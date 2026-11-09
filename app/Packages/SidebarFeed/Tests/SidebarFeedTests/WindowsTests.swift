@@ -46,18 +46,17 @@ private func windowsFixture(_ state: KoSchema.AgentState = waiting(), mark: KoSc
     }
 }
 
-@Test func tabLabelsShareSidebarAgentRule() throws {
-    let cases: [(Lifecycle, Bool, Bool)] = [(piAgent(idle()), true, true),
-        (agent(idle()), true, false),
-        (remote(.agent(.init(name: "pi", status: report(idle())))), true, false),
-        (terminal(), false, false)]
-    for (lifecycle, isAgent, messageable) in cases {
+@Test func tabLabelsShareSidebarMessageableRule() throws {
+    let cases: [(Lifecycle, Bool)] = [(piAgent(idle()), true),
+        (agent(idle()), false),
+        (remote(.agent(.init(name: "pi", status: report(idle())))), false),
+        (terminal(), false)]
+    for (lifecycle, messageable) in cases {
         for title in ["name", "@name"] {
             let snapshot: Snapshot = makeSnapshot([pane(0, title: title, lifecycle: lifecycle)])
             let label = try #require(sidebarWindows(snapshot, projection: PaneProjection(snapshot), session: SessionID(number: 0), surviving: [WindowID(number: 0)],
                                                    activePanes: [WindowID(number: 0): PaneID(number: 0)]).labels[WindowID(number: 0)])
             #expect(label.title == title)
-            #expect(label.agent == isAgent)
             #expect(label.messageable == messageable)
             #expect(sidebarTitle(label.title, messageable: label.messageable) == (messageable && title == "name" ? "@name" : title))
         }

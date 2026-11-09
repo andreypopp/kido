@@ -34,6 +34,16 @@ import KoModel
     } else { Issue.record("missing folded children") }
 }
 
+@Test func foldedSingleChildNamesOnlyAgents() {
+    for (lifecycle, title) in [(agent(working()), Optional("child")), (terminal(), nil)] {
+        let snapshot = makeSnapshot([pane(0, children: [pane(1, title: "child", lifecycle: lifecycle, mark: .running)])])
+        let row = sidebarRows(snapshot).rows[1]
+        guard case .folded(let hidden) = row.children else { Issue.record("missing folded child"); continue }
+        #expect(hidden.count == 1)
+        #expect(hidden.first?.title == title)
+    }
+}
+
 @Test func foldedCirclesOrderReducedStatusesAndKeepSidebarTies() {
     let children = (1...6).map { pane($0, title: "idle-\($0)", lifecycle: agent(idle())) } + [
         pane(7, title: "running-7", lifecycle: agent(working()), mark: .running),
@@ -69,11 +79,11 @@ import KoModel
     let row = sidebarRows(makeSnapshot([pane(0, children: children)])).rows[1]
     guard case .folded(let hidden) = row.children else { Issue.record("missing circles"); return }
     #expect(hidden == [
-        .init(title: "failed", status: .error),
+        .init(title: nil, status: .error),
         .init(title: "failed subtree", status: .error),
         .init(title: "live subtree", status: .running),
-        .init(title: "ended subtree", status: .running),
-        .init(title: "lingering subtree", status: .running),
+        .init(title: nil, status: .running),
+        .init(title: nil, status: .running),
         .init(title: "working record", status: .running),
         .init(title: "done", status: .quiet),
         .init(title: "seen record", status: .quiet)

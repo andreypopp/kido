@@ -26,13 +26,12 @@ import KoModel
         button.performClick(nil)
     }
 
-    func testTabAgentDisplayNameAndWeight() {
+    func testTabDisplayName() {
         let tabs = WindowTabs()
-        for (agent, messageable, name, display) in [(true, true, "agent", "@agent"), (true, true, "@agent", "@agent"), (true, false, "native", "native"), (false, false, "shell", "shell")] {
-            let tab = SessionModel.Tab(id: WindowID(number: 7), name: name, active: true, status: .quiet, agent: agent, messageable: messageable)
+        for (messageable, name, display) in [(true, "agent", "@agent"), (true, "@agent", "@agent"), (false, "native", "native"), (false, "shell", "shell")] {
+            let tab = SessionModel.Tab(id: WindowID(number: 7), name: name, active: true, status: .quiet, messageable: messageable)
             XCTAssertEqual(tab.name, name)
             XCTAssertEqual(tab.displayName, display)
-            XCTAssertEqual(tabs.labelFont(tab), NSFont.systemFont(ofSize: 11, weight: agent ? .semibold : .regular))
             tabs.entries = [tab]
             tabs.frame = NSRect(x: 0, y: 0, width: 220, height: 36)
             XCTAssertEqual(tabs.labelRect(0).minX, 28)

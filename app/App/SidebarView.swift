@@ -658,16 +658,19 @@ final class Table: NSTableView {
     var focusChanged: () -> Void = {}
     override func becomeFirstResponder() -> Bool {
         let accepted = super.becomeFirstResponder()
-        if accepted { focusChanged() }
+        if accepted { redrawCells(); focusChanged() }
         return accepted
     }
     override func resignFirstResponder() -> Bool {
         let accepted = super.resignFirstResponder()
-        if accepted { focusChanged() }
+        if accepted { redrawCells(); focusChanged() }
         return accepted
     }
     var keyboardSelection = false {
-        didSet { enumerateAvailableRowViews { row, _ in row.subviews.forEach { $0.needsDisplay = true } } }
+        didSet { redrawCells() }
+    }
+    private func redrawCells() {
+        enumerateAvailableRowViews { row, _ in row.subviews.forEach { $0.needsDisplay = true } }
     }
     override var acceptsFirstResponder: Bool { Sidebar.allowsFirstResponder(self, in: window) && super.acceptsFirstResponder }
     override func mouseDown(with event: NSEvent) {

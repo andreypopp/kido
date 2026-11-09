@@ -308,8 +308,6 @@ final class WindowTabs: NSView {
         needsDisplay = true
     }
 
-    func labelFont(_ tab: SessionModel.Tab) -> NSFont { .systemFont(ofSize: 11, weight: tab.agent ? .semibold : .regular) }
-
     func labelRect(_ index: Int) -> NSRect {
         let geometry = geometry(dragPoint)
         return label(origin(index, geometry), geometry.width)
@@ -365,7 +363,7 @@ final class WindowTabs: NSView {
                 }
                 let status = visibleStatus(tab.status)
                 (tab.displayName as NSString).draw(in: label(x, tabWidth),
-                    withAttributes: [.font: labelFont(tab), .foregroundColor: tab.active ? Chrome.ink : Chrome.inkSecondary,
+                    withAttributes: [.font: NSFont.systemFont(ofSize: 11), .foregroundColor: tab.active ? Chrome.ink : Chrome.inkSecondary,
                                      .paragraphStyle: paragraph])
                 if status != .quiet && hovered != index {
                     drawStatusMark(status, at: NSPoint(x: rect.minX + 15, y: rect.midY), flipped: false)

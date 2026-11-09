@@ -36,7 +36,7 @@ func drawStatusMark(_ status: SidebarRow.Status, at center: NSPoint, flipped: Bo
 
 struct SidebarFonts {
     let regular = NSFont.systemFont(ofSize: 13)
-    let agent = NSFont.systemFont(ofSize: 13, weight: .semibold)
+    let selected = NSFont.systemFont(ofSize: 13, weight: .semibold)
     let section = NSFont.systemFont(ofSize: 11, weight: .semibold)
     let tail = NSFont.systemFont(ofSize: 11)
     let clock = NSFont.monospacedDigitSystemFont(ofSize: 10, weight: .regular)
@@ -69,17 +69,18 @@ final class SidebarChildren: ActionButton {
     var content: [SidebarRow.HiddenChild] = [] { didSet { needsDisplay = true } }
     private let fonts: SidebarFonts
     private let limit = 6
+    private var name: String? { content.count == 1 ? content[0].title : nil }
     init(_ fonts: SidebarFonts) { self.fonts = fonts; super.init() }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
     private func width(showing count: Int) -> CGFloat {
         if content.isEmpty { return 0 }
-        if content.count == 1, count == 1 { return ceil((content[0].title as NSString).size(withAttributes: [.font: fonts.tail]).width) + 12 }
+        if let name, count == 1 { return ceil((name as NSString).size(withAttributes: [.font: fonts.tail]).width) + 12 }
         let extra = content.count - count
         return CGFloat(count * 10) + (extra > 0 ? (count > 0 ? 2 : 0) + ceil(("+\(extra)" as NSString).size(withAttributes: [.font: fonts.clock]).width) + 2 : 0)
     }
     func fittingWidth(_ available: CGFloat) -> CGFloat {
         guard !content.isEmpty else { return 0 }
-        if content.count == 1 { return available >= 8 ? min(available, width(showing: 1)) : 0 }
+        if name != nil { return available >= 8 ? min(available, width(showing: 1)) : 0 }
         for count in stride(from: min(limit, content.count), through: 0, by: -1) {
             let width = width(showing: count)
             if width <= available { return width }
@@ -96,12 +97,12 @@ final class SidebarChildren: ActionButton {
                                    withAttributes: [.font: font, .foregroundColor: Chrome.inkSecondary, .paragraphStyle: paragraph])
         }
         var count = min(limit, content.count)
-        if content.count != 1 { while count > 0 && width(showing: count) > bounds.width { count -= 1 } }
+        if name == nil { while count > 0 && width(showing: count) > bounds.width { count -= 1 } }
         for (index, child) in content.prefix(count).enumerated() {
-            let center = NSPoint(x: content.count == 1 ? bounds.width - 5 : CGFloat(5 + index * 10), y: 6)
+            let center = NSPoint(x: name != nil ? bounds.width - 5 : CGFloat(5 + index * 10), y: 6)
             drawStatusMark(child.status, at: center, flipped: true)
         }
-        if content.count == 1 { caption(content[0].title, x: 0, width: bounds.width - 12, font: fonts.tail) }
+        if let name { caption(name, x: 0, width: bounds.width - 12, font: fonts.tail) }
         else if content.count > count {
             let x = CGFloat(count > 0 ? count * 10 + 2 : 0)
             caption("+\(content.count - count)", x: x, width: bounds.width - x - 2, font: fonts.clock)
@@ -320,7 +321,7 @@ final class SidebarCell: NSTableCellView, NSTextFieldDelegate {
             let paragraph = NSMutableParagraphStyle()
             paragraph.lineBreakMode = .byTruncatingTail
             var titleRect = NSRect(x: leading, y: y, width: max(0, end - leading), height: 18)
-            let titleFont = header ? fonts.section : row.agent ? fonts.agent : fonts.regular
+            let titleFont = header ? fonts.section : (row.focused || selected) ? fonts.selected : fonts.regular
             var suffix = NSRect.zero
             if let text = runtimeText, !header {
                 // The title gives way first; the suffix is cut only when the row has no room for it alone.

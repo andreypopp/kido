@@ -21,7 +21,7 @@ public struct SidebarRow: Equatable, Sendable {
         func mergingTabStatus(_ other: Self) -> Self { min(self, other) }
     }
     public struct HiddenChild: Equatable, Sendable {
-        public let title: String
+        public let title: String?
         public let status: Status
     }
     public enum Children: Equatable, Sendable {
@@ -225,7 +225,7 @@ public func sidebarRows(_ snapshot: Snapshot?, expanded: Set<SidebarRow.ID> = []
         let disclosure: SidebarRow.Children = children.isEmpty ? .leaf
             : open ? .expanded : .folded(hidden.enumerated().sorted {
                 ($0.element.summary, $0.offset) < ($1.element.summary, $1.offset)
-            }.map { .init(title: $0.element.row.title, status: $0.element.summary) })
+            }.map { .init(title: $0.element.row.agent ? $0.element.row.title : nil, status: $0.element.summary) })
         switch row.kind {
         case .pane(let position, _): row.kind = .pane(position, disclosure)
         case .program: row.kind = .program(disclosure)

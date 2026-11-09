@@ -31,7 +31,6 @@ struct SessionModel: Equatable {
         let name: String
         let active: Bool
         let status: SidebarRow.Status
-        var agent = false
         var messageable = false
         var displayName: String { sidebarTitle(name, messageable: messageable) }
     }
@@ -55,7 +54,7 @@ struct SessionModel: Equatable {
         let active = window.flatMap { panes.rootWindows[$0] ?? $0 }
         model.window = active
         return (model, model.windows.map { Tab(id: $0.id, name: projection.labels[$0.id]?.title ?? $0.name, active: $0.id == active,
-                                              status: projection.statuses[$0.id] ?? .quiet, agent: projection.labels[$0.id]?.agent ?? false,
+                                              status: projection.statuses[$0.id] ?? .quiet,
                                               messageable: projection.labels[$0.id]?.messageable ?? false) })
     }
 

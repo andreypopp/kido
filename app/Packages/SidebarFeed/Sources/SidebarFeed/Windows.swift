@@ -36,7 +36,6 @@ public func closeScope(_ projection: PaneProjection, target: CloseTarget) -> Clo
 public struct WindowProjection: Equatable, Sendable {
     public struct Label: Equatable, Sendable {
         public let title: String
-        public let agent: Bool
         public let messageable: Bool
     }
     public var statuses: [WindowID: SidebarRow.Status] = [:]
@@ -51,7 +50,7 @@ public func sidebarWindows(_ snapshot: Snapshot?, projection: PaneProjection, se
     for (id, entry) in projection.items where entry.session == session {
         let item = entry.item
         if activePanes[item.window] == id {
-            result.labels[item.window] = .init(title: item.label, agent: item.isAgent, messageable: item.isMessageable)
+            result.labels[item.window] = .init(title: item.label, messageable: item.isMessageable)
         }
         guard let root = projection.rootWindows[item.window], surviving.contains(root) else { continue }
         result.statuses[root] = (result.statuses[root] ?? .quiet).mergingTabStatus(item.indicator.status)

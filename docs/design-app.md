@@ -1486,9 +1486,9 @@ instead ([Children in the slot](#children-in-the-slot)).
 Tabs project the current session's top-level windows from the
 snapshot; a child shown in a slot keeps its top-level tab active. Each title is
 the composed label of that window's focus pane, or of the client's active
-pane in the shown window. A tab whose active pane is an
-agent is drawn like its sidebar row: semibold, with the display-only
-@ prefix when that row has one; other tabs are regular with no @. WindowView's active
+pane in the shown window. Every tab label is regular, the active tab
+included: its fill and its primary text colour mark it. A tab shows the display-only
+@ prefix when its active pane's sidebar row has one. WindowView's active
 pane, from the layout and the client's selection, is shared with terminal
 focus. Each tab combines its window and descendants into one status mark,
 ranked error (including unseen failed outcomes, command exits
@@ -1576,10 +1576,11 @@ timer serves the next pending deadline; removed rows lose their state.
 All pane and program rows are 28pt single-line or 42pt with a second line,
 with 5pt vertical padding: the second line holds the caption, the circles
 of folded children ([Folded children](#folded-children)), or both. Titles are 13pt regular on an 18pt line; captions are
-11pt on a 14pt line, 23pt from the row's top. Titles of panes whose lifecycle is a
-live agent (a pi agent, another agent or a remote agent) and all program-record
-rows are semibold; every other pane title, Ended and Terminal runs included,
-is regular. Rows and session headers have 5pt of horizontal padding.
+11pt on a 14pt line, 23pt from the row's top. The weight marks selection, not
+kind: only the focused pane's row and the keyboard-selected row have a semibold
+title, and every other title is regular, whatever the pane runs. The status
+indicator, the @ and the dimmed `Terminal` title carry the agent/shell
+distinction. Rows and session headers have 5pt of horizontal padding.
 A row has a 12pt leading slot for its disclosure chevron and a 6pt gap,
 so the title and the caption start 23pt from the row's edge; there are no
 leading icons. The trailing column holds, on the title line, the 10pt
@@ -1635,7 +1636,7 @@ prefix, never doubled, marks an agent that can be messaged, which is exactly
 a live pi agent pane. A native agent pane (such as
 Claude Code) and an agent over SSH (an Ssh pane with a remote agent, out of
 reach of message_agent, which only reaches pi sessions on the same server)
-cannot be messaged, so they keep the semibold title without the @. Idle shell panes on the host or in a runtime
+cannot be messaged, so they have no @. Idle shell panes on the host or in a runtime
 (Live Terminal at a known Idle prompt, idle/done/failed indicator) display secondary-colored
 `Terminal`; an Unknown phase, full-screen programs and SSH keep their labels. Both display
 rules leave raw pane labels and tab/window titles unchanged.
@@ -1949,8 +1950,11 @@ its descendant records in the same way. Only the circles summarise; a
 row's own indicator is its own status.
 After six, the line shows `+N` in 10pt muted tabular digits, 4pt after the
 last circle; its right edge, like the last circle's, is the indicator's
-right edge. With exactly one hidden child, its title comes first, in the
-caption's style, ending in an ellipsis 4pt before its circle. The caption keeps the rest of the line and ends in an ellipsis 6pt
+right edge. With exactly one hidden child that is an agent (a pane with a
+live agent of any kind, or a program record), its title comes first, in the
+caption's style, ending in an ellipsis 4pt before its circle. A single hidden
+job (a run, a stream monitor, a subagent whose agent is gone) is a circle
+alone, as in a line of several. The caption keeps the rest of the line and ends in an ellipsis 6pt
 before the circles; a row without a caption has the circles alone. The
 circles win the room: the caption shrinks and hides below 16pt, then
 circles go into `+N` from the end, down to one circle and `+N`, then
