@@ -447,6 +447,32 @@ function followBottom() {
   if (scrollFrame !== undefined) return;
   scrollFrame = requestAnimationFrame(() => { scrollFrame = undefined; if (follow) element('scroll').scrollTop = element('scroll').scrollHeight; });
 }
+const metrics = document.querySelector('meta[name="koa-metrics"]') ? { bytes: 0, pending: [], samples: [], timer: undefined, writes: Promise.resolve(), frames: new Set(), reader: { type: 'running' }, error: undefined } : undefined;
+function sendMetrics(force = false) {
+  if (!metrics || !force && !metrics.samples.length) return;
+  clearTimeout(metrics.timer); metrics.timer = undefined;
+  const samples = metrics.samples.splice(0, 50);
+  metrics.writes = metrics.writes.then(async () => {
+    const response = await fetch('/metrics', { method: 'POST', body: JSON.stringify(samples) });
+    if (!response.ok) throw Error('Metrics write failed: ' + response.status);
+  }).catch(error => { metrics.error = error.message; console.error(error); });
+}
+if (metrics) window.koaMetrics = {
+  async flush() {
+    await Promise.all([...metrics.frames]);
+    while (metrics.samples.length) sendMetrics();
+    sendMetrics(true); await metrics.writes;
+    if (metrics.error) throw Error(metrics.error);
+  },
+  pauseRead() {
+    if (metrics.reader.type === 'paused') throw Error('Already paused');
+    let resume;
+    const ready = new Promise(resolve => { resume = resolve; });
+    metrics.reader = { type: 'paused', ready, resume };
+  },
+  resumeRead() { if (metrics.reader.type === 'paused') { metrics.reader.resume(); metrics.reader = { type: 'running' }; } },
+  get after() { return after; },
+};
 async function connect() {
   try {
     const response = await fetch('/events?epoch=' + encodeURIComponent(epoch) + '&after=' + after);
@@ -454,11 +480,31 @@ async function connect() {
     const reader = response.body.getReader(), decoder = new TextDecoder(); let partial = ''; delay = 200;
     element('error').textContent = '';
     for (;;) {
+      if (metrics?.reader.type === 'paused') await metrics.reader.ready;
       const { value, done } = await reader.read(); if (done) break;
+      if (metrics) metrics.bytes += value.byteLength;
       partial += decoder.decode(value, { stream: true });
       let end;
-      while ((end = partial.indexOf('\n')) >= 0) { const line = partial.slice(0, end); partial = partial.slice(end + 1); if (line) { try { apply(JSON.parse(line)); } catch (error) { console.error(error); reportError(error); } } }
+      while ((end = partial.indexOf('\n')) >= 0) { const line = partial.slice(0, end); partial = partial.slice(end + 1); if (line) { try { const record = JSON.parse(line); if (metrics && record.type === 'flush') metrics.pending.push(record.t); else apply(record); } catch (error) { console.error(error); reportError(error); } } }
       followBottom();
+      if (metrics?.pending.length) {
+        const pending = metrics.pending.splice(0), bytes = metrics.bytes;
+        const sampled = (kind) => {
+          const at = performance.timeOrigin + performance.now();
+          for (const t of pending) {
+            metrics.samples.push({ t, [kind]: at, bytes, clockError: Date.now() - at });
+            if (metrics.samples.length === 50) sendMetrics();
+          }
+          metrics.timer ??= setTimeout(sendMetrics, 250);
+        };
+        if (window.ko) sampled('applied');
+        else {
+          let finish;
+          const frame = new Promise(resolve => { finish = resolve; });
+          metrics.frames.add(frame);
+          requestAnimationFrame(() => { sampled('frame'); metrics.frames.delete(frame); finish(); });
+        }
+      }
     }
   } catch { element('error').textContent = 'Connection lost. Reconnecting…'; }
   setTimeout(connect, delay); delay = Math.min(delay * 2, 5000);

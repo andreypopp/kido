@@ -59,6 +59,8 @@ stress tsan-stress asan-stress:
 		--seed $(SEED) --duration $(DURATION) --find $(FIND) --out build/bundle/stress/$@-$(SEED)
 
 RECORD ?= 0
+KOA_STRESS_OUTPUT ?= /tmp/koa-stress
+
 visual: VISUAL_FLAG =
 visual-fast: VISUAL_FLAG = skip
 visual-slow: VISUAL_FLAG = only
@@ -82,8 +84,18 @@ visual visual-fast visual-slow: project
 	trap '$(KO_ABS)/build/ko/bin/ko kill-server --server "$$server" 2>/dev/null || true; rm -rf "$$server"' EXIT; \
 	xcodebuild -project Kido.xcodeproj -scheme Visual -configuration Debug KIDO_VISUAL_SERVER="$$server" \
 		-destination platform=macOS -derivedDataPath $(DERIVED) KO_CHECKOUT=$(KO_ABS) KIDO_VISUAL_CONDITION=KIDO_VISUAL \
-		KIDO_VISUAL_RECORD=$(RECORD) $(foreach test,$(ONLY),-only-testing:VisualTests/$(test)) $$select test 2>&1 | $(XCODE_PROGRESS)
+		KIDO_VISUAL_RECORD=$(RECORD) KOA_STRESS=$(KOA_STRESS) KOA_STRESS_OUTPUT=$(KOA_STRESS_OUTPUT) $(foreach test,$(ONLY),-only-testing:VisualTests/$(test)) $$select test 2>&1 | $(XCODE_PROGRESS)
 	python3 scripts/quit-check.py $(abspath $(APP))
+
+.PHONY: koa-stress koa-stress-root
+koa-stress-root:
+	@printf '%s\n' '$(KOA_STRESS_OUTPUT)'
+
+koa-stress:
+	@mkdir -p '$(KOA_STRESS_OUTPUT)'; \
+	run=$${KOA_STRESS_RUN:-$$(mktemp -d '$(KOA_STRESS_OUTPUT)/run-XXXXXX')} || exit 1; \
+	echo "koa stress run: $$run"; \
+	$(MAKE) visual ONLY="KoaStressTests VisualTests/testWebviewFetchSlots" KOA_STRESS=1 KOA_STRESS_OUTPUT="$$run"
 
 ko-test: DERIVED = build/xcode.noindex/derived-$@
 ko-test: project

@@ -1,6 +1,6 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { once } from "node:events";
-import { readFile } from "node:fs/promises";
+import { readFile, appendFile, writeFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { basename } from "node:path";
 import { homedir } from "node:os";
@@ -92,12 +92,16 @@ async function main(): Promise<void> {
   const location = pathToFileURL(process.argv[1] ?? "");
   const args = process.argv.slice(2);
   let browser = false;
+  let metricsFile: string | undefined;
   let executable = "pi";
   const pass: string[] = [];
   for (let i = 0; i < args.length; i++) {
     const arg = args[i];
     if (arg === "--browser") browser = true;
-    else if (arg === "--pi") {
+    else if (arg === "--metrics") {
+      metricsFile = args[++i];
+      if (!metricsFile) throw new Error("--metrics requires a path");
+    } else if (arg === "--pi") {
       const path = args[++i];
       if (!path) throw new Error("--pi requires a path");
       executable = path;
@@ -105,10 +109,13 @@ async function main(): Promise<void> {
   }
   const configured = Number(process.env.KOA_PI_EXIT_MS ?? 5000);
   const exitMs = Number.isFinite(configured) && configured > 0 ? configured : 5000;
-  const page = await assemblePage(location);
+  const document = await assemblePage(location);
+  const page = metricsFile ? document.replace("<head>", '<head><meta name="koa-metrics" content="on">') : document;
   const view = await webview({ target: browser ? "browser" : "pane" });
   if (!view) throw new Error("koa requires a Kido pane or --browser");
-  const feed = transcript({ flushMs: FLUSH_MS });
+  if (metricsFile) await writeFile(metricsFile, "");
+  let metricsWrites: Promise<void> | undefined;
+  const feed = transcript({ flushMs: FLUSH_MS, metrics: metricsFile !== undefined });
   const state: State = { working: false, aborted: false, name: "pi", levels: [], cwd: process.cwd(), home: homedir(), queue: { steering: [], followUp: [] }, dialogs: [], statuses: {} };
   let stopping = false;
   let pi: Pi = { type: "starting" };
@@ -370,6 +377,19 @@ async function main(): Promise<void> {
   };
   const handle = async (request: IncomingMessage, response: ServerResponse) => {
     try {
+      if (metricsFile && request.method === "POST" && request.url === "/metrics") {
+        const bytes = await readBody(request, 1 << 20);
+        if (!bytes) { respond(response, 413, "{}"); return; }
+        let samples: unknown;
+        try { samples = JSON.parse(bytes.toString("utf8")); } catch { respond(response, 400, "{}"); return; }
+        if (!Array.isArray(samples) || samples.length > 50 || !samples.every(sample => sample && typeof sample === "object" && Number.isFinite(sample.t) && (Number.isFinite(sample.frame) || Number.isFinite(sample.applied)) && Number.isFinite(sample.clockError) && Number.isSafeInteger(sample.bytes) && sample.bytes >= 0)) { respond(response, 400, "{}"); return; }
+        const line = JSON.stringify({ type: "metrics", at: Date.now(), samples, ...feed.metrics }) + "\n";
+        const file = metricsFile;
+        const write = (metricsWrites ?? Promise.resolve()).then(() => appendFile(file, line));
+        metricsWrites = write.catch(() => {});
+        try { await write; } catch (error) { respond(response, 500, JSON.stringify({ error: errorText(error) })); return; }
+        respond(response, 200, "{}"); return;
+      }
       if (feed.handle(request, response)) return;
       if (request.method === "GET" && request.url === "/") { respond(response, 200, page, "text/html; charset=utf-8"); return; }
       const route = routes[request.url ?? ""];

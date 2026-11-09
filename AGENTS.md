@@ -758,7 +758,8 @@ maps the coordinator's modules.
                         markdown over vendor/ (marked and remend, pinned
                         in vendor/README.md); koa-assemble.ts, the one
                         HTML response; koa-fake-pi.ts, the scripted pi
-                        of its suite koa-*.test.ts
+                        of its suite koa-*.test.ts; stress/, the stress
+                        workloads and runner (not installed)
     share/webview/      @kido/webview, the Node SDK for webview pages
                         (index.ts, README.md), installed as share/ko/webview
     .pi/prompts/        gh-watch.md, /gh-watch: starts scripts/main-watch.sh streamed;
@@ -1018,7 +1019,10 @@ enter the tests. The lint and ts stages need Node 24 or newer;
 `KO_TS_TEST_REQUIRED=1`, which verify sets itself, makes a missing node
 a failure. Before a release, validation uses `make verify` in full.
 Kido.app has its own checks in `app/` (`make test`, `make visual`,
-`make stress`; docs/design-app.md, "Testing").
+`make stress`; docs/design-app.md, "Testing"). koa's stress runs are
+manual and never in verify: `share/koa/stress/run.sh` (headless
+Chrome) and `make -C app koa-stress` (off-screen Kido); no window
+shows on the screen.
 
 **Which verification.** `make verify` is the one command for ko,
 `share/` and `scripts/`. A change that touches `app/` or the shared

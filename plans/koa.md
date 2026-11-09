@@ -509,7 +509,8 @@ approval.
 
 **Measurements.**
 
-- Token to paint: with `--metrics FILE`, each flush that koa sends
+- Flush to frame (Chrome) and flush to apply (Kido, whose off-screen
+  windows run no `requestAnimationFrame`): with `--metrics FILE`, each flush that koa sends
   carries `{type:"flush", t}` with koa's `Date.now()`. The page, after
   it applies the records of one read, takes `performance.timeOrigin
   + performance.now()` in a `requestAnimationFrame` and sends the
@@ -533,7 +534,7 @@ approval.
 **The scripted pi.** `koa-fake-pi.ts` is a Node program that speaks
 the RPC protocol on its stdin and stdout from a script: a JSON lines
 file of commands to expect and events to emit, with gates (`wait` for
-a command, `delay` in ms, `repeat` with a count). It emits the exact
+a command and `repeat` with a count and a delay in ms). It emits the exact
 event shapes of pi's `json.md` and answers `get_state`,
 `get_messages`, `get_session_stats` and the extension UI records. It
 runs the tests and the stress workloads, so both are repeatable. The
@@ -682,12 +683,26 @@ unit. The order is fixed, because each unit builds on the one before.
    and `--fork` after `koa`; a koa test that `--runtime x` reaches pi's
    argv. The e2e suite does not run koa (section 5), so a child's
    start in a real pane is the manual check of the stress workload 12.
-6. **The stress runner.** `share/koa/stress/`: the twelve scripts, the
-   metrics channel (`--metrics`, `/metrics`, the `flush` record), the
-   runner with its table and the memory sampling. The unit's report
-   gives the first numbers for each workload on the developer's Mac
-   and names every limit that a workload hit in a way the plan did not
-   expect. Each such finding becomes its own unit.
+6. **The stress runner.** Done: `share/koa/stress/run.sh` (page
+   workloads in headless Chrome over the DevTools protocol) and `make
+   -C app koa-stress` (Kido workloads in off-screen windows, which run
+   no `requestAnimationFrame`, so they measure flush to apply). Its
+   findings are the units 6a and 6b.
+6a. **A page's memory.** One koa page costs about 370 MiB of
+   WebContent memory in Kido (W2: +377 MiB; W12's parent: +168 MiB)
+   and a 136 to 168 MB JS heap in Chrome (W2, W5, W8), against the
+   27 MB of an empty view. Find what the page keeps (the item views,
+   the markdown memo, the records, the samples) with a heap snapshot
+   in Chrome, bound it, and give the stress table a memory budget per
+   page that fails above it.
+6b. **Many streaming pages.** W6 (eight panes that stream at once)
+   fails: one page does not finish in 90 s, flush to apply reaches a
+   p95 of 27 s, and WebKit logs `Too many messages (129) in the queue`
+   of `WebPage_URLSchemeTaskDidReceiveData` for seven renderers. The
+   scheme handler hands every small chunk to WebKit as its own
+   `didReceive`; coalesce the chunks of one turn of the main queue
+   into one call (and check that `testWebviewStreamingLastRecord`
+   still holds), then measure W6 again.
 7. **ko-pi's page goes.** The user decided on 2026-11-08 that koa
    replaces ko-pi's page when koa is stable: its visual tests and its
    stress runs pass, and every finding of unit 6 is fixed. Until then

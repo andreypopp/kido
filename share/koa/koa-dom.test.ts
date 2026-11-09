@@ -21,7 +21,7 @@ async function page() {
   }
   const elements = new Map<string, Node>();
   const listeners = new Map<string, (event: unknown) => void>();
-  const document = { getElementById(id: string) { let node = elements.get(id); if (!node) { node = new Node(); elements.set(id, node); } return node; }, createElement: () => new Node(), createElementNS: () => new Node(), addEventListener(type: string, handler: (event: unknown) => void) { listeners.set(type, handler); }, querySelectorAll: () => [] };
+  const document = { querySelector: () => null, getElementById(id: string) { let node = elements.get(id); if (!node) { node = new Node(); elements.set(id, node); } return node; }, createElement: () => new Node(), createElementNS: () => new Node(), addEventListener(type: string, handler: (event: unknown) => void) { listeners.set(type, handler); }, querySelectorAll: () => [] };
   const context = { document, window: { ko: {} }, innerWidth: 980, console, getComputedStyle: () => ({ maxHeight: "120px" }), setInterval() {}, clearInterval() {}, setTimeout, clearTimeout, requestAnimationFrame() {}, fetch: async () => ({ ok: true, json: async () => ({}) }) };
   return { context, elements, listeners, run: (code: string) => runInNewContext("{\n" + source.replace(/^import .*;\n/gm, "").replace(/setInterval\(status,[\s\S]*$/, "") + "\n" + code + "\n}", context) };
 }
@@ -35,7 +35,7 @@ test("both transcript pages skip empty stream lines", async () => {
       controller.close();
     } });
     const received: object[] = [];
-    await runInNewContext(connect + ";connect()", { epoch: "", after: -1, delay: 200, disconnected: false, TextDecoder, console, fetch: async () => ({ ok: true, body: response }), apply: (record: object) => received.push(record), element: () => ({}), followBottom() {}, setTimeout() {} });
+    await runInNewContext(connect + ";connect()", { metrics: undefined, epoch: "", after: -1, delay: 200, disconnected: false, TextDecoder, console, fetch: async () => ({ ok: true, body: response }), apply: (record: object) => received.push(record), element: () => ({}), followBottom() {}, setTimeout() {} });
     assert.equal(JSON.stringify(received), JSON.stringify([{ type: "state", name: "ready" }]), name);
   }
 });

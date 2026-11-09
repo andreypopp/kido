@@ -1,7 +1,7 @@
 import { test, type TestContext } from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdtemp, readFile, writeFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile, rm, mkdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { once } from "node:events";
@@ -33,8 +33,37 @@ async function fixture(t: TestContext, steps: object[], env: NodeJS.ProcessEnv =
   const { state: stream, until } = ndjson(Readable.from(response.body));
   const post = (path: string, body: object = {}) => fetch(base + path, { method: "POST", body: JSON.stringify(body) });
   if (startup) await until(record => record.type === "state" && (pi ? record.pi?.type === "exited" : Array.isArray(record.levels) && record.levels.length === 3));
-  return { post, until, count: () => stream.records.length, close, stdout: () => stdout, stderr: () => stderr, log: async () => (await readFile(log, "utf8")).trim().split("\n").map(line => JSON.parse(line)), base };
+  return { post, until, records: () => stream.records, count: () => stream.records.length, close, stdout: () => stdout, stderr: () => stderr, log: async () => (await readFile(log, "utf8")).trim().split("\n").map(line => JSON.parse(line)), base };
 }
+test("metrics are opt-in and record frame samples with stream counters", { timeout: 10000 }, async t => {
+  const off = await fixture(t, []);
+  assert.equal((await off.post("metrics", [])).status, 404);
+  assert.equal(off.records().some(record => record.type === "flush"), false);
+  assert.doesNotMatch(await (await fetch(off.base)).text(), /<meta name="koa-metrics"/);
+  const dir = await mkdtemp(join(tmpdir(), "koa-metrics-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const file = join(dir, "metrics.jsonl");
+  const on = await fixture(t, [], {}, undefined, true, ["--metrics", file]);
+  const flush = await on.until(record => record.type === "flush");
+  assert.equal(typeof flush.t, "number");
+  assert.match(await (await fetch(on.base)).text(), /<meta name="koa-metrics"/);
+  const samples = [{ t: flush.t, frame: flush.t + 12, bytes: 100, clockError: 0 }];
+  assert.equal((await on.post("metrics", samples)).status, 200);
+  const record = JSON.parse((await readFile(file, "utf8")).trim());
+  assert.deepEqual(record.samples, samples);
+  assert.equal(record.type, "metrics");
+  assert.equal(record.opens, 1); assert.equal(record.resets, 1); assert.equal(record.cursors, 0);
+  assert.equal(record.caps, 0); assert.equal(record.subscribers, 1);
+  assert.ok(record.bytes > 0); assert.ok(record.highWater > 0);
+  assert.equal((await on.post("metrics", [{ t: flush.t, applied: flush.t + 1, bytes: 100, clockError: 0 }])).status, 200);
+  assert.equal((await on.post("metrics", [{ t: "bad" }])).status, 400);
+  await rm(file); await mkdir(file);
+  assert.equal((await on.post("metrics", samples)).status, 500);
+  await rm(file, { recursive: true }); await writeFile(file, "");
+  assert.equal((await on.post("metrics", samples)).status, 200);
+  assert.deepEqual(JSON.parse((await readFile(file, "utf8")).trim()).samples, samples);
+});
+
 test("startup refuses prompts until the snapshot response is applied", { timeout: 10000 }, async t => {
   const dir = await mkdtemp(join(tmpdir(), "koa-startup-"));
   t.after(() => rm(dir, { recursive: true, force: true }));

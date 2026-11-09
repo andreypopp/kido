@@ -6,6 +6,7 @@ import SidebarFeed
 import SnapshotTesting
 import PaneGeometry
 import XCTest
+import WebKit
 @testable import Kido
 
 // A pane that runs `cat` in raw mode, so what a test writes to it comes back as output.
@@ -13,6 +14,19 @@ let rawScript = "stty raw -echo; printf '\\033]2;raw-ready\\007'; exec /bin/cat"
 
 @MainActor class VisualTestCase: XCTestCase {
     var serverEnvironment: [String: String] = [:]
+    var checkoutRoot: URL { URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent() }
+
+    func webviewJS(_ web: WKWebView, _ script: String, within seconds: Double = 10) async throws -> String {
+        let done = expectation(description: "webview script: " + script)
+        var answer: Result<Any, Error>?
+        web.callAsyncJavaScript("return JSON.stringify(await (\(script)))", arguments: [:], in: nil, in: .page) { answer = $0; done.fulfill() }
+        await fulfillment(of: [done], timeout: seconds + 1)
+        return try XCTUnwrap(try XCTUnwrap(answer).get() as? String)
+    }
+
+    func webviewUntil(_ web: WKWebView, _ condition: String, within seconds: Double = 10) async throws {
+        _ = try await webviewJS(web, "new Promise((resolve,reject)=>{const observer=new MutationObserver(check);const timer=setTimeout(()=>{clean();reject(Error('Webview condition deadline: '+\(String(reflecting: condition))))},\(seconds * 1000));function clean(){observer.disconnect();clearTimeout(timer);removeEventListener('resize',check)}function check(){if(\(condition)){clean();resolve(true)}}observer.observe(document.documentElement,{attributes:true,childList:true,characterData:true,subtree:true});addEventListener('resize',check);check()})", within: seconds)
+    }
 
     func presentedFrame(_ pane: PaneView, attempts: Int = 3, file: StaticString = #filePath, line: UInt = #line) async {
         var status = GHOSTTY_RENDER_PRESENTATION_DISCARDED

@@ -10,6 +10,17 @@ final class WebviewToy: @unchecked Sendable {
     private var delayed: [NWConnection] = []
     private var opened = Set<ObjectIdentifier>()
     private var eventStream: NWConnection?
+    private var slots: [(id: Int, connection: NWConnection?)] = []
+    var acceptedSlots: [Int] { queue.sync { slots.map(\.id) } }
+    var waitingSlots: Int { queue.sync { slots.filter { $0.connection != nil }.count } }
+    func releaseSlot(_ id: Int) {
+        queue.sync {
+            guard let index = slots.firstIndex(where: { $0.id == id }), let connection = slots[index].connection else { return }
+            slots[index].connection = nil
+            let body = Data(String(id).utf8)
+            connection.send(content: Data("HTTP/1.1 200 OK\r\nContent-Length: \(body.count)\r\nConnection: close\r\n\r\n".utf8) + body, completion: .contentProcessed { _ in connection.cancel() })
+        }
+    }
 
     func writeLaterRecord() {
         queue.async { [self] in
@@ -91,6 +102,9 @@ final class WebviewToy: @unchecked Sendable {
                     if error == nil { self?.events(connection, 0) }
                 })
                 return
+            }
+            if let path = text.split(separator: " ").dropFirst().first, path.hasPrefix("/slot/"), let id = Int(path.dropFirst(6)) {
+                slots.append((id, connection)); return
             }
             if text.hasPrefix("POST /body ") {
                 let length = text.components(separatedBy: "\r\n").first(where: { $0.lowercased().hasPrefix("content-length:") })?.split(separator: ":", maxSplits: 1).last.flatMap { Int($0.trimmingCharacters(in: .whitespaces)) } ?? 0

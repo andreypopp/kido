@@ -11,21 +11,6 @@ import KoModel
 }
 
 extension VisualTests {
-    func webviewJS(_ web: WKWebView, _ script: String) async throws -> String {
-        let done = expectation(description: "webview script: " + script)
-        var answer: Result<Any, Error>?
-        web.callAsyncJavaScript("return JSON.stringify(await (\(script)))", arguments: [:], in: nil, in: .page) {
-            answer = $0
-            done.fulfill()
-        }
-        await fulfillment(of: [done], timeout: 10)
-        return try XCTUnwrap(try XCTUnwrap(answer).get() as? String)
-    }
-
-    func webviewUntil(_ web: WKWebView, _ condition: String) async throws {
-        _ = try await webviewJS(web, "new Promise(resolve=>{const observer=new MutationObserver(check);function check(){if(\(condition)){observer.disconnect();removeEventListener('resize',check);resolve(true)}}observer.observe(document.documentElement,{attributes:true,childList:true,characterData:true,subtree:true});addEventListener('resize',check);check()})")
-    }
-
     private func webviewEqual(_ web: WKWebView, _ script: String, _ expected: String) async throws {
         let actual = try await webviewJS(web, script)
         XCTAssertEqual(actual, expected, script)
@@ -65,6 +50,26 @@ extension VisualTests {
         webview.addSubview(overlay)
         defer { overlay.removeFromSuperview() }
         try await snapshot(name, testName: testName)
+    }
+
+    func testWebviewFetchSlots() async throws {
+        let toy = try WebviewToy(path: directory.appendingPathComponent("webview.sock").path)
+        let pane = try await webviewStart(toy: toy)
+        let web = try XCTUnwrap(pane.webviewView?.browser)
+        _ = try await webviewJS(web, "fetch('/events').then(response=>{window.slotStream=response;window.slotRequests=Array.from({length:8},(_,id)=>fetch('/slot/'+id).then(response=>response.text()));return true})")
+        try await wait("five short requests admitted", within: 5) { toy.acceptedSlots.count == 5 }
+        XCTAssertEqual(toy.acceptedSlots, [0, 1, 2, 3, 4])
+        XCTAssertEqual(toy.waitingSlots, 5)
+        for id in 0..<3 {
+            toy.releaseSlot(id)
+            try await wait("the next queued request", within: 5) { toy.acceptedSlots.count == 6 + id }
+            XCTAssertEqual(toy.acceptedSlots, Array(0..<(6 + id)))
+            XCTAssertEqual(toy.waitingSlots, 5)
+        }
+        for id in 3..<8 { toy.releaseSlot(id) }
+        let result = try await webviewJS(web, "Promise.all(window.slotRequests)")
+        XCTAssertEqual(result, #"["0","1","2","3","4","5","6","7"]"#)
+        _ = try await webviewJS(web, "window.slotStream.body.cancel().then(()=>true)")
     }
 
     func testWebviewStreamingLastRecord() async throws {

@@ -1,9 +1,10 @@
 #!/usr/bin/env node
 import { readFileSync, appendFileSync, writeFileSync } from "node:fs";
 import { once } from "node:events";
+import { setTimeout } from "node:timers/promises";
 import { spawn } from "node:child_process";
 
-type Step = { type: "respond"; command: "get_state" | "get_messages" | "get_session_stats" | "get_available_thinking_levels"; data: object; after?: object[] } | { type: "emit"; event: object } | { type: "raw"; text: string } | { type: "stderr"; text: string } | { type: "wait"; command: string; events?: object[]; after?: object[]; data?: object; error?: string } | { type: "exit"; code: number } | { type: "repeat"; count: number; events: object[] };
+type Step = { type: "respond"; command: "get_state" | "get_messages" | "get_session_stats" | "get_available_thinking_levels"; data: object; after?: object[] } | { type: "emit"; event: object } | { type: "raw"; text: string } | { type: "stderr"; text: string } | { type: "wait"; command: string; events?: object[]; after?: object[]; data?: object; error?: string } | { type: "exit"; code: number } | { type: "repeat"; count: number; events: object[]; delayMs?: number };
 const script: Step[] = process.env.KOA_FAKE_SCRIPT ? readFileSync(process.env.KOA_FAKE_SCRIPT, "utf8").trim().split("\n").filter(Boolean).map(line => JSON.parse(line)) : [];
 let next = 0;
 let working = false;
@@ -36,7 +37,7 @@ async function advance(): Promise<void> {
     else if (step.type === "emit") await emit(step.event);
     else if (step.type === "raw") await write(step.text);
     else if (step.type === "stderr") process.stderr.write(step.text);
-    else if (step.type === "repeat") { for (let i = 0; i < step.count; i++) for (const event of step.events) await emit(event); }
+    else if (step.type === "repeat") { for (let i = 0; i < step.count; i++) { for (const event of step.events) await emit(event); if (step.delayMs) await setTimeout(step.delayMs); } }
     else { await output; process.exit(step.code); }
   }
 }

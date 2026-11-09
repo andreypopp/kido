@@ -87,7 +87,7 @@ def lexical(text):
     return re.sub(pattern, mask, text), comments
 
 signal_sites = {'share/pi/ko-pi.ts': {'function': 'signalJob', 'count': 0}, 'share/koa/koa.ts': {'function': 'signalPi', 'count': 0}}
-for path in glob.glob('share/pi/*.ts') + glob.glob('share/webview/*.ts') + glob.glob('share/koa/*.ts'):
+for path in glob.glob('share/pi/*.ts') + glob.glob('share/webview/*.ts') + glob.glob('share/koa/*.ts') + glob.glob('share/koa/stress/*.ts'):
     text = pathlib.Path(path).read_text()
     code, _ = lexical(text)
     allowed = signal_sites.get(path)
@@ -119,7 +119,7 @@ for path in glob.glob('ko/**/*.rs', recursive=True) + glob.glob('ko_*/**/*.rs', 
         for match in re.finditer(r'(?<![\w:])kill(?:pg)?\s*\(', code):
             report(path, text, match.start(), 'signals must go through ko_sys::pid')
 
-core = ['share/pi/ko-pi.ts', 'share/pi/transcript.ts', *glob.glob('share/koa/*.ts')]
+core = ['share/pi/ko-pi.ts', 'share/pi/transcript.ts', *glob.glob('share/koa/*.ts'), *glob.glob('share/koa/stress/*.ts')]
 for path in candidates(r'(^|[^a-zA-Z_])(as|any)([^a-zA-Z_]|$)|!', core):
     text = pathlib.Path(path).read_text()
     code, _ = lexical(text)
@@ -147,7 +147,7 @@ for path, statements in fuzz_allowed.items():
             report(path, '', 0, f'stale KO_FUZZ_ allowance {statement!r} ({left} unused)')
 
 history = r'\b(previously|no longer|(?<!be )used to|formerly|as of now|since this fix)\b'
-for path in candidates('[Pp]reviously|[Nn]o longer|[Uu]sed to|[Ff]ormerly|[Aa]s of now|[Ss]ince this fix', glob.glob('share/pi/*.ts') + glob.glob('share/webview/*.ts') + glob.glob('share/koa/*.ts')):
+for path in candidates('[Pp]reviously|[Nn]o longer|[Uu]sed to|[Ff]ormerly|[Aa]s of now|[Ss]ince this fix', glob.glob('share/pi/*.ts') + glob.glob('share/webview/*.ts') + glob.glob('share/koa/*.ts') + glob.glob('share/koa/stress/*.ts')):
     text = pathlib.Path(path).read_text()
     _, comments = lexical(text)
     for offset, comment in comments:

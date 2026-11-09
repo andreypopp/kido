@@ -1,0 +1,31 @@
+import assert from 'node:assert/strict';
+import { test } from 'node:test';
+import { mkdtemp, writeFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { report } from './stress/report.ts';
+
+test('stress reports refuse missing files, empty samples and clock jumps', async t => {
+  const dir = await mkdtemp(join(tmpdir(), 'koa-report-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  await assert.rejects(report(dir), /No run manifest/);
+  await writeFile(join(dir, 'page-manifest.json'), JSON.stringify({ target: 'page', ids: [2] }));
+  await assert.rejects(report(dir), /ENOENT/);
+  const file = join(dir, 'samples.jsonl');
+  await writeFile(join(dir, 'page-2-summary.json'), JSON.stringify({ target: 'page', id: 2, status: 'ok', seconds: 1, heap: 1000, metrics: [file] }));
+  await assert.rejects(report(dir), /ENOENT/);
+  const record = { samples: [], bytes: 50, opens: 1, caps: 0, flushes: 2, highWater: 50 };
+  await writeFile(file, JSON.stringify(record));
+  await assert.rejects(report(dir), /No timing samples/);
+  await writeFile(file, JSON.stringify({ ...record, samples: [{ t: 1000, frame: 1010, bytes: 50, clockError: 1000 }] }));
+  await assert.rejects(report(dir), /Wall-clock jump/);
+  await writeFile(file, JSON.stringify({ ...record, samples: [{ t: 1000, frame: 1010, bytes: 50, clockError: 0 }, { t: 1020, frame: 1040, bytes: 50, clockError: 0 }] }));
+  const rows = await report(dir);
+  assert.equal(rows[0]?.timing, 'flush→frame');
+  assert.equal(rows[0]?.p50, 20);
+  assert.equal(rows[0]?.bytes, 50);
+  await writeFile(join(dir, 'page-2-summary.json'), JSON.stringify({ target: 'page', id: 2, status: 'failed', error: 'baseline not settled', seconds: 10, metrics: [] }));
+  const failed = await report(dir);
+  assert.equal(failed[0]?.status, 'failed');
+  assert.equal(failed[0]?.error, 'baseline not settled');
+});

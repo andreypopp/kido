@@ -115,7 +115,8 @@ function notRun(item: Assistant): void {
   for (const block of item.blocks) if (block.type === "tool" && block.state.type === "pending") block.state = { type: "not_run" };
 }
 
-export function transcript({ flushMs }: { flushMs: number }) {
+export function transcript({ flushMs, metrics = false }: { flushMs: number; metrics?: boolean }) {
+  const counters = metrics ? { flushes: 0, bytes: 0, highWater: 0, opens: 0, resets: 0, cursors: 0, caps: 0 } : undefined;
   let currentState: object | undefined;
   let epoch = mintId();
   let items: Item[] = [];
@@ -132,8 +133,14 @@ export function transcript({ flushMs }: { flushMs: number }) {
 
   const body = (req: ServerResponse, text: string, more = false): void => {
     if (req.destroyed || req.writableEnded) return;
-    if (text) { req.write(text); if (text !== "\n") written = true; }
+    if (text) {
+      const bytes = counters ? Buffer.from(text) : text;
+      req.write(bytes);
+      if (counters && typeof bytes !== "string") { counters.bytes += bytes.length; counters.highWater = Math.max(counters.highWater, req.writableLength); }
+      if (text !== "\n") written = true;
+    }
     if (!more || req.writableLength > MAX_WEBVIEW_OUTPUT_BYTES) {
+      if (counters && req.writableLength > MAX_WEBVIEW_OUTPUT_BYTES) counters.caps++;
       req.end();
       subscribers.delete(req);
     }
@@ -153,6 +160,7 @@ export function transcript({ flushMs }: { flushMs: number }) {
     for (const req of subscribers) body(req, line, true);
     quiet();
   };
+  const flushRecord = () => ({ type: "flush", t: Date.now() });
   const window = (before: number): string => {
     let start = Math.min(before, items.length);
     const strings: string[] = [];
@@ -251,6 +259,7 @@ export function transcript({ flushMs }: { flushMs: number }) {
       if (item.kind === "assistant" && !item.final) sent.set(seq, { ...item, blocks: item.blocks.map((block) => ({ ...block })) });
       else sent.delete(seq);
     }
+    if (counters && dirty.size) { counters.flushes++; broadcast(flushRecord()); }
     dirty.clear();
   };
   const applyMessage = (message: AgentMessage, phase: "start" | "update" | "end" | "branch", ended?: number): void => {
@@ -345,23 +354,26 @@ export function transcript({ flushMs }: { flushMs: number }) {
       if (!Number.isSafeInteger(before) || before < 0) respond(req, 400, "{}");
       else respond(req, 200, '{"epoch":' + JSON.stringify(epoch) + ',' + window(before) + '}');
     } else if (request.method === "GET" && url.pathname === "/events") {
+      if (counters) counters.opens++;
       req.once("close", () => subscribers.delete(req));
       flush();
       req.writeHead(200, { "Content-Type": "application/x-ndjson" });
       if (url.searchParams.get("epoch") === epoch) {
+        if (counters) counters.cursors++;
         const after = Number(url.searchParams.get("after") ?? -1);
         if (!Number.isSafeInteger(after) || after < -1) { body(req, ""); return true; }
         for (const item of items.slice(after + 1)) {
           body(req, JSON.stringify({ type: "item", item }) + "\n", true);
           if (req.writableEnded || req.destroyed) break;
         }
-      } else body(req, reset(), true);
+      } else { if (counters) counters.resets++; body(req, reset(), true); }
       if (req.writableEnded || req.destroyed) return true;
       subscribers.add(req);
+      if (counters) body(req, JSON.stringify(flushRecord()) + "\n", true);
       if (currentState) broadcast(currentState);
       quiet();
     } else return false;
     return true;
   };
-  return { message, thinking, rebuild, toolRunning, toolPartial, toolDone, state, send: broadcast, handle, close };
+  return { message, thinking, rebuild, toolRunning, toolPartial, toolDone, state, send: broadcast, handle, close, get metrics() { return counters && { ...counters, subscribers: subscribers.size }; } };
 }

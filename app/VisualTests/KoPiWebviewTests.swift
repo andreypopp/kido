@@ -5,9 +5,8 @@ import XCTest
 
 extension VisualTests {
     func testKoPiWebviewLightAndDark() async throws {
-        let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent()
         let shim = tools.prefix + "/share/ko/bin/ko-pi"
-        let piBin = root.appendingPathComponent("share/pi/node_modules/.bin").path
+        let piBin = checkoutRoot.appendingPathComponent("share/pi/node_modules/.bin").path
         guard FileManager.default.isExecutableFile(atPath: piBin + "/pi") else {
             XCTFail("Pinned pi is missing; run npm install in share/pi")
             return
