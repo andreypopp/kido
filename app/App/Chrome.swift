@@ -43,8 +43,9 @@ enum Chrome {
     static var linkText: NSColor { .controlAccentColor }
     static var onAccent: NSColor { .white }
     static var onError: NSColor { .white }
-    static var capsuleHighlight: CGColor { CGColor(gray: 1, alpha: 0.12) }
-    static var capsuleShadow: (color: NSColor, blur: CGFloat) { (.black.withAlphaComponent(0.2), 9) }
+    static func capsuleShadow(dark: Bool) -> (color: NSColor, offset: CGFloat, blur: CGFloat) {
+        (.black.withAlphaComponent(dark ? 0.30 : 0.08), -1, dark ? 3 : 2)
+    }
     static var floatShadow: (color: NSColor, blur: CGFloat) { (.black.withAlphaComponent(0.22), 12) }
     static func sidebarShadow(dark: Bool) -> (color: NSColor, blur: CGFloat) { (.black.withAlphaComponent(dark ? 0.4 : 0.18), 14) }
     static var shadowMask: NSColor { .black }
@@ -52,8 +53,8 @@ enum Chrome {
     static var disabledIconAlpha: CGFloat { 0.35 }
     static var pickerRing: NSColor { NSColor.controlAccentColor.withAlphaComponent(0.55) }
     static var codeFill: NSColor { NSColor.labelColor.withAlphaComponent(NSColor.labelColor.alphaComponent * 0.08) }
-    static var capsuleSurface: (fillMix: Double, edgeAlpha: CGFloat) { (0.08, 0.12) }
-    static var cardSurface: (fillMix: Double, edgeAlpha: CGFloat) { (0.07, 0.14) }
+    static func capsuleSurface(dark: Bool) -> (fillMix: Double, edgeAlpha: CGFloat) { (0.08, dark ? 0.14 : 0.16) }
+    static func cardSurface(dark: Bool) -> (fillMix: Double, edgeAlpha: CGFloat) { (0.07, 0.14) }
     static func capsuleEdge(_ foreground: NSColor, alpha: CGFloat) -> NSColor { foreground.withAlphaComponent(alpha) }
     static func bannerVeil(_ background: NSColor) -> NSColor { background.withAlphaComponent(0.85) }
     static func floatingOverlay(_ background: NSColor) -> NSColor { background.withAlphaComponent(0.45) }

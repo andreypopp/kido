@@ -145,44 +145,38 @@ final class PaneDropPreview: NSView {
 }
 
 class PaneCapsule: NSView {
+    enum ShadowStyle { case contact, float, none }
     // A label draws its text 2pt inside its frame on each side.
     static let labelInset: CGFloat = 2
     weak var pane: PaneView?
     let runtime: GhosttyRuntime
     private let radius: CGFloat
-    private let surface: (fillMix: Double, edgeAlpha: CGFloat)
+    private let surface: (Bool) -> (fillMix: Double, edgeAlpha: CGFloat)
+    private let shadowStyle: ShadowStyle
+    private var shadowDark: Bool?
     private let edgeOutset: CGFloat
     private let edge = CALayer()
-    private let highlight = CAShapeLayer()
     private let separators: [CALayer]
     private let ring = CALayer()
     private var focus: NSKeyValueObservation?
     var separatorX: [CGFloat] = [] { didSet { needsLayout = true } }
     var focused: Bool { false }
 
-    init(runtime: GhosttyRuntime, radius: CGFloat, separators: Int = 0, surface: (fillMix: Double, edgeAlpha: CGFloat) = Chrome.capsuleSurface, edgeOutset: CGFloat = 0.5) {
+    init(runtime: GhosttyRuntime, radius: CGFloat, separators: Int = 0, surface: @escaping (Bool) -> (fillMix: Double, edgeAlpha: CGFloat) = Chrome.capsuleSurface, edgeOutset: CGFloat = 0.5, shadowStyle: ShadowStyle = .contact) {
         self.runtime = runtime
         self.radius = radius
         self.surface = surface
+        self.shadowStyle = shadowStyle
         self.edgeOutset = edgeOutset
         self.separators = (0..<separators).map { _ in CALayer() }
         super.init(frame: .zero)
         wantsLayer = true
         layer?.cornerRadius = radius
-        let shadow = NSShadow()
-        shadow.shadowColor = Chrome.capsuleShadow.color
-        shadow.shadowOffset = NSSize(width: 0, height: -6)
-        shadow.shadowBlurRadius = Chrome.capsuleShadow.blur
-        self.shadow = shadow
         edge.borderWidth = 0.5
         edge.cornerRadius = radius + edgeOutset
-        highlight.fillColor = Chrome.capsuleHighlight
-        highlight.fillRule = .evenOdd
-        highlight.cornerRadius = radius
-        highlight.masksToBounds = true
         ring.borderWidth = 3
         ring.cornerRadius = radius + 3
-        for sublayer in [edge, highlight] + self.separators + [ring] { layer?.addSublayer(sublayer) }
+        for sublayer in [edge] + self.separators + [ring] { layer?.addSublayer(sublayer) }
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
     override var wantsUpdateLayer: Bool { true }
@@ -199,6 +193,23 @@ class PaneCapsule: NSView {
     override func updateLayer() { updateSurface() }
     private func updateSurface() {
         let background = runtime.background, foreground = runtime.foreground
+        let dark = background.isDark
+        let surface = surface(dark)
+        if shadowDark != dark {
+            shadowDark = dark
+            let style: (color: NSColor, offset: CGFloat, blur: CGFloat)? = switch shadowStyle {
+            case .contact: Chrome.capsuleShadow(dark: dark)
+            case .float: (Chrome.floatShadow.color, -10, Chrome.floatShadow.blur)
+            case .none: nil
+            }
+            shadow = style.map {
+                let shadow = NSShadow()
+                shadow.shadowColor = $0.color
+                shadow.shadowOffset = NSSize(width: 0, height: $0.offset)
+                shadow.shadowBlurRadius = $0.blur
+                return shadow
+            }
+        }
         layer?.backgroundColor = background.mixed(toward: foreground, amount: surface.fillMix).cgColor
         edge.borderColor = Chrome.capsuleEdge(foreground, alpha: surface.edgeAlpha).cgColor
         effectiveAppearance.performAsCurrentDrawingAppearance {
@@ -213,11 +224,6 @@ class PaneCapsule: NSView {
         if !wantsUpdateLayer { updateSurface() }
         layer?.shadowPath = CGPath(roundedRect: bounds, cornerWidth: radius, cornerHeight: radius, transform: nil)
         edge.frame = bounds.insetBy(dx: -edgeOutset, dy: -edgeOutset)
-        highlight.frame = bounds
-        let path = CGMutablePath()
-        path.addRoundedRect(in: bounds, cornerWidth: radius, cornerHeight: radius)
-        path.addRoundedRect(in: bounds.offsetBy(dx: 0, dy: -0.5), cornerWidth: radius, cornerHeight: radius)
-        highlight.path = path
         for (separator, x) in zip(separators, separatorX) {
             separator.frame = CGRect(x: x, y: (bounds.height - 14) / 2, width: 1 / (window?.backingScaleFactor ?? 2), height: 14)
         }

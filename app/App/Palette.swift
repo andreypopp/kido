@@ -431,8 +431,7 @@ final class PaletteView: NSView, NSTextFieldDelegate {
     init(runtime: GhosttyRuntime, entries: [PaletteEntry]) {
         self.entries = entries
         self.runtime = runtime
-        card = PaneCapsule(runtime: runtime, radius: 12, surface: Chrome.cardSurface, edgeOutset: 0)
-        card.shadow = nil
+        card = PaneCapsule(runtime: runtime, radius: 12, surface: Chrome.cardSurface, edgeOutset: 0, shadowStyle: .none)
         super.init(frame: .zero)
         appearance = NSAppearance(named: runtime.background.isDark ? .darkAqua : .aqua)
         autoresizingMask = [.width, .height]

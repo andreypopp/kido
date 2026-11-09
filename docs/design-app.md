@@ -495,6 +495,18 @@ exempt; the theme derivations in `GhosttyRuntime` use this marker.
 `app/VisualTests` is not checked. The `PromptMarkdown` package cannot
 import the app, so the prompt view passes it its three ink roles.
 
+The pane capsules (`PaneCapsule` in `app/App/PaneChrome.swift`: the
+breadcrumb, the COPY and history pills, the runtime pill, the hover
+toolbar and find) have one surface: an opaque fill, an edge outside the
+fill, no inner highlight, and a contact shadow, not a lift shadow
+(`Chrome.capsuleSurface` and `Chrome.capsuleShadow`;
+`app/design/pane/NOTES.md`, "Capsule (shared)"). The edge and the shadow
+have a light and a dark value, chosen by the pane background's
+`isDark`, the rule of the sidebar's appearance, so they change with the
+theme as the fill does. A lift shadow read as a gray smear under the
+small pills on a light background. The notice cards keep the capsule
+surface with the float's shadow; the palette card has no shadow.
+
 The default theme pair is `kido-light` and `kido-dark`. A theme name
 resolves in the app (`ThemePaths`): a bundled name to
 `<bundle>/ghostty/themes/<name>`, else to `themes/<name>` beside the

@@ -224,12 +224,7 @@ struct TransientNotices {
             self.kind = kind
             self.title = title
             self.detail = detail
-            super.init(runtime: runtime, radius: 12)
-            let shadow = NSShadow()
-            shadow.shadowColor = Chrome.floatShadow.color
-            shadow.shadowBlurRadius = Chrome.floatShadow.blur
-            shadow.shadowOffset = NSSize(width: 0, height: -10)
-            self.shadow = shadow
+            super.init(runtime: runtime, radius: 12, shadowStyle: .float)
             setAccessibilityElement(true)
             setAccessibilityRole(.group)
             setAccessibilityLabel(title + ". " + detail)
