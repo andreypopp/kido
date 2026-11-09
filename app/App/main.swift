@@ -79,6 +79,7 @@ import SidebarFeed
             lifecycleObservers.append(DistributedNotificationCenter.default().addObserver(forName: Notification.Name(name), object: nil, queue: .main) { _ in note(label) })
         }
         Upload.sweepPromises(launch: true)
+        ImagePreview.shared.sweep()
         if let notifications = Notifier.shared.poster as? SystemNotifications {
             notifications.click = { [weak self] in self?.route($0) }
             notifications.failure = { Notifier.shared.failed($0) }
@@ -227,7 +228,10 @@ import SidebarFeed
         if let editMenu { updatePromptMenu(editMenu, responder: responder ?? owner?.window.firstResponder) }
     }
 
-    func applicationDidResignActive(_ notification: Notification) { Notifier.shared.attendanceChanged() }
+    func applicationDidResignActive(_ notification: Notification) {
+        ImagePreview.shared.close()
+        Notifier.shared.attendanceChanged()
+    }
 
     func applicationDidBecomeActive(_ notification: Notification) {
         Notifier.shared.attendanceChanged()
@@ -641,6 +645,7 @@ import SidebarFeed
     func quit(_ reason: String) { trigger = reason; NSApp.terminate(nil) }
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        ImagePreview.shared.stop()
         note("quitting: \(trigger ?? "NSApp.terminate")")
         Notifier.shared.withdrawAll()
         Upload.sweepPromises()

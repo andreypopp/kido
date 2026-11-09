@@ -790,9 +790,9 @@ or triple-click selects a word or a line. Entry is asynchronous. The app holds
 the gesture and applies it when entry completes. If entry is refused or
 cancelled, the app drops the gesture and does not send its drags and release
 to Ghostty. A press with Shift and Command, Option or Control does not enter
-copy mode and keeps its usual behaviour. Thus, Ghostty keeps Shift-Command-click
-on links under mouse reporting. Other clicks and drags outside copy mode go to
-Ghostty, which keeps its own mouse selection.
+copy mode. A Shift-Command press on a link or an image is the app's
+([Image preview](#image-preview)). Other clicks and drags outside copy mode go
+to Ghostty, which keeps its own mouse selection.
 
 A link click is Ghostty's open-URL action. In a local window, Ghostty opens a
 link that it detected in the text itself. An OSC 8 link, and every link in a
@@ -865,6 +865,45 @@ The surface's `image-storage-limit` is the server's
 `kitty_images_max_bytes` from `welcome` (`ko_client_limits`), not the
 user's setting, so the mirror evicts what the pane evicts and a restore
 keeps every image that the snapshot holds.
+
+### Image preview
+
+A Shift-Command-click on a link or an image opens it. The app asks the
+surface what is under the press (`ghostty_surface_content_at`). Ghostty finds
+a link first: an OSC 8 link or a link that its `link` rules detect, without
+their modifier rule. The link and the image are found at the same cell, with
+the fractional scroll applied, and a point in a render band finds nothing. Else it finds the topmost kitty placement at the cell, in
+the renderer's draw order (layer, z, image id). Thus, a link wins over an
+image, and a placeholder placement is hit as the renderer draws it. When the
+query finds something, the app takes the press, its drags and its release
+away from Ghostty, also under mouse reporting, so the program gets no report.
+A drag cancels the gesture, and only the release opens. A link opens through
+Ghostty's open-URL action (`ghostty_surface_open_link_at`), as a
+Command-click does. While Shift and Command are held over a link or an image,
+the cursor is the pointing hand.
+
+For an image, the hit holds the image's `transmission`, which stays during an
+animation and changes when the program replaces the image. Ghostty's
+`generation` changes at each animation step, so it is not the identity. At the
+release, `ghostty_surface_image_copy` copies the pixels of the image's
+current frame under the renderer lock, only while the transmission is the
+same; the app frees the copy with `ghostty_image_free`. The preview is the
+whole image at its own size, not the placement's crop or scale, and an
+animation gives its current frame as a still image. Local and remote windows
+do the same, because the pixels come from the mirror.
+
+`ImagePreview` writes the PNG off main, in sRGB (gray for gray pixels). The
+file is private to the user, in a private directory that the app sweeps at
+launch and removes at quit, as it does for dropped file promises. One
+`ImagePreview` for the app holds the one preview and is the panel's data
+source and delegate, because the panel is shared. `OwnerWindow`, not the pane,
+takes the panel's control, so the preview stays when its pane or image goes. The panel
+zooms from the placement's rect on the screen. Space and Escape close it while
+it is key; Space never opens it. As in Finder, a click into the pane's window
+or another Kido window keeps the panel open: every `OwnerWindow` takes the
+panel's control while a preview is ready. A new preview, the panel's close and
+a switch to another app end the preview and remove its file. The close of the
+pane, the image or the window does not. The app removes the directory at quit.
 
 ### Focus treatment
 

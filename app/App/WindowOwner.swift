@@ -1,4 +1,5 @@
 import AppKit
+import QuickLookUI
 import KoClient
 import KoModel
 import PaneGeometry
@@ -9,6 +10,10 @@ extension NSScreen {
 }
 
 class OwnerWindow: NSWindow {
+    override func acceptsPreviewPanelControl(_ panel: QLPreviewPanel!) -> Bool { ImagePreview.shared.ready }
+    override func beginPreviewPanelControl(_ panel: QLPreviewPanel!) { ImagePreview.shared.begin(panel) }
+    override func endPreviewPanelControl(_ panel: QLPreviewPanel!) {}
+
     var allowsPaneInput: Bool { isKeyWindow || (NSApp.delegate as? AppDelegate)?.palettePanel == nil }
     override func sendEvent(_ event: NSEvent) {
         if !allowsPaneInput, [.keyDown, .keyUp, .flagsChanged].contains(event.type) { return }

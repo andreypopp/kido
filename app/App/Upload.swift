@@ -55,13 +55,9 @@ struct Upload: Sendable {
         self.sources = sources
     }
 
-    #if KIDO_VISUAL || KIDO_STRESS
-    @MainActor static let promiseRoot = FileManager.default.temporaryDirectory.appendingPathComponent("kido-promises-test-" + UUID().uuidString)
-    #else
-    static let promiseRoot = FileManager.default.temporaryDirectory.appendingPathComponent("kido-promises")
-    #endif
-    @MainActor static let promiseDirectory = promiseRoot.appendingPathComponent(UUID().uuidString)
-    @MainActor private static var promiseLock: FileHandle?
+    private static let temporary = PrivateTemporaryDirectory("kido-promises")
+    static var promiseRoot: URL { temporary.root }
+    static var promiseDirectory: URL { temporary.directory }
     #if KIDO_VISUAL
     @MainActor static var promiseTimeout: TimeInterval = 30
     @MainActor static var visualImagePreparation: (@MainActor @Sendable () async -> Void)?
@@ -70,31 +66,14 @@ struct Upload: Sendable {
     #endif
     @MainActor private static var promises: [String: PromisedFiles] = [:]
 
-    fileprivate static func privatePromiseDirectory(_ url: URL) -> Bool {
-        var info = stat()
-        return lstat(url.path, &info) == 0 && info.st_mode & S_IFMT == S_IFDIR && info.st_uid == getuid() && info.st_mode & 0o777 == 0o700
-    }
-
-    private static func promiseDirectoryMatches(_ url: URL, _ fd: Int32) -> Bool {
-        var opened = stat(), named = stat()
-        return fstat(fd, &opened) == 0 && lstat(url.path, &named) == 0 && opened.st_dev == named.st_dev && opened.st_ino == named.st_ino
-    }
-
     @MainActor static func sweepPromises(launch: Bool = false) {
-        guard privatePromiseDirectory(promiseRoot) else { return }
+        guard PrivateTemporaryDirectory.isPrivate(promiseRoot) else { return }
         if !launch {
             Array(promises.values).forEach { $0.finish(.failure(Failure(message: "Upload cancelled."))) }
-            if privatePromiseDirectory(promiseDirectory) { try? FileManager.default.removeItem(at: promiseDirectory) }
+            temporary.remove()
             return
         }
-        for directory in (try? FileManager.default.contentsOfDirectory(at: promiseRoot, includingPropertiesForKeys: nil)) ?? [] {
-            guard privatePromiseDirectory(directory) else { continue }
-            let fd = open(directory.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
-            guard fd >= 0 else { continue }
-            defer { close(fd) }
-            guard flock(fd, LOCK_EX | LOCK_NB) == 0, promiseDirectoryMatches(directory, fd) else { continue }
-            try? FileManager.default.removeItem(at: directory)
-        }
+        temporary.sweep()
     }
 
     @MainActor static func cancelPromises(_ ids: [String]) {
@@ -107,21 +86,7 @@ struct Upload: Sendable {
         }
         let directory = promiseDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
         do {
-            if !FileManager.default.fileExists(atPath: promiseRoot.path) {
-                try FileManager.default.createDirectory(at: promiseRoot, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
-            }
-            guard privatePromiseDirectory(promiseRoot) else { throw Failure(message: "The temporary upload directory is not private.") }
-            if !FileManager.default.fileExists(atPath: promiseDirectory.path) {
-                try FileManager.default.createDirectory(at: promiseDirectory, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
-            }
-            guard privatePromiseDirectory(promiseDirectory) else { throw Failure(message: "The temporary upload directory is not private.") }
-            if promiseLock.map({ promiseDirectoryMatches(promiseDirectory, $0.fileDescriptor) }) != true {
-                let fd = open(promiseDirectory.path, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC)
-                guard fd >= 0 else { throw Failure(message: "Kido could not open the temporary upload directory.") }
-                let lock = FileHandle(fileDescriptor: fd, closeOnDealloc: true)
-                guard flock(fd, LOCK_EX | LOCK_NB) == 0, promiseDirectoryMatches(promiseDirectory, fd) else { throw Failure(message: "Kido could not lock the temporary upload directory.") }
-                promiseLock = lock
-            }
+            try temporary.prepare()
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
         } catch { throw Failure(message: "Kido could not create a temporary upload directory: \(error.localizedDescription)") }
         let state = PromisedFiles(directory: directory, deadline: .now.advanced(by: .seconds(promiseTimeout)))
@@ -275,7 +240,7 @@ struct Upload: Sendable {
     }
 
     private func clean() {
-        guard Upload.privatePromiseDirectory(Upload.promiseRoot), Upload.privatePromiseDirectory(Upload.promiseDirectory) else { return }
+        guard PrivateTemporaryDirectory.isPrivate(Upload.promiseRoot), PrivateTemporaryDirectory.isPrivate(Upload.promiseDirectory) else { return }
         try? FileManager.default.removeItem(at: directory)
     }
 }

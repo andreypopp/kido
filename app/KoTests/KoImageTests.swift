@@ -1,4 +1,6 @@
 import GhosttyKit
+import ImageIO
+import QuickLookUI
 import KoClient
 import KoModel
 import XCTest
@@ -146,6 +148,35 @@ import XCTest
         wait("frame 1 fetched again under its new stamp") {
             mirror.fetched.count == 4 && mirror.surface.pendingFrames.isEmpty && mirror.surface.generation(image: 1, frame: 1) != before
         }
+    }
+
+    func testImagePreviewWritesWholePixelsPrivatelyAndRemovesTheFile() async throws {
+        let bytes: [UInt8] = [255, 0, 0, 255, 0, 255, 0, 255]
+        let pixels = PreviewPixels(width: 2, height: 1, format: GHOSTTY_IMAGE_FORMAT_RGBA, data: Data(bytes))
+        let preview = ImagePreview.shared
+        let prepared = await preview.prepare(pixels, id: 7, rect: .zero)
+        XCTAssertTrue(prepared)
+        defer { preview.close() }
+        let panel = try XCTUnwrap(QLPreviewPanel.shared())
+        let item = try XCTUnwrap(preview.previewPanel(panel, previewItemAt: 0))
+        let url = try XCTUnwrap(item.previewItemURL)
+        XCTAssertEqual(url.lastPathComponent, "image-7.png")
+        let source = try XCTUnwrap(CGImageSourceCreateWithURL(url as CFURL, nil))
+        let image = try XCTUnwrap(CGImageSourceCreateImageAtIndex(source, 0, nil))
+        XCTAssertEqual(image.width, 2)
+        XCTAssertEqual(image.height, 1)
+        let bitmap = NSBitmapImageRep(cgImage: image)
+        var first = [Int](repeating: 0, count: 4)
+        var second = [Int](repeating: 0, count: 4)
+        bitmap.getPixel(&first, atX: 0, y: 0)
+        bitmap.getPixel(&second, atX: 1, y: 0)
+        XCTAssertEqual(first, [255, 0, 0, 255])
+        XCTAssertEqual(second, [0, 255, 0, 255])
+        let fm = FileManager.default
+        XCTAssertEqual((try fm.attributesOfItem(atPath: url.path)[.posixPermissions] as? NSNumber)?.intValue, 0o600)
+        XCTAssertEqual((try fm.attributesOfItem(atPath: ImagePreview.directory.path)[.posixPermissions] as? NSNumber)?.intValue, 0o700)
+        preview.close()
+        XCTAssertFalse(fm.fileExists(atPath: url.path))
     }
 
     func testAPngDrawnWhileHiddenAppearsWhenShownAndComesBackAfterAReconnect() throws {

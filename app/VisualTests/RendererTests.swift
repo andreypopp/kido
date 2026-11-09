@@ -2,6 +2,7 @@ import AppKit
 import Darwin
 import GhosttyKit
 import IOSurface
+import QuickLookUI
 import SnapshotTesting
 import Synchronization
 import PaneGeometry
@@ -127,6 +128,177 @@ import KoModel
     sys.stdout.flush()
     time.sleep(3600)
     """
+
+    func testImageContentHitUsesTopmostPlacementAndLinksWin() async throws {
+        let (pane, host) = try makePane(windowed: true)
+        defer { pane.dispose(); host?.close() }
+        let red = Data([255, 0, 0, 255]).base64EncodedString()
+        let blue = Data([0, 0, 255, 255]).base64EncodedString()
+        XCTAssertTrue(pane.feed(Data(("\u{1b}[H\u{1b}_Ga=T,i=7,f=32,s=1,v=1,c=4,r=2,z=1,q=2;\(red)\u{1b}\\" +
+            "\u{1b}[H\u{1b}_Ga=T,i=8,f=32,s=1,v=1,c=4,r=2,z=2,q=2;\(blue)\u{1b}\\").utf8)))
+        await presentedFrame(pane, attempts: 5)
+        let x = pane.cell.width / 2
+        let y = pane.cell.height / 2
+        var hit = ghostty_hit_s()
+        XCTAssertEqual(ghostty_surface_content_at(pane.surface, x, y, &hit), GHOSTTY_SUCCESS)
+        XCTAssertEqual(hit.kind, GHOSTTY_HIT_IMAGE)
+        XCTAssertEqual(hit.image_id, 8)
+        var image = ghostty_image_s()
+        XCTAssertEqual(ghostty_surface_image_copy(pane.surface, &hit, &image), GHOSTTY_SUCCESS)
+        XCTAssertEqual(image.width, 1)
+        XCTAssertEqual(image.height, 1)
+        XCTAssertEqual(image.data.map { Array(UnsafeBufferPointer(start: $0, count: image.len)) }, [0, 0, 255, 255])
+        ghostty_image_free(&image)
+        let green = Data([0, 255, 0, 255]).base64EncodedString()
+        XCTAssertTrue(pane.feed(Data("\u{1b}_Ga=f,i=8,r=1,f=32,s=1,v=1,q=2;\(green)\u{1b}\\".utf8)))
+        XCTAssertEqual(ghostty_surface_image_copy(pane.surface, &hit, &image), GHOSTTY_SUCCESS)
+        XCTAssertEqual(image.data.map { Array(UnsafeBufferPointer(start: $0, count: image.len)) }, [0, 255, 0, 255])
+        ghostty_image_free(&image)
+        XCTAssertTrue(pane.feed(Data("\u{1b}[H\u{1b}_Ga=T,i=8,f=32,s=1,v=1,c=4,r=2,z=2,q=2;\(blue)\u{1b}\\".utf8)))
+        XCTAssertNotEqual(ghostty_surface_image_copy(pane.surface, &hit, &image), GHOSTTY_SUCCESS)
+        XCTAssertNil(image.data)
+        await presentedFrame(pane, attempts: 5)
+        var input = Data()
+        pane.visualInput = { input.append($0) }
+        XCTAssertTrue(pane.feed(Data("\u{1b}[?1000h\u{1b}[?1002h\u{1b}[?1006h".utf8)))
+        let point = pane.convert(NSPoint(x: x, y: pane.bounds.height - y), to: nil)
+        func event(_ type: NSEvent.EventType, _ location: NSPoint, _ mods: NSEvent.ModifierFlags) throws -> NSEvent {
+            try XCTUnwrap(NSEvent.mouseEvent(with: type, location: location, modifierFlags: mods, timestamp: 0,
+                                           windowNumber: host!.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1))
+        }
+        pane.mouseDown(with: try event(.leftMouseDown, point, [.shift, .command]))
+        XCTAssertTrue(input.isEmpty)
+        let dragged = NSPoint(x: point.x + 10, y: point.y)
+        pane.mouseDragged(with: try event(.leftMouseDragged, dragged, [.shift, .command]))
+        pane.mouseUp(with: try event(.leftMouseUp, dragged, [.shift, .command]))
+        XCTAssertTrue(input.isEmpty)
+        XCTAssertFalse(pane.hasSelection)
+        pane.mouseDown(with: try event(.leftMouseDown, point, []))
+        pane.mouseUp(with: try event(.leftMouseUp, point, []))
+        try await wait("the ordinary mouse release", within: 3) { String(decoding: input, as: UTF8.self).hasSuffix("\u{1b}[<0;1;1m") }
+        XCTAssertEqual(String(decoding: input, as: UTF8.self), "\u{1b}[<0;1;1M\u{1b}[<0;1;1m")
+        XCTAssertTrue(pane.feed(Data("\u{1b}[H\u{1b}]8;;https://example.com\u{1b}\\X\u{1b}]8;;\u{1b}\\".utf8)))
+        XCTAssertEqual(ghostty_surface_content_at(pane.surface, x, y, &hit), GHOSTTY_SUCCESS)
+        XCTAssertEqual(hit.kind, GHOSTTY_HIT_LINK)
+        XCTAssertTrue(pane.feed(Data("\u{1b}[H\u{1b}[2Khttps://example.com".utf8)))
+        XCTAssertEqual(ghostty_surface_content_at(pane.surface, x, y, &hit), GHOSTTY_SUCCESS)
+        XCTAssertEqual(hit.kind, GHOSTTY_HIT_LINK)
+    }
+
+    func testPreviewLinksUseTheFractionallyScrolledCellAndIgnoreTheBottomBand() async throws {
+        let (pane, host) = try makePane(windowed: true)
+        defer { pane.dispose(); host?.close() }
+        var opened: [String] = []
+        pane.onURL = { opened.append($0) }
+        let first = "https://example.com/first", second = "https://example.com/second", last = "https://example.com/last"
+        XCTAssertTrue(pane.feed(Data(("\u{1b}[H\u{1b}]8;;\(first)\u{1b}\\A\u{1b}]8;;\u{1b}\\\r\n" +
+            "\u{1b}]8;;\(second)\u{1b}\\B\u{1b}]8;;\u{1b}\\\u{1b}[24;1H\u{1b}]8;;\(last)\u{1b}\\Z\u{1b}]8;;\u{1b}\\").utf8)))
+        var bar = ghostty_surface_scrollbar_s()
+        XCTAssertTrue(ghostty_surface_scrollbar(pane.surface, &bar))
+        let size = ghostty_surface_size(pane.surface)
+        var delta: Int64 = 0
+        XCTAssertTrue(ghostty_surface_scroll_to_row_pixel_if_revision(pane.surface, bar.offset, Float(size.cell_height_px) / 2, bar.row_space_revision, &bar, &delta))
+        await presentedFrame(pane, attempts: 5)
+        XCTAssertTrue(ghostty_surface_open_link_at(pane.surface, pane.cell.width / 2, pane.cell.height * 0.75))
+        try await wait("the scrolled link") { !opened.isEmpty }
+        XCTAssertEqual(opened, [second])
+        XCTAssertTrue(ghostty_surface_scroll_to_row_pixel_if_revision(pane.surface, bar.offset, 0, bar.row_space_revision, &bar, &delta))
+        pane.renderInsets.bottom = 20
+        await presentedFrame(pane, attempts: 5)
+        var hit = ghostty_hit_s()
+        XCTAssertEqual(ghostty_surface_content_at(pane.surface, pane.cell.width / 2, pane.cell.height * 24 + 5, &hit), GHOSTTY_SUCCESS)
+        XCTAssertEqual(hit.kind, GHOSTTY_HIT_NONE)
+        let point = pane.convert(NSPoint(x: pane.cell.width / 2, y: 5), to: nil)
+        for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
+            let event = try XCTUnwrap(NSEvent.mouseEvent(with: type, location: point, modifierFlags: [.shift, .command], timestamp: 0,
+                                                       windowNumber: host!.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 1))
+            if type == .leftMouseDown { pane.mouseDown(with: event) } else { pane.mouseUp(with: event) }
+        }
+        XCTAssertTrue(ghostty_surface_open_link_at(pane.surface, pane.cell.width / 2, pane.cell.height / 2))
+        try await wait("the link after the band click") { opened.last == first }
+        XCTAssertEqual(opened, [second, first])
+    }
+
+    func testImagePreviewKeepsItsFileWhenThePaneGoes() async throws {
+        let owner = WindowOwner(host: .local, runtime: runtime, start: false)
+        let pane = try XCTUnwrap(PaneView(runtime: runtime, pane: PaneID(number: 0), font: 13) { _ in })
+        owner.window.contentView = pane
+        owner.window.makeFirstResponder(pane)
+        defer {
+            ImagePreview.shared.close()
+            pane.dispose()
+            owner.close()
+        }
+        pane.resize(cols: 80, rows: 24)
+        let red = Data([255, 0, 0, 255]).base64EncodedString()
+        XCTAssertTrue(pane.feed(Data("\u{1b}[H\u{1b}_Ga=T,i=7,f=32,s=1,v=1,c=4,r=2,q=2;\(red)\u{1b}\\".utf8)))
+        await presentedFrame(pane, attempts: 5)
+        var hit = ghostty_hit_s()
+        XCTAssertEqual(ghostty_surface_content_at(pane.surface, pane.cell.width / 2, pane.cell.height / 2, &hit), GHOSTTY_SUCCESS)
+        var image = ghostty_image_s()
+        XCTAssertEqual(ghostty_surface_image_copy(pane.surface, &hit, &image), GHOSTTY_SUCCESS)
+        defer { ghostty_image_free(&image) }
+        let pixels = try XCTUnwrap(PreviewPixels(taking: &image))
+        let prepared = await ImagePreview.shared.prepare(pixels, id: hit.image_id, rect: owner.window.frame)
+        XCTAssertTrue(prepared)
+        let panel = try XCTUnwrap(QLPreviewPanel.shared())
+        XCTAssertTrue(owner.window.acceptsPreviewPanelControl(panel))
+        owner.window.beginPreviewPanelControl(panel)
+        XCTAssertTrue(panel.dataSource === ImagePreview.shared)
+        XCTAssertTrue(panel.delegate === ImagePreview.shared)
+        XCTAssertFalse(panel.isVisible || owner.window.isVisible || NSApp.isActive)
+        let item = try XCTUnwrap(ImagePreview.shared.previewPanel(panel, previewItemAt: 0))
+        let url = try XCTUnwrap(item.previewItemURL)
+        pane.dispose()
+        owner.window.contentView = NSView()
+        XCTAssertTrue(FileManager.default.fileExists(atPath: url.path))
+        XCTAssertEqual(ImagePreview.shared.numberOfPreviewItems(in: panel), 1)
+        owner.window.endPreviewPanelControl(panel)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: url.path))
+        owner.close()
+        XCTAssertTrue(FileManager.default.fileExists(atPath: url.path))
+        ImagePreview.shared.windowWillClose(Notification(name: NSWindow.willCloseNotification, object: panel))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: url.path))
+        XCTAssertFalse(panel.isVisible || owner.window.isVisible || NSApp.isActive)
+    }
+
+    func testPreviewSurvivesControlTransfersUntilEscape() async throws {
+        let first = OwnerWindow(contentRect: NSRect(x: -20000, y: -20000, width: 800, height: 600), styleMask: .titled, backing: .buffered, defer: false)
+        let second = OwnerWindow(contentRect: first.frame, styleMask: .titled, backing: .buffered, defer: false)
+        first.isReleasedWhenClosed = false
+        second.isReleasedWhenClosed = false
+        let pane = try XCTUnwrap(PaneView(runtime: runtime, pane: PaneID(number: 0), font: 13) { _ in })
+        first.contentView = pane
+        first.makeFirstResponder(pane)
+        let preview = ImagePreview.shared
+        defer { preview.close(); pane.dispose(); first.close(); second.close() }
+        let pixels = PreviewPixels(width: 1, height: 1, format: GHOSTTY_IMAGE_FORMAT_RGBA, data: Data([255, 0, 0, 255]))
+        let prepared = await preview.prepare(pixels, id: 7, rect: first.frame)
+        XCTAssertTrue(prepared)
+        let panel = try XCTUnwrap(QLPreviewPanel.shared())
+        XCTAssertTrue(first.acceptsPreviewPanelControl(panel))
+        XCTAssertTrue(second.acceptsPreviewPanelControl(panel))
+        first.beginPreviewPanelControl(panel)
+        let item = try XCTUnwrap(preview.previewPanel(panel, previewItemAt: 0))
+        let url = try XCTUnwrap(item.previewItemURL)
+        first.endPreviewPanelControl(panel)
+        XCTAssertEqual(preview.numberOfPreviewItems(in: panel), 1)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: url.path))
+        second.beginPreviewPanelControl(panel)
+        XCTAssertTrue(panel.dataSource === preview)
+        second.endPreviewPanelControl(panel)
+        XCTAssertEqual(preview.numberOfPreviewItems(in: panel), 1)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: url.path))
+        first.beginPreviewPanelControl(panel)
+        XCTAssertTrue(panel.dataSource === preview)
+        XCTAssertFalse(first.isVisible || second.isVisible || panel.isVisible || NSApp.isActive)
+        let escape = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0,
+                                                   windowNumber: panel.windowNumber, context: nil, characters: "\u{1b}",
+                                                   charactersIgnoringModifiers: "\u{1b}", isARepeat: false, keyCode: 53))
+        XCTAssertTrue(preview.previewPanel(panel, handle: escape))
+        XCTAssertEqual(preview.numberOfPreviewItems(in: panel), 0)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: url.path))
+    }
 
     func testARestoredImageIsVisible() async throws {
         let dir = try koServerDir()

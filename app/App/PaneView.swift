@@ -124,6 +124,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
     }
     private enum LeftGesture {
         case pending(CopyPress), released(CopyPress), swallowed
+        case content(NSPoint, ghostty_hit_s)
     }
     private var mouseDrag: MouseDrag?
     private var leftGesture: LeftGesture?
@@ -142,8 +143,10 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
         }
     }
     private(set) var mouseShape = GHOSTTY_MOUSE_SHAPE_TEXT
+    private var contentHover = false
     var mouseCursor: NSCursor {
-        switch mouseShape {
+        if contentHover { return .pointingHand }
+        return switch mouseShape {
         case GHOSTTY_MOUSE_SHAPE_POINTER: .pointingHand
         case GHOSTTY_MOUSE_SHAPE_TEXT: .iBeam
         case GHOSTTY_MOUSE_SHAPE_VERTICAL_TEXT: .iBeamCursorForVerticalLayout
@@ -1492,8 +1495,8 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
 
     // MARK: - Mouse
 
-    private func inRenderBand(_ event: NSEvent) -> Bool {
-        let y = convert(event.locationInWindow, from: nil).y
+    func inRenderBand(_ point: NSPoint) -> Bool {
+        let y = point.y
         return (renderInsets.bottom > 0 && y < renderInsets.bottom)
             || (renderInsets.top > 0 && bounds.height - y < renderInsets.top)
     }
@@ -1504,7 +1507,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
             return true
         }
         if state == GHOSTTY_MOUSE_PRESS {
-                let strip = inRenderBand(event)
+                let strip = inRenderBand(convert(event.locationInWindow, from: nil))
             if event.buttonNumber == 0 || strip {
                 window?.makeFirstResponder(self)
                 onSelect()
@@ -1524,15 +1527,16 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
     }
 
     private func position(_ event: NSEvent) {
+        updateContentHover(event.modifierFlags, point: convert(event.locationInWindow, from: nil))
         guard copyMode == nil else { return }
-        if inRenderBand(event) && pressed.isEmpty {
+        if inRenderBand(convert(event.locationInWindow, from: nil)) && pressed.isEmpty {
             ghostty_surface_mouse_pos(surface, -1, -1, Self.mods(event.modifierFlags))
             return
         }
         guard scrollDistance.map({ $0 == $0.rounded() }) != false else { return }
         let pos = convert(event.locationInWindow, from: nil)
-        let y = bounds.height - pos.y - renderInsets.top
-        ghostty_surface_mouse_pos(surface, pos.x, y, Self.mods(event.modifierFlags))
+        let point = surfacePoint(pos)
+        ghostty_surface_mouse_pos(surface, point.x, point.y, Self.mods(event.modifierFlags))
     }
 
     private func point(_ cell: (x: Int, y: Int)) -> ghostty_point_s {
@@ -1674,7 +1678,33 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
         applyDrag((cell.x, max(0, row)))
     }
 
+    private static func contentModifiers(_ flags: NSEvent.ModifierFlags) -> Bool {
+        flags.intersection([.shift, .command, .control, .option]) == [.shift, .command]
+    }
+
+    private func updateContentHover(_ flags: NSEvent.ModifierFlags, point: NSPoint) {
+        let hover = Self.contentModifiers(flags) && contentHit(point).kind != GHOSTTY_HIT_NONE
+        setContentHover(hover)
+    }
+
+    private func setContentHover(_ hover: Bool) {
+        guard hover != contentHover else { return }
+        contentHover = hover
+        (superview as? WindowView)?.invalidateCursorRects()
+        mouseCursor.set()
+    }
+
     override func mouseDown(with event: NSEvent) {
+        if Self.contentModifiers(event.modifierFlags), !disposed {
+            let point = convert(event.locationInWindow, from: nil)
+            let hit = contentHit(point)
+            if hit.kind != GHOSTTY_HIT_NONE {
+                leftGesture = .content(point, hit)
+                window?.makeFirstResponder(self)
+                onSelect()
+                return
+            }
+        }
         if copyMode == nil, Self.copyPress(event) {
             beginCopyPress(event)
             return
@@ -1800,6 +1830,14 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
     }
 
     override func mouseUp(with event: NSEvent) {
+        if case .content(let point, let hit) = leftGesture {
+            leftGesture = nil
+            guard !disposed else { return }
+            let release = convert(event.locationInWindow, from: nil)
+            guard hypot(release.x - point.x, release.y - point.y) < 3 else { return }
+            activateContent(hit, at: point)
+            return
+        }
         guard copyMode != nil else {
             if leftGesture != nil, event.buttonNumber == 0 {
                 leftGesture = nil
@@ -1817,7 +1855,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
                 leftGesture = .released(press)
             case .swallowed, .none:
                 leftGesture = nil
-            case .released:
+            case .released, .content:
                 break
             }
             return
@@ -1866,6 +1904,10 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
     override func mouseEntered(with event: NSEvent) { position(event) }
     override func mouseMoved(with event: NSEvent) { position(event) }
     override func mouseDragged(with event: NSEvent) {
+        if case .content = leftGesture {
+            leftGesture = .swallowed
+            return
+        }
         if entering {
             if case .pending(var press) = leftGesture {
                 let point = convert(event.locationInWindow, from: nil)
@@ -1893,6 +1935,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
     override func otherMouseDragged(with event: NSEvent) { position(event) }
 
     override func mouseExited(with event: NSEvent) {
+        setContentHover(false)
         guard NSEvent.pressedMouseButtons == 0, copyMode == nil else { return }
         ghostty_surface_mouse_pos(surface, -1, -1, Self.mods(event.modifierFlags))
     }
@@ -1953,7 +1996,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
     override func scrollWheel(with event: NSEvent) {
         let time = CACurrentMediaTime()
         debug("wheel pane=\(pane) time=\(time) phase=\(event.phase.rawValue) momentum=\(event.momentumPhase.rawValue) precise=\(event.hasPreciseScrollingDeltas) delta=\(event.scrollingDeltaY) eventTime=\(event.timestamp)")
-        let strip = inRenderBand(event)
+        let strip = inRenderBand(convert(event.locationInWindow, from: nil))
         if strip { position(event) }
         let precise = event.hasPreciseScrollingDeltas
         if event.momentumPhase.isEmpty && event.scrollingDeltaY != 0 { suppressMomentum = false }
@@ -2176,6 +2219,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
     }
 
     override func flagsChanged(with event: NSEvent) {
+        updateContentHover(event.modifierFlags, point: convert(window?.mouseLocationOutsideOfEventStream ?? .zero, from: nil))
         let mod: ghostty_input_mods_e
         let rightMask: Int32?
         switch event.keyCode {
@@ -2334,8 +2378,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
         snapScroll()
         var x = 0.0, y = 0.0, width = 0.0, height = 0.0
         ghostty_surface_ime_point(surface, &x, &y, &width, &height)
-        let rect = convert(NSRect(x: x, y: bounds.height - renderInsets.top - y, width: width, height: max(height, cell.height)), to: nil)
-        return window?.convertToScreen(rect) ?? rect
+        return screenRect(NSRect(x: x, y: y - max(height, cell.height), width: width, height: max(height, cell.height)))
     }
 
     func insertText(_ string: Any, replacementRange: NSRange) {
