@@ -874,7 +874,12 @@ impl State {
             self.end_visit(poll, id, Some("server ended".to_owned()));
         }
         for conn in &mut self.conns {
-            conn.out.shut();
+            if let Some((Role::Client(_), wire)) = conn.role_mut() {
+                wire.ws.shutdown(wire.out);
+                wire.out.close();
+            } else {
+                conn.out.shut();
+            }
         }
         self.panes.shutdown(&mut Io {
             poll,

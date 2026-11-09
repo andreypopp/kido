@@ -3,7 +3,7 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use ko_client::wire::{Link, Next, Resume, text};
+use ko_client::wire::{self, Connecting, Link, Next, Resume, UpgradeStep, text};
 use ko_pane_wire::frame::{History, Limits};
 use ko_pane_wire::ring::Slice;
 use ko_server::api::{Offset, Route};
@@ -11,7 +11,7 @@ use ko_server::ids::{ClientId, PaneId};
 use ko_server::protocol::{self, Images, Marker, ViewEvent, ViewOptions, ViewRequest, json};
 use ko_server::ws::{BadRecord, Parsed, parse_record};
 use ko_sys::clock::Mono;
-use ko_sys::event::{Poll, Token};
+use ko_sys::event::{Poll, Ready, Token};
 use ko_vt::compress::{Compress, Tick};
 use ko_vt::render::Frame;
 use ko_vt::search::{Progress, SearchId};
@@ -210,9 +210,21 @@ fn copy_row(vt: &Terminal, cols: u16, row: u32) -> Result<Row, String> {
 }
 
 #[derive(Debug)]
+enum Connection {
+    Connecting {
+        link: Connecting,
+        token: Token,
+        started: Instant,
+    },
+    Open {
+        link: Box<Link>,
+    },
+    Closed,
+}
+
+#[derive(Debug)]
 pub(crate) struct Mirror {
-    link: Link,
-    token: Token,
+    connection: Connection,
     shared: Arc<Shared>,
     compressor: Option<JoinHandle<()>>,
     limits: Limits,
@@ -229,14 +241,21 @@ impl Mirror {
         client: ClientId,
         pane: PaneId,
         resume: Option<u64>,
-    ) -> Result<Link, String> {
+        poll: &mut Poll,
+    ) -> Result<Connection, String> {
         let route = Route::View {
             id: pane,
             history: OPTIONS.history,
             images: OPTIONS.images,
             offset: resume.and_then(Offset::new),
         };
-        Link::connect(socket, Some(client), &route, None).map_err(text)
+        let link = Connecting::start(socket, client, &route, None).map_err(text)?;
+        let token = link.watch(poll);
+        Ok(Connection::Connecting {
+            link,
+            token,
+            started: Instant::now(),
+        })
     }
 
     pub(crate) fn open(
@@ -246,11 +265,11 @@ impl Mirror {
         limits: Limits,
         poll: &mut Poll,
     ) -> Result<Mirror, String> {
-        Mirror::with(Mirror::connect(socket, client, pane, None)?, limits, poll)
+        let connection = Mirror::connect(socket, client, pane, None, poll)?;
+        Ok(Mirror::with_connection(connection, limits))
     }
 
-    fn with(mut link: Link, limits: Limits, poll: &mut Poll) -> Result<Mirror, String> {
-        let token = link.watch(poll).map_err(text)?;
+    fn with_connection(connection: Connection, limits: Limits) -> Mirror {
         let shared = Arc::new(Shared {
             state: Mutex::new(State {
                 surface: Surface::Empty,
@@ -263,9 +282,8 @@ impl Mirror {
             wake: Condvar::new(),
         });
         let thread = Arc::clone(&shared);
-        let mut mirror = Mirror {
-            link,
-            token,
+        Mirror {
+            connection,
             shared,
             compressor: Some(std::thread::spawn(move || compress_loop(&thread))),
             limits,
@@ -274,28 +292,33 @@ impl Mirror {
             resume: Resume::default(),
             frozen: None,
             awaiting_snapshot: false,
-        };
-        mirror.handle(poll, Instant::now())?;
-        Ok(mirror)
+        }
     }
 
     pub(crate) fn dead(&self) -> Option<u64> {
         self.dead
     }
 
-    pub(crate) fn token(&self) -> Token {
-        self.token
+    pub(crate) fn token(&self) -> Option<Token> {
+        match &self.connection {
+            Connection::Connecting { token, .. } => Some(*token),
+            Connection::Open { link } => link.token(),
+            Connection::Closed => None,
+        }
     }
 
-    pub(crate) fn received(&self) -> Option<Instant> {
-        self.link
-            .close_frame()
-            .is_none()
-            .then(|| self.link.received())
+    pub(crate) fn deadline(&self, silence: Duration) -> Option<Instant> {
+        match &self.connection {
+            Connection::Connecting { started, .. } => Some(*started + wire::READ_TIMEOUT),
+            Connection::Open { link, .. } => Some(link.received() + silence),
+            Connection::Closed => None,
+        }
     }
 
     pub(crate) fn begin_turn(&mut self) {
-        self.link.begin_turn();
+        if let Connection::Open { link, .. } = &mut self.connection {
+            link.begin_turn();
+        }
     }
 
     fn wake(&self, state: MutexGuard<'_, State>) {
@@ -315,23 +338,90 @@ impl Mirror {
         result
     }
 
-    pub(crate) fn send(&mut self, poll: &mut Poll, request: &ViewRequest) -> Result<(), String> {
-        self.link.send(json(request)).map_err(text)?;
-        self.link.settle(poll).map_err(text)
+    pub(crate) fn input(
+        &mut self,
+        poll: &mut Poll,
+        input: protocol::Input,
+    ) -> Result<Option<protocol::Input>, String> {
+        let Connection::Open { link } = &mut self.connection else {
+            return Ok(Some(input));
+        };
+        link.send(json(&ViewRequest::Input { input }))
+            .map_err(text)?;
+        link.settle(poll).map_err(text)?;
+        Ok(None)
     }
 
-    pub(crate) fn handle(&mut self, poll: &mut Poll, now: Instant) -> Result<(), String> {
+    pub(crate) fn handle(
+        &mut self,
+        poll: &mut Poll,
+        mut ready: Ready,
+        now: Instant,
+    ) -> Result<(), String> {
+        let connection = std::mem::replace(&mut self.connection, Connection::Closed);
+        self.connection = match connection {
+            Connection::Connecting {
+                link,
+                token,
+                started,
+            } => match link.advance(poll, ready) {
+                Ok(UpgradeStep::Pending(link)) => {
+                    self.connection = Connection::Connecting {
+                        link,
+                        token,
+                        started,
+                    };
+                    return Ok(());
+                }
+                Ok(UpgradeStep::Open(mut link)) => {
+                    if self.awaiting_snapshot
+                        && let Err(error) = link
+                            .send(json(&ViewRequest::Resync(OPTIONS)))
+                            .and_then(|()| link.settle(poll))
+                    {
+                        poll.unwatch(token);
+                        return Err(text(error));
+                    }
+                    ready = wire::buffered(token);
+                    Connection::Open { link }
+                }
+                Ok(UpgradeStep::Refused(response)) => {
+                    poll.unwatch(token);
+                    if response.status == 404 {
+                        return Ok(());
+                    }
+                    return Err(text(ko_server::ws::refused(&response)));
+                }
+                Err(error) => {
+                    poll.unwatch(token);
+                    return Err(text(error));
+                }
+            },
+            other => other,
+        };
+        if let Connection::Open { link } = &mut self.connection
+            && ready.write
+        {
+            link.settle(poll).map_err(text)?;
+        }
+        if !ready.read {
+            return Ok(());
+        }
         let shared = Arc::clone(&self.shared);
         let mut state = shared.lock();
         let mut changed = false;
-        loop {
-            match self.link.next(poll, now).map_err(text)? {
+        while let Connection::Open { link } = &mut self.connection {
+            let next = link.next(poll, now).map_err(text)?;
+            match next {
                 Next::Gone => {
-                    self.link.unwatch(poll);
+                    if let Connection::Open { link } = &mut self.connection {
+                        link.unwatch(poll);
+                    }
+                    self.connection = Connection::Closed;
                     break;
                 }
                 Next::Wait => break,
-                Next::Closed => return Err("pane view closed".to_owned()),
+                Next::Shutdown | Next::Closed => return Err("pane view closed".to_owned()),
                 Next::Text(event) => self.marker(&mut state, &event)?,
                 Next::Binary(record) => self.record(&mut state, &record)?,
             }
@@ -682,7 +772,7 @@ impl Mirror {
         screen.vt.text_between(span).map(Some).map_err(text)
     }
 
-    pub(crate) fn thaw(&mut self, poll: &mut Poll) -> Result<(), String> {
+    fn unfreeze(&mut self) -> Option<Frozen> {
         let mut frozen = self.frozen.take();
         let mut state = self.shared.lock();
         if let Some(search) = frozen.as_mut().and_then(|frozen| frozen.search.take())
@@ -693,7 +783,11 @@ impl Mirror {
         state.searching = false;
         drop(state);
         self.shared.wake.notify_one();
-        if let Some(frozen) = frozen {
+        frozen
+    }
+
+    pub(crate) fn thaw(&mut self, poll: &mut Poll) -> Result<(), String> {
+        if let Some(frozen) = self.unfreeze() {
             self.bottom()?;
             if frozen.dirty {
                 self.resync(poll)?;
@@ -706,7 +800,12 @@ impl Mirror {
         self.resume.clear();
         self.assembly = None;
         self.awaiting_snapshot = true;
-        self.send(poll, &ViewRequest::Resync(OPTIONS))
+        if let Connection::Open { link } = &mut self.connection {
+            link.send(json(&ViewRequest::Resync(OPTIONS)))
+                .map_err(text)?;
+            link.settle(poll).map_err(text)?;
+        }
+        Ok(())
     }
 
     pub(crate) fn bottom(&mut self) -> Result<(), String> {
@@ -768,14 +867,33 @@ impl Mirror {
     }
 
     pub(crate) fn close(mut self, poll: &mut Poll) {
-        self.link.unwatch(poll);
+        self.unwatch(poll);
     }
 
     pub(crate) fn unwatch(&mut self, poll: &mut Poll) {
-        if self.frozen.take().is_some() {
+        if self.unfreeze().is_some() {
             self.resume.clear();
         }
-        self.link.unwatch(poll);
+        match &mut self.connection {
+            Connection::Open { link, .. } => link.unwatch(poll),
+            Connection::Connecting { token, .. } => poll.unwatch(*token),
+            Connection::Closed => {}
+        }
+        self.connection = Connection::Closed;
+    }
+
+    pub(crate) fn reopen(
+        &mut self,
+        cause: String,
+        socket: &Path,
+        client: ClientId,
+        pane: PaneId,
+        poll: &mut Poll,
+    ) -> Result<(), String> {
+        match self.connection {
+            Connection::Open { .. } => self.relink(socket, client, pane, poll),
+            Connection::Connecting { .. } | Connection::Closed => Err(cause),
+        }
     }
 
     pub(crate) fn relink(
@@ -785,10 +903,10 @@ impl Mirror {
         pane: PaneId,
         poll: &mut Poll,
     ) -> Result<(), String> {
-        self.link = Mirror::connect(socket, client, pane, self.resume.offset())?;
-        self.token = self.link.watch(poll).map_err(text)?;
+        self.unwatch(poll);
         self.assembly = None;
-        self.handle(poll, Instant::now())
+        self.connection = Mirror::connect(socket, client, pane, self.resume.offset(), poll)?;
+        Ok(())
     }
 }
 
@@ -811,24 +929,188 @@ mod tests {
 
     use super::*;
 
+    fn with(mut link: Link, limits: Limits, poll: &mut Poll) -> Result<Mirror, String> {
+        let token = link.watch(poll).map_err(text)?;
+        let mut mirror = Mirror::with_connection(
+            Connection::Open {
+                link: Box::new(link),
+            },
+            limits,
+        );
+        mirror.handle(poll, wire::buffered(token), Instant::now())?;
+        Ok(mirror)
+    }
+
     fn mirror() -> (Mirror, UnixStream, Poll) {
         let (ours, theirs) = UnixStream::pair().unwrap();
         let mut poll = Poll::new();
-        let mirror = Mirror::with(Link::of(ours, Vec::new()), default_limits(), &mut poll).unwrap();
+        let mirror = with(Link::of(ours, Vec::new()), default_limits(), &mut poll).unwrap();
         (mirror, theirs, poll)
+    }
+
+    #[test]
+    fn a_pending_view_upgrade_does_not_block_client_pongs() {
+        use std::io::Write;
+        use std::os::unix::net::UnixListener;
+        use tungstenite::protocol::Role;
+        let path = std::env::temp_dir().join(format!(
+            "ko-upgrade-{}-{}",
+            std::process::id(),
+            Mono::now().nanos()
+        ));
+        let listener = UnixListener::bind(&path).unwrap();
+        let mut poll = Poll::new();
+        let client = "client_1".parse().unwrap();
+        let pane = "pane_1".parse().unwrap();
+        let mut mirror = Mirror::open(&path, client, pane, default_limits(), &mut poll).unwrap();
+        let (mut held, _) = listener.accept().unwrap();
+        std::fs::remove_file(&path).unwrap();
+        let token = mirror.token().unwrap();
+        mirror
+            .handle(
+                &mut poll,
+                Ready {
+                    token,
+                    read: true,
+                    write: true,
+                },
+                Instant::now(),
+            )
+            .unwrap();
+        assert!(matches!(mirror.connection, Connection::Connecting { .. }));
+        let (ours, mut server) = UnixStream::pair().unwrap();
+        server
+            .set_read_timeout(Some(Duration::from_secs(1)))
+            .unwrap();
+        let mut link = Link::of(ours, Vec::new());
+        link.watch(&mut poll).unwrap();
+        server.write_all(b"\x89\x04ping").unwrap();
+        assert_eq!(link.next(&mut poll, Instant::now()).unwrap(), Next::Wait);
+        let mut peer = tungstenite::WebSocket::from_raw_socket(server, Role::Server, None);
+        assert_eq!(
+            peer.read().unwrap(),
+            tungstenite::Message::Pong(b"ping".to_vec().into())
+        );
+        held.write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n")
+            .unwrap();
+        mirror
+            .handle(&mut poll, wire::buffered(token), Instant::now())
+            .unwrap();
+        assert_eq!(mirror.token(), None);
+        assert_eq!(mirror.deadline(Duration::from_secs(60)), None);
+        mirror.close(&mut poll);
+        drop(held);
+    }
+
+    #[test]
+    fn a_recoverable_view_close_can_resume_and_render_new_output() {
+        use std::os::unix::net::UnixListener;
+        let (mut mirror, mut peer, mut poll) = mirror();
+        let snapshot = slices(
+            &server(16, 2, "before").snapshot_bytes(false).unwrap(),
+            4096,
+        );
+        for mut record in snapshot {
+            record[1..9].copy_from_slice(&40_u64.to_le_bytes());
+            feed(&mut mirror, &record).unwrap();
+        }
+        peer.set_read_timeout(Some(Duration::from_secs(1))).unwrap();
+        use std::io::Write;
+        peer.write_all(b"\x88\x04\x03\xf0io").unwrap();
+        mirror.begin_turn();
+        let token = mirror.token().unwrap();
+        assert_eq!(
+            mirror
+                .handle(&mut poll, wire::buffered(token), Instant::now())
+                .unwrap_err(),
+            "pane view closed"
+        );
+        let path = std::env::temp_dir().join(format!(
+            "ko-reopen-{}-{}",
+            std::process::id(),
+            Mono::now().nanos()
+        ));
+        let listener = UnixListener::bind(&path).unwrap();
+        mirror
+            .relink(
+                &path,
+                "client_1".parse().unwrap(),
+                "pane_1".parse().unwrap(),
+                &mut poll,
+            )
+            .unwrap();
+        let (mut stream, _) = listener.accept().unwrap();
+        std::fs::remove_file(&path).unwrap();
+        stream
+            .set_read_timeout(Some(Duration::from_secs(1)))
+            .unwrap();
+        let token = mirror.token().unwrap();
+        mirror
+            .handle(
+                &mut poll,
+                Ready {
+                    token,
+                    read: true,
+                    write: true,
+                },
+                Instant::now(),
+            )
+            .unwrap();
+        use std::io::Read;
+        let mut head = Vec::new();
+        while !head.ends_with(b"\r\n\r\n") {
+            assert!(head.len() < 16384);
+            let mut byte = [0];
+            stream.read_exact(&mut byte).unwrap();
+            head.push(byte[0]);
+        }
+        let head = String::from_utf8(head).unwrap();
+        assert_eq!(
+            head.lines().next(),
+            Some("GET /panes/pane_1/view?history=all&offset=40 HTTP/1.1")
+        );
+        let key = head
+            .lines()
+            .filter_map(|line| line.split_once(':'))
+            .find(|(name, _)| name.eq_ignore_ascii_case("sec-websocket-key"))
+            .unwrap()
+            .1
+            .trim();
+        let accept = tungstenite::handshake::derive_accept_key(key.as_bytes());
+        write!(stream, "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: {accept}\r\n\r\n").unwrap();
+        let mut peer = tungstenite::WebSocket::from_raw_socket(
+            stream,
+            tungstenite::protocol::Role::Server,
+            None,
+        );
+        let mut bytes = output(b"-after");
+        bytes[1..9].copy_from_slice(&40_u64.to_le_bytes());
+        peer.send(tungstenite::Message::Binary(bytes.into()))
+            .unwrap();
+        mirror
+            .handle(&mut poll, wire::buffered(token), Instant::now())
+            .unwrap();
+        assert_eq!(row(&mirror, 0), "before-after");
+        mirror.close(&mut poll);
     }
 
     #[test]
     fn a_gone_view_keeps_its_display_but_has_no_watchdog_deadline() {
         use std::io::Write;
         let (mut mirror, mut server, mut poll) = mirror();
-        assert!(mirror.received().is_some());
+        assert!(mirror.deadline(Duration::from_secs(40)).is_some());
         server
             .write_all(&[0x88, 6, 3, 0xf0, b'g', b'o', b'n', b'e'])
             .unwrap();
         mirror.begin_turn();
-        mirror.handle(&mut poll, Instant::now()).unwrap();
-        assert_eq!(mirror.received(), None);
+        mirror
+            .handle(
+                &mut poll,
+                wire::buffered(mirror.token().unwrap()),
+                Instant::now(),
+            )
+            .unwrap();
+        assert_eq!(mirror.deadline(Duration::from_secs(40)), None);
     }
 
     fn server(cols: u16, rows: u16, text: &str) -> Terminal {
@@ -1035,6 +1317,12 @@ mod tests {
         mirror.thaw(&mut poll).unwrap();
         assert!(!mirror.shared.lock().searching);
         assert!(mirror.copy().is_none());
+        assert!(mirror.freeze(Entry::Here).unwrap());
+        keys(&mut mirror, b"?needle\r");
+        assert!(mirror.shared.lock().searching);
+        mirror.unwatch(&mut poll);
+        assert!(!mirror.shared.lock().searching);
+        assert!(mirror.copy().is_none());
     }
 
     #[test]
@@ -1132,7 +1420,7 @@ mod tests {
         let length = u16::try_from(record.len()).unwrap().to_be_bytes();
         let rest = [&[0x82, 126][..], &length, &record].concat();
         let mut poll = Poll::new();
-        let mirror = Mirror::with(Link::of(ours, rest), default_limits(), &mut poll).unwrap();
+        let mirror = with(Link::of(ours, rest), default_limits(), &mut poll).unwrap();
         assert_eq!(
             (kind(&mirror), row(&mirror, 0)),
             ("full", "buffered".to_owned())

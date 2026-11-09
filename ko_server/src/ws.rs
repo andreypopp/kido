@@ -372,6 +372,10 @@ impl Ws {
         self.close_with(out, CloseCode::Error, reason);
     }
 
+    pub(crate) fn shutdown(&mut self, out: &mut Output) {
+        self.close_with(out, CloseCode::Away, "shutdown");
+    }
+
     pub(crate) fn finish(&mut self, out: &mut Output) {
         out.closing(Cause::Finished);
         self.close_with(out, CloseCode::Normal, "done");

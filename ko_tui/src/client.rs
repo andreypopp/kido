@@ -20,7 +20,7 @@ use ko_server::api::Route;
 use ko_server::ids::{Name, PaneId, SessionId, WindowId};
 use ko_server::protocol::{
     self, ClientRequest, ClipboardContent, ClipboardServed, CreatePane, Cwd, Direction, Hello,
-    Input as Wire, Key as WireKey, Mouse as WireMouse, Paste, Selection, Switch, ViewRequest, json,
+    Input as Wire, Key as WireKey, Mouse as WireMouse, Paste, Selection, Switch, json,
 };
 use ko_sys::event::{Due, Events, Interest, Mode, Poll, Ready, Timer, Token};
 use ko_sys::signal::{Signal, Signals};
@@ -512,12 +512,6 @@ impl Client {
         self.row(pane).and_then(|row| row.dead.clone())
     }
 
-    fn received(&self) -> Instant {
-        panes(&self.view)
-            .filter_map(|pane| pane.mirror.received())
-            .fold(self.link.received(), Instant::min)
-    }
-
     fn shown(&self) -> Option<(&protocol::Session, &protocol::Window)> {
         let (session, window) = self.model.locate(self.pane()?)?;
         Some((
@@ -589,15 +583,14 @@ impl Client {
         self.link.settle(&mut self.poll).map_err(text)
     }
 
-    fn input_send(&mut self, input: Wire) -> Result<(), String> {
-        let Some(pane) = self.pane() else {
-            return Ok(());
+    fn input_send(&mut self, pane: PaneId, input: Wire) -> Result<(), String> {
+        let input = match self.view.as_mut().and_then(|shown| shown.pane_mut(pane)) {
+            Some(shown) => match shown.mirror.input(&mut self.poll, input)? {
+                Some(input) => input,
+                None => return Ok(()),
+            },
+            None => input,
         };
-        if let Some(shown) = self.view.as_mut().and_then(|shown| shown.pane_mut(pane)) {
-            return shown
-                .mirror
-                .send(&mut self.poll, &ViewRequest::Input { input });
-        }
         wire::request(
             &self.socket,
             (Some(self.model.client), None),
@@ -1063,11 +1056,17 @@ impl Client {
     }
 
     fn paste(&mut self, text: String) -> Result<(), String> {
-        self.input_send(Wire::Paste(Paste {
-            text,
-            check_safe: false,
-            id: None,
-        }))
+        let Some(pane) = self.pane() else {
+            return Ok(());
+        };
+        self.input_send(
+            pane,
+            Wire::Paste(Paste {
+                text,
+                check_safe: false,
+                id: None,
+            }),
+        )
     }
 
     fn key(&mut self, key: KeyEvent) -> Result<(), String> {
@@ -1077,7 +1076,10 @@ impl Client {
         }
         match self.keys.feed(&key, self.key_context(), Instant::now()) {
             Step::Pane(key) => match input::key(&key) {
-                Some(key) => self.input_send(Wire::Key(WireKey(key))),
+                Some(key) => match self.pane() {
+                    Some(pane) => self.input_send(pane, Wire::Key(WireKey(key))),
+                    None => Ok(()),
+                },
                 None => Ok(()),
             },
             Step::Act(action) => self.act(action),
@@ -1493,12 +1495,7 @@ impl Client {
             );
         }
         if shown.serial.is_some() && shown.frame.mouse != MouseTracking::Off {
-            return shown.mirror.send(
-                &mut self.poll,
-                &ViewRequest::Input {
-                    input: Wire::Mouse(WireMouse(input::mouse(origin, &event))),
-                },
-            );
+            return self.input_send(pane, Wire::Mouse(WireMouse(input::mouse(origin, &event))));
         }
         if let MouseKind::Scroll { up } = event.kind {
             self.immediate = true;
@@ -1679,8 +1676,10 @@ impl Client {
     fn turn(&mut self, events: &mut Events) -> Result<(), String> {
         self.escape.set(&mut self.poll, self.input.deadline())?;
         self.repeat.set(&mut self.poll, self.keys.deadline())?;
-        if self.reconnecting.is_none() && self.watchdog.at.is_none() {
-            let at = self.received() + WATCHDOG;
+        if self.reconnecting.is_none() {
+            let at = panes(&self.view)
+                .filter_map(|pane| pane.mirror.deadline(WATCHDOG))
+                .fold(self.link.received() + WATCHDOG, Instant::min);
             self.watchdog.set(&mut self.poll, Some(at))?;
         }
         let mode = if panes(&self.view).any(|pane| pane.mirror.searching()) {
@@ -1711,18 +1710,22 @@ impl Client {
                 if self.reconnecting.is_none()
                     && let Err(error) = self.client(ready, now)
                 {
-                    cause = Some(self.recoverable(error)?);
+                    cause = Some(error);
                 }
             } else if self.reconnecting.is_none() {
                 for pane in panes_mut(&mut self.view) {
-                    if ready.token == pane.mirror.token()
-                        && let Err(error) = pane.mirror.handle(&mut self.poll, now)
+                    if Some(ready.token) == pane.mirror.token()
+                        && let Err(error) = pane.mirror.handle(&mut self.poll, ready, now)
+                        && let Err(error) = pane.mirror.reopen(
+                            error,
+                            &self.socket,
+                            self.model.client,
+                            pane.pane,
+                            &mut self.poll,
+                        )
                     {
                         cause = Some(error);
                     }
-                }
-                if let Some(error) = cause.take() {
-                    cause = Some(self.recoverable(error)?);
                 }
             }
         }
@@ -1733,14 +1736,29 @@ impl Client {
         if self.escape.fired(&self.poll, due) {
             self.input.expire(now, &mut incoming);
         }
-        if self.watchdog.fired(&self.poll, due)
-            && self.reconnecting.is_none()
-            && silent(self.received(), now, WATCHDOG)
-        {
-            cause = Some(self.recoverable("ko socket timed out".to_owned())?);
+        if self.watchdog.fired(&self.poll, due) && self.reconnecting.is_none() {
+            if silent(self.link.received(), now, WATCHDOG) {
+                cause = Some("ko socket timed out".to_owned());
+            }
+            for pane in panes_mut(&mut self.view) {
+                if pane.mirror.deadline(WATCHDOG).is_some_and(|at| at <= now)
+                    && let Err(error) = pane.mirror.reopen(
+                        "pane view timed out".to_owned(),
+                        &self.socket,
+                        self.model.client,
+                        pane.pane,
+                        &mut self.poll,
+                    )
+                {
+                    cause = Some(error);
+                }
+            }
         }
         self.wake.fired(&self.poll, due);
         let retry = self.retry.fired(&self.poll, due);
+        if self.quit {
+            return Ok(());
+        }
         if let Some(cause) = cause {
             self.lost(cause)?;
         }
@@ -1784,16 +1802,8 @@ impl Client {
         Ok(resized)
     }
 
-    fn recoverable(&self, error: String) -> Result<String, String> {
-        if self.remote.is_some() {
-            Ok(error)
-        } else {
-            Err(error)
-        }
-    }
-
     fn recover(&mut self, error: String) -> Result<(), String> {
-        if self.remote.is_none() || self.reconnecting.is_some() {
+        if self.reconnecting.is_some() {
             return Err(error);
         }
         let probe = wire::request_within(
@@ -1810,9 +1820,6 @@ impl Client {
     }
 
     fn lost(&mut self, cause: String) -> Result<(), String> {
-        if self.remote.is_none() {
-            return Err(cause);
-        }
         if self.reconnecting.is_some() {
             return Ok(());
         }
@@ -1840,22 +1847,26 @@ impl Client {
         let Some(outage) = self.reconnecting.as_ref() else {
             return Ok(());
         };
-        if self.pager.is_some() {
-            return self
-                .retry
-                .set(&mut self.poll, Some(Instant::now() + PAUSED));
-        }
         let (restore, cause) = (outage.restore, outage.cause.clone());
+        let deadline = outage.since + GIVE_UP;
         let left = GIVE_UP.saturating_sub(outage.since.elapsed());
-        let Some(remote) = self.remote.as_mut() else {
-            return Ok(());
-        };
         if left.is_zero() {
-            return Err(format!("lost {}: {cause}", remote.host()));
+            let target = self.remote.as_ref().map_or("connection", Remote::host);
+            return Err(format!("lost {target}: {cause}"));
         }
-        let failure = match remote.advance() {
+        if self.pager.is_some() {
+            return self.retry.set(
+                &mut self.poll,
+                Some((Instant::now() + PAUSED).min(deadline)),
+            );
+        }
+        let progress = match self.remote.as_mut() {
+            Some(remote) => remote.advance(),
+            None => Ok(Progress::Up),
+        };
+        let failure = match progress {
             Ok(Progress::Pending(until)) => {
-                return self.retry.set(&mut self.poll, Some(until));
+                return self.retry.set(&mut self.poll, Some(until.min(deadline)));
             }
             Ok(Progress::Up) => match self.reconnect(left, restore) {
                 Ok(()) => return Ok(()),
@@ -1870,14 +1881,15 @@ impl Client {
         let wait = outage.backoff;
         outage.backoff = backoff_after(wait);
         outage.cause = failure;
-        self.retry.set(&mut self.poll, Some(Instant::now() + wait))
+        self.retry
+            .set(&mut self.poll, Some((Instant::now() + wait).min(deadline)))
     }
 
     fn reconnect(&mut self, left: Duration, mut restore: Restore) -> Result<(), JoinError> {
         let mut link = Link::connect_within(&self.socket, None, &Route::Client {}, None, left)
             .map_err(|error| JoinError::Protocol(text(error)))?;
         let mut hello = hello(self.geometry, self.panel, self.sidebar_width, self.focused);
-        hello.selection.window = self.view.as_ref().map(|shown| shown.window);
+        hello.selection = self.model.selection;
         let rejoin = self.model.rejoin(&mut link, hello)?;
         let token = link
             .watch(&mut self.poll)
@@ -1975,13 +1987,14 @@ impl Client {
     }
 
     fn client(&mut self, ready: Ready, now: Instant) -> Result<(), String> {
-        if ready.write {
-            self.link.settle(&mut self.poll).map_err(text)?;
-        }
         if ready.read {
             loop {
                 match self.link.next(&mut self.poll, now).map_err(text)? {
                     Next::Wait => break,
+                    Next::Shutdown => {
+                        self.quit = true;
+                        return Ok(());
+                    }
                     Next::Closed | Next::Gone | Next::Binary(_) => {
                         return Err("server closed the client".to_owned());
                     }
@@ -2031,6 +2044,9 @@ impl Client {
                     }
                 }
             }
+        }
+        if ready.write {
+            self.link.settle(&mut self.poll).map_err(text)?;
         }
         Ok(())
     }

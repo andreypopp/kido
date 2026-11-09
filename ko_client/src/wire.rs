@@ -1,3 +1,6 @@
+mod upgrade;
+pub use upgrade::{Connecting, UpgradeStep};
+
 use std::fmt::Display;
 use std::io::{self, Read, Write};
 use std::os::fd::AsFd;
@@ -365,6 +368,7 @@ pub enum Next {
     Binary(Bytes),
     Wait,
     Gone,
+    Shutdown,
     Closed,
 }
 
@@ -515,15 +519,6 @@ impl Link {
         }
     }
 
-    pub fn connect(
-        socket: &Path,
-        client: Option<ClientId>,
-        route: &Route,
-        cancel: Option<Arc<Wake>>,
-    ) -> io::Result<Link> {
-        Link::connect_within(socket, client, route, cancel, READ_TIMEOUT)
-    }
-
     pub fn connect_within(
         socket: &Path,
         client: Option<ClientId>,
@@ -543,6 +538,10 @@ impl Link {
         );
         self.token = Some(token);
         Ok(token)
+    }
+
+    pub fn token(&self) -> Option<Token> {
+        self.token
     }
 
     pub fn unwatch(&mut self, poll: &mut Poll) {
@@ -585,7 +584,7 @@ impl Link {
             },
             &mut self.closing,
         )?;
-        if matches!(next, Next::Closed | Next::Gone) {
+        if matches!(next, Next::Shutdown | Next::Closed | Next::Gone) {
             let _ = self.out.flush(self.stream.as_fd());
         } else {
             self.settle(poll)?;
@@ -606,7 +605,7 @@ impl Link {
             },
             &mut self.closing,
         )?;
-        if matches!(next, Next::Closed | Next::Gone) {
+        if matches!(next, Next::Shutdown | Next::Closed | Next::Gone) {
             let _ = self.flush_blocking();
         } else {
             self.flush_blocking()?;
@@ -633,8 +632,13 @@ impl Link {
                 Message::Binary(body) => break Next::Binary(body),
                 Message::Close(frame) => {
                     let _ = ctx.flush(io);
+                    let shutdown = frame.as_ref().is_some_and(|frame| {
+                        frame.code == tungstenite::protocol::frame::coding::CloseCode::Away
+                    });
                     *closing = frame.map(|frame| (u16::from(frame.code), frame.reason.to_string()));
-                    break if closing.as_ref().is_some_and(|(_, reason)| reason == "gone") {
+                    break if shutdown {
+                        Next::Shutdown
+                    } else if closing.as_ref().is_some_and(|(_, reason)| reason == "gone") {
                         Next::Gone
                     } else {
                         Next::Closed
@@ -643,7 +647,7 @@ impl Link {
                 Message::Ping(_) | Message::Pong(_) | Message::Frame(_) => {}
             }
         };
-        if !matches!(next, Next::Closed | Next::Gone) {
+        if !matches!(next, Next::Shutdown | Next::Closed | Next::Gone) {
             ctx.flush(io).map_err(failed)?;
         }
         Ok(next)
@@ -792,7 +796,10 @@ mod tests {
         let mut seen = Vec::new();
         loop {
             let next = link.next(poll, now).unwrap();
-            let done = matches!(next, Next::Wait | Next::Closed | Next::Gone);
+            let done = matches!(
+                next,
+                Next::Wait | Next::Shutdown | Next::Closed | Next::Gone
+            );
             seen.push(next);
             if done {
                 return seen;
@@ -915,10 +922,16 @@ mod tests {
 
     #[test]
     fn a_close_is_typed_and_does_not_flush_to_a_closed_peer() {
-        for (reason, expected) in [("gone", Next::Gone), ("io", Next::Closed)] {
+        for (code, reason, expected) in [
+            (1008_u16, "gone", Next::Gone),
+            (1008, "io", Next::Closed),
+            (1001, "shutdown", Next::Shutdown),
+            (1001, "another reason", Next::Shutdown),
+            (1008, "shutdown", Next::Closed),
+        ] {
             let (mut link, mut server, mut poll) = pair();
             link.send("pending".to_owned()).unwrap();
-            let mut body = 1008_u16.to_be_bytes().to_vec();
+            let mut body = code.to_be_bytes().to_vec();
             body.extend_from_slice(reason.as_bytes());
             server.write_all(&frame(8, &body)).unwrap();
             server.shutdown(std::net::Shutdown::Both).unwrap();

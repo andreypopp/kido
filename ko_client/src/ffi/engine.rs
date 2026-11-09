@@ -16,12 +16,11 @@ use ko_server::ws::{Parsed, parse_record};
 use ko_sys::event::{Events, Interest, Mode, Poll, Ready, Timer, Token};
 use tungstenite::Bytes;
 
-use super::upgrade::{Connecting, UpgradeStep};
 use super::view::{Feed, Slice, View};
 use super::{Code, Command, Posted, Shared, ViewEvent, layout_of, locked, post, string};
 use crate::launch::{self, BACKOFF_FIRST, backoff_after};
 use crate::model::{Applied, JoinError, Model, Rejoin};
-use crate::wire::{Link, Next, READ_TIMEOUT, buffered, silent, text};
+use crate::wire::{Connecting, Link, Next, READ_TIMEOUT, UpgradeStep, buffered, silent, text};
 
 const WATCH: Duration = Duration::from_secs(2);
 
@@ -177,11 +176,12 @@ impl Engine<'_> {
     fn join(&mut self) -> Result<(), Failed> {
         let shared = self.shared;
         let socket = shared.socket.as_path();
-        let mut link = Link::connect(
+        let mut link = Link::connect_within(
             socket,
             None,
             &Route::Client {},
             Some(Arc::clone(&shared.cancel)),
+            READ_TIMEOUT,
         )
         .map_err(|error| {
             let (code, message) = failure(&error);
@@ -367,7 +367,7 @@ impl Engine<'_> {
                 .map_err(|error| failure(&error))?
             {
                 Next::Wait => return Ok(()),
-                Next::Closed | Next::Gone => {
+                Next::Shutdown | Next::Closed | Next::Gone => {
                     return Err((Code::Closed, "server closed".to_owned()));
                 }
                 Next::Binary(_) => return Err(protocol_error("binary client message".to_owned())),
@@ -498,7 +498,7 @@ impl Engine<'_> {
             shared.socket.as_path(),
             client,
             &route,
-            Arc::clone(&shared.cancel),
+            Some(Arc::clone(&shared.cancel)),
         );
         match linked {
             Ok(link) => {
@@ -606,6 +606,13 @@ impl Engine<'_> {
                     post_link(self.shared, &open.view, Code::Ok, "view link up");
                     ready = buffered(conn.token);
                 }
+                Ok(UpgradeStep::Refused(response)) => {
+                    self.poll.stop(open.deadline);
+                    self.poll.unwatch(conn.token);
+                    let (code, message) = failure(&ko_server::ws::refused(&response));
+                    self.lose(code, &message);
+                    return;
+                }
                 Err(error) => {
                     self.poll.stop(open.deadline);
                     self.poll.unwatch(conn.token);
@@ -645,7 +652,7 @@ impl Engine<'_> {
                         outcome = Err(End::Gone);
                         break;
                     }
-                    Ok(Next::Closed) => {
+                    Ok(Next::Shutdown | Next::Closed) => {
                         let message = link.close_frame().map_or_else(
                             || "pane view closed".to_owned(),
                             |(code, reason)| format!("close {code}: {reason}"),

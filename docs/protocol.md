@@ -81,7 +81,10 @@ with code 1013 and the reason `view queue overflow`. The removal of a
 pane closes each of its views with code 1008 and the reason `gone`,
 behind the output that the view's queue and spill already hold; only
 this close means the end of the pane, and a client treats it as that,
-not as an outage.
+not as an outage. A server that stops (`ko kill-server`, `SIGTERM`)
+closes each `/client` link with code 1001 (going away); only this
+code means the end of the server, and a client detaches on it
+instead of reconnecting. A client reads the code, never the reason.
 
 Each side answers a received close frame with a close frame of the
 same code and reason (RFC 6455, section 5.5.1), unless it sent its own

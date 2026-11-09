@@ -614,7 +614,8 @@ Conventions:
   `/client` link, the view of each visible pane and the signal pipe. Its plain
   requests (create, delete, list, layout edits, the pager's
   `/screen`) block with
-  the deadlines of `ko api`. While the pager runs, the loop keeps
+  the deadlines of `ko api`; a view's open and upgrade never block,
+  so the `/client` link answers its pings. While the pager runs, the loop keeps
   every link and stops reading stdin and painting until `SIGCHLD`
   reports the pager's exit, so pings get their answers. A turn
   handles `SIGWINCH` after it dispatches the stdin events that it

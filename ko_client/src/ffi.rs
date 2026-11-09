@@ -5,7 +5,6 @@ mod config;
 mod engine;
 mod images;
 mod remote;
-mod upgrade;
 mod view;
 
 pub use calls::*;

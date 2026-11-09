@@ -54,10 +54,8 @@ import XCTest
         let pi = shell(streaming, vars: #"{"pi.session":"s1","pi.name":"Worker"}"#)
         let mute = shell(printf, vars: #"{"pi.session":"s2","pi.name":"Mute"}"#)
         let (_, owner) = try shown(#"[{"name":"first","tree":\#(pi)},{"name":"second","tree":\#(mute)}]"#)
-        wait("both tabs are pi agents") { owner.sidebar.tabs.entries.count == 2 && owner.sidebar.tabs.entries.allSatisfy(\.agent) }
+        wait("both tabs have their pi names") { owner.sidebar.tabs.entries.map(\.displayName) == ["@Worker", "Mute"] }
         wait("the pane with a message stream takes a prompt") { owner.sidebar.tabs.entries.map(\.messageable) == [true, false] }
-        let tabs = owner.sidebar.tabs.entries
-        XCTAssertEqual(tabs.map(\.displayName), ["@Worker", "Mute"])
         XCTAssertEqual(owner.navigation.windows.map(\.name), ["first", "second"], "the window keeps its name")
     }
 

@@ -324,7 +324,9 @@ pub fn forward(
         loop {
             match link.next(&mut poll, Instant::now())? {
                 Next::Text(text) => print(text.as_str())?,
-                Next::Closed | Next::Gone => return Ok(link.close_frame().cloned()),
+                Next::Shutdown | Next::Closed | Next::Gone => {
+                    return Ok(link.close_frame().cloned());
+                }
                 Next::Binary(_) => return Err(StreamError::Binary),
                 Next::Wait => break,
             }

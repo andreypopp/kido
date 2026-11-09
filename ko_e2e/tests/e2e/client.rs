@@ -1,7 +1,7 @@
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 
-use ko_sys::pid::{Pid, signal_descendant};
+use ko_sys::pid::{Exit, Pid, signal_descendant};
 use ko_sys::signal::Signal;
 use serde_json::json;
 
@@ -67,6 +67,51 @@ fn the_client_lists_a_child_pane_under_its_parent_indented_one_column() {
     o.line("NEXT-SKIPS-CHILD");
     s.screen_has(&other, "NEXT-SKIPS-CHILD");
     o.detach();
+}
+
+#[test]
+fn client_local_link_loss_reconnects_after_the_server_returns() {
+    let mut s = start(&[]);
+    s.pane("printf LOCAL-BEFORE; exec cat");
+    let o = Outer::new(&s.dir, Keys::Extended);
+    o.attach("");
+    o.contains("LOCAL-BEFORE");
+    s.child.signal(Signal::Kill).unwrap();
+    assert!(s.child.wait(DEADLINE).is_some());
+    o.quiet();
+    assert!(s.dial().is_err(), "the client must not start a server");
+    s.start_again(&[]);
+    s.pane("printf LOCAL-AFTER; exec cat");
+    o.contains("LOCAL-AFTER");
+    o.line("LOCAL-INPUT");
+    s.screen_has("pane_1", "LOCAL-INPUT");
+    o.detach();
+}
+
+#[test]
+fn client_shutdown_detaches_and_reports_going_away() {
+    let mut s = start(&[]);
+    for signal in [false, true] {
+        s.pane("printf SHUTDOWN-READY; exec cat");
+        let o = Outer::new(&s.dir, Keys::Extended);
+        o.attach("");
+        o.contains("SHUTDOWN-READY");
+        let (mut client, _) = s.client(None);
+        if signal {
+            s.stop();
+        } else {
+            let result = s.ko(&["kill-server"], "");
+            assert_eq!(result.exit, Exit::Exited(0));
+            assert_eq!(result.stdout, "");
+            assert_eq!(result.stderr, "");
+        }
+        client.closed("shutdown closes the client link");
+        assert_eq!(client.close_frame().map(|frame| frame.0), Some(1001));
+        o.detached();
+        if !signal {
+            s.start_again(&[]);
+        }
+    }
 }
 
 const PANE_X: usize = 25;

@@ -5,9 +5,9 @@ use std::path::Path;
 use std::sync::Arc;
 
 use ko_server::api::Route;
-use ko_server::http;
+use ko_server::http::{self, Response};
 use ko_server::ids::ClientId;
-use ko_server::ws::{refused, upgrade_request};
+use ko_server::ws::upgrade_request;
 use ko_sys::event::{Interest, Poll, PollRead, Reads, Ready, Token, Wake};
 use ko_sys::fd::Queue;
 
@@ -28,26 +28,27 @@ impl Read for Buffered<'_> {
 }
 
 #[derive(Debug)]
-pub(crate) struct Connecting {
+pub struct Connecting {
     stream: UnixStream,
     request: Queue,
     response: Vec<u8>,
     key: String,
-    cancel: Arc<Wake>,
+    cancel: Option<Arc<Wake>>,
 }
 
 #[derive(Debug)]
-pub(crate) enum UpgradeStep {
+pub enum UpgradeStep {
     Pending(Connecting),
     Open(Box<Link>),
+    Refused(Response),
 }
 
 impl Connecting {
-    pub(crate) fn start(
+    pub fn start(
         socket: &Path,
         client: ClientId,
         route: &Route,
-        cancel: Arc<Wake>,
+        cancel: Option<Arc<Wake>>,
     ) -> io::Result<Connecting> {
         let stream = UnixStream::from(ko_sys::sock::connect_nonblocking(socket)?);
         let (method, target) = route.to_request();
@@ -63,11 +64,11 @@ impl Connecting {
         })
     }
 
-    pub(crate) fn watch(&self, poll: &mut Poll) -> Token {
+    pub fn watch(&self, poll: &mut Poll) -> Token {
         poll.watch(self.stream.as_fd(), Interest::of(true, true))
     }
 
-    pub(crate) fn advance(mut self, poll: &mut Poll, ready: Ready) -> io::Result<UpgradeStep> {
+    pub fn advance(mut self, poll: &mut Poll, ready: Ready) -> io::Result<UpgradeStep> {
         if ready.write {
             self.request.flush(self.stream.as_fd())?;
         }
@@ -95,15 +96,17 @@ impl Connecting {
                 eof,
             }) {
                 Ok(upgrade) => {
-                    let link = Link::upgraded(
+                    let linked = Link::upgraded(
                         self.stream,
                         upgrade,
                         &self.key,
-                        Some(self.cancel),
+                        self.cancel,
                         Some(ready.token),
-                    )?
-                    .map_err(|response| refused(&response))?;
-                    return Ok(UpgradeStep::Open(Box::new(link)));
+                    )?;
+                    return Ok(match linked {
+                        Ok(link) => UpgradeStep::Open(Box::new(link)),
+                        Err(response) => UpgradeStep::Refused(response),
+                    });
                 }
                 Err(error) if error.kind() == io::ErrorKind::WouldBlock => {}
                 Err(error) => return Err(error),
@@ -133,7 +136,7 @@ mod tests {
             request: Queue::default(),
             response: Vec::new(),
             key: "test-key".to_owned(),
-            cancel: Arc::new(Wake::new().unwrap()),
+            cancel: None,
         };
         let mut poll = Poll::new();
         let token = connecting.watch(&mut poll);
@@ -172,7 +175,7 @@ mod tests {
             request: Queue::default(),
             response: Vec::new(),
             key: "test-key".to_owned(),
-            cancel: Arc::new(Wake::new().unwrap()),
+            cancel: None,
         };
         let mut poll = Poll::new();
         let token = connecting.watch(&mut poll);
@@ -185,6 +188,7 @@ mod tests {
             match connecting.advance(&mut poll, buffered(token)) {
                 Ok(UpgradeStep::Pending(pending)) => connecting = pending,
                 Ok(UpgradeStep::Open(_)) => panic!("an unterminated head opened"),
+                Ok(UpgradeStep::Refused(_)) => panic!("an unterminated head was refused"),
                 Err(error) => {
                     rejected = Some(error.kind());
                     break;

@@ -467,6 +467,22 @@ views and N threads, each idle without output. A frame is fetched only
 when its mirror's generation changed, so a quiet pane costs nothing in
 a paint, and the differ writes only the changed cells.
 
+The client's loop never waits for a view: a view's open and its
+WebSocket upgrade advance through the loop's events (the upgrade
+state machine of `ko_client/src/wire/upgrade.rs`, which Kido.app's
+engine also uses), so a slow upgrade does not stop the `/client` link
+from answering the server's pings. While a pane's view is not open,
+its input goes through the HTTP input route. A view that closes for
+any reason but `gone`, fails, or is silent past the watchdog opens
+again at its resume offset, alone. An upgrade refused because the
+pane is missing ends the view as `gone` does; any other failed
+upgrade, or one that does not complete within the read timeout, is
+an outage of the client. An
+outage of the `/client` link, a local one included, starts the
+reconnect attempts of section 5 and keeps the selection; the client
+never starts a server in them. The close of a stopping server
+(docs/protocol.md, section 1) detaches the client at once.
+
 One writer draws the screen: a direct cell differ (`ko_tui/src/differ.rs`)
 writes the composed cells of the pane region, the sidebar and the
 status line, the last row of the screen. The pane area that the
@@ -1006,7 +1022,8 @@ forward and agent publication and connects to the forward's local
 socket.
 
 Reconnect: a lost link starts attempts with a backoff of 100 ms to
-2 s under one outage deadline of 60 s. An attempt sends a new hello,
+2 s under one outage deadline of 60 s. The local terminal client
+uses the same attempts (section 4.11). An attempt sends a new hello,
 and the client resumes a view at its offset only when the `Welcome`'s
 `instance` equals the one it saw; another instance drops the mirror
 and starts the model again. There is no event replay: every event kind
@@ -1243,3 +1260,13 @@ Each decision names its date. The code states the rest.
   choice). It reverses the rule that the remote server starts only on
   an explicit `ssh HOST ko server`: that rule made a reboot or a `ko
   kill-server` on the host a dead end for every window to it.
+
+2026-11-09:
+
+- A local terminal client reconnects after a lost link, as an ssh
+  client does, and detaches at once only on the typed close of a
+  server that stops (the user's choice). A local link is lost when
+  the loop stalls past the server's pong deadline or the client's
+  watchdog; that loss is an outage, not the end of the server. The
+  attempts end after 60 s: a server that does not come back in
+  that time is gone, and the client never starts one.
