@@ -1,5 +1,6 @@
-import { writeFile, mkdir } from 'node:fs/promises';
+import { writeFile, mkdir, realpath } from 'node:fs/promises';
 import { resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 export const names = ['long-session', 'fast-tokens', 'large-output', 'large-prompt', 'reconnects', 'many-panes', 'hidden-shown', 'themes', 'fetch-concurrency', 'slow-page', 'body-kinds', 'children'];
 export const pageWorkloads = [1, 2, 3, 4, 5, 8, 9, 10, 11];
@@ -26,7 +27,7 @@ export async function scripts(directory: string) {
     await writeFile(resolve(directory, `${id}.jsonl`), steps.map(step => JSON.stringify(step)).join('\n'));
   }
 }
-if (process.argv[1] === new URL(import.meta.url).pathname) {
+if (process.argv[1] && await realpath(process.argv[1]) === await realpath(fileURLToPath(import.meta.url))) {
   const directory = process.argv[2];
   if (!directory) throw Error('A script directory is required');
   await scripts(resolve(directory));

@@ -91,11 +91,12 @@ visual visual-fast visual-slow: project
 koa-stress-root:
 	@printf '%s\n' '$(KOA_STRESS_OUTPUT)'
 
+koa-stress: ONLY = KoaStressTests VisualTests/testWebviewFetchSlots
 koa-stress:
 	@mkdir -p '$(KOA_STRESS_OUTPUT)'; \
 	run=$${KOA_STRESS_RUN:-$$(mktemp -d '$(KOA_STRESS_OUTPUT)/run-XXXXXX')} || exit 1; \
 	echo "koa stress run: $$run"; \
-	$(MAKE) visual ONLY="KoaStressTests VisualTests/testWebviewFetchSlots" KOA_STRESS=1 KOA_STRESS_OUTPUT="$$run"
+	$(MAKE) visual ONLY="$(ONLY)" KOA_STRESS=1 KOA_STRESS_OUTPUT="$$run"
 
 ko-test: DERIVED = build/xcode.noindex/derived-$@
 ko-test: project

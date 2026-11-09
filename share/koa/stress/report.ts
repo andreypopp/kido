@@ -7,7 +7,7 @@ type Sample = { t: number; bytes: number; clockError: number; frame?: number; ap
 type Record = { samples: Sample[]; bytes: number; opens: number; caps: number; flushes: number; highWater: number };
 type Memory = { rssKiB: number; processes: number };
 type Summary = { target: 'page' | 'kido'; id: number; status: string; error?: string; metrics: string[]; seconds: number; heap?: number; before?: Memory; after?: Memory };
-type Row = { target: 'chrome' | 'kido'; id: number; name: string | undefined; status: 'ok' | 'failed'; error?: string; timing?: 'flush→frame' | 'flush→apply'; seconds?: string; p50?: number; p95?: number; p99?: number; bytes?: number; opens?: number; caps?: number; flushes?: number; flushHz?: string; sampleHz?: string; heapMB?: string; rssDeltaMiB?: string; processesBefore?: number; processesAfter?: number };
+type Row = { target: 'chrome' | 'kido'; id: number; name: string | undefined; status: 'ok' | 'failed'; error?: string; timing?: 'flush→frame' | 'flush→apply'; seconds?: string; p50?: number; p95?: number; p99?: number; bytes?: number; opens?: number; caps?: number; flushes?: number; flushHz?: string; sampleHz?: string; heapMB?: string; rssDeltaMiB?: string; memoryBudget?: string; memoryPerPageMiB?: string; processesBefore?: number; processesAfter?: number };
 export async function report(directory: string) {
   const manifests = (await readdir(directory)).filter(name => /^(page|kido)-manifest\.json$/.test(name));
   assert.ok(manifests.length, 'No run manifest');
@@ -49,9 +49,17 @@ export async function report(directory: string) {
       const times = samples.map(sample => { const at = sample[timing]; assert.ok(at !== undefined); return at - sample.t; }).sort((a, b) => a - b);
       const percentile = (fraction: number) => { const value = times[Math.min(times.length - 1, Math.floor(times.length * fraction))]; assert.ok(value !== undefined); return Number(value.toFixed(2)); };
       const total = (key: 'bytes' | 'opens' | 'caps' | 'flushes') => streams.reduce((sum, stream) => { const last = stream.at(-1); assert.ok(last); return sum + last[key]; }, 0);
-      if (summary.target === 'kido') assert.ok(summary.before && summary.after && Object.values(summary.before).every(Number.isFinite) && Object.values(summary.after).every(Number.isFinite), 'Invalid WebContent memory');
-      else assert.ok(Number.isFinite(summary.heap), 'Invalid Chrome heap');
-      rows.push({ target: summary.target === 'page' ? 'chrome' : 'kido', id, name: names[id - 1], status: 'ok', timing: summary.target === 'page' ? 'flush→frame' : 'flush→apply', seconds: summary.seconds.toFixed(1), p50: percentile(.5), p95: percentile(.95), p99: percentile(.99), bytes: total('bytes'), opens: total('opens'), caps: total('caps'), flushes: total('flushes'), flushHz: (total('flushes') / summary.seconds).toFixed(1), sampleHz: (new Set(samples.map(sample => sample[timing])).size / summary.seconds).toFixed(1), heapMB: summary.heap === undefined ? undefined : (summary.heap / 1e6).toFixed(1), rssDeltaMiB: summary.after && summary.before ? ((summary.after.rssKiB - summary.before.rssKiB) / 1024).toFixed(1) : undefined, processesBefore: summary.before?.processes, processesAfter: summary.after?.processes });
+      let memory: number;
+      if (summary.target === 'kido') {
+        assert.ok(summary.before && summary.after && Object.values(summary.before).every(Number.isFinite) && Object.values(summary.after).every(Number.isFinite), 'Invalid WebContent memory');
+        memory = (summary.after.rssKiB - summary.before.rssKiB) / 1024 / summary.metrics.length;
+      } else {
+        assert.ok(summary.heap !== undefined && Number.isFinite(summary.heap), 'Invalid Chrome heap');
+        memory = summary.heap / 1048576;
+      }
+      const budget = summary.target === 'page' ? { name: 'retained-js-heap', mib: 32 } : { name: 'webcontent-rss-increase', mib: 320 };
+      const exceeded = memory > budget.mib;
+      rows.push({ target: summary.target === 'page' ? 'chrome' : 'kido', id, name: names[id - 1], status: exceeded ? 'failed' : 'ok', error: exceeded ? `${budget.name}: ${memory.toFixed(1)} MiB/page exceeds ${budget.mib} MiB/page` : undefined, memoryBudget: `${budget.name}: ${budget.mib} MiB/page`, memoryPerPageMiB: memory.toFixed(1), timing: summary.target === 'page' ? 'flush→frame' : 'flush→apply', seconds: summary.seconds.toFixed(1), p50: percentile(.5), p95: percentile(.95), p99: percentile(.99), bytes: total('bytes'), opens: total('opens'), caps: total('caps'), flushes: total('flushes'), flushHz: (total('flushes') / summary.seconds).toFixed(1), sampleHz: (new Set(samples.map(sample => sample[timing])).size / summary.seconds).toFixed(1), heapMB: summary.heap === undefined ? undefined : (summary.heap / 1e6).toFixed(1), rssDeltaMiB: summary.after && summary.before ? ((summary.after.rssKiB - summary.before.rssKiB) / 1024).toFixed(1) : undefined, processesBefore: summary.before?.processes, processesAfter: summary.after?.processes });
     }
   }
   return rows.sort((a, b) => a.id - b.id || a.target.localeCompare(b.target));
@@ -62,5 +70,5 @@ if (process.argv[1] === new URL(import.meta.url).pathname) {
   const rows = await report(resolve(directory));
   console.table(rows);
   if (rows.some(row => row.status === 'failed')) process.exitCode = 1;
-  console.log('Chrome flush→frame uses rAF, not a paint-completion signal; Kido flush→apply uses never-ordered pages. RSS is global WebContent RSS with before/after baselines. W12 creates parented panes through the API; unit 5 covers spawn_agent argv. W9 slot ordering is checked through Kido. Browser body kinds do not reproduce the bridge constraint.');
+  console.log('Chrome flush→frame uses rAF, not a paint-completion signal; Kido flush→apply uses never-ordered pages. Chrome heap is measured after GC. RSS is global WebContent RSS with before/after baselines; the budget divides the increase by the number of pages. W12 creates parented panes through the API; unit 5 covers spawn_agent argv. W9 slot ordering is checked through Kido. Browser body kinds do not reproduce the bridge constraint.');
 }

@@ -24,8 +24,30 @@ test('stress reports refuse missing files, empty samples and clock jumps', async
   assert.equal(rows[0]?.timing, 'flush→frame');
   assert.equal(rows[0]?.p50, 20);
   assert.equal(rows[0]?.bytes, 50);
+  await writeFile(join(dir, 'page-2-summary.json'), JSON.stringify({ target: 'page', id: 2, status: 'ok', seconds: 1, heap: 33 * 1048576, metrics: [file] }));
+  const overHeap = await report(dir);
+  assert.equal(overHeap[0]?.status, 'failed');
+  assert.match(overHeap[0]?.error ?? '', /retained-js-heap: 33.0 MiB\/page exceeds 32/);
   await writeFile(join(dir, 'page-2-summary.json'), JSON.stringify({ target: 'page', id: 2, status: 'failed', error: 'baseline not settled', seconds: 10, metrics: [] }));
   const failed = await report(dir);
   assert.equal(failed[0]?.status, 'failed');
   assert.equal(failed[0]?.error, 'baseline not settled');
+});
+
+test('WebContent memory budgets apply per page, not per workload', async t => {
+  const dir = await mkdtemp(join(tmpdir(), 'koa-report-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const file = join(dir, 'samples.jsonl');
+  await writeFile(file, JSON.stringify({ samples: [{ t: 1000, applied: 1010, bytes: 50, clockError: 0 }], bytes: 50, opens: 1, caps: 0, flushes: 1, highWater: 50 }));
+  await writeFile(join(dir, 'kido-manifest.json'), JSON.stringify({ target: 'kido', ids: [6] }));
+  const summary = { target: 'kido', id: 6, status: 'ok', seconds: 1, metrics: Array(8).fill(file), before: { rssKiB: 1000, processes: 1 }, after: { rssKiB: 1000 + 8 * 320 * 1024, processes: 9 } };
+  await writeFile(join(dir, 'kido-6-summary.json'), JSON.stringify(summary));
+  const rows = await report(dir);
+  assert.equal(rows[0]?.status, 'ok');
+  assert.equal(rows[0]?.memoryPerPageMiB, '320.0');
+  summary.after.rssKiB += 8 * 1024;
+  await writeFile(join(dir, 'kido-6-summary.json'), JSON.stringify(summary));
+  const exceeded = await report(dir);
+  assert.equal(exceeded[0]?.status, 'failed');
+  assert.match(exceeded[0]?.error ?? '', /webcontent-rss-increase: 321.0 MiB\/page exceeds 320/);
 });

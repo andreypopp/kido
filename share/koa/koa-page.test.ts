@@ -55,6 +55,25 @@ test("incremental markdown matches a fresh render after each patch and preserves
   assert.equal(update(edited).map(block => block.html).join(''), full(edited));
 });
 
+test("an earlier edit regenerates consumed HTML in the later blocks", () => {
+  const update = markdown();
+  const first = update('First.\n\nKept.\n\nTail');
+  for (const block of first) if (!block.streaming) delete block.html;
+  const edited = 'Changed.\n\nKept.\n\nTail';
+  assert.equal(update(edited).map(block => block.html).join(''), full(edited));
+});
+
+test("finished markdown blocks do not retain slices of earlier message versions", () => {
+  const update = markdown();
+  const first = update('Finished paragraph.\n\nTail');
+  delete first[0].html;
+  for (let length = 1; length <= 50; length++) {
+    const blocks = update('Finished paragraph.\n\n' + 'tail '.repeat(length));
+    assert.equal(blocks[0], first[0]);
+    assert.deepEqual(Object.keys(blocks[0]), ['streaming']);
+  }
+});
+
 test("streaming tails heal emphasis, inline code, links and fences; raw HTML stays text", () => {
   const render = (source: string, final = false) => markdown()(source, final).map(block => block.html).join('');
   assert.match(render('**bold'), /<strong>bold<\/strong>/);

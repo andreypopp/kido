@@ -688,13 +688,11 @@ unit. The order is fixed, because each unit builds on the one before.
    -C app koa-stress` (Kido workloads in off-screen windows, which run
    no `requestAnimationFrame`, so they measure flush to apply). Its
    findings are the units 6a and 6b.
-6a. **A page's memory.** One koa page costs about 370 MiB of
-   WebContent memory in Kido (W2: +377 MiB; W12's parent: +168 MiB)
-   and a 136 to 168 MB JS heap in Chrome (W2, W5, W8), against the
-   27 MB of an empty view. Find what the page keeps (the item views,
-   the markdown memo, the records, the samples) with a heap snapshot
-   in Chrome, bound it, and give the stress table a memory budget per
-   page that fails above it.
+6a. **A page's memory.** Done: finished markdown blocks kept slices of
+   every old version of the message; a page now holds about 16 MB of
+   JS heap after W2 (was 117 MB) and +232 MiB of WebContent memory
+   (was +423 MiB). The stress report fails a page above 32 MiB of
+   retained JS heap or 320 MiB of WebContent memory.
 6b. **Many streaming pages.** W6 (eight panes that stream at once)
    fails: one page does not finish in 90 s, flush to apply reaches a
    p95 of 27 s, and WebKit logs `Too many messages (129) in the queue`

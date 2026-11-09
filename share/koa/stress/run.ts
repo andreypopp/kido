@@ -16,7 +16,7 @@ assert.ok(workloads.every(id => pageWorkloads.includes(id)), 'Unknown page workl
 await writeFile(join(output, 'page-manifest.json'), JSON.stringify({ target: 'page', ids: workloads }), { flag: 'wx' });
 await scripts(join(output, 'scripts'));
 const root = resolve(new URL('../../..', import.meta.url).pathname);
-type Reply = { id?: number; method?: string; error?: unknown; result?: { result?: { value?: unknown }; exceptionDetails?: unknown; usedSize?: number } };
+type Reply = { id?: number; method?: string; params?: { chunk?: string }; error?: unknown; result?: { result?: { value?: unknown }; exceptionDetails?: unknown; usedSize?: number } };
 for (const id of workloads) {
   let directory: string | undefined;
   let socket: WebSocket | undefined;
@@ -65,7 +65,7 @@ for (const id of workloads) {
     let serial = 0;
     const events = new EventEmitter();
     const pending = new Map<number, (reply: Reply) => void>();
-    ws.addEventListener('message', event => { const reply: Reply = JSON.parse(String(event.data)); if (reply.id !== undefined) pending.get(reply.id)?.(reply); if (reply.method) events.emit(reply.method); });
+    ws.addEventListener('message', event => { const reply: Reply = JSON.parse(String(event.data)); if (reply.id !== undefined) pending.get(reply.id)?.(reply); if (reply.method) events.emit(reply.method, reply.params); });
     ws.addEventListener('close', () => fail(Error('CDP disconnected')));
     const call = (method: string, params: object = {}) => Promise.race([failed, new Promise<NonNullable<Reply['result']>>((resolve, reject) => {
       const id = ++serial;
@@ -88,6 +88,17 @@ for (const id of workloads) {
       await until('document.querySelector("#status").textContent === "idle" || document.querySelector("#status").textContent.startsWith("working")', 10000);
     };
     await load();
+    const snapshot = async (phase: string) => {
+      if (!process.env.KOA_STRESS_HEAP) return;
+      const chunks: string[] = [];
+      const chunk = (params: { chunk: string }) => chunks.push(params.chunk);
+      events.on('HeapProfiler.addHeapSnapshotChunk', chunk);
+      try {
+        await call('HeapProfiler.takeHeapSnapshot');
+        await writeFile(join(output, `page-${id}-${phase}.heapsnapshot`), chunks.join(''));
+      } finally { events.off('HeapProfiler.addHeapSnapshotChunk', chunk); }
+    };
+    await snapshot('before');
     const started = performance.now();
     const observations: Record<string, unknown> = {};
     const prompt = (size: number) => evaluate(`fetch('/prompt',{method:'POST',body:JSON.stringify({text:'p'.repeat(${size}),mode:'prompt'})}).then(r=>r.status)`);
@@ -120,12 +131,15 @@ for (const id of workloads) {
     if (id === 3) assert.equal(await evaluate(`document.querySelector('#items').textContent.includes('bash')`), true);
     if (id === 10) assert.equal(await evaluate('window.koaMetrics.after'), 1024, 'Incomplete cursor recovery');
     await evaluate('window.koaMetrics.flush().then(()=>true)');
+    const seconds = (performance.now() - started) / 1000;
+    await snapshot('after');
+    await call('HeapProfiler.collectGarbage');
     const heap = await call('Runtime.getHeapUsage');
     const records: { samples: { frame: number }[]; caps: number; opens: number; subscribers: number }[] = (await readFile(file, 'utf8')).trim().split('\n').map(line => JSON.parse(line));
     assert.ok(records.flatMap(record => record.samples).length > 0, 'No frame samples');
     const last = records.at(-1); assert.ok(last); assert.equal(last.subscribers, 1);
     if (id === 10) { assert.ok(last.caps > 0, 'Stalled reader did not reach the output cap'); assert.ok(last.opens > 1, 'No reconnect after cap'); }
-    const summary = { target: 'page', id, name: names[id - 1], timing: 'frame', status: 'ok', seconds: (performance.now() - started) / 1000, metrics: [file], heap: heap.usedSize, observations };
+    const summary = { target: 'page', id, name: names[id - 1], timing: 'frame', status: 'ok', seconds, metrics: [file], heap: heap.usedSize, observations };
     await writeFile(join(output, `page-${id}-summary.json`), JSON.stringify(summary));
     console.log(JSON.stringify(summary));
   } catch (error) {
