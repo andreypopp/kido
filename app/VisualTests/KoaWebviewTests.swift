@@ -5,6 +5,34 @@ import XCTest
 
 extension VisualTests {
     private enum KoaScenario { case transcript, dialogs, controls, exit, feed }
+    func testKoaInterruptRestoresNativeInput() async throws {
+        let script = directory.appendingPathComponent("quit-script.jsonl")
+        try "".write(to: script, atomically: true, encoding: .utf8)
+        let fake = checkoutRoot.appendingPathComponent("share/koa/koa-fake-pi.ts").path
+        try await start(pane: "trap ':' INT; export KOA_FAKE_SCRIPT=\(SSH.quote(script.path)); \(SSH.quote(tools.prefix + "/share/ko/bin/koa")) --pi \(SSH.quote(fake)); " + rawScript)
+        let pane = try XCTUnwrap(terminal?.panes.first)
+        try await wait("koa page") { pane.webviewView != nil }
+        let web = try XCTUnwrap(pane.webviewView?.browser)
+        try await wait("koa document loaded") { web.url?.scheme == "ko" && !web.isLoading }
+        try await webviewUntil(web, "document.getElementById('prompt') !== null")
+        XCTAssertTrue((window.firstResponder as? NSView)?.isDescendant(of: web) == true, "A page in the focused pane starts with the WKWebView as first responder")
+        let accent = try XCTUnwrap(NSColor.controlAccentColor.usingColorSpace(.sRGB))
+        let expectedFocus = "rgba(\(Int(accent.redComponent * 255)),\(Int(accent.greenComponent * 255)),\(Int(accent.blueComponent * 255)),0.5)"
+        let pageFocus = try await webviewJS(web, "getComputedStyle(document.documentElement).getPropertyValue('--ko-focus').trim()")
+        XCTAssertEqual(pageFocus, String(data: try JSONSerialization.data(withJSONObject: expectedFocus, options: .fragmentsAllowed), encoding: .utf8))
+        _ = try await webviewJS(web, "(()=>{document.getElementById('prompt').blur();return true})()")
+        let unfocused = try await webviewJS(web, "(()=>{const field=document.getElementById('field');const reference=document.createElement('div');reference.style.color=getComputedStyle(document.documentElement).getPropertyValue('--ko-focus');document.body.append(reference);const result=!field.matches(':focus-within')&&getComputedStyle(field).borderTopColor!==getComputedStyle(reference).color;reference.remove();return result})()")
+        XCTAssertEqual(unfocused, "true", "The unfocused composer does not use the focus border")
+        _ = try await webviewJS(web, "(()=>{document.getElementById('prompt').focus();return true})()")
+        try XCTUnwrap(pane.koView).text(Data([3]))
+        try await wait("koa left its page") { pane.webviewView == nil }
+        XCTAssertTrue(window.firstResponder === pane, "Interrupting koa restores the terminal first responder")
+        let event = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0,
+            windowNumber: window.windowNumber, context: nil, characters: "z", charactersIgnoringModifiers: "z", isARepeat: false, keyCode: 6))
+        window.sendEvent(event)
+        try await koUntil(directory.path, "/panes/\(pane.pane)/screen", contains: "z")
+    }
+
     func testKoaWebviewComposerFocus() async throws {
         try await koaWebview(width: 980, height: 560, captures: ["focus"])
     }

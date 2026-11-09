@@ -254,7 +254,7 @@ shutdown. koa's end, in order: end the page's `/events` streams,
 responses at once), end pi's stdin, wait `KOA_PI_EXIT_MS` (5000) for pi's exit, then `SIGTERM` to
 the group through `signalPi`, then `SIGKILL` after the same wait. koa
 ends on `SIGTERM`, `SIGHUP` and `SIGINT`, and on a `quit` from the
-page. The pane's hangup rules are ko's (docs/design.md, "Window
+page. `koa --help` prints its usage and starts nothing. The pane's hangup rules are ko's (docs/design.md, "Window
 lifecycle").
 
 **pi exits by itself.** koa keeps the pane: the transcript stays, the
@@ -455,7 +455,9 @@ code, because every tone is a `color-mix` of the properties.
 "Webview panes"), so the page defines none. Return sends, Shift-Return
 inserts a newline, Option-Return queues a follow-up while the agent
 works, Escape aborts and a second Escape clears the composer, as
-NOTES.md says. Command-F is WebKit's find. The composer's one button,
+NOTES.md says. Control-D in an empty composer quits koa, as in pi and a
+shell; Control-C does nothing. The focused composer's border is
+`--ko-focus`, the pane's focus colour. Command-F is WebKit's find. The composer's one button,
 its placeholders and when its key hints show are NOTES.md, "The
 composer"; the page follows it and the plan does not repeat it. The
 composer floats over the transcript on a CSS glass (`backdrop-filter`);
@@ -464,8 +466,10 @@ the dock's height, so a page pinned to the bottom keeps its last line
 above the glass. WebKit's private `-apple-visual-effect` material is not
 used: it needs the private `useSystemAppearance` preference, and
 WebKit's snapshot does not show it, so no test could check it. The
-composer takes the focus when the page's window gets focus (the pane
-became first responder), unless a dialog or a picker is open or the
+composer takes the focus at start, on load, when pi's readiness makes it
+available and when the page's window gets focus (the pane became first responder), each only while the
+document has focus, because a focus while it has none shows no caret
+later; unless a dialog or a picker is open or the
 focus is in a control of the page (native or by its role), and after a
 send, a picker or a dialog; a printable key typed outside a field goes to
 the composer, while Space and Enter on a focused control keep their

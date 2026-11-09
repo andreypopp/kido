@@ -11,16 +11,19 @@ async function page() {
     set textContent(value: unknown) { this.text = String(value); }
     private classes = new Set<string>();
     classList = { toggle: (name: string, force = !this.classes.has(name)) => { if (force) this.classes.add(name); else this.classes.delete(name); }, remove: (name: string) => { this.classes.delete(name); }, add: (name: string) => { this.classes.add(name); }, contains: (name: string) => this.classes.has(name) };
-    append(...children: Node[]) { this.children.push(...children); }
-    prepend(...children: Node[]) { this.children.unshift(...children); }
-    before(...children: Node[]) { this.children.push(...children); }
-    remove() {}
-    replaceChildren(...children: Node[]) { this.children = children; }
+    parent?: Node;
+    inert = false;
+    contains(node: Node | undefined): boolean { return !!node && (node === this || this.contains(node.parent)); }
+    append(...children: Node[]) { children.forEach(child => { if (child instanceof Node) child.parent = this; }); this.children.push(...children); }
+    prepend(...children: Node[]) { children.forEach(child => { if (child instanceof Node) child.parent = this; }); this.children.unshift(...children); }
+    before(...children: Node[]) { this.append(...children); }
+    remove() { if (this.contains(document.activeElement)) document.activeElement = undefined; if (this.parent) this.parent.children = this.parent.children.filter(child => child !== this); this.parent = undefined; }
+    replaceChildren(...children: Node[]) { this.children.forEach(child => { if (child instanceof Node) child.parent = undefined; }); this.children = []; this.append(...children); }
     tagName = 'DIV'; isContentEditable = false; selectionStart = 0; selectionEnd = 0; hidden = true;
     oninput?: () => void;
     onkeydown?: (event: unknown) => void;
     attributes = new Map<string, string>();
-    setAttribute(name: string, value: string) { this.attributes.set(name, value); } focus() { document.activeElement = this; } setSelectionRange() {} addEventListener() {} scrollIntoView() {} getBoundingClientRect() { return { left: 0 }; }
+    setAttribute(name: string, value: string) { this.attributes.set(name, value); } focus() { for (let node: Node | undefined = this; node; node = node.parent) if (node.inert) return; document.activeElement = this; } setSelectionRange() {} addEventListener() {} scrollIntoView() {} getBoundingClientRect() { return { left: 0 }; }
     closest(selector: string) { return ['INPUT', 'TEXTAREA', 'SELECT', ...(selector.includes('button') ? ['BUTTON'] : [])].includes(this.tagName) || (this.attributes.has('role') && selector.includes(`[role=${this.attributes.get('role')}]`)) ? this : null; }
     setRangeText(text: string) { this.value = this.value.slice(0, this.selectionStart) + text + this.value.slice(this.selectionEnd); }
     dispatchEvent() { this.oninput?.(); }
@@ -33,15 +36,70 @@ async function page() {
   const listeners = new Map<string, (event: unknown) => void>();
   const windowListeners = new Map<string, (event?: unknown) => void>();
   let activeElement: Node | undefined;
-  const document = { get activeElement() { return activeElement; }, set activeElement(node: Node | undefined) { activeElement = node; }, querySelector: () => null, getElementById(id: string) { let node = elements.get(id); if (!node) { node = new Node(); elements.set(id, node); } return node; }, createElement: () => new Node(), createElementNS: () => new Node(), addEventListener(type: string, handler: (event: unknown) => void) { listeners.set(type, handler); }, querySelectorAll: () => [] };
+  const document = { hasFocus: () => true, get activeElement() { return activeElement; }, set activeElement(node: Node | undefined) { activeElement = node; }, querySelector: () => null, getElementById(id: string) { let node = elements.get(id); if (!node) { node = new Node(); elements.set(id, node); if (id === 'prompt') document.getElementById('field').append(node); } return node; }, createElement: () => new Node(), createElementNS: () => new Node(), addEventListener(type: string, handler: (event: unknown) => void) { listeners.set(type, handler); }, querySelectorAll: () => [] };
   const context = { markdown: () => () => [], document, window: { ko: {}, addEventListener(type: string, handler: (event?: unknown) => void) { windowListeners.set(type, handler); } }, innerWidth: 980, Event: class { type: string; constructor(type: string) { this.type = type; } }, console, getComputedStyle: () => ({ maxHeight: "120px" }), setInterval() {}, clearInterval() {}, setTimeout, clearTimeout, requestAnimationFrame() {}, fetch: async () => ({ ok: true, json: async () => ({}) }) };
   return { context, elements, listeners, windowListeners, run: (code: string) => runInNewContext("{\n" + source.replace(/^import .*;\n/gm, "").replace(/setInterval\(status,[\s\S]*$/, "") + "\n" + code + "\n}", context) };
 }
+
+test("Control-D quits only with an empty composer and Control-C does not quit", async () => {
+  const app = await page();
+  const requests: string[] = [];
+  app.context.fetch = async (url?: string) => { requests.push(url ?? ''); return { ok: true, json: async () => ({}) }; };
+  app.run("state={pi:{type:'ready'}};composer()");
+  const input = app.elements.get('prompt');
+  assert.ok(input);
+  const key = (key: string) => input.onkeydown?.({ key, ctrlKey: true, preventDefault() {} });
+  key('c');
+  assert.deepEqual(requests, []);
+  input.value = 'draft';
+  key('d');
+  assert.deepEqual(requests, []);
+  assert.equal(input.value, 'draft');
+  input.value = '';
+  key('d');
+  assert.deepEqual(requests, ['/quit']);
+});
 
 async function connectSource(name: string) {
   const source = await readFile(new URL(name, import.meta.url), "utf8");
   return source.slice(source.indexOf("let source, reconnect"), source.indexOf("async function older()"));
 }
+
+test("composer gains focus when delayed pi readiness removes inert", async () => {
+  const app = await page();
+  app.run("state={pi:{type:'starting'}};composer();focusComposer()");
+  app.windowListeners.get('load')?.();
+  assert.equal(app.context.document.activeElement, undefined);
+  app.run("state.pi={type:'ready'};composer()");
+  assert.equal(app.context.document.activeElement, app.elements.get('prompt'));
+});
+
+test("async send and dialog completion preserve focus while the document lacks focus", async t => {
+  for (const action of ['send', 'dialog', 'picker']) await t.test(action, async () => {
+    const app = await page();
+    app.context.document.hasFocus = () => false;
+    let release: () => void = () => {};
+    app.context.fetch = async () => { await new Promise<void>(resolve => { release = resolve; }); return { ok: true, json: async () => ({}) }; };
+    const pending = action === 'send' ? app.run("state={pi:{type:'ready'}};element('prompt').value='draft';send()") : undefined;
+    if (action === 'send') { release(); await pending; }
+    else if (action === 'dialog') app.run("dialogId='done';state.dialogs=[];dialogs()");
+    else app.run("pickerButton=element('model');closePicker()");
+    assert.equal(app.context.document.activeElement, undefined, action);
+  });
+});
+
+test("composer waits for document focus at startup and load", async () => {
+  const app = await page();
+  let focused = false;
+  app.context.document.hasFocus = () => focused;
+  app.run("state={pi:{type:'ready'}};composer();focusComposer()");
+  assert.equal(app.context.document.activeElement, undefined);
+  app.windowListeners.get('load')?.();
+  assert.equal(app.context.document.activeElement, undefined);
+  focused = true;
+  app.windowListeners.get('focus')?.();
+  assert.equal(app.context.document.activeElement, app.elements.get('prompt'));
+});
 
 test("pane focus selects the composer without taking page controls or dialog fields", async () => {
   const app = await page();

@@ -92,6 +92,10 @@ function rpc(child: ChildProcessWithoutNullStreams) {
 async function main(): Promise<void> {
   const location = pathToFileURL(process.argv[1] ?? "");
   const args = process.argv.slice(2);
+  if (args.includes("--help")) {
+    process.stdout.write("Usage: koa [options] [pi arguments]\n\nOptions:\n  --help                 Show this help\n  --browser              Open the page in a browser\n  --pi PATH              Use this pi executable\n  --metrics PATH         Write rendering metrics\n  --metrics-mode MODE    Select applied or frame metrics\n\nOther arguments go to pi.\n");
+    return;
+  }
   let browser = false;
   let metricsFile: string | undefined;
   let metricsMode: "applied" | "frame" | undefined;

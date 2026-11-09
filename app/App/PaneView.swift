@@ -91,7 +91,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
     var selectionQuote: String? { hasSelection ? readSelection() : nil }
     var onPrompt: (PaneView, String?) -> Void = { _, _ in }
     private(set) var webviewView: WebviewPaneView?
-    var inputResponder: NSResponder { if let webviewView { webviewView.browser } else { self } }
+    var inputResponder: NSResponder { if let webviewView { webviewView } else { self } }
     var webviewFocused: Bool {
         guard let webviewView, let responder = window?.firstResponder as? NSView else { return false }
         return responder.isDescendant(of: webviewView)
@@ -103,8 +103,10 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
         guard !isHiddenOrHasHiddenAncestor || webviewView != nil else { return }
         if webviewView == nil {
             endCopy()
+            unmarkText()
             find?.close()
             webviewView = WebviewPaneView(pane: self, client: client)
+            terminal.layer?.isHidden = true
             needsLayout = true
             if let chrome = copyLabel.superview { chrome.addSubview(webviewView!, positioned: .below, relativeTo: copyLabel) }
             if window?.firstResponder === self { window?.makeFirstResponder(inputResponder) }
@@ -118,6 +120,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
         find?.close()
         webviewView.close()
         self.webviewView = nil
+        terminal.layer?.isHidden = false
         needsLayout = true
         if focused { window?.makeFirstResponder(self) }
     }
@@ -1386,22 +1389,24 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
     private(set) var pasting: String?
 
     func paste(_ text: String) {
+        guard webviewView == nil else { return }
         pasting = text
         defer { pasting = nil }
         _ = ghostty_surface_binding_action(surface, "paste_from_clipboard", 20)
     }
 
     func pasteImage() -> Bool {
+        guard webviewView == nil else { return false }
         guard pasting == nil, let types = runtime.pasteboard.types, !types.contains(.fileURL), !types.contains(.string),
               let type = [NSPasteboard.PasteboardType.png, .tiff].first(where: types.contains) else { return false }
         (window?.delegate as? WindowOwner)?.uploadImage(runtime.pasteboard.data(forType: type), to: self)
         return true
     }
 
-    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation { acceptingInput && copyMode == nil ? .copy : [] }
+    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation { webviewView == nil && acceptingInput && copyMode == nil ? .copy : [] }
 
     override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
-        guard acceptingInput, copyMode == nil, let owner = window?.delegate as? WindowOwner else { return false }
+        guard webviewView == nil, acceptingInput, copyMode == nil, let owner = window?.delegate as? WindowOwner else { return false }
         let urls = sender.draggingPasteboard.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL] ?? []
         if urls.isEmpty, let promises = sender.draggingPasteboard.readObjects(forClasses: [NSFilePromiseReceiver.self]) as? [NSFilePromiseReceiver], !promises.isEmpty {
             owner.uploadPromises(promises, to: self)
@@ -2015,7 +2020,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
 
     override func selectAll(_ sender: Any?) { bindingAction("select_all") }
     @objc func copy(_ sender: Any?) { copySelectionItem(sender) }
-    @objc func paste(_ sender: Any?) { bindingAction("paste_from_clipboard") }
+    @objc func paste(_ sender: Any?) { if webviewView == nil { bindingAction("paste_from_clipboard") } }
 
     @objc func copySelectionItem(_ sender: Any?) {
         if copyMode != nil { copyMove("y") }
@@ -2195,6 +2200,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
     }
 
     override func keyDown(with event: NSEvent) {
+        guard webviewView == nil else { return }
         debug("key route code=\(event.keyCode) pane=\(pane) firstResponder=\(PaneView.owner(window?.firstResponder)?.pane.description ?? (window?.firstResponder).map { String(describing: type(of: $0)) } ?? "none")")
         #if KIDO_VISUAL
         visualKeyEvents += 1
@@ -2263,6 +2269,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
     }
 
     override func keyUp(with event: NSEvent) {
+        guard webviewView == nil else { return }
         #if KIDO_VISUAL
         visualKeyUps += 1
         #endif
@@ -2271,6 +2278,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
     }
 
     override func flagsChanged(with event: NSEvent) {
+        guard webviewView == nil else { return }
         updateContentHover(event.modifierFlags, point: convert(window?.mouseLocationOutsideOfEventStream ?? .zero, from: nil))
         let mod: ghostty_input_mods_e
         let rightMask: Int32?
@@ -2298,7 +2306,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
     // consumed Ghostty binding goes to a menu item with that shortcut first,
     // as in Ghostty's own app.
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
-        guard acceptsKeyInput, event.type == .keyDown, window?.firstResponder === self else { return false }
+        guard webviewView == nil, acceptsKeyInput, event.type == .keyDown, window?.firstResponder === self else { return false }
         let mods = event.modifierFlags.intersection([.shift, .control, .option, .command])
         let chord = event.charactersIgnoringModifiers?.lowercased()
         if mods == [.command, .shift] && chord == "c" { toggleCopyMode(nil); return true }
@@ -2376,7 +2384,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
     }
 
     override func doCommand(by selector: Selector) {
-        guard acceptsKeyInput else { return }
+        guard webviewView == nil, acceptsKeyInput else { return }
         if copyMode == nil, let last = lastPerformKeyEvent, let current = NSApp.currentEvent, last == current.timestamp {
             NSApp.sendEvent(current)
         }
@@ -2402,7 +2410,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
     func selectedRange() -> NSRange { NSRange() }
 
     func setMarkedText(_ string: Any, selectedRange: NSRange, replacementRange: NSRange) {
-        guard acceptsKeyInput, copyMode == nil else { return }
+        guard webviewView == nil, acceptsKeyInput, copyMode == nil else { return }
         snapScroll()
         switch string {
         case let v as NSAttributedString: markedText = NSMutableAttributedString(attributedString: v)
@@ -2413,7 +2421,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
     }
 
     func unmarkText() {
-        guard acceptsKeyInput, markedText.length > 0 else { return }
+        guard webviewView == nil, acceptsKeyInput, markedText.length > 0 else { return }
         markedText.mutableString.setString("")
         syncPreedit()
     }
@@ -2434,7 +2442,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
     }
 
     func insertText(_ string: Any, replacementRange: NSRange) {
-        guard acceptsKeyInput else { return }
+        guard webviewView == nil, acceptsKeyInput else { return }
         #if KIDO_VISUAL
         visualTextInputs += 1
         #endif

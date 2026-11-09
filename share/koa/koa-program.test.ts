@@ -10,6 +10,19 @@ import timers from "node:timers/promises";
 import { Readable } from "node:stream";
 import { assistant, sse } from "../pi/ko-pi-fixture.ts";
 
+test("--help prints usage without starting pi or a webview", { timeout: 5000 }, async () => {
+  const child = spawn(process.execPath, [resolve('../koa/koa.ts'), '--help', '--pi', '/does-not-exist'], { env: { PATH: '' }, stdio: 'pipe' });
+  let stdout = '', stderr = '';
+  child.stdout.on('data', bytes => { stdout += bytes; });
+  child.stderr.on('data', bytes => { stderr += bytes; });
+  const [code] = await once(child, 'close');
+  assert.equal(code, 0, stderr);
+  assert.equal(stderr, '');
+  assert.match(stdout, /Usage: koa/);
+  assert.match(stdout, /--browser/);
+  assert.match(stdout, /Other arguments go to pi/);
+});
+
 async function fixture(t: TestContext, steps: object[], env: NodeJS.ProcessEnv = {}, pi?: string, startup = true, args: string[] = [], program = resolve("../koa/koa.ts")) {
   const dir = await mkdtemp(join(tmpdir(), "koa-test-"));
   const script = join(dir, "script");

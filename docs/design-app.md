@@ -1444,8 +1444,24 @@ gets focus in and out) treat the page as the pane's input.
 every path that focuses a pane uses it. While the page has focus,
 `OwnerWindow.performKeyEquivalent` offers a Command key to the main menu
 before WebKit sees it, so Kido's menu keys win; every other key, Escape
-included, goes to the page. Copy mode is not available while the page
+included, goes to the page. A key, text or paste that the page does not
+handle comes back up the responder chain to the pane, which never sends
+it to the terminal while a page is shown, so a Control-C in a page is
+not an interrupt of its program. Copy mode is not available while the page
 has focus, and showing a page ends copy mode.
+
+While its program does not serve, the page is hidden and the web
+view's container holds the focus, because AppKit drops the first
+responder of a hidden view; the focus goes to the web view when the
+page serves and back to the terminal when the page goes, also when the
+program that entered it dies.
+
+The terminal's layer is hidden while a page is shown, so it never shows
+through the page's inset. Its surface keeps its state, its feed and its
+size, so `leave` shows current content at once. Ghostty still draws its
+frames when the content changes: pausing the renderer (its occlusion
+state) redraws asynchronously when it resumes, so the layer would show
+an old frame after `leave`.
 
 The page lies inside the pane's chrome, 1 pt from each edge and below
 the runtime stripe when the pane has one, so the focus border and the
@@ -1468,7 +1484,10 @@ selection colours, so `GhosttyRuntime.webviewColors` reads them from
 `ghostty_config_serialize`, with the foreground and background as their
 defaults. `--ko-bg` is the pane's paper (`PaneView.paperColor`), so an
 unfocused pane's page gets the same shifted paper as a terminal's
-default background; the other properties do not change with focus. The
+default background; the other properties do not change with focus.
+`--ko-focus` is the colour of the pane's focus border (`Chrome.focusStroke`,
+the system accent), so a page's focused field matches it; a change of
+the system colours applies the theme again. The
 web view's appearance, its native backing and `underPageBackgroundColor`
 follow the same paper. WebKit's own base background is off
 (`drawsBackground`, a private property set before the view is attached

@@ -73,6 +73,7 @@ final class WebviewPaneView: NSView, WKNavigationDelegate, WKUIDelegate {
         theme = themeScript()
         installScripts()
         updateTheme()
+        NotificationCenter.default.addObserver(self, selector: #selector(updateTheme), name: NSColor.systemColorsDidChangeNotification, object: nil)
         if let rules = Self.rules {
             config.userContentController.add(rules)
             ready = true
@@ -110,7 +111,7 @@ final class WebviewPaneView: NSView, WKNavigationDelegate, WKUIDelegate {
     }
     override var isFlipped: Bool { true }
     override var acceptsFirstResponder: Bool { true }
-    override func becomeFirstResponder() -> Bool { window?.makeFirstResponder(browser) == true }
+    override func becomeFirstResponder() -> Bool { serving ? window?.makeFirstResponder(browser) == true : super.becomeFirstResponder() }
     override func layout() {
         super.layout()
         browser.frame = bounds
@@ -119,10 +120,13 @@ final class WebviewPaneView: NSView, WKNavigationDelegate, WKUIDelegate {
 
     func update(path: String, serving: Bool) {
         let changed = page != path || self.serving != serving
+        let transferFocus = self.serving != serving && pane?.webviewFocused == true
         page = path
         self.serving = serving
+        if transferFocus && !serving { window?.makeFirstResponder(self) }
         unavailable.isHidden = serving
         browser.isHidden = !serving
+        if transferFocus && serving { window?.makeFirstResponder(browser) }
         if changed { load() }
     }
 
@@ -135,6 +139,7 @@ final class WebviewPaneView: NSView, WKNavigationDelegate, WKUIDelegate {
     func close() {
         guard !stopped else { return }
         stopped = true
+        NotificationCenter.default.removeObserver(self, name: NSColor.systemColorsDidChangeNotification, object: nil)
         browser.stopLoading()
         for fetch in tasks.values { fetch.transfer?.cancel() }
         tasks = [:]
@@ -287,7 +292,7 @@ final class WebviewPaneView: NSView, WKNavigationDelegate, WKUIDelegate {
         controller.addUserScript(WKUserScript(source: theme, injectionTime: .atDocumentStart, forMainFrameOnly: false, in: .page))
     }
 
-    func updateTheme() {
+    @objc func updateTheme() {
         guard let pane else { return }
         browser.appearance = NSAppearance(named: pane.runtime.background.isDark ? .darkAqua : .aqua)
         browser.underPageBackgroundColor = pane.paperColor
@@ -306,12 +311,13 @@ final class WebviewPaneView: NSView, WKNavigationDelegate, WKUIDelegate {
         let runtime = pane.runtime
         func rgb(_ color: NSColor) -> String {
             let value = color.usingColorSpace(.sRGB)!
-            return "rgb(\(Int(value.redComponent * 255)),\(Int(value.greenComponent * 255)),\(Int(value.blueComponent * 255)))"
+            let components = "\(Int(value.redComponent * 255)),\(Int(value.greenComponent * 255)),\(Int(value.blueComponent * 255))"
+            return value.alphaComponent == 1 ? "rgb(\(components))" : "rgba(\(components),\(value.alphaComponent))"
         }
         let colors = runtime.webviewColors
         let family = (runtime.values.font.family ?? GhosttyRuntime.systemFontFamily)
             .replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\"")
-        var properties = ["--ko-bg": rgb(pane.paperColor), "--ko-fg": rgb(runtime.foreground), "--ko-cursor": rgb(colors.cursor),
+        var properties = ["--ko-focus": rgb(Chrome.focusStroke), "--ko-bg": rgb(pane.paperColor), "--ko-fg": rgb(runtime.foreground), "--ko-cursor": rgb(colors.cursor),
                           "--ko-selection-bg": rgb(colors.selectionBackground), "--ko-selection-fg": rgb(colors.selectionForeground),
                           "--ko-font-family": "\"\(family)\", monospace",
                           "--ko-font-size": "\(pane.font)px", "--ko-cell-width": "\(pane.cell.width)px", "--ko-cell-height": "\(pane.cell.height)px",

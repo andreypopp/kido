@@ -1,5 +1,6 @@
 import AppKit
 import WebKit
+import GhosttyKit
 import XCTest
 import SnapshotTesting
 import KoModel
@@ -62,6 +63,65 @@ extension VisualTests {
         let cropped = try XCTUnwrap(bitmap.cgImage?.cropping(to: CGRect(x: area.minX * scale, y: area.minY * scale, width: area.width * scale, height: area.height * scale)))
         let page = try XCTUnwrap(NSBitmapImageRep(data: try XCTUnwrap(image?.tiffRepresentation))?.converting(to: .sRGB, renderingIntent: .default))
         return (try XCTUnwrap(NSBitmapImageRep(cgImage: cropped).converting(to: .sRGB, renderingIntent: .default)), page)
+    }
+
+    func testWebviewLeaveRestoresNativeInput() async throws {
+        let toy = try WebviewToy(path: directory.appendingPathComponent("webview.sock").path)
+        try await toy.start()
+        addTeardownBlock { toy.stop() }
+        let ttyFile = directory.appendingPathComponent("page-tty")
+        try await start(pane: "tty > \(SSH.quote(ttyFile.path)); tail -f /dev/null | '\(tools.ko)' webview serve --socket '\(toy.path)' & " + rawScript)
+        let pane = try XCTUnwrap(terminal?.panes.first)
+        let fill = String(repeating: String(repeating: "M", count: 160) + "\r\n", count: 60)
+        try await emit(pane, "\u{1b}[41m" + fill + "\u{1b}]7502;a=enter\u{7}")
+        try await wait("webview loaded") { pane.webviewView?.browser.isLoading == false && pane.webviewView?.browser.url != nil }
+        let web = try XCTUnwrap(pane.webviewView?.browser)
+        try await webviewUntil(web, "document.querySelector('input') !== null")
+        window.makeFirstResponder(web)
+        _ = try await webviewJS(web, "(()=>{document.querySelector('input').focus();return true})()")
+        var written = Data()
+        pane.visualInput = { written.append($0) }
+        _ = try await webviewJS(web, "(()=>{document.querySelector('input').blur();document.body.tabIndex=0;document.body.focus();return true})()")
+        for (characters, code, modifiers) in [("\u{3}", UInt16(8), NSEvent.ModifierFlags.control), ("x", UInt16(7), [])] {
+            let event = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: modifiers, timestamp: 0,
+                windowNumber: window.windowNumber, context: nil, characters: characters, charactersIgnoringModifiers: characters, isARepeat: false, keyCode: code))
+            window.sendEvent(event)
+        }
+        _ = try await webviewJS(web, "true")
+        XCTAssertEqual(written, Data(), "Keys that the page does not handle must not reach the pty")
+        pane.visualInput = nil
+        let oldSize = ghostty_surface_size(pane.surface)
+        window.setContentSize(NSSize(width: 810, height: 610))
+        try await wait("hidden terminal resized") { ghostty_surface_size(pane.surface).columns != oldSize.columns && ghostty_surface_size(pane.surface).rows != oldSize.rows }
+        let tty = try String(contentsOf: ttyFile, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines)
+        let ttySize = try await Child.run("/bin/stty", ["-f", tty, "size"])
+        let grid = ghostty_surface_size(pane.surface)
+        XCTAssertEqual(ttySize.status, 0, ttySize.err)
+        XCTAssertEqual(ttySize.out.trimmingCharacters(in: .whitespacesAndNewlines), "\(grid.rows) \(grid.columns)")
+        try await settle()
+        try await emit(pane, "LIVE-WHILE-PAGE")
+        XCTAssertTrue(surfaceText(pane).contains("LIVE-WHILE-PAGE"))
+        let bitmap = try XCTUnwrap(pane.bitmapImageRepForCachingDisplay(in: pane.bounds))
+        pane.cacheDisplay(in: pane.bounds, to: bitmap)
+        let paper = try XCTUnwrap(pane.paperColor.usingColorSpace(.sRGB))
+        for (x, y) in [(0, bitmap.pixelsHigh / 2), (bitmap.pixelsWide - 1, bitmap.pixelsHigh / 2), (bitmap.pixelsWide / 2, 0), (bitmap.pixelsWide / 2, bitmap.pixelsHigh - 1)] {
+            let pixel = try XCTUnwrap(bitmap.colorAt(x: x, y: y)?.usingColorSpace(.sRGB))
+            XCTAssertEqual(pixel.redComponent, paper.redComponent, accuracy: 0.02)
+            XCTAssertEqual(pixel.greenComponent, paper.greenComponent, accuracy: 0.02)
+            XCTAssertEqual(pixel.blueComponent, paper.blueComponent, accuracy: 0.02)
+        }
+        try await emit(pane, "\u{1b}]7502;a=leave\u{7}")
+        try await wait("webview left") { pane.webviewView == nil }
+        XCTAssertTrue(window.firstResponder === pane, "Leaving a page restores the terminal first responder")
+        try await presented()
+        let visible = try XCTUnwrap(pane.bitmapImageRepForCachingDisplay(in: pane.bounds))
+        pane.cacheDisplay(in: pane.bounds, to: visible)
+        let restored = try XCTUnwrap(visible.colorAt(x: visible.pixelsWide / 2, y: visible.pixelsHigh / 2)?.usingColorSpace(.sRGB))
+        XCTAssertGreaterThan(restored.redComponent - restored.greenComponent, 0.2, "Leaving the page shows the live terminal")
+        let event = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0,
+            windowNumber: window.windowNumber, context: nil, characters: "z", charactersIgnoringModifiers: "z", isARepeat: false, keyCode: 6))
+        window.sendEvent(event)
+        try await koUntil(directory.path, "/panes/\(pane.pane)/screen", contains: "z")
     }
 
     func testWebviewChromeEdges() async throws {

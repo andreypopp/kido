@@ -236,7 +236,9 @@ function put(item) {
 function composer() {
   const input = element('prompt'), sendButton = element('send');
   const blocked = state.pi?.type === 'starting' || !!state.dialogs?.length, working = state.working && !blocked;
+  const available = element('field').inert && !blocked;
   element('field').inert = blocked;
+  if (available) focusComposer();
   element('field').classList.toggle('blocked', blocked);
   element('field').classList.toggle('working', working);
   input.placeholder = working ? 'Steer koa…' : 'Message koa…';
@@ -290,7 +292,7 @@ function dialogs() {
   dialogId = request?.id;
   clearInterval(dialogTimer);
   host.querySelector('.dialog')?.remove();
-  if (!request) { element('prompt').focus(); return; }
+  if (!request) { focusComposer(); return; }
   const card = node('form', undefined, 'dialog'); card.tabIndex = -1;
   const head = node('div', undefined, 'head'); head.append(node('span', request.title, 'title')); card.append(head);
   if (request.message) card.append(node('div', request.message, 'msg2'));
@@ -376,7 +378,7 @@ function exited() {
   if (!state.sessionFile) card.append(node('div', 'No session file was saved. Start pi again starts a fresh session.', 'fresh'));
   card.append(actions); host.append(card); start.focus();
 }
-function closePicker() { element('picker').hidden = true; if (pickerButton) { pickerButton.classList.remove('pick'); element('prompt').focus(); } pickerButton = undefined; }
+function closePicker() { element('picker').hidden = true; const trigger = pickerButton; pickerButton = undefined; if (trigger) { trigger.classList.remove('pick'); focusComposer(); } }
 async function picker(kind) {
   if (state.pi?.type !== 'ready') return;
   const trigger = element(kind), host = element('picker');
@@ -535,16 +537,18 @@ function reportError(error) { element('error').textContent = error.message; }
 async function send(mode = 'prompt') {
   const input = element('prompt'), text = input.value; if (!text.trim() || submitting) return;
   submitting = true;
-  try { await fetchJSON('/prompt', { text, mode }); if (input.value === text) input.value = ''; composer(); input.focus(); element('error').textContent = ''; }
+  try { await fetchJSON('/prompt', { text, mode }); if (input.value === text) input.value = ''; composer(); focusComposer(); element('error').textContent = ''; }
   catch (error) { reportError(error); }
   finally { submitting = false; }
 }
 element('send').onclick = () => state.working ? stop() : send();
 element('older').onclick = older;
 element('prompt').oninput = () => { escaped = false; composer(); };
-element('prompt').onkeydown = event => { if (!event.metaKey && !event.ctrlKey && !event.isComposing && event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); void send(event.altKey ? 'follow_up' : 'prompt'); } };
+element('prompt').onkeydown = event => { if (event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey && !event.isComposing && event.key.toLowerCase() === 'd') { event.preventDefault(); if (element('prompt').value === '') void fetchJSON('/quit', {}); return; } if (!event.metaKey && !event.ctrlKey && !event.isComposing && event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); void send(event.altKey ? 'follow_up' : 'prompt'); } };
 const isControl = target => target?.isContentEditable || target?.closest('input,textarea,select,button,[role=button],[role=option],[role=listbox],[role=menuitem]');
-window.addEventListener('focus', () => { if (!state.dialogs?.length && !pickerButton && !isControl(document.activeElement)) element('prompt').focus(); });
+function focusComposer() { if (document.hasFocus() && !state.dialogs?.length && !pickerButton && (!isControl(document.activeElement) || document.activeElement === element('prompt'))) element('prompt').focus(); }
+window.addEventListener('focus', focusComposer);
+window.addEventListener('load', focusComposer);
 document.addEventListener('keydown', event => { if (event.defaultPrevented || event.metaKey || event.ctrlKey || event.isComposing || state.dialogs?.length || pickerButton) return; if (!event.altKey && event.key.length === 1 && !(event.key === ' ' && isControl(event.target)) && !event.target?.isContentEditable && !event.target?.closest('input,textarea,select')) { event.preventDefault(); const input = element('prompt'); input.focus(); input.setRangeText(event.key, input.selectionStart, input.selectionEnd, 'end'); input.dispatchEvent(new Event('input', { bubbles: true })); return; } if (event.key === 'Enter' && hasExited() && event.target === document.body) element('exited').querySelector('button')?.click(); if (event.key === 'Escape') { event.preventDefault(); if (escaped) { element('prompt').value = ''; composer(); } else { escaped = true; if (state.working) void stop(); } } });
 element('model').onclick = () => picker('model'); element('thinking').onclick = () => picker('thinking');
 document.addEventListener('pointerdown', event => { if (!element('picker').contains(event.target) && event.target !== pickerButton) closePicker(); });
@@ -555,4 +559,4 @@ new ResizeObserver(([entry]) => {
   document.body.style.setProperty('--dock-h', entry.borderBoxSize[0].blockSize + 'px');
   followBottom();
 }).observe(element('dock'));
-composer(); element('prompt').focus(); void connect();
+composer(); focusComposer(); void connect();
