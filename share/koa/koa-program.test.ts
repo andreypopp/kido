@@ -374,6 +374,14 @@ test("spawn failure is distinct from an exit code", { timeout: 10000 }, async t 
   assert.equal((await app.post("abort")).status, 409);
 });
 
+test("clean pi exit closes koa", { timeout: 10000 }, async t => {
+  const app = await fixture(t, [{ type: "wait", command: "prompt" }, { type: "exit", code: 0 }]);
+  await app.post("prompt", { text: "quit", mode: "prompt" });
+  const result = await Promise.race([app.close, timers.setTimeout(1000, "still running", { ref: false })]);
+  assert.deepEqual(result, [0, null]);
+  await assert.rejects(fetch(app.base));
+});
+
 test("pi crash keeps koa serving its transcript and exit state", { timeout: 10000 }, async t => {
   const app = await fixture(t, [{ type: "wait", command: "prompt" }, { type: "raw", text: "not json\r\n" }, { type: "stderr", text: "old1\nold2\na\nb\nc\npar" }, { type: "stderr", text: "tial\nlast\n" }, { type: "exit", code: 7 }]);
   await app.post("prompt", { text: "go", mode: "prompt" });

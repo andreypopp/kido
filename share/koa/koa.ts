@@ -151,7 +151,11 @@ async function main(): Promise<void> {
     let stderr = "";
     child.stderr.setEncoding("utf8");
     child.stderr.on("data", (text: string) => { stderr = (stderr + text).split(/\n(?=.)/s).slice(-5).join("\n"); process.stderr.write(text); });
-    background(link.exited.then(exit => {
+    background(link.exited.then(async exit => {
+      if ("exited" in exit && exit.exited === 0) {
+        await shutdown();
+        return;
+      }
       pi = { type: "exited", ...exit, at: Date.now(), stderr: stderr.trimEnd() }; state.working = false; delete state.since;
       state.dialogs = []; state.statuses = {};
       link.events(() => {});

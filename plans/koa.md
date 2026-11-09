@@ -265,7 +265,11 @@ ends on `SIGTERM`, `SIGHUP` and `SIGINT`, and on a `quit` from the
 page. `koa --help` prints its usage and starts nothing. The pane's hangup rules are ko's (docs/design.md, "Window
 lifecycle").
 
-**pi exits by itself.** koa keeps the pane: the transcript stays, the
+**pi exits by itself.** When pi exits with code 0, koa shuts down as
+on a `quit`, as a TUI pi leaves the user in the shell: a subagent's pi
+leaves when its parent goes (docs/design-subagents.md), and its koa
+must go with it so that its pane goes. When pi fails (a non-zero code
+or a signal), koa keeps the pane: the transcript stays, the
 status bar says `pi exited N` or `pi died by SIGNAL`, the composer
 shows the last 20 lines of pi's stderr, and a "Start pi again" action
 spawns pi again with the original arguments minus the session flags
