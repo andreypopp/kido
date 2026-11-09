@@ -283,7 +283,18 @@ pub enum ServeOut {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
+pub enum AbortReason {
+    Encoded { coding: String },
+    Program,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "type", rename_all = "snake_case")]
 pub enum ServeIn {
+    Abort {
+        req: u64,
+        reason: AbortReason,
+    },
     Response {
         req: u64,
         status: Status,

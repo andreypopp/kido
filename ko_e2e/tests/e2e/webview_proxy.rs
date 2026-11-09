@@ -29,6 +29,31 @@ fn serving(s: &Server) -> (String, Ws, Ws, Headers) {
 fn webview_proxy_http_auth_streaming_and_failures() {
     let s = start(&[]);
     let (pane, mut stream, _client, headers) = serving(&s);
+    let path = format!("/panes/{pane}/webview/fault");
+    let response = s.send_request("GET", &path, &headers, b"");
+    let req = stream.event("request")["req"].clone();
+    stream.event("body");
+    stream.send(&json!({"type":"abort","req":req,"reason":{"type":"encoded","coding":"gzip"}}));
+    let (status, body) = s.read_reply(response);
+    assert_eq!(status, 502);
+    assert!(String::from_utf8(body).unwrap().contains("gzip"));
+    stream.send(&json!({"type":"abort","req":req,"reason":{"type":"program"}}));
+    let mut response = s.send_request("GET", &path, &headers, b"");
+    let req = stream.event("request")["req"].clone();
+    stream.event("body");
+    stream.send(&json!({"type":"response","req":req,"status":200,"headers":[]}));
+    stream.send(&json!({"type":"body","req":req,"data":base64(b"partial"),"more":true}));
+    let mut bytes = Vec::new();
+    assert_eq!(s.read_head(&mut response, &mut bytes).status, 200);
+    stream.send(&json!({"type":"abort","req":req,"reason":{"type":"program"}}));
+    response.read_to_end(&mut bytes).unwrap();
+    assert!(!bytes.ends_with(b"0\r\n\r\n"));
+    let response = s.send_request("GET", &path, &headers, b"");
+    let req = stream.event("request")["req"].clone();
+    stream.event("body");
+    stream.send(&json!({"type":"response","req":req,"status":200,"headers":[]}));
+    stream.send(&json!({"type":"body","req":req,"data":base64(b"ok"),"more":false}));
+    assert_eq!(s.read_reply(response), (200, b"ok".to_vec()));
     let mut capable = s.ws("/client");
     capable.send(
         &json!({"type":"hello","name":"webview","webview":true,"focused":false,"sizing":{"type":"disabled"}}),
@@ -53,6 +78,7 @@ fn webview_proxy_http_auth_streaming_and_failures() {
     assert_eq!(s.exchange("GET", &path, &s.as_pane(&pane), b"").0, 409);
     let mut sent_headers = headers.clone();
     sent_headers.push(("Origin".into(), "ko://pane".into()));
+    sent_headers.push(("Accept-Encoding".into(), "gzip".into()));
     let mut response = s.send_request("POST", &path, &sent_headers, b"posted");
     let request = stream.event("request");
     assert_eq!(request["path"], "/assets/main?plain&x=a=b?c");
@@ -64,6 +90,16 @@ fn webview_proxy_http_auth_streaming_and_failures() {
             .any(|pair| pair[0].as_str().unwrap().eq_ignore_ascii_case("host"))
     );
     assert!(pairs.iter().any(|pair| pair == &json!(["Ko-Pane", pane])));
+    assert_eq!(
+        pairs
+            .iter()
+            .filter(|pair| pair[0]
+                .as_str()
+                .unwrap()
+                .eq_ignore_ascii_case("accept-encoding"))
+            .collect::<Vec<_>>(),
+        [&json!(["Accept-Encoding", "identity"])]
+    );
     assert!(pairs.iter().any(
         |pair| pair[0].as_str().unwrap().eq_ignore_ascii_case("origin") && pair[1] == "ko://pane"
     ));

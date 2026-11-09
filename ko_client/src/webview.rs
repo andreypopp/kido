@@ -12,7 +12,9 @@ use ko_server::http::{self, response};
 #[cfg(target_vendor = "apple")]
 use ko_server::ids::ClientId;
 use ko_server::protocol::Method;
-use ko_server::protocol::webview::{Data, Headers, MAX_IN_FLIGHT, ServeIn, ServeOut, Status};
+use ko_server::protocol::webview::{
+    AbortReason, Data, Headers, MAX_IN_FLIGHT, ServeIn, ServeOut, Status,
+};
 use ko_server::protocol::{self, CloseCode, CloseReason};
 use ko_sys::event::{Events, Interest, Mode, Poll, Read, Reads, Token};
 use ko_sys::fd::Queue;
@@ -174,21 +176,6 @@ impl Upstream {
         self.out.backed_up(http::MAX_BODY)
             || matches!(&self.phase,Phase::Socket {link,..} if link.backed_up())
     }
-    pub(crate) fn started(&self) -> bool {
-        match &self.phase {
-            Phase::Http { reader, .. } => reader.started(),
-            Phase::Socket { .. } => true,
-        }
-    }
-    pub(crate) fn upgrading(&self) -> bool {
-        matches!(
-            &self.phase,
-            Phase::Http {
-                upgrade: Some(_),
-                ..
-            }
-        )
-    }
     fn is_socket(&self) -> bool {
         matches!(self.phase, Phase::Socket { .. })
     }
@@ -285,7 +272,7 @@ impl Upstream {
         }
         Ok(())
     }
-    pub(crate) fn next(&mut self, poll: &mut Poll) -> io::Result<Option<Event>> {
+    pub(crate) fn next(&mut self, poll: &mut Poll) -> Result<Option<Event>, response::Error> {
         loop {
             match &mut self.phase {
                 Phase::Http {
@@ -296,23 +283,23 @@ impl Upstream {
                 } => {
                     if let Some(event) = reader.next(*eof)? {
                         return Ok(Some(match event {
+                            response::Event::Upgrade(head) => {
+                                let key = upgrade
+                                    .as_ref()
+                                    .ok_or_else(|| invalid("unexpected WebSocket upgrade"))?;
+                                ko_server::ws::accepted(&head, key)?;
+                                let link = Link::of(
+                                    stream.try_clone()?,
+                                    reader.take_rest(),
+                                    protocol::Upgrade::Page,
+                                );
+                                poll.unwatch(self.token);
+                                *self = Self::socket(poll, link)?;
+                                Event::Upgraded(response::metadata(head))
+                            }
                             response::Event::Head(head) => {
-                                if head.status == 101 {
-                                    let key = upgrade
-                                        .as_ref()
-                                        .ok_or_else(|| invalid("unexpected WebSocket upgrade"))?;
-                                    ko_server::ws::accepted(&head, key)?;
-                                    let link = Link::of(
-                                        stream.try_clone()?,
-                                        reader.take_rest(),
-                                        protocol::Upgrade::Page,
-                                    );
-                                    poll.unwatch(self.token);
-                                    *self = Self::socket(poll, link)?;
-                                    Event::Upgraded(head)
-                                } else {
-                                    Event::Response(head)
-                                }
+                                response::identity(&head)?;
+                                Event::Response(head)
                             }
                             response::Event::Body(bytes) => Event::Body(bytes),
                             response::Event::End => Event::End,
@@ -403,17 +390,21 @@ struct Request {
     upstream: Upstream,
 }
 
-fn failed(server: &mut Link, req: u64) -> io::Result<()> {
-    server.send(protocol::json(&ServeIn::Response {
-        req,
-        status: Status::try_from(502).map_err(invalid)?,
-        headers: Headers::default(),
-    }))?;
-    server.send(protocol::json(&ServeIn::Body {
-        req,
-        data: Data::empty(),
-        more: false,
-    }))
+fn failed(server: &mut Link, request: &Request, reason: AbortReason) -> io::Result<()> {
+    let req = request.req;
+    let message = match &request.upstream.phase {
+        Phase::Http { .. } => ServeIn::Abort { req, reason },
+        Phase::Socket {
+            phase: SocketPhase::Finishing(_),
+            ..
+        } => return Ok(()),
+        Phase::Socket { .. } => ServeIn::Close {
+            req,
+            code: CloseCode::INTERNAL,
+            reason: CloseReason::PROGRAM_CLOSED,
+        },
+    };
+    server.send(protocol::json(&message))
 }
 fn remove(poll: &mut Poll, requests: &mut Vec<Request>, index: usize) {
     requests.remove(index).upstream.dispose(poll);
@@ -436,18 +427,24 @@ fn command(
         ServeOut::Upgrade { req, path, headers } => (req, Kind::Upgrade, path, headers),
         ServeOut::Supported { supported: value } => return supported(value),
         ServeOut::Body { req, data, .. } => {
-            if let Some(request) = requests.iter_mut().find(|request| request.req == req) {
-                request.upstream.body(&data.into_bytes())?;
+            if let Some(at) = requests.iter().position(|request| request.req == req)
+                && requests[at].upstream.body(&data.into_bytes()).is_err()
+            {
+                failed(server, &requests[at], AbortReason::Program)?;
+                remove(poll, requests, at);
             }
             return Ok(());
         }
         ServeOut::Frame { req, data, binary } => {
-            if let Some(request) = requests.iter_mut().find(|request| request.req == req) {
+            if let Some(at) = requests.iter().position(|request| request.req == req) {
                 let bytes = data.into_bytes();
                 let message = binary
                     .into_message(bytes)
                     .map_err(|error| invalid(error.to_string()))?;
-                request.upstream.send(message)?;
+                if requests[at].upstream.send(message).is_err() {
+                    failed(server, &requests[at], AbortReason::Program)?;
+                    remove(poll, requests, at);
+                }
             }
             return Ok(());
         }
@@ -460,7 +457,10 @@ fn command(
         ServeOut::Close { req, code, reason } => {
             if let Some(at) = requests.iter().position(|request| request.req == req) {
                 if requests[at].upstream.is_socket() {
-                    requests[at].upstream.close(code, reason)?;
+                    if requests[at].upstream.close(code, reason).is_err() {
+                        failed(server, &requests[at], AbortReason::Program)?;
+                        remove(poll, requests, at);
+                    }
                 } else {
                     remove(poll, requests, at);
                 }
@@ -472,11 +472,17 @@ fn command(
         return Err(invalid("duplicate webview request"));
     }
     if requests.len() >= MAX_IN_FLIGHT {
-        return failed(server, req);
+        return server.send(protocol::json(&ServeIn::Abort {
+            req,
+            reason: AbortReason::Program,
+        }));
     }
     match Upstream::open(poll, path, kind, &target, &headers, Target::Program, b"") {
         Ok(upstream) => requests.push(Request { req, upstream }),
-        Err(_) => failed(server, req)?,
+        Err(_) => server.send(protocol::json(&ServeIn::Abort {
+            req,
+            reason: AbortReason::Program,
+        }))?,
     }
     Ok(())
 }
@@ -485,24 +491,42 @@ fn receive(poll: &mut Poll, server: &mut Link, request: &mut Request) -> io::Res
         let event = match request.upstream.next(poll) {
             Ok(Some(event)) => event,
             Ok(None) => break,
-            Err(_) if !request.upstream.started() || request.upstream.upgrading() => {
-                failed(server, request.req)?;
+            Err(error) => {
+                let reason = match error {
+                    response::Error::Encoded { coding } => AbortReason::Encoded { coding },
+                    response::Error::Io(_) => AbortReason::Program,
+                };
+                failed(server, request, reason)?;
                 return Ok(true);
             }
-            Err(error) => return Err(error),
         };
         let req = request.req;
         server.send(protocol::json(&match event {
-            Event::Response(head) | Event::Upgraded(head) => ServeIn::Response {
-                req,
-                status: Status::try_from(head.status).map_err(invalid)?,
-                headers: Headers::try_from(head.headers).map_err(invalid)?,
-            },
-            Event::Body(bytes) => ServeIn::Body {
-                req,
-                data: Data::new(bytes).map_err(invalid)?,
-                more: true,
-            },
+            Event::Response(head) | Event::Upgraded(head) => {
+                let (Ok(status), Ok(headers)) = (
+                    Status::try_from(head.status),
+                    Headers::try_from(head.headers),
+                ) else {
+                    failed(server, request, AbortReason::Program)?;
+                    return Ok(true);
+                };
+                ServeIn::Response {
+                    req,
+                    status,
+                    headers,
+                }
+            }
+            Event::Body(bytes) => {
+                let Ok(data) = Data::new(bytes) else {
+                    failed(server, request, AbortReason::Program)?;
+                    return Ok(true);
+                };
+                ServeIn::Body {
+                    req,
+                    data,
+                    more: true,
+                }
+            }
             Event::End => {
                 server.send(protocol::json(&ServeIn::Body {
                     req,
@@ -590,22 +614,10 @@ pub fn serve(
         }
         let mut at = 0;
         while at < requests.len() {
-            if let Err(error) = requests[at].upstream.flush(&mut poll) {
-                if requests[at].upstream.is_socket() {
-                    if !requests[at].upstream.reported() {
-                        server.send(protocol::json(&ServeIn::Close {
-                            req: requests[at].req,
-                            code: CloseCode::INTERNAL,
-                            reason: CloseReason::PROGRAM_CLOSED,
-                        }))?;
-                    }
-                    remove(&mut poll, &mut requests, at);
-                    continue;
+            if requests[at].upstream.flush(&mut poll).is_err() {
+                if !requests[at].upstream.reported() {
+                    failed(&mut server, &requests[at], AbortReason::Program)?;
                 }
-                if requests[at].upstream.started() {
-                    return Err(error);
-                }
-                failed(&mut server, requests[at].req)?;
                 remove(&mut poll, &mut requests, at);
                 continue;
             }
@@ -658,7 +670,7 @@ pub fn serve(
                 .is_some_and(|deadline| deadline <= now)
             {
                 if !requests[at].upstream.closing() {
-                    failed(&mut server, requests[at].req)?;
+                    failed(&mut server, &requests[at], AbortReason::Program)?;
                 }
                 remove(&mut poll, &mut requests, at);
             } else {

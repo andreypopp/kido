@@ -1461,7 +1461,22 @@ and the headers as the page sent them, with the hop-by-hop headers,
 `Host` and the identity headers (`Ko-Pane`, `Ko-Pane-Token`,
 `Ko-Client`) removed, and the server's own `Ko-Pane` added.
 `ko_server::http::forwarded` owns the rule, which `ko webview serve` and
-the client core also apply. The program answers requests in any order.
+the client core also apply; it also replaces `Accept-Encoding` with
+`identity`. The program answers requests in any order.
+
+A response head reaches the page with the hop-by-hop headers, the
+`Proxy-*` headers, the headers that its `Connection` names and
+`Content-Length` removed, because each hop sets its own framing; the
+response reader of `ko_server/src/http/response.rs` owns the rule. A
+head whose `Content-Encoding` is not `identity` is refused by the
+client core's webview reader (`ko_client/src/webview.rs`), which `ko
+webview serve` and the app's fetches share: WebKit
+does not decode a body that the app's scheme handler delivers, so the
+page would get the compressed bytes. A program that cannot finish one
+response sends `abort` with its `req` and a reason (`AbortReason`);
+before the head the page gets `502`, after it the connection closes
+with no final chunk, and the other requests continue. An `abort` or a
+`body` for a `req` that has ended is ignored.
 
 A page's WebSocket is an `upgrade`. The program accepts it with a
 `response` of status 101, and any other status is the proxy's answer.
@@ -1520,7 +1535,9 @@ for each request; an `upgrade` becomes an HTTP/1.1 WebSocket upgrade
 on its own connection, and its messages and close go both ways. Its
 stdout carries only the `supported` message, as JSON lines, when the
 stream opens and at each change, so the program learns the value with
-no stream of its own. It runs on one loop until its stdin or the
+no stream of its own. A failed or short response of the program, or a
+compressed one, ends only that request with `abort`, not the
+command. It runs on one loop until its stdin or the
 stream closes. It exits 6 without a
 pane identity, so a program learns from ko alone whether it runs in a
 pane, and 1 with the server's message when the upgrade is refused. A connection that

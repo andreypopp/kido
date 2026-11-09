@@ -52,6 +52,45 @@ extension VisualTests {
         try await snapshot(name, testName: testName)
     }
 
+    func testWebviewPendingFetchLimit() async throws {
+        let toy = try WebviewToy(path: directory.appendingPathComponent("webview.sock").path)
+        let pane = try await webviewStart(toy: toy)
+        let web = try XCTUnwrap(pane.webviewView?.browser)
+        _ = try await webviewJS(web, "(()=>{window.pendingAbort=new AbortController();window.limitResults=[];window.limitRequests=Array.from({length:71},(_,id)=>fetch('/slot/'+id,{signal:id===6?pendingAbort.signal:undefined}).then(r=>r.text()).then(v=>limitResults.push(v),e=>limitResults.push('error:'+id)));return true})()")
+        try await wait("six active requests") { toy.acceptedSlots.count == 6 }
+        try await webviewEqual(web, "Promise.race([limitRequests[70].then(()=>limitResults.includes('error:70')),new Promise(resolve=>setTimeout(()=>resolve(false),3000))])", "true")
+        _ = try await webviewJS(web, "(()=>{pendingAbort.abort();return true})()")
+        toy.releaseSlot(0)
+        try await wait("cancelled waiter skipped") { toy.acceptedSlots.count == 7 }
+        XCTAssertEqual(toy.acceptedSlots, [0, 1, 2, 3, 4, 5, 7])
+        for id in 1..<70 where id != 6 { toy.releaseSlot(id) }
+        _ = try await webviewJS(web, "Promise.all(limitRequests).then(()=>true)")
+        XCTAssertEqual(toy.acceptedSlots.sorted(), Array(0..<70).filter { $0 != 6 })
+    }
+
+    func testWebviewSocketPendingLimit() async throws {
+        let toy = try WebviewToy(path: directory.appendingPathComponent("webview.sock").path)
+        let pane = try await webviewStart(toy: toy)
+        let web = try XCTUnwrap(pane.webviewView?.browser)
+        for bytes in [0, 65536] {
+            let before = toy.messageCount
+            let result = try await webviewJS(web, """
+            new Promise(resolve=>{
+              const socket=new WebSocket('/burst');let errors=0,closes=0,release;
+              const blob=new Blob([new Uint8Array(\(bytes))]);
+              blob.arrayBuffer=()=>new Promise(done=>{release=()=>done(new ArrayBuffer(\(bytes)))});
+              socket.onerror=()=>errors++;
+              socket.onclose=e=>{closes++;release();setTimeout(()=>resolve([errors,closes,e.code,e.wasClean,socket.readyState]),0)};
+              socket.onopen=()=>{socket.send(blob);for(let i=0;i<\(bytes == 0 ? 256 : 16);i++)socket.send(new Uint8Array(\(bytes)))};
+              setTimeout(()=>resolve('timeout'),3000);
+            })
+            """)
+            XCTAssertEqual(result, "[1,1,1006,false,3]")
+            try await webviewEqual(web, "new Promise(resolve=>{const s=new WebSocket('/sibling');s.onopen=()=>s.send('alive');s.onmessage=e=>{s.close();resolve(e.data)}})", #""alive""#)
+            XCTAssertEqual(toy.messageCount, before + 1)
+        }
+    }
+
     func testWebviewFetchSlots() async throws {
         let toy = try WebviewToy(path: directory.appendingPathComponent("webview.sock").path)
         let pane = try await webviewStart(toy: toy)
@@ -70,6 +109,14 @@ extension VisualTests {
         let result = try await webviewJS(web, "Promise.all(window.slotRequests)")
         XCTAssertEqual(result, #"["0","1","2","3","4","5","6","7"]"#)
         _ = try await webviewJS(web, "window.slotStream.body.cancel().then(()=>true)")
+        let view = try XCTUnwrap(pane.webviewView)
+        let documents = view.visualDocuments
+        try await webviewEqual(web, "fetch('/encoded',{headers:{'Accept-Encoding':'gzip'}}).then(async r=>[r.status,(await r.text()).includes('gzip')])", "[502,true]")
+        XCTAssertTrue(toy.encodedRequest.lowercased().contains("accept-encoding: identity\r\n"))
+        try await webviewEqual(web, "fetch('/metadata').then(async r=>[r.headers.get('transfer-encoding'),r.headers.get('content-length'),r.headers.get('x-private'),r.headers.get('proxy-custom'),r.headers.get('x-public'),await r.text()])", #"[null,null,null,null,"kept","finite"]"#)
+        try await webviewEqual(web, "fetch('/truncated').then(r=>r.text()).then(()=>false,()=>true)", "true")
+        XCTAssertEqual(view.visualDocuments, documents)
+        try await webviewEqual(web, "window.ready", "true")
     }
 
     func testWebviewEventSourceScheme() async throws {

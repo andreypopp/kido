@@ -513,6 +513,14 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        AbortReason: {
+            coding: string;
+            /** @constant */
+            type: "encoded";
+        } | {
+            /** @constant */
+            type: "program";
+        };
         /** @description an absolute path */
         AbsPath: string;
         /** @enum {string} */
@@ -1567,6 +1575,11 @@ export interface components {
             via: components["schemas"]["Via"];
         };
         ServeIn: {
+            reason: components["schemas"]["AbortReason"];
+            req: number;
+            /** @constant */
+            type: "abort";
+        } | {
             headers: components["schemas"]["WebviewHeaders"];
             req: number;
             status: components["schemas"]["WebviewStatus"];

@@ -55,6 +55,10 @@ events and `EventSource`, not a long `fetch` body read with a
 a body until more data arrives (WebKit bug 322545). A `fetch` whose
 response ends is not affected.
 
+Kido does not decode compressed responses: requests reach your server
+with `Accept-Encoding: identity`, and a response with another
+`Content-Encoding` fails in the page (502).
+
 Kido.app shows the page in a sandbox with no network: the page reaches
 only your server, through `fetch` and `WebSocket`. Send a request body
 as a string or bytes. A `Blob` or `FormData` body reaches your server

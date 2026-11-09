@@ -709,12 +709,11 @@ unit. The order is fixed, because each unit builds on the one before.
    is gone. Finished prose keeps no copy of its text, and the stress
    report measures the physical footprint of the test app's own
    WebContent processes.
-6e. **The transport's faults.** From the review of the fetch path:
-   a bound on the fetches that wait for a slot and on the WebSocket
-   shim's pending sends; response headers without hop-by-hop fields
-   (`Transfer-Encoding` reaches WebKit with a decoded body) and a
-   defined `Content-Encoding`; a failed response aborts only its own
-   request, not the serve loop of every request.
+6e. **The transport's faults.** Done: the app bounds its waiting
+   fetches and the WebSocket shim's pending sends; response heads reach
+   the page without framing headers, and a compressed response is
+   refused (docs/protocol.md, "The serve stream"); a program's failed
+   response ends only its own request.
 7. **ko-pi's page goes.** The user decided on 2026-11-08 that koa
    replaces ko-pi's page when koa is stable: its visual tests and its
    stress runs pass, and every finding of unit 6 is fixed. Until then

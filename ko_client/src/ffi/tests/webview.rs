@@ -187,6 +187,12 @@ fn webview_fetch_streams_headers_query_body_and_client_identity() {
         welcomed(socket);wait_for_hangup(socket);
     }).raw(move |request,stream| {
         if !request.target.contains("/webview") {return false;}
+        if request.target.ends_with("/encoded") {
+            stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Encoding: gzip\r\nContent-Length: 3\r\n\r\nabc").unwrap();return true;
+        }
+        if request.target.ends_with("/bytes") {
+            stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Encoding: identity\r\nContent-Length: 4\r\n\r\n\x00\x80\xffx").unwrap();return true;
+        }
         if request.target.ends_with("/broken") {
             stream.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 20\r\n\r\nshort").unwrap();return true;
         }
@@ -195,7 +201,7 @@ fn webview_fetch_streams_headers_query_body_and_client_identity() {
         assert_eq!(header(&request.head,"X-Input"),Some("value"));
         assert_eq!(header(&request.head,"Ko-Pane"),None);
         stream.set_write_timeout(Some(WAIT)).unwrap();
-        stream.write_all(b"HTTP/1.1 201 Created\r\nContent-Type: text/html\r\nTransfer-Encoding: chunked\r\nX-Reply: yes\r\n\r\n3\r\none\r\n").unwrap();
+        stream.write_all(b"HTTP/1.1 201 Created\r\nContent-Type: text/html\r\nTransfer-Encoding: chunked\r\nConnection: X-Private\r\nX-Private: hidden\r\nProxy-Custom: hidden\r\nX-Reply: yes\r\n\r\n3\r\none\r\n").unwrap();
         locked(&gate).recv_timeout(WAIT).unwrap();
         stream.write_all(b"3\r\ntwo\r\n0\r\n\r\n").unwrap();true
     }));
@@ -251,11 +257,33 @@ fn webview_fetch_streams_headers_query_body_and_client_identity() {
             .iter()
             .any(|(name, value)| name.eq_ignore_ascii_case("x-reply") && value == "yes")
     );
+    assert!(!headers.iter().any(|(name, _)| {
+        [
+            "transfer-encoding",
+            "content-length",
+            "connection",
+            "x-private",
+            "proxy-custom",
+        ]
+        .contains(&name.as_str())
+    }));
     assert_eq!(next(&events), WebviewSeen::Body(b"one".to_vec()));
     release.send(()).unwrap();
     assert_eq!(next(&events), WebviewSeen::Body(b"two".to_vec()));
     assert_eq!(next(&events), WebviewSeen::End(Code::Ok, String::new()));
     cancel_fetch(handle);
+    let encoded = fetch(client, &probe, c"/encoded");
+    let WebviewSeen::End(code, message) = next(&events) else {
+        panic!("encoded head reached callback")
+    };
+    assert_ne!(code, Code::Ok);
+    assert!(message.contains("gzip"));
+    cancel_fetch(encoded);
+    let bytes = fetch(client, &probe, c"/bytes");
+    assert!(matches!(next(&events), WebviewSeen::Response(200, _)));
+    assert_eq!(next(&events), WebviewSeen::Body(b"\x00\x80\xffx".to_vec()));
+    assert_eq!(next(&events), WebviewSeen::End(Code::Ok, String::new()));
+    cancel_fetch(bytes);
     let broken = fetch(client, &probe, c"/broken");
     assert!(matches!(next(&events), WebviewSeen::Response(200, _)));
     assert_eq!(next(&events), WebviewSeen::Body(b"short".to_vec()));

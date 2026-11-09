@@ -257,6 +257,7 @@ pub fn forwarded(
         .iter()
         .filter(move |(name, _)| {
             !hop_by_hop(name, &tokens)
+                && !name.eq_ignore_ascii_case("accept-encoding")
                 && ![
                     crate::protocol::PANE_TOKEN_HEADER,
                     crate::protocol::CLIENT_HEADER,
@@ -269,6 +270,7 @@ pub fn forwarded(
                     || !name.eq_ignore_ascii_case(CONTENT_LENGTH_HEADER))
         })
         .map(|(name, value)| (name.as_str(), value.as_str()))
+        .chain(std::iter::once(("Accept-Encoding", "identity")))
 }
 
 fn connection_tokens(headers: &[(String, String)]) -> Vec<&str> {
@@ -285,8 +287,6 @@ fn hop_by_hop(name: &str, tokens: &[&str]) -> bool {
         "host",
         "connection",
         "keep-alive",
-        "proxy-authenticate",
-        "proxy-authorization",
         "te",
         "trailer",
         "transfer-encoding",
@@ -298,6 +298,9 @@ fn hop_by_hop(name: &str, tokens: &[&str]) -> bool {
     ]
     .iter()
     .any(|header| name.eq_ignore_ascii_case(header))
+        || name
+            .get(..6)
+            .is_some_and(|prefix| prefix.eq_ignore_ascii_case("proxy-"))
         || tokens.iter().any(|token| name.eq_ignore_ascii_case(token))
 }
 
@@ -487,7 +490,7 @@ fn read_reply(
     loop {
         while let Some(event) = reader.next(eof)? {
             match event {
-                response::Event::Head(response) if response.status == 101 => {
+                response::Event::Upgrade(response) => {
                     return Ok(Upgrade::Accepted(response, reader.take_rest()));
                 }
                 response::Event::Head(response) => head = Some(response),
@@ -563,6 +566,7 @@ mod tests {
         let headers = vec![
             ("Connection".into(), "x-local".into()),
             ("X-Local".into(), "private".into()),
+            ("aCcEpT-EnCoDiNg".into(), "gzip, br".into()),
             ("KO-pAnE".into(), "pane_9".into()),
             ("Ko-Pane-Token".into(), "secret".into()),
             ("Ko-Client".into(), "client_9".into()),
@@ -571,19 +575,24 @@ mod tests {
         ];
         assert_eq!(
             forwarded(&headers, ForwardLength::Keep, ForwardIdentity::Remove).collect::<Vec<_>>(),
-            [("Content-Length", "3"), ("X-Keep", "yes")]
+            [
+                ("Content-Length", "3"),
+                ("X-Keep", "yes"),
+                ("Accept-Encoding", "identity")
+            ]
         );
         assert_eq!(
             forwarded(&headers, ForwardLength::Replace, ForwardIdentity::Remove)
                 .collect::<Vec<_>>(),
-            [("X-Keep", "yes")]
+            [("X-Keep", "yes"), ("Accept-Encoding", "identity")]
         );
         assert_eq!(
             forwarded(&headers, ForwardLength::Keep, ForwardIdentity::Pane).collect::<Vec<_>>(),
             [
                 ("KO-pAnE", "pane_9"),
                 ("Content-Length", "3"),
-                ("X-Keep", "yes")
+                ("X-Keep", "yes"),
+                ("Accept-Encoding", "identity")
             ]
         );
     }
@@ -686,9 +695,9 @@ mod tests {
                 read(&[b"HTTP/1.1 200 OK\r\nX: ".as_slice(), &[b'a'; 70000]].concat()),
             ],
             [
-                r#"200 OK [("content-length", "2")] ok"#,
+                r#"200 OK [] ok"#,
                 r#"404 Not Found [("x", "y")] to the end"#,
-                r#"200 OK [("transfer-encoding", "ChUnKeD")] abcde"#,
+                r#"200 OK [] abcde"#,
                 "invalid HTTP chunk",
                 "unexpected end of file",
                 "invalid HTTP status",

@@ -6,7 +6,9 @@ use std::collections::VecDeque;
 use super::*;
 use crate::http::{self, Policy, Status};
 use crate::protocol::Method;
-use crate::protocol::webview::{Data, Headers, MAX_IN_FLIGHT, Page, ServeIn, ServeOut};
+use crate::protocol::webview::{
+    AbortReason, Data, Headers, MAX_IN_FLIGHT, Page, ServeIn, ServeOut,
+};
 use crate::protocol::{CloseCode, CloseReason};
 use crate::protocol::{Error, ErrorKind};
 use crate::ws::Ws;
@@ -21,6 +23,7 @@ enum Outcome {
     TooLarge,
     InvalidText,
     BadUpgrade,
+    Aborted(AbortReason),
 }
 
 fn message_req(message: &ServeOut) -> Option<u64> {
@@ -36,6 +39,17 @@ fn message_req(message: &ServeOut) -> Option<u64> {
 }
 
 impl State {
+    fn bad_gateway(&mut self, poll: &mut Poll, index: usize, message: impl Into<String>) {
+        let error = Error::new(ErrorKind::Io, message);
+        self.conns[index].out.send_reply(http::error_reply(
+            &error,
+            Status::BadGateway,
+            Policy::Webview,
+        ));
+        self.conns[index].phase = crate::conn::Phase::Head;
+        self.serve(poll, index);
+    }
+
     fn webview_event(&mut self, pane: PaneId) {
         let webview = self.panes.find(pane).and_then(|pane| pane.webview().row());
         self.broadcast(&ClientEvent::Webview { pane, webview });
@@ -283,7 +297,8 @@ impl State {
             ServeIn::Response { req, .. }
             | ServeIn::Body { req, .. }
             | ServeIn::Frame { req, .. }
-            | ServeIn::Close { req, .. } => *req,
+            | ServeIn::Close { req, .. }
+            | ServeIn::Abort { req, .. } => *req,
         };
         let Some(mut wait) = self
             .panes
@@ -297,6 +312,10 @@ impl State {
         };
         let conn = &mut self.conns[target];
         let outcome = match (message, &mut wait.phase) {
+            (
+                ServeIn::Abort { reason, .. },
+                Phase::Head | Phase::Upgrade(_) | Phase::Body { .. },
+            ) => Outcome::Aborted(reason),
             (
                 ServeIn::Response {
                     status, headers, ..
@@ -360,6 +379,19 @@ impl State {
             _ => Outcome::Invalid,
         };
         match outcome {
+            Outcome::Aborted(reason) => {
+                if matches!(wait.phase, Phase::Body { .. }) {
+                    self.conns[target].out.close();
+                } else {
+                    let message = match reason {
+                        AbortReason::Encoded { coding } => {
+                            http::response::Error::Encoded { coding }.to_string()
+                        }
+                        AbortReason::Program => "program response failed".to_owned(),
+                    };
+                    self.bad_gateway(poll, target, message);
+                }
+            }
             Outcome::Invalid => {
                 self.conns[target].out.close();
                 self.conns[index].out.close();
@@ -382,13 +414,6 @@ impl State {
                 self.webview_send(pane, ServeOut::Close { req, code, reason });
             }
             Outcome::BadUpgrade => {
-                let error = Error::new(ErrorKind::Io, "WebSocket extensions are not supported");
-                self.conns[target].out.send_reply(http::error_reply(
-                    &error,
-                    Status::BadGateway,
-                    Policy::Webview,
-                ));
-                self.conns[target].phase = crate::conn::Phase::Head;
                 self.webview_send(
                     pane,
                     ServeOut::Close {
@@ -397,7 +422,7 @@ impl State {
                         reason: CloseReason::EXTENSIONS,
                     },
                 );
-                self.serve(poll, target);
+                self.bad_gateway(poll, target, "WebSocket extensions are not supported");
             }
             Outcome::Keep => {
                 if let Some(found) = self.panes.find_mut(pane)
@@ -533,14 +558,7 @@ impl State {
             let conn = &mut self.conns[index];
             match wait.phase {
                 Phase::Head | Phase::Upgrade(_) => {
-                    let error = Error::new(ErrorKind::Io, "webview serve stream closed");
-                    conn.out.send_reply(http::error_reply(
-                        &error,
-                        Status::BadGateway,
-                        Policy::Webview,
-                    ));
-                    conn.phase = crate::conn::Phase::Head;
-                    self.serve(poll, index);
+                    self.bad_gateway(poll, index, "webview serve stream closed");
                 }
                 Phase::Body { .. } => conn.out.close(),
                 Phase::Socket => {

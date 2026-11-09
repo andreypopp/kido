@@ -9,7 +9,11 @@ final class WebviewToy: @unchecked Sendable {
     private var starting: CheckedContinuation<Void, Error>?
     private var delayed: [NWConnection] = []
     private var opened = Set<ObjectIdentifier>()
+    private var messages = 0
+    var messageCount: Int { queue.sync { messages } }
     private var stashStream: NWConnection?
+    private var encodedHead = ""
+    var encodedRequest: String { queue.sync { encodedHead } }
     func writeStash() {
         queue.sync {
             stashStream?.send(content: Self.chunk(String(repeating: "x", count: 4096)), completion: .contentProcessed { _ in })
@@ -21,15 +25,20 @@ final class WebviewToy: @unchecked Sendable {
         }
     }
     private var slots: [(id: Int, connection: NWConnection?)] = []
+    private var releasedSlots = Set<Int>()
     var acceptedSlots: [Int] { queue.sync { slots.map(\.id) } }
     var waitingSlots: Int { queue.sync { slots.filter { $0.connection != nil }.count } }
     func releaseSlot(_ id: Int) {
         queue.sync {
-            guard let index = slots.firstIndex(where: { $0.id == id }), let connection = slots[index].connection else { return }
-            slots[index].connection = nil
-            let body = Data(String(id).utf8)
-            connection.send(content: Data("HTTP/1.1 200 OK\r\nContent-Length: \(body.count)\r\nConnection: close\r\n\r\n".utf8) + body, completion: .contentProcessed { _ in connection.cancel() })
+            releasedSlots.insert(id)
+            finishSlot(id)
         }
+    }
+    private func finishSlot(_ id: Int) {
+        guard let index = slots.firstIndex(where: { $0.id == id }), let connection = slots[index].connection else { return }
+        slots[index].connection = nil
+        let body = Data(String(id).utf8)
+        connection.send(content: Data("HTTP/1.1 200 OK\r\nContent-Length: \(body.count)\r\nConnection: close\r\n\r\n".utf8) + body, completion: .contentProcessed { _ in connection.cancel() })
     }
 
     var delayedCount: Int { queue.sync { delayed.count } }
@@ -100,6 +109,20 @@ final class WebviewToy: @unchecked Sendable {
                 return
             }
             let text = String(decoding: data[..<end.upperBound], as: UTF8.self)
+            if text.hasPrefix("GET /encoded ") {
+                encodedHead = text
+                let body = Data(base64Encoded: "H4sIAAAAAAAA/0vNS85PSU1RKE7OSM1NVUjKT6kEAHcGrlsTAAAA")!
+                connection.send(content: Data("HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Encoding: gzip\r\nContent-Length: \(body.count)\r\nConnection: close\r\n\r\n".utf8) + body, completion: .contentProcessed { _ in connection.cancel() })
+                return
+            }
+            if text.hasPrefix("GET /truncated ") {
+                connection.send(content: Data("HTTP/1.1 200 OK\r\nContent-Length: 99\r\n\r\npartial".utf8), completion: .contentProcessed { _ in connection.cancel() })
+                return
+            }
+            if text.hasPrefix("GET /metadata ") {
+                connection.send(content: Data("HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nTransfer-Encoding: chunked\r\nConnection: X-Private\r\nX-Private: hidden\r\nProxy-Custom: hidden\r\nX-Public: kept\r\n\r\n6\r\nfinite\r\n0\r\n\r\n".utf8), completion: .contentProcessed { _ in connection.cancel() })
+                return
+            }
             if text.hasPrefix("GET /stash ") {
                 stashStream = connection
                 connection.send(content: Data("HTTP/1.1 200 OK\r\nContent-Type: application/octet-stream\r\nTransfer-Encoding: chunked\r\n\r\n".utf8) + Self.chunk(String(repeating: "x", count: 4096)), completion: .contentProcessed { _ in })
@@ -115,7 +138,9 @@ final class WebviewToy: @unchecked Sendable {
                 return
             }
             if let path = text.split(separator: " ").dropFirst().first, path.hasPrefix("/slot/"), let id = Int(path.dropFirst(6)) {
-                slots.append((id, connection)); return
+                slots.append((id, connection))
+                if releasedSlots.contains(id) { finishSlot(id) }
+                return
             }
             if text.hasPrefix("POST /body ") {
                 let length = text.components(separatedBy: "\r\n").first(where: { $0.lowercased().hasPrefix("content-length:") })?.split(separator: ":", maxSplits: 1).last.flatMap { Int($0.trimmingCharacters(in: .whitespaces)) } ?? 0
@@ -163,6 +188,7 @@ final class WebviewToy: @unchecked Sendable {
             let length = Int(bytes[1] & 127)
             guard length < 126, bytes[1] & 128 != 0 else { connection.cancel(); return }
             if previous.count >= length + 6 {
+                if bytes[0] & 15 != 8 { messages += 1 }
                 let payload = (0..<length).map { bytes[$0 + 6] ^ bytes[2 + $0 % 4] }
                 let response = Data([bytes[0], UInt8(length)] + payload)
                 connection.send(content: response, completion: .contentProcessed { [weak self] error in

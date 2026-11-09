@@ -1370,7 +1370,12 @@ terminal content.
 scheme handler sends each request through `ko_client_webview_fetch` and
 streams the response head, the body chunks and the end into the
 `WKURLSchemeTask`; WebKit's `stop` cancels the fetch. At most 6 fetches
-of a page are in flight; the rest wait in arrival order. A row with
+of a page are in flight and 64 wait, in arrival order; the next one
+fails with `resourceUnavailable`. WebKit does not decode a body that a
+scheme handler delivers with a `Content-Encoding`, so the core refuses
+a response whose encoding is not `identity`: through `ko webview
+serve` the page gets `502`, and from a program that speaks the serve
+stream itself the page's fetch fails. A row with
 `serving: false` shows "The program is not serving" in place of the
 page; the row is the one source of that state, so a fetch's status
 does not change it. A change of the path or of `serving` loads the page again.
@@ -1418,9 +1423,11 @@ route through `ko_client_webview_ws_open` and answers through
 `evaluateJavaScript`. Messages cross as base64. A message over 64 KiB
 closes the socket with 1009 in the shim, as the server would.
 `bufferedAmount` is the shim's unsent bytes plus the core's
-`ko_webview_ws_buffered_amount`. A send that the core refuses, because its
-queue is full, closes the socket abnormally: a gap in the messages
-would be worse. `close()` before the socket opens cancels it. A page has
+`ko_webview_ws_buffered_amount`. The shim keeps at most 1 MiB and 256
+sends that the native side has not taken yet; a send past either
+limit, or one that the core refuses because its queue is full, closes
+the socket abnormally (1006): a gap in the messages would be worse.
+`close()` sends the accepted messages first. `close()` before the socket opens cancels it. A page has
 at most 16 sockets, the server's cap for each pane. Each main-frame
 document gets a new generation. The scripts carry the next generation
 from the start of a navigation; the commit of the new document (after a

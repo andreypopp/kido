@@ -152,9 +152,16 @@ final class WebviewPaneView: NSView, WKNavigationDelegate, WKUIDelegate {
         return url.scheme == "ko" && url.host == pane.pane.description && url.port == nil && url.user == nil && url.password == nil
     }
 
+    private static let maxActiveFetches = 6
+    private static let maxPendingFetches = 64
+
     func webView(_ webView: WKWebView, start task: any WKURLSchemeTask) {
         guard !stopped, allowed(task.request.url) else {
             task.didFailWithError(URLError(.noPermissionsToReadFile))
+            return
+        }
+        guard pending.count < Self.maxPendingFetches else {
+            task.didFailWithError(URLError(.resourceUnavailable))
             return
         }
         let id = ObjectIdentifier(task)
@@ -173,7 +180,7 @@ final class WebviewPaneView: NSView, WKNavigationDelegate, WKUIDelegate {
     private func drain() {
         var active = tasks.values.filter { $0.transfer != nil }.count
         var consumed = 0
-        while active < 6, consumed < pending.count {
+        while active < Self.maxActiveFetches, consumed < pending.count {
             let id = pending[consumed]
             consumed += 1
             guard let fetch = tasks[id], let pane, let client else { continue }
@@ -313,7 +320,7 @@ final class WebviewPaneView: NSView, WKNavigationDelegate, WKUIDelegate {
         return "(()=>{const ko=\(json);window.ko=ko;const apply=()=>{for(const [k,v] of Object.entries(ko.theme))document.documentElement.style.setProperty(k,v)};if(document.documentElement)apply();else {const observer=new MutationObserver(()=>{if(document.documentElement){apply();observer.disconnect()}});observer.observe(document,{childList:true,subtree:true})}})()"
     }
 
-    private enum SocketAction: String { case open, send, close, buffer }
+    private enum SocketAction: String { case open, send, close, buffer, abort }
 
     private func dispatch(_ id: Int, generation: String, _ event: [String: Any]) {
         guard generation == self.generation, !stopped else { return }
@@ -352,7 +359,7 @@ final class WebviewPaneView: NSView, WKNavigationDelegate, WKUIDelegate {
                   let binary = data["binary"] as? Bool else { return }
             do {
                 try socket.send(body, binary: binary)
-                dispatch(id, generation: generation, ["type": "buffer", "amount": socket.bufferedAmount, "sent": body.count])
+                dispatch(id, generation: generation, ["type": "buffer", "amount": socket.bufferedAmount, "sent": body.count, "ack": true])
             } catch {
                 socket.cancel()
                 sockets.removeValue(forKey: id)
@@ -368,6 +375,8 @@ final class WebviewPaneView: NSView, WKNavigationDelegate, WKUIDelegate {
                 sockets.removeValue(forKey: id)
                 dispatch(id, generation: generation, ["type": "close", "code": 1006, "reason": "Connection failed", "clean": false])
             }
+        case .abort:
+            sockets.removeValue(forKey: id)?.cancel()
         case .buffer:
             guard let socket = sockets[id] else { return }
             dispatch(id, generation: generation, ["type": "buffer", "amount": socket.bufferedAmount, "sent": 0])
@@ -377,7 +386,7 @@ final class WebviewPaneView: NSView, WKNavigationDelegate, WKUIDelegate {
     private static let socketScript = #"""
     (()=>{
       const bridge=window.webkit.messageHandlers.koSocket, sockets=new Map();let serial=0;
-      const documentID='__KO_DOCUMENT__';
+      const documentID='__KO_DOCUMENT__',MAX_PENDING_BYTES=1048576,MAX_PENDING_SENDS=256;
       const post=(s,action,args={})=>bridge.postMessage({document:documentID,id:s._id,action,...args});
       class Socket extends EventTarget {
         static CONNECTING=0;static OPEN=1;static CLOSING=2;static CLOSED=3;
@@ -386,7 +395,7 @@ final class WebviewPaneView: NSView, WKNavigationDelegate, WKUIDelegate {
           super();const url=new URL(raw,location.href);
           if(url.protocol!=='ko:'||url.host!==location.host||url.username||url.password||url.hash)throw new DOMException('Only this pane is allowed','SecurityError');
           if(protocols.length>0)throw new DOMException('Subprotocols are not supported','SyntaxError');
-          this._id=++serial;this._url=url.href;this._state=0;this._pending=0;this._nativeBuffer=0;this._binaryType='blob';this._chain=Promise.resolve();
+          this._id=++serial;this._url=url.href;this._state=0;this._pending=0;this._nativeBuffer=0;this._binaryType='blob';this._queue=[];this._pendingSends=0;this._draining=false;this._closing=null;
           sockets.set(this._id,this);post(this,'open',{url:url.href});
         }
         get url(){return this._url}get readyState(){return this._state}get protocol(){return ''}get extensions(){return ''}
@@ -397,17 +406,33 @@ final class WebviewPaneView: NSView, WKNavigationDelegate, WKUIDelegate {
           const binary=value instanceof Blob||value instanceof ArrayBuffer||ArrayBuffer.isView(value);let bytes;
           if(typeof value==='string')bytes=new TextEncoder().encode(value);
           else if(value instanceof Blob)bytes=value;
-          else if(value instanceof ArrayBuffer)bytes=new Uint8Array(value.slice(0));
-          else if(ArrayBuffer.isView(value))bytes=new Uint8Array(value.buffer.slice(value.byteOffset,value.byteOffset+value.byteLength));
+          else if(value instanceof ArrayBuffer)bytes=new Uint8Array(value);
+          else if(ArrayBuffer.isView(value))bytes=new Uint8Array(value.buffer,value.byteOffset,value.byteLength);
           else bytes=new TextEncoder().encode(String(value));
           const size=bytes instanceof Blob?bytes.size:bytes.byteLength;
-          if(size>65536){this._state=2;post(this,'close',{code:1009,reason:'Message too large'});return}this._pending+=size;
-          this._chain=this._chain.then(async()=>{if(bytes instanceof Blob)bytes=new Uint8Array(await bytes.arrayBuffer());let text='';for(let offset=0;offset<bytes.length;offset+=8192)text+=String.fromCharCode(...bytes.subarray(offset,offset+8192));post(this,'send',{data:btoa(text),binary})});
+          if(size>65536){this._state=2;this._closing={code:1009,reason:'Message too large'};this._drain();return}
+          if(this._pending+size>MAX_PENDING_BYTES||this._pendingSends>=MAX_PENDING_SENDS){this._abort();return}
+          this._pending+=size;this._pendingSends++;this._queue.push({bytes:binary&&!(bytes instanceof Blob)?bytes.slice():bytes,binary});this._drain();
         }
         close(code=1000,reason=''){
           reason=String(reason);if(code!==1000&&(code<3000||code>4999))throw new DOMException('Invalid close code','InvalidAccessError');
           if(new TextEncoder().encode(reason).length>123)throw new DOMException('Reason too long','SyntaxError');
-          if(this._state>=2)return;this._state=2;this._chain=this._chain.then(()=>post(this,'close',{code,reason}));
+          if(this._state>=2)return;this._state=2;this._closing={code,reason};this._drain();
+        }
+        _finish(code,reason,clean){if(this._state===3)return;this._state=3;this._queue=[];this._pending=0;this._pendingSends=0;this._nativeBuffer=0;sockets.delete(this._id);if(!clean)this._emit(new Event('error'));this._emit(new CloseEvent('close',{code,reason,wasClean:clean}))}
+        _abort(){if(this._state===3)return;post(this,'abort');this._finish(1006,'Send queue full',false)}
+        async _drain(){
+          if(this._draining)return;this._draining=true;
+          try{
+            while(this._queue.length&&this._state!==3){
+              let {bytes,binary}=this._queue.shift();
+              if(bytes instanceof Blob)bytes=new Uint8Array(await bytes.arrayBuffer());
+              if(this._state===3)return;
+              let text='';for(let offset=0;offset<bytes.length;offset+=8192)text+=String.fromCharCode(...bytes.subarray(offset,offset+8192));
+              post(this,'send',{data:btoa(text),binary});
+            }
+            if(this._state===2&&this._closing){post(this,'close',this._closing);this._closing=null}
+          }catch{this._abort()}finally{this._draining=false}
         }
         _emit(event){this.dispatchEvent(event);const handler=this['on'+event.type];if(typeof handler==='function')handler.call(this,event)}
       }
@@ -415,9 +440,9 @@ final class WebviewPaneView: NSView, WKNavigationDelegate, WKUIDelegate {
       window.__koSocketEvent=(generation,id,e)=>{if(generation!==documentID)return;const s=sockets.get(id);if(!s)return;
         if(e.type==='open'){if(s._state===0){s._state=1;s._emit(new Event('open'))}}
         else if(e.type==='message'){const bytes=Uint8Array.from(atob(e.data),c=>c.charCodeAt(0));const data=e.binary?(s.binaryType==='blob'?new Blob([bytes]):bytes.buffer):new TextDecoder().decode(bytes);s._emit(new MessageEvent('message',{data,origin:location.origin}))}
-        else if(e.type==='buffer'){s._pending=Math.max(0,s._pending-e.sent);s._nativeBuffer=e.amount}
+        else if(e.type==='buffer'){if(e.ack)s._pendingSends=Math.max(0,s._pendingSends-1);s._pending=Math.max(0,s._pending-e.sent);s._nativeBuffer=e.amount}
         else if(e.type==='error')s._emit(new Event('error'));
-        else if(e.type==='close'){s._state=3;if(!e.clean)s._emit(new Event('error'));s._emit(new CloseEvent('close',{code:e.code,reason:e.reason,wasClean:e.clean}));sockets.delete(id)}
+        else if(e.type==='close')s._finish(e.code,e.reason,e.clean);
       };window.WebSocket=Socket;
     })();
     """#

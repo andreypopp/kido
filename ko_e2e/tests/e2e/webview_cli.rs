@@ -59,18 +59,91 @@ fn read_head(stream: &mut UnixStream) -> Vec<u8> {
 fn webview_cli_streams_irregular_chunks_without_a_later_write() {
     let s = start(&[]);
     let socket = s.scratch.join("events.sock");
+    let output = s.scratch.join("faults-supported.jsonl");
     let listener = UnixListener::bind(&socket).unwrap();
     let pane = s.token_pane(&format!(
-        "{} webview enter; exec {} webview serve --socket {}",
+        "{} webview enter; exec {} webview serve --socket {} > {}",
         quote(text_of(&ko())),
         quote(text_of(&ko())),
-        quote(text_of(&socket))
+        quote(text_of(&socket)),
+        quote(text_of(&output))
     ));
     s.wait_row(&pane, "webview bridge", |row| {
         row["webview"]["serving"] == true
     });
     let (_client, welcome) = s.client(None);
     let headers = s.client_headers(welcome["client"].as_str().unwrap());
+    for (status, framing) in [
+        (200, "Content-Length: 99\r\n\r\npartial"),
+        (200, "Transfer-Encoding: chunked\r\n\r\n7\r\npartial\r\n"),
+        (600, "Content-Length: 0\r\n\r\n"),
+    ] {
+        let mut broken = s.send_request(
+            "GET",
+            &format!("/panes/{pane}/webview/broken"),
+            &headers,
+            b"",
+        );
+        let mut program = accept(&listener);
+        let head = read_head(&mut program);
+        assert!(
+            String::from_utf8(head)
+                .unwrap()
+                .to_lowercase()
+                .contains("accept-encoding: identity\r\n")
+        );
+        let sibling = s.send_request(
+            "GET",
+            &format!("/panes/{pane}/webview/sibling"),
+            &headers,
+            b"",
+        );
+        let mut healthy = accept(&listener);
+        read_head(&mut healthy);
+        write!(program, "HTTP/1.1 {status} Response\r\n{framing}").unwrap();
+        let mut bytes = Vec::new();
+        assert_eq!(
+            s.read_head(&mut broken, &mut bytes).status,
+            if status == 600 { 502 } else { 200 }
+        );
+        drop(program);
+        if status == 200 {
+            broken.read_to_end(&mut bytes).unwrap();
+            assert!(!bytes.ends_with(b"0\r\n\r\n"));
+        }
+        healthy
+            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok")
+            .unwrap();
+        assert_eq!(s.read_reply(sibling), (200, b"ok".to_vec()));
+        let later = s.send_request(
+            "GET",
+            &format!("/panes/{pane}/webview/later"),
+            &headers,
+            b"",
+        );
+        let mut healthy = accept(&listener);
+        read_head(&mut healthy);
+        healthy
+            .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nlater")
+            .unwrap();
+        assert_eq!(s.read_reply(later), (200, b"later".to_vec()));
+        let before = std::fs::read_to_string(&output).unwrap();
+        let mut capable = s.ws("/client");
+        capable.send(&json!({"type":"hello","name":"fault-test","webview":true,"focused":false,"sizing":{"type":"disabled"}}));
+        capable.welcome();
+        poll("supported survives request fault", || {
+            std::fs::read_to_string(&output).unwrap()
+                == format!("{before}{{\"type\":\"supported\",\"supported\":true}}\n")
+        });
+        drop(capable);
+        poll("unsupported survives request fault", || {
+            std::fs::read_to_string(&output).unwrap()
+                == format!(
+                    "{before}{{\"type\":\"supported\",\"supported\":true}}\n{{\"type\":\"supported\",\"supported\":false}}\n"
+                )
+        });
+        assert_eq!(s.row(&pane)["webview"]["serving"], true);
+    }
     let mut response = s.send_request(
         "GET",
         &format!("/panes/{pane}/webview/events"),

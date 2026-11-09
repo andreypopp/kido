@@ -152,6 +152,19 @@ fn webview_ffi_uses_the_real_proxy_and_cancels_the_program_request() {
     assert_eq!(next(&events), WebviewSeen::Body(b"two".to_vec()));
     assert_eq!(next(&events), WebviewSeen::End(Code::Ok, String::new()));
     cancel_fetch(handle);
+    let encoded = fetch(client, &probe, c"/encoded");
+    let req = event(&mut program, "request")["req"].clone();
+    send(&mut program, &serde_json::json!({"type":"response","req":req,"status":200,"headers":[["content-encoding","gzip"]]}).to_string());
+    send(
+        &mut program,
+        &serde_json::json!({"type":"body","req":req,"data":"YWJj","more":false}).to_string(),
+    );
+    let WebviewSeen::End(code, message) = next(&events) else {
+        panic!("encoded head reached callback")
+    };
+    assert_ne!(code, Code::Ok);
+    assert!(message.contains("gzip"));
+    cancel_fetch(encoded);
     let handle = fetch(client, &probe, c"/events");
     let req = event(&mut program, "request")["req"].clone();
     send(

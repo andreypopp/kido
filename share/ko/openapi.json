@@ -1,6 +1,38 @@
 {
   "components": {
     "schemas": {
+      "AbortReason": {
+        "oneOf": [
+          {
+            "properties": {
+              "coding": {
+                "type": "string"
+              },
+              "type": {
+                "const": "encoded",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "coding"
+            ],
+            "type": "object"
+          },
+          {
+            "properties": {
+              "type": {
+                "const": "program",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          }
+        ]
+      },
       "AbsPath": {
         "description": "an absolute path",
         "pattern": "^/",
@@ -3891,6 +3923,27 @@
       },
       "ServeIn": {
         "oneOf": [
+          {
+            "properties": {
+              "reason": {
+                "$ref": "#/components/schemas/AbortReason"
+              },
+              "req": {
+                "minimum": 0,
+                "type": "integer"
+              },
+              "type": {
+                "const": "abort",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "req",
+              "reason"
+            ],
+            "type": "object"
+          },
           {
             "properties": {
               "headers": {

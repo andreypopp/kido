@@ -16,10 +16,76 @@ enum Phase {
 }
 
 #[derive(Debug)]
+pub enum Error {
+    Io(io::Error),
+    Encoded { coding: String },
+}
+
+impl std::fmt::Display for Error {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Io(error) => error.fmt(f),
+            Self::Encoded { coding } => write!(f, "unsupported HTTP content encoding: {coding}"),
+        }
+    }
+}
+
+impl From<io::Error> for Error {
+    fn from(error: io::Error) -> Self {
+        Self::Io(error)
+    }
+}
+
+impl From<Error> for io::Error {
+    fn from(error: Error) -> Self {
+        match error {
+            Error::Io(error) => error,
+            error @ Error::Encoded { .. } => {
+                io::Error::new(io::ErrorKind::InvalidData, error.to_string())
+            }
+        }
+    }
+}
+
+#[derive(Debug)]
 pub enum Event {
+    Upgrade(Response),
     Head(Response),
     Body(Vec<u8>),
     End,
+}
+
+pub fn identity(head: &Response) -> Result<(), Error> {
+    for (_, coding) in head
+        .headers
+        .iter()
+        .filter(|(name, _)| name.eq_ignore_ascii_case("content-encoding"))
+    {
+        if !coding
+            .split(',')
+            .all(|token| token.trim().eq_ignore_ascii_case("identity"))
+        {
+            return Err(Error::Encoded {
+                coding: coding.clone(),
+            });
+        }
+    }
+    Ok(())
+}
+
+pub fn metadata(mut head: Response) -> Response {
+    let tokens = super::connection_tokens(&head.headers);
+    let keep: Vec<_> = head
+        .headers
+        .iter()
+        .map(|(name, _)| {
+            !super::hop_by_hop(name, &tokens)
+                && !name.eq_ignore_ascii_case(super::CONTENT_LENGTH_HEADER)
+        })
+        .collect();
+    let mut keep = keep.into_iter();
+    head.headers.retain(|_| keep.next().unwrap_or(false));
+    head
 }
 
 #[derive(Debug)]
@@ -114,7 +180,10 @@ impl Reader {
                     } else {
                         Phase::UntilClose
                     };
-                    return Ok(Some(Event::Head(head)));
+                    if head.status == 101 {
+                        return Ok(Some(Event::Upgrade(head)));
+                    }
+                    return Ok(Some(Event::Head(metadata(head))));
                 }
                 Phase::Length(0) => self.phase = Phase::End,
                 Phase::Length(left) | Phase::ChunkData(left) => {
@@ -211,6 +280,71 @@ mod tests {
     use super::*;
 
     #[test]
+    fn metadata_has_no_framing_or_connection_fields() {
+        for framing in [
+            "Content-Length: 3\r\n",
+            "Transfer-Encoding: chunked\r\n",
+            "",
+        ] {
+            let mut reader = Reader::default();
+            reader.push(format!("HTTP/1.1 200 OK\r\n{framing}Connection: X-Private\r\nX-Private: secret\r\nProxy-Custom: secret\r\nContent-Security-Policy: default-src 'none'\r\nContent-Encoding: identity\r\n\r\n").as_bytes());
+            let Some(Event::Head(head)) = reader.next(false).unwrap() else {
+                panic!()
+            };
+            assert_eq!(
+                head.headers,
+                [
+                    (
+                        "content-security-policy".into(),
+                        "default-src 'none'".into()
+                    ),
+                    ("content-encoding".into(), "identity".into())
+                ]
+            );
+        }
+        for status in [204, 304] {
+            let mut reader = Reader::default();
+            reader
+                .push(format!("HTTP/1.1 {status} Empty\r\nContent-Length: 123\r\n\r\n").as_bytes());
+            let Some(Event::Head(head)) = reader.next(false).unwrap() else {
+                panic!()
+            };
+            assert_eq!(head.headers, []);
+            assert!(matches!(reader.next(false).unwrap(), Some(Event::End)));
+        }
+    }
+
+    #[test]
+    fn identity_delivery_refuses_encoded_responses() {
+        let mut reader = Reader::default();
+        reader.push(b"HTTP/1.1 200 OK\r\nContent-Encoding: gzip\r\nContent-Length: 3\r\n\r\nabc");
+        let Some(Event::Head(head)) = reader.next(false).unwrap() else {
+            panic!("missing encoded head")
+        };
+        assert_eq!(
+            identity(&head).unwrap_err().to_string(),
+            "unsupported HTTP content encoding: gzip"
+        );
+        assert!(matches!(reader.next(false).unwrap(), Some(Event::Body(bytes)) if bytes == b"abc"));
+        for (fields, accepted) in [
+            ("", true),
+            ("Content-Encoding: Identity, identity\r\n", true),
+            (
+                "Content-Encoding: identity\r\nContent-Encoding: Br\r\n",
+                false,
+            ),
+            ("Content-Encoding: identity, deflate\r\n", false),
+        ] {
+            let mut reader = Reader::default();
+            reader.push(format!("HTTP/1.1 200 OK\r\n{fields}Content-Length: 0\r\n\r\n").as_bytes());
+            let Some(Event::Head(head)) = reader.next(false).unwrap() else {
+                panic!("missing head")
+            };
+            assert_eq!(identity(&head).is_ok(), accepted);
+        }
+    }
+
+    #[test]
     fn every_cut_preserves_the_head_body_and_end() {
         for input in [
             b"HTTP/1.1 200 OK\r\nContent-Length: 7\r\n\r\nabcdefg".as_slice(),
@@ -227,6 +361,7 @@ mod tests {
                     while let Some(event) = reader.next(eof).unwrap() {
                         match event {
                             Event::Head(head) => statuses.push(head.status),
+                            Event::Upgrade(_) => panic!("unexpected upgrade"),
                             Event::Body(bytes) => body.extend_from_slice(&bytes),
                             Event::End => ends = ends.saturating_add(1),
                         }

@@ -145,7 +145,10 @@ impl Open {
         if ready.read && !self.task.backed_up() {
             self.upstream.begin_turn();
             while !self.task.backed_up() {
-                let event = self.upstream.next(poll).map_err(|error| failure(&error))?;
+                let event = self
+                    .upstream
+                    .next(poll)
+                    .map_err(|error| failure(&error.into()))?;
                 self.task.progress(self.upstream.written());
                 let Some(event) = event else {
                     break;
