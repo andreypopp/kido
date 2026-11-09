@@ -219,6 +219,38 @@ import KoModel
         XCTAssertEqual(opened, [second, first])
     }
 
+    func testCommandClickUsesTheFractionallyScrolledCell() async throws {
+        let (pane, host) = try makePane(windowed: true)
+        defer { pane.dispose(); host?.close() }
+        var opened: [String] = []
+        pane.onURL = { opened.append($0) }
+        let first = "https://example.com/first", second = "https://example.com/second"
+        XCTAssertTrue(pane.feed(Data(("\u{1b}[H\u{1b}]8;;\(first)\u{1b}\\A\u{1b}]8;;\u{1b}\\\r\n" +
+            "\u{1b}]8;;\(second)\u{1b}\\B\u{1b}]8;;\u{1b}\\").utf8)))
+        var bar = ghostty_surface_scrollbar_s()
+        XCTAssertTrue(ghostty_surface_scrollbar(pane.surface, &bar))
+        let size = ghostty_surface_size(pane.surface)
+        var delta: Int64 = 0
+        XCTAssertTrue(ghostty_surface_scroll_to_row_pixel_if_revision(pane.surface, bar.offset, Float(size.cell_height_px) / 2, bar.row_space_revision, &bar, &delta))
+        await presentedFrame(pane, attempts: 5)
+        let plain = try XCTUnwrap(pane.renderedPixels)
+        ghostty_surface_mouse_pos(pane.surface, pane.cell.width / 2, pane.cell.height * 1.25, GHOSTTY_MODS_SUPER)
+        await presentedFrame(pane, attempts: 5)
+        let highlighted = try XCTUnwrap(pane.renderedPixels)
+        let image = try XCTUnwrap(pane.renderedImage)
+        let changedRows = Set(plain.indices.filter { plain[$0] != highlighted[$0] }.map { $0 / (image.width * 4) })
+        XCTAssertFalse(changedRows.isEmpty, "Command-hover must draw a link underline")
+        let underlineBand = Int(Double(size.cell_height_px) * 1.15)..<Int(Double(size.cell_height_px) * 1.5)
+        XCTAssertTrue(changedRows.allSatisfy { underlineBand.contains($0) }, "Only the visible second row's underline band must change: \(changedRows.sorted())")
+        ghostty_surface_mouse_pos(pane.surface, pane.cell.width / 2, pane.cell.height * 0.75, GHOSTTY_MODS_SUPER)
+        await presentedFrame(pane, attempts: 5)
+        XCTAssertEqual(pane.renderedPixels, highlighted, "Both points cover the same drawn link row")
+        _ = ghostty_surface_mouse_button(pane.surface, GHOSTTY_MOUSE_PRESS, GHOSTTY_MOUSE_LEFT, GHOSTTY_MODS_SUPER)
+        _ = ghostty_surface_mouse_button(pane.surface, GHOSTTY_MOUSE_RELEASE, GHOSTTY_MOUSE_LEFT, GHOSTTY_MODS_SUPER)
+        try await wait("the command-clicked link") { !opened.isEmpty }
+        XCTAssertEqual(opened, [second])
+    }
+
     func testImagePreviewKeepsItsFileWhenThePaneGoes() async throws {
         let owner = WindowOwner(host: .local, runtime: runtime, start: false)
         let pane = try XCTUnwrap(PaneView(runtime: runtime, pane: PaneID(number: 0), font: 13) { _ in })
