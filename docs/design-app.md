@@ -1503,16 +1503,18 @@ user scripts and runs one `evaluateJavaScript` that sets the properties
 again and dispatches `ko-theme` on `window`. `--ko-font-family` is a CSS
 font list: the quoted family name, then `monospace`.
 
-**Hidden pages.** A pane that hides keeps its web view. `SessionView`
-keeps the order in which pages hid, for the whole native window, and
-releases the oldest beyond `app.webview.keep_hidden`; 0 releases a page when
-its pane hides. A released page loads again when its pane shows. A pane
-that leaves its slot to another pane, as a parent agent's pane does to
-its child's, is not hidden: its view goes with its page, whatever
-`keep_hidden` says, and its page loads again when it comes back. The
-pane that takes the slot gets its page in the same layout pass that adds
-it, so no frame shows its terminal; until WebKit paints, the page shows
-the pane's paper.
+**Hidden pages.** A pane that hides keeps its web view. A pane that
+leaves its slot to another pane, as a parent agent's pane does to its
+child's, also hides: `WindowView` keeps one view for each pane of its
+window, and a slot only selects which one shows. `SessionView` keeps
+the order in which pages hid, for the whole native window, and releases
+the oldest beyond `app.webview.keep_hidden`; 0 releases a page when its
+pane hides. A pane that comes back with its page shows that live page
+in the same layout pass, so a switch shows no frame of paper. A
+released page loads again when its pane shows; the pane that takes a
+slot gets its page in the same layout pass that adds it, so no frame
+shows its terminal, and until WebKit paints, the page shows the pane's
+paper.
 
 ## Threads
 

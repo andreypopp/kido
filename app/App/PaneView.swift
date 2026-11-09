@@ -106,7 +106,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
             unmarkText()
             find?.close()
             webviewView = WebviewPaneView(pane: self, client: client)
-            terminal.layer?.isHidden = true
+            terminal.isHidden = true
             needsLayout = true
             if let chrome = copyLabel.superview { chrome.addSubview(webviewView!, positioned: .below, relativeTo: copyLabel) }
             if window?.firstResponder === self { window?.makeFirstResponder(inputResponder) }
@@ -120,7 +120,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
         find?.close()
         webviewView.close()
         self.webviewView = nil
-        terminal.layer?.isHidden = false
+        terminal.isHidden = false
         needsLayout = true
         if focused { window?.makeFirstResponder(self) }
     }

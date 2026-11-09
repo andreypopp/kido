@@ -304,13 +304,23 @@ extension VisualTests {
     }
 
     func testWebviewChildSlotFrames() async throws {
+        try await webviewChildSlotFrames(keepHidden: 4)
+    }
+
+    func testWebviewChildSlotReleasedFrames() async throws {
+        try await webviewChildSlotFrames(keepHidden: 0)
+    }
+
+    private func webviewChildSlotFrames(keepHidden: Int) async throws {
+        let config = directory.appendingPathComponent("slot.yaml")
+        try "app: {webview: {keep_hidden: \(keepHidden)}}\n".write(to: config, atomically: true, encoding: .utf8)
         let toy = try WebviewToy(path: directory.appendingPathComponent("slot.sock").path)
         try await toy.start()
         addTeardownBlock { toy.stop() }
         func command(_ color: String) -> String {
             "printf '\\033[41m'; i=0; while [ $i -lt 60 ]; do printf 'TERMINAL-BEHIND-PAGE %080d\\r\\n' 0; i=$((i+1)); done; '\(tools.ko)' webview enter --path '/?solid=\(color)'; exec '\(tools.ko)' webview serve --socket '\(toy.path)'"
         }
-        try await start(pane: command("126a42"))
+        try await start(configFile: config.path, pane: command("126a42"))
         let owner = WindowOwner(host: .local, runtime: runtime, start: false)
         owner.testServerDir = directory.path
         addTeardownBlock { @MainActor in owner.close() }
@@ -321,6 +331,8 @@ extension VisualTests {
         }
         let session = try XCTUnwrap(owner.testSession)
         let parent = try XCTUnwrap(session.activePane?.pane)
+        let parentWeb = try XCTUnwrap(session.activePane?.webviewView?.browser)
+        weak var parentView = session.activePane
         let slot = try XCTUnwrap(session.windows.values.first { !$0.isHidden })
         let request = directory.appendingPathComponent("child.json")
         try JSONSerialization.data(withJSONObject: [
@@ -341,7 +353,7 @@ extension VisualTests {
             let paper = try XCTUnwrap(pane.paperColor.usingColorSpace(.sRGB))
             let bytes: [CGFloat] = pane.pane == parent ? [18, 106, 66] : [35, 75, 145]
             let page = bytes.map { $0 / 255 }
-            let allowed = [[paper.redComponent, paper.greenComponent, paper.blueComponent], page]
+            let allowed = pane.pane == parent && keepHidden > 0 ? [page] : [[paper.redComponent, paper.greenComponent, paper.blueComponent], page]
             let captured = NSImage(size: view.bounds.size)
             captured.addRepresentation(image)
             let attachment = XCTAttachment(image: captured)
@@ -358,6 +370,9 @@ extension VisualTests {
                     }
                 }
             }
+            if pane.pane == parent {
+                XCTAssertEqual(pane.webviewView?.browser === parentWeb, keepHidden > 0, "return must obey the hidden page budget")
+            }
             XCTAssertTrue(pane.visualTerminalHidden, "slot frame \(captures) exposes the terminal layer for \(pane.pane)")
             captures += 1
         }
@@ -365,10 +380,16 @@ extension VisualTests {
             do { try capture(view) } catch { XCTFail("slot capture: \(error)") }
         }
         defer { session.visualReconciled = { _ in } }
+        weak var childView: PaneView?
         for target in [child, parent] {
             try owner.testClient?.select(KO_SELECT_PANE, target)
             try await wait("slot switches to \(target)") { session.activePane?.pane == target }
+            if target == child && keepHidden == 0 {
+                try await wait("released displaced pane leaves hierarchy") { parentView?.superview == nil }
+                try await wait("released displaced pane deallocates") { parentView == nil }
+            }
             let pane = try XCTUnwrap(session.activePane)
+            if target == child { childView = pane }
             try await wait("slot page loaded") { pane.webviewView?.browser.isLoading == false && pane.webviewView?.browser.url != nil }
             let web = try XCTUnwrap(pane.webviewView?.browser)
             let color = target == parent ? "rgb(18, 106, 66)" : "rgb(35, 75, 145)"
@@ -380,6 +401,12 @@ extension VisualTests {
             }
         }
         XCTAssertGreaterThanOrEqual(captures, 8)
+        if keepHidden > 0 {
+            XCTAssertNotNil(childView)
+            try await ko(["api", "-X", "DELETE", "/panes/\(child)"], dir: directory.path)
+            try await wait("removed displaced pane leaves hierarchy") { childView?.superview == nil }
+            try await wait("removed displaced pane deallocates") { childView == nil }
+        }
     }
 
     func testWebviewReloadMenu() async throws {

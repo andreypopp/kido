@@ -29,6 +29,7 @@ final class SessionView: NSView {
                 else { pane.updateWebview(webview(pane.pane)) }
             }
             hiddenWebview.removeAll { release.contains($0) }
+            for view in Array(windows.values) + Array(others.values) { view.releaseUnusedPanes() }
         }
     }
     var edit: (KoSchema.Edit, LayoutEditor.Key?) -> Void = { _, _ in }
@@ -208,7 +209,7 @@ final class SessionView: NSView {
     func retryImages() { panes.forEach { $0.retryImages() } }
 
     private var panes: [PaneView] {
-        (windows.values.flatMap(\.panes) + others.values.flatMap(\.panes)).sorted { $0.pane.number < $1.pane.number }
+        (windows.values.flatMap(\.allPanes) + others.values.flatMap(\.allPanes)).sorted { $0.pane.number < $1.pane.number }
     }
 
     private func forEachPane(_ body: (PaneView) -> Void) { panes.forEach(body) }

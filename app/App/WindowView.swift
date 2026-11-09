@@ -35,6 +35,20 @@ final class WindowView: NSView {
         let chrome: PaneChrome
     }
     private var slots: [PaneID: Slot] = [:]
+    private var paneViews: [PaneID: Slot] = [:]
+    var allPanes: [PaneView] { paneViews.values.map(\.view) }
+
+    func releaseUnusedPanes() {
+        let shown = Set(panes.map(\.pane))
+        for (id, slot) in paneViews where !shown.contains(id) && slot.view.webviewView == nil {
+            slot.view.chromeViews.forEach { $0.removeFromSuperview() }
+            slot.chrome.removeFromSuperview()
+            slot.view.scroller.removeFromSuperview()
+            slot.view.dispose()
+            slot.view.removeFromSuperview()
+            paneViews.removeValue(forKey: id)
+        }
+    }
     private var shownPanes: [PaneID: ShownPane] = [:]
     var activeSlot: PaneID? {
         shown?.layout.root.panes.first { $0.id == active || shownPanes[$0.id]?.shown.position.pane == active }?.id
@@ -185,7 +199,8 @@ final class WindowView: NSView {
 
     func evict() {
         endDrag()
-        slots.values.forEach { $0.view.dispose() }
+        paneViews.values.forEach { $0.view.dispose() }
+        paneViews = [:]
         toolbar?.removeFromSuperview()
         toolbar = nil
         dividers = []
@@ -224,7 +239,7 @@ final class WindowView: NSView {
         guard !isHidden else { return }
         if !needsReconcile { place(); return }
         let layoutPanes = shown.layout.root.panes
-        let existing = Dictionary(uniqueKeysWithValues: slots.values.map { ($0.view.pane, $0.view) })
+        let existing = paneViews.mapValues(\.view)
         var views: [PaneID: PaneView] = [:]
         for pane in layoutPanes {
             let actual = shownPanes[pane.id]?.shown.position.pane ?? pane.id
@@ -234,9 +249,9 @@ final class WindowView: NSView {
         let removed = existing.values.filter { !actual.contains($0.pane) }
         if !removed.isEmpty { toolbar?.removeFromSuperview(); toolbar = nil }
         for gone in removed {
-            gone.chromeViews.forEach { $0.removeFromSuperview() }
+            gone.isHidden = true
             gone.scroller.removeFromSuperview()
-            gone.dispose()
+            paneViews[gone.pane]?.chrome.isHidden = true
         }
         let cell = session?.cell ?? views.values.lazy.map(\.cell).first { $0.width > 0 && $0.height > 0 } ?? .zero
         guard cell.width > 0, cell.height > 0 else { return }
@@ -253,8 +268,11 @@ final class WindowView: NSView {
             guard let view = views[pane.id] else { continue }
             let g = (seen[pane.id] ?? pane).geometry
             view.isHidden = seen[pane.id] == nil
-            let chrome = slots[pane.id]?.chrome ?? PaneChrome(pane: pane.id, runtime: runtime)
-            nextSlots[pane.id] = Slot(view: view, chrome: chrome)
+            let chrome = paneViews[view.pane].flatMap { $0.chrome.pane == pane.id ? $0.chrome : nil }
+                ?? PaneChrome(pane: pane.id, runtime: runtime)
+            let slot = Slot(view: view, chrome: chrome)
+            nextSlots[pane.id] = slot
+            paneViews[view.pane] = slot
             chrome.select = view.onSelect
             chrome.hover = { [weak self] chrome, point in self?.hover(chrome, point) }
             let isFloating = (seen[pane.id] ?? pane).layer != .tiled
@@ -292,7 +310,8 @@ final class WindowView: NSView {
         }
         preview.frame = bounds
         preview.autoresizingMask = [.width, .height]
-        subviews = dividers + tiled + floating.sorted { $0.z < $1.z }.flatMap(\.views) + [preview]
+        let hidden = paneViews.values.filter { !actual.contains($0.view.pane) }.flatMap { [$0.view, $0.chrome] as [NSView] }
+        subviews = hidden + dividers + tiled + floating.sorted { $0.z < $1.z }.flatMap(\.views) + [preview]
         slots = nextSlots
         for view in views.values where existing[view.pane] == nil {
             view.updateWebview(session?.webview(view.pane))
