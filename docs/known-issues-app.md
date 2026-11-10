@@ -115,12 +115,16 @@ Gesture logic is exercised, but hit testing and real delivery can fail
 for users without a stress failure. An on-screen event harness is medium-to-large
 work; a manual smoke test is small. Status: untested.
 
-## App checks do not run in CI
+## Visual tests do not run in CI
 
-`.github/workflows/ci.yml` builds and tests the CLI, not Kido.app.
-Swift, embedding and visual regressions can merge without automated app checks
-and need not heal. Add a macOS app job after resolving dependency cost
-(medium infrastructure work). Status: untested in CI.
+The `app` job of `.github/workflows/ci.yml` builds Kido.app and runs
+`make test` and `make ko-test`, but not `make visual`: its references depend
+on the display and the backing scale
+([Visual references depend on the machine](#visual-references-depend-on-the-machine)).
+The job also has no localhost sshd, so the ssh cases of
+`KoTests/RemoteTests.swift` skip. A visual regression can merge when the
+unit's `scripts/checks.sh` did not select the suite that shows it. Pin a
+runner and record its references (medium). Status: untested in CI.
 
 ## Live sidebar-resize frames are not tested
 

@@ -45,6 +45,10 @@ for name in ${STAGES:-build build-linux lint unit e2e ts verus}; do
     e2e) stage e2e make e2e E2E="${E2E:-}" ;;
     lint) stage lint make lint ;;
     lint-rs) stage lint-rs make lint-rs ;;
+    lint-sh) stage lint-sh ./scripts/lint.sh ;;
+    app) stage app make -C app test ;;
+    ko-test) stage ko-test make -C app ko-test ;;
+    visual) stage visual make -C app visual ONLY="${VISUAL_ONLY:-}" ;;
     ts) stage ts ./scripts/test-ts.sh ;;
     verus) stage verus verus ;;
     *) echo "Unknown stage: $name" >&2; status=1 ;;

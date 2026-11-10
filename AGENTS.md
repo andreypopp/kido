@@ -789,7 +789,8 @@ maps the coordinator's modules.
     .pi/extensions/     no-git-writes, the spawned agent's bash-tool guard
     .pi/tests/          no-git-writes.test.ts, the guard's suite, which
                         scripts/test-ts.sh runs with the ko-pi suite
-    scripts/            verify.sh, scrubbed verification; release.sh, the
+    scripts/            verify.sh, scrubbed verification; checks.sh, the
+                        checks of a unit's changed paths; release.sh, the
                         Homebrew tap release; lint.sh, code hygiene, signal
                         calls, doc references, schemas and prompt snapshots;
                         test-ts.sh; dump-prompts.ts, every prompt text pi
@@ -1003,7 +1004,8 @@ models of `ko_pane_wire::ring::model` show it on the Rust code:
 
 ## Tests
 
-    make verify  the one verification, in this order: a scrubbed make build, make build-linux check-static (build-linux), fmt, clippy and scripts/lint.sh (lint; lint-rs is the stage without lint.sh), ko's cargo tests (unit), ko's e2e (e2e), the TypeScript suite (ts), and make verus
+    make checks  the checks of the paths that a unit changed (scripts/checks.sh); DRY=1 prints the plan
+    make verify  the full verification, in this order: a scrubbed make build, make build-linux check-static (build-linux), fmt, clippy and scripts/lint.sh (lint; lint-rs is the stage without lint.sh), ko's cargo tests (unit), ko's e2e (e2e), the TypeScript suite (ts), and make verus
     make verus   cargo verus verify on ko_pane_wire and ko_server with the pinned Verus release, downloaded once into build/verus/
     make build  the installed layout under build/ko/; the default goal
     make build-linux  the static Linux ko under build/ko/share/ko/linux/<arch>/ (LINUX_ARCHS, default the host's); check-static checks it
@@ -1030,7 +1032,10 @@ models of `ko_pane_wire::ring::model` show it on the Rust code:
 
 `make verify STAGES=e2e` selects stages. `E2E=client_` limits
 the e2e stage to the tests whose names contain the text (a cargo test
-filter). Every selected stage runs even after a failure and prints
+filter). The stages `lint-sh` (`scripts/lint.sh` only), `app` (the
+app's `make test`), `ko-test` and `visual` (the app's `make visual`,
+limited by `VISUAL_ONLY`) are not in the default list; `scripts/checks.sh`
+selects them. Every selected stage runs even after a failure and prints
 PASS/FAIL/SKIP with its time. `scripts/verify.sh` scrubs the
 environment: it unsets `KO_STATE_DIR`, `KO_PANE`, `KO_SOCKET`,
 `KO_PANE_TOKEN` and every `KO_AGENT_*`, and removes installed
@@ -1044,11 +1049,16 @@ manual and never in verify: `share/koa/stress/run.sh` (headless
 Chrome) and `make -C app koa-stress` (off-screen Kido); no window
 shows on the screen.
 
-**Which verification.** `make verify` is the one command for ko,
-`share/` and `scripts/`. A change that touches `app/` or the shared
-`third_party/ghostty` pin also runs the app's `make test` in `app/`,
-plus `make visual` for a visible change. Agents run `make fuzz` only
-when the user asks. Long fuzz runs occur only in CI and never in
+**Which verification.** Agents verify a unit with `scripts/checks.sh`
+(`make checks`; `DRY=1` prints only the plan, `BASE=ref` sets the base).
+It reads the paths that the unit changed (`git diff --name-only` against
+the merge-base with the upstream branch or `origin/main`, and the
+untracked files), finds the checks of each path in the one table of the
+script, prints the plan and runs the checks through `scripts/verify.sh`.
+A path that the table does not name selects every check. Full `make
+verify` runs on CI. A release, a move of the Ghostty pin and a rebase
+with resolved conflicts also run full `make verify` and the app's full
+`make visual`. Agents run `make fuzz` only when the user asks. Long fuzz runs occur only in CI and never in
 verify.
 
 CI (`.github/workflows/ci.yml`) runs on Ubuntu and macOS on every
@@ -1056,8 +1066,9 @@ push and PR: one `make verify` with the default stages, under
 `KO_VERUS_REQUIRED=1`, `KO_E2E_HOST_SSH=1` and `E2E_THREADS=16`, then the installed
 layout check (`make install PREFIX=$HOME/ko-install`, `ko version`
 from it, and the `ko` shim executable under its `share/ko/bin`).
-It does not build Kido.app
-(docs/known-issues-app.md, "App checks do not run in CI").
+Its `app` job builds Kido.app and runs the app's `make test` and `make
+ko-test` (docs/design-app.md, "Testing"), not `make visual`
+(docs/known-issues-app.md, "Visual tests do not run in CI").
 `scripts/main-watch.sh` watches main and reports each observed head's
 CI. `/gh-watch` starts it through streamed `async_bash`.
 
@@ -1436,12 +1447,10 @@ delegates as its brief says and does not write code.
   the app's `make visual-fast` while you iterate. Run only the
   specific tests that you add or change. After the last edit, and
   after the review findings are applied and the last docs edit, run
-  the verification once ("Which verification" under "Tests": `make
-  verify` for ko, `share/` and `scripts/`; the app's `make test`, plus
-  `make visual` for a visible change, for `app/` or the Ghostty pin).
-  It controls environment scrubbing. Use `E2E=name` to limit the e2e
-  stage to the changed behaviour. Do not also run the top-level `make
-  test` or `make e2e`. Report PASS/FAIL/SKIP as printed. An unrelated
+  `scripts/checks.sh` once ("Which verification" under "Tests"). It
+  tests only what the unit touched and controls environment
+  scrubbing. Do not also run the top-level `make test`, `make e2e` or
+  `make verify`. Report PASS/FAIL/SKIP as printed. An unrelated
   failure gets one run of that test alone, not a suite rerun. If a
   failure is in a file you do not own, report it. Do not fix it.
 - **A flake has a time box of 5 minutes.** When a test fails only

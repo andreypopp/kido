@@ -2811,6 +2811,16 @@ poster.
 
 ## Testing
 
+CI's `app` job runs on GitHub's `xcode-27` image (macOS 27 and Xcode 27,
+the toolchain of local development). It installs Homebrew's `rustup`,
+because the ko_client build phase runs make with a system PATH and the
+Makefile finds cargo only there, `xcodegen`, and the Metal toolchain, which
+Ghostty's build needs and Xcode downloads separately,
+restores GhosttyKit from a cache keyed by the pin and
+`app/scripts/build-ghosttykit.sh`, and runs `make test` and `make ko-test`.
+`make visual` runs only locally (docs/known-issues-app.md, "Visual tests do
+not run in CI").
+
 `app/Packages/PromptMarkdown/Package.resolved` pins only that package's graph,
 for `swift test`. The project's graph, with SnapshotTesting and its
 dependencies, has its own lock:
@@ -3067,7 +3077,9 @@ fast. A name whose class or test does not exist in `app/VisualTests/*.swift`
 stops the target before `xcodebuild` runs.
 
 An implementer runs `make test` and `make visual-fast` while it works. Before
-the manager reports, the manager runs `make visual-slow` or `make visual`. An
+the manager reports, the manager runs `scripts/checks.sh`, which runs
+`make visual` with `ONLY=` for the suites that the unit touched, or in full
+when the paths do not map to suites (AGENTS.md, "Which verification"). An
 implementer works on a slow test only when the manager reports that it fails.
 
 A new test is fast by default: it is not in `slow.txt`. Write it to take less

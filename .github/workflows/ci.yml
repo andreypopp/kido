@@ -192,3 +192,105 @@ jobs:
       - name: Install
         timeout-minutes: 10
         run: make install PREFIX=$HOME/ko-install && $HOME/ko-install/bin/ko version && test -x $HOME/ko-install/share/ko/bin/ko
+
+  # Visual snapshots depend on the display and backing scale, so they stay local.
+  app:
+    runs-on: xcode-27
+    timeout-minutes: 60
+    steps:
+      - name: Checkout
+        timeout-minutes: 5
+        uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - name: Resolve zig key
+        timeout-minutes: 1
+        id: zig
+        run: echo "key=$(./scripts/install-zig.sh --print-key)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache zig
+        timeout-minutes: 5
+        id: zig-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/zig
+          key: zig-${{ runner.os }}-${{ runner.arch }}-${{ steps.zig.outputs.key }}
+
+      - name: Install zig
+        if: steps.zig-cache.outputs.cache-hit != 'true'
+        timeout-minutes: 5
+        run: ./scripts/install-zig.sh "$HOME/zig"
+
+      - name: Put zig on PATH
+        timeout-minutes: 1
+        run: echo "$HOME/zig" >> "$GITHUB_PATH"
+
+      # The app's scrubbed build phase finds cargo through Homebrew's rustup directory.
+      - name: Install the Rust toolchain
+        timeout-minutes: 5
+        run: |
+          brew install rustup
+          "$(brew --prefix rustup)/bin/rustup" toolchain install
+
+      - name: Cache crates
+        timeout-minutes: 5
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: cargo-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('Cargo.lock') }}
+
+      - name: Resolve ghostty pin
+        timeout-minutes: 1
+        id: ghostty
+        run: echo "pin=$(git ls-files -s third_party/ghostty | cut -d' ' -f2)" >> "$GITHUB_OUTPUT"
+
+      - name: Cache libghostty-vt
+        timeout-minutes: 5
+        uses: actions/cache@v4
+        with:
+          path: target/zig-cache
+          key: zig-cache-${{ runner.os }}-${{ runner.arch }}-${{ steps.ghostty.outputs.pin }}-${{ steps.zig.outputs.key }}
+
+      - name: Download crates
+        timeout-minutes: 5
+        run: cargo fetch --locked
+
+      - name: Set up node
+        uses: actions/setup-node@v4
+        timeout-minutes: 5
+        with:
+          node-version: '24'
+
+      - name: Install XcodeGen
+        timeout-minutes: 5
+        run: brew install xcodegen
+
+      - name: Install Metal toolchain
+        timeout-minutes: 15
+        run: xcrun -f metal >/dev/null 2>&1 || xcodebuild -downloadComponent MetalToolchain
+
+      - name: Cache GhosttyKit
+        timeout-minutes: 5
+        uses: actions/cache@v4
+        with:
+          path: app/build/ghosttykit
+          key: ghosttykit-${{ runner.os }}-${{ runner.arch }}-${{ steps.ghostty.outputs.pin }}-${{ hashFiles('app/scripts/build-ghosttykit.sh') }}-${{ steps.zig.outputs.key }}
+
+      - name: Build GhosttyKit
+        timeout-minutes: 30
+        run: app/scripts/build-ghosttykit.sh
+
+      - name: Build ko
+        timeout-minutes: 15
+        run: make build
+
+      - name: Test app
+        timeout-minutes: 15
+        run: make -C app test
+
+      - name: Test ko integration
+        timeout-minutes: 15
+        run: make -C app ko-test

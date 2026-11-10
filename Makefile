@@ -2,8 +2,8 @@ PREFIX ?= $(HOME)/.local
 E2E_THREADS ?= 64
 
 # Homebrew's rustup is keg-only, so cargo is not on PATH; every cargo
-# command runs through a target of this file. CI runners have neither
-# directory and use their own rustup from PATH.
+# command runs through a target of this file. CI's test job has neither
+# directory and uses the runner's rustup from PATH.
 RUSTUP_BIN := $(firstword $(wildcard $(HOMEBREW_PREFIX)/opt/rustup/bin /opt/homebrew/opt/rustup/bin /usr/local/opt/rustup/bin))
 export PATH := $(if $(RUSTUP_BIN),$(RUSTUP_BIN):)$(PATH)
 # make 3.81 (macOS) execs a recipe line without shell syntax through its
@@ -16,7 +16,7 @@ export KO_VT := $(word 2,$(shell git ls-files -s third_party/ghostty))
 # The Linux architectures that build-linux, check-static and install handle: the host's alone by
 # default; make build-linux LINUX_ARCHS="aarch64 x86_64" builds both.
 LINUX_ARCHS ?= $(patsubst arm64,aarch64,$(shell uname -m))
-.PHONY: build build-linux check-static build-fake-ko ko-client-xcframework build-bench test cargo fmt lint-rs lint probe bindgen fuzz miri nightly-has nightly-cargo verus e2e verify install ci-like preview-pi unpreview-pi release prompts schemas api-docs website
+.PHONY: build build-linux check-static build-fake-ko ko-client-xcframework build-bench test cargo fmt lint-rs lint probe bindgen fuzz miri nightly-has nightly-cargo verus e2e verify checks install ci-like preview-pi unpreview-pi release prompts schemas api-docs website
 
 # The installed layout is build/ko: bin/ko, bin/ko-pane and share/ko. rm -f first:
 # macOS kills (Killed: 9) a process whose executable was overwritten in place.
@@ -42,7 +42,10 @@ api-docs:
 	@echo build/ko-api.html
 
 verify:
-	STAGES='$(STAGES)' E2E='$(E2E)' bash scripts/verify.sh
+	STAGES='$(STAGES)' E2E='$(E2E)' VISUAL_ONLY='$(VISUAL_ONLY)' bash scripts/verify.sh
+
+checks:
+	bash scripts/checks.sh $(if $(filter 1,$(DRY)),--dry-run) $(BASE)
 
 # verifies the crates of scripts/verus.sh with the pinned Verus release, which it
 # downloads into build/verus/<release> once. Only this target needs Verus.
