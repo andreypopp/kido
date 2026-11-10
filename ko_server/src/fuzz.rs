@@ -96,8 +96,8 @@ fn settle(pieces: &[&[u8]]) -> Parsed {
 
 fn same_head(a: &Parsed, b: &Parsed, len: usize) -> bool {
     match (a, b) {
-        (Parsed::Complete { .. } | Parsed::Partial, _)
-        | (_, Parsed::Complete { .. } | Parsed::Partial) => a == b,
+        (Parsed::Complete { .. }, _) | (_, Parsed::Complete { .. }) => a == b,
+        (Parsed::BadLine, Parsed::Partial) | (Parsed::Partial, Parsed::BadLine) => true,
         _ => len >= MAX_HEAD || a == b,
     }
 }
@@ -171,13 +171,12 @@ fn summary<T: Debug>(result: io::Result<T>) -> String {
 }
 
 fn upgraded(mut source: impl Read) -> String {
-    summary(read_upgrade(&mut source).and_then(|upgrade| {
-        let (response, mut rest) = match upgrade {
-            Upgrade::Accepted(response, rest) => (response, rest),
-            Upgrade::Refused(response) => (response, Vec::new()),
-        };
-        source.read_to_end(&mut rest)?;
-        Ok((response, rest))
+    summary(read_upgrade(&mut source).and_then(|upgrade| match upgrade {
+        Upgrade::Accepted(response, mut rest) => {
+            source.read_to_end(&mut rest)?;
+            Ok(Upgrade::Accepted(response, rest))
+        }
+        Upgrade::Refused(response) => Ok(Upgrade::Refused(response)),
     }))
 }
 
@@ -571,6 +570,7 @@ thread_local! {
 fn with_rig<T>(f: impl FnOnce(&mut Rig) -> T) -> T {
     RIG.with_borrow_mut(|slot| {
         f(slot.get_or_insert_with(|| {
+            ko_sys::signal::ignore(ko_sys::signal::Signal::Pipe).unwrap();
             let exe = std::env::var_os("KO_PANE_EXE")
                 .expect("KO_PANE_EXE names ko-pane; fuzz.sh and make test set it");
             let dir = PathBuf::from(format!("/tmp/ko-fuzz-http-{}", std::process::id()));
@@ -654,6 +654,32 @@ mod tests {
                 next: 0
             })
         );
+    }
+
+    #[test]
+    fn head_finding_0() {
+        head(b"\x01\x0d\x0a\x0d\x0a\x00\x00\x00\x61\x61\x61\x61\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x27\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x0a");
+    }
+
+    #[test]
+    fn head_finding_1() {
+        head(b"\x02\xcb\x2f\x0a\x0d\x0a\x2d\x45\x6e\x74\x72\x61\x6e\x73\x66\x65\x72\x2d\x65\x6e\x63\x6f\x64\x69\x00\x0b");
+    }
+
+    #[test]
+    fn client_finding_0() {
+        client(b"\xff\xff\xff\xff\x03\x20\x60\xa0\x48\x54\x54\x50\x2f\x31\x2e\x31\x20\x32\x30\x30\x20\x4f\x4b\x0d\x0a\x54\x72\x61\x6e\x73\x66\x65\x72\x2d\x45\x6e\x63\x6f\x64\x69\x6e\x67\x3a\x20\x63\x68\x75\x6e\x6b\x65\x64\x0d\x0a\x0d\x0a\x0d\x0a\x33\x0d\x0a\x71\x62\x63\x0d\x0a\x32\x3b\x05\x00\xfe\xff\xff\xff\x00\x00\x00\x00\x00\x01\x00\x00\x00\x00\x0a\x7e\x0d\x0d\x30\x0a\x0a");
+    }
+
+    #[test]
+    fn client_finding_1() {
+        client(b"\x02\x40\x80\x48\x54\x54\x50\x2f\x31\x2e\x31\x20\x32\x30\x30\x20\x4f\x4b\x31\x2e\x31\x20\x32\x30\x30\x20\x4f\x4b\x0d\x0a\x43\x6f\x6e\x74\x65\x6e\x74\x2d\x4c\x65\x6e\x67\x74\x68\x3a\x31\x20\x0d\x0a\x0d\x0a\x43\x6f\x6e\x6e\x65\x63\x74\x69\x6f\x6e\x3a\x20\x6b\x65\x65\x70\x2d\x61\x6c\x69\x76\x65\x0d\x0a\x0d\x0a\x68\x65\x6c\x6c\x6f\x20\x77\x6f\x72\x30\x0d\x0a\x43\x6f\x6e\x74\x65\x6e\x74\x2d\x4c\x65\x6e\x67\x74\x68\x3a\x20\x0d\x0a\x63\x6e\x43\x6e\x6f\x0a\x65\x0d\x74\x69\x6f\x6e\x3a\x20\x6b\x65\x65\x70\x2d\x61\x6c\x69\x76\x65\x0d\x0a\x0d\x0a\x68\x65\x6c\x6c\x6f\x20\x77\x6f\x72\x30\x0d\x0a\x0d\x0a\x6c\x64");
+    }
+
+    #[test]
+    fn refused_upgrade_does_not_compare_read_ahead() {
+        let response = b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\nextra";
+        same_reads(response, &[response.len() - 5]);
     }
 
     #[test]

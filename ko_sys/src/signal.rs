@@ -97,9 +97,13 @@ fn set_handler(signal: Signal, handler: libc::sighandler_t) -> io::Result<()> {
     action.sa_flags = libc::SA_RESTART;
     // SAFETY: sa_mask is a valid sigset_t.
     unsafe { libc::sigemptyset(&mut action.sa_mask) };
-    // SAFETY: action is initialized, and the handler only stores a flag and writes the pipe.
+    // SAFETY: action is initialized; handler is SIG_DFL, SIG_IGN, or to_pipe.
     check(unsafe { libc::sigaction(signal.number(), &action, std::ptr::null_mut()) })?;
     Ok(())
+}
+
+pub fn ignore(signal: Signal) -> io::Result<()> {
+    set_handler(signal, libc::SIG_IGN)
 }
 
 impl Signals {

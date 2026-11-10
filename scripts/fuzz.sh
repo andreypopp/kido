@@ -48,10 +48,14 @@ max_len=$(sed -n 's/^max_len *= *//p' "fuzz/$target.options" 2>/dev/null)
 options+=("-max_len=${max_len:-1024}" -rss_limit_mb=4000 -timeout=10 -artifact_prefix="$PWD/target/fuzz-artifacts/$target-")
 # ASan on macOS keeps what libghostty-vt frees, so a libFuzzer process grows by about
 # 100 KiB per input; restart it every 24000 inputs, which stays under the RSS limit.
+# control grows by about 190 KiB per input under ASan on macOS and Linux, and stays
+# flat without ASan, so it restarts every 8000 inputs.
+runs=24000
+[[ $target == control ]] && runs=8000
 end=$((SECONDS + seconds))
 total=0
 while ((SECONDS < end)); do
-  boxed fuzz.sh $((end - SECONDS + 30)) "$binary" -runs=24000 -max_total_time=$((end - SECONDS)) "${options[@]}" "$corpus" >"$scratch/log" 2>&1
+  boxed fuzz.sh $((end - SECONDS + 30)) "$binary" -runs=$runs -max_total_time=$((end - SECONDS)) "${options[@]}" "$corpus" >"$scratch/log" 2>&1
   status=$?
   if ((status != 0)); then
     cat "$scratch/log"

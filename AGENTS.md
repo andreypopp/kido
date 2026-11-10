@@ -1183,6 +1183,9 @@ scratch directory, and the script kills and removes both on every
 exit. A finding is in `target/fuzz-artifacts/`.
 A libFuzzer run restarts every 24000 inputs, because ASan on macOS
 keeps libghostty-vt's freed memory, about 100 KiB per input.
+`control` restarts every 8000 inputs: under ASan it grows by about
+190 KiB per input on macOS and Linux, and without ASan its memory
+stays flat, so the growth is not a leak.
 A bug that a fuzzer finds gets a regression test with that case:
 the explicit input or operation list, not a seed.
 The corpora are files named by SHA-1. Only `make fuzz MERGE=1`

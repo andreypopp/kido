@@ -223,6 +223,12 @@ struct Clock {
     kills: Option<usize>,
 }
 
+impl Clock {
+    fn due(&self) -> Instant {
+        self.first_due + self.period.unwrap_or_default() * u32::try_from(self.fired).unwrap()
+    }
+}
+
 fn channel(poll: &mut Poll, socket: bool) -> io::Result<Channel> {
     let (a, b) = if socket {
         let (a, b) = UnixStream::pair()?;
@@ -314,8 +320,7 @@ impl Run {
         let now = Instant::now();
         let clock = &self.clocks[index];
         assert!(clock.active, "timer {index} fired while cancelled");
-        let due = clock.first_due
-            + clock.period.unwrap_or_default() * u32::try_from(clock.fired).unwrap();
+        let due = clock.due();
         assert!(now >= due, "timer {index} fired {:?} early", due - now);
         if clock.period.is_none() {
             assert!(
@@ -397,6 +402,14 @@ impl Run {
     }
 
     fn step(&mut self, mode: Mode) {
+        self.step_with_turn(mode, |poll, mode, events| poll.turn(mode, events));
+    }
+
+    fn step_with_turn(
+        &mut self,
+        mode: Mode,
+        mut turn: impl FnMut(&mut Poll, Mode, &mut Events) -> io::Result<()>,
+    ) {
         let now = Instant::now();
         let expected: Vec<usize> = self.channels.iter().map(Channel::predicted_calls).collect();
         let ends_now: Vec<bool> = self.channels.iter().map(Channel::ends_now).collect();
@@ -429,7 +442,21 @@ impl Run {
                 .unwrap();
         }
         let mut events = std::mem::take(&mut self.events);
-        self.poll.turn(mode, &mut events).unwrap();
+        for attempt in 0..32 {
+            let now = Instant::now();
+            let timer_due = self
+                .clocks
+                .iter()
+                .any(|clock| clock.active && now >= clock.due() + SLACK);
+            turn(&mut self.poll, mode, &mut events).unwrap();
+            if events.ready().is_empty() && events.due().is_empty() {
+                assert!(!timer_due, "step Wait returned with nothing to report");
+            }
+            if mode == Mode::Peek || !events.ready().is_empty() || !events.due().is_empty() {
+                break;
+            }
+            assert!(attempt < 31, "step Wait made no progress in 32 turns");
+        }
         for &ready in events.ready() {
             let wants = self.poll.wants(ready);
             if ready.token == self.signal_token {
@@ -669,6 +696,87 @@ pub fn event(data: &[u8]) {
 mod tests {
     use super::*;
     use std::path::Path;
+
+    #[test]
+    fn an_empty_interrupted_turn_preserves_timer_progress() {
+        let _serial = crate::signal::SERIAL.lock().unwrap();
+        let mut run = Run::new().unwrap();
+        run.apply(Op::Timer {
+            timer: 0,
+            after: 1,
+            repeat: None,
+            limit: 1,
+            kills: None,
+        });
+        let mut interrupted = false;
+        run.step_with_turn(Mode::Wait, |poll, mode, events| {
+            if !interrupted {
+                interrupted = true;
+                Ok(())
+            } else {
+                poll.turn(mode, events)
+            }
+        });
+        assert!(interrupted);
+        assert_eq!(run.clocks[0].fired, 1);
+        assert!(!run.clocks[0].active);
+        run.apply(Op::Timer {
+            timer: 0,
+            after: 1000,
+            repeat: None,
+            limit: 1,
+            kills: None,
+        });
+        let mut turns = 0;
+        let failure = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            run.step_with_turn(Mode::Wait, |_, _, events| {
+                *events = Events::default();
+                turns += 1;
+                Ok(())
+            });
+        }))
+        .unwrap_err();
+        assert_eq!(turns, 32);
+        assert_eq!(
+            failure.downcast_ref::<&str>(),
+            Some(&"step Wait made no progress in 32 turns")
+        );
+    }
+
+    #[test]
+    fn an_empty_turn_cannot_skip_an_already_due_timer() {
+        let _serial = crate::signal::SERIAL.lock().unwrap();
+        let mut run = Run::new().unwrap();
+        run.apply(Op::Timer {
+            timer: 0,
+            after: 0,
+            repeat: None,
+            limit: 1,
+            kills: None,
+        });
+        run.clocks[0].first_due = Instant::now() - SLACK;
+        let failure = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            run.step_with_turn(Mode::Wait, |_, _, events| {
+                *events = Events::default();
+                Ok(())
+            });
+        }))
+        .unwrap_err();
+        assert_eq!(
+            failure.downcast_ref::<&str>(),
+            Some(&"step Wait returned with nothing to report")
+        );
+    }
+
+    #[test]
+    fn loop_finding_0() {
+        event(b"\x1e\x5e\xc9\xe6\xa0\x39\x28\x54\xa8\x61\x5e\xef\x10\x9f\xc1\xbf\xa9\xe2\x56\x37\x01\x28\x8f\x29\xb3\xd7\x3f\x6a\xc2\xb6\x9e\xdd\x2c\x19\xf2\x64\xbe\xe4\x62\xa5\xba\xf2\x0f\xd2\x7e\xcf\x14\xc0\x11\xed\x20\x1f\x83\x63\x20\xad\xb9\x8b\xab\x16\x86\xa2\x8d\xfc\x43\xfe\x5d\x04\x9b\x4d\x78\xa7\xa3\xeb\xb9\x28\x65\xc8\x51\x7e\xd0\x21\x11\x9b\x9b\x9b\x9b\x9b\x9b\x9b\x9b\x9b\x9b\x9b\x9b\x9b\x9b\x9b\x9b\x9b\x9b\x9b\x9b\x9b\x9b\x9b\x9b\x9b\x9b\x9b\x9b\x9b\x9b\x9b\x9b\x9b\x9b\x00\x1c\x02\x19\x01\x10\x01\x9b\x9b\x9b\x9b\x9b\x9b\x9b\x9b\x9b\x9b\x9b\x9b\x9b\x9b\x9b\x9b\x9b\x9b\x9b\x9b\x9b\x9b\x9b\x9b\x9b\x12\x00\x03\x02\x01\x9a\xca\xca\x00\x00\x9b\x9b\x9b\x9b\x9b\x9b\x9b\x9b\x9b\x9b\x9b\x9b\x9b\x9b\x9b\x9b\x9b\x9b\x9b\x9b\x9b\x9b\x9b\x9b\x9b\x9b\x9b\x9b\x9b\x9b\x9b\x9b\x9b\x9b\x9b\x9b\x9b\x9b\x9b\x9b\x9b\x9b\x9b\x9b\x9b\x11\xf6\xa6\x52\xda\x34\x24\x87\x2b\x6a\xd2\xd2\xd2\xd2\xd2\xd2\xd2\xd2\xd2\xd2\xd2\xd2\xd2\xd2\xd2\xd2\xd2\xd2\xd2\xd2\xd2\xd2\xd2\xd2\xd2\xd2\xd2\xd2\xd2\xd2\xd2\xd2\xd2\xd2\xd2\xd2\xd2\xd2\xd2\xd2\xd2\xd2\xd2\xd2\xd2\xd2\xd2\xd2\xd2\xd2\xd2\xd2\xd2\xd2\xd2\xd2\xd2\xd2\xd2\xd2\xd2\xd2\xd2\xd2\xd2\xd2\xd2\xd2\xd2\xd2\xd2\xd2\xd2\xd2\xd2\xd2\xd2\xd2\xd2\xd2\x78\xa7\xa3\xeb\xb9\x28\x65\xc8\x51\x7e\xd0\x21\x11\xf6\xa6\x31\xd7\xff\xe4\x58\x77\x44\xd5\xeb\x78\x3e\x96\x2e\x8f\x89\xbe\x82\x85\x65\xe0\x7e\x5f\x7d\x78\x4e\x90\x60\xa7\x21\xca\x80\x7d\x76\x31\xed\x12\x34\x02\xf3\x76\xe5\xbf\x14\x96\x77\x3d\x19");
+    }
+
+    #[test]
+    fn loop_finding_1() {
+        event(b"\x00\x00\x01\x06\x00\x00\x13\x1c\x00\x61\x63\x26\xbe\x5b\xe5\x85\x03\x36\xb3\x6f\x13\xbc\xae\x48\x16\x68\x82\x13\x68\x05\xa7\xd1\xbe\x5e\x9f\x27\x68\x10\xfd\xf7\x20\xd0\x33\xca\x4f\x2e\x53\xcb\x8a\xd1\x90\x9d\xd5\x1a\x9f\xb6\xd4\xd5\x0f\x10\x09\xba\x64\xc8\x00\xcf\x68\x03\xde\x50\xd8\x3a\x2e\xcf\xba\xeb\x53\x42\x07\x1a\x48\xcb\x2d\xbd\x57\x4a\xb2\x91\x52\x57\x22\x37\xc4\xfb\x65\x9a\x40\x16\xf7\xa1\x1b\xc6\x2c\x52\x71\xcf\x64\xf2\x5d\x6f\x15\xcc\x50\xc4\xb7\x3f\x4c\x7e\x62\x15\x13\xa5\x3c\xc7\xe9\x9c\xd7\x9d\x7f\xd9\xc7\xbc\xe4\xe0\x5b\x0b\x01\xfa\xee\x78\xe4\xea\x5b\xf2\xcc\x36\x22\x41\xb7\xdc\xbb\x2e\xe2\x14\x14\x42\x2a\xa0\x28\x1b\xc1\x45\x0d\x21\x38\x63\x43\xfb\x93\x54\x71\x21\xb3\x81\x51\xa5\x8c\xe9\x49\x82\xf5\x6a\x86\x79\xa3\xbe\x12\x65\x5d\xce\x52\x8e\xa7\xc0\x56\x87\x3a\x18\xb8\xe7\x35\x81\xc9\xbe\x87\xc0\xbc\x4a\xb8\xa9\x29\xe2\x75\x5a\x18\x97\x81\x9e\xa0\x00\x11\x71\x4c\x94\xdd\xd5\xba\x18\x43\xfa\x74\x17\x0b\x1b\x01\xb5\x9b\x36\xb6\x72\xd3\x9a\x44\x68\xbb\xf3\x51\x44\x07\x7c\x4c\xe6\x31\x20\x4a\x8a\xcd\x87\x05\x1c\xb3\xe3\xfc\x7f\x1c\x00\x1c\x00\x54\x00\x16\x1f\x0c\xcf\x5f\x79\x51\x1d\x35\x06\x64\x48\xd3\x66\xd4\x59\x9e\x20\x99\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\xff\x18\xf4\x03\xc0\xdf\xee\x29\xe7\x59\x73\x35\x85\x76\x13\x3f\xab\x86\x1a\x88\xdf\x87\x97\x6f\x2b\x07\x56\x85");
+    }
 
     #[test]
     fn the_replayed_corpus_runs_to_the_end() {
