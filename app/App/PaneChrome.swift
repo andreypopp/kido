@@ -75,7 +75,38 @@ final class PaneChrome: NSView {
         effectiveAppearance.performAsCurrentDrawingAppearance {
             switch treatment {
             case .plain: break
-            case .edge: FocusEdge.stroke(bounds)
+            case .edge:
+                Chrome.focusStroke.setStroke()
+                let rect = bounds.insetBy(dx: 0.5, dy: 0.5)
+                let corners = [CGPoint(x: rect.minX, y: rect.minY), CGPoint(x: rect.maxX, y: rect.minY),
+                               CGPoint(x: rect.maxX, y: rect.maxY), CGPoint(x: rect.minX, y: rect.maxY)]
+                let tolerance: CGFloat = 0.51
+                let windowCorners: (CGRect, [CGFloat])? = {
+                    guard #available(macOS 27, *), let window, !window.styleMask.contains(.fullScreen),
+                          let content = window.contentView, let radii = content.effectiveCornerRadii else { return nil }
+                    return (content.convert(content.bounds, to: nil), [radii.topLeft, radii.topRight, radii.bottomLeft, radii.bottomRight])
+                }()
+                let path = NSBezierPath()
+                path.move(to: CGPoint(x: rect.minX, y: rect.midY))
+                for index in corners.indices {
+                    let corner = corners[index]
+                    let next = corners[(index + 1) % corners.count]
+                    var radius: CGFloat = 0
+                    if let (outer, radii) = windowCorners {
+                        let point = convert(corner, to: nil)
+                        let left = abs(point.x - outer.minX) <= tolerance
+                        let bottom = abs(point.y - outer.minY) <= tolerance
+                        if (left || abs(point.x - outer.maxX) <= tolerance),
+                           (bottom || abs(point.y - outer.maxY) <= tolerance) {
+                            let outerRadius = radii[(bottom ? 2 : 0) + (left ? 0 : 1)]
+                            radius = max(0, min(outerRadius - 0.5, rect.width / 2, rect.height / 2))
+                        }
+                    }
+                    if radius > 0 { path.appendArc(from: corner, to: next, radius: radius) }
+                    else { path.line(to: corner) }
+                }
+                path.close()
+                path.stroke()
             case .overlay:
                 Chrome.floatingOverlay(runtime.background).setFill()
                 bounds.fill()

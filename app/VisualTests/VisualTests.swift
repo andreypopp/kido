@@ -1017,9 +1017,25 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
     }
 
     func testPaneFocusTreatment() async throws {
+        class FocusWindow: OwnerWindow {
+            var fullscreen = false
+            override var styleMask: NSWindow.StyleMask {
+                get { fullscreen ? super.styleMask.union(.fullScreen) : super.styleMask }
+                set { super.styleMask = newValue }
+            }
+        }
         let config = directory.appendingPathComponent("focus.yaml")
         try "app: {font: {size: 13}}\n".write(to: config, atomically: true, encoding: .utf8)
         try await start(configFile: config.path)
+        window.contentView = nil
+        window.isReleasedWhenClosed = false
+        window.close()
+        let focusWindow = FocusWindow(contentRect: NSRect(x: 0, y: 0, width: 1000, height: 640),
+                                      styleMask: [.titled, .fullSizeContentView, .resizable], backing: .buffered, defer: false)
+        window = focusWindow
+        window.isReleasedWhenClosed = false
+        window.appearance = NSAppearance(named: .aqua)
+        window.colorSpace = .displayP3
         let sidebar = Sidebar()
         window.titleVisibility = .hidden
         window.titlebarAppearsTransparent = true
@@ -1045,6 +1061,11 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
             sidebar?.updateFocusEdge()
             sidebar?.view.needsLayout = true
             sidebar?.view.layoutSubtreeIfNeeded()
+        }
+        let testName = #function
+        func snapshot(_ name: String, view: NSView) async throws {
+            try await wait("stable focus tab title") { sidebar.tabs.entries.map(\.name) == ["cat"] }
+            try await self.snapshot(name, testName: testName, view: view)
         }
         func capture() throws -> NSBitmapImageRep {
             let image = try XCTUnwrap(root.bitmapImageRepForCachingDisplay(in: root.bounds))
@@ -1086,6 +1107,46 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
             terminal.updateFocusTreatment()
             try await drain(runtime)
             try await snapshot("pane-\(name)", view: root)
+            for hidden in [false, true] {
+                sidebar.isCollapsed = hidden
+                sidebar.dismissFloating()
+                root.layoutSubtreeIfNeeded()
+                try await settle()
+                let chromes = terminal.subviews.compactMap { $0 as? PaneChrome }.filter { !$0.isHidden }
+                let chrome = try XCTUnwrap(chromes.sorted {
+                    let a = $0.convert($0.bounds, to: nil), b = $1.convert($1.bounds, to: nil)
+                    if abs(a.minY - b.minY) > 1 { return a.minY < b.minY }
+                    return hidden ? a.minX < b.minX : a.maxX > b.maxX
+                }.first)
+                terminal.focus(chrome.pane)
+                terminal.updateFocusTreatment()
+                try await drain(runtime)
+                let side = hidden ? "left" : "right"
+                try await snapshot("corner-\(side)-\(name)", view: root)
+                if #available(macOS 27, *), let radii = window.contentView?.effectiveCornerRadii {
+                    let radius = hidden ? radii.bottomLeft : radii.bottomRight
+                    XCTAssertGreaterThan(radius, 0)
+                    let offset = radius - (radius - 0.5) / sqrt(2)
+                    let point = CGPoint(x: hidden ? offset : chrome.bounds.maxX - offset, y: chrome.bounds.maxY - offset)
+                    let image = try capture()
+                    let curve = try color(image, chrome, point)
+                    let contrast = zip([curve.redComponent, curve.greenComponent, curve.blueComponent], pure).map { abs($0 * 255 - Double($1)) }.max() ?? 0
+                    XCTAssertGreaterThan(contrast, 30, "focus stroke follows the window curve")
+                }
+                focusWindow.fullscreen = true
+                chrome.needsDisplay = true
+                try await snapshot("corner-\(side)-fullscreen-\(name)", view: root)
+                let square = try capture()
+                let edge = try color(square, chrome, CGPoint(x: hidden ? 0.75 : chrome.bounds.maxX - 0.75, y: chrome.bounds.maxY - 5))
+                XCTAssertGreaterThan(abs(edge.blueComponent * 255 - Double(pure[2])), 3, "full-screen focus edge stays square")
+                focusWindow.fullscreen = false
+                chrome.needsDisplay = true
+            }
+            sidebar.isCollapsed = false
+            root.layoutSubtreeIfNeeded()
+            try await settle()
+            terminal.focus(active.pane)
+            terminal.updateFocusTreatment()
             func expectLook(_ looksFocused: Bool, _ message: String, edge: Bool = true) async throws {
                 let chromes = terminal.subviews.compactMap { $0 as? PaneChrome }.filter { !$0.isHidden }
                 for chrome in chromes {

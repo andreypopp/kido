@@ -439,6 +439,7 @@ final class WindowView: NSView {
             (frame, grid, content, insets) = (tiled.chrome, tiled.grid, tiled.content, tiled.insets)
         }
         if chrome.frame != frame { chrome.frame = frame; view.needsLayout = true }
+        if chrome.treatment == .edge { chrome.needsDisplay = true }
         if backings[chrome.pane]?.frame != frame { backings[chrome.pane]?.frame = frame }
         for overlay in view.chromeViews where overlay.superview !== chrome { chrome.addSubview(overlay); view.needsLayout = true }
         if toolbar?.superview === chrome, toolbar?.frame != chrome.toolbarFrame { toolbar?.frame = chrome.toolbarFrame }

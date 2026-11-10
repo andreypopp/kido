@@ -1,0 +1,7 @@
+bounds=0.00,0.00,1000.00,588.00 separator=0.00,0.00,1000.00,0.50 banner=false
+pane_1 cells=Geometry(x: 0, y: 0, width: 61, height: 37) layer=tiled grid=7.50,2.50,488.00,573.50 content=7.50,0.50,488.00,587.50 chrome=0.00,0.50,499.50,587.50 insets=2.0,12.0 find=false alternate=false scroll=nil
+pane_2 cells=Geometry(x: 62, y: 0, width: 61, height: 18) layer=tiled grid=503.50,2.50,488.00,279.00 content=503.50,0.50,488.00,288.50 chrome=500.00,0.50,500.00,288.50 insets=2.0,7.5 find=false alternate=false scroll=nil
+pane_3 cells=Geometry(x: 62, y: 19, width: 61, height: 18) layer=tiled grid=503.50,297.00,488.00,279.00 content=503.50,289.50,488.00,298.50 chrome=500.00,289.50,500.00,298.50 insets=7.5,12.0 find=false alternate=false scroll=nil
+divider=0.00,0.00,1000.00,0.50
+divider=499.50,0.50,0.50,587.50
+divider=500.00,289.00,500.00,0.50

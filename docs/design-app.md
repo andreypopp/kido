@@ -931,7 +931,15 @@ key, `window.unfocused_shift`, has the same range and direction rule,
 with a 3% default. A reload that changes only this key repaints the
 panes and the band. The focused pane also gets a 1pt `controlAccentColor`
 stroke at 50% alpha, inside its chrome rect, over the padding and not over
-cells. A single-pane window draws no shift and no edge on its pane while
+cells. Where a corner of the chrome rect is a corner of the window, the
+stroke follows the window's rounded corner, so the window's corner mask
+does not cut it. The arc is concentric with that corner: its radius is the
+content view's `effectiveCornerRadii` for that corner minus the stroke's
+0.5pt inset. The stroke reads the corners from the geometry when it draws,
+so a docked sidebar, a hidden sidebar and zoom need no rule of their own.
+In full screen the window has no rounded corners, and the stroke is square.
+`effectiveCornerRadii` exists only on macOS 27. On macOS 26 the stroke stays
+square, because no measured radius exists for that release. A single-pane window draws no shift and no edge on its pane while
 its window is key, also under sidebar focus. Floating panes keep a 45%
 theme-background overlay when they are not active.
 
