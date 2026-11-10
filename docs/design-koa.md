@@ -715,9 +715,22 @@ foot of the field holds the state, the model and thinking-level
 buttons, the context, the extensions' statuses (`setStatus`) and the
 working directory at the right. The state cell has a fixed width, so
 a change of state or time never moves the cells to its right. The row
-has no send or stop button and says nothing about Return and Escape. A
-narrow pane drops the extensions' statuses first, then the level's
-text; the model picker then offers the levels.
+has no send or stop button and says nothing about Return and Escape.
+
+- **Narrow widths.** The foot drops cells by its own width, a
+  container query on the field, not the window's: the field is what
+  the cells must fit, whatever the pane and the sidebar do. The
+  extensions' statuses go first. Under 540px the level, the cwd's
+  leading directories and the context numbers go; the model picker
+  then offers the levels. Under 340px the model and the cwd go, and
+  the context moves to the right. Under 200px the context goes and
+  the state cell gives up its reserved width, so its text ellipsizes.
+  The cwd and the model's name ellipsize at every width, so a deep
+  directory or a long model never pushes the other cells, and the
+  foot never overflows the field. What a step hides stays reachable:
+  `/model` and `/thinking` open the pickers, above the field when the
+  model cell is hidden; `/session` lists the model and the context
+  numbers, and the cwd is the pane's title.
 
 - **Pickers.** The model and level buttons open pickers above the
   foot; a pick goes through `set_model` or `set_thinking_level`. No

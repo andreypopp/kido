@@ -171,6 +171,9 @@ extension VisualTests {
     func testKoaWebviewBangNarrow() async throws {
         try await koaWebview(width: 470, height: 220, scenario: .bang, captures: ["narrow-bang", "narrow-bang2", "narrow-bang-attachments", "narrow-bang-drop", "narrow-bang-runs", "narrow-bang-done", "narrow-bang-error", "narrow-bang-cancelled", "narrow-bang-truncated", "narrow-bang-quiet", "narrow-bang-running", "narrow-bang-typing", "narrow-bang-busy", "narrow-bang-completed"])
     }
+    func testKoaWebviewComposerFootResponsive() async throws {
+        try await koaWebview(width: 674, height: 300, scenario: .composer, captures: ["foot-responsive"])
+    }
     func testKoaWebviewComposerFootIdleWide() async throws {
         try await koaWebview(width: 980, height: 300, scenario: .composer, captures: ["foot-idle"])
     }
@@ -448,6 +451,9 @@ extension VisualTests {
         if captures.contains("focus") || captures.contains("focus-border-transcript") || captures.contains("focus-border-dialog") {
             // The off-screen WKWebView reports no document focus.
             WebviewPaneView.visualInitialScript = "document.hasFocus=()=>true;" + (WebviewPaneView.visualInitialScript ?? "")
+        }
+        if captures.contains("foot-responsive") {
+            WebviewPaneView.visualInitialScript = (WebviewPaneView.visualInitialScript ?? "") + "const FootSource=EventSource;window.EventSource=class extends FootSource{constructor(...args){super(...args);window.footSource=this;this.addEventListener('message',event=>{const record=JSON.parse(event.data);if(record.type==='state')window.footState=record})}};"
         }
         defer { WebviewPaneView.visualInitialScript = nil }
         let usage: [String: Any] = ["input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0, "totalTokens": 0, "cost": ["input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0, "total": 0]]
@@ -806,7 +812,7 @@ extension VisualTests {
             steps = Array(steps.prefix(3)); steps[1] = ["type": "respond", "command": "get_messages", "data": ["messages": [person]]]
             if name == "waiting" { steps[2] = ["type": "respond", "command": "get_session_stats", "data": ["contextUsage": ["tokens": 156000, "contextWindow": 200000, "percent": 78]]] }
             var events: [[String: Any]] = []
-            if ["working", "narrow", "toast-err"].contains(name) {
+            if ["working", "narrow", "toast-err", "responsive"].contains(name) {
                 events = [["type": "agent_start"], ["type": "message_start", "message": assistant([["type": "toolCall", "id": "foot-run", "name": "bash", "arguments": ["command": "make verify STAGES=unit"]]], stop: "toolUse")], ["type": "tool_execution_start", "toolCallId": "foot-run"]]
             } else if name == "waiting" { events = [["type": "message_end", "message": assistant([["type": "text", "text": "Which tap revision? (see the dialog)"]])], ["type": "extension_ui_request", "id": "foot-wait", "method": "input", "title": "Which tap revision?"]] }
             if name == "toast" || name == "toast-err" { events.append(["type": "extension_ui_request", "id": "foot-notify", "method": "notify", "notifyType": name == "toast" ? "info" : "error", "message": name == "toast" ? "Switched to claude-sonnet-5-5 · thinking medium" : "extension release: tap checkout is dirty, refusing to commit"]) }
@@ -814,6 +820,7 @@ extension VisualTests {
             prompt(events)
             if name == "exited" { steps.append(["type": "stderr", "text": "Killed: 9\n"]); steps.append(["type": "exit", "code": 137]) }
             if name == "picker" { steps.append(["type": "wait", "command": "get_available_models", "data": ["models": [["id": "claude-opus-5-5", "provider": "anthropic"], ["id": "claude-sonnet-5-5", "provider": "anthropic"], ["id": "claude-fable-5-1", "provider": "claude-bridge"], ["id": "gpt-6.1-sol", "provider": "openai-codex"], ["id": "gpt-6-astra", "provider": "openai-codex"]]]]) }
+            if name == "responsive" { steps.insert(["type": "wait", "command": "get_available_models", "data": ["models": [["id": "claude-opus-5-5", "provider": "anthropic"]]]], at: 3) }
         }
         if scenario == .bang {
             var person = user; person["content"] = [["type": "text", "text": "Verify the sidebar unit"]]
@@ -1044,7 +1051,7 @@ extension VisualTests {
             _ = try await webviewJS(web, "new Promise((resolve,reject)=>{let previous,stable=0,frame;const timer=setTimeout(()=>{cancelAnimationFrame(frame);reject(Error('Koa capture did not settle'))},5000);function sample(){const cursor=document.querySelector('#prompt .cm-cursor')?.getBoundingClientRect();const state=JSON.stringify([document.querySelector('#scroll').scrollTop,document.querySelector('#dock').getBoundingClientRect().height,cursor?[cursor.x,cursor.y,cursor.width,cursor.height]:null]);stable=koaPendingFrames.size===0&&state===previous?stable+1:0;previous=state;if(stable>=2){clearTimeout(timer);resolve(true)}else frame=requestAnimationFrame(sample)}frame=requestAnimationFrame(sample)})")
         }
         func capture(_ name: String) async throws {
-            guard captures.contains(name) else { return }
+            guard captures.contains(name) || captures.contains("foot-responsive") else { return }
             let ordered = name == "questions-ordered" || name == "narrow-questions-ordered"
             let top = scenario == .questions || scenario == .media || scenario == .lightbox || scenario == .agents || scenario == .composer
             window.contentView?.layoutSubtreeIfNeeded()
@@ -1259,6 +1266,49 @@ extension VisualTests {
             try await capture("narrow-questions-ordered")
             let marked = try await webviewJS(web, #"(()=>{const reply=document.querySelectorAll('.assistant')[1];if(!reply.textContent.includes('Literal �999;x�')||/[\uE010-\uE012]/.test(reply.textContent)||!reply.querySelector('.ann-opt code')||!reply.querySelector('.ann-opt strong')||!reply.querySelector('li .ann-ctl')||!reply.querySelector('h2 .ann-ctl')||!reply.querySelector('td .ann-ctl'))return reply.innerHTML;reply.querySelector('.ann-opt code').parentElement.click();return window.composer.text()})()"#)
             XCTAssertEqual(marked, #""> 😀 Pick one or two?\none""#)
+            return
+        }
+        if scenario == .composer && captures.contains("foot-responsive") {
+            func widths(_ state: String, sizes: [CGFloat] = [674, 554, 374, 250, 190]) async throws {
+                for size in sizes {
+                    koaContentSize(window: window, width: size, height: height)
+                    window.contentView?.layoutSubtreeIfNeeded(); pane.webviewView?.layoutSubtreeIfNeeded()
+                    let viewportWidth = Int(web.bounds.width)
+                    try await webviewUntil(web, "innerWidth===\(viewportWidth)")
+                    let fits = try await webviewJS(web, "(()=>{const foot=document.querySelector('.field .foot'),field=document.querySelector('#field');return foot.scrollWidth<=foot.clientWidth&&foot.getBoundingClientRect().right<=field.getBoundingClientRect().right})()")
+                    XCTAssertEqual(fits, "true", "The foot stays inside the field at pane width \(viewportWidth)")
+                    try await capture("foot-responsive-\(Int(size))-" + state)
+                }
+            }
+            try await widths("idle")
+            koaContentSize(window: window, width: 374, height: height)
+            window.contentView?.layoutSubtreeIfNeeded(); pane.webviewView?.layoutSubtreeIfNeeded()
+            let pickerViewportWidth = Int(web.bounds.width)
+            try await webviewUntil(web, "innerWidth===\(pickerViewportWidth)&&document.querySelector('#model-cell').offsetParent===null")
+            _ = try await webviewJS(web, "(()=>{window.composer.setText('/model');document.querySelector('.cm-content').dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',keyCode:13,bubbles:true,cancelable:true}));return true})()")
+            try await webviewUntil(web, "!document.querySelector('#picker').hidden&&Array.from(document.querySelectorAll('#picker .ph')).some(node=>node.textContent==='Thinking')")
+            let modelPickerFits = try await webviewJS(web, "(()=>{const r=document.querySelector('#picker').getBoundingClientRect();return r.height>0&&r.top>=0&&r.bottom<=innerHeight&&r.left>=0&&r.right<=innerWidth})()")
+            XCTAssertEqual(modelPickerFits, "true", "The model picker stays inside the viewport when its foot cell is hidden")
+            try await capture("foot-responsive-374-picker")
+            _ = try await webviewJS(web, "(()=>{document.querySelector('#picker').dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true,cancelable:true}));window.composer.setText('/thinking');document.querySelector('.cm-content').dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',keyCode:13,bubbles:true,cancelable:true}));return true})()")
+            try await webviewUntil(web, "!document.querySelector('#picker').hidden&&document.querySelector('#picker .ph').textContent==='Thinking'")
+            let thinkingPickerFits = try await webviewJS(web, "(()=>{const r=document.querySelector('#picker').getBoundingClientRect();return r.height>0&&r.top>=0&&r.bottom<=innerHeight&&r.left>=0&&r.right<=innerWidth})()")
+            XCTAssertEqual(thinkingPickerFits, "true", "The thinking picker stays inside the viewport when its foot cell is hidden")
+            _ = try await webviewJS(web, "(()=>{document.querySelector('#picker').dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true,cancelable:true}));return true})()")
+            _ = try await webviewJS(web, "(()=>{window.composer.setText('!make checks');return true})()")
+            try await webviewUntil(web, "document.querySelector('#status').textContent==='run'")
+            try await widths("run")
+            _ = try await webviewJS(web, "(()=>{const nativeFetch=window.fetch;window.fetch=(url,options)=>url==='/complete'?new Promise((resolve,reject)=>options.signal.addEventListener('abort',()=>reject(new DOMException('Aborted','AbortError')),{once:true})):nativeFetch(url,options);window.composer.setText('!git checkout kido-');document.querySelector('.cm-content').dispatchEvent(new KeyboardEvent('keydown',{key:'Tab',keyCode:9,bubbles:true,cancelable:true}));return true})()")
+            try await webviewUntil(web, "document.querySelector('#status').textContent==='completing…'")
+            try await widths("completing")
+            _ = try await webviewJS(web, "(()=>{window.composer.setText('');Date.now=()=>\(stamp + 754000);return true})()")
+            try await advance()
+            try await webviewUntil(web, "document.querySelector('#status').textContent==='working 12m 34s'")
+            try await widths("working")
+            _ = try await webviewJS(web, "(()=>{footSource.dispatchEvent(new MessageEvent('message',{data:JSON.stringify({...footState,cwd:footState.home+'/Workspace/kido-sidebar-layout/app/App/SidebarFeed'})}));return true})()")
+            try await widths("cwd")
+            _ = try await webviewJS(web, "(()=>{footSource.dispatchEvent(new MessageEvent('message',{data:JSON.stringify({...footState,model:{provider:'anthropic',id:'claude-opus-5-5-with-a-long-provider-specific-model-identifier-20261110'}})}));return true})()")
+            try await widths("long-model", sizes: [674, 420])
             return
         }
         if scenario == .composer {

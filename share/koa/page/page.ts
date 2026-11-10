@@ -694,7 +694,7 @@ function exited() {
 function closePicker() { element('picker').hidden = true; const trigger = pickerButton; pickerButton = undefined; if (trigger) { trigger.classList.remove('pick'); focusComposer(); } composerFocus(); }
 function positionPicker() {
   if (!pickerButton) return;
-  const host = element('picker'), rect = element('model-cell').getBoundingClientRect();
+  const host = element('picker'), cell = element('model-cell'), rect = (cell.offsetParent === null ? element('field') : cell).getBoundingClientRect();
   host.style.left = Math.max(0, Math.min(rect.left - 6, innerWidth - 244)) + 'px';
   host.style.bottom = (innerHeight - rect.top + 8) + 'px';
   host.style.maxHeight = Math.max(0, rect.top - 16) + 'px';
@@ -708,7 +708,7 @@ async function picker(kind: 'model' | 'thinking', search = '') {
   try {
     if (kind === 'model') {
       choices.push(...(await fetchJSON('/models', undefined, 'GET')).models.map(model => ({ kind: 'model' as const, id: model.id, provider: model.provider })));
-      if (getComputedStyle(element('thinking')).display === 'none') choices.push(...state.levels.map(id => ({ kind: 'thinking' as const, id })));
+      if (element('thinking').offsetParent === null) choices.push(...state.levels.map(id => ({ kind: 'thinking' as const, id })));
     } else choices.push(...state.levels.map(id => ({ kind: 'thinking' as const, id })));
   } catch (error) { reportError(error); return; }
   if (search) {
