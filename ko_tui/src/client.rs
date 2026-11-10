@@ -2184,7 +2184,7 @@ fn mismatch(dir: &std::path::Path, host: Option<&str>) -> Option<String> {
 }
 
 pub fn run(dir: &std::path::Path, executable: &std::path::Path, pager: &str) -> Result<(), String> {
-    let (socket, stream) = launch::attach(dir, executable, None, PATIENCE)?;
+    let (socket, stream) = launch::attach(dir, executable, None, None, PATIENCE)?;
     let link = Link::upgrade(stream, None, &Route::Client {}, None)
         .map_err(|error| mismatch(dir, None).unwrap_or_else(|| error.to_string()))?;
     let signals = Signals::install(&SIGNALS).map_err(text)?;

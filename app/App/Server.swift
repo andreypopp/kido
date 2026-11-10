@@ -56,7 +56,7 @@ struct BundledTools: Sendable {
         try tools.validate()
         let executable = tools.ko
         let path = await loginPath.value
-        let launch = Task.detached { try KoClient.launch(dir: dir, executable: executable, path: path) }
+        let launch = Task.detached { try KoClient.launch(dir: dir, executable: executable, path: path, cwd: NSHomeDirectory()) }
         #if KIDO_VISUAL
         let id = UUID()
         launches[dir, default: [:]][id] = launch

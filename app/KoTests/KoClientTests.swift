@@ -90,9 +90,9 @@ import XCTest
         }
         let executable = tools.ko
         let socket: String
-        do { socket = try offMain("the launch") { try KoClient.launch(dir: dir, executable: executable, path: nil) } } catch { return XCTFail("\(error)") }
+        do { socket = try offMain("the launch") { try KoClient.launch(dir: dir, executable: executable, path: nil, cwd: nil) } } catch { return XCTFail("\(error)") }
         XCTAssertEqual(socket, dir + "/socket")
-        let again = try offMain("the second launch") { try KoClient.launch(dir: dir, executable: "/nonexistent/ko", path: nil) }
+        let again = try offMain("the second launch") { try KoClient.launch(dir: dir, executable: "/nonexistent/ko", path: nil, cwd: nil) }
         XCTAssertEqual(again, socket, "a running server is reused and the executable is not started")
 
         var events: [KoEvent] = []

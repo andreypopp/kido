@@ -962,23 +962,25 @@ pub unsafe extern "C" fn ko_client_default_dir(out: *mut Buffer) -> Code {
 
 /// # Safety
 ///
-/// `dir` and `executable` are NUL-terminated strings. `path` is null or a
-/// NUL-terminated string. `socket` is writable for
+/// `dir` and `executable` are NUL-terminated strings. `path` and `cwd` are null or
+/// NUL-terminated strings. `socket` is writable for
 /// one `ko_buffer`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn ko_client_launch(
     dir: *const c_char,
     executable: *const c_char,
     path: *const c_char,
+    cwd: *const c_char,
     socket: *mut Buffer,
 ) -> Code {
     let scope = ();
     // SAFETY: ko_client.h requires these inputs to remain readable for this call.
-    let (dir_text, executable_text, path_text) = unsafe {
+    let (dir_text, executable_text, path_text, cwd_text) = unsafe {
         (
             text_of(dir, &scope),
             text_of(executable, &scope),
             text_of(path, &scope),
+            text_of(cwd, &scope),
         )
     };
 
@@ -992,11 +994,15 @@ pub unsafe extern "C" fn ko_client_launch(
         (false, None) => return Code::Argument,
         (_, path) => path,
     };
-    let (code, bytes) = match launch::attach(Path::new(dir), Path::new(executable), path, PATIENCE)
-    {
-        Ok((path, _stream)) => (Code::Ok, path.as_os_str().as_bytes().to_vec()),
-        Err(message) => (Code::Io, message.into_bytes()),
+    let cwd = match (cwd.is_null(), cwd_text) {
+        (false, None) => return Code::Argument,
+        (_, cwd) => cwd.map(Path::new),
     };
+    let (code, bytes) =
+        match launch::attach(Path::new(dir), Path::new(executable), path, cwd, PATIENCE) {
+            Ok((path, _stream)) => (Code::Ok, path.as_os_str().as_bytes().to_vec()),
+            Err(message) => (Code::Io, message.into_bytes()),
+        };
     // SAFETY: out is null or writable for one ko_buffer (ko_client.h).
     unsafe { put(socket, bytes) };
     code
@@ -4114,26 +4120,33 @@ mod tests {
     }
 
     #[test]
-    fn the_core_launches_stops_and_names_its_version() {
+    fn ko_client_launch_stops_and_names_its_version() {
         let dir = PathBuf::from(format!("/tmp/ko-ffi-launch-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let c_dir = CString::new(dir.as_os_str().as_bytes()).unwrap();
         let mut socket = empty_buffer();
-        // SAFETY: the byte string is NUL-terminated and socket is writable.
-        let code = unsafe {
-            ko_client_launch(
-                c_dir.as_ptr(),
-                c"/nonexistent/ko".as_ptr(),
-                c"\xff".as_ptr(),
-                &mut socket,
-            )
-        };
-        assert_eq!(code, Code::Argument);
+        for (path, cwd) in [
+            (c"\xff".as_ptr(), std::ptr::null()),
+            (std::ptr::null(), c"\xff".as_ptr()),
+        ] {
+            // SAFETY: the byte strings are NUL-terminated and socket is writable.
+            let code = unsafe {
+                ko_client_launch(
+                    c_dir.as_ptr(),
+                    c"/nonexistent/ko".as_ptr(),
+                    path,
+                    cwd,
+                    &mut socket,
+                )
+            };
+            assert_eq!(code, Code::Argument);
+        }
         // SAFETY: the strings are valid and socket is writable.
         let code = unsafe {
             ko_client_launch(
                 c_dir.as_ptr(),
                 c"/nonexistent/ko".as_ptr(),
+                std::ptr::null(),
                 std::ptr::null(),
                 &mut socket,
             )
@@ -4151,7 +4164,7 @@ mod tests {
         std::fs::write(
             &executable,
             format!(
-                "#!/bin/sh\nprintf '%s' \"$PATH\" > '{}'\n",
+                "#!/bin/sh\nprintf '%s\\n%s' \"$PATH\" \"$(pwd -P)\" > '{}'\n",
                 recorded.display()
             ),
         )
@@ -4168,13 +4181,17 @@ mod tests {
                 c_dir.as_ptr(),
                 executable.as_ptr(),
                 c"/login/bin:/usr/bin".as_ptr(),
+                c"/tmp".as_ptr(),
                 &mut socket,
             )
         };
         assert_eq!(code, Code::Io);
         assert_eq!(
             std::fs::read_to_string(recorded).unwrap(),
-            "/login/bin:/usr/bin"
+            format!(
+                "/login/bin:/usr/bin\n{}",
+                std::fs::canonicalize("/tmp").unwrap().display()
+            )
         );
         // SAFETY: socket owns a core allocation that is not freed yet.
         unsafe { freed_once(&mut socket) };
@@ -4185,6 +4202,7 @@ mod tests {
             ko_client_launch(
                 c_dir.as_ptr(),
                 c"/nonexistent/ko".as_ptr(),
+                std::ptr::null(),
                 std::ptr::null(),
                 &mut socket,
             )

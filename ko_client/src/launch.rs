@@ -140,6 +140,7 @@ pub fn attach(
     dir: &Path,
     executable: &Path,
     path: Option<&str>,
+    cwd: Option<&Path>,
     patience: Patience,
 ) -> Result<(PathBuf, UnixStream), String> {
     let socket = config::socket(Dir::Create, dir)?;
@@ -175,7 +176,8 @@ pub fn attach(
     let env = environment
         .as_deref()
         .map_or(ko_sys::spawn::Env::Inherit, ko_sys::spawn::Env::Only);
-    let child = ko_sys::spawn::detached(executable, &args, output.as_fd(), env).map_err(message)?;
+    let child =
+        ko_sys::spawn::detached(executable, &args, output.as_fd(), env, cwd).map_err(message)?;
     let ended = reap(child);
     let deadline = Instant::now() + patience.deadline;
     loop {
@@ -281,7 +283,7 @@ mod tests {
         )
         .unwrap();
         std::fs::write(dir.join("log"), "OLD-FAILURE\n").unwrap();
-        let error = attach(&dir, &executable, None, PATIENCE).unwrap_err();
+        let error = attach(&dir, &executable, None, None, PATIENCE).unwrap_err();
         assert!(error.starts_with("server exited"), "{error}");
         assert!(error.contains("�START-FAILED"), "{error}");
         assert!(!error.contains("OLD-FAILURE"), "{error}");

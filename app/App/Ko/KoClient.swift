@@ -290,9 +290,9 @@ private final class ClientHandle: @unchecked Sendable {
 
     // These two block until the server started or ended: run them off the main queue.
     // The state directory's server is started with `executable` unless one runs there. Returns its socket path.
-    nonisolated static func launch(dir: String, executable: String, path: String?) throws -> String {
+    nonisolated static func launch(dir: String, executable: String, path: String?, cwd: String?) throws -> String {
         var buffer = ko_buffer()
-        return String(decoding: try take(ko_client_launch(dir, executable, path, &buffer), &buffer), as: UTF8.self)
+        return String(decoding: try take(ko_client_launch(dir, executable, path, cwd, &buffer), &buffer), as: UTF8.self)
     }
 
     nonisolated static func stopServer(dir: String) throws {

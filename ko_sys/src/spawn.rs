@@ -101,12 +101,13 @@ pub fn detached(
     args: &[&str],
     log: BorrowedFd<'_>,
     env: Env<'_>,
+    dir: Option<&Path>,
 ) -> io::Result<Pid> {
     start(
         program,
         args,
         &[(log, 0), (log, 1), (log, 2)],
-        (env, None),
+        (env, dir),
         Session::New,
     )
 }

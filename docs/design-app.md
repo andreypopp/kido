@@ -81,7 +81,14 @@ mismatch sheet's Restart and the refusal banner's Restart Server stop it. When n
 starts one: every local connection (at launch, for each new local window
 and on Reconnect) runs `KoServer.launch`, which calls
 `ko_client_launch(dir, bundled ko)` on a detached task. It starts a server
-unless one runs there and returns the socket; then the owner dials. Two
+unless one runs there and returns the socket; then the owner dials. A
+server that the app starts runs in the user's home directory, which the
+app gives as `ko_client_launch`'s `cwd`: the app's own working directory
+is `/` when Finder or the Dock starts it, and a pane with no `cwd`
+starts in the server's working directory, so the first pane starts in
+`~`, as in Terminal.app. A server that `ko` starts keeps the shell's
+directory, and the app keeps the directory of a server that already
+runs. Two
 windows that connect at once end with one server (docs/design-ko.md,
 "Lifecycle and the command line"). `ko_client_launch` starts the server with
 the app's own environment, so `app/App/Server.swift` removes the pane

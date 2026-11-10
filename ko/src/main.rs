@@ -290,7 +290,7 @@ fn server(args: ServerArgs, server: Option<PathBuf>) -> ExitCode {
             .map_err(|error| error.to_string())
             .and_then(|dir| {
                 if args.ensure {
-                    launch::attach(&dir, &invoked(), None, PATIENCE).map(|(socket, _)| socket)
+                    launch::attach(&dir, &invoked(), None, None, PATIENCE).map(|(socket, _)| socket)
                 } else {
                     config::socket_path(&dir)
                 }
