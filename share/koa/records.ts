@@ -6,10 +6,12 @@ export type PromptMode = "prompt" | "follow_up";
 export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 export type DialogMethod = Dialog["method"];
 export type Text = { text: string; cut: number };
-type ToolState = { type: "pending" } | { type: "running"; result?: Text } | { type: "done"; result: Text; error: boolean } | { type: "not_run" };
+export type ImageRef = { id: string; revision: number; mimeType: string; bytes: number; width?: number; height?: number };
+type ToolResult = Text & { images: ImageRef[] };
+type ToolState = { type: "pending" } | { type: "running"; result?: ToolResult } | { type: "done"; result: ToolResult; error: boolean } | { type: "not_run" };
 export type Block = (({ type: "text" } | { type: "thinking" }) & { text: string; redacted?: boolean; started?: number; ended?: number }) | { type: "tool"; id: string; name: string; args: Text; state: ToolState; started?: number; ended?: number; durationMs?: number; exit?: number };
 export type Item = { seq: number; at: number; final: boolean } & (
-  { kind: "user"; text: string; images: number } |
+  { kind: "user"; text: string; images: ImageRef[] } |
   { kind: "assistant"; blocks: Block[]; stop: string; error: string; ended?: number; lifecycle: "streaming" | "ended" } |
   { kind: "notice"; customType: string; from: string; text: string } |
   { kind: "bash"; command: string; output: Text; exit?: number } |

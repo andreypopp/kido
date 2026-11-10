@@ -307,8 +307,16 @@ of its call, so the page never needs the call's item to place a
 result. An item is final when it can no longer change; an assistant
 item becomes final after its end, when each call has its result or
 will never run (an aborted or failed response). Tool arguments,
-results and command output are capped, with the count of cut bytes;
-an image is a count. Jobs and subagent reports are the notices that
+results and command output are capped, with the count of cut bytes.
+An image is not in the feed: koa writes each image to its own file in
+its private temporary directory, which it removes at exit, and the
+records carry a reference with its id, revision, type and size. The page
+loads an image only when its item shows it, from `/images/{id}`, whose
+URL carries the epoch and the revision, because WebKit keeps a decoded
+image for a URL across a rebuild. Its type comes only from the sniffed
+header (PNG, JPEG, GIF, WebP, BMP), and every response carries `nosniff`
+and a sandbox policy, so a payload that only claims an image type never
+runs as a document on koa's origin. Jobs and subagent reports are the notices that
 ko-pi already puts in the session; the page has no live list of jobs.
 A rebuild (a new runtime, `session_tree`,
 `session_compact`) mints a new epoch. The model, its caps, its window

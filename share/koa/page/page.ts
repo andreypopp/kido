@@ -1,9 +1,9 @@
 import { markdown } from './markdown.ts';
 import { composer } from './composer.ts';
-import type { State, WireItem, WireAssistant, Block, Patch, PageRecord, PromptMode } from '../records.ts';
+import type { State, WireItem, WireAssistant, Block, Patch, PageRecord, PromptMode, ImageRef } from '../records.ts';
 
-type Step = { block: Exclude<Block, { type: 'text' }>;  item: WireAssistant; index: number; key: string };
-type Slot = HTMLDivElement & { signature?: string };
+type Step = { block: Exclude<Block, { type: 'text' }>;  item: WireAssistant; index: number; key: string; slots: Map<string, Slot> };
+type Slot = (HTMLDivElement | HTMLButtonElement) & { signature?: string };
 declare global {
   interface Window {
     ko?: object;
@@ -90,6 +90,40 @@ function prose(key: string, source: string, final: boolean) {
   return memo.view;
 }
 
+function thumbnails(refs: ImageRef[], slots: Map<string, Slot>) {
+  const view = node('div', undefined, 'thumbs');
+  return { view, load() {
+    if (view.childNodes.length) return;
+    for (const ref of refs) {
+      const key = 'image:' + ref.id;
+      let thumb = slots.get(key);
+      if (!thumb) { thumb = node('button', undefined, 'thumb'); thumb.type = 'button'; thumb.append(node('img'), node('span', undefined, 'sz')); slots.set(key, thumb); }
+      if (!(thumb instanceof HTMLButtonElement)) throw Error('Invalid thumbnail slot');
+      const image = thumb.firstElementChild, label = thumb.children[1];
+      if (!(image instanceof HTMLImageElement) || !(label instanceof HTMLElement)) throw Error('Invalid image slot');
+      const src = '/images/' + encodeURIComponent(ref.id) + '?e=' + encodeURIComponent(epoch) + '&r=' + ref.revision;
+      if (image.getAttribute('src') !== src) {
+        thumb.classList.remove('gone'); thumb.removeAttribute('role'); thumb.disabled = false;
+        while (thumb.children.length > 2) thumb.lastElementChild?.remove();
+        const size = ref.width && ref.height ? ref.width + '×' + ref.height : '';
+        label.textContent = size; label.hidden = !size;
+        thumb.setAttribute('aria-label', 'Preview image' + (size ? ' ' + size : ''));
+        image.alt = ''; image.hidden = false;
+        if (ref.width && ref.height) { image.width = ref.width; image.height = ref.height; }
+        else { image.removeAttribute('width'); image.removeAttribute('height'); }
+        const target = thumb;
+        image.onload = followBottom;
+        image.onerror = () => {
+          target.classList.add('gone'); target.setAttribute('role', 'img'); target.setAttribute('aria-label', 'Image unavailable'); target.disabled = true;
+          image.hidden = true; target.append(node('span', 'Image unavailable')); followBottom();
+        };
+        image.setAttribute('src', src);
+      }
+      view.append(thumb);
+    }
+  } };
+}
+
 const displayCwd = () => state.home && (state.cwd === state.home || state.cwd?.startsWith(state.home + '/')) ? '~' + state.cwd.slice(state.home.length) : state.cwd;
 const duration = (ms: number | undefined) => ms === undefined ? '' : ms < 100 ? Math.round(ms) + 'ms' : ms >= 60000 ? Math.floor(ms / 60000) + 'm' + String(Math.floor(ms / 1000) % 60).padStart(2, '0') + 's' : Number((ms / 1000).toFixed(1)) + 's';
 function args(block: Extract<Block, { type: 'tool' }>): Record<string, unknown> {
@@ -104,7 +138,10 @@ function stepInfo(step: Step & { args: Record<string, unknown> }) {
   const first = Object.values(values)[0];
   const label = block.name === 'bash' ? values.command : ['read', 'edit', 'write'].includes(block.name) ? values.path : block.name + (first === undefined ? '' : ' ' + (typeof first === 'string' ? first : JSON.stringify(first)));
   let detail = '';
-  if (block.name === 'read' && 'result' in block.state && block.state.result) detail = block.state.result.text.split('\n').length + ' lines';
+  if (block.name === 'read' && 'result' in block.state && block.state.result) {
+    const image = block.state.result.images[0];
+    detail = image ? image.mimeType.replace(/^image\//, '') + (image.width && image.height ? ' · ' + image.width + '×' + image.height : '') : block.state.result.text.split('\n').length + ' lines';
+  }
   let edit;
   if (block.name === 'edit' && typeof values.oldText === 'string' && typeof values.newText === 'string') {
     const old = values.oldText.split('\n'), next = values.newText.split('\n');
@@ -116,14 +153,15 @@ function stepInfo(step: Step & { args: Record<string, unknown> }) {
   }
   return { edit, labelClass: block.name === 'bash' ? 'cmd' : ['read', 'edit', 'write'].includes(block.name) ? 'path' : '', label: typeof label === 'string' ? label : label === undefined ? block.name + ' ' + block.args.text : JSON.stringify(label), detail, kind, aborted: item.stop === 'aborted' && block.state.type !== 'done' };
 }
-function fold(view: HTMLElement, key: string, line: HTMLElement, details: HTMLElement) {
+function fold(view: HTMLElement, key: string, line: HTMLElement, details: HTMLElement, show?: () => void) {
   view.classList.toggle('open', folds.get(key) === true);
   line.setAttribute('role', 'button'); line.tabIndex = 0;
   line.setAttribute('aria-expanded', String(folds.get(key) === true));
-  const toggle = () => { const open = !view.classList.contains('open'); folds.set(key, open); view.classList.toggle('open', open); line.setAttribute('aria-expanded', String(open)); };
+  const toggle = () => { const open = !view.classList.contains('open'); folds.set(key, open); view.classList.toggle('open', open); line.setAttribute('aria-expanded', String(open)); if (open) show?.(); };
   line.onclick = toggle;
   line.onkeydown = event => { if (!event.metaKey && !event.ctrlKey && (event.key === 'Enter' || event.key === ' ')) { event.preventDefault(); toggle(); } };
   view.append(line, details);
+  if (folds.get(key)) show?.();
 }
 function run(input: Step[]) {
   const steps = input.map(step => { const value = { ...step, args: step.block.type === 'tool' ? args(step.block) : {} }; return { ...value, info: stepInfo(value) }; });
@@ -167,6 +205,8 @@ function run(input: Step[]) {
     outcome.append(node('span', result, error ? 'err' : ''), node('span', (result ? ' ' : '') + duration((block.type === 'tool' ? block.durationMs : undefined) ?? (block.started !== undefined && ended !== undefined ? ended - block.started : undefined)), error ? 'time err' : 'time'));
     row.append(node('span', '›', 'chev'), sum, outcome);
     const detail = node('div', undefined, 'detail');
+    const refs = block.type === 'tool' && 'result' in block.state ? block.state.result?.images : undefined;
+    const images = refs?.length ? thumbnails(refs, step.slots) : undefined;
     if (block.type === 'thinking') detail.append(node('div', block.text || (block.redacted ? 'Redacted thinking' : ''), 'think'));
     else {
       if (info.edit) {
@@ -180,11 +220,12 @@ function run(input: Step[]) {
         detail.append(diff);
       } else {
         if (block.name === 'bash') detail.append(node('div', 'cwd ' + displayCwd(), 'kv'));
-        if ('result' in block.state && block.state.result?.text) detail.append(node('pre', block.state.result.text));
+        if ('result' in block.state && block.state.result?.text) detail.append(node(images && block.name === 'read' ? 'div' : 'pre', block.state.result.text, images && block.name === 'read' ? 'note' : ''));
       }
       if ('result' in block.state && block.state.result?.cut) detail.append(node('div', block.state.result.cut + ' bytes omitted', 'delta'));
     }
-    fold(child, key, row, detail); children.append(child);
+    if (images) { if (block.type === 'tool' && block.name === 'read') images.view.classList.add('large'); detail.append(images.view); }
+    fold(child, key, row, detail, images?.load); children.append(child);
   }
   fold(view, 'run:' + steps[0].key, line, children);
   return view;
@@ -210,11 +251,11 @@ function reconcileRuns(seq: number) {
     steps = [];
   };
   for (let current = start; current <= end; current++) {
-    const item = items.get(current);
-    if (item?.kind !== 'assistant') continue;
+    const item = items.get(current), owner = views.get(current);
+    if (item?.kind !== 'assistant' || !owner) continue;
     item.blocks.forEach((block, index) => {
       if (block.type === 'text') flush();
-      else steps.push({ block, item, index, key: item.seq + ':' + index });
+      else steps.push({ block, item, index, key: item.seq + ':' + index, slots: owner.slots });
     });
     if (item.error) flush();
   }
@@ -227,7 +268,9 @@ function put(item: WireItem) {
   if (previous?.item === item) return previous.view;
   const view = previous?.view ?? node('div');
   view.dataset.seq = String(item.seq);
-  const children: HTMLElement[] = [], slots = new Map<string, Slot>();
+  const refs = item.kind === 'user' ? item.images : item.kind === 'assistant' ? item.blocks.flatMap(block => block.type === 'tool' && 'result' in block.state ? block.state.result?.images ?? [] : []) : [];
+  const ids = new Set(refs.map(ref => 'image:' + ref.id));
+  const children: HTMLElement[] = [], slots = new Map([...previous?.slots ?? []].filter(([key]) => ids.has(key)));
   let steps: Step[] = [];
   const flush = () => {
     if (steps.length) {
@@ -240,7 +283,7 @@ function put(item: WireItem) {
     item.blocks.forEach((block, index) => {
       const key = item.seq + ':' + index;
       if (block.type === 'text') { flush(); if (block.text) children.push(prose(key, block.text, item.final)); }
-      else steps.push({ block, item, key, index });
+      else steps.push({ block, item, key, index, slots });
     });
     flush();
     if (item.error) children.push(node('div', item.error, 'msg err'));
@@ -248,7 +291,9 @@ function put(item: WireItem) {
     view.className = 'msg ' + item.kind;
     if (item.kind === 'user') {
       const time = node('time', timestamp(item.at)); time.dateTime = new Date(item.at).toISOString();
-      children.push(node('div', item.text + (item.images ? '\n' + item.images + ' images' : ''), 't'), time);
+      const text = node('div', item.text, 't');
+      if (item.images.length) { const images = thumbnails(item.images, slots); images.load(); text.append(images.view); }
+      children.push(text, time);
     } else if (item.kind === 'bash') children.push(node('div', '$ ' + item.command), node('pre', item.output.text), node('div', 'Exit ' + (item.exit ?? 'unknown'), 'delta'));
     else children.push(node('div', item.text, 'notice'));
   }

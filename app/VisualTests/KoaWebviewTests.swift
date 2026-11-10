@@ -7,7 +7,7 @@ import SidebarFeed
 @testable import Kido
 
 extension VisualTests {
-    private enum KoaScenario { case transcript, dialogs, controls, exit, feed, completion, markdown }
+    private enum KoaScenario { case transcript, dialogs, controls, exit, feed, completion, markdown, media }
     func testKoaInterruptRestoresNativeInput() async throws {
         let script = directory.appendingPathComponent("quit-script.jsonl")
         try "".write(to: script, atomically: true, encoding: .utf8)
@@ -133,6 +133,14 @@ extension VisualTests {
         try await koaWebview(width: 470, height: 560, scenario: .exit, captures: ["narrow-exited"])
     }
 
+    func testKoaWebviewMediaWide() async throws {
+        try await koaWebview(width: 980, height: 560, scenario: .media, captures: ["media-read-image", "media-user-images", "media-image-gone"])
+    }
+
+    func testKoaWebviewMediaNarrow() async throws {
+        try await koaWebview(width: 470, height: 560, scenario: .media, captures: ["narrow-media-read-image", "narrow-media-user-images", "narrow-media-image-gone"])
+    }
+
     func testKoaWebviewComposerMarkdown() async throws {
         try await koaWebview(width: 980, height: 560, scenario: .markdown, captures: ["composer-markdown", "composer-markdown-code"])
     }
@@ -153,7 +161,7 @@ extension VisualTests {
         let cwd = home.appendingPathComponent("Workspace/kido")
         try FileManager.default.createDirectory(at: cwd, withIntermediateDirectories: true)
         try JSONSerialization.data(withJSONObject: ["cwd": cwd.path]).write(to: sessionFile)
-        let stamp = Int(try XCTUnwrap(Calendar.current.date(from: DateComponents(year: 2026, month: 11, day: 8, hour: 14, minute: 32))).timeIntervalSince1970 * 1000)
+        let stamp = Int(try XCTUnwrap(Calendar.current.date(from: DateComponents(year: 2026, month: 11, day: scenario == .media ? 10 : 8, hour: scenario == .media ? 9 : 14, minute: scenario == .media ? 12 : 32))).timeIntervalSince1970 * 1000)
         let usage: [String: Any] = ["input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0, "totalTokens": 0, "cost": ["input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0, "total": 0]]
         func assistant(_ content: [[String: Any]], stop: String = "stop") -> [String: Any] {
             ["role": "assistant", "api": "test", "provider": "test", "model": "test", "usage": usage, "timestamp": stamp, "stopReason": stop, "content": content]
@@ -314,6 +322,39 @@ extension VisualTests {
             replay([completionUser])
             replay([])
         }
+        if scenario == .media {
+            func image(_ width: Int, _ height: Int, _ a: UInt32, _ b: UInt32, _ label: String) throws -> [String: Any] {
+                let bitmap = try XCTUnwrap(NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: width, pixelsHigh: height, bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: width * 4, bitsPerPixel: 32))
+                let context = try XCTUnwrap(NSGraphicsContext(bitmapImageRep: bitmap))
+                NSGraphicsContext.saveGraphicsState(); NSGraphicsContext.current = context
+                defer { NSGraphicsContext.restoreGraphicsState() }
+                let w = CGFloat(width), h = CGFloat(height)
+                func color(_ value: UInt32) -> NSColor { NSColor(srgbRed: CGFloat((value >> 16) & 255) / 255, green: CGFloat((value >> 8) & 255) / 255, blue: CGFloat(value & 255) / 255, alpha: 1) }
+                try XCTUnwrap(NSGradient(starting: color(a), ending: color(b))).draw(in: NSRect(x: 0, y: 0, width: w, height: h), angle: -45)
+                NSColor.white.withAlphaComponent(0.82).setFill()
+                NSBezierPath(roundedRect: NSRect(x: w * 0.08, y: h * 0.14, width: w * 0.84, height: h * 0.72), xRadius: min(w, h) * 0.03, yRadius: min(w, h) * 0.03).fill()
+                for (x, y, rw, rh, alpha) in [(0.12, 0.75, 0.5, 0.05, 0.55), (0.12, 0.66, 0.76, 0.04, 0.3), (0.12, 0.58, 0.7, 0.04, 0.3)] {
+                    NSColor(white: 0.2, alpha: alpha).setFill(); NSBezierPath(roundedRect: NSRect(x: w * x, y: h * y, width: w * rw, height: h * rh), xRadius: 3, yRadius: 3).fill()
+                }
+                color(a).withAlphaComponent(0.35).setFill(); NSBezierPath(roundedRect: NSRect(x: w * 0.12, y: h * 0.24, width: w * 0.76, height: h * 0.3), xRadius: 4, yRadius: 4).fill()
+                let paragraph = NSMutableParagraphStyle(); paragraph.alignment = .center
+                (label as NSString).draw(in: NSRect(x: 0, y: h * 0.015, width: w, height: h * 0.08), withAttributes: [.font: NSFont.monospacedSystemFont(ofSize: max(10, h * 0.045), weight: .regular), .foregroundColor: NSColor.white.withAlphaComponent(0.85), .paragraphStyle: paragraph])
+                return ["type": "image", "mimeType": "image/png", "data": try XCTUnwrap(bitmap.representation(using: .png, properties: [:])).base64EncodedString()]
+            }
+            let shot = try image(1440, 900, 0x2f6fd6, 0x8b3fc9, "screenshot 1440×900")
+            let diagram = try image(800, 800, 0xe0742d, 0xc42a5b, "diagram 800×800")
+            let sidebar = try image(1200, 500, 0x1f9d7a, 0x1f6fa6, "sidebar 1200×500")
+            func message(_ text: String, _ images: [[String: Any]] = []) -> [String: Any] { ["role": "user", "timestamp": stamp, "content": [["type": "text", "text": text]] + images] }
+            func read(_ id: String, _ path: String, _ at: Int) -> [[String: Any]] {
+                var call = assistant([["type": "toolCall", "id": id, "name": "read", "arguments": ["path": path]]], stop: "toolUse"); call["timestamp"] = stamp + at
+                return [call, ["role": "toolResult", "toolCallId": id, "toolName": "read", "timestamp": stamp + at + 200, "isError": false, "content": [["type": "text", "text": "Read image file [image/png]"], shot]]]
+            }
+            var code = assistant([["type": "toolCall", "id": "images", "name": "codemode", "arguments": ["code": "image() x2"]]], stop: "toolUse"); code["timestamp"] = stamp + 7900
+            steps = Array(steps.prefix(4))
+            replay([message("Look at the two screenshots in /tmp/koa-shots and tell me what differs")] + read("light", "/tmp/koa-shots/complete-at-agents-light-wide.png", 0) + read("dark", "/tmp/koa-shots/complete-at-agents-dark-wide.png", 200) + [code, ["role": "toolResult", "toolCallId": "images", "toolName": "codemode", "timestamp": stamp + 9000, "isError": false, "content": [["type": "text", "text": "sidebar rows: 28 vs 32pt"], sidebar, diagram]], assistant([["type": "text", "text": "The light render has the kind tags; the dark one lost them to the ellipsis. Two things differ…"]])])
+            replay([message("Make the sidebar look like this", [sidebar, diagram]), assistant([["type": "text", "text": "Reading both fixtures."]])])
+            replay([message("Compare with the earlier screenshot", [shot, shot]), assistant([["type": "text", "text": "I can see the second one; the first is no longer available in this session."]])])
+        }
         if scenario == .feed {
             steps = Array(steps.prefix(4))
             let part = String(repeating: "x", count: 4096)
@@ -399,13 +440,14 @@ extension VisualTests {
         }
         func capture(_ name: String) async throws {
             guard captures.contains(name) else { return }
+            let top = scenario == .media
             window.contentView?.layoutSubtreeIfNeeded()
             pane.webviewView?.layoutSubtreeIfNeeded()
-            _ = try await webviewJS(web, "(()=>{if(!document.querySelector('.dialog')&&!document.querySelector('#exited:not([hidden])')&&document.querySelector('#picker').hidden)window.composer.focus();const scroll=document.querySelector('#scroll');scroll.scrollTop=scroll.scrollHeight;return true})()")
+            _ = try await webviewJS(web, "(()=>{if(!document.querySelector('.dialog')&&!document.querySelector('#exited:not([hidden])')&&document.querySelector('#picker').hidden)window.composer.focus();const scroll=document.querySelector('#scroll');scroll.scrollTop=\(top ? "0" : "scroll.scrollHeight");return true})()")
             try await webviewUntil(web, "(()=>{const dock=document.querySelector('#dock');return Number.parseFloat(getComputedStyle(document.body).getPropertyValue('--dock-h'))===dock.getBoundingClientRect().height})()")
-            try await webviewUntil(web, "(()=>{const scroll=document.querySelector('#scroll');scroll.scrollTop=scroll.scrollHeight;return scroll.scrollHeight-scroll.scrollTop-scroll.clientHeight<1})()")
+            try await webviewUntil(web, "(()=>{const scroll=document.querySelector('#scroll');scroll.scrollTop=\(top ? "0" : "scroll.scrollHeight");return \(top ? "scroll.scrollTop===0" : "scroll.scrollHeight-scroll.scrollTop-scroll.clientHeight<1")})()")
             let lastAboveDock = try await webviewJS(web, "(()=>{const last=document.querySelector('#items').lastElementChild;return !last||last.getBoundingClientRect().bottom<=document.querySelector('#dock').getBoundingClientRect().top})()")
-            XCTAssertEqual(lastAboveDock, "true", "dock space keeps the last message above the composer")
+            if !top { XCTAssertEqual(lastAboveDock, "true", "dock space keeps the last message above the composer") }
             try await webviewSnapshot(pane, name + "-light", testName: "testKoaWebviewMockupStates()")
             try await darken()
             pane.webviewView?.updateTheme()
@@ -422,6 +464,33 @@ extension VisualTests {
         _ = try await webviewJS(web, "(()=>{const NativeDate=Date;window.Date=class extends NativeDate{constructor(...args){super(...(args.length?args:[\(stamp + 12000)]))}static now(){return \(stamp + 12000)}};const style=document.createElement('style');style.textContent='.caret,.spin,.dot.on{animation:none!important}';document.head.append(style);return true})()")
         let idleHint = try await webviewJS(web, "document.querySelector('#hint .spin')===null")
         XCTAssertEqual(idleHint, "true")
+        if scenario == .media {
+            let prefix = width < 750 ? "narrow-media-" : "media-"
+            func loaded(_ count: Int) async throws {
+                try await webviewUntil(web, "document.querySelectorAll('.thumb:not(.gone) img').length===\(count)")
+                _ = try await webviewJS(web, "Promise.all(Array.from(document.querySelectorAll('.thumb:not(.gone) img'),image=>image.decode())).then(()=>true)")
+                let dimensions = try await webviewJS(web, "Array.from(document.querySelectorAll('.thumb:not(.gone) img')).every(image=>image.naturalWidth>0&&image.naturalWidth===Number(image.getAttribute('width'))&&image.naturalHeight===Number(image.getAttribute('height')))")
+                XCTAssertEqual(dimensions, "true", "The decoded pixels belong to this transcript epoch")
+            }
+            try await advance()
+            try await webviewUntil(web, "document.querySelectorAll('.step').length===3")
+            let lazy = try await webviewJS(web, "document.querySelectorAll('.thumb img').length")
+            XCTAssertEqual(lazy, "0", "Collapsed steps do not create or request images")
+            _ = try await webviewJS(web, "(()=>{document.querySelector('.run>.line').click();document.querySelectorAll('.step>.line')[0].click();document.querySelectorAll('.step>.line')[2].click();return true})()")
+            try await loaded(3)
+            try await capture(prefix + "read-image")
+            try await advance()
+            try await webviewUntil(web, "document.querySelector('.user .t')?.firstChild?.textContent==='Make the sidebar look like this'")
+            try await loaded(2)
+            try await capture(prefix + "user-images")
+            try await advance()
+            try await webviewUntil(web, "document.querySelector('.user .t')?.textContent.includes('Compare with the earlier screenshot')")
+            _ = try await webviewJS(web, "(()=>{document.querySelector('.thumb img').src='/images/gone';return true})()")
+            try await webviewUntil(web, "document.querySelector('.thumb.gone[role=img]')!==null")
+            try await loaded(1)
+            try await capture(prefix + "image-gone")
+            return
+        }
         if scenario == .markdown {
             _ = try await webviewJS(web, #"(()=>{window.composer.setText('# Plan\n- **Strong** and *emphasis* with ~~old~~\n- Read `inline` and [link](https://kido.tools)');return true})()"#)
             try await webviewUntil(web, "document.querySelector('#prompt .cm-monospace')&&document.querySelector('#prompt .cm-strikethrough')")
@@ -678,7 +747,7 @@ extension VisualTests {
             try await capture("narrow-exited")
         }
         switch scenario {
-        case .transcript, .feed, .completion, .markdown: break
+        case .transcript, .feed, .completion, .markdown, .media: break
         case .dialogs: try await dialogScenario()
         case .controls: try await controlsScenario()
         case .exit: try await exitScenario()

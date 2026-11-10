@@ -653,3 +653,65 @@ arc, .8s) then "working 12s · ⎋ abort" in the faint terminal font,
 and the status bar's green dot breathes (opacity to .35 and back,
 1.6s ease-in-out). The placeholder stays "Steer koa…", so the ↩ hint
 is not needed. The run line's spinner is unchanged.
+
+## Images, attachments and Quick Look (media.html; proposal, 2026-11-10)
+
+`media.html` is the reference for units 12 to 14 (plans/koa.md,
+section 8), ten states, light and dark, wide and 60 columns. It copies
+`mockup.html`'s style block.
+
+**12 · Images in the transcript.**
+- A `read` of an image: the step's delta is `png · 1440×900` (the
+  sniffed type and the pixel size) in place of "N lines". Open, the
+  detail shows pi's note ("Read image file [image/png]") in the faint
+  tone at .85em, then the thumbnail: the image at its own aspect, at
+  most 240pt tall in a step (160pt in a user message), a `--hair`
+  border, radius 6pt, `--well` behind it while it loads; the pixel
+  size in a small label at its lower right on hover. It is a button
+  (`role=button`, `tabIndex 0`, zoom-in cursor): click, Space or
+  Enter previews it. Several images in one result sit in a row that
+  wraps, 6pt apart.
+- A user message: the text, then its thumbnails (160pt), then the
+  path lines of its file attachments in the terminal font at .92em
+  in the muted tone, one per line. The time stays at the right of
+  the first line.
+- An image that is gone (404, 410): a dashed `--hair2` box, 120×80pt,
+  radius 6pt, "Image unavailable" in the faint prose at .8em; not a
+  button.
+
+**13 · Attachments.** A chip row above the field, inside the dock,
+6pt gaps, wrapping. A chip is 28pt tall, radius 7pt, a `--hair2`
+border, the dock's 72% glass fill, at most 320pt wide: a 20pt square
+(the image's thumbnail, cover-cropped, or a document glyph on
+`--well2` in the muted tone), the name (ellipsized), then the size in
+the faint terminal font at .85em, then × (16pt, faint, `--well2` on
+hover). A path chip shows the directory muted after the name instead
+of a size. An upload shows the run line's gray spinner in the 20pt
+square and "18 / 41 MB". A refused chip has its border tinted 45%
+`--err` and the reason in red prose in place of the size ("over 64
+MB", "too many", "not readable"). A click on the chip's body previews
+it; × removes it. Drop hover: the field's border turns dashed at 45%
+fg and the placeholder reads "Drop to attach"; nothing else moves. A
+folder in any drop, local or not, is not attached (user, 2026-11-10:
+no `@dir/` for now): one line in the chip row in the muted prose at
+.85em, "Folders are not attached", for 4 s or until the next drop;
+the files of the same drop still become chips. The queue: a row with attachments shows a
+paper-clip glyph and the count after its text in the faint terminal
+font. After Send: the chips go and the user message shows the
+thumbnails and path lines of 12.
+
+**14 · Quick Look.** While ⇧ and ⌘ are both held, the path of a
+`read`, `edit` or `write` step with a file takes the pointer cursor
+and an underline in the muted tone, offset 2pt (a page-level `cmd`
+class that keydown and keyup set from `metaKey && shiftKey`);
+⇧⌘-click previews the file (user, 2026-11-10: the terminal's
+Shift-Command-click on images), a plain click folds. Other steps show nothing. The browser lightbox: a fixed
+overlay on the dock's glass (72% `--ko-bg`, blur 18) over the whole
+pane, the image at its natural size at most the viewport less 24pt a
+side and 96pt of height, radius 6pt, a shadow; a caption below in the
+faint terminal font: name · pixel size · "click or ⎋ to close".
+
+Renders: `/tmp/koa-shots/media-<state>-<theme>-<width>.png`, states
+read-image, user-images, image-gone, chips, drop, folder, queue, sent,
+cmd-hover, lightbox. Approved by the user on 2026-11-10 ("mockups look
+good, please go ahead"), as shown.

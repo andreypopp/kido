@@ -1,5 +1,9 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
-import type { Text, Block, Item, Assistant, WireItem, State, PageRecord, PromptMode, CompletionQuery } from "../koa/records.ts";
+import { createHash } from "node:crypto";
+import { createReadStream, mkdirSync, openSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { imageInfo } from "./image.ts";
+import type { Text, Block, Item, Assistant, WireItem, State, PageRecord, PromptMode, CompletionQuery, ImageRef } from "../koa/records.ts";
 import { mintId, contentText, utf8Prefix, type Content } from "./text.ts";
 import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { RpcExtensionUIRequest, RpcExtensionUIResponse } from "@earendil-works/pi-coding-agent";
@@ -78,7 +82,26 @@ function notRun(item: Assistant): void {
   for (const block of item.blocks) if (block.type === "tool" && block.state.type === "pending") block.state = { type: "not_run" };
 }
 
-export function transcript({ flushMs, metrics = false }: { flushMs: number; metrics?: boolean }) {
+export function transcript({ dir, flushMs, metrics = false }: { dir: string; flushMs: number; metrics?: boolean }) {
+  const imageDir = join(dir, "images");
+  mkdirSync(imageDir, { recursive: true, mode: 0o700 });
+  const images = new Map<string, { ref: ImageRef; path: string; digest: string }>();
+  const saveImages = (prefix: string, content: Content, previous: ImageRef[] = []): ImageRef[] => {
+    const refs: ImageRef[] = [];
+    if (typeof content !== "string") for (const block of content) {
+      if (block.type !== "image") continue;
+      const bytes = Buffer.from(block.data, "base64"), id = prefix + "." + refs.length;
+      const digest = createHash("sha1").update(bytes).digest("hex");
+      const old = images.get(id);
+      if (old?.digest === digest) { refs.push(old.ref); continue; }
+      const path = join(imageDir, id);
+      writeFileSync(path + ".tmp", bytes, { mode: 0o600 }); renameSync(path + ".tmp", path);
+      const ref: ImageRef = { id, revision: old ? old.ref.revision + 1 : 0, bytes: bytes.length, ...(imageInfo(bytes) ?? { mimeType: "application/octet-stream" }) };
+      images.set(id, { ref, path, digest }); refs.push(ref);
+    }
+    for (const ref of previous.slice(refs.length)) { const saved = images.get(ref.id); if (saved) rmSync(saved.path, { force: true }); images.delete(ref.id); }
+    return refs;
+  };
   const counters = metrics ? { flushes: 0, bytes: 0, highWater: 0, opens: 0, resets: 0, cursors: 0, caps: 0 } : undefined;
   let currentState: Extract<PageRecord, { type: "state" }> | undefined;
   let epoch = mintId();
@@ -156,8 +179,10 @@ export function transcript({ flushMs, metrics = false }: { flushMs: number; metr
     if (a.type !== b.type) return false;
     if (a.type !== "tool" && b.type !== "tool") return a.text === b.text && a.redacted === b.redacted && (a.type !== "thinking" || sameTiming(a, b));
     if (a.type !== "tool" || b.type !== "tool") return false;
+    const left = "result" in a.state ? a.state.result?.images : undefined, right = "result" in b.state ? b.state.result?.images : undefined;
     return sameTiming(a, b) && a.durationMs === b.durationMs && a.exit === b.exit && a.id === b.id && a.name === b.name && sameText(a.args, b.args) && a.state.type === b.state.type
       && sameText("result" in a.state ? a.state.result : undefined, "result" in b.state ? b.state.result : undefined)
+      && left?.length === right?.length && (left?.every((ref, index) => ref === right?.[index]) ?? true)
       && (a.state.type !== "done" || b.state.type === "done" && a.state.error === b.state.error);
   };
   const flush = (notify = true): void => {
@@ -181,7 +206,8 @@ export function transcript({ flushMs, metrics = false }: { flushMs: number; metr
           if (footer && code !== 0 && code === Number(footer[1])) text = text.slice(0, footer.index);
         }
       }
-      const result = cap(text, MAX_WEBVIEW_RESULT_BYTES);
+      const previous = "result" in found.block.state ? found.block.state.result?.images : undefined;
+      const result = { ...cap(text, MAX_WEBVIEW_RESULT_BYTES), images: saveImages(found.item.seq + "." + found.item.blocks.indexOf(found.block), held.content, previous) };
       found.block.state = held.type === "done" ? { type: "done", result, error: held.error } : { type: "running", result };
       if (held.type === "done") {
         if (held.at !== undefined) found.block.ended = held.at;
@@ -241,7 +267,7 @@ export function transcript({ flushMs, metrics = false }: { flushMs: number; metr
     const seq = items.length;
     let item: Item;
     switch (message.role) {
-      case "user": item = { seq, at: message.timestamp, final: true, kind: "user", text: contentText(message.content), images: typeof message.content === "string" ? 0 : message.content.filter(b => b.type === "image").length }; break;
+      case "user": item = { seq, at: message.timestamp, final: true, kind: "user", text: contentText(message.content), images: saveImages(String(seq), message.content) }; break;
       case "custom":
         if (!message.display) return;
         item = { seq, at: message.timestamp, final: true, kind: "notice", customType: message.customType, from: message.details && typeof message.details === "object" && "from" in message.details && typeof message.details.from === "string" ? message.details.from : "", text: contentText(message.content) }; break;
@@ -253,6 +279,7 @@ export function transcript({ flushMs, metrics = false }: { flushMs: number; metr
     if (!branch) { publish(item); flush(); }
   };
   const rebuild = (messages: readonly AgentMessage[] = []): void => {
+    images.clear(); rmSync(imageDir, { recursive: true, force: true }); mkdirSync(imageDir, { mode: 0o700 });
     epoch = mintId();
     items = [];
     assistant = undefined;
@@ -298,7 +325,21 @@ export function transcript({ flushMs, metrics = false }: { flushMs: number; metr
   };
   const handle = (request: IncomingMessage, req: ServerResponse): boolean => {
     const url = new URL(request.url ?? "/", "http://ko");
-    if (request.method === "GET" && url.pathname === "/items") {
+    if (request.method === "GET" && url.pathname.startsWith("/images/")) {
+      req.setHeader("Cache-Control", "no-store");
+      req.setHeader("X-Content-Type-Options", "nosniff");
+      req.setHeader("Content-Security-Policy", "sandbox; default-src 'none'");
+      const image = images.get(url.pathname.slice(8));
+      if (!image) { respond(req, 404, "{}"); return true; }
+      req.setHeader("Content-Type", image.ref.mimeType);
+      let fd: number;
+      try { fd = openSync(image.path, "r"); }
+      catch (error) { respond(req, error instanceof Error && "code" in error && error.code === "ENOENT" ? 410 : 500, "{}"); return true; }
+      req.writeHead(200, { "Content-Length": image.ref.bytes });
+      const stream = createReadStream(image.path, { fd });
+      req.once("close", () => stream.destroy());
+      stream.once("error", () => req.destroy()); stream.pipe(req);
+    } else if (request.method === "GET" && url.pathname === "/items") {
       const before = Number(url.searchParams.get("before"));
       if (!Number.isSafeInteger(before) || before < 0) respond(req, 400, "{}");
       else respond(req, 200, '{"epoch":' + JSON.stringify(epoch) + ',' + window(before) + '}');

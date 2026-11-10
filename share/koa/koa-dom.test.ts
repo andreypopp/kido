@@ -27,21 +27,22 @@ async function page() {
     oninput?: () => void;
     onkeydown?: (event: unknown) => void;
     attributes = new Map<string, string>();
-    setAttribute(name: string, value: string) { this.attributes.set(name, value); } focus() { for (let node: Node | undefined = this; node; node = node.parent) if (node.inert) return; document.activeElement = this; } setSelectionRange() {} addEventListener() {} scrollIntoView() {} getBoundingClientRect() { return { left: 0 }; }
+    setAttribute(name: string, value: string) { this.attributes.set(name, value); } getAttribute(name: string) { return this.attributes.get(name) ?? null; } removeAttribute(name: string) { this.attributes.delete(name); } focus() { for (let node: Node | undefined = this; node; node = node.parent) if (node.inert) return; document.activeElement = this; } setSelectionRange() {} addEventListener() {} scrollIntoView() {} getBoundingClientRect() { return { left: 0 }; }
     closest(selector: string) { return ['INPUT', 'TEXTAREA', 'SELECT', ...(selector.includes('button') ? ['BUTTON'] : [])].includes(this.tagName) || (this.attributes.has('role') && selector.includes(`[role=${this.attributes.get('role')}]`)) ? this : null; }
     setRangeText(text: string) { this.value = this.value.slice(0, this.selectionStart) + text + this.value.slice(this.selectionEnd); }
     dispatchEvent() { this.oninput?.(); }
     querySelector() { return undefined; }
     get childNodes() { return this.children; }
-    insertBefore(child: Node, _next: Node | null) { this.children.push(child); }
+    insertBefore(child: Node, next: Node | null) { if (child === next) return; child.remove(); const index = next ? this.children.indexOf(next) : this.children.length; this.children.splice(index < 0 ? this.children.length : index, 0, child); child.parent = this; }
     get firstElementChild() { return this.children[0]; }
     get lastElementChild() { return this.children.at(-1); }
+    get lastChild() { return this.children.at(-1); }
   }
   const elements = new Map<string, Node>();
   const listeners = new Map<string, (event: unknown) => void>();
   const windowListeners = new Map<string, (event?: unknown) => void>();
   let activeElement: Node | undefined;
-  const document = { hasFocus: () => true, get activeElement() { return activeElement; }, set activeElement(node: Node | undefined) { activeElement = node; }, querySelector: () => null, getElementById(id: string) { let node = elements.get(id); if (!node) { node = new Node(); elements.set(id, node); if (id === 'prompt') document.getElementById('field').append(node); } return node; }, createElement: () => new Node(), createElementNS: () => new Node(), addEventListener(type: string, handler: (event: unknown) => void) { listeners.set(type, handler); }, querySelectorAll: () => [] };
+  const document = { hasFocus: () => true, get activeElement() { return activeElement; }, set activeElement(node: Node | undefined) { activeElement = node; }, querySelector: () => null, getElementById(id: string) { let node = elements.get(id); if (!node) { node = new Node(); elements.set(id, node); if (id === 'prompt') document.getElementById('field').append(node); } return node; }, createElement: (tag: string) => { const node = new Node(); node.tagName = tag.toUpperCase(); return node; }, createElementNS: () => new Node(), addEventListener(type: string, handler: (event: unknown) => void) { listeners.set(type, handler); }, querySelectorAll: () => [] };
   type Handlers = { input(user: boolean): void; send(mode: PromptMode): void; quit(): void };
   let handlers: Handlers | undefined;
   let text = () => '';
@@ -61,7 +62,7 @@ async function page() {
       placeholder(text: string) { content.placeholder = text; },
     };
   };
-  const context = { composer, Node, Element: Node, HTMLElement: Node, HTMLButtonElement: Node, markdown, document, window: { ko: {}, addEventListener(type: string, handler: (event?: unknown) => void) { windowListeners.set(type, handler); } }, innerWidth: 980, Event: class { type: string; constructor(type: string) { this.type = type; } }, console, setInterval() {}, clearInterval() {}, setTimeout, clearTimeout, requestAnimationFrame() {}, fetch: async () => ({ ok: true, json: async () => ({}) }) };
+  const context = { composer, Node, Element: Node, HTMLElement: Node, HTMLButtonElement: Node, HTMLImageElement: Node, markdown, document, window: { ko: {}, addEventListener(type: string, handler: (event?: unknown) => void) { windowListeners.set(type, handler); } }, innerWidth: 980, Event: class { type: string; constructor(type: string) { this.type = type; } }, console, setInterval() {}, clearInterval() {}, setTimeout, clearTimeout, requestAnimationFrame() {}, fetch: async () => ({ ok: true, json: async () => ({}) }) };
   return { context, elements, listeners, windowListeners, handlers: () => handlers, prompt: () => prompt, text: () => text(), run: (code: string) => runInNewContext("{\n" + source.replace(/^import .*;\n/gm, "").replace(/^setInterval\([\s\S]*$/m, "") + "\n" + code + "\n}", context) };
 }
 
@@ -91,7 +92,7 @@ test("working hint shares the status clock and keeps its spinner across ticks", 
 test("printable transcript keys cannot change the draft during startup", async () => {
   const app = await page();
   app.run("refreshComposer()");
-  app.listeners.get('keydown')?.({ key: 'z', target: app.context.document.createElement(), preventDefault() {} });
+  app.listeners.get('keydown')?.({ key: 'z', target: app.context.document.createElement('div'), preventDefault() {} });
   assert.equal(app.text(), '');
 });
 
@@ -158,12 +159,12 @@ test("pane focus selects the composer without taking page controls or dialog fie
 test("printable transcript keys reach the composer but native shortcuts and fields keep their keys", async () => {
   const app = await page();
   app.run("state={...state,pi:{type:'ready'},dialogs:[]}");
-  const target = app.context.document.createElement();
+  const target = app.context.document.createElement('div');
   let prevented = 0;
   const key = (extra = {}) => app.listeners.get('keydown')?.({ key: 'z', target, preventDefault() { prevented++; }, ...extra });
   for (const modifier of ['metaKey', 'ctrlKey', 'altKey', 'isComposing']) key({ [modifier]: true });
   key({ key: 'Tab' });
-  const button = app.context.document.createElement(); button.tagName = 'BUTTON';
+  const button = app.context.document.createElement('div'); button.tagName = 'BUTTON';
   key({ key: ' ', target: button });
   key({ key: 'Enter', target: button });
   assert.equal(prevented, 0);
@@ -173,7 +174,7 @@ test("printable transcript keys reach the composer but native shortcuts and fiel
   assert.equal(app.context.document.activeElement, app.prompt());
   assert.equal(prevented, 1);
   key({ target: app.prompt() });
-  const editable = app.context.document.createElement(); editable.isContentEditable = true;
+  const editable = app.context.document.createElement('div'); editable.isContentEditable = true;
   key({ target: editable });
   assert.equal(prevented, 1);
   assert.equal(app.listeners.has('blur'), false);
@@ -301,13 +302,13 @@ test("finished prose and view change checks retain no extra text strings", async
 
 test("a run joins adjacent assistant items without replacing their text views", async () => {
   const app = await page();
-  assert.equal(app.run("const firstSlot=node('div'),secondSlot=node('div');items.set(0,{seq:0,kind:'assistant',final:true,stop:'toolUse',blocks:[{type:'thinking',text:'check'}]});items.set(1,{seq:1,kind:'assistant',final:true,stop:'toolUse',blocks:[{type:'tool',name:'read',args:{text:'{}'},state:{type:'done',error:false,result:{text:'ok'}}}]});views.set(0,{slots:new Map([['0:0',firstSlot]])});views.set(1,{slots:new Map([['1:0',secondSlot]])});run=steps=>({count:steps.length});reconcileRuns(1);firstSlot.children[0].count===2&&secondSlot.children.length===0"), true);
+  assert.equal(app.run("const firstSlot=node('div'),secondSlot=node('div');items.set(0,{seq:0,kind:'assistant',final:true,stop:'toolUse',blocks:[{type:'thinking',text:'check'}]});items.set(1,{seq:1,kind:'assistant',final:true,stop:'toolUse',blocks:[{type:'tool',name:'read',args:{text:'{}'},state:{type:'done',error:false,result:{text:'ok',images:[]}}}]});views.set(0,{slots:new Map([['0:0',firstSlot]])});views.set(1,{slots:new Map([['1:0',secondSlot]])});run=steps=>({count:steps.length});reconcileRuns(1);firstSlot.children[0].count===2&&secondSlot.children.length===0"), true);
 });
 
 test("invalid tool arguments do not stop rendering", async () => {
   const app = await page();
   for (const text of ["null", '{"path":"file","oldText":42,"newText":"text"}', '{"path":{"toString":null},"oldText":42,"newText":"text"}', '{"path":{"toString":null},"oldText":"old","newText":"new"}']) {
-    assert.doesNotThrow(() => app.run(`run([{key:'0:0',index:0,item:{final:true,stop:'stop',blocks:[]},block:{type:'tool',name:'edit',args:{text:${JSON.stringify(text)}},state:{type:'done',error:false,result:{text:'done'}}}}])`));
+    assert.doesNotThrow(() => app.run(`run([{key:'0:0',index:0,item:{final:true,stop:'stop',blocks:[]},block:{type:'tool',name:'edit',args:{text:${JSON.stringify(text)}},state:{type:'done',error:false,result:{text:'done',images:[]}}}}])`));
   }
 });
 
@@ -450,8 +451,8 @@ test("failed and aborted runs keep their outcomes", async () => {
   const app = await page();
   const result = app.run(`(()=>{
     const contents=value=>typeof value==='string'?value:value.textContent+value.children.map(contents).join('');
-    const read={type:'tool',name:'read',args:{text:JSON.stringify({path:'Makefile'})},started:0,ended:100,state:{type:'done',error:false,result:{text:'line'}}};
-    const bad={type:'tool',name:'bash',args:{text:JSON.stringify({command:'make verify STAGES=unit'})},started:1000,ended:41000,exit:101,state:{type:'done',error:true,result:{text:'FAIL unit 40.2s'}}};
+    const read={type:'tool',name:'read',args:{text:JSON.stringify({path:'Makefile'})},started:0,ended:100,state:{type:'done',error:false,result:{text:'line',images:[]}}};
+    const bad={type:'tool',name:'bash',args:{text:JSON.stringify({command:'make verify STAGES=unit'})},started:1000,ended:41000,exit:101,state:{type:'done',error:true,result:{text:'FAIL unit 40.2s',images:[]}}};
     const failedItem={at:0,final:true,stop:'toolUse',blocks:[read,bad]};
     const failed=run(failedItem.blocks.map((block,index)=>({block,index,key:'f'+index,item:failedItem})));
     const thinking={type:'thinking',text:'the order in sweep()'};
@@ -465,4 +466,35 @@ test("failed and aborted runs keep their outcomes", async () => {
   assert.doesNotMatch(result.output, /Command exited/);
   assert.match(result.aborted, /aborted, you pressed Escape/);
   assert.equal(result.outcome, "aborted ");
+});
+
+test("user thumbnails reuse their image node and a failed image becomes non-interactive", async () => {
+  const app = await page();
+  assert.equal(app.run(`(()=>{
+    const find=root=>root.tagName==='IMG'?root:root.children.flatMap(child=>typeof child==='object'?[find(child)]:[]).find(Boolean);
+    const item={seq:0,at:0,final:true,kind:'user',text:'Compare',images:[{id:'0.0',revision:0,mimeType:'image/png',bytes:10,width:1440,height:900}]};
+    const first=find(put(item));
+    if(!first)return false;
+    const second=find(put({...item}));
+    if(first!==second)return false;
+    const changed=find(put({...item,images:[{...item.images[0],revision:1}]}));
+    if(first!==changed||first.getAttribute('src')!=='/images/0.0?e=&r=1')return false;
+    const thumb=first.parent;if(thumb.tagName!=='BUTTON'||thumb.type!=='button'||thumb.disabled)return false;
+    first.onerror();return thumb.classList.contains('gone')&&thumb.attributes.get('role')==='img'&&thumb.disabled;
+  })()`), true);
+});
+
+test("a tool creates its image only when its step first opens", async () => {
+  const app = await page();
+  assert.equal(app.run(`(()=>{
+    const count=root=>(root.tagName==='IMG'?1:0)+root.children.reduce((sum,child)=>sum+(typeof child==='object'?count(child):0),0);
+    const block={type:'tool',id:'read',name:'read',args:{text:'{}',cut:0},state:{type:'done',error:false,result:{text:'Read image file [image/png]',cut:0,images:[{id:'0.0',revision:0,mimeType:'image/png',bytes:10,width:1440,height:900}]}}};
+    const view=put({seq:0,at:0,final:true,kind:'assistant',stop:'toolUse',error:'',blocks:[block]});
+    const run=views.get(0).slots.get('0:0').children[0];
+    if(count(view)!==0)return false;
+    run.children[0].onclick();if(count(view)!==0)return false;
+    const step=run.children[1].children[0];step.children[0].onclick();
+    if(count(view)!==1)return false;
+    step.children[0].onclick();step.children[0].onclick();return count(view)===1;
+  })()`), true);
 });

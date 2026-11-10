@@ -774,7 +774,7 @@ unit. The order is fixed, because each unit builds on the one before.
 12. **Images in the transcript.** Section 8, "The image store and its
    route". The design agent first mocks the thumbnails of a user
    message and the image in an open `read` step; the unit follows the
-   mockup. `share/pi/image.ts` (`sniffImage`, `imageSize`) with its
+   mockup. `share/pi/image.ts` (`imageInfo`) with its
    tests; koa's directory `koa-<pid>` and its removal at exit; the
    on-disk store, `ImageRef` and `GET /images/{id}` in
    `transcript.ts` (`transcript({ dir })`); `records.ts` gets
@@ -794,8 +794,8 @@ unit. The order is fixed, because each unit builds on the one before.
    in the theme script, the native drop of `PaneView` for a local
    page with `__koDrop` and the `ko-drop` event, and its
    `WebviewPaneTests`. The page: `page/attach.ts` (the drop, paste
-   and `ko-drop` handlers, the chips, the folder's `@dir/` at the
-   cursor, the chunked upload), the
+   and `ko-drop` handlers, the chips, the folder refusal line, the
+   chunked upload), the
    composer's `drop` and `paste` handlers that take file drops before
    CodeMirror. koa: the attachment routes (upload, path, bytes,
    delete) in `koa.ts`, `/prompt` with `attachments`, the queue
@@ -806,21 +806,29 @@ unit. The order is fixed, because each unit builds on the one before.
    thumbnail and a path line, the queue with an attachment), light and
    dark. The manual check in Kido: a Finder drop of a PNG and of a
    text file onto a koa pane, local (the chips show the paths, and pi
-   edits the original), a folder with a file (the `@dir/` text and
+   edits the original), a folder with a file (the refusal line and
    one chip) and over `ko HOST` (the chips show copies).
-14. **Quick Look.** Section 8, "Quick Look". The app: the `koPreview`
-   handler and `window.ko.preview` in `WebviewPaneView.swift`, the
-   preview file under `$TMPDIR/kido-previews/<pid>/<uuid>/<name>`,
-   the `QLPreviewPanel` data source and delegate on the pane's webview
-   view, the 64 MiB stop, the sweep at launch, and `WebviewPaneTests`
-   for the validation and the file. koa: `GET /steps/{seq}/{block}/file` and the
-   `Content-Disposition` of every served file. The page: a click or
-   Space on an image or a chip, and ⌘-click on the label of a `read`,
-   `edit` or `write` step with a file (the ⌘-hover look mocked
-   first), call `window.ko.preview` when it exists, else the lightbox
-   for an image and a new tab for a file; Escape closes the lightbox
-   first. Tests: section 8, "Tests", and one snapshot in
-   `KoaWebviewTests` (a `read` step's label under ⌘-hover). The manager sends the handler's shape to the top-level
+14. **Quick Look.** Section 8, "Quick Look". Before it starts, the
+   `webview` branch is rebased onto `main`, because main has the
+   terminal's Quick Look (62c6f1f5, "Shift-Command-click opens a
+   kitty image in Quick Look") with `app/App/ImagePreview.swift` and
+   `PrivateTemporaryDirectory`. The app side reuses them: the
+   `koPreview` handler and `window.ko.preview` in
+   `WebviewPaneView.swift` hand the fetched bytes to main's
+   `ImagePreview` and its private temporary directory, not to a
+   `kido-previews` writer of their own; the `QLPreviewPanel` data
+   source and delegate on the pane's webview view, the 64 MiB stop
+   and `WebviewPaneTests` for the validation and the file follow
+   main's shapes, and the full redesign of that part (section 8,
+   "Quick Look", "The app") happens after the rebase. koa: `GET
+   /steps/{seq}/{block}/file` and the `Content-Disposition` of every
+   served file. The page: a click or Space on an image or a chip, and
+   ⇧⌘-click on the label of a `read`, `edit` or `write` step with a
+   file (the ⇧⌘-hover look mocked first), call `window.ko.preview`
+   when it exists, else the lightbox for an image and a new tab for a
+   file; Escape closes the lightbox first. Tests: section 8, "Tests",
+   and one snapshot in `KoaWebviewTests` (a `read` step's label under
+   ⇧⌘-hover). The manager sends the handler's shape to the top-level
    session before the implementer writes it: it is a new page-to-app
    surface.
 15. **Markdown in the composer.** Section 7, "Markdown in the
@@ -1685,29 +1693,53 @@ session. koa's memory must not grow with the images, so the bytes
 live in files, not in a `Map`: the transcript module decodes each
 image block from base64 at conversion, in `applyMessage` for a user
 message and in `flush` for a tool result, and writes it with
-`writeFileSync` to `<dir>/images/<seq>.<n>`, where `<dir>` is koa's
+`writeFileSync` to `<dir>/images/<id>`, where `<dir>` is koa's
 own directory `<os.tmpdir()>/koa-<pid>/` (0700, made at start,
-removed at exit; the attachments below share it) and `n` is the
-image's ordinal in the item, so a rebuild gives the same ids to the
-same images. The module keeps only the index `images: Map<string,
+removed at exit; the attachments below share it). The id is
+`<seq>.<n>` for a user message's images and `<seq>.<block>.<n>` for a
+tool result's, with `block` the tool block's index in the assistant
+item and `n` the image's ordinal in that content list, so two blocks
+of one item never share a name, a block's partial and final results
+write the same ids (the final result replaces that block's images
+file by file and removes the ids beyond its count), a block's images
+are written again only when its result changed, and a rebuild gives
+the same ids to the same images. The module keeps only the index `images: Map<string,
 ImageRef & { path: string }>`, and the route streams the file with
 `createReadStream`. `transcript({ dir })` takes the directory from
 koa; the module's tests pass a temporary one. A record carries a
 reference, not bytes:
 
 ```ts
-type ImageRef = { id: string; mimeType: string; bytes: number; width?: number; height?: number };
+type ImageRef = { id: string; revision: number; mimeType: string; bytes: number; width?: number; height?: number };
 ```
+
+`revision` starts at 0 and increments when a write under the same id
+finds different bytes: the module's index keeps a sha1 digest of the
+decoded bytes for each id (computed once at conversion, so koa holds
+no base64 between flushes) and compares before it writes. The page's
+source is `/images/<id>?e=<epoch>&r=<revision>`, so a changed partial
+result changes one `src` attribute and the browser fetches again,
+while an unchanged ref leaves its node alone; the route ignores the
+query. The epoch is in the URL because a rebuild resets the index
+and its revisions, and WebKit's memory cache keys an image on its
+URL whatever `Cache-Control` says: without it, a rebuilt `0.1` of
+other bytes under the same id showed the old pixels in a new `<img>`. A
+block's result "changed" when its text or any image digest changed.
 
 in `records.ts`, on the user item as `images: ImageRef[]` (the count
 goes) and on a tool block's result as `images: ImageRef[]` beside
 `text` and `cut`. `width` and `height` come from the file's header
 (PNG `IHDR`, JPEG `SOFn`, GIF, WebP `VP8`/`VP8L`/`VP8X`, BMP) in
 `share/pi/image.ts`, a new module installed beside `transcript.ts`,
-with `sniffImage(bytes)` (the mime of the first bytes, pi's set and
-pi's exclusions) and `imageSize(bytes)`; the attachment routes below
-are its second caller. A header that the parser does not know leaves
-both absent, and the page reserves no space.
+whose one export `imageInfo(bytes)` returns the type from the first
+bytes (an allow-list: pi's set and pi's exclusions) with the
+dimensions, or nothing; the attachment routes below are its second
+caller. The sniffed type is the stored `mimeType`. A block whose
+bytes match no header gets no type at all: the record carries no
+`mimeType` and no size, the page reserves no space, and the route
+serves it as `application/octet-stream`; the `mimeType` that pi
+supplies with the block is never trusted or stored (the security
+review of 2026-11-10, which supersedes the earlier fallback).
 
 **The cost, stated.** Disk under `$TMPDIR` equal to the decoded size
 of every image of the branch, written once at conversion and again
@@ -1725,11 +1757,17 @@ host's `$TMPDIR` cleaning removes it (the plan accepts this, as pi
 accepts its `pi-clipboard-*` files).
 
 **The route.** `GET /images/{id}` in `transcript.ts`'s `handle`
-beside `/items`: `Content-Type` is the stored `mimeType`,
-`Content-Length` its size, the body the file; an unknown id is 404,
-and a missing file (the directory was cleaned under koa) is 410.
-Every proxy response carries `Cache-Control: no-store` and the
-server's CSP (protocol.md, section 16). The CSP's `img-src 'self'
+beside `/items`: `Content-Type` is the stored `mimeType`, else
+`application/octet-stream`, `Content-Length` its size, the body the
+file; an unknown id is 404, and a missing file (the directory was
+cleaned under koa) is 410. Every `/images` response adds
+`X-Content-Type-Options: nosniff` and its own
+`Content-Security-Policy: sandbox; default-src 'none'`, so a served
+file is never a document with the pane's origin; koa's CSP applies
+beside the server's, which a program can make stricter
+(protocol.md, "The serve stream"). Every proxy response carries
+`Cache-Control: no-store` and the server's CSP (protocol.md, section
+16). The CSP's `img-src 'self'
 data:` permits the route and forbids `blob:`, so the page never uses
 `createObjectURL`, also for a chip's thumbnail (below). `no-store`
 means that a second `<img>` with the same URL fetches again, so the
@@ -1801,14 +1839,16 @@ no type and caps only the size. What is clickable:
 - An attachment chip: a click on the chip's body previews it, × still
   removes it.
 - The target of a `read`, `edit` or `write` step whose arguments
-  name a file: ⌘-click on the step's label (the user decided on
-  2026-11-09). A plain click still folds, and the step has no control
-  inside it. While ⌘ is held over such a label, the cursor is the
-  pointer and the label gets the underline of a link (`:hover` under a
-  page-level `cmd` class that the `keydown` and `keyup` of Meta
-  toggle); a label of any other step, or of a step whose `path`
-  argument is missing, shows nothing and ⌘-click folds as a click
-  does. It shows the file as it is now on pi's host, not as the tool
+  name a file: ⇧⌘-click on the step's label (the user decided on
+  2026-11-10, in place of ⌘-click, to match the terminal's gesture
+  on main: "Shift-Command-click opens a kitty image in Quick Look",
+  62c6f1f5). A plain click still folds, and the step has no control
+  inside it. While ⇧ and ⌘ are both held over such a label, the
+  cursor is the pointer and the label gets the underline of a link
+  (`:hover` under a page-level class that the `keydown` and `keyup`
+  of Shift and Meta toggle, set only while both are down); a label of
+  any other step, or of a step whose `path` argument is missing,
+  shows nothing and ⇧⌘-click folds as a click does. It shows the file as it is now on pi's host, not as the tool
   saw it.
 
 **The message.** The document-start script adds one function,
@@ -1859,7 +1899,7 @@ could not preview the file"). The user closes the panel with Space or
 Escape, as in Finder.
 
 **The page.** A click on an image or a chip, Space and Enter on a
-focused one (each has `tabIndex` 0 and `role="button"`), or ⌘-click
+focused one (each has `tabIndex` 0 and `role="button"`), or ⇧⌘-click
 on the label of a `read`, `edit` or `write` step with a file calls
 `window.ko.preview(url)` when the function exists. Without it, the browser target, the page opens a lightbox
 for an image: a fixed overlay on the dock's glass with the image at
@@ -1905,32 +1945,26 @@ bytes.
   regular files only, no packages, symlinks or aliases, at most 16),
   after it has set aside the folders: a URL whose `lstat` is a
   directory and that is not a package (`isPackageKey`) is a folder,
-  and `Upload` never sees it. The app hands the page the two lists
-  with `browser.evaluateJavaScript("window.__koDrop('<generation>', <json>)")`,
+  and `Upload` never sees it. The app hands the page the file list
+  and whether the drop had a folder, with
+  `browser.evaluateJavaScript("window.__koDrop('<generation>', <json>)")`,
   where the document-start script defines `__koDrop` to check the
   generation and dispatch a `ko-drop` `CustomEvent` on `window` with
-  `{ files: string[]; folders: string[] }`. The app hands the page
-  nothing else: no bytes, no URL, and a file path only after
-  `Upload`'s checks; a failed check shows Kido's own upload notice and
-  hands nothing of that drop. The page validates the event in turn
-  (two arrays of strings, each absolute and without control
-  characters, at most 16 together) and makes a path chip for each
-  file. **A folder** (the user decided on 2026-11-09) becomes text:
-  the page inserts `@dir/` at the composer's cursor, with a space
-  before and after when the neighbours are not blank, as pi's paste
-  of paths does; the path is relative to the session `cwd`
-  (`state.cwd`) when the folder is under it (`@src/app/`), else
-  absolute (`@/Users/me/other/`), and quoted as pi's completion quotes
-  it (`@"a b/"`) when it has a space. The reason for the relative
-  form: it is what the completion of section 7 would insert, and a
-  session that moves hosts keeps it readable. The files of the same
-  drop still become chips. The drop position does not matter: the
-  whole page is the composer's target.
-  In a session that is not local, a dropped folder has no path on
-  pi's host and no bytes (WebKit gives a `File` of size 0 for a
-  directory, and `webkitGetAsEntry().isDirectory` names it), so the
-  page refuses it with a transient line in the chip row, "Folders
-  need a local session", and uploads the files of the drop.
+  `{ files: string[]; refused: boolean }`. The app hands the page
+  nothing else: no bytes, no URL, no folder path, and a file path
+  only after `Upload`'s checks; a failed check shows Kido's own upload
+  notice and hands nothing of that drop. The page validates the event
+  in turn (an array of strings, each absolute and without control
+  characters, at most 16, and a boolean) and makes a path chip for
+  each file. **A folder is not attached** (the user decided on
+  2026-11-10, in place of the `@dir/` text of 2026-11-09): the
+  terminal's upload refuses a folder, and the page does the same,
+  local or not, with one muted line in the chip row, "Folders are not
+  attached", shown for 4 s or until the next drop. The files of the
+  same drop still become chips. In a session that is not local, the
+  page names the folder itself: WebKit gives a `File` of size 0 for a
+  directory, and `webkitGetAsEntry().isDirectory` names it. The drop
+  position does not matter: the whole page is the composer's target.
 - **Every other session: the bytes.** The page's `drop` and `paste`
   handlers read `dataTransfer.files` and upload them in chunks
   (below). When `window.ko.local` is true, the page ignores
@@ -1968,9 +2002,9 @@ store" above, so koa holds no attachment in memory; the one exception
 is the image that it encodes at send time. A path attachment is not
 copied: koa `lstat`s it, refuses what is not a regular readable file,
 and keeps the path. When the last chunk lands, or at once for a path,
-`sniffImage` decides the kind from the first bytes (pi's set and
-exclusions, never from the browser's `type` or the extension), and
-`imageSize` gives the dimensions. The directory goes at koa's exit; a
+`imageInfo` decides the kind and the dimensions from the first bytes
+(pi's set and exclusions, never from the browser's `type` or the
+extension). The directory goes at koa's exit; a
 sent copy's file stays until then, because pi reads a file's path
 later and the session's transcript names it. These routes have an id
 in the path, so `koa.ts` matches them by prefix as `transcript.ts`
@@ -2026,8 +2060,10 @@ shows a glyph and the count beside a text with attachments.
 
 **The transcript.** pi stores the user message as
 `[{ text }, ...images]` (`agent-session.js:1525`), so the user item
-shows the thumbnails of "The image store" above, and the path lines
-show as text.
+shows the thumbnails of "The image store" above. The page does not
+guess attachment paths from the text's trailing lines; the chips of
+sent attachments come with unit 13's data, and until then the text
+shows as text.
 
 ### Limits
 
@@ -2088,13 +2124,14 @@ each image.
   `ko-drop` event with two paths makes two path chips, and an event
   with a relative path or a control character makes none; a `paste`
   with files makes chips, a text paste does not; × removes a chip and
-  posts the delete; Enter sends the ids; a `ko-drop` with a folder
-  under `state.cwd` inserts `@dir/` relative at the cursor with the
-  spaces, one outside inserts it absolute, one with a space inserts it
-  quoted, and a non-local drop with a directory entry shows the
-  refusal line and uploads the files; a click on an image or a chip,
-  or ⌘-click on a `read` step's label, calls `window.ko.preview` with
-  the URL when it exists, a ⌘-click on a `bash` step folds; without it an image opens the lightbox and Escape closes
+  posts the delete; Enter sends the ids; a `ko-drop` with `refused`
+  shows the refusal line for 4 s and makes the chips of its files,
+  the next drop clears the line, and a non-local drop with a
+  directory entry shows the same line and uploads the files; a click
+  on an image or a chip,
+  or ⇧⌘-click on a `read` step's label, calls `window.ko.preview`
+  with the URL when it exists, a ⇧⌘-click on a `bash` step folds and
+  a ⌘-click without ⇧ on a `read` step folds; without it an image opens the lightbox and Escape closes
   it and does not abort; a step's `<img>` exists only after the first
   open.
 - `WebviewPaneTests`: a `koPreview` message with another generation,
@@ -2132,12 +2169,14 @@ app).
 4. An images-only send may require text when pi refuses an empty
    message; the unit checks pi first.
 
-5. A step's file opens in Quick Look on ⌘-click of the step's label;
-   a plain click folds.
-6. A folder dropped on a local session adds `@dir/` at the cursor,
-   relative to the session `cwd` when inside it; its files still
-   become chips; a non-local drop of a folder is refused in the chip
-   row.
+5. A step's file opens in Quick Look on ⇧⌘-click of the step's label,
+   the terminal's gesture on main (changed from ⌘-click on
+   2026-11-10); a plain click folds, and the hover affordance shows
+   while ⇧ and ⌘ are both held.
+6. A dropped folder is not attached and inserts no text (changed on
+   2026-11-10 from the `@dir/` insertion): local or not, the chip row
+   shows "Folders are not attached" for 4 s or until the next drop,
+   and the files of the same drop still become chips.
 
 No open questions.
 

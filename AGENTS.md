@@ -177,8 +177,9 @@ These requirements are fixed:
   `make build` installs `share/ko/bin` (the `ko`, `ssh`, `ko-pi`
   and `koa` shims), `share/ko/shim.sh`, `share/pi/ko-pi.ts`,
   `share/pi/text.ts`, `share/pi/ko-api.d.ts`,
-  `share/pi/transcript.ts` and `share/pi/skills` (in
-  `share/ko/pi/`), koa's program, page and vendored modules (in `share/ko/koa/`), and the SDK
+  `share/pi/transcript.ts`, `share/pi/image.ts`, `share/pi/agents.ts`,
+  `share/pi/token.ts` and `share/pi/skills` (in
+  `share/ko/pi/`), koa's program and its bundled page (in `share/ko/koa/`), and the SDK
   `share/webview/` (in `share/ko/webview/`) beside `bin/ko` in
   `build/ko/`, the layout
   that `ko_shell/src/bin_dir.rs` finds as installed.
@@ -745,13 +746,15 @@ maps the coordinator's modules.
       bash/, zsh/       the OSC 133 integrations every primed shell sources
       openapi.json, client-model.json, config-schema.json   the generated schemas (make schemas)
     share/pi/           ko-pi.ts, the harness, which the ko-pi shim loads
-                        with --extension; transcript.ts, the transcript
-                        model of koa's page; its suite ko-pi-*.test.ts on
+                        with --extension; its suite ko-pi-*.test.ts on
                         the fake ko of testdata/fake_ko/; ko-api.d.ts,
                         generated from openapi.json; testdata/ko-prompts.txt,
                         the prompt snapshot; skills/ko/SKILL.md, the ko
                         skill that ko-pi offers to pi; transcript.ts,
-                        the transcript model that ko-pi and koa share
+                        the transcript model of koa's page, with
+                        image.ts, its image sniffer; agents.ts and
+                        token.ts, the completion rules that ko-pi and
+                        koa share
     share/koa/          koa.ts, the pi harness that renders through a
                         webview (plans/koa.md); page/, the TypeScript
                         sources of its page (page.ts, markdown.ts, the

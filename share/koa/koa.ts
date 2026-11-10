@@ -1,9 +1,10 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { once } from "node:events";
 import { readFile, appendFile, writeFile } from "node:fs/promises";
+import { mkdtempSync, rmSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { basename, join } from "node:path";
-import { homedir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import timers from "node:timers/promises";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import type { RpcCommand, RpcResponse, JsonAgentSessionEvent, RpcExtensionUIRequest, RpcExtensionUIResponse, SlashCommandSource } from "@earendil-works/pi-coding-agent";
@@ -124,7 +125,9 @@ async function main(): Promise<void> {
   if (!view) throw new Error("koa requires a Kido pane or --browser");
   if (metricsFile) await writeFile(metricsFile, "");
   let metricsWrites: Promise<void> | undefined;
-  const feed = transcript({ flushMs: FLUSH_MS, metrics: metricsFile !== undefined });
+  const dir = mkdtempSync(join(tmpdir(), `koa-${process.pid}-`));
+  process.once("exit", () => rmSync(dir, { recursive: true, force: true }));
+  const feed = transcript({ dir, flushMs: FLUSH_MS, metrics: metricsFile !== undefined });
   const agentDir = process.env.PI_CODING_AGENT_DIR || join(homedir(), ".pi/agent");
   const fd = findFd(process.env.KOA_FD, agentDir.replace(/^~(?=\/|$)/, homedir()), process.env.PATH ?? "");
   if (!fd) process.stderr.write("koa: fd not found; file completion is unavailable\n");

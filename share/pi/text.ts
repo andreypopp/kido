@@ -37,4 +37,4 @@ export function utf8Suffix(text: string, max: number): string {
   return bytes.subarray(start).toString("utf8");
 }
 
-export type Content = string | readonly { type: string; text?: string }[];
+export type Content = string | readonly ({ type: "text" | "thinking" | "toolCall"; text?: string } | { type: "image"; data: string; mimeType: string })[];
