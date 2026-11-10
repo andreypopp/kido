@@ -7,7 +7,7 @@ import SidebarFeed
 @testable import Kido
 
 extension VisualTests {
-    private enum KoaScenario { case transcript, dialogs, controls, exit, feed, completion, markdown, media, attachments, userMarkdown, preview, lightbox, agents, composer, questions, bang, commands, sessions }
+    private enum KoaScenario { case transcript, dialogs, controls, exit, feed, completion, markdown, media, attachments, userMarkdown, thinkingMarkdown, preview, lightbox, agents, composer, questions, bang, commands, sessions }
     func testKoaWebviewSubmitFollowsClampedBottom() async throws {
         WebviewPaneView.visualInitialScript = "window.requestAnimationFrame=callback=>setTimeout(()=>callback(performance.now()),16);window.cancelAnimationFrame=clearTimeout;const Source=EventSource;window.EventSource=class extends Source{constructor(...args){super(...args);window.scrollSource=this}};"
         defer { WebviewPaneView.visualInitialScript = nil }
@@ -334,6 +334,14 @@ extension VisualTests {
         try await koaWebview(width: 470, height: 560, scenario: .userMarkdown, captures: ["narrow-user-markdown", "narrow-user-quote", "narrow-user-quote2", "narrow-user-code"])
     }
 
+    func testKoaWebviewThinkingMarkdownWide() async throws {
+        try await koaWebview(width: 980, height: 560, scenario: .thinkingMarkdown, captures: ["thinking-markdown"])
+    }
+
+    func testKoaWebviewThinkingMarkdownNarrow() async throws {
+        try await koaWebview(width: 470, height: 560, scenario: .thinkingMarkdown, captures: ["narrow-thinking-markdown"])
+    }
+
     func testKoaWebviewComposerMarkdown() async throws {
         try await koaWebview(width: 980, height: 560, scenario: .markdown, captures: ["composer-markdown", "composer-markdown-code"])
     }
@@ -429,7 +437,7 @@ extension VisualTests {
         let stamp = Int(try XCTUnwrap(Calendar.current.date(from: DateComponents(year: 2026, month: 11, day: mediaClock ? 10 : 8, hour: mediaClock ? 9 : 14, minute: mediaClock ? 12 : 32))).timeIntervalSince1970 * 1000)
         let measured: Bool
         switch scenario {
-        case .commands, .sessions, .questions, .completion, .attachments, .userMarkdown, .exit, .lightbox: measured = true
+        case .commands, .sessions, .questions, .completion, .attachments, .userMarkdown, .thinkingMarkdown, .exit, .lightbox: measured = true
         default: measured = completionCaptures || captures.contains("focus-border-transcript") || captures.contains("focus-border-dialog")
         }
         let measurementClock = measured ? "const ClockDate=Date;window.Date=class extends ClockDate{constructor(...args){super(...(args.length?args:[\(stamp + 12000)]))}static now(){return \(stamp + 12000)}};" : ""
@@ -743,6 +751,13 @@ extension VisualTests {
             replay([message("Look at the two screenshots in /tmp/koa-shots and tell me what differs")] + read("light", "/tmp/koa-shots/complete-at-agents-light-wide.png", 0) + read("dark", "/tmp/koa-shots/complete-at-agents-dark-wide.png", 200) + [code, ["role": "toolResult", "toolCallId": "images", "toolName": "codemode", "timestamp": stamp + 9000, "isError": false, "content": [["type": "text", "text": "sidebar rows: 28 vs 32pt"], sidebar, diagram]], assistant([["type": "text", "text": "The light render has the kind tags; the dark one lost them to the ellipsis. Two things differ…"]])])
             replay([message("Make the sidebar look like this", [sidebar, diagram]), assistant([["type": "text", "text": "Reading both fixtures."]])])
             replay([message("Compare with the earlier screenshot", [shot, shot]), assistant([["type": "text", "text": "I can see the second one; the first is no longer available in this session."]])])
+        }
+        if scenario == .thinkingMarkdown {
+            let thinking = "# Check the close policy\n\nKeep **start failures** visible and use `close` for the exit rule.\n\n- Read the pane state\n- Keep the focus rule\n\n```swift\nif pane.close == .exit {\n    remove(pane)\n}\n```"
+            steps = Array(steps.prefix(3))
+            let content: [[String: Any]] = [["type": "thinking", "thinking": thinking]]
+            let messages: [[String: Any]] = [user, assistant(content)]
+            steps[1] = ["type": "respond", "command": "get_messages", "data": ["messages": messages]]
         }
         if scenario == .userMarkdown {
             var rich = user; rich["content"] = [["type": "text", "text": "Use `inline` and the same Markdown rules.\n\n> Keep the quoted instruction clear on the tint.\n\n- First item\n- Second item\n\n```js\nconst x = 1;\n```\n\n<b>raw HTML stays text</b>"]]
@@ -1061,6 +1076,15 @@ extension VisualTests {
         }
         try await webviewUntil(web, "document.querySelector('#status').textContent==='idle'&&document.querySelector('#model-name').textContent==='claude-opus-5-5'")
         _ = try await webviewJS(web, "(()=>{const NativeDate=Date;window.Date=class extends NativeDate{constructor(...args){super(...(args.length?args:[\(stamp + 12000)]))}static now(){return \(stamp + 12000)}};const style=document.createElement('style');style.textContent='.caret,.spin,.spin::before,.dot.on,.cm-cursorLayer{animation:none!important}.info .chev{transition:none!important}';document.head.append(style);return true})()")
+        if scenario == .thinkingMarkdown {
+            try await webviewUntil(web, "document.querySelector('.step')!==null")
+            _ = try await webviewJS(web, "(()=>{document.querySelector('.run>.line').click();document.querySelector('.step>.line').click();return true})()")
+            try await webviewUntil(web, "document.querySelector('.think h1')!==null&&document.querySelector('.think strong')!==null&&document.querySelector('.think ul')!==null&&document.querySelector('.think pre code')!==null")
+            let styles = try await webviewJS(web, "(()=>{const think=document.querySelector('.think'),pre=think.querySelector('pre'),heading=think.querySelector('h1'),style=getComputedStyle(think),code=getComputedStyle(pre);return style.maxHeight==='260px'&&style.whiteSpace==='normal'&&code.maxHeight==='none'&&code.overflowY==='hidden'&&code.color===style.color&&getComputedStyle(heading).fontSize===style.fontSize&&Math.abs(pre.getBoundingClientRect().height-62)<4})()")
+            XCTAssertEqual(styles, "true", "Thinking uses one vertical scroller and compact code and headings")
+            try await capture(width < 750 ? "narrow-thinking-markdown" : "thinking-markdown")
+            return
+        }
         if captures.contains("focus-border-transcript") {
             try await advance(); try await advance()
             try await webviewUntil(web, "document.querySelector('.assistant p')!==null")
@@ -1738,7 +1762,7 @@ extension VisualTests {
             try await capture("narrow-exited")
         }
         switch scenario {
-        case .transcript, .feed, .completion, .markdown, .media, .attachments, .userMarkdown, .preview, .lightbox, .agents, .composer, .questions, .bang, .commands, .sessions: break
+        case .transcript, .feed, .completion, .markdown, .media, .attachments, .userMarkdown, .thinkingMarkdown, .preview, .lightbox, .agents, .composer, .questions, .bang, .commands, .sessions: break
         case .dialogs: try await dialogScenario()
         case .controls: try await controlsScenario()
         case .exit: try await exitScenario()

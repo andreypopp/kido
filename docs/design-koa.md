@@ -470,6 +470,16 @@ replay from `get_messages` and the live stream use one conversion.
 - **Runs are the page's.** A run is every consecutive thinking and
   tool block between two texts; nothing stores it. Fold state is
   page-local and a reload loses it.
+- **Thinking is Markdown when open.** A thinking step's line shows
+  its first line without Markdown syntax, as an agent card does. Its
+  text renders through the reply's Markdown memo only when the step
+  is open: the first open renders it, and while it streams open, each
+  rebuild gives the memo the new text, as a reply streams. A closed
+  step does no Markdown work. Redacted thinking stays plain text.
+  Inside the step, Markdown keeps the muted tone of thinking: bold is
+  weight only, code and quotes are quieter than in a reply, headings
+  are body size, and the step's own 260px scroller is the one
+  vertical scroll.
 - **Notifications** (pi's `notify`) are items, one line where they
   arrived, and they stay. `get_messages` has no notifications, so a
   rebuild keeps the module's own notification items and merges them

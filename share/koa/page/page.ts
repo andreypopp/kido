@@ -226,7 +226,11 @@ function args(block: Extract<Block, { type: 'tool' }>): Record<string, unknown> 
 }
 function stepInfo(step: Step & { args: Record<string, unknown> }) {
   const { block, item } = step;
-  if (block.type === 'thinking') return { label: 'thinking', labelClass: 'name', detail: block.redacted ? 'redacted' : block.text.split('\n')[0], kind: 'thinking' };
+  if (block.type === 'thinking') {
+    const first = block.text.indexOf('\n');
+    const second = first < 0 ? -1 : block.text.indexOf('\n', first + 1);
+    return { label: 'thinking', labelClass: 'name', detail: block.redacted ? 'redacted' : markdownLine(second < 0 ? block.text : block.text.slice(0, second)), kind: 'thinking' };
+  }
   const values = step.args;
   const kind = block.name;
   if (block.name === 'async_bash') return { label: block.job?.name ?? (typeof values.name === 'string' ? values.name : 'async_bash'), labelClass: 'path', detail: '', kind };
@@ -305,8 +309,8 @@ function run(input: Step[]) {
     const detail = node('div', undefined, 'detail');
     const refs = block.type === 'tool' && 'result' in block.state ? block.state.result?.images : undefined;
     const images = refs?.length ? thumbnails(refs, step.slots, step.file) : undefined;
-    if (block.type === 'thinking') detail.append(node('div', block.text || (block.redacted ? 'Redacted thinking' : ''), 'think'));
-    else {
+    if (block.type === 'thinking' && block.redacted) detail.append(node('div', block.text || 'Redacted thinking', 'think redacted'));
+    else if (block.type === 'tool') {
       if (info.edit) {
         const diff = node('div', undefined, 'diff'); diff.append(node('div', info.label, 'h'));
         const { old, next, prefix, suffix } = info.edit;
@@ -324,7 +328,12 @@ function run(input: Step[]) {
       if ('result' in block.state && block.state.result?.cut) detail.append(node('div', block.state.result.cut + ' bytes omitted', 'delta'));
     }
     if (images) { if (block.type === 'tool' && block.name === 'read') images.view.classList.add('large'); detail.append(images.view); }
-    fold(child, key, row, detail, images?.load);
+    fold(child, key, row, detail, block.type === 'thinking' && !block.redacted ? () => {
+      if (!block.text) return;
+      const thinking = prose(key, block.text, step.item.final);
+      thinking.className = 'think prose';
+      detail.replaceChildren(thinking);
+    } : images?.load);
     if (step.file) {
       previewFile(label, '/steps/' + step.item.seq + '/' + step.index + '/file');
     }

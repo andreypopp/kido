@@ -734,6 +734,57 @@ test("finished prose and view change checks retain no extra text strings", async
   assert.equal(app.run("const finished={seq:0,kind:'assistant',final:true,blocks:[{type:'text',text:'same'}]};put(finished);const proseView=texts.get('0:0').view;put({...finished,blocks:[{type:'text',text:'same'}]});apply({type:'patch',seq:0,final:true,stop:'stop',ended:42,blocks:[]});texts.get('0:0').view===proseView&&items.get(0).stop==='stop'&&items.get(0).ended===42"), true);
 });
 
+test('thinking Markdown renders only on expand and stays current across streaming rebuilds', async () => {
+  const app = await page(), rendered: string[] = [];
+  let renderers = 0;
+  app.context.markdown = (user = false) => {
+    assert.equal(user, false);
+    renderers++;
+    const render = markdown(user);
+    return (...args: Parameters<typeof render>) => {
+      const blocks = render(...args);
+      rendered.push(blocks.map(block => block.html ?? '').join(''));
+      return blocks;
+    };
+  };
+  app.run(`
+    put({seq:0,at:1,kind:'assistant',final:false,blocks:[{type:'thinking',text:'**Plan**\\n\\n- Use \`code\`'}]});
+    if (texts.has('0:0')) throw Error('Collapsed thinking rendered');
+    const item=items.get(0);
+    if (stepInfo({block:item.blocks[0],item,args:{}}).detail!=='Plan') throw Error('Markdown syntax in summary');
+    const view=run([{block:item.blocks[0],item,index:0,key:'0:0'}]);
+    const step=view.children[1].children[0];
+    if (step.children[1].children.length) throw Error('Collapsed details have children');
+    step.children[0].onclick();
+    if (texts.get('0:0').view.className!=='think prose') throw Error('Missing Markdown class');
+    apply({type:'patch',seq:0,final:false,blocks:[{index:0,suffix:' and **more'}]});
+    if (texts.get('0:0').source!=='**Plan**\\n\\n- Use \`code\` and **more') throw Error('Stale thinking');
+    folds.set('0:0',false);
+    apply({type:'patch',seq:0,final:false,blocks:[{index:0,suffix:' words**'}]});
+    if (texts.get('0:0').source!=='**Plan**\\n\\n- Use \`code\` and **more') throw Error('Collapsed thinking updated');
+    folds.set('0:0',true);apply({type:'patch',seq:0,final:true,blocks:[]});
+  `);
+  assert.equal(renderers, 1);
+  assert.equal(rendered.length, 3);
+  assert.match(rendered[0], /<strong>Plan<\/strong>/);
+  assert.match(rendered[0], /<ul>/);
+  assert.match(rendered[0], /<code>code<\/code>/);
+  assert.match(rendered[1], /<strong>more<\/strong>/);
+  assert.match(rendered[2], /<strong>more words<\/strong>/);
+});
+
+test('redacted thinking stays plain text when expanded', async () => {
+  const app = await page();
+  app.context.markdown = () => { throw Error('Redacted thinking rendered Markdown'); };
+  assert.equal(app.run(`['', '**secret**'].every(text=>{
+    const block={type:'thinking',redacted:true,text},item={final:true,blocks:[block]};
+    folds.set('0:0',true);
+    const view=run([{block,item,index:0,key:'0:0'}]);
+    const detail=view.children[1].children[0].children[1].children[0];
+    return detail.className==='think redacted'&&detail.textContent===(text||'Redacted thinking')&&detail.children.length===0&&stepInfo({block,item,args:{}}).detail==='redacted';
+  })`), true);
+});
+
 test("a run joins adjacent assistant items without replacing their text views", async () => {
   const app = await page();
   assert.equal(app.run("const firstSlot=node('div'),secondSlot=node('div');items.set(0,{seq:0,kind:'assistant',final:true,stop:'toolUse',blocks:[{type:'thinking',text:'check'}]});items.set(1,{seq:1,kind:'assistant',final:true,stop:'toolUse',blocks:[{type:'tool',name:'read',args:{text:'{}'},state:{type:'done',error:false,result:{text:'ok',images:[]}}}]});views.set(0,{slots:new Map([['0:0',{type:'run',view:firstSlot}]])});views.set(1,{slots:new Map([['1:0',{type:'run',view:secondSlot}]])});run=steps=>({count:steps.length});reconcileRuns(1);firstSlot.children[0].count===2&&secondSlot.children.length===0"), true);
