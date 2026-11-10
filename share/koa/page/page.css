@@ -130,10 +130,10 @@ body .cm-tooltip.cm-tooltip-autocomplete.koa-complete::after{flex-shrink:0;conte
 .job .sep{color:var(--faint);font-size:.85em;margin:2px 0}
 .job .ft{color:var(--faint);font-size:.85em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .amsg .hd .who{min-width:0;overflow:hidden;text-overflow:ellipsis}.amsg .hd .tag{max-width:45%;overflow:hidden;text-overflow:ellipsis}.job .hd .nm,.job .hd .end{min-width:0;overflow:hidden;text-overflow:ellipsis}
-.ann-opt{display:inline;font:inherit;color:var(--ko-color-4);background:none;border:0;padding:0 1px;margin:0;border-radius:3px;cursor:pointer;text-decoration:underline;text-decoration-color:color-mix(in srgb,var(--ko-color-4) 40%,transparent);text-underline-offset:3px;text-decoration-thickness:1px}
+.ann-opt{color:var(--ko-color-4);padding:0 1px;border-radius:3px;box-decoration-break:clone;-webkit-box-decoration-break:clone;cursor:pointer;text-decoration:underline;text-decoration-color:color-mix(in srgb,var(--ko-color-4) 40%,transparent);text-underline-offset:3px;text-decoration-thickness:1px}
 .ann-opt:hover,.ann-opt.hover{background:color-mix(in srgb,var(--ko-color-4) 12%,var(--ko-bg));text-decoration-color:var(--ko-color-4)}
 .ann-opt.sel{background:color-mix(in srgb,var(--ko-color-4) 18%,var(--ko-bg));color:var(--ko-fg);text-decoration:none;box-shadow:0 0 0 1px color-mix(in srgb,var(--ko-color-4) 18%,var(--ko-bg))}
 .ann-ctl{display:inline-flex;gap:4px;margin-left:8px;vertical-align:baseline;white-space:nowrap}
-.ann-ctl .ann-opt{font-size:.88em;color:var(--ko-color-4);border:1px solid color-mix(in srgb,var(--ko-color-4) 35%,transparent);border-radius:5px;padding:0 6px;line-height:1.45;text-decoration:none}
+.ann-ctl .ann-opt{font:inherit;font-size:.88em;background:none;margin:0;color:var(--ko-color-4);border:1px solid color-mix(in srgb,var(--ko-color-4) 35%,transparent);border-radius:5px;padding:0 6px;line-height:1.45;text-decoration:none}
 .ann-ctl .ann-opt:hover,.ann-ctl .ann-opt.hover{background:color-mix(in srgb,var(--ko-color-4) 12%,var(--ko-bg));border-color:var(--ko-color-4)}
 .ann-ctl .ann-opt.sel{background:color-mix(in srgb,var(--ko-color-4) 18%,var(--ko-bg));border-color:transparent;color:var(--ko-fg);box-shadow:none}

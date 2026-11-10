@@ -249,11 +249,11 @@ extension VisualTests {
     }
 
     func testKoaWebviewQuestionsWide() async throws {
-        try await koaWebview(width: 980, height: 560, scenario: .questions, captures: ["questions-reply", "questions-answered"])
+        try await koaWebview(width: 980, height: 560, scenario: .questions, captures: ["questions-reply", "questions-answered", "questions-ordered"])
     }
 
     func testKoaWebviewQuestionsNarrow() async throws {
-        try await koaWebview(width: 470, height: 560, scenario: .questions, captures: ["narrow-questions-reply", "narrow-questions-answered"])
+        try await koaWebview(width: 470, height: 560, scenario: .questions, captures: ["narrow-questions-reply", "narrow-questions-answered", "narrow-questions-ordered"])
     }
 
     func testKoaWebviewCompletionWide() async throws {
@@ -670,12 +670,14 @@ extension VisualTests {
             steps = Array(steps.prefix(3))
             steps[1] = ["type": "respond", "command": "get_messages", "data": ["messages": [person, assistant([["type": "text", "text": reply]])]]]
             steps.append(["type": "respond", "command": "get_entries", "data": ["entries": [entry], "leafId": "questions"]])
-            let marked = "😀 Pick `one` or **two**?\r\n\r\n- Keep the cache?\r\n\r\n## Use alpha or beta?\r\n\r\n| Choice |\r\n| --- |\r\n| Use red or blue? |\r\n\r\nLiteral \u{E012}999;x\u{E012}"
+            let ordered = "Which should I do?\n\n1. Rebase the branch onto main and rerun the full verification before the push, including the application tests and all checks for the changed files.\n2. Push the branch as it is now and let CI check the combination on main, including the application tests and all checks for the changed files."
+            let marked = ordered + "\n\n😀 Pick `one` or **two**?\r\n\r\n- Keep the cache?\r\n\r\n## Use alpha or beta?\r\n\r\n| Choice |\r\n| --- |\r\n| Use red or blue? |\r\n\r\nLiteral \u{E012}999;x\u{E012}"
             func markedSpan(_ text: String) throws -> [Int] {
                 let range = try XCTUnwrap(marked.range(of: text))
                 return [marked[..<range.lowerBound].unicodeScalars.count, marked[..<range.upperBound].unicodeScalars.count]
             }
             let markedQuestions: [[String: Any]] = [
+                ["type": "question", "kind": "choice", "range": try markedSpan(ordered), "options": [try markedSpan("Rebase the branch onto main and rerun the full verification before the push, including the application tests and all checks for the changed files"), try markedSpan("Push the branch as it is now and let CI check the combination on main, including the application tests and all checks for the changed files")]],
                 ["type": "question", "kind": "choice", "range": try markedSpan("😀 Pick `one` or **two**?"), "options": [try markedSpan("`one`"), try markedSpan("**two**")]],
                 ["type": "question", "kind": "yes_no", "range": try markedSpan("Keep the cache?"), "options": []],
                 ["type": "question", "kind": "choice", "range": try markedSpan("Use alpha or beta?"), "options": [try markedSpan("alpha"), try markedSpan("beta")]],
@@ -766,12 +768,13 @@ extension VisualTests {
         }
         func capture(_ name: String) async throws {
             guard captures.contains(name) else { return }
+            let ordered = name == "questions-ordered" || name == "narrow-questions-ordered"
             let top = scenario == .questions || scenario == .media || scenario == .lightbox || scenario == .agents || scenario == .composer
             window.contentView?.layoutSubtreeIfNeeded()
             pane.webviewView?.layoutSubtreeIfNeeded()
-            _ = try await webviewJS(web, "(()=>{if(!document.querySelector('.lightbox')&&!document.querySelector('.dialog')&&!document.querySelector('#exited:not([hidden])')&&document.querySelector('#picker').hidden)window.composer.focus();const scroll=document.querySelector('#scroll');scroll.scrollTop=\(top ? "0" : "scroll.scrollHeight");return true})()")
+            _ = try await webviewJS(web, "(()=>{if(!document.querySelector('.lightbox')&&!document.querySelector('.dialog')&&!document.querySelector('#exited:not([hidden])')&&document.querySelector('#picker').hidden)window.composer.focus();const scroll=document.querySelector('#scroll');scroll.scrollTop=\(top ? "0" : "scroll.scrollHeight");if(\(ordered))document.querySelectorAll('.assistant')[1].scrollIntoView({block:'start'});return true})()")
             try await webviewUntil(web, "(()=>{const dock=document.querySelector('#dock');return Number.parseFloat(getComputedStyle(document.body).getPropertyValue('--dock-h'))===dock.getBoundingClientRect().height})()")
-            try await webviewUntil(web, "(()=>{const scroll=document.querySelector('#scroll');scroll.scrollTop=\(top ? "0" : "scroll.scrollHeight");return \(top ? "scroll.scrollTop===0" : "scroll.scrollHeight-scroll.scrollTop-scroll.clientHeight<1")})()")
+            try await webviewUntil(web, "(()=>{const scroll=document.querySelector('#scroll');if(\(ordered)){document.querySelectorAll('.assistant')[1].scrollIntoView({block:'start'});return true}scroll.scrollTop=\(top ? "0" : "scroll.scrollHeight");return \(top ? "scroll.scrollTop===0" : "scroll.scrollHeight-scroll.scrollTop-scroll.clientHeight<1")})()")
             let lastAboveDock = try await webviewJS(web, "(()=>{const last=document.querySelector('#items').lastElementChild;return !last||last.getBoundingClientRect().bottom<=document.querySelector('#dock').getBoundingClientRect().top})()")
             if !top { XCTAssertEqual(lastAboveDock, "true", "dock space keeps the last message above the composer") }
             if name.hasSuffix("queue") {
@@ -798,20 +801,22 @@ extension VisualTests {
         XCTAssertEqual(idleHint, "true")
         if scenario == .questions {
             try await webviewUntil(web, "document.querySelectorAll('.ann-opt').length===13")
-            let structure = try await webviewJS(web, "(()=>{const first=document.querySelector('.assistant li'),paragraph=Array.from(document.querySelectorAll('.assistant p')).find(p=>p.textContent.includes('Do you want'));return first.querySelectorAll('button').length===3&&paragraph.querySelector('.ann-ctl').nextSibling.textContent.startsWith(' It costs')&&!document.querySelector('.assistant').textContent.match(/[\\uE010-\\uE012]/)})()")
+            let structure = try await webviewJS(web, "(()=>{const first=document.querySelector('.assistant li'),paragraph=Array.from(document.querySelectorAll('.assistant p')).find(p=>p.textContent.includes('Do you want'));return first.querySelectorAll('[role=button]').length===2&&first.querySelectorAll('button').length===1&&paragraph.querySelector('.ann-ctl').nextSibling.textContent.startsWith(' It costs')&&!document.querySelector('.assistant').textContent.match(/[\\uE010-\\uE012]/)})()")
             XCTAssertEqual(structure, "true")
-            _ = try await webviewJS(web, "(()=>{const style=document.createElement('style');style.textContent='.ann-opt.snapshot-hover{background:color-mix(in srgb,var(--ko-color-4) 12%,var(--ko-bg));text-decoration-color:var(--ko-color-4)}.ann-ctl .snapshot-hover{border-color:var(--ko-color-4)}';document.head.append(style);const choices=document.querySelectorAll('.assistant li');choices[0].querySelectorAll('button')[1].classList.add('snapshot-hover');choices[1].querySelector('button').classList.add('snapshot-hover');return true})()")
+            _ = try await webviewJS(web, "(()=>{const style=document.createElement('style');style.textContent='.ann-opt.snapshot-hover{background:color-mix(in srgb,var(--ko-color-4) 12%,var(--ko-bg));text-decoration-color:var(--ko-color-4)}.ann-ctl .snapshot-hover{border-color:var(--ko-color-4)}';document.head.append(style);const choices=document.querySelectorAll('.assistant li');choices[0].querySelectorAll('.ann-opt')[1].classList.add('snapshot-hover');choices[1].querySelector('button').classList.add('snapshot-hover');return true})()")
             try await capture("questions-reply")
             try await capture("narrow-questions-reply")
-            let answered = try await webviewJS(web, #"(()=>{const rows=document.querySelectorAll('.assistant li');rows[0].querySelectorAll('button')[1].click();rows[1].querySelector('button').click();document.querySelectorAll('.snapshot-hover').forEach(b=>b.classList.remove('snapshot-hover'));return window.composer.text()})()"#)
+            let answered = try await webviewJS(web, #"(()=>{const rows=document.querySelectorAll('.assistant li');rows[0].querySelectorAll('.ann-opt')[1].dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true,cancelable:true}));rows[1].querySelector('button').click();document.querySelectorAll('.snapshot-hover').forEach(b=>b.classList.remove('snapshot-hover'));return window.composer.text()})()"#)
             XCTAssertEqual(answered, #""> Should I push now, or wait for CI on the rebase?\n\nwait for CI\n\n> The breadcrumb test is flaky on Linux. I recommend skipping it on Linux for now.\n\nYes""#)
             try await capture("questions-answered")
             try await capture("narrow-questions-answered")
-            let clicks = try await webviewJS(web, #"(()=>{const rows=document.querySelectorAll('.assistant li'),editor=window.composer;rows[0].querySelector('button').click();if(!editor.text().includes('\n\npush now\n\n> ')||document.querySelectorAll('.ann-opt.sel').length!==2)return 'replace';rows[0].querySelector('.ann-ctl button').click();if(!editor.text().includes('rebase?\n\n\n\n> '))return 'Other';const open=Array.from(document.querySelectorAll('.ann-ctl button')).find(b=>b.textContent==='Answer');open.click();editor.setText(editor.text()+'Food');open.click();if(!editor.text().endsWith('called?\n\nFood'))return 'Answer';editor.setText('');if(document.querySelector('.ann-opt.sel'))return 'clear selected';editor.setText('not a boundary > Should I push now, or wait for CI on the rebase?\n\npush now');if(rows[0].querySelector('.sel'))return 'invalid quote boundary selected';editor.setText('');return 'ok'})()"#)
+            let clicks = try await webviewJS(web, #"(()=>{const rows=document.querySelectorAll('.assistant li'),editor=window.composer;rows[0].querySelector('.ann-opt').dispatchEvent(new KeyboardEvent('keydown',{key:' ',bubbles:true,cancelable:true}));if(!editor.text().includes('\n\npush now\n\n> ')||document.querySelectorAll('.ann-opt.sel').length!==2)return 'replace';rows[0].querySelector('.ann-ctl button').click();if(!editor.text().includes('rebase?\n\n\n\n> '))return 'Other';const open=Array.from(document.querySelectorAll('.ann-ctl button')).find(b=>b.textContent==='Answer');open.click();editor.setText(editor.text()+'Food');open.click();if(!editor.text().endsWith('called?\n\nFood'))return 'Answer';editor.setText('');if(document.querySelector('.ann-opt.sel'))return 'clear selected';editor.setText('not a boundary > Should I push now, or wait for CI on the rebase?\n\npush now');if(rows[0].querySelector('.sel'))return 'invalid quote boundary selected';editor.setText('');return 'ok'})()"#)
             XCTAssertEqual(clicks, "\"ok\"")
             try await advance()
-            try await webviewUntil(web, "document.querySelectorAll('.assistant').length===2&&document.querySelectorAll('.ann-ctl').length===9")
-            let marked = try await webviewJS(web, #"(()=>{const reply=document.querySelectorAll('.assistant')[1];if(!reply.textContent.includes('Literal �999;x�')||/[\uE010-\uE012]/.test(reply.textContent)||!reply.querySelector('button code')||!reply.querySelector('button strong')||!reply.querySelector('li .ann-ctl')||!reply.querySelector('h2 .ann-ctl')||!reply.querySelector('td .ann-ctl'))return reply.innerHTML;reply.querySelector('button').click();return window.composer.text()})()"#)
+            try await webviewUntil(web, "document.querySelectorAll('.assistant').length===2&&document.querySelectorAll('.ann-ctl').length===10")
+            try await capture("questions-ordered")
+            try await capture("narrow-questions-ordered")
+            let marked = try await webviewJS(web, #"(()=>{const reply=document.querySelectorAll('.assistant')[1];if(!reply.textContent.includes('Literal �999;x�')||/[\uE010-\uE012]/.test(reply.textContent)||!reply.querySelector('.ann-opt code')||!reply.querySelector('.ann-opt strong')||!reply.querySelector('li .ann-ctl')||!reply.querySelector('h2 .ann-ctl')||!reply.querySelector('td .ann-ctl'))return reply.innerHTML;reply.querySelector('.ann-opt code').parentElement.click();return window.composer.text()})()"#)
             XCTAssertEqual(marked, #""> 😀 Pick one or two?\n\none""#)
             return
         }

@@ -618,8 +618,11 @@ which finds the questions of a reply, and the page renders the
   to the token before it, an opening mark to the token after it, so a
   question's controls stay in its list item. marked passes the
   private-use marker characters through as text, and a walk over the
-  text nodes of the parsed HTML replaces them with the option buttons
-  and the controls. This is the TUI's technique on the DOM, so both
+  text nodes of the parsed HTML replaces them with the options and
+  the controls. An option is an inline span with the button role, not
+  a `<button>`: WebKit lays out a button as an atomic inline block that
+  centres its text, so a long option in a list item would not wrap as
+  prose. The controls after a question are buttons. This is the TUI's technique on the DOM, so both
   renderers share one rule for where a marker can fall: the
   producer's guarantee that a boundary is never inside Markdown syntax.
   A marker character in the reply's own text is replaced before the

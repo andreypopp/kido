@@ -4,7 +4,7 @@ import { answer, current, plain, quote } from './answers.ts';
 import type { composer } from './composer.ts';
 
 export function update(text: string): void {
-  for (const control of document.querySelectorAll<HTMLButtonElement>('.ann-opt')) {
+  for (const control of document.querySelectorAll<HTMLElement>('.ann-opt')) {
     const selected = current(text, control.dataset.quote ?? '');
     control.classList.toggle('sel', selected !== undefined && selected === control.dataset.answer);
   }
@@ -30,8 +30,15 @@ export function annotations(source: string, questions: Annotation[], editor: Pic
   });
   marks.sort((a, b) => a.offset - b.offset);
   const button = (id: number, label?: string) => {
-    const data = actions[id], result = document.createElement('button');
-    result.type = 'button'; result.className = 'ann-opt';
+    const data = actions[id], result = document.createElement(label ? 'button' : 'span');
+    if (result instanceof HTMLButtonElement) result.type = 'button';
+    else {
+      result.setAttribute('role', 'button'); result.tabIndex = 0;
+      result.onkeydown = event => {
+        if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); result.click(); }
+      };
+    }
+    result.className = 'ann-opt';
     if (label) result.textContent = label;
     result.dataset.quote = data.quote; result.dataset.answer = data.answer;
     result.onclick = () => { editor.setText(answer(editor.text(), data.quote, data.answer, data.overwrite)); editor.focus(); };
