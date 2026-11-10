@@ -137,6 +137,24 @@ test("bash exit codes come from structured results or the status footer", t => {
   view.close();
 });
 
+test("delivered attachment paths are data and a rebuild never guesses them", t => {
+  const view = transcript({ dir: directory(t), flushMs: 1 });
+  const lines = request(view, "/events");
+  const file = { id: "upload", name: "data.txt", size: 4, path: "/tmp/copy/data.txt", origin: "upload" as const, kind: "file" as const };
+  const message = { role: "user" as const, timestamp: 1, content: "Inspect\n" + file.path };
+  view.message(message, "start");
+  view.message(message, "end", undefined, [file]);
+  const item = lines.map(record).filter(record => record.type === "item").at(-1)?.item;
+  assert.equal(item?.text, "Inspect");
+  assert.deepEqual(item?.attachments, [file]);
+  lines.length = 0;
+  view.rebuild([message]);
+  const rebuilt = lines.map(record).find(record => record.type === "reset")?.items[0];
+  assert.equal(rebuilt?.text, message.content);
+  assert.deepEqual(rebuilt?.attachments, []);
+  view.close();
+});
+
 test("identical image partials emit no patch and changed bytes advance the wire revision", t => {
   const view = transcript({ dir: directory(t), flushMs: 1000 });
   const lines = request(view, "/events");
@@ -167,7 +185,7 @@ test("rebuild sends reset then exactly one caller-supplied state and keeps the e
   view.state({ ...state, working: true, name: "after" });
   const records = lines.map(record);
   assert.deepEqual(records.map(record => record.type), ["reset", "state"]);
-  assert.deepEqual(records[0].items, [{ seq: 0, at: 456, final: true, kind: "user", text: "restored", images: [] }]);
+  assert.deepEqual(records[0].items, [{ seq: 0, at: 456, final: true, kind: "user", text: "restored", images: [], attachments: [] }]);
   assert.match(records[0].epoch, /^[A-Za-z0-9_-]{22}$/);
   assert.notEqual(records[0].epoch, firstEpoch);
   assert.deepEqual(records[1], { ...state, type: "state", working: true, name: "after" });

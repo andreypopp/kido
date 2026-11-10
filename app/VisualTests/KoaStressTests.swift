@@ -59,7 +59,7 @@ import XCTest
 
     private func prompt(_ web: WKWebView) async throws {
         try await webviewUntil(web, "document.querySelector('#status').textContent==='idle'")
-        let status = try await webviewJS(web, "fetch('/prompt',{method:'POST',body:JSON.stringify({text:'go',mode:'prompt'})}).then(r=>r.status)")
+        let status = try await webviewJS(web, "fetch('/prompt',{method:'POST',body:JSON.stringify({text:'go',mode:'prompt',attachments:[]})}).then(r=>r.status)")
         XCTAssertEqual(status, "200")
     }
 

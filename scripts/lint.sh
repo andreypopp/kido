@@ -124,7 +124,7 @@ core = [path for path in ts_sources if path.startswith('share/koa/') or path in 
 for path in candidates(r'(^|[^a-zA-Z_])(as|any)([^a-zA-Z_]|$)|!', core):
     text = pathlib.Path(path).read_text()
     code, _ = lexical(text)
-    for match in re.finditer(r'\bas\b(?!\s+const\b)|\bany\b|(?<=[\w)\]])!(?!=)', code):
+    for match in re.finditer(r'\bas\b(?!\s+const\b)|(?<![\w.])any\b|(?<=[\w)\]])!(?!=)', code):
         report(path, text, match.start(), 'TS hygiene: assertion or any')
 
 fuzz_allowed = {

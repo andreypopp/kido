@@ -410,6 +410,18 @@ page keeps the composer's text. A body over 1 MiB answers 413; the
 server refuses it first with `invalid` (`MAX_BODY`,
 `ko_server/src/http.rs`).
 
+**`/name`, the one built-in koa handles** (the user decided on
+2026-11-10, in unit 13; the other built-ins stay out, section 7).
+koa intercepts a `/prompt` whose text is `/name` or `/name <text>`
+before it reaches pi: `/name <text>` trims the name and sends
+`set_session_name`, and the page shows the info toast "Session name
+set: NAME" (pi's own wording, `interactive-mode.js:5666`); a bare
+`/name` asks `get_state` and shows "Session name: NAME" when the
+session has a name, else warns "Usage: /name <name>". The
+command sends nothing to pi's `prompt`, keeps the composer's draft
+chips, and never passes attachment ids on. The completion of
+section 7 does not list `/name`: it offers `get_commands` only.
+
 **The status facts.** `working` runs from `agent_start` to
 `agent_settled`; `since` is the `agent_start` time. The model and the
 thinking level come from `get_state` at start, from the `set_model`
@@ -452,6 +464,15 @@ page escapes every text that it did not write. marked produces an HTML string fo
 block; the page parses it with a `DOMParser` into a detached document
 and adopts the nodes, after the `html` tokens were escaped at the
 lexer's output, so no model text reaches `innerHTML` unescaped.
+
+**The user's text** (decided 2026-11-10, in unit 13) renders through
+the same Markdown renderer as the assistant's, in compact plain
+paragraphs, with the timestamp on the first line; the user's well
+outsets by its 12px padding, so the text's width equals the
+assistant's; and the base text size, the composer's included, is
+0.92 of the terminal font's through one shared `--size` property.
+Every koa snapshot of the app's suite is recorded once, at the end
+of the unit, after these changes.
 
 **Theme.** Only `--ko-*` properties, with the mockup's `:root`
 fallback for the browser. The fallback follows `prefers-color-scheme`
@@ -845,6 +866,21 @@ unit. The order is fixed, because each unit builds on the one before.
    with a heading, emphasis, a code span, a link, a list and a quote;
    a fence), light and dark, which the manager checks against the
    rule of section 7, "Highlighting", and the user judges in a demo.
+16. **Messages to and from agents, and job notifications.** Section
+   9, as the approved mockup `agents.html` shows it. ko-pi: the
+   structured `details` of its four custom messages and of the three
+   tool results. The transcript module: the `agent` and `job` items
+   from a custom message and the `agent` and `job` fields of a tool
+   block, all from `details` alone. The page: the agent card with its
+   one-line collapse, the run split, the job line with its opened
+   output and joined stream batches, the plain steps; the user block's
+   18 % accent and the 12pt time edge for every koa page. Tests:
+   section 9, "Tests". After the rebase onto `main` and unit 14.
+17. **The status bar moves into the composer.** Section 10, as the
+   approved mockup `composer.html` shows it: the four cells of the
+   foot with the reserved widths, no send button, the notification
+   as a transcript item, the 24pt to the transcript. Tests: section
+   10, "Tests". After unit 16.
 
 ## 7. The composer: CodeMirror 6 and completion
 
@@ -1600,7 +1636,8 @@ language present, the source adds one check: `syntaxTree(state)
 `InlineCode`, `FencedCode` or `CodeBlock` (the names of
 `@lezer/markdown`), the source returns null, so a `/` or an `@` in a
 code span or a fence is literal text. pi's TUI does not do this; it
-is a small gain from the tree and costs three lines (open question 3).
+is a small gain from the tree and costs three lines (decided
+2026-11-09).
 The tree is incremental, so the check is cheap at every keystroke.
 
 **What does not change.** The IME guard and the Enter ownership of
@@ -2006,7 +2043,17 @@ and keeps the path. When the last chunk lands, or at once for a path,
 (pi's set and exclusions, never from the browser's `type` or the
 extension). The directory goes at koa's exit; a
 sent copy's file stays until then, because pi reads a file's path
-later and the session's transcript names it. These routes have an id
+later and the session's transcript names it. The store therefore
+keeps each attachment in one of three states, `ready` (attached, not
+sent), `queued` (in a sent prompt that pi has not delivered) and
+`used` (in a user message that pi delivered): a delete of a `used`
+attachment answers 409 and removes nothing, a take-back returns only
+`queued` attachments to `ready`, and a late RPC acknowledgement of a
+queued prompt never moves a `used` attachment back. The pending
+delivery mark of "The transcript" below holds the exact `sent` entry
+it matched, so two queued prompts with the same text and mode keep
+their own attachments: the one being delivered becomes `used`, and
+the other is what a take-back restores. These routes have an id
 in the path, so `koa.ts` matches them by prefix as `transcript.ts`
 matches `/items`; they are `alive`, so a user can attach while pi
 starts.
@@ -2061,9 +2108,62 @@ shows a glyph and the count beside a text with attachments.
 **The transcript.** pi stores the user message as
 `[{ text }, ...images]` (`agent-session.js:1525`), so the user item
 shows the thumbnails of "The image store" above. The page does not
-guess attachment paths from the text's trailing lines; the chips of
-sent attachments come with unit 13's data, and until then the text
-shows as text.
+guess attachment paths from the text's trailing lines. The chips of
+a sent message come from koa's own record of the send: the store of
+"The queue" above, `sent: { text, attachments: AttachmentRef[] }[]`,
+where `text` is the whole message string that koa gave `prompt`
+(the typed text with the path lines it appended) and `Attachment`
+is the one wire type of `records.ts`, `{ id, name, size, origin:
+"path" | "upload", path } & ({ kind: "image"; mimeType; width?;
+height? } | { kind: "file" })`, shared by the chips, the queue
+entries and the user item. `path` has one meaning everywhere: the
+file on pi's host that the message names, the original for a path
+attachment and the copy for an upload, set when the attachment is
+made; `origin` is what the chip shows (the directory for a path
+attachment, the size for an upload) and what a take-back restores.
+When koa matches a delivered user message to its `sent` entry, it
+also strips the exact suffix it appended (the path lines) from the
+item's text by equality, so the item shows the typed text with its
+chips; a rebuilt item keeps the lines, because no record names them. The real
+pi accepts `prompt` with an empty `message` and `images` and starts
+a run (checked 2026-11-10), so `promptBody` keeps accepting an empty
+text with attachments. When a user `message_start` arrives, koa
+takes the first entry whose text equals the message's text block and
+gives its attachments to the transcript module with the message, and
+the user item carries `attachments: Attachment[]` on the wire. The
+match follows pi's own bookkeeping (`dist/core/agent-session.js:744-762`:
+before a user `message_start`, pi removes the delivered text from
+the steering queue first, else from the follow-up queue, emits
+`queue_update`, and removes nothing for an empty text). Each `sent`
+entry keeps its mode (`prompt`, `steer`, `followUp`). A
+`queue_update` that follows a send is diffed against the previous
+snapshot, and the one text that left a queue sets a pending mark
+"the next user message is a <mode> with text T"; the `message_start`
+that follows takes the first entry with that mode and text. Without
+a mark, a non-empty text takes the first `prompt` entry with that
+text (a plain prompt runs at once and has no queue), and an empty
+text (images only) takes the first empty-text entry by mode
+preference `steer`, `followUp`, `prompt`, because pi drains steering
+within the current run and follow-ups only at its end, whatever the
+submission order. First-in first-out within one mode is exact. A
+`queue_update` from `clear_queue` or the take-back removes the
+returned entries and sets no mark; an entry with no match stays until
+the store clears at `/pi/start` or a rebuild. One pi quirk shapes the
+queue view: pi never removes an empty text from its queue lists
+(`agent-session.js:747` skips a falsy text), so after an images-only
+queued prompt is delivered, every `queue_update` and the `clear_queue`
+reply still list that `""`. koa counts, per mode, the empty-text
+entries that became `used` since the last `clear_queue` or reset and
+drops that many of the oldest empty texts from that mode's list when
+it derives the queue view and the take-back; the rest of the snapshot
+stands, because the queue also holds texts koa did not send (ko-pi's
+agent messages, queued inside pi as follow-ups). A take-back never
+puts an empty text with no attachments into the composer. The count
+is 0 and changes nothing once pi removes the entry itself. A rebuilt item has no record behind it:
+`get_messages` carries pi's text and images, so after a rebuild or a
+restart the user item shows its thumbnails and its path lines as
+text, with no chips. koa never pre-inserts the item; it comes from
+pi's `message_start` as today.
 
 ### Limits
 
@@ -2180,6 +2280,292 @@ app).
 
 No open questions.
 
+## 9. Messages to and from agents
+
+Status: a design, 2026-11-10, for the user's request "custom
+messages for spawn_agent and message_agent and notifications from
+other agents, so the UI renders them as messages to and from agents".
+The design agent mocks the states below after this design. Unit 16.
+Line references are into `share/pi/ko-pi.ts` at 86d58f81 unless a
+file is named.
+
+### What each case is in pi's session today
+
+**Outgoing.** `spawn_agent`, `message_agent`, `stop_agent`,
+`list_agents` and `read_report` are tool calls of the assistant
+message: a tool block with the tool's name and its arguments, and a
+result whose content is one text and whose `details` is what ko-pi's
+`reply(text, details)` gives (`:250`). `spawn_agent` takes `task`,
+`name`, `model?`, `cwd?`, `resume_from?`, `fork?`, `toplevel?` and
+`runtime?` (`:2769-2800`) and answers "spawned NAME (session ID,
+window W, pane P[, in runtime R])[, forked from session S]; session
+id is what resume_from takes later; <rule>" with `details`
+`{ session, name, window, pane, fork }` (`:2903-2907`), or "could not
+spawn ...". `message_agent` takes `to`, `message` and `mode?`
+(`message`, `steer`, `interrupt-and-steer`; `:2723-2740`) and answers
+one of `deliveryText`'s sentences (`:1725-1740`: "queued for NAME:
+...", "sent to NAME: written to its message stream, not yet
+confirmed", "delivered to NAME", "NAME refused the KIND: MSG"), or
+"could not message TO: ...", or "restarted NAME in pane P; ..." for
+an ended child (`:2756-2760`), with empty `details`. `stop_agent`
+takes `agent` and `force?` (`:2913-2930`). In koa these are steps of
+a run whose line names the tool (section 3, "Runs").
+
+**Inbound.** ko-pi delivers what reaches it as custom messages with
+`display: true`, each with a header line in the content and a few
+fields in `details`:
+
+| customType | content | details | from |
+|---|---|---|---|
+| `ko-message` (`:199`, `:1803-1808`) | `senderHeader` (`:213-214`): "message from @NAME (RELATION TEXT[, in runtime R]):" then the text | `{ from, header, relation, work }` | an agent's message, through `message_agent` or `ko prompt` from a pi pane |
+| `ko-steer` (`:201`, `:1883-1886`) | `steerHeader` (`:216`): "NAME is redirecting this work: " then the text | `{ from, work }` | a steer or an interrupt |
+| `ko-notice` (`:195`, `:1793-1798`) | `noticeHeader` (`:197`): "notice from NAME (a subagent or background job's report, not the user):" then the text | `{ from, noticeId }` | a child's report (`:1843`, the report plus `PARENT_GUIDANCE`, `:245-246`), a child's end (`announceEnding`, `:1850-1861`: "subagent \"NAME\" ended: HOW; it had reported" or "... not reported on its last work" with the last 4000 bytes of its screen), a job's end (`:2160`: "job \"NAME\" (ID) exit N" or "signal SIG", "failed: MSG", "timed out after N s", `jobEndText` `:413-419`, then "--- last 4000 bytes of its output ---", the tail and "log: PATH"), a plain notice from another agent (`:1838`) |
+| `ko-stream` (`:243`, `:2086-2091`) | "job \"NAME\" output (job ID)" then the batch (`streamBatch`, `:889-896`) | `{ from: job name, job: id }` | a streamed job's output |
+
+koa's transcript module turns each into a `notice` item with the
+`customType`, `details.from` and the whole content text
+(`share/pi/transcript.ts:271-273`), and the page shows one plain
+block with that text (`page/page.ts:298`). pi's TUI shows them as a
+collapsed one-liner with the sender and a verb, through ko-pi's
+message renderers (`:2606-2641`). A replay from `get_messages`
+carries the custom messages with their `details`, and the tool blocks
+with their results, so the conversion below works the same live and
+on a rebuild.
+
+### The design
+
+**Typed at the edges, no text parsing on the page.** ko-pi is the
+only writer of these messages, and ko-pi and koa ship together, so
+ko-pi puts the facts the page needs into `details`, and the transcript
+module reads `details` only; the header lines stay in the content for
+the model and for pi's TUI. ko-pi's four `sendMessage` sites and
+its two tool results change as follows, and its own renderers read
+the same `details`:
+
+- Every inbound agent message's `details` gets `agent: { name,
+  session?, pane? }` (the sender; `labelOf`'s inputs, `:1801`, which
+  has the `Sender`'s `pane`, `session` and `name`) and `body: string`
+  (the text without the header), beside what it carries today.
+  `ko-notice` gets `kind: "notice" | "report" | "ended" | "job"`, set
+  at each `deliverNotice` caller (`:1838`, `:1843`, `:1861`, `:2160`,
+  `:2174`). A job's end notice gets `job: { id, name, service, log,
+  end: JobEnd }` and `tail: string` (the last 4000 bytes, without the
+  "--- last ... ---" and "log:" lines, which stay in the content for
+  the model); `ko-stream` gets `job: { id, name, service, log }`,
+  `batch: string`, `omitted: number` and `cut: boolean` (the inputs of
+  `streamBatch`, `:889-896`). A relation is already there for
+  `ko-message`.
+- `async_bash`'s result already has `details: { job, name, log }`
+  (`:3030`); it gains `service: boolean`, so the step that started a
+  job is typed too.
+- `message_agent`'s result gets `details: { to: name, state }`, with
+  `state` the `SendOutcome` state that `deliveryText` switches on
+  (`queued`, `delivered`, `acked`, `refused`, `gone`, ...) or
+  `"error"` for a "could not message" reply, so the card's outcome
+  is a typed fact. `spawn_agent`'s result already has `details`; a
+  failed spawn gets `details: { error: true }`.
+
+**The record.** One new item kind and one new field in
+`records.ts`, both filled by the transcript module from `details`
+and from the parsed arguments it already has:
+
+```ts
+type AgentRef = { name: string; session?: string; pane?: string };
+type Inbound =
+  | { form: "message"; relation: Relation; runtime?: string }
+  | { form: "steer" }
+  | { form: "notice" } | { form: "report" } | { form: "ended" };
+// an item: a message from an agent
+{ kind: "agent"; direction: "in"; from: AgentRef; text: Text; inbound: Inbound }
+// an item: a job's notification (a job is not an agent, design-subagents.md, "A job")
+type JobRef = { id: string; name: string; service: boolean; log: string };
+{ kind: "job"; job: JobRef; event:
+  | { type: "ended"; end: JobEnd; tail: Text }
+  | { type: "stream"; batch: Text; omitted: number; cut: boolean } }
+// a field of a tool block, for spawn_agent and message_agent
+agent: { direction: "out"; to: AgentRef; text: Text; call:
+  | { tool: "spawn"; model?: string; fork: boolean; runtime?: string }
+  | { tool: "message"; mode: "message" | "steer" | "interrupt-and-steer" };
+  outcome?: { ok: boolean; state: string; session?: string } }
+// a field of a tool block, for async_bash: the job it started
+job?: JobRef
+```
+
+`Relation` and `JobEnd` (`:331`: `exit`, `signal`, `failed`,
+`stopped`, `timeout`) are unions in `records.ts` that `koa.ts` proves
+equal to ko-pi's at compile time, as `ThinkingLevel` is (section 7).
+A custom message whose `details` lack these fields (another
+extension's message) stays a `notice` item as today. Every text is
+capped as a tool result is (`MAX_WEBVIEW_RESULT_BYTES`), because a
+task can be 1 MiB (`MAX_TASK_BYTES`, `:227`); the record carries the
+whole capped text, and the fold below is the page's.
+
+**The agent card** (the mockup `app/design/koa/agents.html` and
+NOTES.md "Agent messages and job notices", approved by the user on
+2026-11-10; the plan does not repeat its values). A `spawn_agent` or
+`message_agent` block and an `agent` item are one card, the user
+message's block with a header line. A block with `agent` is not a
+step line: it splits the run as a text block does (the run
+derivation of section 3 treats it as a boundary) and sits in the
+transcript's flow. The header: "to @name" or "from @name", for an
+inbound message the relation shortened after a "·" (none for ko-pi's
+own notices), the kind tag at the right (`task` for a spawn,
+`message`, `steer`, `interrupt`; `message`, `steer`, `report`,
+`ended`, `notice`) and the time. No delivery status and no meta
+lines: `outcome.state` is not shown while it is a success, a spawn
+shows no session, window, pane or model, and a cut report has no
+"full report" trailer (ko-pi's `body` excludes `PARENT_GUIDANCE` and
+that trailer). A failure alone shows, in the error colour, in the
+kind's place: "refused", ko-pi's "no agent named …", "not reported"
+for an ended child that had not reported; the body is then ko-pi's
+refusal text or the message that was refused. Collapsed, the body is
+one line, the first line of the text cut with an ellipsis, so a card
+is two lines at most; a click anywhere on the card shows the whole
+text, a second click collapses it. `stop_agent`, `list_agents`,
+`read_report`, `list_async_bash` and `stop_async_bash` stay plain
+steps by name with their first argument: they are the caller's own
+actions on its agents and jobs, not messages; `read_report`'s detail
+is the report text, as today.
+
+The typed records above stand, aligned to this: `outcome` drives
+only the failure word, the `call`'s `model`, `fork` and `runtime`
+and the `inbound` relation are the data behind the tag and the
+relation word, and nothing is shown that the record does not carry.
+
+**Job notifications: their own card.** What a job is in the session
+today (docs/design-subagents.md, "A job"): `async_bash(command,
+name, stream?, service?)` is a tool call whose result names the job
+id, the name and the log (`:3030`); the job's row in the sidebar
+goes through the status route and never through the transcript; at
+its end exactly one `ko-notice` arrives (the end line, the last 4000
+bytes of output, the log path; none for a stopped job); with
+`stream`, a `ko-stream` arrives for each batch (every 5 s,
+`KO_STREAM_INTERVAL_MS`), with a note of omitted or truncated lines.
+A job is not an agent, so it does not get the agent card (the
+mockup's "A job notice", approved 2026-11-10):
+
+- The `async_bash` step stays a step of its run, with its `job` field
+  from the result: its line reads "async_bash" and the job's name as
+  the step's label (as a `read` step names its file); its detail is
+  the command and the log path.
+- A `job` item is one line in the terminal font: the chevron of a
+  step, the job's name, the kind only when it is not a plain job
+  (`service`, `stream`), ko-pi's end words (`exit 0`, `exit 1`,
+  `signal SIGKILL`, `failed: …`, `timed out 600 s`; none for a
+  stream batch) and the time at the right. Gray when it succeeded;
+  the name and the end in the error colour when it failed (an exit
+  other than 0, a signal, a failure, a timeout). Closed by default; a
+  click on the line opens the output under a step-like guide: the
+  tail or the batches as preformatted text, then the log path and
+  the omitted count faint and ellipsized.
+- Consecutive stream batches of one job are one entry in the page:
+  the items stay separate in the record, as pi stores them, and the
+  page's view joins the `stream` items of one `job.id` that follow
+  each other with a "+ HH:MM" separator line between the batches,
+  and the job's `ended` item closes the entry with its end words.
+
+**Folding.** The user decided on 2026-11-10: an agent card collapses
+to one ellipsized line of text, a job line is closed, and a click
+toggles each (this supersedes the 2 to 3 lines of the first
+decision). The record carries the whole capped text; the fold state
+is page-local, keyed as the runs' fold state is, and a reload loses
+it.
+
+**The link to the agent.** The `@name` of a card is text with the
+agent's session id in its `title`. Focus is a fact of the client
+(docs/design.md, "Who is authoritative for what"), and no route lets
+a pane's program focus another pane, so a click does nothing in this
+unit; a focus action is a new page-to-app surface, for a later
+request.
+
+**Replay.** A rebuild from `get_messages` converts the same custom
+messages and tool results through the same `details`, so a reloaded
+transcript shows the same cards. Messages written by a ko-pi before
+this change have no `agent` in `details` and show as `notice` items,
+which is the "state from an older ko" that a new session clears.
+
+**The mockup's states** are `agents.html`'s seven renders (out,
+failed, in, jobs, fold-a, fold-b, tools), light and dark, wide and
+60 columns, at `/tmp/koa-shots/agents-*`; `KoaWebviewTests` gets
+them as snapshots.
+
+**Decided for every koa page with this mockup** (NOTES.md, "Times end
+at one edge" and "The user message is the accent at 18%", both
+2026-11-10), applied in unit 16: the user message's block is
+`color-mix(in srgb, var(--ko-color-4) 18%, var(--ko-bg))`, so it
+carries more weight than the agent cards, which keep the 5 % well;
+and the time of a run line, a step line and a job line ends where the
+user message's time ends, 12pt in from the transcript's edge
+(`.run .line { padding-right: 12px }`, the same on a job line).
+
+**Tests.** ko-pi: each `sendMessage` site's `details` (the fixture
+suite's message assertions gain `agent`, `body`, `kind`, `job`,
+`tail`, `batch`), the `message_agent` result's `details.state` for
+each `SendOutcome`, `async_bash`'s `service`. transcript: a custom
+message with and without the fields (card item or notice item), each
+agent form's fields, each job event's fields, the caps, a spawn and
+a message block's `agent` field and an `async_bash` block's `job`
+field before and after the result, the rebuild giving the same items.
+page (DOM tests): the run split at an `agent` block, the one-line
+collapse and the click that toggles it, the failure word in the
+kind's place and nothing for a success, the tag and relation words,
+the end words and the error class for each `JobEnd`, the joined
+stream entry with its separators. `KoaWebviewTests`: the mockup's
+states as snapshots. The compile-time equality of `Relation` and
+`JobEnd` with ko-pi's types.
+
+Decided by the user on 2026-11-10 with the mockup: the cards split
+their run; stop, list and read_report stay steps; reports and
+notices are one card with different tags; jobs are one terminal line
+of their own; one-line collapse with a click toggle; no delivery
+status and no meta lines. The `@name` has no action in this unit; a
+click that focuses the agent's pane would be a new page-to-app
+surface, for a later request.
+
+## 10. The status bar moves into the composer
+
+Status: approved by the user on 2026-11-10 as the mockup
+`app/design/koa/composer.html` and NOTES.md "The status bar moves
+into the composer" show it; the plan does not repeat the mockup's
+values. Unit 17.
+
+The 24pt status bar goes, and its facts move into the composer's
+foot, the row under the text. The foot holds exactly four cells and
+nothing else: the state (the dot and the word with its time, with a
+reserved width of `calc(15ch + 12px)` so a state change or a tick
+moves nothing to its right), the model button that opens the picker,
+the context bar with its numbers and percent at a reserved width, and
+the working directory at the right; a flexible gap sits between the
+context and the cwd. The send and stop button goes: Return sends and
+Escape aborts, as the keys already do, and the composer's hint line
+keeps saying so. The exited card stays above the field. The narrow
+drop order is the mockup's (the thinking level, then the cwd's
+leading directories, then the context numbers; the state keeps its
+reserved width). The transcript gains the 24pt, and the dock sits on
+the pane's bottom edge.
+
+**Notifications.** A `notify` record is no longer a toast in a bar:
+it becomes one line in the transcript where it arrived, in the
+terminal font like a job line, the text ellipsized, the time at the
+right, a warning and an error in their colours, and it stays. In the
+record model a notification is therefore an item of the transcript
+module (`kind: "notify"` with `level` and `text`, at the time it
+arrived), not a page-only record, so a reload and a rebuild keep it
+within the module's window as any item; koa feeds it from the
+`extension_ui_request` `notify` as today, and `setStatus` segments
+keep their place as cells after the context (the mockup shows none;
+the implementer follows the foot's cell rule for them and the manager
+checks the result). The `notice` element and the toast timer go.
+
+**Tests.** The DOM tests: the four cells, the state's reserved width
+class, the model button opening the picker, a `notify` becoming an
+item and staying, no send button. `KoaWebviewTests`: the mockup's
+eight renders (idle, working, waiting, exited, picker, toast,
+toast-err, narrow) as snapshots, light and dark.
+
+**Order of the remaining units:** 13 (in work), then the rebase of
+`webview` onto `main`, then 14, 16, 17.
+
 ## Open questions for the user
 
 The user decided every question of sections 1 to 6 and of
@@ -2187,7 +2573,8 @@ The user decided every question of sections 1 to 6 and of
 
 Decided on 2026-11-09: a build pipeline for the page, not vendored
 files or a committed bundle (question 1 as first asked); koa copies
-pi's `@` file rules; built-in slash commands come later; `@name`
+pi's `@` file rules; built-in slash commands come later (`/name`
+alone joined in unit 13, handled by koa, not by the completion); `@name`
 agents are koa's own computation from `ko api`, as section 7 now
 says; Tab accepts and otherwise leaves the field; Enter on a command
 accepts and sends, on a file or an agent accepts; the popup gets a

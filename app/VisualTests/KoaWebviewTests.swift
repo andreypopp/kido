@@ -7,7 +7,7 @@ import SidebarFeed
 @testable import Kido
 
 extension VisualTests {
-    private enum KoaScenario { case transcript, dialogs, controls, exit, feed, completion, markdown, media }
+    private enum KoaScenario { case transcript, dialogs, controls, exit, feed, completion, markdown, media, attachments, userMarkdown }
     func testKoaInterruptRestoresNativeInput() async throws {
         let script = directory.appendingPathComponent("quit-script.jsonl")
         try "".write(to: script, atomically: true, encoding: .utf8)
@@ -141,6 +141,22 @@ extension VisualTests {
         try await koaWebview(width: 470, height: 560, scenario: .media, captures: ["narrow-media-read-image", "narrow-media-user-images", "narrow-media-image-gone"])
     }
 
+    func testKoaWebviewAttachmentsWide() async throws {
+        try await koaWebview(width: 980, height: 560, scenario: .attachments, captures: Set(["chips", "drop", "folder", "queue", "sent"].map { "media-" + $0 }))
+    }
+
+    func testKoaWebviewAttachmentsNarrow() async throws {
+        try await koaWebview(width: 470, height: 560, scenario: .attachments, captures: Set(["chips", "drop", "folder", "queue", "sent"].map { "narrow-media-" + $0 }))
+    }
+
+    func testKoaWebviewUserMarkdownWide() async throws {
+        try await koaWebview(width: 980, height: 560, scenario: .userMarkdown, captures: ["user-markdown"])
+    }
+
+    func testKoaWebviewUserMarkdownNarrow() async throws {
+        try await koaWebview(width: 470, height: 560, scenario: .userMarkdown, captures: ["narrow-user-markdown"])
+    }
+
     func testKoaWebviewComposerMarkdown() async throws {
         try await koaWebview(width: 980, height: 560, scenario: .markdown, captures: ["composer-markdown", "composer-markdown-code"])
     }
@@ -159,9 +175,10 @@ extension VisualTests {
         let sessionFile = directory.appendingPathComponent("session.jsonl")
         let home = directory.appendingPathComponent("home")
         let cwd = home.appendingPathComponent("Workspace/kido")
+        let attachmentPaths = (shot: home.appendingPathComponent("Desktop/Screenshot 2026-11-10 at 09.11.42.png"), diagram: home.appendingPathComponent("Desktop/diagram.png"), notes: home.appendingPathComponent("Desktop/notes.md"), source: cwd.appendingPathComponent("app/App/SidebarRow.swift"))
         try FileManager.default.createDirectory(at: cwd, withIntermediateDirectories: true)
         try JSONSerialization.data(withJSONObject: ["cwd": cwd.path]).write(to: sessionFile)
-        let stamp = Int(try XCTUnwrap(Calendar.current.date(from: DateComponents(year: 2026, month: 11, day: scenario == .media ? 10 : 8, hour: scenario == .media ? 9 : 14, minute: scenario == .media ? 12 : 32))).timeIntervalSince1970 * 1000)
+        let stamp = Int(try XCTUnwrap(Calendar.current.date(from: DateComponents(year: 2026, month: 11, day: (scenario == .media || scenario == .attachments) ? 10 : 8, hour: (scenario == .media || scenario == .attachments) ? 9 : 14, minute: (scenario == .media || scenario == .attachments) ? 12 : 32))).timeIntervalSince1970 * 1000)
         let usage: [String: Any] = ["input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0, "totalTokens": 0, "cost": ["input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0, "total": 0]]
         func assistant(_ content: [[String: Any]], stop: String = "stop") -> [String: Any] {
             ["role": "assistant", "api": "test", "provider": "test", "model": "test", "usage": usage, "timestamp": stamp, "stopReason": stop, "content": content]
@@ -322,25 +339,25 @@ extension VisualTests {
             replay([completionUser])
             replay([])
         }
-        if scenario == .media {
-            func image(_ width: Int, _ height: Int, _ a: UInt32, _ b: UInt32, _ label: String) throws -> [String: Any] {
-                let bitmap = try XCTUnwrap(NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: width, pixelsHigh: height, bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: width * 4, bitsPerPixel: 32))
-                let context = try XCTUnwrap(NSGraphicsContext(bitmapImageRep: bitmap))
-                NSGraphicsContext.saveGraphicsState(); NSGraphicsContext.current = context
-                defer { NSGraphicsContext.restoreGraphicsState() }
-                let w = CGFloat(width), h = CGFloat(height)
-                func color(_ value: UInt32) -> NSColor { NSColor(srgbRed: CGFloat((value >> 16) & 255) / 255, green: CGFloat((value >> 8) & 255) / 255, blue: CGFloat(value & 255) / 255, alpha: 1) }
-                try XCTUnwrap(NSGradient(starting: color(a), ending: color(b))).draw(in: NSRect(x: 0, y: 0, width: w, height: h), angle: -45)
-                NSColor.white.withAlphaComponent(0.82).setFill()
-                NSBezierPath(roundedRect: NSRect(x: w * 0.08, y: h * 0.14, width: w * 0.84, height: h * 0.72), xRadius: min(w, h) * 0.03, yRadius: min(w, h) * 0.03).fill()
-                for (x, y, rw, rh, alpha) in [(0.12, 0.75, 0.5, 0.05, 0.55), (0.12, 0.66, 0.76, 0.04, 0.3), (0.12, 0.58, 0.7, 0.04, 0.3)] {
-                    NSColor(white: 0.2, alpha: alpha).setFill(); NSBezierPath(roundedRect: NSRect(x: w * x, y: h * y, width: w * rw, height: h * rh), xRadius: 3, yRadius: 3).fill()
-                }
-                color(a).withAlphaComponent(0.35).setFill(); NSBezierPath(roundedRect: NSRect(x: w * 0.12, y: h * 0.24, width: w * 0.76, height: h * 0.3), xRadius: 4, yRadius: 4).fill()
-                let paragraph = NSMutableParagraphStyle(); paragraph.alignment = .center
-                (label as NSString).draw(in: NSRect(x: 0, y: h * 0.015, width: w, height: h * 0.08), withAttributes: [.font: NSFont.monospacedSystemFont(ofSize: max(10, h * 0.045), weight: .regular), .foregroundColor: NSColor.white.withAlphaComponent(0.85), .paragraphStyle: paragraph])
-                return ["type": "image", "mimeType": "image/png", "data": try XCTUnwrap(bitmap.representation(using: .png, properties: [:])).base64EncodedString()]
+        func image(_ width: Int, _ height: Int, _ a: UInt32, _ b: UInt32, _ label: String) throws -> [String: Any] {
+            let bitmap = try XCTUnwrap(NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: width, pixelsHigh: height, bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: width * 4, bitsPerPixel: 32))
+            let context = try XCTUnwrap(NSGraphicsContext(bitmapImageRep: bitmap))
+            NSGraphicsContext.saveGraphicsState(); NSGraphicsContext.current = context
+            defer { NSGraphicsContext.restoreGraphicsState() }
+            let w = CGFloat(width), h = CGFloat(height)
+            func color(_ value: UInt32) -> NSColor { NSColor(srgbRed: CGFloat((value >> 16) & 255) / 255, green: CGFloat((value >> 8) & 255) / 255, blue: CGFloat(value & 255) / 255, alpha: 1) }
+            try XCTUnwrap(NSGradient(starting: color(a), ending: color(b))).draw(in: NSRect(x: 0, y: 0, width: w, height: h), angle: -45)
+            NSColor.white.withAlphaComponent(0.82).setFill()
+            NSBezierPath(roundedRect: NSRect(x: w * 0.08, y: h * 0.14, width: w * 0.84, height: h * 0.72), xRadius: min(w, h) * 0.03, yRadius: min(w, h) * 0.03).fill()
+            for (x, y, rw, rh, alpha) in [(0.12, 0.75, 0.5, 0.05, 0.55), (0.12, 0.66, 0.76, 0.04, 0.3), (0.12, 0.58, 0.7, 0.04, 0.3)] {
+                NSColor(white: 0.2, alpha: alpha).setFill(); NSBezierPath(roundedRect: NSRect(x: w * x, y: h * y, width: w * rw, height: h * rh), xRadius: 3, yRadius: 3).fill()
             }
+            color(a).withAlphaComponent(0.35).setFill(); NSBezierPath(roundedRect: NSRect(x: w * 0.12, y: h * 0.24, width: w * 0.76, height: h * 0.3), xRadius: 4, yRadius: 4).fill()
+            let paragraph = NSMutableParagraphStyle(); paragraph.alignment = .center
+            (label as NSString).draw(in: NSRect(x: 0, y: h * 0.015, width: w, height: h * 0.08), withAttributes: [.font: NSFont.monospacedSystemFont(ofSize: max(10, h * 0.045), weight: .regular), .foregroundColor: NSColor.white.withAlphaComponent(0.85), .paragraphStyle: paragraph])
+            return ["type": "image", "mimeType": "image/png", "data": try XCTUnwrap(bitmap.representation(using: .png, properties: [:])).base64EncodedString()]
+        }
+        if scenario == .media {
             let shot = try image(1440, 900, 0x2f6fd6, 0x8b3fc9, "screenshot 1440×900")
             let diagram = try image(800, 800, 0xe0742d, 0xc42a5b, "diagram 800×800")
             let sidebar = try image(1200, 500, 0x1f9d7a, 0x1f6fa6, "sidebar 1200×500")
@@ -354,6 +371,32 @@ extension VisualTests {
             replay([message("Look at the two screenshots in /tmp/koa-shots and tell me what differs")] + read("light", "/tmp/koa-shots/complete-at-agents-light-wide.png", 0) + read("dark", "/tmp/koa-shots/complete-at-agents-dark-wide.png", 200) + [code, ["role": "toolResult", "toolCallId": "images", "toolName": "codemode", "timestamp": stamp + 9000, "isError": false, "content": [["type": "text", "text": "sidebar rows: 28 vs 32pt"], sidebar, diagram]], assistant([["type": "text", "text": "The light render has the kind tags; the dark one lost them to the ellipsis. Two things differ…"]])])
             replay([message("Make the sidebar look like this", [sidebar, diagram]), assistant([["type": "text", "text": "Reading both fixtures."]])])
             replay([message("Compare with the earlier screenshot", [shot, shot]), assistant([["type": "text", "text": "I can see the second one; the first is no longer available in this session."]])])
+        }
+        if scenario == .userMarkdown {
+            var rich = user; rich["content"] = [["type": "text", "text": "Use `inline` and the same Markdown rules.\n\n- First item\n- Second item\n\n```js\nconst x = 1;\n```\n\n<b>raw HTML stays text</b>"]]
+            var plain = user; plain["timestamp"] = stamp + 1; plain["content"] = [["type": "text", "text": "A plain one-line message"]]
+            steps = Array(steps.prefix(3)); steps[1] = ["type": "respond", "command": "get_messages", "data": ["messages": [rich, assistant([["type": "text", "text": "The text column is the same width."]]), plain]]]
+        }
+        if scenario == .attachments {
+            for (path, w, h, a, b, label, length) in [(attachmentPaths.shot, 1440, 900, UInt32(0x2f6fd6), UInt32(0x8b3fc9), "screenshot 1440×900", 2516582), (attachmentPaths.diagram, 800, 800, UInt32(0xe0742d), UInt32(0xc42a5b), "diagram 800×800", 310 * 1024)] {
+                try FileManager.default.createDirectory(at: path.deletingLastPathComponent(), withIntermediateDirectories: true)
+                var bytes = try XCTUnwrap(Data(base64Encoded: try XCTUnwrap(image(w, h, a, b, label)["data"] as? String)))
+                if bytes.count < length { bytes.append(Data(count: length - bytes.count)) }
+                try bytes.write(to: path)
+            }
+            try Data(repeating: 32, count: 8192).write(to: attachmentPaths.notes)
+            try FileManager.default.createDirectory(at: attachmentPaths.source.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try "row\n".write(to: attachmentPaths.source, atomically: true, encoding: .utf8)
+            var first = user; first["content"] = [["type": "text", "text": "Here is what I have so far"]]
+            steps = Array(steps.prefix(3))
+            steps[1] = ["type": "respond", "command": "get_messages", "data": ["messages": [first]]]
+            var release = user; release["content"] = [["type": "text", "text": "Release 0.32"]]
+            replay([release], after: [["type": "agent_start"], ["type": "message_start", "message": assistant([["type": "toolCall", "id": "release", "name": "bash", "arguments": ["command": "make verify"]]], stop: "toolUse")]])
+            prompt([["type": "queue_update", "steering": ["skip the Linux check, I'll run it in CI"], "followUp": []]])
+            prompt([["type": "queue_update", "steering": ["skip the Linux check, I'll run it in CI"], "followUp": ["then compare with these two renders"]]])
+            steps.append(["type": "wait", "command": "clear_queue", "data": ["steering": ["skip the Linux check, I'll run it in CI"], "followUp": ["then compare with these two renders"]], "events": [["type": "queue_update", "steering": [], "followUp": []], ["type": "agent_settled", "aborted": false], ["type": "compaction_end"]]])
+            steps.append(["type": "respond", "command": "get_messages", "data": ["messages": []]])
+            steps.append(["type": "wait", "command": "prompt", "echo": true, "events": [["type": "agent_start"], ["type": "message_start", "message": assistant([["type": "toolCall", "id": "sent-read", "name": "read", "arguments": ["path": "notes.md"]]], stop: "toolUse")]]])
         }
         if scenario == .feed {
             steps = Array(steps.prefix(4))
@@ -406,9 +449,9 @@ extension VisualTests {
         try await wait("koa webview", within: 20) { (pane.webviewView?.visualDocuments ?? 0) > 0 }
         let diagnostics = (try? String(contentsOf: output, encoding: .utf8)) ?? ""
         let web = try XCTUnwrap(pane.webviewView?.browser, diagnostics)
-        if scenario == .completion {
+        if scenario == .completion || scenario == .attachments || scenario == .userMarkdown {
             // WebKit pauses animation frames in an off-screen window.
-            pane.webviewView?.visualFeedScript = "window.requestAnimationFrame=callback=>setTimeout(()=>callback(performance.now()),0);window.cancelAnimationFrame=clearTimeout;"
+            pane.webviewView?.visualFeedScript = "const ClockDate=Date;window.Date=class extends ClockDate{constructor(...args){super(...(args.length?args:[\(stamp + 12000)]))}static now(){return \(stamp + 12000)}};window.requestAnimationFrame=callback=>setTimeout(()=>callback(performance.now()),0);window.cancelAnimationFrame=clearTimeout;"
             let documents = pane.webviewView?.visualDocuments ?? 0
             web.reload()
             try await wait("completion document with measurement clock") { (pane.webviewView?.visualDocuments ?? 0) > documents && !web.isLoading }
@@ -425,7 +468,7 @@ extension VisualTests {
             try await webviewUntil(web, "document.querySelector('#status').textContent==='idle'&&document.querySelector('#model').textContent==='claude-opus-5-5'")
             for index in 1...3 {
                 let before = pane.webviewView!.visualFeedBytes
-                let response = try await webviewJS(web, "fetch('/prompt',{method:'POST',body:JSON.stringify({text:'next',mode:'prompt'})}).then(async r=>({status:r.status,body:await r.json()}))")
+                let response = try await webviewJS(web, "fetch('/prompt',{method:'POST',body:JSON.stringify({text:'next',mode:'prompt',attachments:[]})}).then(async r=>({status:r.status,body:await r.json()}))")
                 XCTAssertTrue(response.contains("\"status\":200"), response)
                 try await wait("feed chunk \(index) handed to WebKit", within: 5) { pane.webviewView!.visualFeedBytes > before + 4096 }
             }
@@ -458,12 +501,90 @@ extension VisualTests {
             try await webviewUntil(web, "getComputedStyle(document.body).getPropertyValue('--ko-appearance').trim()==='light'")
         }
         func advance() async throws {
-            _ = try await webviewJS(web, "fetch('/prompt',{method:'POST',body:JSON.stringify({text:'next',mode:'prompt'})}).then(async r=>{const result=await r.json();if(!r.ok)throw Error(result.error||'Prompt failed');return result})")
+            _ = try await webviewJS(web, "fetch('/prompt',{method:'POST',body:JSON.stringify({text:'next',mode:'prompt',attachments:[]})}).then(async r=>{const result=await r.json();if(!r.ok)throw Error(result.error||'Prompt failed');return result})")
         }
         try await webviewUntil(web, "document.querySelector('#status').textContent==='idle'&&document.querySelector('#model').textContent==='claude-opus-5-5'")
-        _ = try await webviewJS(web, "(()=>{const NativeDate=Date;window.Date=class extends NativeDate{constructor(...args){super(...(args.length?args:[\(stamp + 12000)]))}static now(){return \(stamp + 12000)}};const style=document.createElement('style');style.textContent='.caret,.spin,.dot.on{animation:none!important}';document.head.append(style);return true})()")
+        _ = try await webviewJS(web, "(()=>{const NativeDate=Date;window.Date=class extends NativeDate{constructor(...args){super(...(args.length?args:[\(stamp + 12000)]))}static now(){return \(stamp + 12000)}};const style=document.createElement('style');style.textContent='.caret,.spin,.spin::before,.dot.on{animation:none!important}';document.head.append(style);return true})()")
         let idleHint = try await webviewJS(web, "document.querySelector('#hint .spin')===null")
         XCTAssertEqual(idleHint, "true")
+        if scenario == .userMarkdown {
+            try await webviewUntil(web, "document.querySelectorAll('.user').length===2&&document.querySelector('.user ul li')&&document.querySelector('.user pre code')")
+            let markdown = try await webviewJS(web, "(()=>{const user=document.querySelector('.user'),plain=Array.from(document.querySelectorAll('.user')).at(-1),assistant=document.querySelector('.assistant .prose'),p=plain.querySelector('.prose p'),u=user.querySelector('.t').getBoundingClientRect(),a=assistant.getBoundingClientRect(),well=plain.getBoundingClientRect(),time=plain.querySelector('time').getBoundingClientRect(),scroll=document.querySelector('#scroll').getBoundingClientRect(),font=parseFloat(getComputedStyle(document.body).fontSize),terminal=parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--ko-font-size')),editor=getComputedStyle(document.querySelector('.cm-content'));return plain.querySelector('time').textContent==='14:32'&&user.querySelectorAll('ul li').length===2&&user.querySelectorAll('code').length===2&&user.querySelector('b')===null&&user.textContent.includes('<b>raw HTML stays text</b>')&&Math.abs(u.left-a.left)<.1&&Math.abs(u.right-a.right)<.1&&well.left>=scroll.left+4&&well.right<=scroll.right-4&&getComputedStyle(p).marginTop==='0px'&&getComputedStyle(p).marginBottom==='0px'&&Math.abs(well.height-p.getBoundingClientRect().height-14)<.1&&Math.abs(time.top-p.getBoundingClientRect().top)<.1&&Math.abs(font-terminal*.92)<.01&&Math.abs(parseFloat(editor.fontSize)-font)<.01&&Number.isInteger(parseFloat(editor.minHeight))})()")
+            XCTAssertEqual(markdown, "true", "Markdown, first-line time, equal text widths, compact spacing and rounded composer size")
+            try await capture(width < 750 ? "narrow-user-markdown" : "user-markdown")
+            return
+        }
+        if scenario == .attachments {
+            let prefix = width < 750 ? "narrow-media-" : "media-"
+            let shot = try Data(contentsOf: attachmentPaths.shot).base64EncodedString(), diagram = try Data(contentsOf: attachmentPaths.diagram).base64EncodedString()
+            let source = String(decoding: try JSONSerialization.data(withJSONObject: attachmentPaths.source.path, options: .fragmentsAllowed), as: UTF8.self)
+            _ = try await webviewJS(web, #"""
+            (()=>{
+              const timeout=window.setTimeout.bind(window);window.setTimeout=(fn,delay,...args)=>timeout(fn,delay===4000?60000:delay,...args);
+              const bytes=text=>Uint8Array.from(atob(text),character=>character.charCodeAt(0));
+              window.attachFiles={shot:new File([bytes('\#(shot)')],'Screenshot 2026-11-10 at 09.11.42.png',{type:'image/png'}),diagram:new File([bytes('\#(diagram)')],'diagram.png',{type:'image/png'}),notes:new File([new Uint8Array(8192)],'notes.md',{type:'text/plain'}),readme:new File([new Uint8Array(3072)],'README.md',{type:'text/plain'})};
+              window.dropAttachments=files=>{const transfer=new DataTransfer();files.forEach(file=>transfer.items.add(file));document.querySelector('.cm-content').dispatchEvent(new DragEvent('drop',{bubbles:true,cancelable:true,dataTransfer:transfer}));return true};
+              window.clearAttachments=()=>{document.querySelectorAll('.attach-remove').forEach(button=>button.click());window.composer.setText('');return true};
+              const nativeFetch=window.fetch;window.fetch=async(url,options)=>{
+                if(window.progressId&&String(url).startsWith('/attachments/'+window.progressId+'/')&&Number(String(url).split('/').at(-1))>=18*1048576){await new Promise((resolve,reject)=>{window.releaseUpload=resolve;options.signal.addEventListener('abort',()=>reject(new DOMException('Removed','AbortError')),{once:true})})}
+                const response=await nativeFetch(url,options);
+                if(url==='/attachments'&&typeof options?.body==='string'){const name=JSON.parse(options.body).name;if(name==='kido-demo.mov'||name==='notes.md'){const result=await response.clone().json();if(name==='kido-demo.mov')window.progressId=result.id;else window.notesPath=result.path}}
+                return response;
+              };
+              window.composer.setText('Attach these to the review');
+              const clipboard=new DataTransfer();clipboard.items.add(attachFiles.shot);clipboard.items.add(attachFiles.notes);document.querySelector('.cm-content').dispatchEvent(new ClipboardEvent('paste',{bubbles:true,cancelable:true,clipboardData:clipboard}));
+              window.ko.local=true;window.dispatchEvent(new CustomEvent('ko-drop',{detail:{files:[\#(source)],refused:false}}));window.ko.local=false;
+              const large=new File([],'archive.tar.gz');Object.defineProperty(large,'size',{value:65*1048576});
+              dropAttachments([new File([new Uint8Array(41*1048576)],'kido-demo.mov'),large]);
+              return true;
+            })()
+            """#)
+            try await webviewUntil(web, "document.querySelectorAll('.attach-chip').length===5&&Array.from(document.querySelectorAll('.attach-detail')).some(node=>node.textContent==='18 / 41 MB')&&document.querySelectorAll('.attach-icon img').length===1")
+            _ = try await webviewJS(web, "Promise.all(Array.from(document.querySelectorAll('.attach-icon img'),image=>image.decode())).then(()=>true)")
+            let refusedStyle = try await webviewJS(web, "(()=>{const reason=document.querySelector('.attach-chip.refused .attach-detail'),reference=document.createElement('i');reference.style.color='var(--ko-color-1)';document.body.append(reference);const matches=getComputedStyle(reason).color===getComputedStyle(reference).color&&getComputedStyle(reason.closest('.attach-chip')).borderColor!==getComputedStyle(document.querySelector('.attach-chip')).borderColor;reference.remove();return matches})()")
+            XCTAssertEqual(refusedStyle, "true", "The refused reason and border use the theme's error colour")
+            let pasted = try await webviewJS(web, "window.composer.text()")
+            XCTAssertEqual(pasted, "\"Attach these to the review\"", "File paste does not insert text")
+            try await capture(prefix + "chips")
+            _ = try await webviewJS(web, "(()=>{clearAttachments();const transfer=new DataTransfer();transfer.items.add(attachFiles.shot);document.dispatchEvent(new DragEvent('dragenter',{bubbles:true,cancelable:true,dataTransfer:transfer}));document.dispatchEvent(new DragEvent('dragover',{bubbles:true,cancelable:true,dataTransfer:transfer}));return true})()")
+            try await webviewUntil(web, "document.querySelector('#field').classList.contains('drop')&&document.querySelector('.cm-placeholder').textContent==='Drop to attach'")
+            try await capture(prefix + "drop")
+            _ = try await webviewJS(web, "(()=>{const transfer=new DataTransfer();const folder=transfer.items.add(new File([],'fixtures'));Object.defineProperty(folder,'webkitGetAsEntry',{value:()=>({isDirectory:true})});transfer.items.add(attachFiles.diagram);transfer.items.add(attachFiles.readme);document.dispatchEvent(new DragEvent('drop',{bubbles:true,cancelable:true,dataTransfer:transfer}));return true})()")
+            try await webviewUntil(web, "document.querySelectorAll('.attach-chip').length===2&&!document.querySelector('.attach-notice').hidden&&document.querySelectorAll('.attach-icon img').length===1&&document.querySelectorAll('.attach-icon.spin').length===0")
+            _ = try await webviewJS(web, "Promise.all(Array.from(document.querySelectorAll('.attach-icon img'),image=>image.decode())).then(()=>true)")
+            try await capture(prefix + "folder")
+            _ = try await webviewJS(web, "(()=>{clearAttachments();window.Date.now=()=>\(stamp + 3000);return true})()")
+            try await advance()
+            try await webviewUntil(web, "document.querySelector('#status').textContent==='working 3s'&&document.querySelector('.run')!==null")
+            _ = try await webviewJS(web, "(()=>{const run=document.querySelector('.run');if(run.classList.contains('open'))run.querySelector('.line').click();window.composer.setText(\"skip the Linux check, I'll run it in CI\");document.querySelector('.cm-content').dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',code:'Enter',bubbles:true}));return true})()")
+            try await webviewUntil(web, "document.querySelectorAll('.queue .q').length===1&&window.composer.text()===''")
+            _ = try await webviewJS(web, "(()=>{dropAttachments([attachFiles.shot,attachFiles.diagram]);window.composer.setText('then compare with these two renders');return true})()")
+            try await webviewUntil(web, "document.querySelectorAll('.attach-chip').length===2&&document.querySelectorAll('.attach-icon img').length===2")
+            _ = try await webviewJS(web, "(()=>{document.querySelector('.cm-content').dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',code:'Enter',altKey:true,bubbles:true}));return true})()")
+            try await webviewUntil(web, "document.querySelectorAll('.queue .q').length===2&&document.querySelector('.queue .att')?.textContent==='2'&&document.querySelectorAll('.attach-chip').length===0")
+            try await capture(prefix + "queue")
+            _ = try await webviewJS(web, "(()=>{document.querySelector('.queue .take button').click();return true})()")
+            try await webviewUntil(web, "document.querySelectorAll('.attach-chip').length===2&&window.composer.text().includes('then compare')&&document.querySelectorAll('#items .msg').length===0")
+            let restored = try await webviewJS(web, "Array.from(document.querySelectorAll('.attach-detail')).every(node=>!node.classList.contains('path'))")
+            XCTAssertEqual(restored, "true", "Take-back restores upload chips, not path chips")
+            _ = try await webviewJS(web, #"""
+            (()=>{clearAttachments();dropAttachments([attachFiles.shot,attachFiles.notes]);window.ko.local=true;window.dispatchEvent(new CustomEvent('ko-drop',{detail:{files:[\#(source)],refused:false}}));window.ko.local=false;window.composer.setText('Attach these to the review');return true})()
+            """#)
+            try await webviewUntil(web, "document.querySelectorAll('.attach-chip').length===3&&!document.querySelector('#send').disabled")
+            _ = try await webviewJS(web, "(()=>{document.querySelector('.cm-content').dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',code:'Enter',bubbles:true}));return true})()")
+            try await webviewUntil(web, "document.querySelectorAll('.attach-chip').length===0&&document.querySelector('.user .paths')?.textContent.includes('SidebarRow.swift')&&document.querySelector('.user .thumb img')!==null&&document.querySelector('#status').textContent==='working 3s'")
+            _ = try await webviewJS(web, "Promise.all(Array.from(document.querySelectorAll('.user .thumb img'),image=>image.decode())).then(()=>true)")
+            let text = try await webviewJS(web, "document.querySelector('.user .t .prose').firstElementChild.textContent")
+            XCTAssertEqual(text, "\"Attach these to the review\"", "The appended paths are separate data, not repeated prose")
+            let actualPaths = try await webviewJS(web, #"document.querySelector('.user .paths').textContent===window.notesPath+'\n'+\#(source)"#)
+            XCTAssertEqual(actualPaths, "true", "Sent paths identify the stored copy and the original file")
+            let pathStyle = try await webviewJS(web, "(()=>{const p=getComputedStyle(document.querySelector('.user .paths')),u=getComputedStyle(document.querySelector('.user'));return p.fontFamily===getComputedStyle(document.querySelector('#status')).fontFamily&&Math.abs(parseFloat(p.fontSize)/parseFloat(u.fontSize)-.92)<.001})()")
+            XCTAssertEqual(pathStyle, "true", "Attachment paths use the terminal font at .92em")
+            _ = try await webviewJS(web, "(()=>{document.querySelector('.user .paths').textContent='/Users/andrepopp/Desktop/notes.md\\n/Users/andrepopp/Workspace/kido/app/App/SidebarRow.swift';return true})()")
+            try await capture(prefix + "sent")
+            XCTAssertEqual(try String(contentsOf: attachmentPaths.source, encoding: .utf8), "row\n", "Removing a path chip never deletes the original")
+            return
+        }
         if scenario == .media {
             let prefix = width < 750 ? "narrow-media-" : "media-"
             func loaded(_ count: Int) async throws {
@@ -480,7 +601,7 @@ extension VisualTests {
             try await loaded(3)
             try await capture(prefix + "read-image")
             try await advance()
-            try await webviewUntil(web, "document.querySelector('.user .t')?.firstChild?.textContent==='Make the sidebar look like this'")
+            try await webviewUntil(web, "document.querySelector('.user .t p')?.textContent==='Make the sidebar look like this'")
             try await loaded(2)
             try await capture(prefix + "user-images")
             try await advance()
@@ -638,13 +759,13 @@ extension VisualTests {
         try await capture("narrow-stream")
         let caretCount = try await webviewJS(web, "document.querySelectorAll('.caret').length")
         XCTAssertEqual(caretCount, "1")
-        _ = try await webviewJS(web, "(()=>{document.querySelector('#prompt .cm-content').blur();window.savedUser=document.querySelector('.user .t');window.savedText=savedUser.firstChild;const range=document.createRange();range.setStart(savedText,0);range.setEnd(savedText,4);getSelection().removeAllRanges();getSelection().addRange(range);return true})()")
+        _ = try await webviewJS(web, "(()=>{document.querySelector('#prompt .cm-content').blur();window.savedUser=document.querySelector('.user .t');window.savedText=savedUser.querySelector('p').firstChild;const range=document.createRange();range.setStart(savedText,0);range.setEnd(savedText,4);getSelection().removeAllRanges();getSelection().addRange(range);return true})()")
         let initialSelection = try await webviewJS(web, "getSelection().toString()")
         XCTAssertEqual(initialSelection, "\"Expl\"")
         try await advance()
         try await webviewUntil(web, "document.querySelector('#items').textContent.includes('earlier selection')")
         let stableNode = try await webviewJS(web, "savedUser===document.querySelector('.user .t')")
-        let stableText = try await webviewJS(web, "savedText===savedUser.firstChild&&savedText.isConnected")
+        let stableText = try await webviewJS(web, "savedText===savedUser.querySelector('p').firstChild&&savedText.isConnected")
         let selection = try await webviewJS(web, "getSelection().toString()")
         XCTAssertEqual(stableNode, "true")
         XCTAssertEqual(stableText, "true")
@@ -747,7 +868,7 @@ extension VisualTests {
             try await capture("narrow-exited")
         }
         switch scenario {
-        case .transcript, .feed, .completion, .markdown, .media: break
+        case .transcript, .feed, .completion, .markdown, .media, .attachments, .userMarkdown: break
         case .dialogs: try await dialogScenario()
         case .controls: try await controlsScenario()
         case .exit: try await exitScenario()

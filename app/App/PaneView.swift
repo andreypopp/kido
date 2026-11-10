@@ -111,6 +111,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
             if let chrome = copyLabel.superview { chrome.addSubview(webviewView!, positioned: .below, relativeTo: copyLabel) }
             if window?.firstResponder === self { window?.makeFirstResponder(inputResponder) }
         }
+        webviewView?.updateTheme()
         webviewView?.update(path: page.path, serving: webview?.serving == true)
     }
 
@@ -219,7 +220,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
     var breadcrumbPath: [ShownPane.Entry] = [] { didSet { breadcrumb.show(breadcrumbPath) } }
     var onShowAncestor: (Snapshot.Position) -> Void = { _ in }
     // Where the pane runs, from the model; the pill shows it and the chrome draws its stripe.
-    var runtimeMark: RuntimeMark? { didSet { if runtimeMark != oldValue { showRuntime() } } }
+    var runtimeMark: RuntimeMark? { didSet { if runtimeMark != oldValue { showRuntime(); webviewView?.updateTheme() } } }
     var runtimeFocused = true { didSet { if runtimeFocused != oldValue { showRuntime() } } }
     // The hover toolbar covers the pill's corner, so the pill gives way to it.
     var toolbarShown = false { didSet { if toolbarShown != oldValue { needsLayout = true } } }
@@ -1404,11 +1405,19 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
         return true
     }
 
-    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation { webviewView == nil && acceptingInput && copyMode == nil ? .copy : [] }
+    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+        guard acceptingInput, copyMode == nil else { return [] }
+        if webviewView != nil { return (window?.delegate as? WindowOwner)?.isLocalProgram(self) == true && sender.draggingPasteboard.types?.contains(.fileURL) == true ? .copy : [] }
+        return .copy
+    }
 
     override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
-        guard webviewView == nil, acceptingInput, copyMode == nil, let owner = window?.delegate as? WindowOwner else { return false }
+        guard acceptingInput, copyMode == nil, let owner = window?.delegate as? WindowOwner else { return false }
         let urls = sender.draggingPasteboard.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL] ?? []
+        if webviewView != nil {
+            guard owner.isLocalProgram(self), !urls.isEmpty else { return false }
+            owner.dropFiles(urls, into: self); return true
+        }
         if urls.isEmpty, let promises = sender.draggingPasteboard.readObjects(forClasses: [NSFilePromiseReceiver.self]) as? [NSFilePromiseReceiver], !promises.isEmpty {
             owner.uploadPromises(promises, to: self)
         } else {

@@ -4,6 +4,8 @@ import { test } from "node:test";
 import { runInNewContext } from "node:vm";
 import { stripTypeScriptTypes } from "node:module";
 import { markdown } from "./page/markdown.ts";
+import { nameCommand } from "./prompt.ts";
+import { ATTACHMENT_LIMITS } from "./records.ts";
 import type { PromptMode } from "./records.ts";
 
 async function page() {
@@ -25,6 +27,7 @@ async function page() {
     content = { childNodes: [] };
     tagName = 'DIV'; isContentEditable = false; selectionStart = 0; selectionEnd = 0; hidden = true;
     oninput?: () => void;
+    onclick?: () => void;
     onkeydown?: (event: unknown) => void;
     attributes = new Map<string, string>();
     setAttribute(name: string, value: string) { this.attributes.set(name, value); } getAttribute(name: string) { return this.attributes.get(name) ?? null; } removeAttribute(name: string) { this.attributes.delete(name); } focus() { for (let node: Node | undefined = this; node; node = node.parent) if (node.inert) return; document.activeElement = this; } setSelectionRange() {} addEventListener() {} scrollIntoView() {} getBoundingClientRect() { return { left: 0 }; }
@@ -42,7 +45,7 @@ async function page() {
   const listeners = new Map<string, (event: unknown) => void>();
   const windowListeners = new Map<string, (event?: unknown) => void>();
   let activeElement: Node | undefined;
-  const document = { hasFocus: () => true, get activeElement() { return activeElement; }, set activeElement(node: Node | undefined) { activeElement = node; }, querySelector: () => null, getElementById(id: string) { let node = elements.get(id); if (!node) { node = new Node(); elements.set(id, node); if (id === 'prompt') document.getElementById('field').append(node); } return node; }, createElement: (tag: string) => { const node = new Node(); node.tagName = tag.toUpperCase(); return node; }, createElementNS: () => new Node(), addEventListener(type: string, handler: (event: unknown) => void) { listeners.set(type, handler); }, querySelectorAll: () => [] };
+  const document = { hasFocus: () => true, get activeElement() { return activeElement; }, set activeElement(node: Node | undefined) { activeElement = node; }, querySelector: () => null, getElementById(id: string) { let node = elements.get(id); if (!node) { node = new Node(); elements.set(id, node); if (id === 'prompt') document.getElementById('field').append(node); } return node; }, createElement: (tag: string) => { const node = new Node(); node.tagName = tag.toUpperCase(); return node; }, createElementNS: () => new Node(), createTextNode: (text: string) => { const node = new Node(); node.tagName = '#text'; node.textContent = text; return node; }, addEventListener(type: string, handler: (event: unknown) => void) { listeners.set(type, handler); }, querySelectorAll: () => [] };
   type Handlers = { input(user: boolean): void; send(mode: PromptMode): void; quit(): void };
   let handlers: Handlers | undefined;
   let text = () => '';
@@ -62,9 +65,93 @@ async function page() {
       placeholder(text: string) { content.placeholder = text; },
     };
   };
-  const context = { composer, Node, Element: Node, HTMLElement: Node, HTMLButtonElement: Node, HTMLImageElement: Node, markdown, document, window: { ko: {}, addEventListener(type: string, handler: (event?: unknown) => void) { windowListeners.set(type, handler); } }, innerWidth: 980, Event: class { type: string; constructor(type: string) { this.type = type; } }, console, setInterval() {}, clearInterval() {}, setTimeout, clearTimeout, requestAnimationFrame() {}, fetch: async () => ({ ok: true, json: async () => ({}) }) };
+  const context = { composer, nameCommand, ATTACHMENT_LIMITS, AbortController, AbortSignal, CustomEvent: class { type: string; detail?: unknown; constructor(type: string, options?: { detail?: unknown }) { this.type = type; this.detail = options?.detail; } }, Node, Element: Node, HTMLElement: Node, HTMLButtonElement: Node, HTMLImageElement: Node, markdown, document, window: { ko: {}, addEventListener(type: string, handler: (event?: unknown) => void) { windowListeners.set(type, handler); } }, innerWidth: 980, Event: class { type: string; constructor(type: string) { this.type = type; } }, console, setInterval() {}, clearInterval() {}, setTimeout, clearTimeout, requestAnimationFrame() {}, fetch: async () => ({ ok: true, json: async () => ({}) }) };
+  const attachSource = stripTypeScriptTypes(await readFile(new URL('page/attach.ts', import.meta.url), 'utf8')).replace(/^import .*;\n/gm, '').replace(/^export /gm, '');
+  const httpSource = stripTypeScriptTypes(await readFile(new URL('page/http.ts', import.meta.url), 'utf8')).replace(/^import .*;\n/gm, '').replace(/^export /gm, '');
+  Object.assign(context, { fetchJSON: runInNewContext(httpSource + '\nfetchJSON', context), attach: runInNewContext(attachSource + '\nattach', context) });
   return { context, elements, listeners, windowListeners, handlers: () => handlers, prompt: () => prompt, text: () => text(), run: (code: string) => runInNewContext("{\n" + source.replace(/^import .*;\n/gm, "").replace(/^setInterval\([\s\S]*$/m, "") + "\n" + code + "\n}", context) };
 }
+
+test('/name keeps draft attachments for the next prompt', async () => {
+  const app = await page(), requests: { text: string; attachments: string[] }[] = [];
+  app.context.fetch = async (path?: string, options?: { body?: string }) => { assert.equal(path, '/prompt'); requests.push(JSON.parse(options?.body ?? '{}')); return { ok: true, json: async () => ({ disposition: 'handled' }) }; };
+  app.run("state={...state,pi:{type:'ready'}};draft.restore([{id:'file',name:'note.txt',path:'/tmp/note.txt',origin:'path',kind:'file',size:4}]);editor.setText('/name saved')");
+  app.handlers()?.send('prompt'); await new Promise<void>(resolve => setImmediate(resolve));
+  assert.equal(app.elements.get('attachments')?.children.length, 2); assert.equal(app.text(), '');
+  const prompt = app.prompt(); assert.ok(prompt); prompt.value = 'Review';
+  app.handlers()?.send('prompt'); await new Promise<void>(resolve => setImmediate(resolve));
+  assert.deepEqual(requests.map(request => [request.text, request.attachments]), [['/name saved', []], ['Review', ['file']]]);
+  assert.equal(app.elements.get('attachments')?.children.length, 1);
+});
+
+test('user messages use the shared Markdown HTML sink and keep plain paragraphs compact', async t => {
+  for (const text of ['plain message', 'Use `inline`\n\n- item\n\n```js\nconst x = 1;\n```\n\n<b>raw</b>']) await t.test(text === 'plain message' ? 'plain' : 'Markdown', async () => {
+    const app = await page(), html: string[] = [];
+    const create = app.context.document.createElement;
+    app.context.document.createElement = tag => { const node = create(tag); if (tag === 'template') Object.defineProperty(node, 'innerHTML', { set(value: string) { html.push(value); } }); return node; };
+    app.run('put(' + JSON.stringify({ seq: 0, at: 0, kind: 'user', final: true, text, images: [], attachments: [] }) + ')');
+    const result = html.join('');
+    if (text === 'plain message') assert.equal(result.trim(), '<p>plain message</p>');
+    else { assert.match(result, /<code>inline<\/code>/); assert.match(result, /<ul>[\s\S]*<li>item<\/li>/); assert.match(result, /<pre><code class="language-js">const x = 1;/); assert.match(result, /&lt;b&gt;raw&lt;\/b&gt;/); }
+  });
+});
+
+test("native path drops validate all paths, refuse folders and delete removed chips", async () => {
+  const app = await page();
+  Object.assign(app.context.window.ko, { local: true });
+  let expire: () => void = () => assert.fail('The folder notice needs an expiry');
+  Object.assign(app.context, { setTimeout(callback: () => void, delay: number) { assert.equal(delay, 4000); expire = callback; return 1; }, clearTimeout() {} });
+  const requests: string[] = [];
+  app.context.fetch = async (path?: string, options?: { body?: unknown }) => {
+    requests.push(path ?? '');
+    if (path === '/attachments') { const value = JSON.parse(String(options?.body)); assert.ok(['/tmp/one.txt', '/tmp/two.txt'].includes(value.path)); return { ok: true, json: async () => ({ id: value.path.endsWith('one.txt') ? 'one' : 'two', path: value.path, origin: 'path', name: value.path.slice(5), kind: 'file', size: 4 }) }; }
+    assert.equal(path, '/attachments/one/delete'); return { ok: true, json: async () => ({}) };
+  };
+  app.run("state={...state,pi:{type:'ready'}};refreshComposer();editor.setText('draft')");
+  const drop = (detail: unknown) => app.windowListeners.get('ko-drop')?.(new app.context.CustomEvent('ko-drop', { detail }));
+  for (const files of [['relative'], ['/tmp/bad\nname'], Array(17).fill('/tmp/one.txt')]) drop({ files, refused: false });
+  assert.equal(requests.length, 0);
+  drop({ files: ['/tmp/one.txt', '/tmp/two.txt'], refused: true });
+  await new Promise<void>(resolve => setImmediate(resolve));
+  assert.equal(requests.length, 2);
+  const host = app.elements.get('attachments'); assert.ok(host);
+  assert.equal(host.children.length, 3);
+  const notice = host.lastChild; assert.ok(notice);
+  assert.equal(notice.textContent, 'Folders are not attached'); assert.equal(notice.hidden, false);
+  expire(); assert.equal(notice.hidden, true);
+  drop({ files: [], refused: true }); assert.equal(notice.hidden, false);
+  let prevented = false;
+  app.listeners.get('drop')?.({ dataTransfer: { files: [new File(['x'], 'ignored.txt')], items: [] }, preventDefault() { prevented = true; } });
+  assert.equal(prevented, true); assert.equal(requests.length, 2); assert.equal(notice.hidden, false);
+  drop({ files: [], refused: false }); assert.equal(notice.hidden, true);
+  const close = host.children[0]?.children[1]; assert.ok(close);
+  assert.equal(typeof close.onclick, 'function'); close.onclick?.(); await new Promise<void>(resolve => setImmediate(resolve));
+  assert.equal(requests.at(-1), '/attachments/one/delete'); assert.equal(host.children.length, 2);
+  assert.equal(app.text(), 'draft');
+});
+
+test("file drops attach bytes without inserting text and send their ids", async () => {
+  const app = await page();
+  app.run("state={...state,pi:{type:'ready'}};refreshComposer();editor.setText('draft')");
+  assert.equal(typeof app.listeners.get('drop'), 'function');
+  const requests: { path: string; body: unknown }[] = [];
+  let uploaded: () => void = () => {};
+  const complete = new Promise<void>(resolve => { uploaded = resolve; });
+  app.context.fetch = async (path?: string, options?: { body?: unknown }) => {
+    const body = typeof options?.body === 'string' ? JSON.parse(options.body) : options?.body;
+    requests.push({ path: path ?? '', body });
+    if (path === '/attachments') { assert.deepEqual(body, { name: 'note.txt', type: 'text/plain', size: 4 }); return { ok: true, json: async () => ({ id: 'copy', path: '/tmp/attachments/copy/note.txt' }) }; }
+    if (path === '/attachments/copy/0') { assert.ok(ArrayBuffer.isView(body)); assert.equal(body.byteLength, 4); uploaded(); return { ok: true, json: async () => ({ received: 4, attachment: { id: 'copy', origin: 'upload', path: '/tmp/attachments/copy/note.txt', name: 'note.txt', size: 4, kind: 'file' } }) }; }
+    assert.equal(path, '/prompt'); return { ok: true, json: async () => ({}) };
+  };
+  const file = new File(['note'], 'note.txt', { type: 'text/plain' });
+  let prevented = false;
+  app.listeners.get('drop')?.({ dataTransfer: { files: [file], items: [] }, preventDefault() { prevented = true; } });
+  await complete; await new Promise<void>(resolve => setImmediate(resolve));
+  assert.equal(prevented, true); assert.equal(app.text(), 'draft');
+  app.handlers()?.send('prompt'); await new Promise<void>(resolve => setImmediate(resolve));
+  assert.deepEqual(requests.at(-1), { path: '/prompt', body: { text: 'draft', mode: 'prompt', attachments: ['copy'] } });
+});
 
 test("composer handlers send the selected mode and quit", async () => {
   const app = await page();
@@ -73,7 +160,7 @@ test("composer handlers send the selected mode and quit", async () => {
   app.run("state={...state,pi:{type:'ready'}};refreshComposer();editor.setText('draft')");
   app.handlers()?.send('follow_up');
   await new Promise<void>(resolve => setImmediate(resolve));
-  assert.deepEqual(requests, [{ path: '/prompt', body: { text: 'draft', mode: 'follow_up' } }]);
+  assert.deepEqual(requests, [{ path: '/prompt', body: { text: 'draft', mode: 'follow_up', attachments: [] } }]);
   app.handlers()?.quit();
   await new Promise<void>(resolve => setImmediate(resolve));
   assert.equal(requests[1]?.path, '/quit');
@@ -334,18 +421,18 @@ test("model picker matches provider and id", async () => {
 test("stop and Escape take back queued work before aborting", { timeout: 1000 }, async () => {
   for (const trigger of ["button", "Escape"]) {
     const app = await page();
-    let steering = ["first queued"], followUp = ["second queued"];
+    let steering = [{ text: "first queued", attachments: [] }], followUp = [{ text: "second queued", attachments: [] }];
     const commands: string[] = [], started: string[] = [];
     let aborted: () => void = () => {};
     const done = new Promise<void>(resolve => { aborted = resolve; });
     app.context.fetch = async (path?: string) => {
       let data: object = {};
       if (path === "/queue/clear") { commands.push("clear_queue"); data = { steering, followUp }; steering = []; followUp = []; }
-      else if (path === "/abort") { commands.push("abort"); started.push(...steering, ...followUp); aborted(); }
+      else if (path === "/abort") { commands.push("abort"); started.push(...steering.map(entry => entry.text), ...followUp.map(entry => entry.text)); aborted(); }
       else throw Error("Unexpected request: " + path);
       return { ok: true, json: async () => data };
     };
-    const result = app.run("state={...state,working:true,dialogs:[],queue:{steering:['first queued'],followUp:['second queued']}};" + (trigger === "button" ? "element('send').onclick()" : "undefined"));
+    const result = app.run("state={...state,working:true,dialogs:[],queue:{steering:[{text:'first queued',attachments:[]}],followUp:[{text:'second queued',attachments:[]}]}};" + (trigger === "button" ? "element('send').onclick()" : "undefined"));
     if (trigger === "Escape") app.listeners.get("keydown")?.({ key: "Escape", preventDefault() {} });
     await done; await result;
     assert.deepEqual(commands, ["clear_queue", "abort"], trigger);
@@ -394,7 +481,7 @@ test("unchanged state keeps queue controls and status nodes and acknowledges edi
   const app = await page();
   const requests: string[] = [];
   app.context.fetch = async (path?: string) => { requests.push(path ?? ''); return {ok:true,json:async()=>({})}; };
-  assert.equal(app.run("status=()=>{};dialogs=()=>{};exited=()=>{};const record={...state,type:'state',pi:{type:'starting'},queue:{steering:['queued'],followUp:[]},statuses:{tests:'ok'},editor:{id:'one',text:'draft'}};apply(record);const deferred=editorId===undefined;record.pi={type:'ready'};apply(record);const back=element('queue').children.at(-1).children.at(-1);apply({...record});deferred&&back===element('queue').children.at(-1).children.at(-1)&&element('notice').children.length===1"), true);
+  assert.equal(app.run("status=()=>{};dialogs=()=>{};exited=()=>{};const record={...state,type:'state',pi:{type:'starting'},queue:{steering:[{text:'queued',attachments:[]}],followUp:[]},statuses:{tests:'ok'},editor:{id:'one',text:'draft'}};apply(record);const deferred=editorId===undefined;record.pi={type:'ready'};apply(record);const back=element('queue').children.at(-1).children.at(-1);apply({...record});deferred&&back===element('queue').children.at(-1).children.at(-1)&&element('notice').children.length===1"), true);
   assert.deepEqual(requests, ['/editor/ack']);
 });
 
@@ -472,7 +559,7 @@ test("user thumbnails reuse their image node and a failed image becomes non-inte
   const app = await page();
   assert.equal(app.run(`(()=>{
     const find=root=>root.tagName==='IMG'?root:root.children.flatMap(child=>typeof child==='object'?[find(child)]:[]).find(Boolean);
-    const item={seq:0,at:0,final:true,kind:'user',text:'Compare',images:[{id:'0.0',revision:0,mimeType:'image/png',bytes:10,width:1440,height:900}]};
+    const item={seq:0,at:0,final:true,kind:'user',text:'Compare',attachments:[],images:[{id:'0.0',revision:0,mimeType:'image/png',bytes:10,width:1440,height:900}]};
     const first=find(put(item));
     if(!first)return false;
     const second=find(put({...item}));

@@ -15,6 +15,25 @@ import KoModel
 }
 
 private final class WebviewBrowser: WKWebView {
+    private func localDrop(_ sender: NSDraggingInfo) -> (PaneView, WindowOwner)? {
+        guard sender.draggingPasteboard.types?.contains(.fileURL) == true, let pane = (superview as? WebviewPaneView)?.pane,
+              let owner = pane.window?.delegate as? WindowOwner, owner.isLocalProgram(pane) else { return nil }
+        return (pane, owner)
+    }
+
+    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+        guard let (pane, _) = localDrop(sender) else { return super.draggingEntered(sender) }
+        return pane.acceptingInput ? .copy : []
+    }
+
+    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        guard let (pane, owner) = localDrop(sender) else { return super.performDragOperation(sender) }
+        guard pane.acceptingInput else { return false }
+        let urls = sender.draggingPasteboard.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL] ?? []
+        owner.dropFiles(urls, into: pane)
+        return true
+    }
+
     // Remove this override when the installed WebKit has https://bugs.webkit.org/show_bug.cgi?id=327446 fixed.
     @objc var allowsWritingToolsAffordance: Bool { false }
 }
@@ -329,9 +348,16 @@ final class WebviewPaneView: NSView, WKNavigationDelegate, WKUIDelegate {
                           "--ko-font-size": "\(pane.font)px", "--ko-cell-width": "\(pane.cell.width)px", "--ko-cell-height": "\(pane.cell.height)px",
                           "--ko-appearance": runtime.background.isDark ? "dark" : "light"]
         for (index, color) in colors.palette.enumerated() { properties["--ko-color-\(index)"] = rgb(color) }
-        let value: [String: Any] = ["pane": pane.pane.description, "theme": properties, "cell": ["width": pane.cell.width, "height": pane.cell.height]]
+        let value: [String: Any] = ["pane": pane.pane.description, "local": (pane.window?.delegate as? WindowOwner)?.isLocalProgram(pane) == true, "theme": properties, "cell": ["width": pane.cell.width, "height": pane.cell.height]]
         let json = String(data: try! JSONSerialization.data(withJSONObject: value, options: [.sortedKeys]), encoding: .utf8)!
         return "(()=>{const ko=\(json);window.ko=ko;const apply=()=>{for(const [k,v] of Object.entries(ko.theme))document.documentElement.style.setProperty(k,v)};if(document.documentElement)apply();else {const observer=new MutationObserver(()=>{if(document.documentElement){apply();observer.disconnect()}});observer.observe(document,{childList:true,subtree:true})}})()"
+    }
+
+    func drop(files: [String], refused: Bool) {
+        guard !stopped else { return }
+        let value: [String: Any] = ["files": files, "refused": refused]
+        guard let data = try? JSONSerialization.data(withJSONObject: value), let json = String(data: data, encoding: .utf8) else { return }
+        browser.evaluateJavaScript("window.__koDrop('\(generation)',\(json))", completionHandler: nil)
     }
 
     private enum SocketAction: String { case open, send, close, buffer, abort }
@@ -451,6 +477,7 @@ final class WebviewPaneView: NSView, WKNavigationDelegate, WKUIDelegate {
         _emit(event){this.dispatchEvent(event);const handler=this['on'+event.type];if(typeof handler==='function')handler.call(this,event)}
       }
       for(const name of ['open','message','close','error'])Socket.prototype['on'+name]=null;
+      window.__koDrop=(generation,detail)=>{if(generation===documentID)window.dispatchEvent(new CustomEvent('ko-drop',{detail}))};
       window.__koSocketEvent=(generation,id,e)=>{if(generation!==documentID)return;const s=sockets.get(id);if(!s)return;
         if(e.type==='open'){if(s._state===0){s._state=1;s._emit(new Event('open'))}}
         else if(e.type==='message'){const bytes=Uint8Array.from(atob(e.data),c=>c.charCodeAt(0));const data=e.binary?(s.binaryType==='blob'?new Blob([bytes]):bytes.buffer):new TextDecoder().decode(bytes);s._emit(new MessageEvent('message',{data,origin:location.origin}))}

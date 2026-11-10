@@ -4,8 +4,9 @@ import { once } from "node:events";
 import { setTimeout } from "node:timers/promises";
 import { spawn } from "node:child_process";
 import { connect } from "node:net";
+import type { RpcCommand } from "@earendil-works/pi-coding-agent";
 
-type Step = { type: "respond"; command: "get_state" | "get_messages" | "get_session_stats" | "get_available_thinking_levels" | "get_commands"; data: object; after?: object[] } | { type: "emit"; event: object } | { type: "raw"; text: string } | { type: "stderr"; text: string } | { type: "wait"; command: string; events?: object[]; after?: object[]; data?: object; error?: string } | { type: "exit"; code: number } | { type: "repeat"; count: number; events: object[]; delayMs?: number };
+type Step = { type: "respond"; command: "get_state" | "get_messages" | "get_session_stats" | "get_available_thinking_levels" | "get_commands"; data: object; after?: object[] } | { type: "emit"; event: object } | { type: "raw"; text: string } | { type: "stderr"; text: string } | { type: "wait"; command: string; events?: object[]; after?: object[]; data?: object; error?: string; echo?: boolean } | { type: "exit"; code: number } | { type: "repeat"; count: number; events: object[]; delayMs?: number };
 const script: Step[] = process.env.KOA_FAKE_SCRIPT ? readFileSync(process.env.KOA_FAKE_SCRIPT, "utf8").trim().split("\n").filter(Boolean).map(line => JSON.parse(line)) : [];
 let next = 0;
 let working = false;
@@ -43,7 +44,7 @@ async function advance(): Promise<void> {
     else { await output; process.exit(step.code); }
   }
 }
-async function command(value: { type: string; id: string; message?: string; streamingBehavior?: string; provider?: string; modelId?: string; level?: string }): Promise<void> {
+async function command(value: { type: string; id: string; message?: string; images?: Extract<RpcCommand, { type: "prompt" }>["images"]; streamingBehavior?: string; provider?: string; modelId?: string; level?: string }): Promise<void> {
   log(value);
   if (value.type === "get_state" && startupGate) {
     const gate = connect(startupGate);
@@ -71,6 +72,11 @@ async function command(value: { type: string; id: string; message?: string; stre
   const step = script[next];
   if (step?.type === "wait" && step.command === value.type) {
     next++;
+    if (step.echo) {
+      if (value.type !== "prompt" || typeof value.message !== "string") throw Error("An echoed prompt needs a message");
+      const message = { role: "user", timestamp: Date.now(), content: [{ type: "text", text: value.message }, ...(value.images ?? [])] };
+      await emit({ type: "message_start", message }); await emit({ type: "message_end", message });
+    }
     for (const event of step.events ?? []) await emit(event);
     const response = { type: "response", command: value.type, id: value.id, success: !step.error, ...(step.error ? { error: step.error } : { data: step.data ?? data }) };
     await write([response, ...step.after ?? []].map(record => JSON.stringify(record) + "\n").join(""));

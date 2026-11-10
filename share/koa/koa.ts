@@ -10,12 +10,15 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import type { RpcCommand, RpcResponse, JsonAgentSessionEvent, RpcExtensionUIRequest, RpcExtensionUIResponse, SlashCommandSource } from "@earendil-works/pi-coding-agent";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 type PiThinkingLevel = import("@earendil-works/pi-agent-core").ThinkingLevel;
-import { transcript, respond, readBody, promptBody, completeBody, idBody, modelBody, thinkingBody, dialogBody } from "../pi/transcript.ts";
-import { errorText, replaceControlCharacters, utf8Prefix } from "../pi/text.ts";
+import { transcript, respond, readBody, completeBody, idBody, modelBody, thinkingBody, dialogBody } from "../pi/transcript.ts";
+import { errorText, replaceControlCharacters, utf8Prefix, contentText } from "../pi/text.ts";
 import { webview } from "../webview/index.ts";
 import { assemblePage } from "./koa-assemble.ts";
 import { complete, findFd, agentDiscovery } from "./koa-complete.ts";
 import { signalChild } from "./koa-child.ts";
+import { attachments, UPLOAD_IDLE_MS } from "./koa-attach.ts";
+import { nameCommand, promptBody } from "./prompt.ts";
+import { prompts } from "./koa-queue.ts";
 import type { Exit, Pi, State, ThinkingLevel, DialogMethod, CompletionCommand } from "./records.ts";
 
 type Same<A, B> = [A] extends [B] ? ([B] extends [A] ? true : false) : false;
@@ -128,16 +131,20 @@ async function main(): Promise<void> {
   const dir = mkdtempSync(join(tmpdir(), `koa-${process.pid}-`));
   process.once("exit", () => rmSync(dir, { recursive: true, force: true }));
   const feed = transcript({ dir, flushMs: FLUSH_MS, metrics: metricsFile !== undefined });
+  const uploadIdleMs = Number(process.env.KOA_UPLOAD_IDLE_MS ?? UPLOAD_IDLE_MS);
+  if (!Number.isFinite(uploadIdleMs) || uploadIdleMs <= 0) throw Error("KOA_UPLOAD_IDLE_MS must be positive");
+  const attached = attachments(join(dir, "attachments"), uploadIdleMs);
+  const pendingPrompts = prompts();
   const agentDir = process.env.PI_CODING_AGENT_DIR || join(homedir(), ".pi/agent");
   const fd = findFd(process.env.KOA_FD, agentDir.replace(/^~(?=\/|$)/, homedir()), process.env.PATH ?? "");
   if (!fd) process.stderr.write("koa: fd not found; file completion is unavailable\n");
   const agents = agentDiscovery(process.env.KO_PANE ?? "", process.env.KO_AGENT_LIST_TTL_MS);
-  const state: Omit<State, "pi"> = { working: false, aborted: false, name: "pi", levels: [], cwd: process.cwd(), home: homedir(), queue: { steering: [], followUp: [] }, dialogs: [], statuses: {} };
+  const state: Omit<State, "pi" | "queue"> = { working: false, aborted: false, name: "pi", levels: [], cwd: process.cwd(), home: homedir(), dialogs: [], statuses: {} };
   let stopping = false;
   let pi: Pi = { type: "starting" };
   const running = () => !stopping && pi.type === "ready";
   let root: Root = { value: "idle", message: state.name };
-  const publish = (dialogsChanged = false) => { if (pi.type !== "starting" || dialogsChanged) feed.state({ ...state, pi }); };
+  const publish = (dialogsChanged = false) => { if (pi.type !== "starting" || dialogsChanged) feed.state({ ...state, queue: pendingPrompts.view(), pi }); };
   const status = (value: Root["value"] | "clear", message = state.name) => {
     if (value !== "clear") root = { value, message };
     const dialog = state.dialogs[0];
@@ -207,6 +214,7 @@ async function main(): Promise<void> {
     await Promise.all([rebuild(), levels(false), stats(false)]);
     if (pi.type === "starting") { pi = { type: "ready" }; publish(); }
   };
+  let userAttachments: import("./records.ts").Attachment[] = [];
   let partial: Assistant | undefined;
   let outcome: { type: "done" } | { type: "error"; message: string } = { type: "done" };
   let compaction: { root: Root; working: boolean; since?: number } | undefined;
@@ -221,12 +229,16 @@ async function main(): Promise<void> {
     }
     feed.message(partial, "update");
   };
-  const event = (event: JsonAgentSessionEvent, state: Omit<State, "pi">): void => {
+  const event = (event: JsonAgentSessionEvent, state: Omit<State, "pi" | "queue">): void => {
     if (pi.type === "exited" || stopping) return;
     switch (event.type) {
-      case "message_start":
+      case "message_start": {
         if (event.message.role === "assistant") { clearTimeout(argumentTimer); argumentTimer = undefined; partial = event.message; argumentsText.clear(); }
-        feed.message(event.message, "start"); break;
+        if (event.message.role === "user") { userAttachments = pendingPrompts.start(contentText(event.message.content)); attached.consume(userAttachments.map(file => file.id), "used"); }
+        feed.message(event.message, "start");
+        if (event.message.role === "user") publish();
+        break;
+      }
       case "message_update": {
         if (!partial) break;
         const delta = event.assistantMessageEvent;
@@ -251,7 +263,8 @@ async function main(): Promise<void> {
         break;
       }
       case "message_end":
-        feed.message(event.message, "end", event.message.role === "assistant" ? Date.now() : undefined);
+        feed.message(event.message, "end", event.message.role === "assistant" ? Date.now() : undefined, event.message.role === "user" ? userAttachments : []);
+        if (event.message.role === "user") userAttachments = [];
         if (event.message.role === "assistant") {
           clearTimeout(argumentTimer); argumentTimer = undefined; argumentsText.clear(); partial = undefined;
           outcome = event.message.stopReason === "error" ? { type: "error", message: (event.message.errorMessage ?? "").split("\n")[0] ?? "" } : { type: "done" };
@@ -263,7 +276,7 @@ async function main(): Promise<void> {
       case "agent_start": state.working = true; state.since = Date.now(); state.aborted = false; outcome = { type: "done" }; status("working"); publish(); break;
       case "compaction_start": compaction = { root, working: state.working, since: state.since }; state.working = true; state.since ??= Date.now(); status("working"); publish(); break;
       case "agent_settled": state.working = false; delete state.since; state.aborted = event.aborted; status(event.aborted ? "idle" : outcome.type, outcome.type === "error" ? outcome.message : state.name); publish(); background(stats()); break;
-      case "queue_update": state.queue = { steering: event.steering, followUp: event.followUp }; publish(); break;
+      case "queue_update": pendingPrompts.update({ steering: event.steering, followUp: event.followUp }); publish(); break;
       case "thinking_level_changed": state.thinking = event.level; publish(); break;
       case "session_info_changed": state.name = event.name ?? "pi"; title(); publish(); break;
       case "compaction_end":
@@ -295,7 +308,7 @@ async function main(): Promise<void> {
       }
     } else if (record.type === "response") {
       if (record.success && ["new_session", "switch_session", "fork", "clone"].includes(record.command) && !("data" in record && record.data && "cancelled" in record.data && record.data.cancelled)) {
-        state.working = false; state.aborted = false; delete state.since; state.queue = { steering: [], followUp: [] };
+        state.working = false; state.aborted = false; delete state.since; pendingPrompts.reset(); userAttachments = []; attached.reset();
         status("idle"); background(refresh());
       }
     } else event(record, state);
@@ -315,18 +328,18 @@ async function main(): Promise<void> {
     if (stopping) return;
     stopping = true; clearTimeout(argumentTimer);
     for (const timer of dialogTimers.values()) clearTimeout(timer);
-    dialogTimers.clear(); feed.close();
+    dialogTimers.clear(); feed.close(); attached.close();
     try { await view.hide(); } catch (error) { process.stderr.write(`koa: hide: ${errorText(error)}\n`); }
     try { await view.close(); } catch (error) { process.stderr.write(`koa: close: ${errorText(error)}\n`); }
     server.close(); server.closeAllConnections(); child.stdin.end();
     if (!await waitExit()) { signalChild(child, "SIGTERM"); if (!await waitExit()) { signalChild(child, "SIGKILL"); await link.exited; } }
     child.stdout.destroy(); child.stderr.destroy();
   };
+  const reply = (response: ServerResponse, result: RpcResponse) => respond(response, result.success ? 200 : 409, JSON.stringify(result.success ? "data" in result ? result.data : {} : { error: result.error }));
   const command = async (value: RpcCommand, response: ServerResponse) => {
     const result = await link.command(value);
     if (result.success && result.command === "set_model") { state.model = result.data; await levels(false); publish(); }
-    if (result.success && result.command === "clear_queue") { state.queue = { steering: [], followUp: [] }; publish(); }
-    respond(response, result.success ? 200 : 409, JSON.stringify(result.success ? "data" in result ? result.data : {} : { error: result.error }));
+    reply(response, result);
   };
   const routes: Record<string, { method: "GET" | "POST"; access: "ready" | "alive" | "exited" | "any"; handle(value: unknown, response: ServerResponse): void | Promise<void> }> = {
     "/complete": { method: "POST", access: "alive", handle: async (value, response) => {
@@ -345,13 +358,42 @@ async function main(): Promise<void> {
       } finally { response.removeListener("close", abort); }
     } },
     "/models": { method: "GET", access: "ready", handle: (_value, response) => command({ type: "get_available_models" }, response) },
-    "/prompt": { method: "POST", access: "ready", handle: (value, response) => {
+    "/prompt": { method: "POST", access: "ready", handle: async (value, response) => {
       const prompt = promptBody(value);
       if ("error" in prompt) { respond(response, 400, JSON.stringify(prompt)); return; }
-      return command({ type: "prompt", message: prompt.text, ...(state.working ? { streamingBehavior: prompt.mode === "follow_up" ? "followUp" : "steer" } : {}) }, response);
+      const name = nameCommand(prompt.text);
+      if (name) {
+        if (name.type === "query") {
+          const result = await link.command({ type: "get_state" });
+          if (!result.success || result.command !== "get_state") { reply(response, result); return; }
+          feed.send({ type: "notify", level: result.data.sessionName ? "info" : "warning", message: result.data.sessionName ? "Session name: " + result.data.sessionName : "Usage: /name <name>" });
+        } else {
+          const result = await link.command({ type: "set_session_name", name: name.name });
+          if (!result.success) { reply(response, result); return; }
+          feed.send({ type: "notify", level: "info", message: "Session name set: " + state.name });
+        }
+        respond(response, 200, JSON.stringify({ disposition: "handled" })); return;
+      }
+      const files = await attached.prepare(prompt.attachments);
+      const message = [prompt.text, ...files.paths].filter(Boolean).join("\n");
+      const mode = state.working ? prompt.mode === "follow_up" ? "followUp" : "steer" : "prompt";
+      const entry = pendingPrompts.add(message, mode, files.files);
+      const result = await link.command({ type: "prompt", message, ...(files.images.length ? { images: files.images } : {}), ...(mode !== "prompt" ? { streamingBehavior: mode } : {}) });
+      if (result.success) attached.consume(prompt.attachments, result.command === "prompt" && result.data.disposition === "queued" ? "queued" : "used"); else pendingPrompts.reject(entry);
+      reply(response, result);
     } },
     "/abort": { method: "POST", access: "ready", handle: (_value, response) => command({ type: "abort" }, response) },
-    "/queue/clear": { method: "POST", access: "ready", handle: (_value, response) => command({ type: "clear_queue" }, response) },
+    "/queue/clear": { method: "POST", access: "ready", handle: async (_value, response) => {
+      pendingPrompts.beginClear();
+      try {
+        const result = await link.command({ type: "clear_queue" });
+        if (result.success && result.command === "clear_queue") {
+          const restored = pendingPrompts.takeBack(result.data);
+          attached.restore([...restored.steering, ...restored.followUp].flatMap(entry => entry.attachments.map(file => file.id)));
+          publish(); respond(response, 200, JSON.stringify(restored));
+        } else reply(response, result);
+      } finally { pendingPrompts.endClear(); }
+    } },
     "/model": { method: "POST", access: "ready", handle: (value, response) => {
       const model = modelBody(value);
       if ("error" in model) throw new Error(model.error);
@@ -387,7 +429,7 @@ async function main(): Promise<void> {
         if (arg !== undefined) args.push(arg);
       }
       child = spawnPi([...args, ...(state.sessionFile ? ["--session", state.sessionFile] : [])]); link = rpc(child);
-      pi = { type: "starting" }; state.aborted = false; state.queue = { steering: [], followUp: [] };
+      pi = { type: "starting" }; state.aborted = false; pendingPrompts.reset(); userAttachments = []; attached.reset();
       partial = undefined; argumentsText.clear(); outcome = { type: "done" };
       watch(child, link); link.events(records); status("idle");
       await refresh(); respond(response, 200, "{}");
@@ -414,6 +456,7 @@ async function main(): Promise<void> {
         try { await write; } catch (error) { respond(response, 500, JSON.stringify({ error: errorText(error) })); return; }
         respond(response, 200, "{}"); return;
       }
+      if (await attached.handle(request, response, !stopping && pi.type !== "exited")) return;
       if (feed.handle(request, response)) return;
       if (request.method === "GET" && request.url === "/") {
         try {

@@ -1,12 +1,16 @@
 import { markdown } from './markdown.ts';
 import { composer } from './composer.ts';
+import { attach } from './attach.ts';
+import { nameCommand } from '../prompt.ts';
+import { fetchJSON } from './http.ts';
+import { ATTACHMENT_LIMITS } from '../records.ts';
 import type { State, WireItem, WireAssistant, Block, Patch, PageRecord, PromptMode, ImageRef } from '../records.ts';
 
 type Step = { block: Exclude<Block, { type: 'text' }>;  item: WireAssistant; index: number; key: string; slots: Map<string, Slot> };
 type Slot = (HTMLDivElement | HTMLButtonElement) & { signature?: string };
 declare global {
   interface Window {
-    ko?: object;
+    ko?: { local: boolean };
     composer: Pick<ReturnType<typeof composer>, 'text' | 'setText' | 'focus'>;
     koaMetrics?: { flush(): Promise<void>; readonly after: number; readonly items: WireItem[] };
   }
@@ -36,10 +40,12 @@ let epoch = '', after = -1, first: number | undefined, more = false, paging = fa
 let escaped = false, notificationTimer: number | undefined, dialogId: string | undefined, buttonWorking: boolean | undefined;
 let submitting = false, editorId: string | undefined, dialogTimer: number | undefined, shownExit: number | undefined, pickerButton: HTMLElement | undefined, shownQueue: string | undefined, shownStatuses: string | undefined;
 const pagingPatches: Patch[] = [];
+const draft = attach(element('attachments'), () => refreshComposer(), displayPath);
 const editor = composer(element('prompt'), {
+  drop: draft.drop, paste: draft.paste,
   input(user) { if (user) escaped = false; refreshComposer(); },
   send(mode) { void send(mode); },
-  quit() { void fetchJSON('/quit'); },
+  quit() { if (!draft.count && !draft.busy) void fetchJSON('/quit'); },
 });
 window.composer = editor;
 const composerBlocked = () => state.pi.type === 'starting' || state.dialogs.length > 0;
@@ -61,7 +67,7 @@ function timestamp(at: number) {
 
 function prose(key: string, source: string, final: boolean) {
   let memo = texts.get(key);
-  if (!memo) { memo = { render: markdown(), view: node('div', undefined, 'msg assistant'), blocks: [] }; texts.set(key, memo); }
+  if (!memo) { memo = { render: markdown(), view: node('div', undefined, 'msg prose'), blocks: [] }; texts.set(key, memo); }
   if (memo.final && final) return memo.view;
   if (memo.source === source && memo.final === final) return memo.view;
   if (final) delete memo.source;
@@ -124,7 +130,7 @@ function thumbnails(refs: ImageRef[], slots: Map<string, Slot>) {
   } };
 }
 
-const displayCwd = () => state.home && (state.cwd === state.home || state.cwd?.startsWith(state.home + '/')) ? '~' + state.cwd.slice(state.home.length) : state.cwd;
+function displayPath(value: string) { return state.home && (value === state.home || value.startsWith(state.home + '/')) ? '~' + value.slice(state.home.length) : value; }
 const duration = (ms: number | undefined) => ms === undefined ? '' : ms < 100 ? Math.round(ms) + 'ms' : ms >= 60000 ? Math.floor(ms / 60000) + 'm' + String(Math.floor(ms / 1000) % 60).padStart(2, '0') + 's' : Number((ms / 1000).toFixed(1)) + 's';
 function args(block: Extract<Block, { type: 'tool' }>): Record<string, unknown> {
   try { const value = JSON.parse(block.args.text); return value && typeof value === 'object' && !Array.isArray(value) ? value : {}; }
@@ -219,7 +225,7 @@ function run(input: Step[]) {
         if (suffix) old.slice(-suffix).forEach(text => line(text, '', 'ctx'));
         detail.append(diff);
       } else {
-        if (block.name === 'bash') detail.append(node('div', 'cwd ' + displayCwd(), 'kv'));
+        if (block.name === 'bash') detail.append(node('div', 'cwd ' + displayPath(state.cwd), 'kv'));
         if ('result' in block.state && block.state.result?.text) detail.append(node(images && block.name === 'read' ? 'div' : 'pre', block.state.result.text, images && block.name === 'read' ? 'note' : ''));
       }
       if ('result' in block.state && block.state.result?.cut) detail.append(node('div', block.state.result.cut + ' bytes omitted', 'delta'));
@@ -280,6 +286,7 @@ function put(item: WireItem) {
     steps = [];
   };
   if (item.kind === 'assistant') {
+    view.className = 'assistant';
     item.blocks.forEach((block, index) => {
       const key = item.seq + ':' + index;
       if (block.type === 'text') { flush(); if (block.text) children.push(prose(key, block.text, item.final)); }
@@ -291,9 +298,11 @@ function put(item: WireItem) {
     view.className = 'msg ' + item.kind;
     if (item.kind === 'user') {
       const time = node('time', timestamp(item.at)); time.dateTime = new Date(item.at).toISOString();
-      const text = node('div', item.text, 't');
+      const text = node('div', undefined, 't'); text.append(prose(item.seq + ':user', item.text, true));
       if (item.images.length) { const images = thumbnails(item.images, slots); images.load(); text.append(images.view); }
-      children.push(text, time);
+      const paths = item.attachments.filter(file => file.kind === 'file').map(file => file.path);
+      if (paths.length) text.append(node('div', paths.join('\n'), 'paths'));
+      children.push(time, text);
     } else if (item.kind === 'bash') children.push(node('div', '$ ' + item.command), node('pre', item.output.text), node('div', 'Exit ' + (item.exit ?? 'unknown'), 'delta'));
     else children.push(node('div', item.text, 'notice'));
   }
@@ -319,8 +328,10 @@ function refreshComposer() {
   if (available) focusComposer();
   element('field').classList.toggle('blocked', blocked);
   element('field').classList.toggle('working', working);
-  editor.placeholder(working ? 'Steer koa…' : 'Message koa…');
-  sendButton.disabled = blocked || !working && !editor.text().trim();
+  element('field').classList.toggle('drop', draft.hover);
+  editor.placeholder(draft.hover ? 'Drop to attach' : working ? 'Steer koa…' : 'Message koa…');
+  const text = editor.text();
+  sendButton.disabled = blocked || !working && !canSend(text);
   sendButton.className = 'act' + (sendButton.disabled ? ' off' : working ? ' stop' : '');
   sendButton.setAttribute('aria-label', working ? 'Stop' : 'Send');
   if (buttonWorking !== working) {
@@ -354,7 +365,7 @@ function status() {
   element('context-bar').classList.toggle('high', percent !== null && percent !== undefined && percent > 75);
   const bar = element('context-bar').firstElementChild;
   if (bar instanceof HTMLElement) bar.style.width = Math.min(100, Math.max(0, percent ?? 0)) + '%';
-  const path = (displayCwd() || '').replace(/\/$/, ''), slash = path.lastIndexOf('/');
+  const path = displayPath(state.cwd).replace(/\/$/, ''), slash = path.lastIndexOf('/');
   element('cwd').replaceChildren(node('span', path.slice(0, slash + 1), 'hide-n k'), node('span', path.slice(slash + 1)));
   return working;
 }
@@ -423,13 +434,17 @@ function dialogs() {
   foot.append(cancel, submit); card.append(foot); host.prepend(card); (field || card).focus();
 }
 function queue() {
-  const entries = [...(state.queue?.steering || []).map(text => ['steer', text]), ...(state.queue?.followUp || []).map(text => ['follow-up', text])];
+  const entries = [...state.queue.steering.map(entry => ['steer', entry] as const), ...state.queue.followUp.map(entry => ['follow-up', entry] as const)];
   const signature = JSON.stringify(entries);
   if (shownQueue === signature) return;
   shownQueue = signature;
   const host = element('queue'); host.replaceChildren();
   if (!entries.length) return;
-  for (const [tag, text] of entries) { const row = node('div', undefined, 'q'); row.append(node('span', tag, 'tag'), node('span', text, 't')); host.append(row); }
+  for (const [tag, entry] of entries) {
+    const row = node('div', undefined, 'q'); row.append(node('span', tag, 'tag'), node('span', entry.text, 't'));
+    if (entry.attachments.length) { const count = node('span', undefined, 'att'); count.innerHTML = '<svg viewBox="0 0 16 16"><path d="M10.5 5.5 6 10a1.6 1.6 0 0 0 2.3 2.3l5-5a3.2 3.2 0 0 0-4.5-4.5l-5.2 5.2a4.8 4.8 0 0 0 6.8 6.8l4-4"/></svg>'; count.append(document.createTextNode(String(entry.attachments.length))); row.append(count); }
+    host.append(row);
+  }
   const take = node('div', entries.length + ' queued', 'take'), back = button('take back');
   take.append(node('span', undefined, 'sp'), back); host.append(take);
   back.onclick = async () => {
@@ -440,8 +455,10 @@ function queue() {
 }
 async function takeBack() {
   const result = await fetchJSON('/queue/clear');
-  editor.setText([editor.text(), ...(result.steering || []), ...(result.followUp || [])].filter(Boolean).join('\n\n'));
-  editor.focus();
+  const entries = [...result.steering, ...result.followUp];
+  editor.setText([editor.text(), ...entries.map(entry => entry.text)].filter(Boolean).join('\n\n'));
+  draft.restore(entries.flatMap(entry => entry.attachments));
+  refreshComposer(); editor.focus();
 }
 async function stop() {
   if (submitting) return;
@@ -623,18 +640,13 @@ async function older() {
     }
   } catch (error) { reportError(error); } finally { paging = false; }
 }
-async function fetchJSON(path: '/models', body: undefined, method: 'GET'): Promise<{ models: { id: string; provider: string }[] }>;
-async function fetchJSON(path: '/queue/clear'): Promise<{ steering: string[]; followUp: string[] }>;
-async function fetchJSON(path: string, body?: object, method?: string): Promise<object>;
-async function fetchJSON(path: string, body: object = {}, method = 'POST') {
-  const response = await fetch(path, { method, ...(method === 'GET' ? {} : { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }) });
-  const result = await response.json(); if (!response.ok) throw Error(result.error || 'Request failed'); return result;
-}
+function canSend(text: string) { return !!nameCommand(text) || !draft.busy && draft.count <= ATTACHMENT_LIMITS.files && (!!text.trim() || draft.count > 0); }
 function reportError(error: unknown) { element('error').textContent = error instanceof Error ? error.message : String(error); }
 async function send(mode: PromptMode = 'prompt') {
-  const text = editor.text(); if (!text.trim() || submitting) return;
+  const text = editor.text(), name = nameCommand(text), files = name ? [] : draft.files;
+  if (!canSend(text) || submitting) return;
   submitting = true;
-  try { await fetchJSON('/prompt', { text, mode }); if (editor.text() === text) editor.setText(''); focusComposer(); element('error').textContent = ''; }
+  try { await fetchJSON('/prompt', { text, mode, attachments: files.map(file => file.id) }); if (!name) draft.sent(files); if (editor.text() === text) editor.setText(''); refreshComposer(); focusComposer(); element('error').textContent = ''; }
   catch (error) { reportError(error); }
   finally { submitting = false; }
 }

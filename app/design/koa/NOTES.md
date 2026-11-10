@@ -715,3 +715,144 @@ Renders: `/tmp/koa-shots/media-<state>-<theme>-<width>.png`, states
 read-image, user-images, image-gone, chips, drop, folder, queue, sent,
 cmd-hover, lightbox. Approved by the user on 2026-11-10 ("mockups look
 good, please go ahead"), as shown.
+
+## Agent messages and job notices (agents.html; proposal, 2026-11-10)
+
+`agents.html` is the reference for section 9 of plans/koa.md: what
+passes between agents and what background jobs report, in six
+states, light and dark, wide and 60 columns. It copies
+`mockup.html`'s style block. The texts are ko-pi's today
+(`noticeHeader`, `senderHeader`, `RELATION_TEXT`, `steerHeader`,
+`jobEndText`, `streamBatch`, the `spawn_agent` reply); the fields
+are the planner's. The user's direction (2026-11-10): messages look
+like user messages with a "to @name" / "from @name" header, two
+lines at most with a toggle; job notices are one minimal line,
+name, exit and time, gray for success and red for failure, with a
+toggle for the output.
+
+**An agent message** (outgoing: `spawn_agent`, `message_agent`;
+incoming: ko-pi's `ko-message`, `ko-steer`, `ko-notice` and a
+report) is the user message's block: `--well` fill, radius 8pt,
+padding 6pt 12pt 7pt, with a header line above the text.
+- The header, in the muted prose at .92em: "to @name" (outgoing) or
+  "from @name" (incoming), the @name in the terminal font in the fg
+  colour; for incoming the relation faint after a "·" (RELATION_TEXT
+  shortened: "your parent", "your subagent", "another agent in this
+  session", "a subagent of your subagent"; none for ko-pi's own
+  notices); at the right, before the time, the kind in the faint
+  terminal font at .8em: `task` (a spawn), `message`, `steer`,
+  `interrupt` (outgoing); `message`, `steer`, `report`, `ended` (a
+  child's end), `notice` (ko-pi's own) (incoming); then the time in
+  tabular digits. No delivery status (user, 2026-11-10: no
+  delivered, queued, sent, spawned): a failure alone shows, in red,
+  in the kind's place ("refused", "no agent named …", "not reported"
+  for an ended child that had not reported). A card splits the run
+  it sits in.
+- The body is the text as prose. Collapsed (the default), it is one
+  line: the first line of the text, cut with an ellipsis (nowrap,
+  text-overflow), so a card is two lines at most (user, 2026-11-10:
+  "too much info … 2 lines max"); the ellipsis is the sign of more.
+  A click anywhere on the block expands it to the whole text
+  (pre-wrap); a second click collapses it. Every block toggles, so a text
+  that wraps in a narrow pane also stays one line until clicked; a
+  text that fits shows no ellipsis.
+- No meta lines: a spawn shows no session, window, pane or model
+  line, and a cut report shows no "full report: read_report(…)"
+  trailer (user, 2026-11-10). A failed spawn has the name and
+  "refused" in red and ko-pi's refusal as the body; a refused
+  `message_agent` keeps its text and the refusal in red in place of
+  "delivered".
+
+**A job notice** (`async_bash`'s end notice, a `ko-stream` batch) is
+one line in the terminal font at .92em, muted: a chevron (as a
+step's), the job's name in fg, the kind only when it is not a plain
+job (`service`, `stream`, faint .85em), the end in ko-pi's words
+("exit 0", "exit 1", "signal SIGKILL", "failed: …", "timed out
+600 s"; none for a stream batch), and the time at the right in faint
+tabular digits. Gray when it succeeded; the name and the end in
+`--err` when it failed (exit ≠ 0, a signal, failed, timed out). A
+click on the line opens the output under a 1pt `--hair` guide at
+17pt, 11pt of padding (a step's geometry): the tail in a `--well`
+pre, radius 7pt, at most 200pt, scrolling; consecutive stream
+batches of one job in one entry, separated by "+ HH:MM" lines; then
+"log: <path> · … N lines omitted" faint, ellipsized. Closed by
+default.
+
+**Plain agent tools** (`list_agents`, `read_report`, `stop_agent`,
+`list_async_bash`, `stop_async_bash`) stay steps in a run, by name
+with their first argument, as blocks.html draws them.
+
+The states follow the planner's section 9 list (in: message from
+parent/child/peer, steer, notice, report, ended reported/not, job end
+exit 0/1/signal/timeout, stream; out: spawn pending/spawned/failed,
+message queued/sent/delivered/refused; a folded text; a card between
+runs; narrow); the planner's "6 lines" is superseded by the user's
+three.
+
+Renders: `/tmp/koa-shots/agents-<state>-<theme>-<width>.png`, states
+out, failed, in, jobs, fold-a, fold-b, tools. Approved by the user on
+2026-11-10, as shown.
+
+## The status bar moves into the composer (composer.html; proposal, 2026-11-10)
+
+`composer.html`: the 24pt status bar goes and its facts move into the
+composer's foot, the row under the text that holds the send or stop
+button. Eight states, light and dark, wide and 60 columns. The foot
+is the terminal font at .8em, 20pt tall, 2pt below the text and 5pt
+above the field's bottom edge (user, 2026-11-10: less padding; was
+24pt, 6pt and 8pt), no button; its
+cells, left to right, each with a 1pt `--hair` separator 10pt either
+side:
+
+1. **The state**: a 6pt dot (faint for idle and starting, `--ko-color-2`
+   breathing for working, `--ko-color-3` for waiting, `--ko-color-1`
+   for exited) and the word with its time in tabular digits: "idle",
+   "working 12s", "waiting", "starting", "exited 137" / "signal 9".
+   **Reserved width: 15ch of the .8em terminal font plus the dot and
+   its 6pt gap** (`min-width: calc(15ch + 12px)`, about 106pt at the
+   13pt base), the width of "working 12m 34s"; so a state change or a
+   tick moves nothing to its right (user, 2026-11-10). Escape aborts;
+   nothing in the row says so.
+2. **The model**: a button "claude-opus-5-5 · high" (the level faint);
+   the picker opens above it, 8pt up, left-aligned 6pt out; the cell
+   takes `--well2` while the picker is open or on hover.
+3. **The context**: the 44pt bar (18% track, faint fill, warning colour
+   over 75%), "84k / 200k" faint, the percent; reserved at the bar
+   plus 3ch.
+4. **The gap**: flexible, the one cell with no reserved width.
+5. **The cwd**: the leading directories faint, the last component
+   muted, at the field's right padding.
+
+Nothing else is in the composer (user, 2026-11-10: "no icons … only
+status, model picker, context, cwd"): the send/stop button goes
+(Return sends, Escape aborts, as the keys already do), and a
+notification is not a toast in the foot but one line in the
+transcript where it arrived: terminal font .92em muted, the text
+ellipsized, the time at the right in faint tabular digits as a job
+line; a warning in `--warn`, an error in `--err`; no badge; it stays.
+
+Narrow (60 columns) drops, in order: the thinking level, the cwd's
+leading directories, the context numbers; the bar, the percent, the
+model, the state and "kido" stay, and the state keeps its reserved
+width. The transcript gains the 24pt; the dock sits on the pane's
+bottom edge. Renders: `/tmp/koa-shots/composer-<state>-<theme>-<width>.png`,
+states idle, working, waiting, exited, picker, toast, toast-err,
+narrow. Approved by the user on 2026-11-10, as shown.
+
+## Times end at one edge (user, 2026-11-10)
+
+The time of a run line, a step line and a job line ends where the
+user message's time ends: 12pt in from the transcript's edge, the
+user block's horizontal padding (`.run .line{padding-right:12px}`,
+the same on a job line). Agent message blocks share the user block's
+padding, so their times align too.
+
+## The user message is the accent at 18% (user, 2026-11-10)
+
+The user message's block is `color-mix(in srgb, var(--accent) 18%,
+var(--ko-bg))` (`--accent` is `--ko-color-4`), in place of the 5% gray
+well, so it carries more weight than the agent message blocks, which
+keep the 5% well; radius 8pt and padding 7pt 12pt unchanged. The user
+chose it from 9, 13, 18 and 24% and from gray 12 and 16%. Every koa
+mockup page has it; mockup.html's "User message" control keeps the
+old treatments for reference.

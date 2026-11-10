@@ -1,9 +1,11 @@
-import type { IncomingMessage, ServerResponse } from "node:http";
+import type { IncomingMessage, ServerResponse, OutgoingHttpHeaders } from "node:http";
 import { createHash } from "node:crypto";
-import { createReadStream, mkdirSync, openSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { constants, mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { open } from "node:fs/promises";
 import { imageInfo } from "./image.ts";
-import type { Text, Block, Item, Assistant, WireItem, State, PageRecord, PromptMode, CompletionQuery, ImageRef } from "../koa/records.ts";
+import { promptText } from "../koa/prompt.ts";
+import type { Text, Block, Item, Assistant, WireItem, State, PageRecord, CompletionQuery, ImageRef, Attachment } from "../koa/records.ts";
 import { mintId, contentText, utf8Prefix, type Content } from "./text.ts";
 import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { RpcExtensionUIRequest, RpcExtensionUIResponse } from "@earendil-works/pi-coding-agent";
@@ -22,11 +24,6 @@ export async function readBody(request: IncomingMessage, limit: number): Promise
     if (size <= limit) chunks.push(chunk);
   }
   return size <= limit ? Buffer.concat(chunks) : undefined;
-}
-
-export function promptBody(value: unknown): { text: string; mode: PromptMode | "steer" } | { error: string } {
-  if (value && typeof value === "object" && "text" in value && typeof value.text === "string" && value.text.trim() && "mode" in value && (value.mode === "prompt" || value.mode === "steer" || value.mode === "follow_up")) return { text: value.text, mode: value.mode };
-  return { error: "A non-empty text and prompt, steer or follow_up mode are required" };
 }
 
 export function completeBody(value: unknown): CompletionQuery | { error: string } {
@@ -76,6 +73,17 @@ function final(item: Assistant): boolean {
 export function respond(response: ServerResponse, status: number, text: string, contentType = "application/json"): void {
   response.writeHead(status, { "Content-Type": contentType });
   response.end(text);
+}
+
+export async function serveFile(response: ServerResponse, path: string, headers: OutgoingHttpHeaders): Promise<void> {
+  const file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  try {
+    const stat = await file.stat();
+    if (!stat.isFile()) throw Error("not readable");
+    response.writeHead(200, { ...headers, "Content-Length": stat.size });
+    const stream = file.createReadStream();
+    stream.once("error", () => response.destroy()); response.once("close", () => stream.destroy()); stream.pipe(response);
+  } catch (error) { await file.close(); throw error; }
 }
 
 function notRun(item: Assistant): void {
@@ -238,7 +246,7 @@ export function transcript({ dir, flushMs, metrics = false }: { dir: string; flu
     if (counters && dirty.size) { counters.flushes++; broadcast(flushRecord(counters.bytes)); }
     dirty.clear();
   };
-  const applyMessage = (message: AgentMessage, phase: "start" | "update" | "end" | "branch", ended?: number): void => {
+  const applyMessage = (message: AgentMessage, phase: "start" | "update" | "end" | "branch", ended?: number, attachments: Attachment[] = []): void => {
     const branch = phase === "branch";
     if (message.role === "toolResult") {
       if (phase === "end" || branch) {
@@ -267,7 +275,10 @@ export function transcript({ dir, flushMs, metrics = false }: { dir: string; flu
     const seq = items.length;
     let item: Item;
     switch (message.role) {
-      case "user": item = { seq, at: message.timestamp, final: true, kind: "user", text: contentText(message.content), images: saveImages(String(seq), message.content) }; break;
+      case "user": {
+        const files = phase === "branch" ? [] : attachments;
+        item = { seq, at: message.timestamp, final: true, kind: "user", text: promptText(contentText(message.content), files), images: saveImages(String(seq), message.content), attachments: files }; break;
+      }
       case "custom":
         if (!message.display) return;
         item = { seq, at: message.timestamp, final: true, kind: "notice", customType: message.customType, from: message.details && typeof message.details === "object" && "from" in message.details && typeof message.details.from === "string" ? message.details.from : "", text: contentText(message.content) }; break;
@@ -298,7 +309,7 @@ export function transcript({ dir, flushMs, metrics = false }: { dir: string; flu
     for (const req of responses) { subscribers.add(req); body(req, record, true); }
   };
 
-  const message: (message: AgentMessage, phase: "start" | "update" | "end", ended?: number) => void = applyMessage;
+  const message: (message: AgentMessage, phase: "start" | "update" | "end", ended?: number, attachments?: Attachment[]) => void = applyMessage;
   const thinking = (index: number, edge: "started" | "ended", at: number): void => {
     flush();
     const item = assistant === undefined ? undefined : items[assistant];
@@ -332,13 +343,10 @@ export function transcript({ dir, flushMs, metrics = false }: { dir: string; flu
       const image = images.get(url.pathname.slice(8));
       if (!image) { respond(req, 404, "{}"); return true; }
       req.setHeader("Content-Type", image.ref.mimeType);
-      let fd: number;
-      try { fd = openSync(image.path, "r"); }
-      catch (error) { respond(req, error instanceof Error && "code" in error && error.code === "ENOENT" ? 410 : 500, "{}"); return true; }
-      req.writeHead(200, { "Content-Length": image.ref.bytes });
-      const stream = createReadStream(image.path, { fd });
-      req.once("close", () => stream.destroy());
-      stream.once("error", () => req.destroy()); stream.pipe(req);
+      void serveFile(req, image.path, { "Content-Type": image.ref.mimeType }).catch(error => {
+        if (req.headersSent) req.destroy();
+        else respond(req, error instanceof Error && "code" in error && error.code === "ENOENT" ? 410 : 500, "{}");
+      });
     } else if (request.method === "GET" && url.pathname === "/items") {
       const before = Number(url.searchParams.get("before"));
       if (!Number.isSafeInteger(before) || before < 0) respond(req, 400, "{}");

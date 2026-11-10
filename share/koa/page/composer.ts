@@ -10,7 +10,7 @@ import type { PromptMode } from '../records.ts';
 
 const outsideComposition = (command: Command): Command => view => !view.compositionStarted && command(view);
 
-export function composer(host: HTMLElement, handlers: { input(user: boolean): void; send(mode: PromptMode): void; quit(): void }) {
+export function composer(host: HTMLElement, handlers: { input(user: boolean): void; send(mode: PromptMode): void; quit(): void; drop(event: DragEvent): boolean; paste(event: ClipboardEvent): boolean }) {
   const hint = new Compartment();
   let label = 'Message koa…';
   const completions = completion(host, () => handlers.send('prompt'));
@@ -19,6 +19,7 @@ export function composer(host: HTMLElement, handlers: { input(user: boolean): vo
     parent: host,
     extensions: [
       history(),
+      EditorView.domEventHandlers({ drop: event => handlers.drop(event), paste: event => handlers.paste(event) }),
       markdownLanguage,
       syntaxHighlighting(HighlightStyle.define([
         { tag: [tags.processingInstruction, tags.meta, tags.url, tags.atom], class: 'cm-markup' },

@@ -766,7 +766,11 @@ maps the coordinator's modules.
                         TypeScript in the repository) and the page's
                         npm packages; records.ts, the record types of
                         koa and its page; koa-assemble.ts, the one
-                        HTML response; koa-fake-pi.ts, the scripted pi
+                        HTML response; koa-complete.ts, completion;
+                        koa-attach.ts, attachments; koa-queue.ts, the
+                        queue's attachments; koa-child.ts, the signals
+                        of koa's own children; prompt.ts, the prompt
+                        text rules that koa and its page share; koa-fake-pi.ts, the scripted pi
                         of its suite koa-*.test.ts; stress/, the stress
                         workloads and runner (not installed)
     share/webview/      @kido/webview, the Node SDK for webview pages

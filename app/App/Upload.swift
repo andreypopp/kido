@@ -15,6 +15,20 @@ struct Upload: Sendable {
         return paths.count == sources.count ? paths : nil
     }
 
+    enum Dropped { case file(Upload), folder, refused(Failure) }
+
+    static func classify(_ urls: [URL]) -> [Dropped] {
+        var count = 0
+        return urls.map { url in
+            var status = stat()
+            if lstat(url.path, &status) == 0, status.st_mode & S_IFMT == S_IFDIR, (try? url.resourceValues(forKeys: [.isPackageKey]).isPackage) != true { return .folder }
+            guard count < countLimit else { return .refused(Failure(message: "Kido uploads at most \(countLimit) files at once.")) }
+            guard url.path.rangeOfCharacter(from: .controlCharacters) == nil else { return .refused(Failure(message: "A path contains control characters.")) }
+            do throws(Failure) { let file = try Upload(files: [url], copying: false); count += 1; return .file(file) }
+            catch { return .refused(error) }
+        }
+    }
+
     static let fileLimit = 64 << 20, countLimit = 16, totalLimit = 256 << 20, pixelLimit = 40_000_000
 
     init(files urls: [URL], copying: Bool) throws(Failure) {

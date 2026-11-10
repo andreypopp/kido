@@ -316,7 +316,23 @@ URL carries the epoch and the revision, because WebKit keeps a decoded
 image for a URL across a rebuild. Its type comes only from the sniffed
 header (PNG, JPEG, GIF, WebP, BMP), and every response carries `nosniff`
 and a sandbox policy, so a payload that only claims an image type never
-runs as a document on koa's origin. Jobs and subagent reports are the notices that
+runs as a document on koa's origin.
+
+**Attachments.** A file that the user drops or pastes reaches koa as
+one of two kinds. In a local session (`window.ko.local`: the window's
+host is this Mac, the pane has no runtime), Kido.app takes a Finder drop
+itself, in the web view that the drop targets, and gives the page only
+the paths through the `ko-drop` event, so pi gets the user's original
+file. A paste, and a drop in every other session, upload the bytes:
+the page sends them in chunks below the
+bridge's 1 MiB body cap, as `Uint8Array` bodies (WebKit delivers `Blob`
+and `FormData` bodies empty), into koa's private temporary directory,
+so the file exists on the host where pi runs. Folders are not attached.
+koa sends an image to pi as an image and any other file as a path line.
+An upload that is aborted, or that stalls between chunks for
+`KOA_UPLOAD_IDLE_MS` (30 s), is removed with its file and its share of
+the limits. A queued prompt keeps its attachments across a compaction,
+so taking the queue back restores its chips. Jobs and subagent reports are the notices that
 ko-pi already puts in the session; the page has no live list of jobs.
 A rebuild (a new runtime, `session_tree`,
 `session_compact`) mints a new epoch. The model, its caps, its window

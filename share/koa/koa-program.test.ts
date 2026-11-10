@@ -48,6 +48,144 @@ async function fixture(t: TestContext, steps: object[], env: NodeJS.ProcessEnv =
   if (startup) await until(record => record.type === "state" && (pi ? record.pi?.type === "exited" : Array.isArray(record.levels) && record.levels.length === 3));
   return { post, until, records: () => stream.records, count: () => stream.records.length, close, stdout: () => stdout, stderr: () => stderr, log: async () => (await readFile(log, "utf8")).trim().split("\n").map(line => JSON.parse(line)), base };
 }
+test('/name is a session command, with pi query and empty-name rules', { timeout: 10000 }, async t => {
+  const app = await fixture(t, [
+    { type: 'wait', command: 'set_session_name', events: [{ type: 'session_info_changed', name: 'test-koa' }] },
+    { type: 'respond', command: 'get_state', data: { sessionName: 'test-koa' } },
+    { type: 'wait', command: 'set_session_name', events: [{ type: 'session_info_changed', name: 'second' }] },
+    { type: 'respond', command: 'get_state', data: {} },
+  ]);
+  await app.post('prompt', { text: '/name   test-koa  ', mode: 'prompt', attachments: [] });
+  const commands = (await app.log()).filter(record => ['prompt', 'set_session_name'].includes(record.type));
+  assert.deepEqual(commands.map(record => [record.type, record.name]), [['set_session_name', 'test-koa']]);
+  await app.until(record => record.type === 'state' && record.name === 'test-koa');
+  await app.until(record => record.type === 'notify' && record.message === 'Session name set: test-koa');
+  assert.equal((await app.post('prompt', { text: '/name', mode: 'prompt', attachments: [] })).status, 200);
+  await app.until(record => record.type === 'notify' && record.message === 'Session name: test-koa');
+  await app.post('prompt', { text: ' /name second ', mode: 'prompt', attachments: ['unsent'] });
+  await app.post('prompt', { text: '/name   ', mode: 'prompt', attachments: [] });
+  await app.until(record => record.type === 'notify' && record.level === 'warning' && record.message === 'Usage: /name <name>');
+  assert.equal(app.records().some(record => record.type === 'item'), false);
+  await app.post('prompt', { text: '/names other', mode: 'prompt', attachments: [] });
+  assert.deepEqual((await app.log()).filter(record => record.type === 'prompt').map(record => record.message), ['/names other']);
+});
+
+test("a sent copy survives a later queue take-back and removal", { timeout: 10000 }, async t => {
+  const app = await fixture(t, [
+    { type: 'wait', command: 'prompt', echo: true, events: [{ type: 'agent_start' }] },
+    { type: 'wait', command: 'prompt', events: [{ type: 'queue_update', steering: ['again'], followUp: [] }] },
+    { type: 'wait', command: 'clear_queue', events: [{ type: 'queue_update', steering: [], followUp: [] }], data: { steering: ['again'], followUp: [] } },
+  ]);
+  const bytes = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aWQAAAABJRU5ErkJggg==', 'base64');
+  const file = await (await app.post('attachments', { name: 'keep.png', type: 'image/png', size: bytes.length })).json();
+  await fetch(app.base + `attachments/${file.id}/0`, { method: 'POST', body: new Uint8Array(bytes) });
+  await app.post('prompt', { text: 'first', mode: 'prompt', attachments: [file.id] });
+  await app.post('prompt', { text: 'again', mode: 'prompt', attachments: [file.id] });
+  await app.post('queue/clear');
+  assert.equal((await app.post(`attachments/${file.id}/delete`)).status, 409);
+  assert.deepEqual(await readFile(file.path), bytes);
+});
+
+test('a queued image survives compaction and take-back', { timeout: 10000 }, async t => {
+  const dir = await mkdtemp(join(tmpdir(), 'koa-compaction-image-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const path = join(dir, 'image.png');
+  await writeFile(path, Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aWQAAAABJRU5ErkJggg==', 'base64'));
+  const app = await fixture(t, [
+    { type: 'wait', command: 'prompt', events: [{ type: 'agent_start' }] },
+    { type: 'wait', command: 'prompt', events: [{ type: 'queue_update', steering: [''], followUp: [] }, { type: 'compaction_end' }] },
+    { type: 'wait', command: 'clear_queue', data: { steering: [''], followUp: [] } },
+  ]);
+  await app.post('prompt', { text: 'go', mode: 'prompt', attachments: [] });
+  const file = await (await app.post('attachments', { path })).json();
+  const before = app.count();
+  await app.post('prompt', { text: '', mode: 'prompt', attachments: [file.id] });
+  await app.until(record => record.type === 'reset', before);
+  assert.deepEqual(await (await app.post('queue/clear')).json(), { steering: [{ text: '', attachments: [file] }], followUp: [] });
+});
+
+test("queue take-back returns attachment chips with their typed text", { timeout: 10000 }, async t => {
+  const dir = await mkdtemp(join(tmpdir(), "koa-queue-attachments-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const path = join(dir, "note.txt"); await writeFile(path, "note");
+  const app = await fixture(t, [
+    { type: "wait", command: "prompt", events: [{ type: "agent_start" }] },
+    { type: "wait", command: "prompt", events: [{ type: "queue_update", steering: ["Compare\n" + path], followUp: [] }] },
+    { type: "wait", command: "clear_queue", events: [{ type: "queue_update", steering: [], followUp: [] }], data: { steering: ["Compare\n" + path], followUp: [] } },
+  ]);
+  await app.post("prompt", { text: "go", mode: "prompt", attachments: [] });
+  const file = await (await app.post("attachments", { path })).json();
+  await app.post("prompt", { text: "Compare", mode: "prompt", attachments: [file.id] });
+  const restored = await (await app.post("queue/clear")).json();
+  assert.deepEqual(restored, { steering: [{ text: "Compare", attachments: [file] }], followUp: [] });
+});
+
+test("attachments stream chunks and original paths into prompts", { timeout: 10000 }, async t => {
+  const dir = await mkdtemp(join(tmpdir(), "koa-attachments-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const image = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aWQAAAABJRU5ErkJggg==", "base64");
+  const file = join(dir, "original.txt"), png = join(dir, "original.png");
+  await writeFile(file, "original"); await writeFile(png, image);
+  const app = await fixture(t, []);
+  const created = await app.post("attachments", { name: "pixel.png", type: "text/html", size: image.length });
+  assert.equal(created.status, 200);
+  const uploaded = await created.json();
+  const { id } = uploaded;
+  const chunk = (offset: number, body: Uint8Array<ArrayBuffer>) => fetch(app.base + `attachments/${id}/${offset}`, { method: "POST", body });
+  assert.equal((await chunk(1, image.subarray(0, 10))).status, 409);
+  assert.deepEqual(await (await chunk(0, image.subarray(0, 10))).json(), { received: 10 });
+  const done = await (await chunk(10, image.subarray(10))).json();
+  assert.deepEqual(done, { received: image.length, attachment: { id, path: uploaded.path, origin: "upload", name: "pixel.png", size: image.length, kind: "image", mimeType: "image/png", width: 1, height: 1 } });
+  const downloaded = await fetch(app.base + `attachments/${id}`);
+  assert.equal(downloaded.headers.get("content-type"), "image/png");
+  assert.match(downloaded.headers.get("content-disposition") ?? "", /pixel.png/);
+  assert.deepEqual(Buffer.from(await downloaded.arrayBuffer()), image);
+  const path = await (await app.post("attachments", { path: file })).json();
+  assert.equal(path.kind, "file");
+  assert.equal((await app.post("attachments", { path: dir })).status, 403);
+  assert.equal((await app.post("attachments", { path: join(dir, "missing") })).status, 404);
+  assert.equal((await app.post("attachments", { name: "large", size: 64 * 1024 * 1024 + 1, type: "" })).status, 413);
+  const copy = await (await app.post("attachments", { name: "copied.txt", type: "text/plain", size: 4 })).json();
+  await fetch(app.base + `attachments/${copy.id}/0`, { method: "POST", body: new Uint8Array(Buffer.from("copy")) });
+  assert.equal((await app.post("prompt", { text: "Compare", mode: "prompt", attachments: [id, copy.id, path.id] })).status, 200);
+  const sent = (await app.log()).find(record => record.type === "prompt");
+  assert.deepEqual(sent.images, [{ type: "image", data: image.toString("base64"), mimeType: "image/png" }]);
+  const lines = sent.message.split("\n");
+  assert.equal(lines[0], "Compare"); assert.equal(lines.at(-1), file);
+  assert.equal(await readFile(lines.at(-2), "utf8"), "copy");
+  const originalImage = await (await app.post("attachments", { path: png })).json();
+  assert.equal((await app.post("prompt", { text: "", mode: "prompt", attachments: [originalImage.id] })).status, 200);
+  const last = (await app.log()).filter(record => record.type === "prompt").at(-1);
+  assert.equal(last.message, ""); assert.deepEqual(last.images, sent.images);
+  const extra = await (await app.post("attachments", { path: file })).json();
+  assert.equal((await app.post(`attachments/${extra.id}/delete`)).status, 200);
+  assert.equal((await fetch(app.base + `attachments/${extra.id}`)).status, 404);
+  assert.equal(await readFile(file, 'utf8'), 'original');
+  const link = join(dir, 'link'); await symlink(file, link);
+  assert.equal((await app.post('attachments', { path: link })).status, 403);
+  const unfinished: string[] = [];
+  for (let i = 0; i < 16; i++) { const response = await app.post('attachments', { name: 'empty', type: '', size: 0 }); assert.equal(response.status, 200); unfinished.push((await response.json()).id); }
+  assert.equal((await app.post('attachments', { name: 'seventeenth', type: '', size: 0 })).status, 409);
+  for (const id of unfinished) await app.post(`attachments/${id}/delete`);
+  const boundary = await (await app.post('attachments', { name: 'boundary', type: '', size: 768 * 1024 + 1 })).json();
+  assert.equal((await fetch(app.base + `attachments/${boundary.id}/0`, { method: 'POST', body: new Uint8Array(768 * 1024 + 1) })).status, 413);
+  assert.equal((await fetch(app.base + `attachments/${boundary.id}/0`, { method: 'POST', body: new Uint8Array(0) })).status, 400);
+  await app.post(`attachments/${boundary.id}/delete`);
+  const reserved: string[] = [];
+  for (let i = 0; i < 4; i++) { const response = await app.post('attachments', { name: 'reserved', type: '', size: 64 * 1024 * 1024 }); assert.equal(response.status, 200); reserved.push((await response.json()).id); }
+  assert.equal((await app.post('attachments', { name: 'over-budget', type: '', size: 1 })).status, 409);
+  for (const id of reserved) await app.post(`attachments/${id}/delete`);
+  const html = new TextEncoder().encode('<svg xmlns="http://www.w3.org/2000/svg"><script>globalThis.pwned=true</script></svg>');
+  const unsafe = await (await app.post('attachments', { name: 'evil.svg', type: 'image/svg+xml', size: html.length })).json();
+  assert.equal((await (await fetch(app.base + `attachments/${unsafe.id}/0`, { method: 'POST', body: html })).json()).attachment.kind, 'file');
+  const download = await fetch(app.base + `attachments/${unsafe.id}`);
+  assert.equal(download.headers.get('content-type'), 'application/octet-stream');
+  assert.equal(download.headers.get('x-content-type-options'), 'nosniff');
+  assert.equal(download.headers.get('content-security-policy'), "sandbox; default-src 'none'");
+  await app.post('quit'); await app.close;
+  await assert.rejects(readFile(lines.at(-2)), { code: 'ENOENT' });
+});
+
 test("completion reads pi commands on every request and validates offsets", { timeout: 10000 }, async t => {
   const app = await fixture(t, [{ type: "respond", command: "get_commands", data: { commands: [{ name: "find", description: "Find a file", source: "extension" }] } }]);
   for (let i = 0; i < 2; i++) {
@@ -197,7 +335,7 @@ process.stdin.on('end', () => process.exit(0));
   const app = await fixture(t, [], { KOA_STARTUP_GATE: gate }, pi, false);
   const [socket] = await connected;
   t.after(() => socket.destroy());
-  const early = await app.post("prompt", { text: "too early", mode: "prompt" });
+  const early = await app.post("prompt", { text: "too early", mode: "prompt", attachments: [] });
   assert.equal(early.status, 409);
   assert.match((await early.json()).error, /starting/);
   for (const [route, body] of [["model", {provider:"test",modelId:"early"}], ["thinking", {level:"high"}], ["queue/clear", {}], ["abort", {}], ["editor/ack", {id:"early"}]] as const) {
@@ -212,13 +350,13 @@ process.stdin.on('end', () => process.exit(0));
   assert.equal(startup.pi.type, "starting");
   const afterDialog = app.count();
   assert.equal((await app.post("dialog", {id:"startup-dialog",value:"Yes"})).status, 200);
-  assert.equal((await app.post("prompt", {text:"still starting",mode:"prompt"})).status, 409);
+  assert.equal((await app.post("prompt", {text:"still starting",mode: "prompt", attachments: []})).status, 409);
   socket.write("ready");
   const ready = await app.until(record => record.type === "state" && record.pi?.type === "ready", afterDialog);
   assert.equal(ready.dialogs.length, 0);
   const page = await (await fetch(app.base + "items?before=99")).json();
   assert.equal(page.items[0].text, "snapshot");
-  assert.equal((await app.post("prompt", { text: "ready", mode: "prompt" })).status, 200);
+  assert.equal((await app.post("prompt", { text: "ready", mode: "prompt", attachments: [] })).status, 200);
 });
 
 const assistantMessage = { ...assistant("stop"), api: "test", provider: "test", model: "test", usage: {}, timestamp: 42 };
@@ -242,18 +380,18 @@ test("RPC deltas, authoritative ends, tools, state, status and command correlati
       { type: "session_info_changed", name: "Renamed" },
     ] },
   ]);
-  const started = await app.post("prompt", { text: "go", mode: "steer" });
+  const started = await app.post("prompt", { text: "go", mode: "steer", attachments: [] });
   assert.equal(started.status, 200);
   assert.deepEqual(await started.json(), { disposition: "started" });
   const item = await app.until(record => ["item", "patch"].includes(String(record.type)) && JSON.stringify(record).includes("hello\u2028world"));
   assert.match(JSON.stringify(item), /hello\\u2028world|hello\u2028world/);
-  assert.deepEqual(await (await app.post("prompt", { text: "steering", mode: "steer" })).json(), { disposition: "queued" });
-  assert.deepEqual(await (await app.post("prompt", { text: "later", mode: "follow_up" })).json(), { disposition: "handled" });
+  assert.deepEqual(await (await app.post("prompt", { text: "steering", mode: "steer", attachments: [] })).json(), { disposition: "queued" });
+  assert.deepEqual(await (await app.post("prompt", { text: "later", mode: "follow_up", attachments: [] })).json(), { disposition: "handled" });
   assert.equal((await app.post("abort")).status, 200);
   const patch = await app.until(record => record.type === "patch" && JSON.stringify(record).includes("final"));
   assert.match(JSON.stringify(patch), /final/);
   const state = await app.until(record => record.type === "state" && record.thinking === "high");
-  assert.deepEqual(state.queue, { steering: ["next"], followUp: [] });
+  assert.deepEqual(state.queue, { steering: [{ text: "next", attachments: [] }], followUp: [] });
   assert.deepEqual(state.context, { tokens: 123, window: 1000, percent: 12.3 });
   await app.until(record => record.type === "state" && record.name === "Renamed");
   assert.match(app.stdout(), /\x1b\]7501;state=working:app=pi/);
@@ -288,7 +426,7 @@ test("tool deltas, end replacement, timing and compaction rebuild", { timeout: 1
     { type: "wait", command: "abort", events: [{ type: "compaction_end" }] },
     { type: "wait", command: "get_messages", data: { messages: [{ role: "user", content: "rebuilt", timestamp: 99 }] } },
   ]);
-  await app.post("prompt", { text: "go", mode: "prompt" });
+  await app.post("prompt", { text: "go", mode: "prompt", attachments: [] });
   const record = await app.until(record => record.type === "patch" && JSON.stringify(record).includes('"durationMs":17'));
   const text = JSON.stringify(record);
   assert.match(text, /result/);
@@ -338,7 +476,7 @@ test("queue, model, thinking and dialog routes carry RPC state", { timeout: 1000
     { type: "wait", command: "extension_ui_response" },
 
   ]);
-  assert.equal((await app.post("prompt", { text: "go", mode: "prompt" })).status, 200);
+  assert.equal((await app.post("prompt", { text: "go", mode: "prompt", attachments: [] })).status, 200);
   const state = await app.until(record => record.type === "state" && record.dialogs?.length === 2);
   assert.deepEqual(state.dialogs, [dialog, { ...dialog, id: "dialog-2", method: "confirm", message: "Really?" }]);
   await app.until(record => record.type === "notify" && record.message === "Notice" && record.level === "warning");
@@ -357,7 +495,7 @@ test("queue, model, thinking and dialog routes carry RPC state", { timeout: 1000
   const editorAfter = app.count();
   assert.equal((await app.post("editor/ack", { id: "editor" })).status, 200);
   await app.until(record => record.type === "state" && !record.editor, editorAfter);
-  assert.deepEqual(await (await app.post("queue/clear")).json(), { steering: ["steer"], followUp: ["later"] });
+  assert.deepEqual(await (await app.post("queue/clear")).json(), { steering: [{ text: "steer", attachments: [] }], followUp: [{ text: "later", attachments: [] }] });
   assert.deepEqual(await (await fetch(app.base + "models")).json(), { models: [{ id: "new", provider: "test" }] });
   assert.equal((await app.post("model", { provider: "test", modelId: "new" })).status, 200);
   await app.until(record => record.type === "state" && record.model?.provider === "test" && record.model.id === "new");
@@ -404,7 +542,7 @@ test("restart keeps the saved picker selection, harness and runtime", { timeout:
   assert.equal((await app.post("pi/start")).status, 409);
   assert.equal((await app.post("model", { provider: "test", modelId: "picked" })).status, 200);
   assert.equal((await app.post("thinking", { level: "high" })).status, 200);
-  await app.post("prompt", { text: "exit", mode: "prompt" });
+  await app.post("prompt", { text: "exit", mode: "prompt", attachments: [] });
   await app.until(record => record.type === "state" && record.pi?.type === "exited");
   const after = app.count();
   assert.equal((await app.post("pi/start")).status, 200);
@@ -426,7 +564,7 @@ test("spawn failure is distinct from an exit code", { timeout: 10000 }, async t 
 
 test("clean pi exit closes koa", { timeout: 10000 }, async t => {
   const app = await fixture(t, [{ type: "wait", command: "prompt" }, { type: "exit", code: 0 }]);
-  await app.post("prompt", { text: "quit", mode: "prompt" });
+  await app.post("prompt", { text: "quit", mode: "prompt", attachments: [] });
   const result = await Promise.race([app.close, timers.setTimeout(1000, "still running", { ref: false })]);
   assert.deepEqual(result, [0, null]);
   await assert.rejects(fetch(app.base));
@@ -434,7 +572,7 @@ test("clean pi exit closes koa", { timeout: 10000 }, async t => {
 
 test("pi crash keeps koa serving its transcript and exit state", { timeout: 10000 }, async t => {
   const app = await fixture(t, [{ type: "wait", command: "prompt" }, { type: "raw", text: "not json\r\n" }, { type: "stderr", text: "old1\nold2\na\nb\nc\npar" }, { type: "stderr", text: "tial\nlast\n" }, { type: "exit", code: 7 }]);
-  await app.post("prompt", { text: "go", mode: "prompt" });
+  await app.post("prompt", { text: "go", mode: "prompt", attachments: [] });
   const state = await app.until(record => record.type === "state" && record.pi?.type === "exited");
   assert.equal(state.pi.exited, 7);
   assert.equal(typeof state.pi.at, "number");
@@ -475,13 +613,13 @@ test("concurrent large commands cross pipe back-pressure without lost ids or byt
     };`);
   const app = await fixture(t, [], { NODE_OPTIONS: `--import=${hook}`, KOA_PRESSURE_LOG: pressureLog });
   const texts = ["a", "b", "c"].map(prefix => prefix.repeat(900 * 1024));
-  const responses = await Promise.all(texts.map(text => app.post("prompt", { text, mode: "prompt" })));
+  const responses = await Promise.all(texts.map(text => app.post("prompt", { text, mode: "prompt", attachments: [] })));
   assert.deepEqual(responses.map(response => response.status), [200, 200, 200]);
   assert.equal((await app.post("abort")).status, 200);
-  assert.equal((await app.post("prompt", { text: "x".repeat(1500 * 1024), mode: "prompt" })).status, 413);
-  const invalid = await app.post("prompt", { text: "", mode: "prompt" });
+  assert.equal((await app.post("prompt", { text: "x".repeat(1500 * 1024), mode: "prompt", attachments: [] })).status, 413);
+  const invalid = await app.post("prompt", { text: "", mode: "prompt", attachments: [] });
   assert.equal(invalid.status, 400);
-  assert.deepEqual(await invalid.json(), { error: "A non-empty text and prompt, steer or follow_up mode are required" });
+  assert.deepEqual(await invalid.json(), { error: "Text or attachments and prompt, steer or follow_up mode are required" });
   const commands = await app.log();
   const prompts = commands.filter(command => command.type === "prompt");
   assert.deepEqual(prompts.map(command => command.message).sort(), texts.sort());
@@ -506,7 +644,7 @@ test("tool argument JSON is parsed once per flush, not per delta", { timeout: 10
     { type: "message_update", usage: {}, assistantMessageEvent: { type: "toolcall_start", contentIndex: 0, id: "args", toolName: "read" } },
     ...['{"instrumented":', ...Array.from({ length: 98 }, () => " "), "1}"].map(delta => ({ type: "message_update", usage: {}, assistantMessageEvent: { type: "toolcall_delta", contentIndex: 0, delta } })),
   ] }], { NODE_OPTIONS: `--import=${hook}`, KOA_PARSE_LOG: log });
-  await app.post("prompt", { text: "go", mode: "prompt" });
+  await app.post("prompt", { text: "go", mode: "prompt", attachments: [] });
   await app.until(record => record.type === "patch" && JSON.stringify(record).includes("instrumented"));
   assert.equal(await readFile(log, "utf8"), "parse\n");
 });
@@ -522,7 +660,7 @@ test("HTTP UTF-8 chunks reach pi without replacement characters", { timeout: 100
     };`);
   const app = await fixture(t, [], { NODE_OPTIONS: `--import=${hook}` });
   const text = "héllo 🌎";
-  assert.equal((await app.post("prompt", { text, mode: "prompt" })).status, 200);
+  assert.equal((await app.post("prompt", { text, mode: "prompt", attachments: [] })).status, 200);
   assert.equal((await app.log()).find(record => record.type === "prompt").message, text);
 });
 
@@ -541,14 +679,14 @@ test("manual compaction restores status and retries stay working", { timeout: 10
   ]);
   for (const expected of ["idle", "done", "error", "error"]) {
     let after = app.count();
-    assert.equal((await app.post("prompt", { text: "compact", mode: "prompt" })).status, 200);
+    assert.equal((await app.post("prompt", { text: "compact", mode: "prompt", attachments: [] })).status, 200);
     await app.until(record => record.type === "state" && record.working === true, after);
     after = app.count();
     assert.equal((await app.post("abort")).status, 200);
     await app.until(record => record.type === "state" && record.working === false, after);
     assert.match(app.stdout().split("\x1b]7501;").at(-1) ?? "", new RegExp(`^state=${expected}:`));
   }
-  assert.equal((await app.post("prompt", { text: "retry", mode: "prompt" })).status, 200);
+  assert.equal((await app.post("prompt", { text: "retry", mode: "prompt", attachments: [] })).status, 200);
   await app.post("abort");
   const state = await app.until(record => record.type === "state" && JSON.stringify(record.queue).includes("retry"));
   assert.equal(state.working, true);
@@ -562,7 +700,7 @@ test("pi exit does not wait for a descendant that holds its pipes", { timeout: 1
   await new Promise<void>(resolve => server.listen(gate, resolve));
   const connected = once(server, "connection");
   const app = await fixture(t, [{ type: "wait", command: "prompt" }, { type: "exit", code: 7 }], { KOA_FAKE_KEEP_PIPES: gate });
-  await app.post("prompt", { text: "exit", mode: "prompt" });
+  await app.post("prompt", { text: "exit", mode: "prompt", attachments: [] });
   const [peer] = await connected;
   try {
     await app.post("quit");
