@@ -78,6 +78,7 @@ impl Remote {
     pub(crate) fn start(state: &Path, path: &str, options: Options) -> Remote {
         let dir = Dir::new("ko-ssh-");
         let env = test_env(&dir);
+        std::fs::write(dir.join(".zshrc"), "").unwrap();
         for name in ["host_key", "client_key", "client_key.pub"] {
             std::fs::copy(keys().join(name), dir.join(name)).unwrap();
         }
@@ -124,7 +125,7 @@ impl Remote {
                  AuthorizedKeysFile {d}/authorized_keys\nStrictModes no\nUsePAM no\n\
                  PasswordAuthentication no\nKbdInteractiveAuthentication no\n\
                  PubkeyAuthentication yes\nAllowStreamLocalForwarding {forwarding_line}\n\
-                 SetEnv KO_STATE_DIR={state} PATH={path}\nAcceptEnv KO_E2E_MARK{env}\n{sessions}",
+                 SetEnv KO_STATE_DIR={state} PATH={path} HOME={d} XDG_CONFIG_HOME={d} XDG_STATE_HOME={d} ZDOTDIR={d}\nAcceptEnv KO_E2E_MARK{env}\n{sessions}",
                 d = text_of(&dir),
                 state = text_of(state),
                 env = if options.send_env { " PATH HOME" } else { "" },

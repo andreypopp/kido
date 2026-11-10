@@ -445,7 +445,8 @@ export FPATH
 autoload -Uz compinit add-zsh-hook
 recompinit() {
   unset _comps
-  compinit
+  # A runner's group-writable fpath directories can block compinit on its insecure-directories prompt.
+  compinit -u
   print reinitialized >> "$HOME/compinit-calls"
 }
 recompinit
@@ -562,7 +563,7 @@ print -r -- "$_ko_dir" > "$HOME/ko-completion-dir""#
                 r#"autoload -Uz compinit compdump
 _ko_test_fpath=("${fpath[@]}")
 fpath=("${(@)fpath:#*/ko-shell.*}")
-compinit -D -d "$HOME/complete.dump"
+compinit -u -D -d "$HOME/complete.dump"
 unset '_comps[ko]'
 compdump
 fpath=("${_ko_test_fpath[@]}")
@@ -595,6 +596,9 @@ print -r -- "${_comps[ko]-absent}" > "$HOME/ko-before-precmd""#,
                 "{written}"
             );
             s.text(&stale, "exit\r");
+            poll("the stale completion pane removal", || {
+                s.rows().iter().all(|row| row["id"] != stale)
+            });
             let marker = s.dir.join("zsh-early-exit");
             fs::write(
                 s.dir.join(".zshenv"),

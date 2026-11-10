@@ -593,6 +593,7 @@ test("queue, model, thinking and dialog routes carry RPC state", { timeout: 1000
   assert.equal((await app.post("dialog", { id: "dialog-3", value: "typed" })).status, 200);
   await app.until(record => record.type === "state" && record.dialogs[0]?.id === "dialog-4");
   assert.equal((await app.post("dialog", { id: "dialog-4", cancelled: true })).status, 200);
+  await pollUntil(async () => (await app.log()).some(record => record.type === "extension_ui_response" && record.id === "dialog-4"), 1000, "last dialog answer received");
   const commands = await app.log();
   assert.deepEqual(commands.find(record => record.type === "set_model"), { type: "set_model", provider: "test", modelId: "new", id: commands.find(record => record.type === "set_model").id });
   assert.deepEqual(commands.filter(record => record.type === "extension_ui_response").map(({ id, value, confirmed }) => ({ id, value, confirmed })), [{ id: "dialog-1", value: "Yes", confirmed: undefined }, { id: "dialog-2", value: undefined, confirmed: true }, { id: "dialog-3", value: "typed", confirmed: undefined }, { id: "dialog-4", value: undefined, confirmed: undefined }]);

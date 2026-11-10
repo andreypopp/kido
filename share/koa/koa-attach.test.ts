@@ -85,12 +85,13 @@ test('an aborted chunk releases its file and reserved bytes', { timeout: 10000 }
 });
 
 test('a stalled upload expires and releases all sixteen slots', { timeout: 10000 }, async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
   const app = await fixture(t, 100);
   const paths: string[] = [];
   for (let i = 0; i < 16; i++) { const response = await app.create(0); assert.equal(response.status, 200); paths.push((await response.json()).path); }
   assert.equal((await app.create(0)).status, 409);
-  await pollUntil(async () => (await app.create(0)).status === 200, 1000, 'stalled upload slots recovered');
-  await pollUntil(async () => paths.every(path => !existsSync(path)), 1000, 'all stalled files removed');
-  for (let i = 0; i < 15; i++) assert.equal((await app.create(0)).status, 200);
+  t.mock.timers.tick(100);
+  assert.equal(paths.every(path => !existsSync(path)), true);
+  for (let i = 0; i < 16; i++) assert.equal((await app.create(0)).status, 200);
   assert.equal((await app.create(0)).status, 409);
 });

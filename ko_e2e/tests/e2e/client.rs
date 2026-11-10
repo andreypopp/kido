@@ -5,7 +5,7 @@ use ko_sys::pid::{Exit, Pid, signal_descendant};
 use ko_sys::signal::Signal;
 use serde_json::json;
 
-use crate::harness::{DEADLINE, Dir, HEAVY, Server, quote, run_ko, start, text_of};
+use crate::harness::{DEADLINE, Dir, HEAVY, Server, poll, quote, run_ko, start, text_of};
 use crate::layout::{put_edit, window_size, windows};
 use crate::outer::{DOWN_PRESS_RELEASE, FOCUS_IN, FOCUS_OUT, Keys, Outer, UP};
 
@@ -81,7 +81,10 @@ fn client_local_link_loss_reconnects_after_the_server_returns() {
     o.quiet();
     assert!(s.dial().is_err(), "the client must not start a server");
     s.start_again(&[]);
-    s.pane("printf LOCAL-AFTER; exec cat");
+    poll("the reconnected client to create its pane", || {
+        !s.rows().is_empty()
+    });
+    o.line("printf 'LOCAL-''AFTER'; exec cat");
     o.contains("LOCAL-AFTER");
     o.line("LOCAL-INPUT");
     s.screen_has("pane_1", "LOCAL-INPUT");

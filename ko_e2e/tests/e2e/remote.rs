@@ -227,7 +227,10 @@ fn remote_a_restarted_server_starts_a_fresh_model_and_a_signal_cleans_up() {
 
     // The new ring is longer than the old offset, so a wrong resume would find its offset inside
     // the ring, keep the old screen and append the tail of the new output to it.
+    let master = remote.master(&outer.dir);
     std::fs::write(&remote.block, "").unwrap();
+    signal_descendant(outer.client_pid(), master, Signal::Kill).unwrap();
+    outer.contains(&format!("reconnecting to {HOST}"));
     s.restart(&[]);
     let history = history_lines(300);
     s.pane(&format!(
@@ -253,6 +256,19 @@ fn remote_api_and_concurrent_dials_start_one_server_and_reconnect_starts_another
     let pane = s.pane("printf 'API-PANE'; exec cat");
     s.screen_has(&pane, "API-PANE");
     let remote = Remote::with_ko(&s.dir);
+    let login = run_program(
+        &remote.dir,
+        &remote.bin.join("ssh"),
+        &remote.client_env(),
+        &[
+            "-q",
+            HOST,
+            "printf '%s\\n' \"$HOME\" \"$XDG_CONFIG_HOME\" \"$XDG_STATE_HOME\"",
+        ],
+        "",
+        DEADLINE,
+    );
+    assert_eq!(login.ok(), format!("{0}\n{0}\n{0}\n", text_of(&remote.dir)));
     let version = remote.api(&["/version"]).json();
     assert_eq!(version["protocol"], "1.0");
     let panes = remote.api(&["/panes"]).json();
@@ -288,7 +304,12 @@ fn remote_api_and_concurrent_dials_start_one_server_and_reconnect_starts_another
     let attached = s.ko(&["api", "/version"], "").json();
     outer.line("printf '\\033]0;started-title\\007STARTED'");
     outer.contains("started-title");
+    let master = remote.master(&outer.dir);
+    std::fs::write(&remote.block, "").unwrap();
+    signal_descendant(outer.client_pid(), master, Signal::Kill).unwrap();
+    outer.contains(&format!("reconnecting to {HOST}"));
     s.ko(&["kill-server"], "").ok();
+    std::fs::remove_file(&remote.block).unwrap();
     poll("the client to start another remote server", || {
         s.dial().is_ok() && !s.rows().is_empty()
     });
