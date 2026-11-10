@@ -408,6 +408,26 @@ test("invalid tool arguments do not stop rendering", async () => {
   }
 });
 
+test("a pending tool shows its name until its label arguments arrive", async () => {
+  const app = await page();
+  const labels = app.run(`
+    put({seq:1,at:0,kind:'assistant',final:false,blocks:[{type:'tool',id:'call',name:'bash',args:{text:'{}'},state:{type:'pending'}}]});
+    const label=()=>{const item=items.get(1);return run([{key:'1:0',index:0,item,block:item.blocks[0]}]).children[0].children[1].children.at(-1).textContent;};
+    const before=label();
+    apply({type:'patch',seq:1,final:false,blocks:[{index:0,block:{type:'tool',id:'call',name:'bash',args:{text:JSON.stringify({command:'make verify'})},state:{type:'pending'}}}]});
+    [before,label()];
+  `);
+  assert.deepEqual(Array.from(labels), ['bash', 'make verify']);
+  assert.equal(app.run(`['bash','read','edit','write','custom'].every(name=>{
+    const block={type:'tool',name,args:{text:'{}'},state:{type:'pending'}};
+    return stepInfo({block,item:{final:false},args:{}}).label===name;
+  })`), true);
+  assert.equal(app.run(`['pending','running','done','not_run'].every(type=>{
+    const block={type:'tool',name:'bash',args:{text:'{}'},state:{type}};
+    return stepInfo({block,item:{final:true},args:{}}).label==='bash {}';
+  })`), true);
+});
+
 test("a running tool takes priority over a later pending step", async () => {
   const app = await page();
   assert.equal(app.run("const item={final:false,stop:'',blocks:[]};const steps=['running','pending'].map((type,index)=>({key:'0:'+index,index,item,block:{type:'tool',name:'bash',args:{text:JSON.stringify({command:type+' command'})},state:{type}}}));run(steps).children[0].children[1].children.some(child=>child?.textContent==='running command')"), true);

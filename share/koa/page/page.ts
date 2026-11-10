@@ -226,7 +226,7 @@ function stepInfo(step: Step & { args: Record<string, unknown> }) {
     edit = { old, next, prefix, suffix };
     detail = '+' + (next.length - prefix - suffix) + ' −' + (old.length - prefix - suffix);
   }
-  return { edit, labelClass, label: typeof label === 'string' ? label : label === undefined ? block.name + ' ' + block.args.text : JSON.stringify(label), detail, kind, aborted: item.stop === 'aborted' && block.state.type !== 'done' };
+  return { edit, labelClass, label: typeof label === 'string' ? label : label === undefined ? block.name + (block.state.type === 'pending' && !item.final ? '' : ' ' + block.args.text) : JSON.stringify(label), detail, kind, aborted: item.stop === 'aborted' && block.state.type !== 'done' };
 }
 function fold(view: HTMLElement, key: string, line: HTMLElement, details: HTMLElement, show?: () => void, className = 'open') {
   view.classList.toggle(className, folds.get(key) === true);
