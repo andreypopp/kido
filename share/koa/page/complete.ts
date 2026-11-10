@@ -1,5 +1,5 @@
 import { autocompletion, acceptCompletion, closeCompletion, completionStatus, moveCompletionSelection, pickedCompletion, selectedCompletion, type Completion, type CompletionContext } from '@codemirror/autocomplete';
-import { tooltips, type Command } from '@codemirror/view';
+import { tooltips, ViewPlugin, type Command } from '@codemirror/view';
 import { syntaxTree } from '@codemirror/language';
 import { fileToken, slashToken } from '../../pi/token.ts';
 import type { CompletionOption, CompletionResult, CompletionQuery } from '../../pi/records.ts';
@@ -7,6 +7,8 @@ import type { CompletionOption, CompletionResult, CompletionQuery } from '../../
 export function completion(host: HTMLElement, send: () => void) {
   const field = host.parentElement;
   if (!field) throw new Error('The composer host must have a parent');
+  const layer = document.createElement('div');
+  layer.className = 'completion-layer';
   const options = new WeakMap<Completion, CompletionOption>();
   const active = (command: Command): Command => view => completionStatus(view.state) === 'active' && command(view);
   const source = async (context: CompletionContext) => {
@@ -43,8 +45,14 @@ export function completion(host: HTMLElement, send: () => void) {
   };
   return {
     extension: [
-      tooltips({ position: 'absolute', parent: field, tooltipSpace() {
+      ViewPlugin.define(() => {
+        document.body.append(layer);
+        return { destroy() { layer.remove(); } };
+      }),
+      tooltips({ position: 'absolute', parent: layer, tooltipSpace() {
         const bounds = field.getBoundingClientRect();
+        layer.style.setProperty('--complete-top', `${bounds.top}px`);
+        layer.style.setProperty('--complete-width', `${bounds.width}px`);
         return { left: bounds.left + 9, right: bounds.right + 9, top: 0, bottom: window.innerHeight };
       } }),
       autocompletion({ override: [source], defaultKeymap: false, icons: false, aboveCursor: true, activateOnTypingDelay: 20, interactionDelay: 0, maxRenderedOptions: 20, tooltipClass: () => 'koa-complete', optionClass: completion => { const item = options.get(completion); return item ? 'cm-completion-' + item.kind : ''; }, addToOptions: [{ position: 90, render(completion) {

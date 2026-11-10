@@ -268,7 +268,7 @@ extension VisualTests {
         try JSONSerialization.data(withJSONObject: ["cwd": cwd.path]).write(to: sessionFile)
         let mediaClock = scenario == .media || scenario == .attachments || scenario == .preview || scenario == .lightbox || scenario == .agents || scenario == .composer
         let stamp = Int(try XCTUnwrap(Calendar.current.date(from: DateComponents(year: 2026, month: 11, day: mediaClock ? 10 : 8, hour: mediaClock ? 9 : 14, minute: mediaClock ? 12 : 32))).timeIntervalSince1970 * 1000)
-        let measured = scenario == .completion || scenario == .attachments || scenario == .userMarkdown
+        let measured = scenario == .completion || scenario == .attachments || scenario == .userMarkdown || scenario == .exit || scenario == .lightbox
         let measurementClock = measured ? "const ClockDate=Date;window.Date=class extends ClockDate{constructor(...args){super(...(args.length?args:[\(stamp + 12000)]))}static now(){return \(stamp + 12000)}};" : ""
         // WebKit pauses animation frames in an off-screen window.
         if measured {
@@ -912,12 +912,19 @@ extension VisualTests {
                 window.contentView?.layoutSubtreeIfNeeded(); pane.webviewView?.layoutSubtreeIfNeeded()
                 _ = try await webviewJS(web, "(()=>{delete window.ko.preview;document.querySelector('.step .thumb').click();return true})()")
                 try await webviewUntil(web, "document.querySelector('.lightbox img')?.naturalWidth===1440&&document.querySelector('.lightbox .cap').textContent.includes('1440×900')")
-                try await settle()
-                try await webviewSnapshot(pane, "media-lightbox-light", testName: "testKoaWebviewMockupStates()")
+                func captureLightbox(_ appearance: String) async throws {
+                    _ = try await webviewJS(web, "document.querySelector('.lightbox img').decode().then(()=>true)")
+                    let shadow = try await webviewJS(web, "getComputedStyle(document.querySelector('.lightbox img')).boxShadow!=='none'")
+                    XCTAssertEqual(shadow, "true", "The lightbox image has a shadow")
+                    _ = try await webviewJS(web, "(()=>{const style=document.createElement('style');style.id='capture-lightbox';style.textContent='.lightbox img{box-shadow:none!important}';document.head.append(style);return true})()")
+                    try await settle()
+                    try await webviewSnapshot(pane, "media-lightbox-" + appearance, testName: "testKoaWebviewMockupStates()")
+                    _ = try await webviewJS(web, "(()=>{document.querySelector('#capture-lightbox').remove();return true})()")
+                }
+                try await captureLightbox("light")
                 try await darken(); pane.webviewView?.updateTheme()
                 try await webviewUntil(web, "getComputedStyle(document.body).getPropertyValue('--ko-appearance').trim()==='dark'")
-                try await settle()
-                try await webviewSnapshot(pane, "media-lightbox-dark", testName: "testKoaWebviewMockupStates()")
+                try await captureLightbox("dark")
                 _ = try await webviewJS(web, "(()=>{document.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true,cancelable:true}));return true})()")
                 try await webviewUntil(web, "document.querySelector('.lightbox')===null")
                 return
@@ -961,6 +968,8 @@ extension VisualTests {
                     try await webviewUntil(web, "(()=>{const popup=document.querySelector('.koa-complete'),field=document.querySelector('#field');return !!popup&&popup.getBoundingClientRect().top>=0&&popup.getBoundingClientRect().bottom<=field.getBoundingClientRect().top-5})()")
                     let contained = try await webviewJS(web, "(()=>{const popup=document.querySelector('.koa-complete').getBoundingClientRect(),field=document.querySelector('#field').getBoundingClientRect();return popup.left>=field.left-.5&&popup.right<=field.right+.5})()")
                     XCTAssertEqual(contained, "true", "Completion stays inside the field width")
+                    let backdropRoot = try await webviewJS(web, "(()=>{for(let node=document.querySelector('.koa-complete').parentElement;node;node=node.parentElement){const s=getComputedStyle(node);if((s.backdropFilter&&s.backdropFilter!=='none')||(s.webkitBackdropFilter&&s.webkitBackdropFilter!=='none')||s.filter!=='none'||Number(s.opacity)<1||(s.maskImage&&s.maskImage!=='none')||(s.webkitMaskImage&&s.webkitMaskImage!=='none'))return node.id||node.className||node.tagName}return ''})()")
+                    XCTAssertEqual(backdropRoot, "\"\"", "Completion has no ancestor that isolates its backdrop")
                 }
             }
             func resize(_ height: CGFloat) async throws {
