@@ -129,8 +129,8 @@ Annotation =
 - One entry per text block. A second entry for the same `reply`
   replaces the first in the consumer. Nothing else is said about order.
 
-The contract text lives in Kido, in `docs/reply-annotations.md` (the
-consumer defines it; pi-infer-questions links to it), and the TypeScript
+The contract text is `docs/reply-annotations.md` (written; the
+consumer defines it, and pi-infer-questions links to it), and the TypeScript
 type in `share/pi/records.ts`, which koa and its page import. The
 producer repository writes its own literal; the two repositories do not
 share code.
