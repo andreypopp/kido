@@ -49,7 +49,7 @@ async function page() {
   const listeners = new Map<string, (event: unknown) => void>();
   const windowListeners = new Map<string, (event?: unknown) => void>();
   let activeElement: Node | undefined;
-  const document = { documentElement: new Node(), body: new Node(), hasFocus: () => true, get activeElement() { return activeElement; }, set activeElement(node: Node | undefined) { activeElement = node; }, querySelector: (selector?: string): Node | null => selector === '.cm-content' ? document.getElementById('prompt').children[0] ?? null : null, getElementById(id: string) { let node = elements.get(id); if (!node) { node = new Node(); elements.set(id, node); if (id === 'prompt') document.getElementById('field').append(node); if (id === 'composer') node.hidden = false; } return node; }, createElement: (tag: string) => { const node = new Node(); node.tagName = tag.toUpperCase(); return node; }, createElementNS: () => new Node(), createTextNode: (text: string) => { const node = new Node(); node.tagName = '#text'; node.textContent = text; return node; }, addEventListener(type: string, handler: (event: unknown) => void) { listeners.set(type, handler); }, querySelectorAll: () => [] };
+  const document = { documentElement: new Node(), body: new Node(), hasFocus: () => true, get activeElement() { return activeElement; }, set activeElement(node: Node | undefined) { if (activeElement === node) return; const previous = activeElement; activeElement = node; if (previous) listeners.get('focusout')?.({ target: previous }); if (node) listeners.get('focusin')?.({ target: node }); }, querySelector: (selector?: string): Node | null => selector === '.cm-content' ? document.getElementById('prompt').children[0] ?? null : selector === '.lightbox' ? document.body.children.find(node => node.classList.contains('lightbox')) ?? null : null, getElementById(id: string) { let node = elements.get(id); if (!node) { node = new Node(); elements.set(id, node); if (id === 'prompt') document.getElementById('field').append(node); if (id === 'composer') node.hidden = false; } return node; }, createElement: (tag: string) => { const node = new Node(); node.tagName = tag.toUpperCase(); return node; }, createElementNS: () => new Node(), createTextNode: (text: string) => { const node = new Node(); node.tagName = '#text'; node.textContent = text; return node; }, addEventListener(type: string, handler: (event: unknown) => void) { listeners.set(type, handler); }, querySelectorAll: () => [] };
   type Handlers = { input(user: boolean): void; send(mode: PromptMode): void; quit(): void };
   let handlers: Handlers | undefined;
   let text = () => '';
@@ -247,6 +247,56 @@ test("async send and dialog completion preserve focus while the document lacks f
     else app.run("pickerButton=element('model');closePicker()");
     assert.equal(app.context.document.activeElement, undefined, action);
   });
+});
+
+test('composer focus border follows key routing, not the active element', async () => {
+  const app = await page();
+  let focused = true;
+  app.context.document.hasFocus = () => focused;
+  const controls = app.run(`state={...state,pi:{type:'ready'}};refreshComposer();focusComposer();({
+    picker(){state.levels=['off','low'];return picker('thinking')},
+    working(){closePicker();state.working=true;refreshComposer()},
+    dialog(method){state.dialogs=[{id:method,method,title:'Question',options:['One'],message:'Proceed?'}];refreshComposer();dialogs()},
+    clear(){state.dialogs=[];document.body.focus();refreshComposer();dialogs()},
+    preview(){preview('/images/0',element('model'),'image',composerFocus)},
+    closePreview(){previewKey({key:'Escape',preventDefault(){},stopPropagation(){}})},
+    exit(){state.pi={type:'exited',at:1,exited:0,stderr:''};refreshComposer();exited()}
+  })`);
+  const field = app.elements.get('field'); assert.ok(field);
+  const border = () => field.classList.contains('focus');
+  assert.equal(border(), true);
+  app.context.document.body.focus();
+  assert.equal(border(), true);
+  const completion = app.context.document.createElement('div'); completion.setAttribute('role', 'listbox'); completion.focus();
+  assert.equal(border(), true);
+  await controls.picker();
+  assert.equal(border(), true);
+  controls.working();
+  assert.equal(border(), true);
+  for (const tag of ['input', 'textarea', 'select']) {
+    const input = app.context.document.createElement(tag); input.focus();
+    assert.equal(border(), false);
+    app.context.document.body.focus(); assert.equal(border(), true);
+  }
+  const editable = app.context.document.createElement('div'); editable.isContentEditable = true; editable.focus();
+  assert.equal(border(), false);
+  app.context.document.body.focus();
+  for (const method of ['input', 'select', 'confirm']) {
+    controls.dialog(method);
+    assert.equal(border(), false);
+    controls.clear(); assert.equal(border(), true);
+  }
+  controls.preview();
+  assert.equal(border(), false);
+  const restore = app.elements.get('model'); assert.ok(restore);
+  app.context.document.body.append(restore); restore.focus();
+  assert.equal(border(), false);
+  controls.closePreview();
+  assert.equal(border(), true);
+  focused = false; app.windowListeners.get('blur')?.(); assert.equal(border(), false);
+  focused = true; app.windowListeners.get('focus')?.(); assert.equal(border(), true);
+  controls.exit();
+  assert.equal(border(), false);
 });
 
 test("composer waits for document focus at startup and load", async () => {
@@ -675,7 +725,7 @@ test('step previews require exactly Shift-Command and a stationary press', async
 test('browser lightbox Escape closes before abort and keeps the draft', async () => {
   const app = await page();
   const requests: string[] = []; app.context.fetch = async (path?: string) => { requests.push(path ?? ''); return { ok: true, json: async () => ({}) }; };
-  assert.equal(app.run(`(()=>{state.pi={type:'ready'};state.working=true;editor.setText('draft');const target=node('button');preview('/images/0',target,'image');return document.body.children[0].className==='lightbox'})()`), true);
+  assert.equal(app.run(`(()=>{state.pi={type:'ready'};state.working=true;editor.setText('draft');const target=node('button');preview('/images/0',target,'image',composerFocus);return document.body.children[0].className==='lightbox'})()`), true);
   let prevented = false;
   app.listeners.get('keydown')?.({ key: 'Escape', preventDefault() { prevented = true; }, stopPropagation() {} });
   assert.equal(prevented, true); assert.equal(app.context.document.body.children.length, 0); assert.equal(app.text(), 'draft');

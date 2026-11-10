@@ -407,6 +407,14 @@ no queued work runs after it.
   only while the document has focus and no dialog, picker or control
   of the page holds it. A printable key typed outside a field goes to
   the composer; a selection in the transcript stays.
+- **The focus border.** The composer's focus border shows where keys
+  go, not the DOM focus: it is on while the document has focus, the
+  composer is enabled, no dialog or lightbox is open and no other
+  text input of the page holds the focus. One predicate decides it
+  and the routing of printable keys, so a click in the transcript
+  keeps the border. The model and thinking picker keeps the border
+  but takes the keys while it is open, because it is a menu over the
+  composer.
 - **Markdown.** The composer parses GFM through
   `@codemirror/lang-markdown`'s named exports, never its `markdown()`,
   which bundles the HTML, CSS and JavaScript parsers (about 345 KB).
@@ -420,6 +428,19 @@ no queued work runs after it.
   padding at the dock's height. WebKit's private system glass needs a
   private preference, and WebKit's snapshot does not show it, so no
   test could check it.
+- **Bottom-following.** The transcript follows its bottom while the
+  user is within 60 px of it; a new record, an image load or a
+  resize of the viewport or the dock scrolls to the bottom in the
+  next frame. A browser dispatches a scroll event at the next frame
+  and the handler reads the geometry then, not at the time of the
+  scroll. After a send, the cleared composer shrinks the dock, the
+  shorter padding clamps the scroll position, and the submitted
+  message can arrive before the clamp's event runs: that event then
+  sees the new message's height below the view. Thus the page keeps
+  the scroll position that it caused itself (its own scroll, and the
+  clamp of a resize), and a scroll event at that position does not
+  change the following. Only a scroll to another position, the
+  user's, decides it again.
 
 **Completion.** pi's RPC mode offers only its command list
 (`get_commands`: extension commands, prompt templates and skills, no

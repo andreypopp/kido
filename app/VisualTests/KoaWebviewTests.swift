@@ -8,6 +8,62 @@ import SidebarFeed
 
 extension VisualTests {
     private enum KoaScenario { case transcript, dialogs, controls, exit, feed, completion, markdown, media, attachments, userMarkdown, preview, lightbox, agents, composer, questions }
+    func testKoaWebviewSubmitFollowsClampedBottom() async throws {
+        WebviewPaneView.visualInitialScript = "window.requestAnimationFrame=callback=>setTimeout(()=>callback(performance.now()),16);window.cancelAnimationFrame=clearTimeout;const Source=EventSource;window.EventSource=class extends Source{constructor(...args){super(...args);window.scrollSource=this}};"
+        defer { WebviewPaneView.visualInitialScript = nil }
+        let stamp = 1700000000000, question = Array(repeating: "Keep the cache?", count: 12).joined(separator: "\n\n")
+        let usage: [String: Any] = ["input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0, "totalTokens": 0, "cost": ["input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0, "total": 0]]
+        let history: [String: Any] = ["role": "user", "timestamp": stamp - 1, "content": [["type": "text", "text": Array(repeating: "Earlier message", count: 80).joined(separator: "\n\n")]]]
+        let reply: [String: Any] = ["role": "assistant", "api": "test", "provider": "test", "model": "test", "usage": usage, "timestamp": stamp, "stopReason": "stop", "content": [["type": "text", "text": question]]]
+        let entry: [String: Any] = ["type": "custom", "id": "question", "parentId": NSNull(), "customType": "reply-annotations", "timestamp": ISO8601DateFormatter().string(from: Date(timeIntervalSince1970: Double(stamp + 1) / 1000)), "data": ["reply": ["at": stamp, "block": 0, "length": question.count], "annotations": [["type": "question", "kind": "yes_no", "range": [0, question.count]]]]]
+        let steps: [[String: Any]] = [["type": "respond", "command": "get_messages", "data": ["messages": [history, reply]]], ["type": "respond", "command": "get_entries", "data": ["entries": [entry], "leafId": "question"]]]
+        let script = directory.appendingPathComponent("scroll-trace.jsonl")
+        try steps.map { String(decoding: try JSONSerialization.data(withJSONObject: $0), as: UTF8.self) }.joined(separator: "\n").write(to: script, atomically: true, encoding: .utf8)
+        let fake = checkoutRoot.appendingPathComponent("share/koa/koa-fake-pi.ts").path
+        try await start(pane: "export KOA_FAKE_SCRIPT=\(SSH.quote(script.path)); \(SSH.quote(tools.prefix + "/share/ko/bin/koa")) --pi \(SSH.quote(fake))")
+        let pane = try XCTUnwrap(terminal?.displayedPanes.first)
+        try await wait("koa page") { pane.webviewView != nil }
+        let web = try XCTUnwrap(pane.webviewView?.browser)
+        try await wait("koa document loaded") { web.url?.scheme == "ko" && !web.isLoading }
+        try await webviewUntil(web, "window.composer&&document.querySelector('.ann-opt')&&document.querySelector('#status').textContent==='idle'")
+        let result = try await webviewJS(web, #"""
+        (async()=>{
+          const s=document.querySelector('#scroll'),dock=document.querySelector('#dock'),results=[],originalFetch=window.fetch,raf=window.requestAnimationFrame;
+          const tick=()=>new Promise(resolve=>setTimeout(resolve,100));let seq=100;
+          for(const mode of ['composer','chip','up']){
+            if(mode==='chip')document.querySelector('.ann-opt').click();else composer.setText(Array(20).fill('Submitted paragraph').join('\n\n'));
+            await tick();s.scrollTop=mode==='up'?200:s.scrollHeight;s.dispatchEvent(new Event('scroll'));await tick();
+            const frames=[],before=s.scrollTop;let pending,clamped;
+            window.requestAnimationFrame=callback=>(frames.push(callback),frames.length);
+            window.fetch=async(path,options)=>{if(path!=='/prompt')return originalFetch(path,options);pending=JSON.parse(options.body).text;return {ok:true,json:async()=>({})}};
+            await new Promise((resolve,reject)=>{const timer=setTimeout(()=>{observer.disconnect();reject(Error('No dock clamp'))},10000);const observer=new ResizeObserver(()=>{if(pending===undefined||composer.text()||dock.getBoundingClientRect().height>100)return;void s.scrollHeight;clamped=s.scrollTop;if(mode!=='up'&&clamped>=before){observer.disconnect();clearTimeout(timer);reject(Error('Expected the dock shrink to clamp scrollTop'));return}scrollSource.dispatchEvent(new MessageEvent('message',{data:JSON.stringify({type:'item',item:{kind:'user',seq:seq++,at:Date.now(),final:true,text:pending,images:[],attachments:[]}})}));pending=undefined;observer.disconnect();clearTimeout(timer);resolve()});observer.observe(dock);document.querySelector('#prompt .cm-content').dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',keyCode:13,bubbles:true,cancelable:true}));});
+            s.dispatchEvent(new Event('scroll'));window.requestAnimationFrame=raf;for(const callback of frames)callback(performance.now());await tick();
+            window.fetch=originalFetch;results.push({mode,before,clamped,top:s.scrollTop,distance:s.scrollHeight-s.scrollTop-s.clientHeight,bottom:s.scrollHeight-s.scrollTop-s.clientHeight<1&&document.querySelector('.user:last-child').getBoundingClientRect().bottom<=dock.getBoundingClientRect().top,stationary:s.scrollTop===200});
+          }
+          s.scrollTop=s.scrollHeight;s.dispatchEvent(new Event('scroll'));await tick();
+          const bottom=s.scrollTop;s.scrollTop=bottom-.5;
+          if(s.scrollTop===bottom-.5){
+            for(let i=1;i<=130;i++){s.scrollTop=bottom-i*.5;s.dispatchEvent(new Event('scroll'))}
+            const top=s.scrollTop;
+            scrollSource.dispatchEvent(new MessageEvent('message',{data:JSON.stringify({type:'item',item:{kind:'user',seq:seq++,at:Date.now(),final:true,text:'After fractional scroll up',images:[],attachments:[]}})}));await tick();
+            results.push({mode:'fractional-up',stationary:s.scrollTop===top});
+            const end=s.scrollHeight-s.clientHeight;
+            for(let next=s.scrollTop;next<end;next+=.5){s.scrollTop=next;s.dispatchEvent(new Event('scroll'))}
+            s.scrollTop=end;s.dispatchEvent(new Event('scroll'));
+            scrollSource.dispatchEvent(new MessageEvent('message',{data:JSON.stringify({type:'item',item:{kind:'user',seq:seq++,at:Date.now(),final:true,text:'After fractional scroll down',images:[],attachments:[]}})}));await tick();
+            results.push({mode:'fractional-down',bottom:s.scrollHeight-s.scrollTop-s.clientHeight<1});
+          }else results.push({mode:'fractional-unsupported'});
+          return results;
+        })()
+        """#, within: 30)
+        let results = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(result.utf8)) as? [[String: Any]])
+        for result in results {
+            let mode = result["mode"] as? String
+            if mode == "fractional-unsupported" { NSLog("WK rounds scrollTop; skip the sub-pixel case"); continue }
+            XCTAssertEqual(result[mode == "up" || mode == "fractional-up" ? "stationary" : "bottom"] as? Bool, true, String(describing: result))
+        }
+    }
+
     func testKoaInterruptRestoresNativeInput() async throws {
         WebviewPaneView.visualInitialScript = "document.hasFocus=()=>true;window.requestAnimationFrame=callback=>setTimeout(()=>callback(performance.now()),0);window.cancelAnimationFrame=clearTimeout;"
         defer { WebviewPaneView.visualInitialScript = nil }
@@ -21,13 +77,14 @@ extension VisualTests {
         try await wait("koa document loaded") { web.url?.scheme == "ko" && !web.isLoading }
         try await webviewUntil(web, "document.getElementById('prompt') !== null")
         XCTAssertTrue((window.firstResponder as? NSView)?.isDescendant(of: web) == true, "A page in the focused pane starts with the WKWebView as first responder")
+        try await webviewUntil(web, "window.composer&&document.querySelector('#status').textContent==='idle'")
         let accent = try XCTUnwrap(NSColor.controlAccentColor.usingColorSpace(.sRGB))
         let expectedFocus = "rgba(\(Int(accent.redComponent * 255)),\(Int(accent.greenComponent * 255)),\(Int(accent.blueComponent * 255)),0.5)"
         let pageFocus = try await webviewJS(web, "getComputedStyle(document.documentElement).getPropertyValue('--ko-focus').trim()")
         XCTAssertEqual(pageFocus, String(data: try JSONSerialization.data(withJSONObject: expectedFocus, options: .fragmentsAllowed), encoding: .utf8))
         _ = try await webviewJS(web, "(()=>{document.querySelector('#prompt .cm-content').blur();return true})()")
-        let unfocused = try await webviewJS(web, "(()=>{const field=document.getElementById('field');const reference=document.createElement('div');reference.style.color=getComputedStyle(document.documentElement).getPropertyValue('--ko-focus');document.body.append(reference);const result=!field.matches(':focus-within')&&getComputedStyle(field).borderTopColor!==getComputedStyle(reference).color;reference.remove();return result})()")
-        XCTAssertEqual(unfocused, "true", "The unfocused composer does not use the focus border")
+        let unfocused = try await webviewJS(web, "(()=>{const field=document.getElementById('field');const reference=document.createElement('div');reference.style.color=getComputedStyle(document.documentElement).getPropertyValue('--ko-focus');document.body.append(reference);const result=!field.matches(':focus-within')&&field.classList.contains('focus')&&getComputedStyle(field).borderTopColor===getComputedStyle(reference).color;reference.remove();return result})()")
+        XCTAssertEqual(unfocused, "true", "The composer keeps the focus border when focus moves to the transcript")
         _ = try await webviewJS(web, "(()=>{window.composer.focus();return true})()")
         try await webviewUntil(web, "window.composer&&document.querySelector('#status').textContent==='idle'")
         _ = try await webviewJS(web, "(()=>{const reference=document.createElement('div');reference.style.color='var(--ko-cursor)';document.body.append(reference);window.expectedCursorColor=getComputedStyle(reference).color;reference.remove();return true})()")
@@ -158,6 +215,14 @@ extension VisualTests {
     func testKoaWebviewComposerStateGeometryNarrow() async throws {
         try await koaWebview(width: 470, height: 560, captures: ["geometry"])
     }
+    func testKoaWebviewFocusBorderTranscript() async throws {
+        try await koaWebview(width: 980, height: 560, captures: ["focus-border-transcript"])
+    }
+
+    func testKoaWebviewFocusBorderDialog() async throws {
+        try await koaWebview(width: 980, height: 300, scenario: .dialogs, captures: ["focus-border-dialog"])
+    }
+
     func testKoaWebviewComposerFocus() async throws {
         try await koaWebview(width: 980, height: 560, captures: ["focus"])
     }
@@ -276,11 +341,15 @@ extension VisualTests {
         try JSONSerialization.data(withJSONObject: ["cwd": cwd.path]).write(to: sessionFile)
         let mediaClock = scenario == .media || scenario == .attachments || scenario == .preview || scenario == .lightbox || scenario == .agents || scenario == .composer
         let stamp = Int(try XCTUnwrap(Calendar.current.date(from: DateComponents(year: 2026, month: 11, day: mediaClock ? 10 : 8, hour: mediaClock ? 9 : 14, minute: mediaClock ? 12 : 32))).timeIntervalSince1970 * 1000)
-        let measured = scenario == .questions || scenario == .completion || scenario == .attachments || scenario == .userMarkdown || scenario == .exit || scenario == .lightbox
+        let measured = scenario == .questions || scenario == .completion || scenario == .attachments || scenario == .userMarkdown || scenario == .exit || scenario == .lightbox || captures.contains("focus-border-transcript") || captures.contains("focus-border-dialog")
         let measurementClock = measured ? "const ClockDate=Date;window.Date=class extends ClockDate{constructor(...args){super(...(args.length?args:[\(stamp + 12000)]))}static now(){return \(stamp + 12000)}};" : ""
         // WebKit pauses animation frames in an off-screen window.
         if measured {
             WebviewPaneView.visualInitialScript = measurementClock + "window.koaPendingFrames=new Set();window.requestAnimationFrame=callback=>{const id=setTimeout(()=>{koaPendingFrames.delete(id);callback(performance.now())},0);koaPendingFrames.add(id);return id};window.cancelAnimationFrame=id=>{koaPendingFrames.delete(id);clearTimeout(id)};"
+        }
+        if captures.contains("focus") || captures.contains("focus-border-transcript") || captures.contains("focus-border-dialog") {
+            // The off-screen WKWebView reports no document focus.
+            WebviewPaneView.visualInitialScript = "document.hasFocus=()=>true;" + (WebviewPaneView.visualInitialScript ?? "")
         }
         defer { WebviewPaneView.visualInitialScript = nil }
         let usage: [String: Any] = ["input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0, "totalTokens": 0, "cost": ["input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0, "total": 0]]
@@ -772,7 +841,7 @@ extension VisualTests {
             let top = scenario == .questions || scenario == .media || scenario == .lightbox || scenario == .agents || scenario == .composer
             window.contentView?.layoutSubtreeIfNeeded()
             pane.webviewView?.layoutSubtreeIfNeeded()
-            _ = try await webviewJS(web, "(()=>{if(!document.querySelector('.lightbox')&&!document.querySelector('.dialog')&&!document.querySelector('#exited:not([hidden])')&&document.querySelector('#picker').hidden)window.composer.focus();const scroll=document.querySelector('#scroll');scroll.scrollTop=\(top ? "0" : "scroll.scrollHeight");if(\(ordered))document.querySelectorAll('.assistant')[1].scrollIntoView({block:'start'});return true})()")
+            _ = try await webviewJS(web, "(()=>{if(\(name != "focus-border-transcript")&&!document.querySelector('.lightbox')&&!document.querySelector('.dialog')&&!document.querySelector('#exited:not([hidden])')&&document.querySelector('#picker').hidden)window.composer.focus();const scroll=document.querySelector('#scroll');scroll.scrollTop=\(top ? "0" : "scroll.scrollHeight");if(\(ordered))document.querySelectorAll('.assistant')[1].scrollIntoView({block:'start'});return true})()")
             try await webviewUntil(web, "(()=>{const dock=document.querySelector('#dock');return Number.parseFloat(getComputedStyle(document.body).getPropertyValue('--dock-h'))===dock.getBoundingClientRect().height})()")
             try await webviewUntil(web, "(()=>{const scroll=document.querySelector('#scroll');if(\(ordered)){document.querySelectorAll('.assistant')[1].scrollIntoView({block:'start'});return true}scroll.scrollTop=\(top ? "0" : "scroll.scrollHeight");return \(top ? "scroll.scrollTop===0" : "scroll.scrollHeight-scroll.scrollTop-scroll.clientHeight<1")})()")
             let lastAboveDock = try await webviewJS(web, "(()=>{const last=document.querySelector('#items').lastElementChild;return !last||last.getBoundingClientRect().bottom<=document.querySelector('#dock').getBoundingClientRect().top})()")
@@ -797,6 +866,15 @@ extension VisualTests {
         }
         try await webviewUntil(web, "document.querySelector('#status').textContent==='idle'&&document.querySelector('#model-name').textContent==='claude-opus-5-5'")
         _ = try await webviewJS(web, "(()=>{const NativeDate=Date;window.Date=class extends NativeDate{constructor(...args){super(...(args.length?args:[\(stamp + 12000)]))}static now(){return \(stamp + 12000)}};const style=document.createElement('style');style.textContent='.caret,.spin,.spin::before,.dot.on,.cm-cursorLayer{animation:none!important}';document.head.append(style);return true})()")
+        if captures.contains("focus-border-transcript") {
+            try await advance(); try await advance()
+            try await webviewUntil(web, "document.querySelector('.assistant p')!==null")
+            _ = try await webviewJS(web, "(()=>{const transcript=document.querySelector('#transcript');transcript.tabIndex=-1;transcript.focus();const range=document.createRange();range.selectNodeContents(document.querySelector('.assistant p'));getSelection().removeAllRanges();getSelection().addRange(range);return true})()")
+            let focused = try await webviewJS(web, "document.activeElement===document.querySelector('#transcript')&&document.querySelector('#field').classList.contains('focus')")
+            XCTAssertEqual(focused, "true")
+            try await capture("focus-border-transcript")
+            return
+        }
         let idleHint = try await webviewJS(web, "document.querySelector('#hint .spin')===null")
         XCTAssertEqual(idleHint, "true")
         if scenario == .questions {
@@ -1256,6 +1334,12 @@ extension VisualTests {
             _ = try await webviewJS(web, "(()=>{Date.now=()=>\(stamp + 6000);document.querySelector('.dialog input').value='0.32.0';return true})()")
             try await webviewUntil(web, "document.querySelector('.dialog .count').textContent==='43s'")
             try await capture("dialog-input")
+            if captures.contains("focus-border-dialog") {
+                let focused = try await webviewJS(web, "document.activeElement===document.querySelector('.dialog input')&&!document.querySelector('#field').classList.contains('focus')")
+                XCTAssertEqual(focused, "true")
+                try await capture("focus-border-dialog")
+                return
+            }
             try await post("/dialog", ["id": "input", "value": "0.32.0"])
             try await webviewUntil(web, "document.querySelector('.dialog textarea')&&document.querySelector('.run>.line .spin')&&document.querySelector('.run>.line')?.textContent.includes('release')")
             try await capture("dialog-editor")

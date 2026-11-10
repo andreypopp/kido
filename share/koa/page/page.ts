@@ -40,7 +40,7 @@ const template = document.createElement('template');
 const folds = new Map<string, boolean>();
 const texts = new Map<string, { render: ReturnType<typeof markdown>; view: HTMLElement; blocks: { block: ReturnType<ReturnType<typeof markdown>>[number]; nodes: ChildNode[] }[]; final?: boolean; source?: string; annotationItem?: Extract<WireItem, { kind: 'annotations' }> }>();
 let state: State = { pi: { type: 'starting' }, working: false, aborted: false, name: '', levels: [], cwd: '', home: '', statuses: {}, queue: { steering: [], followUp: [] }, dialogs: [] };
-let epoch = '', after = -1, first: number | undefined, more = false, paging = false, follow = true, delay = 200, scrollFrame: number | undefined;
+let epoch = '', after = -1, first: number | undefined, more = false, paging = false, follow = true, lastScrollTop = 0, delay = 200, scrollFrame: number | undefined;
 let escaped = false, dialogId: string | undefined;
 let submitting = false, editorId: string | undefined, dialogTimer: number | undefined, shownExit: number | undefined, pickerButton: HTMLElement | undefined, shownQueue: string | undefined, shownStatuses: string | undefined;
 const pagingPatches: Patch[] = [];
@@ -199,7 +199,7 @@ function thumbnails(refs: ImageRef[], slots: Map<string, Slot>, name?: string) {
         image.setAttribute('src', src);
       }
       const target = thumb;
-      target.onclick = () => { if (!target.disabled) preview(src, target, 'image', name); };
+      target.onclick = () => { if (!target.disabled) preview(src, target, 'image', composerFocus, name); };
       view.append(thumb);
     }
   } };
@@ -316,7 +316,7 @@ function run(input: Step[]) {
       label.classList.add('preview-file');
       let press: { x: number; y: number } | undefined;
       label.onmousedown = event => { press = undefined; if (event.button === 0 && previewModifiers(event)) { event.preventDefault(); press = { x: event.clientX, y: event.clientY }; } };
-      label.onclick = event => { const start = press; press = undefined; if (start && Math.hypot(event.clientX - start.x, event.clientY - start.y) < 3) { event.preventDefault(); event.stopPropagation(); preview('/steps/' + step.item.seq + '/' + step.index + '/file', label, 'file'); } };
+      label.onclick = event => { const start = press; press = undefined; if (start && Math.hypot(event.clientX - start.x, event.clientY - start.y) < 3) { event.preventDefault(); event.stopPropagation(); preview('/steps/' + step.item.seq + '/' + step.index + '/file', label, 'file', composerFocus); } };
     }
     children.append(child);
   }
@@ -430,6 +430,7 @@ function refreshComposer() {
   const blocked = composerBlocked(), working = state.working && !blocked;
   const available = element('field').inert && !blocked;
   element('field').inert = blocked;
+  composerFocus();
   if (available) focusComposer();
   element('field').classList.toggle('drop', draft.hover);
   editor.placeholder(draft.hover ? 'Drop to attach' : hasExited() ? 'pi has exited' : working ? 'Steer koa…' : 'Message koa…');
@@ -468,6 +469,7 @@ function cursor(rows: HTMLElement[], onMark: (row: HTMLElement, chosen: boolean)
   return { mark, get index() { return index; } };
 }
 function dialogs() {
+  composerFocus();
   const request = state.dialogs[0], host = element('dialogs');
   host.querySelector('.queued-next')?.remove();
   if (state.dialogs.length > 1) {
@@ -557,6 +559,7 @@ async function stop() {
 function hasExited() { return state.pi.type === 'exited'; }
 function exitCause(): { kind: 'code' | 'signal' | 'failed'; value: string } | undefined { return 'exited' in state.pi ? { kind: 'code', value: String(state.pi.exited) } : 'signal' in state.pi ? { kind: 'signal', value: state.pi.signal } : 'failed' in state.pi ? { kind: 'failed', value: state.pi.failed } : undefined; }
 function exited() {
+  composerFocus();
   const host = element('exited'); host.hidden = !hasExited();
   const pi = state.pi;
   const at = pi.type === 'exited' ? pi.at : undefined;
@@ -573,7 +576,7 @@ function exited() {
   if (!state.sessionFile) card.append(node('div', 'No session file was saved. Start pi again starts a fresh session.', 'fresh'));
   card.append(actions); host.append(card); start.focus();
 }
-function closePicker() { element('picker').hidden = true; const trigger = pickerButton; pickerButton = undefined; if (trigger) { trigger.classList.remove('pick'); focusComposer(); } }
+function closePicker() { element('picker').hidden = true; const trigger = pickerButton; pickerButton = undefined; if (trigger) { trigger.classList.remove('pick'); focusComposer(); } composerFocus(); }
 function positionPicker() {
   if (!pickerButton) return;
   const host = element('picker'), rect = element('model-cell').getBoundingClientRect();
@@ -606,7 +609,7 @@ async function picker(kind: 'model' | 'thinking') {
   });
   const selection = cursor(rows, () => {});
   const choose = async (index: number) => { const choice = choices[index]; if (!choice) return; try { await fetchJSON('/' + choice.kind, choice.kind === 'model' ? { provider: choice.provider, modelId: choice.id } : { level: choice.id }); closePicker(); } catch (error) { reportError(error); } };
-  host.append(node('div', '↑↓ move · ↩ choose · ⎋ close', 'hints')); selection.mark(Math.max(0, choices.findIndex(current))); host.focus();
+  host.append(node('div', '↑↓ move · ↩ choose · ⎋ close', 'hints')); selection.mark(Math.max(0, choices.findIndex(current))); host.focus(); composerFocus();
   host.onkeydown = event => { if (event.metaKey || event.ctrlKey || event.isComposing) return; if (['ArrowUp', 'ArrowDown', 'Enter', 'Escape'].includes(event.key)) { event.preventDefault(); event.stopPropagation(); if (event.key === 'Escape') { closePicker(); } else if (event.key === 'Enter') void choose(selection.index); else selection.mark(selection.index + (event.key === 'ArrowDown' ? 1 : -1)); } };
 }
 function statuses() {
@@ -651,7 +654,19 @@ function apply(record: PageRecord) {
 
 function followBottom() {
   if (scrollFrame !== undefined) return;
-  scrollFrame = requestAnimationFrame(() => { scrollFrame = undefined; if (follow) element('scroll').scrollTop = element('scroll').scrollHeight; });
+  scrollFrame = requestAnimationFrame(() => {
+    scrollFrame = undefined;
+    if (follow) {
+      const scroll = element('scroll');
+      scroll.scrollTop = scroll.scrollHeight;
+      lastScrollTop = scroll.scrollTop;
+    }
+  });
+}
+function followResize() {
+  const scroll = element('scroll');
+  lastScrollTop = Math.min(lastScrollTop, Math.max(0, scroll.scrollHeight - scroll.clientHeight));
+  followBottom();
 }
 const metricsMode = document.querySelector<HTMLMetaElement>('meta[name="koa-metrics"]')?.content;
 const metrics: { mode: string; bytes: number; pending: number[]; samples: { t: number; bytes: number; clockError: number; applied?: number; frame?: number }[]; timer?: number; writes: Promise<void>; frames: Set<Promise<void>>; error?: string } | undefined = metricsMode ? { mode: metricsMode, bytes: 0, pending: [], samples: [], timer: undefined, writes: Promise.resolve(), frames: new Set(), error: undefined } : undefined;
@@ -743,23 +758,28 @@ async function send(mode: PromptMode = 'prompt') {
   finally { submitting = false; }
 }
 element('older').onclick = older;
-const isControl = (target: EventTarget | null) => target instanceof HTMLElement && (target.isContentEditable || target.closest('input,textarea,select,button,[role=button],[role=option],[role=listbox],[role=menuitem]'));
-function focusComposer() { if (document.hasFocus() && !element('field').inert && !state.dialogs.length && !pickerButton && (!isControl(document.activeElement) || editor.hasFocus())) editor.focus(); }
+const isTextInput = (target: EventTarget | null) => target instanceof HTMLElement && (target.isContentEditable || !!target.closest('input,textarea,select'));
+const isControl = (target: EventTarget | null) => isTextInput(target) || target instanceof HTMLElement && !!target.closest('button,[role=button],[role=option],[role=listbox],[role=menuitem]');
+function composerReceivesKeys() { return document.hasFocus() && !element('field').inert && !state.dialogs.length && !document.querySelector('.lightbox') && (editor.hasFocus() || !isTextInput(document.activeElement)); }
+function composerFocus() { element('field').classList.toggle('focus', composerReceivesKeys()); }
+function focusComposer() { composerFocus(); if (composerReceivesKeys() && !pickerButton && (!isControl(document.activeElement) || editor.hasFocus())) editor.focus(); }
 window.addEventListener('focus', focusComposer);
 window.addEventListener('load', focusComposer);
+document.addEventListener('focusin', composerFocus);
+document.addEventListener('focusout', composerFocus);
 const previewModifiers = (event: MouseEvent | KeyboardEvent) => event.shiftKey && event.metaKey && !event.ctrlKey && !event.altKey;
 const previewHover = (event: KeyboardEvent) => document.documentElement.classList.toggle('preview-modifiers', previewModifiers(event));
 document.addEventListener('keyup', previewHover);
-window.addEventListener('blur', () => document.documentElement.classList.remove('preview-modifiers'));
-document.addEventListener('keydown', event => { previewHover(event); if (previewKey(event)) return; if (event.defaultPrevented || event.metaKey || event.ctrlKey || event.isComposing || state.dialogs.length || pickerButton) return; if (!element('field').inert && !event.altKey && event.key.length === 1 && !(event.key === ' ' && isControl(event.target)) && !(event.target instanceof HTMLElement && (event.target.isContentEditable || event.target.closest('input,textarea,select')))) { event.preventDefault(); editor.focus(); editor.insert(event.key); return; } if (event.key === 'Enter' && hasExited() && event.target === document.body) element('exited').querySelector('button')?.click(); if (event.key === 'Escape') { event.preventDefault(); if (escaped) { editor.setText(''); } else { escaped = true; if (state.working) void stop(); } } });
+window.addEventListener('blur', () => { document.documentElement.classList.remove('preview-modifiers'); composerFocus(); });
+document.addEventListener('keydown', event => { previewHover(event); if (previewKey(event)) return; if (event.defaultPrevented || event.metaKey || event.ctrlKey || event.isComposing || state.dialogs.length || pickerButton) return; if (composerReceivesKeys() && !event.altKey && event.key.length === 1 && !(event.key === ' ' && isControl(event.target)) && !isTextInput(event.target)) { event.preventDefault(); editor.focus(); editor.insert(event.key); return; } if (event.key === 'Enter' && hasExited() && event.target === document.body) element('exited').querySelector('button')?.click(); if (event.key === 'Escape') { event.preventDefault(); if (escaped) { editor.setText(''); } else { escaped = true; if (state.working) void stop(); } } });
 element('model').onclick = () => picker('model'); element('thinking').onclick = () => picker('thinking');
 document.addEventListener('pointerdown', event => { if (!element('picker').contains(event.target instanceof Node ? event.target : null) && !pickerButton?.contains(event.target instanceof Node ? event.target : null)) closePicker(); });
-element('scroll').onscroll = () => { const scroll = element('scroll'); follow = scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight < 60; if (scroll.scrollTop < 80) void older(); };
+element('scroll').onscroll = () => { const scroll = element('scroll'); if (Math.abs(scroll.scrollTop - lastScrollTop) >= 1) { follow = scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight < 60; lastScrollTop = scroll.scrollTop; } if (scroll.scrollTop < 80) void older(); };
 setInterval(status, 1000);
 window.addEventListener('resize', positionPicker);
-new ResizeObserver(followBottom).observe(element('scroll'));
+new ResizeObserver(followResize).observe(element('scroll'));
 new ResizeObserver(([entry]) => {
   document.body.style.setProperty('--dock-h', entry.borderBoxSize[0].blockSize + 'px');
-  followBottom();
+  followResize();
 }).observe(element('dock'));
 refreshComposer(); focusComposer(); void connect();
