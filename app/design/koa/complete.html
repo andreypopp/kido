@@ -65,7 +65,7 @@ html[data-width=narrow] .pane{width:calc(60*var(--ko-cell-width) + 2px)}
 .transcript{max-width:720px;margin:0 auto;padding:14px 20px 8px}
 .narrow .transcript,html[data-width=narrow] .transcript{padding:10px 12px 6px}
 .msg{margin:0 0 14px}
-.msg.user{color:var(--fg);display:flex;gap:14px;align-items:baseline;border-radius:8px;padding:7px 12px;background:var(--well)}
+.msg.user{color:var(--fg);display:flex;gap:14px;align-items:baseline;border-radius:8px;padding:7px 12px;background:color-mix(in srgb,var(--accent) 18%,var(--ko-bg))}
 html[data-user=tint] .msg.user{background:color-mix(in srgb,var(--accent) 7%,var(--ko-bg))}
 html[data-user=bar] .msg.user{background:var(--well);border-left:2px solid var(--accent);border-radius:0 8px 8px 0;padding-left:12px}
 html[data-user=plain] .msg.user{background:none;border-left:2px solid var(--accent);border-radius:0;padding:1px 0 1px 12px}
@@ -277,6 +277,8 @@ html:not([data-dock=band]) .dock .queued-next{text-shadow:0 0 6px var(--ko-bg),0
 .text .tok{color:var(--fg)}
 .text .tok.cmd{color:var(--accent)}
 .cap{font-size:12px;color:var(--muted);margin:6px 0 0;max-width:720px}
+/* the times of run and step lines end where the user message's time ends: 12pt in from the transcript's edge (user, 2026-11-10) */
+.run .line{padding-right:12px}
 </style>
 </head>
 <body>

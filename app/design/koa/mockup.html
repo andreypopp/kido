@@ -64,7 +64,7 @@ html[data-width=narrow] .pane{width:calc(60*var(--ko-cell-width) + 2px)}
 .transcript{max-width:720px;margin:0 auto;padding:14px 20px 8px}
 .narrow .transcript,html[data-width=narrow] .transcript{padding:10px 12px 6px}
 .msg{margin:0 0 14px}
-.msg.user{color:var(--fg);display:flex;gap:14px;align-items:baseline;border-radius:8px;padding:7px 12px;background:var(--well)}
+.msg.user{color:var(--fg);display:flex;gap:14px;align-items:baseline;border-radius:8px;padding:7px 12px;background:color-mix(in srgb,var(--accent) 18%,var(--ko-bg))}
 html[data-user=tint] .msg.user{background:color-mix(in srgb,var(--accent) 7%,var(--ko-bg))}
 html[data-user=bar] .msg.user{background:var(--well);border-left:2px solid var(--accent);border-radius:0 8px 8px 0;padding-left:12px}
 html[data-user=plain] .msg.user{background:none;border-left:2px solid var(--accent);border-radius:0;padding:1px 0 1px 12px}
@@ -260,6 +260,8 @@ html:not([data-dock=band]) .dock .queued-next{text-shadow:0 0 6px var(--ko-bg),0
 
 .note{font-size:12px;color:var(--muted);max-width:980px;margin:10px 0 0}
 .note code{font-size:.9em}
+/* the times of run and step lines end where the user message's time ends: 12pt in from the transcript's edge (user, 2026-11-10) */
+.run .line{padding-right:12px}
 </style>
 </head>
 <body>
@@ -267,7 +269,7 @@ html:not([data-dock=band]) .dock .queued-next{text-shadow:0 0 6px var(--ko-bg),0
 <p class="lede">One pane, one page. The page uses only the <code>--ko-*</code> properties the app sets from the pane's theme and font; the <code>:root</code> block at the top is the fallback for a plain browser (kido-light / kido-dark). Every tone is a <code>color-mix</code> of <code>--ko-fg</code>, <code>--ko-bg</code> and the ANSI palette. Prose is the system font at the terminal's size; tool lines, code, the composer footer and the status bar are the terminal font.</p>
 <div class="controls">
   <label>Theme <select id="theme"><option value="light">kido-light</option><option value="dark">kido-dark</option></select></label>
-  <label>User message <select id="usermsg"><option value="well">A · gray block (fg 5%)</option><option value="tint">B · accent tint (7%)</option><option value="bar">C · gray block + accent bar</option><option value="plain">current (bar only)</option></select></label>
+  <label>User message <select id="usermsg"><option value="well">accent 18% (chosen 2026-11-10)</option><option value="tint">B · accent tint (7%), before</option><option value="bar">C · gray block + accent bar</option><option value="plain">current (bar only)</option></select></label>
   <label>Composer <select id="dock"><option value="glass">floating glass</option><option value="band">docked band (before)</option></select></label>
   <label>Pane width <select id="width"><option value="wide">wide (980pt)</option><option value="narrow">narrow (60 columns)</option></select></label>
   <span style="color:var(--faint)">Click a run line or a step line to fold or unfold it.</span>
@@ -465,7 +467,7 @@ Object.assign(states,{
   queue:()=>transcript(userMsg('Release 0.32')+run({sum:`<span class="spin"></span> <span class="cmd">make verify</span>`,res:`<span class="time">1m02s</span>`,steps:[]}))+`<div class="composer"><div class="field working"><div class="text ph">Steer koa…</div><div class="foot"><span class="hint"><span class="spin"></span>working 1m02s · <kbd>⎋</kbd> abort</span><span class="sp"></span><button class="act stop" aria-label="Abort"><svg viewBox="0 0 16 16"><rect x="4" y="4" width="8" height="8" rx="1.5" fill="currentColor" stroke="none"/></svg></button></div></div>${queueBlock()}</div>`+status('working'),
   'picker-model':()=>transcript('')+composer('empty')+picker({left:84,ph:'Model',rows:[{n:'claude-opus-5-5',p:'anthropic',on:true},{n:'claude-sonnet-5-5',p:'anthropic',cur:true},{n:'claude-fable-5-1',p:'claude-bridge'},{n:'gpt-6.1-sol',p:'openai-codex'},{n:'gpt-6-astra',p:'openai-codex'}]})+status('idle').replace('<span class="seg">claude-opus-5-5','<span class="seg pick">claude-opus-5-5'),
   'picker-thinking':()=>transcript('')+composer('empty')+picker({left:196,ph:'Thinking',rows:[{n:'off'},{n:'minimal'},{n:'low'},{n:'medium',cur:true},{n:'high',on:true},{n:'xhigh'}]})+status('idle'),
-  'toast-info':()=>transcript('')+composer('empty')+statusWith('idle',ext([['git','↑2'],['tests','3 failing']])+toast('info','Worktree ~/Workspace/kido-release created')),
+  'toast-info':()=>transcript('')+composer('empty')+statusWith('idle',ext([['git','↑2'],['tests','3 failing']])+toast('info','Switched to claude-sonnet-5-5 · thinking medium')),
   'toast-warn':()=>transcript('')+composer('empty')+statusWith('working',ext([['git','↑2']])+toast('warn','Context at 78%, compaction soon')),
   'toast-error':()=>transcript('')+composer('empty')+statusWith('idle',toast('error','extension release: tap checkout is dirty, refusing to commit')),
   exited:()=>transcript(userMsg('Release 0.32')+run({sum:`<span class="delta names">read, bash x2</span>`,res:`<span class="time">48s</span>`,steps:[]})+`<div class="msg assistant"><p>The tap formula is updated; pushing now.</p></div>`)+`<div class="exited"><div class="card"><div class="head"><span class="title">pi exited <span class="err">· code 1</span></span><span class="count" style="font:.8em/1.4 var(--mono);color:var(--faint)">14:41</span></div><pre>node:internal/process/esm_loader:108
