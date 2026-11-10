@@ -197,7 +197,9 @@ their own deadlines. A stuck bridge or pi thus never keeps koa
 alive. The reply to the page's own quit request is sent before the
 shutdown starts, with a deadline (`QUIT_REPLY_MS`). Every signal of
 koa goes through one function, `signalChild` in `koa-child.ts`, which
-takes a child that koa spawned (pi or `fd`); `scripts/lint.sh` permits
+takes a child that koa spawned (pi or `fd`) and ignores `ESRCH` and
+`EPERM`, as `signalJob` does (design-subagents.md, "Stopping a
+job"); `scripts/lint.sh` permits
 `process.kill` only there.
 
 **The private directory.** koa makes one directory `koa-<pid>-*` under

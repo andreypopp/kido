@@ -784,7 +784,10 @@ that its `detached` spawn created. The function refuses when the
 shell has exited: Node has reaped it, and the group id can be reused
 once its last member is gone. A job whose shell exited while a
 descendant holds its pipes waits for the pipes, and a stop sends
-nothing. A routed job's stop is `kill()` of its own `ko api` child:
+nothing. An `ESRCH` or `EPERM` from a group signal means that no
+member can get it, not an error: macOS returns `EPERM` for a group
+whose members are all zombies, which occurs after the shell exits and
+before Node reaps it. A routed job's stop is `kill()` of its own `ko api` child:
 ko closes the exec session, and the inside ko signals the command's
 group (design-runtimes.md, "The exec session"). ko-pi sends no
 `signal` frame. A process that leaves its group (`setsid`) escapes.

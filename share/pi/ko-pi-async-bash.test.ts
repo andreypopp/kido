@@ -1,4 +1,5 @@
 import { test } from "node:test";
+import { spawnSync } from "node:child_process";
 import assert from "node:assert/strict";
 import { readFileSync, writeFileSync, statSync, existsSync, realpathSync, symlinkSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
@@ -255,6 +256,30 @@ test("stop_async_bash refuses to signal an exited leader", async (t) => {
       job.state = ended;
       kill.mock.restore();
     }
+  } finally { await fx.restore(); }
+});
+
+test("stop_async_bash accepts an unreaped local job", async () => {
+  const fx = makeFixture();
+  try {
+    fx.setPanes([selfPane()]);
+    const s = await startSession(fx);
+    const gate = join(fx.dir, "exit-gate");
+    const result = await s.tools.get("async_bash").execute("c", { command: gatedCommand(gate, "", "", 0), name: "zombie" });
+    const job = registry().jobs.get(result.details.job.id);
+    writeFileSync(gate, "");
+    const deadline = Date.now() + 2000;
+    let state = "";
+    while (Date.now() < deadline) {
+      state = spawnSync("/bin/ps", ["-o", "stat=", "-p", String(job.where.child.pid)], { encoding: "utf8", timeout: 1000 }).stdout.trim();
+      if (state.startsWith("Z")) break;
+    }
+    assert.match(state, /^Z/);
+    assert.equal(job.where.child.exitCode, null);
+    try {
+      const stopped = await s.tools.get("stop_async_bash").execute("s", { job: result.details.job.id });
+      assert.match(text(stopped), /stopped job/);
+    } finally { await pollUntil(() => job.state.type === "ended"); }
   } finally { await fx.restore(); }
 });
 

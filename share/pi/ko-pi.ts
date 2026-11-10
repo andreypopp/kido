@@ -405,7 +405,7 @@ function signalJob(job: Job, signal: NodeJS.Signals): boolean {
     else child.kill();
     return true;
   } catch (error) {
-    if (isRecord(error) && error.code === "ESRCH") return false;
+    if (isRecord(error) && (error.code === "ESRCH" || (job.where.type === "local" && error.code === "EPERM"))) return false;
     throw error;
   }
 }
