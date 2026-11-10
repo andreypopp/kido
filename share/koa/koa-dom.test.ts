@@ -83,6 +83,23 @@ async function page() {
   return { context, elements, listeners, windowListeners, handlers: () => handlers, prompt: () => prompt, text: () => text(), run: (code: string) => runInNewContext("{\n" + source.replace(/^import .*;\n/gm, "").replace(/^setInterval\([\s\S]*$/m, "") + "\n" + code + "\n}", context) };
 }
 
+test('user messages separate quote answers without changing assistant Markdown', async () => {
+  const fixture = await page(), rendered: string[] = [];
+  fixture.context.markdown = (user = false) => {
+    const render = markdown(user);
+    return (...args: Parameters<typeof render>) => {
+      const blocks = render(...args);
+      rendered.push(blocks.map(block => block.html).join(''));
+      return blocks;
+    };
+  };
+  fixture.run(`
+    put({kind:'user',seq:0,at:1,text:'> q\\nanswer',images:[],attachments:[]});
+    put({kind:'assistant',seq:1,at:2,final:true,stop:'stop',error:'',blocks:[{type:'text',text:'> q\\nanswer'}]});
+  `);
+  assert.deepEqual(rendered, ['<blockquote>\n<p>q</p>\n</blockquote>\n<p>answer</p>\n', '<blockquote>\n<p>q\nanswer</p>\n</blockquote>\n']);
+});
+
 test('annotation map attaches a late reply, hides items and re-renders final text only for a new annotation item', async () => {
   const fixture = await page();
   const result = fixture.run(`

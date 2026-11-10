@@ -2,11 +2,19 @@ import { Compartment, Prec, Transaction } from '@codemirror/state';
 import { EditorView, drawSelection, keymap, placeholder, type Command } from '@codemirror/view';
 import { history, historyKeymap, standardKeymap, insertNewline } from '@codemirror/commands';
 import { markdownLanguage, insertNewlineContinueMarkup, deleteMarkupBackward } from '@codemirror/lang-markdown';
-import { syntaxHighlighting, HighlightStyle } from '@codemirror/language';
+import { Language, syntaxHighlighting, HighlightStyle } from '@codemirror/language';
 import { tags } from '@lezer/highlight';
+import type { MarkdownParser } from '@lezer/markdown';
 
 import { completion } from './complete.ts';
 import type { PromptMode } from '../koa-records.ts';
+
+export const composerLanguage = new Language(markdownLanguage.data, (markdownLanguage.parser as MarkdownParser).configure({
+  parseBlock: [{
+    name: 'QuoteAnswer',
+    endLeaf: (context, line) => context.parentType().name === 'Blockquote' && !/^ {0,3}>/.test(line.text),
+  }],
+}), [], 'markdown');
 
 const outsideComposition = (command: Command): Command => view => !view.compositionStarted && command(view);
 
@@ -20,7 +28,7 @@ export function composer(host: HTMLElement, handlers: { input(user: boolean): vo
     extensions: [
       history(),
       EditorView.domEventHandlers({ drop: event => handlers.drop(event), paste: event => handlers.paste(event) }),
-      markdownLanguage,
+      composerLanguage,
       syntaxHighlighting(HighlightStyle.define([
         { tag: [tags.processingInstruction, tags.meta, tags.url, tags.atom], class: 'cm-markup' },
         { tag: [tags.strong, tags.heading], class: 'cm-strong' },

@@ -1,11 +1,11 @@
-import { Marked, type Token, type TokensList } from 'marked';
+import { Marked, type Token, type TokensList, type MarkedExtension } from 'marked';
 import remend from 'remend';
 
 export type Mark = { offset: number; mark: string; side: 'open' | 'close' };
 type RenderedBlock = { streaming: boolean; html?: string; marks: string };
 
 const escape = (text: string) => text.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;');
-const parser = new Marked({ renderer: {
+const rendering: MarkedExtension = { renderer: {
   html: ({ text }) => escape(text),
   image: ({ text }) => escape(text),
   link({ href, tokens }) {
@@ -14,6 +14,16 @@ const parser = new Marked({ renderer: {
       const url = new URL(href);
       return ['http:', 'https:', 'mailto:'].includes(url.protocol) ? `<a href="${escape(href)}">${text}</a>` : text;
     } catch { return text; }
+  },
+} };
+const parser = new Marked(rendering);
+
+const userParser = new Marked(rendering, { tokenizer: {
+  blockquote(source) {
+    const raw = source.match(/^(?: {0,3}>[^\n]*(?:\n|$))+/)?.[0];
+    if (!raw) return;
+    const text = raw.replace(/^ {0,3}> ?/gm, '');
+    return { type: 'blockquote', raw, text, tokens: this.lexer.blockTokens(text) };
   },
 } });
 
@@ -26,7 +36,8 @@ export function markdownLine(source: string): string {
   return plain(lexer.inlineTokens(line)).replace(/\s+/g, ' ').trim();
 }
 
-export function markdown() {
+export function markdown(user = false) {
+  const selectedParser = user ? userParser : parser;
   let blocks: RenderedBlock[] = [];
   let raw: string[] = [];
   let links = '';
@@ -37,7 +48,7 @@ export function markdown() {
       marks = marks.map(mark => ({ ...mark, offset: offsets[mark.offset] }));
     }
     source = source.replace(/\r\n?/g, '\n').replace(/[\uE010-\uE012]/g, '\uFFFD');
-    const tokens = parser.lexer(source);
+    const tokens = selectedParser.lexer(source);
     const references = JSON.stringify(tokens.links);
     const previous = references === links ? blocks : [];
     const previousRaw = raw;
@@ -61,11 +72,11 @@ export function markdown() {
       let selected: TokensList;
       if (!streaming && !local.length) selected = Object.assign([token], { links: tokens.links });
       else {
-        const lexer = new parser.Lexer(parser.defaults);
+        const lexer = new selectedParser.Lexer(selectedParser.defaults);
         lexer.tokens.links = tokens.links;
         selected = lexer.lex(streaming ? remend(marked) : marked);
       }
-      return { streaming, html: parser.parser(selected), marks: signature };
+      return { streaming, html: selectedParser.parser(selected), marks: signature };
     });
     const result = blocks;
     if (final) { blocks = []; raw = []; links = ''; }

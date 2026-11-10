@@ -136,9 +136,9 @@ function timestamp(at: number) {
   return (date.getFullYear() === today.getFullYear() ? '' : date.getFullYear() + ' ') + date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) + ' ' + time;
 }
 
-function prose(key: string | undefined, source: string, final: boolean, annotationItem?: Extract<WireItem, { kind: 'annotations' }>) {
+function prose(key: string | undefined, source: string, final: boolean, annotationItem?: Extract<WireItem, { kind: 'annotations' }>, user = false) {
   let memo = key === undefined ? undefined : texts.get(key);
-  if (!memo) { memo = { render: markdown(), view: node('div', undefined, 'msg prose'), blocks: [] }; if (key !== undefined) texts.set(key, memo); }
+  if (!memo) { memo = { render: markdown(user), view: node('div', undefined, 'msg prose'), blocks: [] }; if (key !== undefined) texts.set(key, memo); }
   if (memo.annotationItem === annotationItem && (memo.final && final || memo.source === source && memo.final === final)) return memo.view;
   if (final) delete memo.source;
   else memo.source = source;
@@ -387,7 +387,7 @@ function put(item: WireItem) {
     view.className = 'msg ' + item.kind;
     if (item.kind === 'user') {
       const time = node('time', timestamp(item.at)); time.dateTime = new Date(item.at).toISOString();
-      const text = node('div', undefined, 't'); text.append(prose(item.seq + ':user', item.text, true));
+      const text = node('div', undefined, 't'); text.append(prose(item.seq + ':user', item.text, true, undefined, true));
       if (item.images.length) { const images = thumbnails(item.images, slots); images.load(); text.append(images.view); }
       const paths = item.attachments.filter(file => file.kind === 'file').map(file => file.path);
       if (paths.length) text.append(node('div', paths.join('\n'), 'paths'));

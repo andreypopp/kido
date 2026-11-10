@@ -8,6 +8,9 @@ import remend from "remend";
 import { assemblePage } from "./koa-assemble.ts";
 import { markdown, markdownLine, type Mark } from "./page/markdown.ts";
 import { answer, current, quote } from "./page/answers.ts";
+import { composerLanguage } from "./page/composer.ts";
+import { highlightTree, tags } from '@lezer/highlight';
+import { HighlightStyle } from '@codemirror/language';
 
 test('Markdown previews strip first-line syntax and use the first fenced code line', () => {
   for (const [source, expected] of [
@@ -29,26 +32,37 @@ test('Markdown previews strip first-line syntax and use the first fenced code li
 });
 
 test('question answers follow the TUI quote, append, replace and empty-answer rules', () => {
+  let overlapping = answer('', 'First\nSecond', 'long answer', false);
+  overlapping = answer(overlapping, 'First', 'one', false);
+  overlapping = answer(overlapping, 'First', 'two', false);
+  assert.equal(overlapping, '> First\n> Second\nlong answer\n\n> First\ntwo');
+  assert.equal(current(overlapping, 'First'), 'two');
   const database = quote('Which database should we use: **PostgreSQL**, SQLite or MySQL?');
   const migration = 'Should I continue with the migration?';
   let text = answer('', database, 'SQLite', false);
-  assert.equal(text, '> Which database should we use: PostgreSQL, SQLite or MySQL?\n\nSQLite');
+  assert.equal(text, '> Which database should we use: PostgreSQL, SQLite or MySQL?\nSQLite');
   text = answer(text, migration, 'Yes', false);
-  assert.equal(text, '> Which database should we use: PostgreSQL, SQLite or MySQL?\n\nSQLite\n\n> Should I continue with the migration?\n\nYes');
+  assert.equal(text, '> Which database should we use: PostgreSQL, SQLite or MySQL?\nSQLite\n\n> Should I continue with the migration?\nYes');
   text = answer(text, migration, 'No', false);
-  assert.equal(text, '> Which database should we use: PostgreSQL, SQLite or MySQL?\n\nSQLite\n\n> Should I continue with the migration?\n\nNo');
-  assert.equal(answer(text, database, 'MySQL', false), '> Which database should we use: PostgreSQL, SQLite or MySQL?\n\nMySQL\n\n> Should I continue with the migration?\n\nNo');
-  assert.equal(answer(text, migration, '', true), '> Which database should we use: PostgreSQL, SQLite or MySQL?\n\nSQLite\n\n> Should I continue with the migration?\n\n');
+  assert.equal(text, '> Which database should we use: PostgreSQL, SQLite or MySQL?\nSQLite\n\n> Should I continue with the migration?\nNo');
+  assert.equal(answer(text, database, 'MySQL', false), '> Which database should we use: PostgreSQL, SQLite or MySQL?\nMySQL\n\n> Should I continue with the migration?\nNo');
+  assert.equal(answer(text, migration, '', true), '> Which database should we use: PostgreSQL, SQLite or MySQL?\nSQLite\n\n> Should I continue with the migration?\n');
+  assert.equal(current('> Shorter\nold', 'Short'), undefined);
+  assert.equal(current('> First\n> Second\nedited\nanswer', 'First\nSecond'), 'edited\nanswer');
+  assert.equal(answer('> Short\nold\nanswer\n\n> Next\nyes', 'Short', 'new', false), '> Short\nnew\n\n> Next\nyes');
+  assert.equal(current('> Short\n> More\nold', 'Short'), undefined);
+  assert.equal(current('> Short\nuser edit\nsecond line', 'Short'), 'user edit\nsecond line');
+  assert.equal(answer('> Short\nuser edit\nsecond line', 'Short', 'new', true), '> Short\nnew');
   const open = 'What should the new service be called?';
   const empty = answer('', open, '', false);
-  assert.equal(empty, '> What should the new service be called?\n\n');
+  assert.equal(empty, '> What should the new service be called?\n');
   assert.equal(answer(empty + 'Food', open, '', false), empty + 'Food');
   assert.equal(quote('  Is dropping the `cache` **acceptable**, or is it too risky?\n\n  2. __Plan__: Is there a [plan](https://example.com) to ship the ~~docs~~ next week?  '), 'Is dropping the cache acceptable, or is it too risky?\n2. Plan: Is there a plan to ship the docs next week?');
   assert.equal(answer('draft', open, '', false), 'draft\n\n' + empty);
   assert.equal(current('not a boundary ' + empty + 'old', open), undefined);
   assert.equal(current(empty + 'Food', open), 'Food');
   assert.equal(current(empty, open), '');
-  assert.equal(current('draft\n\n' + empty + 'Food\n\n> Next\n\nYes', open), 'Food');
+  assert.equal(current('draft\n\n' + empty + 'Food\n\n> Next\nYes', open), 'Food');
   assert.equal(answer('not a boundary ' + empty + 'old', open, 'new', false), 'not a boundary ' + empty + 'old\n\n' + empty + 'new');
 });
 
@@ -151,4 +165,24 @@ test("streaming tails heal emphasis, inline code, links and fences; raw HTML sta
   assert.doesNotMatch(render('[bad](javascript:alert%281%29)', true), /href=/);
   assert.match(render('[good](https://example.com)', true), /href="https:\/\/example.com"/);
   assert.doesNotMatch(render('[relative](/queue/clear)', true), /href=/);
+});
+
+test('composer answers have no quote highlighting', () => {
+  const text = '> q\nanswer\nsecond line\n\n> next\nYes', spans: [number, number, string][] = [];
+  highlightTree(composerLanguage.parser.parse(text), HighlightStyle.define([{ tag: tags.quote, class: 'cm-quote' }]), (from, to, classes) => spans.push([from, to, classes]));
+  assert.ok(spans.some(([from, to, classes]) => from <= 2 && to > 2 && classes.includes('cm-quote')));
+  for (const at of [4, 11, text.lastIndexOf('Yes')]) assert.ok(!spans.some(([from, to, classes]) => from <= at && to > at && classes.includes('cm-quote')), JSON.stringify(spans));
+});
+
+test('user quotes end before answers; assistant quotes keep lazy continuation', () => {
+  const render = (user: boolean, source = '> q\nanswer') => markdown(user)(source, true).map(block => block.html).join('');
+  assert.equal(render(true), '<blockquote>\n<p>q</p>\n</blockquote>\n<p>answer</p>\n');
+  assert.equal(render(false), '<blockquote>\n<p>q\nanswer</p>\n</blockquote>\n');
+  assert.equal(render(true, '> q\n  answer'), '<blockquote>\n<p>q</p>\n</blockquote>\n<p>  answer</p>\n');
+  assert.match(render(true, '[link][id]\n\n[id]: https://example.com'), /href="https:\/\/example.com"/);
+  for (const source of ['- ```\n  > q\n  answer\n  ```', '    ```\n\n> q\nanswer', '```invalid`opener\n> q\nanswer']) {
+    if (source.startsWith('- ')) assert.equal(render(true, source), render(false, source));
+    else assert.match(render(true, source), /<\/blockquote>\n<p>answer<\/p>/);
+  }
+  assert.equal(render(true, '```\n> q\nanswer\n```'), '<pre><code>&gt; q\nanswer\n</code></pre>\n');
 });

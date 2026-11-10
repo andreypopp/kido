@@ -691,13 +691,26 @@ which finds the questions of a reply, and the page renders the
   producer's guarantee that a boundary is never inside Markdown syntax.
   A marker character in the reply's own text is replaced before the
   marks go in, so a reply cannot forge a control.
-- **The labels and the click are the TUI's** (pi-infer-questions'
+- **The labels and the click are the TUI's**, except for the blank
+  line below (pi-infer-questions'
   `extension.ts`): `page/answers.ts` is its quote and answer rule, a
   pure function. A click sends nothing: it sets the composer's text
   and puts the cursor at the end, and the user edits and sends. A
   control is selected while its answer is the answer of its
   question's block in the composer; the composer's input refreshes
   the selection.
+- **The answer follows its quote with no blank line.** The user
+  decided against the TUI's empty line: a block is the quote's `> `
+  lines and then the answer on the next line, and blank lines
+  separate the blocks. In CommonMark that answer is a lazy
+  continuation of the quote, so the composer and the render of a user
+  message have no lazy continuation: a quote is only its consecutive
+  `>` lines, and the line after it starts a new block. The composer
+  thus shows the answer as plain text, and the sent message shows the
+  quote and then the answer as its own paragraph. The rule is in the
+  parsers' blockquote rule, so fences, indented code and list items
+  keep their own rules. An assistant reply keeps CommonMark, and the
+  model gets the raw text.
 - **The look** is the mockup `questions.html`, chips version
   (app/design/koa/NOTES.md, "Question controls in a reply").
 
