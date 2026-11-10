@@ -856,3 +856,55 @@ keep the 5% well; radius 8pt and padding 7pt 12pt unchanged. The user
 chose it from 9, 13, 18 and 24% and from gray 12 and 16%. Every koa
 mockup page has it; mockup.html's "User message" control keeps the
 old treatments for reference.
+
+Its time is not the faint gray: over the tint that read as dirty
+(user, 2026-11-10). It is an accent ink, `color-mix(in srgb,
+var(--accent) 60%, var(--fg))`, .8em terminal font as before, in
+light and dark. agents.html's `data-ut` holds the two rejected
+alternatives (fg over the tint, the bare accent) for reference.
+
+## Question controls in a reply (questions.html; proposal, 2026-11-10)
+
+The "reply annotations" contract (plans/koa-questions.md): an
+extension marks the questions of a final reply (range, kind, the
+options of a choice), and the page puts controls in the prose. The
+labels and the click rule are the TUI's (pi-infer-questions,
+`extension.ts:333-360`), unchanged: a choice shows each option in
+place, then Other; a choice with one option shows the option, then
+Yes, Other; a yes/no question or a proposal shows Yes, No, Other; an
+open question shows Answer. A click sends nothing: it puts the
+question as a quote (`> ` lines), a blank line and the answer into the
+composer, after the current text and a blank line; a second click on
+the same question replaces its answer (Other replaces it with
+nothing; a block per question; `answer()` in the mockup is the TUI's
+function). The question's own text is not styled.
+
+- **An option in place** (`.ann`): the question's own words as a
+  button in the prose, the accent colour, a 1pt underline at 40%
+  accent 3pt under the baseline (a link's is 35%: an option's is a
+  shade stronger, and it is a button, not a link), 1pt horizontal
+  padding, 3pt radius. Hover: a 12% accent fill and the underline at
+  full accent. Selected (its answer is in the composer): the 18%
+  accent fill (the user message's tint), the text in `--fg`, no
+  underline, a 1pt outline of the same fill so the fill clears the
+  descenders. An option that wraps keeps its fill across the break.
+- **The labels** (`.ctl .ann`): chips 8pt after the question's end,
+  4pt apart, in the question's line and font: .88em, the accent with a
+  1pt edge at 35% accent, 5pt radius, 0 6pt padding, line-height
+  1.45. Hover: the 12% fill and the edge at full accent. Selected: the
+  18% fill, `--fg`, no edge. In a list item, a table cell or a
+  heading, the chips follow the text where it ends; in a paragraph
+  that goes on after the question ("Do you want the Linux check at
+  all? It costs…") the chips sit between the sentences.
+- The "Labels" control shows the TUI's form for reference (words
+  with slashes, underlined, no chips); the chips are the proposal.
+- **The composer** after a click: the plain Markdown, the quote
+  lines (`> …`) in `--muted`, the answer in `--fg`, the cursor at the
+  end; `.field .text` grows to 9 lines before it scrolls (6 before)
+  so two answered questions show whole.
+- Narrow: nothing changes in size; the chips wrap as words.
+
+Renders: `/tmp/koa-shots/questions-<state>-<theme>-<width>.png`,
+states reply (hover on "wait for CI" and on a "Yes"), answered (two
+clicks), narrow; and `questions-reply-slash-light-wide.png` (the TUI's
+labels). Not decided; shown to the user.
