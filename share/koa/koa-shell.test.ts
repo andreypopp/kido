@@ -1,4 +1,4 @@
-import { test } from 'node:test';
+import { test, type TestContext } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtemp, mkdir, writeFile, readFile, rm } from 'node:fs/promises';
 import os from 'node:os';
@@ -6,6 +6,16 @@ import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { shellComplete } from './koa-shell.ts';
+
+async function functionCompletion(t: TestContext, cwd: string, env: NodeJS.ProcessEnv): Promise<boolean> {
+  const script = await readFile(new URL('./koa-shell.sh', import.meta.url), 'utf8');
+  const { stdout } = await promisify(execFile)('/bin/sh', ['-c', script, 'koa-complete', 'printf "%s\\n" "$BASH" "$BASH_VERSION"'], { cwd, env, timeout: 5000 });
+  const [bash, version] = stdout.trim().split('\n');
+  t.diagnostic(`Completion helper: ${bash}, Bash ${version}`);
+  if (Number(version?.split('.')[0]) >= 4) return true;
+  t.skip(`Registered function completion needs Bash 4 or later; the helper selected ${bash}, Bash ${version}`);
+  return false;
+}
 
 test('shell completion quotes words, preserves mid-line spans, and rejects substitutions', async () => {
   const cwd = await mkdtemp(path.join(os.tmpdir(), 'koa-complete-'));
@@ -15,40 +25,42 @@ test('shell completion quotes words, preserves mid-line spans, and rejects subst
     const context = { type: 'host' as const, cwd };
     const command = await shellComplete('prin', 4, context, 'ko', new AbortController().signal);
     assert.ok(command.options.some(item => item.label === 'printf'));
-    const result = await shellComplete('cat hel tail', 7, context, 'ko', new AbortController().signal);
-    assert.equal(result.from, 4); assert.equal(result.to, 7);
+    const result = await shellComplete('cat < hel tail', 9, context, 'ko', new AbortController().signal);
+    assert.equal(result.from, 6); assert.equal(result.to, 9);
     assert.ok(result.options.some(item => item.insert === "\'hello world\' "));
     assert.ok(result.options.some(item => item.insert === "\'hello directory/\'"));
     assert.equal((await shellComplete('cat $(touch owned)', 17, context, 'ko', new AbortController().signal)).options.length, 0);
     assert.equal((await shellComplete('cat `touch owned`', 16, context, 'ko', new AbortController().signal)).options.length, 0);
     await assert.rejects(readFile(path.join(cwd, 'owned')), { code: 'ENOENT' });
     await writeFile(path.join(cwd, 'line\nbreak'), '');
-    const newline = await shellComplete('cat li', 6, context, 'ko', new AbortController().signal);
+    const newline = await shellComplete('cat < li', 8, context, 'ko', new AbortController().signal);
     assert.deepEqual(newline.options, [{ label: 'line\nbreak', insert: "'line\nbreak' " }]);
     await mkdir(path.join(cwd, 'é-dir'));
     await writeFile(path.join(cwd, 'é-dir/inner'), '');
-    const directory = await shellComplete('cat é', 5, context, 'ko', new AbortController().signal);
+    const directory = await shellComplete('cat < é', 7, context, 'ko', new AbortController().signal);
     assert.equal(directory.options[0]?.insert, "'é-dir/'");
-    const secondLine = 'cat ' + directory.options[0]?.insert + 'in';
+    const secondLine = 'cat < ' + directory.options[0]?.insert + 'in';
     const second = await shellComplete(secondLine, secondLine.length, context, 'ko', new AbortController().signal);
     assert.equal(second.options[0]?.insert, "'é-dir/inner' ");
     await writeFile(path.join(cwd, "it's"), '');
-    const apostrophe = await shellComplete('cat it', 6, context, 'ko', new AbortController().signal);
+    const apostrophe = await shellComplete('cat < it', 8, context, 'ko', new AbortController().signal);
     assert.equal(apostrophe.options[0]?.insert, "'it'\\''s' ");
-    const middle = await shellComplete('cat hello tail', 7, context, 'ko', new AbortController().signal);
-    assert.equal(middle.to, 9);
+    const middle = await shellComplete('cat < hello tail', 9, context, 'ko', new AbortController().signal);
+    assert.equal(middle.to, 11);
   } finally { await rm(cwd, { recursive: true, force: true }); }
 });
 
-test('registered Bash functions control quoting, nospace, empty answers, separators and Unicode', async () => {
+test('registered Bash functions control quoting, nospace, empty answers, separators and Unicode', async t => {
   const cwd = await mkdtemp(path.join(os.tmpdir(), 'koa-complete-'));
   try {
     const data = path.join(cwd, 'data'); await mkdir(path.join(data, 'bash-completion'), { recursive: true });
     await writeFile(path.join(cwd, 'hello world'), '');
     await mkdir(path.join(cwd, 'hello directory'));
-    await writeFile(path.join(data, 'bash-completion/bash_completion'), `_koa_test() { compopt -o nospace; COMPREPLY=(\"hello world\"); }; complete -F _koa_test widget\n_koa_empty() { COMPREPLY=(); }; complete -F _koa_empty empty\n_koa_dir() { compopt -o filenames; COMPREPLY=(\"hello directory\"); }; complete -F _koa_dir directory\n_koa_unicode() { [[ $COMP_POINT == 15 && $COMP_CWORD == 2 && $COMP_LINE == 'unicode 😀 he' ]] && COMPREPLY=(hello); }; complete -F _koa_unicode unicode\n`);
-    const code = `import { shellComplete } from ${JSON.stringify(new URL('./koa-shell.ts', import.meta.url).href)};const context={type:'host',cwd:${JSON.stringify(cwd)}};const signal=new AbortController().signal;const results=[];for(const line of ['widget he','widget \"he','cat x; widget he','empty hel','unicode 😀 he','directory he','cat ~/hel'])results.push(await shellComplete(line,line.length,context,'ko',signal));process.stdout.write(JSON.stringify(results));`;
-    const { stdout } = await promisify(execFile)(process.execPath, ['--input-type=module', '-e', code], { env: { ...process.env, XDG_DATA_HOME: data, HOME: cwd }, timeout: 5000 });
+    await writeFile(path.join(data, 'bash-completion/bash_completion'), `_koa_test() { compopt -o nospace; COMPREPLY=(\"hello world\"); }; complete -F _koa_test widget\n_koa_empty() { COMPREPLY=(); }; complete -F _koa_empty empty\n_koa_dir() { compopt -o filenames; COMPREPLY=(\"hello directory\"); }; complete -F _koa_dir directory\n_koa_unicode() { [[ $COMP_POINT == 15 && $COMP_CWORD == 2 && $COMP_LINE == 'unicode 😀 he' ]] && COMPREPLY=(hello); }; complete -F _koa_unicode unicode\n_koa_newline() { COMPREPLY=($'line\\nbreak'); }; complete -F _koa_newline newline\n`);
+    const env = { ...process.env, XDG_DATA_HOME: data, HOME: cwd };
+    if (!await functionCompletion(t, cwd, env)) return;
+    const code = `import { shellComplete } from ${JSON.stringify(new URL('./koa-shell.ts', import.meta.url).href)};const context={type:'host',cwd:${JSON.stringify(cwd)}};const signal=new AbortController().signal;const results=[];for(const line of ['widget he','widget \"he','cat x; widget he','empty hel','unicode 😀 he','directory he','cat ~/hel','newline li'])results.push(await shellComplete(line,line.length,context,'ko',signal));process.stdout.write(JSON.stringify(results));`;
+    const { stdout } = await promisify(execFile)(process.execPath, ['--input-type=module', '-e', code], { env, timeout: 5000 });
     const results = JSON.parse(stdout);
     assert.equal(results[0].options[0]?.insert, "\'hello world\'");
     assert.equal(results[1].from, 7); assert.equal(results[1].options[0]?.insert, "\'hello world\'");
@@ -57,6 +69,7 @@ test('registered Bash functions control quoting, nospace, empty answers, separat
     assert.equal(results[4].from, 11); assert.equal(results[4].options[0]?.insert, 'hello ');
     assert.equal(results[5].options[0]?.insert, "\'hello directory/\'");
     assert.ok(results[6].options.some((item: { insert: string }) => item.insert === "~/\'hello directory/\'"));
+    assert.deepEqual(results[7].options, [{ label: 'line\nbreak', insert: "'line\nbreak' " }]);
   } finally { await rm(cwd, { recursive: true, force: true }); }
 });
 
@@ -80,8 +93,10 @@ _unset() { compopt +o default; COMPREPLY=(); }; complete -o default -F _unset un
 _utfvalid() { COMPREPLY=(préé préê); }; complete -F _utfvalid utfvalid
 `);
     const lines = ['gitfixture ch', 'utf ', 'defaults hel', 'bashdefaults hel', 'dirs hel', 'dynamic hel', 'plus hel', 'lazy lo', 'FOO=x widget wo', '>out widget wo', '2>out widget wo', 'widget >out wo', 'widget wo\\\nrk', 'filename fi', 'plus-empty hel', 'retry-loop wo', 'unsetdefault hel', 'utfvalid pr'];
+    const env = { ...process.env, XDG_DATA_HOME: data, HOME: cwd };
+    if (!await functionCompletion(t, cwd, env)) return;
     const code = `import { shellComplete } from ${JSON.stringify(new URL('./koa-shell.ts', import.meta.url).href)};const results=[];for(const line of ${JSON.stringify(lines)})results.push(await shellComplete(line,line.length,{type:'host',cwd:${JSON.stringify(cwd)}},'ko',new AbortController().signal));process.stdout.write(JSON.stringify(results));`;
-    const { stdout } = await promisify(execFile)(process.execPath, ['--input-type=module', '-e', code], { env: { ...process.env, XDG_DATA_HOME: data, HOME: cwd }, timeout: 5000 });
+    const { stdout } = await promisify(execFile)(process.execPath, ['--input-type=module', '-e', code], { env, timeout: 5000 });
     const results = JSON.parse(stdout);
     await t.test('Git-style acceptance suffix', () => { assert.equal(results[0].options[0]?.insert, 'checkout '); assert.equal(results[0].common, 'che'); });
     await t.test('UTF-8 boundary', () => assert.equal(results[1].common, ''));
