@@ -203,7 +203,7 @@ private class AlertEscape: NSView {
     }
 
     var shownPanes: [PaneID] {
-        (session?.windows.values.first { !$0.isHidden }?.panes ?? []).filter { !$0.isHidden }.map(\.pane)
+        (session?.windows.values.first { !$0.isHidden }?.displayedPanes ?? []).filter { !$0.isHidden }.map(\.pane)
     }
 
     private var presentedPanes: [PaneID] = []

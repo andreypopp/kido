@@ -33,7 +33,7 @@ extension VisualTests {
         let config = directory.appendingPathComponent("webview.yaml")
         try "app: {webview: {keep_hidden: 4}}\n".write(to: config, atomically: true, encoding: .utf8)
         try await start(configFile: config.path, pane: "'\(tools.ko)' webview enter --path '\(gates ? "/?gates" : "/")'; exec '\(tools.ko)' webview serve --socket '\(toy.path)'")
-        let pane = try XCTUnwrap(terminal?.panes.first)
+        let pane = try XCTUnwrap(terminal?.displayedPanes.first)
         try await wait("webview page loaded") { pane.webviewView?.browser.isLoading == false && pane.webviewView?.browser.url != nil }
         let web = try XCTUnwrap(pane.webviewView?.browser)
         XCTAssertEqual(web.configuration.writingToolsBehavior, .none)
@@ -98,15 +98,15 @@ extension VisualTests {
         (()=>{
           const r={x:1,y:2,width:30,height:40};
           webkit.messageHandlers.koPreview.postMessage({document:'wrong',url:location.origin+'/images/generation',rect:r});
-          ko.preview('ko://other/images/foreign',r);ko.preview('/secret',r);ko.preview('/images/rect',{...r,width:-1});ko.preview('/images/bool',{...r,x:true});ko.preview('/images/infinite',{...r,x:Infinity});
-          ko.preview('/steps/held',r);ko.preview('/images/second',r);
+          ko.preview('ko://other/images/foreign',r);ko.preview('/images/rect',{...r,width:-1});ko.preview('/images/bool',{...r,x:true});ko.preview('/images/infinite',{...r,x:Infinity});
+          ko.preview('/files/held',r);ko.preview('/images/second',r);
           return true;
         })()
         """)
-        try await wait("one held preview") { toy.previews.contains("/steps/held") }
+        try await wait("one held preview") { toy.previews.contains("/files/held") }
         toy.releasePreviews()
         try await wait("preview file prepared") { prepared == 1 }
-        XCTAssertEqual(toy.previews, ["/steps/held"])
+        XCTAssertEqual(toy.previews, ["/files/held"])
         let panel = try XCTUnwrap(QLPreviewPanel.shared())
         let item = try XCTUnwrap(ImagePreview.shared.previewPanel(panel, previewItemAt: 0)), url = try XCTUnwrap(item.previewItemURL)
         XCTAssertEqual(url.lastPathComponent, "source.swift")
@@ -199,7 +199,7 @@ extension VisualTests {
         addTeardownBlock { toy.stop() }
         let ttyFile = directory.appendingPathComponent("page-tty")
         try await start(pane: "tty > \(SSH.quote(ttyFile.path)); tail -f /dev/null | '\(tools.ko)' webview serve --socket '\(toy.path)' & " + rawScript)
-        let pane = try XCTUnwrap(terminal?.panes.first)
+        let pane = try XCTUnwrap(terminal?.displayedPanes.first)
         let fill = String(repeating: String(repeating: "M", count: 160) + "\r\n", count: 60)
         try await emit(pane, "\u{1b}[41m" + fill + "\u{1b}]7502;a=enter\u{7}")
         try await wait("webview loaded") { pane.webviewView?.browser.isLoading == false && pane.webviewView?.browser.url != nil }
@@ -265,7 +265,7 @@ extension VisualTests {
         _ = try await webviewJS(web, "(()=>{document.body.innerHTML='';document.body.style.background='#ffffff';return true})()")
         try await split(1, .h)
         try await split(1, .v)
-        try await wait("both split axes") { self.terminal?.panes.count == 3 }
+        try await wait("both split axes") { self.terminal?.displayedPanes.count == 3 }
         try client?.select(KO_SELECT_PANE, pane.pane)
         try await wait("webview selected") { self.terminal?.active == pane.pane }
         window.makeFirstResponder(pane.inputResponder)
@@ -300,7 +300,7 @@ extension VisualTests {
         let web = view.browser
         _ = try await webviewJS(web, "(()=>{document.body.innerHTML='<div id=foreground style=\"position:fixed;left:20px;top:20px;width:40px;height:40px;background:var(--ko-fg)\"></div><div id=hard style=\"position:fixed;left:80px;top:20px;width:40px;height:40px;background:#123456\"></div>';return true})()")
         try await split(1, .h)
-        try await wait("paper split") { self.terminal?.panes.count == 2 }
+        try await wait("paper split") { self.terminal?.displayedPanes.count == 2 }
         try client?.select(KO_SELECT_PANE, pane.pane)
         try await wait("paper selected") { self.terminal?.active == pane.pane }
         window.contentView?.layoutSubtreeIfNeeded()
@@ -365,10 +365,10 @@ extension VisualTests {
         let config = directory.appendingPathComponent("unpainted.yaml")
         try "app: {webview: {keep_hidden: 4}}\n".write(to: config, atomically: true, encoding: .utf8)
         try await start(configFile: config.path, pane: "'\(tools.ko)' webview enter --path /held; exec '\(tools.ko)' webview serve --socket '\(toy.path)'")
-        let pane = try XCTUnwrap(terminal?.panes.first)
+        let pane = try XCTUnwrap(terminal?.displayedPanes.first)
         try await wait("held first document") { toy.heldDocumentCount == 1 }
         try await split(1, .h)
-        try await wait("unpainted split") { self.terminal?.panes.count == 2 }
+        try await wait("unpainted split") { self.terminal?.displayedPanes.count == 2 }
         try client?.select(KO_SELECT_PANE, pane.pane)
         try await wait("unpainted pane selected") { self.terminal?.active == pane.pane }
         for keep in [4, 0] {
@@ -430,6 +430,26 @@ extension VisualTests {
         try await webviewEqual(web, "Promise.all([window.echo,window.sandbox]).then(()=>true)", "true")
     }
 
+    func testRetainedWebviewPanesCountTowardSurfaceBudget() async throws {
+        let terminals = Array(repeating: koPane(rawScript), count: 31).joined(separator: ",")
+        let (owner, slot, _, child) = try await webviewChildSlot(keepHidden: 4,
+            extraWindows: #",{"name":"budget","tree":{"split":"h","children":[\#(terminals)]}}"#)
+        let session = try XCTUnwrap(owner.testSession)
+        let other = try XCTUnwrap(session.windows.first { $0.value !== slot }?.key)
+        try owner.testClient?.select(KO_SELECT_PANE, child)
+        try await wait("displaced budget pane retained") {
+            session.activePane?.pane == child && slot.retainedPanes.count == 2
+        }
+        XCTAssertEqual(slot.displayedPanes.count, 1)
+        XCTAssertEqual(session.visualHotSurfaces, 2)
+        try owner.testClient?.select(KO_SELECT_WINDOW, other)
+        session.show(other)
+        XCTAssertEqual(session.visualHotSurfaces, 33)
+        try await wait("retained window evicted over budget") { slot.retainedPanes.isEmpty }
+        XCTAssertFalse(slot.hot)
+        XCTAssertEqual(session.visualHotSurfaces, 31)
+    }
+
     func testWebviewChildSlotFrames() async throws {
         try await webviewChildSlotFrames(keepHidden: 4)
     }
@@ -438,7 +458,7 @@ extension VisualTests {
         try await webviewChildSlotFrames(keepHidden: 0)
     }
 
-    private func webviewChildSlotFrames(keepHidden: Int) async throws {
+    private func webviewChildSlot(keepHidden: Int, extraWindows: String = "") async throws -> (WindowOwner, WindowView, PaneID, PaneID) {
         let config = directory.appendingPathComponent("slot.yaml")
         try "app: {webview: {keep_hidden: \(keepHidden)}}\n".write(to: config, atomically: true, encoding: .utf8)
         let toy = try WebviewToy(path: directory.appendingPathComponent("slot.sock").path)
@@ -447,7 +467,7 @@ extension VisualTests {
         func command(_ color: String) -> String {
             "printf '\\033[41m'; i=0; while [ $i -lt 60 ]; do printf 'TERMINAL-BEHIND-PAGE %080d\\r\\n' 0; i=$((i+1)); done; '\(tools.ko)' webview enter --path '/?solid=\(color)'; exec '\(tools.ko)' webview serve --socket '\(toy.path)'"
         }
-        try await start(configFile: config.path, pane: command("126a42"))
+        try await start(configFile: config.path, windows: #"[{"name":"parent","tree":\#(koPane(command("126a42")))}\#(extraWindows)]"#)
         let owner = WindowOwner(host: .local, runtime: runtime, start: false)
         owner.testServerDir = directory.path
         addTeardownBlock { @MainActor in owner.close() }
@@ -458,8 +478,6 @@ extension VisualTests {
         }
         let session = try XCTUnwrap(owner.testSession)
         let parent = try XCTUnwrap(session.activePane?.pane)
-        let parentWeb = try XCTUnwrap(session.activePane?.webviewView?.browser)
-        weak var parentView = session.activePane
         let slot = try XCTUnwrap(session.windows.values.first { !$0.isHidden })
         let request = directory.appendingPathComponent("child.json")
         try JSONSerialization.data(withJSONObject: [
@@ -469,9 +487,17 @@ extension VisualTests {
         try await ko(["api", "-X", "POST", "--input", request.path, "/panes"], dir: directory.path)
         try await wait("child page serving") { owner.testModel?.panes.contains { $0.parent == parent && $0.webview?.page != nil && $0.webview?.serving == true } == true }
         let child = try XCTUnwrap(owner.testModel?.panes.first { $0.parent == parent }?.id)
+        return (owner, slot, parent, child)
+    }
+
+    private func webviewChildSlotFrames(keepHidden: Int) async throws {
+        let (owner, slot, parent, child) = try await webviewChildSlot(keepHidden: keepHidden)
+        let session = try XCTUnwrap(owner.testSession)
+        let parentWeb = try XCTUnwrap(session.activePane?.webviewView?.browser)
+        weak var parentView = session.activePane
         var captures = 0
         func capture(_ view: WindowView) throws {
-            guard let pane = view.panes.first, [parent, child].contains(pane.pane) else { return }
+            guard let pane = view.displayedPanes.first, [parent, child].contains(pane.pane) else { return }
             XCTAssertTrue(view === slot, "parent and child must use the same window slot")
             view.layoutSubtreeIfNeeded()
             let bitmap = try XCTUnwrap(view.bitmapImageRepForCachingDisplay(in: view.bounds))
@@ -554,8 +580,8 @@ extension VisualTests {
         XCTAssertTrue(pane.tryToPerform(try XCTUnwrap(reload.action), with: reload))
         try await wait("menu reloads the page") { view.visualDocuments > documents }
         try await split(1, .h)
-        try await wait("terminal for reload validation") { self.terminal?.panes.count == 2 }
-        let terminalPane = try XCTUnwrap(terminal?.panes.first { $0 !== pane })
+        try await wait("terminal for reload validation") { self.terminal?.displayedPanes.count == 2 }
+        let terminalPane = try XCTUnwrap(terminal?.displayedPanes.first { $0 !== pane })
         window.makeFirstResponder(terminalPane)
         XCTAssertFalse(terminalPane.validateMenuItem(reload))
     }

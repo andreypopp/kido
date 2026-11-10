@@ -285,13 +285,13 @@ import PaneGeometry
         var completed = false
         let menuChanged = owner.menuChanged
         let check = {
-            if !completed, owner.stressState.2?.windows.values.flatMap(\.panes).count == 2 { completed = true; ready.fulfill() }
+            if !completed, owner.stressState.2?.windows.values.flatMap(\.displayedPanes).count == 2 { completed = true; ready.fulfill() }
         }
         owner.menuChanged = { menuChanged(); check() }
         owner.snapshotReceived = check
         owner.start()
         await fulfillment(of: [ready], timeout: 10)
-        let panes = try XCTUnwrap(owner.stressState.2).windows.values.flatMap(\.panes)
+        let panes = try XCTUnwrap(owner.stressState.2).windows.values.flatMap(\.displayedPanes)
         XCTAssertEqual(panes.count, 2)
         let panel = try fixture.open()
         let row = try XCTUnwrap(panel.palette.theme?.rows[2])
@@ -825,7 +825,7 @@ import PaneGeometry
         let previousDelegate = NSApp.delegate
         NSApp.delegate = fixture.app
         defer { NSApp.delegate = previousDelegate }
-        let paneCount = { owner.testSession?.windows.values.flatMap(\.panes).count ?? 0 }
+        let paneCount = { owner.testSession?.windows.values.flatMap(\.displayedPanes).count ?? 0 }
         let focusSidebar = { (floating: Bool) in
             owner.sidebar.isCollapsed = floating
             try sendKey(owner.window, "s", code: 1, modifiers: .command)

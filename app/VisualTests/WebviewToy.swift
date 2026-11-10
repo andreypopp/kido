@@ -128,7 +128,7 @@ final class WebviewToy: @unchecked Sendable {
                 return
             }
             let text = String(decoding: data[..<end.upperBound], as: UTF8.self)
-            if let path = text.split(separator: " ").dropFirst().first, path.hasPrefix("/images/") || path.hasPrefix("/attachments/") || path.hasPrefix("/steps/") {
+            if let path = text.split(separator: " ").dropFirst().first, path.hasPrefix("/images/") || path.hasPrefix("/attachments/") || path.hasPrefix("/steps/") || path == "/files/held" {
                 previewRequests.append(String(path))
                 if path.contains("held") { heldPreviews.append(connection) } else { previewReply(connection, path: String(path)) }
                 return

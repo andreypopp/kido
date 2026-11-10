@@ -223,7 +223,7 @@ typealias AppWindow = StressWindow
     // One random edit of the shown window, through the owner's editor as a gesture sends it.
     private func layoutEdit(_ pane: PaneView) {
         guard let window = owner.stressModel?.layout.layout.locate(pane.pane)?.window else { return }
-        let other = window.panes[random(window.panes.count)]
+        let other = window.displayedPanes[random(window.displayedPanes.count)]
         let edges: [KoSchema.Edge] = [.left, .right, .top, .bottom]
         let edit: KoSchema.Edit = switch random(6) {
         case 0: .split(KoSchema.EditSplit(axis: random(2) == 0 ? .h : .v, new: KoSchema.CreatePane(), pane: pane.pane))

@@ -154,7 +154,7 @@ import XCTest
         let bytes: [UInt8] = [255, 0, 0, 255, 0, 255, 0, 255]
         let pixels = PreviewPixels(width: 2, height: 1, format: GHOSTTY_IMAGE_FORMAT_RGBA, data: Data(bytes))
         let preview = ImagePreview.shared
-        let prepared = await preview.prepare(pixels, id: 7, rect: .zero)
+        let prepared = await preview.prepare(.pixels(pixels, id: 7), rect: .zero)
         XCTAssertTrue(prepared)
         defer { preview.close() }
         let panel = try XCTUnwrap(QLPreviewPanel.shared())

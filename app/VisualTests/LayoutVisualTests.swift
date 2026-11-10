@@ -98,7 +98,7 @@ import XCTest
         let session = try XCTUnwrap(owner.testSession)
         session.paneCommand(.zoom, PaneID(number: 1))
         try await placed("zoom") { $0.zoom == PaneID(number: 1) }
-        XCTAssertEqual(terminal?.panes.filter { !$0.isHidden }.map(\.pane), [PaneID(number: 1)])
+        XCTAssertEqual(terminal?.displayedPanes.filter { !$0.isHidden }.map(\.pane), [PaneID(number: 1)])
         try snapshot("zoom")
         session.paneCommand(.zoom, PaneID(number: 1))
         try await placed("the zoom ended") { $0.zoom == nil }
@@ -141,7 +141,7 @@ import XCTest
         try await placed("the first pane is six cells wider") { _ in self.geometry(PaneID(number: 1))?.width == first.width + 6 }
         try await wait("the edits settled", within: 5) { self.owner.testSession?.editing() == false }
         XCTAssertEqual(geometry(PaneID(number: 3)), third, "the drag moves one divider")
-        XCTAssertTrue(terminal.panes.allSatisfy { !$0.visualResizeIntent }, "the settled layout ends the resize intent")
+        XCTAssertTrue(terminal.displayedPanes.allSatisfy { !$0.visualResizeIntent }, "the settled layout ends the resize intent")
         try snapshot("after")
     }
 

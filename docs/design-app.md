@@ -1204,7 +1204,10 @@ directory: an upload is a client action. Remote and Local-pane SSH consent
 rules still apply. Text and web links without files or promises are refused.
 
 Surfaces are kept per window, for the most recently shown windows of
-any session while their panes total at most 32; the rest have none. A
+any session while their retained panes total at most 32; the rest have
+none. A window's retained panes are every pane view that it keeps, the
+views that its slots show and the views that left their slot ("Hidden
+pages"), because each has a surface. A
 window gains its surfaces when shown. Showing another window evicts the
 least recent past the budget, never the shown one, off the switch path.
 A surface is freed in `PaneView.deinit`, after the utility-queue
@@ -1441,11 +1444,10 @@ the URL and the clicked element's rect to the script message handler
 `koPreview`. The handler drops the message silently, as `koSocket` does,
 unless the view is not stopped, the message is the main frame's, the
 frame's URL is allowed, the generation matches, no navigation is
-pending, the URL is on the pane's own origin under `/images/`,
-`/attachments/` or `/steps/`, the rect is four finite numbers with a
-width and a height that are not negative, the web
-view is the first responder of a key window, and no other preview of the
-view is in flight. It fetches the URL through the page's own fetch path,
+pending, the URL is on the pane's own origin, whatever its path, the
+rect is four finite numbers with a width and a height that are not
+negative, the web view is the first responder of a key window, and no
+other preview of the view is in flight. It fetches the URL through the page's own fetch path,
 so a remote server and a runtime work as for the page, and stops past
 `Upload.fileLimit` (64 MiB) or on a status other than 200 with the
 pane's notice. The file's name is the base name of the response's
@@ -1525,7 +1527,8 @@ font list: the quoted family name, then `monospace`.
 **Hidden pages.** A pane that hides keeps its web view. A pane that
 leaves its slot to another pane, as a parent agent's pane does to its
 child's, also hides: `WindowView` keeps one view for each pane of its
-window, and a slot only selects which one shows. `SessionView` keeps
+window, and a slot only names the pane whose view shows. The view
+and its chrome are stored once, by pane. `SessionView` keeps
 the order in which pages hid, for the whole native window, and releases
 the oldest beyond `app.webview.keep_hidden`; 0 releases a page when its
 pane hides. A pane that comes back with its page shows that live page

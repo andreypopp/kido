@@ -269,12 +269,12 @@ import XCTest
     func testSwitchingThroughThreeWindowsOfTwelvePanesKeepsAtMostThirtyTwoHotSurfacesAndAnEvictedWindowShowsTheScreenAgain() throws {
         let dir = try serverWithWindows([12, 12, 12], argv: ["/bin/sh", "-c", #"printf "I am $KO_PANE"; exec sleep 60"#])
         let owner = try owner(dir: dir)
-        wait("the first window") { owner.testSession?.windows.values.contains { !$0.isHidden && $0.panes.count == 12 } == true }
+        wait("the first window") { owner.testSession?.windows.values.contains { !$0.isHidden && $0.displayedPanes.count == 12 } == true }
         let windows = try XCTUnwrap(owner.testModel).layout.layout.windows.map(\.id)
         XCTAssertEqual(windows.count, 3)
         for id in windows.dropFirst() {
             owner.perform(.selectWindow(SessionID(number: 1), id))
-            wait("window \(id)") { owner.testSession?.windows[id].map { !$0.isHidden && $0.panes.count == 12 } == true }
+            wait("window \(id)") { owner.testSession?.windows[id].map { !$0.isHidden && $0.displayedPanes.count == 12 } == true }
         }
         wait("the oldest window is evicted") { owner.testSession?.windows[windows[0]]?.hot == false }
         XCTAssertEqual(owner.testSession?.visualHotSurfaces, 24)

@@ -44,7 +44,7 @@ extension VisualTests {
         """.write(toFile: script, atomically: true, encoding: .utf8)
         addTeardownBlock { try? FileManager.default.removeItem(atPath: script) }
         try await start(pane: "exec python3 -u " + script)
-        let pane = try XCTUnwrap(terminal?.panes.first)
+        let pane = try XCTUnwrap(terminal?.displayedPanes.first)
         try await wait("the pane reads its cell size") { self.reported(pane) == self.expected(pane) }
 
         let first = expected(pane)
@@ -58,7 +58,7 @@ extension VisualTests {
         let grid = ghostty_surface_size(pane.surface)
         let larger = expected(pane)
         let scale: CGFloat = window.backingScaleFactor == 1 ? 2 : 1
-        for pane in try XCTUnwrap(terminal).panes {
+        for pane in try XCTUnwrap(terminal).displayedPanes {
             pane.visualScale = scale
             pane.viewDidChangeBackingProperties()
         }

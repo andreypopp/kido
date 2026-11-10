@@ -507,9 +507,9 @@ extension VisualTests {
         try await settle()
         try await exits("sidebar focus") { window.makeFirstResponder(nil) }
         try await split(Int(pane.pane.number), .v)
-        try await wait("split pane") { self.terminal?.panes.count == 2 }
+        try await wait("split pane") { self.terminal?.displayedPanes.count == 2 }
         try await settle()
-        let other = try XCTUnwrap(terminal?.panes.first { $0 !== pane })
+        let other = try XCTUnwrap(terminal?.displayedPanes.first { $0 !== pane })
         try await exits("pane focus") { window.makeFirstResponder(other) }
         try await exits("pane death", other) {
             try await ko(["api", "-X", "DELETE", "/panes/" + other.pane.description], dir: directory.path)
@@ -1192,10 +1192,10 @@ extension VisualTests {
         let pane = try await rawPane()
         let row = try await mouseFixture(pane)
         try await split(1, .h)
-        try await wait("split pane", within: 2) { self.terminal?.panes.count == 2 }
+        try await wait("split pane", within: 2) { self.terminal?.displayedPanes.count == 2 }
         try await settle()
-        try await wait("split restored", within: 2) { self.terminal?.panes.allSatisfy { !$0.restoring } == true }
-        let other = try XCTUnwrap(terminal?.panes.first { $0 !== pane })
+        try await wait("split restored", within: 2) { self.terminal?.displayedPanes.allSatisfy { !$0.restoring } == true }
+        let other = try XCTUnwrap(terminal?.displayedPanes.first { $0 !== pane })
         try XCTUnwrap(client).select(KO_SELECT_PANE, other.pane)
         try await wait("the other pane is active", within: 2) { self.terminal?.active == other.pane }
         try await mouseWindow()
@@ -1208,20 +1208,20 @@ extension VisualTests {
         try await restored(pane)
 
         try await split(Int(pane.pane.number), .h)
-        try await wait("third pane", within: 2) { self.terminal?.panes.count == 3 }
+        try await wait("third pane", within: 2) { self.terminal?.displayedPanes.count == 3 }
         try await settle()
-        try await wait("third pane restored", within: 2) { self.terminal?.panes.allSatisfy { !$0.restoring } == true }
-        let third = try XCTUnwrap(terminal?.panes.first { $0 !== pane && $0 !== other })
+        try await wait("third pane restored", within: 2) { self.terminal?.displayedPanes.allSatisfy { !$0.restoring } == true }
+        let third = try XCTUnwrap(terminal?.displayedPanes.first { $0 !== pane && $0 !== other })
         let lower = other.pane, upper = third.pane
         try await edit(.float(KoSchema.EditFloat(cols: 35, pane: lower, rows: 10, x: 5, y: 2)))
         try await wait("lower floating pane", within: 2) { self.terminal?.visualLayout.contains("float \(lower)") == true }
         try await edit(.float(KoSchema.EditFloat(cols: 35, pane: upper, rows: 10, x: 45, y: 2)))
         try await wait("upper floating pane", within: 2) { self.terminal?.visualLayout.contains("float \(upper)") == true }
         try await settle()
-        try await wait("floats restored", within: 2) { self.terminal?.panes.allSatisfy { !$0.restoring } == true }
+        try await wait("floats restored", within: 2) { self.terminal?.displayedPanes.allSatisfy { !$0.restoring } == true }
         try XCTUnwrap(client).select(KO_SELECT_PANE, pane.pane)
         try await waitForZ(lower, 0)
-        let lowerPane = try XCTUnwrap(terminal?.panes.first { $0.pane == lower })
+        let lowerPane = try XCTUnwrap(terminal?.displayedPanes.first { $0.pane == lower })
         window.sendEvent(mouse(lowerPane, .leftMouseDown, x: 2, y: 2, mods: [.shift]))
         try await entered(lowerPane)
         try await waitForZ(lower, 1)

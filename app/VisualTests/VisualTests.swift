@@ -65,7 +65,7 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         NSApp.activate(ignoringOtherApps: true)
         try await wait("private measurement window is unoccluded") { self.window.occlusionState.contains(.visible) }
         try Data().write(to: URL(fileURLWithPath: "/tmp/kido-vsync-visible-\(getpid())"))
-        let pane = try XCTUnwrap(terminal?.panes.first)
+        let pane = try XCTUnwrap(terminal?.displayedPanes.first)
         var installations: [Double] = []
         let observation = observeFrames(try XCTUnwrap(pane.subviews.first?.layer)) { installations.append(CACurrentMediaTime()) }
         defer { observation.invalidate(); window.orderOut(nil) }
@@ -104,7 +104,7 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
     // The pane that the harness starts with runs `cat` in raw mode, so what a test writes to it comes back as output.
     func rawPane(dark: Bool = false) async throws -> PaneView {
         try await start(dark: dark)
-        let pane = try XCTUnwrap(terminal?.panes.first)
+        let pane = try XCTUnwrap(terminal?.displayedPanes.first)
         window.makeFirstResponder(pane)
         return pane
     }
@@ -240,7 +240,7 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
             case .select(let target): try? client.select(KO_SELECT_PANE, target)
             }
         }
-        try await wait("initial layout") { self.terminal?.panes.isEmpty == false }
+        try await wait("initial layout") { self.terminal?.displayedPanes.isEmpty == false }
         try await settle()
         if dark { try await darken() }
     }
@@ -301,8 +301,8 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
                 root.layoutSubtreeIfNeeded()
                 owner.window.display()
                 try await presented()
-                let pane = try XCTUnwrap(terminal?.panes.first)
-                XCTAssertEqual(terminal?.panes.count, 1)
+                let pane = try XCTUnwrap(terminal?.displayedPanes.first)
+                XCTAssertEqual(terminal?.displayedPanes.count, 1)
                 XCTAssertEqual(pane.paperColor, runtime.background)
                 let image = try XCTUnwrap(content.bitmapImageRepForCachingDisplay(in: content.bounds))
                 content.cacheDisplay(in: content.bounds, to: image)
@@ -312,13 +312,13 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
                 }
             }
             let split = try await edit(.split(KoSchema.EditSplit(axis: .h, new: rawCat, pane: PaneID(number: 1))))
-            try await wait("inactive tiled paper") { self.terminal?.panes.count == 2 }
-            let inactive = try XCTUnwrap(terminal?.panes.first { $0.shiftedBackground })
+            try await wait("inactive tiled paper") { self.terminal?.displayedPanes.count == 2 }
+            let inactive = try XCTUnwrap(terminal?.displayedPanes.first { $0.shiftedBackground })
             XCTAssertEqual(inactive.paperColor, owner.window.backgroundColor)
             XCTAssertEqual(inactive.paperColor, owner.sidebar.tabs.theme.background)
             let added = try XCTUnwrap(split.createdPane)
             try await ko(["api", "-X", "DELETE", "/panes/" + added.description], dir: directory.path)
-            try await wait("single pane restored") { self.terminal?.panes.count == 1 }
+            try await wait("single pane restored") { self.terminal?.displayedPanes.count == 1 }
         }
     }
 
@@ -330,7 +330,7 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         try "background = #000000\n".write(to: theme, atomically: true, encoding: .utf8)
         try "app: {theme: custom, window: {unfocused_shift: 0}}\n".write(to: config, atomically: true, encoding: .utf8)
         try await start(configFile: config.path)
-        let pane = try XCTUnwrap(terminal?.panes.first)
+        let pane = try XCTUnwrap(terminal?.displayedPanes.first)
         func check(_ rgb: [Int]) async throws {
             try await presented()
             let root = try XCTUnwrap(window.contentView)
@@ -357,7 +357,7 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         let config = directory.appendingPathComponent("font.yaml")
         try "app: {theme: kido-light, font: {family: Menlo, size: 15}}\n".write(to: config, atomically: true, encoding: .utf8)
         try await start(configFile: config.path)
-        let pane = try XCTUnwrap(terminal?.panes.first)
+        let pane = try XCTUnwrap(terminal?.displayedPanes.first)
         try await emit(pane, "Menlo 15\r\nAaBb 0123456789 => != ffi\r\n")
         window.makeFirstResponder(pane)
         pane.syncFocus()
@@ -370,7 +370,7 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         let config = directory.appendingPathComponent("settings.yaml")
         try "app: {theme: kido-light}\n".write(to: config, atomically: true, encoding: .utf8)
         try await start(configFile: config.path)
-        let pane = try XCTUnwrap(terminal?.panes.first)
+        let pane = try XCTUnwrap(terminal?.displayedPanes.first)
         try await emit(pane, "System monospaced font\r\nAaBb 0123456789 => != ffi\r\n")
         try await snapshot("system-mono-light")
         let themes = directory.appendingPathComponent("themes")
@@ -456,7 +456,7 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         let config = directory.appendingPathComponent("adjusted-font.yaml")
         try "app: {font: {size: 13}}\n".write(to: config, atomically: true, encoding: .utf8)
         try await start(configFile: config.path)
-        let first = try XCTUnwrap(terminal?.panes.first)
+        let first = try XCTUnwrap(terminal?.displayedPanes.first)
         let key = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: .command,
             timestamp: 0, windowNumber: window.windowNumber, context: nil, characters: "=",
             charactersIgnoringModifiers: "=", isARepeat: false, keyCode: 24))
@@ -464,14 +464,14 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         try await wait("adjusted font") { first.font > 13 }
         let adjusted = first.font
         try await edit(.split(KoSchema.EditSplit(axis: .h, new: rawCat, pane: PaneID(number: 1))))
-        try await wait("new pane") { self.terminal?.panes.count == 2 }
-        let panes = try XCTUnwrap(terminal).panes
+        try await wait("new pane") { self.terminal?.displayedPanes.count == 2 }
+        let panes = try XCTUnwrap(terminal).displayedPanes
         for pane in panes { XCTAssertEqual(pane.font, adjusted) }
         let added = try await edit(.addWindow(KoSchema.EditAddWindow(after: WindowID(number: 1), new: rawCat, session: SessionID(number: 1))))
         let hidden = try XCTUnwrap(added.createdWindow)
         try client?.select(KO_SELECT_WINDOW, hidden)
         try await wait("hidden window") { first.isHidden || first.superview?.isHidden == true }
-        let allPanes = session.windows.values.flatMap(\.panes)
+        let allPanes = session.windows.values.flatMap(\.retainedPanes)
         XCTAssertTrue(allPanes.contains { $0 === first }, "the cached hidden pane must be checked")
         XCTAssertEqual(allPanes.count, 3)
         let reloads: [(configSize: Int, background: String, expectedSize: Float)] = [
@@ -487,7 +487,7 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
                 XCTAssertEqual(pane.font, expected, "pane \(pane.pane) after font-size \(size)")
             }
         }
-        let active = try XCTUnwrap(terminal?.panes.first)
+        let active = try XCTUnwrap(terminal?.displayedPanes.first)
         active.keyDown(with: key)
         try await wait("font shortcut after reload") { allPanes.allSatisfy { $0.font > 20 } }
         let reset = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: .command,
@@ -538,7 +538,7 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         let config = directory.appendingPathComponent("live.yaml")
         try "app: {font: {size: 13}}\n".write(to: config, atomically: true, encoding: .utf8)
         try await start(configFile: config.path)
-        let pane = try XCTUnwrap(terminal?.panes.first)
+        let pane = try XCTUnwrap(terminal?.displayedPanes.first)
         let before = ghostty_surface_size(pane.surface)
         let shaded = expectation(description: "shade-only reload")
         runtime.onConfigChange = { shaded.fulfill() }
@@ -572,13 +572,13 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
     func settle() async throws {
         try await wait("authoritative restore and presented frame") {
             guard let terminal = self.terminal else { return false }
-            return terminal.visualGeometryReady && !terminal.panes.isEmpty && terminal.panes.filter { !$0.isHidden }.allSatisfy(\.visualReady)
+            return terminal.visualGeometryReady && !terminal.displayedPanes.isEmpty && terminal.displayedPanes.filter { !$0.isHidden }.allSatisfy(\.visualReady)
         }
     }
 
     // Fills every shown pane with coloured rows, or `content`, through its raw cat.
     func paint(lines: Int? = nil, alternate: Bool = false, content: String? = nil) async throws {
-        for pane in try XCTUnwrap(terminal).panes.filter({ !$0.isHidden }) {
+        for pane in try XCTUnwrap(terminal).displayedPanes.filter({ !$0.isHidden }) {
             let grid = ghostty_surface_size(pane.surface)
             let count = lines ?? Int(grid.rows)
             var text = alternate ? "\u{1b}[?1049h" : ""
@@ -599,7 +599,7 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         try await settle()
         let terminal = try XCTUnwrap(terminal)
         window.contentView?.layoutSubtreeIfNeeded()
-        for pane in terminal.panes.filter({ !$0.isHidden }) {
+        for pane in terminal.displayedPanes.filter({ !$0.isHidden }) {
             await presentedFrame(pane)
         }
     }
@@ -612,7 +612,7 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         XCTAssertFalse(window.isMainWindow)
         XCTAssertFalse(NSApp.isActive)
         CATransaction.flush()
-        terminal.panes.forEach { $0.scroller.isHidden = true }
+        terminal.displayedPanes.forEach { $0.scroller.isHidden = true }
         CATransaction.flush()
         checkSnapshot { verifySnapshot(of: view ?? terminal, as: .image, named: name, record: $0, testName: testName) }
         checkSnapshot { verifySnapshot(of: terminal.visualLayout, as: .lines, named: name, record: $0, testName: testName) }
@@ -719,8 +719,8 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
 
     func testPaneDragExcludesReorderGestures() async throws {
         try await start(windows: #"[{"name":"zsh","tree":{"split":"h","children":[\#(koPane()),\#(koPane())]}}]"#)
-        try await wait("two panes") { self.terminal?.panes.count == 2 }
-        let view = try XCTUnwrap(terminal), pane = try XCTUnwrap(view.panes.first?.pane)
+        try await wait("two panes") { self.terminal?.displayedPanes.count == 2 }
+        let view = try XCTUnwrap(terminal), pane = try XCTUnwrap(view.displayedPanes.first?.pane)
         let down = try XCTUnwrap(NSEvent.mouseEvent(with: .leftMouseDown, location: .zero, modifierFlags: [], timestamp: 0,
             windowNumber: window.windowNumber, context: nil, eventNumber: 1, clickCount: 1, pressure: 1))
         XCTAssertTrue(session.reorder.claim(.tab))
@@ -761,7 +761,7 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         root.layoutSubtreeIfNeeded()
         sidebar.splitView.setPosition(292, ofDividerAt: 0)
         sidebar.viewDidLayout()
-        let row = try XCTUnwrap(self.terminal?.panes.first)
+        let row = try XCTUnwrap(self.terminal?.displayedPanes.first)
         let shown = try XCTUnwrap(currentModel.window)
         sidebar.list.show(Snapshot(clock: .init(now: 0, local: 0), client: .init(session: SessionID(number: 0), window: shown, pane: row.pane), serverInstance: ServerInstance("4242/1791000000"),
                                      sessions: [SessionNodes(id: SessionID(number: 0), name: "visual",
@@ -844,7 +844,7 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         let terminal = try XCTUnwrap(terminal)
         let frame = terminal.frame
         let tabFrame = sidebar.tabs.convert(sidebar.tabs.bounds, to: root)
-        let grids = terminal.panes.map { ghostty_surface_size($0.surface) }
+        let grids = terminal.displayedPanes.map { ghostty_surface_size($0.surface) }
         sentSizes.removeAll()
         let list = sidebar.list
         let listParent = try XCTUnwrap(list.superview)
@@ -869,8 +869,8 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         XCTAssertGreaterThan(floatingTabFrame.minX, tabFrame.minX)
         XCTAssertGreaterThanOrEqual(floatingTabFrame.minX, nativeFrame.maxX)
         XCTAssertEqual(floatingTabFrame.maxX, tabFrame.maxX)
-        XCTAssertEqual(terminal.panes.map { ghostty_surface_size($0.surface).columns }, grids.map(\.columns))
-        XCTAssertEqual(terminal.panes.map { ghostty_surface_size($0.surface).rows }, grids.map(\.rows))
+        XCTAssertEqual(terminal.displayedPanes.map { ghostty_surface_size($0.surface).columns }, grids.map(\.columns))
+        XCTAssertEqual(terminal.displayedPanes.map { ghostty_surface_size($0.surface).rows }, grids.map(\.rows))
         await mainQueueFence()
         XCTAssertEqual(sentSizes, [], "a floating sidebar keeps the server's size")
         try key()
@@ -913,8 +913,8 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         try key()
         try await settle()
         XCTAssertEqual(sidebar.tabs.convert(sidebar.tabs.bounds, to: root), floatingTabFrame)
-        XCTAssertEqual(terminal.panes.map { ghostty_surface_size($0.surface).columns }, grids.map(\.columns))
-        XCTAssertEqual(terminal.panes.map { ghostty_surface_size($0.surface).rows }, grids.map(\.rows))
+        XCTAssertEqual(terminal.displayedPanes.map { ghostty_surface_size($0.surface).columns }, grids.map(\.columns))
+        XCTAssertEqual(terminal.displayedPanes.map { ghostty_surface_size($0.surface).rows }, grids.map(\.rows))
         XCTAssertEqual(terminal.frame, frame)
         let outside = try XCTUnwrap(NSEvent.mouseEvent(with: .leftMouseDown,
             location: sidebar.content.convert(NSPoint(x: sidebar.content.bounds.maxX - 30, y: 100), to: nil), modifierFlags: [],
@@ -975,7 +975,7 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         try await start()
         try await paint(lines: 100)
         let terminal = try XCTUnwrap(terminal)
-        let pane = try XCTUnwrap(terminal.panes.first)
+        let pane = try XCTUnwrap(terminal.displayedPanes.first)
         for (name, shape, cursor) in [("pointer", GHOSTTY_MOUSE_SHAPE_POINTER, NSCursor.pointingHand),
                                       ("text", GHOSTTY_MOUSE_SHAPE_TEXT, NSCursor.iBeam),
                                       ("default", GHOSTTY_MOUSE_SHAPE_DEFAULT, NSCursor.arrow)] {
@@ -999,8 +999,8 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         XCTAssertFalse(terminal.paneCursorRects.contains { $0.1 === NSCursor.pointingHand && $0.0.intersects(findRect) })
         find.close()
         try await split(1, .h)
-        try await wait("split for cursor priority") { terminal.panes.count == 2 }
-        for view in terminal.panes { view.setMouseShape(GHOSTTY_MOUSE_SHAPE_POINTER) }
+        try await wait("split for cursor priority") { terminal.displayedPanes.count == 2 }
+        for view in terminal.displayedPanes { view.setMouseShape(GHOSTTY_MOUSE_SHAPE_POINTER) }
         let dividers = terminal.paneCursorRects.filter { $0.1 === NSCursor.resizeLeftRight }
         XCTAssertFalse(dividers.isEmpty)
         for (rect, _) in dividers {
@@ -1073,15 +1073,15 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
             let terminal = try XCTUnwrap(terminal)
             if dark {
                 try await toggleZoom(1)
-                try await wait("unzoom for dark focus") { terminal.panes.filter { !$0.isHidden }.count == 3 }
+                try await wait("unzoom for dark focus") { terminal.displayedPanes.filter { !$0.isHidden }.count == 3 }
             } else {
                 try await split(1, .h)
                 try await split(2, .v)
-                try await wait("three focus panes") { terminal.panes.count == 3 }
+                try await wait("three focus panes") { terminal.displayedPanes.count == 3 }
             }
             let content = "pi · kido-app\r\n\r\n› Refine pane focus.\r\nKeep the native chrome.\r\nInactive text stays readable.\r\n\r\n\u{1b}[34m$ git status --short\u{1b}[0m\r\n› "
             try await paint(content: content)
-            let active = try XCTUnwrap(terminal.panes.first { $0.pane == terminal.active })
+            let active = try XCTUnwrap(terminal.displayedPanes.first { $0.pane == terminal.active })
             window.makeFirstResponder(active)
             terminal.updateFocusTreatment()
             try await drain(runtime)
@@ -1090,12 +1090,12 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
                 let chromes = terminal.subviews.compactMap { $0 as? PaneChrome }.filter { !$0.isHidden }
                 for chrome in chromes {
                     let frame = expectation(description: "presented \(chrome.pane)")
-                    try XCTUnwrap(terminal.panes.first { $0.pane == chrome.pane }).visualFrame { _ in frame.fulfill() }
+                    try XCTUnwrap(terminal.displayedPanes.first { $0.pane == chrome.pane }).visualFrame { _ in frame.fulfill() }
                     await fulfillment(of: [frame], timeout: 10)
                 }
                 let image = try capture()
                 for chrome in chromes {
-                    let pane = try XCTUnwrap(terminal.panes.first { $0.pane == chrome.pane })
+                    let pane = try XCTUnwrap(terminal.displayedPanes.first { $0.pane == chrome.pane })
                     let focused = looksFocused && chrome.pane == terminal.active
                     XCTAssertEqual(chrome.treatment, focused && edge ? .edge : .plain, "\(message) \(chrome.pane) treatment")
                     check(try color(image, pane, CGPoint(x: pane.bounds.midX, y: 35)), focused ? pure : shifted, "\(message) \(chrome.pane) paper")
@@ -1132,7 +1132,7 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
             window.makeFirstResponder(active)
             terminal.updateFocusTreatment()
             if !dark {
-                let panes = terminal.panes.filter { !$0.isHidden }
+                let panes = terminal.displayedPanes.filter { !$0.isHidden }
                 let target = try XCTUnwrap(panes.first { $0 !== active })
                 func click(_ view: NSView) throws -> NSEvent {
                     try XCTUnwrap(NSEvent.mouseEvent(with: .leftMouseDown, location: view.convert(CGPoint(x: view.bounds.midX, y: view.bounds.midY), to: nil),
@@ -1226,7 +1226,7 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
             active.transparentPaper = true
             try await settle()
             for chrome in terminal.subviews.compactMap({ $0 as? PaneChrome }).filter({ !$0.isHidden }) {
-                let pane = try XCTUnwrap(terminal.panes.first { $0.pane == chrome.pane })
+                let pane = try XCTUnwrap(terminal.displayedPanes.first { $0.pane == chrome.pane })
                 let fill = chrome.pane == active.pane ? pure : shifted
                 check(try color(image, pane, CGPoint(x: pane.bounds.midX, y: 35)), fill, "pane paper \(name) \(chrome.pane)")
                 let inset = try color(image, chrome, CGPoint(x: chrome.bounds.maxX - 0.75, y: chrome.bounds.midY))
@@ -1270,7 +1270,7 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
             XCTAssertLessThan(toolbarNear.redComponent * 255, Double(pure[0]) - 1, "sidebar shadow covers the toolbar band")
             check(try color(image, left, CGPoint(x: 50, y: left.bounds.midY)), shifted, "sidebar shadow ends before distant paper")
             for chrome in terminal.subviews.compactMap({ $0 as? PaneChrome }).filter({ !$0.isHidden }) {
-                let pane = try XCTUnwrap(terminal.panes.first { $0.pane == chrome.pane })
+                let pane = try XCTUnwrap(terminal.displayedPanes.first { $0.pane == chrome.pane })
                 check(try color(image, pane, CGPoint(x: pane.bounds.midX, y: 35)), shifted, "sidebar focus shifts all panes")
                 check(try color(image, chrome, CGPoint(x: chrome.bounds.maxX - 0.75, y: chrome.bounds.midY)), shifted, "sidebar focus removes pane edges")
             }
@@ -1324,7 +1324,7 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
                 sidebar.toggleSidebar(nil)
                 try await snapshot("expanded-dark", view: root)
                 let expanded = try capture()
-                for chrome in terminal.subviews.compactMap({ $0 as? PaneChrome }).filter({ chrome in !chrome.isHidden && terminal.panes.first(where: { $0.pane == chrome.pane })?.shiftedBackground == true }) {
+                for chrome in terminal.subviews.compactMap({ $0 as? PaneChrome }).filter({ chrome in !chrome.isHidden && terminal.displayedPanes.first(where: { $0.pane == chrome.pane })?.shiftedBackground == true }) {
                     for x in [2.0, 4, 6] {
                         for y in [2.0, chrome.bounds.midY, chrome.bounds.maxY - 2] {
                             check(try color(expanded, chrome, CGPoint(x: x, y: y)), [30, 30, 30], "expanded inactive left padding is shifted")
@@ -1333,11 +1333,11 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
                 }
             }
             try await toggleZoom(1)
-            try await wait("single visible focus pane") { terminal.panes.filter { !$0.isHidden }.count == 1 }
+            try await wait("single visible focus pane") { terminal.displayedPanes.filter { !$0.isHidden }.count == 1 }
             try await paint(content: content)
             try await snapshot("single-\(name)", view: root)
             let chrome = try XCTUnwrap(terminal.subviews.compactMap { $0 as? PaneChrome }.first { !$0.isHidden })
-            let pane = try XCTUnwrap(terminal.panes.first { !$0.isHidden })
+            let pane = try XCTUnwrap(terminal.displayedPanes.first { !$0.isHidden })
             window.makeFirstResponder(pane)
             try await expectLook(true, "single pane key", edge: false)
             NotificationCenter.default.post(name: NSWindow.didResignKeyNotification, object: window)
@@ -1360,7 +1360,7 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         }
         let terminal = try XCTUnwrap(terminal)
         try await toggleZoom(1)
-        try await wait("unzoom for config reload") { terminal.panes.filter { !$0.isHidden }.count == 3 }
+        try await wait("unzoom for config reload") { terminal.displayedPanes.filter { !$0.isHidden }.count == 3 }
         let reloaded = expectation(description: "focus config reloaded")
         runtime.onConfigChange = { [weak self] in
             guard let self else { return }
@@ -1376,11 +1376,11 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         XCTAssertEqual(runtime.sidebarShade, 0.4)
         try await paint(content: "\u{1b}[48;2;255;249;236m" + String(repeating: " ", count: 40) + "\u{1b}[0m")
         let frames = expectation(description: "reloaded paper presented")
-        frames.expectedFulfillmentCount = terminal.panes.count
-        for pane in terminal.panes { pane.visualFrame { _ in frames.fulfill() } }
+        frames.expectedFulfillmentCount = terminal.displayedPanes.count
+        for pane in terminal.displayedPanes { pane.visualFrame { _ in frames.fulfill() } }
         await fulfillment(of: [frames], timeout: 10)
         let image = try capture()
-        for pane in terminal.panes {
+        for pane in terminal.displayedPanes {
             check(try color(image, pane, CGPoint(x: pane.bounds.midX, y: 35)), [247, 242, 229], "pane shade ignores sidebar override after reload")
             check(try color(image, pane, CGPoint(x: 40, y: pane.bounds.maxY - 15)), [255, 249, 236], "explicit default-colour cell background stays opaque")
         }
@@ -1395,11 +1395,11 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
             try await settle()
             try await drain(runtime)
             let frames = expectation(description: "pane shift presented")
-            frames.expectedFulfillmentCount = terminal.panes.count
-            for pane in terminal.panes { pane.visualFrame { _ in frames.fulfill() } }
+            frames.expectedFulfillmentCount = terminal.displayedPanes.count
+            for pane in terminal.displayedPanes { pane.visualFrame { _ in frames.fulfill() } }
             await fulfillment(of: [frames], timeout: 10)
             let image = try capture()
-            for pane in terminal.panes {
+            for pane in terminal.displayedPanes {
                 check(try color(image, pane, CGPoint(x: pane.bounds.midX, y: 35)), expected, "inactive pane paper follows shift-only reload")
             }
         }
@@ -1407,7 +1407,7 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
 
     func testFirstWheelWithZeroSampleRendersFractionalFrame() async throws {
         try await start()
-        let original = try XCTUnwrap(terminal?.panes.first)
+        let original = try XCTUnwrap(terminal?.displayedPanes.first)
         var input = Data()
         var pane: PaneView? = try XCTUnwrap(PaneView(runtime: runtime, pane: original.pane, font: original.font,
                                          input: { input.append($0) }))
@@ -1444,7 +1444,7 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
     func testFractionalAlternateResizeDark() async throws {
         try await start(dark: true)
         try await paint(lines: 200)
-        try XCTUnwrap(terminal?.panes.first).visualScroll(8.35)
+        try XCTUnwrap(terminal?.displayedPanes.first).visualScroll(8.35)
         try await snapshot("fractional-dark")
         try await paint(alternate: true)
         try await snapshot("alternate-dark")
@@ -1743,7 +1743,7 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         owner.window.makeFirstResponder(original)
         app.togglePalette()
         XCTAssertNotNil(app.palettePanel)
-        let next = try XCTUnwrap(session.windows.first { !$0.value.panes.contains { $0 === original } }?.key)
+        let next = try XCTUnwrap(session.windows.first { !$0.value.displayedPanes.contains { $0 === original } }?.key)
         session.show(next)
         XCTAssertTrue(original.isHiddenOrHasHiddenAncestor)
         app.closePalette()
@@ -1850,7 +1850,7 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         window.setFrameOrigin(NSPoint(x: -10000, y: -10000))
         window.orderFront(nil)
         defer { owner.close() }
-        let pane = try XCTUnwrap(terminal?.panes.first)
+        let pane = try XCTUnwrap(terminal?.displayedPanes.first)
         let board = runtime.pasteboard
         board.clearContents()
         board.setString("before", forType: .string)
@@ -1951,7 +1951,7 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         let client = try XCTUnwrap(owner.testClient)
         _ = try await Task.detached { try client.edit(.zoom(KoSchema.EditZoom(pane: PaneID(number: 1), window: WindowID(number: 1)))) }.value
         func shown() -> [PaneID] {
-            owner.testSession?.windows.values.first { !$0.isHidden }?.panes.filter { !$0.isHidden }.map(\.pane) ?? []
+            owner.testSession?.windows.values.first { !$0.isHidden }?.displayedPanes.filter { !$0.isHidden }.map(\.pane) ?? []
         }
         let rows = { sidebarRows(owner.snapshot).rows.filter { $0.topLevel != nil } }
         try await wait("the zoomed pane alone is shown") {
@@ -1983,7 +1983,7 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         }
         layoutWindow()
         try await wait("resized two-pane window and sidebar selection are ready") {
-            windowView.visualGeometryReady && windowView.panes.allSatisfy(\.visualReady)
+            windowView.visualGeometryReady && windowView.displayedPanes.allSatisfy(\.visualReady)
                 && rows().contains { $0.focused && $0.target?.pane == second }
         }
         _ = try await Task.detached { try client.edit(.equalize(KoSchema.EditEqualize(pane: PaneID(number: 1)))) }.value
@@ -1993,7 +1993,7 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         }
         try await wait("even rows") { let rows = leafRows(); return rows.count == 2 && abs(rows[0] - rows[1]) <= 1 }
         try await wait("both even panes have their rendered rows") {
-            windowView.visualGeometryReady && zip(windowView.panes.sorted { $0.pane.number < $1.pane.number }, leafRows()).allSatisfy {
+            windowView.visualGeometryReady && zip(windowView.displayedPanes.sorted { $0.pane.number < $1.pane.number }, leafRows()).allSatisfy {
                 $0.visualReady && Int(ghostty_surface_size($0.surface).rows) == $1
             }
         }
@@ -2006,11 +2006,11 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         layoutWindow()
         rootPanel.palette.layoutSubtreeIfNeeded()
         try await wait("complete native pane layout and matching surface sizes") {
-            windowView.visualGeometryReady && windowView.panes.allSatisfy { pane in
+            windowView.visualGeometryReady && windowView.displayedPanes.allSatisfy { pane in
                 pane.visualReady && pane.visualInstalledPixels == CGSize(width: pane.frame.width * 2, height: pane.frame.height * 2)
             }
         }
-        for pane in windowView.panes {
+        for pane in windowView.displayedPanes {
             let presented = expectation(description: "palette background pane frame")
             pane.visualFrame { result in
                 XCTAssertEqual(result, GHOSTTY_RENDER_PRESENTATION_PRESENTED)
@@ -2024,7 +2024,7 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
             defer { ghostty_surface_free_text(pane.surface, &text) }
             XCTAssertEqual(String(decoding: UnsafeRawBufferPointer(start: bytes, count: Int(text.text_len)), as: UTF8.self).trimmingCharacters(in: .whitespacesAndNewlines), pane.pane == first ? "PALETTE UPPER" : "PALETTE LOWER")
         }
-        for pane in windowView.panes {
+        for pane in windowView.displayedPanes {
             XCTAssertEqual(pane.visualInstalledPixels, CGSize(width: pane.frame.width * 2, height: pane.frame.height * 2), pane.resizeDebug)
             print("palette capture", pane.pane, pane.resizeDebug)
         }

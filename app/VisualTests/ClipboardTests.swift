@@ -84,7 +84,7 @@ import KoModel
                 owner.window.orderFront(nil)
             }
             owner.start()
-            try await wait("owner \(index) connected") { owner.testClient != nil && owner.testSession?.windows.values.contains { !$0.panes.isEmpty } == true }
+            try await wait("owner \(index) connected") { owner.testClient != nil && owner.testSession?.windows.values.contains { !$0.displayedPanes.isEmpty } == true }
             if index > 0 { try owner.testClient?.select(KO_SELECT_WINDOW, WindowID(number: UInt32(index + 1))) }
         }
         for (index, fifo) in fifos.enumerated() {

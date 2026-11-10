@@ -13,7 +13,7 @@ extension VisualTests {
         try "".write(to: script, atomically: true, encoding: .utf8)
         let fake = checkoutRoot.appendingPathComponent("share/koa/koa-fake-pi.ts").path
         try await start(pane: "trap ':' INT; export KOA_FAKE_SCRIPT=\(SSH.quote(script.path)); \(SSH.quote(tools.prefix + "/share/ko/bin/koa")) --pi \(SSH.quote(fake)); " + rawScript)
-        let pane = try XCTUnwrap(terminal?.panes.first)
+        let pane = try XCTUnwrap(terminal?.displayedPanes.first)
         try await wait("koa page") { pane.webviewView != nil }
         let web = try XCTUnwrap(pane.webviewView?.browser)
         try await wait("koa document loaded") { web.url?.scheme == "ko" && !web.isLoading }
@@ -648,7 +648,7 @@ extension VisualTests {
         } else {
             try await start(width: width, height: height, pane: command)
         }
-        let pane = try XCTUnwrap(terminal?.panes.first)
+        let pane = try XCTUnwrap(terminal?.displayedPanes.first)
         try await wait("koa webview", within: 20) { (pane.webviewView?.visualDocuments ?? 0) > 0 }
         let diagnostics = (try? String(contentsOf: output, encoding: .utf8)) ?? ""
         let web = try XCTUnwrap(pane.webviewView?.browser, diagnostics)
@@ -1038,8 +1038,8 @@ extension VisualTests {
         try await webviewUntil(web, "document.querySelector('.caret')&&document.querySelector('table')")
         if captures.contains("focus") {
             try await split(1, .h)
-            try await wait("koa focus split") { self.terminal?.panes.count == 2 }
-            let other = try XCTUnwrap(terminal?.panes.first { $0 !== pane })
+            try await wait("koa focus split") { self.terminal?.displayedPanes.count == 2 }
+            let other = try XCTUnwrap(terminal?.displayedPanes.first { $0 !== pane })
             window.makeFirstResponder(other)
             _ = try await webviewJS(web, "(()=>{document.querySelector('#prompt .cm-content').blur();return true})()")
             window.makeFirstResponder(pane.inputResponder)

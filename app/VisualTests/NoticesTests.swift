@@ -29,16 +29,16 @@ import XCTest
         owner.updateAppearance()
         owner.start()
         addTeardownBlock { @MainActor in owner.close(); board.releaseGlobally(); try? FileManager.default.removeItem(at: config) }
-        try await wait("notice fixture connected") { owner.testSession?.windows.values.contains { !$0.isHidden && !$0.panes.isEmpty && $0.visualGeometryReady } == true }
+        try await wait("notice fixture connected") { owner.testSession?.windows.values.contains { !$0.isHidden && !$0.displayedPanes.isEmpty && $0.visualGeometryReady } == true }
         return owner
     }
 
     private func ready(_ owner: WindowOwner) async throws {
         owner.window.contentView?.superview?.layoutSubtreeIfNeeded()
         try await wait("pane geometry") {
-            owner.testSession?.windows.values.filter { !$0.isHidden }.allSatisfy { $0.visualGeometryReady && $0.panes.allSatisfy(\.visualReady) } == true
+            owner.testSession?.windows.values.filter { !$0.isHidden }.allSatisfy { $0.visualGeometryReady && $0.displayedPanes.allSatisfy(\.visualReady) } == true
         }
-        for pane in owner.testSession?.windows.values.filter({ !$0.isHidden }).flatMap(\.panes) ?? [] {
+        for pane in owner.testSession?.windows.values.filter({ !$0.isHidden }).flatMap(\.displayedPanes) ?? [] {
             pane.scroller.isHidden = true
             await presentedFrame(pane)
         }
@@ -56,7 +56,7 @@ import XCTest
                 owner.sidebar.dismissFloating()
                 owner.sidebar.isCollapsed = state == "collapsed" || state == "floating" || state == "fullscreen-floating" || state == "fullscreen-collapsed"
                 if state == "floating" || state == "fullscreen-floating" { owner.sidebar.focusSidebar(nil); owner.focusSelected() }
-                let leaves = try XCTUnwrap(owner.testSession?.windows.values.first(where: { !$0.isHidden })).panes.map(\.pane).sorted { $0.number < $1.number }
+                let leaves = try XCTUnwrap(owner.testSession?.windows.values.first(where: { !$0.isHidden })).displayedPanes.map(\.pane).sorted { $0.number < $1.number }
                 XCTAssertEqual(leaves.count, 3)
                 let pane = leaves.map { #"{"pane":"\#($0)"}"# }
                 let tree: String = switch state {
@@ -95,7 +95,7 @@ import XCTest
                 }
                 if let anchored = owner.notices.testConfigCard ?? owner.notices.testCards.last { XCTAssertEqual(anchored.frame.minY, 16) }
                 if state == "float" {
-                    let float = try XCTUnwrap(owner.testSession?.windows.values.first(where: { !$0.isHidden })?.panes.first { $0.pane == leaves[2] })
+                    let float = try XCTUnwrap(owner.testSession?.windows.values.first(where: { !$0.isHidden })?.displayedPanes.first { $0.pane == leaves[2] })
                     XCTAssertFalse(float.convert(float.bounds, to: owner.sidebar.content).intersection(try XCTUnwrap(cards.first).frame).isEmpty)
                 }
                 try await ready(owner)
@@ -135,7 +135,7 @@ import XCTest
     func testConfigErrorKeepsPaneGeometryAndStaysAboveBanner() async throws {
         let owner = try await fixture("light")
         try await ready(owner)
-        let pane = try XCTUnwrap(owner.testSession?.windows.values.first(where: { !$0.isHidden })?.panes.first)
+        let pane = try XCTUnwrap(owner.testSession?.windows.values.first(where: { !$0.isHidden })?.displayedPanes.first)
         owner.window.makeFirstResponder(pane)
         let contentFrame = owner.sidebar.content.frame
         let paneFrame = pane.frame
@@ -154,7 +154,7 @@ import XCTest
         let owner = try await fixture("light")
         owner.window.setFrameOrigin(NSPoint(x: -10000, y: -10000))
         owner.window.orderFront(nil)
-        let pane = try XCTUnwrap(owner.testSession?.windows.values.first(where: { !$0.isHidden })?.panes.first)
+        let pane = try XCTUnwrap(owner.testSession?.windows.values.first(where: { !$0.isHidden })?.displayedPanes.first)
         owner.window.makeFirstResponder(pane)
         let focused = owner.testModel?.current?.window.focus
         let error = ConfigError(path: owner.runtime.home + "/.config/ko/config.yaml", problem: .init(line: 14, column: 5, message: "bad field"))

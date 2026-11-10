@@ -50,7 +50,7 @@ extension VisualTests {
             try await wait("the flags reply", within: 5) { self.bytes(file).starts(with: Data("\u{1b}[?".utf8)) }
             try Data().write(to: file)
         }
-        self.window.makeFirstResponder(try XCTUnwrap(terminal?.panes.first))
+        self.window.makeFirstResponder(try XCTUnwrap(terminal?.displayedPanes.first))
         return file
     }
 
@@ -134,7 +134,7 @@ extension VisualTests {
         let keys = keyCases()
         try Data().write(to: file)
         for key in keys {
-            if let pane = terminal?.panes.first { window.makeFirstResponder(pane) }
+            if let pane = terminal?.displayedPanes.first { window.makeFirstResponder(pane) }
             let start = bytes(file).count
             window.sendEvent(event(key))
             let wanted = data(table[key.name]!)
@@ -148,7 +148,7 @@ extension VisualTests {
         try Data().write(to: file)
         runtime.pasteboard.clearContents()
         runtime.pasteboard.setString("Cmd-V ✓\ntext", forType: .string)
-        window.makeFirstResponder(try XCTUnwrap(terminal?.panes.first))
+        window.makeFirstResponder(try XCTUnwrap(terminal?.displayedPanes.first))
         let event = event(KeyCase(name: "paste", characters: "v", mods: [.command], code: 9))
         if !window.performKeyEquivalent(with: event), !(NSApp.mainMenu?.performKeyEquivalent(with: event) ?? false) {
             window.sendEvent(event)
@@ -174,7 +174,7 @@ extension VisualTests {
         let commands = try await startRecorder(request: "")
         runtime.pasteboard.clearContents()
         let chords: [(String, UInt16)] = [("c", 8), ("v", 9), ("f", 3), ("o", 31), ("k", 40), ("t", 17), ("h", 4), ("j", 38), ("l", 37), ("w", 13)]
-        let pane = try XCTUnwrap(terminal?.panes.first)
+        let pane = try XCTUnwrap(terminal?.displayedPanes.first)
         for (ch, code) in chords {
             window.makeFirstResponder(pane)
             let key = event(KeyCase(name: ch, characters: ch, mods: [.command], code: code))
@@ -197,7 +197,7 @@ extension VisualTests {
         try await send()
         try await wait("the bytes", within: 5) { self.bytes(file).count >= atLeast }
         let fence = Data("\u{2}FENCE\u{3}".utf8)
-        let view = try XCTUnwrap(terminal?.panes.first?.koView)
+        let view = try XCTUnwrap(terminal?.displayedPanes.first?.koView)
         await withCheckedContinuation { done in
             DispatchQueue.main.async {
                 try? view.text(fence)
@@ -216,7 +216,7 @@ extension VisualTests {
     private func post(_ body: String) async throws {
         let file = directory.appendingPathComponent("body-\(UUID().uuidString).json")
         try Data(body.utf8).write(to: file)
-        let pane = try XCTUnwrap(terminal?.panes.first).pane.description
+        let pane = try XCTUnwrap(terminal?.displayedPanes.first).pane.description
         _ = try await ko(["api", "-X", "POST", "--input", file.path, "/panes/\(pane)/input"], dir: directory.path)
     }
 
@@ -250,7 +250,7 @@ extension VisualTests {
         for (index, request) in ["", "\u{1b}[>1u\u{1b}[?u", "\u{1b}[>3u\u{1b}[?u"].enumerated() {
             let file = try await startRecorder(request: request)
             for (key, body, release, expected) in cases {
-                if let pane = terminal?.panes.first { window.makeFirstResponder(pane) }
+                if let pane = terminal?.displayedPanes.first { window.makeFirstResponder(pane) }
                 let surface = try await received(file) { window.sendEvent(self.event(key, type: release ? .keyUp : .keyDown)) }
                 let server = try await received(file) { try await post(body) }
                 XCTAssertEqual(hex(surface), expected[index].0, "surface, flags set \(index), \(key.name)")
@@ -273,7 +273,7 @@ extension VisualTests {
         try await start()
         let click1006 = "1b 5b 3c 30 3b 33 3b 32 4d 1b 5b 3c 30 3b 33 3b 32 6d"
         let file = try await startRecorder(request: "\u{1b}[?1000h\u{1b}[?1006h\u{1b}[?u")
-        let pane = try XCTUnwrap(terminal?.panes.first)
+        let pane = try XCTUnwrap(terminal?.displayedPanes.first)
         window.makeFirstResponder(pane)
         let surface = try await received(file) {
             pane.mouseDown(with: click(pane, type: .leftMouseDown))
@@ -286,7 +286,7 @@ extension VisualTests {
         XCTAssertEqual(hex(surface), click1006)
         XCTAssertEqual(hex(server), click1006)
         let pixels = try await startRecorder(request: "\u{1b}[?1000h\u{1b}[?1016h\u{1b}[?u")
-        let precisePane = try XCTUnwrap(terminal?.panes.first)
+        let precisePane = try XCTUnwrap(terminal?.displayedPanes.first)
         window.makeFirstResponder(precisePane)
         let precise = try await received(pixels) {
             precisePane.mouseDown(with: click(precisePane, type: .leftMouseDown))
@@ -304,7 +304,7 @@ extension VisualTests {
             try await received(file, atLeast: bytes) {
                 board.clearContents()
                 board.setString(text, forType: .string)
-                window.makeFirstResponder(try XCTUnwrap(terminal?.panes.first))
+                window.makeFirstResponder(try XCTUnwrap(terminal?.displayedPanes.first))
                 let key = event(KeyCase(name: "paste", characters: "v", mods: [.command], code: 9))
                 if !window.performKeyEquivalent(with: key), !(NSApp.mainMenu?.performKeyEquivalent(with: key) ?? false) { window.sendEvent(key) }
             }
@@ -317,19 +317,19 @@ extension VisualTests {
         XCTAssertEqual(raw, Data("Cmd-V ✓".utf8), "a multi-line paste without brackets asks for consent first")
 
         let dead = try await startRecorder(request: "")
-        window.makeFirstResponder(try XCTUnwrap(terminal?.panes.first))
+        window.makeFirstResponder(try XCTUnwrap(terminal?.displayedPanes.first))
         // insertText needs a current event, as a key event has.
         NSApp.postEvent(NSEvent.otherEvent(with: .applicationDefined, location: .zero, modifierFlags: [], timestamp: 0, windowNumber: 0, context: nil, subtype: 0, data1: 0, data2: 0)!, atStart: true)
         _ = NSApp.nextEvent(matching: .any, until: .distantPast, inMode: .default, dequeue: true)
         let composed = try await received(dead) {
-            let pane = try XCTUnwrap(terminal?.panes.first)
+            let pane = try XCTUnwrap(terminal?.displayedPanes.first)
             pane.setMarkedText("´", selectedRange: NSRange(location: 1, length: 0), replacementRange: NSRange(location: NSNotFound, length: 0))
             pane.insertText("é", replacementRange: NSRange(location: NSNotFound, length: 0))
         }
         XCTAssertEqual(hex(composed), "c3 a9", "a dead key and a letter commit é")
 
         let pushed = try await startRecorder(request: "", later: "\\033[>1u")
-        let pane = try XCTUnwrap(terminal?.panes.first)
+        let pane = try XCTUnwrap(terminal?.displayedPanes.first)
         window.makeFirstResponder(pane)
         try await wait("the first restore") { !pane.restoring }
         pane.toggleCopyMode(nil)

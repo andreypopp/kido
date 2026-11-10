@@ -97,7 +97,7 @@ import XCTest
         return ["footprintBytes": Int(footprints.reduce(0, +)), "maxFootprintBytes": Int(footprints.max() ?? 0), "processes": footprints.count]
     }
 
-    private var panes: [PaneView] { owner.testSession?.windows.values.filter { !$0.isHidden }.flatMap(\.panes) ?? [] }
+    private var panes: [PaneView] { owner.testSession?.windows.values.filter { !$0.isHidden }.flatMap(\.displayedPanes) ?? [] }
 
     private func summary(_ id: Int, started: Date, before: [String: Int], metrics: [String], status: Result<Void, Error>) throws {
         var value: [String: Any] = ["target": "kido", "visible": visible, "timing": timing, "id": id, "before": before, "after": try memory(), "metrics": metrics, "seconds": Date().timeIntervalSince(started)]
@@ -174,7 +174,7 @@ import XCTest
                     try XCTUnwrap(owner.testClient).select(KO_SELECT_WINDOW, parentWindow)
                     try await wait("parent selected") { self.panes.first?.pane == parent && (self.panes.first?.webviewView?.visualDocuments ?? 0) > 0 }
                 }
-                try await wait("children released") { self.owner.testSession?.windows.values.filter { $0.isHidden }.flatMap(\.panes).allSatisfy { $0.webviewView == nil } == true }
+                try await wait("children released") { self.owner.testSession?.windows.values.filter { $0.isHidden }.flatMap(\.retainedPanes).allSatisfy { $0.webviewView == nil } == true }
                 try JSONSerialization.data(withJSONObject: try memory()).write(to: output.appendingPathComponent("kido-12-hidden.json"))
                 try await complete(try XCTUnwrap(panes.first?.webviewView?.browser), id: id, deadline: deadline)
                 try await flushMetrics(try panes.map { try XCTUnwrap($0.webviewView?.browser) })
@@ -199,7 +199,7 @@ import XCTest
             if hidden {
                 let rows = try XCTUnwrap(owner.testModel?.layout.layout.sessions.first?.windows)
                 try XCTUnwrap(owner.testClient).select(KO_SELECT_WINDOW, rows[1].id)
-                try await wait("hidden koa page released") { self.owner.testSession?.windows[rows[0].id]?.panes.allSatisfy { $0.webviewView == nil } == true }
+                try await wait("hidden koa page released") { self.owner.testSession?.windows[rows[0].id]?.retainedPanes.allSatisfy { $0.webviewView == nil } == true }
                 let during = try memory()
                 try XCTUnwrap(owner.testClient).select(KO_SELECT_WINDOW, rows[0].id)
                 try await wait("koa page reloaded") { (self.panes.first?.webviewView?.visualDocuments ?? 0) > 0 }

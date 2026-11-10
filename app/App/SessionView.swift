@@ -18,7 +18,7 @@ final class SessionView: NSView {
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
             webviewQueued = false
-            let live = panes
+            let live = retainedPanes
             let hidden = live.filter { $0.isHiddenOrHasHiddenAncestor && $0.webviewView != nil }
             let ids = Set(hidden.map(\.pane))
             hiddenWebview.removeAll { !ids.contains($0) }
@@ -178,16 +178,17 @@ final class SessionView: NSView {
         var hot = 0
         for id in recent where hotSurfaces > Self.budget {
             guard let view = windows[id] ?? others[id], view.hot else { continue }
-            hot += view.panes.count
+            let count = view.retainedCount
+            hot += count
             guard hot > Self.budget, view !== shown else { continue }
-            debug("evict \(id): \(view.panes.count) of \(hot) hot surfaces")
-            hot -= view.panes.count
+            debug("evict \(id): \(count) of \(hot) hot surfaces")
+            hot -= count
             if others.removeValue(forKey: id) != nil { view.close() } else { view.evict() }
         }
         recent.removeAll { windows[$0]?.hot != true && others[$0] == nil }
     }
 
-    private var hotSurfaces: Int { (Array(windows.values) + Array(others.values)).filter(\.hot).reduce(0) { $0 + $1.panes.count } }
+    private var hotSurfaces: Int { (Array(windows.values) + Array(others.values)).filter(\.hot).reduce(0) { $0 + $1.retainedCount } }
     #if KIDO_VISUAL
     var visualHotSurfaces: Int { hotSurfaces }
     #endif
@@ -201,32 +202,32 @@ final class SessionView: NSView {
     }
 
     func pane(_ pane: PaneID) -> PaneView? {
-        shown?.panes.first { $0.pane == pane } ?? windows.values.lazy.flatMap(\.panes).first { $0.pane == pane }
+        shown?.displayedPanes.first { $0.pane == pane } ?? windows.values.lazy.flatMap(\.displayedPanes).first { $0.pane == pane }
     }
 
     func windowName(_ window: WindowID) -> String? { windows[window]?.name }
 
-    func retryImages() { panes.forEach { $0.retryImages() } }
+    func retryImages() { retainedPanes.forEach { $0.retryImages() } }
 
-    private var panes: [PaneView] {
-        (windows.values.flatMap(\.allPanes) + others.values.flatMap(\.allPanes)).sorted { $0.pane.number < $1.pane.number }
+    private var retainedPanes: [PaneView] {
+        (windows.values.flatMap(\.retainedPanes) + others.values.flatMap(\.retainedPanes)).sorted { $0.pane.number < $1.pane.number }
     }
 
-    private func forEachPane(_ body: (PaneView) -> Void) { panes.forEach(body) }
+    private func forEachPane(_ body: (PaneView) -> Void) { retainedPanes.forEach(body) }
 
     var cell: CGSize? {
-        guard let cell = panes.first?.cell, cell.width > 0, cell.height > 0 else { return nil }
+        guard let cell = retainedPanes.first?.cell, cell.width > 0, cell.height > 0 else { return nil }
         return cell
     }
 
     var cellPixels: KoSchema.CellPixels? {
-        guard let pane = panes.first else { return nil }
+        guard let pane = retainedPanes.first else { return nil }
         let size = ghostty_surface_size(pane.surface)
         guard size.cell_width_px > 0, size.cell_height_px > 0 else { return nil }
         return KoSchema.CellPixels(height: Int(size.cell_height_px), width: Int(size.cell_width_px))
     }
 
-    var font: Float { panes.first?.font ?? 0 }
+    var font: Float { retainedPanes.first?.font ?? 0 }
 
     func fontChanged(_ points: Float) {
         forEachPane { pane in
@@ -247,7 +248,7 @@ final class SessionView: NSView {
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
             relayoutQueued = false
-            panes.forEach { $0.webviewView?.updateTheme() }
+            retainedPanes.forEach { $0.webviewView?.updateTheme() }
             windows.values.forEach { $0.cellChanged() }
         }
     }

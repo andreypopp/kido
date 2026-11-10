@@ -42,7 +42,7 @@ private extension PaneView {
             PaneView.renderOffscreen = false
         }
         owner.start()
-        try await wait("root and child panes") { owner.testModel?.panes.count == 4 && owner.testSession?.windows.values.first?.panes.count == 2 }
+        try await wait("root and child panes") { owner.testModel?.panes.count == 4 && owner.testSession?.windows.values.first?.displayedPanes.count == 2 }
         return (dir, runtime, owner, children)
     }
 
@@ -217,7 +217,7 @@ private extension PaneView {
             }
             for dark in [false, true] {
                 try await theme(fixture.runtime, dark: dark)
-                for pane in owner.testSession?.windows.values.flatMap(\.panes) ?? [] where !pane.isHidden { await presentedFrame(pane) }
+                for pane in owner.testSession?.windows.values.flatMap(\.displayedPanes) ?? [] where !pane.isHidden { await presentedFrame(pane) }
                 owner.testReceive(feed(split: split))
                 owner.sidebar.list.visualSetExpanded(.pane(child.session, .init(number: 1)), true)
                 owner.window.layoutIfNeeded()
@@ -333,9 +333,9 @@ private extension PaneView {
         XCTAssertEqual(sibling.testBreadcrumb.entries.count, 2)
         func capture(_ name: String) async throws {
             try await wait("visible panes restored before \(name)") {
-                owner.testSession?.windows.values.flatMap(\.panes).filter { !$0.isHidden }.allSatisfy { !$0.restoring && $0.visualRestores > 0 } == true
+                owner.testSession?.windows.values.flatMap(\.displayedPanes).filter { !$0.isHidden }.allSatisfy { !$0.restoring && $0.visualRestores > 0 } == true
             }
-            for pane in owner.testSession?.windows.values.flatMap(\.panes) ?? [] where !pane.isHidden { await presentedFrame(pane) }
+            for pane in owner.testSession?.windows.values.flatMap(\.displayedPanes) ?? [] where !pane.isHidden { await presentedFrame(pane) }
             owner.window.layoutIfNeeded()
             owner.window.contentView?.layoutSubtreeIfNeeded()
             owner.window.displayIfNeeded()
@@ -434,7 +434,7 @@ private extension PaneView {
         button.mouseDown(with: down)
         try await wait("ancestor click shows parent in same slot") { owner.testModel?.selection.pane == child.pane }
         XCTAssertTrue(owner.testSession?.pane(fixture.children[1].pane) === sibling)
-        XCTAssertEqual(owner.testSession?.windows[WindowID(number: 1)]?.panes.count, 2)
+        XCTAssertEqual(owner.testSession?.windows[WindowID(number: 1)]?.displayedPanes.count, 2)
         let parent = try XCTUnwrap(owner.testSession?.pane(child.pane))
         XCTAssertEqual(parent.testBreadcrumb.entries.map(\.position), [root, child])
         for dark in [false, true] {
@@ -713,7 +713,7 @@ private extension PaneView {
         for child in [first, second] {
             owner.perform(.jump(.init(session: child.session, window: child.window, pane: child.pane)))
             try await wait("child selected in its root slot") {
-                owner.testModel?.selection.pane == child.pane && owner.testSession?.windows[root]?.panes.contains { $0.pane == child.pane } == true
+                owner.testModel?.selection.pane == child.pane && owner.testSession?.windows[root]?.displayedPanes.contains { $0.pane == child.pane } == true
             }
         }
         XCTAssertEqual(owner.navigation.window, root)
@@ -722,7 +722,7 @@ private extension PaneView {
             guard let model = owner.testModel, let window = model.layout.layout.window(root), let view = owner.testSession?.windows[root] else { return false }
             let layout = Layout(window, visible: true)
             return zip([PaneID(number: 1), PaneID(number: 2)], fixture.children).allSatisfy { root, child in
-                guard let slot = layout.root.panes.first(where: { $0.id == root }), let server = model.layout.layout.window(child.window), let pane = view.panes.first(where: { $0.pane == child.pane }) else { return false }
+                guard let slot = layout.root.panes.first(where: { $0.id == root }), let server = model.layout.layout.window(child.window), let pane = view.displayedPanes.first(where: { $0.pane == child.pane }) else { return false }
                 return server.cols == slot.geometry.width && server.rows == slot.geometry.height && Int(pane.geometry.columns) == server.cols && Int(pane.geometry.rows) == server.rows
             }
         }
@@ -737,7 +737,7 @@ private extension PaneView {
         try await ko(["layout", "edit", String(decoding: JSONEncoder().encode(rename), as: UTF8.self)], dir: fixture.dir)
         try await wait("unchanged layout resends complete sizing after Welcome reset") { !reports.isEmpty }
         XCTAssertEqual(Set(try XCTUnwrap(reports.last)), Set([root, first.window, second.window]))
-        XCTAssertTrue(owner.testSession?.windows[root]?.panes.contains { $0.pane == first.pane } == true)
+        XCTAssertTrue(owner.testSession?.windows[root]?.displayedPanes.contains { $0.pane == first.pane } == true)
         owner.perform(.jump(first))
         try await wait("first child selected before command source changes") { owner.testModel?.selection.pane == first.pane }
         owner.perform(.jump(second))
@@ -751,10 +751,10 @@ private extension PaneView {
         reports.removeAll()
         owner.perform(.selectWindow(first.session, root))
         try await wait("tab return restores focused slot and both cold choices") {
-            owner.testModel?.selection.pane == second.pane && owner.testSession?.windows[root]?.panes.count == 2 && reports.contains { $0.contains(root) }
+            owner.testModel?.selection.pane == second.pane && owner.testSession?.windows[root]?.displayedPanes.count == 2 && reports.contains { $0.contains(root) }
         }
         XCTAssertEqual(Set(try XCTUnwrap(reports.first { $0.contains(root) })), Set([root, first.window, second.window]))
-        XCTAssertTrue(owner.testSession?.windows[root]?.panes.contains { $0.pane == first.pane } == true)
+        XCTAssertTrue(owner.testSession?.windows[root]?.displayedPanes.contains { $0.pane == first.pane } == true)
         try await ko(["api", "-X", "DELETE", "/windows/\(createdWindow)"], dir: fixture.dir)
         try await wait("temporary tab removed") { owner.testModel?.layout.layout.window(createdWindow) == nil }
         owner.window.setContentSize(NSSize(width: 1140, height: 780))
@@ -795,7 +795,7 @@ private extension PaneView {
         XCTAssertTrue(owner.sidebar.list.visualRows.contains { $0.target?.pane == first.pane && !$0.focused })
         for dark in [false, true] {
             try await theme(fixture.runtime, dark: dark)
-            for pane in owner.testSession?.windows[root]?.panes ?? [] { await presentedFrame(pane) }
+            for pane in owner.testSession?.windows[root]?.displayedPanes ?? [] { await presentedFrame(pane) }
             owner.window.layoutIfNeeded()
             owner.window.contentView?.layoutSubtreeIfNeeded()
             owner.window.displayIfNeeded()
@@ -818,7 +818,7 @@ private extension PaneView {
         try await wait("split adds a root pane and keeps both child windows singleton") {
             guard let model = owner.testModel else { return false }
             guard let selected = model.selection.pane, !previousRoots.contains(selected), model.layout.layout.window(root)?.panes.contains(selected) == true else { return false }
-            return model.layout.layout.window(root)?.panes.count == 3 && model.layout.layout.window(second.window)?.panes == [second.pane] && owner.testSession?.windows[root]?.panes.contains { $0.pane == second.pane } == true
+            return model.layout.layout.window(root)?.panes.count == 3 && model.layout.layout.window(second.window)?.panes == [second.pane] && owner.testSession?.windows[root]?.displayedPanes.contains { $0.pane == second.pane } == true
         }
         let splitPane = try XCTUnwrap(owner.testModel?.selection.pane)
         XCTAssertEqual(directory(splitPane), inheritedDirectory)
@@ -844,7 +844,7 @@ private extension PaneView {
         owner.paneCommand(.close, first.pane)
         owner.respondToAlert(.alertFirstButtonReturn)
         try await wait("closed child restores its root slot") {
-            owner.testModel?.pane(first.pane) == nil && owner.testModel?.pane(grandchild.pane) == nil && owner.testSession?.windows[root]?.panes.contains { $0.pane == PaneID(number: 1) } == true
+            owner.testModel?.pane(first.pane) == nil && owner.testModel?.pane(grandchild.pane) == nil && owner.testSession?.windows[root]?.displayedPanes.contains { $0.pane == PaneID(number: 1) } == true
         }
     }
 }

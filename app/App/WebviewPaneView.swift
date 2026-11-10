@@ -415,7 +415,6 @@ final class WebviewPaneView: NSView, WKNavigationDelegate, WKUIDelegate {
 
     private func preview(_ data: [String: Any]) {
         guard pendingDocument == nil, let raw = data["url"] as? String, let url = URL(string: raw), allowed(url),
-              ["/images/", "/attachments/", "/steps/"].contains(where: url.path.hasPrefix),
               let numbers = data["rect"] as? [String: NSNumber], ["x", "y", "width", "height"].allSatisfy({ numbers[$0].map { CFGetTypeID($0) != CFBooleanGetTypeID() } == true }),
               let x = numbers["x"]?.doubleValue, let y = numbers["y"]?.doubleValue, let width = numbers["width"]?.doubleValue, let height = numbers["height"]?.doubleValue,
               [x, y, width, height].allSatisfy({ $0.isFinite }), width >= 0, height >= 0,

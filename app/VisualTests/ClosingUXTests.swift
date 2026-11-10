@@ -116,13 +116,13 @@ import KoModel
         owner.testServerDir = dir
         addTeardownBlock { @MainActor in owner.close(); board.releaseGlobally() }
         owner.start()
-        try await wait("private owner ready") { owner.testClient != nil && owner.snapshot != nil && owner.testSession?.windows.values.first?.panes.first != nil }
+        try await wait("private owner ready") { owner.testClient != nil && owner.snapshot != nil && owner.testSession?.windows.values.first?.displayedPanes.first != nil }
         let original = try XCTUnwrap(owner.stressState.0.window)
         owner.window.display()
         try click(owner.sidebar.tabs.addWindow)
         try await wait("plus creates and selects another window") { owner.stressState.0.windows.count == 2 && owner.stressState.0.window != original }
         let created = try XCTUnwrap(owner.stressState.0.window)
-        let pane = try XCTUnwrap(owner.testSession?.windows[created]?.panes.first)
+        let pane = try XCTUnwrap(owner.testSession?.windows[created]?.displayedPanes.first)
         try await wait("new window receives terminal focus") { owner.window.firstResponder === pane }
         func status(_ running: Bool, pane: PaneView, created: WindowID) async throws {
             try await wait("the snapshot has the pane") { sidebarRows(owner.snapshot).rows.contains { $0.target?.pane == pane.pane } }
@@ -175,9 +175,9 @@ import KoModel
         try await wait("quiet Cmd-W kills originating pane, not original window") { owner.stressState.0.windows.count == 1 }
         XCTAssertEqual(owner.stressState.0.window, original)
         owner.sidebar.tabs.addWindow.performClick(nil)
-        try await wait("another close target created") { owner.stressState.0.windows.count == 2 && owner.stressState.0.window != original && owner.stressState.0.window.flatMap { owner.testSession?.windows[$0]?.panes.first } != nil }
+        try await wait("another close target created") { owner.stressState.0.windows.count == 2 && owner.stressState.0.window != original && owner.stressState.0.window.flatMap { owner.testSession?.windows[$0]?.displayedPanes.first } != nil }
         let tab = try XCTUnwrap(owner.sidebar.tabs.entries.first { $0.id != original })
-        let nextPane = try XCTUnwrap(owner.testSession?.windows[tab.id]?.panes.first)
+        let nextPane = try XCTUnwrap(owner.testSession?.windows[tab.id]?.displayedPanes.first)
         try await status(false, pane: nextPane, created: tab.id)
         let nextIndex = try XCTUnwrap(tabs.entries.firstIndex { $0.id == tab.id })
         tabs.mouseEntered(with: mouse(.mouseEntered, at: tabs.convert(NSPoint(x: tabs.labelRect(nextIndex).minX - 11, y: 18), to: nil), in: owner.window))
@@ -186,9 +186,9 @@ import KoModel
         try await wait("quiet window close kills right target") { owner.stressState.0.windows.count == 1 }
         XCTAssertEqual(owner.stressState.0.windows.first?.id, original)
         owner.sidebar.tabs.addWindow.performClick(nil)
-        try await wait("quiet row target created") { owner.stressState.0.windows.count == 2 && owner.stressState.0.window != original && owner.stressState.0.window.flatMap { owner.testSession?.windows[$0]?.panes.first } != nil }
+        try await wait("quiet row target created") { owner.stressState.0.windows.count == 2 && owner.stressState.0.window != original && owner.stressState.0.window.flatMap { owner.testSession?.windows[$0]?.displayedPanes.first } != nil }
         let rowWindow = try XCTUnwrap(owner.stressState.0.window)
-        let rowPane = try XCTUnwrap(owner.testSession?.windows[rowWindow]?.panes.first)
+        let rowPane = try XCTUnwrap(owner.testSession?.windows[rowWindow]?.displayedPanes.first)
         try await status(false, pane: rowPane, created: rowWindow)
         let quietRow = try XCTUnwrap(list.visualRows.firstIndex { $0.target?.pane == rowPane.pane })
         let quietCell = try XCTUnwrap(list.visualTable.view(atColumn: 0, row: quietRow, makeIfNecessary: true) as? SidebarCell)
@@ -200,9 +200,9 @@ import KoModel
         try await wait("quiet row close kills right pane") { owner.stressState.0.windows.count == 1 }
         XCTAssertEqual(owner.stressState.0.windows.first?.id, original)
         owner.sidebar.tabs.addWindow.performClick(nil)
-        try await wait("confirmed window target created") { owner.stressState.0.windows.count == 2 && owner.stressState.0.window != original && owner.stressState.0.window.flatMap { owner.testSession?.windows[$0]?.panes.first } != nil }
+        try await wait("confirmed window target created") { owner.stressState.0.windows.count == 2 && owner.stressState.0.window != original && owner.stressState.0.window.flatMap { owner.testSession?.windows[$0]?.displayedPanes.first } != nil }
         let confirmedWindow = try XCTUnwrap(owner.stressState.0.window)
-        let confirmedPane = try XCTUnwrap(owner.testSession?.windows[confirmedWindow]?.panes.first)
+        let confirmedPane = try XCTUnwrap(owner.testSession?.windows[confirmedWindow]?.displayedPanes.first)
         try await status(true, pane: confirmedPane, created: confirmedWindow)
         let confirmedIndex = try XCTUnwrap(tabs.entries.firstIndex { $0.id == confirmedWindow })
         tabs.mouseEntered(with: mouse(.mouseEntered, at: tabs.convert(NSPoint(x: tabs.labelRect(confirmedIndex).minX - 11, y: 18), to: nil), in: owner.window))

@@ -55,8 +55,8 @@ import KoModel
         owner.testServerDir = try stateDir()
         defer { owner.close() }
         owner.start()
-        wait("the pane") { owner.testSession?.windows.values.first?.panes.first != nil }
-        let pane = try XCTUnwrap(owner.testSession?.windows.values.first?.panes.first)
+        wait("the pane") { owner.testSession?.windows.values.first?.displayedPanes.first != nil }
+        let pane = try XCTUnwrap(owner.testSession?.windows.values.first?.displayedPanes.first)
         var hostname = [CChar](repeating: 0, count: Int(MAXHOSTNAMELEN))
         XCTAssertEqual(gethostname(&hostname, hostname.count), 0)
         let urls = ["https://example.com/path", "http://example.com", "file:///tmp/link", "file://localhost/tmp/link", "file://\(String(cString: hostname))/tmp/link", "ftp://example.com/file", "file://not-this-host.invalid/tmp/link", "file:relative", "file://user@localhost/tmp/a", "file://localhost:12/tmp/a"]

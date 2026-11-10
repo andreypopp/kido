@@ -55,7 +55,7 @@ extension VisualTests {
 
     // Replaces what a pane of a runtime shows: the wrapper of the runtime clears the screen as the pane starts.
     private func fill(_ id: PaneID, _ text: String) async throws {
-        let pane = try XCTUnwrap(terminal?.panes.first { $0.pane == id })
+        let pane = try XCTUnwrap(terminal?.displayedPanes.first { $0.pane == id })
         try await emit(pane, "\u{1b}[2J\u{1b}[H" + text)
     }
 
@@ -95,7 +95,7 @@ extension VisualTests {
         try await fill(first, "buildbox ~/src/kido\r\n$ make verify\r\ncargo build ok")
         try await settle()
         if find {
-            let pane = try XCTUnwrap(terminal?.panes.first { $0.pane == first })
+            let pane = try XCTUnwrap(terminal?.displayedPanes.first { $0.pane == first })
             pane.showFind(nil)
             try await wait("the find capsule") { pane.find != nil }
             try await hover(first)
@@ -109,7 +109,7 @@ extension VisualTests {
         try await runtimeSnapshot(dark, "window-hover")
         try await hover(first, entering: false)
         try await toggleZoom(1)
-        try await wait("the zoom") { self.terminal?.panes.filter { !$0.isHidden }.count == 1 }
+        try await wait("the zoom") { self.terminal?.displayedPanes.filter { !$0.isHidden }.count == 1 }
         try await settle()
         try await runtimeSnapshot(dark, "zoomed")
     }
