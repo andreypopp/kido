@@ -101,6 +101,9 @@ th,td{text-align:left;padding:4px 12px 4px 0;border-bottom:1px solid var(--hair)
 th{color:var(--muted);font-weight:600;font-size:.85em;text-transform:uppercase;letter-spacing:.05em}
 tr:last-child td{border-bottom:0}
 blockquote{margin:.3em 0 .9em;padding-left:12px;border-left:2px solid var(--hair2);color:var(--muted)}
+/* inside the user message's tint the gray reads as dirty (user, 2026-11-10): the quote takes the time's accent ink, its bar the accent at 45% */
+.msg.user blockquote{color:color-mix(in srgb,var(--accent) 60%,var(--fg));border-left-color:color-mix(in srgb,var(--accent) 45%,transparent)}
+.msg.user code{background:color-mix(in srgb,var(--accent) 12%,transparent)}
 a{color:var(--accent);text-decoration:none;border-bottom:1px solid color-mix(in srgb,var(--accent) 35%,transparent)}
 .caret{display:inline-block;width:2px;height:1em;background:var(--ko-cursor);vertical-align:-.15em;margin-left:1px;animation:blink 1s steps(1) infinite}
 @keyframes blink{50%{opacity:0}}
@@ -279,7 +282,8 @@ html:not([data-dock=band]) .dock .queued-next{text-shadow:0 0 6px var(--ko-bg),0
 .amsg.many{cursor:pointer}
 .amsg .hd{display:flex;align-items:baseline;gap:8px;font:.92em/1.5 var(--prose);color:var(--muted);white-space:nowrap;min-width:0}
 .amsg .hd .dir{color:var(--muted)}
-.amsg .hd .who{font:.92em var(--mono);color:var(--fg)}
+/* the @name in the header is prose, not mono: three fonts in one card were too many (user, 2026-11-10) */
+.amsg .hd .who{font:600 1em/1.5 var(--prose);color:var(--fg)}
 .amsg .hd .who.err{color:var(--err)}
 .amsg .hd .rel{overflow:hidden;text-overflow:ellipsis;min-width:0;color:var(--faint)}
 .amsg .hd .tag{margin-left:auto;font:.8em/1.5 var(--mono);color:var(--faint);flex-shrink:0}

@@ -19,9 +19,9 @@ Both controls are one capsule style. "Background" and "foreground" are the pane'
 | Height | 32pt |
 | Corner radius | 12pt |
 | Fill | background mixed 8% toward foreground, opaque, drawn over the terminal (no blur, no glass, no translucency: terminal text must not show through) |
-| Edge | 0.5pt stroke, foreground at 12%, drawn outside the fill |
-| Highlight | 0.5pt inner top edge, white at 12% |
-| Shadow | black at 20%, y offset 6pt, blur 18pt |
+| Edge | 0.5pt stroke, drawn outside the fill, foreground at 16% on a light theme and 14% on a dark one (12% before 2026-11-09) |
+| Highlight | none (the 0.5pt white inner top edge at 12% was dropped on 2026-11-09: over a light background it read as a second, dirty ring) |
+| Shadow | a contact shadow, not a lift: black at 8%, y offset 1pt, blur 2pt on a light theme; black at 30%, y offset 1pt, blur 3pt on a dark one (user, 2026-11-09, option B of pane/shadow.html; before: black 20%, y 6, blur 18 in these notes and blur 9 in the app, which smeared under the 22pt pills on cream). Light or dark is the theme's: the chrome reads the configured theme background, which a program's OSC 11 does not change (as for the fill). |
 | Content inset | 3pt on every side |
 | Icon button | 26×26pt, SF Symbol 15pt regular, secondary tint; hover: label tint and label at 12% fill with 8pt radius; disabled: 35% opacity, no fill; focus ring: accent at 45%, 3pt |
 | Separator | 0.5pt (1 device pixel) wide, 14pt tall, vertically centered (y = 9), foreground at 20% (dark) / 17% (light): `separatorColor` is acceptable |

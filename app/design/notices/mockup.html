@@ -11,7 +11,7 @@ body{margin:0;padding:18px 24px 24px;background:#8d8a84;font:13px/1.45 -apple-sy
 .stage{position:relative;width:1100px;height:740px;margin:auto;border-radius:18px;overflow:hidden;box-shadow:0 18px 60px #0003,0 0 0 .5px #0002}
 /* kido-dark #171717 and kido-light #FFF9EC; the sidebar shade is the background mixed 5% toward white (dark) or black (light) */
 .stage{--bg:#171717;--fg:#c9c9c9;--muted:#8f8f8f;--accent:#2466b5;--green:#05ab69;--shade:color-mix(in srgb,var(--bg) 95%,#fff);--text:#dddddd;--dimtext:#9a9a9a;--line:color-mix(in srgb,var(--bg) 82%,var(--fg));--sbline:var(--line);--sel:#ffffff1a;--running:#30d158;--attention:#ff9f0a;--error:#ff453a;--shadow:#0006;--guide:#4f555c;--sep:#ffffff1a;--sw:292px;background:var(--bg);color:var(--text)}
-.stage.light{--bg:#fff9ec;--fg:#424242;--muted:#848484;--accent:#014ca6;--green:#008550;--shade:color-mix(in srgb,var(--bg) 95%,#000);--text:#000000d9;--dimtext:#00000080;--sbline:color-mix(in srgb,var(--bg) 72%,var(--fg));--sel:#0000001a;--running:#34c759;--attention:#ff9500;--error:#ff3b30;--shadow:#0000002e;--guide:#bfbab1;--sep:#0000001a}
+.stage.light{--capsule-edge:color-mix(in srgb,var(--fg) 16%,transparent);--bg:#fff9ec;--fg:#424242;--muted:#848484;--accent:#014ca6;--green:#008550;--shade:color-mix(in srgb,var(--bg) 95%,#000);--text:#000000d9;--dimtext:#00000080;--sbline:color-mix(in srgb,var(--bg) 72%,var(--fg));--sel:#0000001a;--running:#34c759;--attention:#ff9500;--error:#ff3b30;--shadow:#0000002e;--guide:#bfbab1;--sep:#0000001a}
 .stage.fullscreen{border-radius:0}
 .app{position:absolute;inset:0;display:flex}
 .header{position:absolute;top:0;left:0;right:0;height:52px;display:flex;align-items:center;padding:0 16px 0 19px;z-index:3}
@@ -57,7 +57,7 @@ body{margin:0;padding:18px 24px 24px;background:#8d8a84;font:13px/1.45 -apple-sy
 /* the notices: a column at the area's bottom-right (or bottom-centre), 16pt in, newest nearest the edge */
 .notices{position:absolute;right:16px;bottom:16px;display:flex;flex-direction:column-reverse;gap:8px;z-index:7;align-items:flex-end;max-width:calc(100% - 32px)}
 .notices.center{right:50%;transform:translateX(50%);align-items:center}
-.card{width:360px;max-width:100%;border-radius:12px;background:color-mix(in srgb,var(--bg) 92%,var(--fg) 8%);box-shadow:0 0 0 .5px color-mix(in srgb,var(--fg) 12%,transparent),0 10px 26px #0000003d,inset 0 .5px 0 #ffffff1f;padding:9px 12px 10px;font:12px/16px -apple-system,BlinkMacSystemFont,system-ui,sans-serif;color:var(--text);position:relative;transition:opacity .2s,transform .15s}
+.card{width:360px;max-width:100%;border-radius:12px;background:color-mix(in srgb,var(--bg) 92%,var(--fg) 8%);box-shadow:0 0 0 .5px var(--capsule-edge,color-mix(in srgb,var(--fg) 14%,transparent)),0 10px 26px #0000003d,inset 0 .5px 0 #ffffff1f;padding:9px 12px 10px;font:12px/16px -apple-system,BlinkMacSystemFont,system-ui,sans-serif;color:var(--text);position:relative;transition:opacity .2s,transform .15s}
 .card.enter{opacity:0;transform:translateY(8px)}.card.leave{opacity:0}
 .card .ttl{display:flex;align-items:center;gap:8px;font-weight:600;padding-right:18px}
 .card .ttl i{width:6px;height:6px;border-radius:50%;background:var(--error);flex-shrink:0}
@@ -158,7 +158,7 @@ float:{float:true,cards:[T.split]},
 banner:{banner:true,cards:[{...T.config,persistent:true}]},
 none:{cards:[]}};
 const CAP={
-transient:'<b>Transient</b>One card at the area\'s bottom-right, 16pt in: 360pt wide, 12pt corners, the capsule surface (background mixed 8% toward the foreground, a 0.5pt edge at 12%), a 6pt systemRed dot and a 12pt semibold title, the server\'s text below in secondaryLabelColor. It goes after 5 s, or at a click anywhere on it. Hover pauses the clock. The same line goes to app.log: <span class="k">local: Could not split the pane: The window is zoomed.</span>',
+transient:'<b>Transient</b>One card at the area\'s bottom-right, 16pt in: 360pt wide, 12pt corners, the capsule surface (background mixed 8% toward the foreground, a 0.5pt edge at 16% light / 14% dark, no highlight), a 6pt systemRed dot and a 12pt semibold title, the server\'s text below in secondaryLabelColor. It goes after 5 s, or at a click anywhere on it. Hover pauses the clock. The same line goes to app.log: <span class="k">local: Could not split the pane: The window is zoomed.</span>',
 two:'<b>Stacked (recommended)</b>A second failure within the first\'s 5 s gets its own card above the first, 8pt apart, so both stay readable; each has its own clock. At most three show; a fourth pushes the oldest out. The column grows upward from the fixed anchor, so the newest is nearest the edge and nothing moves when a card leaves.',
 'two-replace':'<b>Replace (rejected)</b>The newer failure replaces the older at once. Cheaper, but a refused drag followed by a refused split loses the first text within a second, and the user sees one card flicker. app.log keeps both either way.',
 long:'<b>Long message</b>The detail wraps to at most five lines and is cut with an ellipsis; the clock is 8 s for a detail of three lines or more. The full text is in app.log, which is the one place for the whole message: the card carries no tooltip and no disclosure.',

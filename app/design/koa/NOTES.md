@@ -29,6 +29,10 @@ question controls, is approved but not built yet.
 | Images, attachments, Quick Look | `media.html` | "Images, attachments and Quick Look" |
 | Agent cards and job lines | `agents.html` | "Agent messages and job notices" |
 | Question controls in a reply | `questions.html` | "Question controls in a reply" |
+| The user message | `user.html` | "The user message is the accent at 18%" |
+| `!` runs a command | `bang.html` | "`!` runs a command" |
+| Built-in slash commands | `commands.html` | "Built-in slash commands" |
+| Sessions inside the page | `sessions.html` | "Sessions inside the page" |
 
 `working.html` holds the five working-state variants from which the
 user chose; the foot of `composer.html` replaced the chosen one.
@@ -189,8 +193,13 @@ the card cancels the request, not the run.
 
 ## The queue while koa works
 
-Steering and follow-up messages that pi holds are listed under the
-field, inside the composer column: one line each, a tag in the
+Steering and follow-up messages that pi holds are listed above the
+field (user, 2026-11-10; they were under it), inside the composer
+column, with a 6pt gap under the list and none above; when the draft
+has attachment chips, the order from the top is the queue, the chips,
+the field: the chips belong to the draft and stay against it, the
+queue is what pi already holds. A dialog card and its "+1 queued"
+line stay above all of them. The list is one line each, a tag in the
 terminal font (`steer`, `follow-up`) in a 62pt column, the text
 ellipsized. Under them, the count and a "take back ⌥⌫" button, the
 hairline button style, no key of its own (⌥⌫ is delete-word in the
@@ -308,7 +317,8 @@ transcript's bottom padding is the dock's height plus 8pt (`--dock-h`,
 which the page measures with a ResizeObserver on the dock), so the
 last message is never under the glass when scrolled to the end. The
 dock (`.dock`) holds the dialog card and its "+1 queued" line, the
-chips, the composer with its queue, and the exit card. It sits on the
+composer (its queue, then the chips, then the field), and the exit
+card. It sits on the
 pane's bottom edge, `pointer-events: none` with `auto` on its
 children, so a click beside the composer reaches the transcript.
 
@@ -563,8 +573,10 @@ incoming: ko-pi's `ko-message`, `ko-steer`, `ko-notice` and a
 report) is the user message's block: `--well` fill, radius 8pt,
 padding 6pt 12pt 7pt, with a header line above the text.
 - The header, in the muted prose at .92em: "to @name" (outgoing) or
-  "from @name" (incoming), the @name in the terminal font in the fg
-  colour; for incoming the relation faint after a "·" (RELATION_TEXT
+  "from @name" (incoming), the @name in the prose font, 600, in the fg
+  (not the terminal font: three fonts in one card were too many,
+  user 2026-11-10; the kind and the time stay in the terminal font as
+  metadata, as a run line's time does); for incoming the relation faint after a "·" (RELATION_TEXT
   shortened: "your parent", "your subagent", "another agent in this
   session", "a subagent of your subagent"; none for ko-pi's own
   notices); at the right, before the time, the kind in the faint
@@ -689,7 +701,20 @@ old treatments for reference.
 Its time is not the faint gray: over the tint that read as dirty
 (user, 2026-11-10). It is an accent ink, `color-mix(in srgb,
 var(--accent) 60%, var(--fg))`, .8em terminal font as before, in
-light and dark. agents.html's `data-ut` holds the two rejected
+light and dark. The same for a blockquote in the user message (a
+quote from ⌘O or a question control): the gray text read as dirty on
+the tint (user, 2026-11-10), so `.msg.user blockquote` takes the
+same accent ink and its 2pt bar the accent at 45% over transparent;
+inline `code` in the user message takes the accent at 12% over
+transparent in place of the gray well; a fenced block in the user
+message is the accent at 10% over transparent with a 30% accent
+edge, the text in `--fg`, no language label; the paths of sent
+attachments (media.html) take the quote's ink. Nothing in the user
+message is gray. user.html shows every state: one line, paragraphs
+with a list and code, one quote with its answer, two quotes in one
+message, a code block, attachments, a long message; light and dark,
+wide and narrow. Renders: `/tmp/koa-shots/user-<state>-<theme>-<width>.png`,
+states one, paras, quote, quote2, code, attach, long. agents.html's `data-ut` holds the two rejected
 alternatives (fg over the tint, the bare accent) for reference.
 
 ## Question controls in a reply (questions.html; approved, 2026-11-10)
@@ -699,15 +724,17 @@ docs/design-koa.md, "Reply annotations"): an
 extension marks the questions of a final reply (range, kind, the
 options of a choice), and the page puts controls in the prose. The
 labels and the click rule are the TUI's (pi-infer-questions,
-`extension.ts:333-360`), unchanged: a choice shows each option in
+`extension.ts:333-360`), except that no blank line separates the
+answer from its quote: a choice shows each option in
 place, then Other; a choice with one option shows the option, then
 Yes, Other; a yes/no question or a proposal shows Yes, No, Other; an
 open question shows Answer. A click sends nothing: it puts the
-question as a quote (`> ` lines), a blank line and the answer into the
+question as a quote (`> ` lines) and, on the next line, the answer into the
 composer, after the current text and a blank line; a second click on
 the same question replaces its answer (Other replaces it with
 nothing; a block per question; `answer()` in the mockup is the TUI's
-function). The question's own text is not styled.
+function without its blank line, as the page has it since 0e4cea65).
+The question's own text is not styled.
 
 - **An option in place** (`.ann`): the question's own words as a
   button in the prose, the accent colour, a 1pt underline at 40%
@@ -729,8 +756,8 @@ function). The question's own text is not styled.
 - The "Labels" control shows the TUI's form for reference (words
   with slashes, underlined, no chips); the chips are the proposal.
 - **The composer** after a click: the plain Markdown, the quote
-  lines (`> …`) in `--muted`, the answer in `--fg`, the cursor at the
-  end; `.field .text` grows to 9 lines before it scrolls (6 before)
+  lines (`> …`) in `--muted`, the answer on the next line in `--fg`,
+  the cursor at the end; `.field .text` grows to 9 lines before it scrolls (6 before)
   so two answered questions show whole.
 - Narrow: nothing changes in size; the chips wrap as words.
 
@@ -739,3 +766,184 @@ states reply (hover on "wait for CI" and on a "Yes"), answered (two
 clicks), narrow; and `questions-reply-slash-light-wide.png` (the TUI's
 labels). Approved by the user; the chips version is built
 (docs/design-koa.md, "Reply annotations").
+
+## `!` runs a command (bang.html; 2026-11-10)
+
+As pi's TUI: a message that starts with `!` is a shell command, not a
+prompt. koa sends pi's `bash` RPC command (docs/rpc-commands.md,
+"bash"; output streams as `bash_execution_update`), and pi stores a
+`bashExecution` message, which the model gets as user text before its
+next turn. `!!` sends it with `excludeFromContext: true`: stored and
+shown, never in the model's context. `!` or `!!` followed by a space
+is allowed; `!` alone is the mode with no command, and Return does
+nothing.
+
+**The composer.** The one mode cue is the font: while the text starts
+with `!`, `.field .text` is `var(--ko-font-size)/1.5
+var(--ko-font-family)` (the whole text, not only after the `!`). The
+`!` is the accent at 600; the `!!` pair is `--muted` at normal weight
+(a quiet run). The foot's state cell reads "run" or "run, quiet" in
+`--muted` in place of "idle", so the row says what Return does; model,
+context and cwd stay. No tag, badge or border change, no button.
+Completion: `@` and `/` are off in this mode; path completion stays
+(a command takes paths). Attachments: a command takes none. A drop in
+`!` mode is refused with the usual line under the field ("a command
+takes no attachments"); chips present when `!` is typed stay, and
+Return does not send while they exist (the state cell "run" in
+`--err`, tooltip "remove the attachments").
+
+**The transcript.** A user-run command is a line of its own kind
+(`.cmdrun`) in a run line's geometry, placed where it ran: a `!` in
+the accent at 600 in the chevron's 9pt slot (a faint `!!` for a quiet
+run, tooltip "not in the model's context"; nothing marks a `!` run),
+the command in the terminal font .92em in `--fg` (`--err` when the
+exit is not 0, as a failed tool's name), and at the right in the
+time's place, `.8em` terminal faint: "exit N" in `--err` when N is not
+0, "cancelled" for a cancelled run, then the duration. The output is
+folded by default and opens on a click of the line: a step's guide
+(4pt margin, 1pt `--hair`, 13pt padding) and a `pre` as a step's
+output (.88em, `--well`, `--hair` edge, max 260pt, own scroll), in
+`--fg`. While it runs, the spinner takes the `!`'s slot, the output
+is open and streams in `--muted`, and turns `--fg` at the end. A
+cancelled run keeps the output it got. Truncated output (pi's
+`truncated`) ends with "… full output: <path>" in the faint terminal
+font.
+
+**Cancel, and a busy pi.** While a command runs and pi is idle, the
+field stays in `!` mode with the text cleared, placeholder "running…
+⎋ cancels", state cell "running Ns" with the breathing dot; Return
+sends nothing, Escape cancels (pi's `abort_bash`), typing starts the
+next message. While pi works, a `!` message runs at once, as pi 1.5.0
+does (only the session record waits for the turn's end): its line is
+appended at the end of the transcript, under the streaming reply, and
+streams there while the reply goes on above it; the state cell stays
+"working Ns" (the turn is the session's state; the command's spinner
+says it runs); the field returns to the working placeholder "Steer
+koa…". Escape then cancels the command first (`abort_bash`); a second
+Escape aborts the turn.
+
+**Tab completes, from bash** (user, 2026-11-10: Tab only, bash
+only, where the command runs). Tab asks bash for the completions of
+the word at the caret (bash-completion's functions where installed,
+else command names and paths); nothing completes as you type. The
+answer is plain words, so there are no kinds and no detail column.
+One match: the word completes inline, with a space after it, or `/`
+after a directory, as bash reports it. Several: the common prefix is
+inserted inline first, then the list opens in the `/` popup's
+geometry (`.complete.sh`): rows in the terminal font .92em in
+`--fg`, bash's order, eight visible then scroll; a second Tab or ↓
+moves, ↩ or Tab accepts, ⎋ closes, typing closes it (the next Tab
+narrows). The list never opens by itself. None: the state cell reads
+"no completions" in `--faint` for 1.5 s in place of "run"; nothing
+moves (the cell's reserved width holds it). Slow (over 150 ms): the
+state cell reads "completing…" with the spinner in the dot's slot
+until the answer; Tab waits, typing cancels the request. Cap: 200
+words fetched; over it, the last row "… N more, type to narrow" in
+`.8em` `--faint`, not selectable.
+
+Renders: `/tmp/koa-shots/bang-<state>-<theme>-<width>.png`, states
+bang, bang2, runs, running, busy (both running), typing (`!` typed
+while pi works), tab (five matches after the prefix), tab-none,
+tab-pending, tab-cap. Shown to the user for a final look;
+the spec went to the implementer the same day.
+
+## The composer's focus border (2026-11-10)
+
+The focused treatment (`--ko-focus` border) is a fact of the page, not
+of the DOM focus: the composer looks focused whenever a keypress would
+reach it. Rule: `.field.focus` is set when the document has focus
+(the window is key and the pane is Kido's focused pane) and no other
+text input of the page holds the focus (a dialog's field, a rename, a
+search); the hairline shows otherwise. The page sets the class on
+`focus`/`blur` of the window and on every focus change inside the
+page; `:focus-within` is not used. Cases: a click or a selection in
+the transcript keeps it focused (printable keys still go to the
+composer); the completion popup, the model picker and a running `!`
+command keep it focused (they are the composer's own, or typing starts
+the next message); an open dialog card with its own field, and the
+lightbox, show the hairline (keys go to them); pi exited shows the
+hairline always (the field is disabled). The mockups already show the
+treatment as a static `.focus` class and do not change.
+
+## Built-in slash commands (commands.html; 2026-11-10)
+
+koa runs seven of pi's built-ins itself through RPC: `/model`,
+`/thinking`, `/compact`, `/session`, `/copy`, `/export`, `/quit`
+(with `/name`, and `/resume` and `/new` from sessions.html). Every
+other pi built-in (`/settings`, `/tree`, `/fork`, `/login`, `/reload`,
+`/hotkeys`, …) gets one notice line in `--warn`, "/x is not available
+in koa", and the text never reaches the model.
+
+- **In the popup**: one list; the built-ins first, in a fixed order
+  (model, thinking, compact, session, copy, export, name, resume, new,
+  quit), then `get_commands` in its order; the kind column reads
+  `built-in` in the same faint tone as `extension`, `template`,
+  `skill`; the detail is pi's one-line description. The fuzzy filter
+  runs over all together. Refused built-ins are not listed.
+- **Outcomes** are lines in the transcript where the command ran, in
+  the notice geometry (terminal .92em `--muted`, time at the right,
+  12pt in): `/copy` "copied the last reply · N characters"; `/export`
+  "exported <path>", the path in `--fg`, ⇧⌘-click Quick Look as a
+  step's file label; `/model x` and `/thinking x` with an argument set
+  through pi and give the existing "model: … · thinking …" notice;
+  without an argument they open the foot's picker (the one the click
+  opens), nothing in the transcript. A result with more than one line
+  is an **info line** (`.info`, a job line's geometry: chevron, name in
+  `--fg`, the rest muted, time right; closed by default, a click opens
+  a body behind a step's guide): `/session` "name · N messages · $x"
+  opening to a key/value grid in the terminal font (name, id, file,
+  model, messages, tokens in/out/cache read/cache write, cost,
+  context); `/compact` first a notice with the spinner "compacting…"
+  while the state cell reads "compacting Ns" with the breathing dot,
+  then the info line "compacted · 184k → 31k tokens" opening to pi's
+  summary as prose; a failure "compact failed: <message>" in `--err`.
+  `/quit` ends pi and koa; the pane closes as a shell's exit does;
+  nothing is drawn.
+- **Prompt history**: Up on the first line of an empty or unedited
+  field puts the previous submitted prompt in the field, Down the next;
+  a draft typed before Up comes back with Down. No cue: the field looks
+  as when the user types. **Alt-Up** takes the queue back, the same as
+  the queue's button; the list goes, the texts stand in the field; no
+  other cue.
+
+Renders: `/tmp/koa-shots/commands-<state>-<theme>-<width>.png`, states
+pop, pop-filter, outcomes, picker, session, compact.
+
+## Sessions inside the page (sessions.html; 2026-11-10)
+
+`/resume` opens a session picker; `/new` starts a new session (pi's
+`switch_session`, `new_session`). The picker is a card in the dock
+above the field, where an extension's dialog card sits (`.sess` in
+the `.dialogs` column: the dialog's 9pt radius, hairline and glass;
+padding 9pt 10pt 8pt; the column's 10pt under it; rows are a grid,
+name and first message in the first column, date over count in the
+second), so the transcript stays visible and the keys are the
+dialog's; the composer under it is inert (text in `--faint`).
+
+- **Top row**: the search field (focused; fuzzy over name and first
+  message, as pi's selector), and at the right a two-part scope "this
+  folder" / "all" (.8em terminal, 6pt radius, the on part in
+  `--well2`); ⇥ switches it; this folder is the default.
+- **Rows**, newest first, 4pt 8pt padding, 6pt radius, current in
+  `--well2`, 8 visible then scroll: the name in `--fg` (the first
+  message when unnamed), then `current` for the open session (.8em
+  terminal faint) and, in "all", the folder in faint .9em; the first
+  message under it in `--muted` .92em, ellipsized; at the right the
+  date (time today, date otherwise) over the message count, .8em
+  terminal faint, tabular. ↩ on the current row does nothing.
+- **Empty**: "no sessions in this folder" with the hint "⇥ all
+  folders" under it; "no match" with a search.
+- **Switch**: the card closes, the transcript empties, the field is
+  inert with "loading…", the state cell reads "loading"; then the
+  session's transcript, scrolled to the end, with one notice line
+  "session: <name> · N messages"; the foot shows its model and
+  context. `/new`: an empty transcript and the notice "new session".
+  The queue goes with the old session; the draft in the field is kept.
+- **While a turn or a `!` command runs**: pi's confirm dialog first,
+  "Switch session?", "koa is working on a turn; it will be aborted."
+  or "a command is running; it will be cancelled.", ⎋ Cancel, ↩
+  Switch; Switch aborts (`abort` or `abort_bash`), then opens the
+  picker or starts the session.
+
+Renders: `/tmp/koa-shots/sessions-<state>-<theme>-<width>.png`, states
+pick, pick-all, pick-search, pick-empty, loading, after, confirm.

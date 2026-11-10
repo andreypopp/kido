@@ -103,8 +103,9 @@ bottom-right.
 **Size and surface.** 360pt wide (`min(360, area width − 32)`),
 height from its content, 12pt corners, the capsule surface of the
 pane chrome (`Chrome.capsuleSurface`: the terminal background mixed 8%
-toward the foreground, a 0.5pt edge at 12% of the foreground, the
-0.5pt inner highlight), the float's shadow (`Chrome.floatShadow`:
+toward the foreground, a 0.5pt edge at 16% of the foreground on a
+light theme and 14% on a dark one, no inner highlight; since
+2026-11-09, ec442562), the float's shadow (`Chrome.floatShadow`:
 black 22%, blur 12, here drawn a little deeper). Opaque: no blur, no
 glass, so terminal text never bleeds through. 12pt padding at the
 sides, 9pt at the top, 10pt at the bottom.

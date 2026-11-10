@@ -89,6 +89,9 @@ th,td{text-align:left;padding:4px 12px 4px 0;border-bottom:1px solid var(--hair)
 th{color:var(--muted);font-weight:600;font-size:.85em;text-transform:uppercase;letter-spacing:.05em}
 tr:last-child td{border-bottom:0}
 blockquote{margin:.3em 0 .9em;padding-left:12px;border-left:2px solid var(--hair2);color:var(--muted)}
+/* inside the user message's tint the gray reads as dirty (user, 2026-11-10): the quote takes the time's accent ink, its bar the accent at 45% */
+.msg.user blockquote{color:color-mix(in srgb,var(--accent) 60%,var(--fg));border-left-color:color-mix(in srgb,var(--accent) 45%,transparent)}
+.msg.user code{background:color-mix(in srgb,var(--accent) 12%,transparent)}
 a{color:var(--accent);text-decoration:none;border-bottom:1px solid color-mix(in srgb,var(--accent) 35%,transparent)}
 .caret{display:inline-block;width:2px;height:1em;background:var(--ko-cursor);vertical-align:-.15em;margin-left:1px;animation:blink 1s steps(1) infinite}
 @keyframes blink{50%{opacity:0}}
@@ -143,7 +146,7 @@ html:not([data-dock=band]) .dock .field,html:not([data-dock=band]) .dock .dialog
 @supports (-apple-visual-effect: -apple-system-glass-material){html:not([data-dock=band]) .dock .field,html:not([data-dock=band]) .dock .dialog,html:not([data-dock=band]) .dock .exited .card,html:not([data-dock=band]) .dock .queue{background:transparent;-webkit-backdrop-filter:none;backdrop-filter:none;-apple-visual-effect:-apple-system-glass-material;box-shadow:none;border-color:color-mix(in srgb,var(--ko-fg) 14%,transparent)}}
 html:not([data-dock=band]) .dock .field.focus{border-color:color-mix(in srgb,var(--ko-fg) 45%,transparent)}
 html:not([data-dock=band]) .dock .field.working{border-color:color-mix(in srgb,var(--ko-fg) 22%,transparent)}
-html:not([data-dock=band]) .dock .queue{background:color-mix(in srgb,var(--ko-bg) 72%,transparent);-webkit-backdrop-filter:blur(18px) saturate(1.35);backdrop-filter:blur(18px) saturate(1.35);border-radius:8px;padding:4px 8px 6px;margin:6px 0 0}
+html:not([data-dock=band]) .dock .queue{background:color-mix(in srgb,var(--ko-bg) 72%,transparent);-webkit-backdrop-filter:blur(18px) saturate(1.35);backdrop-filter:blur(18px) saturate(1.35);border-radius:8px;padding:4px 8px 6px;margin:0 0 6px}
 html:not([data-dock=band]) .dock .queued-next{text-shadow:0 0 6px var(--ko-bg),0 0 2px var(--ko-bg)}
 
 .narrow .composer,html[data-width=narrow] .composer{padding:0 14px 10px}
@@ -215,7 +218,7 @@ html:not([data-dock=band]) .dock .queued-next{text-shadow:0 0 6px var(--ko-bg),0
 .queued-next b{font-weight:500;color:var(--muted)}
 
 /* ---- the queue: steering and follow-ups pi holds while it works ---- */
-.queue{margin:6px 2px 0;font:.85em/1.5 var(--prose);color:var(--muted)}
+.queue{margin:0 2px 6px;font:.85em/1.5 var(--prose);color:var(--muted)}
 .queue .q{display:flex;align-items:baseline;gap:9px;padding:2px 0}
 .queue .tag{font:.8em var(--mono);color:var(--faint);width:62px;flex-shrink:0;text-transform:lowercase}
 .queue .q .t{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
@@ -341,7 +344,7 @@ html.cmd .step .path.file{cursor:pointer;text-decoration:underline;text-underlin
 <div class="pane short" data-state="folder"></div></section>
 
 <section><h2>13d · The queue with attachments</h2>
-<p>A queued prompt that carries attachments shows a paper-clip glyph and the count after its text, in the faint terminal font; take back restores the chips with the texts.</p>
+<p>The queue sits above the field (user, 2026-11-10), and above the chips when both show: the chips belong to the draft and stay against the field. A queued prompt that carries attachments shows a paper-clip glyph and the count after its text, in the faint terminal font; take back restores the chips with the texts.</p>
 <div class="pane short" data-state="queue"></div></section>
 
 <section><h2>13e · Sent: the user message with its images and files</h2>
@@ -371,7 +374,7 @@ const userMsg=(t,extra='')=>`<div class="msg user"><div class="t">${esc(t)}${ext
 const thumb=(src,sz,lg)=>`<button class="thumb${lg?' lg':''}" aria-label="Preview image ${sz}"><img src="${src}" alt=""><span class="sz">${sz}</span></button>`;
 const thumbs=(items)=>`<div class="thumbs">${items.join('')}</div>`;
 const paths=(ps)=>`<div class="paths">${ps.map(esc).join('\n')}</div>`;
-function composer(o={}){const chips=o.chips?`<div class="chips">${o.chips}</div>`:'';const hint=o.working?`<span class="spin" style="border-color:var(--hair2);border-top-color:var(--muted);margin-right:5px;vertical-align:-1px"></span>working 3s · <kbd>⎋</kbd> abort`:(o.text?'<kbd>⇧↩</kbd> newline':'');return `<div class="composer">${chips}<div class="field${o.drop?' drop':o.working?' working':' focus'}"><div class="text${o.text?'':' ph'}">${o.text?esc(o.text)+'<span class="caret"></span>':o.drop?'Drop to attach':o.working?'Steer koa…':'Message koa…'}</div><div class="foot"><span class="hint">${hint}</span><span class="sp"></span><button class="act ${o.working?'stop':'send'}${o.text||o.chips?'':' off'}" aria-label="Send">${o.working?stop:send}</button></div></div>${o.after||''}</div>`}
+function composer(o={}){const chips=o.chips?`<div class="chips">${o.chips}</div>`:'';const before=o.after||'';o.after='';const hint=o.working?`<span class="spin" style="border-color:var(--hair2);border-top-color:var(--muted);margin-right:5px;vertical-align:-1px"></span>working 3s · <kbd>⎋</kbd> abort`:(o.text?'<kbd>⇧↩</kbd> newline':'');return `<div class="composer">${before}${chips}<div class="field${o.drop?' drop':o.working?' working':' focus'}"><div class="text${o.text?'':' ph'}">${o.text?esc(o.text)+'<span class="caret"></span>':o.drop?'Drop to attach':o.working?'Steer koa…':'Message koa…'}</div><div class="foot"><span class="hint">${hint}</span><span class="sp"></span><button class="act ${o.working?'stop':'send'}${o.text||o.chips?'':' off'}" aria-label="Send">${o.working?stop:send}</button></div></div>${o.after||''}</div>`}
 const chip=(o)=>`<span class="chip${o.cls||''}" role="button" tabindex="0"><span class="ic">${o.img?`<img src="${o.img}" alt="">`:o.cls===' up'?'':doc}</span><span class="n">${esc(o.name)}</span>${o.dir?`<span class="dir">${esc(o.dir)}</span>`:''}<span class="m">${o.meta||''}</span><button class="x" aria-label="Remove">${xx}</button></span>`;
 const run=(o)=>`<div class="run open"><div class="line"><span class="chev">›</span><span class="sum"><span class="names">${o.sum}</span></span><span class="time">${o.time}</span></div><div class="steps">${o.steps.join('')}</div></div>`;
 const step=(o)=>`<div class="step${o.open?' open':''}"><div class="line"><span class="chev">›</span><span class="sum"><span class="name">${o.name}</span> <span class="path file${o.hover?' hover':''}">${esc(o.path)}</span> <span class="delta">${o.delta||''}</span></span><span class="time">${o.time}</span></div><div class="detail">${o.detail||''}</div></div>`;

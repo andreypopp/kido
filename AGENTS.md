@@ -1282,9 +1282,11 @@ delegates as its brief says and does not write code.
   goes back to the manager for a check. The session confirms the
   commit on `origin/main` before it stops the unit's agents and
   removes the worktree, each a separate step, never in parallel with
-  the commit. macOS is the platform that counts: a
-  failure that occurs only on Linux CI gets no unit unless the user
-  asks, and a brief asks for no Linux checks.
+  the commit. macOS and Linux are both first-class: a failure on
+  either CI runner gets a unit, and a failure that occurs only on
+  Linux is reproduced with `scripts/ci-like.sh` ("Reproducing a
+  CI-only failure"). The session reads CI's result for each head that
+  it pushes.
 - **Models.** Name a model by its fully qualified name in every
   `spawn_agent` call without `resume_from`: without `model`, the agent
   takes the caller's model. A `resume_from`, also with `fork`, and a

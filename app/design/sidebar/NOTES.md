@@ -37,7 +37,11 @@ today.
   2026-11-07 rejection). A slot that shows a descendant draws a pill at
   its top left, 8pt from the top and the left edges, in the COPY
   pill's family: 22pt high, 8pt radius, the pane background mixed 8%
-  toward the foreground, a 0.5pt border, 11pt text. It holds the path
+  toward the foreground, the shared capsule edge and contact shadow of
+  pane/NOTES.md "Capsule (shared)" (since 2026-11-09: edge 16% light /
+  14% dark, shadow black 8% y1 blur 2 light / 30% y1 blur 3 dark, no
+  inner highlight; the earlier lift shadow smeared on cream), 11pt
+  text. It holds the path
   from the top-level pane to the shown one, `@kido-app › @sidebar-mockup`,
   names separated by `›`. Each ancestor is a button in the muted
   colour; clicking it shows that ancestor in the slot and focuses it.
@@ -131,7 +135,9 @@ is per pane, in memory, and goes with the pane.
 
 The row's status indicator moves from the leading slot to the
 trailing column, after the clock (the mockup's **Indicator: Right**):
-the same 6pt dot or check in the same 12pt slot, 9pt after the clock.
+the same 6pt dot or check in the same 12pt slot, 1pt after the clock,
+so 4pt of space separate the clock's text from the mark, the gap of
+the folded-child circles (user, 2026-11-08).
 The hover × replaces it there. The geometry (5pt padding, the leading
 chevron slot, text at 23pt, the indicator centre 11pt from the right
 edge) is below; it is implemented, and docs/design-app.md ("Sidebar",
@@ -153,17 +159,52 @@ ellipsizes instead. When one circle and `+N` still do not fit, the
 line shows `+N` alone, the count without a circle; when even that
 does not fit, the line is absent and the chevron alone says that
 children exist. Nothing clips. The trailing column is the same on
-every row: the elapsed clock, 9pt, then the 12pt indicator slot.
+every row: the elapsed clock, 1pt, then the 12pt indicator slot, so
+the clock ends 4pt before the 6pt mark.
 
-In the folded circles line an idle child is a gray circle (the muted
-colour at 55%), unlike the row indicator, where idle is nothing: the
-line counts the children, so each one needs a mark. The line has no
-hover fill.
+Each circle of a folded line summarises the hidden child's whole
+subtree (user, 2026-11-08): the child itself, its descendant panes
+and its OSC 7501 records, reduced by the order error > running >
+idle. A folded circle has no "done": a clean end (the gray check:
+done, or gone with outcome completed) counts as idle and is the gray
+idle circle; a failed end (the gray cross) counts as error. So a
+dead or idle child with a running grandchild shows a running circle,
+and a child whose work all ended cleanly shows a gray one. The line
+summarises the progress of the work, so the circles are ordered by
+their reduced status, error first, then running, then idle, and only
+then cut to the limit (six, or fewer on a narrow row) with `+N`;
+within one status the children keep their sidebar order. The order
+applies always, not only when the line overflows, so a running or
+failed child never disappears into `+N` behind idle ones (user,
+2026-11-08). The stress fixture's `@devpi` pane shows it: nine
+children, the failed and the running one last in sidebar order,
+first in the line. A waiting descendant needs no rule: it unfolds its
+path. The rule is for the circles of the folded line only; an
+unfolded row's mark and a top-level row's mark are their own status.
+
+A running `async_bash(..., service: true)` job does not make its
+ancestors look running (user, 2026-11-08): its OSC 7501 record is
+`state=idle` with the msg "service: <name>", so its own row shows the
+gray idle dot and the caption, and it reduces as idle in a folded
+circle; its end still writes done or error. (ko-pi writes `working`
+today; the client cannot tell a service from a job without parsing
+the msg, so the change is in ko-pi.)
+
+An idle pane is a gray circle (the muted colour at 50%) everywhere:
+in the folded circles line, where the line counts the children so
+each one needs a mark, and in the row's own trailing indicator, top
+level included (user, 2026-11-08; before that the row's idle
+indicator drew nothing). So every row has a mark, and the header's
+plus, centred 11pt from the edge, sits on the same column. The line
+has no hover fill.
 
 With the indicator on the right, the folded children line is right
 aligned too: its last circle ends under the trailing indicator, and
-for a single hidden child the name comes first, then its circle
-(`main-watch ●`). The hit area is the circles and the name, as before.
+for a single hidden agent child the name comes first, then its
+circle (`@sidebar-mockup ●`); a single hidden job (a bash run, a
+stream, a finished subagent with no live agent) is a circle alone
+(user, 2026-11-09). The hit area is the circles and the name, as
+before.
 
 The collapse control is a disclosure chevron in the parent row's
 leading slot, the 12pt slot that the status indicator left. Rows and
@@ -171,8 +212,8 @@ session headers have 5pt of horizontal padding (was 12pt), so the
 chevron starts 5pt from the row edge, the title, the activity text
 and the single-child name start at 23pt, the trailing indicator's
 centre is 11pt from the right edge, and the folded circles end under
-it. The header's plus is still centred 15pt from the edge, 4pt
-outside the indicator column. The nesting step stays 15pt. A row with children always
+it. The header's plus is centred 11pt from the edge, on the
+indicator column (user, 2026-11-08; it was 15pt). The nesting step stays 15pt. A row with children always
 shows it, folded (right) or open (down): a 10pt chevron with a
 1.75pt stroke (the one the title tabs use), muted at 70% with no
 hover or pressed state, like the other
@@ -269,8 +310,24 @@ working session after one Split Right (a three-pane window).
 - Six circles, then `+N`, drawn in the row under the title, not in
   the trailing column (third line on 2026-11-07; on the activity
   line, right aligned, since 2026-11-08).
-- A single hidden child shows its name after its circle, in the small
-  muted font, on the same line (user, 2026-11-07).
+- A job row (an `async_bash` job, an OSC 7501 record `job/<id>` that
+  ko-pi writes under its pi's pane) reads name first: the record's
+  title is the job's name and its message is the command while it
+  runs (`main-watch` over `scripts/main-watch.sh --stream`), and the
+  end text when it ended (`lint` over `exit 1`). A running service
+  reads the same, name over command, with no `service:` prefix; only
+  its idle state (the gray dot) marks it as a service (user,
+  2026-11-09; the fixture's `preview` row). Before 2026-11-09 the
+  title was the command and the message the name; the user asked for
+  the swap. The change is in ko-pi's writer and
+  docs/design-subagents.md "A job's row", not in the app: the app
+  draws a record's title over its message as for every record. The
+  "Claude Code + records" fixture shows both forms.
+- A single hidden child shows its name with its circle, in the small
+  muted font, on the same line (user, 2026-11-07), only when that
+  child is an agent: a pane with a live agent or a program record. A
+  single hidden job (bash run, stream monitor, or a subagent whose
+  agent is gone) is a circle alone (user, 2026-11-09).
 - No tree guides; nesting alone shows the hierarchy. The bracket that
   groups the panes of a multi-pane window stayed on 2026-11-07 and is
   gone since 2026-11-08 (dividers and the active window fill replace it).
@@ -282,9 +339,9 @@ working session after one Split Right (a three-pane window).
   label 5pt from the top, and the gap after a session is 10pt. These
   replace the 32/48pt rows, 29pt headers and 16pt session gap of the
   draft below.
-- No gray circle (user, 2026-11-07; replaced on 2026-11-08 for the
-  circles line, where an idle child is a gray circle; the row's own
-  idle indicator still draws nothing): an idle indicator draws nothing, in the row's
+- No gray circle (user, 2026-11-07; replaced on 2026-11-08: an idle
+  pane is a gray circle again, in the circles line and in the row's
+  own indicator alike): an idle indicator draws nothing, in the row's
   leading slot and in the circles line alike, but keeps its 6pt
   space, so nothing shifts: an idle row's title stays at 30pt, and an
   idle child in the circles line is a gap that still counts. The
@@ -301,7 +358,7 @@ working session after one Split Right (a three-pane window).
 
 This preview now explores a new direction requested by the user, superseding the older geometry and no-guide decisions below. Native window chrome remains unchanged.
 
-- All pane and child-record titles: 13pt system font, 18pt line height, regardless of depth or single-/multi-pane window; titles of panes with a live agent and of program records semibold, shell and run titles regular (RPC 6.0 rules below).
+- All pane and child-record titles: 13pt system font, 18pt line height, regardless of depth or single-/multi-pane window; regular weight, semibold only on the focused and the keyboard-selected row (weight rule below).
 - All rows: 32pt single-line / 48pt with caption, 7pt vertical padding. Captions: 11pt system font, 15pt line height, 1pt gap below title.
 - Uniform 15pt nesting step for child windows and slash-separated program records, chosen so each nested guide sits exactly on the parent icon's center (12pt inset + 8pt half icon = 20pt; 15pt indent + 5pt guide inset = 20pt). No extra window/pane spacing or divider rows.
 - All guides are identical vertical 1pt lines in one opaque color (`#bfbab1` light, `#4f555c` dark), with no horizontal arms, no transparency and no overlapping segments. A guide sits 5pt inside the left edge of the group it covers and spans that whole group, 10pt inset top and bottom: a multi-pane top-level window's guide covers its pane rows and every descendant between and below them; a nested guide covers a parent's entire children block, including grandchildren; a program-record guide covers all records under their parent. Single-pane windows have no window guide.
@@ -333,7 +390,7 @@ Leading icons are removed for now; the status indicator takes their place. Earli
 | E | bot face (custom; no exact SF Symbol, closest `faceid` or a custom symbol) | bare prompt | as terminal | strongest agent/shell contrast, least Apple-native |
 | F | `text.bubble` | `terminal` | `play.circle` | three kinds: async bash and stream monitors become runs, separating them from interactive shells |
 
-Current rule: no leading icon of any kind. The status indicator (6pt dot; for done a plain green check with no circular base: the path `M0.2 3.2 2.1 5.1 5.8 1.1` in a 6pt box, stroked 2pt with round caps and joins in opaque green, which the app draws with NSBezierPath rather than an SF Symbol; its visual center sits on the dot's center, horizontally on the dot column and vertically on the title line's center, like every other indicator) sits in the former icon slot, centered 20pt from the row's edge (12pt inset + half the 16pt slot) plus 15pt per nesting level; idle is a gray dot (secondary color at 45%) so every row has a mark. The trailing column keeps only the elapsed clock. Program records use the same row layout, so a record's dot and title line up with child-window rows at its depth. Titles are semibold (600) only while the pane reports a live agent, and on program records; shells and runs without a live agent stay regular. With the @ prefix and the dimmed "Terminal" title, that is the whole agent/shell distinction.
+Current rule: no leading icon of any kind. The status indicator (6pt dot; for done a plain green check with no circular base: the path `M0.2 3.2 2.1 5.1 5.8 1.1` in a 6pt box, stroked 2pt with round caps and joins in opaque green, which the app draws with NSBezierPath rather than an SF Symbol; its visual center sits on the dot's center, horizontally on the dot column and vertically on the title line's center, like every other indicator) sits in the former icon slot, centered 20pt from the row's edge (12pt inset + half the 16pt slot) plus 15pt per nesting level; idle is a gray dot (secondary color at 45%) so every row has a mark. The trailing column keeps only the elapsed clock. Program records use the same row layout, so a record's dot and title line up with child-window rows at its depth. Titles are regular; only the focused pane's row and the keyboard-selected row are semibold (600), whatever the pane runs (since 2026-11-09). The @ prefix and the dimmed "Terminal" title are the whole agent/shell distinction.
 
 Review the default Claude Code fixture for program records and scroll to the multi-pane kido-app group for selectable nested windows. This is a draft for visual review, not an approved implementation specification.
 
@@ -384,7 +441,7 @@ Previewed in the mockup; nothing of this is implemented natively yet.
 - **Close confirmation.** Closing a pane or window asks unless every live pane in it, descendants included, is a quiet shell (the row titled "Terminal") that holds the foreground; any agent, also idle, a running command, a full-screen program, a shell of unknown phase (no integration, ssh) or another foreground process makes it ask, and a dead or lingering pane does not. The question is a standard window-modal alert sheet: app icon, bold 13pt title `Close “name”?`, 11pt message ("A program is still running in this pane. Closing the pane will end it." / "Programs are still running in this window. Closing the window will end them."), then stacked full-width buttons: **Close** (default, blue, Enter) above **Cancel** (Escape). Windows of quiet shells close without asking. The user settled that every path that ends a pane or window goes through this one confirmation: the × buttons, Cmd-W, menu commands, and any other app-issued kill. Closing the native macOS window is not one of them: it only closes that window's control client, the app and every pane keep running, and reopening redials, so it never confirms. Native: NSAlert as a sheet on the window, `.warning` style, Close as the default button, Cancel bound to Escape.
 - **Tab status and close buttons.** The tab's status dot moves to the leading side: centered 15pt from the tab surface's leading edge. Hovering the indicator's own 16pt slot (not the rest of the tab) replaces the dot with a 16pt × close button centered on the same point; the dot returns when the pointer leaves the slot, and hovering elsewhere on the tab changes nothing. The label is always inset 26pt on both sides, so neither the dot nor the button changes the label's position or width on hover. Hovering the button only brightens it and adds a faint 4pt-radius fill. Click goes through the confirmation above. No press feedback beyond that. Cmd-W closes the focused pane through the same confirmation.
 - **Close buttons on sidebar rows.** Hovering the status indicator's own 16pt slot on a pane row (never a program record, and not the rest of the row) replaces the indicator with the same × button in that slot; elsewhere on the row the indicator stays. Clicking closes that pane (its nested windows with it), via the same confirmation.
-- **Tab titles in the sidebar's style.** A tab whose active pane reports a live agent shows its name semibold, exactly like the sidebar row, with the display-only @ prefix (not doubled if already present) when that agent is a live Pi_agent; shell, run and other tabs stay regular with no @. Window names, identities and tmux data are unchanged.
+- **Tab titles in the sidebar's style.** Every tab title is regular weight (since 2026-11-09; before, a live agent's tab was semibold). A tab whose active pane is a live Pi_agent shows the display-only @ prefix (not doubled if already present); shell, run and other tabs have no @. Window names, identities and tmux data are unchanged.
 
 - **Inline session rename.** Double-clicking a session heading's name edits it in place, Finder-style. The field replaces the label exactly in place: same 11pt semibold font and 18pt line, text starting at the label's x, primary text color on the sidebar background with a hairline edge and the accent focus ring, the whole name selected; the session + does not move and the body below does not shift. Enter or clicking elsewhere commits; Escape cancels. An empty or unchanged name reverts silently. A duplicate of another session's name keeps the field open and shows the reason under it in 10pt red ("A session named “x” already exists."), the heading growing to fit; editing again clears the error. A single click still does what it does today (nothing on the label). Native: an NSTextField swapped into the header cell on double-click, committed through rename-session, with tmux's refusal shown as the inline error rather than an alert. The preview changes only its own data.
 
@@ -403,7 +460,7 @@ The preview's fixtures follow the 6.0 feed shape:
 
 - A pane item's `run` is an opaque run id or null, never a kind. The elapsed clock is attached when `run` is non-null and `started` is non-null, for any run.
 - A pane item's `agent` is the live agent it reports, or null: `{kind: "pi", session}` for a local Pi_agent (its field is `session`, not `id`), `{kind: "native"}` for Some_agent (Claude Code), `{kind: "remote"}` for an agent over SSH.
-- **Weight.** A row or tab is semibold only while its pane reports a live agent (any of the three kinds). A subagent run that has finished, or one that is still starting and has not claimed its run yet, has `agent: null` and is regular, like a bash run. OSC 7501 record rows stay semibold.
+- **Weight.** Since 2026-11-09, a sidebar row's title is semibold only when the row is the focused pane or the keyboard-selected row; agents, records, shells and runs are otherwise all regular. Weight marks selection, not kind: the status indicator, the @ and the dimmed "Terminal" title carry the agent/shell distinction. Tabs are all regular, the active tab included (2026-11-09); the tab's fill marks the active one.
 - **The @.** Display-only, and only for a live Pi_agent. Native and remote agents are semibold without it; runs and records never get it.
 - **Waiting is attention** only on a live agent or a record; a waiting indicator on a plain run is not an orange tab mark.
 - **Notifications.** A run pane is silent only when it is nested under another item. A top-level run (no parent item) notifies like any pane.
@@ -412,7 +469,7 @@ The "Working session + states" fixture shows the regular-weight cases: the compl
 
 ## Approved sidebar geometry
 
-Sessions are plain noninteractive 11pt semibold secondary labels in 29pt headers, followed by windows; no session card or folding. Label line-box y=6.5pt. The trailing 11pt plus (matching the 11pt heading type) creates a new window (preview placeholder), with icon-only hover and center aligned to status circles, 15pt from the item's right edge. Session bottom gap is 16pt. The scrolling list has 8pt horizontal insets, 2pt top and 10pt bottom space.
+Sessions are plain noninteractive 11pt semibold secondary labels in 29pt headers, followed by windows; no session card or folding. Label line-box y=6.5pt. The trailing 11pt plus (matching the 11pt heading type) creates a new window (preview placeholder), with icon-only hover and center aligned to status circles, 11pt from the item's right edge (since 2026-11-08; 15pt before). Session bottom gap is 16pt. The scrolling list has 8pt horizontal insets, 2pt top and 10pt bottom space.
 
 Each window is one 7pt-rounded item containing its pane rows and their descendants. Active window gets continuous 10% labelColor fill, including all nested descendants. Focusing a child highlights its own subtree, not ancestors. Single-pane windows need no extra focus mark; multi-pane windows retain a 2pt leading mark with the row's vertical padding as its inset (85% white dark / 75% black light). Keyboard selection independently adds 10% fill and clears on mouse interaction.
 
