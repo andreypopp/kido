@@ -1053,9 +1053,8 @@ private class AlertEscape: NSView {
             ready()
             if !fresh { session?.retryImages() }
             observeSeen()
-        case .layout(let revision):
+        case .layout:
             receiveSoon()
-            editor?.layoutChanged(revision: Int(revision))
         case .model:
             receiveSoon()
         case .selected(let request, let session, let window, let pane):
@@ -1209,6 +1208,7 @@ private class AlertEscape: NSView {
             paneSlots.observe(pane, in: projection)
         }
         received = Received(ko: ko, model: model, snapshot: snapshot, projection: projection)
+        defer { editor?.layoutChanged(revision: ko.layout.revision) }
         for position in repairs {
             focusTarget = .pane(position)
             navigationPhase = .selecting(position.pane, SelectionWait(focus: .pane))

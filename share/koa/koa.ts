@@ -189,6 +189,11 @@ async function main(): Promise<void> {
       executable = path;
     } else if (arg !== undefined) pass.push(arg);
   }
+  if (metricsMode && !metricsFile) throw new Error("--metrics-mode requires --metrics");
+  const configured = Number(process.env.KOA_PI_EXIT_MS ?? 5000);
+  const exitMs = Number.isFinite(configured) && configured > 0 ? configured : 5000;
+  const uploadIdleMs = Number(process.env.KOA_UPLOAD_IDLE_MS ?? UPLOAD_IDLE_MS);
+  if (!Number.isFinite(uploadIdleMs) || uploadIdleMs <= 0) throw Error("KOA_UPLOAD_IDLE_MS must be positive");
   let packageRoot = await piPackage(executable, process.env.PATH ?? '');
   let initialMessages: string[] = [], resume = false;
   if (pass.length || !packageRoot) {
@@ -211,11 +216,6 @@ async function main(): Promise<void> {
       pass.splice(end < 0 ? pass.length : end, 0, "--session", result.path);
     }
   }
-  if (metricsMode && !metricsFile) throw new Error("--metrics-mode requires --metrics");
-  const configured = Number(process.env.KOA_PI_EXIT_MS ?? 5000);
-  const exitMs = Number.isFinite(configured) && configured > 0 ? configured : 5000;
-  const uploadIdleMs = Number(process.env.KOA_UPLOAD_IDLE_MS ?? UPLOAD_IDLE_MS);
-  if (!Number.isFinite(uploadIdleMs) || uploadIdleMs <= 0) throw Error("KOA_UPLOAD_IDLE_MS must be positive");
   if (metricsFile) await writeFile(metricsFile, "");
   const view = await webview({ target: browser ? "browser" : "pane" });
   if (!view) throw new Error("koa requires a Kido pane or --browser");

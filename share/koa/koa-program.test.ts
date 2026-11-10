@@ -43,7 +43,7 @@ test('resume selects before the browser, cancels, and reports a broken picker', 
   const server = createServer();
   const children = new Set<ReturnType<typeof spawn>>();
   const sockets = new Set<import('node:net').Socket>();
-  server.on('connection', socket => { sockets.add(socket); socket.once('close', () => sockets.delete(socket)); });
+  server.on('connection', socket => { sockets.add(socket); socket.on('error', (error: NodeJS.ErrnoException) => { if (error.code !== 'ECONNRESET') throw error; }); socket.once('close', () => sockets.delete(socket)); });
   t.after(async () => {
     for (const child of children) child.kill('SIGTERM');
     for (const socket of sockets) socket.destroy();
@@ -364,8 +364,11 @@ test('a failed switch refresh clears old history and returns to a usable session
 });
 
 test('startup failures release the view before exiting', { timeout: 5000 }, async t => {
-  for (const args of [[], ['--metrics', '/does-not-exist/metrics']]) {
-    const child = spawn(process.execPath, [resolve('../koa/koa.ts'), '--browser', ...args], { env: { ...process.env, ...(args.length ? {} : { KOA_UPLOAD_IDLE_MS: 'bad' }) }, stdio: 'pipe' });
+  const dir = await mkdtemp(join(tmpdir(), 'koa-startup-failure-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  await symlink(process.execPath, join(dir, 'node'));
+  for (const args of [[], ['--pi', resolve('../koa/koa-fake-pi.ts'), '--metrics', '/does-not-exist/metrics']]) {
+    const child = spawn(process.execPath, [resolve('../koa/koa.ts'), '--browser', ...args], { env: { ...process.env, PATH: dir, ...(args.length ? {} : { KOA_UPLOAD_IDLE_MS: 'bad' }) }, stdio: 'pipe' });
     const close = once(child, 'close'); t.after(() => { if (child.exitCode === null) child.kill('SIGTERM'); });
     let stderr = ''; child.stderr.on('data', bytes => { stderr += bytes; });
     const [code] = await close; assert.equal(code, 1); assert.match(stderr, args.length ? /ENOENT/ : /KOA_UPLOAD_IDLE_MS/);
@@ -847,7 +850,7 @@ test("metrics are opt-in and record frame samples with stream counters", { timeo
 
 test("metrics mode is explicit and requires metrics", { timeout: 10000 }, async () => {
   for (const args of [["--metrics-mode", "frame"], ["--metrics-mode", "invalid"]]) {
-    const child = spawn(process.execPath, [resolve("../koa/koa.ts"), ...args], { timeout: 5000 });
+    const child = spawn(process.execPath, [resolve("../koa/koa.ts"), ...args], { env: { ...process.env, PATH: '' }, timeout: 5000 });
     let error = "";
     child.stderr.on("data", bytes => { error += bytes; });
     const [code] = await once(child, "close");

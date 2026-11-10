@@ -328,14 +328,19 @@ mod tests {
         let (mut reader, writer) = std::io::pipe().unwrap();
         // SAFETY: an inheritable copy of the pipe, closed below.
         let gap = unsafe { libc::fcntl(writer.as_raw_fd(), libc::F_DUPFD, 5) };
-        assert!((5..12).contains(&gap), "{gap}");
-        let report = format!(
-            "for n in 0 3 4 {gap}; do [ -e /proc/$$/fd/$n ] && echo open$n; done; echo done"
-        );
+        assert!(gap >= 5, "{gap}");
+        let target = u8::try_from(gap.checked_add(1).unwrap()).unwrap();
+        let probes = std::iter::once(0)
+            .chain(3..i32::from(target))
+            .map(|fd| fd.to_string())
+            .collect::<Vec<_>>()
+            .join(" ");
+        let report =
+            format!("for n in {probes}; do [ -e /proc/$$/fd/$n ] && echo open$n; done; echo done");
         let child = program(
             Path::new("/bin/sh"),
             &["-c", &report],
-            &[(writer.as_fd(), 1), (writer.as_fd(), 12)],
+            &[(writer.as_fd(), 1), (writer.as_fd(), target)],
             Env::Inherit,
             None,
         );

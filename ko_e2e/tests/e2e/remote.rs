@@ -197,10 +197,15 @@ fn remote_a_reconnected_client_reports_its_window_without_a_later_resize() {
     }
     let s = start(&[]);
     let pane = s.pane("printf '\\033]0;sized-title\\007'; exec sh");
+    let initial = s.stty(&pane);
     let remote = Remote::with_ko(&s.dir);
     let outer = attach(&remote, &s.dir);
     outer.contains("sized-title");
-    let before = s.stty(&pane);
+    let mut before = initial;
+    poll("the pane to follow the attached client's report", || {
+        before = s.stty(&pane);
+        before != initial
+    });
     let master = remote.master(&outer.dir);
     std::fs::write(&remote.block, "").unwrap();
     signal_descendant(outer.client_pid(), master, Signal::Kill).unwrap();
