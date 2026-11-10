@@ -1,7 +1,7 @@
 import SidebarFeed
 
 @MainActor final class Reorder {
-    enum Gesture { case pane, tab, sidebar }
+    enum Gesture { case pane, sidebar }
     private(set) var gesture: Gesture?
     var state = ReorderState()
 

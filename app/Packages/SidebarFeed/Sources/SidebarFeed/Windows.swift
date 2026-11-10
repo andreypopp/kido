@@ -35,35 +35,18 @@ public func closeScope(_ snapshot: Snapshot?, target: CloseTarget) -> (running: 
 }
 
 public struct WindowProjection: Equatable, Sendable {
-    public struct Label: Equatable, Sendable {
-        public let title: String
-        public let agent: Bool
-        public let messageable: Bool
-    }
     public var ancestors: [WindowID: WindowID] = [:]
-    public var statuses: [WindowID: SidebarRow.Status] = [:]
-    public var labels: [WindowID: Label] = [:]
     public var order: [WindowID] = []
     public init() {}
 }
 
-public func sidebarWindows(_ snapshot: Snapshot?, session: SessionID?, surviving: Set<WindowID>, activePanes: [WindowID: PaneID] = [:], seen: SidebarSeen = SidebarSeen()) -> WindowProjection {
+public func sidebarWindows(_ snapshot: Snapshot?, session: SessionID?, surviving: Set<WindowID>) -> WindowProjection {
     var result = WindowProjection()
     func collect(_ node: Node, ancestor: WindowID?) {
         let window = node.window
-        if case .item(let item) = node, activePanes[window] == item.pane {
-            result.labels[window] = .init(title: item.label, agent: item.isAgent, messageable: item.isMessageable)
-        }
         let root = ancestor ?? (surviving.contains(window) ? window : nil)
         if ancestor == nil, root != nil { result.order.append(window) }
-        if let root {
-            result.ancestors[window] = root
-            let previous = result.statuses[root] ?? .quiet
-            if previous != .error {
-                let status: SidebarRow.Status = if case .item(let item) = node { item.indicator(seen).status } else { .quiet }
-                result.statuses[root] = previous.mergingTabStatus(status)
-            }
-        }
+        if let root { result.ancestors[window] = root }
         node.children.forEach { collect($0, ancestor: root) }
     }
     snapshot?.sessions.first { $0.id == session }?.nodes.forEach { collect($0, ancestor: nil) }

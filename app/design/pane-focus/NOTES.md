@@ -5,7 +5,7 @@
 ## Treatments
 
 - **Current.** Inactive overlay, terminal background at 45%. Cost: text in inactive panes drops to about half contrast, and those panes are where output is read while typing elsewhere. The overlay also covers selection and find highlights.
-- **Background shift.** Inactive panes take the sidebar's shade rule: the terminal background mixed toward black on a light theme and toward white on a dark one. Glyphs, cursor, selection and highlights are untouched. The focused pane is then the only surface with the pure terminal background. The Shift strength control previews 5% (the sidebar default, so inactive panes match the sidebar tone), 8% and 12%. The shift is a fixed 5% and does not follow `kido-sidebar-shade`: a sidebar shade of −40% must not make inactive panes unreadable. Matching the sidebar tone is a side effect at the default, not a rule.
+- **Background shift.** Inactive panes take the terminal background mixed toward black on a light theme and toward white on a dark one. Glyphs, cursor, selection and highlights are untouched. The focused pane is then the only surface with the pure terminal background. The Shift strength control previews 5%, 8% and 12%. The app's shift is set by `kido-unfocused-background-shift` (default 3%, 0 turns it off).
 - **Active dividers.** The separators that touch the focused pane are drawn in the accent colour (accent mixed 70% into `separatorColor`), 1pt as before. Separators between two inactive panes keep `separatorColor`.
 - **Focus edge.** A 1pt inset stroke on the focused pane in the accent at 50% opacity. It sits over the pane padding, not over cells.
 - **Shift + focus edge.** The shift plus the 1pt accent stroke on the focused pane. Louder than the dividers in a light theme because the stroke closes all four sides.
@@ -13,13 +13,13 @@
 
 ## Sidebar focus
 
-When the sidebar is first responder (Focus control, or click the sidebar), it gets the same 1pt inset accent stroke at 50% around its whole column, including the band behind the toolbar. No pane looks focused: every pane takes the inactive treatment (the shift on all panes, or the overlay on all panes in the current treatment), there is no focus edge and no accent divider, and the active pane's cursor is hollow. Only one surface carries focus at a time. The active pane is still remembered, so clicking back into the terminal area or pressing Escape returns to it. The keyboard-selection fill on a sidebar row is unchanged.
+When the sidebar is first responder (Focus control, or click the sidebar), it gets the same 1pt inset accent stroke at 50% around its whole column, including the title row. No pane looks focused: every pane takes the inactive treatment (the shift on all panes, or the overlay on all panes in the current treatment), there is no focus edge and no accent divider, and the active pane's cursor is hollow. Only one surface carries focus at a time. The active pane is still remembered, so clicking back into the terminal area or pressing Escape returns to it. The keyboard-selection fill on a sidebar row is unchanged.
 
 ## Window chrome
 
-As in the real window: a 1 device pixel line under the toolbar across the terminal area (`placement.topLine` in WindowView), the split view divider at the sidebar's right edge, full height through the toolbar, and the pane dividers. Both stay in every focus state; the focus edge draws inside them.
+The real window has no toolbar, no top line and no divider lines: panes are cards on a canvas and the ring is 1.5pt (docs/design-app.md, "Focus treatment").
 
-Line colour: `separatorColor` is about 10% over the background, and over a shifted surface it nearly disappears, because the sidebar and an inactive pane are the same tone. These lines use the terminal background mixed 18% toward the terminal foreground instead (light `#f6ede0`-ish over `#fff9ec`, dark `#373737` over `#171717`). It follows the theme and stays visible over the shift in both appearances.
+Historical: the sections below describe an earlier mockup with divider lines and a docked sidebar shadow. The app has neither now: the docked sidebar is the canvas colour (docs/design-app.md, "Focus treatment").
 
 ## Sidebar separation (chosen: soft shadow)
 
@@ -27,7 +27,7 @@ With the shift, the sidebar and an inactive pane next to it are the same tone, s
 
 - **Soft shadow.** The sidebar casts a shadow onto the terminal area: offset 4pt right, blur 14pt, spread −2pt, black 40% in dark and black 18% in light; the divider stays. In light the shadow alone is too faint, so there the sidebar divider is the background mixed 28% toward the foreground (#cac6bc over #fff9ec); dark keeps 18%. The sidebar reads as a raised sheet, as the macOS 26 inset (Liquid Glass) sidebar does. User's choice.
 - **Stronger divider.** The split divider only, terminal background mixed 35% toward foreground instead of 18%. Cheapest, but a 1px line cannot separate two surfaces of the same tone by much.
-- **Larger tone step.** Sidebar at 12% shift, inactive panes at 5%. Native-looking (Finder and Xcode sidebars differ from content by tone), but on a dark theme 12% is still close to 5%, and a stronger sidebar shade fights the user's `kido-sidebar-shade`.
+- **Larger tone step.** Sidebar at 12% shift, inactive panes at 5%. Native-looking (Finder and Xcode sidebars differ from content by tone), but on a dark theme 12% is still close to 5%. Rejected: the sidebar is the canvas now.
 
 HIG: not against it. A plain split-view sidebar has only its divider, while the macOS 26 inset sidebar floats with its own soft edge and shadow, so a subtle cast shadow puts a docked sidebar in the same family. Keep it soft (blur under about 16pt, low opacity) and never on the content's own edges.
 

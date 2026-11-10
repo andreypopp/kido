@@ -47,6 +47,12 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate {
     private let insertion = Insertion()
     private let dragOwner = UUID().uuidString
     var navigate: (RPCRequest) -> Void = { _ in }
+    var accent = Chrome.accent {
+        didSet {
+            guard accent != oldValue else { return }
+            table.enumerateAvailableRowViews { row, _ in (row.view(atColumn: 0) as? SidebarCell)?.accent = accent }
+        }
+    }
     var onIntent: () -> Void = {}
     var leave: () -> Void = {}
     private var rendering = false
@@ -585,6 +591,7 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate {
                 resizeRows([index])
             }
         }
+        cell.accent = accent
         cell.configure(item)
         cell.close.invoke = { [weak self] in self?.closePane(item) }
         cell.addWindow.invoke = { [weak self] in self?.newWindow(item.id.session) }
