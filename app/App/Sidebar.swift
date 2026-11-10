@@ -158,6 +158,7 @@ final class Sidebar: NSSplitViewController {
         }
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
+    private var glassResize: NSObjectProtocol?
     override func viewDidAppear() {
         super.viewDidAppear()
         view.needsLayout = true
@@ -168,6 +169,12 @@ final class Sidebar: NSSplitViewController {
 
     override func viewDidLayout() {
         super.viewDidLayout()
+        if glassResize == nil, let glass = dockedGlass {
+            glass.postsFrameChangedNotifications = true
+            glassResize = NotificationCenter.default.addObserver(forName: NSView.frameDidChangeNotification, object: glass, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.view.needsLayout = true }
+            }
+        }
         let root = view.window?.contentView?.superview
         if let root, let glass = dockedGlass, !isFloating, !isCollapsed {
             if dock.superview !== root { root.addSubview(dock, positioned: .above, relativeTo: view.window?.contentView) }

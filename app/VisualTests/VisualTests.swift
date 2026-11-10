@@ -762,6 +762,14 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         func titleFrame() -> NSRect { sidebar.visualTitle.convert(sidebar.visualTitle.bounds, to: root) }
         try await shot("docked")
         let dockedTitle = titleFrame()
+        let tall = window.frame
+        window.setFrame(NSRect(x: tall.minX, y: tall.minY + 300, width: tall.width, height: tall.height - 300), display: true)
+        window.setFrame(tall, display: true)
+        root.layoutSubtreeIfNeeded()
+        let column = sidebar.splitView.convert(sidebar.splitView.bounds, to: root)
+        let listFrame = sidebar.list.convert(sidebar.list.bounds, to: root)
+        XCTAssertEqual(listFrame.height, column.height, accuracy: 0.5, "the docked list follows the window height after a resize")
+        XCTAssertEqual(sidebar.list.visualScroll.frame.maxY, sidebar.list.bounds.height - 10, accuracy: 0.5)
         XCTAssertFalse(sidebar.windowTitle.isEmpty)
         XCTAssertEqual(sidebar.windowTitle, owner.window.title)
         XCTAssertFalse(sidebar.toggleButton.isHidden)
