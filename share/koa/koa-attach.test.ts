@@ -29,7 +29,7 @@ test('a file response keeps its validated descriptor and byte boundary', async t
 async function fixture(t: TestContext, idleMs: number) {
   const dir = mkdtempSync(join(tmpdir(), 'koa-upload-cleanup-'));
   const store = attachments(join(dir, 'attachments'), idleMs);
-  const server = createServer((req, res) => { void store.handle(req, res, true); });
+  const server = createServer((req, res) => { void store.handle(req, res, () => {}); });
   server.listen(0, '127.0.0.1'); await once(server, 'listening');
   t.after(async () => { store.close(); server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); rmSync(dir, { recursive: true, force: true }); });
   const address = server.address(); assert.ok(address && typeof address !== 'string');
@@ -57,7 +57,7 @@ test('a disconnected path response does not reserve an attachment', async t => {
   let finished: Promise<boolean> | undefined;
   const server = createServer((req, res) => {
     if (req.headers['x-disconnect']) res.destroy();
-    finished = store.handle(req, res, true);
+    finished = store.handle(req, res, () => {});
   });
   server.listen(0, '127.0.0.1'); await once(server, 'listening');
   t.after(() => { store.close(); server.closeAllConnections(); server.close(); });

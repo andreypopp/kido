@@ -161,6 +161,10 @@ answers `handled`, an extension command), once after pi is ready,
 not when a page connects. A restart of pi does not send them again;
 they stay in pi's arguments, where RPC mode ignores them.
 
+koa also loads its own extension `koa-sessions.ts` and gives pi a
+fourth pipe on fd 3, the session channel ("Sessions inside the page"
+below).
+
 **`--resume` picks before the webview.** pi runs its session picker
 for `--resume` (`-r`) in every mode, also in RPC, where it would wait
 for keys on the RPC pipe. Thus, when an argument is `--resume` or
@@ -173,7 +177,8 @@ so koa has no copy of pi's grammar: when pi would not run its picker
 (`--session`, `--fork`, `--no-session` and the other flags that
 precede the picker in pi's `main.js`), it answers `skip`. Else it
 shows pi's exported `SessionSelectorComponent` with pi's two session
-loaders and the session directory that pi resolves, answers `ready`
+loaders and the session directory that pi resolves
+(`koa-session-dir.ts`, which the page's picker also uses), answers `ready`
 when the screen takes input, then `selected` with the file or
 `cancel`, restores the terminal and exits. On `selected`, koa adds
 `--session <file>` before `--` and keeps `--resume`, because pi's
@@ -236,10 +241,12 @@ With ko-pi's `pi.session`, the row is a `PiAgent`
 the session name and the session's directory.
 
 **The session's directory.** For a session of another directory, pi
-runs in that directory, so koa reads `cwd` from the session file's
-header, not from its own working directory. pi writes a new
-session's file only at its first message; a missing file is a new
-session in koa's own directory.
+runs in that directory, so koa takes `cwd` from the session channel's
+`session` record, which `koa-sessions.ts` sends at each
+`session_start` from pi's own session manager, never from its own
+working directory or from the session file: pi writes a new session's
+file only at its first message, and `/new` after a switch to another
+folder starts in that folder.
 
 **pi exits by itself.** When pi exits with code 0, koa shuts down as
 on a quit, as a TUI pi leaves the user in the shell: a subagent's pi
@@ -355,6 +362,8 @@ the supported set; each runs over pi's RPC:
   works for a remote koa and in a browser. A page's
   `navigator.clipboard` write needs a user gesture in WebKit and the
   text arrives after it.
+- `/resume` and `/new` switch the session inside the page ("Sessions
+  inside the page" below).
 - `/quit` shuts koa down as Control-D does.
 
 Every other built-in is refused with a warning line, "/settings is
@@ -362,6 +371,69 @@ not available in koa", and its text stays out of pi; completion does
 not list it. The arguments of a built-in never carry attachments: the
 page keeps them in the composer. The built-ins come first in
 completion, in the supported order, with the kind `built-in`.
+
+## Sessions inside the page
+
+`/resume` opens a session picker in the page and `/new` starts a new
+session, as in pi's TUI; `koa --resume` keeps its terminal picker
+("The process" above), which the user decided. Both commands consume
+their text in the composer; the rest of the draft (its attachments)
+stays across the switch. The picker's look is the mockup's
+(app/design/koa, "Sessions inside the page").
+
+**In place, through pi's RPC.** koa sends pi's `switch_session` or
+`new_session` and does not restart pi: pi's runtime already asks the
+extensions (`session_before_switch`, which can cancel), aborts the
+turn and a running bash command, shuts the old session down and starts
+the new one. ko-pi follows through its own `session_shutdown` and
+`session_start` (its pane variables, registry and peers), so koa does
+nothing for it. A cancelled switch changes nothing in koa.
+
+**The session channel.** pi has no RPC that lists sessions, and a
+list reads pi's session files with the settings of the session that
+runs, which only the pi child has. Thus `koa-sessions.ts`, an
+extension in the pi child, answers on fd 3 (`koa-session-channel.ts` holds its
+records): a `list` query with an id, for this folder or all, which it
+answers with pi's `SessionManager.list` or `listAll` over the session
+directory that pi resolves, and a `cancel` of a running scan. It also
+sends a `session` record at each `session_start` with the session's
+id, cwd and a generation that increases, so a switch to the same file
+waits for the new record. The first message of a row is cut to its
+first line on the wire. Subagent sessions do not show, because ko-pi
+keeps them out of pi's session tree. pi loads the extension module
+again on a switch to another folder, so the channel lives on
+`globalThis`, once for each process.
+
+**The switch.** koa's state has a `switching` phase. While it lasts,
+koa drops pi's events and RPC replies of the old session, and refuses
+the routes of the session (prompts, abort, the queue, model, thinking,
+completion, attachments and step files); dialog answers and quit still
+work, because an extension can ask before it allows the switch. pi
+runs the new session's `session_start` before it answers, so koa keeps
+the extensions' fire-and-forget UI records of that time and replays
+them in order after the switch. On success koa resets the session's
+state in one place (`resetSession`: the queue, the attachments, the
+partial message, dialogs, statuses), refreshes as at start and adds one
+notice: "session: <name> · N messages" or "new session". A refresh
+that fails ends with an empty transcript, the error as a notice and pi
+ready. Every request that acts on a session carries the page's
+`sessionId`, and koa refuses a request of another session with 409,
+so a prompt whose body arrived after a switch never reaches the new
+session.
+
+**pi's busy rule.** pi aborts a running turn or command on a switch
+and does not ask. The page asks first: while pi works or a `!` command
+runs, "Switch session?" with Cancel and Switch; Switch sends the page's
+abort (once for each of the two that runs, because the route cancels
+the command first), then opens the picker or starts the session. The
+confirmation is single-use. The reset drops the `!` commands of the
+old session, so a late result does not reach the new one.
+
+**Search** is a subsequence match over the name and the first message,
+in the page. pi's TUI also searches the message text, through a
+function that pi does not export, so the page's search is narrower.
+The rows of each scope stay while the picker is open, so ⇥ does not
+scan again.
 
 ## The transcript
 
@@ -934,8 +1006,9 @@ keep up.
 
 The TypeScript suite drives koa over the scripted pi
 (`koa-fake-pi.ts`) and the fake ko: the feed, the delivery, the
-routes, the attachments, the restart and the status bytes
-(`koa-program.test.ts`), the transcript module, completion, the
+routes, the attachments, the restart, the session switch and the
+status bytes (`koa-program.test.ts`), the session channel over the
+pinned real pi in a private directory (`koa-sessions.test.ts`), the transcript module, completion, the
 queue's matching, the image sniffer, and the page's DOM rules over a
 fake document with the page's types stripped (`koa-dom.test.ts`). The
 Markdown memo is a pure module, tested under Node against a full

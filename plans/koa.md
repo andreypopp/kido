@@ -17,8 +17,7 @@ have their own plan, plans/koa-questions.md.
    follows with a rebuild; the page has no view to start them. Needs a
    mockup first.
 3. **More built-in slash commands.** koa handles `/model`,
-   `/thinking`, `/compact`, `/session`, `/copy`, `/export`, `/name`
-   and `/quit` (design-koa.md, "Built-in commands are koa's"); the
-   others are refused. `/new` and `/resume` come with the session
-   switching in the page. Each further built-in is a decision for the
-   user.
+   `/thinking`, `/compact`, `/session`, `/copy`, `/export`, `/name`,
+   `/new`, `/resume` and `/quit` (design-koa.md, "Built-in commands
+   are koa's"); the others are refused. Each further built-in is a
+   decision for the user.

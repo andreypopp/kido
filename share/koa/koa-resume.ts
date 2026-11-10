@@ -1,8 +1,8 @@
 import { writeSync } from "node:fs";
-import { homedir } from "node:os";
-import { resolve } from "node:path";
 import { ProcessTerminal, TuiMainScreen } from "@earendil-works/pi-tui";
 import { getAgentDir, initTheme, parseArgs, SessionManager, SessionSelectorComponent, SettingsManager } from "@earendil-works/pi-coding-agent";
+
+import { sessionDir } from "./koa-session-dir.ts";
 
 export default async function () {
   const ui = new TuiMainScreen(new ProcessTerminal());
@@ -19,15 +19,13 @@ export default async function () {
     if (!process.stdin.isTTY || !process.stdout.isTTY) throw new Error("resume requires a terminal");
     const cwd = process.cwd();
     const settings = SettingsManager.create(cwd, getAgentDir());
-    const expand = (path: string) => path.replace(/^~(?=\/|$)/, homedir());
-    const configured = args.sessionDir || process.env.PI_CODING_AGENT_SESSION_DIR;
-    const sessionDir = configured ? resolve(expand(configured)) : settings.getSessionDir();
+    const dir = sessionDir(args, cwd);
     initTheme(settings.getThemeSetting());
     const result = await new Promise<{ type: "selected"; path: string } | { type: "cancel" }>(resolve => {
       const cancel = () => resolve({ type: "cancel" });
       const selector = new SessionSelectorComponent(
-        (progress, signal) => SessionManager.list(cwd, sessionDir, progress, signal),
-        (progress, signal) => SessionManager.listAll(sessionDir, progress, signal),
+        (progress, signal) => SessionManager.list(cwd, dir, progress, signal),
+        (progress, signal) => SessionManager.listAll(dir, progress, signal),
         path => resolve({ type: "selected", path }), cancel, cancel,
         () => ui.requestRender(), { showRenameHint: false },
       );

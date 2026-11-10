@@ -1,10 +1,11 @@
 #!/usr/bin/env node
-import { readFileSync, appendFileSync, writeFileSync, writeSync, closeSync } from "node:fs";
+import { readFileSync, appendFileSync, writeFileSync, writeSync, closeSync, existsSync, watch } from "node:fs";
 import { once } from "node:events";
 import { fileURLToPath } from 'node:url';
 import { setTimeout } from "node:timers/promises";
 import { spawn } from "node:child_process";
-import { connect } from "node:net";
+import { connect, Socket } from "node:net";
+import { createInterface } from 'node:readline';
 import type { RpcCommand } from "@earendil-works/pi-coding-agent";
 
 if (process.argv.some(arg => arg.endsWith('/koa-startup.ts'))) {
@@ -80,12 +81,24 @@ async function advance(): Promise<void> {
     else { await output; process.exit(step.code); }
   }
 }
-async function command(value: { type: string; id: string; message?: string; images?: Extract<RpcCommand, { type: "prompt" }>["images"]; streamingBehavior?: string; provider?: string; modelId?: string; level?: string; command?: string; excludeFromContext?: boolean }): Promise<void> {
+async function command(value: { type: string; id: string; sessionPath?: string; message?: string; images?: Extract<RpcCommand, { type: "prompt" }>["images"]; streamingBehavior?: string; provider?: string; modelId?: string; level?: string; command?: string; excludeFromContext?: boolean }): Promise<void> {
   log(value);
+  if (value.type === 'switch_session') {
+    const rows: { path: string }[] = JSON.parse(process.env.KOA_FAKE_SESSIONS_FILE ? readFileSync(process.env.KOA_FAKE_SESSIONS_FILE, 'utf8') : process.env.KOA_FAKE_SESSIONS ?? '[]');
+    if (!rows.some(row => row.path === value.sessionPath)) { await emit({ type: 'response', command: value.type, id: value.id, success: false, error: 'Unknown session path' }); return; }
+  }
   if (value.type === "get_state" && startupGate) {
     const gate = connect(startupGate);
     startupGate = undefined;
     await once(gate, "data"); gate.end();
+  }
+  if ((value.type === 'switch_session' || value.type === 'new_session') && process.env.KOA_FAKE_SESSION_FILE_GATE && existsSync(process.env.KOA_FAKE_SESSION_FILE_GATE)) {
+    const watcher = watch(process.env.KOA_FAKE_SESSION_FILE_GATE);
+    try { await once(watcher, 'change'); } finally { watcher.close(); }
+  }
+  if ((value.type === 'switch_session' || value.type === 'new_session') && process.env.KOA_FAKE_SESSION_GATE) {
+    const gate = connect(process.env.KOA_FAKE_SESSION_GATE);
+    await once(gate, 'data'); gate.end();
   }
   if (value.type === "prompt" && working && !["steer", "followUp"].includes(value.streamingBehavior ?? "")) {
     await emit({ type: "response", command: value.type, id: value.id, success: false, error: "prompt requires streamingBehavior while working" });
@@ -100,7 +113,7 @@ async function command(value: { type: string; id: string; message?: string; imag
   else if (value.type === "get_available_thinking_levels") data = { levels: ["off", "low", "high"] };
   else if (value.type === "get_session_stats") data = { contextUsage: { tokens: 123, contextWindow: 1000, percent: 12.3 } };
   const configured = responses.get(value.type);
-  if (configured) data = configured.data;
+  if (configured) data = value.type === 'get_state' ? { sessionId: 'fake', ...configured.data } : configured.data;
   if (selectionFile) {
     if (value.type === "get_state") data = { ...data, ...selection };
     if (value.type === "set_model" && value.provider && value.modelId) { selection.model = { provider: value.provider, id: value.modelId }; writeFileSync(selectionFile, JSON.stringify(selection)); }
@@ -110,6 +123,13 @@ async function command(value: { type: string; id: string; message?: string; imag
     await bash.cancel();
     await emit({ type: 'response', command: 'abort_bash', id: value.id, success: true });
     return;
+  }
+  if (value.type === 'get_state' && sessionSocket) {
+    if (!('sessionId' in data) || typeof data.sessionId !== 'string') throw Error('get_state needs a session id');
+    let cwd = process.env.KOA_FAKE_CWD ?? process.cwd();
+    if ('sessionFile' in data && typeof data.sessionFile === 'string') { try { cwd = JSON.parse(readFileSync(data.sessionFile, 'utf8').split('\n')[0] ?? '{}').cwd ?? cwd; } catch {} }
+    sessionCwd = cwd;
+    sessionSocket.write(JSON.stringify({ type: 'session', id: data.sessionId, generation: ++sessionGeneration, cwd }) + '\n');
   }
   const step = script[next];
   if (step?.type === "wait" && step.command === value.type) {
@@ -151,6 +171,22 @@ async function command(value: { type: string; id: string; message?: string; imag
   }
 }
 log({ type: "argv", args: process.argv.slice(2) });
+let sessionSocket: Socket | undefined;
+let sessionCwd = process.cwd();
+let sessionGeneration = 0;
+if (process.argv.some(arg => arg.endsWith('/koa-sessions.ts'))) {
+  const channel = new Socket({ fd: 3, readable: true, writable: true }); sessionSocket = channel;
+  channel.on('error', () => {});
+  const lines = createInterface({ input: channel });
+  lines.on('line', line => {
+    const query = JSON.parse(line); log({ type: 'session_query', ...query });
+    if (query.type === 'list') {
+      const rows = JSON.parse(process.env.KOA_FAKE_SESSIONS_FILE ? readFileSync(process.env.KOA_FAKE_SESSIONS_FILE, 'utf8') : process.env.KOA_FAKE_SESSIONS ?? '[]');
+      rows.sort((a: { modified: number }, b: { modified: number }) => b.modified - a.modified);
+      channel.write(JSON.stringify({ type: 'list', id: query.id, rows: query.scope === 'all' ? rows : rows.filter((row: { cwd: string }) => row.cwd === sessionCwd) }) + '\n');
+    }
+  });
+}
 if (process.env.KOA_FAKE_KEEP_PIPES) spawn(process.execPath, ["-e", 'const socket = require("node:net").connect(process.env.KOA_FAKE_KEEP_PIPES); socket.on("data", () => socket.end());'], { stdio: ["ignore", process.stdout, process.stderr] }).unref();
 if (process.env.KOA_FAKE_STUBBORN) process.on("SIGTERM", () => log({ type: "signal", signal: "SIGTERM" }));
 let buffer = Buffer.alloc(0);

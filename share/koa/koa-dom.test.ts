@@ -257,6 +257,90 @@ test('command results use notice lines and expandable session information', asyn
   assert.deepEqual(Array.from(result), ['copied the last reply · 2.1k characters', 'note', 'info open']);
 });
 
+test('session picker filters locally and keeps the draft on a switch', async () => {
+  const fixture = await page();
+  const result = await fixture.run(`(async()=>{
+    state={...state,pi:{type:'ready'},sessionId:'old'};
+    editor.setText('keep my draft');
+    const calls=[];
+    fetchJSON=async(path,body)=>{calls.push([path,body]);return path==='/sessions/list'?{rows:[{id:'one',path:'/tmp/one',cwd:'/work/a',name:'First',firstMessage:'hello',modified:1,messageCount:2},{id:'two',path:'/tmp/two',cwd:'/work/b',firstMessage:'other',modified:2,messageCount:1}]}:{};};
+    await openSessions();
+    sessionSearch.value='other';sessionSearch.oninput();
+    const shown=sessionResults.children.map(row=>row.children[0].textContent);
+    await chooseSession({type:'switch',path:'/tmp/two'});
+    apply({type:'state',...state,sessionId:'two'});
+    return {shown,calls,text:editor.text()};
+  })()`);
+  assert.deepEqual(Array.from(result.shown), ['other']);
+  assert.equal(result.text, 'keep my draft');
+  assert.equal(result.calls[0][0], '/sessions/list');
+  assert.equal(result.calls[1][0], '/sessions/switch');
+});
+
+test('resume consumes only command text and confirms before aborting a turn', async () => {
+  const app = await page();
+  const requests: string[] = [];
+  app.context.fetch = async (path?: string) => { requests.push(path ?? ''); return { ok: true, json: async () => path === '/prompt' ? { disposition: 'handled', action: { type: 'session', kind: 'resume' } } : path === '/sessions/list' ? { rows: [] } : {} }; };
+  const saved = app.run("state={...state,pi:{type:'ready'},working:true};draft.restore([{id:'draft',name:'note',path:'/tmp/note',size:1,origin:'upload',kind:'file'}]);editor.setText('/resume');void send();({files:()=>draft.files})");
+  await new Promise<void>(resolve => setImmediate(resolve));
+  assert.equal(app.text(), '');
+  assert.deepEqual(requests, ['/prompt']);
+  assert.equal(app.elements.get('session-picker')?.children[0].children[0].children[0].textContent, 'Switch session?');
+  assert.equal(app.elements.get('field')?.inert, true);
+  app.elements.get('session-picker')?.onkeydown?.({ key: 'Enter', preventDefault() {}, stopPropagation() {} });
+  await new Promise<void>(resolve => setImmediate(resolve));
+  assert.deepEqual(requests, ['/prompt', '/abort', '/sessions/list']);
+  assert.equal(saved.files()[0].id, 'draft');
+});
+
+test('session confirmation cancels commands and concurrent turns before opening the picker', async () => {
+  for (const working of [false, true]) {
+    const app = await page(), requests: string[] = [];
+    app.context.fetch = async (path?: string) => { requests.push(path ?? ''); return { ok: true, json: async () => ({ rows: [] }) }; };
+    app.run(`state={...state,pi:{type:'ready'},working:${working},bash:[{id:'run',phase:'running',command:'echo hi',excludeFromContext:false,started:1,output:{text:'',cut:0}}]};void sessionCommand('resume')`);
+    const card = app.elements.get('session-picker')?.children[0];
+    assert.equal(card?.children[1].textContent, working ? 'koa is working on a turn; it will be aborted.' : 'a command is running; it will be cancelled.');
+    assert.deepEqual(requests, []);
+    app.elements.get('session-picker')?.onkeydown?.({ key: 'Enter', preventDefault() {}, stopPropagation() {} });
+    await new Promise<void>(resolve => setImmediate(resolve));
+    assert.deepEqual(requests, working ? ['/abort', '/abort', '/sessions/list'] : ['/abort', '/sessions/list']);
+  }
+});
+
+test('session scope loading has no stale choices and cached scopes do not rescan', async () => {
+  const app = await page();
+  const result = await app.run(`(async()=>{
+    state={...state,pi:{type:'ready'},sessionId:'old'};
+    const calls=[];let release;
+    fetchJSON=async(path,body)=>{calls.push(path);if(calls.length===1)return {rows:[{id:'one',path:'/tmp/one',cwd:'/work',firstMessage:'keep one',modified:2,messageCount:1},{id:'two',path:'/tmp/two',cwd:'/work',firstMessage:'keep two',modified:1,messageCount:1}]};return new Promise(resolve=>{release=resolve})};
+    await openSessions();
+    const row=sessionResults.children[0];
+    sessionHost.onkeydown({key:'ArrowDown',preventDefault(){},stopPropagation(){}});
+    const same=row===sessionResults.children[0];
+    const loading=openSessions('all');sessionSearch.value='keep';sessionSearch.oninput();
+    sessionHost.onkeydown({key:'Enter',preventDefault(){},stopPropagation(){}});
+    const hidden=visibleSessions.length===0&&sessionPicker==='loading';
+    release({rows:[]});await loading;await openSessions('current');
+    return {same,hidden,calls,rows:visibleSessions.length};
+  })()`);
+  assert.equal(result.same, true); assert.equal(result.hidden, true);
+  assert.equal(result.rows, 2);
+  assert.deepEqual(Array.from(result.calls), ['/sessions/list', '/sessions/list']);
+});
+
+test('busy confirmation submits once and cancelling a held abort prevents the session action', async () => {
+  const app = await page();
+  const calls: string[] = [];
+  let release: () => void = () => {};
+  app.context.fetch = async (path?: string) => {
+    calls.push(path ?? '');
+    return new Promise<{ ok: boolean; json(): Promise<object> }>(resolve => { release = () => resolve({ ok: true, json: async () => ({}) }); });
+  };
+  const saved = app.run("state={...state,pi:{type:'ready'},working:true,sessionId:'old'};void sessionCommand('new');({press:key=>sessionHost.onkeydown({key,preventDefault(){},stopPropagation(){}}),closed:()=>sessionPicker==='closed'})");
+  saved.press('Enter'); saved.press('Enter'); saved.press('Escape'); release();
+  await new Promise<void>(resolve => setImmediate(resolve));
+  assert.deepEqual(calls, ['/abort']); assert.equal(saved.closed(), true);
+});
 test('annotation map attaches a late reply, hides items and re-renders final text only for a new annotation item', async () => {
   const fixture = await page();
   const result = fixture.run(`

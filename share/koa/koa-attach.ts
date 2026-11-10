@@ -11,8 +11,9 @@ export const UPLOAD_IDLE_MS = 30000;
 export const isChunkRoute = (path: string) => /^\/attachments\/[^/]+\/\d+$/.test(path);
 type Entry = { type: 'uploading'; path: string; name: string; size: number; received: number; timer: ReturnType<typeof setTimeout>; request?: IncomingMessage } | { type: 'ready' | 'queued' | 'used'; info: Attachment };
 
-export async function stepFile(request: IncomingMessage, response: ServerResponse, pathAt: (seq: number, index: number) => string | undefined, cwd: string, home: string): Promise<boolean> {
+export async function stepFile(request: IncomingMessage, response: ServerResponse, pathAt: (seq: number, index: number) => string | undefined, cwd: string, home: string, access: () => void): Promise<boolean> {
   if (request.method !== 'GET' || !request.url?.startsWith('/steps/')) return false;
+  access();
   const match = /^\/steps\/(\d+)\/(\d+)\/file$/.exec(request.url);
   const path = match ? pathAt(Number(match[1]), Number(match[2])) : undefined;
   if (!path) { respond(response, 404, '{}'); return true; }
@@ -36,12 +37,12 @@ export function attachments(dir: string, idleMs = UPLOAD_IDLE_MS) {
     return file.image ? { ...common, kind: 'image', ...file.image } : { ...common, kind: 'file' };
   };
   return {
-    async handle(request: IncomingMessage, response: ServerResponse, alive: boolean) {
+    async handle(request: IncomingMessage, response: ServerResponse, access: () => void) {
       const url = new URL(request.url ?? '/', 'http://koa');
       if (url.pathname !== '/attachments' && !url.pathname.startsWith('/attachments/')) return false;
       response.setHeader('X-Content-Type-Options', 'nosniff'); response.setHeader('Content-Security-Policy', "sandbox; default-src 'none'");
       const reply = (status: number, value: object) => { respond(response, status, JSON.stringify(value)); return true; };
-      if (!alive) return reply(409, { error: 'pi is not running' });
+      access();
       try {
         if (url.pathname === '/attachments' && request.method === 'POST') {
           const bytes = await readBody(request, 1 << 20);
@@ -140,7 +141,7 @@ export function attachments(dir: string, idleMs = UPLOAD_IDLE_MS) {
     },
     consume(ids: readonly string[], type: 'queued' | 'used') { for (const id of ids) { const entry = entries.get(id); if (entry && entry.type !== 'uploading' && entry.type !== 'used') entries.set(id, { type, info: entry.info }); } },
     restore(ids: readonly string[]) { for (const id of ids) { const entry = entries.get(id); if (entry?.type === 'queued') entries.set(id, { type: 'ready', info: entry.info }); } },
-    reset() { for (const [id, entry] of entries) if (entry.type !== 'used') remove(id); },
+    reset() { for (const [id, entry] of entries) if (entry.type === 'queued') remove(id); },
     close() { for (const entry of entries.values()) if (entry.type === 'uploading') clearTimeout(entry.timer); },
   };
 }

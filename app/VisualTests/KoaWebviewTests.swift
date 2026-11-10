@@ -7,7 +7,7 @@ import SidebarFeed
 @testable import Kido
 
 extension VisualTests {
-    private enum KoaScenario { case transcript, dialogs, controls, exit, feed, completion, markdown, media, attachments, userMarkdown, preview, lightbox, agents, composer, questions, bang, commands }
+    private enum KoaScenario { case transcript, dialogs, controls, exit, feed, completion, markdown, media, attachments, userMarkdown, preview, lightbox, agents, composer, questions, bang, commands, sessions }
     func testKoaWebviewSubmitFollowsClampedBottom() async throws {
         WebviewPaneView.visualInitialScript = "window.requestAnimationFrame=callback=>setTimeout(()=>callback(performance.now()),16);window.cancelAnimationFrame=clearTimeout;const Source=EventSource;window.EventSource=class extends Source{constructor(...args){super(...args);window.scrollSource=this}};"
         defer { WebviewPaneView.visualInitialScript = nil }
@@ -63,7 +63,6 @@ extension VisualTests {
             XCTAssertEqual(result[mode == "up" || mode == "fractional-up" ? "stationary" : "bottom"] as? Bool, true, String(describing: result))
         }
     }
-
     func testKoaInterruptRestoresNativeInput() async throws {
         WebviewPaneView.visualInitialScript = "document.hasFocus=()=>true;window.requestAnimationFrame=callback=>setTimeout(()=>callback(performance.now()),0);window.cancelAnimationFrame=clearTimeout;"
         defer { WebviewPaneView.visualInitialScript = nil }
@@ -349,6 +348,14 @@ extension VisualTests {
         try await koaWebview(width: 470, height: 560, scenario: .completion, captures: Set(["slash-all", "slash-filter", "at-agents", "at-files", "at-mid", "none"].map { "narrow-complete-" + $0 }))
     }
 
+    func testKoaWebviewSessionsWide() async throws {
+        try await koaWebview(width: 980, height: 560, scenario: .sessions, captures: Set(["pick", "all", "filtered", "empty", "no-match", "loading", "after", "new", "confirm", "confirm-bash"].map { "sessions-" + $0 }))
+    }
+
+    func testKoaWebviewSessionsNarrow() async throws {
+        try await koaWebview(width: 470, height: 560, scenario: .sessions, captures: Set(["pick", "all", "filtered", "empty", "no-match", "loading", "after", "new", "confirm", "confirm-bash"].map { "narrow-sessions-" + $0 }))
+    }
+
     private func koaWebview(width: CGFloat, height: CGFloat, scenario: KoaScenario = .transcript, captures: Set<String>) async throws {
         let composerState = captures.first?.replacingOccurrences(of: "narrow-foot-", with: "").replacingOccurrences(of: "foot-", with: "") ?? ""
         let fake = checkoutRoot.appendingPathComponent("share/koa/koa-fake-pi.ts").path
@@ -359,9 +366,9 @@ extension VisualTests {
         let attachmentPaths = (shot: home.appendingPathComponent("Desktop/Screenshot 2026-11-10 at 09.11.42.png"), diagram: home.appendingPathComponent("Desktop/diagram.png"), notes: home.appendingPathComponent("Desktop/notes.md"), source: cwd.appendingPathComponent("app/App/SidebarRow.swift"))
         try FileManager.default.createDirectory(at: cwd, withIntermediateDirectories: true)
         try JSONSerialization.data(withJSONObject: ["cwd": cwd.path]).write(to: sessionFile)
-        let mediaClock = scenario == .commands || scenario == .media || scenario == .attachments || scenario == .preview || scenario == .lightbox || scenario == .agents || scenario == .composer
+        let mediaClock = scenario == .commands || scenario == .sessions || scenario == .media || scenario == .attachments || scenario == .preview || scenario == .lightbox || scenario == .agents || scenario == .composer
         let stamp = Int(try XCTUnwrap(Calendar.current.date(from: DateComponents(year: 2026, month: 11, day: mediaClock ? 10 : 8, hour: mediaClock ? 9 : 14, minute: mediaClock ? 12 : 32))).timeIntervalSince1970 * 1000)
-        let measured = scenario == .commands || scenario == .questions || scenario == .completion || scenario == .attachments || scenario == .userMarkdown || scenario == .exit || scenario == .lightbox || captures.contains("focus-border-transcript") || captures.contains("focus-border-dialog")
+        let measured = scenario == .commands || scenario == .sessions || scenario == .questions || scenario == .completion || scenario == .attachments || scenario == .userMarkdown || scenario == .exit || scenario == .lightbox || captures.contains("focus-border-transcript") || captures.contains("focus-border-dialog")
         let measurementClock = measured ? "const ClockDate=Date;window.Date=class extends ClockDate{constructor(...args){super(...(args.length?args:[\(stamp + 12000)]))}static now(){return \(stamp + 12000)}};" : ""
         // WebKit pauses animation frames in an off-screen window.
         if measured {
@@ -809,6 +816,52 @@ extension VisualTests {
             let markedEntry: [String: Any] = ["type": "custom", "id": "marked-questions", "parentId": "questions", "customType": "reply-annotations", "timestamp": ISO8601DateFormatter().string(from: Date(timeIntervalSince1970: Double(stamp + 2000) / 1000)), "data": ["reply": ["at": stamp + 1000, "block": 0, "length": marked.unicodeScalars.count], "annotations": markedQuestions]]
             prompt([["type": "message_start", "message": markedMessage], ["type": "message_end", "message": markedMessage], ["type": "entry_appended", "entry": markedEntry]])
         }
+        let sessionRows = directory.appendingPathComponent("session-rows.json")
+        let sessionGate = directory.appendingPathComponent("session-gate")
+        if scenario == .sessions {
+            let titles: [(String?, String, Int)] = [
+                ("sidebar-right", "Hand the sidebar unit to an implementer and tell the reviewer when it builds", 212),
+                ("koa-md", "Agent cards render Markdown; the queue goes above the field", 96),
+                (nil, "Why does ko_client::Model::place fail on the musl target only?", 14),
+                ("runtimes-u4", "Design the runtime indicator for Kido.app and ko_tui", 341),
+                ("release-0.31", "Release 0.31: Kido.app first, then ko", 58),
+                (nil, "Explain the view write path in ko_server::conn", 9),
+                ("notices", "Redesign the sidebar errors as notices", 187),
+                ("html-mockups", "koa webview mockups: streaming, runs, composer", 402),
+                ("bench", "Why does allocations/record rise after the deflate change?", 27),
+            ]
+            var rows: [[String: Any]] = []
+            for (index, title) in titles.enumerated() {
+                let age = index < 2 ? (index == 0 ? 600000 : 3480000) : index * 86400000
+                var row: [String: Any] = ["cwd": cwd.path, "firstMessage": title.1, "messageCount": title.2, "modified": stamp - age]
+                row["id"] = index == 0 ? "fake" : "session-\(index)"
+                row["path"] = "/tmp/koa-visual-session-\(index)"
+                if let name = title.0 { row["name"] = name }
+                rows.append(row)
+            }
+            rows.append(["id": "other", "path": "/tmp/koa-visual-other", "cwd": home.appendingPathComponent("Workspace/pi-infer-questions").path, "name": "pi-infer-questions", "firstMessage": "Train the option tagger on the new corpus", "messageCount": 77, "modified": stamp - 1800000])
+            try JSONSerialization.data(withJSONObject: rows).write(to: sessionRows)
+            let person: [String: Any] = ["role": "user", "timestamp": stamp, "content": [["type": "text", "text": "Verify the sidebar unit"]]]
+            steps = Array(steps.prefix(3))
+            steps[1] = ["type": "respond", "command": "get_messages", "data": ["messages": [person, assistant([["type": "text", "text": "Verified: every stage passes. The snapshots that changed are the twelve of SidebarTests."]])]]]
+            steps.append(["type": "wait", "command": "switch_session", "data": ["cancelled": false]])
+            steps.append(["type": "respond", "command": "get_state", "data": ["sessionId": "session-1", "sessionName": "koa-md", "sessionFile": sessionFile.path, "thinkingLevel": "high", "model": ["id": "claude-opus-5-5", "provider": "anthropic"]]])
+            let nextUser: [String: Any] = ["role": "user", "timestamp": stamp - 3480000, "content": [["type": "text", "text": "Agent cards render Markdown; the queue goes above the field"]]]
+            let nextReply = assistant([["type": "text", "text": "Done: the cards render through the reply's Markdown renderer, collapsed to one plain line."]])
+            let nextMessages: [[String: Any]] = [nextUser, nextReply]
+            steps.append(["type": "respond", "command": "get_messages", "data": ["messages": nextMessages]])
+            steps.append(["type": "respond", "command": "get_session_stats", "data": ["totalMessages": 96, "contextUsage": ["tokens": 46000, "contextWindow": 200000, "percent": 23]]])
+            let commandEvent: [String: Any] = ["type": "bash_execution_update", "delta": "running 212 tests"]
+            let commandResult: [String: Any] = ["output": "cancelled", "cancelled": true, "truncated": false]
+            steps.append(["type": "wait", "command": "bash", "gate": true, "events": [commandEvent], "data": commandResult])
+            let running = assistant([["type": "toolCall", "id": "verify", "name": "bash", "arguments": ["command": "make verify STAGES=unit"]]], stop: "toolUse")
+            prompt([["type": "agent_start"], ["type": "message_start", "message": person], ["type": "message_end", "message": person], ["type": "message_start", "message": running], ["type": "tool_execution_start", "toolCallId": "verify"]])
+            steps.append(["type": "wait", "command": "abort", "events": [["type": "agent_settled", "aborted": true]]])
+            steps.append(["type": "wait", "command": "new_session", "data": ["cancelled": false]])
+            steps.append(["type": "respond", "command": "get_state", "data": ["sessionId": "fresh", "sessionName": "pi", "sessionFile": sessionFile.path, "thinkingLevel": "high", "model": ["id": "claude-opus-5-5", "provider": "anthropic"]]])
+            steps.append(["type": "respond", "command": "get_messages", "data": ["messages": []]])
+            steps.append(["type": "respond", "command": "get_session_stats", "data": ["totalMessages": 0, "contextUsage": ["tokens": 0, "contextWindow": 200000, "percent": 0]]])
+        }
         if captures.contains("geometry") {
             steps = Array(steps.prefix(3))
             steps.append(["type": "wait", "command": "get_available_models", "data": ["models": [["id": "claude-opus-5-5", "provider": "anthropic"]]]])
@@ -844,7 +897,7 @@ extension VisualTests {
             """#.write(to: fd, atomically: true, encoding: .utf8)
             try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: fd.path)
         }
-        let command = "export HOME=\(SSH.quote(home.path)) PATH=\(SSH.quote(path)) KOA_FAKE_SCRIPT=\(SSH.quote(script.path)) NODE_OPTIONS=\(SSH.quote("--import " + clock.path))" + (scenario == .completion ? " KOA_FD=\(SSH.quote(fd.path))" : "") + "; exec \(SSH.quote(tools.prefix + "/share/ko/bin/koa")) --pi \(SSH.quote(fake)) 2>\(SSH.quote(output.path))"
+        let command = "export HOME=\(SSH.quote(home.path)) PATH=\(SSH.quote(path)) KOA_FAKE_SCRIPT=\(SSH.quote(script.path)) NODE_OPTIONS=\(SSH.quote("--import " + clock.path))" + (scenario == .completion ? " KOA_FD=\(SSH.quote(fd.path))" : "") + (scenario == .sessions ? " KOA_FAKE_SESSIONS_FILE=\(SSH.quote(sessionRows.path)) KOA_FAKE_SESSION_FILE_GATE=\(SSH.quote(sessionGate.path))" : "") + "; exec \(SSH.quote(tools.prefix + "/share/ko/bin/koa")) --pi \(SSH.quote(fake)) 2>\(SSH.quote(output.path))"
         if scenario == .completion {
             let idle = "stty raw -echo; printf '\\033]7501;state=idle:app=pi\\033\\\\'; exec cat"
             let working = "stty raw -echo; printf '\\033]7501;state=working:app=pi\\033\\\\'; exec cat"
@@ -884,7 +937,7 @@ extension VisualTests {
             try await webviewUntil(web, "document.querySelector('#status').textContent==='idle'&&document.querySelector('#model-name').textContent==='claude-opus-5-5'")
             for index in 1...3 {
                 let before = pane.webviewView!.visualFeedBytes
-                let response = try await webviewJS(web, "fetch('/prompt',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text:'next',mode:'prompt',attachments:[]})}).then(async r=>({status:r.status,body:await r.json()}))")
+                let response = try await webviewJS(web, "fetch('/prompt',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sessionId:document.body.dataset.sessionId,text:'next',mode:'prompt',attachments:[]})}).then(async r=>({status:r.status,body:await r.json()}))")
                 XCTAssertTrue(response.contains("\"status\":200"), response)
                 try await wait("feed chunk \(index) handed to WebKit", within: 5) { pane.webviewView!.visualFeedBytes > before + 4096 }
             }
@@ -928,7 +981,7 @@ extension VisualTests {
             try await webviewUntil(web, "getComputedStyle(document.body).getPropertyValue('--ko-appearance').trim()==='light'")
         }
         func advance() async throws {
-            _ = try await webviewJS(web, "fetch('/prompt',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text:'next',mode:'prompt',attachments:[]})}).then(async r=>{const result=await r.json();if(!r.ok)throw Error(result.error||'Prompt failed');return result})")
+            _ = try await webviewJS(web, "fetch('/prompt',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sessionId:document.body.dataset.sessionId,text:'next',mode:'prompt',attachments:[]})}).then(async r=>{const result=await r.json();if(!r.ok)throw Error(result.error||'Prompt failed');return result})")
         }
         try await webviewUntil(web, "document.querySelector('#status').textContent==='idle'&&document.querySelector('#model-name').textContent==='claude-opus-5-5'")
         _ = try await webviewJS(web, "(()=>{const NativeDate=Date;window.Date=class extends NativeDate{constructor(...args){super(...(args.length?args:[\(stamp + 12000)]))}static now(){return \(stamp + 12000)}};const style=document.createElement('style');style.textContent='.caret,.spin,.spin::before,.dot.on,.cm-cursorLayer{animation:none!important}.info .chev{transition:none!important}';document.head.append(style);return true})()")
@@ -973,10 +1026,10 @@ extension VisualTests {
             try await webviewUntil(web, "document.querySelectorAll('.cmdrun').length===0")
             resize(220)
             try String(stamp + 9000).write(to: now, atomically: true, encoding: .utf8)
-            _ = try await webviewJS(web, "fetch('/prompt',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text:'!make verify STAGES=unit',mode:'prompt',attachments:[]})}).then(r=>r.json())")
+            _ = try await webviewJS(web, "fetch('/prompt',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sessionId:document.body.dataset.sessionId,text:'!make verify STAGES=unit',mode:'prompt',attachments:[]})}).then(r=>r.json())")
             try await webviewUntil(web, "document.querySelector('.cmdrun .live')?.textContent.includes('running 212 tests')&&document.querySelector('#status').textContent.startsWith('running')")
             try await capture(prefix + "bang-running")
-            _ = try await webviewJS(web, "fetch('/abort',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}).then(r=>r.json())")
+            _ = try await webviewJS(web, "fetch('/abort',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sessionId:document.body.dataset.sessionId})}).then(r=>r.json())")
             try await webviewUntil(web, "!document.querySelector('.cmdrun .live')")
             try String(stamp).write(to: now, atomically: true, encoding: .utf8)
             try await advance()
@@ -985,11 +1038,11 @@ extension VisualTests {
             try await capture(prefix + "bang-typing")
             _ = try await webviewJS(web, "(()=>{Date.now=()=>\(stamp + 14000);return true})()")
             try String(stamp + 13000).write(to: now, atomically: true, encoding: .utf8)
-            _ = try await webviewJS(web, "fetch('/prompt',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text:'!git status --short',mode:'prompt',attachments:[]})}).then(r=>{window.composer.setText('');return r.json()})")
+            _ = try await webviewJS(web, "fetch('/prompt',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sessionId:document.body.dataset.sessionId,text:'!git status --short',mode:'prompt',attachments:[]})}).then(r=>{window.composer.setText('');return r.json()})")
             try await webviewUntil(web, "document.querySelector('.cmdrun .live')?.textContent.includes('SidebarRow.swift')")
             try await capture(prefix + "bang-busy")
             try String(stamp + 14000).write(to: now, atomically: true, encoding: .utf8)
-            _ = try await webviewJS(web, "fetch('/abort',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}).then(r=>r.json())")
+            _ = try await webviewJS(web, "fetch('/abort',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sessionId:document.body.dataset.sessionId})}).then(r=>r.json())")
             try await webviewUntil(web, "document.querySelector('.cmdrun .meta')?.textContent==='cancelled1s'")
             resize(330)
             try await capture(prefix + "bang-completed")
@@ -999,7 +1052,7 @@ extension VisualTests {
             let prefix = width < 600 ? "narrow-commands-" : "commands-"
             func submit(_ text: String) async throws {
                 let value = String(decoding: try JSONSerialization.data(withJSONObject: text, options: .fragmentsAllowed), as: UTF8.self)
-                _ = try await webviewJS(web, "fetch('/prompt',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text:\(value),mode:'prompt',attachments:[]})}).then(async r=>{const body=await r.json();if(!r.ok)throw Error(body.error);return body})")
+                _ = try await webviewJS(web, "fetch('/prompt',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sessionId:document.body.dataset.sessionId,text:\(value),mode:'prompt',attachments:[]})}).then(async r=>{const body=await r.json();if(!r.ok)throw Error(body.error);return body})")
             }
             try await submit("/copy")
             try await webviewUntil(web, "document.querySelector('.note')?.textContent.includes('copied the last reply')")
@@ -1025,7 +1078,7 @@ extension VisualTests {
             try await capture(prefix + "compacted-open")
             try await submit("/compact")
             try await webviewUntil(web, "document.querySelector('#status').textContent.startsWith('compacting')")
-            _ = try await webviewJS(web, "fetch('/abort',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}).then(r=>r.json())")
+            _ = try await webviewJS(web, "fetch('/abort',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sessionId:document.body.dataset.sessionId})}).then(r=>r.json())")
             try await webviewUntil(web, "Array.from(document.querySelectorAll('.note')).some(node=>node.textContent.includes('compaction cancelled'))")
             try await capture(prefix + "compact-cancelled")
             try await submit("/compact")
@@ -1034,6 +1087,53 @@ extension VisualTests {
             _ = try await webviewJS(web, "(()=>{window.composer.setText('');window.composer.focus();document.execCommand('insertText',false,'/');return true})()")
             try await webviewUntil(web, "document.querySelectorAll('.koa-complete li').length>0")
             try await capture(prefix + "popup")
+            return
+        }
+        if scenario == .sessions {
+            let prefix = width < 600 ? "narrow-sessions-" : "sessions-"
+            _ = try await webviewJS(web, "(()=>{window.composer.setText('/resume');document.querySelector('.cm-content').dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',code:'Enter',bubbles:true}));return true})()")
+            try await webviewUntil(web, "document.querySelector('#session-picker').dataset.state==='list'")
+            try await capture(prefix + "pick")
+            _ = try await webviewJS(web, "(()=>{document.querySelector('.sess .scope button:last-child').click();return true})()")
+            try await webviewUntil(web, "document.querySelectorAll('.sess .row').length===10")
+            try await capture(prefix + "all")
+            _ = try await webviewJS(web, "(()=>{const q=document.querySelector('.sess .q');q.value='side';q.dispatchEvent(new Event('input'));return true})()")
+            try await webviewUntil(web, "document.querySelector('#session-picker').dataset.state==='filtered'&&document.querySelectorAll('.sess .row').length>0&&document.querySelectorAll('.sess .row').length<10")
+            try await capture(prefix + "filtered")
+            _ = try await webviewJS(web, "(()=>{const q=document.querySelector('.sess .q');q.value='no-such-session';q.dispatchEvent(new Event('input'));return true})()")
+            try await webviewUntil(web, "document.querySelector('.sess .empty')?.textContent.includes('no match')")
+            try await capture(prefix + "no-match")
+            let savedSessions = try Data(contentsOf: sessionRows)
+            try Data("[]".utf8).write(to: sessionRows)
+            _ = try await webviewJS(web, "(()=>{document.querySelector('#session-picker').dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true}));window.composer.setText('/resume');document.querySelector('.cm-content').dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',code:'Enter',bubbles:true}));return true})()")
+            try await webviewUntil(web, "document.querySelector('.sess .empty')?.textContent.includes('no sessions')")
+            try await capture(prefix + "empty")
+            _ = try await webviewJS(web, "(()=>{document.querySelector('#session-picker').dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true}));return true})()")
+            try savedSessions.write(to: sessionRows)
+            try Data("hold".utf8).write(to: sessionGate)
+            _ = try await webviewJS(web, "(()=>{void fetch('/sessions/switch',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sessionId:document.body.dataset.sessionId,path:'/tmp/koa-visual-session-1'})});return true})()")
+            try await webviewUntil(web, "document.querySelector('#status').textContent==='loading'")
+            try await capture(prefix + "loading")
+            try FileManager.default.removeItem(at: sessionGate)
+            try await webviewUntil(web, "document.querySelector('#status').textContent==='idle'&&document.querySelector('#items').textContent.includes('session: koa-md · 96 messages')")
+            try await capture(prefix + "after")
+            _ = try await webviewJS(web, "fetch('/prompt',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sessionId:document.body.dataset.sessionId,text:'!make verify STAGES=unit',mode:'prompt',attachments:[]})}).then(r=>r.json())")
+            try await webviewUntil(web, "document.querySelector('#status').textContent.startsWith('running')&&document.querySelector('.cmdrun .live')?.textContent.trim()==='running 212 tests'")
+            _ = try await webviewJS(web, "(()=>{window.composer.setText('/resume');document.querySelector('.cm-content').dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',code:'Enter',bubbles:true}));return true})()")
+            try await webviewUntil(web, "document.querySelector('#session-picker .msg2')?.textContent==='a command is running; it will be cancelled.'")
+            try await capture(prefix + "confirm-bash")
+            _ = try await webviewJS(web, "(()=>{document.querySelector('#session-picker').dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true}));return fetch('/abort',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sessionId:document.body.dataset.sessionId})}).then(r=>r.json())})()")
+            try await webviewUntil(web, "document.querySelectorAll('.cmdrun').length===0&&document.querySelector('#status').textContent==='idle'")
+            try await advance()
+            try await webviewUntil(web, "document.querySelector('#status').textContent.startsWith('working')")
+            _ = try await webviewJS(web, "(()=>{window.composer.setText('/resume');document.querySelector('.cm-content').dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',code:'Enter',bubbles:true}));return true})()")
+            try await webviewUntil(web, "document.querySelector('#session-picker .title')?.textContent==='Switch session?'")
+            try await capture(prefix + "confirm")
+            _ = try await webviewJS(web, "(()=>{document.querySelector('#session-picker').dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true}));return fetch('/abort',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sessionId:document.body.dataset.sessionId})}).then(r=>r.json())})()")
+            try await webviewUntil(web, "document.querySelector('#status').textContent==='aborted'")
+            _ = try await webviewJS(web, "(()=>{window.composer.setText('/new');document.querySelector('.cm-content').dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',code:'Enter',bubbles:true}));return true})()")
+            try await webviewUntil(web, "document.querySelector('#items').textContent.includes('new session')&&!document.querySelector('#items').textContent.includes('Done:')")
+            try await capture(prefix + "new")
             return
         }
         if scenario == .questions {
@@ -1335,6 +1435,7 @@ extension VisualTests {
             try await resize(300)
             try await show("", "/re")
             try await capture(prefix + "slash-filter")
+            _ = try await webviewJS(web, "(()=>{const index=lastComplete.result.options.findIndex(option=>option.label==='/release');if(index<0)throw Error('missing release command');for(let i=0;i<index;i++)document.querySelector('#prompt .cm-content').dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowDown',bubbles:true,cancelable:true}));return true})()")
             try await key("Enter")
             try await webviewUntil(web, "window.composer.text()===''&&completePrompts.length===1&&completePrompts[0].text==='/release '")
             try await resize(height)
@@ -1479,7 +1580,7 @@ extension VisualTests {
             _ = try await webviewJS(web, "(()=>{Date.now=()=>\(stamp + 8000);return true})()")
             func post(_ route: String, _ body: [String: Any] = [:]) async throws {
                 let json = String(decoding: try JSONSerialization.data(withJSONObject: body), as: UTF8.self)
-                _ = try await webviewJS(web, "fetch('\(route)',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(\(json))}).then(async r=>{const v=await r.json();if(!r.ok)throw Error(v.error);return v})")
+                _ = try await webviewJS(web, "fetch('\(route)',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({...\(json),sessionId:document.body.dataset.sessionId})}).then(async r=>{const v=await r.json();if(!r.ok)throw Error(v.error);return v})")
             }
             try await advance()
             try await webviewUntil(web, "document.querySelector('.dialog .title')?.textContent==='Which tap revision?'&&document.querySelector('.queued-next')&&document.querySelector('.run>.line .spin')&&document.querySelector('.run>.line')?.textContent.includes('release')")
@@ -1557,7 +1658,7 @@ extension VisualTests {
             try await capture("narrow-exited")
         }
         switch scenario {
-        case .transcript, .feed, .completion, .markdown, .media, .attachments, .userMarkdown, .preview, .lightbox, .agents, .composer, .questions, .bang, .commands: break
+        case .transcript, .feed, .completion, .markdown, .media, .attachments, .userMarkdown, .preview, .lightbox, .agents, .composer, .questions, .bang, .commands, .sessions: break
         case .dialogs: try await dialogScenario()
         case .controls: try await controlsScenario()
         case .exit: try await exitScenario()

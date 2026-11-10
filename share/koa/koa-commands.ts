@@ -3,7 +3,7 @@ import { pathToFileURL } from 'node:url';
 import type { RpcCommand, RpcResponse } from '@earendil-works/pi-coding-agent';
 import type { CompletionCommand, CommandAction, CommandResult, SessionStats } from './koa-records.ts';
 
-const SUPPORTED = ['model', 'thinking', 'compact', 'session', 'copy', 'export', 'name', 'quit'] as const;
+const SUPPORTED = ['model', 'thinking', 'compact', 'session', 'copy', 'export', 'name', 'resume', 'new', 'quit'] as const;
 type Action = typeof SUPPORTED[number] | 'refuse';
 type Builtin = CompletionCommand & { action: Action };
 type Model = Extract<RpcResponse, { command: 'get_available_models'; success: true }>['data']['models'][number];
@@ -69,6 +69,7 @@ export async function dispatchCommand(input: NonNullable<ReturnType<typeof parse
       else { const result = await run({ type: 'get_state' }); if (result.command === 'get_state') host.notify(result.data.sessionName ? 'Session name: ' + result.data.sessionName : 'Usage: /name <name>', result.data.sessionName ? 'info' : 'warning'); }
       break;
     }
+    case 'resume': case 'new': return { type: 'session', kind: command.action };
     case 'quit': return { type: 'quit' };
   }
   return { type: 'none' };

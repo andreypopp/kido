@@ -6,7 +6,7 @@ import { preview, previewKey } from './preview.ts';
 import { fetchJSON } from './http.ts';
 import { ATTACHMENT_LIMITS, pathArg } from '../koa-records.ts';
 import { jobEndText } from '../../pi/records.ts';
-import type { State, WireItem, WireAssistant, Block, Patch, PageRecord, PromptMode, ImageRef, AgentCall, Bash } from '../koa-records.ts';
+import type { State, WireItem, WireAssistant, Block, Patch, PageRecord, PromptMode, ImageRef, AgentCall, Bash, SessionRow, SessionScope } from '../koa-records.ts';
 import type { Relation } from '../../pi/records.ts';
 
 type Step = { block: Exclude<Block, { type: 'text' }>;  item: WireAssistant; index: number; key: string; slots: Map<string, Slot> };
@@ -58,7 +58,7 @@ const editor = composer(element('prompt'), {
   takeBack() { if (state.pi.type === 'ready' && !state.dialogs.length && !submitting) void takeBack().catch(reportError); },
 });
 window.composer = editor;
-const composerBlocked = () => state.pi.type !== 'ready' || state.dialogs.length > 0;
+const composerBlocked = () => state.pi.type !== 'ready' || state.dialogs.length > 0 || sessionPicker !== 'closed';
 
 if (!window.ko) {
   const scheme = matchMedia('(prefers-color-scheme: dark)');
@@ -142,11 +142,11 @@ function previewFile(label: HTMLElement, url: string) {
   label.onclick = event => { const start = press; press = undefined; if (start && Math.hypot(event.clientX - start.x, event.clientY - start.y) < 3) { event.preventDefault(); event.stopPropagation(); preview(url, label, 'file', composerFocus); } };
 }
 const quantity = (value: number) => value >= 1000000 ? Number((value / 1000000).toFixed(1)) + 'M' : value >= 1000 ? Number((value / 1000).toFixed(1)) + 'k' : String(value);
-function timestamp(at: number) {
-  const date = new Date(at), today = new Date();
+function timestamp(at: number, today = new Date(), kind: 'message' | 'session' = 'message') {
+  const date = new Date(at);
   const time = date.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
   if (date.toDateString() === today.toDateString()) return time;
-  return (date.getFullYear() === today.getFullYear() ? '' : date.getFullYear() + ' ') + date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) + ' ' + time;
+  return (date.getFullYear() === today.getFullYear() ? '' : date.getFullYear() + ' ') + date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) + (kind === 'session' ? '' : ' ' + time);
 }
 
 function prose(key: string | undefined, source: string, final: boolean, annotationItem?: Extract<WireItem, { kind: 'annotations' }>, user = false) {
@@ -527,7 +527,7 @@ function refreshComposer() {
   const running = state.bash.some(item => item.phase !== 'completed') && !working && editor.empty();
   editor.running(running);
   if (!editor.bash() && element('error').textContent === 'a command takes no attachments') { clearTimeout(attachmentRefusalTimer); element('error').textContent = ''; }
-  editor.placeholder(running ? 'running… ⎋ cancels' : draft.hover ? 'Drop to attach' : hasExited() ? 'pi has exited' : working && state.compaction !== 'running' ? 'Steer koa…' : 'Message koa…');
+  editor.placeholder(state.pi.type === 'switching' ? 'loading…' : running ? 'running… ⎋ cancels' : draft.hover ? 'Drop to attach' : hasExited() ? 'pi has exited' : working && state.compaction !== 'running' ? 'Steer koa…' : 'Message koa…');
   status();
 }
 function status() {
@@ -536,7 +536,7 @@ function status() {
   const bang = editor.bash(), running = state.bash.find(item => item.phase !== 'completed');
   label.classList.toggle('err', !!bang && draft.count > 0);
   label.title = bang && draft.count ? 'remove the attachments' : '';
-  const word = cause ? (cause.kind === 'code' ? 'exited' : cause.kind) + ' ' + cause.value : waiting ? 'waiting' : state.pi.type === 'starting' ? 'starting' : state.working ? state.compaction === 'running' ? 'compacting' : 'working' : running ? 'running' : bang ? bang.excludeFromContext ? 'run, quiet' : 'run' : state.aborted ? 'aborted' : 'idle';
+  const word = cause ? (cause.kind === 'code' ? 'exited' : cause.kind) + ' ' + cause.value : waiting ? 'waiting' : state.pi.type === 'starting' ? 'starting' : state.pi.type === 'switching' ? 'loading' : state.working ? state.compaction === 'running' ? 'compacting' : 'working' : running ? 'running' : bang ? bang.excludeFromContext ? 'run, quiet' : 'run' : state.aborted ? 'aborted' : 'idle';
   label.textContent = word;
   if (state.pi.type === 'ready' && (state.working || running) && !waiting) {
     const ms = Math.max(0, Math.floor((Date.now() - (state.working ? state.since ?? Date.now() : running?.started ?? Date.now())) / 1000)) * 1000;
@@ -605,7 +605,7 @@ function dialogs() {
   const answer = async (cancelled: boolean) => {
     if (submit.disabled) return;
     submit.disabled = cancel.disabled = true;
-    try { await fetchJSON('/dialog', { id: request.id, ...(cancelled ? { cancelled: true } : request.method === 'confirm' ? { confirmed: true } : { value: field ? field.value : request.method === 'select' && selection ? request.options[selection.index] : undefined }) }); }
+    try { await fetchJSON('/dialog', { sessionId: state.sessionId, id: request.id, ...(cancelled ? { cancelled: true } : request.method === 'confirm' ? { confirmed: true } : { value: field ? field.value : request.method === 'select' && selection ? request.options[selection.index] : undefined }) }); }
     catch (error) { reportError(error); submit.disabled = cancel.disabled = false; }
   };
   card.onsubmit = event => { event.preventDefault(); void answer(false); };
@@ -643,7 +643,9 @@ let takingBack: Promise<void> | undefined;
 function takeBack(): Promise<void> {
   if (state.pi.type !== 'ready' || state.dialogs.length) return Promise.resolve();
   return takingBack ??= (async () => {
-    const result = await fetchJSON('/queue/clear');
+    const session = state.sessionId;
+    const result = await fetchJSON('/queue/clear', { sessionId: session });
+    if (state.sessionId !== session) return;
     const entries = [...result.steering, ...result.followUp];
     editor.setText([editor.text(), ...entries.map(entry => entry.text)].filter(Boolean).join('\n\n'));
     draft.restore(entries.flatMap(entry => entry.attachments));
@@ -653,7 +655,7 @@ function takeBack(): Promise<void> {
 async function stop() {
   if (submitting || state.pi.type !== 'ready' || state.dialogs.length) return;
   submitting = true;
-  try { if (!state.bash.some(item => item.phase === 'running')) await takeBack(); await fetchJSON('/abort'); }
+  try { if (!state.bash.some(item => item.phase === 'running')) await takeBack(); await fetchJSON('/abort', { sessionId: state.sessionId }); }
   catch (error) { reportError(error); }
   finally { submitting = false; }
 }
@@ -713,7 +715,7 @@ async function picker(kind: 'model' | 'thinking', search = '') {
     row.onmouseenter = () => selection.mark(index); row.onclick = () => choose(index); host.append(row); return row;
   });
   const selection = cursor(rows, () => {});
-  const choose = async (index: number) => { const choice = choices[index]; if (!choice) return; try { await fetchJSON('/' + choice.kind, choice.kind === 'model' ? { provider: choice.provider, modelId: choice.id } : { level: choice.id }); closePicker(); } catch (error) { reportError(error); } };
+  const choose = async (index: number) => { const choice = choices[index]; if (!choice) return; try { await fetchJSON('/' + choice.kind, { sessionId: state.sessionId, ...(choice.kind === 'model' ? { provider: choice.provider, modelId: choice.id } : { level: choice.id }) }); closePicker(); } catch (error) { reportError(error); } };
   host.append(node('div', '↑↓ move · ↩ choose · ⎋ close', 'hints')); selection.mark(Math.max(0, choices.findIndex(current))); host.focus(); composerFocus();
   host.onkeydown = event => { if (event.metaKey || event.ctrlKey || event.isComposing) return; if (['ArrowUp', 'ArrowDown', 'Enter', 'Escape'].includes(event.key)) { event.preventDefault(); event.stopPropagation(); if (event.key === 'Escape') { closePicker(); } else if (event.key === 'Enter') void choose(selection.index); else selection.mark(selection.index + (event.key === 'ArrowDown' ? 1 : -1)); } };
 }
@@ -748,10 +750,11 @@ function apply(record: PageRecord) {
     }
     put(item);
   } else if (record.type === 'state') {
-    state = record; refreshBash(); refreshComposer(); dialogs(); queue(); exited();
+    if (state.sessionId && state.sessionId !== record.sessionId) { closeSessions(); closePicker(); editorId = undefined; }
+    state = record; document.body.dataset.sessionId = state.sessionId ?? ''; element('items').hidden = state.pi.type === 'switching'; refreshBash(); refreshComposer(); dialogs(); queue(); exited();
     if (state.pi.type === 'ready' && state.editor && editorId !== state.editor.id) {
       editor.setText(state.editor.text); editorId = state.editor.id;
-      void fetchJSON('/editor/ack', { id: state.editor.id }).catch(reportError);
+      void fetchJSON('/editor/ack', { sessionId: state.sessionId, id: state.editor.id }).catch(reportError);
     }
     statuses();
   }
@@ -852,21 +855,137 @@ async function older() {
     }
   } catch (error) { reportError(error); } finally { paging = false; }
 }
+const sessionHost = element('session-picker');
+const sessionSearch = node('input', undefined, 'q'); sessionSearch.placeholder = 'Search sessions…'; sessionSearch.setAttribute('aria-label', 'Search sessions');
+const sessionResults = node('div', undefined, 'rows'); sessionResults.setAttribute('role', 'listbox'); sessionResults.setAttribute('aria-label', 'Sessions');
+const sessionCurrent = button('this folder'), sessionAll = button('all');
+const sessionHints = node('div', undefined, 'hints');
+const sessionCard = node('div', undefined, 'sess'), sessionTop = node('div', undefined, 'top'), sessionScopes = node('span', undefined, 'scope');
+sessionScopes.append(sessionCurrent, sessionAll); sessionTop.append(sessionSearch, sessionScopes); sessionCard.append(sessionTop, sessionResults, sessionHints);
+let sessionRows: Partial<Record<SessionScope, (SessionRow & { search: string[] })[]>> = {};
+let visibleSessions: SessionRow[] = [], sessionCursor: ReturnType<typeof cursor> | undefined;
+let sessionScope: SessionScope = 'current', sessionScan: AbortController | undefined, sessionAction: AbortController | undefined;
+let sessionPicker: 'closed' | 'loading' | 'list' | 'filtered' | 'empty' | 'error' | 'switching' | 'confirm' = 'closed';
+function closeSessions() {
+  sessionScan?.abort(); sessionScan = undefined; sessionAction?.abort(); sessionAction = undefined;
+  sessionRows = {}; visibleSessions = []; sessionCursor = undefined;
+  sessionPicker = 'closed'; sessionHost.hidden = true; refreshComposer(); focusComposer();
+}
+function renderSessions(selected?: number) {
+  const rows = sessionRows[sessionScope];
+  if (!rows) return;
+  const query = sessionSearch.value.trim().toLocaleLowerCase(), today = new Date();
+  visibleSessions = rows.filter(row => row.search.some(text => {
+    let offset = 0;
+    for (const char of query) { const found = text.indexOf(char, offset); if (found < 0) return false; offset = found + 1; }
+    return true;
+  }));
+  sessionPicker = !visibleSessions.length ? 'empty' : query ? 'filtered' : 'list'; sessionHost.dataset.state = sessionPicker;
+  sessionResults.replaceChildren();
+  const choices = visibleSessions.map(row => {
+    const choice = button(''); choice.className = 'row';
+    choice.setAttribute('role', 'option');
+    const name = node('span', row.name || row.firstMessage || row.id, 'n');
+    if (row.id === state.sessionId) name.append(node('span', 'current', 'tag'));
+    if (sessionScope === 'all' && row.cwd !== state.cwd) name.append(node('span', displayPath(row.cwd), 'dir'));
+    const meta = node('span', undefined, 'm'); meta.append(node('span', timestamp(row.modified, today, 'session')), node('br'), node('span', String(row.messageCount)));
+    choice.append(name, node('span', row.name ? row.firstMessage : '', 'f'), meta);
+    choice.dataset.path = row.path; choice.onclick = () => { if (row.id !== state.sessionId) void chooseSession({ type: 'switch', path: row.path }); };
+    sessionResults.append(choice); return choice;
+  });
+  sessionCursor = cursor(choices, (row, chosen) => row.setAttribute('aria-selected', String(chosen)));
+  sessionCursor.mark(selected ?? Math.max(0, visibleSessions.findIndex(row => row.id !== state.sessionId)));
+  if (!visibleSessions.length) { const empty = node('div', query ? 'no match' : 'no sessions in this folder', 'empty'); empty.append(node('div', '⇥ all folders', 'h')); sessionResults.append(empty); }
+}
+sessionSearch.oninput = () => renderSessions(0);
+sessionCurrent.onclick = () => { void openSessions('current'); }; sessionAll.onclick = () => { void openSessions('all'); };
+async function openSessions(scope: SessionScope = 'current') {
+  closePicker(); sessionScan?.abort(); sessionScan = undefined;
+  sessionScope = scope; sessionPicker = 'loading'; visibleSessions = []; sessionCursor = undefined;
+  sessionHost.dataset.state = sessionPicker; sessionHost.hidden = false;
+  sessionCurrent.className = scope === 'current' ? 'on' : ''; sessionAll.className = scope === 'all' ? 'on' : '';
+  sessionCurrent.setAttribute('aria-pressed', String(scope === 'current')); sessionAll.setAttribute('aria-pressed', String(scope === 'all'));
+  sessionHints.replaceChildren(node('span', '↑↓ move · ↩ open · ⎋ close'), node('span', undefined, 'sp'), node('span', '⇥ ' + (scope === 'all' ? 'this folder' : 'all folders')));
+  if (sessionHost.firstElementChild !== sessionCard) sessionHost.replaceChildren(sessionCard);
+  sessionHost.onkeydown = event => {
+    if (event.isComposing || event.metaKey || event.ctrlKey || event.altKey) return;
+    if (['Escape', 'Tab', 'ArrowUp', 'ArrowDown', 'Enter'].includes(event.key)) { event.preventDefault(); event.stopPropagation(); }
+    if (event.key === 'Escape') closeSessions();
+    else if (event.key === 'Tab') void openSessions(sessionScope === 'current' ? 'all' : 'current');
+    else if (event.key === 'ArrowUp' || event.key === 'ArrowDown') sessionCursor?.mark(sessionCursor.index + (event.key === 'ArrowUp' ? -1 : 1));
+    else if (event.key === 'Enter' && sessionCursor) { const row = visibleSessions[sessionCursor.index]; if (row && row.id !== state.sessionId) void chooseSession({ type: 'switch', path: row.path }); }
+  };
+  refreshComposer(); sessionSearch.focus();
+  if (sessionRows[scope]) { renderSessions(); return; }
+  const scan = new AbortController(); sessionScan = scan;
+  sessionResults.replaceChildren(node('div', 'loading sessions…', 'empty'));
+  try {
+    const result = await fetchJSON('/sessions/list', { scope }, 'POST', scan.signal);
+    if (scan.signal.aborted || sessionScan !== scan) return;
+    sessionRows[scope] = result.rows.map(row => ({ ...row, search: [row.name ?? '', row.firstMessage].map(text => text.toLocaleLowerCase()) }));
+    renderSessions();
+  } catch (error) {
+    if (scan.signal.aborted || sessionScan !== scan) return;
+    sessionPicker = 'error'; sessionHost.dataset.state = sessionPicker;
+    sessionResults.replaceChildren(node('p', error instanceof Error ? error.message : String(error), 'session-error'));
+    const retry = button('Try again'); retry.onclick = () => { void openSessions(scope); }; sessionResults.append(retry);
+  }
+}
+async function chooseSession(choice: { type: 'switch'; path: string } | { type: 'new' }) {
+  const sessionId = state.sessionId;
+  closeSessions(); sessionPicker = 'switching'; refreshComposer();
+  try { await fetchJSON(choice.type === 'switch' ? '/sessions/switch' : '/sessions/new', { sessionId, ...(choice.type === 'switch' ? { path: choice.path } : {}) }); }
+  catch (error) { reportError(error); if (choice.type === 'switch') await openSessions(sessionScope); }
+  finally { if (sessionPicker === 'switching') closeSessions(); }
+}
+async function sessionCommand(kind: 'resume' | 'new') {
+  const continueSession = async () => { closeSessions(); if (kind === 'resume') { sessionSearch.value = ''; await openSessions(); } else await chooseSession({ type: 'new' }); };
+  const commandRunning = state.bash.some(item => item.phase !== 'completed'), turnRunning = state.working;
+  if (!turnRunning && !commandRunning) { await continueSession(); return; }
+  const action = new AbortController(); sessionAction = action;
+  sessionPicker = 'confirm'; sessionHost.dataset.state = 'confirm'; sessionHost.hidden = false;
+  const card = node('div', undefined, 'dialog'), head = node('div', undefined, 'head'); head.append(node('span', 'Switch session?', 'title'));
+  const foot = node('div', '⎋ cancel · ↩ switch', 'foot'), cancel = button('Cancel'), confirm = button('Switch', '↩', true);
+  const perform = async () => {
+    if (confirm.disabled || action.signal.aborted) return;
+    confirm.disabled = true;
+    try {
+      await fetchJSON('/abort', { sessionId: state.sessionId }, 'POST', action.signal);
+      if (action.signal.aborted) return;
+      if (commandRunning && turnRunning) await fetchJSON('/abort', { sessionId: state.sessionId }, 'POST', action.signal);
+      if (!action.signal.aborted) await continueSession();
+    }
+    catch (error) { if (!action.signal.aborted) { closeSessions(); reportError(error); } }
+  };
+  cancel.onclick = closeSessions; confirm.onclick = () => { void perform(); };
+  foot.append(node('span', undefined, 'sp'), cancel, confirm);
+  card.append(head, node('div', turnRunning ? 'koa is working on a turn; it will be aborted.' : 'a command is running; it will be cancelled.', 'msg2'), foot); sessionHost.replaceChildren(card);
+  sessionHost.onkeydown = event => { if (event.key === 'Escape' || event.key === 'Enter') { event.preventDefault(); event.stopPropagation(); if (event.key === 'Escape') closeSessions(); else void perform(); } };
+  refreshComposer(); confirm.focus();
+}
 function canSend(text: string) { if (state.compaction === 'running') return false; const bang = editor.bash(); if (bang) return !!bang.command.trim() && !state.bash.some(item => item.phase !== 'completed') && !draft.busy && !draft.count; return /^\/\S+/.test(text.trim()) || !draft.busy && draft.count <= ATTACHMENT_LIMITS.files && (!!text.trim() || draft.count > 0); }
 function reportError(error: unknown) { element('error').textContent = error instanceof Error ? error.message : String(error); }
 async function send(mode: PromptMode = 'prompt') {
   const text = editor.text(), files = draft.files;
   if (!canSend(text) || submitting) return;
+  const sendingSession = state.sessionId;
   submitting = true;
   try {
-    const result = await fetchJSON('/prompt', { text, mode, attachments: files.map(file => file.id) });
+    const result = await fetchJSON('/prompt', { sessionId: sendingSession, text, mode, attachments: files.map(file => file.id) });
+    if (state.sessionId !== sendingSession) return;
     switch (result.disposition) {
       case 'started': case 'queued': draft.sent(files); break;
       case 'handled': break;
     }
     if (editor.text() === text) editor.setText('');
     refreshComposer(); focusComposer(); element('error').textContent = '';
-    if (result.disposition === 'handled' && result.action.type === 'picker') await picker(result.action.kind, result.action.search);
+    if (result.disposition === 'handled') {
+      switch (result.action.type) {
+        case 'picker': await picker(result.action.kind, result.action.search); break;
+        case 'session': await sessionCommand(result.action.kind); break;
+        case 'none': case 'quit': break;
+      }
+    }
   }
   catch (error) { reportError(error); }
   finally { submitting = false; }
@@ -876,7 +995,7 @@ const isTextInput = (target: EventTarget | null) => target instanceof HTMLElemen
 const isControl = (target: EventTarget | null) => isTextInput(target) || target instanceof HTMLElement && !!target.closest('button,[role=button],[role=option],[role=listbox],[role=menuitem]');
 function composerReceivesKeys() { return document.hasFocus() && !element('field').inert && !state.dialogs.length && !document.querySelector('.lightbox') && (editor.hasFocus() || !isTextInput(document.activeElement)); }
 function composerFocus() { element('field').classList.toggle('focus', composerReceivesKeys()); }
-function focusComposer() { composerFocus(); if (composerReceivesKeys() && !pickerButton && (!isControl(document.activeElement) || editor.hasFocus())) editor.focus(); }
+function focusComposer() { composerFocus(); if (composerReceivesKeys() && !pickerButton && sessionPicker === 'closed' && (!isControl(document.activeElement) || editor.hasFocus())) editor.focus(); }
 window.addEventListener('focus', focusComposer);
 window.addEventListener('load', focusComposer);
 document.addEventListener('focusin', composerFocus);
@@ -885,7 +1004,7 @@ const previewModifiers = (event: MouseEvent | KeyboardEvent) => event.shiftKey &
 const previewHover = (event: KeyboardEvent) => document.documentElement.classList.toggle('preview-modifiers', previewModifiers(event));
 document.addEventListener('keyup', previewHover);
 window.addEventListener('blur', () => { document.documentElement.classList.remove('preview-modifiers'); composerFocus(); });
-document.addEventListener('keydown', event => { previewHover(event); if (previewKey(event)) return; if (event.defaultPrevented || event.metaKey || event.ctrlKey || event.isComposing || state.dialogs.length || pickerButton) return; if (composerReceivesKeys() && !event.altKey && event.key.length === 1 && !(event.key === ' ' && isControl(event.target)) && !isTextInput(event.target)) { event.preventDefault(); editor.focus(); editor.insert(event.key); return; } if (event.key === 'Enter' && hasExited() && event.target === document.body) element('exited').querySelector('button')?.click(); if (event.key === 'Escape') { event.preventDefault(); if (state.bash.some(item => item.phase === 'running')) { escaped = false; void stop(); } else if (state.working) { escaped = true; void stop(); } else if (escaped) { editor.setText(''); } else { escaped = true; } } });
+document.addEventListener('keydown', event => { previewHover(event); if (previewKey(event)) return; if (event.defaultPrevented || event.metaKey || event.ctrlKey || event.isComposing || state.dialogs.length || pickerButton || sessionPicker !== 'closed') return; if (composerReceivesKeys() && !event.altKey && event.key.length === 1 && !(event.key === ' ' && isControl(event.target)) && !isTextInput(event.target)) { event.preventDefault(); editor.focus(); editor.insert(event.key); return; } if (event.key === 'Enter' && hasExited() && event.target === document.body) element('exited').querySelector('button')?.click(); if (event.key === 'Escape') { event.preventDefault(); if (state.bash.some(item => item.phase === 'running')) { escaped = false; void stop(); } else if (state.working) { escaped = true; void stop(); } else if (escaped) { editor.setText(''); } else { escaped = true; } } });
 element('model').onclick = () => picker('model'); element('thinking').onclick = () => picker('thinking');
 document.addEventListener('pointerdown', event => { if (!element('picker').contains(event.target instanceof Node ? event.target : null) && !pickerButton?.contains(event.target instanceof Node ? event.target : null)) closePicker(); });
 element('scroll').onscroll = () => { const scroll = element('scroll'); if (Math.abs(scroll.scrollTop - lastScrollTop) >= 1) { follow = scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight < 60; lastScrollTop = scroll.scrollTop; } if (scroll.scrollTop < 80) void older(); };

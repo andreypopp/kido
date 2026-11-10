@@ -33,6 +33,26 @@ button,textarea,input,select{font:inherit;color:inherit}button{appearance:none;c
 .dock .field.focus{border-color:var(--ko-focus)}
 .dock .queue{border-radius:8px;padding:4px 8px 6px;margin:0 0 6px}.dock .queued-next{text-shadow:0 0 6px var(--ko-bg),0 0 2px var(--ko-bg)}
 .dialogs:empty{padding:0}
+.sess{position:relative;border:1px solid var(--hair2);border-radius:9px;background:var(--ko-bg);padding:9px 10px 8px;margin:0;font:.95em/1.5 var(--prose)}
+.dock .sess{background:color-mix(in srgb,var(--ko-bg) 72%,transparent);-webkit-backdrop-filter:blur(18px) saturate(1.35);backdrop-filter:blur(18px) saturate(1.35);border:1px solid color-mix(in srgb,var(--ko-fg) 22%,transparent);box-shadow:inset 0 .5px 0 color-mix(in srgb,#fff 28%,transparent),0 6px 22px color-mix(in srgb,var(--ko-fg) 14%,transparent),0 1px 3px color-mix(in srgb,var(--ko-fg) 10%,transparent)}
+.sess .top{display:flex;align-items:center;gap:10px;margin:0 2px 6px}
+.sess .q{flex:1;min-width:0;font:1em/1.5 var(--prose);color:var(--ko-fg);border:0;padding:0;background:none;outline:none}
+.sess .q::placeholder{color:var(--faint)}
+.sess .scope{display:inline-flex;border:1px solid var(--hair2);border-radius:6px;overflow:hidden;font:.8em/1.6 var(--ko-font-family);color:var(--muted);flex-shrink:0}
+.sess .scope button{padding:0 8px;border:0;background:none;font:inherit;color:inherit}
+.sess .scope button.on{background:var(--well2);color:var(--ko-fg)}
+.sess .rows{max-height:calc(8*34px);overflow:auto;scrollbar-gutter:stable}
+.sess .row{display:grid;width:100%;border:0;background:none;text-align:left;font:inherit;grid-template-columns:1fr auto;grid-template-rows:auto auto;column-gap:12px;padding:4px 8px;border-radius:6px;cursor:default}
+.sess .row.cur{background:var(--well2)}
+.sess .row .n{grid-column:1;grid-row:1;color:var(--ko-fg);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+.sess .row .n .tag{font:.8em var(--ko-font-family);color:var(--faint);margin-left:8px}
+.sess .row .n .dir{color:var(--faint);font-size:.9em;margin-left:8px}
+.sess .row .f{grid-column:1;grid-row:2;color:var(--muted);font-size:.92em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+.sess .row .m{grid-column:2;grid-row:1/3;align-self:center;text-align:right;font:.8em/1.5 var(--ko-font-family);color:var(--faint);white-space:nowrap;font-variant-numeric:tabular-nums}
+.sess .empty{padding:10px 8px 12px;color:var(--muted);font-size:.95em}
+.sess .empty .h{color:var(--faint);font:.8em var(--ko-font-family);margin-top:2px}
+.sess .hints{margin-top:4px;padding:5px 8px 0;border-top:1px solid var(--hair);color:var(--faint);font:.8em/1.4 var(--ko-font-family);display:flex;gap:14px}
+#field[inert] .cm-content{color:var(--faint)}
 .dialog{position:relative;border:1px solid var(--hair2);border-radius:9px;background:var(--ko-bg);padding:11px 12px 10px;overflow:hidden}
 .dialog .head{display:flex;align-items:baseline;gap:12px;margin-bottom:4px}
 .dialog .title{font-weight:600;flex:1;min-width:0}

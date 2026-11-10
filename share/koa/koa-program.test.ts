@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join, resolve, relative } from "node:path";
 import { once } from "node:events";
 import { createServer, connect } from "node:net";
+import { request } from "node:http";
 import timers from "node:timers/promises";
 import { Readable } from "node:stream";
 import { EventEmitter } from 'node:events';
@@ -82,10 +83,10 @@ test('resume selects before the browser, cancels, and reports a broken picker', 
       const argv = (await readLog()).find(record => record.type === 'argv').args;
       const expected = [...pass];
       if (item.gate !== 'skip') expected.splice(expected.indexOf('--'), 0, '--session', chosen);
-      assert.deepEqual(argv.slice(6), expected);
+      assert.deepEqual(argv.slice(argv.indexOf('--harness') + 2), expected);
       await pollUntil(async () => { try { return (await readFile(urls, 'utf8')).startsWith('http:'); } catch { return false; } });
       const base = output.match(/koa: (http:\/\/127\.0\.0\.1:\d+\/)/)?.[1]; assert.ok(base, output);
-      await fetch(base + 'prompt', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text: 'exit', mode: 'prompt', attachments: [] }) });
+      await fetch(base + 'prompt', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ sessionId: 'fake', text: 'exit', mode: 'prompt', attachments: [] }) });
     }
     assert.equal((await closed)[0], item.code, output);
     children.delete(child);
@@ -118,7 +119,7 @@ async function fixture(t: TestContext, steps: object[], env: NodeJS.ProcessEnv =
   const response = await fetch(base + "events", { signal: controller.signal });
   assert.ok(response.body);
   const { state: stream, until } = sse(Readable.from(response.body));
-  const post = (path: string, body: object = {}) => fetch(base + path, { method: "POST", headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  const post = (path: string, body: object = {}) => fetch(base + path, { method: "POST", headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(Array.isArray(body) ? body : { sessionId: stream.records.filter(record => record.type === 'state').at(-1)?.sessionId, ...body }) });
   if (startup) await until(record => record.type === "state" && (pi ? record.pi?.type === "exited" : Array.isArray(record.levels) && record.levels.length === 3));
   return { script, post, until, records: () => stream.records, count: () => stream.records.length, close, stdout: () => stdout, stderr: () => stderr, log: async () => (await readFile(log, "utf8")).trim().split("\n").map(line => JSON.parse(line)), base };
 }
@@ -186,7 +187,7 @@ test('model selection, completion collisions, session statistics and export defa
     { type: 'wait', command: 'export_html', data: { path: exported } },
   ], {}, undefined, true, [], resolve('../koa/koa.ts'));
   const completion: { options: { label: string; source: string }[] } = await (await f.post('complete', { text: '/', pos: 1 })).json();
-  assert.deepEqual(completion.options.map(value => value.label), ['/model', '/thinking', '/compact', '/session', '/copy', '/export', '/name', '/quit', '/custom']);
+  assert.deepEqual(completion.options.map(value => value.label), ['/model', '/thinking', '/compact', '/session', '/copy', '/export', '/name', '/resume', '/new', '/quit', '/custom']);
   assert.equal(completion.options[0]?.source, 'builtin');
   for (const text of ['/model TEST/EXACT', '/thinking HIGH', '/session', '/export']) assert.equal((await f.post('prompt', { text, mode: 'prompt', attachments: [] })).status, 200);
   await f.until(record => record.type === 'item' && record.item.kind === 'command' && record.item.result.type === 'session');
@@ -250,13 +251,116 @@ test('built-in commands use RPC and never become prompts', { timeout: 10000 }, a
   ], {}, undefined, true, [], resolve('../koa/koa.ts'));
   for (const text of ['/tree args', '/resume', '/new', '/copy', '/export /tmp/export.html', '/compact keep decisions', '/model', '/thinking', '/export test.jsonl']) {
     const response = await f.post('prompt', { text, mode: 'prompt', attachments: [] });
-    assert.equal(response.status, 200, await response.text());
+    assert.equal(response.status, 200);
+    if (text === '/resume' || text === '/new') assert.deepEqual(await response.json(), { disposition: 'handled', action: { type: 'session', kind: text.slice(1) } });
   }
+  const history = await (await fetch(f.base + 'history')).json();
+  assert.deepEqual(history.entries, []);
   const log = await f.log();
   assert.equal(log.filter(value => value.type === 'prompt').length, 0);
   assert.ok(log.some(value => value.type === 'export_html' && value.outputPath === '/tmp/export.html'));
   assert.ok(log.some(value => value.type === 'compact' && value.customInstructions === 'keep decisions'));
   assert.ok(f.stdout().includes('\x1b]52;c;' + Buffer.from('copied reply').toString('base64') + '\x1b\\'));
+});
+
+test('in-page session switches refresh only on success', { timeout: 10000 }, async t => {
+  const app = await fixture(t, [
+    { type: 'respond', command: 'get_messages', data: { messages: [{ role: 'user', timestamp: 1, content: [{ type: 'image', mimeType: 'image/png', data: 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aWQAAAABJRU5ErkJggg==' }] }] } },
+    { type: 'emit', event: { type: 'queue_update', steering: ['keep queued'], followUp: [] } },
+    { type: 'wait', command: 'switch_session', data: { cancelled: true } },
+    { type: 'wait', command: 'switch_session', data: { cancelled: false } },
+    { type: 'respond', command: 'get_state', data: { sessionId: 'chosen', sessionName: 'Chosen', thinkingLevel: 'low' } },
+    { type: 'respond', command: 'get_messages', data: { messages: [{ role: 'user', timestamp: 1, content: [{ type: 'text', text: 'Chosen history' }] }] } },
+    { type: 'wait', command: 'new_session', error: 'Cannot create session' },
+  ], { KOA_FAKE_SESSIONS: JSON.stringify([{ path: '/tmp/chosen.jsonl' }]) }, undefined, true, [], resolve('../koa/koa.ts'));
+  const before = app.records().filter(record => record.type === 'reset').length;
+  assert.equal((await app.post('sessions/switch', { path: '/tmp/chosen.jsonl' })).status, 200);
+  assert.equal(app.records().filter(record => record.type === 'reset').length, before);
+  const cancelled = app.records().filter(record => record.type === 'state').at(-1);
+  assert.equal(cancelled.queue.steering[0].text, 'keep queued');
+  assert.equal(app.records().filter(record => record.type === 'reset').at(-1).items[0].images.length, 1);
+  assert.equal((await app.post('sessions/switch', { path: '/tmp/chosen.jsonl' })).status, 200);
+  await app.until(record => record.type === 'state' && record.sessionId === 'chosen' && record.pi.type === 'ready');
+  assert.ok(app.records().some(record => record.type === 'reset' && record.items.some((item: { text?: string }) => item.text === 'Chosen history')));
+  const ready = app.records().filter(record => record.type === 'state').at(-1);
+  assert.equal(ready.name, 'Chosen'); assert.equal(ready.cwd, process.cwd());
+  assert.deepEqual(ready.queue, { steering: [], followUp: [] });
+  assert.equal((await app.post('sessions/new')).status, 409);
+});
+
+test('session startup UI records survive switching and refresh', { timeout: 10000 }, async t => {
+  const app = await fixture(t, [
+    { type: 'wait', command: 'switch_session', data: { cancelled: false }, events: [{ type: 'extension_ui_request', id: 'before', method: 'setStatus', statusKey: 'startup', statusText: 'before response' }] },
+    { type: 'respond', command: 'get_state', data: { sessionId: 'chosen', sessionName: 'Chosen' } },
+    { type: 'respond', command: 'get_messages', data: { messages: [] }, after: [{ type: 'extension_ui_request', id: 'during', method: 'setStatus', statusKey: 'refresh', statusText: 'during refresh' }] },
+  ], { KOA_FAKE_SESSIONS: JSON.stringify([{ path: '/tmp/chosen.jsonl' }]) }, undefined, true, [], resolve('../koa/koa.ts'));
+  assert.equal((await app.post('sessions/switch', { path: '/tmp/chosen.jsonl' })).status, 200);
+  const ready = await app.until(record => record.type === 'state' && record.pi.type === 'ready' && record.statuses.refresh === 'during refresh');
+  assert.equal(ready.statuses.startup, 'before response');
+});
+
+test('session switching blocks racing prompts and preserves draft attachments', { timeout: 10000 }, async t => {
+  const dir = await mkdtemp('/tmp/koa-switch-gate-'); t.after(() => rm(dir, { recursive: true, force: true }));
+  const gate = createServer(); gate.listen(join(dir, 'gate')); await once(gate, 'listening');
+  t.after(() => gate.close());
+  const rows = [{ id: 'chosen', path: '/tmp/chosen.jsonl', cwd: '/tmp', firstMessage: 'Chosen', modified: 1, messageCount: 1 }];
+  const app = await fixture(t, [
+    { type: 'wait', command: 'switch_session', data: { cancelled: false }, after: [{ type: 'message_end', message: assistant('stale old reply') }] },
+    { type: 'respond', command: 'get_state', data: { sessionId: 'chosen', sessionName: 'Chosen' } },
+    { type: 'wait', command: 'prompt', echo: true },
+  ], { KOA_FAKE_SESSION_GATE: join(dir, 'gate'), KOA_FAKE_SESSIONS: JSON.stringify(rows) }, undefined, true, [], resolve('../koa/koa.ts'));
+  assert.deepEqual(await (await app.post('sessions/list', { scope: 'all' })).json(), { rows });
+  const bytes = new Uint8Array([104, 105]);
+  const pending = await (await app.post('attachments', { name: 'draft.txt', type: 'text/plain', size: bytes.length })).json();
+  await fetch(app.base + `attachments/${pending.id}/0`, { method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: bytes });
+  const before = app.count();
+  const connected = once(gate, 'connection');
+  const chosen = rows[0]; assert.ok(chosen);
+  const switched = app.post('sessions/switch', { path: chosen.path });
+  const [socket] = await connected; t.after(() => socket.destroy());
+  assert.equal((await app.post('prompt', { text: 'racing', mode: 'prompt', attachments: [] })).status, 409);
+  assert.equal((await app.post('sessions/new')).status, 409);
+  socket.end('go'); assert.equal((await switched).status, 200);
+  assert.equal((await app.post('prompt', { text: 'draft', mode: 'prompt', attachments: [pending.id] })).status, 200);
+  assert.ok(!JSON.stringify(app.records().slice(before)).includes('stale old reply'));
+  assert.ok(!(await app.log()).some(record => record.type === 'prompt' && record.message === 'racing'));
+});
+
+test('a prompt body held across a completed switch cannot enter the new session', { timeout: 10000 }, async t => {
+  const path = '/tmp/chosen.jsonl';
+  const app = await fixture(t, [
+    { type: 'wait', command: 'switch_session', data: { cancelled: false } },
+    { type: 'respond', command: 'get_state', data: { sessionId: 'chosen' } },
+  ], { KOA_FAKE_SESSIONS: JSON.stringify([{ path }]) }, undefined, true, [], resolve('../koa/koa.ts'));
+  const body = JSON.stringify({ sessionId: 'fake', text: 'stale body', mode: 'prompt', attachments: [] });
+  const held = request(app.base + 'prompt', { method: 'POST', headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) } });
+  const response = new Promise<number | undefined>(resolve => {
+    held.once('response', response => { response.resume(); response.once('end', () => resolve(response.statusCode)); });
+  });
+  held.write(body.slice(0, 20));
+  t.after(() => held.destroy());
+  assert.equal((await app.post('sessions/switch', { path })).status, 200);
+  held.end(body.slice(20));
+  assert.equal(await response, 409);
+  assert.ok(!(await app.log()).some(record => record.type === 'prompt'));
+});
+
+test('a failed switch refresh clears old history and returns to a usable session', { timeout: 10000 }, async t => {
+  const path = '/tmp/chosen.jsonl';
+  const app = await fixture(t, [
+    { type: 'respond', command: 'get_messages', data: { messages: [{ role: 'user', timestamp: 1, content: [{ type: 'text', text: 'old session history' }] }] } },
+    { type: 'wait', command: 'switch_session', data: { cancelled: false } },
+    { type: 'respond', command: 'get_state', data: { sessionId: 'chosen', sessionName: 'Chosen' } },
+    { type: 'wait', command: 'get_messages', error: 'History unavailable' },
+    { type: 'wait', command: 'prompt', echo: true },
+  ], { KOA_FAKE_SESSIONS: JSON.stringify([{ path }]) }, undefined, true, [], resolve('../koa/koa.ts'));
+  assert.equal((await app.post('sessions/switch', { path: '/tmp/not-a-fixture-session' })).status, 409);
+  assert.equal((await app.post('sessions/switch', { path })).status, 200);
+  await app.until(record => JSON.stringify(record).includes('History unavailable'));
+  const state = app.records().filter(record => record.type === 'state').at(-1);
+  assert.equal(state.pi.type, 'ready'); assert.equal(state.sessionId, 'chosen');
+  assert.deepEqual(app.records().filter(record => record.type === 'reset').at(-1).items, []);
+  assert.equal((await app.post('prompt', { text: 'fresh prompt', mode: 'prompt', attachments: [] })).status, 200);
 });
 
 test('startup failures release the view before exiting', { timeout: 5000 }, async t => {
@@ -348,6 +452,29 @@ test('bash output is bounded live, replaced by the result, and replayed once', {
   await app.until(record => record.type === 'reset', before);
   const stored = await (await fetch(app.base + 'items?before=99')).json();
   assert.equal(stored.items.length, 1); assert.equal(stored.items[0].result.output.text, 'authoritative final');
+});
+
+test('a late bash result cannot enter the switched session', { timeout: 10000 }, async t => {
+  const dir = await mkdtemp('/tmp/koa-session-bash-'); t.after(() => rm(dir, { recursive: true, force: true }));
+  const server = createServer(); server.listen(join(dir, 'gate')); await once(server, 'listening'); t.after(() => server.close());
+  const connected = once(server, 'connection');
+  const app = await fixture(t, [
+    { type: 'wait', command: 'bash', gate: join(dir, 'gate'), data: { output: 'late old command output', exitCode: 0, cancelled: false, truncated: false }, after: [{ type: 'extension_ui_request', id: 'delivered', method: 'notify', message: 'late result delivered' }] },
+    { type: 'wait', command: 'switch_session', data: { cancelled: false } },
+    { type: 'respond', command: 'get_state', data: { sessionId: 'chosen', sessionName: 'Chosen' } },
+    { type: 'respond', command: 'get_messages', data: { messages: [] } },
+  ], { KOA_FAKE_SESSIONS: JSON.stringify([{ path: '/tmp/chosen.jsonl' }]) }, undefined, true, [], resolve('../koa/koa.ts'));
+  await app.post('prompt', { text: '!old command', mode: 'prompt', attachments: [] });
+  const [gate] = await connected; t.after(() => gate.destroy());
+  await app.until(record => record.type === 'state' && record.bash?.[0]?.phase === 'running');
+  assert.equal((await app.post('sessions/switch', { path: '/tmp/chosen.jsonl' })).status, 200);
+  const ready = await app.until(record => record.type === 'state' && record.sessionId === 'chosen' && record.pi.type === 'ready');
+  assert.deepEqual(ready.bash, []);
+  const before = app.count(); gate.end('release');
+  await app.until(record => record.type === 'item' && record.item.kind === 'notify' && record.item.text.text === 'late result delivered', before);
+  assert.equal(JSON.stringify(app.records().slice(before)).includes('late old command output'), false);
+  assert.deepEqual(app.records().findLast(record => record.type === 'state')?.bash, []);
+  assert.equal(JSON.stringify(await (await fetch(app.base + 'items?before=99')).json()).includes('late old command output'), false);
 });
 
 test('a resumed bash message has one stored item and no running state', { timeout: 5000 }, async t => {
@@ -741,6 +868,8 @@ test("startup refuses prompts until the snapshot response is applied", { timeout
   await writeFile(pi, `#!/usr/bin/env node
 import { connect } from 'node:net';
 if (process.env.KOA_STARTUP_ARGS) { const {writeSync}=await import('node:fs'); writeSync(3,JSON.stringify({packageRoot:${JSON.stringify(resolve('node_modules/@earendil-works/pi-coding-agent'))},messages:[],resume:false})+'\\n'); process.exit(0); }
+const { writeSync } = await import('node:fs');
+writeSync(3, JSON.stringify({type:'session',id:'fake',generation:1,cwd:process.cwd()})+'\\n');
 let buffer = '', snapshot, answered = false, released = false;
 const complete = () => { if (snapshot && answered && released) { send(snapshot, {messages:[{role:'user',content:'snapshot',timestamp:1}]}); snapshot = undefined; } };
 const send = (v, data) => process.stdout.write(JSON.stringify({type:'response',command:v.type,id:v.id,success:true,data})+'\\n');
@@ -989,17 +1118,11 @@ test("queue, model, thinking and dialog routes carry RPC state", { timeout: 1000
   assert.deepEqual(commands.filter(record => record.type === "extension_ui_response").map(({ id, value, confirmed }) => ({ id, value, confirmed })), [{ id: "dialog-1", value: "Yes", confirmed: undefined }, { id: "dialog-2", value: undefined, confirmed: true }, { id: "dialog-3", value: "typed", confirmed: undefined }, { id: "dialog-4", value: undefined, confirmed: undefined }]);
 });
 
-test("session headers keep the startup cwd for a missing file and report invalid files", { timeout: 10000 }, async t => {
-  const dir = await mkdtemp(join(tmpdir(), "koa-session-header-"));
-  t.after(() => rm(dir, { recursive: true, force: true }));
-  const invalid = join(dir, "invalid.jsonl");
-  await writeFile(invalid, "not json\n");
-  for (const [sessionFile, reports] of [[join(dir, "missing.jsonl"), false], [invalid, true], [dir, true]] as const) {
-    const app = await fixture(t, [{ type: "respond", command: "get_state", data: { sessionFile } }]);
-    const state = await app.until(record => record.type === "state" && record.pi?.type === "ready");
-    assert.equal(state.cwd, process.cwd());
-    assert.equal(app.stderr().includes("koa: session header:"), reports, app.stderr());
-  }
+test('session metadata supplies cwd before the session has a file', { timeout: 10000 }, async t => {
+  const app = await fixture(t, [], { KOA_FAKE_CWD: '/tmp/other-folder' });
+  const state = await app.until(record => record.type === 'state' && record.pi?.type === 'ready');
+  assert.equal(state.cwd, '/tmp/other-folder');
+  assert.equal(state.sessionId, 'fake');
 });
 
 test("restart keeps the saved picker selection, harness and runtime", { timeout: 10000 }, async t => {
@@ -1029,7 +1152,7 @@ test("restart keeps the saved picker selection, harness and runtime", { timeout:
   assert.equal(restarted.thinking, "high");
   const argv = (await app.log()).filter(record => record.type === "argv").map(record => record.args);
   assert.equal(argv.length, 2);
-  assert.deepEqual(argv[1], ["--mode", "rpc", "--extension", resolve("../../build/ko/share/ko/pi/ko-pi.ts"), "--harness", "koa-browser", "--runtime", "remote", "--resume", "-r", "--system-prompt", "--resume", "--session", session, "--", "--session", "literal", "--resume"]);
+  assert.deepEqual(argv[1], ["--mode", "rpc", "--extension", resolve("../../build/ko/share/ko/pi/ko-pi.ts"), '--extension', resolve('../../build/ko/share/ko/koa/koa-sessions.ts'), "--harness", "koa-browser", "--runtime", "remote", "--resume", "-r", "--system-prompt", "--resume", "--session", session, "--", "--session", "literal", "--resume"]);
 });
 
 test('a missing pi fails package discovery before the webview', { timeout: 5000 }, async () => {

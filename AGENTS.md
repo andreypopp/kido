@@ -785,7 +785,11 @@ maps the coordinator's modules.
                         extension; koa-args.ts, its rules for pi's
                         parsed arguments; koa-resume.ts, the picker
                         extension of `koa --resume`; koa-commands.ts,
-                        the built-in slash commands; prompt.ts, the prompt
+                        the built-in slash commands; koa-sessions.ts,
+                        the extension in the pi child that lists
+                        sessions for the page's `/resume`, over
+                        koa-session-channel.ts; koa-session-dir.ts, the
+                        session directory rule of both pickers; prompt.ts, the prompt
                         text rules that koa and its page share; koa-fake-pi.ts, the scripted pi
                         of its suite koa-*.test.ts, and koa-fake-tty.ts,
                         its terminal preload; stress/, the stress
