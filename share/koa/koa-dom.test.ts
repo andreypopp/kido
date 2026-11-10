@@ -3,7 +3,7 @@ import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 import { runInNewContext } from "node:vm";
 import { stripTypeScriptTypes } from "node:module";
-import { markdown } from "./page/markdown.ts";
+import { markdown, markdownLine } from "./page/markdown.ts";
 import { nameCommand } from "./prompt.ts";
 import { ATTACHMENT_LIMITS, isAttachment, pathArg } from "./koa-records.ts";
 import { jobEndText } from "../pi/records.ts";
@@ -34,7 +34,7 @@ async function page() {
     onkeydown?: (event: unknown) => void;
     attributes = new Map<string, string>();
     setAttribute(name: string, value: string) { this.attributes.set(name, value); } getAttribute(name: string) { return this.attributes.get(name) ?? null; } removeAttribute(name: string) { this.attributes.delete(name); } focus() { for (let node: Node | undefined = this; node; node = node.parent) if (node.inert) return; document.activeElement = this; } setSelectionRange() {} addEventListener() {} scrollIntoView() {} getBoundingClientRect() { return { left: 0 }; }
-    closest(selector: string) { return ['INPUT', 'TEXTAREA', 'SELECT', ...(selector.includes('button') ? ['BUTTON'] : [])].includes(this.tagName) || (this.attributes.has('role') && selector.includes(`[role=${this.attributes.get('role')}]`)) ? this : null; }
+    closest(selector: string): Node | null { if (selector === 'a') return this.tagName === 'A' ? this : this.parent?.closest(selector) ?? null; return ['INPUT', 'TEXTAREA', 'SELECT', ...(selector.includes('button') ? ['BUTTON'] : [])].includes(this.tagName) || (this.attributes.has('role') && selector.includes(`[role=${this.attributes.get('role')}]`)) ? this : null; }
     setRangeText(text: string) { this.value = this.value.slice(0, this.selectionStart) + text + this.value.slice(this.selectionEnd); }
     dispatchEvent() { this.oninput?.(); }
     querySelector() { return undefined; }
@@ -69,7 +69,7 @@ async function page() {
       placeholder(text: string) { content.placeholder = text; },
     };
   };
-  const context = { getComputedStyle: () => ({ display: 'block' }), composer, nameCommand, ATTACHMENT_LIMITS, isAttachment, pathArg, jobEndText, AbortController, AbortSignal, CustomEvent: class { type: string; detail?: unknown; constructor(type: string, options?: { detail?: unknown }) { this.type = type; this.detail = options?.detail; } }, Node, Element: Node, HTMLElement: Node, HTMLButtonElement: Node, HTMLImageElement: Node, markdown, document, window: { ko: {}, addEventListener(type: string, handler: (event?: unknown) => void) { windowListeners.set(type, handler); } }, innerWidth: 980, innerHeight: 560, Event: class { type: string; constructor(type: string) { this.type = type; } }, console, setInterval() {}, clearInterval() {}, setTimeout, clearTimeout, requestAnimationFrame() {}, fetch: async () => ({ ok: true, json: async () => ({}) }) };
+  const context = { getComputedStyle: () => ({ display: 'block' }), composer, nameCommand, ATTACHMENT_LIMITS, isAttachment, pathArg, jobEndText, AbortController, AbortSignal, CustomEvent: class { type: string; detail?: unknown; constructor(type: string, options?: { detail?: unknown }) { this.type = type; this.detail = options?.detail; } }, Node, Element: Node, HTMLElement: Node, HTMLButtonElement: Node, HTMLImageElement: Node, markdown, markdownLine, document, window: { ko: {}, addEventListener(type: string, handler: (event?: unknown) => void) { windowListeners.set(type, handler); } }, innerWidth: 980, innerHeight: 560, Event: class { type: string; constructor(type: string) { this.type = type; } }, console, setInterval() {}, clearInterval() {}, setTimeout, clearTimeout, requestAnimationFrame() {}, fetch: async () => ({ ok: true, json: async () => ({}) }) };
   const answersSource = stripTypeScriptTypes(await readFile(new URL('page/answers.ts', import.meta.url), 'utf8')).replace(/^export /gm, '');
   const annotationsSource = stripTypeScriptTypes(await readFile(new URL('page/annotations.ts', import.meta.url), 'utf8')).replace(/^import .*;\n/gm, '').replace(/^export /gm, '');
   Object.assign(context, runInNewContext(answersSource + '\n' + annotationsSource + '\n({annotations,update})', context));
@@ -622,9 +622,32 @@ test('consecutive job batches join without replacing the open line or earlier ou
   assert.equal(app.run(`(()=>{const job={id:'j',name:'build',service:false,log:'/tmp/build.log'},batch=(seq,text)=>({seq,at:seq*60000,final:true,kind:'job',job,event:{type:'stream',batch:{text,cut:0},omitted:0,cut:false}});put(batch(0,'first'));const root=views.get(0).view.children[0],line=root.children[0];if(root.children[1].children.length)return false;line.onclick();const pre=root.children[1].children[0];put(batch(1,'second'));const stable=root.children[0]===line&&root.children[1].children[0]===pre&&root.classList.contains('open');put({seq:2,at:120000,final:true,kind:'job',job,event:{type:'ended',end:{type:'exit',code:1},tail:{text:'last tail',cut:0}}});return stable&&views.get(1).view.hidden&&views.get(2).view.hidden&&root.classList.contains('err')&&root.children[1].children.some(child=>child.className==='sep')})()`), true);
 });
 
+test('agent body changes render fresh final Markdown without a retained prose memo', async () => {
+  const app = await page(), html: string[] = [];
+  const create = app.context.document.createElement;
+  app.context.document.createElement = tag => { const node = create(tag); if (tag === 'template') Object.defineProperty(node, 'innerHTML', { set(value: string) { html.push(value); } }); return node; };
+  const result = app.run(`
+    const card={direction:'out',to:{name:'worker'},text:{text:'**Review**',cut:0},call:{tool:'spawn',fork:false}};
+    const slots=new Map();
+    const view=agentCard(card,0,'agent:0',slots);
+    view.onclick({});
+    const link=document.createElement('a'), label=document.createElement('strong'); link.append(label); view.append(link);
+    view.onclick({target:label});
+    const clicked=view.classList.contains('expanded');
+    view.onkeydown({target:label,key:'Enter',preventDefault(){throw Error('Link Enter was intercepted');}});
+    const entered=view.classList.contains('expanded');
+    agentCard({...card,text:{text:'Use \`code\`',cut:0},outcome:{ok:false,failure:'refused',message:'No'}},0,'agent:0',slots);
+    const fallback=put({seq:1,at:0,kind:'notice',final:true,customType:'other',from:'',text:'## **Ready**\\nSecond line'});
+    [clicked,entered,texts.size,fallback.className,fallback.children[0].textContent,fallback.children[1].tagName];
+  `);
+  assert.match(html.join(''), /<strong>Review<\/strong>/);
+  assert.match(html.join(''), /<code>code<\/code>/);
+  assert.deepEqual(Array.from(result), [true, true, 0, 'note', 'Ready', 'TIME']);
+});
+
 test('agent cards split runs and toggle their one-line body without success metadata', async () => {
   const app = await page();
-  assert.equal(app.run(`(()=>{const tool=name=>({type:'tool',id:name,name,args:{text:'{}'},state:{type:'done',error:false,result:{text:'',images:[]}}});const card={...tool('spawn_agent'),agent:{direction:'out',to:{name:'worker',session:'worker-id'},text:{text:'Check the module\\nReturn findings',cut:0},call:{tool:'spawn',fork:false},outcome:{ok:true}}};const view=put({seq:0,at:0,kind:'assistant',final:true,stop:'stop',error:'',blocks:[tool('read'),card,tool('bash')]});const agent=view.children.find(child=>child.classList.contains('amsg'));if(!agent||view.children.length!==3)return false;const closed=!agent.classList.contains('expanded');agent.onclick();const open=agent.classList.contains('expanded');agent.onclick();return closed&&open&&!agent.classList.contains('expanded')&&agent.children[0].children.some(child=>child.textContent==='@worker')&&!agent.children[0].children.some(child=>child.textContent==='spawned')})()`), true);
+  assert.equal(app.run(`(()=>{const tool=name=>({type:'tool',id:name,name,args:{text:'{}'},state:{type:'done',error:false,result:{text:'',images:[]}}});const card={...tool('spawn_agent'),agent:{direction:'out',to:{name:'worker',session:'worker-id'},text:{text:'Check the module\\nReturn findings',cut:0},call:{tool:'spawn',fork:false},outcome:{ok:true}}};const view=put({seq:0,at:0,kind:'assistant',final:true,stop:'stop',error:'',blocks:[tool('read'),card,tool('bash')]});const agent=view.children.find(child=>child.classList.contains('amsg'));if(!agent||view.children.length!==3)return false;const closed=!agent.classList.contains('expanded');agent.onclick({});const open=agent.classList.contains('expanded');agent.onclick({});return closed&&open&&!agent.classList.contains('expanded')&&agent.children[0].children.some(child=>child.textContent==='@worker')&&!agent.children[0].children.some(child=>child.textContent==='spawned')})()`), true);
 });
 
 test('step previews require exactly Shift-Command and a stationary press', async () => {

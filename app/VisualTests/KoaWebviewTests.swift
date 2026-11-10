@@ -237,11 +237,11 @@ extension VisualTests {
     }
 
     func testKoaWebviewUserMarkdownWide() async throws {
-        try await koaWebview(width: 980, height: 560, scenario: .userMarkdown, captures: ["user-markdown"])
+        try await koaWebview(width: 980, height: 560, scenario: .userMarkdown, captures: ["user-markdown", "user-quote", "user-quote2", "user-code"])
     }
 
     func testKoaWebviewUserMarkdownNarrow() async throws {
-        try await koaWebview(width: 470, height: 560, scenario: .userMarkdown, captures: ["narrow-user-markdown"])
+        try await koaWebview(width: 470, height: 560, scenario: .userMarkdown, captures: ["narrow-user-markdown", "narrow-user-quote", "narrow-user-quote2", "narrow-user-code"])
     }
 
     func testKoaWebviewComposerMarkdown() async throws {
@@ -463,7 +463,10 @@ extension VisualTests {
         }
         if scenario == .agents {
             let task = """
-            Implement the sidebar's right-side status indicators in ~/Workspace/kido-sidebar-right (app/App/SidebarRow.swift, SidebarView.swift, Packages/SidebarFeed).
+            Implement the **sidebar** indicators with `SidebarRow.swift`; see [the reference](https://example.com/sidebar).
+
+            - Keep the **status** at the right.
+            - Update `SidebarView.swift`.
 
             Rules from the approved mockup (app/design/sidebar/mockup.html, NOTES.md "Indicator on the right"):
             1. status and the hover-close × share one 12pt trailing slot centred 18pt from the row's right edge;
@@ -475,13 +478,15 @@ extension VisualTests {
             Add snapshot tests for every state of the mockup (light and dark, docked and floating). Run the app's make test; report the pre-fix failures and the diff summary. Do not commit.
             """
             let report = """
-            Built the right-side indicators. Pre-fix failures: 6 snapshot tests (SidebarTests.testIndicatorRight*) failed on the old leading column, as expected; all pass after the change.
+            Built the **right-side** indicators with `SidebarRow.swift`; see [the reference](https://example.com/sidebar). Pre-fix failures: 6 snapshot tests (SidebarTests.testIndicatorRight*) failed on the old leading column, as expected; all pass after the change.
 
-            Changed: SidebarRow.swift (the trailing slot, 12pt, centred 18pt from the edge; the title inset), SidebarView.swift (the session + alignment), Rows.swift (the fold-state key for record rows).
+            - **SidebarRow.swift**: the trailing slot, 12pt, centred 18pt from the edge; the title inset.
+            - `SidebarView.swift`: the session + alignment.
+            - Rows.swift: the fold-state key for record rows.
 
             Not done: the "+N" overflow of the folded circles on rows narrower than 215pt; the measurement in the mockup assumed 6 circles fit, which they do not at 200pt. Needs a decision.
 
-            Snapshots: app/Tests/__Snapshots__/SidebarTests/ (12 new).
+            Snapshots: `app/Tests/__Snapshots__/SidebarTests/` (12 new).
             """
             func person(_ text: String) -> [String: Any] { var value = user; value["content"] = [["type": "text", "text": text]]; return value }
             func prose(_ text: String) -> [String: Any] { assistant([["type": "text", "text": text]]) }
@@ -581,9 +586,17 @@ extension VisualTests {
             replay([message("Compare with the earlier screenshot", [shot, shot]), assistant([["type": "text", "text": "I can see the second one; the first is no longer available in this session."]])])
         }
         if scenario == .userMarkdown {
-            var rich = user; rich["content"] = [["type": "text", "text": "Use `inline` and the same Markdown rules.\n\n- First item\n- Second item\n\n```js\nconst x = 1;\n```\n\n<b>raw HTML stays text</b>"]]
+            var rich = user; rich["content"] = [["type": "text", "text": "Use `inline` and the same Markdown rules.\n\n> Keep the quoted instruction clear on the tint.\n\n- First item\n- Second item\n\n```js\nconst x = 1;\n```\n\n<b>raw HTML stays text</b>"]]
             var plain = user; plain["timestamp"] = stamp + 1; plain["content"] = [["type": "text", "text": "A plain one-line message"]]
             steps = Array(steps.prefix(3)); steps[1] = ["type": "respond", "command": "get_messages", "data": ["messages": [rich, assistant([["type": "text", "text": "The text column is the same width."]]), plain]]]
+            for text in [
+                "> The breadcrumb test is flaky on Linux. I recommend skipping it on Linux for now.\n\nYes",
+                "> error[E0599]: no method named `place` found for struct `Model`\n>   --> ko_client/src/model.rs:412:18\n\nWhy does this appear only on the musl target? The method is `pub(crate)`.\n\n> Should I push now, or wait for CI on the rebase?\n\nwait for CI",
+                "Use this as the fixture:\n\n```json\n{ \"reply\": { \"at\": 1762764720000, \"block\": 0, \"length\": 212 },\n  \"annotations\": [ { \"type\": \"question\", \"range\": [96, 142],\n    \"kind\": \"choice\", \"options\": [[106, 114], [119, 130]] } ] }\n```\n\nand make the test read it from a `file`."
+            ] {
+                var value = user; value["content"] = [["type": "text", "text": text]]
+                replay([value])
+            }
         }
         if scenario == .attachments {
             for (path, w, h, a, b, label, length) in [(attachmentPaths.shot, 1440, 900, UInt32(0x2f6fd6), UInt32(0x8b3fc9), "screenshot 1440×900", 2516582), (attachmentPaths.diagram, 800, 800, UInt32(0xe0742d), UInt32(0xc42a5b), "diagram 800×800", 310 * 1024)] {
@@ -761,6 +774,10 @@ extension VisualTests {
             try await webviewUntil(web, "(()=>{const scroll=document.querySelector('#scroll');scroll.scrollTop=\(top ? "0" : "scroll.scrollHeight");return \(top ? "scroll.scrollTop===0" : "scroll.scrollHeight-scroll.scrollTop-scroll.clientHeight<1")})()")
             let lastAboveDock = try await webviewJS(web, "(()=>{const last=document.querySelector('#items').lastElementChild;return !last||last.getBoundingClientRect().bottom<=document.querySelector('#dock').getBoundingClientRect().top})()")
             if !top { XCTAssertEqual(lastAboveDock, "true", "dock space keeps the last message above the composer") }
+            if name.hasSuffix("queue") {
+                let order = try await webviewJS(web, "(()=>{const composer=document.querySelector('#composer'),queue=document.querySelector('#queue'),attachments=document.querySelector('#attachments'),field=document.querySelector('#field');return composer.firstElementChild===queue&&queue.nextElementSibling===attachments&&Math.abs(queue.getBoundingClientRect().bottom+6-(attachments.hidden?field:attachments).getBoundingClientRect().top)<.5})()")
+                XCTAssertEqual(order, "true", "Queued steers and follow-ups stay above the attachment chips and composer field")
+            }
             try await settle()
             try await webviewSnapshot(pane, name + "-light", testName: "testKoaWebviewMockupStates()")
             try await darken()
@@ -859,17 +876,25 @@ extension VisualTests {
                 XCTAssertEqual(result, "true", "All times end at the column edge and wells keep the narrow paper margin")
             }
             try await webviewUntil(web, "document.querySelectorAll('.amsg').length===5")
-            try await openRuns(); try await aligned(); try await capture(prefix + "out")
+            try await openRuns(); try await aligned()
+            _ = try await webviewJS(web, "(()=>{document.querySelector('.amsg').click();return true})()")
+            let taskMarkdown = try await webviewJS(web, "(()=>{const body=document.querySelector('.amsg .bd');return !!body.querySelector('ul li')&&!!body.querySelector('code')&&!!body.querySelector('strong')&&body.querySelector('a')?.getAttribute('href')==='https://example.com/sidebar'})()")
+            XCTAssertEqual(taskMarkdown, "true", "Outbound task renders Markdown elements")
+            try await capture(prefix + "out")
             try await advance(); try await webviewUntil(web, "document.querySelectorAll('.amsg').length===2&&document.querySelectorAll('.amsg .tag.err').length===2")
             size(330); try await capture(prefix + "failed")
             try await advance(); try await webviewUntil(web, "document.querySelectorAll('.amsg').length===7")
             size(560)
             _ = try await webviewJS(web, "(()=>{document.querySelectorAll('.amsg')[1].click();return true})()")
+            let rendered = try await webviewJS(web, "(()=>{const body=document.querySelectorAll('.amsg')[1].querySelector('.bd');return !!body.querySelector('ul li')&&!!body.querySelector('code')&&!!body.querySelector('strong')&&body.querySelector('a')?.getAttribute('href')==='https://example.com/sidebar'&&!body.querySelector('.caret')})()")
+            XCTAssertEqual(rendered, "true", "Expanded agent body renders final Markdown elements")
             try await capture(prefix + "in")
             try await advance(); try await webviewUntil(web, "document.querySelectorAll('.job').length===5")
             _ = try await webviewJS(web, "(()=>{Array.from(document.querySelectorAll('.job')).find(job=>job.querySelector('.nm').textContent==='lint').querySelector('.hd').click();return true})()")
             try await aligned(); try await capture(prefix + "jobs")
             try await advance(); try await webviewUntil(web, "document.querySelectorAll('.job').length===1&&document.querySelectorAll('.amsg').length===1")
+            let summary = try await webviewJS(web, "document.querySelector('.amsg .preview').textContent==='Built the right-side indicators with SidebarRow.swift; see the reference. Pre-fix failures: 6 snapshot tests (SidebarTests.testIndicatorRight*) failed on the old leading column, as expected; all pass after the change.'")
+            XCTAssertEqual(summary, "true", "Collapsed agent body has no Markdown syntax")
             size(330); try await capture(prefix + "fold-a")
             _ = try await webviewJS(web, "(()=>{document.querySelector('.amsg').click();document.querySelector('.job .hd').click();return true})()")
             try await capture(prefix + "fold-b")
@@ -886,10 +911,19 @@ extension VisualTests {
             return
         }
         if scenario == .userMarkdown {
-            try await webviewUntil(web, "document.querySelectorAll('.user').length===2&&document.querySelector('.user ul li')&&document.querySelector('.user pre code')")
+            try await webviewUntil(web, "document.querySelectorAll('.user').length===2&&document.querySelector('.user ul li')&&document.querySelector('.user pre code')&&document.querySelector('.user blockquote')")
             let markdown = try await webviewJS(web, "(()=>{const user=document.querySelector('.user'),plain=Array.from(document.querySelectorAll('.user')).at(-1),assistant=document.querySelector('.assistant .prose'),p=plain.querySelector('.prose p'),u=user.querySelector('.t').getBoundingClientRect(),a=assistant.getBoundingClientRect(),well=plain.getBoundingClientRect(),time=plain.querySelector('time').getBoundingClientRect(),scroll=document.querySelector('#scroll').getBoundingClientRect(),font=parseFloat(getComputedStyle(document.body).fontSize),terminal=parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--ko-font-size')),editor=getComputedStyle(document.querySelector('.cm-content'));return plain.querySelector('time').textContent==='14:32'&&user.querySelectorAll('ul li').length===2&&user.querySelectorAll('code').length===2&&user.querySelector('b')===null&&user.textContent.includes('<b>raw HTML stays text</b>')&&Math.abs(u.left-a.left)<.1&&Math.abs(u.right-a.right)<.1&&well.left>=scroll.left+4&&well.right<=scroll.right-4&&getComputedStyle(p).marginTop==='0px'&&getComputedStyle(p).marginBottom==='0px'&&Math.abs(well.height-p.getBoundingClientRect().height-14)<.1&&Math.abs(time.top-p.getBoundingClientRect().top)<.1&&Math.abs(font-terminal*.92)<.01&&Math.abs(parseFloat(editor.fontSize)-font)<.01&&Number.isInteger(parseFloat(editor.minHeight))})()")
             XCTAssertEqual(markdown, "true", "Markdown, first-line time, equal text widths, compact spacing and rounded composer size")
-            try await capture(width < 750 ? "narrow-user-markdown" : "user-markdown")
+            let prefix = width < 750 ? "narrow-user-" : "user-"
+            try await capture(prefix + "markdown")
+            for (name, condition) in [("quote", "document.querySelectorAll('.user').length===1&&document.querySelectorAll('.user blockquote').length===1"), ("quote2", "document.querySelectorAll('.user blockquote').length===2"), ("code", "document.querySelector('.user pre code.language-json')!==null")] {
+                try await advance(); try await webviewUntil(web, condition)
+                if name == "code" {
+                    let label = try await webviewJS(web, "getComputedStyle(document.querySelector('.user pre .lang')).display==='none'&&getComputedStyle(document.querySelector('.user pre code')).backgroundColor==='rgba(0, 0, 0, 0)'")
+                    XCTAssertEqual(label, "true", "User code has no language label or doubled background")
+                }
+                try await capture(prefix + name)
+            }
             return
         }
         if scenario == .attachments {

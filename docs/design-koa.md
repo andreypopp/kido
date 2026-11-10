@@ -411,7 +411,8 @@ text; the model picker then offers the levels.
   field submits with Control-Return, because Return and Shift-Return
   are newlines there and every Command key goes to Kido first.
 - **The queue.** pi's `queue_update` carries the whole queue, so the
-  page lists the steering and follow-up messages under the field.
+  page lists the steering and follow-up messages above the composer,
+  so the field and its attachment chips stay together.
   Taking it back calls `clear_queue` and puts the texts, with their
   attachments, into the composer.
 - **Context and model facts** come from `get_state`, the pickers'
@@ -559,7 +560,14 @@ The user decided the look with the mockup `agents.html`:
 - `spawn_agent`, `message_agent` and every inbound agent message are
   a card with a "to @name" or "from @name" header, which splits its
   run as a text does. A card shows one line of its text until a
-  click. It shows no delivery status and no meta lines: only a failure
+  click: the first line as plain text with its Markdown syntax
+  removed (the first code line when the text starts with a fence),
+  so a closed card keeps its height. Open, the text is Markdown,
+  rendered as final text by the reply's renderer. A custom message
+  without agent details is not Markdown: it stays a one-line notice
+  of its first line, with the same syntax removed and no expansion,
+  because another extension's text need not be Markdown. A card
+  shows no delivery status and no meta lines: only a failure
   shows, as a word in the kind's place. The `@name` has no action: a
   focus of another pane would be a new page-to-app surface.
 - `stop_agent`, `list_agents`, `read_report`, `list_async_bash` and

@@ -1,5 +1,5 @@
 import { annotations, update } from './annotations.ts';
-import { markdown } from './markdown.ts';
+import { markdown, markdownLine } from './markdown.ts';
 import { composer } from './composer.ts';
 import { attach } from './attach.ts';
 import { preview, previewKey } from './preview.ts';
@@ -80,7 +80,9 @@ function agentCard(card: AgentCard, at: number, key: string, slots: Map<string, 
   header.append(node('span', kind, failed ? 'tag err' : 'tag'), node('time', timestamp(at)));
   const body = card.text.text || (card.direction === 'out' && card.outcome?.ok === false ? card.outcome.message : '');
   view.replaceChildren(header);
-  fold(view, key, view, node('div', body, 'bd'), undefined, 'expanded');
+  view.append(node('div', markdownLine(body), 'preview'));
+  const details = prose(undefined, body, true); details.className = 'bd prose';
+  fold(view, key, view, details, undefined, 'expanded');
   return view;
 }
 function jobCard(first: JobItem, slots: Map<string, Slot>): JobGroup {
@@ -134,9 +136,9 @@ function timestamp(at: number) {
   return (date.getFullYear() === today.getFullYear() ? '' : date.getFullYear() + ' ') + date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) + ' ' + time;
 }
 
-function prose(key: string, source: string, final: boolean, annotationItem?: Extract<WireItem, { kind: 'annotations' }>) {
-  let memo = texts.get(key);
-  if (!memo) { memo = { render: markdown(), view: node('div', undefined, 'msg prose'), blocks: [] }; texts.set(key, memo); }
+function prose(key: string | undefined, source: string, final: boolean, annotationItem?: Extract<WireItem, { kind: 'annotations' }>) {
+  let memo = key === undefined ? undefined : texts.get(key);
+  if (!memo) { memo = { render: markdown(), view: node('div', undefined, 'msg prose'), blocks: [] }; if (key !== undefined) texts.set(key, memo); }
   if (memo.annotationItem === annotationItem && (memo.final && final || memo.source === source && memo.final === final)) return memo.view;
   if (final) delete memo.source;
   else memo.source = source;
@@ -239,8 +241,8 @@ function fold(view: HTMLElement, key: string, line: HTMLElement, details: HTMLEl
   line.setAttribute('role', 'button'); line.tabIndex = 0;
   line.setAttribute('aria-expanded', String(folds.get(key) === true));
   const toggle = () => { const open = !view.classList.contains(className); folds.set(key, open); view.classList.toggle(className, open); line.setAttribute('aria-expanded', String(open)); if (open) show?.(); };
-  line.onclick = toggle;
-  line.onkeydown = event => { if (!event.metaKey && !event.ctrlKey && (event.key === 'Enter' || event.key === ' ')) { event.preventDefault(); toggle(); } };
+  line.onclick = event => { if (!(event?.target instanceof Element && event.target.closest('a'))) toggle(); };
+  line.onkeydown = event => { if (!(event.target instanceof Element && event.target.closest('a')) && !event.metaKey && !event.ctrlKey && (event.key === 'Enter' || event.key === ' ')) { event.preventDefault(); toggle(); } };
   if (view !== line) view.append(line);
   view.append(details);
   if (folds.get(key)) show?.();
@@ -394,6 +396,7 @@ function put(item: WireItem) {
     else if (item.kind === 'agent') { view.className = ''; children.push(agentCard(item, item.at, 'agent:' + item.seq, slots)); }
     else if (item.kind === 'annotations') { view.hidden = true; }
     else if (item.kind === 'job') { view.className = ''; const saved = previous?.slots.get('job'); if (saved?.type === 'job') slots.set('job', saved); }
+    else if (item.kind === 'notice') { view.className = 'note'; children.push(node('span', markdownLine(item.text), 'tx'), node('time', timestamp(item.at))); }
     else if (item.kind === 'bash') children.push(node('div', '$ ' + item.command), node('pre', item.output.text), node('div', 'Exit ' + (item.exit ?? 'unknown'), 'delta'));
     else children.push(node('div', item.text, 'notice'));
   }

@@ -6,8 +6,27 @@ import { Marked } from "marked";
 import remend from "remend";
 
 import { assemblePage } from "./koa-assemble.ts";
-import { markdown, type Mark } from "./page/markdown.ts";
+import { markdown, markdownLine, type Mark } from "./page/markdown.ts";
 import { answer, current, quote } from "./page/answers.ts";
+
+test('Markdown previews strip first-line syntax and use the first fenced code line', () => {
+  for (const [source, expected] of [
+    ['## **Ready** with `code`, _emphasis_ and ~~old~~ [link](https://example.com).\nNot shown', 'Ready with code, emphasis and old link.'],
+    ['> - [ ] Review ![the image](https://example.com/image.png)  now', 'Review the image now'],
+    ['1. __First__\r\nSecond', 'First'],
+    ['```ts\nconst x = a * b;\n```', 'const x = a * b;'],
+    ['_x_ __bold__ snake_case file_name.ts `a*b` and `file_name.ts`', 'x bold snake_case file_name.ts a*b and file_name.ts'],
+    ['[nested](https://example.com/a_(b)) and [reference][id]\n\n[id]: https://example.com', 'nested and reference'],
+    ['~~~\n  first   code line\n~~~', 'first code line'],
+    ['```ts', ''],
+    ['```inline```', 'inline'],
+    ['```\n```', ''],
+    ['>foo', 'foo'],
+    ['>> foo', 'foo'],
+    ['> > foo', 'foo'],
+    ['', ''],
+  ]) assert.equal(markdownLine(source), expected);
+});
 
 test('question answers follow the TUI quote, append, replace and empty-answer rules', () => {
   const database = quote('Which database should we use: **PostgreSQL**, SQLite or MySQL?');
