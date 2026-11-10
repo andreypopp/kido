@@ -19,12 +19,9 @@ declare global {
   }
 }
 
-function element(id: 'send'): HTMLButtonElement;
-function element(id: string): HTMLElement;
 function element(id: string) {
   const result = document.getElementById(id);
   if (!result) throw Error('Missing element: ' + id);
-  if (id === 'send' && !(result instanceof HTMLButtonElement)) throw Error('Invalid send button');
   return result;
 }
 const node = <K extends keyof HTMLElementTagNameMap>(tag: K, text?: string, className?: string) => {
@@ -40,7 +37,7 @@ const folds = new Map<string, boolean>();
 const texts = new Map<string, { render: ReturnType<typeof markdown>; view: HTMLElement; blocks: { block: ReturnType<ReturnType<typeof markdown>>[number]; nodes: ChildNode[] }[]; final?: boolean; source?: string }>();
 let state: State = { pi: { type: 'starting' }, working: false, aborted: false, name: '', levels: [], cwd: '', home: '', statuses: {}, queue: { steering: [], followUp: [] }, dialogs: [] };
 let epoch = '', after = -1, first: number | undefined, more = false, paging = false, follow = true, delay = 200, scrollFrame: number | undefined;
-let escaped = false, notificationTimer: number | undefined, dialogId: string | undefined, buttonWorking: boolean | undefined;
+let escaped = false, dialogId: string | undefined;
 let submitting = false, editorId: string | undefined, dialogTimer: number | undefined, shownExit: number | undefined, pickerButton: HTMLElement | undefined, shownQueue: string | undefined, shownStatuses: string | undefined;
 const pagingPatches: Patch[] = [];
 const draft = attach(element('attachments'), () => refreshComposer(), displayPath);
@@ -51,8 +48,7 @@ const editor = composer(element('prompt'), {
   quit() { if (!draft.count && !draft.busy) void fetchJSON('/quit'); },
 });
 window.composer = editor;
-const composerBlocked = () => state.pi.type === 'starting' || state.dialogs.length > 0;
-const workingText = () => 'working ' + Math.max(0, Math.floor((Date.now() - (state.since ?? Date.now())) / 1000)) + 's';
+const composerBlocked = () => state.pi.type !== 'ready' || state.dialogs.length > 0;
 
 if (!window.ko) {
   const scheme = matchMedia('(prefers-color-scheme: dark)');
@@ -202,7 +198,7 @@ function thumbnails(refs: ImageRef[], slots: Map<string, Slot>, name?: string) {
 }
 
 function displayPath(value: string) { return state.home && (value === state.home || value.startsWith(state.home + '/')) ? '~' + value.slice(state.home.length) : value; }
-const duration = (ms: number | undefined) => ms === undefined ? '' : ms < 100 ? Math.round(ms) + 'ms' : ms >= 60000 ? Math.floor(ms / 60000) + 'm' + String(Math.floor(ms / 1000) % 60).padStart(2, '0') + 's' : Number((ms / 1000).toFixed(1)) + 's';
+const duration = (ms: number | undefined, separator = '') => ms === undefined ? '' : ms < 100 && !separator ? Math.round(ms) + 'ms' : ms >= 60000 ? Math.floor(ms / 60000) + 'm' + separator + String(Math.floor(ms / 1000) % 60).padStart(2, '0') + 's' : Number((ms / 1000).toFixed(1)) + 's';
 function args(block: Extract<Block, { type: 'tool' }>): Record<string, unknown> {
   try { const value = JSON.parse(block.args.text); return value && typeof value === 'object' && !Array.isArray(value) ? value : {}; }
   catch { return {}; }
@@ -388,7 +384,8 @@ function put(item: WireItem) {
       const paths = item.attachments.filter(file => file.kind === 'file').map(file => file.path);
       if (paths.length) text.append(node('div', paths.join('\n'), 'paths'));
       children.push(time, text);
-    } else if (item.kind === 'agent') { view.className = ''; children.push(agentCard(item, item.at, 'agent:' + item.seq, slots)); }
+    } else if (item.kind === 'notify') { view.className = 'note ' + item.level; children.push(node('span', item.text.text, 'tx'), node('time', timestamp(item.at))); }
+    else if (item.kind === 'agent') { view.className = ''; children.push(agentCard(item, item.at, 'agent:' + item.seq, slots)); }
     else if (item.kind === 'job') { view.className = ''; const saved = previous?.slots.get('job'); if (saved?.type === 'job') slots.set('job', saved); }
     else if (item.kind === 'bash') children.push(node('div', '$ ' + item.command), node('pre', item.output.text), node('div', 'Exit ' + (item.exit ?? 'unknown'), 'delta'));
     else children.push(node('div', item.text, 'notice'));
@@ -409,44 +406,26 @@ function put(item: WireItem) {
 }
 
 function refreshComposer() {
-  const sendButton = element('send');
   const blocked = composerBlocked(), working = state.working && !blocked;
   const available = element('field').inert && !blocked;
   element('field').inert = blocked;
   if (available) focusComposer();
-  element('field').classList.toggle('blocked', blocked);
-  element('field').classList.toggle('working', working);
   element('field').classList.toggle('drop', draft.hover);
-  editor.placeholder(draft.hover ? 'Drop to attach' : working ? 'Steer koa…' : 'Message koa…');
-  const text = editor.text();
-  sendButton.disabled = blocked || !working && !canSend(text);
-  sendButton.className = 'act' + (sendButton.disabled ? ' off' : working ? ' stop' : '');
-  sendButton.setAttribute('aria-label', working ? 'Stop' : 'Send');
-  if (buttonWorking !== working) {
-    buttonWorking = working;
-    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg'); svg.setAttribute('viewBox', '0 0 16 16');
-    const shape = document.createElementNS(svg.namespaceURI, working ? 'rect' : 'path');
-    if (working) { for (const [key, value] of Object.entries({ x: 4, y: 4, width: 8, height: 8, rx: 1.5 })) shape.setAttribute(key, String(value)); shape.setAttribute('fill', 'currentColor'); shape.setAttribute('stroke', 'none'); }
-    else shape.setAttribute('d', 'M3 8h9.5M8.3 3.8 12.5 8l-4.2 4.2');
-    svg.append(shape); sendButton.replaceChildren(svg);
-  }
-  composerHint(status());
-}
-function composerHint(working: string) {
-  const hint = element('hint');
-  if (state.working && !composerBlocked()) {
-    if (hint.firstElementChild?.className !== 'spin') hint.replaceChildren(node('span', undefined, 'spin'), node('span'), node('kbd', '⎋'), node('span', ' abort'));
-    const clock = hint.children[1];
-    if (clock) clock.textContent = working + ' · ';
-  } else hint.textContent = editor.empty() ? '' : '⇧↩ newline';
+  editor.placeholder(draft.hover ? 'Drop to attach' : hasExited() ? 'pi has exited' : working ? 'Steer koa…' : 'Message koa…');
+  status();
 }
 function status() {
-  const working = workingText();
-  const waiting = state.dialogs.length > 0;
-  element('status').textContent = hasExited() ? 'pi exited · ' + exitCause() : waiting ? 'waiting for you' : state.pi.type === 'starting' ? 'starting' : state.working ? working : state.aborted ? 'aborted' : 'idle';
-  element('dot').className = 'dot' + (hasExited() ? ' off' : waiting ? ' wait' : state.working ? ' on' : '');
-  element('model').textContent = state.model?.id ?? '';
-  element('thinking').textContent = state.thinking ? '· thinking ' + state.thinking : '';
+  const waiting = state.dialogs.length > 0, label = element('status');
+  const cause = exitCause();
+  const word = cause ? (cause.kind === 'code' ? 'exited' : cause.kind) + ' ' + cause.value : waiting ? 'waiting' : state.pi.type === 'starting' ? 'starting' : state.working ? 'working' : state.aborted ? 'aborted' : 'idle';
+  label.textContent = word;
+  if (state.pi.type === 'ready' && state.working && !waiting) {
+    const ms = Math.max(0, Math.floor((Date.now() - (state.since ?? Date.now())) / 1000)) * 1000;
+    label.append(node('span', ' ' + duration(ms, ' '), 'k'));
+  }
+  element('dot').className = 'dot' + (hasExited() ? ' off' : waiting ? ' wait' : state.pi.type === 'ready' && state.working ? ' on' : '');
+  element('model-name').textContent = state.model?.id ?? '';
+  element('thinking').textContent = state.thinking ? '· ' + state.thinking : '';
   const context = state.context, percent = context?.percent;
   element('tokens').textContent = context ? (context.tokens === null ? '—' : Math.round(context.tokens / 1000) + 'k') + ' / ' + Math.round(context.window / 1000) + 'k' : '';
   element('percent').textContent = percent === null || percent === undefined ? '—' : Math.round(percent) + '%';
@@ -454,8 +433,7 @@ function status() {
   const bar = element('context-bar').firstElementChild;
   if (bar instanceof HTMLElement) bar.style.width = Math.min(100, Math.max(0, percent ?? 0)) + '%';
   const path = displayPath(state.cwd).replace(/\/$/, ''), slash = path.lastIndexOf('/');
-  element('cwd').replaceChildren(node('span', path.slice(0, slash + 1), 'hide-n k'), node('span', path.slice(slash + 1)));
-  return working;
+  element('cwd').replaceChildren(node('span', path.slice(0, slash + 1), 'lead k'), node('span', path.slice(slash + 1)));
 }
 function button(label: string, key?: string, primary = false) {
   const result = node('button', label, 'btn' + (primary ? ' primary' : ''));
@@ -556,9 +534,9 @@ async function stop() {
   finally { submitting = false; }
 }
 function hasExited() { return state.pi.type === 'exited'; }
-function exitCause() { return 'exited' in state.pi ? 'code ' + state.pi.exited : 'signal' in state.pi ? 'signal ' + state.pi.signal : 'failed' in state.pi ? state.pi.failed : undefined; }
+function exitCause(): { kind: 'code' | 'signal' | 'failed'; value: string } | undefined { return 'exited' in state.pi ? { kind: 'code', value: String(state.pi.exited) } : 'signal' in state.pi ? { kind: 'signal', value: state.pi.signal } : 'failed' in state.pi ? { kind: 'failed', value: state.pi.failed } : undefined; }
 function exited() {
-  const host = element('exited'); host.hidden = !hasExited(); element('composer').hidden = hasExited();
+  const host = element('exited'); host.hidden = !hasExited();
   const pi = state.pi;
   const at = pi.type === 'exited' ? pi.at : undefined;
   if (shownExit === at) return;
@@ -566,7 +544,8 @@ function exited() {
   if (pi.type !== 'exited') return;
   closePicker();
   const card = node('div', undefined, 'card'), head = node('div', undefined, 'head');
-  const title = node('span', 'pi exited ', 'title'); title.append(node('span', '· ' + exitCause(), 'err')); head.append(title, node('span', timestamp(pi.at), 'count'));
+  const cause = exitCause();
+  const title = node('span', 'pi exited ', 'title'); title.append(node('span', '· ' + (cause ? cause.kind + ' ' + cause.value : ''), 'err')); head.append(title, node('span', timestamp(pi.at), 'count'));
   const actions = node('div', "last 5 lines of pi's stderr · the whole output is in the pane's terminal", 'acts'), start = button('Start pi again', '↩', true);
   start.onclick = async () => { start.disabled = true; try { await fetchJSON('/pi/start'); } catch (error) { reportError(error); start.disabled = false; } };
   actions.append(node('span', undefined, 'sp'), start); card.append(head, node('pre', pi.stderr || ''));
@@ -574,26 +553,38 @@ function exited() {
   card.append(actions); host.append(card); start.focus();
 }
 function closePicker() { element('picker').hidden = true; const trigger = pickerButton; pickerButton = undefined; if (trigger) { trigger.classList.remove('pick'); focusComposer(); } }
+function positionPicker() {
+  if (!pickerButton) return;
+  const host = element('picker'), rect = element('model-cell').getBoundingClientRect();
+  host.style.left = Math.max(0, Math.min(rect.left - 6, innerWidth - 244)) + 'px';
+  host.style.bottom = (innerHeight - rect.top + 8) + 'px';
+  host.style.maxHeight = Math.max(0, rect.top - 16) + 'px';
+}
 async function picker(kind: 'model' | 'thinking') {
   if (state.pi.type !== 'ready') return;
   const trigger = element(kind), host = element('picker');
   if (pickerButton === trigger) { closePicker(); return; }
   closePicker();
-  let choices: { id: string; provider?: string }[];
-  try { choices = kind === 'model' ? (await fetchJSON('/models', undefined, 'GET')).models : state.levels.map(id => ({ id })); }
-  catch (error) { reportError(error); return; }
+  const choices: ({ kind: 'model'; id: string; provider: string } | { kind: 'thinking'; id: string })[] = [];
+  try {
+    if (kind === 'model') {
+      choices.push(...(await fetchJSON('/models', undefined, 'GET')).models.map(model => ({ kind: 'model' as const, id: model.id, provider: model.provider })));
+      if (getComputedStyle(element('thinking')).display === 'none') choices.push(...state.levels.map(id => ({ kind: 'thinking' as const, id })));
+    } else choices.push(...state.levels.map(id => ({ kind: 'thinking' as const, id })));
+  } catch (error) { reportError(error); return; }
   pickerButton = trigger; trigger.classList.add('pick'); host.replaceChildren(); host.hidden = false; host.tabIndex = -1;
-  host.style.left = Math.min(trigger.getBoundingClientRect().left, innerWidth - 244) + 'px';
+  positionPicker();
   host.append(node('div', kind === 'model' ? 'Model' : 'Thinking', 'ph'));
-  const current = (choice: { id: string; provider?: string }) => kind === 'model' ? choice.id === state.model?.id && choice.provider === state.model?.provider : choice.id === state.thinking;
+  const current = (choice: typeof choices[number]) => choice.kind === 'model' ? choice.id === state.model?.id && choice.provider === state.model?.provider : choice.id === state.thinking;
   const rows = choices.map((choice, index) => {
+    if (kind === 'model' && choice.kind === 'thinking' && choices[index - 1]?.kind !== 'thinking') host.append(node('div', 'Thinking', 'ph'));
     const row = node('button', undefined, 'row'); row.type = 'button'; row.tabIndex = -1;
     row.append(node('span', current(choice) ? '✓' : '', 'tick'), node('span', choice.id, 'n'));
-    if (choice.provider) row.append(node('span', choice.provider, 'p'));
+    if (choice.kind === 'model') row.append(node('span', choice.provider, 'p'));
     row.onmouseenter = () => selection.mark(index); row.onclick = () => choose(index); host.append(row); return row;
   });
   const selection = cursor(rows, () => {});
-  const choose = async (index: number) => { const choice = choices[index]; if (!choice) return; try { await fetchJSON('/' + kind, kind === 'model' ? { provider: choice.provider, modelId: choice.id } : { level: choice.id }); closePicker(); } catch (error) { reportError(error); } };
+  const choose = async (index: number) => { const choice = choices[index]; if (!choice) return; try { await fetchJSON('/' + choice.kind, choice.kind === 'model' ? { provider: choice.provider, modelId: choice.id } : { level: choice.id }); closePicker(); } catch (error) { reportError(error); } };
   host.append(node('div', '↑↓ move · ↩ choose · ⎋ close', 'hints')); selection.mark(Math.max(0, choices.findIndex(current))); host.focus();
   host.onkeydown = event => { if (event.metaKey || event.ctrlKey || event.isComposing) return; if (['ArrowUp', 'ArrowDown', 'Enter', 'Escape'].includes(event.key)) { event.preventDefault(); event.stopPropagation(); if (event.key === 'Escape') { closePicker(); } else if (event.key === 'Enter') void choose(selection.index); else selection.mark(selection.index + (event.key === 'ArrowDown' ? 1 : -1)); } };
 }
@@ -601,17 +592,9 @@ function statuses() {
   const entries = Object.entries(state.statuses || {}).sort(([a], [b]) => a.localeCompare(b)), signature = JSON.stringify(entries);
   if (shownStatuses === signature) return;
   shownStatuses = signature;
-  document.querySelectorAll('.status .ext').forEach(segment => segment.remove());
-  for (const [key, text] of entries) {
-    const segment = node('div', undefined, 'seg ext'); segment.append(node('span', key, 'k'), node('span', text)); element('notice').before(segment);
-  }
-}
-function toast(record: Extract<PageRecord, { type: 'notify' }>) {
-  clearTimeout(notificationTimer);
-  const notice = node('button', undefined, 'toast ' + record.level); notice.type = 'button';
-  notice.append(node('span', record.level === 'warning' ? '!' : record.level === 'error' ? '✕' : 'i', 'i'), node('span', record.message, 't'));
-  notice.onclick = () => element('notice').replaceChildren(); element('notice').replaceChildren(notice);
-  notificationTimer = setTimeout(() => { element('notice').replaceChildren(); }, 4000);
+  element('status-extras').replaceChildren(...entries.map(([key, text]) => {
+    const segment = node('span', undefined, 'ext'); segment.append(node('i', undefined, 'sep'), node('span', key, 'k'), node('span', text)); return segment;
+  }));
 }
 function apply(record: PageRecord) {
   if (record.type === 'reset') {
@@ -642,7 +625,7 @@ function apply(record: PageRecord) {
       void fetchJSON('/editor/ack', { id: state.editor.id }).catch(reportError);
     }
     statuses();
-  } else if (record.type === 'notify') toast(record);
+  }
 }
 
 function followBottom() {
@@ -738,7 +721,6 @@ async function send(mode: PromptMode = 'prompt') {
   catch (error) { reportError(error); }
   finally { submitting = false; }
 }
-element('send').onclick = () => state.working ? stop() : send();
 element('older').onclick = older;
 const isControl = (target: EventTarget | null) => target instanceof HTMLElement && (target.isContentEditable || target.closest('input,textarea,select,button,[role=button],[role=option],[role=listbox],[role=menuitem]'));
 function focusComposer() { if (document.hasFocus() && !element('field').inert && !state.dialogs.length && !pickerButton && (!isControl(document.activeElement) || editor.hasFocus())) editor.focus(); }
@@ -750,9 +732,10 @@ document.addEventListener('keyup', previewHover);
 window.addEventListener('blur', () => document.documentElement.classList.remove('preview-modifiers'));
 document.addEventListener('keydown', event => { previewHover(event); if (previewKey(event)) return; if (event.defaultPrevented || event.metaKey || event.ctrlKey || event.isComposing || state.dialogs.length || pickerButton) return; if (!element('field').inert && !event.altKey && event.key.length === 1 && !(event.key === ' ' && isControl(event.target)) && !(event.target instanceof HTMLElement && (event.target.isContentEditable || event.target.closest('input,textarea,select')))) { event.preventDefault(); editor.focus(); editor.insert(event.key); return; } if (event.key === 'Enter' && hasExited() && event.target === document.body) element('exited').querySelector('button')?.click(); if (event.key === 'Escape') { event.preventDefault(); if (escaped) { editor.setText(''); } else { escaped = true; if (state.working) void stop(); } } });
 element('model').onclick = () => picker('model'); element('thinking').onclick = () => picker('thinking');
-document.addEventListener('pointerdown', event => { if (!element('picker').contains(event.target instanceof Node ? event.target : null) && event.target !== pickerButton) closePicker(); });
+document.addEventListener('pointerdown', event => { if (!element('picker').contains(event.target instanceof Node ? event.target : null) && !pickerButton?.contains(event.target instanceof Node ? event.target : null)) closePicker(); });
 element('scroll').onscroll = () => { const scroll = element('scroll'); follow = scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight < 60; if (scroll.scrollTop < 80) void older(); };
-setInterval(() => composerHint(status()), 1000);
+setInterval(status, 1000);
+window.addEventListener('resize', positionPicker);
 new ResizeObserver(followBottom).observe(element('scroll'));
 new ResizeObserver(([entry]) => {
   document.body.style.setProperty('--dock-h', entry.borderBoxSize[0].blockSize + 'px');

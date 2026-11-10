@@ -189,14 +189,16 @@ async function main(): Promise<void> {
   const levels = (notify = true) => link.command({ type: "get_available_thinking_levels" }, response => {
     if (response.success && response.command === "get_available_thinking_levels") { state.levels = response.data.levels; if (notify) publish(); }
   });
+  let session: string | undefined;
   const rebuild = () => link.command({ type: "get_messages" }, response => {
-    if (response.success && response.command === "get_messages") feed.rebuild(response.data.messages);
+    if (response.success && response.command === "get_messages") feed.rebuild(response.data.messages, session);
   });
   const refresh = async () => {
     if (pi.type === "exited" || stopping) return;
     pi = { type: "starting" };
     const response = await link.command({ type: "get_state" }, response => {
       if (response.success && response.command === "get_state") {
+        session = response.data.sessionId;
         state.name = response.data.sessionName ?? "pi";
         state.model = response.data.model; state.thinking = response.data.thinkingLevel; state.sessionFile = response.data.sessionFile;
       }
@@ -298,7 +300,7 @@ async function main(): Promise<void> {
           state.dialogs.push({ ...record, ...("timeout" in record && record.timeout !== undefined ? { expires: Date.now() + record.timeout } : {}) });
           if ("timeout" in record && record.timeout !== undefined) dialogTimers.set(record.id, setTimeout(() => removeDialog(record.id), record.timeout));
           status(root.value, root.message); publish(true); break;
-        case "notify": feed.send({ type: "notify", message: record.message, level: record.notifyType ?? "info" }); break;
+        case "notify": feed.notify(record.message, record.notifyType ?? "info"); break;
         case "set_editor_text": state.editor = { id: record.id, text: record.text }; publish(); break;
         case "setStatus":
           if (!record.statusText) delete state.statuses[record.statusKey];
@@ -366,11 +368,11 @@ async function main(): Promise<void> {
         if (name.type === "query") {
           const result = await link.command({ type: "get_state" });
           if (!result.success || result.command !== "get_state") { reply(response, result); return; }
-          feed.send({ type: "notify", level: result.data.sessionName ? "info" : "warning", message: result.data.sessionName ? "Session name: " + result.data.sessionName : "Usage: /name <name>" });
+          feed.notify(result.data.sessionName ? "Session name: " + result.data.sessionName : "Usage: /name <name>", result.data.sessionName ? "info" : "warning");
         } else {
           const result = await link.command({ type: "set_session_name", name: name.name });
           if (!result.success) { reply(response, result); return; }
-          feed.send({ type: "notify", level: "info", message: "Session name set: " + state.name });
+          feed.notify("Session name set: " + state.name, "info");
         }
         respond(response, 200, JSON.stringify({ disposition: "handled" })); return;
       }

@@ -10,6 +10,7 @@ export type PromptMode = "prompt" | "follow_up";
 export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 export type DialogMethod = Dialog["method"];
 export type Text = { text: string; cut: number };
+export type NotifyLevel = "info" | "warning" | "error";
 export type Attachment = { id: string; name: string; size: number; path: string; origin: "path" | "upload" } & ({ kind: "image"; mimeType: string; width?: number; height?: number } | { kind: "file" });
 export type UploadProgress = { received: number; attachment?: Attachment };
 export type QueuedPrompt = { text: string; attachments: Attachment[] };
@@ -49,6 +50,7 @@ export type Item = { seq: number; at: number; final: boolean } & (
   { kind: "assistant"; blocks: Block[]; stop: string; error: string; ended?: number; lifecycle: "streaming" | "ended" } |
   { kind: 'agent'; direction: 'in'; from: AgentRef; text: Text; inbound: Inbound } |
   { kind: 'job'; job: JobRef; event: { type: 'ended'; end: JobEnd; tail: Text } | { type: 'stream'; batch: Text; omitted: number; cut: boolean } } |
+  { kind: "notify"; level: NotifyLevel; text: Text } |
   { kind: "notice"; customType: string; from: string; text: string } |
   { kind: "bash"; command: string; output: Text; exit?: number } |
   { kind: "summary"; text: string }
@@ -71,4 +73,4 @@ export function pathArg(block: Block | undefined): string | undefined {
 }
 
 export type Patch = { type: "patch"; seq: number; blocks: ({ index: number; block: Block } | { index: number; suffix: string })[]; final: boolean; stop: string; error: string; ended?: number };
-export type PageRecord = { type: "reset"; epoch: string; more: boolean; items: WireItem[] } | { type: "item"; item: WireItem } | Patch | ({ type: "state" } & State) | { type: "notify"; message: string; level: "info" | "warning" | "error" } | { type: "flush"; bytes: number; t: number };
+export type PageRecord = { type: "reset"; epoch: string; more: boolean; items: WireItem[] } | { type: "item"; item: WireItem } | Patch | ({ type: "state" } & State) | { type: "flush"; bytes: number; t: number };

@@ -7,7 +7,7 @@ import SidebarFeed
 @testable import Kido
 
 extension VisualTests {
-    private enum KoaScenario { case transcript, dialogs, controls, exit, feed, completion, markdown, media, attachments, userMarkdown, preview, lightbox, agents }
+    private enum KoaScenario { case transcript, dialogs, controls, exit, feed, completion, markdown, media, attachments, userMarkdown, preview, lightbox, agents, composer }
     func testKoaInterruptRestoresNativeInput() async throws {
         let script = directory.appendingPathComponent("quit-script.jsonl")
         try "".write(to: script, atomically: true, encoding: .utf8)
@@ -87,6 +87,67 @@ extension VisualTests {
         try await koUntil(directory.path, "/panes/\(pane.pane)/screen", contains: "z")
     }
 
+    func testKoaWebviewComposerFootIdleWide() async throws {
+        try await koaWebview(width: 980, height: 300, scenario: .composer, captures: ["foot-idle"])
+    }
+    func testKoaWebviewComposerFootIdleNarrow() async throws {
+        try await koaWebview(width: 470, height: 300, scenario: .composer, captures: ["narrow-foot-idle"])
+    }
+    func testKoaWebviewComposerFootWorkingWide() async throws {
+        try await koaWebview(width: 980, height: 300, scenario: .composer, captures: ["foot-working"])
+    }
+    func testKoaWebviewComposerFootWorkingNarrow() async throws {
+        try await koaWebview(width: 470, height: 300, scenario: .composer, captures: ["narrow-foot-working"])
+    }
+    func testKoaWebviewComposerFootWaitingWide() async throws {
+        try await koaWebview(width: 980, height: 300, scenario: .composer, captures: ["foot-waiting"])
+    }
+    func testKoaWebviewComposerFootWaitingNarrow() async throws {
+        try await koaWebview(width: 470, height: 300, scenario: .composer, captures: ["narrow-foot-waiting"])
+    }
+    func testKoaWebviewComposerFootExitedWide() async throws {
+        try await koaWebview(width: 980, height: 300, scenario: .composer, captures: ["foot-exited"])
+    }
+    func testKoaWebviewComposerFootExitedNarrow() async throws {
+        try await koaWebview(width: 470, height: 300, scenario: .composer, captures: ["narrow-foot-exited"])
+    }
+    func testKoaWebviewComposerFootPickerWide() async throws {
+        try await koaWebview(width: 980, height: 560, scenario: .composer, captures: ["foot-picker"])
+    }
+    func testKoaWebviewComposerFootPickerNarrow() async throws {
+        try await koaWebview(width: 470, height: 560, scenario: .composer, captures: ["narrow-foot-picker"])
+    }
+    func testKoaWebviewComposerFootNoticeWide() async throws {
+        try await koaWebview(width: 980, height: 300, scenario: .composer, captures: ["foot-toast"])
+    }
+    func testKoaWebviewComposerFootNoticeNarrow() async throws {
+        try await koaWebview(width: 470, height: 300, scenario: .composer, captures: ["narrow-foot-toast"])
+    }
+    func testKoaWebviewComposerFootErrorNoticeWide() async throws {
+        try await koaWebview(width: 980, height: 300, scenario: .composer, captures: ["foot-toast-err"])
+    }
+    func testKoaWebviewComposerFootErrorNoticeNarrow() async throws {
+        try await koaWebview(width: 470, height: 300, scenario: .composer, captures: ["narrow-foot-toast-err"])
+    }
+    func testKoaWebviewComposerFootLongWorkingWide() async throws {
+        try await koaWebview(width: 980, height: 300, scenario: .composer, captures: ["foot-narrow"])
+    }
+    func testKoaWebviewComposerFootLongWorkingNarrow() async throws {
+        try await koaWebview(width: 470, height: 300, scenario: .composer, captures: ["narrow-foot-narrow"])
+    }
+
+    func testKoaWebviewComposerFootStatusesWide() async throws {
+        try await koaWebview(width: 980, height: 300, scenario: .composer, captures: ["foot-extras"])
+    }
+    func testKoaWebviewComposerFootStatusesNarrow() async throws {
+        try await koaWebview(width: 470, height: 300, scenario: .composer, captures: ["narrow-foot-extras"])
+    }
+    func testKoaWebviewComposerStateGeometryWide() async throws {
+        try await koaWebview(width: 980, height: 560, captures: ["geometry"])
+    }
+    func testKoaWebviewComposerStateGeometryNarrow() async throws {
+        try await koaWebview(width: 470, height: 560, captures: ["geometry"])
+    }
     func testKoaWebviewComposerFocus() async throws {
         try await koaWebview(width: 980, height: 560, captures: ["focus"])
     }
@@ -186,6 +247,7 @@ extension VisualTests {
     }
 
     private func koaWebview(width: CGFloat, height: CGFloat, scenario: KoaScenario = .transcript, captures: Set<String>) async throws {
+        let composerState = captures.first?.replacingOccurrences(of: "narrow-foot-", with: "").replacingOccurrences(of: "foot-", with: "") ?? ""
         let fake = checkoutRoot.appendingPathComponent("share/koa/koa-fake-pi.ts").path
         let script = directory.appendingPathComponent("koa-script.jsonl")
         let sessionFile = directory.appendingPathComponent("session.jsonl")
@@ -194,7 +256,7 @@ extension VisualTests {
         let attachmentPaths = (shot: home.appendingPathComponent("Desktop/Screenshot 2026-11-10 at 09.11.42.png"), diagram: home.appendingPathComponent("Desktop/diagram.png"), notes: home.appendingPathComponent("Desktop/notes.md"), source: cwd.appendingPathComponent("app/App/SidebarRow.swift"))
         try FileManager.default.createDirectory(at: cwd, withIntermediateDirectories: true)
         try JSONSerialization.data(withJSONObject: ["cwd": cwd.path]).write(to: sessionFile)
-        let mediaClock = scenario == .media || scenario == .attachments || scenario == .preview || scenario == .lightbox || scenario == .agents
+        let mediaClock = scenario == .media || scenario == .attachments || scenario == .preview || scenario == .lightbox || scenario == .agents || scenario == .composer
         let stamp = Int(try XCTUnwrap(Calendar.current.date(from: DateComponents(year: 2026, month: 11, day: mediaClock ? 10 : 8, hour: mediaClock ? 9 : 14, minute: mediaClock ? 12 : 32))).timeIntervalSince1970 * 1000)
         let usage: [String: Any] = ["input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0, "totalTokens": 0, "cost": ["input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0, "total": 0]]
         func assistant(_ content: [[String: Any]], stop: String = "stop") -> [String: Any] {
@@ -526,6 +588,26 @@ extension VisualTests {
             prompt([["type": "message_update", "usage": usage, "assistantMessageEvent": ["type": "text_delta", "contentIndex": 0, "delta": part]]])
             prompt([["type": "message_end", "message": assistant([["type": "text", "text": part + part + part]])], ["type": "agent_settled", "aborted": false]])
         }
+        if scenario == .composer {
+            let name = composerState
+            var person = user; person["content"] = [["type": "text", "text": ["waiting", "exited", "toast-err"].contains(name) ? "Release 0.32" : name == "toast" ? "Use Sonnet for the rest of this" : "Run the unit stage"]]
+            steps = Array(steps.prefix(3)); steps[1] = ["type": "respond", "command": "get_messages", "data": ["messages": [person]]]
+            if name == "waiting" { steps[2] = ["type": "respond", "command": "get_session_stats", "data": ["contextUsage": ["tokens": 156000, "contextWindow": 200000, "percent": 78]]] }
+            var events: [[String: Any]] = []
+            if ["working", "narrow", "toast-err"].contains(name) {
+                events = [["type": "agent_start"], ["type": "message_start", "message": assistant([["type": "toolCall", "id": "foot-run", "name": "bash", "arguments": ["command": "make verify STAGES=unit"]]], stop: "toolUse")], ["type": "tool_execution_start", "toolCallId": "foot-run"]]
+            } else if name == "waiting" { events = [["type": "message_end", "message": assistant([["type": "text", "text": "Which tap revision? (see the dialog)"]])], ["type": "extension_ui_request", "id": "foot-wait", "method": "input", "title": "Which tap revision?"]] }
+            if name == "toast" || name == "toast-err" { events.append(["type": "extension_ui_request", "id": "foot-notify", "method": "notify", "notifyType": name == "toast" ? "info" : "error", "message": name == "toast" ? "Switched to claude-sonnet-5-5 · thinking medium" : "extension release: tap checkout is dirty, refusing to commit"]) }
+            if name == "extras" { events = [["type": "extension_ui_request", "id": "foot-git", "method": "setStatus", "statusKey": "git", "statusText": "↑2"], ["type": "extension_ui_request", "id": "foot-tests", "method": "setStatus", "statusKey": "tests", "statusText": "3 failing"]] }
+            prompt(events)
+            if name == "exited" { steps.append(["type": "stderr", "text": "Killed: 9\n"]); steps.append(["type": "exit", "code": 137]) }
+            if name == "picker" { steps.append(["type": "wait", "command": "get_available_models", "data": ["models": [["id": "claude-opus-5-5", "provider": "anthropic"], ["id": "claude-sonnet-5-5", "provider": "anthropic"], ["id": "claude-fable-5-1", "provider": "claude-bridge"], ["id": "gpt-6.1-sol", "provider": "openai-codex"], ["id": "gpt-6-astra", "provider": "openai-codex"]]]]) }
+        }
+        if captures.contains("geometry") {
+            steps = Array(steps.prefix(3))
+            steps.append(["type": "wait", "command": "get_available_models", "data": ["models": [["id": "claude-opus-5-5", "provider": "anthropic"]]]])
+            prompt([])
+        }
         try steps.map { String(decoding: try JSONSerialization.data(withJSONObject: $0), as: UTF8.self) }.joined(separator: "\n").write(to: script, atomically: true, encoding: .utf8)
         let path = [tools.prefix + "/bin", "/opt/homebrew/bin", ProcessInfo.processInfo.environment["PATH"] ?? "/usr/bin:/bin"].joined(separator: ":")
         let clock = directory.appendingPathComponent("clock.mjs")
@@ -578,7 +660,7 @@ extension VisualTests {
             try await wait("completion document with measurement clock") { (pane.webviewView?.visualDocuments ?? 0) > documents && !web.isLoading }
         }
         if scenario == .feed {
-            try await webviewUntil(web, "document.querySelector('#status').textContent==='idle'&&document.querySelector('#model').textContent==='claude-opus-5-5'")
+            try await webviewUntil(web, "document.querySelector('#status').textContent==='idle'&&document.querySelector('#model-name').textContent==='claude-opus-5-5'")
             pane.webviewView?.visualFeedPath = "/events"
             pane.webviewView?.visualFeedScript = #"""
             const NativeEventSource=EventSource;
@@ -586,7 +668,7 @@ extension VisualTests {
             """#
             web.reload()
             try await wait("reloaded feed", within: 10) { !web.isLoading }
-            try await webviewUntil(web, "document.querySelector('#status').textContent==='idle'&&document.querySelector('#model').textContent==='claude-opus-5-5'")
+            try await webviewUntil(web, "document.querySelector('#status').textContent==='idle'&&document.querySelector('#model-name').textContent==='claude-opus-5-5'")
             for index in 1...3 {
                 let before = pane.webviewView!.visualFeedBytes
                 let response = try await webviewJS(web, "fetch('/prompt',{method:'POST',body:JSON.stringify({text:'next',mode:'prompt',attachments:[]})}).then(async r=>({status:r.status,body:await r.json()}))")
@@ -604,7 +686,7 @@ extension VisualTests {
         }
         func capture(_ name: String) async throws {
             guard captures.contains(name) else { return }
-            let top = scenario == .media || scenario == .lightbox || scenario == .agents
+            let top = scenario == .media || scenario == .lightbox || scenario == .agents || scenario == .composer
             window.contentView?.layoutSubtreeIfNeeded()
             pane.webviewView?.layoutSubtreeIfNeeded()
             _ = try await webviewJS(web, "(()=>{if(!document.querySelector('.lightbox')&&!document.querySelector('.dialog')&&!document.querySelector('#exited:not([hidden])')&&document.querySelector('#picker').hidden)window.composer.focus();const scroll=document.querySelector('#scroll');scroll.scrollTop=\(top ? "0" : "scroll.scrollHeight");return true})()")
@@ -624,10 +706,60 @@ extension VisualTests {
         func advance() async throws {
             _ = try await webviewJS(web, "fetch('/prompt',{method:'POST',body:JSON.stringify({text:'next',mode:'prompt',attachments:[]})}).then(async r=>{const result=await r.json();if(!r.ok)throw Error(result.error||'Prompt failed');return result})")
         }
-        try await webviewUntil(web, "document.querySelector('#status').textContent==='idle'&&document.querySelector('#model').textContent==='claude-opus-5-5'")
+        try await webviewUntil(web, "document.querySelector('#status').textContent==='idle'&&document.querySelector('#model-name').textContent==='claude-opus-5-5'")
         _ = try await webviewJS(web, "(()=>{const NativeDate=Date;window.Date=class extends NativeDate{constructor(...args){super(...(args.length?args:[\(stamp + 12000)]))}static now(){return \(stamp + 12000)}};const style=document.createElement('style');style.textContent='.caret,.spin,.spin::before,.dot.on{animation:none!important}';document.head.append(style);return true})()")
         let idleHint = try await webviewJS(web, "document.querySelector('#hint .spin')===null")
         XCTAssertEqual(idleHint, "true")
+        if scenario == .composer {
+            let captureName = captures.first!, name = composerState
+            let elapsed = name == "narrow" ? 754 : name == "toast-err" ? 62 : 12
+            let offset = name == "toast" ? 60000 : name == "toast-err" ? 120000 : 0
+            try String(stamp + offset).write(to: now, atomically: true, encoding: .utf8)
+            _ = try await webviewJS(web, "(()=>{Date.now=()=>\(stamp + offset + 12000);return true})()")
+            try await advance()
+            _ = try await webviewJS(web, "(()=>{Date.now=()=>\(stamp + offset + elapsed * 1000);return true})()")
+            if name == "exited" { try await webviewUntil(web, "document.querySelector('#status').textContent==='exited 137'&&!document.querySelector('#exited').hidden&&document.querySelector('#field').inert") }
+            else if name == "waiting" { try await webviewUntil(web, "document.querySelector('#status').textContent==='waiting'") }
+            else if ["working", "narrow", "toast-err"].contains(name) {
+                let clock = name == "narrow" ? "12m 34s" : name == "toast-err" ? "1m 02s" : "12s"
+                try await webviewUntil(web, "document.querySelector('#status').textContent==='working \(clock)'")
+            }
+            if name == "toast" || name == "toast-err" { try await webviewUntil(web, "document.querySelector('.note')!==null") }
+            if name == "extras" { try await webviewUntil(web, "document.querySelectorAll('.foot .ext').length===2") }
+            if name == "picker" {
+                _ = try await webviewJS(web, "(()=>{document.querySelector('#model').click();return true})()")
+                try await webviewUntil(web, "!document.querySelector('#picker').hidden")
+                _ = try await webviewJS(web, "document.querySelector('#picker').dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowDown',bubbles:true,cancelable:true}))")
+            }
+            let facts = try await webviewJS(web, "document.querySelectorAll('.field .foot>.cell').length===4&&document.querySelector('#send')===null&&document.querySelector('#notice')===null&&document.querySelector('footer.status')===null&&document.querySelector('#model-cell').contains(document.querySelector('#thinking'))&&Math.abs(document.querySelector('#dock').getBoundingClientRect().bottom-innerHeight)<.1")
+            XCTAssertEqual(facts, "true", "The bottom-edge composer has four fixed facts and no old controls")
+            try await capture(captureName)
+            return
+        }
+        if captures.contains("geometry") {
+            let fixed = try await webviewJS(web, "(()=>{const label=document.querySelector('#status'),positions=()=>['model','context-bar','cwd'].map(id=>document.getElementById(id).getBoundingClientRect().left);label.textContent='idle';const idle=positions();label.textContent='working 9s';const short=positions();label.textContent='working 100m 00s';const long=positions();return idle.every((x,i)=>Math.abs(x-short[i])<.1&&Math.abs(x-long[i])<.1)})()")
+            XCTAssertEqual(fixed, "true", "State and elapsed-time changes move no other composer cell")
+            web.configuration.preferences.tabFocusesLinks = true
+            XCTAssertTrue(window.makeFirstResponder(web))
+            func key(_ text: String, _ code: UInt16) throws {
+                let event = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0, windowNumber: window.windowNumber, context: nil, characters: text, charactersIgnoringModifiers: text, isARepeat: false, keyCode: code))
+                window.sendEvent(event)
+            }
+            _ = try await webviewJS(web, "(()=>{document.querySelector('#model').focus();return true})()")
+            try key("\r", 36)
+            try await webviewUntil(web, "!document.querySelector('#picker').hidden&&document.querySelector('#picker .ph').textContent==='Model'")
+            if width > 750 {
+                _ = try await webviewJS(web, "(()=>{document.querySelector('#picker').dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true,cancelable:true}));document.querySelector('#model').focus();return true})()")
+                try key("\t", 48)
+                try await webviewUntil(web, "document.activeElement===document.querySelector('#thinking')")
+                try key("\r", 36)
+                try await webviewUntil(web, "!document.querySelector('#picker').hidden&&document.querySelector('#picker .ph').textContent==='Thinking'")
+            } else {
+                let levels = try await webviewJS(web, "Array.from(document.querySelectorAll('#picker .ph')).some(node=>node.textContent==='Thinking')")
+                XCTAssertEqual(levels, "true", "The narrow model picker keeps levels reachable")
+            }
+            return
+        }
         if scenario == .agents {
             let prefix = width < 750 ? "narrow-agents-" : "agents-"
             func size(_ height: CGFloat) { var frame = window.frame; frame.size.height = height; window.setFrame(frame, display: false) }
@@ -728,7 +860,7 @@ extension VisualTests {
             _ = try await webviewJS(web, #"""
             (()=>{clearAttachments();dropAttachments([attachFiles.shot,attachFiles.notes]);window.ko.local=true;window.dispatchEvent(new CustomEvent('ko-drop',{detail:{files:[\#(source)],refused:false}}));window.ko.local=false;window.composer.setText('Attach these to the review');return true})()
             """#)
-            try await webviewUntil(web, "document.querySelectorAll('.attach-chip').length===3&&!document.querySelector('#send').disabled")
+            try await webviewUntil(web, "document.querySelectorAll('.attach-chip').length===3&&document.querySelectorAll('.attach-icon.spin').length===0&&!document.querySelector('#field').inert")
             _ = try await webviewJS(web, "(()=>{document.querySelector('.cm-content').dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',code:'Enter',bubbles:true}));return true})()")
             try await webviewUntil(web, "document.querySelectorAll('.attach-chip').length===0&&document.querySelector('.user .paths')?.textContent.includes('SidebarRow.swift')&&document.querySelector('.user .thumb img')!==null&&document.querySelector('#status').textContent==='working 3s'")
             _ = try await webviewJS(web, "Promise.all(Array.from(document.querySelectorAll('.user .thumb img'),image=>image.decode())).then(()=>true)")
@@ -898,9 +1030,9 @@ extension VisualTests {
         try await capture("composer-multi")
         _ = try await webviewJS(web, "(()=>{window.composer.setText('');return true})()")
         try await advance()
-        try await webviewUntil(web, "document.querySelector('#field').classList.contains('working')")
-        let workingHint = try await webviewJS(web, "document.querySelector('#hint .spin')!==null&&document.querySelector('#hint').textContent===document.querySelector('#status').textContent+' · ⎋ abort'&&document.querySelector('.dot.on')!==null&&getComputedStyle(document.querySelector('#field'),'::after').content==='none'")
-        XCTAssertEqual(workingHint, "true")
+        try await webviewUntil(web, "document.querySelector('#status').textContent==='working 12s'")
+        let workingState = try await webviewJS(web, "document.querySelector('#status').textContent==='working 12s'&&document.querySelector('.foot .dot.on')!==null&&document.querySelector('#hint')===null&&document.querySelector('#send')===null&&getComputedStyle(document.querySelector('#field'),'::after').content==='none'")
+        XCTAssertEqual(workingState, "true")
         try await capture("user-well")
         try await advance()
         try await webviewUntil(web, "document.querySelector('.caret')&&document.querySelector('table')")
@@ -999,26 +1131,28 @@ extension VisualTests {
             try await advance()
             try await webviewUntil(web, "!document.querySelector('.user')")
             _ = try await webviewJS(web, "(()=>{document.querySelector('#model').click();return true})()")
-            try await webviewUntil(web, "!document.querySelector('#picker').hidden&&document.querySelectorAll('#picker .row').length===5")
+            try await webviewUntil(web, "!document.querySelector('#picker').hidden&&document.querySelectorAll('#picker .row').length===\(width > 750 ? 5 : 11)")
             _ = try await webviewJS(web, "(()=>{document.querySelector('#picker').dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowDown',bubbles:true,cancelable:true}));return true})()")
             try await capture("picker-model")
             try await capture("narrow-picker-model")
-            _ = try await webviewJS(web, "(()=>{document.querySelector('#picker').dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true,cancelable:true}));document.querySelector('#thinking').click();return true})()")
-            try await webviewUntil(web, "document.querySelector('#picker .ph')?.textContent==='Thinking'")
-            _ = try await webviewJS(web, "(()=>{document.querySelector('#picker').dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowUp',bubbles:true,cancelable:true}));return true})()")
-            try await capture("picker-thinking")
             _ = try await webviewJS(web, "(()=>{document.querySelector('#picker').dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true,cancelable:true}));return true})()")
+            if width > 750 {
+                _ = try await webviewJS(web, "(()=>{document.querySelector('#thinking').click();return true})()")
+                try await webviewUntil(web, "document.querySelector('#picker .ph')?.textContent==='Thinking'")
+                _ = try await webviewJS(web, "(()=>{document.querySelector('#picker').dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowUp',bubbles:true,cancelable:true}));return true})()")
+                try await capture("picker-thinking")
+                _ = try await webviewJS(web, "(()=>{document.querySelector('#picker').dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true,cancelable:true}));return true})()")
+            }
             try await advance()
-            try await webviewUntil(web, "document.querySelector('.toast.info')&&document.querySelectorAll('.status .ext').length===2")
+            try await webviewUntil(web, "document.querySelector('.note.info')&&document.querySelectorAll('.foot .ext').length===2")
             try await capture("toast-info")
             try await advance()
-            try await webviewUntil(web, "document.querySelector('.toast.warning')")
+            try await webviewUntil(web, "document.querySelector('.note.warning')")
             try await capture("toast-warn")
             try await capture("narrow-toast-warn")
             try await advance()
-            try await webviewUntil(web, "document.querySelector('.toast.error')")
+            try await webviewUntil(web, "document.querySelector('.note.error')")
             try await capture("toast-error")
-            _ = try await webviewJS(web, "(()=>{document.querySelector('.toast')?.click();return true})()")
         }
         func exitScenario() async throws {
             try await advance()
@@ -1038,7 +1172,7 @@ extension VisualTests {
             try await capture("narrow-exited")
         }
         switch scenario {
-        case .transcript, .feed, .completion, .markdown, .media, .attachments, .userMarkdown, .preview, .lightbox, .agents: break
+        case .transcript, .feed, .completion, .markdown, .media, .attachments, .userMarkdown, .preview, .lightbox, .agents, .composer: break
         case .dialogs: try await dialogScenario()
         case .controls: try await controlsScenario()
         case .exit: try await exitScenario()

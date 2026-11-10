@@ -69,13 +69,13 @@ test('/name is a session command, with pi query and empty-name rules', { timeout
   const commands = (await app.log()).filter(record => ['prompt', 'set_session_name'].includes(record.type));
   assert.deepEqual(commands.map(record => [record.type, record.name]), [['set_session_name', 'test-koa']]);
   await app.until(record => record.type === 'state' && record.name === 'test-koa');
-  await app.until(record => record.type === 'notify' && record.message === 'Session name set: test-koa');
+  await app.until(record => record.type === 'item' && record.item.kind === 'notify' && record.item.text.text === 'Session name set: test-koa');
   assert.equal((await app.post('prompt', { text: '/name', mode: 'prompt', attachments: [] })).status, 200);
-  await app.until(record => record.type === 'notify' && record.message === 'Session name: test-koa');
+  await app.until(record => record.type === 'item' && record.item.kind === 'notify' && record.item.text.text === 'Session name: test-koa');
   await app.post('prompt', { text: ' /name second ', mode: 'prompt', attachments: ['unsent'] });
   await app.post('prompt', { text: '/name   ', mode: 'prompt', attachments: [] });
-  await app.until(record => record.type === 'notify' && record.level === 'warning' && record.message === 'Usage: /name <name>');
-  assert.equal(app.records().some(record => record.type === 'item'), false);
+  await app.until(record => record.type === 'item' && record.item.kind === 'notify' && record.item.level === 'warning' && record.item.text.text === 'Usage: /name <name>');
+  assert.equal(app.records().some(record => record.type === 'item' && record.item.kind !== 'notify'), false);
   await app.post('prompt', { text: '/names other', mode: 'prompt', attachments: [] });
   assert.deepEqual((await app.log()).filter(record => record.type === 'prompt').map(record => record.message), ['/names other']);
 });
@@ -489,7 +489,7 @@ test("queue, model, thinking and dialog routes carry RPC state", { timeout: 1000
   assert.equal((await app.post("prompt", { text: "go", mode: "prompt", attachments: [] })).status, 200);
   const state = await app.until(record => record.type === "state" && record.dialogs?.length === 2);
   assert.deepEqual(state.dialogs, [dialog, { ...dialog, id: "dialog-2", method: "confirm", message: "Really?" }]);
-  await app.until(record => record.type === "notify" && record.message === "Notice" && record.level === "warning");
+  await app.until(record => record.type === "item" && record.item.kind === "notify" && record.item.text.text === "Notice" && record.item.level === "warning");
   await app.until(record => record.type === "state" && record.editor?.text === "Draft");
   await app.until(record => record.type === "state" && record.statuses?.check === "Checking");
   assert.match(app.stdout(), /state=blocked:app=pi:kind=question/);

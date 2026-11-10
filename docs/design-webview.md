@@ -357,6 +357,20 @@ before them. `spawn_agent`, `message_agent` and every inbound message
 are a card that splits its run; a job's notices are one line, and the
 stream batches of one job join into one entry. The page has no live
 list of jobs.
+
+**The composer's foot.** koa has no status bar: the foot of its field
+holds the state, the model and thinking-level buttons, the context, the
+extensions' statuses, and the working directory at the right. The
+state cell has a fixed width, the width of "working 12m 34s", so a
+change of state or time never moves the cells to its right; a longer
+text ends in an ellipsis. A narrow pane drops the extensions' statuses
+first, then the level's text, and the model picker then offers the
+levels. Nothing in the row says that
+Return sends and Escape aborts, and the row has no send or stop button:
+the user decided this with the mockup. A notification from pi is a
+line in the transcript where it arrived and stays there; a rebuild of
+the same pi session keeps the lines, and a rebuild for another session
+drops them.
 A rebuild (a new runtime, `session_tree`,
 `session_compact`) mints a new epoch. The model, its caps, its window
 and its delivery are `Transcript` in `share/pi/transcript.ts`; koa

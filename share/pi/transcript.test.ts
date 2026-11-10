@@ -36,6 +36,35 @@ function assistant(text: string, stopReason: "stop" | "error" = "stop"): Extract
   return { role: "assistant", content: [{ type: "text", text }], api: "openai-responses", provider: "openai", model: "test", usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } }, stopReason, timestamp: 123 };
 }
 
+test('startup notifications bind to the first session and not to a later session', t => {
+  const view = transcript({ dir: directory(t), flushMs: 1 });
+  view.notify('Extension failed to load', 'error');
+  view.rebuild([], 'first-session');
+  const items = JSON.parse(request(view, '/items?before=100').join('')).items;
+  assert.equal(items.length, 1); assert.equal(items[0].text.text, 'Extension failed to load');
+  view.rebuild([], 'second-session');
+  assert.deepEqual(JSON.parse(request(view, '/items?before=100').join('')).items, []); view.close();
+});
+
+test('notifications are retained transcript items across reconnect and same-session rebuild', t => {
+  const view = transcript({ dir: directory(t), flushMs: 1 }), first = assistant('before');
+  view.rebuild([first], 'session-one');
+  view.notify('Remember this warning', 'warning');
+  const live = JSON.parse(request(view, '/items?before=100').join('')).items;
+  assert.equal(live.length, 2);
+  assert.equal(live[1].kind, 'notify'); assert.equal(live[1].text.text, 'Remember this warning');
+  view.rebuild([first], 'session-one');
+  assert.deepEqual(JSON.parse(request(view, '/items?before=100').join('')).items, live);
+  const reconnect = record(request(view, '/events')[0]!);
+  assert.deepEqual(reconnect.items, live);
+  const later = { ...assistant('after'), timestamp: live[1].at + 1 };
+  view.rebuild([first, later], 'session-one');
+  assert.deepEqual(JSON.parse(request(view, '/items?before=100').join('')).items.map((item: WireItem) => item.kind), ['assistant', 'notify', 'assistant']);
+  view.notify('x'.repeat(20000), 'error');
+  assert.deepEqual(JSON.parse(request(view, '/items?before=100').join('')).items.at(-1).text, { text: 'x'.repeat(16384), cut: 3616 });
+  view.rebuild([], 'new-session'); assert.deepEqual(JSON.parse(request(view, '/items?before=100').join('')).items, []); view.close();
+});
+
 test('structured agent and job details render identically live and on rebuild', t => {
   const view = transcript({ dir: directory(t), flushMs: 1 });
   const messages: AgentMessage[] = [

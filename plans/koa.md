@@ -2614,14 +2614,23 @@ values. Unit 17.
 
 The 24pt status bar goes, and its facts move into the composer's
 foot, the row under the text. The foot holds exactly four cells and
-nothing else: the state (the dot and the word with its time, with a
-reserved width of `calc(15ch + 12px)` so a state change or a tick
-moves nothing to its right), the model button that opens the picker,
-the context bar with its numbers and percent at a reserved width, and
-the working directory at the right; a flexible gap sits between the
-context and the cwd. The send and stop button goes: Return sends and
-Escape aborts, as the keys already do, and the composer's hint line
-keeps saying so. The exited card stays above the field. The narrow
+nothing else: the state (the dot and the word with its time, at a
+fixed reserved width of `calc(15ch + 12px)`, so a state change or a
+tick moves nothing to its right, with the text clipped by an
+ellipsis when it is longer than the reservation), the model cell
+("claude-opus-5-5 · high", the level faint), which is two buttons
+beside each other and both keyboard reachable: the model name opens
+the model picker and the level opens the same picker component with
+the thinking levels, both above the cell (the mockup: "Thinking is
+the same picker from the level"; the `/thinking` route and
+`state.levels` stay; when narrow drops the level text, its button
+goes with it, which the mockup's narrow rule accepts), the context
+bar with its numbers and percent at a reserved width, and the
+working directory at the right; a flexible gap sits between the
+context and the cwd. The send and stop button goes, and no icon or
+hint takes its place: Return sends and Escape aborts, as the keys
+already do, and nothing in the row says so (the approved
+`composer.html`). The exited card stays above the field. The narrow
 drop order is the mockup's (the thinking level, then the cwd's
 leading directories, then the context numbers; the state keeps its
 reserved width). The transcript gains the 24pt, and the dock sits on
@@ -2633,12 +2642,22 @@ terminal font like a job line, the text ellipsized, the time at the
 right, a warning and an error in their colours, and it stays. In the
 record model a notification is therefore an item of the transcript
 module (`kind: "notify"` with `level` and `text`, at the time it
-arrived), not a page-only record, so a reload and a rebuild keep it
-within the module's window as any item; koa feeds it from the
-`extension_ui_request` `notify` as today, and `setStatus` segments
-keep their place as cells after the context (the mockup shows none;
-the implementer follows the foot's cell rule for them and the manager
-checks the result). The `notice` element and the toast timer go.
+arrived), not a page-only record, so a reload keeps it within the
+module's window as any item; koa feeds it from the
+`extension_ui_request` `notify` as today. pi's `get_messages` has no
+notify (the extension UI request is not a message), so on a rebuild
+the module keeps its own notify items and merges them with the
+rebuilt items by time, with fresh seqs in that order in the new
+epoch; a rebuild of the same session (a compaction, a `/pi/start`)
+keeps them, and a rebuild that takes another session (a switch, a
+new session, a fork or a clone) clears them, because they belonged
+to the old session's transcript. The four
+cells are the fixed set; a `setStatus` key with text is a transient
+extra cell after the context cell and before the gap, in the foot's
+cell style, one per key, gone when its text goes, and the first to
+drop when narrow (the mockup shows none; the manager checks the
+result). It does not go into the context cell, whose width is
+reserved. The `notice` element and the toast timer go.
 
 **Tests.** The DOM tests: the four cells, the state's reserved width
 class, the model button opening the picker, a `notify` becoming an

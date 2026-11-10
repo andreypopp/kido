@@ -13,7 +13,7 @@ async function page() {
   class Node {
     value = ""; private text = ""; style = {}; disabled = false; placeholder = ""; scrollHeight = 20; children: Node[] = []; dataset = {};
     get textContent() { return this.text; }
-    set textContent(value: unknown) { this.text = String(value); }
+    set textContent(value: unknown) { this.text = String(value); this.children = []; }
     private classes = new Set<string>();
     get className() { return [...this.classes].join(' '); }
     set className(value: string) { this.classes = new Set(value.split(/\s+/).filter(Boolean)); }
@@ -48,7 +48,7 @@ async function page() {
   const listeners = new Map<string, (event: unknown) => void>();
   const windowListeners = new Map<string, (event?: unknown) => void>();
   let activeElement: Node | undefined;
-  const document = { documentElement: new Node(), body: new Node(), hasFocus: () => true, get activeElement() { return activeElement; }, set activeElement(node: Node | undefined) { activeElement = node; }, querySelector: (selector?: string): Node | null => selector === '.cm-content' ? document.getElementById('prompt').children[0] ?? null : null, getElementById(id: string) { let node = elements.get(id); if (!node) { node = new Node(); elements.set(id, node); if (id === 'prompt') document.getElementById('field').append(node); } return node; }, createElement: (tag: string) => { const node = new Node(); node.tagName = tag.toUpperCase(); return node; }, createElementNS: () => new Node(), createTextNode: (text: string) => { const node = new Node(); node.tagName = '#text'; node.textContent = text; return node; }, addEventListener(type: string, handler: (event: unknown) => void) { listeners.set(type, handler); }, querySelectorAll: () => [] };
+  const document = { documentElement: new Node(), body: new Node(), hasFocus: () => true, get activeElement() { return activeElement; }, set activeElement(node: Node | undefined) { activeElement = node; }, querySelector: (selector?: string): Node | null => selector === '.cm-content' ? document.getElementById('prompt').children[0] ?? null : null, getElementById(id: string) { let node = elements.get(id); if (!node) { node = new Node(); elements.set(id, node); if (id === 'prompt') document.getElementById('field').append(node); if (id === 'composer') node.hidden = false; } return node; }, createElement: (tag: string) => { const node = new Node(); node.tagName = tag.toUpperCase(); return node; }, createElementNS: () => new Node(), createTextNode: (text: string) => { const node = new Node(); node.tagName = '#text'; node.textContent = text; return node; }, addEventListener(type: string, handler: (event: unknown) => void) { listeners.set(type, handler); }, querySelectorAll: () => [] };
   type Handlers = { input(user: boolean): void; send(mode: PromptMode): void; quit(): void };
   let handlers: Handlers | undefined;
   let text = () => '';
@@ -68,7 +68,7 @@ async function page() {
       placeholder(text: string) { content.placeholder = text; },
     };
   };
-  const context = { composer, nameCommand, ATTACHMENT_LIMITS, pathArg, jobEndText, AbortController, AbortSignal, CustomEvent: class { type: string; detail?: unknown; constructor(type: string, options?: { detail?: unknown }) { this.type = type; this.detail = options?.detail; } }, Node, Element: Node, HTMLElement: Node, HTMLButtonElement: Node, HTMLImageElement: Node, markdown, document, window: { ko: {}, addEventListener(type: string, handler: (event?: unknown) => void) { windowListeners.set(type, handler); } }, innerWidth: 980, Event: class { type: string; constructor(type: string) { this.type = type; } }, console, setInterval() {}, clearInterval() {}, setTimeout, clearTimeout, requestAnimationFrame() {}, fetch: async () => ({ ok: true, json: async () => ({}) }) };
+  const context = { getComputedStyle: () => ({ display: 'block' }), composer, nameCommand, ATTACHMENT_LIMITS, pathArg, jobEndText, AbortController, AbortSignal, CustomEvent: class { type: string; detail?: unknown; constructor(type: string, options?: { detail?: unknown }) { this.type = type; this.detail = options?.detail; } }, Node, Element: Node, HTMLElement: Node, HTMLButtonElement: Node, HTMLImageElement: Node, markdown, document, window: { ko: {}, addEventListener(type: string, handler: (event?: unknown) => void) { windowListeners.set(type, handler); } }, innerWidth: 980, innerHeight: 560, Event: class { type: string; constructor(type: string) { this.type = type; } }, console, setInterval() {}, clearInterval() {}, setTimeout, clearTimeout, requestAnimationFrame() {}, fetch: async () => ({ ok: true, json: async () => ({}) }) };
   const attachSource = stripTypeScriptTypes(await readFile(new URL('page/attach.ts', import.meta.url), 'utf8')).replace(/^import .*;\n/gm, '').replace(/^export /gm, '');
   const httpSource = stripTypeScriptTypes(await readFile(new URL('page/http.ts', import.meta.url), 'utf8')).replace(/^import .*;\n/gm, '').replace(/^export /gm, '');
   const previewSource = stripTypeScriptTypes(await readFile(new URL('page/preview.ts', import.meta.url), 'utf8')).replace(/^export /gm, '');
@@ -176,9 +176,9 @@ async function connectSource(name: string) {
   return source.slice(source.indexOf("let source"), source.indexOf("async function older()"));
 }
 
-test("working hint shares the status clock and keeps its spinner across ticks", async () => {
+test("working time moves into the state cell and formats minutes", async () => {
   const app = await page();
-  assert.equal(app.run("Date.now=()=>12000;state={...state,pi:{type:'ready'},working:true,since:0};status();refreshComposer();const spinner=element('hint').firstElementChild;const clockMatches=element('hint').children[1].textContent===element('status').textContent+' · '&&element('hint').children[2].textContent==='⎋'&&element('hint').children[3].textContent===' abort';Date.now=()=>25000;composerHint(status());clockMatches&&element('status').textContent==='working 25s'&&element('hint').children[1].textContent==='working 25s · '&&element('hint').firstElementChild===spinner&&spinner.className==='spin'"), true);
+  assert.equal(app.run("Date.now=()=>9000;state={...state,pi:{type:'ready'},working:true,since:0};refreshComposer();const short=element('status').textContent==='working'&&element('status').children[0].textContent===' 9s'&&element('dot').className==='dot on';Date.now=()=>754000;status();short&&element('status').children.length===1&&element('status').children[0].textContent===' 12m 34s'"), true);
 });
 
 test("printable transcript keys cannot change the draft during startup", async () => {
@@ -427,27 +427,25 @@ test("model picker matches provider and id", async () => {
   assert.deepEqual(selected, [{provider:'two',modelId:'same'}]);
 });
 
-test("stop and Escape take back queued work before aborting", { timeout: 1000 }, async () => {
-  for (const trigger of ["button", "Escape"]) {
-    const app = await page();
-    let steering = [{ text: "first queued", attachments: [] }], followUp = [{ text: "second queued", attachments: [] }];
-    const commands: string[] = [], started: string[] = [];
-    let aborted: () => void = () => {};
-    const done = new Promise<void>(resolve => { aborted = resolve; });
-    app.context.fetch = async (path?: string) => {
-      let data: object = {};
-      if (path === "/queue/clear") { commands.push("clear_queue"); data = { steering, followUp }; steering = []; followUp = []; }
-      else if (path === "/abort") { commands.push("abort"); started.push(...steering.map(entry => entry.text), ...followUp.map(entry => entry.text)); aborted(); }
-      else throw Error("Unexpected request: " + path);
-      return { ok: true, json: async () => data };
-    };
-    const result = app.run("state={...state,working:true,dialogs:[],queue:{steering:[{text:'first queued',attachments:[]}],followUp:[{text:'second queued',attachments:[]}]}};" + (trigger === "button" ? "element('send').onclick()" : "undefined"));
-    if (trigger === "Escape") app.listeners.get("keydown")?.({ key: "Escape", preventDefault() {} });
-    await done; await result;
-    assert.deepEqual(commands, ["clear_queue", "abort"], trigger);
-    assert.deepEqual(started, [], trigger);
-    assert.equal(app.text(), "first queued\n\nsecond queued", trigger);
-  }
+test("Escape takes back queued work before aborting", { timeout: 1000 }, async () => {
+  const app = await page();
+  let steering = [{ text: "first queued", attachments: [] }], followUp = [{ text: "second queued", attachments: [] }];
+  const commands: string[] = [], started: string[] = [];
+  let aborted: () => void = () => {};
+  const done = new Promise<void>(resolve => { aborted = resolve; });
+  app.context.fetch = async (path?: string) => {
+    let data: object = {};
+    if (path === "/queue/clear") { commands.push("clear_queue"); data = { steering, followUp }; steering = []; followUp = []; }
+    else if (path === "/abort") { commands.push("abort"); started.push(...steering.map(entry => entry.text), ...followUp.map(entry => entry.text)); aborted(); }
+    else throw Error("Unexpected request: " + path);
+    return { ok: true, json: async () => data };
+  };
+  app.run("state={...state,working:true,dialogs:[],queue:{steering:[{text:'first queued',attachments:[]}],followUp:[{text:'second queued',attachments:[]}]}}");
+  app.listeners.get("keydown")?.({ key: "Escape", preventDefault() {} });
+  await done;
+  assert.deepEqual(commands, ["clear_queue", "abort"]);
+  assert.deepEqual(started, []);
+  assert.equal(app.text(), "first queued\n\nsecond queued");
 });
 
 test("editor acknowledgment keeps the second Escape clear action", async () => {
@@ -478,19 +476,19 @@ test("a held prompt response prevents duplicate draft submissions", async () => 
 
 test("a startup dialog is visible with an inert composer", async () => {
   const app = await page();
-  assert.equal(app.run("status=()=>{};apply({type:'state',pi:{type:'starting'},dialogs:[{id:'trust',method:'select',title:'Trust project?',options:['Yes','No']}],queue:{steering:[],followUp:[]}});element('composer').hidden===false&&element('field').inert&&element('send').disabled&&element('dialogs').children[0].className==='dialog'"), true);
+  assert.equal(app.run("status=()=>{};apply({type:'state',pi:{type:'starting'},dialogs:[{id:'trust',method:'select',title:'Trust project?',options:['Yes','No']}],queue:{steering:[],followUp:[]}});!element('composer').hidden&&element('field').inert&&element('dialogs').children[0].className==='dialog'"), true);
 });
 
 test("a state record preserves a typed dialog answer", async () => {
   const app = await page();
-  assert.equal(app.run("state={...state,working:true,dialogs:[{id:'a',method:'input',title:'Question'}]};refreshComposer();dialogs();const form=element('dialogs').children[0];const input=form.children[1];input.value='typed';state={...state,dialogs:[{id:'a',method:'input',title:'Question'}]};dialogs();apply({type:'reset',epoch:'next',more:false,items:[]});element('dialogs').children[0]===form&&input.value==='typed'&&element('prompt').children[0].placeholder==='Message koa…'&&element('send').disabled"), true);
+  assert.equal(app.run("state={...state,working:true,dialogs:[{id:'a',method:'input',title:'Question'}]};refreshComposer();dialogs();const form=element('dialogs').children[0];const input=form.children[1];input.value='typed';state={...state,dialogs:[{id:'a',method:'input',title:'Question'}]};dialogs();apply({type:'reset',epoch:'next',more:false,items:[]});element('dialogs').children[0]===form&&input.value==='typed'&&element('prompt').children[0].placeholder==='Message koa…'&&element('field').inert"), true);
 });
 
 test("unchanged state keeps queue controls and status nodes and acknowledges editor once", async () => {
   const app = await page();
   const requests: string[] = [];
   app.context.fetch = async (path?: string) => { requests.push(path ?? ''); return {ok:true,json:async()=>({})}; };
-  assert.equal(app.run("status=()=>{};dialogs=()=>{};exited=()=>{};const record={...state,type:'state',pi:{type:'starting'},queue:{steering:[{text:'queued',attachments:[]}],followUp:[]},statuses:{tests:'ok'},editor:{id:'one',text:'draft'}};apply(record);const deferred=editorId===undefined;record.pi={type:'ready'};apply(record);const back=element('queue').children.at(-1).children.at(-1);apply({...record});deferred&&back===element('queue').children.at(-1).children.at(-1)&&element('notice').children.length===1"), true);
+  assert.equal(app.run("status=()=>{};dialogs=()=>{};exited=()=>{};const record={...state,type:'state',pi:{type:'starting'},queue:{steering:[{text:'queued',attachments:[]}],followUp:[]},statuses:{tests:'ok'},editor:{id:'one',text:'draft'}};apply(record);const deferred=editorId===undefined;record.pi={type:'ready'};apply(record);const back=element('queue').children.at(-1).children.at(-1);apply({...record});deferred&&back===element('queue').children.at(-1).children.at(-1)&&element('status-extras').children.length===1"), true);
   assert.deepEqual(requests, ['/editor/ack']);
 });
 
@@ -562,6 +560,20 @@ test("failed and aborted runs keep their outcomes", async () => {
   assert.doesNotMatch(result.output, /Command exited/);
   assert.match(result.aborted, /aborted, you pressed Escape/);
   assert.equal(result.outcome, "aborted ");
+});
+
+test('a pointer on the active picker trigger child keeps it open until the click toggles it', async () => {
+  const app = await page();
+  app.run("state.pi={type:'ready'};const trigger=element('model'),child=node('span','model');trigger.append(child);pickerButton=trigger;element('picker').hidden=false");
+  app.listeners.get('pointerdown')?.({ target: app.elements.get('model')?.children[0] });
+  assert.equal(app.elements.get('picker')?.hidden, false);
+  app.elements.get('model')?.onclick?.();
+  assert.equal(app.elements.get('picker')?.hidden, true);
+});
+
+test('notifications render as persistent coloured transcript lines', async () => {
+  const app = await page();
+  assert.equal(app.run("const item={seq:0,at:0,final:true,kind:'notify',level:'warning',text:{text:'Notice stays',cut:0}};const view=put(item);apply({...state,type:'state'});view.className==='note warning'&&view.children[0].textContent==='Notice stays'&&view.children[1].tagName==='TIME'&&views.get(0).view===view"), true);
 });
 
 test('consecutive job batches join without replacing the open line or earlier output', async () => {

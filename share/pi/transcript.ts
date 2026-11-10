@@ -6,7 +6,7 @@ import { open } from "node:fs/promises";
 import { imageInfo, imageExtensions } from "./image.ts";
 import { pathArg, isRelation, isAgentFailure } from "./records.ts";
 import { promptText } from "../koa/prompt.ts";
-import type { Text, Block, Item, Assistant, WireItem, State, PageRecord, CompletionQuery, ImageRef, Attachment, AgentRef, AgentCall, AgentOutcome, JobRef, JobEnd, Inbound, AgentDetails, NoticeDetails, StreamDetails } from "./records.ts";
+import type { Text, Block, Item, Assistant, WireItem, State, PageRecord, CompletionQuery, ImageRef, Attachment, AgentRef, AgentCall, AgentOutcome, JobRef, JobEnd, Inbound, AgentDetails, NoticeDetails, StreamDetails, NotifyLevel } from "./records.ts";
 import { mintId, contentText, utf8Prefix, isRecord, type Content } from "./text.ts";
 import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { RpcExtensionUIRequest, RpcExtensionUIResponse } from "@earendil-works/pi-coding-agent";
@@ -190,6 +190,7 @@ export function transcript({ dir, flushMs, metrics = false }: { dir: string; flu
   let currentState: Extract<PageRecord, { type: "state" }> | undefined;
   let epoch = mintId();
   let items: Item[] = [];
+  let session: { type: 'unbound' } | { type: 'bound'; id: string | undefined } = { type: 'unbound' };
   let assistant: number | undefined;
   const subscribers = new Set<ServerResponse>();
   const tools = new Map<string, { item: Assistant; block: Extract<Block, { type: "tool" }> }>();
@@ -382,7 +383,10 @@ export function transcript({ dir, flushMs, metrics = false }: { dir: string; flu
     items.push(item);
     if (!branch) { publish(item); flush(); }
   };
-  const rebuild = (messages: readonly AgentMessage[] = []): void => {
+  const rebuild = (messages: readonly AgentMessage[] = [], nextSession?: string): void => {
+    const notices = session.type === 'unbound' || session.id === nextSession ? items.filter(item => item.kind === 'notify').sort((a, b) => a.at - b.at) : [];
+    session = { type: 'bound', id: nextSession };
+    let nextNotice = 0;
     images.clear(); rmSync(imageDir, { recursive: true, force: true }); mkdirSync(imageDir, { mode: 0o700 });
     epoch = mintId();
     items = [];
@@ -392,7 +396,11 @@ export function transcript({ dir, flushMs, metrics = false }: { dir: string; flu
     pending.clear();
     pendingTools.clear();
     tools.clear();
-    for (const message of messages) applyMessage(message, "branch");
+    for (const message of messages) {
+      while (nextNotice < notices.length && notices[nextNotice].at <= message.timestamp) { items.push({ ...notices[nextNotice++], seq: items.length }); }
+      applyMessage(message, 'branch');
+    }
+    while (nextNotice < notices.length) items.push({ ...notices[nextNotice++], seq: items.length });
     const responses = [...subscribers];
     subscribers.clear();
     flush(false);
@@ -408,6 +416,11 @@ export function transcript({ dir, flushMs, metrics = false }: { dir: string; flu
     const item = assistant === undefined ? undefined : items[assistant];
     const block = item?.kind === "assistant" ? item.blocks[index] : undefined;
     if (block?.type === "thinking" && item) { block[edge] = at; publish(item); schedule(); }
+  };
+  const notify = (text: string, level: NotifyLevel): void => {
+    flush();
+    const item: Item = { seq: items.length, at: Date.now(), final: true, kind: 'notify', level, text: cap(text, MAX_WEBVIEW_RESULT_BYTES) };
+    items.push(item); publish(item); flush();
   };
   const state = (record: State): void => { currentState = { ...record, type: "state" }; broadcast(currentState); };
   const toolRunning = (id: string, at: number): void => {
@@ -469,5 +482,5 @@ export function transcript({ dir, flushMs, metrics = false }: { dir: string; flu
     const item = items[seq], block = item?.kind === 'assistant' ? item.blocks[index] : undefined;
     return pathArg(block);
   };
-  return { stepPath, message, thinking, rebuild, toolRunning, toolPartial, toolDone, state, send: (record: Extract<PageRecord, { type: "notify" }>) => broadcast(record), handle, close, get metrics() { return counters && { ...counters, subscribers: subscribers.size }; } };
+  return { stepPath, message, thinking, rebuild, toolRunning, toolPartial, toolDone, state, notify, handle, close, get metrics() { return counters && { ...counters, subscribers: subscribers.size }; } };
 }
