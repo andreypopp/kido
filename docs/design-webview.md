@@ -175,22 +175,40 @@ The README gives the calls; the rules that it does not state:
   shows by itself.
 - `close` removes the `supported` listeners before it leaves, so a
   listener that hides does not run during the close.
+- Every wait has a deadline, `timeoutMs` (5 s by default): the
+  bridge's first `supported` line, each `enter` and `leave`, the
+  browser opener and `close`. A child of the SDK that passes it, or
+  that a `close` cancels, gets `SIGTERM` and, 1 s later, `SIGKILL`.
+  A program that ends must not hang on a bridge or a client that
+  does not answer. `close` is one promise for every caller; it
+  cancels the queued `show` and `hide`, and always removes the
+  socket directory.
 
 The browser target's rules:
 
-- The SDK listens on `127.0.0.1` on a free port and forwards the bytes
-  of each connection to the socket, so streaming bodies and WebSockets
-  work as in Kido. It starts no `ko webview serve`.
-- A local port is open to every local process, and to every web page
-  through DNS rebinding. The SDK refuses a connection whose first
-  request has a `Host` other than `127.0.0.1:<port>` or
-  `localhost:<port>`: a browser's connection carries one origin, so
-  the first head decides for the connection. There is no token: the
-  user decided that a local process may call the page's routes.
+- The SDK listens on `127.0.0.1` on a free port and forwards each
+  request and each WebSocket upgrade to the socket with `node:http`,
+  so streaming bodies and WebSockets work as in Kido. It starts no
+  `ko webview serve`.
+- A local port is open to every local process, to every web page
+  through DNS rebinding, and to every web page through a simple
+  cross-origin request, which a browser sends without asking. The SDK
+  checks each request and each upgrade before it forwards it, because
+  one keep-alive connection can carry requests of several pages: a
+  `Host` other than exactly one `127.0.0.1:<port>` or
+  `localhost:<port>` gets 421; an `Origin` other than exactly one
+  `http://` plus that `Host`, `null` included, gets 403. A request
+  without `Origin` passes: a browser omits it only on a navigation or
+  a same-origin `GET`, and a local process can call the routes anyway.
+  There is no token: the user decided that a local process may call
+  the page's routes. A page's program still refuses a mutation with a
+  simple content type (koa requires `application/json`), so a form
+  post from a foreign page that a browser sends without `Origin` does
+  nothing.
 - `close` must not cut a response that is on its way, such as the
-  reply to a page's own quit request: it stops the listener, ends the
-  program's side of each connection, lets each browser side end after
-  its last byte, and destroys what remains after `BROWSER_CLOSE_MS`.
+  reply to a page's own quit request: it stops the listener, closes
+  the idle connections, lets each response end, and destroys what
+  remains after `timeoutMs` or 1 s, whichever is shorter.
 - `show` opens the URL in the browser, and refuses a path without a
   leading `/`, which could name another host; `hide` does nothing, because a
   program cannot close a tab, so a show after a hide opens no second
@@ -334,9 +352,18 @@ step's file open in a new tab.
 **Attachments.** A file that the user drops or pastes reaches koa as
 one of two kinds. In a local session (`window.ko.local`: the window's
 host is this Mac, the pane has no runtime), Kido.app takes a Finder drop
-itself, in the web view that the drop targets, and gives the page only
-the paths through the `ko-drop` event, so pi gets the user's original
-file. A paste, and a drop in every other session, upload the bytes:
+itself, in the web view that the drop targets, so pi gets the user's
+original file. Only Kido.app names a host path: it posts each path to
+`/attachments` itself, with the header `Kido-Native-Drop: 1`, and
+gives the page the resulting attachment records through the `ko-drop`
+event. Request headers that start with `Kido-` belong to the host:
+Kido.app's scheme handler and the SDK's browser target remove them
+from every request of a page. koa refuses a path without the header
+(403), so neither a page nor a browser page can read a host file that
+the user did not drop. koa removes a path attachment whose answer did
+not reach the app, and the app removes one that it does not give to
+the page, so a cancelled drop holds no attachment. A paste, and a drop in
+every other session and in a browser, upload the bytes:
 the page sends them in chunks below the
 bridge's 1 MiB body cap, as `Uint8Array` bodies (WebKit delivers `Blob`
 and `FormData` bodies empty), into koa's private temporary directory,

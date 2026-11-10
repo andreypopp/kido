@@ -741,7 +741,7 @@ private class AlertEscape: NSView {
     func isLocalProgram(_ pane: PaneView) -> Bool { host == .local && pane.runtimeMark == nil && pane.webviewView != nil }
 
     func dropFiles(_ urls: [URL], into pane: PaneView) {
-        guard pane.acceptingInput, let page = pane.webviewView else { return }
+        guard pane.acceptingInput, isLocalProgram(pane), let page = pane.webviewView else { return }
         var files: [String] = [], refused = false
         var failure: Failure?
         for item in Upload.classify(urls) {

@@ -102,7 +102,7 @@ for (const id of ids) {
     await snapshot('before');
     const started = performance.now();
     const observations: Record<string, unknown> = {};
-    const prompt = (size: number) => evaluate(`fetch('/prompt',{method:'POST',body:JSON.stringify({text:'p'.repeat(${size}),mode:'prompt',attachments:[]})}).then(r=>r.status)`);
+    const prompt = (size: number) => evaluate(`fetch('/prompt',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text:'p'.repeat(${size}),mode:'prompt',attachments:[]})}).then(r=>r.status)`);
     if (id === 10) {
       stalled = await new Promise<http.IncomingMessage>((resolve, reject) => {
         const request = http.get(new URL('events', url), { agent: false }, response => { request.setTimeout(0); response.pause(); resolve(response); });
@@ -138,7 +138,7 @@ for (const id of ids) {
     }
     if (id === 8) observations.themeFrame = await evaluate(`(async()=>{const times=[];for(let n=0;n<50;n++){const t=performance.now();document.documentElement.style.setProperty('--ko-bg',n%2?'#fff':'#111');dispatchEvent(new Event('ko-theme'));await new Promise(requestAnimationFrame);times.push(performance.now()-t)}return times})()`);
     if (id === 9) assert.deepEqual(await evaluate(`Promise.all(Array.from({length:8},()=>fetch('/items?before=0').then(r=>r.status)))`), Array(8).fill(200));
-    if (id === 11) assert.deepEqual(await evaluate(`Promise.all([new Blob([JSON.stringify({text:'body-kind probe',mode:'prompt',attachments:[]})]),new FormData()].map(body=>fetch('/prompt',{method:'POST',body}).then(r=>r.status)))`), [200, 400]);
+    if (id === 11) assert.deepEqual(await evaluate(`Promise.all([new Blob([JSON.stringify({text:'body-kind probe',mode:'prompt',attachments:[]})]),new FormData()].map(body=>fetch('/prompt',{method:'POST',body}).then(r=>r.status)))`), [415, 415]);
     await until(`document.querySelector('#status').textContent==='idle'&&document.querySelector('#items').textContent.includes('STRESS DONE ${id}')`, 120000);
     if ([2, 5, 8, 9].includes(id)) {
       await evaluate(`(()=>{if(document.querySelector('#items').textContent.length<400000&&!document.querySelector('#older').hidden)document.querySelector('#older').click();return true})()`);

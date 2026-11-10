@@ -11,6 +11,10 @@ export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhi
 export type DialogMethod = Dialog["method"];
 export type Text = { text: string; cut: number };
 export type NotifyLevel = "info" | "warning" | "error";
+export function isAttachment(value: unknown): value is Attachment {
+  if (!value || typeof value !== "object") return false;
+  return "id" in value && typeof value.id === "string" && "name" in value && typeof value.name === "string" && "path" in value && typeof value.path === "string" && "size" in value && typeof value.size === "number" && Number.isSafeInteger(value.size) && value.size >= 0 && "origin" in value && (value.origin === "path" || value.origin === "upload") && "kind" in value && (value.kind === "file" || value.kind === "image" && "mimeType" in value && typeof value.mimeType === "string");
+}
 export type Attachment = { id: string; name: string; size: number; path: string; origin: "path" | "upload" } & ({ kind: "image"; mimeType: string; width?: number; height?: number } | { kind: "file" });
 export type UploadProgress = { received: number; attachment?: Attachment };
 export type QueuedPrompt = { text: string; attachments: Attachment[] };

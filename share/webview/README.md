@@ -34,6 +34,9 @@ when no page is shown. `shown` is the last state that the SDK set, not
 a report from the app. `close()` hides the page, ends the
 bridge and removes its private socket directory. Use `off` to remove a
 `supported` listener. Pass `{ ko: "/path/to/ko" }` to select the executable.
+`timeoutMs` (default 5000) bounds the bridge's start, each `show` and
+`hide`, and `close`; a step that passes it rejects, and the SDK ends
+its child.
 
 For development, `webview({ target: "browser" })` serves the same
 server on a free port of `127.0.0.1` and shows the page in your
@@ -42,9 +45,14 @@ ko. `url` is the page's address, `show(path)` opens it once for each
 path, `hide()` does nothing and `supported` is always true. `close()` stops
 the port, lets responses that are on their way reach the browser, and
 ends what remains after one second. The SDK
-refuses a connection whose first request has a `Host` other than that
-address (421), which stops DNS rebinding; any local process can still
-call your routes. `show(path)` refuses a path that does not start with
+refuses each request and WebSocket upgrade whose `Host` is not that
+address (421), which stops DNS rebinding, and each one whose `Origin`
+is present and not that address (403), which stops other web pages;
+any local process can still call your routes. A browser sends a
+simple cross-origin form post without `Origin`, so accept a mutation
+only with a non-simple `Content-Type`, such as `application/json`.
+Request headers that start with `Kido-` belong to the host: the SDK
+removes them, as Kido.app does. `show(path)` refuses a path that does not start with
 `/`. A browser
 has no `window.ko` and no `--ko-*` properties, so give `:root` a
 fallback theme.

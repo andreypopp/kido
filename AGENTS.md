@@ -585,10 +585,14 @@ Conventions:
   In Python, `bench/client.py` signals only through `signal_child`.
   In TypeScript, `share/pi/ko-pi.ts` signals only the process groups
   of the jobs that it spawned itself, through `signalJob`, which takes
-  a record of its job registry, and `share/koa/koa.ts` signals only
-  the process group of the pi that it spawned, through `signalPi`;
+  a record of its job registry, and koa signals only the process
+  groups of the children that it spawned itself (pi and fd), through
+  `signalChild` in `share/koa/koa-child.ts`;
   `scripts/lint.sh` refuses `process.kill(` anywhere else in
-  `share/pi/` and `share/koa/` (docs/design-subagents.md, "Stopping a job").
+  `share/pi/`, `share/webview/` and `share/koa/`
+  (docs/design-subagents.md, "Stopping a job"). Elsewhere a child
+  gets a signal only through its own `ChildProcess.kill`, which
+  Node refuses after the child's exit.
   `ko_e2e` signals a process that it
   spawned through its `Pid`, and any other process only through
   `ko_sys::pid::signal_descendant`, which refuses a pid that does not

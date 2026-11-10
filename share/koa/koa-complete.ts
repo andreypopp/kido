@@ -101,20 +101,28 @@ function output(command: string, args: string[], signal: AbortSignal): Promise<s
   if (signal.aborted) return Promise.resolve(undefined);
   return new Promise(resolve => {
     const child = spawn(command, args, { detached: true, stdio: ["ignore", "pipe", "ignore"] });
-    const abort = () => signalChild(child, "SIGKILL");
+    let size = 0, state: "reading" | "aborted" | "ended" = "reading";
+    const chunks: Buffer[] = [];
+    const finish = (result: string | undefined) => {
+      if (state === "ended") return;
+      state = "ended"; signal.removeEventListener("abort", abort);
+      child.stdout.removeListener("data", data); child.stdout.destroy(); resolve(result);
+    };
+    const abort = () => { if (state !== "reading") return; state = "aborted"; signalChild(child, "SIGKILL"); };
+    const data = (bytes: Buffer) => {
+      if (bytes.length > (1 << 20) - size) { abort(); return; }
+      size += bytes.length; chunks.push(bytes);
+    };
     signal.addEventListener("abort", abort, { once: true });
-    let text = "";
-    child.stdout.setEncoding("utf8");
-    child.stdout.on("data", bytes => { text += bytes; });
-    const finish = (result: string | undefined) => { signal.removeEventListener("abort", abort); resolve(result); };
+    child.stdout.on("data", data);
     child.once("error", () => finish(undefined));
-    child.once("close", code => finish(code === 0 && !signal.aborted ? text : undefined));
+    child.once("close", code => finish(code === 0 && state === "reading" && !signal.aborted ? Buffer.concat(chunks).toString("utf8") : undefined));
   });
 }
 
-export function agentDiscovery(pane: string, ttl: string | undefined) {
+export function agentDiscovery(pane: string, ttl: string | undefined, signal: AbortSignal) {
   return agentCache(async () => {
-    const body = pane ? await output("ko", ["api", "/layout"], AbortSignal.timeout(5000)) : undefined;
+    const body = pane ? await output("ko", ["api", "/layout"], AbortSignal.any([signal, AbortSignal.timeout(5000)])) : undefined;
     if (body === undefined) return { rows: [], all: [] };
     const layout: components["schemas"]["LayoutPanes"] = JSON.parse(body);
     const panes = parsePanes(layout), me = panes.find(p => p.pane === pane);
@@ -123,11 +131,16 @@ export function agentDiscovery(pane: string, ttl: string | undefined) {
   }, ttl);
 }
 
+let fdProcesses = 0;
 async function walk(fd: string, base: string, query: string, signal: AbortSignal, depth?: number): Promise<{ path: string; directory: boolean }[]> {
   const escape = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const pattern = query.includes("/") ? query.replace(/^\/+|\/+$/g, "").split("/").filter(Boolean).map(escape).join("[\\\\/]") + (query.endsWith("/") ? "[\\\\/]" : "") : escape(query);
   const args = ["--base-directory", base, "--max-results", "100", "--type", "f", "--type", "d", "--follow", "--hidden", "--exclude", ".git", "--exclude", ".git/*", "--exclude", ".git/**", ...(depth === undefined ? [] : ["--max-depth", String(depth)]), ...(query.includes("/") ? ["--full-path"] : []), ...(query ? ["--", pattern] : [])];
-  const text = await output(fd, args, signal);
+  if (fdProcesses >= 4) return [];
+  fdProcesses++;
+  let text: string | undefined;
+  try { text = await output(fd, args, AbortSignal.any([signal, AbortSignal.timeout(2000)])); }
+  finally { fdProcesses--; }
   return text === undefined ? [] : text.trim().split("\n").filter(Boolean).map(path => ({ path: path.replace(/\\/g, "/"), directory: /[\\/]$/.test(path) })).filter(entry => !/(^|\/)\.git(\/|$)/.test(entry.path));
 }
 

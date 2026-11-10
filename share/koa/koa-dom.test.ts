@@ -5,7 +5,7 @@ import { runInNewContext } from "node:vm";
 import { stripTypeScriptTypes } from "node:module";
 import { markdown } from "./page/markdown.ts";
 import { nameCommand } from "./prompt.ts";
-import { ATTACHMENT_LIMITS, pathArg, jobEndText } from "../pi/records.ts";
+import { ATTACHMENT_LIMITS, isAttachment, pathArg, jobEndText } from "../pi/records.ts";
 import type { PromptMode } from "../pi/records.ts";
 
 async function page() {
@@ -68,7 +68,7 @@ async function page() {
       placeholder(text: string) { content.placeholder = text; },
     };
   };
-  const context = { getComputedStyle: () => ({ display: 'block' }), composer, nameCommand, ATTACHMENT_LIMITS, pathArg, jobEndText, AbortController, AbortSignal, CustomEvent: class { type: string; detail?: unknown; constructor(type: string, options?: { detail?: unknown }) { this.type = type; this.detail = options?.detail; } }, Node, Element: Node, HTMLElement: Node, HTMLButtonElement: Node, HTMLImageElement: Node, markdown, document, window: { ko: {}, addEventListener(type: string, handler: (event?: unknown) => void) { windowListeners.set(type, handler); } }, innerWidth: 980, innerHeight: 560, Event: class { type: string; constructor(type: string) { this.type = type; } }, console, setInterval() {}, clearInterval() {}, setTimeout, clearTimeout, requestAnimationFrame() {}, fetch: async () => ({ ok: true, json: async () => ({}) }) };
+  const context = { getComputedStyle: () => ({ display: 'block' }), composer, nameCommand, ATTACHMENT_LIMITS, isAttachment, pathArg, jobEndText, AbortController, AbortSignal, CustomEvent: class { type: string; detail?: unknown; constructor(type: string, options?: { detail?: unknown }) { this.type = type; this.detail = options?.detail; } }, Node, Element: Node, HTMLElement: Node, HTMLButtonElement: Node, HTMLImageElement: Node, markdown, document, window: { ko: {}, addEventListener(type: string, handler: (event?: unknown) => void) { windowListeners.set(type, handler); } }, innerWidth: 980, innerHeight: 560, Event: class { type: string; constructor(type: string) { this.type = type; } }, console, setInterval() {}, clearInterval() {}, setTimeout, clearTimeout, requestAnimationFrame() {}, fetch: async () => ({ ok: true, json: async () => ({}) }) };
   const attachSource = stripTypeScriptTypes(await readFile(new URL('page/attach.ts', import.meta.url), 'utf8')).replace(/^import .*;\n/gm, '').replace(/^export /gm, '');
   const httpSource = stripTypeScriptTypes(await readFile(new URL('page/http.ts', import.meta.url), 'utf8')).replace(/^import .*;\n/gm, '').replace(/^export /gm, '');
   const previewSource = stripTypeScriptTypes(await readFile(new URL('page/preview.ts', import.meta.url), 'utf8')).replace(/^export /gm, '');
@@ -101,24 +101,23 @@ test('user messages use the shared Markdown HTML sink and keep plain paragraphs 
   });
 });
 
-test("native path drops validate all paths, refuse folders and delete removed chips", async () => {
+test("native drops install ready records without path requests", async () => {
   const app = await page();
   Object.assign(app.context.window.ko, { local: true });
   let expire: () => void = () => assert.fail('The folder notice needs an expiry');
   Object.assign(app.context, { setTimeout(callback: () => void, delay: number) { assert.equal(delay, 4000); expire = callback; return 1; }, clearTimeout() {} });
   const requests: string[] = [];
-  app.context.fetch = async (path?: string, options?: { body?: unknown }) => {
+  app.context.fetch = async (path?: string) => {
     requests.push(path ?? '');
-    if (path === '/attachments') { const value = JSON.parse(String(options?.body)); assert.ok(['/tmp/one.txt', '/tmp/two.txt'].includes(value.path)); return { ok: true, json: async () => ({ id: value.path.endsWith('one.txt') ? 'one' : 'two', path: value.path, origin: 'path', name: value.path.slice(5), kind: 'file', size: 4 }) }; }
     assert.equal(path, '/attachments/one/delete'); return { ok: true, json: async () => ({}) };
   };
   app.run("state={...state,pi:{type:'ready'}};refreshComposer();editor.setText('draft')");
   const drop = (detail: unknown) => app.windowListeners.get('ko-drop')?.(new app.context.CustomEvent('ko-drop', { detail }));
   for (const files of [['relative'], ['/tmp/bad\nname'], Array(17).fill('/tmp/one.txt')]) drop({ files, refused: false });
   assert.equal(requests.length, 0);
-  drop({ files: ['/tmp/one.txt', '/tmp/two.txt'], refused: true });
+  drop({ files: ['one', 'two'].map(id => ({ id, path: '/tmp/' + id + '.txt', origin: 'path', name: id + '.txt', kind: 'file', size: 4 })), refused: true });
   await new Promise<void>(resolve => setImmediate(resolve));
-  assert.equal(requests.length, 2);
+  assert.equal(requests.length, 0);
   const host = app.elements.get('attachments'); assert.ok(host);
   assert.equal(host.children.length, 3);
   const notice = host.lastChild; assert.ok(notice);
@@ -127,7 +126,7 @@ test("native path drops validate all paths, refuse folders and delete removed ch
   drop({ files: [], refused: true }); assert.equal(notice.hidden, false);
   let prevented = false;
   app.listeners.get('drop')?.({ dataTransfer: { files: [new File(['x'], 'ignored.txt')], items: [] }, preventDefault() { prevented = true; } });
-  assert.equal(prevented, true); assert.equal(requests.length, 2); assert.equal(notice.hidden, false);
+  assert.equal(prevented, true); assert.equal(requests.length, 0); assert.equal(notice.hidden, false);
   drop({ files: [], refused: false }); assert.equal(notice.hidden, true);
   const close = host.children[0]?.children[1]; assert.ok(close);
   assert.equal(typeof close.onclick, 'function'); close.onclick?.(); await new Promise<void>(resolve => setImmediate(resolve));

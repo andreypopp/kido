@@ -1,4 +1,4 @@
-import { ATTACHMENT_LIMITS } from '../../pi/records.ts';
+import { ATTACHMENT_LIMITS, isAttachment } from '../../pi/records.ts';
 import { fetchJSON } from './http.ts';
 import { preview } from './preview.ts';
 import type { Attachment } from '../../pi/records.ts';
@@ -48,18 +48,12 @@ export function attach(host: HTMLElement, changed: () => void, displayPath: (val
     chips.push(chip); host.insertBefore(view, notice); render(chip);
     return chip;
   };
-  const add = async (input: { type: 'file'; file: File } | { type: 'path'; path: string }) => {
-    const name = input.type === 'file' ? input.file.name : input.path.slice(input.path.lastIndexOf('/') + 1);
+  const add = async (source: File) => {
+    const name = source.name;
     if (chips.filter(chip => chip.state.type !== 'refused').length >= ATTACHMENT_LIMITS.files) { create({ type: 'refused', name, reason: 'too many' }); return; }
-    if (input.type === 'file' && input.file.size > ATTACHMENT_LIMITS.fileBytes) { create({ type: 'refused', name, reason: 'over ' + ATTACHMENT_LIMITS.fileBytes / 1048576 + ' MB' }); return; }
-    const chip = create({ type: 'pending', name, size: input.type === 'file' ? input.file.size : 0, received: 0 });
+    if (source.size > ATTACHMENT_LIMITS.fileBytes) { create({ type: 'refused', name, reason: 'over ' + ATTACHMENT_LIMITS.fileBytes / 1048576 + ' MB' }); return; }
+    const chip = create({ type: 'pending', name, size: source.size, received: 0 });
     try {
-      if (input.type === 'path') {
-        const file = await fetchJSON('/attachments', { path: input.path });
-        if (!chips.includes(chip)) { deleteFile(file.id); return; }
-        chip.state = { type: 'ready', file }; render(chip); return;
-      }
-      const source = input.file;
       const created = await fetchJSON('/attachments', { name, type: source.type, size: source.size });
       if (!chips.includes(chip)) { deleteFile(created.id); return; }
       chip.state = { type: 'pending', name, size: source.size, received: 0, id: created.id };
@@ -93,13 +87,13 @@ export function attach(host: HTMLElement, changed: () => void, displayPath: (val
     if (items.length) for (const item of items) { if (item.webkitGetAsEntry?.()?.isDirectory) refused = true; else { const file = item.getAsFile(); if (file) files.push(file); } }
     else files.push(...Array.from(transfer.files));
     if (refused) refuseFolders();
-    for (const file of files.slice(0, ATTACHMENT_LIMITS.files + 1)) void add({ type: 'file', file });
+    for (const file of files.slice(0, ATTACHMENT_LIMITS.files + 1)) void add(file);
     return true;
   };
   const paste = (event: ClipboardEvent) => {
     if (event.defaultPrevented || !event.clipboardData?.files.length) return false;
     event.preventDefault();
-    for (const file of Array.from(event.clipboardData.files).slice(0, ATTACHMENT_LIMITS.files + 1)) void add({ type: 'file', file });
+    for (const file of Array.from(event.clipboardData.files).slice(0, ATTACHMENT_LIMITS.files + 1)) void add(file);
     return true;
   };
   document.addEventListener('drop', drop);
@@ -110,9 +104,9 @@ export function attach(host: HTMLElement, changed: () => void, displayPath: (val
   window.addEventListener('ko-drop', event => {
     if (!window.ko?.local || !(event instanceof CustomEvent)) return;
     const value: unknown = event.detail;
-    if (!value || typeof value !== 'object' || !('files' in value) || !Array.isArray(value.files) || value.files.length > ATTACHMENT_LIMITS.files || !value.files.every(path => typeof path === 'string' && path.startsWith('/') && !/\p{Cc}/u.test(path)) || !('refused' in value) || typeof value.refused !== 'boolean') return;
+    if (!value || typeof value !== 'object' || !('files' in value) || !Array.isArray(value.files) || value.files.length > ATTACHMENT_LIMITS.files || !value.files.every(file => isAttachment(file) && file.origin === 'path') || !('refused' in value) || typeof value.refused !== 'boolean') return;
     beginDrop(); if (value.refused) refuseFolders();
-    for (const path of value.files) void add({ type: 'path', path });
+    for (const file of value.files) create({ type: 'ready', file });
   });
   return {
     drop, paste,

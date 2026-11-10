@@ -31,6 +31,8 @@ final class WebviewToy: @unchecked Sendable {
     private var messages = 0
     var messageCount: Int { queue.sync { messages } }
     private var stashStream: NWConnection?
+    private var attachmentHeads: [String] = []
+    var attachmentRequests: [String] { queue.sync { attachmentHeads } }
     private var encodedHead = ""
     var encodedRequest: String { queue.sync { encodedHead } }
     func writeStash() {
@@ -128,9 +130,19 @@ final class WebviewToy: @unchecked Sendable {
                 return
             }
             let text = String(decoding: data[..<end.upperBound], as: UTF8.self)
+            if text.contains(" /attachments ") { attachmentHeads.append(text) }
             if let path = text.split(separator: " ").dropFirst().first, path.hasPrefix("/images/") || path.hasPrefix("/attachments/") || path.hasPrefix("/steps/") || path == "/files/held" {
                 previewRequests.append(String(path))
                 if path.contains("held") { heldPreviews.append(connection) } else { previewReply(connection, path: String(path)) }
+                return
+            }
+            if text.hasPrefix("POST /attachments ") {
+                guard text.components(separatedBy: "\r\n").contains(where: { $0.lowercased() == "kido-native-drop: 1" }) else {
+                    connection.send(content: Data("HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n".utf8), completion: .contentProcessed { _ in connection.cancel() })
+                    return
+                }
+                let length = text.components(separatedBy: "\r\n").first(where: { $0.lowercased().hasPrefix("content-length:") })?.split(separator: ":", maxSplits: 1).last.flatMap { Int($0.trimmingCharacters(in: .whitespaces)) } ?? 0
+                body(connection, Data(data[end.upperBound...]), length, attachment: true)
                 return
             }
             if text.hasPrefix("GET /held ") { documents.append(connection); return }
@@ -195,15 +207,20 @@ final class WebviewToy: @unchecked Sendable {
         Data("\(String(body.utf8.count, radix: 16))\r\n\(body)\r\n".utf8)
     }
 
-    private func body(_ connection: NWConnection, _ data: Data, _ length: Int) {
+    private func body(_ connection: NWConnection, _ data: Data, _ length: Int, attachment: Bool = false) {
         if data.count >= length {
-            let response = Data("HTTP/1.1 200 OK\r\nContent-Length: \(data.count)\r\nConnection: close\r\n\r\n".utf8) + data
+            var result = data
+            if attachment {
+                guard let value = try? JSONSerialization.jsonObject(with: data) as? [String: String], let path = value["path"], let bytes = FileManager.default.contents(atPath: path), let record = try? JSONSerialization.data(withJSONObject: ["id": "native", "path": path, "name": URL(fileURLWithPath: path).lastPathComponent, "size": bytes.count, "origin": "path", "kind": "file"]) else { connection.cancel(); return }
+                result = record
+            }
+            let response = Data("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: \(result.count)\r\nConnection: close\r\n\r\n".utf8) + result
             connection.send(content: response, completion: .contentProcessed { _ in connection.cancel() })
             return
         }
-        connection.receive(minimumIncompleteLength: 1, maximumLength: 65536) { [weak self] bytes, _, complete, error in
-            guard let bytes, !complete, error == nil else { connection.cancel(); return }
-            self?.body(connection, data + bytes, length)
+        connection.receive(minimumIncompleteLength: 1, maximumLength: 65536) { [weak self] bytes, _, _, error in
+            guard let bytes, !bytes.isEmpty, error == nil else { connection.cancel(); return }
+            self?.body(connection, data + bytes, length, attachment: attachment)
         }
     }
 

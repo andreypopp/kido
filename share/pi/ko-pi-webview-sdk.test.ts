@@ -11,6 +11,81 @@ import { createHash } from "node:crypto";
 import { webview, type Webview } from "../webview/index.ts";
 import { makeFixture, pollUntil } from "./ko-pi-fixture.ts";
 
+test("bridge readiness expires and removes its directory", { timeout: 5000 }, async () => {
+  const dir = mkdtempSync(join(tmpdir(), "webview-ready-"));
+  const ko = join(dir, "ko");
+  writeFileSync(ko, `#!/bin/sh\nprintf '%s' "$4" > '${dir}/socket'\nexec /bin/cat\n`, { mode: 0o700 });
+  try {
+    await assert.rejects(webview({ ko, timeoutMs: 1000 }), /timed out/);
+    const socket = readFileSync(join(dir, "socket"), "utf8");
+    assert.equal(existsSync(dirname(socket)), false);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("close bounds a stuck leave and ends its bridge", { timeout: 5000 }, async () => {
+  const dir = mkdtempSync(join(tmpdir(), "webview-close-"));
+  const ko = join(dir, "ko");
+  writeFileSync(ko, `#!${process.execPath}\nif(process.argv[3]==='enter')process.exit(0);process.on('SIGTERM', () => {}); setInterval(() => {}, 1000); if(process.argv[3]==='serve')console.log(JSON.stringify({type:'supported',supported:true}));\n`, { mode: 0o700 });
+  const tty = process.stdout.isTTY;
+  try {
+    process.stdout.isTTY = true;
+    const view = await webview({ ko, timeoutMs: 1000 }); assert.ok(view);
+    await view.show(); assert.equal(view.shown, true);
+    const started = Date.now();
+    const first = view.close(); assert.equal(view.close(), first); await first;
+    assert.ok(Date.now() - started < 2800);
+    assert.equal(existsSync(dirname(view.socketPath)), false);
+  } finally { process.stdout.isTTY = tty; rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("close cancels a stuck enter and queued actions", { timeout: 5000 }, async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'webview-enter-')), gate = join(dir, 'gate'), ko = join(dir, 'ko');
+  const server = createNetServer();
+  await new Promise<void>(resolve => server.listen(gate, resolve));
+  const started = new Promise<import('node:net').Socket>(resolve => server.once('connection', resolve));
+  writeFileSync(ko, `#!${process.execPath}\nconst fs=require('node:fs'); process.on('SIGTERM',()=>{}); setInterval(()=>{},1000); if(process.argv[3]==='serve')console.log(JSON.stringify({type:'supported',supported:true})); else {fs.appendFileSync(${JSON.stringify(join(dir, 'actions'))},process.argv[3]+'\\n');require('node:net').connect(${JSON.stringify(gate)});}\n`, { mode: 0o700 });
+  const tty = process.stdout.isTTY;
+  let view: Webview | null = null;
+  try {
+    process.stdout.isTTY = true;
+    view = await webview({ ko, timeoutMs: 1000 }); assert.ok(view);
+    const first = assert.rejects(view.show('/first'), /closed/), queued = assert.rejects(view.show('/queued'), /closed/);
+    const socket = await started;
+    const disconnected = new Promise<void>(resolve => socket.once('close', resolve)); socket.resume();
+    await view.close(); await Promise.all([first, queued, disconnected]);
+    assert.equal(readFileSync(join(dir, 'actions'), 'utf8'), 'enter\n');
+    assert.equal(existsSync(dirname(view.socketPath)), false);
+  } finally { process.stdout.isTTY = tty; await view?.close(); await new Promise<void>(resolve => server.close(() => resolve())); rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("browser checks every request origin", { timeout: 5000 }, async () => {
+  const view = await webview({ target: "browser" });
+  let calls = 0;
+  const app = createServer((_req, res) => { calls++; res.end("ok"); });
+  app.on("upgrade", (_req, socket) => { calls++; socket.destroy(); });
+  await new Promise<void>(resolve => app.listen(view.socketPath, resolve));
+  const url = new URL(view.url!);
+  const raw = (request: string) => new Promise<string>((resolve, reject) => {
+    const socket = connect(Number(url.port), "127.0.0.1", () => socket.end(request));
+    let data = "";
+    socket.on("data", bytes => { data += bytes; }); socket.on("end", () => resolve(data)); socket.on("error", reject);
+  });
+  try {
+    for (const origin of ["null", "https://foreign.example", `http://localhost:${url.port}`, `${url.origin}/`, `${url.origin}\r\nOrigin: ${url.origin}`]) {
+      assert.equal((await fetch(view.url!, { method: "POST", headers: { Origin: origin.includes("\r") ? "null" : origin }, body: "bad" })).status, 403);
+      assert.match(await raw(`GET / HTTP/1.1\r\nHost: ${url.host}\r\nOrigin: ${origin}\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\r\n`), /403/);
+    }
+    assert.equal(calls, 0);
+    const pipelined = await raw(`GET / HTTP/1.1\r\nHost: ${url.host}\r\nOrigin: null\r\n\r\nPOST / HTTP/1.1\r\nHost: ${url.host}\r\nOrigin: null\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`);
+    assert.match(pipelined, /403/); assert.equal(calls, 0);
+    const second = await raw(`GET / HTTP/1.1\r\nHost: ${url.host}\r\n\r\nPOST / HTTP/1.1\r\nHost: ${url.host}\r\nOrigin: null\r\nConnection: close\r\nContent-Length: 0\r\n\r\n`);
+    assert.match(second, /200 OK/); assert.match(second, /403 Forbidden/); assert.equal(calls, 1);
+    assert.equal((await fetch(view.url!, { headers: { Origin: url.origin } })).status, 200);
+    assert.equal((await fetch(view.url!)).status, 200);
+    assert.equal(calls, 3);
+  } finally { await view.close(); app.closeAllConnections(); await new Promise<void>(resolve => app.close(() => resolve())); }
+});
+
 test("browser Host guard and show/hide rules", { timeout: 15000 }, async () => {
   const wv = await webview({ target: "browser" });
   assert.ok(wv);
@@ -27,11 +102,11 @@ test("browser Host guard and show/hide rules", { timeout: 15000 }, async () => {
       req.on("end", () => res.end(JSON.stringify({ method: req.method, path: req.url, body })));
     } else res.end(req.url === "/" ? "app body" : req.url);
   });
-  server.on("upgrade", (req, socket) => {
+  server.on("upgrade", (req, socket, head) => {
     const accept = createHash("sha1").update(`${req.headers["sec-websocket-key"]}258EAFA5-E914-47DA-95CA-C5AB0DC85B11`).digest("base64");
     socket.write(`HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ${accept}\r\n\r\n`);
     let buffered = Buffer.alloc(0);
-    socket.on("data", bytes => {
+    const receive = (bytes: Buffer) => {
       buffered = Buffer.concat([buffered, bytes]);
       if (buffered.length < 6) return;
       const length = buffered[1]! & 127;
@@ -40,7 +115,8 @@ test("browser Host guard and show/hide rules", { timeout: 15000 }, async () => {
       for (let i = 0; i < length; i++) payload[i] = payload[i]! ^ buffered[2 + i % 4]!;
       socket.write(Buffer.concat([Buffer.from([0x81, length]), payload]));
       buffered = buffered.subarray(6 + length);
-    });
+    };
+    socket.on("data", receive); receive(head);
     socket.on("error", () => socket.destroy());
     socket.on("end", () => socket.destroy());
   });
@@ -73,6 +149,12 @@ test("browser Host guard and show/hide rules", { timeout: 15000 }, async () => {
     assert.equal((pipelined.match(/HTTP\/1.1 200 OK/g) ?? []).length, 2);
     assert.ok(pipelined.indexOf("/first") > 0);
     assert.ok(pipelined.indexOf("/second") > pipelined.indexOf("/first"));
+    await new Promise<void>((resolve, reject) => {
+      const socket = connect(Number(url.port), '127.0.0.1', () => socket.write(Buffer.concat([Buffer.from(`GET /head HTTP/1.1\r\nHost: ${url.host}\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n`), Buffer.from([0x81, 0x83, 1, 2, 3, 4, 96, 96, 96])])));
+      let data = Buffer.alloc(0);
+      socket.on('data', bytes => { data = Buffer.concat([data, bytes]); if (data.includes(Buffer.from([0x81, 3, 97, 98, 99]))) { socket.destroy(); resolve(); } });
+      socket.on('error', reject);
+    });
     const stream = await fetch(`${wv.url}stream`);
     const reader = stream.body!.getReader();
     assert.equal(new TextDecoder().decode((await reader.read()).value), "first");
@@ -123,9 +205,9 @@ test("browser preserves a write-side EOF and handles an absent app", { timeout: 
   const url = new URL(wv.url!);
   const expected = `POST /eof HTTP/1.1\r\nHost: 127.0.0.1:${url.port}\r\nContent-Length: 4\r\n\r\nbody`;
   let received = "";
-  const app = createNetServer({ allowHalfOpen: true }, socket => {
-    socket.on("data", bytes => { received += bytes; });
-    socket.on("end", () => socket.end("HTTP/1.1 200 OK\r\nContent-Length: 12\r\n\r\nafter EOF ok"));
+  const app = createServer((request, response) => {
+    request.on("data", bytes => { received += bytes; });
+    request.on("end", () => response.end("after EOF ok"));
   });
   try {
     await new Promise<void>(resolve => app.listen(wv.socketPath, resolve));
@@ -136,8 +218,8 @@ test("browser preserves a write-side EOF and handles an absent app", { timeout: 
       socket.on("end", () => resolve(bytes));
       socket.on("error", reject);
     });
-    assert.equal(received, expected);
-    assert.equal(response, "HTTP/1.1 200 OK\r\nContent-Length: 12\r\n\r\nafter EOF ok");
+    assert.equal(received, "body");
+    assert.match(response, /after EOF ok$/);
     await new Promise<void>(resolve => app.close(() => resolve()));
     await new Promise<void>((resolve, reject) => {
       const socket = connect(Number(url.port), "127.0.0.1", () => socket.write(`GET / HTTP/1.1\r\nHost: localhost:${url.port}\r\n\r\n`));
@@ -248,7 +330,7 @@ test("browser close does not wait for an opener", { timeout: 15000 }, async () =
     const forwarded = connect(port, "127.0.0.1");
     await new Promise(resolve => forwarded.once("connect", resolve));
     const disconnected = new Promise(resolve => forwarded.once("close", resolve));
-    const showing = wv.show();
+    const showing = assert.rejects(wv.show(), /closed/);
     const opener = await started;
     try {
       await wv.close();

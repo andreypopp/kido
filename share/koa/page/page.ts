@@ -639,7 +639,7 @@ function sendMetrics(force = false) {
   clearTimeout(metrics.timer); metrics.timer = undefined;
   const samples = metrics.samples.splice(0, 50);
   metrics.writes = metrics.writes.then(async () => {
-    const response = await fetch('/metrics', { method: 'POST', body: JSON.stringify(samples) });
+    const response = await fetch('/metrics', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(samples) });
     if (!response.ok) throw Error('Metrics write failed: ' + response.status);
   }).catch(error => { metrics.error = error.message; console.error(error); });
 }

@@ -44,10 +44,46 @@ async function fixture(t: TestContext, steps: object[], env: NodeJS.ProcessEnv =
   const response = await fetch(base + "events", { signal: controller.signal });
   assert.ok(response.body);
   const { state: stream, until } = sse(Readable.from(response.body));
-  const post = (path: string, body: object = {}) => fetch(base + path, { method: "POST", body: JSON.stringify(body) });
+  const post = (path: string, body: object = {}) => fetch(base + path, { method: "POST", headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
   if (startup) await until(record => record.type === "state" && (pi ? record.pi?.type === "exited" : Array.isArray(record.levels) && record.levels.length === 3));
   return { post, until, records: () => stream.records, count: () => stream.records.length, close, stdout: () => stdout, stderr: () => stderr, log: async () => (await readFile(log, "utf8")).trim().split("\n").map(line => JSON.parse(line)), base };
 }
+test('startup failures release the view before exiting', { timeout: 5000 }, async t => {
+  for (const args of [[], ['--metrics', '/does-not-exist/metrics']]) {
+    const child = spawn(process.execPath, [resolve('../koa/koa.ts'), '--browser', ...args], { env: { ...process.env, ...(args.length ? {} : { KOA_UPLOAD_IDLE_MS: 'bad' }) }, stdio: 'pipe' });
+    const close = once(child, 'close'); t.after(() => { if (child.exitCode === null) child.kill('SIGTERM'); });
+    let stderr = ''; child.stderr.on('data', bytes => { stderr += bytes; });
+    const [code] = await close; assert.equal(code, 1); assert.match(stderr, args.length ? /ENOENT/ : /KOA_UPLOAD_IDLE_MS/);
+  }
+});
+
+test('a listen failure closes the acquired view and pi', { timeout: 5000 }, async t => {
+  const dir = await mkdtemp('/tmp/koa-listen-failure-'); t.after(() => rm(dir, { recursive: true, force: true }));
+  await cp(resolve('../../build/ko/share/ko/koa'), join(dir, 'koa'), { recursive: true });
+  await symlink(resolve('../../build/ko/share/ko/pi'), join(dir, 'pi'));
+  await mkdir(join(dir, 'webview'));
+  const marker = join(dir, 'socket');
+  await writeFile(join(dir, 'webview/index.ts'), `import {webview as real} from ${JSON.stringify(new URL('../webview/index.ts', import.meta.url).href)};import {writeFileSync} from 'node:fs';export async function webview(options){const view=await real(options);writeFileSync(${JSON.stringify(marker)},view.socketPath);writeFileSync(view.socketPath,'occupied');return view;}`);
+  const child = spawn(process.execPath, [join(dir, 'koa/koa.ts'), '--browser', '--pi', resolve('../koa/koa-fake-pi.ts')], { env: { ...process.env, KOA_PI_EXIT_MS: '30', KOA_FAKE_STUBBORN: '1' }, stdio: 'pipe' });
+  t.after(() => { if (child.exitCode === null) child.kill('SIGTERM'); });
+  let stderr = ''; child.stderr.on('data', bytes => { stderr += bytes; });
+  const [code] = await once(child, 'close'); assert.equal(code, 1); assert.match(stderr, /EADDRINUSE/);
+  await assert.rejects(readFile(await readFile(marker, 'utf8')), { code: 'ENOENT' });
+});
+
+test('mutations refuse simple content types and browser path grants', { timeout: 10000 }, async t => {
+  const app = await fixture(t, [], {}, undefined, true, [], resolve('../koa/koa.ts'));
+  const before = (await app.log()).length;
+  for (const path of ['abort', 'complete', 'attachments', 'attachments/absent/delete']) {
+    assert.equal((await fetch(app.base + path, { method: 'POST', headers: { 'Content-Type': 'text/plain' }, body: '{}' })).status, 415);
+  }
+  const grants: Record<string, string>[] = [{ 'Content-Type': 'application/json' }, { 'Content-Type': 'application/json', 'Kido-Native-Drop': '1' }];
+  for (const headers of grants) {
+    assert.equal((await fetch(app.base + 'attachments', { method: 'POST', headers, body: JSON.stringify({ path: '/etc/passwd' }) })).status, 403);
+  }
+  assert.equal((await app.log()).length, before);
+});
+
 test('step previews resolve only transcript-owned regular files', { timeout: 10000 }, async t => {
   const dir = await mkdtemp(join(tmpdir(), 'koa-preview-')); t.after(() => rm(dir, { recursive: true, force: true }));
   await writeFile(join(dir, 'notes.md'), '# Preview'); await mkdir(join(dir, 'folder')); await symlink(join(dir, 'notes.md'), join(dir, 'link'));
@@ -88,7 +124,7 @@ test("a sent copy survives a later queue take-back and removal", { timeout: 1000
   ]);
   const bytes = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aWQAAAABJRU5ErkJggg==', 'base64');
   const file = await (await app.post('attachments', { name: 'keep.png', type: 'image/png', size: bytes.length })).json();
-  await fetch(app.base + `attachments/${file.id}/0`, { method: 'POST', body: new Uint8Array(bytes) });
+  await fetch(app.base + `attachments/${file.id}/0`, { method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: new Uint8Array(bytes) });
   await app.post('prompt', { text: 'first', mode: 'prompt', attachments: [file.id] });
   await app.post('prompt', { text: 'again', mode: 'prompt', attachments: [file.id] });
   await app.post('queue/clear');
@@ -107,7 +143,9 @@ test('a queued image survives compaction and take-back', { timeout: 10000 }, asy
     { type: 'wait', command: 'clear_queue', data: { steering: [''], followUp: [] } },
   ]);
   await app.post('prompt', { text: 'go', mode: 'prompt', attachments: [] });
-  const file = await (await app.post('attachments', { path })).json();
+  const bytes = await readFile(path);
+  const created = await (await app.post('attachments', { name: 'image.png', type: 'image/png', size: bytes.length })).json();
+  const file = (await (await fetch(app.base + `attachments/${created.id}/0`, { method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: new Uint8Array(bytes) })).json()).attachment;
   const before = app.count();
   await app.post('prompt', { text: '', mode: 'prompt', attachments: [file.id] });
   await app.until(record => record.type === 'reset', before);
@@ -115,33 +153,32 @@ test('a queued image survives compaction and take-back', { timeout: 10000 }, asy
 });
 
 test("queue take-back returns attachment chips with their typed text", { timeout: 10000 }, async t => {
-  const dir = await mkdtemp(join(tmpdir(), "koa-queue-attachments-"));
-  t.after(() => rm(dir, { recursive: true, force: true }));
-  const path = join(dir, "note.txt"); await writeFile(path, "note");
+  const bytes = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aWQAAAABJRU5ErkJggg==', 'base64');
   const app = await fixture(t, [
     { type: "wait", command: "prompt", events: [{ type: "agent_start" }] },
-    { type: "wait", command: "prompt", events: [{ type: "queue_update", steering: ["Compare\n" + path], followUp: [] }] },
-    { type: "wait", command: "clear_queue", events: [{ type: "queue_update", steering: [], followUp: [] }], data: { steering: ["Compare\n" + path], followUp: [] } },
+    { type: "wait", command: "prompt", events: [{ type: "queue_update", steering: ["Compare"], followUp: [] }] },
+    { type: "wait", command: "clear_queue", events: [{ type: "queue_update", steering: [], followUp: [] }], data: { steering: ["Compare"], followUp: [] } },
   ]);
   await app.post("prompt", { text: "go", mode: "prompt", attachments: [] });
-  const file = await (await app.post("attachments", { path })).json();
+  const created = await (await app.post('attachments', { name: 'image.png', type: 'image/png', size: bytes.length })).json();
+  const file = (await (await fetch(app.base + `attachments/${created.id}/0`, { method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: new Uint8Array(bytes) })).json()).attachment;
   await app.post("prompt", { text: "Compare", mode: "prompt", attachments: [file.id] });
   const restored = await (await app.post("queue/clear")).json();
   assert.deepEqual(restored, { steering: [{ text: "Compare", attachments: [file] }], followUp: [] });
 });
 
-test("attachments stream chunks and original paths into prompts", { timeout: 10000 }, async t => {
+test("attachments stream chunks into prompts", { timeout: 10000 }, async t => {
   const dir = await mkdtemp(join(tmpdir(), "koa-attachments-"));
   t.after(() => rm(dir, { recursive: true, force: true }));
   const image = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aWQAAAABJRU5ErkJggg==", "base64");
-  const file = join(dir, "original.txt"), png = join(dir, "original.png");
-  await writeFile(file, "original"); await writeFile(png, image);
+  const file = join(dir, "original.txt");
+  await writeFile(file, "original");
   const app = await fixture(t, []);
   const created = await app.post("attachments", { name: "pixel.png", type: "text/html", size: image.length });
   assert.equal(created.status, 200);
   const uploaded = await created.json();
   const { id } = uploaded;
-  const chunk = (offset: number, body: Uint8Array<ArrayBuffer>) => fetch(app.base + `attachments/${id}/${offset}`, { method: "POST", body });
+  const chunk = (offset: number, body: Uint8Array<ArrayBuffer>) => fetch(app.base + `attachments/${id}/${offset}`, { method: "POST", headers: { 'Content-Type': 'application/octet-stream' }, body });
   assert.equal((await chunk(1, image.subarray(0, 10))).status, 409);
   assert.deepEqual(await (await chunk(0, image.subarray(0, 10))).json(), { received: 10 });
   const done = await (await chunk(10, image.subarray(10))).json();
@@ -150,24 +187,20 @@ test("attachments stream chunks and original paths into prompts", { timeout: 100
   assert.equal(downloaded.headers.get("content-type"), "image/png");
   assert.match(downloaded.headers.get("content-disposition") ?? "", /pixel.png/);
   assert.deepEqual(Buffer.from(await downloaded.arrayBuffer()), image);
-  const path = await (await app.post("attachments", { path: file })).json();
-  assert.equal(path.kind, "file");
-  assert.equal((await app.post("attachments", { path: dir })).status, 403);
-  assert.equal((await app.post("attachments", { path: join(dir, "missing") })).status, 404);
+  assert.equal((await app.post("attachments", { path: file })).status, 403);
   assert.equal((await app.post("attachments", { name: "large", size: 64 * 1024 * 1024 + 1, type: "" })).status, 413);
   const copy = await (await app.post("attachments", { name: "copied.txt", type: "text/plain", size: 4 })).json();
-  await fetch(app.base + `attachments/${copy.id}/0`, { method: "POST", body: new Uint8Array(Buffer.from("copy")) });
-  assert.equal((await app.post("prompt", { text: "Compare", mode: "prompt", attachments: [id, copy.id, path.id] })).status, 200);
+  await fetch(app.base + `attachments/${copy.id}/0`, { method: "POST", headers: { 'Content-Type': 'application/octet-stream' }, body: new Uint8Array(Buffer.from("copy")) });
+  assert.equal((await app.post("prompt", { text: "Compare", mode: "prompt", attachments: [id, copy.id] })).status, 200);
   const sent = (await app.log()).find(record => record.type === "prompt");
   assert.deepEqual(sent.images, [{ type: "image", data: image.toString("base64"), mimeType: "image/png" }]);
   const lines = sent.message.split("\n");
-  assert.equal(lines[0], "Compare"); assert.equal(lines.at(-1), file);
-  assert.equal(await readFile(lines.at(-2), "utf8"), "copy");
-  const originalImage = await (await app.post("attachments", { path: png })).json();
-  assert.equal((await app.post("prompt", { text: "", mode: "prompt", attachments: [originalImage.id] })).status, 200);
+  assert.equal(lines[0], "Compare");
+  assert.equal(await readFile(lines.at(-1), "utf8"), "copy");
+  assert.equal((await app.post("prompt", { text: "", mode: "prompt", attachments: [id] })).status, 200);
   const last = (await app.log()).filter(record => record.type === "prompt").at(-1);
   assert.equal(last.message, ""); assert.deepEqual(last.images, sent.images);
-  const extra = await (await app.post("attachments", { path: file })).json();
+  const extra = await (await app.post("attachments", { name: 'extra', type: '', size: 0 })).json();
   assert.equal((await app.post(`attachments/${extra.id}/delete`)).status, 200);
   assert.equal((await fetch(app.base + `attachments/${extra.id}`)).status, 404);
   assert.equal(await readFile(file, 'utf8'), 'original');
@@ -178,8 +211,8 @@ test("attachments stream chunks and original paths into prompts", { timeout: 100
   assert.equal((await app.post('attachments', { name: 'seventeenth', type: '', size: 0 })).status, 409);
   for (const id of unfinished) await app.post(`attachments/${id}/delete`);
   const boundary = await (await app.post('attachments', { name: 'boundary', type: '', size: 768 * 1024 + 1 })).json();
-  assert.equal((await fetch(app.base + `attachments/${boundary.id}/0`, { method: 'POST', body: new Uint8Array(768 * 1024 + 1) })).status, 413);
-  assert.equal((await fetch(app.base + `attachments/${boundary.id}/0`, { method: 'POST', body: new Uint8Array(0) })).status, 400);
+  assert.equal((await fetch(app.base + `attachments/${boundary.id}/0`, { method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: new Uint8Array(768 * 1024 + 1) })).status, 413);
+  assert.equal((await fetch(app.base + `attachments/${boundary.id}/0`, { method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: new Uint8Array(0) })).status, 400);
   await app.post(`attachments/${boundary.id}/delete`);
   const reserved: string[] = [];
   for (let i = 0; i < 4; i++) { const response = await app.post('attachments', { name: 'reserved', type: '', size: 64 * 1024 * 1024 }); assert.equal(response.status, 200); reserved.push((await response.json()).id); }
@@ -187,13 +220,36 @@ test("attachments stream chunks and original paths into prompts", { timeout: 100
   for (const id of reserved) await app.post(`attachments/${id}/delete`);
   const html = new TextEncoder().encode('<svg xmlns="http://www.w3.org/2000/svg"><script>globalThis.pwned=true</script></svg>');
   const unsafe = await (await app.post('attachments', { name: 'evil.svg', type: 'image/svg+xml', size: html.length })).json();
-  assert.equal((await (await fetch(app.base + `attachments/${unsafe.id}/0`, { method: 'POST', body: html })).json()).attachment.kind, 'file');
+  assert.equal((await (await fetch(app.base + `attachments/${unsafe.id}/0`, { method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: html })).json()).attachment.kind, 'file');
   const download = await fetch(app.base + `attachments/${unsafe.id}`);
   assert.equal(download.headers.get('content-type'), 'application/octet-stream');
   assert.equal(download.headers.get('x-content-type-options'), 'nosniff');
   assert.equal(download.headers.get('content-security-policy'), "sandbox; default-src 'none'");
   await app.post('quit'); await app.close;
-  await assert.rejects(readFile(lines.at(-2)), { code: 'ENOENT' });
+  await assert.rejects(readFile(lines.at(-1)), { code: 'ENOENT' });
+});
+
+test('completion limits active searches and kills expired children', { timeout: 10000 }, async t => {
+  const dir = await mkdtemp('/tmp/koa-search-limit-'); t.after(() => rm(dir, { recursive: true, force: true }));
+  const gate = join(dir, 'gate'), fd = join(dir, 'fd');
+  await writeFile(fd, `#!${process.execPath}\nrequire('node:net').connect(${JSON.stringify(gate)}).on('connect',function(){this.write('ready')});\n`, { mode: 0o700 });
+  const sockets = new Set<import('node:net').Socket>(); let accepted = 0;
+  const server = createServer(socket => { accepted++; sockets.add(socket); socket.on('data', () => {}); socket.once('close', () => sockets.delete(socket)); });
+  server.listen(gate); await once(server, 'listening'); t.after(() => { for (const socket of sockets) socket.destroy(); server.close(); });
+  const app = await fixture(t, [], { KOA_FD: fd }, undefined, true, [], resolve('../koa/koa.ts'));
+  const controller = new AbortController();
+  const first = fetch(app.base + 'complete', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text: '@', pos: 1 }), signal: controller.signal });
+  const rejected = assert.rejects(first, { name: 'AbortError' });
+  const second = app.post('complete', { text: '@', pos: 1 });
+  await pollUntil(() => sockets.size === 4, 1500, 'four fd children');
+  const capped = await app.post('complete', { text: '@', pos: 1 });
+  assert.equal(capped.status, 200); assert.deepEqual((await capped.json()).options, []); assert.equal(accepted, 4);
+  controller.abort(); await rejected;
+  await pollUntil(() => sockets.size === 2, 1000, 'disconnect releases children');
+  const replacement = app.post('complete', { text: '@', pos: 1 });
+  await pollUntil(() => accepted === 6, 1000, 'disconnect releases capacity');
+  assert.deepEqual((await (await second).json()).options, []); assert.deepEqual((await (await replacement).json()).options, []);
+  await pollUntil(() => sockets.size === 0, 1000, 'expired children ended');
 });
 
 test("completion reads pi commands on every request and validates offsets", { timeout: 10000 }, async t => {
@@ -235,7 +291,7 @@ if(fs.existsSync(path+'/block')){fs.writeFileSync(path+'/pid',String(process.pid
   assert.equal((await (await app.post("complete", { text: "/fi", pos: 3 })).json()).options[0].insert, "/find ");
   await writeFile(join(dir, "block"), "");
   const connected = once(server, "connection"), controller = new AbortController();
-  const request = fetch(app.base + "complete", { method: "POST", body: JSON.stringify({ text: "@si", pos: 3 }), signal: controller.signal });
+  const request = fetch(app.base + "complete", { method: "POST", headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text: "@si", pos: 3 }), signal: controller.signal });
   const [socket] = await connected;
   t.after(() => socket.destroy());
   await once(socket, "data");
@@ -733,7 +789,7 @@ test("quit exits at its deadline when the reply stalls and the client never read
     };`);
   const app = await fixture(t, [], { NODE_OPTIONS: `--import=${hook}` });
   const url = new URL(app.base);
-  const socket = connect(Number(url.port), "127.0.0.1", () => socket.write(`POST /quit HTTP/1.1\r\nHost: ${url.host}\r\nContent-Length: 2\r\n\r\n{}`));
+  const socket = connect(Number(url.port), "127.0.0.1", () => socket.write(`POST /quit HTTP/1.1\r\nHost: ${url.host}\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n{}`));
   socket.pause();
   socket.on("error", () => {});
   t.after(() => socket.destroy());

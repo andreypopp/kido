@@ -681,7 +681,7 @@ extension VisualTests {
             try await webviewUntil(web, "document.querySelector('#status').textContent==='idle'&&document.querySelector('#model-name').textContent==='claude-opus-5-5'")
             for index in 1...3 {
                 let before = pane.webviewView!.visualFeedBytes
-                let response = try await webviewJS(web, "fetch('/prompt',{method:'POST',body:JSON.stringify({text:'next',mode:'prompt',attachments:[]})}).then(async r=>({status:r.status,body:await r.json()}))")
+                let response = try await webviewJS(web, "fetch('/prompt',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text:'next',mode:'prompt',attachments:[]})}).then(async r=>({status:r.status,body:await r.json()}))")
                 XCTAssertTrue(response.contains("\"status\":200"), response)
                 try await wait("feed chunk \(index) handed to WebKit", within: 5) { pane.webviewView!.visualFeedBytes > before + 4096 }
             }
@@ -720,7 +720,7 @@ extension VisualTests {
             try await webviewUntil(web, "getComputedStyle(document.body).getPropertyValue('--ko-appearance').trim()==='light'")
         }
         func advance() async throws {
-            _ = try await webviewJS(web, "fetch('/prompt',{method:'POST',body:JSON.stringify({text:'next',mode:'prompt',attachments:[]})}).then(async r=>{const result=await r.json();if(!r.ok)throw Error(result.error||'Prompt failed');return result})")
+            _ = try await webviewJS(web, "fetch('/prompt',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text:'next',mode:'prompt',attachments:[]})}).then(async r=>{const result=await r.json();if(!r.ok)throw Error(result.error||'Prompt failed');return result})")
         }
         try await webviewUntil(web, "document.querySelector('#status').textContent==='idle'&&document.querySelector('#model-name').textContent==='claude-opus-5-5'")
         _ = try await webviewJS(web, "(()=>{const NativeDate=Date;window.Date=class extends NativeDate{constructor(...args){super(...(args.length?args:[\(stamp + 12000)]))}static now(){return \(stamp + 12000)}};const style=document.createElement('style');style.textContent='.caret,.spin,.spin::before,.dot.on,.cm-cursorLayer{animation:none!important}';document.head.append(style);return true})()")
@@ -839,12 +839,13 @@ extension VisualTests {
               };
               window.composer.setText('Attach these to the review');
               const clipboard=new DataTransfer();clipboard.items.add(attachFiles.shot);clipboard.items.add(attachFiles.notes);document.querySelector('.cm-content').dispatchEvent(new ClipboardEvent('paste',{bubbles:true,cancelable:true,clipboardData:clipboard}));
-              window.ko.local=true;window.dispatchEvent(new CustomEvent('ko-drop',{detail:{files:[\#(source)],refused:false}}));window.ko.local=false;
-              const large=new File([],'archive.tar.gz');Object.defineProperty(large,'size',{value:65*1048576});
-              dropAttachments([new File([new Uint8Array(41*1048576)],'kido-demo.mov'),large]);
+              window.ko.local=true;
               return true;
             })()
             """#)
+            pane.webviewView?.drop(files: [attachmentPaths.source.path], refused: false)
+            try await webviewUntil(web, "document.querySelectorAll('.attach-chip').length===3&&document.querySelectorAll('.attach-icon.spin').length===0")
+            _ = try await webviewJS(web, "(()=>{window.ko.local=false;const large=new File([],'archive.tar.gz');Object.defineProperty(large,'size',{value:65*1048576});dropAttachments([new File([new Uint8Array(41*1048576)],'kido-demo.mov'),large]);return true})()")
             try await webviewUntil(web, "document.querySelectorAll('.attach-chip').length===5&&Array.from(document.querySelectorAll('.attach-detail')).some(node=>node.textContent==='18 / 41 MB')&&document.querySelectorAll('.attach-icon img').length===1")
             _ = try await webviewJS(web, "Promise.all(Array.from(document.querySelectorAll('.attach-icon img'),image=>image.decode())).then(()=>true)")
             let refusedStyle = try await webviewJS(web, "(()=>{const reason=document.querySelector('.attach-chip.refused .attach-detail'),reference=document.createElement('i');reference.style.color='var(--ko-color-1)';document.body.append(reference);const matches=getComputedStyle(reason).color===getComputedStyle(reference).color&&getComputedStyle(reason.closest('.attach-chip')).borderColor!==getComputedStyle(document.querySelector('.attach-chip')).borderColor;reference.remove();return matches})()")
@@ -874,9 +875,11 @@ extension VisualTests {
             let restored = try await webviewJS(web, "Array.from(document.querySelectorAll('.attach-detail')).every(node=>!node.classList.contains('path'))")
             XCTAssertEqual(restored, "true", "Take-back restores upload chips, not path chips")
             _ = try await webviewJS(web, #"""
-            (()=>{clearAttachments();dropAttachments([attachFiles.shot,attachFiles.notes]);window.ko.local=true;window.dispatchEvent(new CustomEvent('ko-drop',{detail:{files:[\#(source)],refused:false}}));window.ko.local=false;window.composer.setText('Attach these to the review');return true})()
+            (()=>{clearAttachments();dropAttachments([attachFiles.shot,attachFiles.notes]);window.ko.local=true;window.composer.setText('Attach these to the review');return true})()
             """#)
+            pane.webviewView?.drop(files: [attachmentPaths.source.path], refused: false)
             try await webviewUntil(web, "document.querySelectorAll('.attach-chip').length===3&&document.querySelectorAll('.attach-icon.spin').length===0&&!document.querySelector('#field').inert")
+            _ = try await webviewJS(web, "window.ko.local=false")
             _ = try await webviewJS(web, "(()=>{document.querySelector('.cm-content').dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',code:'Enter',bubbles:true}));return true})()")
             try await webviewUntil(web, "document.querySelectorAll('.attach-chip').length===0&&document.querySelector('.user .paths')?.textContent.includes('SidebarRow.swift')&&document.querySelector('.user .thumb img')!==null&&document.querySelector('#status').textContent==='working 3s'")
             _ = try await webviewJS(web, "Promise.all(Array.from(document.querySelectorAll('.user .thumb img'),image=>image.decode())).then(()=>true)")
@@ -946,7 +949,7 @@ extension VisualTests {
         }
         if scenario == .completion {
             _ = try await webviewJS(web, "(()=>{window.completePrompts=[];window.lastComplete=null;const nativeFetch=window.fetch;window.fetch=async(path,options)=>{if(path==='/prompt')completePrompts.push(JSON.parse(options.body));const response=await nativeFetch(path,options);if(path==='/complete'){lastComplete={query:JSON.parse(options.body),result:await response.clone().json()};document.body.dataset.complete=String(Number(document.body.dataset.complete||0)+1)}return response};return true})()")
-            let warmed = try await webviewJS(web, "(async()=>{const deadline=performance.now()+5000;while(performance.now()<deadline){const result=await(await fetch('/complete',{method:'POST',body:JSON.stringify({text:'@si',pos:3})})).json();if(result.options.filter(o=>o.kind==='agent').length===3)return true}throw Error('agent completion deadline')})()")
+            let warmed = try await webviewJS(web, "(async()=>{const deadline=performance.now()+5000;while(performance.now()<deadline){const result=await(await fetch('/complete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text:'@si',pos:3})})).json();if(result.options.filter(o=>o.kind==='agent').length===3)return true}throw Error('agent completion deadline')})()")
             XCTAssertEqual(warmed, "true")
             let prefix = width < 750 ? "narrow-complete-" : "complete-"
             func show(_ before: String, _ token: String, _ after: String = "", empty: Bool = false) async throws {
@@ -1119,7 +1122,7 @@ extension VisualTests {
             _ = try await webviewJS(web, "(()=>{Date.now=()=>\(stamp + 8000);return true})()")
             func post(_ route: String, _ body: [String: Any] = [:]) async throws {
                 let json = String(decoding: try JSONSerialization.data(withJSONObject: body), as: UTF8.self)
-                _ = try await webviewJS(web, "fetch('\(route)',{method:'POST',body:JSON.stringify(\(json))}).then(async r=>{const v=await r.json();if(!r.ok)throw Error(v.error);return v})")
+                _ = try await webviewJS(web, "fetch('\(route)',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(\(json))}).then(async r=>{const v=await r.json();if(!r.ok)throw Error(v.error);return v})")
             }
             try await advance()
             try await webviewUntil(web, "document.querySelector('.dialog .title')?.textContent==='Which tap revision?'&&document.querySelector('.queued-next')&&document.querySelector('.run>.line .spin')&&document.querySelector('.run>.line')?.textContent.includes('release')")

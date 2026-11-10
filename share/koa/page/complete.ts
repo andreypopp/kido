@@ -18,7 +18,7 @@ export function completion(host: HTMLElement, send: () => void) {
     const controller = new AbortController();
     context.addEventListener('abort', () => controller.abort(), { onDocChange: true });
     try {
-      const response = await fetch('/complete', { method: 'POST', body: JSON.stringify({ text: context.state.doc.toString(), pos: context.pos } satisfies CompletionQuery), signal: controller.signal });
+      const response = await fetch('/complete', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text: context.state.doc.toString(), pos: context.pos } satisfies CompletionQuery), signal: controller.signal });
       if (!response.ok || context.aborted) return null;
       const result: CompletionResult = await response.json();
       if (!result.options.length || context.aborted) return null;

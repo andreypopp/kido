@@ -1456,6 +1456,21 @@ beside the terminal's `pixels`, so the panel, its control, its file and
 its removal are the terminal's. The panel zooms from the clicked
 element's rect.
 
+**Drops on a page.** A Finder drop on a local program's page
+(`WindowOwner.isLocalProgram`) is the one grant of a host path to a
+page's program. The app posts each dropped path to `/attachments`
+through the page's own fetch path, with the header
+`Kido-Native-Drop: 1`, and gives the page only the attachment records
+of the answers, through `window.__koDrop` and the `ko-drop` event.
+The scheme handler removes every `Kido-` header from every request of
+the page (`setValue(nil, forHTTPHeaderField:)`; a filtered
+`allHTTPHeaderFields` keeps them), so the page cannot claim a drop. A
+drop has at most 16 files in flight, an answer of at most 64 KiB and a
+deadline of 5 s; a navigation cancels it, and the app deletes an
+attachment that it does not give to the page. `WebviewBrowser` takes
+`prepareForDragOperation` itself for such a drop, because WebKit's own
+handling of a file drop runs there.
+
 **Focus and keys.** A click in the page selects the pane through the
 pane's left-mouse-down monitor and makes the web view first responder.
 `PaneView.owner` maps the web view to its pane, so the window's active

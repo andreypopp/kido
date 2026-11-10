@@ -9,6 +9,7 @@ import { ATTACHMENT_LIMITS, type Attachment, type UploadProgress } from '../pi/r
 import type { RpcCommand } from '@earendil-works/pi-coding-agent';
 
 export const UPLOAD_IDLE_MS = 30000;
+export const isChunkRoute = (path: string) => /^\/attachments\/[^/]+\/\d+$/.test(path);
 type Entry = { type: 'uploading'; path: string; name: string; size: number; received: number; timer: ReturnType<typeof setTimeout>; request?: IncomingMessage } | { type: 'ready' | 'queued' | 'used'; info: Attachment };
 
 class FileError extends Error {
@@ -89,6 +90,7 @@ export function attachments(dir: string, idleMs = UPLOAD_IDLE_MS) {
           let entry: Entry;
           const id = mintId();
           if ('path' in value) {
+            if (request.headers['kido-native-drop'] !== '1') return reply(403, { error: 'A native drop is required' });
             if (typeof value.path !== 'string' || !isAbsolute(value.path) || /\p{Cc}/u.test(value.path)) return reply(400, { error: 'An absolute file path is required' });
             const file = await openFile(value.path);
             try { entry = { type: 'ready', info: info(id, { path: value.path, name: basename(value.path), origin: 'path' }, file) }; }
@@ -106,6 +108,10 @@ export function attachments(dir: string, idleMs = UPLOAD_IDLE_MS) {
             return reply(409, { error: pending.length >= ATTACHMENT_LIMITS.files ? 'too many' : 'over ' + ATTACHMENT_LIMITS.pendingBytes / 1048576 + ' MB pending' });
           }
           if (entry.type === 'uploading') { mkdirSync(dirname(entry.path), { recursive: true, mode: 0o700 }); writeFileSync(entry.path, Buffer.alloc(0), { mode: 0o600 }); }
+          if (entry.type !== 'uploading' && entry.info.origin === 'path') {
+            if (response.destroyed) return true;
+            response.once('close', () => { if (!response.writableFinished) remove(id); });
+          }
           entries.set(id, entry);
           return reply(200, entry.type === 'uploading' ? { id, path: entry.path } : entry.info);
         }

@@ -6,6 +6,13 @@ import { tmpdir } from "node:os";
 import { complete, findFd } from "./koa-complete.ts";
 import type { CompletionCommand } from "../pi/records.ts";
 
+test("oversized completion output is discarded", { timeout: 5000 }, async t => {
+  const cwd = await mkdtemp(join(tmpdir(), 'koa-output-')); t.after(() => rm(cwd, { recursive: true, force: true }));
+  const fd = join(cwd, 'fd');
+  await writeFile(fd, `#!${process.execPath}\nprocess.stdout.write('file.txt\\n'.repeat(140000));\n`, { mode: 0o700 });
+  assert.deepEqual((await complete('@', 1, { cwd, fd, signal: AbortSignal.timeout(3000), commands: async () => [] })).options, []);
+});
+
 test("command completion follows pi fuzzy order, skill names and command apply", async () => {
   let calls = 0;
   const commands: CompletionCommand[] = [{ name: "release", description: "Ship", source: "prompt" }, { name: "review", source: "extension" }, { name: "skill:review", source: "skill" }, { name: "skill:ko", source: "skill" }];

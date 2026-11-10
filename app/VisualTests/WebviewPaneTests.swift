@@ -143,7 +143,8 @@ extension VisualTests {
     }
 
     func testWebviewNativeFileDrop() async throws {
-        _ = try await webviewStart()
+        let toy = try WebviewToy(path: directory.appendingPathComponent("webview.sock").path)
+        _ = try await webviewStart(toy: toy)
         let owner = WindowOwner(host: .local, runtime: runtime, start: false)
         owner.testServerDir = directory.path
         addTeardownBlock { @MainActor in owner.close() }
@@ -153,6 +154,8 @@ extension VisualTests {
         let web = try XCTUnwrap(pane.webviewView?.browser)
         try await webviewEqual(web, "window.ko.local===true", "true")
         _ = try await webviewJS(web, "(()=>{window.drops=[];addEventListener('ko-drop',event=>drops.push(event.detail));return true})()")
+        try await webviewEqual(web, "fetch('/attachments',{method:'POST',headers:{'Content-Type':'application/json','kIdO-nAtIvE-dRoP':'1'},body:JSON.stringify({path:'/etc/passwd'})}).then(r=>r.status)", "403")
+        XCTAssertFalse(toy.attachmentRequests.last?.lowercased().contains("kido-native-drop") ?? true, toy.attachmentRequests.joined(separator: "\n"))
         let file = directory.appendingPathComponent("original.txt"), folder = directory.appendingPathComponent("folder", isDirectory: true)
         try "original".write(to: file, atomically: true, encoding: .utf8)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: false)
@@ -168,9 +171,10 @@ extension VisualTests {
         XCTAssertFalse(destination === pane, "The browser, not its covered parent, receives the drag")
         XCTAssertEqual(destination.draggingEntered(drag), .copy)
         XCTAssertTrue(destination.performDragOperation(drag))
+        try await wait("native attachment request: \(toy.attachmentRequests)") { toy.attachmentRequests.count == 2 }
         try await webviewUntil(web, "drops.length===1")
         let detail = try await webviewJS(web, "drops[0]")
-        let expected = String(data: try JSONSerialization.data(withJSONObject: ["files": [file.path], "refused": true], options: [.sortedKeys]), encoding: .utf8)!
+        let expected = String(data: try JSONSerialization.data(withJSONObject: ["files": [["id": "native", "path": file.path, "name": "original.txt", "origin": "path", "kind": "file", "size": 8]], "refused": true], options: [.sortedKeys]), encoding: .utf8)!
         let actual = try XCTUnwrap(detail.data(using: .utf8))
         XCTAssertEqual(try JSONSerialization.jsonObject(with: actual) as? NSDictionary, try JSONSerialization.jsonObject(with: Data(expected.utf8)) as? NSDictionary)
         let link = directory.appendingPathComponent("link")
@@ -182,7 +186,9 @@ extension VisualTests {
         board.clearContents(); board.writeObjects([file as NSURL, link as NSURL])
         XCTAssertTrue(destination.prepareForDragOperation(SyntheticDrag(board)))
         XCTAssertTrue(destination.performDragOperation(SyntheticDrag(board)))
-        try await webviewUntil(web, "drops.length===2&&drops[1].files.length===1&&drops[1].refused===false")
+        try await wait("second native attachment request") { toy.attachmentRequests.count == 3 }
+        try await webviewUntil(web, "drops.length===2")
+        try await webviewEqual(web, "[drops[1].files.length,drops[1].refused]", "[1,false]")
         pane.runtimeMark = .unavailable(RuntimeKey(name: "box", source: .config), routed: true)
         try await webviewEqual(web, "window.ko.local", "false")
         XCTAssertEqual(pane.draggingEntered(drag), [])
