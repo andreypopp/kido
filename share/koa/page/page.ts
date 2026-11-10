@@ -67,7 +67,7 @@ if (!window.ko) {
   theme();
 }
 
-const relationWords: Record<Relation, string> = { parent: 'your parent', child: 'your subagent', sibling: 'another agent in this session', descendant: 'a subagent of your subagent', sibling_descendant: 'a subagent of another agent in this session' };
+const relationWords: Record<Relation, string> = { parent: 'parent', child: 'subagent', sibling: 'peer', descendant: 'subagent', sibling_descendant: 'peer' };
 function agentCard(card: AgentCard, at: number, key: string, slots: Map<string, Slot>) {
   const saved = slots.get(key), slot: Extract<Slot, { type: 'agent' }> = saved?.type === 'agent' ? saved : { type: 'agent', view: node('div') };
   slots.set(key, slot);
@@ -80,10 +80,9 @@ function agentCard(card: AgentCard, at: number, key: string, slots: Map<string, 
   if (card.direction === 'in' && card.inbound.form === 'ended' && !card.inbound.reported) { failed = true; kind = 'not reported'; }
   const view = slot.view; view.className = 'amsg';
   const header = node('div', undefined, 'hd'), who = node('span', '@' + ref.name, 'who'); if (ref.session) who.title = ref.session;
-  if (failed && card.direction === 'out' && card.call.tool === 'spawn') who.classList.add('err');
-  header.append(node('span', inbound ? 'from' : 'to', 'dir'), who);
-  if (card.direction === 'in' && 'relation' in card.inbound && card.inbound.relation) header.append(node('span', '· ' + relationWords[card.inbound.relation], 'rel'));
-  header.append(node('span', kind, failed ? 'tag err' : 'tag'), node('time', timestamp(at)));
+  header.append(node('span', kind, failed ? 'kind err' : 'kind'), node('span', inbound ? 'from' : 'to', 'dir'), who);
+  if (card.direction === 'in' && 'relation' in card.inbound && card.inbound.relation) header.append(node('span', relationWords[card.inbound.relation], 'rel'));
+  header.append(node('time', timestamp(at)));
   const body = card.text.text || (card.direction === 'out' && card.outcome?.ok === false ? card.outcome.message : '');
   view.replaceChildren(header);
   view.append(node('div', markdownLine(body), 'preview'));

@@ -1015,7 +1015,46 @@ test('agent body changes render fresh final Markdown without a retained prose me
 
 test('agent cards split runs and toggle their one-line body without success metadata', async () => {
   const app = await page();
-  assert.equal(app.run(`(()=>{const tool=name=>({type:'tool',id:name,name,args:{text:'{}'},state:{type:'done',error:false,result:{text:'',images:[]}}});const card={...tool('spawn_agent'),agent:{direction:'out',to:{name:'worker',session:'worker-id'},text:{text:'Check the module\\nReturn findings',cut:0},call:{tool:'spawn',fork:false},outcome:{ok:true}}};const view=put({seq:0,at:0,kind:'assistant',final:true,stop:'stop',error:'',blocks:[tool('read'),card,tool('bash')]});const agent=view.children.find(child=>child.classList.contains('amsg'));if(!agent||view.children.length!==3)return false;const closed=!agent.classList.contains('expanded');agent.onclick({});const open=agent.classList.contains('expanded');agent.onclick({});return closed&&open&&!agent.classList.contains('expanded')&&agent.children[0].children.some(child=>child.textContent==='@worker')&&!agent.children[0].children.some(child=>child.textContent==='spawned')})()`), true);
+  assert.equal(app.run(`(()=>{const tool=name=>({type:'tool',id:name,name,args:{text:'{}'},state:{type:'done',error:false,result:{text:'',images:[]}}});const card={...tool('spawn_agent'),agent:{direction:'out',to:{name:'worker',session:'worker-id'},text:{text:'Check the module\\nReturn findings',cut:0},call:{tool:'spawn',fork:false},outcome:{ok:true}}};const view=put({seq:0,at:0,kind:'assistant',final:true,stop:'stop',error:'',blocks:[tool('read'),card,tool('bash')]});const agent=view.children.find(child=>child.classList.contains('amsg'));if(!agent||view.children.length!==3)return false;const closed=!agent.classList.contains('expanded');agent.onclick({});const open=agent.classList.contains('expanded');agent.onclick({});return closed&&open&&!agent.classList.contains('expanded')&&agent.children[0].children.some(child=>child.textContent==='@worker')&&agent.children[0].children.slice(0,-1).map(child=>child.textContent).join(' ')==='task to @worker'})()`), true);
+});
+
+test('agent card header phrases preserve kinds, directions, relations and failures', async () => {
+  const app = await page();
+  const ref = { name: 'worker', session: 'worker-id' }, text = { text: 'Body', cut: 0 };
+  const outgoing = (call: object, outcome?: object) => ({ direction: 'out', to: ref, text, call, outcome });
+  const incoming = (inbound: object) => ({ direction: 'in', from: ref, text, inbound });
+  const cases: [object, string, boolean][] = [
+    [outgoing({ tool: 'spawn', fork: false }), 'task to @worker', false],
+    [outgoing({ tool: 'message', mode: 'message' }), 'message to @worker', false],
+    [outgoing({ tool: 'message', mode: 'steer' }), 'steer to @worker', false],
+    [outgoing({ tool: 'message', mode: 'interrupt-and-steer' }), 'interrupt to @worker', false],
+    [incoming({ form: 'steer' }), 'steer from @worker', false],
+    [incoming({ form: 'report' }), 'report from @worker', false],
+    [incoming({ form: 'ended', reported: true }), 'ended from @worker', false],
+    [incoming({ form: 'notice' }), 'notice from @worker', false],
+    [incoming({ form: 'message', relation: 'child' }), 'message from @worker subagent', false],
+    [incoming({ form: 'message', relation: 'descendant' }), 'message from @worker subagent', false],
+    [incoming({ form: 'message', relation: 'parent' }), 'message from @worker parent', false],
+    [incoming({ form: 'message', relation: 'sibling' }), 'message from @worker peer', false],
+    [incoming({ form: 'message', relation: 'sibling_descendant' }), 'message from @worker peer', false],
+    [incoming({ form: 'steer', relation: 'parent' }), 'steer from @worker parent', false],
+    [incoming({ form: 'report', relation: 'child' }), 'report from @worker subagent', false],
+    [incoming({ form: 'ended', reported: false, relation: 'child' }), 'not reported from @worker subagent', true],
+    [outgoing({ tool: 'spawn', fork: false }, { ok: false, failure: 'error', message: 'Cannot start' }), 'refused to @worker', true],
+    [outgoing({ tool: 'message', mode: 'message' }, { ok: false, failure: 'refused', message: 'Refused' }), 'refused to @worker', true],
+    [outgoing({ tool: 'message', mode: 'message' }, { ok: false, failure: 'gone', message: 'Gone' }), 'gone to @worker', true],
+    [outgoing({ tool: 'message', mode: 'message' }, { ok: false, failure: 'not_found', message: 'no agent named worker' }), 'no agent named worker to @worker', true],
+    [outgoing({ tool: 'message', mode: 'message' }, { ok: false, failure: 'ambiguous', message: 'several agents named worker' }), 'several agents named worker to @worker', true],
+    [outgoing({ tool: 'message', mode: 'message' }, { ok: false, failure: 'not_running', message: 'worker is not running' }), 'worker is not running to @worker', true],
+    [outgoing({ tool: 'message', mode: 'message' }, { ok: false, failure: 'error', message: 'send failed' }), 'send failed to @worker', true],
+  ];
+  for (const [card, phrase, failed] of cases) {
+    const result = app.run(`(()=>{const view=agentCard(${JSON.stringify(card)},0,'card',new Map());const header=view.children[0],children=header.children;return {phrase:children.slice(0,-1).map(child=>child.textContent).join(' '),classes:children.slice(0,-1).map(child=>child.className),title:children[2].title,time:children.at(-1).tagName}})()`);
+    assert.equal(result.phrase, phrase);
+    assert.deepEqual(Array.from(result.classes), [failed ? 'kind err' : 'kind', 'dir', 'who', ...(phrase.endsWith('parent') || phrase.endsWith('peer') || phrase.endsWith('subagent') ? ['rel'] : [])]);
+    assert.equal(result.title, 'worker-id');
+    assert.equal(result.time, 'TIME');
+  }
 });
 
 test('step previews require exactly Shift-Command and a stationary press', async () => {

@@ -945,8 +945,12 @@ or a session written before them) stays a plain notice.
 The user decided the look with the mockup `agents.html`:
 
 - `spawn_agent`, `message_agent` and every inbound agent message are
-  a card with a "to @name" or "from @name" header, which splits its
-  run as a text does. A card shows one line of its text until a
+  a card whose header is one phrase in the prose font,
+  `<kind> to|from @<name> <relation>` ("steer from @kido-app
+  parent"), with only the time at the right, in the terminal font.
+  The relation is one word, `subagent`, `peer` or `parent`, that
+  folds ko-pi's five relations; ko-pi's own notices have none. The
+  card splits its run as a text does. A card shows one line of its text until a
   click: the first line as plain text with its Markdown syntax
   removed (the first code line when the text starts with a fence),
   so a closed card keeps its height. Open, the text is Markdown,
@@ -955,7 +959,8 @@ The user decided the look with the mockup `agents.html`:
   of its first line, with the same syntax removed and no expansion,
   because another extension's text need not be Markdown. A card
   shows no delivery status and no meta lines: only a failure
-  shows, as a word in the kind's place. The `@name` has no action: a
+  shows, in the error colour in the kind's place ("refused to
+  @name", "not reported from @name subagent"). The `@name` has no action: a
   focus of another pane would be a new page-to-app surface.
 - `stop_agent`, `list_agents`, `read_report`, `list_async_bash` and
   `stop_async_bash` stay steps: they are the caller's own actions, not

@@ -1377,7 +1377,7 @@ extension VisualTests {
             let taskMarkdown = try await webviewJS(web, "(()=>{const body=document.querySelector('.amsg .bd');return !!body.querySelector('ul li')&&!!body.querySelector('code')&&!!body.querySelector('strong')&&body.querySelector('a')?.getAttribute('href')==='https://example.com/sidebar'})()")
             XCTAssertEqual(taskMarkdown, "true", "Outbound task renders Markdown elements")
             try await capture(prefix + "out")
-            try await advance(); try await webviewUntil(web, "document.querySelectorAll('.amsg').length===2&&document.querySelectorAll('.amsg .tag.err').length===2")
+            try await advance(); try await webviewUntil(web, "document.querySelectorAll('.amsg').length===2&&document.querySelectorAll('.amsg .kind.err').length===2")
             size(330); try await capture(prefix + "failed")
             try await advance(); try await webviewUntil(web, "document.querySelectorAll('.amsg').length===7")
             size(560)
