@@ -191,6 +191,8 @@ status=0
 	${git_args[@]+"${git_args[@]}"} \
 	-v ko-ci-like-target:/repo/target \
 	-v ko-ci-like-build:/repo/build \
+	-v ko-ci-like-pi-node-modules:/repo/share/pi/node_modules:nocopy \
+	-v ko-ci-like-koa-node-modules:/repo/share/koa/node_modules:nocopy \
 	-w /repo \
 	"$image" \
 	"$@" || status=$?

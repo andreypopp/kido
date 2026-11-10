@@ -1139,7 +1139,11 @@ the toolchain of `rust-toolchain.toml`, zig through
 `rust-toolchain.toml`, so a change of one rebuilds it. `target/` and
 `build/` are the named volumes `ko-ci-like-target` and
 `ko-ci-like-build` over the bind mount, so a Linux build never
-overwrites the host's macOS outputs. The container (`ko-ci-like-<pid>`;
+overwrites the host's macOS outputs. `share/pi/node_modules` and
+`share/koa/node_modules` are the named volumes
+`ko-ci-like-pi-node-modules` and `ko-ci-like-koa-node-modules`, so
+the container's `npm ci` installs Linux packages and the ts stage
+runs there. The container (`ko-ci-like-<pid>`;
 its busy siblings `ko-ci-like-busy-<pid>-N`) gets
 `KO_STATE_DIR=/tmp/ko-state`, and the host's other `KO_*` variables
 pass through, except `KO_AGENT_*`, `KO_PANE`, `KO_PANE_TOKEN` and

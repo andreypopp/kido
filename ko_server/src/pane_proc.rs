@@ -75,7 +75,10 @@ pub(crate) enum Event {
     Pwd,
     Output,
     Dead(Death),
-    Snapshot(Done),
+    Snapshot {
+        done: Done,
+        dead: Option<crate::protocol::Dead>,
+    },
     Screen {
         req: Req,
         chunk: Vec<u8>,
@@ -545,7 +548,11 @@ impl PaneProc {
             .delivery_mut()
             .map(Delivery::fail_all)
             .unwrap_or_default();
-        io.events.extend(snapshots.into_iter().map(Event::Snapshot));
+        io.events
+            .extend(snapshots.into_iter().map(|done| Event::Snapshot {
+                done,
+                dead: self.dead.as_ref().map(Into::into),
+            }));
         io.events.extend(
             std::mem::take(&mut self.pending)
                 .into_keys()
@@ -630,7 +637,10 @@ impl PaneProc {
             .stage
             .delivery_mut()
             .and_then(|delivery| delivery.snapshot_done(req));
-        io.events.extend(done.map(Event::Snapshot));
+        io.events.extend(done.map(|done| Event::Snapshot {
+            done,
+            dead: self.dead.as_ref().map(Into::into),
+        }));
     }
 
     pub(crate) fn snapshot(&mut self, history: History, io: &mut Io<'_>) -> Option<(u64, Req)> {
@@ -1301,7 +1311,7 @@ mod tests {
         assert_eq!(cursor, Some(339));
         assert!(fake.slices.iter().any(|(req, _)| *req == second));
         fake.feed(&frame(Kind::SnapshotDone, &req(1)));
-        let [Event::Snapshot(done)] = &fake.events[..] else {
+        let [Event::Snapshot { done, .. }] = &fake.events[..] else {
             panic!("{:?}", fake.events);
         };
         assert_eq!(
@@ -1330,7 +1340,7 @@ mod tests {
                     log.push(format!("{name} slice {pos}"));
                 }
                 for event in std::mem::take(&mut fake.events) {
-                    if let Event::Snapshot(done) = event {
+                    if let Event::Snapshot { done, .. } = event {
                         let name = if done.serial() == first { "A" } else { "B" };
                         log.push(format!("{name} {}", done.hold().is_some()));
                         if done.serial() == first {
@@ -1366,7 +1376,7 @@ mod tests {
             .events
             .iter()
             .filter_map(|event| match event {
-                Event::Snapshot(done) => Some((done.hold(), done.slices())),
+                Event::Snapshot { done, .. } => Some((done.hold(), done.slices())),
                 _ => None,
             })
             .collect();
@@ -1503,7 +1513,7 @@ mod tests {
         fake.feed(&frame(Kind::SnapshotDone, &req(7)));
         assert_eq!((fake.events.len(), fake.proc.life()), (0, Life::Open));
         fake.feed(&frame(Kind::SnapshotDone, &req(1)));
-        let [Event::Snapshot(ended)] = &fake.events[..] else {
+        let [Event::Snapshot { done: ended, .. }] = &fake.events[..] else {
             panic!("{:?}", fake.events);
         };
         assert_eq!((ended.serial(), ended.hold()), (asked, None));
@@ -1602,7 +1612,7 @@ mod tests {
                     at: Mono::from_nanos(0),
                     cause,
                 }),
-                Event::Snapshot(done) => Event::Failed {
+                Event::Snapshot { done, .. } => Event::Failed {
                     req: done.req(),
                     message: format!("{:?} {}", done.hold(), done.slices()),
                 },

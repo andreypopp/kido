@@ -8,7 +8,7 @@ use ko_sys::pid::Exit;
 use serde_json::{Value, json};
 
 use crate::harness::{
-    Dir, Server, enabled, ko, poll_for, run_ko, run_program, test_env, text_of, which,
+    Dir, Server, enabled, ko, poll, poll_for, run_ko, run_program, test_env, text_of, which,
 };
 use crate::panes::{api, post, token_pane_in_new_session};
 use crate::runtime::{read_exec, serve_in, start_exec, start_tree};
@@ -179,6 +179,12 @@ fn state_of(s: &Server, name: &str) -> String {
 fn wait_link(s: &Server, name: &str, want: &str) {
     poll_for(&format!("runtime {name} to be {want}"), LINK_POLL, || {
         state_of(s, name) == want
+    });
+}
+
+fn wait_panes_gone(s: &Server) {
+    poll("the stopped runtime's panes to be removed", || {
+        s.rows().is_empty()
     });
 }
 
@@ -507,6 +513,7 @@ runtimes:
     );
     assert_eq!(state_of(&s, &name), "down");
     engine.wait_state(Some(spec.stopped));
+    wait_panes_gone(&s);
 
     let again = s.new_pane(shell_in(&name, "echo again-$KO_RUNTIME; echo API=$(/opt/ko/bin/ko api /version | grep -o '\"protocol\":\"[0-9.]*\"'); exec cat"));
     wait_link(&s, &name, "up");
@@ -518,6 +525,7 @@ runtimes:
         Exit::Exited(0)
     );
     wait_link(&s, &name, "down");
+    wait_panes_gone(&s);
     let revived = s.new_pane(shell_in(&name, "echo revived-$KO_RUNTIME; exec cat"));
     s.screen_has(&revived, &format!("revived-{name}"));
 
@@ -537,6 +545,7 @@ runtimes:
         0
     );
     if kind == EngineKind::Podman {
+        wait_panes_gone(&s);
         let user = Engine {
             kind,
             container: engine.container.clone(),
@@ -585,6 +594,7 @@ runtimes:
         s.request("DELETE", &format!("/runtimes/{user_name}"), None, 200);
         assert_eq!(user.state().as_deref(), Some("running"));
         assert_eq!(fs::metadata(&user_io).unwrap().ino(), user_inode);
+        wait_panes_gone(&s);
         let again = s.new_pane(shell_in(&user_name, command));
         wait_link(&s, &user_name, "up");
         s.screen_has(&again, "API=\"protocol\":\"1.0\"");

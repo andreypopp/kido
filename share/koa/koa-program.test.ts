@@ -749,15 +749,28 @@ test('completion limits active searches and kills expired children', { timeout: 
   const controller = new AbortController();
   const first = fetch(app.base + 'complete', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ sessionId: 'fake', text: '@', pos: 1 }), signal: controller.signal });
   const rejected = assert.rejects(first, { name: 'AbortError' });
-  const second = app.post('complete', { text: '@', pos: 1 });
+  let secondEnded = false;
+  const second = app.post('complete', { text: '@', pos: 1 }).then(response => { secondEnded = true; return response; });
   await pollUntil(() => sockets.size === 4, 1500, 'four fd children');
   const capped = await app.post('complete', { text: '@', pos: 1 });
   assert.equal(capped.status, 200); assert.deepEqual((await capped.json()).options, []); assert.equal(accepted, 4);
   controller.abort(); await rejected;
   await pollUntil(() => sockets.size === 2, 1000, 'disconnect releases children');
-  const replacement = app.post('complete', { text: '@', pos: 1 });
-  await pollUntil(() => accepted === 6, 1000, 'disconnect releases capacity');
-  assert.deepEqual((await (await second).json()).options, []); assert.deepEqual((await (await replacement).json()).options, []);
+  const replacements: Promise<Response>[] = [];
+  let retry = true;
+  await pollUntil(() => {
+    if (accepted > 4) return true;
+    if (retry) {
+      retry = false;
+      const replacement = app.post('complete', { text: '@', pos: 1 });
+      replacements.push(replacement);
+      void replacement.then(() => { retry = true; });
+    }
+    return false;
+  }, 1000, 'disconnect releases capacity');
+  assert.equal(secondEnded, false);
+  assert.deepEqual((await (await second).json()).options, []);
+  for (const replacement of replacements) assert.deepEqual((await (await replacement).json()).options, []);
   await pollUntil(() => sockets.size === 0, 1000, 'expired children ended');
 });
 

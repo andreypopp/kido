@@ -1583,6 +1583,58 @@ mod tests {
     }
 
     #[test]
+    fn a_snapshot_completed_before_death_does_not_send_the_death_twice() {
+        let mut h = Harness::new();
+        h.open_view(History::All, Reader::Fast, false, None, Mirror::fresh());
+        let id = h.rig.pane;
+        let token = h.rig.state.panes.find(id).unwrap().proc().token().unwrap();
+        let mut pending = Vec::new();
+        let mut ready_events = ko_sys::event::Events::default();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !pending
+            .iter()
+            .any(|event| matches!(event, crate::pane_proc::Event::Dead(_)))
+        {
+            assert!(Instant::now() < deadline, "the pane never died");
+            h.flush_feed();
+            h.rig
+                .state
+                .turn(
+                    &mut h.rig.poll,
+                    Mode::Peek,
+                    &mut ready_events,
+                    |state, poll, wake| {
+                        if let crate::state::Wake::Ready(ready) = wake
+                            && ready.token == token
+                        {
+                            let (_, events) = state
+                                .call(poll, id, |pane, io| pane.proc_mut().ready(ready, io))
+                                .unwrap();
+                            pending.extend(events);
+                            return Ok(true);
+                        }
+                        Ok(false)
+                    },
+                )
+                .unwrap();
+            if h.feed.is_some()
+                && pending
+                    .iter()
+                    .any(|event| matches!(event, crate::pane_proc::Event::Snapshot { .. }))
+            {
+                h.eof = true;
+                h.flush_feed();
+            }
+        }
+        h.rig.state.dispatch(&mut h.rig.poll, id, pending);
+        h.until("the view to see the death", |h| {
+            h.stable >= 30 && h.views[0].mirror.deaths > 0
+        })
+        .unwrap();
+        assert_eq!(h.views[0].mirror.deaths, 1);
+    }
+
+    #[test]
     fn a_signal_while_a_screen_reply_waits_for_its_pipe_does_not_fail_the_pane() {
         let mut h = Harness::new();
         h.step_op(Op::Feed(Source::Lines, 300_000, 1)).unwrap();

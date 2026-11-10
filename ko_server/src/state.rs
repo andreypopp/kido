@@ -1116,15 +1116,10 @@ impl State {
                     self.pump_views(poll, id);
                 }
             }
-            Event::Snapshot(done) => {
+            Event::Snapshot { done, dead } => {
                 if let Some(Owner::Snapshot(token)) = self.owners.remove(&(id, done.req()))
                     && let Some(index) = self.index(token)
                 {
-                    let dead = self
-                        .panes
-                        .find(id)
-                        .and_then(|pane| pane.proc().dead())
-                        .map(Into::into);
                     if let Some((Role::View(view), mut wire)) = self.conns[index].role_mut() {
                         view.on_done(&mut wire, &done, dead);
                     }
