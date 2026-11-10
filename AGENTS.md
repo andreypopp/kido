@@ -1036,7 +1036,7 @@ models of `ko_pane_wire::ring::model` show it on the Rust code:
     make lint    cargo fmt --check, clippy and scripts/lint.sh
     make build-fake-ko  the fake ko of the TypeScript suite
     make koa-page  koa's page bundle in build/ko/share/ko/koa/ (npm ci when the lockfile changed); make build runs it
-    make koa-watch  rebuild koa's page on each source change, for ⌘R in a webview pane
+    make koa-watch  rebuild koa's page on each source change, for ⌘R in a webview pane of a koa started with KOA_PAGE_RELOAD=1
     make bindgen  regenerate ko_vt_sys/src/bindings.rs
     make probe BYTES=N  ko-bench throughput: the server's ring reader under ko-pane, N bytes of bench/streams (default 1 GiB); not part of verify
     make build-bench  the C helpers of bench/ in build/bench/, after build

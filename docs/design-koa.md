@@ -98,8 +98,21 @@ runs `koa.ts` as is, as pi loads `ko-pi.ts`.
 
 **One response for the page.** A remote server costs one round trip
 for each asset, so koa inlines `page.html`, `page.css` and `page.js`
-into one document for `/` (`koa-assemble.ts`). koa reads the three
-files again for each page load, so a rebuild and ⌘R show a change.
+into one document for `/` (`koa-assemble.ts`). koa assembles it once
+at startup and serves that copy for its whole life, and it reads
+`koa-shell.sh` at startup too: a running koa always serves the page of
+its own code, so an install that replaces the files under it (a
+Kido.app update) cannot give an old koa a new page that expects state
+it does not send. A page file that is missing at startup stops koa.
+For development, `KOA_PAGE_RELOAD=1` assembles the page again for each
+load, so `make koa-watch` and ⌘R show a change.
+
+**A record that the page cannot apply ends the feed.** A throw while
+the page applies an event record closes the event source and shows
+the error with a request to reload the pane; it does not reconnect,
+also not when the page comes back from the back/forward cache,
+because a reconnect gets the same record and throws again, over state
+that is partly applied. Only a transport error reconnects.
 
 **Type checks.** TypeScript 7 from `share/koa/package.json` is the one
 type checker of the repository. `share/pi/tsconfig.json` checks the

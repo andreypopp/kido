@@ -18,7 +18,7 @@ test('bang completion asks the child for its cwd and returns shell replacements'
   const cwd = await mkdtemp('/tmp/koa-tab-context-');
   t.after(() => rm(cwd, { recursive: true, force: true }));
   await writeFile(join(cwd, 'bridge-file'), '');
-  const app = await fixture(t, [{ type: 'wait', command: 'prompt' }], { KOA_FAKE_COMPLETION_CONTEXT: JSON.stringify({ type: 'host', cwd }) }, undefined, true, [], resolve('../koa/koa.ts'));
+  const app = await fixture(t, [{ type: 'wait', command: 'prompt' }], { KOA_FAKE_COMPLETION_CONTEXT: JSON.stringify({ type: 'host', cwd }) }, undefined, true, [], resolve('../../build/ko/share/ko/koa/koa.ts'));
   const started = performance.now();
   const response = await app.post('complete', { text: '!!cat bridge-', pos: 13 });
   t.diagnostic(`One host Tab, HTTP + context bridge + Bash: ${(performance.now() - started).toFixed(1)} ms`);
@@ -33,7 +33,7 @@ test('bang completion asks the child for its cwd and returns shell replacements'
 });
 
 test("--help prints usage without starting pi or a webview", { timeout: 5000 }, async () => {
-  const child = spawn(process.execPath, [resolve('../koa/koa.ts'), '--help', '--pi', '/does-not-exist'], { env: { PATH: '' }, stdio: 'pipe' });
+  const child = spawn(process.execPath, [resolve('../../build/ko/share/ko/koa/koa.ts'), '--help', '--pi', '/does-not-exist'], { env: { PATH: '' }, stdio: 'pipe' });
   let stdout = '', stderr = '';
   child.stdout.on('data', bytes => { stdout += bytes; });
   child.stderr.on('data', bytes => { stderr += bytes; });
@@ -46,7 +46,7 @@ test("--help prints usage without starting pi or a webview", { timeout: 5000 }, 
 });
 
 test('resume requires a terminal before starting a webview', { timeout: 5000 }, async t => {
-  const child = spawn(process.execPath, [resolve('../koa/koa.ts'), '--browser', '--resume', '--pi', resolve('../koa/koa-fake-pi.ts')], { stdio: 'pipe' });
+  const child = spawn(process.execPath, [resolve('../../build/ko/share/ko/koa/koa.ts'), '--browser', '--resume', '--pi', resolve('../koa/koa-fake-pi.ts')], { stdio: 'pipe' });
   t.after(() => { if (child.exitCode === null) child.kill('SIGTERM'); });
   let stderr = ''; child.stderr.on('data', bytes => { stderr += bytes; });
   const [code] = await once(child, 'close');
@@ -86,7 +86,7 @@ test('resume selects before the browser, cancels, and reports a broken picker', 
     await writeFile(script, (item.gate.startsWith('{"type":"selected"') ? '{"type":"wait","command":"prompt"}\n' : '') + '{"type":"wait","command":"prompt"}\n{"type":"exit","code":0}\n');
     const connected = once(server, 'connection');
     const pass = item.gate === 'skip' ? ['--resume', '--session', 'existing.jsonl'] : ['--resume', '-r', '--session-dir', dir, '--', 'prompt'];
-    const child = spawn(process.execPath, ['--import', resolve('../koa/koa-fake-tty.ts'), resolve('../koa/koa.ts'), '--browser', '--pi', resolve('../koa/koa-fake-pi.ts'), ...pass], { stdio: 'pipe', env: { ...process.env, KO_PANE: '', KOA_FAKE_LOG: log, KOA_FAKE_SCRIPT: script, KOA_FAKE_PICKER_GATE: join(dir, 'gate'), KOA_RESUME_READY_MS: '1000', OPEN_LOG: urls, PATH: `${dir}:${process.env.PATH}` } });
+    const child = spawn(process.execPath, ['--import', resolve('../koa/koa-fake-tty.ts'), resolve('../../build/ko/share/ko/koa/koa.ts'), '--browser', '--pi', resolve('../koa/koa-fake-pi.ts'), ...pass], { stdio: 'pipe', env: { ...process.env, KO_PANE: '', KOA_FAKE_LOG: log, KOA_FAKE_SCRIPT: script, KOA_FAKE_PICKER_GATE: join(dir, 'gate'), KOA_RESUME_READY_MS: '1000', OPEN_LOG: urls, PATH: `${dir}:${process.env.PATH}` } });
     children.add(child);
     let output = ''; child.stdout.on('data', bytes => { output += bytes; }); child.stderr.on('data', bytes => { output += bytes; });
     const closed = once(child, 'close');
@@ -143,7 +143,7 @@ async function fixture(t: TestContext, steps: object[], env: NodeJS.ProcessEnv =
 }
 test('startup refuses incompatible flags before opening a webview', { timeout: 10000 }, async () => {
   for (const args of [['--mode','text'], ['-p'], ['--export','out.html'], ['--list-models'], ['-v'], ['--tui-mode','fullscreen'], ['--theme','dark'], ['--use-theme','dark'], ['--no-themes'], ['@notes.txt']]) {
-    const child = spawn(process.execPath, [resolve('../koa/koa.ts'), '--browser', '--pi', resolve('../koa/koa-fake-pi.ts'), ...args]);
+    const child = spawn(process.execPath, [resolve('../../build/ko/share/ko/koa/koa.ts'), '--browser', '--pi', resolve('../koa/koa-fake-pi.ts'), ...args]);
     let output = ''; child.stderr.on('data', bytes => { output += bytes; });
     const [code] = await once(child, 'close');
     assert.equal(code, 1, output);
@@ -157,7 +157,7 @@ test('startup messages run separately after readiness without a page connection'
     { type: 'wait', command: 'prompt', after: [{ type: 'agent_settled', aborted: false }] },
     { type: 'wait', command: 'prompt', after: [{ type: 'agent_settled', aborted: false }] },
     { type: 'exit', code: 1 },
-  ], {}, undefined, true, ['--', 'first', '--help'], resolve('../koa/koa.ts'));
+  ], {}, undefined, true, ['--', 'first', '--help'], resolve('../../build/ko/share/ko/koa/koa.ts'));
   await pollUntil(async () => (await f.log()).filter(value => value.type === 'prompt').length === 2);
   assert.deepEqual((await f.log()).filter(value => value.type === 'prompt').map(value => value.message), ['first', '--help']);
   await f.until(record => record.type === 'state' && record.pi?.type === 'exited');
@@ -171,7 +171,7 @@ test('startup handled commands continue and agent_end does not release a retry',
     { type: 'wait', command: 'prompt', events: [{ type: 'agent_start' }, { type: 'agent_end', messages: [] }] },
     { type: 'wait', command: 'get_commands', data: { commands: [] }, after: [{ type: 'agent_settled', aborted: false }] },
     { type: 'wait', command: 'prompt', after: [{ type: 'agent_settled', aborted: false }] },
-  ], {}, undefined, true, ['--', '/extension', 'retry', 'last'], resolve('../koa/koa.ts'));
+  ], {}, undefined, true, ['--', '/extension', 'retry', 'last'], resolve('../../build/ko/share/ko/koa/koa.ts'));
   await pollUntil(async () => (await f.log()).filter(value => value.type === 'prompt').length >= 2);
   assert.deepEqual((await f.log()).filter(value => value.type === 'prompt').map(value => value.message), ['/extension', 'retry']);
   assert.equal((await f.post('complete', { text: '/', pos: 1 })).status, 200);
@@ -185,7 +185,7 @@ test('history comes from the whole transcript and omits consecutive duplicates',
   const f = await fixture(t, [{ type: 'respond', command: 'get_messages', data: { messages: [...messages,
     { role: 'bashExecution', command: 'pwd', excludeFromContext: false, output: '', exitCode: 0, cancelled: false, truncated: false, timestamp: 113 },
     { role: 'bashExecution', command: 'pwd', excludeFromContext: true, output: '', exitCode: 0, cancelled: false, truncated: false, timestamp: 114 },
-  ] } }], {}, undefined, true, [], resolve('../koa/koa.ts'));
+  ] } }], {}, undefined, true, [], resolve('../../build/ko/share/ko/koa/koa.ts'));
   const result: { entries: string[] } = await (await fetch(f.base + 'history')).json();
   assert.equal(result.entries.length, 100);
   assert.deepEqual(result.entries.slice(0, 3), ['!!pwd', '!pwd', 'prompt 109']);
@@ -203,7 +203,7 @@ test('model selection, completion collisions, session statistics and export defa
     { type: 'wait', command: 'set_model', data: { provider: 'test', id: 'exact' } },
     { type: 'wait', command: 'set_thinking_level', events: [{ type: 'thinking_level_changed', level: 'high' }] },
     { type: 'wait', command: 'export_html', data: { path: exported } },
-  ], {}, undefined, true, [], resolve('../koa/koa.ts'));
+  ], {}, undefined, true, [], resolve('../../build/ko/share/ko/koa/koa.ts'));
   const completion: { options: { label: string; source: string }[] } = await (await f.post('complete', { text: '/', pos: 1 })).json();
   assert.deepEqual(completion.options.map(value => value.label), ['/model', '/thinking', '/compact', '/session', '/copy', '/export', '/name', '/resume', '/new', '/quit', '/custom']);
   assert.equal(completion.options[0]?.source, 'builtin');
@@ -223,7 +223,7 @@ test('manual compaction has one result per attempt and restores the working stat
   const f = await fixture(t, [
     { type: 'wait', command: 'compact', events: [{ type: 'compaction_start', reason: 'manual' }], after: [{ type: 'compaction_end', reason: 'manual', result, willRetry: false }] },
     { type: 'wait', command: 'compact', error: 'request failed', events: [{ type: 'compaction_start', reason: 'manual' }], after: [{ type: 'compaction_end', reason: 'manual', errorMessage: 'request failed', willRetry: false }] },
-  ], {}, undefined, true, [], resolve('../koa/koa.ts'));
+  ], {}, undefined, true, [], resolve('../../build/ko/share/ko/koa/koa.ts'));
   for (let i = 0; i < 2; i++) assert.equal((await f.post('prompt', { text: '/compact', mode: 'prompt', attachments: [] })).status, 200);
   await f.until(record => record.type === 'state' && record.compaction === 'idle' && !record.working);
   await f.until(record => record.type === 'item' && record.item.kind === 'command' && record.item.result.type === 'compaction' && record.item.result.state.type === 'failed');
@@ -236,7 +236,7 @@ test('a held compaction can be aborted and finishes as cancelled', { timeout: 10
     { type: 'wait', command: 'compact', defer: true, events: [{ type: 'compaction_start', reason: 'manual' }] },
     { type: 'wait', command: 'clear_queue', data: { steering: [], followUp: [] } },
     { type: 'wait', command: 'abort', events: [{ type: 'compaction_end', reason: 'manual', aborted: true, willRetry: false }] },
-  ], {}, undefined, true, [], resolve('../koa/koa.ts'));
+  ], {}, undefined, true, [], resolve('../../build/ko/share/ko/koa/koa.ts'));
   assert.equal((await f.post('prompt', { text: '/compact', mode: 'prompt', attachments: [] })).status, 200);
   await f.until(record => record.type === 'state' && record.compaction === 'running');
   assert.equal((await f.post('queue/clear')).status, 200);
@@ -249,7 +249,7 @@ test('a compaction crash clears its state and restart accepts a prompt', { timeo
   const f = await fixture(t, [
     { type: 'wait', command: 'compact', defer: true, events: [{ type: 'compaction_start', reason: 'manual' }] },
     { type: 'wait', command: 'abort' }, { type: 'exit', code: 7 },
-  ], {}, undefined, true, [], resolve('../koa/koa.ts'));
+  ], {}, undefined, true, [], resolve('../../build/ko/share/ko/koa/koa.ts'));
   assert.equal((await f.post('prompt', { text: '/compact', mode: 'prompt', attachments: [] })).status, 200);
   await f.until(record => record.type === 'state' && record.compaction === 'running');
   await f.post('abort');
@@ -266,7 +266,7 @@ test('built-in commands use RPC and never become prompts', { timeout: 10000 }, a
     { type: 'wait', command: 'get_last_assistant_text', data: { text: 'copied reply' } },
     { type: 'wait', command: 'export_html', data: { path: '/tmp/export.html' } },
     { type: 'wait', command: 'compact', data: {} },
-  ], {}, undefined, true, [], resolve('../koa/koa.ts'));
+  ], {}, undefined, true, [], resolve('../../build/ko/share/ko/koa/koa.ts'));
   for (const text of ['/tree args', '/resume', '/new', '/copy', '/export /tmp/export.html', '/compact keep decisions', '/model', '/thinking', '/export test.jsonl']) {
     const response = await f.post('prompt', { text, mode: 'prompt', attachments: [] });
     assert.equal(response.status, 200);
@@ -290,7 +290,7 @@ test('in-page session switches refresh only on success', { timeout: 10000 }, asy
     { type: 'respond', command: 'get_state', data: { sessionId: 'chosen', sessionName: 'Chosen', thinkingLevel: 'low' } },
     { type: 'respond', command: 'get_messages', data: { messages: [{ role: 'user', timestamp: 1, content: [{ type: 'text', text: 'Chosen history' }] }] } },
     { type: 'wait', command: 'new_session', error: 'Cannot create session' },
-  ], { KOA_FAKE_SESSIONS: JSON.stringify([{ path: '/tmp/chosen.jsonl' }]) }, undefined, true, [], resolve('../koa/koa.ts'));
+  ], { KOA_FAKE_SESSIONS: JSON.stringify([{ path: '/tmp/chosen.jsonl' }]) }, undefined, true, [], resolve('../../build/ko/share/ko/koa/koa.ts'));
   const before = app.records().filter(record => record.type === 'reset').length;
   assert.equal((await app.post('sessions/switch', { path: '/tmp/chosen.jsonl' })).status, 200);
   assert.equal(app.records().filter(record => record.type === 'reset').length, before);
@@ -311,7 +311,7 @@ test('session startup UI records survive switching and refresh', { timeout: 1000
     { type: 'wait', command: 'switch_session', data: { cancelled: false }, events: [{ type: 'extension_ui_request', id: 'before', method: 'setStatus', statusKey: 'startup', statusText: 'before response' }] },
     { type: 'respond', command: 'get_state', data: { sessionId: 'chosen', sessionName: 'Chosen' } },
     { type: 'respond', command: 'get_messages', data: { messages: [] }, after: [{ type: 'extension_ui_request', id: 'during', method: 'setStatus', statusKey: 'refresh', statusText: 'during refresh' }] },
-  ], { KOA_FAKE_SESSIONS: JSON.stringify([{ path: '/tmp/chosen.jsonl' }]) }, undefined, true, [], resolve('../koa/koa.ts'));
+  ], { KOA_FAKE_SESSIONS: JSON.stringify([{ path: '/tmp/chosen.jsonl' }]) }, undefined, true, [], resolve('../../build/ko/share/ko/koa/koa.ts'));
   assert.equal((await app.post('sessions/switch', { path: '/tmp/chosen.jsonl' })).status, 200);
   const ready = await app.until(record => record.type === 'state' && record.pi.type === 'ready' && record.statuses.refresh === 'during refresh');
   assert.equal(ready.statuses.startup, 'before response');
@@ -326,7 +326,7 @@ test('session switching blocks racing prompts and preserves draft attachments', 
     { type: 'wait', command: 'switch_session', data: { cancelled: false }, after: [{ type: 'message_end', message: assistant('stale old reply') }] },
     { type: 'respond', command: 'get_state', data: { sessionId: 'chosen', sessionName: 'Chosen' } },
     { type: 'wait', command: 'prompt', echo: true },
-  ], { KOA_FAKE_SESSION_GATE: join(dir, 'gate'), KOA_FAKE_SESSIONS: JSON.stringify(rows) }, undefined, true, [], resolve('../koa/koa.ts'));
+  ], { KOA_FAKE_SESSION_GATE: join(dir, 'gate'), KOA_FAKE_SESSIONS: JSON.stringify(rows) }, undefined, true, [], resolve('../../build/ko/share/ko/koa/koa.ts'));
   assert.deepEqual(await (await app.post('sessions/list', { scope: 'all' })).json(), { rows });
   const bytes = new Uint8Array([104, 105]);
   const pending = await (await app.post('attachments', { name: 'draft.txt', type: 'text/plain', size: bytes.length })).json();
@@ -349,7 +349,7 @@ test('a prompt body held across a completed switch cannot enter the new session'
   const app = await fixture(t, [
     { type: 'wait', command: 'switch_session', data: { cancelled: false } },
     { type: 'respond', command: 'get_state', data: { sessionId: 'chosen' } },
-  ], { KOA_FAKE_SESSIONS: JSON.stringify([{ path }]) }, undefined, true, [], resolve('../koa/koa.ts'));
+  ], { KOA_FAKE_SESSIONS: JSON.stringify([{ path }]) }, undefined, true, [], resolve('../../build/ko/share/ko/koa/koa.ts'));
   const body = JSON.stringify({ sessionId: 'fake', text: 'stale body', mode: 'prompt', attachments: [] });
   const held = request(app.base + 'prompt', { method: 'POST', headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) } });
   const response = new Promise<number | undefined>(resolve => {
@@ -371,7 +371,7 @@ test('a failed switch refresh clears old history and returns to a usable session
     { type: 'respond', command: 'get_state', data: { sessionId: 'chosen', sessionName: 'Chosen' } },
     { type: 'wait', command: 'get_messages', error: 'History unavailable' },
     { type: 'wait', command: 'prompt', echo: true },
-  ], { KOA_FAKE_SESSIONS: JSON.stringify([{ path }]) }, undefined, true, [], resolve('../koa/koa.ts'));
+  ], { KOA_FAKE_SESSIONS: JSON.stringify([{ path }]) }, undefined, true, [], resolve('../../build/ko/share/ko/koa/koa.ts'));
   assert.equal((await app.post('sessions/switch', { path: '/tmp/not-a-fixture-session' })).status, 409);
   assert.equal((await app.post('sessions/switch', { path })).status, 200);
   await app.until(record => JSON.stringify(record).includes('History unavailable'));
@@ -386,11 +386,28 @@ test('startup failures release the view before exiting', { timeout: 5000 }, asyn
   t.after(() => rm(dir, { recursive: true, force: true }));
   await symlink(process.execPath, join(dir, 'node'));
   for (const args of [[], ['--pi', resolve('../koa/koa-fake-pi.ts'), '--metrics', '/does-not-exist/metrics']]) {
-    const child = spawn(process.execPath, [resolve('../koa/koa.ts'), '--browser', ...args], { env: { ...process.env, PATH: dir, ...(args.length ? {} : { KOA_UPLOAD_IDLE_MS: 'bad' }) }, stdio: 'pipe' });
+    const child = spawn(process.execPath, [resolve('../../build/ko/share/ko/koa/koa.ts'), '--browser', ...args], { env: { ...process.env, PATH: dir, ...(args.length ? {} : { KOA_UPLOAD_IDLE_MS: 'bad' }) }, stdio: 'pipe' });
     const close = once(child, 'close'); t.after(() => { if (child.exitCode === null) child.kill('SIGTERM'); });
     let stderr = ''; child.stderr.on('data', bytes => { stderr += bytes; });
     const [code] = await close; assert.equal(code, 1); assert.match(stderr, args.length ? /ENOENT/ : /KOA_UPLOAD_IDLE_MS/);
   }
+});
+
+test('page assets stay with the running program', { timeout: 10000 }, async t => {
+  const dir = await mkdtemp('/tmp/koa-page-install-');
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  await cp(resolve('../koa'), join(dir, 'koa'), { recursive: true, filter: path => !path.includes('node_modules') });
+  await symlink(resolve('../pi'), join(dir, 'pi'));
+  await symlink(resolve('../webview'), join(dir, 'webview'));
+  await writeFile(join(dir, 'koa/page.html'), '<head><!-- style --></head><body>original<!-- script --></body>');
+  await writeFile(join(dir, 'koa/page.css'), 'original-style');
+  await writeFile(join(dir, 'koa/page.js'), 'original-script');
+  const app = await fixture(t, [], { KOA_PAGE_RELOAD: '0' }, undefined, true, [], join(dir, 'koa/koa.ts'));
+  const original = await (await fetch(app.base)).text();
+  assert.match(original, /original-script/);
+  await writeFile(join(dir, 'koa/page.html'), '<head><!-- style --></head><body>replacement<!-- script --></body>');
+  await writeFile(join(dir, 'koa/page.js'), 'replacement-script');
+  assert.equal(await (await fetch(app.base)).text(), original);
 });
 
 test('a listen failure closes the acquired view and pi', { timeout: 5000 }, async t => {
@@ -408,7 +425,7 @@ test('a listen failure closes the acquired view and pi', { timeout: 5000 }, asyn
 });
 
 test('mutations refuse simple content types and browser path grants', { timeout: 10000 }, async t => {
-  const app = await fixture(t, [], {}, undefined, true, [], resolve('../koa/koa.ts'));
+  const app = await fixture(t, [], {}, undefined, true, [], resolve('../../build/ko/share/ko/koa/koa.ts'));
   const before = (await app.log()).length;
   for (const path of ['abort', 'complete', 'attachments', 'attachments/absent/delete']) {
     assert.equal((await fetch(app.base + path, { method: 'POST', headers: { 'Content-Type': 'text/plain' }, body: '{}' })).status, 415);
@@ -455,7 +472,7 @@ test('bash output is bounded live, replaced by the result, and replayed once', {
   const app = await fixture(t, [
     { type: 'wait', command: 'bash', gate: join(dir, 'gate'), events: [{ type: 'bash_execution_update', delta: 'a'.repeat(32768) }, { type: 'bash_execution_update', delta: 'b'.repeat(32768) }], data: { output: 'authoritative final', exitCode: 3, cancelled: false, truncated: true, fullOutputPath: '/tmp/full' } },
     { type: 'wait', command: 'prompt', events: [{ type: 'compaction_end' }] },
-  ], {}, undefined, true, [], resolve('../koa/koa.ts'));
+  ], {}, undefined, true, [], resolve('../../build/ko/share/ko/koa/koa.ts'));
   assert.equal((await app.post('prompt', { text: '!gated', mode: 'prompt', attachments: [] })).status, 200);
   const [gate] = await connected; t.after(() => gate.destroy());
   const live = await app.until(record => record.type === 'state' && record.bash?.[0]?.phase === 'running' && record.bash[0].output.cut > 0);
@@ -484,7 +501,7 @@ test('a late bash result cannot enter the switched session', { timeout: 10000 },
     { type: 'wait', command: 'switch_session', data: { cancelled: false } },
     { type: 'respond', command: 'get_state', data: { sessionId: 'chosen', sessionName: 'Chosen' } },
     { type: 'respond', command: 'get_messages', data: { messages: [] } },
-  ], { KOA_FAKE_SESSIONS: JSON.stringify([{ path: '/tmp/chosen.jsonl' }]) }, undefined, true, [], resolve('../koa/koa.ts'));
+  ], { KOA_FAKE_SESSIONS: JSON.stringify([{ path: '/tmp/chosen.jsonl' }]) }, undefined, true, [], resolve('../../build/ko/share/ko/koa/koa.ts'));
   await app.post('prompt', { text: '!old command', mode: 'prompt', attachments: [] });
   const [gate] = await connected; t.after(() => gate.destroy());
   await app.until(record => record.type === 'state' && record.bash?.[0]?.phase === 'running');
@@ -500,7 +517,7 @@ test('a late bash result cannot enter the switched session', { timeout: 10000 },
 
 test('a resumed bash message has one stored item and no running state', { timeout: 5000 }, async t => {
   const message = { role: 'bashExecution', command: 'saved', output: 'saved output', exitCode: 0, cancelled: false, truncated: true, fullOutputPath: '/tmp/saved-output', excludeFromContext: true, timestamp: 42 };
-  const app = await fixture(t, [{ type: 'respond', command: 'get_messages', data: { messages: [message] } }], {}, undefined, true, ['--session', '/tmp/saved-session'], resolve('../koa/koa.ts'));
+  const app = await fixture(t, [{ type: 'respond', command: 'get_messages', data: { messages: [message] } }], {}, undefined, true, ['--session', '/tmp/saved-session'], resolve('../../build/ko/share/ko/koa/koa.ts'));
   const page = await (await fetch(app.base + 'items?before=99')).json();
   assert.equal(page.items.length, 1);
   assert.deepEqual(page.items[0], { seq: 0, at: 42, final: true, kind: 'bash', command: 'saved', result: { output: { text: 'saved output', cut: 0 }, exit: 0, cancelled: false, truncated: true, fullOutputPath: '/tmp/saved-output' }, excludeFromContext: true });
@@ -516,7 +533,7 @@ test('a second abort reaches the turn while bash cancellation is still pending',
     { type: 'wait', command: 'prompt', events: [{ type: 'agent_start' }] },
     { type: 'wait', command: 'bash', gate: join(dir, 'gate'), data: { output: 'kept output', cancelled: false, truncated: false } },
     { type: 'wait', command: 'abort', events: [{ type: 'agent_settled', aborted: true }] },
-  ], {}, undefined, true, [], resolve('../koa/koa.ts'));
+  ], {}, undefined, true, [], resolve('../../build/ko/share/ko/koa/koa.ts'));
   await app.post('prompt', { text: 'turn', mode: 'prompt', attachments: [] });
   await app.post('prompt', { text: '!slow cleanup', mode: 'prompt', attachments: [] });
   const [gate] = await connected; t.after(() => gate.destroy());
@@ -539,7 +556,7 @@ test('an idle compaction rebuild clears its completed command before stored repl
     { type: 'wait', command: 'prompt', events: [{ type: 'compaction_start' }] },
     { type: 'wait', command: 'bash', data: { output: 'saved during compaction', exitCode: 0, cancelled: false, truncated: false } },
     { type: 'wait', command: 'prompt', events: [{ type: 'compaction_end' }] },
-  ], {}, undefined, true, [], resolve('../koa/koa.ts'));
+  ], {}, undefined, true, [], resolve('../../build/ko/share/ko/koa/koa.ts'));
   await app.post('prompt', { text: 'compact', mode: 'prompt', attachments: [] });
   await app.post('prompt', { text: '!echo saved', mode: 'prompt', attachments: [] });
   await app.until(record => record.type === 'state' && record.bash?.[0]?.phase === 'completed');
@@ -558,7 +575,7 @@ test('sequential commands during a turn keep acceptance order and enforce the pe
     { type: 'wait', command: 'prompt', events: [{ type: 'agent_start' }] },
     ...Array.from({ length: 16 }, (_, index) => ({ type: 'wait', command: 'bash', data: { output: String(index), exitCode: 0, cancelled: false, truncated: false }, after: [{ type: 'session_info_changed', name: 'command ' + index }] })),
     { type: 'wait', command: 'abort', events: [{ type: 'agent_settled', aborted: true }] },
-  ], {}, undefined, true, [], resolve('../koa/koa.ts'));
+  ], {}, undefined, true, [], resolve('../../build/ko/share/ko/koa/koa.ts'));
   await app.post('prompt', { text: 'turn', mode: 'prompt', attachments: [] });
   for (let index = 0; index < 16; index++) {
     assert.equal((await app.post('prompt', { text: '!echo ' + index, mode: 'prompt', attachments: [] })).status, 200);
@@ -582,7 +599,7 @@ test('bang commands run outside the prompt queue and stream until cancelled', { 
     { type: 'wait', command: 'bash', events: [{ type: 'bash_execution_update', delta: 'live output' }], data: { output: 'final output', exitCode: 0, cancelled: false, truncated: true, fullOutputPath: '/tmp/full' }, gate: true },
     { type: 'wait', command: 'abort', events: [{ type: 'agent_settled', aborted: true }] },
     { type: 'wait', command: 'bash', data: { output: 'quiet', exitCode: 0, cancelled: false, truncated: false } },
-  ], {}, undefined, true, [], resolve('../koa/koa.ts'));
+  ], {}, undefined, true, [], resolve('../../build/ko/share/ko/koa/koa.ts'));
   await app.post('prompt', { text: 'go', mode: 'prompt', attachments: [] });
   assert.equal((await app.post('prompt', { text: '! echo hi', mode: 'prompt', attachments: ['missing'] })).status, 409);
   assert.equal((await app.post('prompt', { text: '! echo hi', mode: 'follow_up', attachments: [] })).status, 200);
@@ -745,7 +762,7 @@ test('completion limits active searches and kills expired children', { timeout: 
   const sockets = new Set<import('node:net').Socket>(); let accepted = 0;
   const server = createServer(socket => { accepted++; sockets.add(socket); socket.on('data', () => {}); socket.once('close', () => sockets.delete(socket)); });
   server.listen(gate); await once(server, 'listening'); t.after(() => { for (const socket of sockets) socket.destroy(); server.close(); });
-  const app = await fixture(t, [], { KOA_FD: fd }, undefined, true, [], resolve('../koa/koa.ts'));
+  const app = await fixture(t, [], { KOA_FD: fd }, undefined, true, [], resolve('../../build/ko/share/ko/koa/koa.ts'));
   const controller = new AbortController();
   const first = fetch(app.base + 'complete', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ sessionId: 'fake', text: '@', pos: 1 }), signal: controller.signal });
   const rejected = assert.rejects(first, { name: 'AbortError' });
@@ -829,8 +846,8 @@ test("document loads read the current page files and recover after a failed read
   t.after(() => rm(dir, { recursive: true, force: true }));
   await cp(resolve("../../build/ko/share/ko/koa"), dir, { recursive: true });
   const program = join(dir, "koa.ts");
-  await writeFile(program, `import ${JSON.stringify(resolve("../koa/koa.ts"))};`);
-  const app = await fixture(t, [], {}, undefined, true, [], program);
+  await writeFile(program, `import ${JSON.stringify(resolve('../../build/ko/share/ko/koa/koa.ts'))};`);
+  const app = await fixture(t, [], { KOA_PAGE_RELOAD: '1' }, undefined, true, [], program);
   for (const name of ["page.html", "page.css", "page.js"]) {
     const file = join(dir, name), marker = `reload-${name}`;
     assert.doesNotMatch(await (await fetch(app.base)).text(), new RegExp(marker));
@@ -881,7 +898,7 @@ test("metrics are opt-in and record frame samples with stream counters", { timeo
 
 test("metrics mode is explicit and requires metrics", { timeout: 10000 }, async () => {
   for (const args of [["--metrics-mode", "frame"], ["--metrics-mode", "invalid"]]) {
-    const child = spawn(process.execPath, [resolve("../koa/koa.ts"), ...args], { env: { ...process.env, PATH: '' }, timeout: 5000 });
+    const child = spawn(process.execPath, [resolve('../../build/ko/share/ko/koa/koa.ts'), ...args], { env: { ...process.env, PATH: '' }, timeout: 5000 });
     let error = "";
     child.stderr.on("data", bytes => { error += bytes; });
     const [code] = await once(child, "close");
@@ -960,7 +977,7 @@ test('reply annotations reach events live and on get_entries rebuild', { timeout
     { type: 'respond', command: 'get_messages', data: { messages: [message] } },
     { type: 'respond', command: 'get_entries', data: { entries: [entry], leafId: entry.id } },
     { type: 'wait', command: 'prompt', events: [{ type: 'compaction_end' }] },
-  ], {}, undefined, true, [], resolve('../koa/koa.ts'));
+  ], {}, undefined, true, [], resolve('../../build/ko/share/ko/koa/koa.ts'));
   await app.post('prompt', { text: 'go', mode: 'prompt', attachments: [] });
   const live = await app.until(record => record.type === 'item' && record.item?.kind === 'annotations');
   assert.deepEqual(live.item.reply, { seq: 0, block: 0 });
@@ -979,7 +996,7 @@ test("a malformed held message does not block later transcript entries", { timeo
       { type: "message_start", message: { ...assistantMessage, timestamp: 999, content: [{ type: "text", text: "After bad held message" }] } },
       { type: "message_end", message: { ...assistantMessage, timestamp: 999, content: [{ type: "text", text: "After bad held message" }] } },
     ], data: { disposition: "started" } },
-  ], {}, undefined, true, [], resolve("../koa/koa.ts"));
+  ], {}, undefined, true, [], resolve('../../build/ko/share/ko/koa/koa.ts'));
   assert.equal((await app.post("prompt", { text: "go", mode: "prompt", attachments: [] })).status, 200);
   await app.until(record => ["item", "patch"].includes(String(record.type)) && JSON.stringify(record).includes("After bad held message"));
   assert.match(app.stderr(), /koa: transcript: /);
@@ -992,7 +1009,7 @@ test("a malformed pi record does not stop later records", { timeout: 5000 }, asy
       { type: "message_update" },
       { type: "session_info_changed", name: "After bad record" },
     ], data: { disposition: "started" } },
-  ], {}, undefined, true, [], resolve("../koa/koa.ts"));
+  ], {}, undefined, true, [], resolve('../../build/ko/share/ko/koa/koa.ts'));
   assert.equal((await app.post("prompt", { text: "go", mode: "prompt", attachments: [] })).status, 200);
   await app.until(record => record.type === "state" && record.name === "After bad record");
   assert.match(app.stderr(), /koa: pi record message_update: /);
@@ -1190,7 +1207,7 @@ test("restart keeps the saved picker selection, harness and runtime", { timeout:
 });
 
 test('a missing pi fails package discovery before the webview', { timeout: 5000 }, async () => {
-  const child = spawn(process.execPath, [resolve('../koa/koa.ts'), '--browser', '--pi', '/koa-no-such-pi']);
+  const child = spawn(process.execPath, [resolve('../../build/ko/share/ko/koa/koa.ts'), '--browser', '--pi', '/koa-no-such-pi']);
   let stderr = ''; child.stderr.on('data', bytes => { stderr += bytes; });
   assert.equal((await once(child, 'close'))[0], 1);
   assert.match(stderr, /koa: cannot find pi's package from \/koa-no-such-pi/);

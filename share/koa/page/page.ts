@@ -810,7 +810,7 @@ if (metrics) window.koaMetrics = {
   get after() { return after; },
   get items() { return [...items.values()]; },
 };
-let source: EventSource, reconnect: number | undefined, closed = false;
+let source: EventSource, reconnect: number | undefined, closed = false, failed = false;
 function connect() {
   if (closed) return;
   source = new EventSource('/events?epoch=' + encodeURIComponent(epoch) + '&after=' + after);
@@ -846,11 +846,17 @@ function connect() {
           requestAnimationFrame(() => { sampled('frame'); metrics.frames.delete(frame); finish(); });
         }
       }
-    } catch (error) { console.error(error); lost(); }
+    } catch (error) {
+      failed = true;
+      console.error(error);
+      source.onmessage = source.onerror = source.onopen = null;
+      source.close();
+      element('error').textContent = `This page cannot show koa's state: ${error instanceof Error ? error.message : String(error)}. Reload the pane.`;
+    }
   };
 }
 window.addEventListener('pagehide', () => { closed = true; source?.close(); clearTimeout(reconnect); });
-window.addEventListener('pageshow', event => { if (event.persisted && closed) { closed = false; connect(); } });
+window.addEventListener('pageshow', event => { if (event.persisted && closed && !failed) { closed = false; connect(); } });
 async function older() {
   if (!more || paging || first === undefined) return;
   paging = true;

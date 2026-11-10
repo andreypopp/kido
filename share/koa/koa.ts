@@ -191,6 +191,8 @@ async function main(): Promise<void> {
     } else if (arg !== undefined) pass.push(arg);
   }
   if (metricsMode && !metricsFile) throw new Error("--metrics-mode requires --metrics");
+  const reloadPage = process.env.KOA_PAGE_RELOAD === '1';
+  const page = reloadPage ? undefined : await assemblePage(location);
   const configured = Number(process.env.KOA_PI_EXIT_MS ?? 5000);
   const exitMs = Number.isFinite(configured) && configured > 0 ? configured : 5000;
   const uploadIdleMs = Number(process.env.KOA_UPLOAD_IDLE_MS ?? UPLOAD_IDLE_MS);
@@ -733,9 +735,9 @@ async function main(): Promise<void> {
         if (feed.handle(request, response)) return;
         if (request.method === "GET" && request.url === "/") {
           try {
-            const document = await assemblePage(location);
-            const page = metricsFile ? document.replace("<head>", `<head><meta name="koa-metrics" content="${metricsMode ?? "frame"}">`) : document;
-            respond(response, 200, page, "text/html; charset=utf-8");
+            const document = page ?? await assemblePage(location);
+            const html = metricsFile ? document.replace("<head>", `<head><meta name="koa-metrics" content="${metricsMode ?? "frame"}">`) : document;
+            respond(response, 200, html, "text/html; charset=utf-8");
           } catch (error) { respond(response, 500, errorText(error), "text/plain; charset=utf-8"); }
           return;
         }

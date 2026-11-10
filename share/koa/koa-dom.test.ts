@@ -675,12 +675,13 @@ test("the transcript page applies SSE synchronously and reconnects with the appl
     const retry = () => { const callback = retries.shift(); assert.ok(callback); callback(); };
     let teardown: () => void = () => {};
     let restore: (event: { persisted: boolean }) => void = () => {};
-    const context = { metrics: undefined, epoch: "", after: -1, delay: 200, disconnected: false, EventSource, console, window: { addEventListener(name: string, handler: (event?: { persisted: boolean }) => void) { if (name === "pagehide") teardown = handler; else if (name === "pageshow") restore = handler; } }, apply(record: { type: string; epoch?: string; after?: number }) {
+    const error = { textContent: '' };
+    const context = { metrics: undefined, epoch: "", after: -1, delay: 200, disconnected: false, EventSource, Error, console: { error() {} }, window: { addEventListener(name: string, handler: (event?: { persisted: boolean }) => void) { if (name === "pagehide") teardown = handler; else if (name === "pageshow") restore = handler; } }, apply(record: { type: string; epoch?: string; after?: number }) {
       if (record.type === "bad") throw Error("Apply failed");
       received.push(record);
       if (record.epoch) context.epoch = record.epoch;
       if (record.after !== undefined) context.after = record.after;
-    }, element: () => ({}), followBottom() {}, setTimeout(callback: () => void) { retries.push(callback); }, clearTimeout() {} };
+    }, element: () => error, followBottom() {}, setTimeout(callback: () => void) { retries.push(callback); }, clearTimeout() {} };
     runInNewContext(connect + ";connect()", context);
     sources[0].onopen?.();
     sources[0].onmessage?.({ data: '{"type":"state","epoch":"new","after":3}' });
@@ -689,24 +690,26 @@ test("the transcript page applies SSE synchronously and reconnects with the appl
     assert.equal(sources[0].closed, true);
     retry();
     assert.equal(sources[1].url, "/events?epoch=new&after=3");
-    sources[1].onmessage?.({ data: '{"type":"bad"}' });
+    teardown();
     assert.equal(sources[1].closed, true);
-    retry();
-    assert.equal(sources[2].url, "/events?epoch=new&after=3");
-    sources[2].onmessage?.({ data: 'not JSON' });
-    assert.equal(sources[2].closed, true);
-    teardown();
-    retry();
-    assert.equal(sources.length, 3);
     restore({ persisted: false });
+    assert.equal(sources.length, 2);
+    restore({ persisted: true });
     assert.equal(sources.length, 3);
+    assert.equal(sources[2].url, "/events?epoch=new&after=3");
     restore({ persisted: true });
-    assert.equal(sources.length, 4);
-    assert.equal(sources[3].url, "/events?epoch=new&after=3");
-    restore({ persisted: true });
-    assert.equal(sources.length, 4);
+    assert.equal(sources.length, 3);
+    sources[2].onmessage?.({ data: '{"type":"bad"}' });
+    assert.equal(sources[2].closed, true);
+    assert.equal(error.textContent, "This page cannot show koa's state: Apply failed. Reload the pane.");
+    assert.equal(sources[2].onmessage, null);
+    assert.equal(sources[2].onerror, null);
+    assert.equal(sources[2].onopen, null);
+    assert.equal(retries.length, 0);
     teardown();
-    assert.equal(sources[3].closed, true);
+    restore({ persisted: true });
+    assert.equal(sources.length, 3);
+    assert.equal(error.textContent, "This page cannot show koa's state: Apply failed. Reload the pane.");
   }
 });
 

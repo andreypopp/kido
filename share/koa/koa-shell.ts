@@ -5,15 +5,13 @@ import type { ShellCompletion } from './koa-records.ts';
 import type { bashCommand } from './prompt.ts';
 import { output } from './koa-complete.ts';
 
-let helper: Promise<string> | undefined;
+const script = await readFile(new URL('./koa-shell.sh', import.meta.url), 'utf8');
 
 export async function shellComplete(text: string, caret: number, context: CompletionContext, ko: string, signal: AbortSignal, bang?: ReturnType<typeof bashCommand>): Promise<ShellCompletion> {
   const empty: ShellCompletion = { type: 'shell', from: caret, to: caret, options: [], common: '', more: 0 };
   const prefix = bang?.prefixLength ?? 0, line = text.slice(prefix), pos = caret - prefix;
   if (context.type === 'unavailable' || signal.aborted || line.length > 65536 || !Number.isInteger(pos) || pos < 0 || pos > line.length) return empty;
   if (line.charCodeAt(pos - 1) >= 0xd800 && line.charCodeAt(pos - 1) <= 0xdbff && line.charCodeAt(pos) >= 0xdc00 && line.charCodeAt(pos) <= 0xdfff) return empty;
-  const script = await (helper ??= readFile(new URL('./koa-shell.sh', import.meta.url), 'utf8'));
-  if (signal.aborted) return empty;
   const args = [script, line, String(Buffer.byteLength(line.slice(0, pos)))];
   try {
     let body: Buffer | undefined;
