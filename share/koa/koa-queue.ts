@@ -1,4 +1,4 @@
-import type { Attachment, QueuedPrompt } from '../pi/records.ts';
+import type { Attachment, QueuedPrompt } from './koa-records.ts';
 import { promptText } from './prompt.ts';
 
 type Sent = { text: string; mode: 'prompt' | 'steer' | 'followUp'; attachments: Attachment[] };

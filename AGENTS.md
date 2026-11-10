@@ -16,7 +16,8 @@ subagents. [docs/design-program-status.md](docs/design-program-status.md)
 describes pane classification and status. [docs/design-runtimes.md](docs/design-runtimes.md)
 describes runtimes: the configuration, the link, the identity on a
 runtime connection and the exec session. [docs/design-webview.md](docs/design-webview.md)
-describes webview panes, the `@kido/webview` SDK and koa's page. [docs/design-app.md](docs/design-app.md)
+describes webview panes and the `@kido/webview` SDK. [docs/design-koa.md](docs/design-koa.md)
+describes koa, the pi harness that renders through a page. [docs/design-app.md](docs/design-app.md)
 describes Kido.app. Before you change these mechanisms, read these
 files. The code comments and this file do not repeat them.
 
@@ -176,8 +177,7 @@ These requirements are fixed:
   It embeds the shell integrations of `share/ko/` with `include_str!`;
   `make build` installs `share/ko/bin` (the `ko`, `ssh`, `ko-pi`
   and `koa` shims), `share/ko/shim.sh`, `share/pi/ko-pi.ts`,
-  `share/pi/text.ts`, `share/pi/ko-api.d.ts`,
-  `share/pi/transcript.ts`, `share/pi/image.ts`, `share/pi/agents.ts`,
+  `share/pi/text.ts`, `share/pi/ko-api.d.ts`, `share/pi/agents.ts`,
   `share/pi/token.ts`, `share/pi/records.ts` and `share/pi/skills` (in
   `share/ko/pi/`), koa's program and its bundled page (in `share/ko/koa/`), and the SDK
   `share/webview/` (in `share/ko/webview/`) beside `bin/ko` in
@@ -754,14 +754,13 @@ maps the coordinator's modules.
                         the fake ko of testdata/fake_ko/; ko-api.d.ts,
                         generated from openapi.json; testdata/ko-prompts.txt,
                         the prompt snapshot; skills/ko/SKILL.md, the ko
-                        skill that ko-pi offers to pi; transcript.ts,
-                        the transcript model of koa's page, with
-                        image.ts, its image sniffer; agents.ts and
-                        token.ts, the completion rules that ko-pi and
-                        koa share; records.ts, the records and their
-                        guards that ko-pi, koa and its page share
+                        skill that ko-pi offers to pi; the modules that
+                        ko-pi and koa share at run time and nothing
+                        else: text.ts; agents.ts, the agent rows;
+                        token.ts, the token grammar; records.ts, the facts of
+                        ko-pi's message details and their guards
     share/koa/          koa.ts, the pi harness that renders through a
-                        webview (plans/koa.md); page/, the TypeScript
+                        webview (docs/design-koa.md); page/, the TypeScript
                         sources of its page (page.ts, markdown.ts, the
                         streaming markdown over marked and remend,
                         page.html, page.css), which `make koa-page`
@@ -770,7 +769,13 @@ maps the coordinator's modules.
                         TypeScript 7 (the one type checker of every
                         TypeScript in the repository) and the page's
                         npm packages; koa-assemble.ts, the one
-                        HTML response; koa-complete.ts, completion;
+                        HTML response; koa-transcript.ts, the
+                        transcript model, its delivery and the image
+                        store; koa-image.ts, the image sniffer;
+                        koa-http.ts, the HTTP helpers and the one file
+                        server with its checked, size-capped open;
+                        koa-records.ts, the records that koa and its
+                        page share; koa-complete.ts, completion;
                         koa-attach.ts, attachments; koa-queue.ts, the
                         queue's attachments; koa-child.ts, the signals
                         of koa's own children; prompt.ts, the prompt
@@ -1463,7 +1468,10 @@ version and no tags** for ko. Versioning uses the `ko` formula in
 `andreypopp/homebrew-tap`: a git `revision:` with a manually
 increased `version`. The formula builds ko from source with the
 pinned toolchains (the rustup toolchain of `rust-toolchain.toml` and
-the zig of `scripts/install-zig.sh`), through `make install`.
+the zig of `scripts/install-zig.sh`), through `make install`. `make
+build` bundles koa's page with Node and npm, so the formula needs
+`depends_on "node" => :build`; `scripts/release.sh` refuses to
+release while the tap's formula lacks it, and does not add it.
 
 `/release` (`.pi/prompts/release.md`) is the whole sequence for an
 agent: Kido.app first when the schemas or the Ghostty pin changed,

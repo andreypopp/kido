@@ -48,4 +48,4 @@ make -C ../.. koa-page
 if [ "$#" -gt 0 ]; then
 	exec node --test --test-concurrency=4 --test-reporter=spec "$@"
 fi
-exec node --test --test-concurrency=4 --test-reporter=spec ko-pi-*.test.ts agents.test.ts transcript.test.ts image.test.ts ../koa/koa-*.test.ts ../../.pi/tests/no-git-writes.test.ts
+exec node --test --test-concurrency=4 --test-reporter=spec ko-pi-*.test.ts agents.test.ts ../koa/koa-*.test.ts ../../.pi/tests/no-git-writes.test.ts

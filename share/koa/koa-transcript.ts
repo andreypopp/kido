@@ -1,57 +1,22 @@
-import type { IncomingMessage, ServerResponse, OutgoingHttpHeaders } from "node:http";
+import type { IncomingMessage, ServerResponse } from "node:http";
+import { respond, serveFile } from "./koa-http.ts";
 import { createHash } from "node:crypto";
-import { constants, mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
-import { join, basename } from "node:path";
-import { open } from "node:fs/promises";
-import { imageInfo, imageExtensions } from "./image.ts";
-import { pathArg, isRelation, isAgentFailure } from "./records.ts";
-import { promptText } from "../koa/prompt.ts";
-import type { Text, Block, Item, Assistant, WireItem, State, PageRecord, CompletionQuery, ImageRef, Attachment, AgentRef, AgentCall, AgentOutcome, JobRef, JobEnd, Inbound, AgentDetails, NoticeDetails, StreamDetails, NotifyLevel } from "./records.ts";
-import { mintId, contentText, utf8Prefix, isRecord, type Content } from "./text.ts";
-import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core";
-import type { RpcExtensionUIRequest, RpcExtensionUIResponse } from "@earendil-works/pi-coding-agent";
+import { mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
+import { imageInfo, imageExtensions } from "./koa-image.ts";
+import { pathArg } from "./koa-records.ts";
+import { isRelation, isAgentFailure } from "../pi/records.ts";
+import { promptText } from "./prompt.ts";
+import type { Text, Block, Item, Assistant, WireItem, State, PageRecord, ImageRef, Attachment, AgentCall, NotifyLevel } from "./koa-records.ts";
+import type { AgentRef, AgentOutcome, JobRef, JobEnd, Inbound, AgentDetails, NoticeDetails, StreamDetails } from "../pi/records.ts";
+import { mintId, contentText, utf8Prefix, isRecord, type Content } from "../pi/text.ts";
+import type { AgentMessage } from "@earendil-works/pi-agent-core";
 
 const MAX_WEBVIEW_WINDOW_ITEMS = 40;
 const MAX_WEBVIEW_WINDOW_BYTES = 256 * 1024;
 const MAX_WEBVIEW_ARGS_BYTES = 4 * 1024;
 const MAX_WEBVIEW_RESULT_BYTES = 16 * 1024;
 const MAX_WEBVIEW_OUTPUT_BYTES = 1 << 20;
-
-export async function readBody(request: IncomingMessage, limit: number): Promise<Buffer | undefined> {
-  const chunks: Buffer[] = [];
-  let size = 0;
-  for await (const chunk of request) {
-    size += chunk.length;
-    if (size <= limit) chunks.push(chunk);
-  }
-  return size <= limit ? Buffer.concat(chunks) : undefined;
-}
-
-export function completeBody(value: unknown): CompletionQuery | { error: string } {
-  return value && typeof value === "object" && "text" in value && typeof value.text === "string" && "pos" in value && typeof value.pos === "number" && Number.isSafeInteger(value.pos) && value.pos >= 0 && value.pos <= value.text.length ? { text: value.text, pos: value.pos } : { error: "Completion requires text and a cursor offset in that text" };
-}
-
-export function idBody(value: unknown): { id: string } | { error: string } {
-  return value && typeof value === "object" && "id" in value && typeof value.id === "string" ? { id: value.id } : { error: "An id is required" };
-}
-
-export function modelBody(value: unknown): { provider: string; modelId: string } | { error: string } {
-  return value && typeof value === "object" && "provider" in value && typeof value.provider === "string" && "modelId" in value && typeof value.modelId === "string" ? { provider: value.provider, modelId: value.modelId } : { error: "A provider and modelId are required" };
-}
-
-export function thinkingBody(value: unknown, levels: readonly ThinkingLevel[]): { level: ThinkingLevel } | { error: string } {
-  const available = (level: unknown): level is ThinkingLevel => levels.some(value => value === level);
-  return value && typeof value === "object" && "level" in value && available(value.level) ? { level: value.level } : { error: "An available thinking level is required" };
-}
-
-export function dialogBody(value: unknown, dialog: Extract<RpcExtensionUIRequest, { method: "select" | "confirm" | "input" | "editor" }>): RpcExtensionUIResponse | { error: string } {
-  if (value && typeof value === "object") {
-    if ("cancelled" in value && value.cancelled === true) return { type: "extension_ui_response", id: dialog.id, cancelled: true };
-    if (dialog.method === "confirm" && "confirmed" in value && typeof value.confirmed === "boolean") return { type: "extension_ui_response", id: dialog.id, confirmed: value.confirmed };
-    if (dialog.method !== "confirm" && "value" in value && typeof value.value === "string" && (dialog.method !== "select" || dialog.options.includes(value.value))) return { type: "extension_ui_response", id: dialog.id, value: value.value };
-  }
-  return { error: "A valid dialog answer is required" };
-}
 
 const sameText = (a: Text | undefined, b: Text | undefined): boolean => a?.text === b?.text && a?.cut === b?.cut;
 const sameTiming = (a: Block, b: Block): boolean => a.started === b.started && a.ended === b.ended;
@@ -139,27 +104,6 @@ function wireItem(item: Item): WireItem {
 
 function final(item: Assistant): boolean {
   return item.lifecycle === "ended" && item.blocks.every((b) => b.type !== "tool" || b.state.type === "done" || b.state.type === "not_run");
-}
-
-export function respond(response: ServerResponse, status: number, text: string, contentType = "application/json"): void {
-  response.writeHead(status, { "Content-Type": contentType });
-  response.end(text);
-}
-
-export function fileDisposition(name: string): string {
-  const file = basename(name);
-  return 'inline; filename="' + file.replace(/[^\x20-\x21\x23-\x5b\x5d-\x7e]/g, '_') + '"; filename*=UTF-8\'\'' + encodeURIComponent(file);
-}
-
-async function serveFile(response: ServerResponse, path: string, headers: OutgoingHttpHeaders): Promise<void> {
-  const file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
-  try {
-    const stat = await file.stat();
-    if (!stat.isFile()) throw Error("not readable");
-    response.writeHead(200, { ...headers, "Content-Length": stat.size });
-    const stream = file.createReadStream();
-    stream.once("error", () => response.destroy()); response.once("close", () => stream.destroy()); stream.pipe(response);
-  } catch (error) { await file.close(); throw error; }
 }
 
 function notRun(item: Assistant): void {
@@ -443,16 +387,9 @@ export function transcript({ dir, flushMs, metrics = false }: { dir: string; flu
   const handle = (request: IncomingMessage, req: ServerResponse): boolean => {
     const url = new URL(request.url ?? "/", "http://ko");
     if (request.method === "GET" && url.pathname.startsWith("/images/")) {
-      req.setHeader("Cache-Control", "no-store");
-      req.setHeader("X-Content-Type-Options", "nosniff");
-      req.setHeader("Content-Security-Policy", "sandbox; default-src 'none'");
       const image = images.get(url.pathname.slice(8));
       if (!image) { respond(req, 404, "{}"); return true; }
-      req.setHeader("Content-Type", image.ref.mimeType);
-      void serveFile(req, image.path, { "Content-Type": image.ref.mimeType, "Content-Disposition": fileDisposition(image.ref.id + "." + (imageExtensions[image.ref.mimeType] ?? "bin")) }).catch(error => {
-        if (req.headersSent) req.destroy();
-        else respond(req, error instanceof Error && "code" in error && error.code === "ENOENT" ? 410 : 500, "{}");
-      });
+      void serveFile(req, image.path, image.ref.id + "." + (imageExtensions[image.ref.mimeType] ?? "bin"), 410);
     } else if (request.method === "GET" && url.pathname === "/items") {
       const before = Number(url.searchParams.get("before"));
       if (!Number.isSafeInteger(before) || before < 0) respond(req, 400, "{}");

@@ -5,8 +5,9 @@ import { runInNewContext } from "node:vm";
 import { stripTypeScriptTypes } from "node:module";
 import { markdown } from "./page/markdown.ts";
 import { nameCommand } from "./prompt.ts";
-import { ATTACHMENT_LIMITS, isAttachment, pathArg, jobEndText } from "../pi/records.ts";
-import type { PromptMode } from "../pi/records.ts";
+import { ATTACHMENT_LIMITS, isAttachment, pathArg } from "./koa-records.ts";
+import { jobEndText } from "../pi/records.ts";
+import type { PromptMode } from "./koa-records.ts";
 
 async function page() {
   const source = stripTypeScriptTypes(await readFile(new URL("page/page.ts", import.meta.url), "utf8"));

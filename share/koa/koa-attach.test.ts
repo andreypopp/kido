@@ -4,8 +4,9 @@ import { createServer, request } from 'node:http';
 import { once } from 'node:events';
 import { mkdtempSync, rmSync, existsSync, writeFileSync, appendFileSync, renameSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { attachments, fileResponse } from './koa-attach.ts';
+import { basename, join } from 'node:path';
+import { attachments } from './koa-attach.ts';
+import { serveFile } from './koa-http.ts';
 import { connect } from 'node:net';
 import { pollUntil } from '../pi/ko-pi-fixture.ts';
 
@@ -14,7 +15,7 @@ test('a file response keeps its validated descriptor and byte boundary', async t
   const path = join(dir, 'file.txt'); writeFileSync(path, 'original');
   const server = createServer((_request, response) => {
     response.on('pipe', () => { appendFileSync(path, 'growth'); renameSync(path, path + '.old'); writeFileSync(path, 'replacement'); });
-    void fileResponse(response, path);
+    void serveFile(response, path, basename(path), 404);
   });
   server.listen(0, '127.0.0.1'); await once(server, 'listening');
   t.after(async () => { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); });

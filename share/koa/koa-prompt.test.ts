@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { prompts } from './koa-queue.ts';
-import type { Attachment } from '../pi/records.ts';
+import type { Attachment } from './koa-records.ts';
 
 const a: Attachment = { id: 'a', name: 'a.png', path: '/tmp/a.png', origin: 'upload', kind: 'image', mimeType: 'image/png', size: 1 };
 const b: Attachment = { ...a, id: 'b', name: 'b.png', path: '/tmp/b.png' };

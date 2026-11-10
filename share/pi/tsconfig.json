@@ -14,5 +14,5 @@
       "@earendil-works/pi-agent-core": ["./node_modules/@earendil-works/pi-agent-core/dist/index.d.ts"]
     }
   },
-  "include": ["text.ts", "transcript.ts", "transcript.test.ts", "ko-pi.ts", "ko-pi-fixture.ts", "ko-pi-*.test.ts", "../webview/*.ts", "../koa/*.ts", "../koa/stress/*.ts"]
+  "include": ["text.ts", "ko-pi.ts", "ko-pi-fixture.ts", "ko-pi-*.test.ts", "../webview/*.ts", "../koa/*.ts", "../koa/stress/*.ts"]
 }

@@ -6,7 +6,7 @@ import { syntaxHighlighting, HighlightStyle } from '@codemirror/language';
 import { tags } from '@lezer/highlight';
 
 import { completion } from './complete.ts';
-import type { PromptMode } from '../../pi/records.ts';
+import type { PromptMode } from '../koa-records.ts';
 
 const outsideComposition = (command: Command): Command => view => !view.compositionStarted && command(view);
 

@@ -18,6 +18,8 @@ give the behaviour and do not repeat it here:
   status word.
 - [design.md](design.md), "The pi extension, ko-pi": the interfaces
   of ko that the harness uses.
+- [design-koa.md](design-koa.md): koa, the pi harness that renders
+  through a page.
 
 ## Goals and non-goals
 
@@ -305,137 +307,17 @@ reloadable: its state is its program's.
 - **A pane with a `parent`.** No rule changes: a page is the pane's
   own.
 
-## koa's page
+## koa
 
-koa (`share/koa/`) runs pi in RPC mode under a page: the session's
-transcript, a prompt field, pi's dialogs, its queue and its pickers.
-The page is TypeScript in `share/koa/page/`, which `make build`
-bundles with esbuild into one unminified script; koa reads the built
-files again for each page load, so a rebuild and ⌘R show a change.
-`plans/koa.md` gives its design until `docs/design-koa.md` replaces
-it. The transcript and its delivery are the parts that this document
-keeps, because they are the webview's largest load.
+koa (`share/koa/`), pi's session under a page, is the largest page
+and the stress test of this feature: its stress runs found WebKit's
+fetch-body bug above and showed that Kido needs no limit on the
+number of webviews. [design-koa.md](design-koa.md) gives its design.
 
-**The transcript.** koa projects the session branch into items in
-memory: user messages, assistant messages with their text, thinking
-and tool calls, the custom messages that pi displays (ko-pi's
-inbound messages, steers, notices and job reports among them),
-user `!` commands, and summaries. A tool's result goes into the block
-of its call, so the page never needs the call's item to place a
-result. An item is final when it can no longer change; an assistant
-item becomes final after its end, when each call has its result or
-will never run (an aborted or failed response). Tool arguments,
-results and command output are capped, with the count of cut bytes.
-An image is not in the feed: koa writes each image to its own file in
-its private temporary directory, which it removes at exit, and the
-records carry a reference with its id, revision, type and size. The page
-loads an image only when its item shows it, from `/images/{id}`, whose
-URL carries the epoch and the revision, because WebKit keeps a decoded
-image for a URL across a rebuild. Its type comes only from the sniffed
-header (PNG, JPEG, GIF, WebP, BMP), and every response carries `nosniff`
-and a sandbox policy, so a payload that only claims an image type never
-runs as a document on koa's origin.
+## Tests
 
-**Quick Look.** A click on a thumbnail or a chip, and ⇧⌘-click on the
-label of a `read`, `edit` or `write` step (the terminal's gesture: the
-modifiers at the press, a movement below 3 points), ask Kido.app for a
-preview of an `/images/`, `/attachments/` or `/steps/{seq}/{block}/file`
-URL (docs/design-app.md, "Quick Look from a page"). koa serves a step's
-file only from its own record of the step: the path argument, resolved
-against the session's directory as pi's tools resolve it (`~` expanded,
-a leading `@` removed), a regular file of at most 64 MiB, streamed from
-the descriptor that it checked. In a browser, a click on an image (a
-thumbnail or an image chip) opens it in a lightbox inside the page,
-which Escape closes before it aborts anything; any other chip and every
-step's file open in a new tab.
-
-**Attachments.** A file that the user drops or pastes reaches koa as
-one of two kinds. In a local session (`window.ko.local`: the window's
-host is this Mac, the pane has no runtime), Kido.app takes a Finder drop
-itself, in the web view that the drop targets, so pi gets the user's
-original file. Only Kido.app names a host path: it posts each path to
-`/attachments` itself, with the header `Kido-Native-Drop: 1`, and
-gives the page the resulting attachment records through the `ko-drop`
-event. Request headers that start with `Kido-` belong to the host:
-Kido.app's scheme handler and the SDK's browser target remove them
-from every request of a page. koa refuses a path without the header
-(403), so neither a page nor a browser page can read a host file that
-the user did not drop. koa removes a path attachment whose answer did
-not reach the app, and the app removes one that it does not give to
-the page, so a cancelled drop holds no attachment. A paste, and a drop in
-every other session and in a browser, upload the bytes:
-the page sends them in chunks below the
-bridge's 1 MiB body cap, as `Uint8Array` bodies (WebKit delivers `Blob`
-and `FormData` bodies empty), into koa's private temporary directory,
-so the file exists on the host where pi runs. Folders are not attached.
-koa sends an image to pi as an image and any other file as a path line.
-An upload that is aborted, or that stalls between chunks for
-`KOA_UPLOAD_IDLE_MS` (30 s), is removed with its file and its share of
-the limits. A queued prompt keeps its attachments across a compaction,
-so taking the queue back restores its chips.
-
-**Agents and jobs.** ko-pi writes the facts of each agent message and
-job notice into the message's `details`, typed by `share/pi/records.ts`:
-the inbound form with the sender and its relation, a tool's outcome, and
-a job's reference, end and output. The transcript turns them into agent
-cards and job records, so the page parses no text, and a message
-without such details stays a plain notice, as do the sessions written
-before them. `spawn_agent`, `message_agent` and every inbound message
-are a card that splits its run; a job's notices are one line, and the
-stream batches of one job join into one entry. The page has no live
-list of jobs.
-
-**The composer's cursor.** The composer draws its cursor and its
-selection with CodeMirror's `drawSelection()`, in `--ko-cursor` and the
-theme's selection colours, also during an input method's composition.
-WebKit's native caret lagged visibly when the Markdown highlighting
-rebuilt the spans around it, as after deleting a code span's backticks.
-
-**The composer's foot.** koa has no status bar: the foot of its field
-holds the state, the model and thinking-level buttons, the context, the
-extensions' statuses, and the working directory at the right. The
-state cell has a fixed width, the width of "working 12m 34s", so a
-change of state or time never moves the cells to its right; a longer
-text ends in an ellipsis. A narrow pane drops the extensions' statuses
-first, then the level's text, and the model picker then offers the
-levels. Nothing in the row says that
-Return sends and Escape aborts, and the row has no send or stop button:
-the user decided this with the mockup. A notification from pi is a
-line in the transcript where it arrived and stays there; a rebuild of
-the same pi session keeps the lines, and a rebuild for another session
-drops them.
-A rebuild (a new runtime, `session_tree`,
-`session_compact`) mints a new epoch. The model, its caps, its window
-and its delivery are `Transcript` in `share/pi/transcript.ts`; koa
-feeds it from pi's RPC events.
-
-**Incremental delivery.** A long session must not cost its whole
-size on each page load, and a stream of tokens must not cost the
-square of its size:
-
-- `/events` is a server-sent event stream that stays open, one JSON
-  record for each event. A page with the current epoch gives its last
-  final item and gets only the items after it. A page that loses the
-  stream closes it and opens it again with its own epoch and last
-  final item, not with `Last-Event-ID`: a patch changes an unfinished
-  item many times, so the item, not the event, is the cursor. Any other page gets `reset`: the newest items, under the window
-  caps of `share/pi/transcript.ts`, and whether older items exist.
-- `/items?before=N` gives older items under the same caps, when the
-  page's top comes into view.
-- While an item streams, koa keeps only the newest raw message and
-  converts it once for each flush (`FLUSH_MS` in `koa.ts`). A flush sends
-  `patch` records: for each changed block its new suffix when the
-  block only grew, else the block whole, and the item's changed
-  metadata.
-- A `write` that returns false is ordinary buffering, as for a large
-  `reset` or a long streaming item, and changes nothing. Only an event
-  response whose buffered output passes its cap (the bridge and the
-  server stop reading while that page is slow) is ended; that page
-  reconnects with its epoch and gets what it lacks, and the other
-  pages continue.
-
-**Tests.** The TypeScript suite drives the SDK through the fake ko,
-whose `ko webview serve` prints the `supported` lines that the test
-releases, and drives koa over its fake pi. The e2e suite covers the
-real bridge. Kido.app's visual suite snapshots each state of koa's page
-in light and dark (`KoaWebviewTests`).
+The TypeScript suite drives the SDK through the fake ko, whose `ko
+webview serve` prints the `supported` lines that the test releases.
+The e2e suite covers the real bridge. Kido.app's `WebviewPaneTests`
+cover the web view, its sandbox and the WebKit facts that this
+document relies on.

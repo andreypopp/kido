@@ -884,7 +884,9 @@ order.
 
 **Install layout.** `make build` lays out `build/ko/` as installed:
 `bin/ko`, `bin/ko-pane` and `share/ko` with `bin/`, `shim.sh`,
-`pi/ko-pi.ts`, `pi/text.ts`, `pi/transcript.ts`, `pi/ko-api.d.ts`, `koa/`, `webview/` (the SDK) and the terminfo. `make install` copies it under
+`pi/` (ko-pi, the modules that it shares with koa, `ko-api.d.ts` and
+the skills), `koa/`, `webview/` (the SDK) and the terminfo. `make
+install` copies it under
 `PREFIX`, default `~/.local`. This is Homebrew's `pkgshare` layout.
 
 ## Knobs

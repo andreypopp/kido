@@ -4,7 +4,7 @@ import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { complete, findFd } from "./koa-complete.ts";
-import type { CompletionCommand } from "../pi/records.ts";
+import type { CompletionCommand } from "./koa-records.ts";
 
 test("oversized completion output is discarded", { timeout: 5000 }, async t => {
   const cwd = await mkdtemp(join(tmpdir(), 'koa-output-')); t.after(() => rm(cwd, { recursive: true, force: true }));

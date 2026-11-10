@@ -4,8 +4,10 @@ import { attach } from './attach.ts';
 import { preview, previewKey } from './preview.ts';
 import { nameCommand } from '../prompt.ts';
 import { fetchJSON } from './http.ts';
-import { ATTACHMENT_LIMITS, pathArg, jobEndText } from '../../pi/records.ts';
-import type { State, WireItem, WireAssistant, Block, Patch, PageRecord, PromptMode, ImageRef, AgentCall, Relation } from '../../pi/records.ts';
+import { ATTACHMENT_LIMITS, pathArg } from '../koa-records.ts';
+import { jobEndText } from '../../pi/records.ts';
+import type { State, WireItem, WireAssistant, Block, Patch, PageRecord, PromptMode, ImageRef, AgentCall } from '../koa-records.ts';
+import type { Relation } from '../../pi/records.ts';
 
 type Step = { block: Exclude<Block, { type: 'text' }>;  item: WireAssistant; index: number; key: string; slots: Map<string, Slot> };
 type AgentCard = AgentCall | Extract<WireItem, { kind: 'agent' }>;

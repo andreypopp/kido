@@ -30,6 +30,10 @@ remote=$(git -C "$ssh_tap" remote get-url --push origin)
 [[ $remote == git@* || $remote == ssh://* ]] || { echo 'Workspace tap must push over SSH' >&2; exit 1; }
 action git -C "$ssh_tap" pull --ff-only origin main
 action git -C "$tap" pull --ff-only "$ssh_tap" HEAD
+if ! grep -Eq '^[[:space:]]*depends_on[[:space:]]+"node(@[0-9]+)?"[[:space:]]*=>[[:space:]]*:build([[:space:]]|$)' "$formula"; then
+  echo 'The tap’s ko formula lacks depends_on "node" => :build: make install bundles koa’s page with Node and npm; add it to Formula/ko.rb first' >&2
+  $dry || exit 1
+fi
 read -r old previous < <(python3 - "$formula" <<'PY'
 import re,sys
 s=open(sys.argv[1]).read()

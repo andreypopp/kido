@@ -10,16 +10,49 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import type { RpcCommand, RpcResponse, JsonAgentSessionEvent, RpcExtensionUIRequest, RpcExtensionUIResponse, SlashCommandSource } from "@earendil-works/pi-coding-agent";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 type PiThinkingLevel = import("@earendil-works/pi-agent-core").ThinkingLevel;
-import { transcript, respond, readBody, completeBody, idBody, modelBody, thinkingBody, dialogBody } from "../pi/transcript.ts";
-import { errorText, replaceControlCharacters, utf8Prefix, contentText } from "../pi/text.ts";
+import { transcript } from "./koa-transcript.ts";
+import { respond, readBody } from "./koa-http.ts";
+import { isRecord, errorText, replaceControlCharacters, utf8Prefix, contentText } from "../pi/text.ts";
 import { webview } from "../webview/index.ts";
 import { assemblePage } from "./koa-assemble.ts";
 import { complete, findFd, agentDiscovery } from "./koa-complete.ts";
 import { signalChild } from "./koa-child.ts";
 import { attachments, stepFile, UPLOAD_IDLE_MS, isChunkRoute } from "./koa-attach.ts";
-import { nameCommand, promptBody } from "./prompt.ts";
+import { nameCommand } from "./prompt.ts";
 import { prompts } from "./koa-queue.ts";
-import type { Exit, Pi, State, ThinkingLevel, DialogMethod, CompletionCommand, Attachment } from "../pi/records.ts";
+import { ATTACHMENT_LIMITS, type PromptMode, type Exit, type Pi, type State, type ThinkingLevel, type DialogMethod, type CompletionCommand, type Attachment, type CompletionQuery } from "./koa-records.ts";
+
+function completeBody(value: unknown): CompletionQuery | { error: string } {
+  return isRecord(value) && typeof value.text === "string" && typeof value.pos === "number" && Number.isSafeInteger(value.pos) && value.pos >= 0 && value.pos <= value.text.length ? { text: value.text, pos: value.pos } : { error: "Completion requires text and a cursor offset in that text" };
+}
+
+function idBody(value: unknown): { id: string } | { error: string } {
+  return isRecord(value) && typeof value.id === "string" ? { id: value.id } : { error: "An id is required" };
+}
+
+function modelBody(value: unknown): { provider: string; modelId: string } | { error: string } {
+  return isRecord(value) && typeof value.provider === "string" && typeof value.modelId === "string" ? { provider: value.provider, modelId: value.modelId } : { error: "A provider and modelId are required" };
+}
+
+function thinkingBody(value: unknown, levels: readonly ThinkingLevel[]): { level: ThinkingLevel } | { error: string } {
+  const available = (level: unknown): level is ThinkingLevel => levels.some(value => value === level);
+  return isRecord(value) && available(value.level) ? { level: value.level } : { error: "An available thinking level is required" };
+}
+
+function dialogBody(value: unknown, dialog: Extract<RpcExtensionUIRequest, { method: "select" | "confirm" | "input" | "editor" }>): RpcExtensionUIResponse | { error: string } {
+  if (isRecord(value)) {
+    if (value.cancelled === true) return { type: "extension_ui_response", id: dialog.id, cancelled: true };
+    if (dialog.method === "confirm" && typeof value.confirmed === "boolean") return { type: "extension_ui_response", id: dialog.id, confirmed: value.confirmed };
+    if (dialog.method !== "confirm" && typeof value.value === "string" && (dialog.method !== "select" || dialog.options.includes(value.value))) return { type: "extension_ui_response", id: dialog.id, value: value.value };
+  }
+  return { error: "A valid dialog answer is required" };
+}
+
+function promptBody(value: unknown): { text: string; mode: PromptMode | "steer"; attachments: string[] } | { error: string } {
+  if (isRecord(value) && typeof value.text === "string" && Array.isArray(value.attachments) && value.attachments.length <= ATTACHMENT_LIMITS.files && value.attachments.every(id => typeof id === "string") && (value.text.trim() || value.attachments.length) && (value.mode === "prompt" || value.mode === "steer" || value.mode === "follow_up")) return { text: value.text, mode: value.mode, attachments: value.attachments };
+  return { error: "Text or attachments and prompt, steer or follow_up mode are required" };
+}
+
 
 type Same<A, B> = [A] extends [B] ? ([B] extends [A] ? true : false) : false;
 const thinkingLevelsMatch: Same<ThinkingLevel, PiThinkingLevel> = true;

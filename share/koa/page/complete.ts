@@ -2,7 +2,7 @@ import { autocompletion, acceptCompletion, closeCompletion, completionStatus, mo
 import { tooltips, ViewPlugin, type Command } from '@codemirror/view';
 import { syntaxTree } from '@codemirror/language';
 import { fileToken, slashToken } from '../../pi/token.ts';
-import type { CompletionOption, CompletionResult, CompletionQuery } from '../../pi/records.ts';
+import type { CompletionOption, CompletionResult, CompletionQuery } from '../koa-records.ts';
 
 export function completion(host: HTMLElement, send: () => void) {
   const field = host.parentElement;

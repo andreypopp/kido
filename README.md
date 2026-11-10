@@ -154,10 +154,20 @@ Claude Code runs unmodified, without a shim or settings.
 `CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1` also disables its native
 status.
 
-Start pi as `ko-pi` to load the harness. Only a pi started as `ko-pi`
-appears in `list_agents` and accepts `message_agent`. Start pi as
-`koa` to use it through a page in Kido.app: its transcript, a prompt
-field, its dialogs, its queue and its pickers; `koa --browser` shows the same page in your browser.
+Kido's pi harness has two entry points:
+
+- `ko-pi` starts pi with its terminal UI in the pane.
+- `koa` starts pi under a page in Kido.app: its transcript, a prompt
+  field with completion and attachments, its dialogs, its queue and
+  its pickers. `koa --browser` shows the same page in your browser.
+
+Both load the same harness, so agent discovery, `list_agents`,
+`spawn_agent` and `message_agent` work in both, and a subagent starts
+with its parent's entry point. A pi that you start as plain `pi` has
+none of this. koa runs where its pane's program runs, so that host
+(the Mac, a server of `ko HOST`, or a runtime) needs Node 24 or newer
+and `pi` on PATH (docs/design-koa.md).
+
 `ko prompt` sends
 text from stdin to the agent in your window, over its message stream or
 as a paste for a native agent.

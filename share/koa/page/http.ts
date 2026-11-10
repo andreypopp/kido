@@ -1,4 +1,4 @@
-import type { QueuedPrompt, UploadProgress } from '../../pi/records.ts';
+import type { QueuedPrompt, UploadProgress } from '../koa-records.ts';
 
 export async function fetchJSON(path: '/models', body: undefined, method: 'GET'): Promise<{ models: { id: string; provider: string }[] }>;
 export async function fetchJSON(path: '/queue/clear'): Promise<{ steering: QueuedPrompt[]; followUp: QueuedPrompt[] }>;

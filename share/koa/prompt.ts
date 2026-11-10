@@ -1,10 +1,4 @@
-import { ATTACHMENT_LIMITS, type Attachment, type PromptMode } from '../pi/records.ts';
-
-export function promptBody(value: unknown): { text: string; mode: PromptMode | "steer"; attachments: string[] } | { error: string } {
-  if (value && typeof value === "object" && "text" in value && typeof value.text === "string" && "attachments" in value && Array.isArray(value.attachments) && value.attachments.length <= ATTACHMENT_LIMITS.files && value.attachments.every(id => typeof id === "string") && (value.text.trim() || value.attachments.length) && "mode" in value && (value.mode === "prompt" || value.mode === "steer" || value.mode === "follow_up")) return { text: value.text, mode: value.mode, attachments: value.attachments };
-  return { error: "Text or attachments and prompt, steer or follow_up mode are required" };
-}
-
+import type { Attachment } from './koa-records.ts';
 
 export function promptText(text: string, attachments: readonly Attachment[]): string {
   const paths = attachments.filter(file => file.kind === 'file').map(file => file.path).join('\n');

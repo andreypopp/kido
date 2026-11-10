@@ -1372,9 +1372,10 @@ terminal content.
 **Loads.** The page is `ko://pane_N/` plus the row's path. The `ko:`
 scheme handler sends each request through `ko_client_webview_fetch` and
 streams the response head, the body chunks and the end into the
-`WKURLSchemeTask`; WebKit's `stop` cancels the fetch. At most 6 fetches
-of a page are in flight and 64 wait, in arrival order; the next one
-fails with `resourceUnavailable`. WebKit does not decode a body that a
+`WKURLSchemeTask`; WebKit's `stop` cancels the fetch. A page has a cap
+of fetches in flight and of fetches that wait, in arrival order
+(`maxActiveFetches` and `maxPendingFetches` in `WebviewPaneView.swift`);
+the next one fails with `resourceUnavailable`. WebKit does not decode a body that a
 scheme handler delivers with a `Content-Encoding`, so the core refuses
 a response whose encoding is not `identity`: through `ko webview
 serve` the page gets `502`, and from a program that speaks the serve
@@ -1426,9 +1427,9 @@ route through `ko_client_webview_ws_open` and answers through
 `evaluateJavaScript`. Messages cross as base64. A message over 64 KiB
 closes the socket with 1009 in the shim, as the server would.
 `bufferedAmount` is the shim's unsent bytes plus the core's
-`ko_webview_ws_buffered_amount`. The shim keeps at most 1 MiB and 256
-sends that the native side has not taken yet; a send past either
-limit, or one that the core refuses because its queue is full, closes
+`ko_webview_ws_buffered_amount`. The shim bounds the bytes and the
+sends that the native side has not taken yet (`MAX_PENDING_BYTES` and
+`MAX_PENDING_SENDS` in its script); a send past either limit, or one that the core refuses because its queue is full, closes
 the socket abnormally (1006): a gap in the messages would be worse.
 `close()` sends the accepted messages first. `close()` before the socket opens cancels it. A page has
 at most 16 sockets, the server's cap for each pane. Each main-frame
@@ -1449,7 +1450,7 @@ rect is four finite numbers with a width and a height that are not
 negative, the web view is the first responder of a key window, and no
 other preview of the view is in flight. It fetches the URL through the page's own fetch path,
 so a remote server and a runtime work as for the page, and stops past
-`Upload.fileLimit` (64 MiB) or on a status other than 200 with the
+`Upload.fileLimit` or on a status other than 200 with the
 pane's notice. The file's name is the base name of the response's
 `filename*`, else `preview`. `ImagePreview` takes it as a `file` source
 beside the terminal's `pixels`, so the panel, its control, its file and
@@ -1465,8 +1466,8 @@ of the answers, through `window.__koDrop` and the `ko-drop` event.
 The scheme handler removes every `Kido-` header from every request of
 the page (`setValue(nil, forHTTPHeaderField:)`; a filtered
 `allHTTPHeaderFields` keeps them), so the page cannot claim a drop. A
-drop has at most 16 files in flight, an answer of at most 64 KiB and a
-deadline of 5 s; a navigation cancels it, and the app deletes an
+drop has a cap of files (`maxDropFiles`), a cap of answer bytes and a
+deadline; a navigation cancels it, and the app deletes an
 attachment that it does not give to the page. `WebviewBrowser` takes
 `prepareForDragOperation` itself for such a drop, because WebKit's own
 handling of a file drop runs there.
@@ -2929,8 +2930,7 @@ orders the window far off screen. The Command-key check drives
 
 `KoaWebviewTests` runs the checkout's koa over its fake pi
 (`share/koa/koa-fake-pi.ts`), so no model call happens, and snapshots
-each state of koa's mockup in light and dark (design-webview.md,
-"koa's page"). A page check in the visual
+each state of koa's mockups in light and dark (design-koa.md). A page check in the visual
 suite waits with a `MutationObserver`, never with `requestAnimationFrame`:
 WebKit pauses animation frames for a page in the off-screen window.
 

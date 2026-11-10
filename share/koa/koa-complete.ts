@@ -4,7 +4,7 @@ import { basename, delimiter, join, resolve } from "node:path";
 import { homedir } from "node:os";
 import { parsePanes, piAgent, runningRows, agentCache } from "../pi/agents.ts";
 import type { components } from "../pi/ko-api.d.ts";
-import type { CompletionCommand, CompletionOption, CompletionResult } from "../pi/records.ts";
+import type { CompletionCommand, CompletionOption, CompletionResult } from "./koa-records.ts";
 import { signalChild } from "./koa-child.ts";
 import { fileToken, slashToken, pathSeparator } from "../pi/token.ts";
 

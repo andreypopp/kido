@@ -6,8 +6,8 @@ import { mkdtempSync, rmSync, readFileSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
-import { transcript } from "./transcript.ts";
-import type { WireItem } from "./records.ts";
+import { transcript } from "./koa-transcript.ts";
+import type { WireItem } from "./koa-records.ts";
 
 function directory(t: TestContext) {
   const dir = mkdtempSync(join(tmpdir(), "koa-transcript-test-"));
@@ -27,7 +27,8 @@ function request(view: ReturnType<typeof transcript>, path: string) {
   return lines;
 }
 
-function record(line: string) {
+function record(line: string | undefined) {
+  assert.ok(line !== undefined);
   assert.match(line, /^data: [^\r\n]*\n\n$/);
   return JSON.parse(line.slice(6, -2));
 }
@@ -55,7 +56,7 @@ test('notifications are retained transcript items across reconnect and same-sess
   assert.equal(live[1].kind, 'notify'); assert.equal(live[1].text.text, 'Remember this warning');
   view.rebuild([first], 'session-one');
   assert.deepEqual(JSON.parse(request(view, '/items?before=100').join('')).items, live);
-  const reconnect = record(request(view, '/events')[0]!);
+  const reconnect = record(request(view, '/events')[0]);
   assert.deepEqual(reconnect.items, live);
   const later = { ...assistant('after'), timestamp: live[1].at + 1 };
   view.rebuild([first, later], 'session-one');
@@ -165,12 +166,12 @@ test("patches append only unchanged text prefixes and replace changed blocks", t
   view.message(assistant("hello"), "start");
   view.message(assistant("hello world"), "update");
   request(view, "/events");
-  assert.deepEqual(record(lines.findLast(line => line.includes('"type":"patch"'))!).blocks, [{ index: 0, suffix: " world" }]);
+  assert.deepEqual(record(lines.findLast(line => line.includes('"type":"patch"'))).blocks, [{ index: 0, suffix: " world" }]);
   view.message(assistant("replacement"), "update");
   request(view, "/events");
-  assert.deepEqual(record(lines.findLast(line => line.includes('"type":"patch"'))!).blocks, [{ index: 0, block: { type: "text", text: "replacement" } }]);
+  assert.deepEqual(record(lines.findLast(line => line.includes('"type":"patch"'))).blocks, [{ index: 0, block: { type: "text", text: "replacement" } }]);
   view.message(assistant("replacement", "error"), "end");
-  const patch = record(lines.findLast(line => line.includes('"type":"patch"'))!);
+  const patch = record(lines.findLast(line => line.includes('"type":"patch"')));
   assert.equal(patch.stop, "error");
   assert.equal(patch.final, true);
   assert.deepEqual(patch.blocks, []);
@@ -181,7 +182,7 @@ test("patches append only unchanged text prefixes and replace changed blocks", t
   thinking.content = [{ type: "thinking", thinking: "hidden", redacted: true }];
   view.message(thinking, "update");
   request(view, "/events");
-  assert.deepEqual(record(lines.findLast(line => line.includes('"type":"patch"'))!).blocks, [{ index: 0, block: { type: "thinking", text: "hidden", redacted: true } }]);
+  assert.deepEqual(record(lines.findLast(line => line.includes('"type":"patch"'))).blocks, [{ index: 0, block: { type: "thinking", text: "hidden", redacted: true } }]);
   view.close();
 });
 
@@ -254,7 +255,7 @@ test("identical image partials emit no patch and changed bytes advance the wire 
   const next = [{ ...image, data: Buffer.from("new").toString("base64") }];
   view.toolPartial("image", next); request(view, "/events");
   assert.equal(lines.length, before + 1);
-  const patch = record(lines.at(-1)!);
+  const patch = record(lines.at(-1));
   assert.equal(patch.type, "patch");
   assert.deepEqual(patch.blocks[0].block.state.result.images, [{ id: "0.0.0", revision: 1, mimeType: "application/octet-stream", bytes: 3 }]);
   view.close();
@@ -336,7 +337,8 @@ test("image references keep disk bytes beyond the feed window and serve missing 
   view.rebuild([]);
   assert.equal((await fetch(url + "/images/" + image.id)).status, 404);
   for (const [mimeType, data] of [["text/html", "<!doctype html><script>globalThis.pwned=true</script>"], ["image/svg+xml", '<svg xmlns="http://www.w3.org/2000/svg"><script>globalThis.pwned=true</script></svg>']]) {
-    view.rebuild([{ role: "user", timestamp: 1, content: [{ type: "image", mimeType: mimeType!, data: Buffer.from(data!).toString("base64") }] }]);
+    assert.ok(mimeType !== undefined && data !== undefined);
+    view.rebuild([{ role: "user", timestamp: 1, content: [{ type: "image", mimeType, data: Buffer.from(data).toString("base64") }] }]);
     const response = await fetch(url + "/images/0.0");
     assert.equal(response.status, 200);
     assert.equal(response.headers.get("content-type"), "application/octet-stream");
