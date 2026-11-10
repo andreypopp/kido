@@ -842,7 +842,9 @@ registry: the own pi session"). ko never reads the extension's files. Its knobs 
 
 A server is its state directory (`$KO_STATE_DIR`, else
 `$XDG_STATE_HOME/ko`, else `~/.local/state/ko`). Its socket is
-`<dir>/socket`. Every command accepts `--server DIR`. Inside a pane,
+`<dir>/socket`. `--server DIR` is one option of the whole command
+line, before or after the command name. Every command that talks to a
+server obeys it; a command that does not refuses it. Inside a pane,
 `$KO_SOCKET` names the pane's own server, `$KO_PANE` the pane and
 `$KO_PANE_TOKEN` its secret; every `ko` command but the terminal
 client sends the pair as the

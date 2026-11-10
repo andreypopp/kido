@@ -43,7 +43,7 @@ const USAGE_ERROR: u8 = 124;
 #[command(name = "ko")]
 struct Cli {
     /// The server's state directory.
-    #[arg(long, value_name = "DIR", conflicts_with = "host")]
+    #[arg(long, global = true, value_name = "DIR")]
     server: Option<PathBuf>,
     /// The host to attach to over ssh, as ssh names it.
     #[arg(value_name = "HOST")]
@@ -57,11 +57,7 @@ enum Command {
     /// Run the ko server in the foreground.
     Server(ServerArgs),
     /// Stop the ko server.
-    KillServer {
-        /// The server's state directory.
-        #[arg(long, value_name = "DIR")]
-        server: Option<PathBuf>,
-    },
+    KillServer,
     /// Print the build, protocol and terminal revisions.
     Version,
     /// Print the OpenAPI 3.1 description of the HTTP and WebSocket interface.
@@ -133,9 +129,6 @@ enum Command {
 
 #[derive(Debug, Args)]
 struct PanesArgs {
-    /// The server's state directory.
-    #[arg(long, value_name = "DIR")]
-    server: Option<PathBuf>,
     /// Print the JSON of GET /panes, not a table.
     #[arg(long)]
     json: bool,
@@ -143,9 +136,6 @@ struct PanesArgs {
 
 #[derive(Debug, Args)]
 struct LayoutArgs {
-    /// The server's state directory.
-    #[arg(long, value_name = "DIR", global = true)]
-    server: Option<PathBuf>,
     #[command(subcommand)]
     command: Option<LayoutCommand>,
 }
@@ -177,9 +167,6 @@ enum LayoutCommand {
 
 #[derive(Debug, Args)]
 struct ServerArgs {
-    /// The server's state directory.
-    #[arg(long, value_name = "DIR")]
-    server: Option<PathBuf>,
     /// The directory of the ko shims, put first on the PATH of every pane. The default is
     /// share/ko/bin beside the installed ko, if it exists.
     #[arg(long, value_name = "DIR")]
@@ -198,9 +185,6 @@ struct ServerArgs {
 
 #[derive(Debug, Args)]
 struct ApiArgs {
-    /// The server's state directory.
-    #[arg(long, value_name = "DIR", conflicts_with = "host")]
-    server: Option<PathBuf>,
     /// Send the request to the ko server on HOST, over an ssh forward that ko opens for this one
     /// request.
     #[arg(long, value_name = "HOST")]
@@ -297,9 +281,9 @@ fn invoked() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from(OsString::from("ko")))
 }
 
-fn server(args: ServerArgs) -> ExitCode {
+fn server(args: ServerArgs, server: Option<PathBuf>) -> ExitCode {
     if args.print_socket {
-        let socket = std::path::absolute(config::dir(args.server))
+        let socket = std::path::absolute(config::dir(server))
             .map_err(|error| error.to_string())
             .and_then(|dir| {
                 if args.ensure {
@@ -318,7 +302,7 @@ fn server(args: ServerArgs) -> ExitCode {
     }
     let config = match Config::create(
         &invoked(),
-        args.server,
+        server,
         args.bin_dir.or_else(|| bin_dir::of_exe(&invoked())),
         args.config,
     ) {
@@ -417,7 +401,7 @@ fn stream(link: Link) -> ExitCode {
     }
 }
 
-fn api(args: ApiArgs) -> ExitCode {
+fn api(args: ApiArgs, server: Option<PathBuf>) -> ExitCode {
     let body = match args.input.as_deref().map(read_input).transpose() {
         Ok(body) => body.unwrap_or_default(),
         Err(error) => return fail("api", error),
@@ -440,7 +424,7 @@ fn api(args: ApiArgs) -> ExitCode {
             dir: remote.dir().to_path_buf(),
             caller: None,
         },
-        None => target(args.server),
+        None => target(server),
     };
     let response = if args.stream {
         match api::stream(&dir, caller, &args.path) {
@@ -550,8 +534,8 @@ fn state(row: &Row) -> String {
     }
 }
 
-fn panes(args: PanesArgs) -> ExitCode {
-    let body = match get("panes", args.server, &Route::ListPanes {}) {
+fn panes(args: PanesArgs, server: Option<PathBuf>) -> ExitCode {
+    let body = match get("panes", server, &Route::ListPanes {}) {
         Ok(body) => body,
         Err(code) => return code,
     };
@@ -587,10 +571,10 @@ fn panes(args: PanesArgs) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-fn layout(args: LayoutArgs) -> ExitCode {
+fn layout(args: LayoutArgs, server: Option<PathBuf>) -> ExitCode {
     let file = match args.command {
         None => {
-            return match get("layout", args.server, &Route::GetLayout {}) {
+            return match get("layout", server, &Route::GetLayout {}) {
                 Ok(body) => {
                     let mut out = io::stdout().lock();
                     let _ = out.write_all(&body);
@@ -600,10 +584,10 @@ fn layout(args: LayoutArgs) -> ExitCode {
                 Err(code) => code,
             };
         }
-        Some(LayoutCommand::Edit { edit }) => return layout_edit(args.server, &edit),
+        Some(LayoutCommand::Edit { edit }) => return layout_edit(server, &edit),
         Some(LayoutCommand::Put { file }) => file,
     };
-    let Target { dir, caller } = target(args.server);
+    let Target { dir, caller } = target(server);
     let document = read_input(&file)
         .map_err(|error| error.to_string())
         .and_then(|text| protocol::decode::<Document>(&text).map_err(|error| error.to_string()));
@@ -685,7 +669,27 @@ fn main() -> ExitCode {
         Ok(false) => {}
         Ok(true) | Err(_) => return ExitCode::SUCCESS,
     }
-    let cli = match Cli::try_parse() {
+    let cli = match Cli::try_parse().and_then(|cli| {
+        if cli.server.is_some() {
+            let conflict = match &cli.command {
+                None if cli.host.is_some() => Some("HOST"),
+                Some(Command::Api(args)) if args.host.is_some() => Some("--host <HOST>"),
+                Some(Command::Shell { .. }) => Some("shell"),
+                Some(Command::Ssh { .. }) => Some("ssh"),
+                Some(Command::Enter(_)) => Some("enter"),
+                Some(Command::Version) => Some("version"),
+                Some(Command::ApiSchema { .. }) => Some("api-schema"),
+                _ => None,
+            };
+            if let Some(conflict) = conflict {
+                return Err(Cli::command().error(
+                    clap::error::ErrorKind::ArgumentConflict,
+                    format!("the argument '--server <DIR>' cannot be used with '{conflict}'"),
+                ));
+            }
+        }
+        Ok(cli)
+    }) {
         Ok(cli) => cli,
         Err(error) => {
             let _ = error.print();
@@ -700,8 +704,8 @@ fn main() -> ExitCode {
         return attach(cli.server, cli.host);
     };
     match command {
-        Command::Server(args) => server(args),
-        Command::KillServer { server } => match launch::stop(&config::dir(server), PATIENCE) {
+        Command::Server(args) => server(args, cli.server),
+        Command::KillServer => match launch::stop(&config::dir(cli.server), PATIENCE) {
             Ok(()) => ExitCode::SUCCESS,
             Err(message) => fail("kill-server", message),
         },
@@ -731,7 +735,7 @@ fn main() -> ExitCode {
             }
             Err(message) => fail("api-schema", message),
         },
-        Command::Api(args) => api(args),
+        Command::Api(args) => api(args, cli.server),
         Command::Shell { command } => {
             let error = shell::exec(&command, &invoked(), inside_runtime().is_some());
             let target = target(None);
@@ -744,10 +748,10 @@ fn main() -> ExitCode {
         }
         Command::Ssh { args } => ssh(&args),
         Command::Enter(args) => runtime::enter(args),
-        Command::RuntimeExec(args) => runtime::runtime_exec(args),
-        Command::Run(args) => run::run(*args),
-        Command::Panes(args) => panes(args),
-        Command::Layout(args) => layout(args),
-        Command::Prompt(args) => prompt::prompt(args),
+        Command::RuntimeExec(args) => runtime::runtime_exec(args, cli.server),
+        Command::Run(args) => run::run(*args, cli.server),
+        Command::Panes(args) => panes(args, cli.server),
+        Command::Layout(args) => layout(args, cli.server),
+        Command::Prompt(args) => prompt::prompt(args, cli.server),
     }
 }

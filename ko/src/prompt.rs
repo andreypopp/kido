@@ -12,9 +12,6 @@ use crate::{Target, complain, fail, target};
 
 #[derive(Debug, Args)]
 pub(crate) struct PromptArgs {
-    /// The server's state directory.
-    #[arg(long, value_name = "DIR")]
-    server: Option<PathBuf>,
     /// Search only the caller's window, never widening to the session.
     #[arg(long)]
     window: bool,
@@ -24,7 +21,7 @@ fn failed(dir: &Path, failure: ReplyError) -> ExitCode {
     fail("prompt", ko_client::api::describe(dir, failure))
 }
 
-pub(crate) fn prompt(args: PromptArgs) -> ExitCode {
+pub(crate) fn prompt(args: PromptArgs, server: Option<PathBuf>) -> ExitCode {
     let mut text = String::new();
     if let Err(error) = io::stdin().read_to_string(&mut text) {
         return fail("prompt", error);
@@ -34,7 +31,7 @@ pub(crate) fn prompt(args: PromptArgs) -> ExitCode {
         complain("no prompt given");
         return ExitCode::from(1);
     }
-    let Target { dir, caller } = target(args.server);
+    let Target { dir, caller } = target(server);
     let Some(caller) = caller else {
         return fail("prompt", "pane \"\" not found");
     };

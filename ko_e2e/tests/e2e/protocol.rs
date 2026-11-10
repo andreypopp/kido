@@ -9,6 +9,93 @@ use crate::harness::{
 };
 
 #[test]
+fn server_option_before_subcommand() {
+    let mut s = start(&[]);
+    let scratch = Dir::new("ko-target-");
+    let env = test_env(&scratch);
+    for args in [
+        vec![
+            "--server",
+            text_of(&s.dir),
+            "api",
+            "--host",
+            "remote",
+            "/layout",
+        ],
+        vec![
+            "api",
+            "--server",
+            text_of(&s.dir),
+            "--host",
+            "remote",
+            "/layout",
+        ],
+        vec!["--server", text_of(&s.dir), "remote"],
+    ] {
+        let run = run_ko(&scratch, &env, &args, "");
+        assert_eq!(run.exit, Exit::Exited(124), "{run:?}");
+        assert!(run.stderr.contains("cannot be used"), "{run:?}");
+    }
+    for args in [
+        vec!["shell"],
+        vec!["ssh"],
+        vec!["enter", "--exec"],
+        vec!["version"],
+        vec!["api-schema"],
+    ] {
+        let mut argv = vec!["--server", text_of(&s.dir)];
+        argv.extend(args);
+        let run = run_ko(&scratch, &env, &argv, "");
+        assert_eq!(run.exit, Exit::Exited(124), "{run:?}");
+        assert!(run.stderr.contains("cannot be used"), "{run:?}");
+    }
+    let actual = run_ko(
+        &scratch,
+        &env,
+        &[
+            "--server",
+            text_of(&s.dir),
+            "runtime-exec",
+            "missing",
+            "--",
+            "/usr/bin/true",
+        ],
+        "",
+    );
+    assert_eq!(actual.exit, Exit::Exited(1));
+    assert_eq!(
+        actual.stderr,
+        format!(
+            "runtime missing: no runtime missing in {}/ko/config.yaml\n",
+            s.dir.display()
+        )
+    );
+    let expected = s.ko(&["api", "/layout"], "").ok();
+    assert_eq!(
+        run_ko(
+            &scratch,
+            &env,
+            &["--server", text_of(&s.dir), "api", "/layout"],
+            ""
+        )
+        .ok(),
+        expected
+    );
+    assert_eq!(
+        run_ko(
+            &scratch,
+            &env,
+            &["--server", text_of(&s.dir), "kill-server"],
+            ""
+        )
+        .ok(),
+        ""
+    );
+    assert_eq!(s.child.wait(DEADLINE), Some(Exit::Exited(0)));
+    assert!(!s.dir.join("socket").exists());
+}
+
+#[test]
 fn kill_server() {
     let s = start(&[]);
     let p = s.pane("trap '' HUP; printf READY; while read x; do :; done");

@@ -29,9 +29,6 @@ struct Entry {
     /// The runtime's name in the current session.
     #[arg(verbatim_doc_comment, long, required = true, value_parser = |s: &str| RuntimeName::try_from(s.to_owned()), add = ArgValueCompleter::new(crate::complete::runtimes))]
     name: Option<RuntimeName>,
-    /// The server's state directory.
-    #[arg(verbatim_doc_comment, long)]
-    server: Option<PathBuf>,
     /// Variables for every pane of the runtime, applied before the variables of the request.
     #[arg(verbatim_doc_comment, long, value_parser = assignment)]
     env: Vec<(String, String)>,
@@ -281,7 +278,7 @@ impl RunArgsCli {
     }
 }
 
-pub(crate) fn run(args: RunArgsCli) -> ExitCode {
+pub(crate) fn run(args: RunArgsCli, server: Option<PathBuf>) -> ExitCode {
     if let Some(runtime) = inside_runtime() {
         return fail(
             "run",
@@ -291,15 +288,7 @@ pub(crate) fn run(args: RunArgsCli) -> ExitCode {
             ),
         );
     }
-    let (
-        Entry {
-            name,
-            server,
-            command,
-            env,
-        },
-        runtime,
-    ) = match args.definition() {
+    let (Entry { name, command, env }, runtime) = match args.definition() {
         Ok(definition) => definition,
         Err(error) => return fail("run", error),
     };

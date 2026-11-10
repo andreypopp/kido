@@ -168,9 +168,9 @@ pub(crate) fn enter(args: EnterArgs) -> ExitCode {
     crate::fail_before_program("enter", failure, &socket, Some(&caller))
 }
 
-pub(crate) fn runtime_exec(args: RuntimeExecArgs) -> ExitCode {
+pub(crate) fn runtime_exec(args: RuntimeExecArgs, server: Option<PathBuf>) -> ExitCode {
     let RuntimeExecArgs { name, argv } = args;
-    let Target { dir, caller } = target(None);
+    let Target { dir, caller } = target(server);
     let stop = |message: String| {
         let message = format!("runtime {name}: {message}");
         if io::stderr().is_terminal() {
