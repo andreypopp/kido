@@ -60,11 +60,13 @@ A consumer drops a span that is reversed, that is out of the block's
 range, or, for an option, that is not inside its question's range. It
 keeps the other spans of the same entry.
 
-A range boundary falls on a character of the text, never inside a
-Markdown delimiter run (`**`, `` ` ``) or a URL, and a range that
-overlaps a code span covers the whole code span. The consumer inserts
-its markers at the boundaries before it renders the Markdown, and these
-rules keep the markers out of the syntax.
+The producer guarantees that a range boundary falls on a character of
+the text, never inside a Markdown delimiter run (`**`, `` ` ``) or a
+URL, and that a range that overlaps a code span covers the whole code
+span. The consumer does not check this: it parses no Markdown to
+validate a span, and its checks are the three rules above. It relies
+on the guarantee when it inserts its markers at the boundaries before
+it renders the Markdown, so that the markers stay out of the syntax.
 
 ## Annotation types
 
