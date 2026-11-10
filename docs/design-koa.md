@@ -236,6 +236,33 @@ ignores `ESRCH` and `EPERM`, as `signalJob` does (design-subagents.md,
 there. The session picker shares koa's group, so it gets its signals
 through its own `ChildProcess.kill`.
 
+**Errors do not stop koa.** An error of a child, a stream, a pi record
+or a timer callback is reported as one `koa:` line on stderr, and koa
+goes on; only the loss of the terminal stops it. The edges:
+
+- A record from pi whose handling throws is a protocol error of pi.
+  koa drops the record with one line that names its type and handles
+  the next records. It does not validate each record's shape: pi's
+  types are the contract, and one catch at the dispatch in `rpc`
+  covers every field. A bad record does not end pi, because pi can
+  still work and the user keeps the session. A handler that throws
+  midway keeps what it changed before the throw.
+- The transcript's flush takes each held message or tool result out
+  of its queue before it applies it, and reports a throw, so one bad
+  entry does not block the later ones.
+- Every timer callback runs through `later` (`koa-timer.ts`), which
+  reports a throw.
+- An error on pi's stdout or stderr is reported; pi's exit path
+  owns the rest of its lifecycle.
+- A signal error other than `ESRCH` and `EPERM` is reported by
+  `signalChild`, which never throws, so the shutdown continues.
+- An error on the `fd` child's stdout ends the completion read with
+  no result.
+- An error on koa's own stdout means that the terminal is gone: koa
+  shuts down as on `SIGHUP`; before the shutdown exists (`--help`),
+  the error is ignored. An error on koa's own stderr is ignored,
+  because there is no other place to report it.
+
 **The private directory.** koa makes one directory `koa-<pid>-*` under
 the temporary directory at start (0700) for the image store and the
 uploads, and removes it at exit. A koa that dies by a signal leaves

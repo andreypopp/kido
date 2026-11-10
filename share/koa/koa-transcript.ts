@@ -1,4 +1,5 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { later } from "./koa-timer.ts";
 import { respond, serveFile } from "./koa-http.ts";
 import { createHash } from "node:crypto";
 import { mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
@@ -9,7 +10,7 @@ import { isRelation, isAgentFailure } from "../pi/records.ts";
 import { promptText } from "./prompt.ts";
 import type { Text, Block, Item, Assistant, WireItem, State, PageRecord, ImageRef, Attachment, AgentCall, NotifyLevel } from "./koa-records.ts";
 import type { AgentRef, AgentOutcome, JobRef, JobEnd, Inbound, AgentDetails, NoticeDetails, StreamDetails } from "../pi/records.ts";
-import { mintId, contentText, utf8Prefix, isRecord, type Content } from "../pi/text.ts";
+import { mintId, contentText, utf8Prefix, isRecord, errorText, type Content } from "../pi/text.ts";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { SessionEntry } from "@earendil-works/pi-coding-agent";
 
@@ -187,7 +188,7 @@ export function transcript({ dir, flushMs, metrics = false }: { dir: string; flu
   };
   const reset = (): string => frame('{"type":"reset","epoch":' + JSON.stringify(epoch) + ',' + window(items.length) + '}');
   const schedule = (): void => {
-    if (!flushTimer) flushTimer = setTimeout(flush, flushMs);
+    if (!flushTimer) flushTimer = later(flush, flushMs);
   };
   const publish = (item: Item): void => { dirty.add(item.seq); };
   const applyAssistant = (item: Assistant, message: Extract<AgentMessage, { role: "assistant" }>, ended: boolean): void => {
@@ -227,42 +228,46 @@ export function transcript({ dir, flushMs, metrics = false }: { dir: string; flu
     if (flushTimer) clearTimeout(flushTimer);
     flushTimer = null;
     for (const [seq, held] of pending) {
-      const item = items[seq];
-      if (item?.kind === "assistant") applyAssistant(item, held.message, held.phase === "end");
+      pending.delete(seq);
+      try {
+        const item = items[seq];
+        if (item?.kind === "assistant") applyAssistant(item, held.message, held.phase === "end");
+      } catch (error) { process.stderr.write(`koa: transcript: ${errorText(error)}\n`); }
     }
-    pending.clear();
     for (const [id, held] of pendingTools) {
-      const found = tools.get(id);
-      if (!found) continue;
-      let text = contentText(held.content);
-      if (held.type === "done" && found.block.name === "bash") {
-        const footer = text.match(/\n*Command exited with code (\d+)\s*$/);
-        const structured = held.structuredContent;
-        const code = structured && typeof structured === "object" && "exit_code" in structured ? structured.exit_code : footer ? Number(footer[1]) : undefined;
-        if (typeof code === "number" && Number.isInteger(code) && code >= 0) {
-          found.block.exit = code;
-          if (footer && code !== 0 && code === Number(footer[1])) text = text.slice(0, footer.index);
+      pendingTools.delete(id);
+      try {
+        const found = tools.get(id);
+        if (!found) continue;
+        let text = contentText(held.content);
+        if (held.type === "done" && found.block.name === "bash") {
+          const footer = text.match(/\n*Command exited with code (\d+)\s*$/);
+          const structured = held.structuredContent;
+          const code = structured && typeof structured === "object" && "exit_code" in structured ? structured.exit_code : footer ? Number(footer[1]) : undefined;
+          if (typeof code === "number" && Number.isInteger(code) && code >= 0) {
+            found.block.exit = code;
+            if (footer && code !== 0 && code === Number(footer[1])) text = text.slice(0, footer.index);
+          }
         }
-      }
-      if (held.type === 'done') {
-        const details = isRecord(held.details) ? held.details : undefined;
-        const done = outcome(details?.outcome), card = found.block.agent;
-        if (card && done) {
-          const to = card.call.tool === 'spawn' ? agentRef(details) ?? card.to : { ...card.to, ...(typeof details?.to === 'string' ? { name: details.to } : {}) };
-          found.block.agent = { ...card, to, text: !done.ok && (card.call.tool === 'spawn' || !card.text.text) ? cap(done.message, MAX_WEBVIEW_RESULT_BYTES) : card.text, outcome: done };
-        } else if (card) delete found.block.agent;
-        if (found.block.name === 'async_bash' && details) { const job = jobRef(details.job); if (job) found.block.job = job; }
-      }
-      const previous = "result" in found.block.state ? found.block.state.result?.images : undefined;
-      const result = { ...cap(text, MAX_WEBVIEW_RESULT_BYTES), images: saveImages(found.item.seq + "." + found.item.blocks.indexOf(found.block), held.content, previous) };
-      found.block.state = held.type === "done" ? { type: "done", result, error: held.error } : { type: "running", result };
-      if (held.type === "done") {
-        if (held.at !== undefined) found.block.ended = held.at;
-        if (held.durationMs !== undefined) found.block.durationMs = held.durationMs;
-      }
-      publish(found.item);
+        if (held.type === 'done') {
+          const details = isRecord(held.details) ? held.details : undefined;
+          const done = outcome(details?.outcome), card = found.block.agent;
+          if (card && done) {
+            const to = card.call.tool === 'spawn' ? agentRef(details) ?? card.to : { ...card.to, ...(typeof details?.to === 'string' ? { name: details.to } : {}) };
+            found.block.agent = { ...card, to, text: !done.ok && (card.call.tool === 'spawn' || !card.text.text) ? cap(done.message, MAX_WEBVIEW_RESULT_BYTES) : card.text, outcome: done };
+          } else if (card) delete found.block.agent;
+          if (found.block.name === 'async_bash' && details) { const job = jobRef(details.job); if (job) found.block.job = job; }
+        }
+        const previous = "result" in found.block.state ? found.block.state.result?.images : undefined;
+        const result = { ...cap(text, MAX_WEBVIEW_RESULT_BYTES), images: saveImages(found.item.seq + "." + found.item.blocks.indexOf(found.block), held.content, previous) };
+        found.block.state = held.type === "done" ? { type: "done", result, error: held.error } : { type: "running", result };
+        if (held.type === "done") {
+          if (held.at !== undefined) found.block.ended = held.at;
+          if (held.durationMs !== undefined) found.block.durationMs = held.durationMs;
+        }
+        publish(found.item);
+      } catch (error) { process.stderr.write(`koa: transcript: ${errorText(error)}\n`); }
     }
-    pendingTools.clear();
     if (!notify) { dirty.clear(); return; }
     for (const seq of dirty) {
       const item = items[seq];

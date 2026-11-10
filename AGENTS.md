@@ -772,6 +772,7 @@ maps the coordinator's modules.
                         HTML response; koa-transcript.ts, the
                         transcript model, its delivery and the image
                         store; koa-image.ts, the image sniffer;
+                        koa-timer.ts, the timer that reports a throw;
                         koa-http.ts, the HTTP helpers and the one file
                         server with its checked, size-capped open;
                         koa-records.ts, the records that koa and its

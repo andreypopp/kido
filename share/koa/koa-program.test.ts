@@ -516,6 +516,34 @@ test('reply annotations reach events live and on get_entries rebuild', { timeout
   assert.ok((await app.log()).filter(record => record.type === 'get_entries').length >= 2);
 });
 
+test("a malformed held message does not block later transcript entries", { timeout: 5000 }, async t => {
+  const app = await fixture(t, [
+    { type: "wait", command: "prompt", events: [
+      { type: "message_start", message: assistantMessage },
+      { type: "message_end", message: { ...assistantMessage, content: null } },
+      { type: "message_start", message: { ...assistantMessage, timestamp: 999, content: [{ type: "text", text: "After bad held message" }] } },
+      { type: "message_end", message: { ...assistantMessage, timestamp: 999, content: [{ type: "text", text: "After bad held message" }] } },
+    ], data: { disposition: "started" } },
+  ], {}, undefined, true, [], resolve("../koa/koa.ts"));
+  assert.equal((await app.post("prompt", { text: "go", mode: "prompt", attachments: [] })).status, 200);
+  await app.until(record => ["item", "patch"].includes(String(record.type)) && JSON.stringify(record).includes("After bad held message"));
+  assert.match(app.stderr(), /koa: transcript: /);
+});
+
+test("a malformed pi record does not stop later records", { timeout: 5000 }, async t => {
+  const app = await fixture(t, [
+    { type: "wait", command: "prompt", events: [
+      { type: "message_start", message: assistantMessage },
+      { type: "message_update" },
+      { type: "session_info_changed", name: "After bad record" },
+    ], data: { disposition: "started" } },
+  ], {}, undefined, true, [], resolve("../koa/koa.ts"));
+  assert.equal((await app.post("prompt", { text: "go", mode: "prompt", attachments: [] })).status, 200);
+  await app.until(record => record.type === "state" && record.name === "After bad record");
+  assert.match(app.stderr(), /koa: pi record message_update: /);
+  assert.equal(app.stderr().split("koa: pi record message_update:").length, 2);
+});
+
 test("RPC deltas, authoritative ends, tools, state, status and command correlation", { timeout: 10000 }, async t => {
   const app = await fixture(t, [
     { type: "wait", command: "prompt", events: [

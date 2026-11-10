@@ -114,6 +114,7 @@ function output(command: string, args: string[], signal: AbortSignal): Promise<s
       size += bytes.length; chunks.push(bytes);
     };
     signal.addEventListener("abort", abort, { once: true });
+    child.stdout.on("error", () => finish(undefined));
     child.stdout.on("data", data);
     child.once("error", () => finish(undefined));
     child.once("close", code => finish(code === 0 && state === "reading" && !signal.aborted ? Buffer.concat(chunks).toString("utf8") : undefined));

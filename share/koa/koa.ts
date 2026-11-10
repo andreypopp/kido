@@ -11,6 +11,7 @@ import type { RpcCommand, RpcResponse, JsonAgentSessionEvent, RpcExtensionUIRequ
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 type PiThinkingLevel = import("@earendil-works/pi-agent-core").ThinkingLevel;
 import { transcript } from "./koa-transcript.ts";
+import { later } from "./koa-timer.ts";
 import { respond, readBody } from "./koa-http.ts";
 import { isRecord, errorText, replaceControlCharacters, utf8Prefix, contentText } from "../pi/text.ts";
 import { webview } from "../webview/index.ts";
@@ -91,7 +92,7 @@ function rpc(child: ChildProcessWithoutNullStreams) {
     const result = new Promise<RpcResponse>((resolve, reject) => {
       const fail = (error: Error) => { pending.get(id)?.reject(error); pending.delete(id); };
       const abort = () => fail(new Error("pi command aborted"));
-      const timer = setTimeout(() => fail(new Error(`pi ${value.type} response timed out`)), RPC_RESPONSE_MS);
+      const timer = later(() => fail(new Error(`pi ${value.type} response timed out`)), RPC_RESPONSE_MS);
       const clear = () => { clearTimeout(timer); signal?.removeEventListener("abort", abort); };
       signal?.addEventListener("abort", abort, { once: true });
       pending.set(id, {
@@ -110,6 +111,7 @@ function rpc(child: ChildProcessWithoutNullStreams) {
   };
   let chunks: Buffer[] = [];
   let size = 0;
+  child.stdout.on("error", error => { process.stderr.write(`koa: pi stdout: ${errorText(error)}\n`); });
   child.stdout.on("data", (chunk: Buffer) => {
     let start = 0;
     for (let end = chunk.indexOf(10); end >= 0; end = chunk.indexOf(10, start)) {
@@ -119,8 +121,10 @@ function rpc(child: ChildProcessWithoutNullStreams) {
       let record: RpcResponse | JsonAgentSessionEvent | RpcExtensionUIRequest;
       try { record = JSON.parse(line); } catch { process.stderr.write(`koa: pi stdout: ${line}\n`); continue; }
       if (!record || typeof record !== "object" || !("type" in record)) { process.stderr.write(`koa: invalid pi record: ${line}\n`); continue; }
-      if (record.type === "response" && record.id) { pending.get(record.id)?.resolve(record); pending.delete(record.id); }
-      events(record);
+      try {
+        if (record.type === "response" && record.id) { pending.get(record.id)?.resolve(record); pending.delete(record.id); }
+        events(record);
+      } catch (error) { process.stderr.write(`koa: pi record ${record.type}: ${errorText(error)}\n`); }
     }
     if (start < chunk.length) { const tail = chunk.subarray(start); chunks.push(tail); size += tail.length; }
   });
@@ -132,6 +136,8 @@ function rpc(child: ChildProcessWithoutNullStreams) {
 }
 
 async function main(): Promise<void> {
+  process.stderr.on("error", () => {});
+  process.stdout.on("error", () => {});
   const location = pathToFileURL(process.argv[1] ?? "");
   const args = process.argv.slice(2);
   if (args.includes("--help")) {
@@ -183,7 +189,7 @@ async function main(): Promise<void> {
   const start = async () => {
     let metricsWrites: Promise<void> | undefined;
     const dir = mkdtempSync(join(tmpdir(), `koa-${process.pid}-`));
-    const removeDir = () => rmSync(dir, { recursive: true, force: true });
+    const removeDir = () => { try { rmSync(dir, { recursive: true, force: true }); } catch (error) { process.stderr.write(`koa: ${errorText(error)}\n`); } };
     process.once("exit", removeDir);
     teardown.push(() => { removeDir(); process.off("exit", removeDir); });
     const feed = transcript({ dir, flushMs: FLUSH_MS, metrics: metricsFile !== undefined });
@@ -230,6 +236,7 @@ async function main(): Promise<void> {
     const background = (work: Promise<unknown>) => { void work.catch(error => { if (pi.type !== "exited" && !stopping) process.stderr.write(`koa: ${errorText(error)}\n`); }); };
     const watch = (child: ChildProcessWithoutNullStreams, link: ReturnType<typeof rpc>) => {
       let stderr = "";
+      child.stderr.on("error", error => { process.stderr.write(`koa: pi stderr: ${errorText(error)}\n`); });
       child.stderr.setEncoding("utf8");
       child.stderr.on("data", (text: string) => { stderr = (stderr + text).split(/\n(?=.)/s).slice(-5).join("\n"); process.stderr.write(text); });
       background(link.exited.then(async exit => {
@@ -335,7 +342,7 @@ async function main(): Promise<void> {
               case "text_end": partial.content[index] = { type: "text", text: delta.content }; break;
               case "thinking_end": partial.content[index] = { type: "thinking", thinking: delta.content }; break;
               case "toolcall_start": partial.content[index] = { type: "toolCall", id: delta.id, name: delta.toolName, arguments: {} }; argumentsText.set(index, ""); break;
-              case "toolcall_delta": argumentsText.set(index, (argumentsText.get(index) ?? "") + delta.delta); argumentTimer ??= setTimeout(applyArguments, FLUSH_MS); break;
+              case "toolcall_delta": argumentsText.set(index, (argumentsText.get(index) ?? "") + delta.delta); argumentTimer ??= later(applyArguments, FLUSH_MS); break;
               case "toolcall_end": partial.content[index] = delta.toolCall; argumentsText.delete(index); break;
             }
           }
@@ -377,7 +384,7 @@ async function main(): Promise<void> {
         switch (record.method) {
           case "select": case "confirm": case "input": case "editor":
             state.dialogs.push({ ...record, ...("timeout" in record && record.timeout !== undefined ? { expires: Date.now() + record.timeout } : {}) });
-            if ("timeout" in record && record.timeout !== undefined) dialogTimers.set(record.id, setTimeout(() => removeDialog(record.id), record.timeout));
+            if ("timeout" in record && record.timeout !== undefined) dialogTimers.set(record.id, later(() => removeDialog(record.id), record.timeout));
             status(root.value, root.message); publish(true); break;
           case "notify": feed.notify(record.message, record.notifyType ?? "info"); break;
           case "set_editor_text": state.editor = { id: record.id, text: record.text }; publish(); break;
@@ -508,7 +515,7 @@ async function main(): Promise<void> {
       } },
       "/quit": { method: "POST", access: "any", handle: (_value, response) => {
         response.setHeader("Connection", "close");
-        const timer = setTimeout(() => background(shutdown()), QUIT_REPLY_MS);
+        const timer = later(() => background(shutdown()), QUIT_REPLY_MS);
         response.once("finish", () => { clearTimeout(timer); background(shutdown()); });
         respond(response, 200, "{}");
       } },
@@ -561,6 +568,7 @@ async function main(): Promise<void> {
     const server = createServer((request, response) => { background(handle(request, response)); });
     teardown.push(() => { server.close(); server.closeAllConnections(); });
     const onSignal = () => background(shutdown());
+    process.stdout.on("error", onSignal);
     teardown.push(() => { for (const signal of ["SIGTERM", "SIGINT", "SIGHUP"] as const) process.off(signal, onSignal); });
     for (const signal of ["SIGTERM", "SIGINT", "SIGHUP"] as const) process.on(signal, onSignal);
     await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(view.socketPath, resolve); });

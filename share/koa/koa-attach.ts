@@ -1,8 +1,9 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
-import { mintId } from '../pi/text.ts';
+import { mintId, errorText } from '../pi/text.ts';
 import { readBody, respond, openFile, FileError, serveFile } from './koa-http.ts';
+import { later } from './koa-timer.ts';
 import { ATTACHMENT_LIMITS, type Attachment, type UploadProgress } from './koa-records.ts';
 import type { RpcCommand } from '@earendil-works/pi-coding-agent';
 
@@ -29,7 +30,7 @@ export function attachments(dir: string, idleMs = UPLOAD_IDLE_MS) {
     const file = data(entry);
     if (file.origin === 'upload') rmSync(dirname(file.path), { recursive: true, force: true });
   };
-  const renew = (id: string, entry: Extract<Entry, { type: 'uploading' }>) => { clearTimeout(entry.timer); entry.timer = setTimeout(() => remove(id), idleMs).unref(); };
+  const renew = (id: string, entry: Extract<Entry, { type: 'uploading' }>) => { clearTimeout(entry.timer); entry.timer = later(() => remove(id), idleMs).unref(); };
   const info = (id: string, base: Pick<Attachment, 'name' | 'origin' | 'path'>, file: Awaited<ReturnType<typeof openFile>>): Attachment => {
     const common = { id, name: base.name, path: base.path, origin: base.origin, size: file.size };
     return file.image ? { ...common, kind: 'image', ...file.image } : { ...common, kind: 'file' };
@@ -61,7 +62,7 @@ export function attachments(dir: string, idleMs = UPLOAD_IDLE_MS) {
             if (value.size > ATTACHMENT_LIMITS.fileBytes) throw new FileError('too_large');
             const name = value.name.replace(/[\/\\\p{Cc}]/gu, '_');
             const safe = !name || name === '.' || name === '..' ? 'attachment' : name;
-            entry = { path: join(dir, id, safe), type: 'uploading', name: safe, size: value.size, received: 0, timer: setTimeout(() => remove(id), idleMs).unref() };
+            entry = { path: join(dir, id, safe), type: 'uploading', name: safe, size: value.size, received: 0, timer: later(() => remove(id), idleMs).unref() };
           }
           const pending = [...entries.values()].filter(entry => entry.type === 'uploading' || entry.type === 'ready');
           if (pending.length >= ATTACHMENT_LIMITS.files || pending.reduce((total, item) => total + data(item).size, data(entry).size) > ATTACHMENT_LIMITS.pendingBytes) {
@@ -87,7 +88,7 @@ export function attachments(dir: string, idleMs = UPLOAD_IDLE_MS) {
           const offset = Number(operation);
           if (entry.type !== 'uploading' || entry.request || !Number.isSafeInteger(offset) || offset !== entry.received) return reply(409, { error: 'Upload offset does not match' });
           entry.request = request; renew(id, entry);
-          const aborted = () => remove(id); request.once('aborted', aborted);
+          const aborted = () => { try { remove(id); } catch (error) { process.stderr.write(`koa: ${errorText(error)}\n`); } }; request.once('aborted', aborted);
           let bytes: Buffer | undefined;
           try { bytes = await readBody(request, ATTACHMENT_LIMITS.chunkBytes); }
           finally { request.removeListener('aborted', aborted); delete entry.request; }

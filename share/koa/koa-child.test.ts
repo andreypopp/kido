@@ -1,8 +1,21 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { spawn, spawnSync } from "node:child_process";
+import { ChildProcess, spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
 import { signalChild } from "./koa-child.ts";
+
+test("signal errors are reported without throwing", t => {
+  const child = new ChildProcess();
+  Object.defineProperty(child, "pid", { value: 123 });
+  const kill = process.kill;
+  let output = "";
+  const stderr = t.mock.method(process.stderr, "write", (text: string | Uint8Array) => { output += text; return true; });
+  try {
+    process.kill = () => { throw Object.assign(new Error("invalid signal"), { code: "EINVAL" }); };
+    assert.doesNotThrow(() => signalChild(child, "SIGTERM"));
+    assert.equal(output, "koa: SIGTERM: invalid signal\n");
+  } finally { process.kill = kill; stderr.mock.restore(); }
+});
 
 test("signalling an unreaped child does not throw", async () => {
   const child = spawn("/usr/bin/true", [], { detached: true, stdio: "ignore" });
