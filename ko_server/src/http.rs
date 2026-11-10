@@ -221,15 +221,20 @@ fn message_policy<'a>(
 ) -> Vec<u8> {
     message(
         start,
-        headers.into_iter().chain(
-            if policy == Policy::Webview {
-                SECURITY_HEADERS.as_slice()
-            } else {
-                &[]
-            }
-            .iter()
-            .copied(),
-        ),
+        headers
+            .into_iter()
+            .filter(|(name, _)| {
+                policy != Policy::Webview || !name.eq_ignore_ascii_case("cache-control")
+            })
+            .chain(
+                if policy == Policy::Webview {
+                    SECURITY_HEADERS.as_slice()
+                } else {
+                    &[]
+                }
+                .iter()
+                .copied(),
+            ),
         body,
     )
 }
@@ -338,18 +343,6 @@ pub(crate) fn error_reply(
     json_response(status, &crate::protocol::json(error), policy)
 }
 
-fn response_headers(headers: &[(String, String)]) -> impl Iterator<Item = (&str, &str)> {
-    let tokens = connection_tokens(headers);
-    headers
-        .iter()
-        .filter(move |(name, _)| {
-            !hop_by_hop(name, &tokens)
-                && !name.eq_ignore_ascii_case(CONTENT_LENGTH_HEADER)
-                && !name.eq_ignore_ascii_case("cache-control")
-        })
-        .map(|(name, value)| (name.as_str(), value.as_str()))
-}
-
 pub(crate) fn proxy_head(
     status: crate::protocol::webview::Status,
     headers: &crate::protocol::webview::Headers,
@@ -359,7 +352,13 @@ pub(crate) fn proxy_head(
         .ok()
         .and_then(|status| status.canonical_reason())
         .unwrap_or("");
-    let mut fields: Vec<_> = response_headers(headers.pairs()).collect();
+    let tokens = connection_tokens(headers.pairs());
+    let mut fields: Vec<_> = headers
+        .pairs()
+        .iter()
+        .filter(|(name, _)| response::transport_header(name, &tokens))
+        .map(|(name, value)| (name.as_str(), value.as_str()))
+        .collect();
     if !matches!(code, 204 | 304) {
         fields.push(("transfer-encoding", "chunked"));
     }
@@ -376,7 +375,12 @@ pub(crate) fn switching_protocols(
     headers: &[(String, String)],
     policy: Policy,
 ) -> Vec<u8> {
-    let mut fields: Vec<_> = response_headers(headers).collect();
+    let tokens = connection_tokens(headers);
+    let mut fields: Vec<_> = headers
+        .iter()
+        .filter(|(name, _)| response::transport_header(name, &tokens))
+        .map(|(name, value)| (name.as_str(), value.as_str()))
+        .collect();
     fields.extend([
         ("upgrade", "websocket"),
         ("connection", "upgrade"),
@@ -389,15 +393,25 @@ pub(crate) fn chunk_header(length: usize) -> String {
     format!("{length:x}\r\n")
 }
 
-pub fn request(method: &str, target: &str, headers: &[(&str, &str)], body: &[u8]) -> Vec<u8> {
+pub fn request(
+    method: &str,
+    target: &crate::protocol::RequestTarget,
+    headers: &[(&str, &str)],
+    body: &[u8],
+) -> Vec<u8> {
     message(
-        &format!("{method} {target} HTTP/1.1"),
+        &format!("{method} {} HTTP/1.1", target.as_str()),
         headers.iter().copied(),
         body,
     )
 }
 
-pub fn program_call(method: &str, target: &str, extra: &[(&str, &str)], body: &[u8]) -> Vec<u8> {
+pub fn program_call(
+    method: &str,
+    target: &crate::protocol::RequestTarget,
+    extra: &[(&str, &str)],
+    body: &[u8],
+) -> Vec<u8> {
     let mut headers = extra.to_vec();
     headers.extend([("Host", "localhost"), ("Connection", "close")]);
     if !headers
@@ -411,7 +425,7 @@ pub fn program_call(method: &str, target: &str, extra: &[(&str, &str)], body: &[
 
 pub fn call(
     method: &str,
-    target: &str,
+    target: &crate::protocol::RequestTarget,
     client: Option<ClientId>,
     extra: &[(&str, &str)],
     body: &[u8],
@@ -420,7 +434,7 @@ pub fn call(
     let client = client.map(|client| client.to_string());
     let length = body.len().to_string();
     let mut headers = vec![("Host", "localhost")];
-    if (method, target) != ("GET", "/version") {
+    if (method, target.as_str()) != ("GET", "/version") {
         headers.extend(versions.iter().map(|(name, value)| (*name, value.as_str())));
     }
     if let Some(client) = &client {

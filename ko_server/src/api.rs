@@ -614,7 +614,7 @@ routes! {
     /// Serve the pane's HTTP requests and WebSockets. Only the pane itself can open this stream.
     WebviewServe {
         method: WS,
-        path: /panes/{id: PaneId}/webview/serve,
+        path: /panes/{id: PaneId}/webview_serve,
         caller: optional,
         send: crate::protocol::webview::ServeIn,
         recv: crate::protocol::webview::ServeOut,
@@ -846,7 +846,10 @@ mod tests {
             ),
         ] {
             assert_eq!(Route::of_request(method, encoded), Ok(route.clone()));
-            assert_eq!(route.to_request(), (method, encoded.to_owned()));
+            assert_eq!(
+                route.to_request(),
+                (method, encoded.to_owned().try_into().unwrap())
+            );
         }
         assert_eq!(
             Route::of_request("GET", "/panes/pane_2/vars"),
@@ -974,7 +977,7 @@ mod tests {
             },
         ] {
             let (method, target) = route.to_request();
-            assert_eq!(Route::of_request(method, &target), Ok(route));
+            assert_eq!(Route::of_request(method, target.as_str()), Ok(route));
         }
     }
 
@@ -994,7 +997,7 @@ mod tests {
                 timeout_ms: WaitMs::DEFAULT
             }
             .to_request(),
-            ("GET", wait)
+            ("GET", wait.try_into().unwrap())
         );
         assert_eq!(
             Route::View {
@@ -1004,7 +1007,10 @@ mod tests {
                 offset: Offset::new(0),
             }
             .to_request(),
-            ("GET", "/panes/pane_1/view?offset=0".to_owned())
+            (
+                "GET",
+                "/panes/pane_1/view?offset=0".to_owned().try_into().unwrap()
+            )
         );
     }
 
@@ -1132,7 +1138,15 @@ mod tests {
                 .unwrap_or_else(|invalid| panic!("{target}: {invalid}"));
             assert_eq!(route.name(), info.name, "{target}");
             let (method, again) = route.to_request();
-            assert_eq!(Route::of_request(method, &again), Ok(route), "{again}");
+            assert_eq!(
+                crate::protocol::RequestTarget::try_from(again.as_str().to_owned()),
+                Ok(again.clone())
+            );
+            assert_eq!(
+                Route::of_request(method, again.as_str()),
+                Ok(route),
+                "{again:?}"
+            );
         }
     }
 
@@ -1160,9 +1174,9 @@ mod tests {
         ) {
             let query: Vec<String> = query.into_iter().map(|(key, value)| format!("{key}={value}")).collect();
             let target = if with_query { format!("{path}?{}", query.join("&")) } else { path.to_owned() };
-            if let Ok(route) = Route::of_request(method, &target) {
+            if let Ok(route) = Route::of_request(method, target.as_str()) {
                 let (method, target) = route.to_request();
-                prop_assert_eq!(Route::of_request(method, &target), Ok(route));
+                prop_assert_eq!(Route::of_request(method, target.as_str()), Ok(route));
             }
         }
     }

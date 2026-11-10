@@ -73,18 +73,18 @@ pub fn identity(head: &Response) -> Result<(), Error> {
     Ok(())
 }
 
+pub(super) fn transport_header(name: &str, tokens: &[&str]) -> bool {
+    !super::hop_by_hop(name, tokens) && !name.eq_ignore_ascii_case(super::CONTENT_LENGTH_HEADER)
+}
+
 pub fn metadata(mut head: Response) -> Response {
-    let tokens = super::connection_tokens(&head.headers);
-    let keep: Vec<_> = head
-        .headers
-        .iter()
-        .map(|(name, _)| {
-            !super::hop_by_hop(name, &tokens)
-                && !name.eq_ignore_ascii_case(super::CONTENT_LENGTH_HEADER)
-        })
+    let tokens: Vec<_> = super::connection_tokens(&head.headers)
+        .into_iter()
+        .map(str::to_owned)
         .collect();
-    let mut keep = keep.into_iter();
-    head.headers.retain(|_| keep.next().unwrap_or(false));
+    let tokens: Vec<_> = tokens.iter().map(String::as_str).collect();
+    head.headers
+        .retain(|(name, _)| transport_header(name, &tokens));
     head
 }
 
@@ -287,13 +287,14 @@ mod tests {
             "",
         ] {
             let mut reader = Reader::default();
-            reader.push(format!("HTTP/1.1 200 OK\r\n{framing}Connection: X-Private\r\nX-Private: secret\r\nProxy-Custom: secret\r\nContent-Security-Policy: default-src 'none'\r\nContent-Encoding: identity\r\n\r\n").as_bytes());
+            reader.push(format!("HTTP/1.1 200 OK\r\n{framing}cOnNeCtIoN: X-Private\r\nx-PrIvAtE: secret\r\npRoXy-Custom: secret\r\nCache-Control: public\r\nContent-Security-Policy: default-src 'none'\r\nContent-Encoding: identity\r\n\r\n").as_bytes());
             let Some(Event::Head(head)) = reader.next(false).unwrap() else {
                 panic!()
             };
             assert_eq!(
                 head.headers,
                 [
+                    ("cache-control".into(), "public".into()),
                     (
                         "content-security-policy".into(),
                         "default-src 'none'".into()

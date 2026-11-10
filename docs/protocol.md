@@ -1446,7 +1446,7 @@ prompt start (OSC 133 `A`) remove the page; the death also closes the
 serve stream. The alternate screen does not touch it. Nothing
 persists. The status model does not read it.
 
-**The serve stream**, `GET /panes/{id}/webview/serve`, a WebSocket of
+**The serve stream**, `GET /panes/{id}/webview_serve`, a WebSocket of
 JSON text messages (`ServeIn` and `ServeOut` in
 `ko_server/src/protocol/webview.rs`). Only the pane itself opens it: the
 user and every other pane are `refused`. It is in the runtime gate's
@@ -1457,7 +1457,9 @@ proxied request or page WebSocket, the server mints a `req` serial,
 which only increases. A `data` payload is at most `EXEC_CHUNK` before its
 encoding, as in the exec session (section 15), and a `body` with `more: false`
 ends its side. The program sees the method, the path with its query
-and the headers as the page sent them, with the hop-by-hop headers,
+(`RequestTarget`: a `/` and printable ASCII, checked when a message
+decodes, so no client or proxy writes another target into a request
+line) and the headers as the page sent them, with the hop-by-hop headers,
 `Host` and the identity headers (`Ko-Pane`, `Ko-Pane-Token`,
 `Ko-Client`) removed, and the server's own `Ko-Pane` added.
 `ko_server::http::forwarded` owns the rule, which `ko webview serve` and
@@ -1467,7 +1469,8 @@ the client core also apply; it also replaces `Accept-Encoding` with
 A response head reaches the page with the hop-by-hop headers, the
 `Proxy-*` headers, the headers that its `Connection` names and
 `Content-Length` removed, because each hop sets its own framing; the
-response reader of `ko_server/src/http/response.rs` owns the rule. A
+response reader of `ko_server/src/http/response.rs` owns the rule, and
+the proxy and every client reader apply the same filter. A
 head whose `Content-Encoding` is not `identity` is refused by the
 client core's webview reader (`ko_client/src/webview.rs`), which `ko
 webview serve` and the app's fetches share: WebKit
@@ -1494,7 +1497,9 @@ status that it already sent, so the client sees the body cut off.
 Every page WebSocket of the pane closes with 1011.
 
 **The proxy route**, `GET|POST|PUT|PATCH|DELETE /panes/{id}/webview/{path...}`,
-where `{path...}` takes the rest of the target, query included. A
+where `{path...}` takes the rest of the target, query included. The
+whole namespace belongs to the program, `/serve` included: the serve
+stream has its own path outside it. A
 `GET` with `Upgrade: websocket` opens a page WebSocket. Only the user
 with the `Ko-Client` header of a live client may call it: a pane
 identity is `refused`, an expired client is `gone`, and the runtime
@@ -1512,7 +1517,9 @@ the program gets `cancel`, or `close` for a WebSocket.
 
 Every proxy response, an error included, has `Cache-Control:
 no-store` and the `Content-Security-Policy` of `CSP` in
-`ko_server/src/http.rs`. A program's own CSP passes through
+`ko_server/src/http.rs`. The proxy drops a program's own
+`Cache-Control`; this cache policy is the proxy's, separate from the
+transport filter. A program's own CSP passes through
 beside it, so both apply: a program can make the policy stricter, never
 weaker.
 

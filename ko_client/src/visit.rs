@@ -191,7 +191,7 @@ pub fn visit(
     shown: &mut impl FnMut(),
 ) -> Result<i32, String> {
     let (_, path) = Route::VisitRuntime { name: name.clone() }.to_request();
-    let link = match api::stream(dir, Some(caller), &path) {
+    let link = match api::stream(dir, Some(caller), path.as_str()) {
         Ok(Ok(link)) => link,
         Ok(Err(response)) => return Err(api::describe(dir, api::response_error(&response))),
         Err(api::Error::Server(failure)) => {

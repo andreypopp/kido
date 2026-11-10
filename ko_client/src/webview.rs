@@ -91,7 +91,7 @@ impl Upstream {
         poll: &mut Poll,
         path: &Path,
         kind: Kind,
-        target: &str,
+        target: &ko_server::protocol::RequestTarget,
         headers: &Headers,
         destination: Target,
         body: &[u8],
@@ -562,7 +562,7 @@ pub fn serve(
 ) -> io::Result<()> {
     let pane = caller.pane;
     let (_, route) = Route::WebviewServe { id: pane }.to_request();
-    let mut server = match api::stream(dir, Some(caller), &route) {
+    let mut server = match api::stream(dir, Some(caller), route.as_str()) {
         Ok(Ok(link)) => link,
         Ok(Err(response)) => {
             return Err(io::Error::other(api::describe(

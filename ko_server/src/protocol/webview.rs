@@ -1,3 +1,4 @@
+use super::RequestTarget;
 use std::borrow::Cow;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -19,15 +20,19 @@ impl Rest {
     pub(crate) fn as_str(&self) -> &str {
         &self.0
     }
+
+    pub(crate) fn into_target(self) -> RequestTarget {
+        RequestTarget::rendered(format!("/{}", self.0))
+    }
 }
 
 impl TryFrom<String> for Rest {
     type Error = &'static str;
     fn try_from(value: String) -> Result<Self, Self::Error> {
-        if value.bytes().all(|byte| (0x21..=0x7e).contains(&byte)) {
+        if super::request_target_bytes(&value) {
             Ok(Self(value))
         } else {
-            Err("invalid webview path")
+            Err("invalid request target")
         }
     }
 }
@@ -252,7 +257,7 @@ pub enum ServeOut {
     Request {
         req: u64,
         method: Method,
-        path: String,
+        path: RequestTarget,
         headers: Headers,
     },
     Body {
@@ -265,7 +270,7 @@ pub enum ServeOut {
     },
     Upgrade {
         req: u64,
-        path: String,
+        path: RequestTarget,
         headers: Headers,
     },
     Frame {
@@ -316,4 +321,37 @@ pub enum ServeIn {
         code: CloseCode,
         reason: CloseReason,
     },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn serve_out_request_targets_are_checked() {
+        for kind in ["request", "upgrade"] {
+            for path in [
+                "",
+                "relative",
+                "/space here",
+                "/\t",
+                "/\r",
+                "/\n",
+                "/\0",
+                "/\x7f",
+                "/é",
+            ] {
+                let value = serde_json::json!({"type":kind,"req":1,"method":"GET","path":path,"headers":[]});
+                assert!(
+                    crate::protocol::decode::<ServeOut>(&serde_json::to_vec(&value).unwrap())
+                        .is_err(),
+                    "{kind}: {path:?}"
+                );
+            }
+            for path in ["/", "/query?q=a%20b&x=%ff"] {
+                let value = serde_json::json!({"type":kind,"req":1,"method":"GET","path":path,"headers":[]});
+                crate::protocol::decode::<ServeOut>(&serde_json::to_vec(&value).unwrap()).unwrap();
+            }
+        }
+    }
 }

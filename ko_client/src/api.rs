@@ -135,7 +135,7 @@ fn socket(dir: &Path, caller: Option<&Caller>) -> Result<PathBuf, Failure> {
 pub(crate) fn exchange(
     dir: &Path,
     caller: Option<Caller>,
-    (method, path): (&str, &str),
+    (method, path): (&str, &ko_server::protocol::RequestTarget),
     body: &[u8],
     within: Duration,
 ) -> Result<Response, Failure> {
@@ -181,7 +181,9 @@ pub fn request_within(
     if route.is_some_and(|route| route.websocket()) {
         return Err(Error::Websocket);
     }
-    exchange(dir, caller, (method, path), body, within).map_err(Error::Server)
+    let path = ko_server::protocol::RequestTarget::try_from(path.to_owned())
+        .map_err(|message| Error::Server(Failure::Failed(message.into())))?;
+    exchange(dir, caller, (method, &path), body, within).map_err(Error::Server)
 }
 
 pub fn probe<T: Serialize + DeserializeOwned>(

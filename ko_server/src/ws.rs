@@ -127,7 +127,7 @@ fn record_header(out: &mut [u8; MAX_HEADER], record: Record, offset: u64, len: u
 
 pub fn upgrade_request(
     method: &str,
-    target: &str,
+    target: &crate::protocol::RequestTarget,
     client: Option<ClientId>,
     headers: &[(&str, &str)],
 ) -> (Vec<u8>, String) {

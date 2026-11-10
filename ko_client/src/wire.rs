@@ -152,7 +152,7 @@ fn borrowed<'a>(headers: &'a [(&'static str, String)]) -> Vec<(&'static str, &'a
 fn open(
     socket: &Path,
     (client, caller): Who,
-    (method, target): (&str, &str),
+    (method, target): (&str, &ko_server::protocol::RequestTarget),
     headers: &[(&str, &str)],
     body: &[u8],
     within: Limit,
@@ -187,7 +187,7 @@ fn open(
 pub(crate) fn exchange(
     socket: &Path,
     who: Who,
-    target: (&str, &str),
+    target: (&str, &ko_server::protocol::RequestTarget),
     headers: &[(&str, &str)],
     body: &[u8],
     within: Limit,

@@ -1,3 +1,46 @@
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct RequestTarget(String);
+
+impl RequestTarget {
+    pub(crate) fn rendered(value: String) -> Self {
+        Self(value)
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl TryFrom<String> for RequestTarget {
+    type Error = &'static str;
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        if value.starts_with('/') && request_target_bytes(&value) {
+            Ok(Self(value))
+        } else {
+            Err("invalid request target")
+        }
+    }
+}
+
+impl From<RequestTarget> for String {
+    fn from(target: RequestTarget) -> Self {
+        target.0
+    }
+}
+impl JsonSchema for RequestTarget {
+    fn schema_name() -> Cow<'static, str> {
+        "RequestTarget".into()
+    }
+    fn json_schema(_: &mut SchemaGenerator) -> Schema {
+        json_schema!({"type":"string","pattern":r"^/[\x21-\x7e]*$"})
+    }
+}
+
+pub(crate) fn request_target_bytes(value: &str) -> bool {
+    value.bytes().all(|byte| (0x21..=0x7e).contains(&byte))
+}
+
 pub mod webview;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

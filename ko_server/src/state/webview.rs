@@ -147,7 +147,7 @@ impl State {
         fields.push((protocol::PANE_HEADER.into(), pane.to_string()));
         let headers =
             Headers::try_from(fields).map_err(|message| Error::new(ErrorKind::Invalid, message))?;
-        let path = format!("/{}", path.as_str());
+        let path = path.into_target();
         let upgrading = method == Method::Get
             && head
                 .header("upgrade")
@@ -675,7 +675,7 @@ mod tests {
             ServeOut::Request {
                 req: 1,
                 method: Method::Get,
-                path: "/".into(),
+                path: "/".to_owned().try_into().unwrap(),
                 headers: Headers::default(),
             },
         );

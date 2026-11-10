@@ -55,7 +55,7 @@ fn webview_ffi_uses_the_real_proxy_and_cancels_the_program_request() {
         crate::wire::exchange(
             &server.dir.join("socket"),
             (None, None),
-            (method, target),
+            (method, &target.to_owned().try_into().unwrap()),
             &[],
             body,
             crate::wire::Limit::Idle(WAIT),
@@ -89,7 +89,7 @@ fn webview_ffi_uses_the_real_proxy_and_cancels_the_program_request() {
     stream.set_write_timeout(Some(WAIT)).unwrap();
     let (request, key) = ko_server::ws::upgrade_request(
         "GET",
-        &format!("/panes/{pane}/webview/serve"),
+        &format!("/panes/{pane}/webview_serve").try_into().unwrap(),
         None,
         &[("Ko-Pane", pane), ("Ko-Pane-Token", &token)],
     );
@@ -121,8 +121,8 @@ fn webview_ffi_uses_the_real_proxy_and_cancels_the_program_request() {
             ko_client_webview_fetch(
                 client,
                 c"pane_1".as_ptr(),
-                c"POST".as_ptr(),
-                c"/api?q=1".as_ptr(),
+                c"GET".as_ptr(),
+                c"/serve".as_ptr(),
                 std::ptr::null(),
                 0,
                 b"posted".as_ptr(),
@@ -134,8 +134,8 @@ fn webview_ffi_uses_the_real_proxy_and_cancels_the_program_request() {
         Code::Ok
     );
     let request = event(&mut program, "request");
-    assert_eq!(request["method"], "POST");
-    assert_eq!(request["path"], "/api?q=1");
+    assert_eq!(request["method"], "GET");
+    assert_eq!(request["path"], "/serve");
     assert_eq!(event(&mut program, "body")["data"], "cG9zdGVk");
     let req = request["req"].clone();
     send(&mut program,&serde_json::json!({"type":"response","req":req,"status":201,"headers":[["content-type","text/html"]]}).to_string());

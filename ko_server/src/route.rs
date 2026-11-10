@@ -548,7 +548,7 @@ macro_rules! routes {
             }
 
             #[allow(unused_mut)]
-            pub fn to_request(&self) -> (&'static str, String) {
+            pub fn to_request(&self) -> (&'static str, $crate::protocol::RequestTarget) {
                 match self {
                     $(
                         Route::$name { $( $( $pn, )? )* $( $( $qn, )* )? } => {
@@ -565,7 +565,7 @@ macro_rules! routes {
                                     None $( .or(Some(<$qt>::$qd)) )?,
                                 );
                             )* )?
-                            ($crate::route::method!($method $(($verb))?).http(), target)
+                            ($crate::route::method!($method $(($verb))?).http(), $crate::protocol::RequestTarget::rendered(target))
                         }
                     )*
                 }

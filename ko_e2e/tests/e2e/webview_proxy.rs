@@ -12,7 +12,7 @@ fn serving(s: &Server) -> (String, Ws, Ws, Headers) {
     let headers = s.client_headers(welcome["client"].as_str().unwrap());
     let mut stream = s
         .dial_ws(
-            &format!("/panes/{pane}/webview/serve"),
+            &format!("/panes/{pane}/webview_serve"),
             Some(s.as_pane(&pane)),
             101,
         )
@@ -29,6 +29,20 @@ fn serving(s: &Server) -> (String, Ws, Ws, Headers) {
 fn webview_proxy_http_auth_streaming_and_failures() {
     let s = start(&[]);
     let (pane, mut stream, _client, headers) = serving(&s);
+    let response = s.send_request(
+        "GET",
+        &format!("/panes/{pane}/webview/serve"),
+        &headers,
+        b"",
+    );
+    let request = stream.event("request");
+    assert_eq!(request["path"], "/serve");
+    stream.event("body");
+    stream.send(&json!({"type":"response","req":request["req"],"status":200,"headers":[]}));
+    stream.send(
+        &json!({"type":"body","req":request["req"],"data":base64(b"serve page"),"more":false}),
+    );
+    assert_eq!(s.read_reply(response), (200, b"serve page".to_vec()));
     let path = format!("/panes/{pane}/webview/fault");
     let response = s.send_request("GET", &path, &headers, b"");
     let req = stream.event("request")["req"].clone();
@@ -62,7 +76,7 @@ fn webview_proxy_http_auth_streaming_and_failures() {
     assert_eq!(stream.event("supported")["supported"], true);
     drop(capable);
     assert_eq!(stream.event("supported")["supported"], false);
-    let serve_path = format!("/panes/{pane}/webview/serve");
+    let serve_path = format!("/panes/{pane}/webview_serve");
     assert!(s.dial_ws(&serve_path, None, 409).is_none());
     assert!(
         s.dial_ws(&serve_path, Some(s.as_pane(&pane)), 409)
@@ -105,7 +119,7 @@ fn webview_proxy_http_auth_streaming_and_failures() {
     ));
     assert_eq!(stream.event("body")["data"], base64(b"posted"));
     let req = request["req"].clone();
-    stream.send(&json!({"type":"response","req":req,"status":201,"headers":[["content-type","text/plain"],["content-security-policy","script-src 'none'"]]}));
+    stream.send(&json!({"type":"response","req":req,"status":201,"headers":[["content-type","text/plain"],["Cache-Control","public, max-age=3600"],["content-security-policy","script-src 'none'"]]}));
     stream.send(&json!({"type":"body","req":req,"data":base64(b"first"),"more":true}));
     let mut bytes = Vec::new();
     let head = s.read_head(&mut response, &mut bytes);
@@ -114,6 +128,13 @@ fn webview_proxy_http_auth_streaming_and_failures() {
         head.headers
             .iter()
             .any(|(key, value)| key.eq_ignore_ascii_case("cache-control") && value == "no-store")
+    );
+    assert_eq!(
+        head.headers
+            .iter()
+            .filter(|(key, _)| key.eq_ignore_ascii_case("cache-control"))
+            .count(),
+        1
     );
     let policies: Vec<_> = head
         .headers
@@ -275,9 +296,14 @@ fn webview_proxy_websocket_frames_close_and_size_limit() {
     stream.send(&json!({"type":"response","req":request["req"],"status":101,"headers":[["Sec-WebSocket-Extensions","permessage-deflate"]]}));
     assert_eq!(s.read_reply(rejected).0, 502);
     assert_eq!(stream.event("close")["code"], 1002);
-    let mut socket = s.send_request("GET", &format!("/panes/{pane}/webview/ws?q"), &headers, b"");
+    let mut socket = s.send_request(
+        "GET",
+        &format!("/panes/{pane}/webview/serve"),
+        &headers,
+        b"",
+    );
     let request = stream.event("upgrade");
-    assert_eq!(request["path"], "/ws?q");
+    assert_eq!(request["path"], "/serve");
     let req = request["req"].clone();
     stream.send(&json!({"type":"response","req":req,"status":101,"headers":[]}));
     let mut bytes = Vec::new();
@@ -384,7 +410,7 @@ runtimes:
     s.text(&pane, "ready\n");
     s.screen_has(&pane, "ready");
     let socket = s.dir.join("runtimes/dev/io/socket");
-    let serve_path = format!("/panes/{pane}/webview/serve");
+    let serve_path = format!("/panes/{pane}/webview_serve");
     s.dial_ws_on(&socket, &serve_path, None, 409);
     let mut stream = s
         .dial_ws_on(&socket, &serve_path, Some(s.as_pane(&pane)), 101)

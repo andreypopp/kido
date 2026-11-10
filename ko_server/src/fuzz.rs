@@ -56,7 +56,7 @@ pub fn decode(data: &[u8]) {
     let (method, target) = text.split_once(' ').unwrap_or((&text, &text));
     if let Ok(route) = Route::of_request(method, target) {
         let (method, target) = route.to_request();
-        assert_eq!(Route::of_request(method, &target), Ok(route));
+        assert_eq!(Route::of_request(method, target.as_str()), Ok(route));
     }
 }
 
@@ -519,7 +519,7 @@ impl Rig {
             .iter()
             .map(|(name, value)| (*name, value.as_str()))
             .collect();
-        let probe = request("GET", "/version", &headers, b"");
+        let probe = request("GET", &Route::Version {}.to_request().1, &headers, b"");
         statuses(self.exchange(&probe))
     }
 }
@@ -619,9 +619,14 @@ mod tests {
         let headers: Vec<(&str, &str)> = headers.iter().map(|(n, v)| (*n, v.as_str())).collect();
         let short = &headers[..3];
         let input = [
-            request("GET", "/version", short, b""),
-            request("GET", "/nothing", short, b""),
-            request("GET", "/version", &headers, b""),
+            request("GET", &Route::Version {}.to_request().1, short, b""),
+            request(
+                "GET",
+                &crate::protocol::RequestTarget::try_from("/nothing".to_owned()).unwrap(),
+                short,
+                b"",
+            ),
+            request("GET", &Route::Version {}.to_request().1, &headers, b""),
         ]
         .concat();
         let found = with_rig(|rig| statuses(rig.exchange(&input)));

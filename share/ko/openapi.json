@@ -3474,6 +3474,10 @@
         "pattern": "^/[^:%\\n\\u0000]*$",
         "type": "string"
       },
+      "RequestTarget": {
+        "pattern": "^/[\\x21-\\x7e]*$",
+        "type": "string"
+      },
       "RunArgs": {
         "description": "arguments of the container engine's `run` without an option that ko owns",
         "items": {
@@ -4073,7 +4077,7 @@
                 "$ref": "#/components/schemas/Method"
               },
               "path": {
-                "type": "string"
+                "$ref": "#/components/schemas/RequestTarget"
               },
               "req": {
                 "minimum": 0,
@@ -4141,7 +4145,7 @@
                 "$ref": "#/components/schemas/WebviewHeaders"
               },
               "path": {
-                "type": "string"
+                "$ref": "#/components/schemas/RequestTarget"
               },
               "req": {
                 "minimum": 0,
@@ -6455,64 +6459,6 @@
         }
       }
     },
-    "/panes/{id}/webview/serve": {
-      "get": {
-        "description": "Serve the pane's HTTP requests and WebSockets. Only the pane itself can open this stream.",
-        "operationId": "WebviewServe",
-        "parameters": [
-          {
-            "example": "pane_1",
-            "in": "path",
-            "name": "id",
-            "required": true,
-            "schema": {
-              "$ref": "#/components/schemas/PaneId"
-            }
-          },
-          {
-            "example": "pane_1",
-            "in": "header",
-            "name": "Ko-Pane",
-            "required": false,
-            "schema": {
-              "$ref": "#/components/schemas/PaneId"
-            }
-          },
-          {
-            "example": "0123456789abcdef0123456789abcdef",
-            "in": "header",
-            "name": "Ko-Pane-Token",
-            "required": false,
-            "schema": {
-              "$ref": "#/components/schemas/PaneToken"
-            }
-          }
-        ],
-        "responses": {
-          "101": {
-            "description": "Switching Protocols"
-          },
-          "default": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "description": "The common error body."
-          }
-        },
-        "x-ko-websocket": {
-          "recv": {
-            "$ref": "#/components/schemas/ServeOut"
-          },
-          "send": {
-            "$ref": "#/components/schemas/ServeIn"
-          }
-        }
-      }
-    },
     "/panes/{id}/webview/{path}": {
       "delete": {
         "description": "Delete a resource of the pane's page. Requires a live Ko-Client.",
@@ -6954,6 +6900,64 @@
               }
             },
             "description": "The program's response, or a common error body."
+          }
+        }
+      }
+    },
+    "/panes/{id}/webview_serve": {
+      "get": {
+        "description": "Serve the pane's HTTP requests and WebSockets. Only the pane itself can open this stream.",
+        "operationId": "WebviewServe",
+        "parameters": [
+          {
+            "example": "pane_1",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/PaneId"
+            }
+          },
+          {
+            "example": "pane_1",
+            "in": "header",
+            "name": "Ko-Pane",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/PaneId"
+            }
+          },
+          {
+            "example": "0123456789abcdef0123456789abcdef",
+            "in": "header",
+            "name": "Ko-Pane-Token",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/PaneToken"
+            }
+          }
+        ],
+        "responses": {
+          "101": {
+            "description": "Switching Protocols"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The common error body."
+          }
+        },
+        "x-ko-websocket": {
+          "recv": {
+            "$ref": "#/components/schemas/ServeOut"
+          },
+          "send": {
+            "$ref": "#/components/schemas/ServeIn"
           }
         }
       }

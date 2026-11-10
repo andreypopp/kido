@@ -265,23 +265,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/panes/{id}/webview/serve": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** @description Serve the pane's HTTP requests and WebSockets. Only the pane itself can open this stream. */
-        get: operations["WebviewServe"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/panes/{id}/webview/{path}": {
         parameters: {
             query?: never;
@@ -301,6 +284,23 @@ export interface paths {
         head?: never;
         /** @description Patch a resource of the pane's page. Requires a live Ko-Client. */
         patch: operations["WebviewPatch"];
+        trace?: never;
+    };
+    "/panes/{id}/webview_serve": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** @description Serve the pane's HTTP requests and WebSockets. Only the pane itself can open this stream. */
+        get: operations["WebviewServe"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
         trace?: never;
     };
     "/prompt": {
@@ -1445,6 +1445,7 @@ export interface components {
         };
         /** @description an absolute path without a colon, a percent sign or a newline */
         RemoteDir: string;
+        RequestTarget: string;
         /** @description arguments of the container engine's `run` without an option that ko owns */
         RunArgs: string[];
         Runtime: {
@@ -1611,7 +1612,7 @@ export interface components {
         } | {
             headers: components["schemas"]["WebviewHeaders"];
             method: components["schemas"]["Method"];
-            path: string;
+            path: components["schemas"]["RequestTarget"];
             req: number;
             /** @constant */
             type: "request";
@@ -1627,7 +1628,7 @@ export interface components {
             type: "cancel";
         } | {
             headers: components["schemas"]["WebviewHeaders"];
-            path: string;
+            path: components["schemas"]["RequestTarget"];
             req: number;
             /** @constant */
             type: "upgrade";
@@ -2705,41 +2706,6 @@ export interface operations {
             };
         };
     };
-    WebviewServe: {
-        parameters: {
-            query?: never;
-            header?: {
-                /** @example pane_1 */
-                "Ko-Pane"?: components["schemas"]["PaneId"];
-                /** @example 0123456789abcdef0123456789abcdef */
-                "Ko-Pane-Token"?: components["schemas"]["PaneToken"];
-            };
-            path: {
-                /** @example pane_1 */
-                id: components["schemas"]["PaneId"];
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Switching Protocols */
-            101: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content?: never;
-            };
-            /** @description The common error body. */
-            default: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["Error"];
-                };
-            };
-        };
-    };
     WebviewGet: {
         parameters: {
             query?: never;
@@ -3068,6 +3034,41 @@ export interface operations {
                 };
                 content: {
                     "*/*": string;
+                };
+            };
+        };
+    };
+    WebviewServe: {
+        parameters: {
+            query?: never;
+            header?: {
+                /** @example pane_1 */
+                "Ko-Pane"?: components["schemas"]["PaneId"];
+                /** @example 0123456789abcdef0123456789abcdef */
+                "Ko-Pane-Token"?: components["schemas"]["PaneToken"];
+            };
+            path: {
+                /** @example pane_1 */
+                id: components["schemas"]["PaneId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Switching Protocols */
+            101: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content?: never;
+            };
+            /** @description The common error body. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
                 };
             };
         };

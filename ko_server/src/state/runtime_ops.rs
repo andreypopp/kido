@@ -589,7 +589,10 @@ impl State {
                 let (method, target) = route.to_request();
                 Err(Error::new(
                     ErrorKind::Refused,
-                    format!("{method} {target} is not available on a runtime connection"),
+                    format!(
+                        "{method} {} is not available on a runtime connection",
+                        target.as_str()
+                    ),
                 ))
             }
         }

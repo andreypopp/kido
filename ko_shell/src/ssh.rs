@@ -68,7 +68,7 @@ fn mark(pane: &Pane, parsed: Option<&SshArgs>) {
             &pane.dir,
             Some(pane.caller.clone()),
             method,
-            &path,
+            path.as_str(),
             &body,
             left,
         );
