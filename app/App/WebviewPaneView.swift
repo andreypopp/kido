@@ -359,11 +359,16 @@ final class WebviewPaneView: NSView, WKNavigationDelegate, WKUIDelegate {
         browser.find(text, configuration: config) { done($0.matchFound) }
     }
 
+    #if KIDO_VISUAL
+    static var visualInitialScript: String?
+    #endif
+
     private func installScripts() {
         let controller = browser.configuration.userContentController
         controller.removeAllUserScripts()
         #if KIDO_VISUAL
         controller.addUserScript(WKUserScript(source: "window.__koNativeWebSocket=window.WebSocket", injectionTime: .atDocumentStart, forMainFrameOnly: true, in: .page))
+        if let visualInitialScript = Self.visualInitialScript { controller.addUserScript(WKUserScript(source: visualInitialScript, injectionTime: .atDocumentStart, forMainFrameOnly: true, in: .page)) }
         if let visualFeedScript { controller.addUserScript(WKUserScript(source: visualFeedScript, injectionTime: .atDocumentStart, forMainFrameOnly: true, in: .page)) }
         #endif
         controller.addUserScript(WKUserScript(source: Self.socketScript.replacingOccurrences(of: "__KO_DOCUMENT__", with: pendingDocument?.generation ?? generation), injectionTime: .atDocumentStart, forMainFrameOnly: false, in: .page))

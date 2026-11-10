@@ -9,6 +9,8 @@ import SidebarFeed
 extension VisualTests {
     private enum KoaScenario { case transcript, dialogs, controls, exit, feed, completion, markdown, media, attachments, userMarkdown, preview, lightbox, agents, composer }
     func testKoaInterruptRestoresNativeInput() async throws {
+        WebviewPaneView.visualInitialScript = "document.hasFocus=()=>true;window.requestAnimationFrame=callback=>setTimeout(()=>callback(performance.now()),0);window.cancelAnimationFrame=clearTimeout;"
+        defer { WebviewPaneView.visualInitialScript = nil }
         let script = directory.appendingPathComponent("quit-script.jsonl")
         try "".write(to: script, atomically: true, encoding: .utf8)
         let fake = checkoutRoot.appendingPathComponent("share/koa/koa-fake-pi.ts").path
@@ -28,6 +30,14 @@ extension VisualTests {
         XCTAssertEqual(unfocused, "true", "The unfocused composer does not use the focus border")
         _ = try await webviewJS(web, "(()=>{window.composer.focus();return true})()")
         try await webviewUntil(web, "window.composer&&document.querySelector('#status').textContent==='idle'")
+        _ = try await webviewJS(web, "(()=>{const reference=document.createElement('div');reference.style.color='var(--ko-cursor)';document.body.append(reference);window.expectedCursorColor=getComputedStyle(reference).color;reference.remove();return true})()")
+        try await webviewUntil(web, "document.querySelector('#prompt .cm-cursor')&&getComputedStyle(document.querySelector('#prompt .cm-cursor')).display!=='none'")
+        let cursorStyle = try await webviewJS(web, "(()=>{const cursor=document.querySelector('#prompt .cm-cursor'),style=getComputedStyle(cursor);return {display:style.display,height:cursor.getBoundingClientRect().height,width:style.borderLeftWidth,color:style.borderLeftColor,expected:window.expectedCursorColor,caret:getComputedStyle(document.querySelector('#prompt .cm-content')).caretColor}})()")
+        let visibleCursor = try await webviewJS(web, "(()=>{const cursor=document.querySelector('#prompt .cm-cursor'),style=getComputedStyle(cursor);return style.display!=='none'&&cursor.getBoundingClientRect().height>0&&parseFloat(style.borderLeftWidth)>0&&style.borderLeftColor===window.expectedCursorColor&&getComputedStyle(document.querySelector('#prompt .cm-content')).caretColor==='rgba(0, 0, 0, 0)'})()")
+        XCTAssertEqual(visibleCursor, "true", cursorStyle)
+        _ = try await webviewJS(web, "(()=>{document.querySelector('#prompt .cm-content').blur();return true})()")
+        try await webviewUntil(web, "Array.from(document.querySelectorAll('#prompt .cm-cursor')).every(cursor=>getComputedStyle(cursor).display==='none')")
+        _ = try await webviewJS(web, "(()=>{window.composer.focus();return true})()")
         let result = try await webviewJS(web, #"""
         (async()=>{
           const requests=[], original=window.fetch;
@@ -258,6 +268,13 @@ extension VisualTests {
         try JSONSerialization.data(withJSONObject: ["cwd": cwd.path]).write(to: sessionFile)
         let mediaClock = scenario == .media || scenario == .attachments || scenario == .preview || scenario == .lightbox || scenario == .agents || scenario == .composer
         let stamp = Int(try XCTUnwrap(Calendar.current.date(from: DateComponents(year: 2026, month: 11, day: mediaClock ? 10 : 8, hour: mediaClock ? 9 : 14, minute: mediaClock ? 12 : 32))).timeIntervalSince1970 * 1000)
+        let measured = scenario == .completion || scenario == .attachments || scenario == .userMarkdown
+        let measurementClock = measured ? "const ClockDate=Date;window.Date=class extends ClockDate{constructor(...args){super(...(args.length?args:[\(stamp + 12000)]))}static now(){return \(stamp + 12000)}};" : ""
+        // WebKit pauses animation frames in an off-screen window.
+        if measured {
+            WebviewPaneView.visualInitialScript = measurementClock + "window.koaPendingFrames=new Set();window.requestAnimationFrame=callback=>{const id=setTimeout(()=>{koaPendingFrames.delete(id);callback(performance.now())},0);koaPendingFrames.add(id);return id};window.cancelAnimationFrame=id=>{koaPendingFrames.delete(id);clearTimeout(id)};"
+        }
+        defer { WebviewPaneView.visualInitialScript = nil }
         let usage: [String: Any] = ["input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0, "totalTokens": 0, "cost": ["input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0, "total": 0]]
         func assistant(_ content: [[String: Any]], stop: String = "stop") -> [String: Any] {
             ["role": "assistant", "api": "test", "provider": "test", "model": "test", "usage": usage, "timestamp": stamp, "stopReason": stop, "content": content]
@@ -652,13 +669,6 @@ extension VisualTests {
         try await wait("koa webview", within: 20) { (pane.webviewView?.visualDocuments ?? 0) > 0 }
         let diagnostics = (try? String(contentsOf: output, encoding: .utf8)) ?? ""
         let web = try XCTUnwrap(pane.webviewView?.browser, diagnostics)
-        if scenario == .completion || scenario == .attachments || scenario == .userMarkdown {
-            // WebKit pauses animation frames in an off-screen window.
-            pane.webviewView?.visualFeedScript = "const ClockDate=Date;window.Date=class extends ClockDate{constructor(...args){super(...(args.length?args:[\(stamp + 12000)]))}static now(){return \(stamp + 12000)}};window.requestAnimationFrame=callback=>setTimeout(()=>callback(performance.now()),0);window.cancelAnimationFrame=clearTimeout;"
-            let documents = pane.webviewView?.visualDocuments ?? 0
-            web.reload()
-            try await wait("completion document with measurement clock") { (pane.webviewView?.visualDocuments ?? 0) > documents && !web.isLoading }
-        }
         if scenario == .feed {
             try await webviewUntil(web, "document.querySelector('#status').textContent==='idle'&&document.querySelector('#model-name').textContent==='claude-opus-5-5'")
             pane.webviewView?.visualFeedPath = "/events"
@@ -684,6 +694,10 @@ extension VisualTests {
             XCTAssertEqual(final, "\"" + String(repeating: "x", count: 12288) + "\"")
             return
         }
+        func settle() async throws {
+            guard measured else { return }
+            _ = try await webviewJS(web, "new Promise((resolve,reject)=>{let previous,stable=0,frame;const timer=setTimeout(()=>{cancelAnimationFrame(frame);reject(Error('Koa capture did not settle'))},5000);function sample(){const cursor=document.querySelector('#prompt .cm-cursor')?.getBoundingClientRect();const state=JSON.stringify([document.querySelector('#scroll').scrollTop,document.querySelector('#dock').getBoundingClientRect().height,cursor?[cursor.x,cursor.y,cursor.width,cursor.height]:null]);stable=koaPendingFrames.size===0&&state===previous?stable+1:0;previous=state;if(stable>=2){clearTimeout(timer);resolve(true)}else frame=requestAnimationFrame(sample)}frame=requestAnimationFrame(sample)})")
+        }
         func capture(_ name: String) async throws {
             guard captures.contains(name) else { return }
             let top = scenario == .media || scenario == .lightbox || scenario == .agents || scenario == .composer
@@ -694,10 +708,12 @@ extension VisualTests {
             try await webviewUntil(web, "(()=>{const scroll=document.querySelector('#scroll');scroll.scrollTop=\(top ? "0" : "scroll.scrollHeight");return \(top ? "scroll.scrollTop===0" : "scroll.scrollHeight-scroll.scrollTop-scroll.clientHeight<1")})()")
             let lastAboveDock = try await webviewJS(web, "(()=>{const last=document.querySelector('#items').lastElementChild;return !last||last.getBoundingClientRect().bottom<=document.querySelector('#dock').getBoundingClientRect().top})()")
             if !top { XCTAssertEqual(lastAboveDock, "true", "dock space keeps the last message above the composer") }
+            try await settle()
             try await webviewSnapshot(pane, name + "-light", testName: "testKoaWebviewMockupStates()")
             try await darken()
             pane.webviewView?.updateTheme()
             try await webviewUntil(web, "getComputedStyle(document.body).getPropertyValue('--ko-appearance').trim()==='dark'")
+            try await settle()
             try await webviewSnapshot(pane, name + "-dark", testName: "testKoaWebviewMockupStates()")
             try await darken(.aqua)
             pane.webviewView?.updateTheme()
@@ -707,7 +723,7 @@ extension VisualTests {
             _ = try await webviewJS(web, "fetch('/prompt',{method:'POST',body:JSON.stringify({text:'next',mode:'prompt',attachments:[]})}).then(async r=>{const result=await r.json();if(!r.ok)throw Error(result.error||'Prompt failed');return result})")
         }
         try await webviewUntil(web, "document.querySelector('#status').textContent==='idle'&&document.querySelector('#model-name').textContent==='claude-opus-5-5'")
-        _ = try await webviewJS(web, "(()=>{const NativeDate=Date;window.Date=class extends NativeDate{constructor(...args){super(...(args.length?args:[\(stamp + 12000)]))}static now(){return \(stamp + 12000)}};const style=document.createElement('style');style.textContent='.caret,.spin,.spin::before,.dot.on{animation:none!important}';document.head.append(style);return true})()")
+        _ = try await webviewJS(web, "(()=>{const NativeDate=Date;window.Date=class extends NativeDate{constructor(...args){super(...(args.length?args:[\(stamp + 12000)]))}static now(){return \(stamp + 12000)}};const style=document.createElement('style');style.textContent='.caret,.spin,.spin::before,.dot.on,.cm-cursorLayer{animation:none!important}';document.head.append(style);return true})()")
         let idleHint = try await webviewJS(web, "document.querySelector('#hint .spin')===null")
         XCTAssertEqual(idleHint, "true")
         if scenario == .composer {
@@ -893,9 +909,11 @@ extension VisualTests {
                 window.contentView?.layoutSubtreeIfNeeded(); pane.webviewView?.layoutSubtreeIfNeeded()
                 _ = try await webviewJS(web, "(()=>{delete window.ko.preview;document.querySelector('.step .thumb').click();return true})()")
                 try await webviewUntil(web, "document.querySelector('.lightbox img')?.naturalWidth===1440&&document.querySelector('.lightbox .cap').textContent.includes('1440×900')")
+                try await settle()
                 try await webviewSnapshot(pane, "media-lightbox-light", testName: "testKoaWebviewMockupStates()")
                 try await darken(); pane.webviewView?.updateTheme()
                 try await webviewUntil(web, "getComputedStyle(document.body).getPropertyValue('--ko-appearance').trim()==='dark'")
+                try await settle()
                 try await webviewSnapshot(pane, "media-lightbox-dark", testName: "testKoaWebviewMockupStates()")
                 _ = try await webviewJS(web, "(()=>{document.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true,cancelable:true}));return true})()")
                 try await webviewUntil(web, "document.querySelector('.lightbox')===null")
@@ -1051,6 +1069,7 @@ extension VisualTests {
                 windowNumber: window.windowNumber, context: nil, characters: "z", charactersIgnoringModifiers: "z", isARepeat: false, keyCode: 6))
             window.sendEvent(key)
             try await webviewUntil(web, "window.composer.text()==='z'&&document.activeElement===document.querySelector('#prompt .cm-content')")
+            try await settle()
             try await webviewSnapshot(pane, "composer-focus", testName: "testKoaWebviewComposerFocus()")
             return
         }

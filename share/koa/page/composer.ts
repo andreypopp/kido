@@ -1,5 +1,5 @@
 import { Compartment, Prec, Transaction } from '@codemirror/state';
-import { EditorView, keymap, placeholder, type Command } from '@codemirror/view';
+import { EditorView, drawSelection, keymap, placeholder, type Command } from '@codemirror/view';
 import { history, historyKeymap, standardKeymap, insertNewline } from '@codemirror/commands';
 import { markdownLanguage, insertNewlineContinueMarkup, deleteMarkupBackward } from '@codemirror/lang-markdown';
 import { syntaxHighlighting, HighlightStyle } from '@codemirror/language';
@@ -41,6 +41,7 @@ export function composer(host: HTMLElement, handlers: { input(user: boolean): vo
         { key: 'Ctrl-d', run: () => { if (!empty()) return false; handlers.quit(); return true; } },
       ])),
       EditorView.lineWrapping,
+      drawSelection(),
       EditorView.contentAttributes.of({ 'aria-label': 'Message koa' }),
       hint.of(placeholder(label)),
       EditorView.updateListener.of(update => { if (update.docChanged) handlers.input(update.transactions.some(transaction => transaction.annotation(Transaction.userEvent) !== undefined)); }),

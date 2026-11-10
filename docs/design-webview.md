@@ -358,6 +358,12 @@ are a card that splits its run; a job's notices are one line, and the
 stream batches of one job join into one entry. The page has no live
 list of jobs.
 
+**The composer's cursor.** The composer draws its cursor and its
+selection with CodeMirror's `drawSelection()`, in `--ko-cursor` and the
+theme's selection colours, also during an input method's composition.
+WebKit's native caret lagged visibly when the Markdown highlighting
+rebuilt the spans around it, as after deleting a code span's backticks.
+
 **The composer's foot.** koa has no status bar: the foot of its field
 holds the state, the model and thinking-level buttons, the context, the
 extensions' statuses, and the working directory at the right. The
