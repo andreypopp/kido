@@ -178,7 +178,9 @@ These requirements are fixed:
   `make build` installs `share/ko/bin` (the `ko`, `ssh`, `ko-pi`
   and `koa` shims), `share/ko/shim.sh`, `share/pi/ko-pi.ts`,
   `share/pi/text.ts`, `share/pi/ko-api.d.ts`, `share/pi/agents.ts`,
-  `share/pi/token.ts`, `share/pi/records.ts` and `share/pi/skills` (in
+  `share/pi/token.ts`, `share/pi/records.ts`,
+  `share/pi/completion-context.ts`, `share/pi/runtime-exec.ts` and
+  `share/pi/skills` (in
   `share/ko/pi/`), koa's program and its bundled page (in `share/ko/koa/`), and the SDK
   `share/webview/` (in `share/ko/webview/`) beside `bin/ko` in
   `build/ko/`, the layout
@@ -758,7 +760,10 @@ maps the coordinator's modules.
                         ko-pi and koa share at run time and nothing
                         else: text.ts; agents.ts, the agent rows;
                         token.ts, the token grammar; records.ts, the facts of
-                        ko-pi's message details and their guards
+                        ko-pi's message details and their guards;
+                        completion-context.ts, where ko-pi hands koa's
+                        extension the place where a command runs; runtime-exec.ts,
+                        the client of a runtime's exec route
     share/koa/          koa.ts, the pi harness that renders through a
                         webview (docs/design-koa.md); page/, the TypeScript
                         sources of its page (page.ts, markdown.ts, the
@@ -777,6 +782,8 @@ maps the coordinator's modules.
                         server with its checked, size-capped open;
                         koa-records.ts, the records that koa and its
                         page share; koa-complete.ts, completion;
+                        koa-shell.ts and koa-shell.sh, Tab completion
+                        in `!` mode from bash;
                         koa-attach.ts, attachments; koa-queue.ts, the
                         queue's attachments; koa-child.ts, the signals
                         of koa's own children, pi's package lookup and
@@ -788,7 +795,7 @@ maps the coordinator's modules.
                         the built-in slash commands; koa-sessions.ts,
                         the extension in the pi child that lists
                         sessions for the page's `/resume`, over
-                        koa-session-channel.ts; koa-session-dir.ts, the
+                        koa-channel.ts; koa-session-dir.ts, the
                         session directory rule of both pickers; prompt.ts, the prompt
                         text rules that koa and its page share; koa-fake-pi.ts, the scripted pi
                         of its suite koa-*.test.ts, and koa-fake-tty.ts,
@@ -881,7 +888,8 @@ Every C file of `bench/` starts with `#define _DARWIN_C_SOURCE` and
 agent tool. It calls only `ko api`, with `--stream` for its message
 stream and a routed pi's exec sessions (docs/design.md, "The pi
 extension, ko-pi", lists the routes). At run time it imports `text.ts`,
-`agents.ts`, `token.ts` and `records.ts` beside itself, which koa shares,
+`agents.ts`, `token.ts`, `records.ts`, `completion-context.ts` and
+`runtime-exec.ts` beside itself, which koa shares,
 and nothing else of the checkout. It has no run command: its
 background commands are jobs, child processes of pi
 (docs/design-subagents.md, "A job"). It never opens ko's socket.

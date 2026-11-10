@@ -48,7 +48,7 @@ test("a second copy of the extension at another path registers nothing, and a re
   const dir = mkdtempSync(join(here, ".copy-"));
   try {
     mkdirSync(join(dir, "pi"));
-    for (const file of ["ko-pi.ts", "text.ts", "agents.ts", "token.ts", "records.ts"]) copyFileSync(join(here, file), join(dir, "pi", file));
+    for (const file of ["ko-pi.ts", "text.ts", "agents.ts", "token.ts", "records.ts", "completion-context.ts", "runtime-exec.ts"]) copyFileSync(join(here, file), join(dir, "pi", file));
     const copy = await import(pathToFileURL(join(dir, "pi", "ko-pi.ts")).href);
     const registered = createFakePi();
     copy.default(registered.pi);

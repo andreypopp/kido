@@ -55,6 +55,7 @@ async function page() {
   let handlers: Handlers | undefined;
   let text = () => '';
   let prompt: Node | undefined;
+  let completionResets = 0;
   const composer = (host: Node, callbacks: Handlers) => {
     handlers = callbacks;
     const content = host.children[0] ?? new Node(); content.isContentEditable = true; if (!host.children.length) host.append(content);
@@ -65,6 +66,8 @@ async function page() {
     return {
       text,
       empty: () => content.value.length === 0,
+      completionStatus: () => 'idle',
+      resetCompletion() { completionResets++; },
       bash: () => bashCommand(content.value),
       running(value: boolean) { running = value; refresh(); },
       setText(text: string) { content.value = text; content.selectionStart = content.selectionEnd = text.length; refresh(); callbacks.input(false); },
@@ -85,8 +88,14 @@ async function page() {
   const previewSource = stripTypeScriptTypes(await readFile(new URL('page/preview.ts', import.meta.url), 'utf8')).replace(/^export /gm, '');
   Object.assign(context, runInNewContext(previewSource + '\n({preview,previewKey})', context));
   Object.assign(context, { fetchJSON: runInNewContext(httpSource + '\nfetchJSON', context), attach: runInNewContext(attachSource + '\nattach', context) });
-  return { context, elements, listeners, windowListeners, handlers: () => handlers, prompt: () => prompt, text: () => text(), run: (code: string) => runInNewContext("{\n" + source.replace(/^import .*;\n/gm, "").replace(/^setInterval\([\s\S]*$/m, "") + "\n" + code + "\n}", context) };
+  return { context, elements, listeners, windowListeners, completionResets: () => completionResets, handlers: () => handlers, prompt: () => prompt, text: () => text(), run: (code: string) => runInNewContext("{\n" + source.replace(/^import .*;\n/gm, "").replace(/^setInterval\([\s\S]*$/m, "") + "\n" + code + "\n}", context) };
 }
+
+test('a transcript epoch reset closes completion from the prior session', async () => {
+  const fixture = await page();
+  fixture.run("apply({type:'reset',epoch:1,items:[],more:false})");
+  assert.equal(fixture.completionResets(), 1);
+});
 
 test('user messages separate quote answers without changing assistant Markdown', async () => {
   const fixture = await page(), rendered: string[] = [];

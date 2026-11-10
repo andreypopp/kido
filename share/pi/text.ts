@@ -1,5 +1,7 @@
 import { randomBytes } from "node:crypto";
 
+export const isString = (value: unknown): value is string => typeof value === "string";
+
 export function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }

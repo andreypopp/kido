@@ -28,7 +28,7 @@ export function composer(host: HTMLElement, handlers: { input(user: boolean): vo
     create: () => undefined,
     update(value, transaction) { return !transaction.docChanged ? value : transaction.newDoc.sliceString(0, 1) === '!' ? bashCommand(transaction.newDoc.toString()) : undefined; },
   });
-  const completions = completion(host, () => handlers.send('prompt'), mode);
+  const completions = completion(host, () => handlers.send('prompt'), mode, () => handlers.input(false));
   const refreshMode = () => host.parentElement?.classList.toggle('bash-mode', !!view.state.field(mode) || running && empty());
   const empty = () => view.state.doc.length === 0;
   const prompts = promptHistory(async () => {
@@ -106,6 +106,8 @@ export function composer(host: HTMLElement, handlers: { input(user: boolean): vo
   });
   return {
     empty,
+    completionStatus: completions.status,
+    resetCompletion: completions.reset,
     bash: () => view.state.field(mode),
     running(value: boolean) { running = value; refreshMode(); },
     text: () => view.state.doc.toString(),

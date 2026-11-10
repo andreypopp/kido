@@ -43,20 +43,12 @@ let paths=args[1].endsWith('/a b')?['inner.txt','child/']:['a/','a.txt','a b/','
 console.log(paths.filter(p=>(!shallow||p.replace(/\\/$/,'').split('/').length===1)&&query.test(p)).join('\\n'));
 `, { mode: 0o700 });
   const options = { cwd, fd, signal: new AbortController().signal, commands: async () => [] };
-  const shell = await complete('! cat ./a', 9, options);
-  assert.equal(shell.from, 6);
-  assert.ok(shell.options.some(item => item.kind === 'directory' && item.insert === './a/'));
-  assert.ok(shell.options.some(item => item.insert === "'./a b.txt' "));
-  assert.ok(shell.options.some(item => item.insert === "'./a'\\''$(touch x);*.txt' "));
-  assert.deepEqual((await complete('! cat @a', 8, options)).options, []);
-  assert.equal((await complete('! ./a', 5, options)).from, 2);
-  assert.deepEqual((await complete('!/review', 8, options)).options.filter(item => item.kind === 'command'), []);
   const all = await complete("@", 1, options);
   assert.equal(all.options.length, 20);
   assert.deepEqual(all.options.slice(0, 4).map(item => item.label), ["a/", "a b/", "a.txt", "a b.txt"]);
   assert.equal(all.options.some(item => item.label.startsWith(".git")), false);
   assert.deepEqual((await complete('@"--help', 8, options)).options.map(item => item.insert), ['@"--help.txt" ']);
-  assert.deepEqual(await complete('(@"a b', 6, options), { from: 1, to: 6, options: [
+  assert.deepEqual(await complete('(@"a b', 6, options), { type: 'prompt', from: 1, to: 6, options: [
     { label: "a b/", kind: "directory", insert: '@"a b/"', cursor: 6 },
     { label: "a b.txt", kind: "file", insert: '@"a b.txt" ' },
   ] });

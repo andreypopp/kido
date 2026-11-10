@@ -42,7 +42,9 @@ import { type ChildProcess, spawn, spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { type WriteStream, accessSync, constants, createWriteStream, mkdirSync, readFileSync, readdirSync, realpathSync, statSync } from "node:fs";
 import os from "node:os";
-import { contentText, mintId, utf8Prefix, utf8Suffix, errorText, replaceControlCharacters, isRecord, str } from "./text.ts";
+import { setCompletionContext } from "./completion-context.ts";
+import { runtimeExec, lineReader, openStream, type ExecOptions, type ExecResult } from "./runtime-exec.ts";
+import { contentText, mintId, utf8Prefix, utf8Suffix, errorText, replaceControlCharacters, isRecord, isString, str } from "./text.ts";
 import { dirname, delimiter, extname, join, posix, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Type } from "typebox";
@@ -716,7 +718,6 @@ type Held = { from: Api["Sender"]; relation?: Relation; text: string; runtime?: 
 
 const runtimeOf = (data: unknown): string | undefined => (isRecord(data) && typeof data.runtime === "string" ? data.runtime : undefined);
 
-const isString = (value: unknown): value is string => typeof value === "string";
 
 
 function isCause(value: unknown): value is Dead["cause"] {
@@ -748,13 +749,6 @@ function isPlacement(value: unknown): value is Api["Placement"] {
   return isRecord(value) && isString(value.pane) && isString(value.session) && isString(value.window);
 }
 
-function isExecServer(value: unknown): value is Api["ExecServer"] {
-  if (!isRecord(value)) return false;
-  if (value.type === "stdout" || value.type === "stderr") return isString(value.data);
-  if (value.type === "exit") return typeof value.status === "number" || isString(value.signal);
-  return value.type === "error" && isString(value.message);
-}
-
 // The complete UTF-8 of the carry and the bytes, and the incomplete tail that waits for the next bytes.
 function utf8Complete(carry: Buffer, bytes: Buffer): { text: string; carry: Buffer } {
   const all = Buffer.concat([carry, bytes]);
@@ -767,26 +761,6 @@ function utf8Complete(carry: Buffer, bytes: Buffer): { text: string; carry: Buff
     break;
   }
   return { text: all.subarray(0, end).toString("utf8"), carry: Buffer.from(all.subarray(end)) };
-}
-
-// A data handler that hands over each complete line of a process's output.
-function lineReader(hold: { partial: Buffer }, onLine: (line: string) => void): (chunk: Buffer) => void {
-  return (chunk) => {
-    let rest = Buffer.concat([hold.partial, chunk]);
-    for (let at = rest.indexOf(0x0a); at >= 0; at = rest.indexOf(0x0a)) {
-      const line = rest.subarray(0, at).toString("utf8");
-      rest = rest.subarray(at + 1);
-      if (line) onLine(line);
-    }
-    hold.partial = Buffer.from(rest);
-  };
-}
-
-function openStream(ko: string, path: string, stdin: "pipe" | "ignore", stderr: "pipe" | "ignore" = "ignore"): ChildProcess {
-  const child = spawn(ko, ["api", "--stream", path], { stdio: [stdin, "pipe", stderr], env: process.env });
-  child.on("error", () => {});
-  child.stdin?.on("error", () => {});
-  return child;
 }
 
 type Addressable = { id: string; pane: string; name: string; named: boolean; state: "running" | "ended" };
@@ -937,8 +911,6 @@ function realpathOf(path: string): string | undefined {
 
 // ---- the routed mode: pi on the host, its built-in tools in a runtime ----
 
-const EXEC_CHUNK = 64 * 1024;
-
 const GREP_MAX_LINE_LENGTH = 500;
 
 const GREP_DEFAULT_LIMIT = 100;
@@ -967,19 +939,6 @@ type Facts = { programs: Map<string, string>; home: string };
 
 type Run = { out: Buffer; err: Buffer; exitCode: number | null };
 
-type ExecResult = { end: JobEnd };
-const isNodeSignal = (signal: string): signal is NodeJS.Signals => Object.hasOwn(os.constants.signals, signal);
-
-type ExecOptions = {
-  onSpawn?: (child: ChildProcess, completion: Promise<ExecResult>) => void;
-  argv: string[];
-  cwd?: string;
-  input?: Buffer;
-  signal?: AbortSignal;
-  onStdout?: (data: Buffer) => void;
-  onStderr?: (data: Buffer) => void;
-};
-
 // Resolves or rejects as the signal aborts, without ending the work it waits for.
 function abortable<T>(work: Promise<T>, signal: AbortSignal | undefined): Promise<T> {
   return new Promise((resolve, reject) => {
@@ -993,79 +952,6 @@ function abortable<T>(work: Promise<T>, signal: AbortSignal | undefined): Promis
   });
 }
 
-// One `ko api --stream /runtimes/R/exec` process is one command in the runtime. It runs without a shell
-// and with no environment of this process: the runtime's own environment applies.
-function runtimeExec(ko: string, runtime: string, opts: ExecOptions): Promise<ExecResult> {
-  if (opts.signal?.aborted) return Promise.reject(new Error("aborted"));
-  const child = openStream(ko, `/runtimes/${runtime}/exec`, "pipe", "pipe");
-  const completion = new Promise<ExecResult>((resolve, reject) => {
-    const stdin = child.stdin;
-    let ended: ExecResult | Error | undefined;
-    let aborted = false;
-    const stderr: Buffer[] = [];
-    const onAbort = (): void => {
-      aborted = true;
-      child.kill();
-    };
-    opts.signal?.addEventListener("abort", onAbort, { once: true });
-    const send = (message: Api["ExecClient"]): boolean => stdin?.write(JSON.stringify(message) + "\n") ?? false;
-    send({ type: "exec", argv: opts.argv, ...(opts.cwd === undefined ? {} : { cwd: opts.cwd }), stdin: opts.input !== undefined });
-    const input = opts.input ?? Buffer.alloc(0);
-    void (async () => {
-      for (let at = 0; at < input.length && !stdin?.destroyed; at += EXEC_CHUNK) {
-        if (!send({ type: "stdin", data: input.subarray(at, at + EXEC_CHUNK).toString("base64") })) {
-          await new Promise<void>((done) => {
-            const resume = (): void => {
-              stdin?.off("drain", resume);
-              child.off("close", resume);
-              done();
-            };
-            stdin?.once("drain", resume);
-            child.once("close", resume);
-          });
-        }
-      }
-      if (opts.input !== undefined) send({ type: "eof" });
-      stdin?.end();
-    })();
-    child.stdout?.on(
-      "data",
-      lineReader({ partial: Buffer.alloc(0) }, (line) => {
-        let message: unknown;
-        try {
-          message = JSON.parse(line);
-        } catch {
-          return;
-        }
-        if (!isExecServer(message)) return;
-        if ("data" in message) (message.type === "stdout" ? opts.onStdout : opts.onStderr)?.(Buffer.from(message.data, "base64"));
-        else if ("status" in message) ended = { end: { type: "exit", code: message.status } };
-        else if ("signal" in message) {
-          const signal = `SIG${message.signal}`;
-          ended = {
-            end: isNodeSignal(signal) ? { type: "signal", signal } : { type: "failed", message: "the command ended with an unknown signal" },
-          };
-        }
-        else if ("message" in message) ended = new Error(message.message);
-      }),
-    );
-    child.stderr?.on("data", (chunk: Buffer) => stderr.push(chunk));
-    const finish = (): void => opts.signal?.removeEventListener("abort", onAbort);
-    child.on("error", (error) => {
-      finish();
-      reject(error);
-    });
-    child.on("close", () => {
-      finish();
-      if (aborted) reject(new Error("aborted"));
-      else if (ended instanceof Error) reject(ended);
-      else if (ended) resolve(ended);
-      else reject(new Error(Buffer.concat(stderr).toString("utf8").trim() || "the exec session ended without an exit"));
-    });
-  });
-  opts.onSpawn?.(child, completion);
-  return completion;
-}
 async function execRun(r: Pick<Routed, "ko" | "name">, opts: ExecOptions): Promise<Run> {
   const out: Buffer[] = [];
   const err: Buffer[] = [];
@@ -1463,7 +1349,7 @@ export default function (pi: ExtensionAPI) {
           recordPeers();
         }
       };
-      const child = openStream(ko, "/client", "pipe");
+      const child = openStream(ko, "/client");
       peerClient = child;
       const hello: Api["ClientRequest"] = { type: "hello", name: "ko-pi", webview: false, focused: false, sizing: { type: "disabled" } };
       child.stdin?.write(JSON.stringify(hello) + "\n");
@@ -1980,7 +1866,7 @@ export default function (pi: ExtensionAPI) {
   function receiverOpen(): void {
     receiverTimer = null;
     const target = pane ? `/panes/${pane}/messages` : null;
-    if (receiverActive && ko && target) receiverAttach({ child: openStream(ko, target, "pipe"), partial: Buffer.alloc(0) });
+    if (receiverActive && ko && target) receiverAttach({ child: openStream(ko, target), partial: Buffer.alloc(0) });
   }
   const receiver = {
     start(): void {
@@ -3164,6 +3050,14 @@ export default function (pi: ExtensionAPI) {
   pi.on("session_start", async (_event, ctx) => {
     const flag = pi.getFlag("harness");
     if (flag !== undefined && flag !== "koa" && flag !== "koa-browser") throw new Error("--harness must be koa or koa-browser");
+    let completionReady = false;
+    if (flag) setCompletionContext(async signal => {
+      const current = session;
+      if (!completionReady || !current || current !== ctx || signal.aborted) return { type: "unavailable" };
+      const r = routed ? await liveRouted(signal) : undefined;
+      if (signal.aborted || session !== current) return { type: "unavailable" };
+      return r ? { type: "runtime", name: r.name, cwd: toRuntime(r, r.cwd) } : { type: "host", cwd: current.cwd };
+    });
     ko = insideKo() ? findKo() : null;
     session = ctx;
     ownSessionId = ctx.sessionManager.getSessionId() || null;
@@ -3209,6 +3103,7 @@ export default function (pi: ExtensionAPI) {
     }
 
     await startRouted(ctx);
+    completionReady = true;
     active = !!(ctx.hasUI && ownSessionId && ko && pane);
     if (active) {
       receiver.start();
@@ -3312,6 +3207,7 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.on("session_shutdown", async (event?: { reason?: ShutdownReason }) => {
+    if (pi.getFlag("harness")) setCompletionContext();
     startupCancelled = true;
     stopPeerClient();
     pendingPeers.clear();

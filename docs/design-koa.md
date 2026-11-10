@@ -63,8 +63,10 @@ the page's sources (`page/`), the scripted pi of the tests
 (`stress/`). `share/pi/` holds only what ko-pi and koa share at run
 time: `records.ts` (the facts that ko-pi writes into its messages'
 details, with their guards), `agents.ts`, `token.ts` (the token
-grammar: ko-pi's `@` agent token runs through the file token rules)
-and `text.ts`. The records of koa and its page are
+grammar: ko-pi's `@` agent token runs through the file token rules),
+`text.ts`, `completion-context.ts` (the place where a command runs,
+from ko-pi to `koa-sessions.ts`; "Shell completion") and `runtime-exec.ts` (the client of a runtime's exec
+route, ko-pi's routed commands and koa's shell completion). The records of koa and its page are
 `share/koa/koa-records.ts`. AGENTS.md, "Layout", names each file.
 
 `make build` installs the program and the built page in
@@ -392,10 +394,11 @@ nothing for it. A cancelled switch changes nothing in koa.
 **The session channel.** pi has no RPC that lists sessions, and a
 list reads pi's session files with the settings of the session that
 runs, which only the pi child has. Thus `koa-sessions.ts`, an
-extension in the pi child, answers on fd 3 (`koa-session-channel.ts` holds its
+extension in the pi child, answers on fd 3 (`koa-channel.ts` holds its
 records): a `list` query with an id, for this folder or all, which it
 answers with pi's `SessionManager.list` or `listAll` over the session
-directory that pi resolves, and a `cancel` of a running scan. It also
+directory that pi resolves, a `completion_context` query ("Shell
+completion"), and a `cancel` of a running request. It also
 sends a `session` record at each `session_start` with the session's
 id, cwd and a generation that increases, so a switch to the same file
 waits for the new record. The first message of a row is cut to its
@@ -620,15 +623,8 @@ modules. So koa copies pi's rules (`koa-complete.ts`), behind its own
   pi shows at once, with pi's fuzzy filter over both. `@token`: the agents of the session first, then files from
   `fd` with pi's arguments and scoring. No forced Tab completion and
   no plain-path completion in a prompt (the user's decision).
-- In `!` mode, `/` and `@` offer nothing. A token that starts with
-  `./`, `../`, `/` or `~/` gets paths from the same `fd` search,
-  inserted bare when every character is shell-safe ASCII, so a
-  directory continues to complete, and quoted otherwise; completion
-  does not continue inside a quoted token. This rule and the quoting are koa's
-  alone, so they live in `share/koa/prompt.ts`, not in `token.ts`. The
-  search runs in koa's directory on
-  the host, also for a pi that ko-pi routes to a runtime, so there a
-  path can differ from what the command sees.
+- In `!` mode, `/` and `@` offer nothing, and nothing completes as
+  the user types: only Tab completes, from bash ("Shell completion").
 - The token rules are one copy in `share/pi/token.ts`, which ko-pi,
   koa and the page import, so the page asks only in a context and the
   two sides agree on where a token starts. koa computes the prefix,
@@ -648,6 +644,59 @@ modules. So koa copies pi's rules (`koa-complete.ts`), behind its own
   root (inside the field, the field's own backdrop filter made it a
   backdrop root, so the popup's blur saw only the field), pinned above
   the field.
+
+**Shell completion.** In `!` and `!!` mode, Tab asks bash for the
+word at the caret where the command would run (the user's decision;
+the mockup is `app/design/koa/`, NOTES.md "Tab completes, from
+bash"). `/complete` answers a `shell` result (`koa-records.ts`) for a
+`!` text and a `prompt` result otherwise, so the page has one
+completion source for each mode.
+
+- **Where.** koa cannot know ko-pi's resolved runtime: ko-pi starts
+  and checks a routed runtime itself, and a pane variable cannot say
+  that a runtime is still starting or was refused. So koa asks on
+  the session channel (`completion_context`, with the channel's
+  request ids), and `koa-sessions.ts` answers through the resolver
+  that ko-pi installs for its current session
+  (`share/pi/completion-context.ts`): the host with the session's
+  cwd, a runtime with the cwd that `user_bash` would give the routed
+  command, or `unavailable`. A refused or unready runtime, or no
+  resolver, is `unavailable`, never the host. The channel's reset at
+  each session end, a new pi child or a switch ends the requests in
+  flight, and a reply for another session is a 409.
+- **How.** One exec of `koa-shell.sh` for each Tab, never pi's RPC
+  `bash` (it would enter the transcript) and no persistent shell. On
+  the host it runs in koa's environment; in a runtime it runs through
+  the runtime's exec route (`share/pi/runtime-exec.ts`, ko-pi's
+  client) with no environment from the host, in the login shell that
+  ko-pi's routed commands use (`bash -lc`, else `sh -lc`), and then
+  changes to the resolved cwd, because a profile can change it. The
+  script prefers a bash of version 4 or later from that environment's
+  PATH and the usual prefixes, starts it without profile or rc files,
+  and sources only an installed bash-completion of that environment.
+  A registered completion function decides the matches, its
+  `compopt` options and its fallbacks (`default`, `bashdefault`,
+  `dirnames`, `plusdirs`; a loader's 124 retries at most three times);
+  without one, command names in command position, else files and
+  directories. `-W` and `-C` specs are not evaluated: they fall back
+  to files.
+- **Never the typed text.** The line and the caret's byte offset are
+  arguments. The script splits the line with its own lexer (quotes,
+  escapes, separators, assignments and redirections) and returns no
+  matches for a line with a substitution, a heredoc, a process
+  substitution or a parenthesis, so nothing that the user typed runs.
+- **Bounds.** Each request has a deadline of 2 s and 1 MiB of output;
+  the page's abort kills the process group. The script sends the
+  replacement span in bytes, the common prefix over every match
+  (shortened to a whole UTF-8 character), the count and at most 200
+  NUL-separated matches with their quoted insert text; koa checks the
+  framing and converts the span to the page's UTF-16 offsets.
+- **The page.** A pending Tab waits (no second request) and shows
+  "completing…" after 150 ms; typing or a caret move cancels it. A
+  stale answer (another text, caret, session or child) is dropped.
+  Tab and ↓ move in the list and ↩ accepts, as its hints line says:
+  the spec's "Tab accepts" conflicted with its hints, and the hints
+  won. Measured: 28 ms on the host, 311 ms for a cold command runtime.
 
 ## The composer's foot
 

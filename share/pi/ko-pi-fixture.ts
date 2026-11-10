@@ -5,6 +5,7 @@
 // for the message stream. Delays are gates that a test releases, never timers.
 
 import childProcess from "node:child_process";
+
 import { EventEmitter, once } from "node:events";
 import type { TestContext } from "node:test";
 
@@ -325,6 +326,8 @@ export function makeFixture(): Fixture {
       for (const shutdown of sessions.reverse()) await shutdown();
       globalThis.__koPiExtensionReceiver?.child.kill();
       globalThis.__koPiExtensionReceiver = undefined;
+      globalThis.__koCompletionContext?.stop.abort();
+      globalThis.__koCompletionContext = undefined;
       await pollUntil(() => work.size === 0, 15000, "all fake commands to close");
       commandWork.delete(command);
       barePathWork = undefined;

@@ -1,11 +1,10 @@
-import { bashCommand, shellPathToken, shellQuote } from './prompt.ts';
 import { spawn } from "node:child_process";
 import { statSync } from 'node:fs';
 import { basename, join, resolve } from "node:path";
 import { homedir } from "node:os";
 import { parsePanes, piAgent, runningRows, agentCache } from "../pi/agents.ts";
 import type { components } from "../pi/ko-api.d.ts";
-import type { CompletionCommand, CompletionOption, CompletionResult } from "./koa-records.ts";
+import type { CompletionCommand, CompletionOption, PromptCompletion } from "./koa-records.ts";
 import { signalChild, which } from "./koa-child.ts";
 import { fileToken, slashToken, pathSeparator } from "../pi/token.ts";
 
@@ -97,13 +96,13 @@ export function findFd(override: string | undefined, agentDir: string, path: str
   return override !== undefined ? which(override, '') : which(join(agentDir, 'bin/fd'), '') ?? which('fd', path);
 }
 
-function output(command: string, args: string[], signal: AbortSignal): Promise<string | undefined> {
+export function output(command: string, args: string[], signal: AbortSignal, cwd?: string): Promise<Buffer | undefined> {
   if (signal.aborted) return Promise.resolve(undefined);
   return new Promise(resolve => {
-    const child = spawn(command, args, { detached: true, stdio: ["ignore", "pipe", "ignore"] });
+    const child = spawn(command, args, { cwd, detached: true, stdio: ["ignore", "pipe", "ignore"] });
     let size = 0, state: "reading" | "aborted" | "ended" = "reading";
     const chunks: Buffer[] = [];
-    const finish = (result: string | undefined) => {
+    const finish = (result: Buffer | undefined) => {
       if (state === "ended") return;
       state = "ended"; signal.removeEventListener("abort", abort);
       child.stdout.removeListener("data", data); child.stdout.destroy(); resolve(result);
@@ -117,7 +116,7 @@ function output(command: string, args: string[], signal: AbortSignal): Promise<s
     child.stdout.on("error", () => finish(undefined));
     child.stdout.on("data", data);
     child.once("error", () => finish(undefined));
-    child.once("close", code => finish(code === 0 && state === "reading" && !signal.aborted ? Buffer.concat(chunks).toString("utf8") : undefined));
+    child.once("close", code => finish(code === 0 && state === "reading" && !signal.aborted ? Buffer.concat(chunks) : undefined));
   });
 }
 
@@ -125,7 +124,7 @@ export function agentDiscovery(pane: string, ttl: string | undefined, signal: Ab
   return agentCache(async () => {
     const body = pane ? await output("ko", ["api", "/layout"], AbortSignal.any([signal, AbortSignal.timeout(5000)])) : undefined;
     if (body === undefined) return { rows: [], all: [] };
-    const layout: components["schemas"]["LayoutPanes"] = JSON.parse(body);
+    const layout: components["schemas"]["LayoutPanes"] = JSON.parse(body.toString('utf8'));
     const panes = parsePanes(layout), me = panes.find(p => p.pane === pane);
     const rows = runningRows(panes, me).filter(({ pane: p }) => me && p.session === me.session && piAgent(p.kind)).map(({ row }) => row);
     return { rows, all: rows };
@@ -140,7 +139,7 @@ async function walk(fd: string, base: string, query: string, signal: AbortSignal
   if (fdProcesses >= 4) return [];
   fdProcesses++;
   let text: string | undefined;
-  try { text = await output(fd, args, AbortSignal.any([signal, AbortSignal.timeout(2000)])); }
+  try { text = (await output(fd, args, AbortSignal.any([signal, AbortSignal.timeout(2000)])))?.toString('utf8'); }
   finally { fdProcesses--; }
   return text === undefined ? [] : text.trim().split("\n").filter(Boolean).map(path => ({ path: path.replace(/\\/g, "/"), directory: /[\\/]$/.test(path) })).filter(entry => !/(^|\/)\.git(\/|$)/.test(entry.path));
 }
@@ -166,14 +165,9 @@ async function files(query: string, cwd: string, fd: string | undefined, signal:
   });
 }
 
-export async function complete(text: string, pos: number, options: { cwd: string; commands(): Promise<readonly CompletionCommand[]>; fd: string | undefined; signal: AbortSignal; agents?: ReturnType<typeof agentDiscovery> }): Promise<CompletionResult> {
-  const result: CompletionResult = { from: pos, to: pos, options: [] };
+export async function complete(text: string, pos: number, options: { cwd: string; commands(): Promise<readonly CompletionCommand[]>; fd: string | undefined; signal: AbortSignal; agents?: ReturnType<typeof agentDiscovery> }): Promise<PromptCompletion> {
+  const result: PromptCompletion = { type: 'prompt', from: pos, to: pos, options: [] };
   if (options.signal.aborted) return result;
-  if (bashCommand(text)) {
-    const path = shellPathToken(text, pos);
-    if (!path) return result;
-    return { from: path.from, to: path.to, options: (await files(path.query, options.cwd, options.fd, options.signal)).map(entry => ({ label: entry.display, insert: shellQuote(entry.display) + (entry.directory ? '' : ' '), kind: entry.directory ? 'directory' : 'file' })) };
-  }
   const lineStart = text.lastIndexOf("\n", pos - 1) + 1, before = text.slice(lineStart, pos);
   const mention = fileToken(before), command = slashToken(text, pos);
   if (mention !== undefined) {

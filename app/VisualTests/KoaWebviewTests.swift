@@ -159,6 +159,12 @@ extension VisualTests {
         try await koUntil(directory.path, "/panes/\(pane.pane)/screen", contains: "z")
     }
 
+    func testKoaWebviewBangCompletionWide() async throws {
+        try await koaWebview(width: 980, height: 360, scenario: .bang, captures: ["bang-tab", "bang-tab-cap", "bang-tab-none", "bang-tab-pending"])
+    }
+    func testKoaWebviewBangCompletionNarrow() async throws {
+        try await koaWebview(width: 470, height: 360, scenario: .bang, captures: ["narrow-bang-tab", "narrow-bang-tab-cap", "narrow-bang-tab-none", "narrow-bang-tab-pending"])
+    }
     func testKoaWebviewBangWide() async throws {
         try await koaWebview(width: 980, height: 220, scenario: .bang, captures: ["bang", "bang2", "bang-attachments", "bang-drop", "bang-runs", "bang-done", "bang-error", "bang-cancelled", "bang-truncated", "bang-quiet", "bang-running", "bang-typing", "bang-busy", "bang-completed"])
     }
@@ -356,6 +362,54 @@ extension VisualTests {
         try await koaWebview(width: 470, height: 560, scenario: .sessions, captures: Set(["pick", "all", "filtered", "empty", "no-match", "loading", "after", "new", "confirm", "confirm-bash"].map { "narrow-sessions-" + $0 }))
     }
 
+    private func koaContentSize(window: NSWindow, width: CGFloat, height: CGFloat) {
+        let chrome = window.frame.height - window.contentLayoutRect.height
+        window.setContentSize(NSSize(width: width, height: height + chrome))
+    }
+
+    private func koaBangCompletion(web: WKWebView, window: NSWindow, width: CGFloat, capture: (String) async throws -> Void) async throws {
+            let prefix = width < 750 ? "narrow-" : ""
+            _ = try await webviewJS(web, #"(()=>{window.tabFetch=window.fetch;window.tabRequests=0;window.tabResolve=null;window.tabKind='list';window.fetch=(url,options)=>{if(url!='/complete')return tabFetch(url,options);tabRequests++;const q=JSON.parse(options.body),from=q.text.lastIndexOf(' ')+1;let result={type:'shell',from,to:q.text.length,common:'verify',more:0,options:['verify','verify-app','verify-linux','verify-rs','verify-ts'].map(label=>({label,insert:label+' ',cursor:label.length+1}))};if(tabKind==='none')result.options=[];if(tabKind==='cap'){result.common='/usr/bin/';result.more=184;result.options=['2to3-','AssetCacheLocatorUtil','AssetCacheManagerUtil','AssetCacheTetheratorUtil','DeRez','GetFileInfo','IOAccelMemory','IOMPSCompiler','ResMerger','Rez','SafeEjectGPU','SetFile','SplitForks'].map(label=>({label,insert:'/usr/bin/'+label+' ',cursor:10+label.length}))}return tabKind==='pending'?new Promise(resolve=>{window.tabResolve=()=>resolve({ok:true,json:async()=>result})}):Promise.resolve({ok:true,json:async()=>result})};window.tabKey=key=>document.querySelector('.cm-content').dispatchEvent(new KeyboardEvent('keydown',{key,code:key==='Tab'?'Tab':key,bubbles:true,cancelable:true}));window.composer.setText('!make ver');tabKey('Tab');return true})()"#)
+            try await webviewUntil(web, "document.querySelector('.koa-complete.sh')!==null&&window.composer.text()==='!make verify'")
+            try await capture(prefix + "bang-tab")
+            let resetClosed = try await webviewJS(web, "(()=>{window.composer.resetCompletion();return !document.querySelector('.koa-complete')})()")
+            XCTAssertEqual(resetClosed, "true", "Session reset closes the real editor completion")
+            _ = try await webviewJS(web, "(()=>{window.composer.setText('!make ver');tabKey('Tab');return true})()")
+            try await webviewUntil(web, "document.querySelector('.koa-complete.sh')!==null")
+            let typedClosed = try await webviewJS(web, "(()=>{window.composer.insert('x');return !document.querySelector('.koa-complete')})()")
+            XCTAssertEqual(typedClosed, "true", "Typing closes completion without a nested editor update")
+            _ = try await webviewJS(web, "(()=>{window.composer.setText('!make ver');window.tabRequests=0;tabKey('Tab');return true})()")
+            try await webviewUntil(web, "document.querySelector('.koa-complete.sh')!==null")
+            _ = try await webviewJS(web, "(()=>{tabKey('Tab');return true})()")
+            let moved = try await webviewJS(web, "document.querySelector('.koa-complete li[aria-selected]')?.textContent==='verify-app'&&tabRequests===1")
+            XCTAssertEqual(moved, "true")
+            _ = try await webviewJS(web, "(()=>{tabKey('Enter');return true})()")
+            let accepted = try await webviewJS(web, "window.composer.text()==='!make verify-app '&&!document.querySelector('.koa-complete')")
+            XCTAssertEqual(accepted, "true")
+            _ = try await webviewJS(web, "(()=>{tabKey('Escape');window.tabKind='cap';window.composer.setText('!ls /usr/bin/');tabKey('Tab');return true})()")
+            try await webviewUntil(web, "document.querySelector('.koa-complete .more')!==null")
+            _ = try await webviewJS(web, "(()=>{const list=document.querySelector('.koa-complete ul');list.scrollTop=list.scrollHeight;return true})()")
+            let contained = try await webviewJS(web, "(()=>{const popup=document.querySelector('.koa-complete').getBoundingClientRect(),dock=document.querySelector('#dock').getBoundingClientRect(),user=document.querySelector('.user').getBoundingClientRect();return popup.top>=user.bottom&&popup.bottom<=dock.top})()")
+            XCTAssertEqual(contained, "true", "Shell completion stays in the transcript above the dock")
+            try await capture(prefix + "bang-tab-cap")
+            koaContentSize(window: window, width: width, height: 220)
+            window.contentView?.layoutSubtreeIfNeeded()
+            web.superview?.layoutSubtreeIfNeeded()
+            try await webviewUntil(web, "(()=>{const popup=document.querySelector('.koa-complete')?.getBoundingClientRect(),dock=document.querySelector('#dock').getBoundingClientRect(),list=document.querySelector('.koa-complete ul');return innerHeight<250&&!!popup&&popup.top>=0&&popup.bottom<=dock.top&&list.scrollHeight>list.clientHeight})()")
+            _ = try await webviewJS(web, "(()=>{tabKey('Escape');window.tabKind='none';window.composer.setText('!make checkz');window.tabTimeout=window.setTimeout;window.setTimeout=(fn,ms,...args)=>ms===1500?(window.tabNone=fn,0):tabTimeout(fn,ms,...args);tabKey('Tab');return true})()")
+            try await webviewUntil(web, "document.querySelector('#status').textContent==='no completions'")
+            try await capture(prefix + "bang-tab-none")
+            _ = try await webviewJS(web, "(()=>{window.setTimeout=window.tabTimeout;tabNone();return true})()")
+            try await webviewUntil(web, "document.querySelector('#status').textContent==='run'")
+            _ = try await webviewJS(web, "(()=>{window.tabKind='pending';window.composer.setText('!git checkout kido-');tabKey('Tab');tabKey('Tab');return true})()")
+            try await webviewUntil(web, "document.querySelector('#status').textContent==='completing…'&&document.querySelector('#dot').classList.contains('spin')")
+            try await capture(prefix + "bang-tab-pending")
+            _ = try await webviewJS(web, "(()=>{window.composer.setText('!git checkout other');tabResolve();return true})()")
+            try await webviewUntil(web, "document.querySelector('#status').textContent==='run'&&!document.querySelector('.koa-complete')")
+            let stale = try await webviewJS(web, "window.composer.text()==='!git checkout other'&&tabRequests===4")
+            XCTAssertEqual(stale, "true")
+    }
+
     private func koaWebview(width: CGFloat, height: CGFloat, scenario: KoaScenario = .transcript, captures: Set<String>) async throws {
         let composerState = captures.first?.replacingOccurrences(of: "narrow-foot-", with: "").replacingOccurrences(of: "foot-", with: "") ?? ""
         let fake = checkoutRoot.appendingPathComponent("share/koa/koa-fake-pi.ts").path
@@ -366,9 +420,18 @@ extension VisualTests {
         let attachmentPaths = (shot: home.appendingPathComponent("Desktop/Screenshot 2026-11-10 at 09.11.42.png"), diagram: home.appendingPathComponent("Desktop/diagram.png"), notes: home.appendingPathComponent("Desktop/notes.md"), source: cwd.appendingPathComponent("app/App/SidebarRow.swift"))
         try FileManager.default.createDirectory(at: cwd, withIntermediateDirectories: true)
         try JSONSerialization.data(withJSONObject: ["cwd": cwd.path]).write(to: sessionFile)
-        let mediaClock = scenario == .commands || scenario == .sessions || scenario == .media || scenario == .attachments || scenario == .preview || scenario == .lightbox || scenario == .agents || scenario == .composer
+        let completionCaptures = captures.contains { $0.contains("bang-tab") }
+        let mediaClock: Bool
+        switch scenario {
+        case .commands, .sessions, .media, .attachments, .preview, .lightbox, .agents, .composer: mediaClock = true
+        default: mediaClock = completionCaptures
+        }
         let stamp = Int(try XCTUnwrap(Calendar.current.date(from: DateComponents(year: 2026, month: 11, day: mediaClock ? 10 : 8, hour: mediaClock ? 9 : 14, minute: mediaClock ? 12 : 32))).timeIntervalSince1970 * 1000)
-        let measured = scenario == .commands || scenario == .sessions || scenario == .questions || scenario == .completion || scenario == .attachments || scenario == .userMarkdown || scenario == .exit || scenario == .lightbox || captures.contains("focus-border-transcript") || captures.contains("focus-border-dialog")
+        let measured: Bool
+        switch scenario {
+        case .commands, .sessions, .questions, .completion, .attachments, .userMarkdown, .exit, .lightbox: measured = true
+        default: measured = completionCaptures || captures.contains("focus-border-transcript") || captures.contains("focus-border-dialog")
+        }
         let measurementClock = measured ? "const ClockDate=Date;window.Date=class extends ClockDate{constructor(...args){super(...(args.length?args:[\(stamp + 12000)]))}static now(){return \(stamp + 12000)}};" : ""
         // WebKit pauses animation frames in an off-screen window.
         if measured {
@@ -921,6 +984,17 @@ extension VisualTests {
         } else {
             try await start(width: width, height: height, pane: command)
         }
+        let host = NSView(frame: window.contentView?.bounds ?? .zero)
+        window.contentView = host
+        host.addSubview(session)
+        session.translatesAutoresizingMaskIntoConstraints = false
+        NSLayoutConstraint.activate([
+            session.leadingAnchor.constraint(equalTo: host.safeAreaLayoutGuide.leadingAnchor),
+            session.trailingAnchor.constraint(equalTo: host.trailingAnchor),
+            session.topAnchor.constraint(equalTo: host.safeAreaLayoutGuide.topAnchor),
+            session.bottomAnchor.constraint(equalTo: host.bottomAnchor),
+        ])
+        koaContentSize(window: window, width: width, height: height)
         let pane = try XCTUnwrap(terminal?.displayedPanes.first)
         try await wait("koa webview", within: 20) { (pane.webviewView?.visualDocuments ?? 0) > 0 }
         let diagnostics = (try? String(contentsOf: output, encoding: .utf8)) ?? ""
@@ -960,6 +1034,8 @@ extension VisualTests {
             let top = scenario == .questions || scenario == .media || scenario == .lightbox || scenario == .agents || scenario == .composer
             window.contentView?.layoutSubtreeIfNeeded()
             pane.webviewView?.layoutSubtreeIfNeeded()
+            let viewportHeight = try await webviewJS(web, "innerHeight")
+            XCTAssertEqual(viewportHeight, String(Int(web.bounds.height)), "The page fills the native webview at capture \(name)")
             _ = try await webviewJS(web, "(()=>{if(\(name != "focus-border-transcript")&&!document.querySelector('.lightbox')&&!document.querySelector('.dialog')&&!document.querySelector('#exited:not([hidden])')&&document.querySelector('#picker').hidden)window.composer.focus();const scroll=document.querySelector('#scroll');scroll.scrollTop=\(top ? "0" : "scroll.scrollHeight");if(\(ordered))document.querySelectorAll('.assistant')[1].scrollIntoView({block:'start'});return true})()")
             try await webviewUntil(web, "(()=>{const dock=document.querySelector('#dock');return Number.parseFloat(getComputedStyle(document.body).getPropertyValue('--dock-h'))===dock.getBoundingClientRect().height})()")
             try await webviewUntil(web, "(()=>{const scroll=document.querySelector('#scroll');if(\(ordered)){document.querySelectorAll('.assistant')[1].scrollIntoView({block:'start'});return true}scroll.scrollTop=\(top ? "0" : "scroll.scrollHeight");return \(top ? "scroll.scrollTop===0" : "scroll.scrollHeight-scroll.scrollTop-scroll.clientHeight<1")})()")
@@ -996,9 +1072,13 @@ extension VisualTests {
         }
         let idleHint = try await webviewJS(web, "document.querySelector('#hint .spin')===null")
         XCTAssertEqual(idleHint, "true")
+        if scenario == .bang && completionCaptures {
+            try await koaBangCompletion(web: web, window: window, width: width, capture: capture)
+            return
+        }
         if scenario == .bang {
             let prefix = width < 750 ? "narrow-" : ""
-            func resize(_ height: CGFloat) { var frame = window.frame; frame.size.height = height; window.setFrame(frame, display: false) }
+            func resize(_ height: CGFloat) { koaContentSize(window: window, width: width, height: height) }
             _ = try await webviewJS(web, "(()=>{window.composer.setText('!make checks DRY=1');return true})()")
             try await capture(prefix + "bang")
             _ = try await webviewJS(web, "(()=>{window.composer.setText('!!git status --short');return true})()")
@@ -1209,7 +1289,7 @@ extension VisualTests {
         }
         if scenario == .agents {
             let prefix = width < 750 ? "narrow-agents-" : "agents-"
-            func size(_ height: CGFloat) { var frame = window.frame; frame.size.height = height; window.setFrame(frame, display: false) }
+            func size(_ height: CGFloat) { koaContentSize(window: window, width: width, height: height) }
             func openRuns(_ firstStep: Bool = false) async throws {
                 _ = try await webviewJS(web, "(()=>{document.querySelectorAll('.run>.line').forEach(line=>{if(line.getAttribute('aria-expanded')!=='true')line.click()});if(\(firstStep)){const line=document.querySelector('.step>.line');if(line?.getAttribute('aria-expanded')!=='true')line?.click()}return true})()")
             }
@@ -1404,7 +1484,7 @@ extension VisualTests {
         }
         if scenario == .completion {
             _ = try await webviewJS(web, "(()=>{window.completePrompts=[];window.lastComplete=null;const nativeFetch=window.fetch;window.fetch=async(path,options)=>{if(path==='/prompt')completePrompts.push(JSON.parse(options.body));const response=await nativeFetch(path,options);if(path==='/complete'){lastComplete={query:JSON.parse(options.body),result:await response.clone().json()};document.body.dataset.complete=String(Number(document.body.dataset.complete||0)+1)}return response};return true})()")
-            let warmed = try await webviewJS(web, "(async()=>{const deadline=performance.now()+5000;while(performance.now()<deadline){const result=await(await fetch('/complete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text:'@si',pos:3})})).json();if(result.options.filter(o=>o.kind==='agent').length===3)return true}throw Error('agent completion deadline')})()")
+            let warmed = try await webviewJS(web, "(async()=>{const deadline=performance.now()+5000;while(performance.now()<deadline){const result=await(await fetch('/complete',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sessionId:document.body.dataset.sessionId,text:'@si',pos:3})})).json();if(result.options.filter(o=>o.kind==='agent').length===3)return true}throw Error('agent completion deadline')})()")
             XCTAssertEqual(warmed, "true")
             let prefix = width < 750 ? "narrow-complete-" : "complete-"
             func show(_ before: String, _ token: String, _ after: String = "", empty: Bool = false) async throws {
@@ -1421,7 +1501,7 @@ extension VisualTests {
                 }
             }
             func resize(_ height: CGFloat) async throws {
-                window.setContentSize(NSSize(width: width, height: height))
+                koaContentSize(window: window, width: width, height: height)
                 window.contentView?.layoutSubtreeIfNeeded()
                 try await settle()
             }

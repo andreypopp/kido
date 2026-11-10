@@ -537,12 +537,15 @@ function status() {
   label.classList.toggle('err', !!bang && draft.count > 0);
   label.title = bang && draft.count ? 'remove the attachments' : '';
   const word = cause ? (cause.kind === 'code' ? 'exited' : cause.kind) + ' ' + cause.value : waiting ? 'waiting' : state.pi.type === 'starting' ? 'starting' : state.pi.type === 'switching' ? 'loading' : state.working ? state.compaction === 'running' ? 'compacting' : 'working' : running ? 'running' : bang ? bang.excludeFromContext ? 'run, quiet' : 'run' : state.aborted ? 'aborted' : 'idle';
-  label.textContent = word;
+  const completing = editor.completionStatus();
+  label.textContent = bang && completing === 'pending' ? 'completing…' : bang && completing === 'none' ? 'no completions' : word;
+  label.classList.toggle('completion-hint', !!bang && completing !== 'idle');
   if (state.pi.type === 'ready' && (state.working || running) && !waiting) {
     const ms = Math.max(0, Math.floor((Date.now() - (state.working ? state.since ?? Date.now() : running?.started ?? Date.now())) / 1000)) * 1000;
     label.append(node('span', ' ' + duration(ms, ' '), 'k'));
   }
   element('dot').className = 'dot' + (hasExited() ? ' off' : waiting ? ' wait' : state.pi.type === 'ready' && (state.working || running) ? ' on' : '');
+  if (bang && completing === 'pending') element('dot').className = 'spin completion-spin';
   element('model-name').textContent = state.model?.id ?? '';
   element('thinking').textContent = state.thinking ? '· ' + state.thinking : '';
   const context = state.context, percent = context?.percent;
@@ -729,6 +732,7 @@ function statuses() {
 }
 function apply(record: PageRecord) {
   if (record.type === 'reset') {
+    editor.resetCompletion();
     epoch = record.epoch; after = -1; first = undefined; items.clear(); views.clear(); texts.clear(); annotationItems.clear(); folds.clear(); jobOwners.clear(); pagingPatches.length = 0; more = record.more;
     element('items').replaceChildren();
     element('older').hidden = !more;
@@ -750,6 +754,7 @@ function apply(record: PageRecord) {
     }
     put(item);
   } else if (record.type === 'state') {
+    if (state.sessionId !== record.sessionId || state.pi.type !== record.pi.type) editor.resetCompletion();
     if (state.sessionId && state.sessionId !== record.sessionId) { closeSessions(); closePicker(); editorId = undefined; }
     state = record; document.body.dataset.sessionId = state.sessionId ?? ''; element('items').hidden = state.pi.type === 'switching'; refreshBash(); refreshComposer(); dialogs(); queue(); exited();
     if (state.pi.type === 'ready' && state.editor && editorId !== state.editor.id) {

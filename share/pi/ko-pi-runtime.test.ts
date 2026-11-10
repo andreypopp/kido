@@ -14,6 +14,7 @@ import { getAgentDir } from "@earendil-works/pi-coding-agent";
 
 import { makeFixture, agentPane, selfPane, startSession, text, entriesOf, customMessages, notices, gatedCommand, pollUntil, withEnv, freshExtension, movedId, logHas, captureStatusRecords, type Fixture, type Started } from "./ko-pi-fixture.ts";
 
+import { resolveCompletionContext } from './completion-context.ts';
 import { mapHostPath, senderHeader } from "./ko-pi.ts";
 
 type Body = Record<string, any>;
@@ -43,6 +44,20 @@ async function routed(fx: Fixture, t: ReturnType<typeof tree>, opts: { runtimes?
 
 
 const run = (s: Started, tool: string, params: Record<string, unknown>, signal?: AbortSignal): Promise<any> => s.tools.get(tool).execute("c", params, signal, () => {});
+
+test('completion context follows current routed session, host switch and runtime refusal', async () => {
+  const fx = makeFixture();
+  try {
+    const t = tree(fx); fx.setRuntimes({ dev: dev(t) });
+    await startSession(fx, { flags: { harness: 'koa', runtime: 'dev' }, ctx: { cwd: t.hostCwd } });
+    const request = () => resolveCompletionContext(new AbortController().signal);
+    assert.deepEqual(await request(), { type: 'runtime', name: 'dev', cwd: join(t.rt, 'proj') });
+    await startSession(fx, { sessionId: 'other', flags: { harness: 'koa' }, ctx: { cwd: '/new-host' } });
+    assert.deepEqual(await request(), { type: 'host', cwd: '/new-host' });
+    await startSession(fx, { sessionId: 'refused', flags: { harness: 'koa', runtime: 'missing' }, ctx: { cwd: '/never-host' } });
+    assert.deepEqual(await request(), { type: 'unavailable' });
+  } finally { await fx.restore(); }
+});
 
 test("a host path maps by its longest prefix of whole components", () => {
   const paths = [

@@ -14,6 +14,24 @@ import { stripTypeScriptTypes } from 'node:module';
 import { runInNewContext } from 'node:vm';
 import { assistant, sse, selfPane, agentPane, pollUntil } from "../pi/ko-pi-fixture.ts";
 
+test('bang completion asks the child for its cwd and returns shell replacements', { timeout: 7000 }, async t => {
+  const cwd = await mkdtemp('/tmp/koa-tab-context-');
+  t.after(() => rm(cwd, { recursive: true, force: true }));
+  await writeFile(join(cwd, 'bridge-file'), '');
+  const app = await fixture(t, [{ type: 'wait', command: 'prompt' }], { KOA_FAKE_COMPLETION_CONTEXT: JSON.stringify({ type: 'host', cwd }) }, undefined, true, [], resolve('../koa/koa.ts'));
+  const started = performance.now();
+  const response = await app.post('complete', { text: '!!cat bridge-', pos: 13 });
+  t.diagnostic(`One host Tab, HTTP + context bridge + Bash: ${(performance.now() - started).toFixed(1)} ms`);
+  assert.equal(response.status, 200);
+  const result = await response.json();
+  assert.equal(result.type, 'shell'); assert.equal(result.from, 6); assert.equal(result.to, 13);
+  assert.deepEqual(result.options, [{ label: 'bridge-file', insert: 'bridge-file ' }]);
+  assert.equal((await app.log()).some(row => row.type === 'bash'), false);
+  const stale = await app.post('complete', { sessionId: 'previous', text: '!!cat bridge-', pos: 13 });
+  assert.equal(stale.status, 409);
+  assert.deepEqual(await stale.json(), { error: 'pi session changed' });
+});
+
 test("--help prints usage without starting pi or a webview", { timeout: 5000 }, async () => {
   const child = spawn(process.execPath, [resolve('../koa/koa.ts'), '--help', '--pi', '/does-not-exist'], { env: { PATH: '' }, stdio: 'pipe' });
   let stdout = '', stderr = '';
@@ -729,7 +747,7 @@ test('completion limits active searches and kills expired children', { timeout: 
   server.listen(gate); await once(server, 'listening'); t.after(() => { for (const socket of sockets) socket.destroy(); server.close(); });
   const app = await fixture(t, [], { KOA_FD: fd }, undefined, true, [], resolve('../koa/koa.ts'));
   const controller = new AbortController();
-  const first = fetch(app.base + 'complete', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text: '@', pos: 1 }), signal: controller.signal });
+  const first = fetch(app.base + 'complete', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ sessionId: 'fake', text: '@', pos: 1 }), signal: controller.signal });
   const rejected = assert.rejects(first, { name: 'AbortError' });
   const second = app.post('complete', { text: '@', pos: 1 });
   await pollUntil(() => sockets.size === 4, 1500, 'four fd children');
@@ -748,7 +766,7 @@ test("completion reads pi commands on every request and validates offsets", { ti
   for (let i = 0; i < 2; i++) {
     const response = await app.post("complete", { text: "/fi", pos: 3 });
     assert.equal(response.status, 200);
-    assert.deepEqual(await response.json(), { from: 0, to: 3, options: [{ label: "/find", detail: "Find a file", insert: "/find ", kind: "command", source: "extension", matched: [1, 2] }] });
+    assert.deepEqual(await response.json(), { type: 'prompt', from: 0, to: 3, options: [{ label: "/find", detail: "Find a file", insert: "/find ", kind: "command", source: "extension", matched: [1, 2] }] });
   }
   assert.equal((await app.log()).filter(record => record.type === "get_commands").length, 2);
   for (const body of [{ text: "@", pos: -1 }, { text: "@", pos: 2 }, { text: "@", pos: 0.5 }, { text: 1, pos: 0 }]) assert.equal((await app.post("complete", body)).status, 400);
@@ -782,7 +800,7 @@ if(fs.existsSync(path+'/block')){fs.writeFileSync(path+'/pid',String(process.pid
   assert.equal((await (await app.post("complete", { text: "/fi", pos: 3 })).json()).options[0].insert, "/find ");
   await writeFile(join(dir, "block"), "");
   const connected = once(server, "connection"), controller = new AbortController();
-  const request = fetch(app.base + "complete", { method: "POST", headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text: "@si", pos: 3 }), signal: controller.signal });
+  const request = fetch(app.base + "complete", { method: "POST", headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ sessionId: 'fake', text: "@si", pos: 3 }), signal: controller.signal });
   const [socket] = await connected;
   t.after(() => socket.destroy());
   await once(socket, "data");

@@ -14,17 +14,3 @@ export function bashCommand(text: string): { command: string; excludeFromContext
   return { command: text.slice(prefixLength).trimStart(), excludeFromContext: prefixLength === 2, prefixLength };
 }
 
-export function shellPathToken(text: string, pos: number, bang = bashCommand(text)): { from: number; to: number; query: string } | undefined {
-  if (!bang || pos < text.length && !/\s/.test(text[pos])) return;
-  const before = text.slice(bang.prefixLength, pos);
-  if (/["'`\\$]/.test(before)) return;
-  const query = /(?:^|\s)((?:\.\.?\/|~\/|\/)[^\s;&|<>()@*?\[\]{}]*)$/.exec(before)?.[1];
-  if (query === undefined) return;
-  return { from: pos - query.length, to: pos, query };
-}
-
-export function shellQuote(path: string): string {
-  const home = path.startsWith('~/'), rest = home ? path.slice(2) : path;
-  return (home ? '~/' : '') + (/^[\w./+-]+$/.test(rest) ? rest : "'" + rest.replace(/'/g, "'\\''") + "'");
-}
-

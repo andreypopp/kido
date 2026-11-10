@@ -17,7 +17,8 @@ import { webview } from "../webview/index.ts";
 import { assemblePage } from "./koa-assemble.ts";
 import { complete, findFd, agentDiscovery } from "./koa-complete.ts";
 import { startup, pickSession, signalChild, piPackage } from "./koa-child.ts";
-import { sessionChannel } from "./koa-session-channel.ts";
+import { koaChannel } from "./koa-channel.ts";
+import { shellComplete } from "./koa-shell.ts";
 import { attachments, stepFile, UPLOAD_IDLE_MS, isChunkRoute } from "./koa-attach.ts";
 import { commandCatalog, parseCommand, dispatchCommand } from './koa-commands.ts';
 import { bashCommand } from "./prompt.ts";
@@ -258,7 +259,7 @@ async function main(): Promise<void> {
     const title = () => process.stdout.write(`\x1b]0;${utf8Prefix(replaceControlCharacters(`koa - ${state.name} - ${basename(state.cwd)}`), 2048)}\x1b\\`);
     const spawnPi = (args: string[]) => spawn(executable, ["--mode", "rpc", "--extension", fileURLToPath(new URL("../pi/ko-pi.ts", location)), "--extension", fileURLToPath(new URL("./koa-sessions.ts", location)), "--harness", browser ? "koa-browser" : "koa", ...args], { detached: true, stdio: ["pipe", "pipe", "pipe", "pipe"] });
     let child = spawnPi(pass);
-    let sessions = sessionChannel(child.stdio[3]);
+    let sessions = koaChannel(child.stdio[3]);
     teardown.push(() => sessions.close());
     let link = rpc(child);
     const waitExit = async (): Promise<boolean> => {
@@ -550,13 +551,16 @@ async function main(): Promise<void> {
       "/complete": { method: "POST", access: "alive", handle: async (value, response) => {
         const query = completeBody(value);
         if ("error" in query) { respond(response, 400, JSON.stringify(query)); return; }
-        await withRequestSignal(response, lifetime.signal, async signal => {
-          const result = await complete(query.text, query.pos, { cwd: state.cwd, fd, signal, agents, commands: async () => {
+        checkSession(value);
+        await withRequestSignal(response, lifetime.signal, async requestSignal => {
+          const bang = bashCommand(query.text), owner = child, ownerSession = state.sessionId;
+          const signal = AbortSignal.any([requestSignal, sessions.signal(), ...(bang ? [AbortSignal.timeout(2000)] : [])]);
+          const result = bang ? await shellComplete(query.text, query.pos, await sessions.completionContext(signal), 'ko', signal, bang) : await complete(query.text, query.pos, { cwd: state.cwd, fd, signal, agents, commands: async () => {
             if (pi.type !== "ready") return [];
             const result = await link.command({ type: "get_commands" }, { signal });
             return [...completion, ...(result.success && result.command === 'get_commands' ? result.data.commands.filter(value => !catalog.some(builtin => builtin.name === value.name)) : [])];
           } });
-          if (!signal.aborted) respond(response, 200, JSON.stringify(result));
+          if (!requestSignal.aborted) respond(response, signal.aborted || owner !== child || ownerSession !== state.sessionId ? 409 : 200, JSON.stringify(result));
         });
       } },
       "/sessions/list": { method: "POST", access: "ready", handle: async (value, response) => {
@@ -696,7 +700,7 @@ async function main(): Promise<void> {
         }
         if (compaction) finishCompaction({ type: 'failed', message: 'pi restarted during compaction' });
         compactRequest = undefined;
-        sessions.close(); child = spawnPi(args); link = rpc(child); sessions = sessionChannel(child.stdio[3]);
+        sessions.close(); child = spawnPi(args); link = rpc(child); sessions = koaChannel(child.stdio[3]);
         pi = { type: "starting" }; resetSession();
         watch(child, link); link.events(records);
         await refresh(); respond(response, 200, "{}");

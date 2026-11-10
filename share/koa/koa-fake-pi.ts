@@ -83,6 +83,7 @@ async function advance(): Promise<void> {
 }
 async function command(value: { type: string; id: string; sessionPath?: string; message?: string; images?: Extract<RpcCommand, { type: "prompt" }>["images"]; streamingBehavior?: string; provider?: string; modelId?: string; level?: string; command?: string; excludeFromContext?: boolean }): Promise<void> {
   log(value);
+  if (value.type === 'switch_session' || value.type === 'new_session') sessionSocket?.write(JSON.stringify({ type: 'reset' }) + '\n');
   if (value.type === 'switch_session') {
     const rows: { path: string }[] = JSON.parse(process.env.KOA_FAKE_SESSIONS_FILE ? readFileSync(process.env.KOA_FAKE_SESSIONS_FILE, 'utf8') : process.env.KOA_FAKE_SESSIONS ?? '[]');
     if (!rows.some(row => row.path === value.sessionPath)) { await emit({ type: 'response', command: value.type, id: value.id, success: false, error: 'Unknown session path' }); return; }
@@ -180,7 +181,9 @@ if (process.argv.some(arg => arg.endsWith('/koa-sessions.ts'))) {
   const lines = createInterface({ input: channel });
   lines.on('line', line => {
     const query = JSON.parse(line); log({ type: 'session_query', ...query });
-    if (query.type === 'list') {
+    if (query.type === 'completion_context') {
+      channel.write(JSON.stringify({ type: 'completion_context', id: query.id, context: process.env.KOA_FAKE_COMPLETION_CONTEXT ? JSON.parse(process.env.KOA_FAKE_COMPLETION_CONTEXT) : { type: 'host', cwd: sessionCwd } }) + '\n');
+    } else if (query.type === 'list') {
       const rows = JSON.parse(process.env.KOA_FAKE_SESSIONS_FILE ? readFileSync(process.env.KOA_FAKE_SESSIONS_FILE, 'utf8') : process.env.KOA_FAKE_SESSIONS ?? '[]');
       rows.sort((a: { modified: number }, b: { modified: number }) => b.modified - a.modified);
       channel.write(JSON.stringify({ type: 'list', id: query.id, rows: query.scope === 'all' ? rows : rows.filter((row: { cwd: string }) => row.cwd === sessionCwd) }) + '\n');
