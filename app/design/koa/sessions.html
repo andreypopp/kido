@@ -1,0 +1,439 @@
+<!doctype html>
+<html lang="en" data-theme="light" data-width="wide">
+<head>
+<meta charset="utf-8">
+<title>koa — sessions inside the page</title>
+<style>
+/* ---- copied from mockup.html's <style> (the approved design language); edit there first ---- */
+/* Fallback themes: kido-light and kido-dark (app/Resources/ghostty/themes).
+   In Kido.app the --ko-* properties on :root override every value here. */
+:root{
+  --ko-bg:#FFF9EC;--ko-fg:#424242;--ko-cursor:#AAAAAA;
+  --ko-selection-bg:#d9d1bd;--ko-selection-fg:#222;
+  --ko-color-0:#222222;--ko-color-1:#a4002e;--ko-color-2:#008550;--ko-color-3:#dc682a;
+  --ko-color-4:#014ca6;--ko-color-5:#950c93;--ko-color-6:#128399;--ko-color-7:#acacac;
+  --ko-color-8:#848484;--ko-color-9:#ad1d1d;--ko-color-10:#178258;--ko-color-11:#f0da4a;
+  --ko-color-12:#3382e1;--ko-color-13:#da21d8;--ko-color-14:#008ec4;--ko-color-15:#929292;
+  --ko-font-family:"SF Mono",Menlo,monospace;--ko-font-size:13px;--ko-cell-width:7.8px;--ko-cell-height:17px;
+  --ko-appearance:light;
+}
+html[data-theme=dark]{
+  --ko-bg:#171717;--ko-fg:#C9C9C9;--ko-cursor:#999999;
+  --ko-selection-bg:#3a3a3a;--ko-selection-fg:#eee;
+  --ko-color-0:#EEEEEE;--ko-color-1:#d4003c;--ko-color-2:#05ab69;--ko-color-3:#ccbc00;
+  --ko-color-4:#2466b5;--ko-color-5:#950c93;--ko-color-6:#2099b0;--ko-color-7:#cccccc;
+  --ko-color-8:#8f8f8f;--ko-color-9:#fa084c;--ko-color-10:#04d682;--ko-color-11:#ccbc00;
+  --ko-color-12:#3382e1;--ko-color-13:#da21d8;--ko-color-14:#63a9b5;--ko-color-15:#aaaaaa;
+  --ko-appearance:dark;
+}
+
+/* ---- derived tones: every colour below is a mix of --ko-fg, --ko-bg and the palette ---- */
+:root{
+  --fg:var(--ko-fg);--bg:var(--ko-bg);
+  --muted:color-mix(in srgb,var(--ko-fg) 55%,var(--ko-bg));
+  --faint:color-mix(in srgb,var(--ko-fg) 35%,var(--ko-bg));
+  --hair:color-mix(in srgb,var(--ko-fg) 12%,var(--ko-bg));
+  --hair2:color-mix(in srgb,var(--ko-fg) 18%,var(--ko-bg));
+  --well:color-mix(in srgb,var(--ko-fg) 5%,var(--ko-bg));
+  --well2:color-mix(in srgb,var(--ko-fg) 8%,var(--ko-bg));
+  --accent:var(--ko-color-4);
+  --ok:var(--ko-color-2);--err:var(--ko-color-1);--warn:var(--ko-color-3);
+  --mono:var(--ko-font-family);
+  --prose:-apple-system,BlinkMacSystemFont,"SF Pro Text",sans-serif;
+}
+
+*{box-sizing:border-box}
+body{margin:0;background:color-mix(in srgb,var(--ko-fg) 6%,var(--ko-bg));color:var(--fg);font:13px/1.5 var(--prose);padding:24px 28px 60px}
+h1{font:600 15px/1.2 var(--prose);margin:0 0 4px}
+.lede{color:var(--muted);margin:0 0 18px;max-width:900px}
+.controls{position:sticky;top:0;z-index:5;display:flex;gap:14px;align-items:center;padding:10px 0 14px;background:color-mix(in srgb,var(--ko-fg) 6%,var(--ko-bg));font-size:12px}
+.controls label{display:flex;gap:6px;align-items:center;color:var(--muted)}
+select{font:inherit}
+section{margin:30px 0 0}
+section>h2{font:600 12px/1.3 var(--prose);color:var(--muted);text-transform:uppercase;letter-spacing:.06em;margin:0 0 10px}
+section>p{margin:-4px 0 12px;color:var(--muted);max-width:900px}
+.grid{display:flex;gap:22px;flex-wrap:wrap;align-items:flex-start}
+
+/* ---- the pane: one webview, the page owns its whole content area ---- */
+.pane{width:980px;height:560px;background:var(--bg);color:var(--fg);border:1px solid var(--hair2);border-radius:6px;overflow:hidden;display:flex;flex-direction:column;font:var(--ko-font-size)/1.5 var(--prose);box-shadow:0 1px 2px color-mix(in srgb,var(--ko-fg) 10%,transparent)}
+.pane.narrow{width:calc(60*var(--ko-cell-width) + 2px)}
+.pane.short{height:300px}
+html[data-width=narrow] .pane{width:calc(60*var(--ko-cell-width) + 2px)}
+
+/* transcript */
+.scroll{flex:1;overflow:auto;scrollbar-gutter:stable}
+.transcript{max-width:720px;margin:0 auto;padding:14px 20px 8px}
+.narrow .transcript,html[data-width=narrow] .transcript{padding:10px 12px 6px}
+.msg{margin:0 0 14px}
+.msg.user{color:var(--fg);display:flex;gap:14px;align-items:baseline;border-radius:8px;padding:7px 12px;background:color-mix(in srgb,var(--accent) 18%,var(--ko-bg))}
+html[data-user=tint] .msg.user{background:color-mix(in srgb,var(--accent) 7%,var(--ko-bg))}
+html[data-user=bar] .msg.user{background:var(--well);border-left:2px solid var(--accent);border-radius:0 8px 8px 0;padding-left:12px}
+html[data-user=plain] .msg.user{background:none;border-left:2px solid var(--accent);border-radius:0;padding:1px 0 1px 12px}
+.msg.user .t{flex:1;min-width:0;white-space:pre-wrap;overflow-wrap:anywhere}
+.msg.user time{color:color-mix(in srgb,var(--accent) 60%,var(--fg));font:.8em/1.5 var(--mono);white-space:nowrap;font-variant-numeric:tabular-nums}
+.msg.user .who{display:none}
+.assistant p{margin:0 0 .65em}
+.assistant p:last-child{margin-bottom:0}
+.assistant h1,.assistant h2,.assistant h3{font:600 1em/1.35 var(--prose);margin:1em 0 .4em}
+.assistant h2{font-size:1.15em}
+.assistant h1{font-size:1.3em}
+.assistant ul,.assistant ol{margin:.1em 0 .65em;padding-left:1.4em}
+.assistant li{margin:.15em 0}
+.assistant li::marker{color:var(--muted)}
+code{font:.92em var(--mono);background:var(--well2);border-radius:4px;padding:1px 5px}
+pre{font:.9em/1.45 var(--mono);background:var(--well);border:1px solid var(--hair);border-radius:7px;padding:8px 10px;margin:.3em 0 .75em;overflow:auto;position:relative}
+pre code{background:none;padding:0;font-size:1em}
+pre .lang{position:absolute;top:6px;right:10px;font-size:.8em;color:var(--faint);text-transform:lowercase}
+table{border-collapse:collapse;margin:.3em 0 1em;font-size:.95em}
+th,td{text-align:left;padding:4px 12px 4px 0;border-bottom:1px solid var(--hair);vertical-align:top}
+th{color:var(--muted);font-weight:600;font-size:.85em;text-transform:uppercase;letter-spacing:.05em}
+tr:last-child td{border-bottom:0}
+blockquote{margin:.3em 0 .9em;padding-left:12px;border-left:2px solid var(--hair2);color:var(--muted)}
+/* inside the user message's tint the gray reads as dirty (user, 2026-11-10): the quote takes the time's accent ink, its bar the accent at 45% */
+.msg.user blockquote{color:color-mix(in srgb,var(--accent) 60%,var(--fg));border-left-color:color-mix(in srgb,var(--accent) 45%,transparent)}
+.msg.user code{background:color-mix(in srgb,var(--accent) 12%,transparent)}
+a{color:var(--accent);text-decoration:none;border-bottom:1px solid color-mix(in srgb,var(--accent) 35%,transparent)}
+.caret{display:inline-block;width:2px;height:1em;background:var(--ko-cursor);vertical-align:-.15em;margin-left:1px;animation:blink 1s steps(1) infinite}
+@keyframes blink{50%{opacity:0}}
+
+/* ---- the run: a collapsed line of tool calls and thinking ---- */
+.run{margin:0 0 14px;font:.95em/1.5 var(--prose);color:var(--muted)}
+.run .chev,.run .cmd,.step .path,.step .name,.run .names,.run .time{font-family:var(--mono);font-size:.92em}.run .time{font-size:.8em}
+.run>.line,.step>.line{display:flex;align-items:baseline;gap:8px;cursor:pointer;user-select:none;padding:1px 0;border-radius:4px}
+.run>.line:hover,.step>.line:hover{color:var(--fg)}
+.chev{width:9px;flex-shrink:0;color:var(--faint);transition:transform .12s;font-size:.9em;text-align:center;position:relative;top:1px}
+.open>.line .chev{transform:rotate(90deg)}
+.sum{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.sum b{font-weight:600;color:var(--fg)}
+.time{color:var(--faint);font-variant-numeric:tabular-nums;flex-shrink:0}
+.spin{display:inline-block;width:8px;height:8px;border-radius:50%;border:1.5px solid var(--hair2);border-top-color:var(--muted);animation:spin .8s linear infinite;vertical-align:-1px;margin-right:1px}
+@keyframes spin{to{transform:rotate(360deg)}}
+.ok{color:var(--ok)}.err{color:var(--err)}.warn{color:var(--warn)}
+.steps{display:none;margin:1px 0 0 4px;border-left:1px solid var(--hair);padding-left:13px}
+.open>.steps{display:block}
+.step{margin:0}
+.step .name{color:var(--muted)}.step .name.err{color:var(--err)}.step .sum{font-family:var(--mono);font-size:.92em}.step .sum .cmd,.step .sum .path,.step .sum .name{font-size:1em}.step .sum .delta{font-family:var(--prose);font-size:1.087em}
+.step .cmd{color:var(--fg)}
+.step .path{color:var(--fg)}
+.step .delta{color:var(--faint)}
+.step .delta .plus{color:var(--ok)}.step .delta .minus{color:var(--err)}
+.detail{display:none;margin:2px 0 4px 20px;font-size:.98em}
+.step.open>.detail{display:block}
+.detail pre{margin:3px 0 4px;max-height:260px;font-size:.88em;color:var(--fg)}
+.detail .kv{color:var(--faint);margin:2px 0}
+.detail .kv b{color:var(--muted);font-weight:500}
+.detail .think{font:1em/1.5 var(--prose);color:var(--muted);white-space:pre-wrap;max-height:260px;overflow:auto;padding:0;margin:0}
+.diff{font:.88em/1.45 var(--mono);margin:3px 0 4px;border:1px solid var(--hair);border-radius:7px;overflow:hidden}
+.diff .h{padding:4px 10px;background:var(--well);color:var(--muted);border-bottom:1px solid var(--hair);font-size:.92em}
+.diff .l{padding:0 10px;white-space:pre;color:var(--fg)}
+.diff .l.add{background:color-mix(in srgb,var(--ko-color-2) 12%,var(--ko-bg))}
+.diff .l.del{background:color-mix(in srgb,var(--ko-color-1) 11%,var(--ko-bg))}
+.diff .l.ctx{color:var(--muted)}
+.diff .l .g{display:inline-block;width:14px;color:var(--faint)}
+.diff .l.add .g{color:var(--ok)}.diff .l.del .g{color:var(--err)}
+.exit{color:var(--err)}
+
+/* ---- composer ---- */
+.composer{flex-shrink:0;padding:0 24px 12px;max-width:720px;width:100%;margin:0 auto}
+/* ---- floating composer: the transcript scrolls beneath a glass dock ---- */
+html:not([data-dock=band]) .pane .scroll{position:absolute;left:0;right:0;top:0;bottom:24px}
+html:not([data-dock=band]) .pane .transcript{padding-bottom:calc(var(--dock-h,96px) + 8px)}
+html:not([data-dock=band]) .pane .status{position:absolute;left:0;right:0;bottom:0;background:var(--bg)}
+html:not([data-dock=band]) .dock{position:absolute;left:0;right:0;bottom:24px;pointer-events:none}
+html:not([data-dock=band]) .dock>*{pointer-events:auto}
+html:not([data-dock=band]) .dock .field,html:not([data-dock=band]) .dock .dialog,html:not([data-dock=band]) .dock .exited .card{background:color-mix(in srgb,var(--ko-bg) 72%,transparent);-webkit-backdrop-filter:blur(18px) saturate(1.35);backdrop-filter:blur(18px) saturate(1.35);border:1px solid color-mix(in srgb,var(--ko-fg) 22%,transparent);box-shadow:inset 0 .5px 0 color-mix(in srgb,#fff 28%,transparent),0 6px 22px color-mix(in srgb,var(--ko-fg) 14%,transparent),0 1px 3px color-mix(in srgb,var(--ko-fg) 10%,transparent)}
+/* progressive enhancement: Liquid Glass in Kido's WKWebView (private -apple-visual-effect, only with useSystemAppearance); the browser shows the fallback above */
+@supports (-apple-visual-effect: -apple-system-glass-material){html:not([data-dock=band]) .dock .field,html:not([data-dock=band]) .dock .dialog,html:not([data-dock=band]) .dock .exited .card,html:not([data-dock=band]) .dock .queue{background:transparent;-webkit-backdrop-filter:none;backdrop-filter:none;-apple-visual-effect:-apple-system-glass-material;box-shadow:none;border-color:color-mix(in srgb,var(--ko-fg) 14%,transparent)}}
+html:not([data-dock=band]) .dock .field.focus{border-color:color-mix(in srgb,var(--ko-fg) 45%,transparent)}
+html:not([data-dock=band]) .dock .field.working{border-color:color-mix(in srgb,var(--ko-fg) 22%,transparent)}
+html:not([data-dock=band]) .dock .queue{background:color-mix(in srgb,var(--ko-bg) 72%,transparent);-webkit-backdrop-filter:blur(18px) saturate(1.35);backdrop-filter:blur(18px) saturate(1.35);border-radius:8px;padding:4px 8px 6px;margin:0 0 6px}
+html:not([data-dock=band]) .dock .queued-next{text-shadow:0 0 6px var(--ko-bg),0 0 2px var(--ko-bg)}
+
+.narrow .composer,html[data-width=narrow] .composer{padding:0 14px 10px}
+.field{border:1px solid var(--hair2);border-radius:9px;background:var(--bg);padding:9px 12px 8px;position:relative;transition:border-color .12s}
+.field.focus{border-color:color-mix(in srgb,var(--ko-fg) 40%,var(--ko-bg))}
+.field .text{min-height:1.6em;white-space:pre-wrap;overflow-wrap:anywhere;color:var(--fg);max-height:calc(6*1.6em);overflow:auto}
+.field .text:empty::before,.field .text.ph{content:attr(data-ph);color:var(--faint)}
+.field .text.ph{color:var(--faint)}
+.field .foot{display:flex;align-items:center;gap:12px;margin-top:4px;font:.8em/1.4 var(--mono);color:var(--faint);min-height:24px}
+.field .foot .sp{flex:1}
+.field .foot kbd{font:inherit;color:var(--muted)}
+.field .foot .hint{opacity:0;transition:opacity .15s}
+.field.focus .foot .hint,.field.working .foot .hint{opacity:1}
+/* the one button: send (accent, arrow right) or stop (fg, square). 26pt rounded square, 8pt radius, like the palette's Send; no border, no text. */
+.act{width:26px;height:26px;border-radius:7px;border:0;padding:0;display:grid;place-items:center;cursor:pointer;color:var(--accent);background:none;margin-right:-7px;margin-bottom:-2px;transition:background .12s,color .12s}
+.act svg{width:15px;height:15px;fill:none;stroke:currentColor;stroke-width:1.6;stroke-linecap:round;stroke-linejoin:round}
+.act:hover{background:var(--well2)}
+.act.off{color:var(--faint);cursor:default}
+.act.off:hover{background:none}
+.act.stop{color:var(--muted)}
+.act.stop:hover{color:var(--err);background:var(--well2)}
+/* working (C, 2026-11-09): the border rests; the foot shows the run line's gray spinner with the elapsed time; the status dot breathes */
+.field.working .hint .spin{border-color:var(--hair2);border-top-color:var(--muted);margin-right:5px;vertical-align:-1px}
+.dot.on{animation:breathe 1.6s ease-in-out infinite}
+@keyframes breathe{50%{opacity:.35}}
+
+/* ---- status bar: one line ---- */
+.status{flex-shrink:0;height:24px;display:flex;align-items:center;gap:0;padding:0 12px;border-top:1px solid var(--hair);font:.82em/1 var(--mono);color:var(--muted);white-space:nowrap;overflow:hidden}
+.status .seg{display:flex;align-items:center;gap:6px;padding:0 10px;border-right:1px solid var(--hair);height:100%}
+.status .seg:first-child{padding-left:0}
+.status .seg:last-child{border-right:0;padding-right:0;margin-left:auto}
+.status .seg.grow{flex:1;min-width:0;border-right:0;overflow:hidden;text-overflow:ellipsis;display:block;line-height:24px;padding-right:10px}
+.status .dot{width:6px;height:6px;border-radius:50%;background:var(--faint);flex-shrink:0}
+.status .dot.on{background:var(--ok)}
+.status .dot.wait{background:var(--warn)}
+.status .ctx{display:inline-block;width:44px;height:4px;border-radius:2px;background:var(--hair2);position:relative;top:0}
+.status .ctx i{position:absolute;left:0;top:0;bottom:0;border-radius:2px;background:var(--faint)}
+.status .ctx.high i{background:var(--warn)}
+.status .k{color:var(--faint)}
+.narrow .status .hide-n,html[data-width=narrow] .status .hide-n{display:none}
+
+/* ---- dialogs from extensions (pi's select / confirm / input / editor) ---- */
+.dialogs{flex-shrink:0;max-width:720px;width:100%;margin:0 auto;padding:0 24px 10px}
+.narrow .dialogs,html[data-width=narrow] .dialogs{padding:0 14px 8px}
+.dialog{position:relative;border:1px solid var(--hair2);border-radius:9px;background:var(--bg);padding:11px 12px 10px;overflow:hidden}
+.dialog .head{display:flex;align-items:baseline;gap:12px;margin-bottom:4px}
+.dialog .title{font-weight:600;flex:1;min-width:0}
+.dialog .count{font:.8em/1.4 var(--mono);color:var(--faint);font-variant-numeric:tabular-nums;white-space:nowrap}
+.dialog .msg2{color:var(--muted);margin:0 0 8px}
+.dialog .fuse{position:absolute;left:0;top:0;height:2px;background:var(--accent);opacity:.7;width:62%}
+.opts{margin:2px 0 6px;display:flex;flex-direction:column;gap:1px}
+.opt{display:flex;align-items:baseline;gap:9px;padding:4px 8px;border-radius:6px;font:.95em/1.5 var(--prose)}
+.opt .k{font:.85em var(--mono);color:var(--faint);width:12px;text-align:center}
+.opt.cur{background:var(--well2)}
+.opt.cur .k{color:var(--accent)}
+.opt .d{color:var(--muted);font-size:.9em;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.dialog .in{border:1px solid var(--hair2);border-radius:7px;padding:6px 9px;margin:2px 0 8px;color:var(--fg);min-height:1.6em;background:var(--bg)}
+.dialog .in.focus{border-color:color-mix(in srgb,var(--ko-fg) 40%,var(--ko-bg))}
+.dialog .in.multi{min-height:calc(4*1.6em + 12px);white-space:pre-wrap}
+.dialog .in .ph{color:var(--faint)}
+.dialog .foot{display:flex;align-items:center;gap:8px;margin-top:2px;font:.8em/1.4 var(--mono);color:var(--faint)}
+.dialog .foot .sp{flex:1}
+.btn{border:1px solid var(--hair2);border-radius:7px;background:var(--bg);color:var(--fg);padding:3px 11px;font:.95em/1.5 var(--prose);cursor:pointer}
+.btn.primary{background:var(--accent);border-color:var(--accent);color:var(--bg)}
+.btn:hover{background:var(--well)}
+.btn.primary:hover{background:color-mix(in srgb,var(--accent) 85%,var(--ko-fg))}
+.dialog .btn kbd{font:.8em var(--mono);opacity:.6;margin-left:6px}
+.queued-next{display:flex;align-items:baseline;gap:8px;margin:6px 2px 0;font:.8em/1.4 var(--mono);color:var(--faint)}
+.queued-next b{font-weight:500;color:var(--muted)}
+
+/* ---- the queue: steering and follow-ups pi holds while it works ---- */
+.queue{margin:0 2px 6px;font:.85em/1.5 var(--prose);color:var(--muted)}
+.queue .q{display:flex;align-items:baseline;gap:9px;padding:2px 0}
+.queue .tag{font:.8em var(--mono);color:var(--faint);width:62px;flex-shrink:0;text-transform:lowercase}
+.queue .q .t{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.queue .take{display:flex;align-items:center;gap:8px;margin-top:3px;font:.8em/1.4 var(--mono);color:var(--faint)}
+.queue .take .btn{font:1em var(--mono);padding:1px 8px;color:var(--muted)}
+
+/* ---- pickers from the status bar ---- */
+.pane{position:relative}
+.picker{position:absolute;bottom:30px;z-index:3;min-width:220px;max-width:calc(100% - 24px);background:var(--bg);border:1px solid var(--hair2);border-radius:9px;box-shadow:0 8px 28px color-mix(in srgb,var(--ko-fg) 14%,transparent);padding:6px;font:.88em/1.5 var(--mono);color:var(--fg)}
+.picker .ph{padding:2px 8px 6px;color:var(--faint);font-size:.9em}
+.picker .row{display:flex;align-items:baseline;gap:10px;padding:3px 8px;border-radius:6px;white-space:nowrap}
+.picker .row .tick{width:10px;color:var(--accent);flex-shrink:0}
+.picker .row .n{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis}
+.picker .row .p{color:var(--faint);font-size:.9em}
+.picker .row.cur{background:var(--well2)}
+.picker .hints{margin-top:4px;padding:5px 8px 0;border-top:1px solid var(--hair);color:var(--faint);font-size:.85em}
+.status .seg.pick{color:var(--fg);background:var(--well2);border-radius:5px;height:20px;margin:0 4px 0 -6px;padding:0 10px 0 6px;border-right:0}
+.status .seg.pick+.seg{padding-left:6px}
+
+/* ---- toast and extension status in the bar ---- */
+.status .seg.grow{display:flex;align-items:center;gap:7px}
+.toast{display:inline-flex;align-items:center;gap:7px;min-width:0}
+.toast .i{display:inline-grid;place-items:center;width:12px;height:12px;border-radius:50%;font:700 9px/1 var(--mono);color:var(--bg);flex-shrink:0}
+.toast.info .i{background:var(--accent)}.toast.warn .i{background:var(--warn)}.toast.error .i{background:var(--err)}
+.toast .t{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--fg)}
+.toast .t.m{color:var(--muted)}
+.ext{color:var(--muted)}
+.ext .k{color:var(--faint)}
+
+/* ---- pi exited ---- */
+.exited{flex-shrink:0;max-width:720px;width:100%;margin:0 auto;padding:0 24px 12px}
+.narrow .exited,html[data-width=narrow] .exited{padding:0 14px 10px}
+.exited .card{border:1px solid color-mix(in srgb,var(--ko-color-1) 35%,var(--ko-bg));border-radius:9px;padding:10px 12px 10px;background:var(--bg)}
+.exited .head{display:flex;align-items:baseline;gap:12px;margin-bottom:6px}
+.exited .title{font-weight:600;flex:1}
+.exited .title .err{font-weight:500}
+.exited pre{margin:0 0 10px;max-height:140px;color:var(--muted);font-size:.86em}
+.exited .acts{display:flex;align-items:center;gap:10px;font:.8em/1.4 var(--mono);color:var(--faint)}
+.exited .acts .sp{flex:1}
+.status .dot.off{background:var(--err)}
+
+/* idle empty */
+
+.note{font-size:12px;color:var(--muted);max-width:980px;margin:10px 0 0}
+.note code{font-size:.9em}
+
+/* ---- no status bar: the pane ends at the dock ---- */
+.pane .scroll{bottom:0!important}.pane .dock{bottom:0!important}
+.pane .transcript{padding-bottom:calc(var(--dock-h,96px) + 8px)}
+/* ---- the foot carries the session facts; every cell has a reserved width so nothing moves ---- */
+.field .foot{gap:0;min-height:20px;margin-top:2px;font:.8em/1.4 var(--mono);color:var(--muted);align-items:center}
+.foot .st{display:flex;align-items:center;gap:6px;min-width:calc(15ch + 12px);flex-shrink:0;white-space:nowrap;font-variant-numeric:tabular-nums}
+.foot .st .dot{width:6px;height:6px;border-radius:50%;background:var(--faint);flex-shrink:0}
+.foot .st .dot.on{background:var(--ko-color-2);animation:breathe 1.6s ease-in-out infinite}
+.foot .st .dot.wait{background:var(--ko-color-3)}
+.foot .st .dot.off{background:var(--ko-color-1)}
+.foot .st .t{color:var(--faint)}
+@keyframes breathe{50%{opacity:.35}}
+.foot .sep{width:1px;height:12px;background:var(--hair);margin:0 10px;flex-shrink:0}
+.foot .model{display:flex;align-items:baseline;gap:5px;border:0;background:none;padding:0 4px;margin:0 -4px;border-radius:4px;font:inherit;color:var(--muted);cursor:pointer;white-space:nowrap;flex-shrink:0}
+.foot .model .lvl{color:var(--faint)}
+.foot .model:hover,.foot .model.pick{background:var(--well2);color:var(--fg)}
+.foot .ctxc{display:flex;align-items:center;gap:6px;flex-shrink:0;white-space:nowrap;min-width:calc(44px + 6px + 3ch)}
+.foot .ctxc .ctx{display:inline-block;width:44px;height:4px;border-radius:2px;background:var(--hair2);position:relative}
+.foot .ctxc .ctx i{position:absolute;left:0;top:0;bottom:0;border-radius:2px;background:var(--faint)}
+.foot .ctxc.high .ctx i{background:var(--ko-color-3)}
+.foot .ctxc .n{color:var(--faint)}
+.foot .gap{flex:1;min-width:8px;display:flex;align-items:center;overflow:hidden;padding:0 10px}
+.foot .cwd{color:var(--muted);white-space:nowrap;flex-shrink:0}
+.foot .cwd .lead{color:var(--faint)}
+.foot .act{margin-right:-7px;margin-bottom:0;width:22px;height:22px;border-radius:6px}.foot .act svg{width:14px;height:14px}
+.pane .field{padding-bottom:5px}
+.foot .act.stop{color:var(--muted)}
+/* a notification is a line in the transcript: time at the right like a job line, no badge */
+.note{margin:0 0 10px;display:flex;align-items:baseline;gap:10px;font:.92em/1.5 var(--mono);color:var(--muted);white-space:nowrap;padding-right:12px}
+.note .tx{overflow:hidden;text-overflow:ellipsis;min-width:0}
+.note.error .tx{color:var(--err)}.note.warning .tx{color:var(--warn)}
+.note time{margin-left:auto;color:var(--faint);font-size:.85em;font-variant-numeric:tabular-nums}
+.foot .toast{display:inline-flex;align-items:center;gap:7px;min-width:0;background:none;border:0;padding:0;font:inherit}
+.foot .toast .i{display:inline-grid;place-items:center;width:12px;height:12px;border-radius:50%;font:700 9px/1 var(--ko-font-family);color:var(--ko-bg);flex-shrink:0}
+.foot .toast.info .i{background:var(--ko-color-4)}.foot .toast.warning .i{background:var(--ko-color-3)}.foot .toast.error .i{background:var(--ko-color-1)}
+.foot .toast .tx{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--fg)}
+/* narrow: what goes first */
+html[data-width=narrow] .foot .model .lvl,.pane.narrow .foot .model .lvl{display:none}
+html[data-width=narrow] .foot .cwd .lead,.pane.narrow .foot .cwd .lead{display:none}
+html[data-width=narrow] .foot .ctxc .n,.pane.narrow .foot .ctxc .n{display:none}
+html[data-width=narrow] .foot .ctxc,.pane.narrow .foot .ctxc{min-width:44px}
+html[data-width=narrow] .foot .sep,.pane.narrow .foot .sep{margin:0 7px}
+/* the picker opens above the model cell */
+.pane .picker{position:absolute;bottom:auto;top:auto}
+.pane.short{height:300px}
+.grid .pane.short{height:220px}
+.cap{font-size:12px;color:var(--muted);margin:6px 0 0;max-width:720px}
+/* the times of run and step lines end where the user message's time ends: 12pt in from the transcript's edge (user, 2026-11-10) */
+.run .line{padding-right:12px}
+</style>
+<style>
+/* ---- the completion popup ---- */
+.field{position:relative}
+.complete{position:absolute;bottom:calc(100% + 6px);z-index:4;min-width:260px;max-width:min(460px,100%);background:color-mix(in srgb,var(--ko-bg) 72%,transparent);-webkit-backdrop-filter:blur(18px) saturate(1.35);backdrop-filter:blur(18px) saturate(1.35);border:1px solid color-mix(in srgb,var(--ko-fg) 22%,transparent);border-radius:9px;box-shadow:inset 0 .5px 0 color-mix(in srgb,#fff 28%,transparent),0 6px 22px color-mix(in srgb,var(--ko-fg) 14%,transparent),0 1px 3px color-mix(in srgb,var(--ko-fg) 10%,transparent);padding:5px;font:.95em/1.5 var(--prose);color:var(--fg)}
+.complete .rows{max-height:calc(8*23px);overflow:auto;scrollbar-gutter:stable}
+.complete .row{display:flex;align-items:baseline;gap:10px;padding:3px 8px;border-radius:6px;white-space:nowrap;cursor:default}
+.complete .row.cur{background:var(--well2)}
+.complete .row .l{font:.92em var(--mono);color:var(--fg);flex-shrink:0;min-width:0;overflow:hidden;text-overflow:ellipsis;max-width:70%}
+.complete .row .l b{font-weight:600}
+.complete .row .l.dir{color:var(--fg)}.complete .row .l.dir::after{content:"/";color:var(--muted)}
+.complete .row .d{color:var(--muted);flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;font-size:.92em}
+.complete .row .k{color:var(--faint);font:.8em var(--mono);flex-shrink:0;margin-left:auto}
+.complete .hints{margin-top:4px;padding:5px 8px 1px;border-top:1px solid var(--hair);color:var(--faint);font:.8em/1.4 var(--mono)}
+
+/* notices and info lines in the transcript (approved: a job line's geometry) */
+.note{margin:0 0 10px;display:flex;align-items:baseline;gap:10px;font:.92em/1.5 var(--mono);color:var(--muted);white-space:nowrap;padding-right:12px}
+.note .tx{overflow:hidden;text-overflow:ellipsis;min-width:0}
+.note.error .tx{color:var(--err)}.note.warning .tx{color:var(--warn)}
+.note time{margin-left:auto;color:var(--faint);font-size:.85em;font-variant-numeric:tabular-nums}
+.note .spin{margin-right:6px}
+/* an info line that opens: /session, /compact's result */
+.info{margin:0 0 10px;font:.92em/1.5 var(--mono);color:var(--muted)}
+.info>.line{display:flex;align-items:baseline;gap:10px;white-space:nowrap;cursor:pointer;user-select:none;padding:1px 12px 1px 0;border-radius:4px}
+.info>.line:hover{color:var(--fg)}
+.info .chev{width:9px;flex-shrink:0;color:var(--faint);font-size:.9em;text-align:center;position:relative;top:1px;display:inline-block;transition:transform .12s}
+.info.open .chev{transform:rotate(90deg)}
+.info .nm{color:var(--fg)}
+.info .tx{overflow:hidden;text-overflow:ellipsis;min-width:0}
+.info time{margin-left:auto;color:var(--faint);font-size:.85em;font-variant-numeric:tabular-nums}
+.info .body{display:none;margin:3px 0 0 4px;padding:2px 0 2px 13px;border-left:1px solid var(--hair)}
+.info.open .body{display:block}
+.info .kv{display:grid;grid-template-columns:max-content 1fr;gap:1px 16px;font-size:.92em}
+.info .kv b{color:var(--faint);font-weight:400}
+.info .kv span{color:var(--fg)}
+.info .body p{margin:2px 0 0;font:1em/1.5 var(--prose);color:var(--muted);white-space:pre-wrap;max-height:200px;overflow:auto}
+.cap b{color:var(--fg);font-weight:600}
+</style>
+<style>
+/* the session picker: a card in the dock, above the field, like an extension dialog */
+.sess{position:relative;border:1px solid var(--hair2);border-radius:9px;background:var(--bg);padding:9px 10px 8px;margin:0;font:.95em/1.5 var(--prose)}
+html:not([data-dock=band]) .dock .sess{background:color-mix(in srgb,var(--ko-bg) 72%,transparent);-webkit-backdrop-filter:blur(18px) saturate(1.35);backdrop-filter:blur(18px) saturate(1.35);border:1px solid color-mix(in srgb,var(--ko-fg) 22%,transparent);box-shadow:inset 0 .5px 0 color-mix(in srgb,#fff 28%,transparent),0 6px 22px color-mix(in srgb,var(--ko-fg) 14%,transparent),0 1px 3px color-mix(in srgb,var(--ko-fg) 10%,transparent)}
+.sess .top{display:flex;align-items:center;gap:10px;margin:0 2px 6px}
+.sess .q{flex:1;min-width:0;display:flex;align-items:baseline;gap:6px;font:1em/1.5 var(--prose);color:var(--fg)}
+.sess .q .ph{color:var(--faint)}
+.sess .q .caret{margin-left:0}
+.sess .scope{display:inline-flex;border:1px solid var(--hair2);border-radius:6px;overflow:hidden;font:.8em/1.6 var(--mono);color:var(--muted);flex-shrink:0}
+.sess .scope span{padding:0 8px}
+.sess .scope span.on{background:var(--well2);color:var(--fg)}
+.sess .rows{max-height:calc(8*34px);overflow:auto;scrollbar-gutter:stable}
+.sess .row{display:grid;grid-template-columns:1fr auto;grid-template-rows:auto auto;column-gap:12px;padding:4px 8px;border-radius:6px;cursor:default}
+.sess .row.cur{background:var(--well2)}
+.sess .row .n{grid-column:1;grid-row:1;color:var(--fg);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+.sess .row .n .tag{font:.8em var(--mono);color:var(--faint);margin-left:8px}
+.sess .row .n .dir{color:var(--faint);font-size:.9em;margin-left:8px}
+.sess .row .f{grid-column:1;grid-row:2;color:var(--muted);font-size:.92em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
+.sess .row .m{grid-column:2;grid-row:1/3;align-self:center;text-align:right;font:.8em/1.5 var(--mono);color:var(--faint);white-space:nowrap;font-variant-numeric:tabular-nums}
+.sess .empty{padding:10px 8px 12px;color:var(--muted);font-size:.95em}
+.sess .empty .h{color:var(--faint);font:.8em var(--mono);margin-top:2px}
+.sess .hints{margin-top:4px;padding:5px 8px 0;border-top:1px solid var(--hair);color:var(--faint);font:.8em/1.4 var(--mono);display:flex;gap:14px}
+.sess .hints .sp{flex:1}
+.field.inert .text{color:var(--faint)}
+.cap b{color:var(--fg);font-weight:600}
+</style>
+</head>
+<body>
+<h1>koa — sessions inside the page</h1>
+<p class="lede"><code>/resume</code> opens a session picker in the page, <code>/new</code> starts a new session; both through pi's RPC (<code>switch_session</code>, <code>new_session</code>). The picker is a card in the dock above the field, where an extension's dialog card sits, so the transcript stays visible behind it and the keys are the dialog's: ↑↓ move, ↩ open, ⎋ close, ⇥ switches the scope. The composer under it is inert while it is open.</p>
+<div class="controls">
+  <label>Theme <select id="theme"><option value="light">kido-light</option><option value="dark">kido-dark</option></select></label>
+  <label>Pane width <select id="width"><option value="wide">wide (980pt)</option><option value="narrow">narrow (60 columns)</option></select></label>
+</div>
+
+<section><h2>1 · The picker</h2>
+<p>A search field at the top (focused; the typed text filters name and first message, fuzzy as pi's selector does), and at its right a two-part scope, <b>this folder</b> / <b>all</b>, ⇥ switches it; this folder is the default. Rows, newest first: the name in the foreground (the first message when the session has no name), with <code>current</code> after the open session's name and, in <b>all</b>, the folder after the name in the faint tone; the first message under it, muted, ellipsized; at the right, the date (time for today, date otherwise) over the message count, in the faint terminal font. Eight rows visible, the list scrolls. The current row is the one the open session is, so ↩ on it does nothing.</p>
+<div class="grid"><div class="pane" data-state="pick"></div><div class="pane" data-state="pick-all"></div></div></section>
+
+<section><h2>2 · Search, and empty</h2>
+<p>Left: <code>side</code> typed, two matches. Right: a folder with no sessions: one line, "no sessions in this folder", with the hint "⇥ all folders" under it; the same card with "no match" when the search finds nothing.</p>
+<div class="grid"><div class="pane short" data-state="pick-search"></div><div class="pane short" data-state="pick-empty"></div></div></section>
+
+<section><h2>3 · During and after a switch</h2>
+<p>On ↩ the card closes, the transcript empties, the field is inert with the placeholder "loading…" and the state cell reads <b>loading</b> (left). When pi answers, the session's transcript is in place, scrolled to its end, and one notice line at the end says "session: <i>name</i> · 212 messages" (right); the foot shows the session's model and context. <code>/new</code> is the same with an empty transcript and the notice "new session". The queue, if any, is gone with the old session; the draft in the field is kept.</p>
+<div class="grid"><div class="pane short" data-state="loading"></div><div class="pane short" data-state="after"></div></div></section>
+
+<section><h2>4 · While a turn or a <code>!</code> command runs</h2>
+<p><code>/resume</code> and <code>/new</code> while pi works, or while a <code>!</code> command runs, first ask: pi's confirm dialog in the dock, "Switch session?" with "koa is working on a turn; it will be aborted." (or "a command is running; it will be cancelled"), ↩ <b>Switch</b>, ⎋ <b>Cancel</b>. Switch aborts (pi's <code>abort</code>, or <code>abort_bash</code>) and then opens the picker or starts the new session; Cancel leaves everything as it was.</p>
+<div class="pane short" data-state="confirm"></div></section>
+
+<script>
+
+const esc=s=>s.replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]||c));
+const transcript=(inner)=>`<div class="scroll"><div class="transcript">${inner}</div></div>`;
+const userMsg=(t,when='09:12')=>`<div class="msg user"><div class="t">${esc(t)}</div><time>${when}</time></div>`;
+const note=(t,when,cls='')=>`<div class="note ${cls}"><span class="tx">${t}</span><time>${when}</time></div>`;
+function foot(o={}){
+  const st={idle:'<span class="dot"></span>idle',working:`<span class="dot on"></span>working <span class="t">${o.t||'12s'}</span>`,compacting:`<span class="dot on"></span>compacting <span class="t">${o.t||'4s'}</span>`,loading:'<span class="dot"></span>loading',running:`<span class="dot on"></span>running <span class="t">${o.t||'3s'}</span>`}[o.state||'idle'];
+  return `<div class="foot"><span class="st">${st}</span><span class="sep"></span><button class="model${o.pick?' pick':''}">${o.model||'claude-opus-5-5'}<span class="lvl">· ${o.lvl||'high'}</span></button><span class="sep"></span><span class="ctxc"><span class="ctx"><i style="width:${o.ctx||42}%"></i></span><span class="n">${o.ctxn||'84k / 200k'}</span>${o.ctx||42}%</span><span class="gap"></span><span class="cwd"><span class="lead">~/Workspace/</span>kido</span></div>`}
+const field=(o={})=>`<div class="composer"><div class="field${o.unfocus?'':' focus'}${o.state==='working'?' working':''}"><div class="text${o.text?'':' ph'}">${o.text?o.text+'<span class="caret"></span>':o.ph||'Message koa…'}</div>${foot(o)}${o.pop||''}</div></div>`;
+
+const S=(n,f,when,count,o={})=>({n,f,when,count,...o});
+const sessions=[S('sidebar-right','Hand the sidebar unit to an implementer and tell the reviewer when it builds','09:02','212',{cur:true}),S('koa-md','Agent cards render Markdown; the queue goes above the field','08:14','96'),S(null,'Why does ko_client::Model::place fail on the musl target only?','yesterday','14'),S('runtimes-u4','Design the runtime indicator for Kido.app and ko_tui','Nov 8','341'),S('release-0.31','Release 0.31: Kido.app first, then ko','Nov 7','58'),S(null,'Explain the view write path in ko_server::conn','Nov 6','9'),S('notices','Redesign the sidebar errors as notices','Nov 6','187'),S('html-mockups','koa webview mockups: streaming, runs, composer','Nov 5','402'),S('bench','Why does allocations/record rise after the deflate change?','Nov 4','27')];
+const others=[S('pi-infer-questions','Train the option tagger on the new corpus','Nov 9','77',{dir:'~/Workspace/pi-infer-questions'}),S(null,'Pin the ghostty fork to the new kido-upstream head','Nov 8','5',{dir:'~/Workspace/ghostty'})];
+const row=(s,cur,all)=>`<div class="row${cur?' cur':''}"><span class="n">${esc(s.n||s.f)}${s.cur?'<span class="tag">current</span>':''}${all&&s.dir?`<span class="dir">${esc(s.dir)}</span>`:''}</span><span class="f">${s.n?esc(s.f):''}</span><span class="m">${s.when}<br>${s.count}</span></div>`;
+const card=(o)=>`<div class="dialogs"><div class="sess"><div class="top"><span class="q">${o.q?esc(o.q)+'<span class="caret"></span>':'<span class="ph">Search sessions…</span><span class="caret"></span>'}</span><span class="scope"><span class="${o.all?'':'on'}">this folder</span><span class="${o.all?'on':''}">all</span></span></div>${o.rows.length?`<div class="rows">${o.rows.map((s,i)=>row(s,i===(o.cur??0),o.all)).join('')}</div>`:`<div class="empty">${o.q?'no match':'no sessions in this folder'}<div class="h">⇥ all folders</div></div>`}<div class="hints">↑↓ move · ↩ open · ⎋ close<span class="sp"></span>⇥ ${o.all?'this folder':'all folders'}</div></div></div>`;
+const base=userMsg('Verify the sidebar unit')+`<div class="msg assistant"><p>Verified: every stage passes. The snapshots that changed are the twelve of SidebarTests.</p></div>`;
+const inert=(o={})=>`<div class="composer"><div class="field inert"><div class="text ph">${o.ph||'/resume'}</div>${foot(o)}</div></div>`;
+const confirmCard=`<div class="dialogs"><div class="dialog"><div class="head"><span class="title">Switch session?</span></div><div class="msg2">koa is working on a turn; it will be aborted.</div><div class="foot">⎋ cancel · ↩ switch<span class="sp"></span><button class="btn">Cancel</button><button class="btn primary">Switch<kbd>↩</kbd></button></div></div></div>`;
+const states={
+  pick:()=>transcript(base)+card({rows:sessions,cur:1})+inert(),
+  'pick-all':()=>transcript(base)+card({rows:[sessions[0],others[0],sessions[1],others[1],...sessions.slice(2)],all:true,cur:1})+inert(),
+  'pick-search':()=>transcript(base)+card({q:'side',rows:[sessions[0],sessions[3]],cur:1})+inert(),
+  'pick-empty':()=>transcript('')+card({rows:[]})+inert(),
+  loading:()=>transcript('')+`<div class="composer"><div class="field inert"><div class="text ph">loading…</div>${foot({state:'loading'})}</div></div>`,
+  after:()=>transcript(userMsg('Agent cards render Markdown; the queue goes above the field','08:14')+`<div class="msg assistant"><p>Done: the cards render through the reply's Markdown renderer, collapsed to one plain line.</p></div>`+note('session: koa-md · 96 messages','09:21'))+field({ctx:23,ctxn:'46k / 200k'}),
+  confirm:()=>transcript(userMsg('Verify the sidebar unit')+`<div class="run"><div class="line"><span class="chev">›</span><span class="sum"><span class="spin"></span> <span class="cmd">make verify STAGES=unit</span></span><span class="time">12s</span></div></div>`)+confirmCard+inert({state:'working',t:'12s'}),
+};
+for(const pane of document.querySelectorAll('.pane')){pane.innerHTML=states[pane.dataset.state]();const dock=document.createElement('div');dock.className='dock';const kids=[...pane.children].filter(c=>!c.classList.contains('scroll'));if(kids.length){kids[0].before(dock);kids.forEach(k=>dock.append(k))}const s=pane.querySelector('.scroll');if(s)s.scrollTop=s.scrollHeight}
+document.getElementById('theme').onchange=e=>{document.documentElement.dataset.theme=e.target.value};
+document.getElementById('width').onchange=e=>{document.documentElement.dataset.width=e.target.value};
+</script>
+</body>
+</html>
