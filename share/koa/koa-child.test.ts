@@ -2,7 +2,14 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { ChildProcess, spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
-import { signalChild } from "./koa-child.ts";
+import { resolve } from 'node:path';
+import { signalChild, piPackage, which } from './koa-child.ts';
+
+test('pi package resolution follows an executable found through PATH', async () => {
+  const root = resolve('../pi/node_modules/@earendil-works/pi-coding-agent');
+  assert.equal(which('cli.js', root + '/dist'), root + '/dist/cli.js');
+  assert.equal(await piPackage('cli.js', root + '/dist'), root);
+});
 
 test("signal errors are reported without throwing", t => {
   const child = new ChildProcess();

@@ -51,8 +51,8 @@ Non-goals:
   line that says so and keeps serving; the page shows when a client
   with webviews connects. Outside a pane, koa runs only with
   `--browser`.
-- Session trees, `/tree`, forks and clones from the page, and pi's
-  other built-in slash commands except `/name`
+- Session trees, `/tree`, forks and clones from the page, and the
+  built-in slash commands that koa refuses
   ([plans/koa.md](../plans/koa.md)).
 
 ## Where koa lives
@@ -122,7 +122,44 @@ group, with its three streams piped; pi's stdout is the RPC stream.
 and passes every argument that it does not own to pi unchanged, so
 pi's session and model flags and ko-pi's `--runtime` work as in a TUI
 pane. koa adds nothing to pi's environment: the pane identity reaches
-ko-pi as it does in a TUI pane. `koa --help` lists koa's own flags.
+ko-pi as it does in a TUI pane. `koa --help` and `koa -h` list koa's
+own flags. koa's own flags stop at `--`.
+
+**pi's package.** koa imports two modules of the pi that it runs:
+the table of pi's built-in slash commands and pi's exact model match
+("Built-in commands are koa's" below). pi's package exports do not
+reach them, so koa finds pi's package directory (`piPackage` in
+`koa-child.ts`): the executable on PATH (or `--pi`), its real path,
+the first parent directory whose `package.json` names
+`@earendil-works/pi-coding-agent`, else Homebrew's
+`../libexec/lib/node_modules/@earendil-works/pi-coding-agent` beside
+the real path, because Homebrew's `pi` is a shell wrapper. When both
+fail (a shim of a version manager, a custom wrapper), the startup
+helper below reports pi's `getPackageDir()`. The user decided that a
+launch without pi arguments starts no extra pi when the path walk
+finds the package.
+
+**The command line is checked before the webview.** When koa gets pi
+arguments, it runs a startup helper first: `pi --mode rpc
+--no-session --no-extensions --extension koa-startup.ts`, with the
+arguments in `KOA_STARTUP_ARGS` and its answer on fd 3 (`startup` in
+`koa-child.ts`, which shares the spawn, the signals and the deadline
+with the picker's run). The helper parses with pi's exported
+`parseArgs`, so koa has no copy of pi's flag table, and
+`koa-args.ts` decides from the parsed value. koa refuses, with
+`koa: <flag>: <reason>` and exit code 1, the flags that end or
+bypass the RPC session: `--mode` other than `rpc`, `--print`,
+`--export`, `--list-models`, `--version`, `--tui-mode`, `--theme`,
+`--use-theme` and `--no-themes` (the page has its own theme), and
+every error of pi's parser. An `@file` argument is refused too: pi
+refuses it in RPC mode, and an attachment is not pi's inline file
+expansion, so the page's attachments are the way. The helper also
+returns pi's positional messages and whether `--resume` was given.
+koa sends the messages to pi as pi's interactive mode does: one by
+one, each after the previous run's `agent_settled` (at once when pi
+answers `handled`, an extension command), once after pi is ready,
+not when a page connects. A restart of pi does not send them again;
+they stay in pi's arguments, where RPC mode ignores them.
 
 **`--resume` picks before the webview.** pi runs its session picker
 for `--resume` (`-r`) in every mode, also in RPC, where it would wait
@@ -287,11 +324,44 @@ koa answers 415. A browser sends a form post with a simple content
 type to any origin without asking; this rule makes such a post do
 nothing ("Browser mode" below).
 
-**`/name` is koa's.** The user decided that `/name` sets pi's session
-name through RPC instead of reaching the model as text. koa
-intercepts `/name <text>` and a bare `/name` before pi's `prompt` and
-answers with a notification in pi's words. No other built-in command
-of pi's TUI is handled; completion offers only `get_commands`.
+**Built-in commands are koa's.** pi's RPC mode does not run the
+built-in slash commands of its TUI, so a built-in sent as a prompt
+reached the model as text. koa intercepts every built-in before pi's
+`prompt` (`koa-commands.ts`): its catalog is pi's own
+`BUILTIN_SLASH_COMMANDS` with pi's descriptions, plus the names that
+pi dispatches but does not list (`debug` and two easter eggs). A
+built-in wins over an extension command or a template of the same
+name, as in pi's TUI, which dispatches its built-ins before
+`session.prompt`; completion drops the shadowed entry. The user chose
+the supported set; each runs over pi's RPC:
+
+- `/model` and `/thinking` without an argument open the foot's
+  picker. `/model <text>` sets the model when pi's
+  `findExactModelReferenceMatch` finds it among the available
+  models, else it opens the picker with the text as its search.
+  `/thinking <level>` sets an available level. Both report
+  "model: … · thinking …" as a notification.
+- `/compact [instructions]` sends pi's `compact` and answers the
+  page at once; pi's compaction events own the outcome ("The
+  transcript" below), and Escape aborts it as it aborts a run. While
+  a compaction runs, Return sends and queues nothing.
+- `/session` shows `get_session_stats`; `/export [path]` writes pi's
+  HTML export, with pi's default name when no path is given (a
+  `.jsonl` path is refused: RPC has no JSONL export); `/name` sets or
+  shows the session name, in pi's words.
+- `/copy` puts `get_last_assistant_text` on the clipboard with OSC 52
+  on koa's own stdout, the pane's tty, where koa also writes OSC 7501
+  and OSC 0. The user's `clipboard.write` policy decides, and it
+  works for a remote koa and in a browser. A page's
+  `navigator.clipboard` write needs a user gesture in WebKit and the
+  text arrives after it.
+- `/quit` shuts koa down as Control-D does.
+
+Every other built-in is refused with a warning line, "/settings is
+not available in koa", and its text stays out of pi; completion does
+not list it. The arguments of a built-in never carry attachments: the
+page keeps them in the composer. The built-ins come first in
+completion, in the supported order, with the kind `built-in`.
 
 ## The transcript
 
@@ -331,6 +401,14 @@ replay from `get_messages` and the live stream use one conversion.
   by time when the rebuild is of the same session (a compaction, a
   restart), and drops them for another session (a switch, a new
   session, a fork, a clone).
+- **Command outcomes** are one item kind, `command`, whose result
+  is the outcome of a built-in: the copied length, the exported path,
+  the session's stats, or a compaction. A compaction's item is
+  running from `compaction_start` and ends as done (tokens before and
+  after, pi's summary), failed (pi's error, a refusal of `compact`,
+  or pi's exit or restart during it), or cancelled (an aborted
+  `compaction_end`). A rebuild of the same session keeps these items
+  as it keeps notifications.
 - **A rebuild** (at start, after `new_session`, `switch_session`,
   `fork`, `clone` and `compaction_end`) mints a new epoch.
 
@@ -400,6 +478,20 @@ the command first ("`!` commands" below).
   composition and indent a Shift-Return newline. Each Enter binding
   returns false while a composition has started, so the Enter that
   commits a candidate never sends.
+- **Prompt history** follows pi's editor: Up on the first visual
+  line browses when the field is empty, already browsing, or the
+  cursor is at its start, else it moves the cursor to the start;
+  Down on the last visual line goes forward while browsing, and past
+  the newest entry it restores the draft and its selection. An edit
+  ends browsing. Completion and an input method's composition keep
+  their arrows. The entries are the newest 100 user messages and `!`
+  commands of the session, trimmed, without empty entries and
+  consecutive repeats, so a resumed session has its history. They
+  come from koa's transcript (`GET /history`) when browsing starts;
+  the page stores none (`page/history.ts`). A built-in command never
+  reaches the transcript and is not in the history.
+- **Option-Up** takes the queue back into the composer, as the queue
+  card's button does, with no abort.
 - **The cursor** is CodeMirror's `drawSelection()` in the pane's
   cursor and selection colours. WebKit's native caret lagged visibly
   when the Markdown highlighting rebuilt the spans around it.
@@ -451,9 +543,9 @@ reachable from pi's package exports, and pi's bun binary has no
 modules. So koa copies pi's rules (`koa-complete.ts`), behind its own
 `POST /complete`:
 
-- `/` at the start of the first line: `get_commands`, asked at each
-  request so that a `/reload` in pi shows at once, with pi's fuzzy
-  filter. `@token`: the agents of the session first, then files from
+- `/` at the start of the first line: koa's supported built-ins,
+  then `get_commands`, asked at each request so that a `/reload` in
+  pi shows at once, with pi's fuzzy filter over both. `@token`: the agents of the session first, then files from
   `fd` with pi's arguments and scoring. No forced Tab completion and
   no plain-path completion in a prompt (the user's decision).
 - In `!` mode, `/` and `@` offer nothing. A token that starts with

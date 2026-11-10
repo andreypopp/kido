@@ -8,6 +8,7 @@ import { parser, GFM, Subscript, Superscript, Emoji } from '@lezer/markdown';
 
 import { bashCommand } from '../prompt.ts';
 import { completion } from './complete.ts';
+import { promptHistory } from './history.ts';
 import type { PromptMode } from '../koa-records.ts';
 
 export const composerLanguage = new Language(markdownLanguage.data, parser.configure([GFM, Subscript, Superscript, Emoji, {
@@ -20,7 +21,7 @@ export const composerLanguage = new Language(markdownLanguage.data, parser.confi
 
 const outsideComposition = (command: Command): Command => view => !view.compositionStarted && command(view);
 
-export function composer(host: HTMLElement, handlers: { input(user: boolean): void; send(mode: PromptMode): void; quit(): void; drop(event: DragEvent): boolean; paste(event: ClipboardEvent): boolean }) {
+export function composer(host: HTMLElement, handlers: { input(user: boolean): void; send(mode: PromptMode): void; quit(): void; takeBack(): void; drop(event: DragEvent): boolean; paste(event: ClipboardEvent): boolean }) {
   const hint = new Compartment(), language = new Compartment();
   let label = 'Message koa…', running = false;
   const mode = StateField.define<ReturnType<typeof bashCommand>>({
@@ -30,6 +31,33 @@ export function composer(host: HTMLElement, handlers: { input(user: boolean): vo
   const completions = completion(host, () => handlers.send('prompt'), mode);
   const refreshMode = () => host.parentElement?.classList.toggle('bash-mode', !!view.state.field(mode) || running && empty());
   const empty = () => view.state.doc.length === 0;
+  const prompts = promptHistory(async () => {
+    const response = await fetch('/history');
+    if (!response.ok) throw Error('Could not load prompt history');
+    const value: unknown = await response.json();
+    if (typeof value !== 'object' || value === null || !('entries' in value) || !Array.isArray(value.entries) || !value.entries.every(entry => typeof entry === 'string')) throw Error('Invalid prompt history');
+    return value.entries;
+  });
+  let recalling = false;
+  const navigate = (direction: -1 | 1): boolean => {
+    const selection = view.state.selection.main;
+    if (!selection.empty) return false;
+    const visual = view.moveToLineBoundary(selection, direction === 1, true);
+    const boundary = direction === -1 ? visual.head === 0 : visual.head === view.state.doc.length;
+    if (!boundary) return false;
+    const line = view.state.doc.lineAt(selection.head);
+    if (direction === -1 ? !prompts.active && !empty() && selection.head !== line.from : !prompts.active) {
+      view.dispatch({ selection: { anchor: direction === -1 ? line.from : line.to } });
+      return true;
+    }
+    void prompts.move(direction, { text: view.state.doc.toString(), anchor: selection.anchor, head: selection.head }).then(value => {
+      if (!value) return;
+      recalling = true;
+      try { view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: value.text }, selection: { anchor: value.anchor, head: value.head }, scrollIntoView: true }); }
+      finally { recalling = false; }
+    }).catch(error => { console.error(error); });
+    return true;
+  };
   const view = new EditorView({
     parent: host,
     extensions: [
@@ -59,6 +87,9 @@ export function composer(host: HTMLElement, handlers: { input(user: boolean): vo
       keymap.of([...historyKeymap, ...standardKeymap.filter(binding => binding.key !== 'Enter')]),
       Prec.highest(keymap.of([
         ...completions.keys.map(binding => ({ ...binding, run: outsideComposition(binding.run) })),
+        { key: 'ArrowUp', run: outsideComposition(() => navigate(-1)) },
+        { key: 'ArrowDown', run: outsideComposition(() => navigate(1)) },
+        { key: 'Alt-ArrowUp', run: outsideComposition(() => { handlers.takeBack(); return true; }) },
         { key: 'Enter', run: outsideComposition(() => { handlers.send('prompt'); return true; }) },
         { key: 'Shift-Enter', run: outsideComposition(view => !view.state.field(mode) && insertNewlineContinueMarkup(view)) },
         { key: 'Shift-Enter', run: outsideComposition(insertNewline) },
@@ -70,7 +101,7 @@ export function composer(host: HTMLElement, handlers: { input(user: boolean): vo
       drawSelection(),
       EditorView.contentAttributes.of({ 'aria-label': 'Message koa' }),
       hint.of(placeholder(label)),
-      EditorView.updateListener.of(update => { if (update.docChanged) { refreshMode(); handlers.input(update.transactions.some(transaction => transaction.annotation(Transaction.userEvent) !== undefined)); } }),
+      EditorView.updateListener.of(update => { if (update.docChanged) { refreshMode(); if (!recalling) prompts.reset(); handlers.input(update.transactions.some(transaction => transaction.annotation(Transaction.userEvent) !== undefined)); } }),
     ],
   });
   return {
@@ -78,7 +109,7 @@ export function composer(host: HTMLElement, handlers: { input(user: boolean): vo
     bash: () => view.state.field(mode),
     running(value: boolean) { running = value; refreshMode(); },
     text: () => view.state.doc.toString(),
-    setText(text: string) { view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: text }, selection: { anchor: text.length }, scrollIntoView: true }); },
+    setText(text: string) { prompts.reset(); view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: text }, selection: { anchor: text.length }, scrollIntoView: true }); },
     insert(text: string) { view.dispatch(view.state.replaceSelection(text), { scrollIntoView: true, userEvent: 'input.type' }); },
     focus: () => view.focus(),
     hasFocus: () => view.hasFocus,

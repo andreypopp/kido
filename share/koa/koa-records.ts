@@ -2,10 +2,14 @@ import type { AgentRef, AgentOutcome, JobRef, JobEnd, Inbound } from '../pi/reco
 
 export const ATTACHMENT_LIMITS = { files: 16, fileBytes: 64 * 1024 * 1024, chunkBytes: 768 * 1024, pendingBytes: 256 * 1024 * 1024 };
 
-export type CompletionCommand = { name: string; description?: string; source: "extension" | "prompt" | "skill" };
+export type CompletionCommand = { name: string; description?: string; source: "extension" | "prompt" | "skill" | "builtin" };
 export type CompletionOption = { label: string; detail?: string; insert: string; cursor?: number } & ({ kind: "command"; source: CompletionCommand["source"]; matched: number[] } | { kind: "agent"; matched: number[] } | { kind: "file" | "directory" });
 export type CompletionQuery = { text: string; pos: number };
 export type CompletionResult = { from: number; to: number; options: CompletionOption[] };
+export type CommandAction = { type: 'none' } | { type: 'picker'; kind: 'model' | 'thinking'; search: string } | { type: 'quit' };
+export type PromptResult = { disposition: 'handled'; action: CommandAction } | { disposition: 'started' | 'queued' };
+export type CommandResult = { type: 'copy'; characters: number } | { type: 'export'; path: string } | { type: 'session'; stats: SessionStats; name: string; model?: { provider: string; id: string }; thinking?: ThinkingLevel } | { type: 'compaction'; state: { type: 'running' } | { type: 'done'; before: number; after?: number; summary: string } | { type: 'failed'; message: string } | { type: 'cancelled' } };
+export type SessionStats = { sessionFile: string | undefined; sessionId: string; userMessages: number; assistantMessages: number; toolCalls: number; toolResults: number; totalMessages: number; tokens: { input: number; output: number; cacheRead: number; cacheWrite: number; total: number }; cost: number; contextUsage?: { tokens: number | null; contextWindow: number; percent: number | null } };
 export type PromptMode = "prompt" | "follow_up";
 export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 export type DialogMethod = Dialog["method"];
@@ -32,6 +36,7 @@ export type Item = { seq: number; at: number; final: boolean } & (
   { kind: 'job'; job: JobRef; event: { type: 'ended'; end: JobEnd; tail: Text } | { type: 'stream'; batch: Text; omitted: number; cut: boolean } } |
   { kind: 'annotations'; reply: { seq: number; block: number }; annotations: Annotation[] } |
   { kind: "notify"; level: NotifyLevel; text: Text } |
+  { kind: 'command'; result: CommandResult } |
   { kind: "notice"; customType: string; from: string; text: string } |
   { kind: "bash"; command: string; excludeFromContext: boolean; result: BashResult } |
   { kind: "summary"; text: string }
@@ -49,7 +54,7 @@ export type Dialog = { type: "extension_ui_request"; id: string; title: string; 
 );
 export type BashResult = { output: Text; exit?: number; cancelled: boolean; truncated: boolean; fullOutputPath?: string };
 export type Bash = { id: string; command: string; excludeFromContext: boolean; started: number } & ({ phase: 'running' | 'cancelling'; output: Text } | { phase: 'completed'; ended: number; result: BashResult });
-export type State = { bash: Bash[]; working: boolean; since?: number; aborted: boolean; name: string; model?: { provider: string; id: string }; thinking?: ThinkingLevel; levels: ThinkingLevel[]; context?: { tokens: number | null; window: number; percent: number | null }; cwd: string; home: string; sessionFile?: string; queue: { steering: readonly QueuedPrompt[]; followUp: readonly QueuedPrompt[] }; dialogs: Dialog[]; statuses: Record<string, string>; editor?: { id: string; text: string }; pi: Pi };
+export type State = { compaction: 'idle' | 'running'; bash: Bash[]; working: boolean; since?: number; aborted: boolean; name: string; model?: { provider: string; id: string }; thinking?: ThinkingLevel; levels: ThinkingLevel[]; context?: { tokens: number | null; window: number; percent: number | null }; cwd: string; home: string; sessionFile?: string; queue: { steering: readonly QueuedPrompt[]; followUp: readonly QueuedPrompt[] }; dialogs: Dialog[]; statuses: Record<string, string>; editor?: { id: string; text: string }; pi: Pi };
 export function pathArg(block: Block | undefined): string | undefined {
   if (block?.type !== 'tool' || !['read', 'edit', 'write'].includes(block.name)) return;
   try { const value = JSON.parse(block.args.text); return value && typeof value.path === 'string' && value.path && !/[\p{Cc}]/u.test(value.path) ? value.path : undefined; } catch { return; }

@@ -1,10 +1,19 @@
 #!/usr/bin/env node
 import { readFileSync, appendFileSync, writeFileSync, writeSync, closeSync } from "node:fs";
 import { once } from "node:events";
+import { fileURLToPath } from 'node:url';
 import { setTimeout } from "node:timers/promises";
 import { spawn } from "node:child_process";
 import { connect } from "node:net";
 import type { RpcCommand } from "@earendil-works/pi-coding-agent";
+
+if (process.argv.some(arg => arg.endsWith('/koa-startup.ts'))) {
+  const { startupResult } = await import('./koa-args.ts');
+  const { parseArgs } = await import('../pi/node_modules/@earendil-works/pi-coding-agent/dist/cli/args.js');
+  const result = startupResult(parseArgs(JSON.parse(process.env.KOA_STARTUP_ARGS ?? '[]')));
+  writeSync(3, JSON.stringify({ ...result, packageRoot: fileURLToPath(new URL('../pi/node_modules/@earendil-works/pi-coding-agent', import.meta.url)) }) + '\n');
+  process.exit('error' in result ? 1 : 0);
+}
 
 if (process.argv.includes('--version')) { process.stdout.write('fake-pi-resume-1\n'); process.exit(0); }
 if (process.argv.some(arg => arg.endsWith('/koa-resume.ts'))) {
@@ -31,7 +40,7 @@ if (process.argv.some(arg => arg.endsWith('/koa-resume.ts'))) {
   process.exit(0);
 }
 
-type Step = { type: "respond"; command: "get_state" | "get_entries" | "get_messages" | "get_session_stats" | "get_available_thinking_levels" | "get_commands"; data: object; after?: object[] } | { type: "emit"; event: object } | { type: "raw"; text: string } | { type: "stderr"; text: string } | { type: "wait"; command: string; events?: object[]; after?: object[]; data?: object; error?: string; echo?: boolean; gate?: boolean | string } | { type: "exit"; code: number } | { type: "repeat"; count: number; events: object[]; delayMs?: number };
+type Step = { type: "respond"; command: "get_state" | "get_entries" | "get_messages" | "get_session_stats" | "get_available_thinking_levels" | "get_commands"; data: object; after?: object[] } | { type: "emit"; event: object } | { type: "raw"; text: string } | { type: "stderr"; text: string } | { type: "wait"; command: string; events?: object[]; after?: object[]; data?: object; error?: string; echo?: boolean; gate?: boolean | string; defer?: boolean } | { type: "exit"; code: number } | { type: "repeat"; count: number; events: object[]; delayMs?: number };
 const script: Step[] = process.env.KOA_FAKE_SCRIPT ? readFileSync(process.env.KOA_FAKE_SCRIPT, "utf8").trim().split("\n").filter(Boolean).map(line => JSON.parse(line)) : [];
 let next = 0;
 let working = false;
@@ -127,6 +136,7 @@ async function command(value: { type: string; id: string; message?: string; imag
       else if (!step.gate) await finish();
       await advance(); return;
     }
+    if (step.defer) { await advance(); return; }
     const response = { type: "response", command: value.type, id: value.id, success: !step.error, ...(step.error ? { error: step.error } : { data: step.data ?? data }) };
     await respond(response);
     await advance();

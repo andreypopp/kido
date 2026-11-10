@@ -8,7 +8,7 @@ import { imageInfo, imageExtensions } from "./koa-image.ts";
 import { pathArg, type Annotation } from "./koa-records.ts";
 import { isRelation, isAgentFailure } from "../pi/records.ts";
 import { promptText } from "./prompt.ts";
-import type { Text, Block, Item, Assistant, WireItem, State, PageRecord, ImageRef, Attachment, AgentCall, NotifyLevel, BashResult } from "./koa-records.ts";
+import type { Text, Block, Item, Assistant, WireItem, State, PageRecord, ImageRef, Attachment, AgentCall, NotifyLevel, CommandResult, BashResult } from "./koa-records.ts";
 import type { AgentRef, AgentOutcome, JobRef, JobEnd, Inbound, AgentDetails, NoticeDetails, StreamDetails } from "../pi/records.ts";
 import { mintId, contentText, utf8Prefix, isRecord, errorText, type Content } from "../pi/text.ts";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
@@ -385,7 +385,7 @@ export function transcript({ dir, flushMs, metrics = false }: { dir: string; flu
     if (notify) { publish(item); flush(); }
   };
   const rebuild = (messages: readonly AgentMessage[] = [], nextSession?: string, entries: readonly SessionEntry[] = [], leafId: string | null = null): void => {
-    const notices = session.type === 'unbound' || session.id === nextSession ? items.filter(item => item.kind === 'notify').sort((a, b) => a.at - b.at) : [];
+    const notices = session.type === 'unbound' || session.id === nextSession ? items.filter(item => item.kind === 'notify' || item.kind === 'command').sort((a, b) => a.at - b.at) : [];
     session = { type: 'bound', id: nextSession };
     images.clear(); rmSync(imageDir, { recursive: true, force: true }); mkdirSync(imageDir, { mode: 0o700 });
     epoch = mintId();
@@ -433,11 +433,12 @@ export function transcript({ dir, flushMs, metrics = false }: { dir: string; flu
     const block = item?.kind === "assistant" ? item.blocks[index] : undefined;
     if (block?.type === "thinking" && item) { block[edge] = at; publish(item); schedule(); }
   };
-  const notify = (text: string, level: NotifyLevel): void => {
+  const append = (value: { kind: 'notify'; level: NotifyLevel; text: Text } | { kind: 'command'; result: CommandResult }): void => {
     flush();
-    const item: Item = { seq: items.length, at: Date.now(), final: true, kind: 'notify', level, text: cap(text, MAX_WEBVIEW_RESULT_BYTES) };
+    const item: Item = { seq: items.length, at: Date.now(), final: !(value.kind === 'command' && value.result.type === 'compaction' && value.result.state.type === 'running'), ...value };
     items.push(item); publish(item); flush();
   };
+  const notify = (text: string, level: NotifyLevel): void => append({ kind: 'notify', level, text: cap(text, MAX_WEBVIEW_RESULT_BYTES) });
   const state = (record: State): void => { currentState = { ...record, type: "state" }; broadcast(currentState); };
   const toolRunning = (id: string, at: number): void => {
     flush();
@@ -462,6 +463,14 @@ export function transcript({ dir, flushMs, metrics = false }: { dir: string; flu
       const image = images.get(url.pathname.slice(8));
       if (!image) { respond(req, 404, "{}"); return true; }
       void serveFile(req, image.path, image.ref.id + "." + (imageExtensions[image.ref.mimeType] ?? "bin"), 410);
+    } else if (request.method === 'GET' && url.pathname === '/history') {
+      const history: string[] = [];
+      for (let index = items.length - 1; index >= 0 && history.length < 100; index--) {
+        const item = items[index];
+        const text = (item?.kind === 'user' ? item.text : item?.kind === 'bash' ? (item.excludeFromContext ? '!!' : '!') + item.command : '').trim();
+        if (text && history.at(-1) !== text) history.push(text);
+      }
+      respond(req, 200, JSON.stringify({ entries: history }));
     } else if (request.method === "GET" && url.pathname === "/items") {
       const before = Number(url.searchParams.get("before"));
       if (!Number.isSafeInteger(before) || before < 0) respond(req, 400, "{}");
@@ -487,9 +496,16 @@ export function transcript({ dir, flushMs, metrics = false }: { dir: string; flu
     } else return false;
     return true;
   };
-  const stepPath = (seq: number, index: number): string | undefined => {
-    const item = items[seq], block = item?.kind === 'assistant' ? item.blocks[index] : undefined;
-    return pathArg(block);
+  const itemFile = (seq: number, index: number): string | undefined => {
+    const item = items[seq];
+    if (item?.kind === 'assistant') return pathArg(item.blocks[index]);
+    if (item?.kind === 'command' && item.result.type === 'export' && index === 0) return item.result.path;
   };
-  return { stepPath, message, thinking, annotation, rebuild, toolRunning, toolPartial, toolDone, state, notify, handle, close, get metrics() { return counters && { ...counters, subscribers: subscribers.size }; } };
+  const command = (result: CommandResult): void => {
+    flush();
+    const current = result.type === 'compaction' ? items.findLast(item => item.kind === 'command' && item.result.type === 'compaction' && item.result.state.type === 'running') : undefined;
+    if (current?.kind === 'command') { current.result = result; current.final = result.type !== 'compaction' || result.state.type !== 'running'; publish(current); flush(); }
+    else append({ kind: 'command', result });
+  };
+  return { command, itemFile, message, thinking, annotation, rebuild, toolRunning, toolPartial, toolDone, state, notify, handle, close, get metrics() { return counters && { ...counters, subscribers: subscribers.size }; } };
 }

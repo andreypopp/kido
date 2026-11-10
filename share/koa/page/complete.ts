@@ -64,7 +64,7 @@ export function completion(host: HTMLElement, send: () => void, mode: StateField
         if (!item || (item.kind !== 'command' && item.kind !== 'agent')) return null;
         const tag = document.createElement('span');
         tag.className = 'cm-completionKind';
-        tag.textContent = item.kind === 'command' ? item.source === 'prompt' ? 'template' : item.source : item.kind === 'agent' ? 'agent' : '';
+        tag.textContent = item.kind === 'command' ? item.source === 'prompt' ? 'template' : item.source === 'builtin' ? 'built-in' : item.source : item.kind === 'agent' ? 'agent' : '';
         return tag;
       } }] }),
     ],

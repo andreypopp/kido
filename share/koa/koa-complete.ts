@@ -1,12 +1,12 @@
 import { bashCommand, shellPathToken, shellQuote } from './prompt.ts';
 import { spawn } from "node:child_process";
-import { accessSync, constants, statSync } from "node:fs";
-import { basename, delimiter, join, resolve } from "node:path";
+import { statSync } from 'node:fs';
+import { basename, join, resolve } from "node:path";
 import { homedir } from "node:os";
 import { parsePanes, piAgent, runningRows, agentCache } from "../pi/agents.ts";
 import type { components } from "../pi/ko-api.d.ts";
 import type { CompletionCommand, CompletionOption, CompletionResult } from "./koa-records.ts";
-import { signalChild } from "./koa-child.ts";
+import { signalChild, which } from "./koa-child.ts";
 import { fileToken, slashToken, pathSeparator } from "../pi/token.ts";
 
 function scorePositions(textLower: string, positions: number[]) {
@@ -94,8 +94,7 @@ function fuzzyFilter<T>(items: readonly T[], query: string, getText: (item: T) =
 }
 
 export function findFd(override: string | undefined, agentDir: string, path: string): string | undefined {
-  const candidates = override !== undefined ? [override] : [join(agentDir, "bin/fd"), ...path.split(delimiter).filter(Boolean).map(dir => join(dir, "fd"))];
-  return candidates.filter(Boolean).map(candidate => resolve(candidate)).find(candidate => { try { accessSync(candidate, constants.X_OK); return statSync(candidate).isFile(); } catch { return false; } });
+  return override !== undefined ? which(override, '') : which(join(agentDir, 'bin/fd'), '') ?? which('fd', path);
 }
 
 function output(command: string, args: string[], signal: AbortSignal): Promise<string | undefined> {

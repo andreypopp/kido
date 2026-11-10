@@ -16,9 +16,9 @@ have their own plan, plans/koa-questions.md.
    RPC has `fork`, `clone` and `switch_session`, which koa already
    follows with a rebuild; the page has no view to start them. Needs a
    mockup first.
-3. **More built-in slash commands.** pi's RPC mode does not run its
-   TUI's built-ins (`get_commands` excludes them), and koa handles
-   only `/name`. Each further built-in (`/model`, `/thinking`,
-   `/compact`, `/new`, `/resume`, `/session`, `/copy`, `/export`) is
-   koa's own handler over an RPC command or a page action, and
-   completion then lists it. Decide the set with the user.
+3. **More built-in slash commands.** koa handles `/model`,
+   `/thinking`, `/compact`, `/session`, `/copy`, `/export`, `/name`
+   and `/quit` (design-koa.md, "Built-in commands are koa's"); the
+   others are refused. `/new` and `/resume` come with the session
+   switching in the page. Each further built-in is a decision for the
+   user.

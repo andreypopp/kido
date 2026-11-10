@@ -343,7 +343,7 @@ test("identical image partials emit no patch and changed bytes advance the wire 
 
 test("rebuild sends reset then exactly one caller-supplied state and keeps the epoch format", t => {
   const view = transcript({ dir: directory(t), flushMs: 1000 });
-  const state = { bash: [], working: false, name: "before", model: { provider: "test", id: "test" }, aborted: false, levels: [], cwd: "/tmp", home: "/tmp", dialogs: [], statuses: {}, queue: { steering: [], followUp: [] }, pi: { type: "ready" as const } };
+  const state = { bash: [], compaction: 'idle' as const, working: false, name: "before", model: { provider: "test", id: "test" }, aborted: false, levels: [], cwd: "/tmp", home: "/tmp", dialogs: [], statuses: {}, queue: { steering: [], followUp: [] }, pi: { type: "ready" as const } };
   view.state(state);
   const lines = request(view, "/events");
   const firstEpoch = record(lines[0]).epoch;

@@ -7,7 +7,7 @@ import SidebarFeed
 @testable import Kido
 
 extension VisualTests {
-    private enum KoaScenario { case transcript, dialogs, controls, exit, feed, completion, markdown, media, attachments, userMarkdown, preview, lightbox, agents, composer, questions, bang }
+    private enum KoaScenario { case transcript, dialogs, controls, exit, feed, completion, markdown, media, attachments, userMarkdown, preview, lightbox, agents, composer, questions, bang, commands }
     func testKoaWebviewSubmitFollowsClampedBottom() async throws {
         WebviewPaneView.visualInitialScript = "window.requestAnimationFrame=callback=>setTimeout(()=>callback(performance.now()),16);window.cancelAnimationFrame=clearTimeout;const Source=EventSource;window.EventSource=class extends Source{constructor(...args){super(...args);window.scrollSource=this}};"
         defer { WebviewPaneView.visualInitialScript = nil }
@@ -98,7 +98,7 @@ extension VisualTests {
         let result = try await webviewJS(web, #"""
         (async()=>{
           const requests=[], original=window.fetch;
-          window.fetch=(path,options)=>['/prompt','/quit'].includes(path)?(requests.push({path,...JSON.parse(options.body)}),Promise.resolve({ok:true,json:async()=>({})})):original(path,options);
+          window.fetch=(path,options)=>path==='/history'?Promise.resolve({ok:true,json:async()=>({entries:['recent prompt','earlier prompt','!!echo quiet','!echo normal']})}):path==='/queue/clear'?(requests.push({path}),Promise.resolve({ok:true,json:async()=>({steering:[{text:'queued steer',attachments:[]}],followUp:[]})})):['/prompt','/quit'].includes(path)?(requests.push({path,...JSON.parse(options.body)}),Promise.resolve({ok:true,json:async()=>({})})):original(path,options);
           const input=document.querySelector('#prompt .cm-content'), editor=window.composer;
           const key=(key,options={})=>{const event=new KeyboardEvent('keydown',{key,keyCode:key.length===1?key.toUpperCase().charCodeAt(0):({Enter:13,Tab:9,Escape:27}[key]||0),bubbles:true,cancelable:true,...options});input.dispatchEvent(event);return event.defaultPrevented};
           const sent=async(text,options,mode)=>{editor.setText(text);const handled=key('Enter',options);await Promise.resolve();await Promise.resolve();await Promise.resolve();return handled&&requests.at(-1)?.text===text&&requests.at(-1)?.mode===mode};
@@ -114,6 +114,12 @@ extension VisualTests {
             key('Escape');if(editor.text()!=='draft')return 'first Escape';key('Escape');if(editor.text()!=='')return 'second Escape';
             key('d',{ctrlKey:true});if(requests.at(-1)?.path!=='/quit')return 'Control D';
             editor.setText('base');editor.insert('history');const before=editor.text();key('z',{metaKey:true});if(editor.text()===before)return 'undo';key('Z',{metaKey:true,shiftKey:true});if(editor.text()!==before)return 'redo';
+            const historyTick=async()=>{for(let i=0;i<8;i++)await Promise.resolve()};
+            editor.setText('unfinished');key('ArrowUp');if(editor.text()!=='unfinished')return 'history first Up';key('ArrowUp');await historyTick();if(editor.text()!=='recent prompt')return 'history recall';key('ArrowDown');await historyTick();if(editor.text()!=='unfinished')return 'history draft';
+            editor.setText('');for(let i=0;i<3;i++){key('ArrowUp');await historyTick()}if(editor.text()!=='!!echo quiet'||!editor.bash()?.excludeFromContext||!document.querySelector('#field').classList.contains('bash-mode'))return 'quiet bash history';
+            key('ArrowUp');await historyTick();if(editor.text()!=='!echo normal'||editor.bash()?.excludeFromContext!==false)return 'bash history Up';key('ArrowDown');await historyTick();if(editor.text()!=='!!echo quiet'||!editor.bash()?.excludeFromContext)return 'bash history Down';key('ArrowDown');await historyTick();if(editor.text()!=='earlier prompt'||editor.bash()||document.querySelector('#field').classList.contains('bash-mode'))return 'leave bash history';
+            editor.setText('word '.repeat(80));key('ArrowUp');await historyTick();if(editor.text()!=='word '.repeat(80))return 'history visual line';
+            editor.setText('draft');key('ArrowUp',{altKey:true});key('ArrowUp',{altKey:true});await historyTick();if(requests.filter(r=>r.path==='/queue/clear').length!==1||requests.some(r=>r.path==='/abort')||editor.text()!=='draft\n\nqueued steer')return 'Option Up';
             if(key('Tab'))return 'Tab';
             editor.setText('');const transfer=new DataTransfer();transfer.setData('text/plain','pasted\nplain');transfer.setData('text/html','<b>other</b>');input.dispatchEvent(new ClipboardEvent('paste',{bubbles:true,cancelable:true,clipboardData:transfer}));if(editor.text()!=='pasted\nplain')return 'paste';
             editor.setText('- composed');const prior=requests.length, composed=editor.text();input.dispatchEvent(new CompositionEvent('compositionstart',{bubbles:true}));for(const options of [{},{shiftKey:true},{altKey:true}])key('Enter',{isComposing:true,...options});input.dispatchEvent(new CompositionEvent('compositionend',{bubbles:true}));if(requests.length!==prior||editor.text()!==composed)return 'composition keymap';
@@ -235,6 +241,14 @@ extension VisualTests {
     func testKoaWebviewFeedHeldTail() async throws {
         try await koaWebview(width: 980, height: 560, scenario: .feed, captures: [])
     }
+    func testKoaWebviewCommandsWide() async throws {
+        try await koaWebview(width: 980, height: 560, scenario: .commands, captures: Set(["copy", "export", "refused", "session-closed", "session-open", "compacting", "compacted-open", "compact-cancelled", "compact-failed", "popup"].map { "commands-" + $0 }))
+    }
+
+    func testKoaWebviewCommandsNarrow() async throws {
+        try await koaWebview(width: 470, height: 560, scenario: .commands, captures: Set(["copy", "export", "refused", "session-closed", "session-open", "compacting", "compacted-open", "compact-cancelled", "compact-failed", "popup"].map { "narrow-commands-" + $0 }))
+    }
+
     func testKoaWebviewMockupStates() async throws {
         try await koaWebview(width: 980, height: 560, captures: ["user-well", "stream", "lines", "details"])
     }
@@ -345,9 +359,9 @@ extension VisualTests {
         let attachmentPaths = (shot: home.appendingPathComponent("Desktop/Screenshot 2026-11-10 at 09.11.42.png"), diagram: home.appendingPathComponent("Desktop/diagram.png"), notes: home.appendingPathComponent("Desktop/notes.md"), source: cwd.appendingPathComponent("app/App/SidebarRow.swift"))
         try FileManager.default.createDirectory(at: cwd, withIntermediateDirectories: true)
         try JSONSerialization.data(withJSONObject: ["cwd": cwd.path]).write(to: sessionFile)
-        let mediaClock = scenario == .media || scenario == .attachments || scenario == .preview || scenario == .lightbox || scenario == .agents || scenario == .composer
+        let mediaClock = scenario == .commands || scenario == .media || scenario == .attachments || scenario == .preview || scenario == .lightbox || scenario == .agents || scenario == .composer
         let stamp = Int(try XCTUnwrap(Calendar.current.date(from: DateComponents(year: 2026, month: 11, day: mediaClock ? 10 : 8, hour: mediaClock ? 9 : 14, minute: mediaClock ? 12 : 32))).timeIntervalSince1970 * 1000)
-        let measured = scenario == .questions || scenario == .completion || scenario == .attachments || scenario == .userMarkdown || scenario == .exit || scenario == .lightbox || captures.contains("focus-border-transcript") || captures.contains("focus-border-dialog")
+        let measured = scenario == .commands || scenario == .questions || scenario == .completion || scenario == .attachments || scenario == .userMarkdown || scenario == .exit || scenario == .lightbox || captures.contains("focus-border-transcript") || captures.contains("focus-border-dialog")
         let measurementClock = measured ? "const ClockDate=Date;window.Date=class extends ClockDate{constructor(...args){super(...(args.length?args:[\(stamp + 12000)]))}static now(){return \(stamp + 12000)}};" : ""
         // WebKit pauses animation frames in an off-screen window.
         if measured {
@@ -800,6 +814,20 @@ extension VisualTests {
             steps.append(["type": "wait", "command": "get_available_models", "data": ["models": [["id": "claude-opus-5-5", "provider": "anthropic"]]]])
             prompt([])
         }
+        if scenario == .commands {
+            steps = Array(steps.prefix(4))
+            steps[0]["data"] = ["sessionName": "sidebar-right", "thinkingLevel": "high", "model": ["id": "claude-opus-5-5", "provider": "anthropic"], "sessionFile": sessionFile.path]
+            steps[1]["data"] = ["messages": [["role": "user", "timestamp": stamp, "content": "Verify the sidebar unit"], assistant([["type": "text", "text": "Verified: every stage passes. The snapshots that changed are the twelve of SidebarTests."]])]]
+            steps[2]["data"] = ["sessionId": "9702ddd1-4c2a-7e31-b0f8-6d1a2e9c0a11", "sessionFile": "~/.pi/agent/sessions/--Users-andrepopp-Workspace-kido/2026-11-10T09-02-11_9702ddd1.jsonl", "userMessages": 61, "assistantMessages": 98, "toolCalls": 53, "toolResults": 53, "totalMessages": 212, "tokens": ["input": 184000, "output": 12000, "cacheRead": 1600000, "cacheWrite": 142000, "total": 1938000], "cost": 1.42, "contextUsage": ["tokens": 84000, "contextWindow": 200000, "percent": 42]]
+            steps.append(["type": "respond", "command": "get_commands", "data": ["commands": [["name": "release", "description": "Release Kido.app first, then ko", "source": "prompt"]]]])
+            steps.append(["type": "wait", "command": "get_last_assistant_text", "data": ["text": String(repeating: "x", count: 2100)]])
+            steps.append(["type": "wait", "command": "export_html", "data": ["path": "~/Workspace/kido/.pi/export/2026-11-10-sidebar.html"]])
+            steps.append(["type": "wait", "command": "compact", "events": [["type": "compaction_start", "reason": "manual"]]])
+            prompt([["type": "compaction_end", "reason": "manual", "result": ["summary": "The session verified the sidebar-right unit (right-side indicators, chevrons, folded clusters) and fixed two snapshot tests; the user approved the dividers-and-fill grouping and the breadcrumb pill. Open: the +N overflow on rows under 215pt. Files touched: SidebarRow.swift, SidebarView.swift, Rows.swift.", "firstKeptEntryId": "first", "tokensBefore": 184000, "estimatedTokensAfter": 31000], "willRetry": false]])
+            steps.append(["type": "wait", "command": "compact", "defer": true, "events": [["type": "compaction_start", "reason": "manual"]]])
+            steps.append(["type": "wait", "command": "abort", "events": [["type": "compaction_end", "reason": "manual", "aborted": true, "willRetry": false]]])
+            steps.append(["type": "wait", "command": "compact", "error": "The model request failed"])
+        }
         try steps.map { String(decoding: try JSONSerialization.data(withJSONObject: $0), as: UTF8.self) }.joined(separator: "\n").write(to: script, atomically: true, encoding: .utf8)
         let path = [tools.prefix + "/bin", "/opt/homebrew/bin", ProcessInfo.processInfo.environment["PATH"] ?? "/usr/bin:/bin"].joined(separator: ":")
         let clock = directory.appendingPathComponent("clock.mjs")
@@ -903,7 +931,7 @@ extension VisualTests {
             _ = try await webviewJS(web, "fetch('/prompt',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text:'next',mode:'prompt',attachments:[]})}).then(async r=>{const result=await r.json();if(!r.ok)throw Error(result.error||'Prompt failed');return result})")
         }
         try await webviewUntil(web, "document.querySelector('#status').textContent==='idle'&&document.querySelector('#model-name').textContent==='claude-opus-5-5'")
-        _ = try await webviewJS(web, "(()=>{const NativeDate=Date;window.Date=class extends NativeDate{constructor(...args){super(...(args.length?args:[\(stamp + 12000)]))}static now(){return \(stamp + 12000)}};const style=document.createElement('style');style.textContent='.caret,.spin,.spin::before,.dot.on,.cm-cursorLayer{animation:none!important}';document.head.append(style);return true})()")
+        _ = try await webviewJS(web, "(()=>{const NativeDate=Date;window.Date=class extends NativeDate{constructor(...args){super(...(args.length?args:[\(stamp + 12000)]))}static now(){return \(stamp + 12000)}};const style=document.createElement('style');style.textContent='.caret,.spin,.spin::before,.dot.on,.cm-cursorLayer{animation:none!important}.info .chev{transition:none!important}';document.head.append(style);return true})()")
         if captures.contains("focus-border-transcript") {
             try await advance(); try await advance()
             try await webviewUntil(web, "document.querySelector('.assistant p')!==null")
@@ -965,6 +993,47 @@ extension VisualTests {
             try await webviewUntil(web, "document.querySelector('.cmdrun .meta')?.textContent==='cancelled1s'")
             resize(330)
             try await capture(prefix + "bang-completed")
+            return
+        }
+        if scenario == .commands {
+            let prefix = width < 600 ? "narrow-commands-" : "commands-"
+            func submit(_ text: String) async throws {
+                let value = String(decoding: try JSONSerialization.data(withJSONObject: text, options: .fragmentsAllowed), as: UTF8.self)
+                _ = try await webviewJS(web, "fetch('/prompt',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text:\(value),mode:'prompt',attachments:[]})}).then(async r=>{const body=await r.json();if(!r.ok)throw Error(body.error);return body})")
+            }
+            try await submit("/copy")
+            try await webviewUntil(web, "document.querySelector('.note')?.textContent.includes('copied the last reply')")
+            try await capture(prefix + "copy")
+            try await submit("/export")
+            try await webviewUntil(web, "document.querySelectorAll('.note').length===2")
+            try await capture(prefix + "export")
+            try await submit("/settings")
+            try await webviewUntil(web, "document.querySelector('.note.warning')!==null")
+            try await capture(prefix + "refused")
+            try await submit("/session")
+            try await webviewUntil(web, "document.querySelector('.info .kv')!==null")
+            try await capture(prefix + "session-closed")
+            _ = try await webviewJS(web, "(()=>{document.querySelector('.info>.line').click();return true})()")
+            try await capture(prefix + "session-open")
+            _ = try await webviewJS(web, "(()=>{document.querySelector('.info>.line').click();return true})()")
+            try await submit("/compact")
+            try await webviewUntil(web, "document.querySelector('#status').textContent.startsWith('compacting')")
+            try await capture(prefix + "compacting")
+            try await advance()
+            try await webviewUntil(web, "Array.from(document.querySelectorAll('.info')).some(node=>node.textContent.includes('compacted'))")
+            _ = try await webviewJS(web, "(()=>{Array.from(document.querySelectorAll('.info')).find(node=>node.textContent.includes('compacted')).querySelector('.line').click();return true})()")
+            try await capture(prefix + "compacted-open")
+            try await submit("/compact")
+            try await webviewUntil(web, "document.querySelector('#status').textContent.startsWith('compacting')")
+            _ = try await webviewJS(web, "fetch('/abort',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}).then(r=>r.json())")
+            try await webviewUntil(web, "Array.from(document.querySelectorAll('.note')).some(node=>node.textContent.includes('compaction cancelled'))")
+            try await capture(prefix + "compact-cancelled")
+            try await submit("/compact")
+            try await webviewUntil(web, "document.querySelector('.note.error')!==null")
+            try await capture(prefix + "compact-failed")
+            _ = try await webviewJS(web, "(()=>{window.composer.setText('');window.composer.focus();document.execCommand('insertText',false,'/');return true})()")
+            try await webviewUntil(web, "document.querySelectorAll('.koa-complete li').length>0")
+            try await capture(prefix + "popup")
             return
         }
         if scenario == .questions {
@@ -1262,7 +1331,7 @@ extension VisualTests {
             try await show("", "/")
             try await capture(prefix + "slash-all")
             try await key("ArrowDown"); try await key("Tab")
-            try await webviewUntil(web, "window.composer.text()==='/release '&&!document.querySelector('.koa-complete')&&completePrompts.length===0")
+            try await webviewUntil(web, "window.composer.text()==='/thinking '&&!document.querySelector('.koa-complete')&&completePrompts.length===0")
             try await resize(300)
             try await show("", "/re")
             try await capture(prefix + "slash-filter")
@@ -1488,7 +1557,7 @@ extension VisualTests {
             try await capture("narrow-exited")
         }
         switch scenario {
-        case .transcript, .feed, .completion, .markdown, .media, .attachments, .userMarkdown, .preview, .lightbox, .agents, .composer, .questions, .bang: break
+        case .transcript, .feed, .completion, .markdown, .media, .attachments, .userMarkdown, .preview, .lightbox, .agents, .composer, .questions, .bang, .commands: break
         case .dialogs: try await dialogScenario()
         case .controls: try await controlsScenario()
         case .exit: try await exitScenario()

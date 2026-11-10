@@ -28,10 +28,3 @@ export function shellQuote(path: string): string {
   return (home ? '~/' : '') + (/^[\w./+-]+$/.test(rest) ? rest : "'" + rest.replace(/'/g, "'\\''") + "'");
 }
 
-export function nameCommand(text: string): { type: 'query' } | { type: 'set'; name: string } | undefined {
-  const match = /^\/name(?:\s+([\s\S]*))?$/.exec(text.trim());
-  if (!match) return;
-  const name = (match[1] ?? '').trim();
-  return name ? { type: 'set', name } : { type: 'query' };
-}
-

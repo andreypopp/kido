@@ -779,9 +779,13 @@ maps the coordinator's modules.
                         page share; koa-complete.ts, completion;
                         koa-attach.ts, attachments; koa-queue.ts, the
                         queue's attachments; koa-child.ts, the signals
-                        of koa's own children and the session picker's
-                        run; koa-resume.ts, the picker extension of
-                        `koa --resume`; prompt.ts, the prompt
+                        of koa's own children, pi's package lookup and
+                        the runs of the startup helper and the session
+                        picker; koa-startup.ts, the startup helper's
+                        extension; koa-args.ts, its rules for pi's
+                        parsed arguments; koa-resume.ts, the picker
+                        extension of `koa --resume`; koa-commands.ts,
+                        the built-in slash commands; prompt.ts, the prompt
                         text rules that koa and its page share; koa-fake-pi.ts, the scripted pi
                         of its suite koa-*.test.ts, and koa-fake-tty.ts,
                         its terminal preload; stress/, the stress

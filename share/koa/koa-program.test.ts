@@ -64,6 +64,7 @@ test('resume selects before the browser, cancels, and reports a broken picker', 
     { gate: 'skip', code: 0, output: /koa: http:/ },
   ]) {
     await writeFile(log, ''); await rm(urls, { force: true });
+    await writeFile(script, (item.gate.startsWith('{"type":"selected"') ? '{"type":"wait","command":"prompt"}\n' : '') + '{"type":"wait","command":"prompt"}\n{"type":"exit","code":0}\n');
     const connected = once(server, 'connection');
     const pass = item.gate === 'skip' ? ['--resume', '--session', 'existing.jsonl'] : ['--resume', '-r', '--session-dir', dir, '--', 'prompt'];
     const child = spawn(process.execPath, ['--import', resolve('../koa/koa-fake-tty.ts'), resolve('../koa/koa.ts'), '--browser', '--pi', resolve('../koa/koa-fake-pi.ts'), ...pass], { stdio: 'pipe', env: { ...process.env, KO_PANE: '', KOA_FAKE_LOG: log, KOA_FAKE_SCRIPT: script, KOA_FAKE_PICKER_GATE: join(dir, 'gate'), KOA_RESUME_READY_MS: '1000', OPEN_LOG: urls, PATH: `${dir}:${process.env.PATH}` } });
@@ -119,8 +120,145 @@ async function fixture(t: TestContext, steps: object[], env: NodeJS.ProcessEnv =
   const { state: stream, until } = sse(Readable.from(response.body));
   const post = (path: string, body: object = {}) => fetch(base + path, { method: "POST", headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
   if (startup) await until(record => record.type === "state" && (pi ? record.pi?.type === "exited" : Array.isArray(record.levels) && record.levels.length === 3));
-  return { post, until, records: () => stream.records, count: () => stream.records.length, close, stdout: () => stdout, stderr: () => stderr, log: async () => (await readFile(log, "utf8")).trim().split("\n").map(line => JSON.parse(line)), base };
+  return { script, post, until, records: () => stream.records, count: () => stream.records.length, close, stdout: () => stdout, stderr: () => stderr, log: async () => (await readFile(log, "utf8")).trim().split("\n").map(line => JSON.parse(line)), base };
 }
+test('startup refuses incompatible flags before opening a webview', { timeout: 10000 }, async () => {
+  for (const args of [['--mode','text'], ['-p'], ['--export','out.html'], ['--list-models'], ['-v'], ['--tui-mode','fullscreen'], ['--theme','dark'], ['--use-theme','dark'], ['--no-themes'], ['@notes.txt']]) {
+    const child = spawn(process.execPath, [resolve('../koa/koa.ts'), '--browser', '--pi', resolve('../koa/koa-fake-pi.ts'), ...args]);
+    let output = ''; child.stderr.on('data', bytes => { output += bytes; });
+    const [code] = await once(child, 'close');
+    assert.equal(code, 1, output);
+    assert.match(output, /koa: /);
+    assert.doesNotMatch(output, /koa: http:/);
+  }
+});
+
+test('startup messages run separately after readiness without a page connection', { timeout: 10000 }, async t => {
+  const f = await fixture(t, [
+    { type: 'wait', command: 'prompt', after: [{ type: 'agent_settled', aborted: false }] },
+    { type: 'wait', command: 'prompt', after: [{ type: 'agent_settled', aborted: false }] },
+    { type: 'exit', code: 1 },
+  ], {}, undefined, true, ['--', 'first', '--help'], resolve('../koa/koa.ts'));
+  await pollUntil(async () => (await f.log()).filter(value => value.type === 'prompt').length === 2);
+  assert.deepEqual((await f.log()).filter(value => value.type === 'prompt').map(value => value.message), ['first', '--help']);
+  await f.until(record => record.type === 'state' && record.pi?.type === 'exited');
+  assert.equal((await f.post('pi/start')).status, 200);
+  assert.equal((await f.log()).filter(value => value.type === 'prompt').length, 2);
+});
+
+test('startup handled commands continue and agent_end does not release a retry', { timeout: 10000 }, async t => {
+  const f = await fixture(t, [
+    { type: 'wait', command: 'prompt', data: { disposition: 'handled' } },
+    { type: 'wait', command: 'prompt', events: [{ type: 'agent_start' }, { type: 'agent_end', messages: [] }] },
+    { type: 'wait', command: 'get_commands', data: { commands: [] }, after: [{ type: 'agent_settled', aborted: false }] },
+    { type: 'wait', command: 'prompt', after: [{ type: 'agent_settled', aborted: false }] },
+  ], {}, undefined, true, ['--', '/extension', 'retry', 'last'], resolve('../koa/koa.ts'));
+  await pollUntil(async () => (await f.log()).filter(value => value.type === 'prompt').length >= 2);
+  assert.deepEqual((await f.log()).filter(value => value.type === 'prompt').map(value => value.message), ['/extension', 'retry']);
+  assert.equal((await f.post('complete', { text: '/', pos: 1 })).status, 200);
+  await pollUntil(async () => (await f.log()).filter(value => value.type === 'prompt').length === 3);
+  assert.deepEqual((await f.log()).filter(value => value.type === 'prompt').map(value => value.message), ['/extension', 'retry', 'last']);
+});
+
+test('history comes from the whole transcript and omits consecutive duplicates', { timeout: 10000 }, async t => {
+  const messages = Array.from({ length: 110 }, (_, i) => ({ role: 'user', content: 'prompt ' + i, timestamp: i + 1 }));
+  messages.push({ role: 'user', content: ' prompt 109 ', timestamp: 112 });
+  const f = await fixture(t, [{ type: 'respond', command: 'get_messages', data: { messages: [...messages,
+    { role: 'bashExecution', command: 'pwd', excludeFromContext: false, output: '', exitCode: 0, cancelled: false, truncated: false, timestamp: 113 },
+    { role: 'bashExecution', command: 'pwd', excludeFromContext: true, output: '', exitCode: 0, cancelled: false, truncated: false, timestamp: 114 },
+  ] } }], {}, undefined, true, [], resolve('../koa/koa.ts'));
+  const result: { entries: string[] } = await (await fetch(f.base + 'history')).json();
+  assert.equal(result.entries.length, 100);
+  assert.deepEqual(result.entries.slice(0, 3), ['!!pwd', '!pwd', 'prompt 109']);
+  assert.equal(result.entries.at(-1), 'prompt 12');
+});
+
+test('model selection, completion collisions, session statistics and export defaults use pi', { timeout: 10000 }, async t => {
+  const dir = await mkdtemp('/tmp/koa-export-'); t.after(() => rm(dir, { recursive: true, force: true }));
+  const exported = join(dir, 'default.html'); await writeFile(exported, '<html>exported session</html>');
+  const stats = { sessionId: 'test-session', userMessages: 2, assistantMessages: 1, toolCalls: 0, toolResults: 0, totalMessages: 3, tokens: { input: 12, output: 34, cacheRead: 56, cacheWrite: 78, total: 180 }, cost: 0.01 };
+  const f = await fixture(t, [
+    { type: 'respond', command: 'get_commands', data: { commands: [{ name: 'model', source: 'extension' }, { name: 'custom', source: 'extension' }] } },
+    { type: 'respond', command: 'get_session_stats', data: stats },
+    { type: 'wait', command: 'get_available_models', data: { models: [{ provider: 'test', id: 'exact' }] } },
+    { type: 'wait', command: 'set_model', data: { provider: 'test', id: 'exact' } },
+    { type: 'wait', command: 'set_thinking_level', events: [{ type: 'thinking_level_changed', level: 'high' }] },
+    { type: 'wait', command: 'export_html', data: { path: exported } },
+  ], {}, undefined, true, [], resolve('../koa/koa.ts'));
+  const completion: { options: { label: string; source: string }[] } = await (await f.post('complete', { text: '/', pos: 1 })).json();
+  assert.deepEqual(completion.options.map(value => value.label), ['/model', '/thinking', '/compact', '/session', '/copy', '/export', '/name', '/quit', '/custom']);
+  assert.equal(completion.options[0]?.source, 'builtin');
+  for (const text of ['/model TEST/EXACT', '/thinking HIGH', '/session', '/export']) assert.equal((await f.post('prompt', { text, mode: 'prompt', attachments: [] })).status, 200);
+  await f.until(record => record.type === 'item' && record.item.kind === 'command' && record.item.result.type === 'session');
+  assert.deepEqual(f.records().find(record => record.type === 'item' && record.item.kind === 'command' && record.item.result.type === 'session')?.item.result.stats, stats);
+  assert.ok((await f.log()).some(value => value.type === 'set_thinking_level' && value.level === 'high'));
+  assert.ok((await f.log()).some(value => value.type === 'export_html' && !('outputPath' in value)));
+  const notice = await f.until(record => record.type === 'item' && record.item.kind === 'command' && record.item.result.type === 'export');
+  assert.equal(await (await fetch(f.base + 'steps/' + notice.item.seq + '/0/file')).text(), '<html>exported session</html>');
+  assert.equal((await f.post('prompt', { text: '/quit', mode: 'prompt', attachments: [] })).status, 200);
+  assert.equal((await f.close)[0], 0);
+});
+
+test('manual compaction has one result per attempt and restores the working state', { timeout: 10000 }, async t => {
+  const result = { summary: 'Preserved decisions', firstKeptEntryId: 'entry', tokensBefore: 10000, estimatedTokensAfter: 2000 };
+  const f = await fixture(t, [
+    { type: 'wait', command: 'compact', events: [{ type: 'compaction_start', reason: 'manual' }], after: [{ type: 'compaction_end', reason: 'manual', result, willRetry: false }] },
+    { type: 'wait', command: 'compact', error: 'request failed', events: [{ type: 'compaction_start', reason: 'manual' }], after: [{ type: 'compaction_end', reason: 'manual', errorMessage: 'request failed', willRetry: false }] },
+  ], {}, undefined, true, [], resolve('../koa/koa.ts'));
+  for (let i = 0; i < 2; i++) assert.equal((await f.post('prompt', { text: '/compact', mode: 'prompt', attachments: [] })).status, 200);
+  await f.until(record => record.type === 'state' && record.compaction === 'idle' && !record.working);
+  await f.until(record => record.type === 'item' && record.item.kind === 'command' && record.item.result.type === 'compaction' && record.item.result.state.type === 'failed');
+  assert.equal(f.records().filter(record => record.type === 'item' && record.item.kind === 'command' && record.item.result.type === 'compaction' && record.item.result.state.type === 'failed').length, 1);
+  assert.ok(f.records().some(record => record.type === 'item' && record.item.kind === 'command' && record.item.result.type === 'compaction' && record.item.result.state.type === 'done' && record.item.result.state.before === 10000 && record.item.result.state.after === 2000));
+});
+
+test('a held compaction can be aborted and finishes as cancelled', { timeout: 10000 }, async t => {
+  const f = await fixture(t, [
+    { type: 'wait', command: 'compact', defer: true, events: [{ type: 'compaction_start', reason: 'manual' }] },
+    { type: 'wait', command: 'clear_queue', data: { steering: [], followUp: [] } },
+    { type: 'wait', command: 'abort', events: [{ type: 'compaction_end', reason: 'manual', aborted: true, willRetry: false }] },
+  ], {}, undefined, true, [], resolve('../koa/koa.ts'));
+  assert.equal((await f.post('prompt', { text: '/compact', mode: 'prompt', attachments: [] })).status, 200);
+  await f.until(record => record.type === 'state' && record.compaction === 'running');
+  assert.equal((await f.post('queue/clear')).status, 200);
+  assert.equal((await f.post('abort')).status, 200);
+  await f.until(record => record.type === 'item' && record.item.kind === 'command' && record.item.result.type === 'compaction' && record.item.result.state.type === 'cancelled');
+  await f.until(record => record.type === 'state' && record.compaction === 'idle' && !record.working);
+});
+
+test('a compaction crash clears its state and restart accepts a prompt', { timeout: 10000 }, async t => {
+  const f = await fixture(t, [
+    { type: 'wait', command: 'compact', defer: true, events: [{ type: 'compaction_start', reason: 'manual' }] },
+    { type: 'wait', command: 'abort' }, { type: 'exit', code: 7 },
+  ], {}, undefined, true, [], resolve('../koa/koa.ts'));
+  assert.equal((await f.post('prompt', { text: '/compact', mode: 'prompt', attachments: [] })).status, 200);
+  await f.until(record => record.type === 'state' && record.compaction === 'running');
+  await f.post('abort');
+  await f.until(record => record.type === 'state' && record.pi.type === 'exited' && record.compaction === 'idle' && !record.working);
+  assert.ok(f.records().some(record => record.type === 'item' && record.item.kind === 'command' && record.item.result.type === 'compaction' && record.item.result.state.type === 'failed' && /code 7/.test(record.item.result.state.message)));
+  await writeFile(f.script, JSON.stringify({ type: 'wait', command: 'prompt', echo: true }));
+  assert.equal((await f.post('pi/start')).status, 200);
+  assert.equal((await f.post('prompt', { text: 'after restart', mode: 'prompt', attachments: [] })).status, 200);
+  await f.until(record => record.type === 'item' && record.item.kind === 'user' && record.item.text === 'after restart');
+});
+
+test('built-in commands use RPC and never become prompts', { timeout: 10000 }, async t => {
+  const f = await fixture(t, [
+    { type: 'wait', command: 'get_last_assistant_text', data: { text: 'copied reply' } },
+    { type: 'wait', command: 'export_html', data: { path: '/tmp/export.html' } },
+    { type: 'wait', command: 'compact', data: {} },
+  ], {}, undefined, true, [], resolve('../koa/koa.ts'));
+  for (const text of ['/tree args', '/resume', '/new', '/copy', '/export /tmp/export.html', '/compact keep decisions', '/model', '/thinking', '/export test.jsonl']) {
+    const response = await f.post('prompt', { text, mode: 'prompt', attachments: [] });
+    assert.equal(response.status, 200, await response.text());
+  }
+  const log = await f.log();
+  assert.equal(log.filter(value => value.type === 'prompt').length, 0);
+  assert.ok(log.some(value => value.type === 'export_html' && value.outputPath === '/tmp/export.html'));
+  assert.ok(log.some(value => value.type === 'compact' && value.customInstructions === 'keep decisions'));
+  assert.ok(f.stdout().includes('\x1b]52;c;' + Buffer.from('copied reply').toString('base64') + '\x1b\\'));
+});
+
 test('startup failures release the view before exiting', { timeout: 5000 }, async t => {
   for (const args of [[], ['--metrics', '/does-not-exist/metrics']]) {
     const child = spawn(process.execPath, [resolve('../koa/koa.ts'), '--browser', ...args], { env: { ...process.env, ...(args.length ? {} : { KOA_UPLOAD_IDLE_MS: 'bad' }) }, stdio: 'pipe' });
@@ -169,14 +307,14 @@ test('step previews resolve only transcript-owned regular files', { timeout: 100
 
 test('bash response waits for its release gate, not the RPC deadline', async t => {
   const source = await readFile(new URL('./koa.ts', import.meta.url), 'utf8');
-  const body = stripTypeScriptTypes(source.slice(source.indexOf('function rpc('), source.indexOf('async function main(')));
+  const body = stripTypeScriptTypes(source.slice(source.indexOf('class RpcTimeout'), source.indexOf('const RPC_RESPONSE_MS')) + source.slice(source.indexOf('function rpc('), source.indexOf('async function main(')));
   t.mock.timers.enable({ apis: ['setTimeout'] });
   const child = Object.assign(new EventEmitter(), { exitCode: null, signalCode: null, stdin: Object.assign(new EventEmitter(), { destroyed: false, write: () => true, destroy() {} }), stdout: new EventEmitter() });
-  const link = runInNewContext(body + '\nrpc(child)', { child, Buffer, process, once, errorText: String, clearTimeout, later: (callback: () => void, delay: number) => setTimeout(callback, delay), RPC_RESPONSE_MS: 10000 });
+  const { link, RpcTimeout } = runInNewContext(body + '\n({link:rpc(child),RpcTimeout})', { child, Buffer, process, once, errorText: String, clearTimeout, later: (callback: () => void, delay: number) => setTimeout(callback, delay), RPC_RESPONSE_MS: 10000 });
   t.after(() => link.close());
   let ended = false;
   const bash = link.command({ type: 'bash', command: 'gated' }, { deadline: 'none' }).finally(() => { ended = true; });
-  const ordinary = assert.rejects(link.command({ type: 'get_state' }), /response timed out/);
+  const ordinary = assert.rejects(link.command({ type: 'get_state' }), (error: unknown) => error instanceof RpcTimeout);
   await Promise.resolve();
   t.mock.timers.tick(10001);
   await ordinary;
@@ -263,7 +401,8 @@ test('an idle compaction rebuild clears its completed command before stored repl
   const cleared = records.findIndex(record => record.type === 'state' && !record.working && record.bash?.length === 0);
   assert.ok(cleared >= 0 && cleared < records.findIndex(record => record.type === 'reset'), 'completed command must clear before reset');
   const page = await (await fetch(app.base + 'items?before=99')).json();
-  assert.equal(page.items.length, 1); assert.equal(page.items[0].command, 'echo saved');
+  const commands = page.items.filter((item: { kind: string }) => item.kind === 'bash');
+  assert.equal(commands.length, 1); assert.equal(commands[0].command, 'echo saved');
 });
 
 test('sequential commands during a turn keep acceptance order and enforce the pending budget', { timeout: 10000 }, async t => {
@@ -601,6 +740,7 @@ test("startup refuses prompts until the snapshot response is applied", { timeout
   const pi = join(dir, "pi.mjs");
   await writeFile(pi, `#!/usr/bin/env node
 import { connect } from 'node:net';
+if (process.env.KOA_STARTUP_ARGS) { const {writeSync}=await import('node:fs'); writeSync(3,JSON.stringify({packageRoot:${JSON.stringify(resolve('node_modules/@earendil-works/pi-coding-agent'))},messages:[],resume:false})+'\\n'); process.exit(0); }
 let buffer = '', snapshot, answered = false, released = false;
 const complete = () => { if (snapshot && answered && released) { send(snapshot, {messages:[{role:'user',content:'snapshot',timestamp:1}]}); snapshot = undefined; } };
 const send = (v, data) => process.stdout.write(JSON.stringify({type:'response',command:v.type,id:v.id,success:true,data})+'\\n');
@@ -721,7 +861,7 @@ test("RPC deltas, authoritative ends, tools, state, status and command correlati
   const item = await app.until(record => ["item", "patch"].includes(String(record.type)) && JSON.stringify(record).includes("hello\u2028world"));
   assert.match(JSON.stringify(item), /hello\\u2028world|hello\u2028world/);
   assert.deepEqual(await (await app.post("prompt", { text: "steering", mode: "steer", attachments: [] })).json(), { disposition: "queued" });
-  assert.deepEqual(await (await app.post("prompt", { text: "later", mode: "follow_up", attachments: [] })).json(), { disposition: "handled" });
+  assert.deepEqual(await (await app.post("prompt", { text: "later", mode: "follow_up", attachments: [] })).json(), { disposition: "handled", action: { type: "none" } });
   assert.equal((await app.post("abort")).status, 200);
   const patch = await app.until(record => record.type === "patch" && JSON.stringify(record).includes("final"));
   assert.match(JSON.stringify(patch), /final/);
@@ -871,10 +1011,12 @@ test("restart keeps the saved picker selection, harness and runtime", { timeout:
   await writeFile(selection, JSON.stringify({}));
   const app = await fixture(t, [
     { type: "respond", command: "get_state", data: { sessionFile: session } },
+    ...Array.from({ length: 3 }, () => ({ type: 'wait', command: 'prompt', after: [{ type: 'agent_settled', aborted: false }] })),
     { type: "wait", command: "set_model", data: { provider: "test", id: "picked" } },
     { type: "wait", command: "set_thinking_level", events: [{ type: "thinking_level_changed", level: "high" }] },
     { type: "wait", command: "prompt" }, { type: "exit", code: 7 },
   ], { KOA_FAKE_SELECTION_FILE: selection }, undefined, true, ["--runtime", "remote", "--resume", "-r", "--session", "old.jsonl", "--fork", "source.jsonl", "--model", "test/original", "--thinking", "low", "--system-prompt", "--resume", "--", "--session", "literal", "--resume"]);
+  await pollUntil(async () => (await app.log()).filter(record => record.type === 'prompt').length === 3);
   assert.equal((await app.post("pi/start")).status, 409);
   assert.equal((await app.post("model", { provider: "test", modelId: "picked" })).status, 200);
   assert.equal((await app.post("thinking", { level: "high" })).status, 200);
@@ -890,12 +1032,12 @@ test("restart keeps the saved picker selection, harness and runtime", { timeout:
   assert.deepEqual(argv[1], ["--mode", "rpc", "--extension", resolve("../../build/ko/share/ko/pi/ko-pi.ts"), "--harness", "koa-browser", "--runtime", "remote", "--resume", "-r", "--system-prompt", "--resume", "--session", session, "--", "--session", "literal", "--resume"]);
 });
 
-test("spawn failure is distinct from an exit code", { timeout: 10000 }, async t => {
-  const app = await fixture(t, [], {}, "/koa-no-such-pi");
-  const state = await app.until(record => record.type === "state" && record.pi?.type === "exited");
-  assert.match(state.pi.failed, /ENOENT/);
-  assert.equal("exited" in state.pi, false);
-  assert.equal((await app.post("abort")).status, 409);
+test('a missing pi fails package discovery before the webview', { timeout: 5000 }, async () => {
+  const child = spawn(process.execPath, [resolve('../koa/koa.ts'), '--browser', '--pi', '/koa-no-such-pi']);
+  let stderr = ''; child.stderr.on('data', bytes => { stderr += bytes; });
+  assert.equal((await once(child, 'close'))[0], 1);
+  assert.match(stderr, /koa: cannot find pi's package from \/koa-no-such-pi/);
+  assert.doesNotMatch(stderr, /koa: http:/);
 });
 
 test("clean pi exit closes koa", { timeout: 10000 }, async t => {

@@ -3,7 +3,6 @@ import { markdown, markdownLine } from './markdown.ts';
 import { composer } from './composer.ts';
 import { attach } from './attach.ts';
 import { preview, previewKey } from './preview.ts';
-import { nameCommand } from '../prompt.ts';
 import { fetchJSON } from './http.ts';
 import { ATTACHMENT_LIMITS, pathArg } from '../koa-records.ts';
 import { jobEndText } from '../../pi/records.ts';
@@ -39,7 +38,7 @@ const views = new Map<number, { view: HTMLElement; item: WireItem; slots: Map<st
 const template = document.createElement('template');
 const folds = new Map<string, boolean>();
 const texts = new Map<string, { render: ReturnType<typeof markdown>; view: HTMLElement; blocks: { block: ReturnType<ReturnType<typeof markdown>>[number]; nodes: ChildNode[] }[]; final?: boolean; source?: string; annotationItem?: Extract<WireItem, { kind: 'annotations' }> }>();
-let state: State = { bash: [], pi: { type: 'starting' }, working: false, aborted: false, name: '', levels: [], cwd: '', home: '', statuses: {}, queue: { steering: [], followUp: [] }, dialogs: [] };
+let state: State = { bash: [], compaction: 'idle', pi: { type: 'starting' }, working: false, aborted: false, name: '', levels: [], cwd: '', home: '', statuses: {}, queue: { steering: [], followUp: [] }, dialogs: [] };
 let epoch = '', after = -1, first: number | undefined, more = false, paging = false, follow = true, lastScrollTop = 0, delay = 200, scrollFrame: number | undefined;
 let escaped = false, dialogId: string | undefined;
 let submitting = false, editorId: string | undefined, dialogTimer: number | undefined, shownExit: number | undefined, pickerButton: HTMLElement | undefined, shownQueue: string | undefined, shownStatuses: string | undefined;
@@ -56,6 +55,7 @@ const editor = composer(element('prompt'), {
   input(user) { if (user) escaped = false; refreshComposer(); },
   send(mode) { void send(mode); },
   quit() { if (!draft.count && !draft.busy) void fetchJSON('/quit'); },
+  takeBack() { if (state.pi.type === 'ready' && !state.dialogs.length && !submitting) void takeBack().catch(reportError); },
 });
 window.composer = editor;
 const composerBlocked = () => state.pi.type !== 'ready' || state.dialogs.length > 0;
@@ -135,6 +135,13 @@ function reconcileJobs(seq: number) {
   if (group.view.classList.contains('open')) showJob(group);
 }
 
+function previewFile(label: HTMLElement, url: string) {
+  label.classList.add('preview-file');
+  let press: { x: number; y: number } | undefined;
+  label.onmousedown = event => { press = undefined; if (event.button === 0 && previewModifiers(event)) { event.preventDefault(); press = { x: event.clientX, y: event.clientY }; } };
+  label.onclick = event => { const start = press; press = undefined; if (start && Math.hypot(event.clientX - start.x, event.clientY - start.y) < 3) { event.preventDefault(); event.stopPropagation(); preview(url, label, 'file', composerFocus); } };
+}
+const quantity = (value: number) => value >= 1000000 ? Number((value / 1000000).toFixed(1)) + 'M' : value >= 1000 ? Number((value / 1000).toFixed(1)) + 'k' : String(value);
 function timestamp(at: number) {
   const date = new Date(at), today = new Date();
   const time = date.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
@@ -319,10 +326,7 @@ function run(input: Step[]) {
     if (images) { if (block.type === 'tool' && block.name === 'read') images.view.classList.add('large'); detail.append(images.view); }
     fold(child, key, row, detail, images?.load);
     if (step.file) {
-      label.classList.add('preview-file');
-      let press: { x: number; y: number } | undefined;
-      label.onmousedown = event => { press = undefined; if (event.button === 0 && previewModifiers(event)) { event.preventDefault(); press = { x: event.clientX, y: event.clientY }; } };
-      label.onclick = event => { const start = press; press = undefined; if (start && Math.hypot(event.clientX - start.x, event.clientY - start.y) < 3) { event.preventDefault(); event.stopPropagation(); preview('/steps/' + step.item.seq + '/' + step.index + '/file', label, 'file', composerFocus); } };
+      previewFile(label, '/steps/' + step.item.seq + '/' + step.index + '/file');
     }
     children.append(child);
   }
@@ -359,6 +363,10 @@ function reconcileRuns(seq: number) {
     if (item.error) flush();
   }
   flush();
+}
+function noteRow(view: HTMLElement, children: HTMLElement[], text: string | HTMLElement, at: number, level = '') {
+  view.className = 'note' + (level ? ' ' + level : '');
+  children.push(typeof text === 'string' ? node('span', text, 'tx') : text, node('time', timestamp(at)));
 }
 function put(item: WireItem) {
   items.set(item.seq, item);
@@ -398,7 +406,41 @@ function put(item: WireItem) {
       const paths = item.attachments.filter(file => file.kind === 'file').map(file => file.path);
       if (paths.length) text.append(node('div', paths.join('\n'), 'paths'));
       children.push(time, text);
-    } else if (item.kind === 'notify') { view.className = 'note ' + item.level; children.push(node('span', item.text.text, 'tx'), node('time', timestamp(item.at))); }
+    } else if (item.kind === 'notify') noteRow(view, children, item.text.text, item.at, item.level);
+    else if (item.kind === 'command') {
+      const result = item.result;
+      if (result.type === 'copy' || result.type === 'export') {
+      view.className = 'note';
+      const text = node('span', undefined, 'tx');
+      if (result.type === 'copy') text.textContent = 'copied the last reply · ' + quantity(result.characters) + ' characters';
+      else {
+        const path = node('span', result.path, 'path preview-file'); text.append(node('span', 'exported '), path);
+        previewFile(path, '/steps/' + item.seq + '/0/file');
+      }
+      noteRow(view, children, text, item.at);
+      } else if (result.type === 'compaction' && result.state.type !== 'done') {
+        const text = node('span', undefined, 'tx');
+        if (result.state.type === 'running') text.append(node('span', undefined, 'spin'), node('span', 'compacting…'));
+        else text.textContent = result.state.type === 'cancelled' ? 'compaction cancelled' : 'compact failed: ' + result.state.message;
+        noteRow(view, children, text, item.at, result.state.type === 'failed' ? 'error' : '');
+      } else {
+        view.className = 'info' + (view.classList.contains('open') ? ' open' : '');
+        const line = node('div', undefined, 'line'), body = node('div', undefined, 'body'), caption = node('span', undefined, 'tx');
+        line.append(node('span', '›', 'chev'));
+        if (result.type === 'session') {
+          const stats = result.stats;
+          caption.append(node('span', result.name, 'nm'), node('span', ' · ' + stats.totalMessages + ' messages · $' + stats.cost.toFixed(2)));
+          const grid = node('div', undefined, 'kv');
+          for (const [key, value] of [['name', result.name], ['id', stats.sessionId], ['file', stats.sessionFile ?? '—'], ['model', result.model ? result.model.id + (result.thinking ? ' · thinking ' + result.thinking : '') : '—'], ['messages', stats.totalMessages + ' · ' + stats.userMessages + ' user · ' + stats.assistantMessages + ' assistant · ' + stats.toolResults + ' tool'], ['tokens', quantity(stats.tokens.input) + ' in · ' + quantity(stats.tokens.output) + ' out · ' + quantity(stats.tokens.cacheRead) + ' cache read · ' + quantity(stats.tokens.cacheWrite) + ' cache write'], ['cost', '$' + stats.cost.toFixed(2)], ['context', stats.contextUsage?.tokens === null || !stats.contextUsage ? '—' : quantity(stats.contextUsage.tokens) + ' / ' + quantity(stats.contextUsage.contextWindow) + (stats.contextUsage.percent === null ? '' : ' · ' + Math.round(stats.contextUsage.percent) + '%')]]) grid.append(node('b', String(key)), node('span', String(value)));
+          body.append(grid);
+        } else if (result.type === 'compaction' && result.state.type === 'done') {
+          caption.append(node('span', 'compacted', 'nm'), node('span', ' · ' + quantity(result.state.before) + ' → ' + (result.state.after === undefined ? '—' : quantity(result.state.after)) + ' tokens'));
+          body.append(node('p', result.state.summary));
+        }
+        line.append(caption, node('time', timestamp(item.at))); line.onclick = () => view.classList.toggle('open');
+        children.push(line, body);
+      }
+    }
     else if (item.kind === 'agent') { view.className = ''; children.push(agentCard(item, item.at, 'agent:' + item.seq, slots)); }
     else if (item.kind === 'annotations') { view.hidden = true; }
     else if (item.kind === 'job') { view.className = ''; const saved = previous?.slots.get('job'); if (saved?.type === 'job') slots.set('job', saved); }
@@ -485,7 +527,7 @@ function refreshComposer() {
   const running = state.bash.some(item => item.phase !== 'completed') && !working && editor.empty();
   editor.running(running);
   if (!editor.bash() && element('error').textContent === 'a command takes no attachments') { clearTimeout(attachmentRefusalTimer); element('error').textContent = ''; }
-  editor.placeholder(running ? 'running… ⎋ cancels' : draft.hover ? 'Drop to attach' : hasExited() ? 'pi has exited' : working ? 'Steer koa…' : 'Message koa…');
+  editor.placeholder(running ? 'running… ⎋ cancels' : draft.hover ? 'Drop to attach' : hasExited() ? 'pi has exited' : working && state.compaction !== 'running' ? 'Steer koa…' : 'Message koa…');
   status();
 }
 function status() {
@@ -494,7 +536,7 @@ function status() {
   const bang = editor.bash(), running = state.bash.find(item => item.phase !== 'completed');
   label.classList.toggle('err', !!bang && draft.count > 0);
   label.title = bang && draft.count ? 'remove the attachments' : '';
-  const word = cause ? (cause.kind === 'code' ? 'exited' : cause.kind) + ' ' + cause.value : waiting ? 'waiting' : state.pi.type === 'starting' ? 'starting' : state.working ? 'working' : running ? 'running' : bang ? bang.excludeFromContext ? 'run, quiet' : 'run' : state.aborted ? 'aborted' : 'idle';
+  const word = cause ? (cause.kind === 'code' ? 'exited' : cause.kind) + ' ' + cause.value : waiting ? 'waiting' : state.pi.type === 'starting' ? 'starting' : state.working ? state.compaction === 'running' ? 'compacting' : 'working' : running ? 'running' : bang ? bang.excludeFromContext ? 'run, quiet' : 'run' : state.aborted ? 'aborted' : 'idle';
   label.textContent = word;
   if (state.pi.type === 'ready' && (state.working || running) && !waiting) {
     const ms = Math.max(0, Math.floor((Date.now() - (state.working ? state.since ?? Date.now() : running?.started ?? Date.now())) / 1000)) * 1000;
@@ -597,15 +639,19 @@ function queue() {
     catch (error) { reportError(error); back.disabled = false; }
   };
 }
-async function takeBack() {
-  const result = await fetchJSON('/queue/clear');
-  const entries = [...result.steering, ...result.followUp];
-  editor.setText([editor.text(), ...entries.map(entry => entry.text)].filter(Boolean).join('\n\n'));
-  draft.restore(entries.flatMap(entry => entry.attachments));
-  refreshComposer(); editor.focus();
+let takingBack: Promise<void> | undefined;
+function takeBack(): Promise<void> {
+  if (state.pi.type !== 'ready' || state.dialogs.length) return Promise.resolve();
+  return takingBack ??= (async () => {
+    const result = await fetchJSON('/queue/clear');
+    const entries = [...result.steering, ...result.followUp];
+    editor.setText([editor.text(), ...entries.map(entry => entry.text)].filter(Boolean).join('\n\n'));
+    draft.restore(entries.flatMap(entry => entry.attachments));
+    refreshComposer(); editor.focus();
+  })().finally(() => { takingBack = undefined; });
 }
 async function stop() {
-  if (submitting) return;
+  if (submitting || state.pi.type !== 'ready' || state.dialogs.length) return;
   submitting = true;
   try { if (!state.bash.some(item => item.phase === 'running')) await takeBack(); await fetchJSON('/abort'); }
   catch (error) { reportError(error); }
@@ -639,18 +685,22 @@ function positionPicker() {
   host.style.bottom = (innerHeight - rect.top + 8) + 'px';
   host.style.maxHeight = Math.max(0, rect.top - 16) + 'px';
 }
-async function picker(kind: 'model' | 'thinking') {
+async function picker(kind: 'model' | 'thinking', search = '') {
   if (state.pi.type !== 'ready') return;
   const trigger = element(kind), host = element('picker');
   if (pickerButton === trigger) { closePicker(); return; }
   closePicker();
-  const choices: ({ kind: 'model'; id: string; provider: string } | { kind: 'thinking'; id: string })[] = [];
+  let choices: ({ kind: 'model'; id: string; provider: string } | { kind: 'thinking'; id: string })[] = [];
   try {
     if (kind === 'model') {
       choices.push(...(await fetchJSON('/models', undefined, 'GET')).models.map(model => ({ kind: 'model' as const, id: model.id, provider: model.provider })));
       if (getComputedStyle(element('thinking')).display === 'none') choices.push(...state.levels.map(id => ({ kind: 'thinking' as const, id })));
     } else choices.push(...state.levels.map(id => ({ kind: 'thinking' as const, id })));
   } catch (error) { reportError(error); return; }
+  if (search) {
+    const query = search.toLowerCase();
+    choices = choices.filter(choice => (choice.kind === 'model' ? choice.provider + '/' + choice.id : choice.id).toLowerCase().includes(query));
+  }
   pickerButton = trigger; trigger.classList.add('pick'); host.replaceChildren(); host.hidden = false; host.tabIndex = -1;
   positionPicker();
   host.append(node('div', kind === 'model' ? 'Model' : 'Thinking', 'ph'));
@@ -802,13 +852,22 @@ async function older() {
     }
   } catch (error) { reportError(error); } finally { paging = false; }
 }
-function canSend(text: string) { const bang = editor.bash(); if (bang) return !!bang.command.trim() && !state.bash.some(item => item.phase !== 'completed') && !draft.busy && !draft.count; return !!nameCommand(text) || !draft.busy && draft.count <= ATTACHMENT_LIMITS.files && (!!text.trim() || draft.count > 0); }
+function canSend(text: string) { if (state.compaction === 'running') return false; const bang = editor.bash(); if (bang) return !!bang.command.trim() && !state.bash.some(item => item.phase !== 'completed') && !draft.busy && !draft.count; return /^\/\S+/.test(text.trim()) || !draft.busy && draft.count <= ATTACHMENT_LIMITS.files && (!!text.trim() || draft.count > 0); }
 function reportError(error: unknown) { element('error').textContent = error instanceof Error ? error.message : String(error); }
 async function send(mode: PromptMode = 'prompt') {
-  const text = editor.text(), name = nameCommand(text), files = name ? [] : draft.files;
+  const text = editor.text(), files = draft.files;
   if (!canSend(text) || submitting) return;
   submitting = true;
-  try { await fetchJSON('/prompt', { text, mode, attachments: files.map(file => file.id) }); if (!name) draft.sent(files); if (editor.text() === text) editor.setText(''); refreshComposer(); focusComposer(); element('error').textContent = ''; }
+  try {
+    const result = await fetchJSON('/prompt', { text, mode, attachments: files.map(file => file.id) });
+    switch (result.disposition) {
+      case 'started': case 'queued': draft.sent(files); break;
+      case 'handled': break;
+    }
+    if (editor.text() === text) editor.setText('');
+    refreshComposer(); focusComposer(); element('error').textContent = '';
+    if (result.disposition === 'handled' && result.action.type === 'picker') await picker(result.action.kind, result.action.search);
+  }
   catch (error) { reportError(error); }
   finally { submitting = false; }
 }

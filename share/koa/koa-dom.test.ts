@@ -4,7 +4,8 @@ import { test } from "node:test";
 import { runInNewContext } from "node:vm";
 import { stripTypeScriptTypes } from "node:module";
 import { markdown, markdownLine } from "./page/markdown.ts";
-import { bashCommand, nameCommand } from "./prompt.ts";
+import { bashCommand } from "./prompt.ts";
+import { promptHistory } from './page/history.ts';
 import { ATTACHMENT_LIMITS, isAttachment, pathArg } from "./koa-records.ts";
 import { jobEndText } from "../pi/records.ts";
 import type { PromptMode } from "./koa-records.ts";
@@ -73,7 +74,7 @@ async function page() {
       placeholder(text: string) { content.placeholder = text; },
     };
   };
-  const context = { getComputedStyle: () => ({ display: 'block' }), composer, bashCommand, nameCommand, ATTACHMENT_LIMITS, isAttachment, pathArg, jobEndText, AbortController, AbortSignal, CustomEvent: class { type: string; detail?: unknown; constructor(type: string, options?: { detail?: unknown }) { this.type = type; this.detail = options?.detail; } }, Node, Element: Node, HTMLElement: Node, HTMLButtonElement: Node, HTMLImageElement: Node, markdown, markdownLine, document, window: { ko: {}, addEventListener(type: string, handler: (event?: unknown) => void) { windowListeners.set(type, handler); } }, innerWidth: 980, innerHeight: 560, Event: class { type: string; constructor(type: string) { this.type = type; } }, console, setInterval() {}, clearInterval() {}, setTimeout, clearTimeout, requestAnimationFrame() {}, fetch: async () => ({ ok: true, json: async () => ({}) }) };
+  const context = { getComputedStyle: () => ({ display: 'block' }), composer, bashCommand, ATTACHMENT_LIMITS, isAttachment, pathArg, jobEndText, AbortController, AbortSignal, CustomEvent: class { type: string; detail?: unknown; constructor(type: string, options?: { detail?: unknown }) { this.type = type; this.detail = options?.detail; } }, Node, Element: Node, HTMLElement: Node, HTMLButtonElement: Node, HTMLImageElement: Node, markdown, markdownLine, document, window: { ko: {}, addEventListener(type: string, handler: (event?: unknown) => void) { windowListeners.set(type, handler); } }, innerWidth: 980, innerHeight: 560, Event: class { type: string; constructor(type: string) { this.type = type; } }, console, setInterval() {}, clearInterval() {}, setTimeout, clearTimeout, requestAnimationFrame() {}, fetch: async () => ({ ok: true, json: async () => ({}) }) };
   const answersSource = stripTypeScriptTypes(await readFile(new URL('page/answers.ts', import.meta.url), 'utf8')).replace(/^export /gm, '');
   const annotationsSource = stripTypeScriptTypes(await readFile(new URL('page/annotations.ts', import.meta.url), 'utf8')).replace(/^import .*;\n/gm, '').replace(/^export /gm, '');
   Object.assign(context, runInNewContext(answersSource + '\n' + annotationsSource + '\n({annotations,update})', context));
@@ -164,6 +165,98 @@ test('Escape cancels a command before taking back and aborting a concurrent turn
   assert.deepEqual(requests, ['/abort', '/queue/clear', '/abort']);
 });
 
+test('prompt history restores the draft selection and exits after an edit', async () => {
+  let loads = 0;
+  const history = promptHistory(async () => { loads++; return ['newest', 'older']; });
+  const draft = { text: 'unfinished draft', anchor: 2, head: 6 };
+  assert.deepEqual(await history.move(-1, draft), { text: 'newest', anchor: 0, head: 0 });
+  assert.deepEqual(await history.move(-1, draft), { text: 'older', anchor: 0, head: 0 });
+  assert.deepEqual(await history.move(1, draft), { text: 'newest', anchor: 6, head: 6 });
+  assert.deepEqual(await history.move(1, draft), draft);
+  await history.move(-1, draft); history.reset();
+  assert.equal(await history.move(1, draft), undefined);
+  assert.equal(loads, 2);
+});
+
+test('built-in results keep attachments and open the requested picker', async () => {
+  const f = await page();
+  const result = await f.run(`
+    state={...state,pi:{type:'ready'},levels:['low','high']};
+    draft.restore([{id:'file',name:'notes',path:'/tmp/notes',size:2,kind:'file',origin:'path'}]);
+    editor.setText('/thinking');
+    fetchJSON=async()=>({disposition:'handled',action:{type:'picker',kind:'thinking',search:''}});
+    send().then(()=>[draft.count,editor.text(),element('picker').hidden]);
+  `);
+  assert.deepEqual(Array.from(result), [1, '', false]);
+});
+
+test('take-back shortcut shares one in-flight request and never aborts', async () => {
+  const f = await page();
+  const result = await f.run(`
+    state={...state,pi:{type:'ready'}}; editor.setText('draft');
+    const paths=[];let release;
+    fetchJSON=path=>{paths.push(path);return new Promise(resolve=>{release=resolve})};
+    const requestOne=takeBack(),requestTwo=takeBack();
+    release({steering:[{text:'steer',attachments:[]}],followUp:[{text:'later',attachments:[]}]});
+    Promise.all([requestOne,requestTwo]).then(()=>[paths.join(','),editor.text()]);
+  `);
+  assert.deepEqual(Array.from(result), ['/queue/clear', 'draft\n\nsteer\n\nlater']);
+});
+
+test('an extension-handled prompt retains its attachments with a none action', async () => {
+  const f = await page();
+  const result = await f.run(`
+    state={...state,pi:{type:'ready'}};
+    draft.restore([{id:'file',name:'notes',path:'/tmp/notes',size:2,kind:'file',origin:'path'}]);
+    editor.setText('/custom');fetchJSON=async()=>({disposition:'handled',action:{type:'none'}});
+    send().then(()=>[draft.count,editor.text(),element('error').textContent]);
+  `);
+  assert.deepEqual(Array.from(result), [1, '', '']);
+});
+
+test('Return during compaction keeps the draft and attachments without a request', async () => {
+  const f = await page();
+  const result = await f.run(`
+    state={...state,pi:{type:'ready'},working:true,compaction:'running'};
+    draft.restore([{id:'file',name:'notes',path:'/tmp/notes',size:2,kind:'file',origin:'path'}]);
+    editor.setText('keep this draft'); let calls=0;fetchJSON=async()=>{calls++;return {}};
+    refreshComposer();send().then(()=>[calls,editor.text(),draft.count]);
+  `);
+  assert.deepEqual(Array.from(result), [0, 'keep this draft', 1]);
+  assert.equal(f.prompt()?.placeholder, 'Message koa…');
+});
+
+test('Escape aborts compaction after the slash command has returned', async () => {
+  const f = await page();
+  const result = await f.run(`
+    state={...state,pi:{type:'ready'}};editor.setText('/compact');const requests=[];
+    fetchJSON=async path=>{requests.push(path);return path==='/prompt'?{disposition:'handled',action:{type:'none'}}:path==='/queue/clear'?{steering:[],followUp:[]}:{}};
+    send().then(async()=>{state={...state,working:true,compaction:'running'};await stop();return requests.join(',')});
+  `);
+  assert.equal(result, '/prompt,/queue/clear,/abort');
+});
+
+test('cancelled compaction is a muted notice', async () => {
+  const f = await page();
+  const result = f.run(`
+    put({kind:'command',seq:0,at:1,final:true,result:{type:'compaction',state:{type:'cancelled'}}});
+    [views.get(0).view.className,views.get(0).view.children[0].textContent];
+  `);
+  assert.deepEqual(Array.from(result), ['note', 'compaction cancelled']);
+});
+
+test('command results use notice lines and expandable session information', async () => {
+  const f = await page();
+  const result = f.run(`
+    put({kind:'command',seq:0,at:1,final:true,result:{type:'copy',characters:2100}});
+    put({kind:'command',seq:1,at:1,final:false,result:{type:'compaction',state:{type:'running'}}});
+    put({kind:'command',seq:2,at:1,final:true,result:{type:'session',name:'session',stats:{sessionId:'id',totalMessages:212,tokens:{input:1,output:2,cacheRead:3,cacheWrite:4},cost:1.42}}});
+    const info=views.get(2).view;info.children[0].onclick();
+    [views.get(0).view.children[0].textContent,views.get(1).view.className,info.className];
+  `);
+  assert.deepEqual(Array.from(result), ['copied the last reply · 2.1k characters', 'note', 'info open']);
+});
+
 test('annotation map attaches a late reply, hides items and re-renders final text only for a new annotation item', async () => {
   const fixture = await page();
   const result = fixture.run(`
@@ -182,13 +275,13 @@ test('annotation map attaches a late reply, hides items and re-renders final tex
 
 test('/name keeps draft attachments for the next prompt', async () => {
   const app = await page(), requests: { text: string; attachments: string[] }[] = [];
-  app.context.fetch = async (path?: string, options?: { body?: string }) => { assert.equal(path, '/prompt'); requests.push(JSON.parse(options?.body ?? '{}')); return { ok: true, json: async () => ({ disposition: 'handled' }) }; };
+  app.context.fetch = async (path?: string, options?: { body?: string }) => { assert.equal(path, '/prompt'); requests.push(JSON.parse(options?.body ?? '{}')); return { ok: true, json: async () => requests.length === 1 ? ({ disposition: 'handled', action: { type: 'none' } }) : ({ disposition: 'started' }) }; };
   app.run("state={...state,pi:{type:'ready'}};draft.restore([{id:'file',name:'note.txt',path:'/tmp/note.txt',origin:'path',kind:'file',size:4}]);editor.setText('/name saved')");
   app.handlers()?.send('prompt'); await new Promise<void>(resolve => setImmediate(resolve));
   assert.equal(app.elements.get('attachments')?.children.length, 2); assert.equal(app.text(), '');
   const prompt = app.prompt(); assert.ok(prompt); prompt.value = 'Review';
   app.handlers()?.send('prompt'); await new Promise<void>(resolve => setImmediate(resolve));
-  assert.deepEqual(requests.map(request => [request.text, request.attachments]), [['/name saved', []], ['Review', ['file']]]);
+  assert.deepEqual(requests.map(request => [request.text, request.attachments]), [['/name saved', ['file']], ['Review', ['file']]]);
   assert.equal(app.elements.get('attachments')?.children.length, 1);
 });
 
@@ -612,7 +705,7 @@ test("Escape takes back queued work before aborting", { timeout: 1000 }, async (
     else throw Error("Unexpected request: " + path);
     return { ok: true, json: async () => data };
   };
-  app.run("state={...state,working:true,dialogs:[],queue:{steering:[{text:'first queued',attachments:[]}],followUp:[{text:'second queued',attachments:[]}]}}");
+  app.run("state={...state,pi:{type:'ready'},working:true,dialogs:[],queue:{steering:[{text:'first queued',attachments:[]}],followUp:[{text:'second queued',attachments:[]}]}}");
   app.listeners.get("keydown")?.({ key: "Escape", preventDefault() {} });
   await done;
   assert.deepEqual(commands, ["clear_queue", "abort"]);
