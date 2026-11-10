@@ -39,10 +39,18 @@ if(JSON.stringify(args.slice(2,16))!==JSON.stringify(['--max-results','100','--t
 if(args[0]!=='--base-directory'||!fs.statSync(args[1]).isDirectory())process.exit(92);
 let rest=args.slice(16),shallow=rest[0]==='--max-depth';if(shallow){if(rest[1]!=='1')process.exit(93);rest=rest.slice(2)}
 if(rest[0]==='--full-path')rest.shift();if(rest.length&&rest.shift()!=='--')process.exit(95);if(rest.length>1)process.exit(94);let query=new RegExp(rest[0]||'');
-let paths=args[1].endsWith('/a b')?['inner.txt','child/']:['a/','a.txt','a b/','a b.txt','a/nested.txt','nested/missing/a.txt','.git/config','--help.txt',...Array.from({length:25},(_,i)=>'z'+String(i).padStart(2,'0')+'.txt')];
+let paths=args[1].endsWith('/a b')?['inner.txt','child/']:['a/','a.txt','a b/','a b.txt','a/nested.txt','nested/missing/a.txt','.git/config','--help.txt',"a'$(touch x);*.txt",...Array.from({length:25},(_,i)=>'z'+String(i).padStart(2,'0')+'.txt')];
 console.log(paths.filter(p=>(!shallow||p.replace(/\\/$/,'').split('/').length===1)&&query.test(p)).join('\\n'));
 `, { mode: 0o700 });
   const options = { cwd, fd, signal: new AbortController().signal, commands: async () => [] };
+  const shell = await complete('! cat ./a', 9, options);
+  assert.equal(shell.from, 6);
+  assert.ok(shell.options.some(item => item.kind === 'directory' && item.insert === './a/'));
+  assert.ok(shell.options.some(item => item.insert === "'./a b.txt' "));
+  assert.ok(shell.options.some(item => item.insert === "'./a'\\''$(touch x);*.txt' "));
+  assert.deepEqual((await complete('! cat @a', 8, options)).options, []);
+  assert.equal((await complete('! ./a', 5, options)).from, 2);
+  assert.deepEqual((await complete('!/review', 8, options)).options.filter(item => item.kind === 'command'), []);
   const all = await complete("@", 1, options);
   assert.equal(all.options.length, 20);
   assert.deepEqual(all.options.slice(0, 4).map(item => item.label), ["a/", "a b/", "a.txt", "a b.txt"]);

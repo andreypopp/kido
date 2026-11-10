@@ -6,14 +6,14 @@ import type { Attachment } from '../koa-records.ts';
 type Chip = { view: HTMLDivElement; icon: HTMLSpanElement; name: HTMLSpanElement; detail: HTMLSpanElement; body: HTMLButtonElement; controller: AbortController; state: { type: 'pending'; name: string; size: number; received: number; id?: string } | { type: 'ready'; file: Attachment } | { type: 'refused'; name: string; reason: string } };
 const sizeLabel = (size: number) => size >= 1048576 ? (size / 1048576).toFixed(size >= 10 * 1048576 ? 0 : 1) + ' MB' : size >= 1024 ? Math.ceil(size / 1024) + ' KB' : size + ' B';
 
-export function attach(host: HTMLElement, changed: () => void, displayPath: (value: string) => string) {
+export function attach(host: HTMLElement, changed: () => void, displayPath: (value: string) => string, blocked: () => boolean, onRefused: () => void) {
   const chips: Chip[] = [];
   const notice = document.createElement('div'); notice.className = 'attach-notice'; notice.hidden = true; host.append(notice);
   let timer: ReturnType<typeof setTimeout> | undefined, hover = false, depth = 0;
   const refresh = () => { host.hidden = chips.length === 0 && notice.hidden; changed(); };
   const hovering = (value: boolean) => { if (hover !== value) { hover = value; changed(); } };
   const beginDrop = () => { clearTimeout(timer); notice.hidden = true; depth = 0; hovering(false); refresh(); };
-  const refuseFolders = () => { notice.textContent = 'Folders are not attached'; notice.hidden = false; clearTimeout(timer); timer = setTimeout(() => { notice.hidden = true; refresh(); }, 4000); refresh(); };
+  const refuse = (message: string) => { notice.textContent = message; notice.hidden = false; clearTimeout(timer); timer = setTimeout(() => { notice.hidden = true; refresh(); }, 4000); refresh(); };
   const deleteFile = (id: string) => { void fetchJSON('/attachments/' + id + '/delete').catch(() => {}); };
   const remove = (chip: Chip, erase = true) => {
     const index = chips.indexOf(chip); if (index < 0) return;
@@ -80,19 +80,21 @@ export function attach(host: HTMLElement, changed: () => void, displayPath: (val
     const transfer = event.dataTransfer;
     if (!transfer.files.length && !Array.from(transfer.items).some(item => item.webkitGetAsEntry?.()?.isDirectory)) return false;
     event.preventDefault();
+    if (blocked()) { beginDrop(); onRefused(); return true; }
     if (window.ko?.local) { depth = 0; hovering(false); return true; }
     beginDrop();
     const files: File[] = []; let refused = false;
     const items = Array.from(transfer.items).filter(item => item.kind === 'file');
     if (items.length) for (const item of items) { if (item.webkitGetAsEntry?.()?.isDirectory) refused = true; else { const file = item.getAsFile(); if (file) files.push(file); } }
     else files.push(...Array.from(transfer.files));
-    if (refused) refuseFolders();
+    if (refused) refuse('Folders are not attached');
     for (const file of files.slice(0, ATTACHMENT_LIMITS.files + 1)) void add(file);
     return true;
   };
   const paste = (event: ClipboardEvent) => {
     if (event.defaultPrevented || !event.clipboardData?.files.length) return false;
     event.preventDefault();
+    if (blocked()) { onRefused(); return true; }
     for (const file of Array.from(event.clipboardData.files).slice(0, ATTACHMENT_LIMITS.files + 1)) void add(file);
     return true;
   };
@@ -105,7 +107,8 @@ export function attach(host: HTMLElement, changed: () => void, displayPath: (val
     if (!window.ko?.local || !(event instanceof CustomEvent)) return;
     const value: unknown = event.detail;
     if (!value || typeof value !== 'object' || !('files' in value) || !Array.isArray(value.files) || value.files.length > ATTACHMENT_LIMITS.files || !value.files.every(file => isAttachment(file) && file.origin === 'path') || !('refused' in value) || typeof value.refused !== 'boolean') return;
-    beginDrop(); if (value.refused) refuseFolders();
+    beginDrop(); if (blocked()) { onRefused(); for (const file of value.files) deleteFile(file.id); return; }
+    if (value.refused) refuse('Folders are not attached');
     for (const file of value.files) create({ type: 'ready', file });
   });
   return {

@@ -7,7 +7,7 @@ import SidebarFeed
 @testable import Kido
 
 extension VisualTests {
-    private enum KoaScenario { case transcript, dialogs, controls, exit, feed, completion, markdown, media, attachments, userMarkdown, preview, lightbox, agents, composer, questions }
+    private enum KoaScenario { case transcript, dialogs, controls, exit, feed, completion, markdown, media, attachments, userMarkdown, preview, lightbox, agents, composer, questions, bang }
     func testKoaWebviewSubmitFollowsClampedBottom() async throws {
         WebviewPaneView.visualInitialScript = "window.requestAnimationFrame=callback=>setTimeout(()=>callback(performance.now()),16);window.cancelAnimationFrame=clearTimeout;const Source=EventSource;window.EventSource=class extends Source{constructor(...args){super(...args);window.scrollSource=this}};"
         defer { WebviewPaneView.visualInitialScript = nil }
@@ -154,6 +154,12 @@ extension VisualTests {
         try await koUntil(directory.path, "/panes/\(pane.pane)/screen", contains: "z")
     }
 
+    func testKoaWebviewBangWide() async throws {
+        try await koaWebview(width: 980, height: 220, scenario: .bang, captures: ["bang", "bang2", "bang-attachments", "bang-drop", "bang-runs", "bang-done", "bang-error", "bang-cancelled", "bang-truncated", "bang-quiet", "bang-running", "bang-typing", "bang-busy", "bang-completed"])
+    }
+    func testKoaWebviewBangNarrow() async throws {
+        try await koaWebview(width: 470, height: 220, scenario: .bang, captures: ["narrow-bang", "narrow-bang2", "narrow-bang-attachments", "narrow-bang-drop", "narrow-bang-runs", "narrow-bang-done", "narrow-bang-error", "narrow-bang-cancelled", "narrow-bang-truncated", "narrow-bang-quiet", "narrow-bang-running", "narrow-bang-typing", "narrow-bang-busy", "narrow-bang-completed"])
+    }
     func testKoaWebviewComposerFootIdleWide() async throws {
         try await koaWebview(width: 980, height: 300, scenario: .composer, captures: ["foot-idle"])
     }
@@ -710,6 +716,38 @@ extension VisualTests {
             if name == "exited" { steps.append(["type": "stderr", "text": "Killed: 9\n"]); steps.append(["type": "exit", "code": 137]) }
             if name == "picker" { steps.append(["type": "wait", "command": "get_available_models", "data": ["models": [["id": "claude-opus-5-5", "provider": "anthropic"], ["id": "claude-sonnet-5-5", "provider": "anthropic"], ["id": "claude-fable-5-1", "provider": "claude-bridge"], ["id": "gpt-6.1-sol", "provider": "openai-codex"], ["id": "gpt-6-astra", "provider": "openai-codex"]]]]) }
         }
+        if scenario == .bang {
+            var person = user; person["content"] = [["type": "text", "text": "Verify the sidebar unit"]]
+            steps = Array(steps.prefix(3)); steps[1] = ["type": "respond", "command": "get_messages", "data": ["messages": [person]]]
+            let commands: [(String, String, Int, Bool, Bool, Bool)] = [
+                ("make checks DRY=1", "plan: lint-sh unit(ko_client) app visual(SidebarTests)\nunit: cargo test -p ko_client\napp: make -C app test\nvisual: make -C app visual VISUAL_ONLY=SidebarTests", 0, false, false, false),
+                ("git status --short", " M app/App/SidebarRow.swift\n?? app/Tests/__Snapshots__/SidebarTests/testIndicatorRight.1.png", 0, false, false, true),
+                ("make verify STAGES=unit", "test result: FAILED. 1 failed; 212 passed\n---- model::place stays on the host pane ----\nassertion `left == right` failed\n  left: Some(Runtime(\"tools\"))\n right: None\nmake: *** [verify] Error 2", 2, false, false, false),
+                ("make e2e", "running 64 tests\n......................", 0, true, false, false),
+                ("find . -type f", "./AGENTS.md\n./Cargo.toml\n./Makefile\n./README.md", 0, false, true, false),
+            ]
+            var messages: [[String: Any]] = []
+            for command in commands {
+                var message: [String: Any] = ["role": "bashExecution", "command": command.0, "output": command.1, "exitCode": command.2, "cancelled": command.3, "truncated": command.4, "excludeFromContext": command.5, "timestamp": stamp + messages.count + 1]
+                if command.4 { message["fullOutputPath"] = "/tmp/pi-bash-abc123.log" }
+                messages.append(message)
+            }
+            prompt([["type": "compaction_end"]])
+            let allMessages: [[String: Any]] = [person] + messages
+            steps.append(["type": "respond", "command": "get_messages", "data": ["messages": allMessages]])
+            for index in [0, 2, 3, 4, 1] {
+                prompt([["type": "compaction_end"]])
+                let oneMessage: [[String: Any]] = [person, messages[index]]
+                steps.append(["type": "respond", "command": "get_messages", "data": ["messages": oneMessage]])
+            }
+            prompt([["type": "compaction_end"]])
+            steps.append(["type": "respond", "command": "get_messages", "data": ["messages": [person]]])
+            steps.append(["type": "wait", "command": "bash", "gate": true, "events": [["type": "bash_execution_update", "delta": "running 212 tests\ntest model::place_stays_on_host ... ok\ntest model::runtime_name ... ok\n......................"]], "data": ["output": "cancelled", "cancelled": true, "truncated": false]])
+            let busyReply: [String: Any] = assistant([["type": "text", "text": "The sweep needs to distinguish a start failure from a program exit. Checking the close policy."]])
+            let busyEvents: [[String: Any]] = [["type": "agent_start"], ["type": "message_start", "message": busyReply]]
+            prompt(busyEvents)
+            steps.append(["type": "wait", "command": "bash", "gate": true, "events": [["type": "bash_execution_update", "delta": " M app/App/SidebarRow.swift\n?? app/Tests/__Snapshots__/SidebarTests/testIndicatorRight.1.png"]], "data": ["output": " M app/App/SidebarRow.swift\n?? app/Tests/__Snapshots__/SidebarTests/testIndicatorRight.1.png", "exitCode": 0, "cancelled": false, "truncated": false]])
+        }
         if scenario == .questions {
             let reply = """
             The sidebar unit is verified: fmt, clippy, lint, unit, e2e and the TypeScript suite pass. Two things before I push.
@@ -877,6 +915,58 @@ extension VisualTests {
         }
         let idleHint = try await webviewJS(web, "document.querySelector('#hint .spin')===null")
         XCTAssertEqual(idleHint, "true")
+        if scenario == .bang {
+            let prefix = width < 750 ? "narrow-" : ""
+            func resize(_ height: CGFloat) { var frame = window.frame; frame.size.height = height; window.setFrame(frame, display: false) }
+            _ = try await webviewJS(web, "(()=>{window.composer.setText('!make checks DRY=1');return true})()")
+            try await capture(prefix + "bang")
+            _ = try await webviewJS(web, "(()=>{window.composer.setText('!!git status --short');return true})()")
+            try await capture(prefix + "bang2")
+            resize(300)
+            _ = try await webviewJS(web, "(()=>{window.composer.setText('');window.ko.local=true;window.dispatchEvent(new CustomEvent('ko-drop',{detail:{files:[{id:'bang-chip',name:'notes.md',path:'/tmp/notes.md',origin:'path',kind:'file',mimeType:'text/markdown',size:8192}],refused:false}}));window.composer.setText('!make checks DRY=1');return true})()")
+            try await capture(prefix + "bang-attachments")
+            _ = try await webviewJS(web, "(()=>{window.ko.local=true;window.dispatchEvent(new CustomEvent('ko-drop',{detail:{files:[{id:'refused-drop',name:'other.md',path:'/tmp/other.md',origin:'path',kind:'file',mimeType:'text/markdown',size:1}],refused:false}}));return true})()")
+            try await webviewUntil(web, "document.querySelector('#error').textContent==='a command takes no attachments'")
+            try await capture(prefix + "bang-drop")
+            _ = try await webviewJS(web, "(()=>{document.querySelector('.attach-remove').click();window.composer.setText('');document.querySelector('#error').textContent='';return true})()")
+            resize(560)
+            try await advance()
+            try await webviewUntil(web, "document.querySelectorAll('.cmdrun').length===5")
+            _ = try await webviewJS(web, "(()=>{const lines=document.querySelectorAll('.cmdrun>.line');lines[0].click();lines[2].click();lines[4].click();return true})()")
+            try await capture(prefix + "bang-runs")
+            resize(330)
+            for name in ["done", "error", "cancelled", "truncated", "quiet"] {
+                try await advance()
+                try await webviewUntil(web, "document.querySelectorAll('.cmdrun').length===1")
+                if name != "quiet" { _ = try await webviewJS(web, "(()=>{document.querySelector('.cmdrun>.line').click();return true})()") }
+                try await capture(prefix + "bang-" + name)
+            }
+            try await advance()
+            try await webviewUntil(web, "document.querySelectorAll('.cmdrun').length===0")
+            resize(220)
+            try String(stamp + 9000).write(to: now, atomically: true, encoding: .utf8)
+            _ = try await webviewJS(web, "fetch('/prompt',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text:'!make verify STAGES=unit',mode:'prompt',attachments:[]})}).then(r=>r.json())")
+            try await webviewUntil(web, "document.querySelector('.cmdrun .live')?.textContent.includes('running 212 tests')&&document.querySelector('#status').textContent.startsWith('running')")
+            try await capture(prefix + "bang-running")
+            _ = try await webviewJS(web, "fetch('/abort',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}).then(r=>r.json())")
+            try await webviewUntil(web, "!document.querySelector('.cmdrun .live')")
+            try String(stamp).write(to: now, atomically: true, encoding: .utf8)
+            try await advance()
+            try await webviewUntil(web, "document.querySelector('#status').textContent.startsWith('working')")
+            _ = try await webviewJS(web, "(()=>{window.composer.setText('!git status --short');return true})()")
+            try await capture(prefix + "bang-typing")
+            _ = try await webviewJS(web, "(()=>{Date.now=()=>\(stamp + 14000);return true})()")
+            try String(stamp + 13000).write(to: now, atomically: true, encoding: .utf8)
+            _ = try await webviewJS(web, "fetch('/prompt',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text:'!git status --short',mode:'prompt',attachments:[]})}).then(r=>{window.composer.setText('');return r.json()})")
+            try await webviewUntil(web, "document.querySelector('.cmdrun .live')?.textContent.includes('SidebarRow.swift')")
+            try await capture(prefix + "bang-busy")
+            try String(stamp + 14000).write(to: now, atomically: true, encoding: .utf8)
+            _ = try await webviewJS(web, "fetch('/abort',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}).then(r=>r.json())")
+            try await webviewUntil(web, "document.querySelector('.cmdrun .meta')?.textContent==='cancelled1s'")
+            resize(330)
+            try await capture(prefix + "bang-completed")
+            return
+        }
         if scenario == .questions {
             try await webviewUntil(web, "document.querySelectorAll('.ann-opt').length===13")
             let structure = try await webviewJS(web, "(()=>{const first=document.querySelector('.assistant li'),paragraph=Array.from(document.querySelectorAll('.assistant p')).find(p=>p.textContent.includes('Do you want'));return first.querySelectorAll('[role=button]').length===2&&first.querySelectorAll('button').length===1&&paragraph.querySelector('.ann-ctl').nextSibling.textContent.startsWith(' It costs')&&!document.querySelector('.assistant').textContent.match(/[\\uE010-\\uE012]/)})()")
@@ -1398,7 +1488,7 @@ extension VisualTests {
             try await capture("narrow-exited")
         }
         switch scenario {
-        case .transcript, .feed, .completion, .markdown, .media, .attachments, .userMarkdown, .preview, .lightbox, .agents, .composer, .questions: break
+        case .transcript, .feed, .completion, .markdown, .media, .attachments, .userMarkdown, .preview, .lightbox, .agents, .composer, .questions, .bang: break
         case .dialogs: try await dialogScenario()
         case .controls: try await controlsScenario()
         case .exit: try await exitScenario()

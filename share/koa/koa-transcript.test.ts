@@ -6,7 +6,7 @@ import { mkdtempSync, rmSync, readFileSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
-import { transcript } from "./koa-transcript.ts";
+import { transcript, appendBashOutput } from "./koa-transcript.ts";
 import type { WireItem } from "./koa-records.ts";
 
 function directory(t: TestContext) {
@@ -36,6 +36,21 @@ function record(line: string | undefined) {
 function assistant(text: string, stopReason: "stop" | "error" = "stop"): Extract<AgentMessage, { role: "assistant" }> {
   return { role: "assistant", content: [{ type: "text", text }], api: "openai-responses", provider: "openai", model: "test", usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } }, stopReason, timestamp: 123 };
 }
+
+test('live output bounds keep a UTF-8 tail and count omitted bytes', () => {
+  assert.deepEqual(appendBashOutput({ text: 'first', cut: 4 }, '😀' + 'x'.repeat(16383)), { text: 'x'.repeat(16383), cut: 13 });
+  assert.deepEqual(appendBashOutput({ text: '😀', cut: 0 }, 'x'.repeat(16380)), { text: '😀' + 'x'.repeat(16380), cut: 0 });
+});
+
+test('stored bash facts survive live conversion and authoritative rebuild', t => {
+  const view = transcript({ dir: directory(t), flushMs: 1 }); t.after(() => view.close());
+  const message = { role: 'bashExecution' as const, command: 'quiet', output: 'partial', exitCode: 2, cancelled: true, truncated: true, fullOutputPath: '/tmp/full', excludeFromContext: true, timestamp: 42 };
+  view.message(message, 'end');
+  const live = JSON.parse(request(view, '/items?before=100').join('')).items;
+  assert.deepEqual(live, [{ seq: 0, at: 42, final: true, kind: 'bash', command: 'quiet', result: { output: { text: 'partial', cut: 0 }, exit: 2, cancelled: true, truncated: true, fullOutputPath: '/tmp/full' }, excludeFromContext: true }]);
+  view.rebuild([message]);
+  assert.deepEqual(JSON.parse(request(view, '/items?before=100').join('')).items, live);
+});
 
 test('reply annotations resolve live and replay, validate code points and keep cursor and paging items', t => {
   const view = transcript({ dir: directory(t), flushMs: 1 });
@@ -206,7 +221,7 @@ test("caps preserve UTF-8 and windows retain the newest forty items", t => {
   const item = JSON.parse(request(view, "/items?before=100").join("")).items[0];
   assert.equal(item.kind, "bash");
   if (item.kind !== "bash") return;
-  assert.deepEqual(item.output, { text: "a".repeat(16383), cut: 4 });
+  assert.deepEqual(item.result.output, { text: "a".repeat(16383), cut: 4 });
   assert.equal(item.at, 12);
   for (let i = 0; i < 45; i++) view.message({ role: "user", content: `message ${i}`, timestamp: i }, "end");
   const page = JSON.parse(request(view, "/items?before=46").join(""));
@@ -328,7 +343,7 @@ test("identical image partials emit no patch and changed bytes advance the wire 
 
 test("rebuild sends reset then exactly one caller-supplied state and keeps the epoch format", t => {
   const view = transcript({ dir: directory(t), flushMs: 1000 });
-  const state = { working: false, name: "before", model: { provider: "test", id: "test" }, aborted: false, levels: [], cwd: "/tmp", home: "/tmp", dialogs: [], statuses: {}, queue: { steering: [], followUp: [] }, pi: { type: "ready" as const } };
+  const state = { bash: [], working: false, name: "before", model: { provider: "test", id: "test" }, aborted: false, levels: [], cwd: "/tmp", home: "/tmp", dialogs: [], statuses: {}, queue: { steering: [], followUp: [] }, pi: { type: "ready" as const } };
   view.state(state);
   const lines = request(view, "/events");
   const firstEpoch = record(lines[0]).epoch;

@@ -1,10 +1,12 @@
+import type { StateField } from '@codemirror/state';
+import { bashCommand, shellPathToken } from '../prompt.ts';
 import { autocompletion, acceptCompletion, closeCompletion, completionStatus, moveCompletionSelection, pickedCompletion, selectedCompletion, type Completion, type CompletionContext } from '@codemirror/autocomplete';
 import { tooltips, ViewPlugin, type Command } from '@codemirror/view';
 import { syntaxTree } from '@codemirror/language';
 import { fileToken, slashToken } from '../../pi/token.ts';
 import type { CompletionOption, CompletionResult, CompletionQuery } from '../koa-records.ts';
 
-export function completion(host: HTMLElement, send: () => void) {
+export function completion(host: HTMLElement, send: () => void, mode: StateField<ReturnType<typeof bashCommand>>) {
   const field = host.parentElement;
   if (!field) throw new Error('The composer host must have a parent');
   const layer = document.createElement('div');
@@ -12,15 +14,17 @@ export function completion(host: HTMLElement, send: () => void) {
   const options = new WeakMap<Completion, CompletionOption>();
   const active = (command: Command): Command => view => completionStatus(view.state) === 'active' && command(view);
   const source = async (context: CompletionContext) => {
+    const bang = context.state.field(mode), text = context.state.doc.toString();
+    if (bang && !shellPathToken(text, context.pos, bang)) return null;
     for (let node: ReturnType<typeof syntaxTree>['topNode'] | null = syntaxTree(context.state).resolveInner(context.pos, -1); node; node = node.parent) {
       if (node.name === 'InlineCode' || node.name === 'FencedCode' || node.name === 'CodeBlock') return null;
     }
     const line = context.state.doc.lineAt(context.pos), before = line.text.slice(0, context.pos - line.from);
-    if (fileToken(before) === undefined && slashToken(context.state.doc.toString(), context.pos) === undefined) return null;
+    if (!bang && fileToken(before) === undefined && slashToken(text, context.pos) === undefined) return null;
     const controller = new AbortController();
     context.addEventListener('abort', () => controller.abort(), { onDocChange: true });
     try {
-      const response = await fetch('/complete', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text: context.state.doc.toString(), pos: context.pos } satisfies CompletionQuery), signal: controller.signal });
+      const response = await fetch('/complete', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text, pos: context.pos } satisfies CompletionQuery), signal: controller.signal });
       if (!response.ok || context.aborted) return null;
       const result: CompletionResult = await response.json();
       if (!result.options.length || context.aborted) return null;

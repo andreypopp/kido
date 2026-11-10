@@ -4,7 +4,7 @@ import { test } from "node:test";
 import { runInNewContext } from "node:vm";
 import { stripTypeScriptTypes } from "node:module";
 import { markdown, markdownLine } from "./page/markdown.ts";
-import { nameCommand } from "./prompt.ts";
+import { bashCommand, nameCommand } from "./prompt.ts";
 import { ATTACHMENT_LIMITS, isAttachment, pathArg } from "./koa-records.ts";
 import { jobEndText } from "../pi/records.ts";
 import type { PromptMode } from "./koa-records.ts";
@@ -59,17 +59,21 @@ async function page() {
     const content = host.children[0] ?? new Node(); content.isContentEditable = true; if (!host.children.length) host.append(content);
     prompt = content;
     text = () => content.value;
+    let running = false;
+    const refresh = () => host.parent?.classList.toggle('bash-mode', !!bashCommand(content.value) || running && !content.value.length);
     return {
       text,
       empty: () => content.value.length === 0,
-      setText(text: string) { content.value = text; content.selectionStart = content.selectionEnd = text.length; callbacks.input(false); },
-      insert(text: string) { content.setRangeText(text); callbacks.input(true); },
+      bash: () => bashCommand(content.value),
+      running(value: boolean) { running = value; refresh(); },
+      setText(text: string) { content.value = text; content.selectionStart = content.selectionEnd = text.length; refresh(); callbacks.input(false); },
+      insert(text: string) { content.setRangeText(text); refresh(); callbacks.input(true); },
       focus: () => content.focus(),
       hasFocus: () => document.activeElement === content,
       placeholder(text: string) { content.placeholder = text; },
     };
   };
-  const context = { getComputedStyle: () => ({ display: 'block' }), composer, nameCommand, ATTACHMENT_LIMITS, isAttachment, pathArg, jobEndText, AbortController, AbortSignal, CustomEvent: class { type: string; detail?: unknown; constructor(type: string, options?: { detail?: unknown }) { this.type = type; this.detail = options?.detail; } }, Node, Element: Node, HTMLElement: Node, HTMLButtonElement: Node, HTMLImageElement: Node, markdown, markdownLine, document, window: { ko: {}, addEventListener(type: string, handler: (event?: unknown) => void) { windowListeners.set(type, handler); } }, innerWidth: 980, innerHeight: 560, Event: class { type: string; constructor(type: string) { this.type = type; } }, console, setInterval() {}, clearInterval() {}, setTimeout, clearTimeout, requestAnimationFrame() {}, fetch: async () => ({ ok: true, json: async () => ({}) }) };
+  const context = { getComputedStyle: () => ({ display: 'block' }), composer, bashCommand, nameCommand, ATTACHMENT_LIMITS, isAttachment, pathArg, jobEndText, AbortController, AbortSignal, CustomEvent: class { type: string; detail?: unknown; constructor(type: string, options?: { detail?: unknown }) { this.type = type; this.detail = options?.detail; } }, Node, Element: Node, HTMLElement: Node, HTMLButtonElement: Node, HTMLImageElement: Node, markdown, markdownLine, document, window: { ko: {}, addEventListener(type: string, handler: (event?: unknown) => void) { windowListeners.set(type, handler); } }, innerWidth: 980, innerHeight: 560, Event: class { type: string; constructor(type: string) { this.type = type; } }, console, setInterval() {}, clearInterval() {}, setTimeout, clearTimeout, requestAnimationFrame() {}, fetch: async () => ({ ok: true, json: async () => ({}) }) };
   const answersSource = stripTypeScriptTypes(await readFile(new URL('page/answers.ts', import.meta.url), 'utf8')).replace(/^export /gm, '');
   const annotationsSource = stripTypeScriptTypes(await readFile(new URL('page/annotations.ts', import.meta.url), 'utf8')).replace(/^import .*;\n/gm, '').replace(/^export /gm, '');
   Object.assign(context, runInNewContext(answersSource + '\n' + annotationsSource + '\n({annotations,update})', context));
@@ -98,6 +102,66 @@ test('user messages separate quote answers without changing assistant Markdown',
     put({kind:'assistant',seq:1,at:2,final:true,stop:'stop',error:'',blocks:[{type:'text',text:'> q\\nanswer'}]});
   `);
   assert.deepEqual(rendered, ['<blockquote>\n<p>q</p>\n</blockquote>\n<p>answer</p>\n', '<blockquote>\n<p>q\nanswer</p>\n</blockquote>\n']);
+});
+
+test('bang composer mode and live command render without blocking agent controls', async () => {
+  const fixture = await page();
+  let clock = 4000;
+  Object.assign(fixture.context, { Date: class extends Date { static now() { return clock; } } });
+  const tick = fixture.run(`
+    state={...state,pi:{type:'ready'}};
+    editor.setText('!!echo hi');
+    if (!element('field').classList.contains('bash-mode')) throw Error('missing bang font');
+    if (element('status').textContent !== 'run, quiet') throw Error('missing quiet mode');
+    state.bash=[{id:'run',phase:'running',command:'echo hi',excludeFromContext:true,started:1000,output:{text:'live',cut:0}}];
+    editor.setText(''); refreshBash(); refreshComposer();
+    const card=pendingBash.get('run'),pre=card.view.lastElementChild.firstElementChild,time=card.view.firstElementChild.lastElementChild.lastElementChild;
+    if (time.textContent!=='3s') throw Error('missing running duration');
+    if (!card.view.classList.contains('open')) throw Error('live output folded');
+    state.bash[0].output={text:'more',cut:0}; refreshBash();
+    if (pendingBash.get('run')!==card||card.view.lastElementChild.firstElementChild!==pre||pre.textContent!=='more') throw Error('live nodes replaced');
+    apply({type:'reset',epoch:'rebuilt',items:[],more:false});
+    if (!element('items').contains(card.view)) throw Error('rebuild removed running command');
+    editor.setText('!next');
+    if (canSend('!next')) throw Error('second command accepted');
+    if (element('status').textContent !== 'running') throw Error('missing running state');
+    (()=>{card.update(state.bash[0]);return time.textContent});
+  `);
+  clock = 5000;
+  assert.equal(tick(), '4s');
+});
+
+test('bang attachments stay in the draft and new file drops are refused', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const app = await page();
+  const leave = app.run(`
+    state={...state,pi:{type:'ready'}};
+    draft.restore([{id:'keep',name:'notes.md',path:'/tmp/notes.md',origin:'path',kind:'file',mimeType:'text/markdown',size:1}]);
+    editor.setText('!echo hi');
+    if (canSend(editor.text()) || draft.count!==1) throw Error('attachment was sent or removed');
+    if (!element('status').classList.contains('err') || element('status').title!=='remove the attachments') throw Error('missing attachment refusal');
+    (()=>editor.setText('normal'));
+  `);
+  let prevented = false;
+  app.listeners.get('drop')?.({ defaultPrevented: false, dataTransfer: { files: [{}], items: [] }, preventDefault() { prevented = true; } });
+  assert.equal(prevented, true);
+  assert.equal(app.elements.get('error')?.textContent, 'a command takes no attachments');
+  t.mock.timers.tick(4000);
+  assert.equal(app.elements.get('error')?.textContent, '');
+  app.listeners.get('drop')?.({ defaultPrevented: false, dataTransfer: { files: [{}], items: [] }, preventDefault() {} });
+  leave();
+  assert.equal(app.elements.get('error')?.textContent, '');
+});
+
+test('Escape cancels a command before taking back and aborting a concurrent turn', async () => {
+  const app = await page(), requests: string[] = [];
+  app.context.fetch = async (path?: string) => { requests.push(path ?? ''); return { ok: true, json: async () => ({ steering: [], followUp: [] }) }; };
+  const cancelling = app.run(`state={...state,pi:{type:'ready'},working:true,bash:[{id:'run',phase:'running',command:'echo',excludeFromContext:false,started:1,output:{text:'',cut:0}}]};(()=>{state.bash[0].phase='cancelling'})`);
+  const escape = () => app.listeners.get('keydown')?.({ key: 'Escape', target: app.prompt(), preventDefault() {} });
+  escape(); await new Promise<void>(resolve => setImmediate(resolve));
+  assert.deepEqual(requests, ['/abort']);
+  cancelling(); escape(); await new Promise<void>(resolve => setImmediate(resolve));
+  assert.deepEqual(requests, ['/abort', '/queue/clear', '/abort']);
 });
 
 test('annotation map attaches a late reply, hides items and re-renders final text only for a new annotation item', async () => {
@@ -584,7 +648,7 @@ test("a held prompt response prevents duplicate draft submissions", async () => 
 
 test("a startup dialog is visible with an inert composer", async () => {
   const app = await page();
-  assert.equal(app.run("status=()=>{};apply({type:'state',pi:{type:'starting'},dialogs:[{id:'trust',method:'select',title:'Trust project?',options:['Yes','No']}],queue:{steering:[],followUp:[]}});!element('composer').hidden&&element('field').inert&&element('dialogs').children[0].className==='dialog'"), true);
+  assert.equal(app.run("status=()=>{};apply({type:'state',bash:[],pi:{type:'starting'},dialogs:[{id:'trust',method:'select',title:'Trust project?',options:['Yes','No']}],queue:{steering:[],followUp:[]}});!element('composer').hidden&&element('field').inert&&element('dialogs').children[0].className==='dialog'"), true);
 });
 
 test("a state record preserves a typed dialog answer", async () => {

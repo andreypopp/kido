@@ -33,7 +33,7 @@ export type Item = { seq: number; at: number; final: boolean } & (
   { kind: 'annotations'; reply: { seq: number; block: number }; annotations: Annotation[] } |
   { kind: "notify"; level: NotifyLevel; text: Text } |
   { kind: "notice"; customType: string; from: string; text: string } |
-  { kind: "bash"; command: string; output: Text; exit?: number } |
+  { kind: "bash"; command: string; excludeFromContext: boolean; result: BashResult } |
   { kind: "summary"; text: string }
 );
 export type Assistant = Extract<Item, { kind: "assistant" }>;
@@ -47,7 +47,9 @@ export type Dialog = { type: "extension_ui_request"; id: string; title: string; 
   { method: "input"; placeholder?: string; timeout?: number } |
   { method: "editor"; prefill?: string }
 );
-export type State = { working: boolean; since?: number; aborted: boolean; name: string; model?: { provider: string; id: string }; thinking?: ThinkingLevel; levels: ThinkingLevel[]; context?: { tokens: number | null; window: number; percent: number | null }; cwd: string; home: string; sessionFile?: string; queue: { steering: readonly QueuedPrompt[]; followUp: readonly QueuedPrompt[] }; dialogs: Dialog[]; statuses: Record<string, string>; editor?: { id: string; text: string }; pi: Pi };
+export type BashResult = { output: Text; exit?: number; cancelled: boolean; truncated: boolean; fullOutputPath?: string };
+export type Bash = { id: string; command: string; excludeFromContext: boolean; started: number } & ({ phase: 'running' | 'cancelling'; output: Text } | { phase: 'completed'; ended: number; result: BashResult });
+export type State = { bash: Bash[]; working: boolean; since?: number; aborted: boolean; name: string; model?: { provider: string; id: string }; thinking?: ThinkingLevel; levels: ThinkingLevel[]; context?: { tokens: number | null; window: number; percent: number | null }; cwd: string; home: string; sessionFile?: string; queue: { steering: readonly QueuedPrompt[]; followUp: readonly QueuedPrompt[] }; dialogs: Dialog[]; statuses: Record<string, string>; editor?: { id: string; text: string }; pi: Pi };
 export function pathArg(block: Block | undefined): string | undefined {
   if (block?.type !== 'tool' || !['read', 'edit', 'write'].includes(block.name)) return;
   try { const value = JSON.parse(block.args.text); return value && typeof value.path === 'string' && value.path && !/[\p{Cc}]/u.test(value.path) ? value.path : undefined; } catch { return; }

@@ -391,7 +391,8 @@ binds none. A send while pi works is a steer: koa always sends pi's
 `prompt` with a streaming behaviour, never `steer` or `follow_up`,
 because only `prompt` runs an extension command while pi streams.
 Escape first takes the queue back into the composer, then aborts, so
-no queued work runs after it.
+no queued work runs after it. While a `!` command runs, Escape cancels
+the command first ("`!` commands" below).
 
 - **One owner of Enter.** The composer's highest-precedence keymap
   owns every Enter variant; `standardKeymap`'s Enter binding is
@@ -454,7 +455,16 @@ modules. So koa copies pi's rules (`koa-complete.ts`), behind its own
   request so that a `/reload` in pi shows at once, with pi's fuzzy
   filter. `@token`: the agents of the session first, then files from
   `fd` with pi's arguments and scoring. No forced Tab completion and
-  no plain-path completion (the user's decision).
+  no plain-path completion in a prompt (the user's decision).
+- In `!` mode, `/` and `@` offer nothing. A token that starts with
+  `./`, `../`, `/` or `~/` gets paths from the same `fd` search,
+  inserted bare when every character is shell-safe ASCII, so a
+  directory continues to complete, and quoted otherwise; completion
+  does not continue inside a quoted token. This rule and the quoting are koa's
+  alone, so they live in `share/koa/prompt.ts`, not in `token.ts`. The
+  search runs in koa's directory on
+  the host, also for a pi that ko-pi routes to a runtime, so there a
+  path can differ from what the command sees.
 - The token rules are one copy in `share/pi/token.ts`, which ko-pi,
   koa and the page import, so the page asks only in a context and the
   two sides agree on where a token starts. koa computes the prefix,
@@ -508,6 +518,60 @@ text; the model picker then offers the levels.
   the branch and dirty mark.
 - `set_editor_text` replaces the composer's text; `setWidget`,
   `setTitle` and the other fire-and-forget methods are ignored.
+
+## `!` commands
+
+A message that starts with `!` runs a shell command as pi's TUI does:
+`!cmd` puts the command and its output into the model's context,
+`!!cmd` keeps them out. koa sends pi's RPC `bash`, never a prompt and
+never the queue. pi fires `user_bash` for it, so ko-pi runs a routed
+pi's command in its runtime (design-runtimes.md, "Agents in a
+runtime") with no work in koa. The mockup is `app/design/koa/`,
+NOTES.md "`!` runs a command".
+
+- **One running command.** koa refuses a second command while one
+  runs: pi's `abort_bash` cancels every running command, so with one
+  a cancel reaches only the command that the user sees. A completed
+  command does not block the next. koa also refuses `!` with
+  attachments, because their paths would become shell text, and `!`
+  with no command.
+- **While pi works** the command runs at once, beside the turn, as in
+  pi. pi stores its `bashExecution` message only after the turn
+  settles.
+- **No deadline.** The `bash` caller asks the RPC link for no
+  `RPC_RESPONSE_MS`: a command runs as long as it runs, and ends by
+  its exit, a cancel or pi's exit. koa answers the page's `/prompt`
+  at once and waits for pi's answer in the background.
+- **A live command is state, not an item.** `State.bash` holds the
+  running command, with the output of pi's `bash_execution_update`
+  deltas for the id of its RPC command, published once for each
+  flush, and the completed commands that pi has not stored yet. The
+  live output keeps its tail under the cap of a tool result
+  (`koa-transcript.ts`), with the count of the bytes that it dropped,
+  because a running command's newest line is the one to see; pi's
+  stored output also drops its start. The page shows each command
+  where it ran. At most 16 completed commands wait for their record,
+  so the state stays bounded through a long turn; koa refuses the
+  next `!` until the turn ends. pi stores a completed command's
+  message at once while it is idle, and at `agent_settled` while it
+  streams. So every rebuild that starts while pi is idle (the
+  reconcile after a command, at `agent_settled`, a compaction's)
+  takes the completed commands of that moment, and one rebuild runs
+  at a time; a `!` sent during a rebuild starts after it. A rebuild
+  while pi streams keeps them, and a running command stays in every
+  case. The rebuild publishes the state without the
+  completed commands of its snapshot before it sends its reset, and
+  puts them back when the conversion fails, so no command shows
+  twice, even when the page paints between two records. The stored
+  message is the one source of the item, and a resumed session shows
+  the same item. koa adds no item of its own and matches nothing.
+- **Duration.** pi stores only the time of a command, so the duration
+  shows only while koa measured it: during the run and until the
+  rebuild.
+- **Cancel.** While a command runs, Escape and the abort route send
+  `abort_bash` once; pi answers before the command ends, so the next
+  Escape aborts the turn. pi keeps the output that the command wrote
+  before the cancel.
 
 ## Images
 

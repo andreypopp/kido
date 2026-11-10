@@ -31,10 +31,12 @@ if (process.argv.some(arg => arg.endsWith('/koa-resume.ts'))) {
   process.exit(0);
 }
 
-type Step = { type: "respond"; command: "get_state" | "get_entries" | "get_messages" | "get_session_stats" | "get_available_thinking_levels" | "get_commands"; data: object; after?: object[] } | { type: "emit"; event: object } | { type: "raw"; text: string } | { type: "stderr"; text: string } | { type: "wait"; command: string; events?: object[]; after?: object[]; data?: object; error?: string; echo?: boolean } | { type: "exit"; code: number } | { type: "repeat"; count: number; events: object[]; delayMs?: number };
+type Step = { type: "respond"; command: "get_state" | "get_entries" | "get_messages" | "get_session_stats" | "get_available_thinking_levels" | "get_commands"; data: object; after?: object[] } | { type: "emit"; event: object } | { type: "raw"; text: string } | { type: "stderr"; text: string } | { type: "wait"; command: string; events?: object[]; after?: object[]; data?: object; error?: string; echo?: boolean; gate?: boolean | string } | { type: "exit"; code: number } | { type: "repeat"; count: number; events: object[]; delayMs?: number };
 const script: Step[] = process.env.KOA_FAKE_SCRIPT ? readFileSync(process.env.KOA_FAKE_SCRIPT, "utf8").trim().split("\n").filter(Boolean).map(line => JSON.parse(line)) : [];
 let next = 0;
 let working = false;
+let bash: { id: string; cancel(): Promise<void> } | undefined;
+const bashMessages: object[] = [];
 let startupGate = process.env.KOA_FAKE_STARTUP_GATE;
 const selectionFile = process.env.KOA_FAKE_SELECTION_FILE;
 const selection: { model?: { id: string; provider: string }; thinkingLevel?: string } = selectionFile ? JSON.parse(readFileSync(selectionFile, "utf8")) : {};
@@ -69,7 +71,7 @@ async function advance(): Promise<void> {
     else { await output; process.exit(step.code); }
   }
 }
-async function command(value: { type: string; id: string; message?: string; images?: Extract<RpcCommand, { type: "prompt" }>["images"]; streamingBehavior?: string; provider?: string; modelId?: string; level?: string }): Promise<void> {
+async function command(value: { type: string; id: string; message?: string; images?: Extract<RpcCommand, { type: "prompt" }>["images"]; streamingBehavior?: string; provider?: string; modelId?: string; level?: string; command?: string; excludeFromContext?: boolean }): Promise<void> {
   log(value);
   if (value.type === "get_state" && startupGate) {
     const gate = connect(startupGate);
@@ -85,7 +87,7 @@ async function command(value: { type: string; id: string; message?: string; imag
   else if (value.type === "get_commands") data = { commands: [] };
   else if (value.type === "get_state") data = { sessionName: "Fake pi", thinkingLevel: "low", sessionId: "fake", isStreaming: working };
   else if (value.type === "get_entries") data = { entries: [], leafId: null };
-  else if (value.type === "get_messages") data = { messages: [] };
+  else if (value.type === "get_messages") data = { messages: working ? [] : bashMessages };
   else if (value.type === "get_available_thinking_levels") data = { levels: ["off", "low", "high"] };
   else if (value.type === "get_session_stats") data = { contextUsage: { tokens: 123, contextWindow: 1000, percent: 12.3 } };
   const configured = responses.get(value.type);
@@ -95,6 +97,11 @@ async function command(value: { type: string; id: string; message?: string; imag
     if (value.type === "set_model" && value.provider && value.modelId) { selection.model = { provider: value.provider, id: value.modelId }; writeFileSync(selectionFile, JSON.stringify(selection)); }
     if (value.type === "set_thinking_level" && value.level) { selection.thinkingLevel = value.level; writeFileSync(selectionFile, JSON.stringify(selection)); }
   }
+  if (value.type === 'abort_bash' && bash) {
+    await bash.cancel();
+    await emit({ type: 'response', command: 'abort_bash', id: value.id, success: true });
+    return;
+  }
   const step = script[next];
   if (step?.type === "wait" && step.command === value.type) {
     next++;
@@ -103,9 +110,25 @@ async function command(value: { type: string; id: string; message?: string; imag
       const message = { role: "user", timestamp: Date.now(), content: [{ type: "text", text: value.message }, ...(value.images ?? [])] };
       await emit({ type: "message_start", message }); await emit({ type: "message_end", message });
     }
-    for (const event of step.events ?? []) await emit(event);
+    for (const event of step.events ?? []) await emit(value.type === 'bash' ? { ...event, id: value.id } : event);
+    const respond = (response: object) => write([response, ...step.after ?? []].map(record => JSON.stringify(record) + '\n').join(''));
+    if (value.type === 'bash') {
+      const result = step.data ?? data;
+      let cancelling = false;
+      const finish = async (cancelled = cancelling) => {
+        if (bash?.id !== value.id) return;
+        bash = undefined;
+        const final = { ...result, ...(cancelled ? { cancelled: true } : {}) };
+        bashMessages.push({ role: 'bashExecution', command: value.command, timestamp: Date.now(), excludeFromContext: value.excludeFromContext, ...final });
+        await respond({ type: 'response', command: 'bash', id: value.id, success: !step.error, ...(step.error ? { error: step.error } : { data: final }) });
+      };
+      bash = { id: value.id, cancel: async () => { if (typeof step.gate === 'string') cancelling = true; else await finish(true); } };
+      if (typeof step.gate === 'string') { const gate = connect(step.gate); gate.once('data', () => { gate.end(); void finish(); }); }
+      else if (!step.gate) await finish();
+      await advance(); return;
+    }
     const response = { type: "response", command: value.type, id: value.id, success: !step.error, ...(step.error ? { error: step.error } : { data: step.data ?? data }) };
-    await write([response, ...step.after ?? []].map(record => JSON.stringify(record) + "\n").join(""));
+    await respond(response);
     await advance();
   } else {
     const introspection = ["get_state", "get_entries", "get_messages", "get_available_thinking_levels", "get_session_stats", "get_commands"].includes(value.type);

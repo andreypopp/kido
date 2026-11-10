@@ -10,7 +10,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import type { RpcCommand, RpcResponse, JsonAgentSessionEvent, RpcExtensionUIRequest, RpcExtensionUIResponse, SlashCommandSource } from "@earendil-works/pi-coding-agent";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 type PiThinkingLevel = import("@earendil-works/pi-agent-core").ThinkingLevel;
-import { transcript } from "./koa-transcript.ts";
+import { transcript, bashResult, appendBashOutput } from "./koa-transcript.ts";
 import { later } from "./koa-timer.ts";
 import { respond, readBody } from "./koa-http.ts";
 import { isRecord, errorText, replaceControlCharacters, utf8Prefix, contentText } from "../pi/text.ts";
@@ -19,9 +19,9 @@ import { assemblePage } from "./koa-assemble.ts";
 import { complete, findFd, agentDiscovery } from "./koa-complete.ts";
 import { pickSession, signalChild } from "./koa-child.ts";
 import { attachments, stepFile, UPLOAD_IDLE_MS, isChunkRoute } from "./koa-attach.ts";
-import { nameCommand } from "./prompt.ts";
+import { bashCommand, nameCommand } from "./prompt.ts";
 import { prompts } from "./koa-queue.ts";
-import { ATTACHMENT_LIMITS, type PromptMode, type Exit, type Pi, type State, type ThinkingLevel, type DialogMethod, type CompletionCommand, type Attachment, type CompletionQuery } from "./koa-records.ts";
+import { ATTACHMENT_LIMITS, type PromptMode, type Exit, type Pi, type State, type ThinkingLevel, type DialogMethod, type CompletionCommand, type Attachment, type CompletionQuery, type Bash } from "./koa-records.ts";
 
 function completeBody(value: unknown): CompletionQuery | { error: string } {
   return isRecord(value) && typeof value.text === "string" && typeof value.pos === "number" && Number.isSafeInteger(value.pos) && value.pos >= 0 && value.pos <= value.text.length ? { text: value.text, pos: value.pos } : { error: "Completion requires text and a cursor offset in that text" };
@@ -62,6 +62,7 @@ const commandSourcesMatch: Same<CompletionCommand["source"], SlashCommandSource>
 void [thinkingLevelsMatch, dialogMethodsMatch, commandSourcesMatch];
 
 const RPC_RESPONSE_MS = 10000;
+const MAX_PENDING_BASH = 16;
 const FLUSH_MS = 50;
 const QUIT_REPLY_MS = 1000;
 
@@ -85,14 +86,15 @@ function rpc(child: ChildProcessWithoutNullStreams) {
     child.once("error", error => finish({ failed: errorText(error) }));
   });
   const write = async (line: string) => { if (!child.stdin.write(line + "\n")) await once(child.stdin, "drain"); };
-  const command = (value: RpcCommand, apply?: (response: RpcResponse) => void, signal?: AbortSignal): Promise<RpcResponse> => {
+  const command = (value: RpcCommand, options: { apply?: (response: RpcResponse) => void; signal?: AbortSignal; deadline?: number | 'none'; onId?: (id: string) => void } = {}): Promise<RpcResponse> => {
+    const { apply, signal } = options;
     if (signal?.aborted) return Promise.reject(new Error("pi command aborted"));
     if (child.exitCode !== null || child.signalCode !== null || child.stdin.destroyed) return Promise.reject(new Error("pi is not running"));
     const id = String(++serial);
     const result = new Promise<RpcResponse>((resolve, reject) => {
       const fail = (error: Error) => { pending.get(id)?.reject(error); pending.delete(id); };
       const abort = () => fail(new Error("pi command aborted"));
-      const timer = later(() => fail(new Error(`pi ${value.type} response timed out`)), RPC_RESPONSE_MS);
+      const timer = options.deadline === 'none' ? undefined : later(() => fail(new Error(`pi ${value.type} response timed out`)), options.deadline ?? RPC_RESPONSE_MS);
       const clear = () => { clearTimeout(timer); signal?.removeEventListener("abort", abort); };
       signal?.addEventListener("abort", abort, { once: true });
       pending.set(id, {
@@ -102,6 +104,7 @@ function rpc(child: ChildProcessWithoutNullStreams) {
         },
         reject: error => { clear(); reject(error); },
       });
+      options.onId?.(id);
     });
     writes = writes.then(async () => {
       if (!pending.has(id)) return;
@@ -203,7 +206,7 @@ async function main(): Promise<void> {
     const lifetime = new AbortController();
     teardown.push(() => lifetime.abort());
     const agents = agentDiscovery(process.env.KO_PANE ?? "", process.env.KO_AGENT_LIST_TTL_MS, lifetime.signal);
-    const state: Omit<State, "pi" | "queue"> = { working: false, aborted: false, name: "pi", levels: [], cwd: process.cwd(), home: homedir(), dialogs: [], statuses: {} };
+    const state: Omit<State, "pi" | "queue"> = { bash: [], working: false, aborted: false, name: "pi", levels: [], cwd: process.cwd(), home: homedir(), dialogs: [], statuses: {} };
     let stopping = false;
     teardown.push(() => { stopping = true; });
     let pi: Pi = { type: "starting" };
@@ -245,7 +248,7 @@ async function main(): Promise<void> {
           return;
         }
         pi = { type: "exited", ...exit, at: Date.now(), stderr: stderr.trimEnd() }; state.working = false; delete state.since;
-        state.dialogs = []; state.statuses = {};
+        state.dialogs = []; state.statuses = {}; dropBash();
         link.events(() => {});
         for (const timer of dialogTimers.values()) clearTimeout(timer);
         dialogTimers.clear();
@@ -256,37 +259,55 @@ async function main(): Promise<void> {
     };
     watch(child, link);
     const stats = async (notify = true) => {
-      await link.command({ type: "get_session_stats" }, response => {
+      await link.command({ type: "get_session_stats" }, { apply: response => {
         if (response.success && response.command === "get_session_stats") {
           const usage = response.data.contextUsage;
           state.context = usage && { tokens: usage.tokens, window: usage.contextWindow, percent: usage.percent };
           if (notify) publish();
         }
-      });
+      } });
     };
-    const levels = (notify = true) => link.command({ type: "get_available_thinking_levels" }, response => {
+    const levels = (notify = true) => link.command({ type: "get_available_thinking_levels" }, { apply: response => {
       if (response.success && response.command === "get_available_thinking_levels") { state.levels = response.data.levels; if (notify) publish(); }
-    });
+    } });
     let session: string | undefined;
+    let rebuildWork: Promise<RpcResponse[]> | undefined;
     const rebuild = () => {
-      let entries: Extract<RpcResponse, { command: 'get_entries'; success: true }>['data'] | undefined;
-      return Promise.all([
-        link.command({ type: 'get_entries' }, response => { if (response.success && response.command === 'get_entries') entries = response.data; }),
-        link.command({ type: 'get_messages' }, response => {
-          if (response.success && response.command === 'get_messages' && entries) feed.rebuild(response.data.messages, session, entries.entries, entries.leafId);
-        }),
-      ]);
+      const owner = link, ownerSession = session;
+      const work: Promise<RpcResponse[]> = (rebuildWork?.catch(() => {}) ?? Promise.resolve()).then<RpcResponse[]>(() => {
+        if (owner !== link || ownerSession !== session) return [];
+        const completed: Bash[] = state.working ? [] : state.bash.filter(item => item.phase === 'completed');
+        let entries: Extract<RpcResponse, { command: 'get_entries'; success: true }>['data'] | undefined;
+        return Promise.all([
+          owner.command({ type: 'get_entries' }, { apply: response => { if (response.success && response.command === 'get_entries') entries = response.data; } }),
+          owner.command({ type: 'get_messages' }, { apply: response => {
+            if (response.success && response.command === 'get_messages' && entries && owner === link && ownerSession === session) {
+              const previous = state.bash;
+              state.bash = previous.filter(item => !completed.includes(item));
+              if (state.bash.length !== previous.length) publish();
+              try { feed.rebuild(response.data.messages, session, entries.entries, entries.leafId); }
+              catch (error) { state.bash = previous; publish(); throw error; }
+            }
+          } }),
+        ]).then(results => {
+          const failed = results.find(result => !result.success);
+          if (failed && !failed.success) throw new Error(failed.error);
+          return results;
+        });
+      }).finally(() => { if (rebuildWork === work) rebuildWork = undefined; });
+      rebuildWork = work;
+      return work;
     };
     const refresh = async () => {
       if (pi.type === "exited" || stopping) return;
       pi = { type: "starting" };
-      const response = await link.command({ type: "get_state" }, response => {
+      const response = await link.command({ type: "get_state" }, { apply: response => {
         if (response.success && response.command === "get_state") {
           session = response.data.sessionId;
           state.name = response.data.sessionName ?? "pi";
           state.model = response.data.model; state.thinking = response.data.thinkingLevel; state.sessionFile = response.data.sessionFile;
         }
-      });
+      } });
       if (response.success && response.command === "get_state" && response.data.sessionFile) {
         try {
           const header = JSON.parse((await readFile(response.data.sessionFile, "utf8")).split("\n")[0] ?? "{}");
@@ -299,6 +320,13 @@ async function main(): Promise<void> {
       title();
       await Promise.all([rebuild(), levels(false), stats(false)]);
       if (pi.type === "starting") { pi = { type: "ready" }; publish(); }
+    };
+    let bashTimer: NodeJS.Timeout | undefined;
+    const dropBash = () => { clearTimeout(bashTimer); bashTimer = undefined; state.bash = []; };
+    teardown.push(dropBash);
+    const settleBash = () => {
+      if (state.working || !state.bash.length || state.bash.some(item => item.phase !== 'completed')) return Promise.resolve();
+      return rebuild();
     };
     let userAttachments: Attachment[] = [];
     let partial: Assistant | undefined;
@@ -319,6 +347,13 @@ async function main(): Promise<void> {
     const event = (event: JsonAgentSessionEvent, state: Omit<State, "pi" | "queue">): void => {
       if (pi.type === "exited" || stopping) return;
       switch (event.type) {
+        case 'bash_execution_update':
+          const execution = state.bash.find(item => item.id === event.id);
+          if (execution && execution.phase !== 'completed') {
+            execution.output = appendBashOutput(execution.output, event.delta);
+            bashTimer ??= later(() => { bashTimer = undefined; publish(); }, FLUSH_MS);
+          }
+          break;
         case 'entry_appended': feed.annotation(event.entry); break;
         case "message_start": {
           if (event.message.role === "assistant") { clearTimeout(argumentTimer); argumentTimer = undefined; partial = event.message; argumentsText.clear(); }
@@ -363,7 +398,7 @@ async function main(): Promise<void> {
         case "tool_execution_end": feed.toolDone(event.toolCallId, event.result.content, event.isError, Date.now(), event.durationMs, event.result.structuredContent, event.result.details); break;
         case "agent_start": state.working = true; state.since = Date.now(); state.aborted = false; outcome = { type: "done" }; status("working"); publish(); break;
         case "compaction_start": compaction = { root, working: state.working, since: state.since }; state.working = true; state.since ??= Date.now(); status("working"); publish(); break;
-        case "agent_settled": state.working = false; delete state.since; state.aborted = event.aborted; status(event.aborted ? "idle" : outcome.type, outcome.type === "error" ? outcome.message : state.name); publish(); background(stats()); break;
+        case "agent_settled": state.working = false; delete state.since; state.aborted = event.aborted; status(event.aborted ? "idle" : outcome.type, outcome.type === "error" ? outcome.message : state.name); publish(); background(stats()); background(settleBash()); break;
         case "queue_update": pendingPrompts.update({ steering: event.steering, followUp: event.followUp }); publish(); break;
         case "thinking_level_changed": state.thinking = event.level; publish(); break;
         case "session_info_changed": state.name = event.name ?? "pi"; title(); publish(); break;
@@ -396,7 +431,7 @@ async function main(): Promise<void> {
         }
       } else if (record.type === "response") {
         if (record.success && ["new_session", "switch_session", "fork", "clone"].includes(record.command) && !("data" in record && record.data && "cancelled" in record.data && record.data.cancelled)) {
-          state.working = false; state.aborted = false; delete state.since; pendingPrompts.reset(); userAttachments = []; attached.reset();
+          state.working = false; state.aborted = false; delete state.since; dropBash(); pendingPrompts.reset(); userAttachments = []; attached.reset();
           status("idle"); background(refresh());
         }
       } else event(record, state);
@@ -424,7 +459,7 @@ async function main(): Promise<void> {
         try {
           const result = await complete(query.text, query.pos, { cwd: state.cwd, fd, signal, agents, commands: async () => {
             if (pi.type !== "ready") return [];
-            const result = await link.command({ type: "get_commands" }, undefined, signal);
+            const result = await link.command({ type: "get_commands" }, { signal });
             return result.success && result.command === "get_commands" ? result.data.commands : [];
           } });
           if (!controller.signal.aborted) respond(response, 200, JSON.stringify(result));
@@ -435,6 +470,34 @@ async function main(): Promise<void> {
       "/prompt": { method: "POST", access: "ready", handle: async (value, response) => {
         const prompt = promptBody(value);
         if ("error" in prompt) { respond(response, 400, JSON.stringify(prompt)); return; }
+        const bash = bashCommand(prompt.text);
+        if (bash) {
+          while (rebuildWork) await rebuildWork;
+          const refusal = prompt.attachments.length ? 'a command takes no attachments' : state.bash.some(item => item.phase !== 'completed') ? 'a command is already running' : state.bash.length >= MAX_PENDING_BASH ? 'too many commands wait for the turn to end' : !bash.command.trim() ? 'a command is required' : undefined;
+          if (refusal) { respond(response, 409, JSON.stringify({ error: refusal })); return; }
+          const { command: shellCommand, excludeFromContext } = bash;
+          const owner = link, ownerSession = session;
+          let running: (Bash & { phase: 'running' | 'cancelling' }) | undefined;
+          background((async () => {
+            try {
+              const result = await owner.command({ type: 'bash', command: shellCommand, excludeFromContext }, { deadline: 'none', onId: id => {
+                running = { id, command: shellCommand, excludeFromContext, phase: 'running', started: Date.now(), output: { text: '', cut: 0 } };
+                state.bash.push(running); publish();
+              } });
+              if (owner !== link || ownerSession !== session || !running || !state.bash.includes(running)) return;
+              if (!result.success) throw new Error(result.error);
+              if (result.command !== 'bash') throw new Error('unexpected command response');
+              const completed: Bash = { id: running.id, command: shellCommand, excludeFromContext, phase: 'completed', started: running.started, ended: Date.now(), result: bashResult(result.data) };
+              state.bash = state.bash.map(item => item === running ? completed : item);
+              clearTimeout(bashTimer); bashTimer = undefined; publish();
+              await settleBash();
+            } catch (error) {
+              if (running && state.bash.includes(running)) { state.bash = state.bash.filter(item => item !== running); publish(); feed.notify(errorText(error), 'error'); }
+              else if (owner === link && ownerSession === session) throw error;
+            }
+          })());
+          respond(response, 200, JSON.stringify({ disposition: 'handled' })); return;
+        }
         const name = nameCommand(prompt.text);
         if (name) {
           if (name.type === "query") {
@@ -456,7 +519,11 @@ async function main(): Promise<void> {
         if (result.success) attached.consume(prompt.attachments, result.command === "prompt" && result.data.disposition === "queued" ? "queued" : "used"); else pendingPrompts.reject(entry);
         reply(response, result);
       } },
-      "/abort": { method: "POST", access: "ready", handle: (_value, response) => command({ type: "abort" }, response) },
+      "/abort": { method: "POST", access: "ready", handle: (_value, response) => {
+        const running = state.bash.find(item => item.phase === 'running');
+        if (running) { running.phase = 'cancelling'; publish(); }
+        return command({ type: running ? 'abort_bash' : 'abort' }, response);
+      } },
       "/queue/clear": { method: "POST", access: "ready", handle: async (_value, response) => {
         pendingPrompts.beginClear();
         try {
@@ -508,7 +575,7 @@ async function main(): Promise<void> {
           args.splice(end < 0 ? args.length : end, 0, "--session", state.sessionFile);
         }
         child = spawnPi(args); link = rpc(child);
-        pi = { type: "starting" }; state.aborted = false; pendingPrompts.reset(); userAttachments = []; attached.reset();
+        pi = { type: "starting" }; state.aborted = false; dropBash(); pendingPrompts.reset(); userAttachments = []; attached.reset();
         partial = undefined; argumentsText.clear(); outcome = { type: "done" };
         watch(child, link); link.events(records); status("idle");
         await refresh(); respond(response, 200, "{}");

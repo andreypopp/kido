@@ -8,7 +8,7 @@ import { imageInfo, imageExtensions } from "./koa-image.ts";
 import { pathArg, type Annotation } from "./koa-records.ts";
 import { isRelation, isAgentFailure } from "../pi/records.ts";
 import { promptText } from "./prompt.ts";
-import type { Text, Block, Item, Assistant, WireItem, State, PageRecord, ImageRef, Attachment, AgentCall, NotifyLevel } from "./koa-records.ts";
+import type { Text, Block, Item, Assistant, WireItem, State, PageRecord, ImageRef, Attachment, AgentCall, NotifyLevel, BashResult } from "./koa-records.ts";
 import type { AgentRef, AgentOutcome, JobRef, JobEnd, Inbound, AgentDetails, NoticeDetails, StreamDetails } from "../pi/records.ts";
 import { mintId, contentText, utf8Prefix, isRecord, errorText, type Content } from "../pi/text.ts";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
@@ -29,6 +29,17 @@ const MAX_WEBVIEW_OUTPUT_BYTES = 1 << 20;
 
 const sameText = (a: Text | undefined, b: Text | undefined): boolean => a?.text === b?.text && a?.cut === b?.cut;
 const sameTiming = (a: Block, b: Block): boolean => a.started === b.started && a.ended === b.ended;
+
+export function appendBashOutput(output: Text, delta: string): Text {
+  const bytes = Buffer.from(output.text + delta);
+  let start = Math.max(0, bytes.length - MAX_WEBVIEW_RESULT_BYTES);
+  while (start < bytes.length && (bytes[start] & 0xc0) === 0x80) start++;
+  return { text: bytes.toString('utf8', start), cut: output.cut + start };
+}
+
+export function bashResult(value: { output: string; exitCode?: number; cancelled: boolean; truncated: boolean; fullOutputPath?: string }): BashResult {
+  return { output: cap(value.output, MAX_WEBVIEW_RESULT_BYTES), cancelled: value.cancelled, truncated: value.truncated, ...(value.exitCode === undefined ? {} : { exit: value.exitCode }), ...(value.fullOutputPath === undefined ? {} : { fullOutputPath: value.fullOutputPath }) };
+}
 
 function cap(text: string, limit: number): Text {
   const bytes = Buffer.byteLength(text);
@@ -333,7 +344,7 @@ export function transcript({ dir, flushMs, metrics = false }: { dir: string; flu
         else item = { seq, at: message.timestamp, final: true, kind: 'notice', customType: message.customType, from: typeof details?.from === 'string' ? details.from : '', text: contentText(message.content) };
         break;
       }
-      case "bashExecution": item = { seq, at: message.timestamp, final: true, kind: "bash", command: message.command, output: cap(message.output, MAX_WEBVIEW_RESULT_BYTES), ...(message.exitCode === undefined ? {} : { exit: message.exitCode }) }; break;
+      case "bashExecution": item = { seq, at: message.timestamp, final: true, kind: "bash", command: message.command, excludeFromContext: message.excludeFromContext ?? false, result: bashResult(message) }; break;
       case "branchSummary": case "compactionSummary": item = { seq, at: message.timestamp, final: true, kind: "summary", text: message.summary }; break;
       default: return;
     }

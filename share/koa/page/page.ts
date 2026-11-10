@@ -7,7 +7,7 @@ import { nameCommand } from '../prompt.ts';
 import { fetchJSON } from './http.ts';
 import { ATTACHMENT_LIMITS, pathArg } from '../koa-records.ts';
 import { jobEndText } from '../../pi/records.ts';
-import type { State, WireItem, WireAssistant, Block, Patch, PageRecord, PromptMode, ImageRef, AgentCall } from '../koa-records.ts';
+import type { State, WireItem, WireAssistant, Block, Patch, PageRecord, PromptMode, ImageRef, AgentCall, Bash } from '../koa-records.ts';
 import type { Relation } from '../../pi/records.ts';
 
 type Step = { block: Exclude<Block, { type: 'text' }>;  item: WireAssistant; index: number; key: string; slots: Map<string, Slot> };
@@ -39,12 +39,18 @@ const views = new Map<number, { view: HTMLElement; item: WireItem; slots: Map<st
 const template = document.createElement('template');
 const folds = new Map<string, boolean>();
 const texts = new Map<string, { render: ReturnType<typeof markdown>; view: HTMLElement; blocks: { block: ReturnType<ReturnType<typeof markdown>>[number]; nodes: ChildNode[] }[]; final?: boolean; source?: string; annotationItem?: Extract<WireItem, { kind: 'annotations' }> }>();
-let state: State = { pi: { type: 'starting' }, working: false, aborted: false, name: '', levels: [], cwd: '', home: '', statuses: {}, queue: { steering: [], followUp: [] }, dialogs: [] };
+let state: State = { bash: [], pi: { type: 'starting' }, working: false, aborted: false, name: '', levels: [], cwd: '', home: '', statuses: {}, queue: { steering: [], followUp: [] }, dialogs: [] };
 let epoch = '', after = -1, first: number | undefined, more = false, paging = false, follow = true, lastScrollTop = 0, delay = 200, scrollFrame: number | undefined;
 let escaped = false, dialogId: string | undefined;
 let submitting = false, editorId: string | undefined, dialogTimer: number | undefined, shownExit: number | undefined, pickerButton: HTMLElement | undefined, shownQueue: string | undefined, shownStatuses: string | undefined;
 const pagingPatches: Patch[] = [];
-const draft = attach(element('attachments'), () => refreshComposer(), displayPath);
+let attachmentRefusalTimer: number | undefined;
+const draft = attach(element('attachments'), () => refreshComposer(), displayPath, () => !!editor.bash(), () => {
+  clearTimeout(attachmentRefusalTimer);
+  element('error').textContent = 'a command takes no attachments';
+  attachmentRefusalTimer = setTimeout(() => { if (element('error').textContent === 'a command takes no attachments') element('error').textContent = ''; }, 4000);
+});
+const pendingBash = new Map<string, ReturnType<typeof commandRun>>();
 const editor = composer(element('prompt'), {
   drop: draft.drop, paste: draft.paste,
   input(user) { if (user) escaped = false; refreshComposer(); },
@@ -397,7 +403,7 @@ function put(item: WireItem) {
     else if (item.kind === 'annotations') { view.hidden = true; }
     else if (item.kind === 'job') { view.className = ''; const saved = previous?.slots.get('job'); if (saved?.type === 'job') slots.set('job', saved); }
     else if (item.kind === 'notice') { view.className = 'note'; children.push(node('span', markdownLine(item.text), 'tx'), node('time', timestamp(item.at))); }
-    else if (item.kind === 'bash') children.push(node('div', '$ ' + item.command), node('pre', item.output.text), node('div', 'Exit ' + (item.exit ?? 'unknown'), 'delta'));
+    else if (item.kind === 'bash') { view.className = ''; children.push(commandRun(item, 'bash:' + item.seq).view); }
     else children.push(node('div', item.text, 'notice'));
   }
   children.forEach((child, index) => { if (view.childNodes[index] !== child) view.insertBefore(child, view.childNodes[index] ?? null); });
@@ -425,6 +431,49 @@ function put(item: WireItem) {
   return view;
 }
 
+function commandRun(value: Extract<WireItem, { kind: 'bash' }> | Bash, key: string) {
+  const view = node('div', undefined, 'cmdrun'), line = node('div', undefined, 'line');
+  const bang = node('span'), command = node('span'), meta = node('span', undefined, 'meta'), outcome = node('span'), time = node('span');
+  meta.append(outcome, time); line.append(bang, command, meta);
+  const output = node('div', undefined, 'out'), pre = node('pre'), footer = node('div', undefined, 'ft');
+  output.append(pre, footer);
+  if ('phase' in value && value.phase !== 'completed' && !folds.has(key)) folds.set(key, true);
+  fold(view, key, line, output);
+  const text = (target: HTMLElement, next: string) => { if (target.textContent !== next) target.textContent = next; };
+  const update = (value: Extract<WireItem, { kind: 'bash' }> | Bash) => {
+    const live = 'phase' in value && value.phase !== 'completed';
+    const result = 'phase' in value ? value.phase === 'completed' ? value.result : undefined : value.result;
+    const failed = result?.exit !== undefined && result.exit !== 0;
+    text(bang, live ? '' : value.excludeFromContext ? '!!' : '!');
+    const marker = live ? 'spin' : 'bang' + (value.excludeFromContext ? ' quiet' : '');
+    if (bang.className !== marker) bang.className = marker;
+    const title = value.excludeFromContext ? "not in the model's context" : '';
+    if (bang.title !== title) bang.title = title;
+    text(command, value.command);
+    const commandClass = 'cmd' + (failed ? ' err' : '');
+    if (command.className !== commandClass) command.className = commandClass;
+    text(outcome, result?.cancelled ? 'cancelled' : failed ? 'exit ' + result?.exit : '');
+    const outcomeClass = 'ex' + (failed && !result?.cancelled ? ' err' : '');
+    if (outcome.className !== outcomeClass) outcome.className = outcomeClass;
+    outcome.hidden = !outcome.textContent;
+    text(time, 'phase' in value ? duration((value.phase === 'completed' ? value.ended : Date.now()) - value.started) : '');
+    text(pre, result?.output.text ?? ('output' in value ? value.output.text : '')); pre.classList.toggle('live', live);
+    footer.hidden = !(result?.truncated || result?.output.cut);
+    text(footer, result?.fullOutputPath ? '… full output: ' + result.fullOutputPath : '… output truncated');
+  };
+  update(value);
+  return { view, update };
+}
+function refreshBash() {
+  const ids = new Set(state.bash.map(item => item.id));
+  for (const [id, card] of pendingBash) if (!ids.has(id)) { card.view.remove(); pendingBash.delete(id); }
+  for (const item of state.bash) {
+    let card = pendingBash.get(item.id);
+    if (!card) { card = commandRun(item, 'live-bash:' + item.id); pendingBash.set(item.id, card); }
+    else card.update(item);
+    if (!card.view.isConnected) element('items').append(card.view);
+  }
+}
 function refreshComposer() {
   update(editor.text());
   const blocked = composerBlocked(), working = state.working && !blocked;
@@ -433,19 +482,25 @@ function refreshComposer() {
   composerFocus();
   if (available) focusComposer();
   element('field').classList.toggle('drop', draft.hover);
-  editor.placeholder(draft.hover ? 'Drop to attach' : hasExited() ? 'pi has exited' : working ? 'Steer koa…' : 'Message koa…');
+  const running = state.bash.some(item => item.phase !== 'completed') && !working && editor.empty();
+  editor.running(running);
+  if (!editor.bash() && element('error').textContent === 'a command takes no attachments') { clearTimeout(attachmentRefusalTimer); element('error').textContent = ''; }
+  editor.placeholder(running ? 'running… ⎋ cancels' : draft.hover ? 'Drop to attach' : hasExited() ? 'pi has exited' : working ? 'Steer koa…' : 'Message koa…');
   status();
 }
 function status() {
   const waiting = state.dialogs.length > 0, label = element('status');
   const cause = exitCause();
-  const word = cause ? (cause.kind === 'code' ? 'exited' : cause.kind) + ' ' + cause.value : waiting ? 'waiting' : state.pi.type === 'starting' ? 'starting' : state.working ? 'working' : state.aborted ? 'aborted' : 'idle';
+  const bang = editor.bash(), running = state.bash.find(item => item.phase !== 'completed');
+  label.classList.toggle('err', !!bang && draft.count > 0);
+  label.title = bang && draft.count ? 'remove the attachments' : '';
+  const word = cause ? (cause.kind === 'code' ? 'exited' : cause.kind) + ' ' + cause.value : waiting ? 'waiting' : state.pi.type === 'starting' ? 'starting' : state.working ? 'working' : running ? 'running' : bang ? bang.excludeFromContext ? 'run, quiet' : 'run' : state.aborted ? 'aborted' : 'idle';
   label.textContent = word;
-  if (state.pi.type === 'ready' && state.working && !waiting) {
-    const ms = Math.max(0, Math.floor((Date.now() - (state.since ?? Date.now())) / 1000)) * 1000;
+  if (state.pi.type === 'ready' && (state.working || running) && !waiting) {
+    const ms = Math.max(0, Math.floor((Date.now() - (state.working ? state.since ?? Date.now() : running?.started ?? Date.now())) / 1000)) * 1000;
     label.append(node('span', ' ' + duration(ms, ' '), 'k'));
   }
-  element('dot').className = 'dot' + (hasExited() ? ' off' : waiting ? ' wait' : state.pi.type === 'ready' && state.working ? ' on' : '');
+  element('dot').className = 'dot' + (hasExited() ? ' off' : waiting ? ' wait' : state.pi.type === 'ready' && (state.working || running) ? ' on' : '');
   element('model-name').textContent = state.model?.id ?? '';
   element('thinking').textContent = state.thinking ? '· ' + state.thinking : '';
   const context = state.context, percent = context?.percent;
@@ -552,7 +607,7 @@ async function takeBack() {
 async function stop() {
   if (submitting) return;
   submitting = true;
-  try { await takeBack(); await fetchJSON('/abort'); }
+  try { if (!state.bash.some(item => item.phase === 'running')) await takeBack(); await fetchJSON('/abort'); }
   catch (error) { reportError(error); }
   finally { submitting = false; }
 }
@@ -626,7 +681,7 @@ function apply(record: PageRecord) {
     element('items').replaceChildren();
     element('older').hidden = !more;
     for (const item of record.items) put(item);
-    refreshComposer();
+    refreshBash(); refreshComposer();
   } else if (record.type === 'item') put(record.item);
   else if (record.type === 'patch') {
     const current = items.get(record.seq);
@@ -643,7 +698,7 @@ function apply(record: PageRecord) {
     }
     put(item);
   } else if (record.type === 'state') {
-    state = record; refreshComposer(); dialogs(); queue(); exited();
+    state = record; refreshBash(); refreshComposer(); dialogs(); queue(); exited();
     if (state.pi.type === 'ready' && state.editor && editorId !== state.editor.id) {
       editor.setText(state.editor.text); editorId = state.editor.id;
       void fetchJSON('/editor/ack', { id: state.editor.id }).catch(reportError);
@@ -747,7 +802,7 @@ async function older() {
     }
   } catch (error) { reportError(error); } finally { paging = false; }
 }
-function canSend(text: string) { return !!nameCommand(text) || !draft.busy && draft.count <= ATTACHMENT_LIMITS.files && (!!text.trim() || draft.count > 0); }
+function canSend(text: string) { const bang = editor.bash(); if (bang) return !!bang.command.trim() && !state.bash.some(item => item.phase !== 'completed') && !draft.busy && !draft.count; return !!nameCommand(text) || !draft.busy && draft.count <= ATTACHMENT_LIMITS.files && (!!text.trim() || draft.count > 0); }
 function reportError(error: unknown) { element('error').textContent = error instanceof Error ? error.message : String(error); }
 async function send(mode: PromptMode = 'prompt') {
   const text = editor.text(), name = nameCommand(text), files = name ? [] : draft.files;
@@ -771,11 +826,11 @@ const previewModifiers = (event: MouseEvent | KeyboardEvent) => event.shiftKey &
 const previewHover = (event: KeyboardEvent) => document.documentElement.classList.toggle('preview-modifiers', previewModifiers(event));
 document.addEventListener('keyup', previewHover);
 window.addEventListener('blur', () => { document.documentElement.classList.remove('preview-modifiers'); composerFocus(); });
-document.addEventListener('keydown', event => { previewHover(event); if (previewKey(event)) return; if (event.defaultPrevented || event.metaKey || event.ctrlKey || event.isComposing || state.dialogs.length || pickerButton) return; if (composerReceivesKeys() && !event.altKey && event.key.length === 1 && !(event.key === ' ' && isControl(event.target)) && !isTextInput(event.target)) { event.preventDefault(); editor.focus(); editor.insert(event.key); return; } if (event.key === 'Enter' && hasExited() && event.target === document.body) element('exited').querySelector('button')?.click(); if (event.key === 'Escape') { event.preventDefault(); if (escaped) { editor.setText(''); } else { escaped = true; if (state.working) void stop(); } } });
+document.addEventListener('keydown', event => { previewHover(event); if (previewKey(event)) return; if (event.defaultPrevented || event.metaKey || event.ctrlKey || event.isComposing || state.dialogs.length || pickerButton) return; if (composerReceivesKeys() && !event.altKey && event.key.length === 1 && !(event.key === ' ' && isControl(event.target)) && !isTextInput(event.target)) { event.preventDefault(); editor.focus(); editor.insert(event.key); return; } if (event.key === 'Enter' && hasExited() && event.target === document.body) element('exited').querySelector('button')?.click(); if (event.key === 'Escape') { event.preventDefault(); if (state.bash.some(item => item.phase === 'running')) { escaped = false; void stop(); } else if (state.working) { escaped = true; void stop(); } else if (escaped) { editor.setText(''); } else { escaped = true; } } });
 element('model').onclick = () => picker('model'); element('thinking').onclick = () => picker('thinking');
 document.addEventListener('pointerdown', event => { if (!element('picker').contains(event.target instanceof Node ? event.target : null) && !pickerButton?.contains(event.target instanceof Node ? event.target : null)) closePicker(); });
 element('scroll').onscroll = () => { const scroll = element('scroll'); if (Math.abs(scroll.scrollTop - lastScrollTop) >= 1) { follow = scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight < 60; lastScrollTop = scroll.scrollTop; } if (scroll.scrollTop < 80) void older(); };
-setInterval(status, 1000);
+setInterval(() => { status(); for (const item of state.bash) pendingBash.get(item.id)?.update(item); }, 1000);
 window.addEventListener('resize', positionPicker);
 new ResizeObserver(followResize).observe(element('scroll'));
 new ResizeObserver(([entry]) => {

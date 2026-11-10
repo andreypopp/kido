@@ -1,3 +1,4 @@
+import { bashCommand, shellPathToken, shellQuote } from './prompt.ts';
 import { spawn } from "node:child_process";
 import { accessSync, constants, statSync } from "node:fs";
 import { basename, delimiter, join, resolve } from "node:path";
@@ -145,7 +146,7 @@ async function walk(fd: string, base: string, query: string, signal: AbortSignal
   return text === undefined ? [] : text.trim().split("\n").filter(Boolean).map(path => ({ path: path.replace(/\\/g, "/"), directory: /[\\/]$/.test(path) })).filter(entry => !/(^|\/)\.git(\/|$)/.test(entry.path));
 }
 
-async function files(query: string, quoted: boolean, cwd: string, fd: string | undefined, signal: AbortSignal): Promise<CompletionOption[]> {
+async function files(query: string, cwd: string, fd: string | undefined, signal: AbortSignal): Promise<{ display: string; directory: boolean }[]> {
   if (!fd || signal.aborted) return [];
   const normalized = query.replace(/\\/g, "/"), slash = normalized.lastIndexOf("/");
   let base = "", wanted = normalized, directory = cwd;
@@ -162,16 +163,18 @@ async function files(query: string, quoted: boolean, cwd: string, fd: string | u
     if (entry.directory && score > 0 && wanted) score += 10;
     return { ...entry, score };
   }).filter(entry => entry.score > 0).sort((a, b) => b.score - a.score || a.path.split("/").filter(Boolean).length - b.path.split("/").filter(Boolean).length || a.path.length - b.path.length || a.path.localeCompare(b.path)).slice(0, 20).map(entry => {
-    const display = base + entry.path;
-    const needsQuotes = quoted || pathSeparator.test(display);
-    const insert = "@" + (needsQuotes ? '"' + display + '"' : display) + (entry.directory ? "" : " ");
-    return { label: display, insert, kind: entry.directory ? "directory" : "file", ...(entry.directory && needsQuotes ? { cursor: insert.length - 1 } : {}) };
+    return { display: base + entry.path, directory: entry.directory };
   });
 }
 
 export async function complete(text: string, pos: number, options: { cwd: string; commands(): Promise<readonly CompletionCommand[]>; fd: string | undefined; signal: AbortSignal; agents?: ReturnType<typeof agentDiscovery> }): Promise<CompletionResult> {
   const result: CompletionResult = { from: pos, to: pos, options: [] };
   if (options.signal.aborted) return result;
+  if (bashCommand(text)) {
+    const path = shellPathToken(text, pos);
+    if (!path) return result;
+    return { from: path.from, to: path.to, options: (await files(path.query, options.cwd, options.fd, options.signal)).map(entry => ({ label: entry.display, insert: shellQuote(entry.display) + (entry.directory ? '' : ' '), kind: entry.directory ? 'directory' : 'file' })) };
+  }
   const lineStart = text.lastIndexOf("\n", pos - 1) + 1, before = text.slice(lineStart, pos);
   const mention = fileToken(before), command = slashToken(text, pos);
   if (mention !== undefined) {
@@ -179,7 +182,10 @@ export async function complete(text: string, pos: number, options: { cwd: string
     const { quoted, agent: token } = mention;
     if (quoted && text[pos] === '"') result.to++;
     const agents = token === undefined ? [] : options.agents?.(token) ?? [];
-    result.options = [...agents.map(item => ({ kind: "agent" as const, label: item.label, detail: item.description, insert: item.value + " ", matched: fuzzyMatch(token ?? "", item.label.slice(1)).positions.map(index => index + 1) })), ...await files(mention.text.slice(quoted ? 2 : 1), quoted, options.cwd, options.fd, options.signal)];
+    result.options = [...agents.map(item => ({ kind: "agent" as const, label: item.label, detail: item.description, insert: item.value + " ", matched: fuzzyMatch(token ?? "", item.label.slice(1)).positions.map(index => index + 1) })), ...(await files(mention.text.slice(quoted ? 2 : 1), options.cwd, options.fd, options.signal)).map((entry): CompletionOption => {
+      const needsQuotes = quoted || pathSeparator.test(entry.display), insert = '@' + (needsQuotes ? '"' + entry.display + '"' : entry.display) + (entry.directory ? '' : ' ');
+      return { label: entry.display, insert, kind: entry.directory ? 'directory' : 'file', ...(entry.directory && needsQuotes ? { cursor: insert.length - 1 } : {}) };
+    })];
   } else if (command !== undefined) {
     result.from = pos - command.length;
     const commands = await options.commands(), query = command.slice(1);
