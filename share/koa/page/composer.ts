@@ -25,6 +25,7 @@ export function composer(host: HTMLElement, handlers: { input(user: boolean): vo
         { tag: [tags.processingInstruction, tags.meta, tags.url, tags.atom], class: 'cm-markup' },
         { tag: [tags.strong, tags.heading], class: 'cm-strong' },
         { tag: tags.emphasis, class: 'cm-emphasis' },
+        { tag: tags.quote, class: 'cm-quote' },
         { tag: tags.strikethrough, class: 'cm-strikethrough' },
         { tag: tags.monospace, class: 'cm-monospace' },
         { tag: tags.labelName, class: 'cm-markup cm-monospace' },

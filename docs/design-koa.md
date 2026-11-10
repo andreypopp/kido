@@ -571,6 +571,65 @@ The user decided the look with the mockup `agents.html`:
   batches of one job join into one entry. The page has no live list of
   jobs; the sidebar shows them.
 
+## Reply annotations
+
+Any pi extension can mark spans of a final reply with a type and its
+data, in a custom session entry; reply-annotations.md is the contract.
+koa does not depend on a producer: the first is pi-infer-questions,
+which finds the questions of a reply, and the page renders the
+`question` type. The user decided:
+
+- **An annotation is an item of its own kind,** placed by time, not a
+  field of the assistant item. A final item never changes, and the
+  page's cursor is its last final item, so a later change of a final
+  reply would not reach a page that reconnects after it. As an item,
+  an annotation enters the window and the `/items?before` page as a
+  job notice does.
+- **The transcript checks the entry at its edge.** Live, koa gives it
+  each `entry_appended`; on a rebuild, the entries of `get_entries`
+  (one call beside `get_messages`; a custom entry is not a message)
+  that are on the parent chain of pi's leaf, placed by time among the
+  messages, which keep their branch order. koa applies the rebuild in
+  the callback of the `get_messages` response, which it sends after
+  `get_entries`, so no event that pi wrote after that response is lost.
+  The transcript resolves the reply key to the assistant item and its
+  block, and applies the contract's drop rules. The page never sees
+  an unknown type, a stale entry or a bad span. A second entry for the
+  same block is a new item; the page uses the newest.
+- **The page hides the item** and renders the reply's text block
+  again with the annotations; a reply that arrives after its
+  annotation (a window cut, an older page) reads the page's map of
+  annotations when it renders.
+- **Markers, not a second parser.** `page/annotations.ts` converts the
+  code points to UTF-16 offsets once and makes the marks: an option's
+  start and end, and a question's end. `page/markdown.ts` inserts each
+  mark into the raw source of the top-level token that owns it before
+  marked parses that token. A closing mark at a token boundary belongs
+  to the token before it, an opening mark to the token after it, so a
+  question's controls stay in its list item. marked passes the
+  private-use marker characters through as text, and a walk over the
+  text nodes of the parsed HTML replaces them with the option buttons
+  and the controls. This is the TUI's technique on the DOM, so both
+  renderers share one rule for where a marker can fall: the
+  producer's guarantee that a boundary is never inside Markdown syntax.
+  A marker character in the reply's own text is replaced before the
+  marks go in, so a reply cannot forge a control.
+- **The labels and the click are the TUI's** (pi-infer-questions'
+  `extension.ts`): `page/answers.ts` is its quote and answer rule, a
+  pure function. A click sends nothing: it sets the composer's text
+  and puts the cursor at the end, and the user edits and sends. A
+  control is selected while its answer is the answer of its
+  question's block in the composer; the composer's input refreshes
+  the selection.
+- **The look** is the mockup `questions.html`, chips version
+  (app/design/koa/NOTES.md, "Question controls in a reply").
+
+Without the producer in koa's pi (not installed, an unsupported
+platform, models that fail to load) there is no entry and the reply
+shows as before. A routed runtime's pi runs on the host with the
+host's extensions; only a `pi: runtime` runtime and a remote host need
+the producer where pi runs, and koa does not supply it.
+
 ## Browser mode and its origin rule
 
 `koa --browser` uses the SDK's browser target: the same program and
@@ -613,6 +672,8 @@ routes, the attachments, the restart and the status bytes
 queue's matching, the image sniffer, and the page's DOM rules over a
 fake document with the page's types stripped (`koa-dom.test.ts`). The
 Markdown memo is a pure module, tested under Node against a full
-render of every prefix. Kido.app's `KoaWebviewTests` snapshot each
+render of every prefix, and its annotation marks over each kind of block
+(`koa-page.test.ts`). Kido.app's `KoaWebviewTests` snapshot each
 state of the mockups in light and dark, windowed and narrow, and
-check the composer's keys, focus and popup in a real WebKit.
+check the composer's keys, focus and popup, and the question
+controls' placement and clicks, in a real WebKit.

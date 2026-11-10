@@ -7,7 +7,7 @@ import SidebarFeed
 @testable import Kido
 
 extension VisualTests {
-    private enum KoaScenario { case transcript, dialogs, controls, exit, feed, completion, markdown, media, attachments, userMarkdown, preview, lightbox, agents, composer }
+    private enum KoaScenario { case transcript, dialogs, controls, exit, feed, completion, markdown, media, attachments, userMarkdown, preview, lightbox, agents, composer, questions }
     func testKoaInterruptRestoresNativeInput() async throws {
         WebviewPaneView.visualInitialScript = "document.hasFocus=()=>true;window.requestAnimationFrame=callback=>setTimeout(()=>callback(performance.now()),0);window.cancelAnimationFrame=clearTimeout;"
         defer { WebviewPaneView.visualInitialScript = nil }
@@ -248,6 +248,14 @@ extension VisualTests {
         try await koaWebview(width: 980, height: 560, scenario: .markdown, captures: ["composer-markdown", "composer-markdown-code"])
     }
 
+    func testKoaWebviewQuestionsWide() async throws {
+        try await koaWebview(width: 980, height: 560, scenario: .questions, captures: ["questions-reply", "questions-answered"])
+    }
+
+    func testKoaWebviewQuestionsNarrow() async throws {
+        try await koaWebview(width: 470, height: 560, scenario: .questions, captures: ["narrow-questions-reply", "narrow-questions-answered"])
+    }
+
     func testKoaWebviewCompletionWide() async throws {
         try await koaWebview(width: 980, height: 560, scenario: .completion, captures: Set(["slash-all", "slash-filter", "at-agents", "at-files", "at-mid", "none"].map { "complete-" + $0 }))
     }
@@ -268,7 +276,7 @@ extension VisualTests {
         try JSONSerialization.data(withJSONObject: ["cwd": cwd.path]).write(to: sessionFile)
         let mediaClock = scenario == .media || scenario == .attachments || scenario == .preview || scenario == .lightbox || scenario == .agents || scenario == .composer
         let stamp = Int(try XCTUnwrap(Calendar.current.date(from: DateComponents(year: 2026, month: 11, day: mediaClock ? 10 : 8, hour: mediaClock ? 9 : 14, minute: mediaClock ? 12 : 32))).timeIntervalSince1970 * 1000)
-        let measured = scenario == .completion || scenario == .attachments || scenario == .userMarkdown || scenario == .exit || scenario == .lightbox
+        let measured = scenario == .questions || scenario == .completion || scenario == .attachments || scenario == .userMarkdown || scenario == .exit || scenario == .lightbox
         let measurementClock = measured ? "const ClockDate=Date;window.Date=class extends ClockDate{constructor(...args){super(...(args.length?args:[\(stamp + 12000)]))}static now(){return \(stamp + 12000)}};" : ""
         // WebKit pauses animation frames in an off-screen window.
         if measured {
@@ -620,6 +628,51 @@ extension VisualTests {
             if name == "exited" { steps.append(["type": "stderr", "text": "Killed: 9\n"]); steps.append(["type": "exit", "code": 137]) }
             if name == "picker" { steps.append(["type": "wait", "command": "get_available_models", "data": ["models": [["id": "claude-opus-5-5", "provider": "anthropic"], ["id": "claude-sonnet-5-5", "provider": "anthropic"], ["id": "claude-fable-5-1", "provider": "claude-bridge"], ["id": "gpt-6.1-sol", "provider": "openai-codex"], ["id": "gpt-6-astra", "provider": "openai-codex"]]]]) }
         }
+        if scenario == .questions {
+            let reply = """
+            The sidebar unit is verified: fmt, clippy, lint, unit, e2e and the TypeScript suite pass. Two things before I push.
+
+            - Should I push now, or wait for CI on the rebase?
+            - The breadcrumb test is flaky on Linux. I recommend skipping it on Linux for now.
+
+            Do you want the Linux check at all? It costs 4 minutes of CI, and the user-facing change is macOS only.
+
+            I could also fold the two commits into one before the push.
+
+            What should the release be called?
+            """
+            func span(_ text: String) throws -> [Int] {
+                let range = try XCTUnwrap(reply.range(of: text))
+                return [reply[..<range.lowerBound].unicodeScalars.count, reply[..<range.upperBound].unicodeScalars.count]
+            }
+            let questions: [[String: Any]] = [
+                ["type": "question", "kind": "choice", "range": try span("Should I push now, or wait for CI on the rebase?"), "options": [try span("push now"), try span("wait for CI")]],
+                ["type": "question", "kind": "yes_no", "range": try span("The breadcrumb test is flaky on Linux. I recommend skipping it on Linux for now."), "options": []],
+                ["type": "question", "kind": "yes_no", "range": try span("Do you want the Linux check at all?"), "options": []],
+                ["type": "question", "kind": "choice", "range": try span("I could also fold the two commits into one before the push."), "options": [try span("fold the two commits into one")]],
+                ["type": "question", "kind": "open", "range": try span("What should the release be called?"), "options": []],
+            ]
+            let person: [String: Any] = ["role": "user", "timestamp": stamp, "content": [["type": "text", "text": "Verify the sidebar unit and tell me what is left"]]]
+            let entry: [String: Any] = ["type": "custom", "id": "questions", "parentId": NSNull(), "customType": "reply-annotations", "timestamp": ISO8601DateFormatter().string(from: Date(timeIntervalSince1970: Double(stamp + 1) / 1000)), "data": ["reply": ["at": stamp, "block": 0, "length": reply.unicodeScalars.count], "annotations": questions]]
+            steps = Array(steps.prefix(3))
+            steps[1] = ["type": "respond", "command": "get_messages", "data": ["messages": [person, assistant([["type": "text", "text": reply]])]]]
+            steps.append(["type": "respond", "command": "get_entries", "data": ["entries": [entry], "leafId": "questions"]])
+            let marked = "😀 Pick `one` or **two**?\r\n\r\n- Keep the cache?\r\n\r\n## Use alpha or beta?\r\n\r\n| Choice |\r\n| --- |\r\n| Use red or blue? |\r\n\r\nLiteral \u{E012}999;x\u{E012}"
+            func markedSpan(_ text: String) throws -> [Int] {
+                let range = try XCTUnwrap(marked.range(of: text))
+                return [marked[..<range.lowerBound].unicodeScalars.count, marked[..<range.upperBound].unicodeScalars.count]
+            }
+            let markedQuestions: [[String: Any]] = [
+                ["type": "question", "kind": "choice", "range": try markedSpan("😀 Pick `one` or **two**?"), "options": [try markedSpan("`one`"), try markedSpan("**two**")]],
+                ["type": "question", "kind": "yes_no", "range": try markedSpan("Keep the cache?"), "options": []],
+                ["type": "question", "kind": "choice", "range": try markedSpan("Use alpha or beta?"), "options": [try markedSpan("alpha"), try markedSpan("beta")]],
+                ["type": "question", "kind": "choice", "range": try markedSpan("Use red or blue?"), "options": [try markedSpan("red"), try markedSpan("blue")]],
+            ]
+            var markedMessage = assistant([["type": "text", "text": marked]])
+            markedMessage["timestamp"] = stamp + 1000
+            let markedEntry: [String: Any] = ["type": "custom", "id": "marked-questions", "parentId": "questions", "customType": "reply-annotations", "timestamp": ISO8601DateFormatter().string(from: Date(timeIntervalSince1970: Double(stamp + 2000) / 1000)), "data": ["reply": ["at": stamp + 1000, "block": 0, "length": marked.unicodeScalars.count], "annotations": markedQuestions]]
+            prompt([["type": "message_start", "message": markedMessage], ["type": "message_end", "message": markedMessage], ["type": "entry_appended", "entry": markedEntry]])
+        }
         if captures.contains("geometry") {
             steps = Array(steps.prefix(3))
             steps.append(["type": "wait", "command": "get_available_models", "data": ["models": [["id": "claude-opus-5-5", "provider": "anthropic"]]]])
@@ -700,7 +753,7 @@ extension VisualTests {
         }
         func capture(_ name: String) async throws {
             guard captures.contains(name) else { return }
-            let top = scenario == .media || scenario == .lightbox || scenario == .agents || scenario == .composer
+            let top = scenario == .questions || scenario == .media || scenario == .lightbox || scenario == .agents || scenario == .composer
             window.contentView?.layoutSubtreeIfNeeded()
             pane.webviewView?.layoutSubtreeIfNeeded()
             _ = try await webviewJS(web, "(()=>{if(!document.querySelector('.lightbox')&&!document.querySelector('.dialog')&&!document.querySelector('#exited:not([hidden])')&&document.querySelector('#picker').hidden)window.composer.focus();const scroll=document.querySelector('#scroll');scroll.scrollTop=\(top ? "0" : "scroll.scrollHeight");return true})()")
@@ -726,6 +779,25 @@ extension VisualTests {
         _ = try await webviewJS(web, "(()=>{const NativeDate=Date;window.Date=class extends NativeDate{constructor(...args){super(...(args.length?args:[\(stamp + 12000)]))}static now(){return \(stamp + 12000)}};const style=document.createElement('style');style.textContent='.caret,.spin,.spin::before,.dot.on,.cm-cursorLayer{animation:none!important}';document.head.append(style);return true})()")
         let idleHint = try await webviewJS(web, "document.querySelector('#hint .spin')===null")
         XCTAssertEqual(idleHint, "true")
+        if scenario == .questions {
+            try await webviewUntil(web, "document.querySelectorAll('.ann-opt').length===13")
+            let structure = try await webviewJS(web, "(()=>{const first=document.querySelector('.assistant li'),paragraph=Array.from(document.querySelectorAll('.assistant p')).find(p=>p.textContent.includes('Do you want'));return first.querySelectorAll('button').length===3&&paragraph.querySelector('.ann-ctl').nextSibling.textContent.startsWith(' It costs')&&!document.querySelector('.assistant').textContent.match(/[\\uE010-\\uE012]/)})()")
+            XCTAssertEqual(structure, "true")
+            _ = try await webviewJS(web, "(()=>{const style=document.createElement('style');style.textContent='.ann-opt.snapshot-hover{background:color-mix(in srgb,var(--ko-color-4) 12%,var(--ko-bg));text-decoration-color:var(--ko-color-4)}.ann-ctl .snapshot-hover{border-color:var(--ko-color-4)}';document.head.append(style);const choices=document.querySelectorAll('.assistant li');choices[0].querySelectorAll('button')[1].classList.add('snapshot-hover');choices[1].querySelector('button').classList.add('snapshot-hover');return true})()")
+            try await capture("questions-reply")
+            try await capture("narrow-questions-reply")
+            let answered = try await webviewJS(web, #"(()=>{const rows=document.querySelectorAll('.assistant li');rows[0].querySelectorAll('button')[1].click();rows[1].querySelector('button').click();document.querySelectorAll('.snapshot-hover').forEach(b=>b.classList.remove('snapshot-hover'));return window.composer.text()})()"#)
+            XCTAssertEqual(answered, #""> Should I push now, or wait for CI on the rebase?\n\nwait for CI\n\n> The breadcrumb test is flaky on Linux. I recommend skipping it on Linux for now.\n\nYes""#)
+            try await capture("questions-answered")
+            try await capture("narrow-questions-answered")
+            let clicks = try await webviewJS(web, #"(()=>{const rows=document.querySelectorAll('.assistant li'),editor=window.composer;rows[0].querySelector('button').click();if(!editor.text().includes('\n\npush now\n\n> ')||document.querySelectorAll('.ann-opt.sel').length!==2)return 'replace';rows[0].querySelector('.ann-ctl button').click();if(!editor.text().includes('rebase?\n\n\n\n> '))return 'Other';const open=Array.from(document.querySelectorAll('.ann-ctl button')).find(b=>b.textContent==='Answer');open.click();editor.setText(editor.text()+'Food');open.click();if(!editor.text().endsWith('called?\n\nFood'))return 'Answer';editor.setText('');if(document.querySelector('.ann-opt.sel'))return 'clear selected';editor.setText('not a boundary > Should I push now, or wait for CI on the rebase?\n\npush now');if(rows[0].querySelector('.sel'))return 'invalid quote boundary selected';editor.setText('');return 'ok'})()"#)
+            XCTAssertEqual(clicks, "\"ok\"")
+            try await advance()
+            try await webviewUntil(web, "document.querySelectorAll('.assistant').length===2&&document.querySelectorAll('.ann-ctl').length===9")
+            let marked = try await webviewJS(web, #"(()=>{const reply=document.querySelectorAll('.assistant')[1];if(!reply.textContent.includes('Literal �999;x�')||/[\uE010-\uE012]/.test(reply.textContent)||!reply.querySelector('button code')||!reply.querySelector('button strong')||!reply.querySelector('li .ann-ctl')||!reply.querySelector('h2 .ann-ctl')||!reply.querySelector('td .ann-ctl'))return reply.innerHTML;reply.querySelector('button').click();return window.composer.text()})()"#)
+            XCTAssertEqual(marked, #""> 😀 Pick one or two?\n\none""#)
+            return
+        }
         if scenario == .composer {
             let captureName = captures.first!, name = composerState
             let elapsed = name == "narrow" ? 754 : name == "toast-err" ? 62 : 12
@@ -1203,7 +1275,7 @@ extension VisualTests {
             try await capture("narrow-exited")
         }
         switch scenario {
-        case .transcript, .feed, .completion, .markdown, .media, .attachments, .userMarkdown, .preview, .lightbox, .agents, .composer: break
+        case .transcript, .feed, .completion, .markdown, .media, .attachments, .userMarkdown, .preview, .lightbox, .agents, .composer, .questions: break
         case .dialogs: try await dialogScenario()
         case .controls: try await controlsScenario()
         case .exit: try await exitScenario()

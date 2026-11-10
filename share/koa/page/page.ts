@@ -1,3 +1,4 @@
+import { annotations, update } from './annotations.ts';
 import { markdown } from './markdown.ts';
 import { composer } from './composer.ts';
 import { attach } from './attach.ts';
@@ -32,11 +33,12 @@ const node = <K extends keyof HTMLElementTagNameMap>(tag: K, text?: string, clas
   if (className) result.className = className;
   return result;
 };
+const annotationItems = new Map<number, Map<number, Extract<WireItem, { kind: 'annotations' }>>>();
 const items = new Map<number, WireItem>();
 const views = new Map<number, { view: HTMLElement; item: WireItem; slots: Map<string, Slot> }>();
 const template = document.createElement('template');
 const folds = new Map<string, boolean>();
-const texts = new Map<string, { render: ReturnType<typeof markdown>; view: HTMLElement; blocks: { block: ReturnType<ReturnType<typeof markdown>>[number]; nodes: ChildNode[] }[]; final?: boolean; source?: string }>();
+const texts = new Map<string, { render: ReturnType<typeof markdown>; view: HTMLElement; blocks: { block: ReturnType<ReturnType<typeof markdown>>[number]; nodes: ChildNode[] }[]; final?: boolean; source?: string; annotationItem?: Extract<WireItem, { kind: 'annotations' }> }>();
 let state: State = { pi: { type: 'starting' }, working: false, aborted: false, name: '', levels: [], cwd: '', home: '', statuses: {}, queue: { steering: [], followUp: [] }, dialogs: [] };
 let epoch = '', after = -1, first: number | undefined, more = false, paging = false, follow = true, delay = 200, scrollFrame: number | undefined;
 let escaped = false, dialogId: string | undefined;
@@ -132,27 +134,29 @@ function timestamp(at: number) {
   return (date.getFullYear() === today.getFullYear() ? '' : date.getFullYear() + ' ') + date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) + ' ' + time;
 }
 
-function prose(key: string, source: string, final: boolean) {
+function prose(key: string, source: string, final: boolean, annotationItem?: Extract<WireItem, { kind: 'annotations' }>) {
   let memo = texts.get(key);
   if (!memo) { memo = { render: markdown(), view: node('div', undefined, 'msg prose'), blocks: [] }; texts.set(key, memo); }
-  if (memo.final && final) return memo.view;
-  if (memo.source === source && memo.final === final) return memo.view;
+  if (memo.annotationItem === annotationItem && (memo.final && final || memo.source === source && memo.final === final)) return memo.view;
   if (final) delete memo.source;
   else memo.source = source;
+  memo.annotationItem = annotationItem;
+  const annotated = annotationItem ? annotations(source, annotationItem.annotations, editor) : undefined;
   memo.final = final;
   memo.view.querySelector('.caret')?.remove();
-  const blocks = memo.render(source, final);
+  const blocks = memo.render(source, final, annotated?.marks);
   let first = 0;
   while (first < blocks.length && memo.blocks[first]?.block === blocks[first]) first++;
   for (const saved of memo.blocks.splice(first)) for (const child of saved.nodes) child.remove();
   for (const block of blocks.slice(first)) {
     template.innerHTML = block.html ?? '';
+    annotated?.decorate(template.content);
     const nodes = [...template.content.childNodes];
-    if (!block.streaming) delete block.html;
     for (const pre of nodes.flatMap(child => child instanceof Element ? [child, ...child.querySelectorAll('pre')] : []).filter(child => child.tagName === 'PRE')) {
       const language = pre.querySelector('code')?.className.match(/language-(\S+)/)?.[1];
       if (language) pre.append(node('span', language, 'lang'));
     }
+    if (!block.streaming) delete block.html;
     memo.blocks.push({ block, nodes });
     memo.view.append(...nodes);
   }
@@ -371,7 +375,7 @@ function put(item: WireItem) {
     view.className = 'assistant';
     item.blocks.forEach((block, index) => {
       const key = item.seq + ':' + index;
-      if (block.type === 'text') { flush(); if (block.text) children.push(prose(key, block.text, item.final)); }
+      if (block.type === 'text') { flush(); if (block.text) children.push(prose(key, block.text, item.final, annotationItems.get(item.seq)?.get(index))); }
       else if (block.type === 'tool' && block.agent) { flush(); const saved = previous?.slots.get('agent:' + key); if (saved?.type === 'agent') slots.set('agent:' + key, saved); children.push(agentCard(block.agent, block.started ?? item.at, 'agent:' + key, slots)); }
       else steps.push({ block, item, key, index, slots });
     });
@@ -388,6 +392,7 @@ function put(item: WireItem) {
       children.push(time, text);
     } else if (item.kind === 'notify') { view.className = 'note ' + item.level; children.push(node('span', item.text.text, 'tx'), node('time', timestamp(item.at))); }
     else if (item.kind === 'agent') { view.className = ''; children.push(agentCard(item, item.at, 'agent:' + item.seq, slots)); }
+    else if (item.kind === 'annotations') { view.hidden = true; }
     else if (item.kind === 'job') { view.className = ''; const saved = previous?.slots.get('job'); if (saved?.type === 'job') slots.set('job', saved); }
     else if (item.kind === 'bash') children.push(node('div', '$ ' + item.command), node('pre', item.output.text), node('div', 'Exit ' + (item.exit ?? 'unknown'), 'delta'));
     else children.push(node('div', item.text, 'notice'));
@@ -400,6 +405,16 @@ function put(item: WireItem) {
     element('items').insertBefore(view, views.get(next)?.view ?? null);
   }
   if (slots.size || previous?.slots.size || !previous) reconcileRuns(item.seq);
+  if (item.kind === 'annotations') {
+    let blocks = annotationItems.get(item.reply.seq);
+    if (!blocks) { blocks = new Map(); annotationItems.set(item.reply.seq, blocks); }
+    const previous = blocks.get(item.reply.block);
+    if (!previous || previous.seq < item.seq) {
+      blocks.set(item.reply.block, item);
+      const reply = items.get(item.reply.seq);
+      if (reply) { put({ ...reply }); update(editor.text()); }
+    }
+  }
   if (item.kind === 'job') reconcileJobs(item.seq);
   element('older').hidden = !more;
   after = Math.max(after, first - 1);
@@ -408,6 +423,7 @@ function put(item: WireItem) {
 }
 
 function refreshComposer() {
+  update(editor.text());
   const blocked = composerBlocked(), working = state.working && !blocked;
   const available = element('field').inert && !blocked;
   element('field').inert = blocked;
@@ -600,7 +616,7 @@ function statuses() {
 }
 function apply(record: PageRecord) {
   if (record.type === 'reset') {
-    epoch = record.epoch; after = -1; first = undefined; items.clear(); views.clear(); texts.clear(); folds.clear(); jobOwners.clear(); pagingPatches.length = 0; more = record.more;
+    epoch = record.epoch; after = -1; first = undefined; items.clear(); views.clear(); texts.clear(); annotationItems.clear(); folds.clear(); jobOwners.clear(); pagingPatches.length = 0; more = record.more;
     element('items').replaceChildren();
     element('older').hidden = !more;
     for (const item of record.items) put(item);

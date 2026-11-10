@@ -37,6 +37,71 @@ function assistant(text: string, stopReason: "stop" | "error" = "stop"): Extract
   return { role: "assistant", content: [{ type: "text", text }], api: "openai-responses", provider: "openai", model: "test", usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } }, stopReason, timestamp: 123 };
 }
 
+test('reply annotations resolve live and replay, validate code points and keep cursor and paging items', t => {
+  const view = transcript({ dir: directory(t), flushMs: 1 });
+  t.after(() => view.close());
+  const message = assistant('😀 Pick one or two?');
+  const question = { type: 'question', kind: 'choice', range: [2, 18], options: [[7, 10], [14, 17], [0, 1], [9, 8], [7, 30]] };
+  const entry = { type: 'custom' as const, id: 'annotation', parentId: null, customType: 'reply-annotations', timestamp: new Date(124).toISOString(), data: { reply: { at: 123, block: 0, length: 18 }, annotations: [question, { ...question, type: 'future' }, { ...question, kind: 'future' }, { ...question, range: [18, 2] }, { ...question, range: [0, 19] }] } };
+  view.message(message, 'start'); view.message(message, 'end');
+  const events = request(view, '/events'), epoch = record(events[0]).epoch;
+  view.annotation(entry);
+  const item = { seq: 1, at: 124, final: true, kind: 'annotations', reply: { seq: 0, block: 0 }, annotations: [{ ...question, options: [[7, 10], [14, 17]] }] };
+  assert.deepEqual(record(events.at(-1)).item, item);
+  assert.deepEqual(record(request(view, '/events?epoch=' + epoch + '&after=0')[0]).item, item);
+  const live = JSON.parse(request(view, '/items?before=100').join('')).items;
+  for (const bad of [{ ...entry, data: { ...entry.data, reply: { ...entry.data.reply, length: 19 } } }, { ...entry, data: { ...entry.data, reply: { ...entry.data.reply, at: 999 } } }, { ...entry, data: { ...entry.data, annotations: [{ ...question, type: 'unknown' }] } }]) view.annotation(bad);
+  assert.deepEqual(JSON.parse(request(view, '/items?before=100').join('')).items, live);
+  const replacement = { ...entry, id: 'replacement', parentId: entry.id, timestamp: new Date(126).toISOString(), data: { ...entry.data, annotations: [{ ...question, kind: 'open' }] } };
+  view.annotation(replacement);
+  const replaced = JSON.parse(request(view, '/items?before=100').join('')).items;
+  assert.equal(replaced[2].annotations[0].kind, 'open'); assert.equal(replaced[2].annotations[0].options, undefined);
+  view.rebuild([message, { ...assistant('Later'), timestamp: 130 }], 'same', [entry, replacement], replacement.id);
+  const replay = JSON.parse(request(view, '/items?before=100').join('')).items;
+  assert.deepEqual(replay.slice(0, 3), replaced);
+  assert.deepEqual(replay.map((item: WireItem) => item.kind), ['assistant', 'annotations', 'annotations', 'assistant']);
+  assert.deepEqual(JSON.parse(request(view, '/items?before=2').join('')).items, live);
+});
+
+test('reply annotations keep disjoint questions and options in text order', t => {
+  const view = transcript({ dir: directory(t), flushMs: 1 });
+  t.after(() => view.close());
+  view.rebuild([assistant('01234567890123456789')]);
+  const question = (range: number[], options: number[][] = []) => ({ type: 'question', kind: 'choice', range, options });
+  view.annotation({ type: 'custom', id: 'overlap', parentId: null, timestamp: new Date(124).toISOString(), customType: 'reply-annotations', data: {
+    reply: { at: 123, block: 0, length: 20 },
+    annotations: [question([8, 14]), question([2, 10], [[7, 9], [3, 6], [5, 8], [6, 7], [3, 4]]), question([10, 15]), question([15, 20]), question([2, 3])],
+  } });
+  const items = JSON.parse(request(view, '/items?before=100').join('')).items;
+  assert.deepEqual(items[1].annotations, [question([2, 10], [[3, 6], [6, 7], [7, 9]]), question([10, 15]), question([15, 20])]);
+});
+
+test('reply annotation replay follows the active leaf, not another branch with the same reply', t => {
+  const view = transcript({ dir: directory(t), flushMs: 1 });
+  t.after(() => view.close());
+  const message = assistant('Should I proceed?');
+  const root = { type: 'message' as const, id: 'reply', parentId: null, timestamp: new Date(123).toISOString(), message };
+  const left = { type: 'custom' as const, id: 'left', parentId: root.id, timestamp: new Date(124).toISOString(), customType: 'reply-annotations', data: { reply: { at: 123, block: 0, length: 17 }, annotations: [{ type: 'question', kind: 'open', range: [0, 17] }] } };
+  const right = { ...left, id: 'right', timestamp: new Date(125).toISOString(), data: { ...left.data, annotations: [{ type: 'question', kind: 'yes_no', range: [0, 17] }] } };
+  for (const [leaf, kind] of [['left', 'open'], ['right', 'yes_no']]) {
+    view.rebuild([message], 'branch', [root, left, right], leaf);
+    const items = JSON.parse(request(view, '/items?before=100').join('')).items;
+    assert.equal(items.length, 2); assert.equal(items[1].annotations[0].kind, kind);
+  }
+  view.rebuild([message], 'branch', [root, left, right], root.id);
+  assert.equal(JSON.parse(request(view, '/items?before=100').join('')).items.length, 1);
+  view.annotation({ ...left, timestamp: 'not a timestamp' });
+  assert.equal(JSON.parse(request(view, '/items?before=100').join('')).items.length, 1);
+});
+
+test('reply annotation replay keeps branch message order when timestamps go backward', t => {
+  const view = transcript({ dir: directory(t), flushMs: 1 });
+  t.after(() => view.close());
+  view.rebuild([{ ...assistant('first'), timestamp: 200 }, { ...assistant('second'), timestamp: 100 }]);
+  const items = JSON.parse(request(view, '/items?before=100').join('')).items;
+  assert.deepEqual(items.map((item: { blocks: { text: string }[] }) => item.blocks[0].text), ['first', 'second']);
+});
+
 test('startup notifications bind to the first session and not to a later session', t => {
   const view = transcript({ dir: directory(t), flushMs: 1 });
   view.notify('Extension failed to load', 'error');

@@ -4,13 +4,21 @@ import { createHash } from "node:crypto";
 import { mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { imageInfo, imageExtensions } from "./koa-image.ts";
-import { pathArg } from "./koa-records.ts";
+import { pathArg, type Annotation } from "./koa-records.ts";
 import { isRelation, isAgentFailure } from "../pi/records.ts";
 import { promptText } from "./prompt.ts";
 import type { Text, Block, Item, Assistant, WireItem, State, PageRecord, ImageRef, Attachment, AgentCall, NotifyLevel } from "./koa-records.ts";
 import type { AgentRef, AgentOutcome, JobRef, JobEnd, Inbound, AgentDetails, NoticeDetails, StreamDetails } from "../pi/records.ts";
 import { mintId, contentText, utf8Prefix, isRecord, type Content } from "../pi/text.ts";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
+import type { SessionEntry } from "@earendil-works/pi-coding-agent";
+
+function decodeAnnotation(entry: SessionEntry): { at: number; reply: { at: number; block: number; length: number }; annotations: unknown[] } | undefined {
+  if (entry.type !== 'custom' || entry.customType !== 'reply-annotations' || !isRecord(entry.data)) return;
+  const { reply, annotations } = entry.data, at = Date.parse(entry.timestamp);
+  if (!Number.isFinite(at) || !isRecord(reply) || typeof reply.at !== 'number' || !Number.isFinite(reply.at) || typeof reply.block !== 'number' || !Number.isSafeInteger(reply.block) || reply.block < 0 || typeof reply.length !== 'number' || !Number.isSafeInteger(reply.length) || reply.length < 0 || !Array.isArray(annotations)) return;
+  return { at, reply: { at: reply.at, block: reply.block, length: reply.length }, annotations };
+}
 
 const MAX_WEBVIEW_WINDOW_ITEMS = 40;
 const MAX_WEBVIEW_WINDOW_BYTES = 256 * 1024;
@@ -327,10 +335,42 @@ export function transcript({ dir, flushMs, metrics = false }: { dir: string; flu
     items.push(item);
     if (!branch) { publish(item); flush(); }
   };
-  const rebuild = (messages: readonly AgentMessage[] = [], nextSession?: string): void => {
+  const annotation = (entry: SessionEntry, notify = true): void => {
+    const decoded = decodeAnnotation(entry);
+    if (!decoded) return;
+    flush(notify);
+    const { reply, at } = decoded;
+    const target = items.findLast(item => item.kind === 'assistant' && item.at === reply.at);
+    const block = target?.kind === 'assistant' ? target.blocks[reply.block] : undefined;
+    if (!target || block?.type !== 'text' || Array.from(block.text).length !== reply.length) return;
+    const span = (value: unknown, start: number, end: number): value is [number, number] => Array.isArray(value) && value.length === 2 && value.every(Number.isSafeInteger) && value[0] >= start && value[0] < value[1] && value[1] <= end;
+    const disjoint = <T>(spans: T[], range: (value: T) => [number, number]): T[] => {
+      let end = 0;
+      return spans.sort((a, b) => range(a)[0] - range(b)[0]).filter(value => {
+        const next = range(value);
+        if (next[0] < end) return false;
+        end = next[1]; return true;
+      });
+    };
+    const annotations = disjoint(decoded.annotations.flatMap((value): Annotation[] => {
+      if (!isRecord(value) || value.type !== 'question' || !span(value.range, 0, reply.length)) return [];
+      const range = value.range;
+      switch (value.kind) {
+        case 'choice':
+          if (!Array.isArray(value.options)) return [];
+          return [{ type: 'question', kind: value.kind, range, options: disjoint(value.options.filter((option): option is [number, number] => span(option, range[0], range[1])), option => option) }];
+        case 'yes_no': case 'open': return [{ type: 'question', kind: value.kind, range }];
+        default: return [];
+      }
+    }), value => value.range);
+    if (!annotations.length) return;
+    const item: Item = { kind: 'annotations', seq: items.length, at, final: true, reply: { seq: target.seq, block: reply.block }, annotations };
+    items.push(item);
+    if (notify) { publish(item); flush(); }
+  };
+  const rebuild = (messages: readonly AgentMessage[] = [], nextSession?: string, entries: readonly SessionEntry[] = [], leafId: string | null = null): void => {
     const notices = session.type === 'unbound' || session.id === nextSession ? items.filter(item => item.kind === 'notify').sort((a, b) => a.at - b.at) : [];
     session = { type: 'bound', id: nextSession };
-    let nextNotice = 0;
     images.clear(); rmSync(imageDir, { recursive: true, force: true }); mkdirSync(imageDir, { mode: 0o700 });
     epoch = mintId();
     items = [];
@@ -340,11 +380,27 @@ export function transcript({ dir, flushMs, metrics = false }: { dir: string; flu
     pending.clear();
     pendingTools.clear();
     tools.clear();
-    for (const message of messages) {
-      while (nextNotice < notices.length && notices[nextNotice].at <= message.timestamp) { items.push({ ...notices[nextNotice++], seq: items.length }); }
-      applyMessage(message, 'branch');
+    const byId = new Map(entries.map(entry => [entry.id, entry]));
+    const active: SessionEntry[] = [];
+    for (let entry = leafId === null ? undefined : byId.get(leafId); entry; entry = entry.parentId === null ? undefined : byId.get(entry.parentId)) { active.push(entry); byId.delete(entry.id); }
+    const extra = [
+      ...notices.map(notice => ({ type: 'notice' as const, at: notice.at, notice })),
+      ...active.reverse().flatMap(entry => { const decoded = decodeAnnotation(entry); return decoded ? [{ type: 'annotation' as const, at: decoded.at, entry }] : []; }),
+    ].sort((a, b) => a.at - b.at);
+    let next = 0;
+    const replay = messages.flatMap(message => {
+      const start = next;
+      while (next < extra.length && extra[next].at < message.timestamp) next++;
+      return [...extra.slice(start, next), { type: 'message' as const, message }];
+    });
+    replay.push(...extra.slice(next));
+    for (const event of replay) {
+      switch (event.type) {
+        case 'message': applyMessage(event.message, 'branch'); break;
+        case 'notice': items.push({ ...event.notice, seq: items.length }); break;
+        case 'annotation': annotation(event.entry, false); break;
+      }
     }
-    while (nextNotice < notices.length) items.push({ ...notices[nextNotice++], seq: items.length });
     const responses = [...subscribers];
     subscribers.clear();
     flush(false);
@@ -419,5 +475,5 @@ export function transcript({ dir, flushMs, metrics = false }: { dir: string; flu
     const item = items[seq], block = item?.kind === 'assistant' ? item.blocks[index] : undefined;
     return pathArg(block);
   };
-  return { stepPath, message, thinking, rebuild, toolRunning, toolPartial, toolDone, state, notify, handle, close, get metrics() { return counters && { ...counters, subscribers: subscribers.size }; } };
+  return { stepPath, message, thinking, annotation, rebuild, toolRunning, toolPartial, toolDone, state, notify, handle, close, get metrics() { return counters && { ...counters, subscribers: subscribers.size }; } };
 }

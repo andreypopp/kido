@@ -28,7 +28,7 @@ question controls, is approved but not built yet.
 | The completion popup | `complete.html` | "The completion popup" |
 | Images, attachments, Quick Look | `media.html` | "Images, attachments and Quick Look" |
 | Agent cards and job lines | `agents.html` | "Agent messages and job notices" |
-| Question controls in a reply | `questions.html` | "Question controls in a reply" (approved, future work: plans/koa-questions.md) |
+| Question controls in a reply | `questions.html` | "Question controls in a reply" |
 
 `working.html` holds the five working-state variants from which the
 user chose; the foot of `composer.html` replaced the chosen one.
@@ -120,8 +120,9 @@ An agent card splits a run as a text does.
 
 - A 9pt-radius field on the dock's glass ("The composer floats over
   the transcript"), 9pt 12pt padding. Focused: the border takes
-  `--ko-focus`, the pane's focus colour. The text grows to six lines
-  and then scrolls. The editor draws its cursor in `--ko-cursor`.
+  `--ko-focus`, the pane's focus colour. The text grows to nine lines
+  and then scrolls ("Question controls in a reply"); a quote line is
+  in `--muted`. The editor draws its cursor in `--ko-cursor`.
 - No button: Return sends (a steer while koa works), Escape aborts,
   and nothing in the field says so (user, 2026-11-10, with
   `composer.html`).
@@ -691,9 +692,10 @@ var(--accent) 60%, var(--fg))`, .8em terminal font as before, in
 light and dark. agents.html's `data-ut` holds the two rejected
 alternatives (fg over the tint, the bare accent) for reference.
 
-## Question controls in a reply (questions.html; approved, 2026-11-10; not built)
+## Question controls in a reply (questions.html; approved, 2026-11-10)
 
-The "reply annotations" contract (plans/koa-questions.md): an
+The "reply annotations" contract (docs/reply-annotations.md, and
+docs/design-koa.md, "Reply annotations"): an
 extension marks the questions of a final reply (range, kind, the
 options of a choice), and the page puts controls in the prose. The
 labels and the click rule are the TUI's (pi-infer-questions,
@@ -735,5 +737,5 @@ function). The question's own text is not styled.
 Renders: `/tmp/koa-shots/questions-<state>-<theme>-<width>.png`,
 states reply (hover on "wait for CI" and on a "Yes"), answered (two
 clicks), narrow; and `questions-reply-slash-light-wide.png` (the TUI's
-labels). Approved by the user; not built yet: plans/koa-questions.md
-plans the work.
+labels). Approved by the user; the chips version is built
+(docs/design-koa.md, "Reply annotations").

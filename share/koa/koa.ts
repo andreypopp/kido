@@ -251,9 +251,15 @@ async function main(): Promise<void> {
       if (response.success && response.command === "get_available_thinking_levels") { state.levels = response.data.levels; if (notify) publish(); }
     });
     let session: string | undefined;
-    const rebuild = () => link.command({ type: "get_messages" }, response => {
-      if (response.success && response.command === "get_messages") feed.rebuild(response.data.messages, session);
-    });
+    const rebuild = () => {
+      let entries: Extract<RpcResponse, { command: 'get_entries'; success: true }>['data'] | undefined;
+      return Promise.all([
+        link.command({ type: 'get_entries' }, response => { if (response.success && response.command === 'get_entries') entries = response.data; }),
+        link.command({ type: 'get_messages' }, response => {
+          if (response.success && response.command === 'get_messages' && entries) feed.rebuild(response.data.messages, session, entries.entries, entries.leafId);
+        }),
+      ]);
+    };
     const refresh = async () => {
       if (pi.type === "exited" || stopping) return;
       pi = { type: "starting" };
@@ -296,6 +302,7 @@ async function main(): Promise<void> {
     const event = (event: JsonAgentSessionEvent, state: Omit<State, "pi" | "queue">): void => {
       if (pi.type === "exited" || stopping) return;
       switch (event.type) {
+        case 'entry_appended': feed.annotation(event.entry); break;
         case "message_start": {
           if (event.message.role === "assistant") { clearTimeout(argumentTimer); argumentTimer = undefined; partial = event.message; argumentsText.clear(); }
           if (event.message.role === "user") { userAttachments = pendingPrompts.start(contentText(event.message.content)); attached.consume(userAttachments.map(file => file.id), "used"); }

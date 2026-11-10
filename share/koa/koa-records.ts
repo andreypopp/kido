@@ -24,11 +24,13 @@ export type AgentCall = { direction: 'out'; to: AgentRef; text: Text; call: { to
 type ToolResult = Text & { images: ImageRef[] };
 type ToolState = { type: "pending" } | { type: "running"; result?: ToolResult } | { type: "done"; result: ToolResult; error: boolean } | { type: "not_run" };
 export type Block = (({ type: "text" } | { type: "thinking" }) & { text: string; redacted?: boolean; started?: number; ended?: number }) | { type: "tool"; id: string; name: string; args: Text; state: ToolState; started?: number; ended?: number; durationMs?: number; exit?: number; agent?: AgentCall; job?: JobRef };
+export type Annotation = { type: 'question'; range: [number, number] } & ({ kind: 'choice'; options: [number, number][] } | { kind: 'yes_no' } | { kind: 'open' });
 export type Item = { seq: number; at: number; final: boolean } & (
   { kind: "user"; text: string; images: ImageRef[]; attachments: Attachment[] } |
   { kind: "assistant"; blocks: Block[]; stop: string; error: string; ended?: number; lifecycle: "streaming" | "ended" } |
   { kind: 'agent'; direction: 'in'; from: AgentRef; text: Text; inbound: Inbound } |
   { kind: 'job'; job: JobRef; event: { type: 'ended'; end: JobEnd; tail: Text } | { type: 'stream'; batch: Text; omitted: number; cut: boolean } } |
+  { kind: 'annotations'; reply: { seq: number; block: number }; annotations: Annotation[] } |
   { kind: "notify"; level: NotifyLevel; text: Text } |
   { kind: "notice"; customType: string; from: string; text: string } |
   { kind: "bash"; command: string; output: Text; exit?: number } |

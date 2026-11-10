@@ -427,6 +427,25 @@ process.stdin.on('end', () => process.exit(0));
 
 const assistantMessage = { ...assistant("stop"), api: "test", provider: "test", model: "test", usage: {}, timestamp: 42 };
 
+test('reply annotations reach events live and on get_entries rebuild', { timeout: 10000 }, async t => {
+  const message = { ...assistantMessage, content: [{ type: 'text', text: 'Should I proceed?' }] };
+  const entry = { type: 'custom', id: 'annotation', parentId: null, customType: 'reply-annotations', timestamp: new Date(43).toISOString(), data: { reply: { at: 42, block: 0, length: 17 }, annotations: [{ type: 'question', kind: 'yes_no', range: [0, 17], options: [] }] } };
+  const app = await fixture(t, [
+    { type: 'wait', command: 'prompt', events: [{ type: 'message_start', message }, { type: 'message_end', message }, { type: 'entry_appended', entry }] },
+    { type: 'respond', command: 'get_messages', data: { messages: [message] } },
+    { type: 'respond', command: 'get_entries', data: { entries: [entry], leafId: entry.id } },
+    { type: 'wait', command: 'prompt', events: [{ type: 'compaction_end' }] },
+  ], {}, undefined, true, [], resolve('../koa/koa.ts'));
+  await app.post('prompt', { text: 'go', mode: 'prompt', attachments: [] });
+  const live = await app.until(record => record.type === 'item' && record.item?.kind === 'annotations');
+  assert.deepEqual(live.item.reply, { seq: 0, block: 0 });
+  const count = app.count();
+  await app.post('prompt', { text: 'rebuild', mode: 'prompt', attachments: [] });
+  const replay = await app.until(record => record.type === 'reset' && record.items?.some((item: { kind: string }) => item.kind === 'annotations'), count);
+  assert.deepEqual(replay.items.find((item: { kind: string }) => item.kind === 'annotations'), live.item);
+  assert.ok((await app.log()).filter(record => record.type === 'get_entries').length >= 2);
+});
+
 test("RPC deltas, authoritative ends, tools, state, status and command correlation", { timeout: 10000 }, async t => {
   const app = await fixture(t, [
     { type: "wait", command: "prompt", events: [

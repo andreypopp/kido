@@ -70,6 +70,11 @@ async function page() {
     };
   };
   const context = { getComputedStyle: () => ({ display: 'block' }), composer, nameCommand, ATTACHMENT_LIMITS, isAttachment, pathArg, jobEndText, AbortController, AbortSignal, CustomEvent: class { type: string; detail?: unknown; constructor(type: string, options?: { detail?: unknown }) { this.type = type; this.detail = options?.detail; } }, Node, Element: Node, HTMLElement: Node, HTMLButtonElement: Node, HTMLImageElement: Node, markdown, document, window: { ko: {}, addEventListener(type: string, handler: (event?: unknown) => void) { windowListeners.set(type, handler); } }, innerWidth: 980, innerHeight: 560, Event: class { type: string; constructor(type: string) { this.type = type; } }, console, setInterval() {}, clearInterval() {}, setTimeout, clearTimeout, requestAnimationFrame() {}, fetch: async () => ({ ok: true, json: async () => ({}) }) };
+  const answersSource = stripTypeScriptTypes(await readFile(new URL('page/answers.ts', import.meta.url), 'utf8')).replace(/^export /gm, '');
+  const annotationsSource = stripTypeScriptTypes(await readFile(new URL('page/annotations.ts', import.meta.url), 'utf8')).replace(/^import .*;\n/gm, '').replace(/^export /gm, '');
+  Object.assign(context, runInNewContext(answersSource + '\n' + annotationsSource + '\n({annotations,update})', context));
+  Object.assign(document, { createTreeWalker: () => ({ nextNode: () => false }) });
+  Object.assign(context, { NodeFilter: { SHOW_TEXT: 4 } });
   const attachSource = stripTypeScriptTypes(await readFile(new URL('page/attach.ts', import.meta.url), 'utf8')).replace(/^import .*;\n/gm, '').replace(/^export /gm, '');
   const httpSource = stripTypeScriptTypes(await readFile(new URL('page/http.ts', import.meta.url), 'utf8')).replace(/^import .*;\n/gm, '').replace(/^export /gm, '');
   const previewSource = stripTypeScriptTypes(await readFile(new URL('page/preview.ts', import.meta.url), 'utf8')).replace(/^export /gm, '');
@@ -77,6 +82,22 @@ async function page() {
   Object.assign(context, { fetchJSON: runInNewContext(httpSource + '\nfetchJSON', context), attach: runInNewContext(attachSource + '\nattach', context) });
   return { context, elements, listeners, windowListeners, handlers: () => handlers, prompt: () => prompt, text: () => text(), run: (code: string) => runInNewContext("{\n" + source.replace(/^import .*;\n/gm, "").replace(/^setInterval\([\s\S]*$/m, "") + "\n" + code + "\n}", context) };
 }
+
+test('annotation map attaches a late reply, hides items and re-renders final text only for a new annotation item', async () => {
+  const fixture = await page();
+  const result = fixture.run(`
+    const reply={kind:'assistant',seq:0,at:1,final:true,stop:'stop',error:'',blocks:[{type:'text',text:'Pick one?\\n\\nUntouched.'}]};
+    const entry={kind:'annotations',seq:1,at:2,final:true,reply:{seq:0,block:0},annotations:[{type:'question',range:[0,9],kind:'open',options:[]}]};
+    put(entry); put(reply);
+    const memo=texts.get('0:0'), kept=memo.blocks.at(-1).block, touched=memo.blocks[0].block;
+    const attached=memo.annotationItem===entry&&views.get(1).view.hidden;
+    put({...entry,seq:2,annotations:[{type:'question',range:[0,9],kind:'yes_no',options:[]}]});
+    const replaced=memo.annotationItem.seq===2&&memo.blocks.at(-1).block!==kept&&memo.blocks[0].block!==touched&&memo.source===undefined;
+    put(entry);
+    [attached,replaced,memo.annotationItem.seq===2];
+  `);
+  assert.deepEqual(Array.from(result), [true, true, true]);
+});
 
 test('/name keeps draft attachments for the next prompt', async () => {
   const app = await page(), requests: { text: string; attachments: string[] }[] = [];

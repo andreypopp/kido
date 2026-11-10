@@ -6,7 +6,7 @@ import { spawn } from "node:child_process";
 import { connect } from "node:net";
 import type { RpcCommand } from "@earendil-works/pi-coding-agent";
 
-type Step = { type: "respond"; command: "get_state" | "get_messages" | "get_session_stats" | "get_available_thinking_levels" | "get_commands"; data: object; after?: object[] } | { type: "emit"; event: object } | { type: "raw"; text: string } | { type: "stderr"; text: string } | { type: "wait"; command: string; events?: object[]; after?: object[]; data?: object; error?: string; echo?: boolean } | { type: "exit"; code: number } | { type: "repeat"; count: number; events: object[]; delayMs?: number };
+type Step = { type: "respond"; command: "get_state" | "get_entries" | "get_messages" | "get_session_stats" | "get_available_thinking_levels" | "get_commands"; data: object; after?: object[] } | { type: "emit"; event: object } | { type: "raw"; text: string } | { type: "stderr"; text: string } | { type: "wait"; command: string; events?: object[]; after?: object[]; data?: object; error?: string; echo?: boolean } | { type: "exit"; code: number } | { type: "repeat"; count: number; events: object[]; delayMs?: number };
 const script: Step[] = process.env.KOA_FAKE_SCRIPT ? readFileSync(process.env.KOA_FAKE_SCRIPT, "utf8").trim().split("\n").filter(Boolean).map(line => JSON.parse(line)) : [];
 let next = 0;
 let working = false;
@@ -59,6 +59,7 @@ async function command(value: { type: string; id: string; message?: string; imag
   if (value.type === "prompt") data = { disposition: working ? "queued" : "started" };
   else if (value.type === "get_commands") data = { commands: [] };
   else if (value.type === "get_state") data = { sessionName: "Fake pi", thinkingLevel: "low", sessionId: "fake", isStreaming: working };
+  else if (value.type === "get_entries") data = { entries: [], leafId: null };
   else if (value.type === "get_messages") data = { messages: [] };
   else if (value.type === "get_available_thinking_levels") data = { levels: ["off", "low", "high"] };
   else if (value.type === "get_session_stats") data = { contextUsage: { tokens: 123, contextWindow: 1000, percent: 12.3 } };
@@ -82,7 +83,7 @@ async function command(value: { type: string; id: string; message?: string; imag
     await write([response, ...step.after ?? []].map(record => JSON.stringify(record) + "\n").join(""));
     await advance();
   } else {
-    const introspection = ["get_state", "get_messages", "get_available_thinking_levels", "get_session_stats", "get_commands"].includes(value.type);
+    const introspection = ["get_state", "get_entries", "get_messages", "get_available_thinking_levels", "get_session_stats", "get_commands"].includes(value.type);
     if (!introspection && (step?.type === "wait" || !["prompt", "abort", "steer", "follow_up"].includes(value.type))) {
       await emit({ type: "response", command: value.type, id: value.id, success: false, error: step?.type === "wait" ? `expected ${step.command}` : `unsupported command ${value.type}` });
     } else {
