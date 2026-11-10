@@ -1,10 +1,10 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { constants, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { open } from 'node:fs/promises';
-import { basename, dirname, isAbsolute, join } from 'node:path';
+import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 import { imageInfo } from '../pi/image.ts';
 import { mintId } from '../pi/text.ts';
-import { readBody, respond, serveFile } from '../pi/transcript.ts';
+import { readBody, respond, fileDisposition } from '../pi/transcript.ts';
 import { ATTACHMENT_LIMITS, type Attachment, type UploadProgress } from './records.ts';
 import type { RpcCommand } from '@earendil-works/pi-coding-agent';
 
@@ -13,6 +13,7 @@ type Entry = { type: 'uploading'; path: string; name: string; size: number; rece
 
 class FileError extends Error {
   readonly kind: 'too_large' | 'unreadable';
+  get status(): number { return this.kind === 'too_large' ? 413 : this.cause instanceof Error && 'code' in this.cause && this.cause.code === 'ENOENT' ? 404 : 403; }
   constructor(kind: 'too_large' | 'unreadable', cause?: unknown) {
     super(kind === 'too_large' ? 'over ' + ATTACHMENT_LIMITS.fileBytes / 1048576 + ' MB' : 'not readable', { cause }); this.kind = kind;
   }
@@ -28,6 +29,32 @@ async function openFile(path: string) {
     const { bytesRead } = await file.read(header, 0, header.length, 0);
     return { file, size: stat.size, image: imageInfo(header.subarray(0, bytesRead)) };
   } catch (error) { await file.close(); throw error instanceof FileError ? error : new FileError('unreadable', error); }
+}
+
+export async function fileResponse(response: ServerResponse, path: string, name = basename(path)): Promise<void> {
+  response.setHeader('X-Content-Type-Options', 'nosniff'); response.setHeader('Content-Security-Policy', "sandbox; default-src 'none'"); response.setHeader('Cache-Control', 'no-store');
+  try {
+    const source = await openFile(path);
+    try {
+      if (response.destroyed) { await source.file.close(); return; }
+      response.writeHead(200, { 'Content-Type': source.image?.mimeType ?? 'application/octet-stream', 'Content-Length': source.size, 'Content-Disposition': fileDisposition(name) });
+      if (!source.size) { await source.file.close(); response.end(); return; }
+      const stream = source.file.createReadStream({ start: 0, end: source.size - 1 });
+      stream.once('error', () => response.destroy()); response.once('close', () => stream.destroy()); stream.pipe(response);
+    } catch (error) { await source.file.close(); throw error; }
+  } catch (error) {
+    if (response.headersSent) { response.destroy(); return; }
+    respond(response, error instanceof FileError ? error.status : 403, '{}');
+  }
+}
+
+export async function stepFile(request: IncomingMessage, response: ServerResponse, pathAt: (seq: number, index: number) => string | undefined, cwd: string, home: string): Promise<boolean> {
+  if (request.method !== 'GET' || !request.url?.startsWith('/steps/')) return false;
+  const match = /^\/steps\/(\d+)\/(\d+)\/file$/.exec(request.url);
+  const path = match ? pathAt(Number(match[1]), Number(match[2])) : undefined;
+  if (!path) { respond(response, 404, '{}'); return true; }
+  const plain = path.replace(/^@/, ''), expanded = plain === '~' ? home : plain.startsWith('~/') ? join(home, plain.slice(2)) : plain;
+  await fileResponse(response, resolve(cwd, expanded)); return true;
 }
 
 export function attachments(dir: string, idleMs = UPLOAD_IDLE_MS) {
@@ -112,17 +139,13 @@ export function attachments(dir: string, idleMs = UPLOAD_IDLE_MS) {
           } finally { await file.file.close(); }
         }
         if (request.method === 'GET' && operation === undefined && entry.type !== 'uploading') {
-          const file = await openFile(entry.info.path); await file.file.close();
-          try { await serveFile(response, entry.info.path, { 'Content-Type': file.image?.mimeType ?? 'application/octet-stream', 'Content-Disposition': `attachment; filename*=UTF-8''${encodeURIComponent(entry.info.name)}`, 'Cache-Control': 'no-store' }); }
-          catch (error) { throw new FileError('unreadable', error); }
-          return true;
+          await fileResponse(response, entry.info.path, entry.info.name); return true;
         }
         return reply(404, {});
       } catch (error) {
         if (request.aborted || response.destroyed) return true;
         if (error instanceof FileError) {
-          const missing = error.cause instanceof Error && 'code' in error.cause && error.cause.code === 'ENOENT';
-          return reply(error.kind === 'too_large' ? 413 : missing ? 404 : 403, { error: error.message });
+          return reply(error.status, { error: error.message });
         }
         return reply(500, { error: 'Attachment request failed' });
       }

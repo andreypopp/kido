@@ -7,7 +7,7 @@ import SidebarFeed
 @testable import Kido
 
 extension VisualTests {
-    private enum KoaScenario { case transcript, dialogs, controls, exit, feed, completion, markdown, media, attachments, userMarkdown }
+    private enum KoaScenario { case transcript, dialogs, controls, exit, feed, completion, markdown, media, attachments, userMarkdown, preview, lightbox }
     func testKoaInterruptRestoresNativeInput() async throws {
         let script = directory.appendingPathComponent("quit-script.jsonl")
         try "".write(to: script, atomically: true, encoding: .utf8)
@@ -133,6 +133,14 @@ extension VisualTests {
         try await koaWebview(width: 470, height: 560, scenario: .exit, captures: ["narrow-exited"])
     }
 
+    func testKoaWebviewLightbox() async throws {
+        try await koaWebview(width: 980, height: 560, scenario: .lightbox, captures: ["media-lightbox"])
+    }
+
+    func testKoaWebviewPreviewHover() async throws {
+        try await koaWebview(width: 980, height: 400, scenario: .preview, captures: ["media-preview-hover"])
+    }
+
     func testKoaWebviewMediaWide() async throws {
         try await koaWebview(width: 980, height: 560, scenario: .media, captures: ["media-read-image", "media-user-images", "media-image-gone"])
     }
@@ -178,7 +186,8 @@ extension VisualTests {
         let attachmentPaths = (shot: home.appendingPathComponent("Desktop/Screenshot 2026-11-10 at 09.11.42.png"), diagram: home.appendingPathComponent("Desktop/diagram.png"), notes: home.appendingPathComponent("Desktop/notes.md"), source: cwd.appendingPathComponent("app/App/SidebarRow.swift"))
         try FileManager.default.createDirectory(at: cwd, withIntermediateDirectories: true)
         try JSONSerialization.data(withJSONObject: ["cwd": cwd.path]).write(to: sessionFile)
-        let stamp = Int(try XCTUnwrap(Calendar.current.date(from: DateComponents(year: 2026, month: 11, day: (scenario == .media || scenario == .attachments) ? 10 : 8, hour: (scenario == .media || scenario == .attachments) ? 9 : 14, minute: (scenario == .media || scenario == .attachments) ? 12 : 32))).timeIntervalSince1970 * 1000)
+        let mediaClock = scenario == .media || scenario == .attachments || scenario == .preview || scenario == .lightbox
+        let stamp = Int(try XCTUnwrap(Calendar.current.date(from: DateComponents(year: 2026, month: 11, day: mediaClock ? 10 : 8, hour: mediaClock ? 9 : 14, minute: mediaClock ? 12 : 32))).timeIntervalSince1970 * 1000)
         let usage: [String: Any] = ["input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0, "totalTokens": 0, "cost": ["input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0, "total": 0]]
         func assistant(_ content: [[String: Any]], stop: String = "stop") -> [String: Any] {
             ["role": "assistant", "api": "test", "provider": "test", "model": "test", "usage": usage, "timestamp": stamp, "stopReason": stop, "content": content]
@@ -357,7 +366,21 @@ extension VisualTests {
             (label as NSString).draw(in: NSRect(x: 0, y: h * 0.015, width: w, height: h * 0.08), withAttributes: [.font: NSFont.monospacedSystemFont(ofSize: max(10, h * 0.045), weight: .regular), .foregroundColor: NSColor.white.withAlphaComponent(0.85), .paragraphStyle: paragraph])
             return ["type": "image", "mimeType": "image/png", "data": try XCTUnwrap(bitmap.representation(using: .png, properties: [:])).base64EncodedString()]
         }
-        if scenario == .media {
+        if scenario == .preview {
+            var first = user; first["content"] = [["type": "text", "text": "Move the weight rule into the row state"]]
+            var messages = [first]
+            for (id, name, args, start, end, body) in [
+                ("p-read", "read", ["path": "app/App/SidebarRow.swift"], 0, 100, Array(repeating: "row", count: 412).joined(separator: "\n")),
+                ("p-edit", "edit", ["path": "app/App/SidebarRow.swift", "oldText": "a\nb\nc\nd", "newText": "1\n2\n3\n4\n5\n6\n7\n8\n9"], 200, 400, "Edit applied"),
+                ("p-bash", "bash", ["command": "make test"], 600, 4000, "Tests pass")
+            ] {
+                var call = assistant([["type": "toolCall", "id": id, "name": name, "arguments": args]], stop: "toolUse"); call["timestamp"] = stamp + start
+                messages += [call, ["role": "toolResult", "toolCallId": id, "toolName": name, "timestamp": stamp + end, "isError": false, "content": [["type": "text", "text": body]]]]
+            }
+            messages.append(assistant([["type": "text", "text": "Done; the tests pass."]]))
+            steps = Array(steps.prefix(3)); steps[1] = ["type": "respond", "command": "get_messages", "data": ["messages": messages]]
+        }
+        if scenario == .media || scenario == .lightbox {
             let shot = try image(1440, 900, 0x2f6fd6, 0x8b3fc9, "screenshot 1440×900")
             let diagram = try image(800, 800, 0xe0742d, 0xc42a5b, "diagram 800×800")
             let sidebar = try image(1200, 500, 0x1f9d7a, 0x1f6fa6, "sidebar 1200×500")
@@ -483,10 +506,10 @@ extension VisualTests {
         }
         func capture(_ name: String) async throws {
             guard captures.contains(name) else { return }
-            let top = scenario == .media
+            let top = scenario == .media || scenario == .lightbox
             window.contentView?.layoutSubtreeIfNeeded()
             pane.webviewView?.layoutSubtreeIfNeeded()
-            _ = try await webviewJS(web, "(()=>{if(!document.querySelector('.dialog')&&!document.querySelector('#exited:not([hidden])')&&document.querySelector('#picker').hidden)window.composer.focus();const scroll=document.querySelector('#scroll');scroll.scrollTop=\(top ? "0" : "scroll.scrollHeight");return true})()")
+            _ = try await webviewJS(web, "(()=>{if(!document.querySelector('.lightbox')&&!document.querySelector('.dialog')&&!document.querySelector('#exited:not([hidden])')&&document.querySelector('#picker').hidden)window.composer.focus();const scroll=document.querySelector('#scroll');scroll.scrollTop=\(top ? "0" : "scroll.scrollHeight");return true})()")
             try await webviewUntil(web, "(()=>{const dock=document.querySelector('#dock');return Number.parseFloat(getComputedStyle(document.body).getPropertyValue('--dock-h'))===dock.getBoundingClientRect().height})()")
             try await webviewUntil(web, "(()=>{const scroll=document.querySelector('#scroll');scroll.scrollTop=\(top ? "0" : "scroll.scrollHeight");return \(top ? "scroll.scrollTop===0" : "scroll.scrollHeight-scroll.scrollTop-scroll.clientHeight<1")})()")
             let lastAboveDock = try await webviewJS(web, "(()=>{const last=document.querySelector('#items').lastElementChild;return !last||last.getBoundingClientRect().bottom<=document.querySelector('#dock').getBoundingClientRect().top})()")
@@ -507,6 +530,14 @@ extension VisualTests {
         _ = try await webviewJS(web, "(()=>{const NativeDate=Date;window.Date=class extends NativeDate{constructor(...args){super(...(args.length?args:[\(stamp + 12000)]))}static now(){return \(stamp + 12000)}};const style=document.createElement('style');style.textContent='.caret,.spin,.spin::before,.dot.on{animation:none!important}';document.head.append(style);return true})()")
         let idleHint = try await webviewJS(web, "document.querySelector('#hint .spin')===null")
         XCTAssertEqual(idleHint, "true")
+        if scenario == .preview {
+            try await webviewUntil(web, "document.querySelectorAll('.step').length===3")
+            _ = try await webviewJS(web, "(()=>{document.querySelector('.run>.line').click();document.dispatchEvent(new KeyboardEvent('keydown',{key:'Meta',metaKey:true,shiftKey:true}));return true})()")
+            _ = try await webviewJS(web, "(()=>{const rule=Array.from(document.styleSheets).flatMap(sheet=>Array.from(sheet.cssRules)).find(rule=>rule.selectorText?.includes('.preview-file:hover'));if(!rule)throw Error('Missing hover rule');const style=document.createElement('style');style.textContent=rule.cssText.replace(':hover','.snapshot-hover');document.head.append(style);document.querySelectorAll('.step .preview-file')[1].classList.add('snapshot-hover');return true})()")
+            try await webviewUntil(web, "getComputedStyle(document.querySelectorAll('.step .preview-file')[1]).textDecorationLine.includes('underline')")
+            try await capture("media-preview-hover")
+            return
+        }
         if scenario == .userMarkdown {
             try await webviewUntil(web, "document.querySelectorAll('.user').length===2&&document.querySelector('.user ul li')&&document.querySelector('.user pre code')")
             let markdown = try await webviewJS(web, "(()=>{const user=document.querySelector('.user'),plain=Array.from(document.querySelectorAll('.user')).at(-1),assistant=document.querySelector('.assistant .prose'),p=plain.querySelector('.prose p'),u=user.querySelector('.t').getBoundingClientRect(),a=assistant.getBoundingClientRect(),well=plain.getBoundingClientRect(),time=plain.querySelector('time').getBoundingClientRect(),scroll=document.querySelector('#scroll').getBoundingClientRect(),font=parseFloat(getComputedStyle(document.body).fontSize),terminal=parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--ko-font-size')),editor=getComputedStyle(document.querySelector('.cm-content'));return plain.querySelector('time').textContent==='14:32'&&user.querySelectorAll('ul li').length===2&&user.querySelectorAll('code').length===2&&user.querySelector('b')===null&&user.textContent.includes('<b>raw HTML stays text</b>')&&Math.abs(u.left-a.left)<.1&&Math.abs(u.right-a.right)<.1&&well.left>=scroll.left+4&&well.right<=scroll.right-4&&getComputedStyle(p).marginTop==='0px'&&getComputedStyle(p).marginBottom==='0px'&&Math.abs(well.height-p.getBoundingClientRect().height-14)<.1&&Math.abs(time.top-p.getBoundingClientRect().top)<.1&&Math.abs(font-terminal*.92)<.01&&Math.abs(parseFloat(editor.fontSize)-font)<.01&&Number.isInteger(parseFloat(editor.minHeight))})()")
@@ -585,7 +616,7 @@ extension VisualTests {
             XCTAssertEqual(try String(contentsOf: attachmentPaths.source, encoding: .utf8), "row\n", "Removing a path chip never deletes the original")
             return
         }
-        if scenario == .media {
+        if scenario == .media || scenario == .lightbox {
             let prefix = width < 750 ? "narrow-media-" : "media-"
             func loaded(_ count: Int) async throws {
                 try await webviewUntil(web, "document.querySelectorAll('.thumb:not(.gone) img').length===\(count)")
@@ -599,6 +630,18 @@ extension VisualTests {
             XCTAssertEqual(lazy, "0", "Collapsed steps do not create or request images")
             _ = try await webviewJS(web, "(()=>{document.querySelector('.run>.line').click();document.querySelectorAll('.step>.line')[0].click();document.querySelectorAll('.step>.line')[2].click();return true})()")
             try await loaded(3)
+            if scenario == .lightbox {
+                window.contentView?.layoutSubtreeIfNeeded(); pane.webviewView?.layoutSubtreeIfNeeded()
+                _ = try await webviewJS(web, "(()=>{delete window.ko.preview;document.querySelector('.step .thumb').click();return true})()")
+                try await webviewUntil(web, "document.querySelector('.lightbox img')?.naturalWidth===1440&&document.querySelector('.lightbox .cap').textContent.includes('1440×900')")
+                try await webviewSnapshot(pane, "media-lightbox-light", testName: "testKoaWebviewMockupStates()")
+                try await darken(); pane.webviewView?.updateTheme()
+                try await webviewUntil(web, "getComputedStyle(document.body).getPropertyValue('--ko-appearance').trim()==='dark'")
+                try await webviewSnapshot(pane, "media-lightbox-dark", testName: "testKoaWebviewMockupStates()")
+                _ = try await webviewJS(web, "(()=>{document.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true,cancelable:true}));return true})()")
+                try await webviewUntil(web, "document.querySelector('.lightbox')===null")
+                return
+            }
             try await capture(prefix + "read-image")
             try await advance()
             try await webviewUntil(web, "document.querySelector('.user .t p')?.textContent==='Make the sidebar look like this'")
@@ -868,7 +911,7 @@ extension VisualTests {
             try await capture("narrow-exited")
         }
         switch scenario {
-        case .transcript, .feed, .completion, .markdown, .media, .attachments, .userMarkdown: break
+        case .transcript, .feed, .completion, .markdown, .media, .attachments, .userMarkdown, .preview, .lightbox: break
         case .dialogs: try await dialogScenario()
         case .controls: try await controlsScenario()
         case .exit: try await exitScenario()

@@ -1,3 +1,5 @@
+export const imageExtensions: Record<string, string | undefined> = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/gif': 'gif', 'image/webp': 'webp', 'image/bmp': 'bmp' };
+
 const ascii = (bytes: Uint8Array, offset: number, text: string) => bytes.length >= offset + text.length && [...text].every((character, index) => bytes[offset + index] === character.charCodeAt(0));
 
 export function imageInfo(bytes: Uint8Array): { mimeType: string; width?: number; height?: number } | undefined {

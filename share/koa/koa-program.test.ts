@@ -1,9 +1,9 @@
 import { test, type TestContext } from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdtemp, readFile, writeFile, rm, mkdir, cp, symlink } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile, rm, mkdir, cp, symlink, truncate } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { join, resolve, relative } from "node:path";
 import { once } from "node:events";
 import { createServer, connect } from "node:net";
 import timers from "node:timers/promises";
@@ -48,6 +48,16 @@ async function fixture(t: TestContext, steps: object[], env: NodeJS.ProcessEnv =
   if (startup) await until(record => record.type === "state" && (pi ? record.pi?.type === "exited" : Array.isArray(record.levels) && record.levels.length === 3));
   return { post, until, records: () => stream.records, count: () => stream.records.length, close, stdout: () => stdout, stderr: () => stderr, log: async () => (await readFile(log, "utf8")).trim().split("\n").map(line => JSON.parse(line)), base };
 }
+test('step previews resolve only transcript-owned regular files', { timeout: 10000 }, async t => {
+  const dir = await mkdtemp(join(tmpdir(), 'koa-preview-')); t.after(() => rm(dir, { recursive: true, force: true }));
+  await writeFile(join(dir, 'notes.md'), '# Preview'); await mkdir(join(dir, 'folder')); await symlink(join(dir, 'notes.md'), join(dir, 'link'));
+  await writeFile(join(dir, 'huge'), ''); await truncate(join(dir, 'huge'), 65 * 1048576);
+  const message = { ...assistant(''), content: ['notes.md', 'folder', 'missing', 'link', 'huge', 'notes.md', '~/notes.md', '@' + join(dir, 'notes.md')].map((path, i) => ({ type: 'toolCall', id: 'r' + i, name: i === 5 ? 'bash' : 'read', arguments: { path: i === 0 ? relative(process.cwd(), join(dir, path)) : i >= 6 ? path : join(dir, path) } })) };
+  const app = await fixture(t, [{ type: 'wait', command: 'get_messages', data: { messages: [message] } }], { HOME: dir });
+  const good = await fetch(app.base + 'steps/0/0/file'); assert.equal(good.status, 200); assert.equal(await good.text(), '# Preview'); assert.match(good.headers.get('content-disposition') ?? '', /notes.md/);
+  for (const [path, status] of [['steps/0/1/file',403],['steps/0/2/file',404],['steps/0/3/file',403],['steps/0/4/file',413],['steps/0/5/file',404],['steps/0/6/file',200],['steps/0/7/file',200],['steps/0/8/file',404],['steps/0/0/file?path=/etc/passwd',404]]) assert.equal((await fetch(app.base + path)).status, status);
+});
+
 test('/name is a session command, with pi query and empty-name rules', { timeout: 10000 }, async t => {
   const app = await fixture(t, [
     { type: 'wait', command: 'set_session_name', events: [{ type: 'session_info_changed', name: 'test-koa' }] },

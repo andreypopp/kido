@@ -1,16 +1,16 @@
 import { markdown } from './markdown.ts';
 import { composer } from './composer.ts';
 import { attach } from './attach.ts';
+import { preview, previewKey } from './preview.ts';
 import { nameCommand } from '../prompt.ts';
 import { fetchJSON } from './http.ts';
-import { ATTACHMENT_LIMITS } from '../records.ts';
+import { ATTACHMENT_LIMITS, pathArg } from '../records.ts';
 import type { State, WireItem, WireAssistant, Block, Patch, PageRecord, PromptMode, ImageRef } from '../records.ts';
 
 type Step = { block: Exclude<Block, { type: 'text' }>;  item: WireAssistant; index: number; key: string; slots: Map<string, Slot> };
 type Slot = (HTMLDivElement | HTMLButtonElement) & { signature?: string };
 declare global {
   interface Window {
-    ko?: { local: boolean };
     composer: Pick<ReturnType<typeof composer>, 'text' | 'setText' | 'focus'>;
     koaMetrics?: { flush(): Promise<void>; readonly after: number; readonly items: WireItem[] };
   }
@@ -96,7 +96,7 @@ function prose(key: string, source: string, final: boolean) {
   return memo.view;
 }
 
-function thumbnails(refs: ImageRef[], slots: Map<string, Slot>) {
+function thumbnails(refs: ImageRef[], slots: Map<string, Slot>, name?: string) {
   const view = node('div', undefined, 'thumbs');
   return { view, load() {
     if (view.childNodes.length) return;
@@ -125,6 +125,8 @@ function thumbnails(refs: ImageRef[], slots: Map<string, Slot>) {
         };
         image.setAttribute('src', src);
       }
+      const target = thumb;
+      target.onclick = () => { if (!target.disabled) preview(src, target, 'image', name); };
       view.append(thumb);
     }
   } };
@@ -142,7 +144,8 @@ function stepInfo(step: Step & { args: Record<string, unknown> }) {
   const values = step.args;
   const kind = block.name;
   const first = Object.values(values)[0];
-  const label = block.name === 'bash' ? values.command : ['read', 'edit', 'write'].includes(block.name) ? values.path : block.name + (first === undefined ? '' : ' ' + (typeof first === 'string' ? first : JSON.stringify(first)));
+  const labelClass = block.name === 'bash' ? 'cmd' : ['read', 'edit', 'write'].includes(block.name) ? 'path' : '';
+  const label = labelClass === 'cmd' ? values.command : labelClass === 'path' ? values.path : block.name + (first === undefined ? '' : ' ' + (typeof first === 'string' ? first : JSON.stringify(first)));
   let detail = '';
   if (block.name === 'read' && 'result' in block.state && block.state.result) {
     const image = block.state.result.images[0];
@@ -157,7 +160,7 @@ function stepInfo(step: Step & { args: Record<string, unknown> }) {
     edit = { old, next, prefix, suffix };
     detail = '+' + (next.length - prefix - suffix) + ' −' + (old.length - prefix - suffix);
   }
-  return { edit, labelClass: block.name === 'bash' ? 'cmd' : ['read', 'edit', 'write'].includes(block.name) ? 'path' : '', label: typeof label === 'string' ? label : label === undefined ? block.name + ' ' + block.args.text : JSON.stringify(label), detail, kind, aborted: item.stop === 'aborted' && block.state.type !== 'done' };
+  return { edit, labelClass, label: typeof label === 'string' ? label : label === undefined ? block.name + ' ' + block.args.text : JSON.stringify(label), detail, kind, aborted: item.stop === 'aborted' && block.state.type !== 'done' };
 }
 function fold(view: HTMLElement, key: string, line: HTMLElement, details: HTMLElement, show?: () => void) {
   view.classList.toggle('open', folds.get(key) === true);
@@ -170,7 +173,7 @@ function fold(view: HTMLElement, key: string, line: HTMLElement, details: HTMLEl
   if (folds.get(key)) show?.();
 }
 function run(input: Step[]) {
-  const steps = input.map(step => { const value = { ...step, args: step.block.type === 'tool' ? args(step.block) : {} }; return { ...value, info: stepInfo(value) }; });
+  const steps = input.map(step => { const value = { ...step, args: step.block.type === 'tool' ? args(step.block) : {}, file: pathArg(step.block) }; return { ...value, info: stepInfo(value) }; });
   const view = node('div', undefined, 'run');
   const line = node('div', undefined, 'line');
   const summary = node('span', undefined, 'sum');
@@ -200,8 +203,9 @@ function run(input: Step[]) {
     const child = node('div', undefined, 'step');
     const row = node('div', undefined, 'line');
     const sum = node('span', undefined, 'sum');
-    if (block.type === 'tool' && ['bash', 'read', 'edit', 'write'].includes(block.name)) sum.append(node('span', block.name, error ? 'name err' : 'name'), ' ');
-    sum.append(node('span', info.label, error && block.type === 'tool' && !['bash', 'read', 'edit', 'write'].includes(block.name) ? 'err' : info.labelClass), ' ');
+    if (block.type === 'tool' && (block.name === 'bash' || info.labelClass === 'path')) sum.append(node('span', block.name, error ? 'name err' : 'name'), ' ');
+    const label = node('span', info.label, error && block.type === 'tool' && block.name !== 'bash' && info.labelClass !== 'path' ? 'err' : info.labelClass);
+    sum.append(label, ' ');
     const counts = info.detail.match(/^\+(\d+) −(\d+)$/);
     if (counts) sum.append(node('span', '+' + counts[1], 'added'), ' ', node('span', '−' + counts[2], 'err'));
     else sum.append(node('span', info.detail, 'delta'));
@@ -212,7 +216,7 @@ function run(input: Step[]) {
     row.append(node('span', '›', 'chev'), sum, outcome);
     const detail = node('div', undefined, 'detail');
     const refs = block.type === 'tool' && 'result' in block.state ? block.state.result?.images : undefined;
-    const images = refs?.length ? thumbnails(refs, step.slots) : undefined;
+    const images = refs?.length ? thumbnails(refs, step.slots, step.file) : undefined;
     if (block.type === 'thinking') detail.append(node('div', block.text || (block.redacted ? 'Redacted thinking' : ''), 'think'));
     else {
       if (info.edit) {
@@ -231,7 +235,14 @@ function run(input: Step[]) {
       if ('result' in block.state && block.state.result?.cut) detail.append(node('div', block.state.result.cut + ' bytes omitted', 'delta'));
     }
     if (images) { if (block.type === 'tool' && block.name === 'read') images.view.classList.add('large'); detail.append(images.view); }
-    fold(child, key, row, detail, images?.load); children.append(child);
+    fold(child, key, row, detail, images?.load);
+    if (step.file) {
+      label.classList.add('preview-file');
+      let press: { x: number; y: number } | undefined;
+      label.onmousedown = event => { press = undefined; if (event.button === 0 && previewModifiers(event)) { event.preventDefault(); press = { x: event.clientX, y: event.clientY }; } };
+      label.onclick = event => { const start = press; press = undefined; if (start && Math.hypot(event.clientX - start.x, event.clientY - start.y) < 3) { event.preventDefault(); event.stopPropagation(); preview('/steps/' + step.item.seq + '/' + step.index + '/file', label, 'file'); } };
+    }
+    children.append(child);
   }
   fold(view, 'run:' + steps[0].key, line, children);
   return view;
@@ -656,7 +667,11 @@ const isControl = (target: EventTarget | null) => target instanceof HTMLElement 
 function focusComposer() { if (document.hasFocus() && !element('field').inert && !state.dialogs.length && !pickerButton && (!isControl(document.activeElement) || editor.hasFocus())) editor.focus(); }
 window.addEventListener('focus', focusComposer);
 window.addEventListener('load', focusComposer);
-document.addEventListener('keydown', event => { if (event.defaultPrevented || event.metaKey || event.ctrlKey || event.isComposing || state.dialogs.length || pickerButton) return; if (!element('field').inert && !event.altKey && event.key.length === 1 && !(event.key === ' ' && isControl(event.target)) && !(event.target instanceof HTMLElement && (event.target.isContentEditable || event.target.closest('input,textarea,select')))) { event.preventDefault(); editor.focus(); editor.insert(event.key); return; } if (event.key === 'Enter' && hasExited() && event.target === document.body) element('exited').querySelector('button')?.click(); if (event.key === 'Escape') { event.preventDefault(); if (escaped) { editor.setText(''); } else { escaped = true; if (state.working) void stop(); } } });
+const previewModifiers = (event: MouseEvent | KeyboardEvent) => event.shiftKey && event.metaKey && !event.ctrlKey && !event.altKey;
+const previewHover = (event: KeyboardEvent) => document.documentElement.classList.toggle('preview-modifiers', previewModifiers(event));
+document.addEventListener('keyup', previewHover);
+window.addEventListener('blur', () => document.documentElement.classList.remove('preview-modifiers'));
+document.addEventListener('keydown', event => { previewHover(event); if (previewKey(event)) return; if (event.defaultPrevented || event.metaKey || event.ctrlKey || event.isComposing || state.dialogs.length || pickerButton) return; if (!element('field').inert && !event.altKey && event.key.length === 1 && !(event.key === ' ' && isControl(event.target)) && !(event.target instanceof HTMLElement && (event.target.isContentEditable || event.target.closest('input,textarea,select')))) { event.preventDefault(); editor.focus(); editor.insert(event.key); return; } if (event.key === 'Enter' && hasExited() && event.target === document.body) element('exited').querySelector('button')?.click(); if (event.key === 'Escape') { event.preventDefault(); if (escaped) { editor.setText(''); } else { escaped = true; if (state.working) void stop(); } } });
 element('model').onclick = () => picker('model'); element('thinking').onclick = () => picker('thinking');
 document.addEventListener('pointerdown', event => { if (!element('picker').contains(event.target instanceof Node ? event.target : null) && event.target !== pickerButton) closePicker(); });
 element('scroll').onscroll = () => { const scroll = element('scroll'); follow = scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight < 60; if (scroll.scrollTop < 80) void older(); };

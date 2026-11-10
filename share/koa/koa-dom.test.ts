@@ -5,7 +5,7 @@ import { runInNewContext } from "node:vm";
 import { stripTypeScriptTypes } from "node:module";
 import { markdown } from "./page/markdown.ts";
 import { nameCommand } from "./prompt.ts";
-import { ATTACHMENT_LIMITS } from "./records.ts";
+import { ATTACHMENT_LIMITS, pathArg } from "./records.ts";
 import type { PromptMode } from "./records.ts";
 
 async function page() {
@@ -35,6 +35,7 @@ async function page() {
     setRangeText(text: string) { this.value = this.value.slice(0, this.selectionStart) + text + this.value.slice(this.selectionEnd); }
     dispatchEvent() { this.oninput?.(); }
     querySelector() { return undefined; }
+    get isConnected(): boolean { return this === document.body || this === document.documentElement || this.parent?.isConnected === true; }
     get childNodes() { return this.children; }
     insertBefore(child: Node, next: Node | null) { if (child === next) return; child.remove(); const index = next ? this.children.indexOf(next) : this.children.length; this.children.splice(index < 0 ? this.children.length : index, 0, child); child.parent = this; }
     get firstElementChild() { return this.children[0]; }
@@ -45,7 +46,7 @@ async function page() {
   const listeners = new Map<string, (event: unknown) => void>();
   const windowListeners = new Map<string, (event?: unknown) => void>();
   let activeElement: Node | undefined;
-  const document = { hasFocus: () => true, get activeElement() { return activeElement; }, set activeElement(node: Node | undefined) { activeElement = node; }, querySelector: () => null, getElementById(id: string) { let node = elements.get(id); if (!node) { node = new Node(); elements.set(id, node); if (id === 'prompt') document.getElementById('field').append(node); } return node; }, createElement: (tag: string) => { const node = new Node(); node.tagName = tag.toUpperCase(); return node; }, createElementNS: () => new Node(), createTextNode: (text: string) => { const node = new Node(); node.tagName = '#text'; node.textContent = text; return node; }, addEventListener(type: string, handler: (event: unknown) => void) { listeners.set(type, handler); }, querySelectorAll: () => [] };
+  const document = { documentElement: new Node(), body: new Node(), hasFocus: () => true, get activeElement() { return activeElement; }, set activeElement(node: Node | undefined) { activeElement = node; }, querySelector: (selector?: string): Node | null => selector === '.cm-content' ? document.getElementById('prompt').children[0] ?? null : null, getElementById(id: string) { let node = elements.get(id); if (!node) { node = new Node(); elements.set(id, node); if (id === 'prompt') document.getElementById('field').append(node); } return node; }, createElement: (tag: string) => { const node = new Node(); node.tagName = tag.toUpperCase(); return node; }, createElementNS: () => new Node(), createTextNode: (text: string) => { const node = new Node(); node.tagName = '#text'; node.textContent = text; return node; }, addEventListener(type: string, handler: (event: unknown) => void) { listeners.set(type, handler); }, querySelectorAll: () => [] };
   type Handlers = { input(user: boolean): void; send(mode: PromptMode): void; quit(): void };
   let handlers: Handlers | undefined;
   let text = () => '';
@@ -65,9 +66,11 @@ async function page() {
       placeholder(text: string) { content.placeholder = text; },
     };
   };
-  const context = { composer, nameCommand, ATTACHMENT_LIMITS, AbortController, AbortSignal, CustomEvent: class { type: string; detail?: unknown; constructor(type: string, options?: { detail?: unknown }) { this.type = type; this.detail = options?.detail; } }, Node, Element: Node, HTMLElement: Node, HTMLButtonElement: Node, HTMLImageElement: Node, markdown, document, window: { ko: {}, addEventListener(type: string, handler: (event?: unknown) => void) { windowListeners.set(type, handler); } }, innerWidth: 980, Event: class { type: string; constructor(type: string) { this.type = type; } }, console, setInterval() {}, clearInterval() {}, setTimeout, clearTimeout, requestAnimationFrame() {}, fetch: async () => ({ ok: true, json: async () => ({}) }) };
+  const context = { composer, nameCommand, ATTACHMENT_LIMITS, pathArg, AbortController, AbortSignal, CustomEvent: class { type: string; detail?: unknown; constructor(type: string, options?: { detail?: unknown }) { this.type = type; this.detail = options?.detail; } }, Node, Element: Node, HTMLElement: Node, HTMLButtonElement: Node, HTMLImageElement: Node, markdown, document, window: { ko: {}, addEventListener(type: string, handler: (event?: unknown) => void) { windowListeners.set(type, handler); } }, innerWidth: 980, Event: class { type: string; constructor(type: string) { this.type = type; } }, console, setInterval() {}, clearInterval() {}, setTimeout, clearTimeout, requestAnimationFrame() {}, fetch: async () => ({ ok: true, json: async () => ({}) }) };
   const attachSource = stripTypeScriptTypes(await readFile(new URL('page/attach.ts', import.meta.url), 'utf8')).replace(/^import .*;\n/gm, '').replace(/^export /gm, '');
   const httpSource = stripTypeScriptTypes(await readFile(new URL('page/http.ts', import.meta.url), 'utf8')).replace(/^import .*;\n/gm, '').replace(/^export /gm, '');
+  const previewSource = stripTypeScriptTypes(await readFile(new URL('page/preview.ts', import.meta.url), 'utf8')).replace(/^export /gm, '');
+  Object.assign(context, runInNewContext(previewSource + '\n({preview,previewKey})', context));
   Object.assign(context, { fetchJSON: runInNewContext(httpSource + '\nfetchJSON', context), attach: runInNewContext(attachSource + '\nattach', context) });
   return { context, elements, listeners, windowListeners, handlers: () => handlers, prompt: () => prompt, text: () => text(), run: (code: string) => runInNewContext("{\n" + source.replace(/^import .*;\n/gm, "").replace(/^setInterval\([\s\S]*$/m, "") + "\n" + code + "\n}", context) };
 }
@@ -265,7 +268,11 @@ test("printable transcript keys reach the composer but native shortcuts and fiel
   key({ target: editable });
   assert.equal(prevented, 1);
   assert.equal(app.listeners.has('blur'), false);
-  assert.equal(app.windowListeners.has('blur'), false);
+  assert.equal(app.windowListeners.has('blur'), true);
+  app.context.document.documentElement.classList.add('preview-modifiers');
+  app.windowListeners.get('blur')?.();
+  assert.equal(app.context.document.documentElement.classList.contains('preview-modifiers'), false);
+  assert.equal(app.context.document.activeElement, app.prompt());
 });
 
 test("Space on a fold control toggles once without typing or losing focus", async () => {
@@ -553,6 +560,27 @@ test("failed and aborted runs keep their outcomes", async () => {
   assert.doesNotMatch(result.output, /Command exited/);
   assert.match(result.aborted, /aborted, you pressed Escape/);
   assert.equal(result.outcome, "aborted ");
+});
+
+test('step previews require exactly Shift-Command and a stationary press', async () => {
+  const app = await page();
+  assert.equal(app.run(`(()=>{const urls=[];window.ko={preview:url=>urls.push(url)};const block={type:'tool',name:'read',args:{text:JSON.stringify({path:'file.txt'})},state:{type:'done',error:false,result:{text:'ok',images:[]}}};const item={seq:7,at:0,final:true,stop:'stop',blocks:[block]};const tree=run([{key:'7:2',index:2,item,block,slots:new Map()}]);const row=tree.children[1].children[0].children[0],label=row.children[1].children.find(node=>node?.classList?.contains('preview-file'));label.getBoundingClientRect=()=>({x:0,y:0,width:30,height:20});const event={button:0,clientX:2,clientY:3,shiftKey:true,metaKey:true,altKey:false,ctrlKey:false,preventDefault(){},stopPropagation(){}};label.onmousedown(event);label.onclick(event);for(const changes of [{shiftKey:false},{altKey:true},{ctrlKey:true}]){label.onmousedown({...event,...changes});label.onclick({...event,...changes})}label.onmousedown(event);label.onclick({...event,shiftKey:false,metaKey:false});if(urls.length!==2)return false;label.onmousedown(event);label.onclick({...event,clientX:5});return urls.length===2&&urls[0]==='/steps/7/2/file'})()`), true);
+});
+
+test('browser lightbox Escape closes before abort and keeps the draft', async () => {
+  const app = await page();
+  const requests: string[] = []; app.context.fetch = async (path?: string) => { requests.push(path ?? ''); return { ok: true, json: async () => ({}) }; };
+  assert.equal(app.run(`(()=>{state.pi={type:'ready'};state.working=true;editor.setText('draft');const target=node('button');preview('/images/0',target,'image');return document.body.children[0].className==='lightbox'})()`), true);
+  let prevented = false;
+  app.listeners.get('keydown')?.({ key: 'Escape', preventDefault() { prevented = true; }, stopPropagation() {} });
+  assert.equal(prevented, true); assert.equal(app.context.document.body.children.length, 0); assert.equal(app.text(), 'draft');
+  assert.deepEqual(requests.filter(path => ['/abort', '/queue/clear', '/clear_queue'].includes(path)), []);
+  assert.equal(app.context.document.activeElement, app.prompt());
+});
+
+test('thumbnails call native preview with their resource and rectangle', async () => {
+  const app = await page();
+  assert.equal(app.run(`(()=>{window.ko={preview:(url,rect)=>{window.lastPreview={url,rect}}};const images=thumbnails([{id:'0.0',revision:0,mimeType:'image/png',bytes:10}],new Map());images.load();const button=images.view.children[0];button.getBoundingClientRect=()=>({x:1,y:2,width:30,height:40});button.onclick();return window.lastPreview.url==='/images/0.0?e=&r=0'&&window.lastPreview.rect.width===30})()`), true);
 });
 
 test("user thumbnails reuse their image node and a failed image becomes non-interactive", async () => {

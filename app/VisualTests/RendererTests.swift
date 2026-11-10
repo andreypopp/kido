@@ -271,7 +271,7 @@ import KoModel
         XCTAssertEqual(ghostty_surface_image_copy(pane.surface, &hit, &image), GHOSTTY_SUCCESS)
         defer { ghostty_image_free(&image) }
         let pixels = try XCTUnwrap(PreviewPixels(taking: &image))
-        let prepared = await ImagePreview.shared.prepare(pixels, id: hit.image_id, rect: owner.window.frame)
+        let prepared = await ImagePreview.shared.prepare(.pixels(pixels, id: hit.image_id), rect: owner.window.frame)
         XCTAssertTrue(prepared)
         let panel = try XCTUnwrap(QLPreviewPanel.shared())
         XCTAssertTrue(owner.window.acceptsPreviewPanelControl(panel))
@@ -305,7 +305,7 @@ import KoModel
         let preview = ImagePreview.shared
         defer { preview.close(); pane.dispose(); first.close(); second.close() }
         let pixels = PreviewPixels(width: 1, height: 1, format: GHOSTTY_IMAGE_FORMAT_RGBA, data: Data([255, 0, 0, 255]))
-        let prepared = await preview.prepare(pixels, id: 7, rect: first.frame)
+        let prepared = await preview.prepare(.pixels(pixels, id: 7), rect: first.frame)
         XCTAssertTrue(prepared)
         let panel = try XCTUnwrap(QLPreviewPanel.shared())
         XCTAssertTrue(first.acceptsPreviewPanelControl(panel))

@@ -318,6 +318,19 @@ header (PNG, JPEG, GIF, WebP, BMP), and every response carries `nosniff`
 and a sandbox policy, so a payload that only claims an image type never
 runs as a document on koa's origin.
 
+**Quick Look.** A click on a thumbnail or a chip, and ⇧⌘-click on the
+label of a `read`, `edit` or `write` step (the terminal's gesture: the
+modifiers at the press, a movement below 3 points), ask Kido.app for a
+preview of an `/images/`, `/attachments/` or `/steps/{seq}/{block}/file`
+URL (docs/design-app.md, "Quick Look from a page"). koa serves a step's
+file only from its own record of the step: the path argument, resolved
+against the session's directory as pi's tools resolve it (`~` expanded,
+a leading `@` removed), a regular file of at most 64 MiB, streamed from
+the descriptor that it checked. In a browser, a click on an image (a
+thumbnail or an image chip) opens it in a lightbox inside the page,
+which Escape closes before it aborts anything; any other chip and every
+step's file open in a new tab.
+
 **Attachments.** A file that the user drops or pastes reaches koa as
 one of two kinds. In a local session (`window.ko.local`: the window's
 host is this Mac, the pane has no runtime), Kido.app takes a Finder drop

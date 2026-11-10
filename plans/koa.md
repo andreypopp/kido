@@ -830,26 +830,31 @@ unit. The order is fixed, because each unit builds on the one before.
    edits the original), a folder with a file (the refusal line and
    one chip) and over `ko HOST` (the chips show copies).
 14. **Quick Look.** Section 8, "Quick Look". Before it starts, the
-   `webview` branch is rebased onto `main`, because main has the
-   terminal's Quick Look (62c6f1f5, "Shift-Command-click opens a
-   kitty image in Quick Look") with `app/App/ImagePreview.swift` and
-   `PrivateTemporaryDirectory`. The app side reuses them: the
-   `koPreview` handler and `window.ko.preview` in
-   `WebviewPaneView.swift` hand the fetched bytes to main's
-   `ImagePreview` and its private temporary directory, not to a
-   `kido-previews` writer of their own; the `QLPreviewPanel` data
-   source and delegate on the pane's webview view, the 64 MiB stop
-   and `WebviewPaneTests` for the validation and the file follow
-   main's shapes, and the full redesign of that part (section 8,
-   "Quick Look", "The app") happens after the rebase. koa: `GET
-   /steps/{seq}/{block}/file` and the `Content-Disposition` of every
-   served file. The page: a click or Space on an image or a chip, and
-   ⇧⌘-click on the label of a `read`, `edit` or `write` step with a
-   file (the ⇧⌘-hover look mocked first), call `window.ko.preview`
-   when it exists, else the lightbox for an image and a new tab for a
-   file; Escape closes the lightbox first. Tests: section 8, "Tests",
-   and one snapshot in `KoaWebviewTests` (a `read` step's label under
-   ⇧⌘-hover). The manager sends the handler's shape to the top-level
+   `webview` branch is rebased onto `main` (done, 5224ff12), which
+   has the terminal's Quick Look ("Shift-Command-click opens a kitty
+   image in Quick Look") with `app/App/ImagePreview.swift` and
+   `PrivateTemporaryDirectory`. The app: `PreviewSource` as the case
+   type of `ImagePreview` (`pixels` as today, `file(Data, name)`),
+   the `koPreview` script message handler and `window.ko.preview(url,
+   rect)` in `WebviewPaneView.swift` with the validation of section
+   8, "Validation", the one fetch through `KoWebviewFetch` with the
+   64 MiB stop and the `Content-Disposition` name, the notice on a
+   failure; `OwnerWindow`'s panel control, the directory, the sweep
+   and the close rules stay main's. koa: `GET /steps/{seq}/{block}/file`
+   and the `Content-Disposition` of every served file. The page: a
+   click or Space on an image or a chip, and ⇧⌘-click on the label
+   of a `read`, `edit` or `write` step with a file (the ⇧⌘-hover
+   look mocked first), call `window.ko.preview` when it exists, else
+   the lightbox for an image and a new tab for a file; Escape closes
+   the lightbox first. Tests: section 8, "Tests" (`WebviewPaneTests`:
+   a `koPreview` with another generation, a foreign or non-prefixed
+   URL, a bad rect, a non-key window or a fetch in flight is dropped;
+   a valid one makes `ImagePreview.ready` with a file of the
+   `Content-Disposition` name under its directory, 0600; a body over
+   a lowered cap or a 404 writes no file and shows the notice; the
+   `file` source's write and remove), and one snapshot in
+   `KoaWebviewTests` (a `read` step's label under ⇧⌘-hover). The
+   manager sends the handler's shape to the top-level
    session before the implementer writes it: it is a new page-to-app
    surface.
 15. **Markdown in the composer.** Section 7, "Markdown in the
@@ -1888,14 +1893,22 @@ no type and caps only the size. What is clickable:
   shows nothing and ⇧⌘-click folds as a click does. It shows the file as it is now on pi's host, not as the tool
   saw it.
 
-**The message.** The document-start script adds one function,
-`window.ko.preview(url)`, which posts `{ document, url }` to a second
-handler, `koPreview`, with the generation that the socket shim
-carries. The URL is always on the pane's own origin: one mechanism
-serves a local and a remote session, and the app fetches no Mac path
-itself (a local shortcut by path would be a second mechanism for the
-same click, and Quick Look shows the copy under its real name,
-below). koa serves three kinds of URL:
+**The message** (the new native surface; `webview` is rebased onto
+`main` at 5224ff12, and this is the design against main's
+`app/App/ImagePreview.swift` and `PrivateTemporaryDirectory.swift`).
+The document-start script adds one function,
+`window.ko.preview(url, rect)`, which posts `{ document, url, rect }`
+to a second script message handler, `koPreview`, registered beside
+`koSocket` (`WebviewPaneView.swift:84`) in the page world for the
+main frame: `document` is the generation the script carries, `url`
+the resource on the pane's own origin, `rect` the clicked element's
+`getBoundingClientRect()` as `{ x, y, width, height }` in CSS pixels,
+so the panel zooms from the thumbnail or the label as it zooms from a
+kitty placement. The URL is always on the pane's own origin: one
+mechanism serves a local and a remote session, and the app fetches no
+Mac path itself (a local shortcut by path would be a second mechanism
+for the same click, and Quick Look shows the copy under its real
+name, below). koa serves three kinds of URL:
 
 | URL | Serves | Refusals |
 |---|---|---|
@@ -1911,29 +1924,67 @@ by. The page names a step, never a path: a route that took a path
 would let the page read any file of pi's host, and in browser mode
 that route sits on a localhost port. koa resolves the path from the
 transcript's own item, writes nothing and follows no path outside a
-regular file (`lstat`, then `S_IFREG`). The app's validation, in this order: `!stopped`, main
-frame, `allowed(frameInfo.request.url)`, `document == generation`,
-`url` parses and `allowed(url)` (a page previews only its own pane's
-resources), the pane is the active pane of a key window, and no
-preview of this pane is in flight; a message that fails any check is
-dropped without a reply, as a socket message is. The app then fetches
-the URL through `KoWebviewFetch`, the path of a page's own `fetch`
-(it takes one of the 6 slots; a remote server answers through the
-pane's serve stream, so a preview works over `ko HOST` and in a
-runtime), stops the fetch and shows a notice when the body passes
-64 MiB (Kido's per-file upload limit, docs/design-app.md,
-"Uploads") or the status is not 200, writes the bytes to
-`$TMPDIR/kido-previews/<pid>/<uuid>/<name>` (0700; `<name>` from
-`Content-Disposition`, sanitized to a basename, else `preview` with
-an extension from `Content-Type` through `UTType`) and opens
-`QLPreviewPanel.shared()` with that one item. The webview pane view
-answers `acceptsPreviewPanelControl` and is the panel's data source
-and delegate (it is in the responder chain above the WKWebView). The
-file goes when the panel ends its control, when the pane is disposed,
-and at launch for a dead process's directory, under the lock rule of
-`kido-promises`. A failed fetch shows a transient notice card ("Kido
-could not preview the file"). The user closes the panel with Space or
-Escape, as in Finder.
+regular file (`lstat`, then `S_IFREG`).
+
+**Validation**, in `WebviewPaneView.userContentController` beside the
+socket's (`WebviewPaneView.swift:372-376`), in this order, and a
+message that fails any check is dropped without a reply, as a socket
+message is: `!stopped`; `frameInfo.isMainFrame`;
+`allowed(frameInfo.request.url)` (`:182-185`: the `ko:` scheme, the
+view's pane as host, no port, user or password); `document ==
+generation`; the body is a dictionary whose `url` is a string that
+parses, passes `allowed(url)` and whose path starts with `/images/`,
+`/attachments/` or `/steps/` (a page previews only its own pane's
+resources, and only these); `rect` is four finite numbers with a
+non-negative width and height; the web view is the first responder
+of a key window (the pane is the active pane; `PaneView.inputResponder`
+is the web view while a page shows, docs/design-app.md, "Focus and
+keys"); and no preview fetch of this view is in flight, so a second
+click during a fetch is dropped, not queued. The handler holds one
+fetch at a time for the view and cancels it when the view stops or
+navigates (a new generation).
+
+**The fetch and the file.** The app fetches the URL with
+`KoWebviewFetch` (`app/App/Ko/KoClient.swift:516-551`), the path of
+a page's own `fetch`: it takes one of the view's 6 active slots
+(`maxActiveFetches`), and a remote server answers through the pane's
+serve stream, so a preview works over `ko HOST` and in a runtime. It
+accumulates the body in memory and cancels the fetch when the bytes
+pass `Upload.fileLimit`, 64 MiB (`app/App/Upload.swift:55`, Kido's
+per-file upload limit), or when the status is not 200; either shows
+the pane's transient notice "Kido could not preview the file". The
+name comes from `Content-Disposition`'s `filename`, reduced to a
+basename (no path separator, not `.` or `..`, cut to 255 bytes),
+else `preview` with the extension of `Content-Type` through `UTType`.
+The bytes then go to main's `ImagePreview`, which gains a source
+type as a case of its own type, not a parallel path: `enum
+PreviewSource { case pixels(PreviewPixels, id: UInt32); case
+file(Data, name: String) }`, with `show(_:rect:)`, `prepare(_:rect:)`
+and `write(_:)` taking the source; `write` encodes pixels to
+`image-<id>.png` as today and writes a file source's bytes under its
+name, in the same `<uuid>` folder (0700) of the `kido-previews`
+`PrivateTemporaryDirectory`, with mode 0600, under the same `stopped`
+lock. Everything else is main's: one `ImagePreview` for the app,
+`OwnerWindow` takes the panel's control while a preview is ready, a
+new preview, the panel's close or a switch to another app ends the
+preview and removes its file, Space and Escape close it, the app
+sweeps the directory at launch and removes it at quit
+(docs/design-app.md, "Image preview"). The webview view is not the
+panel's data source; the earlier design's own `kido-previews` writer
+and `acceptsPreviewPanelControl` on the view are gone. The zoom rect
+is `rect` converted from the web view's coordinates to the screen,
+as `PaneView.screenRect` converts a placement's rect.
+
+**The gesture** follows main's terminal rule (`PaneView.swift:1748-1750`,
+`contentModifiers`: exactly Shift and Command, no Control or Option;
+`:1752-1756`, the hover while both are held; `:1897-1910`, the press
+is taken and only a release within 3 points opens). In the page: a
+⇧⌘-click on the label of a `read`, `edit` or `write` step with a
+`path` argument calls `window.ko.preview` with the step's URL and the
+label's rect; a `mousedown` with other modifiers, or a drag, does
+nothing but the plain click's fold. A click on a thumbnail or a chip,
+and Space or Enter on a focused one, call it with the image's or the
+attachment's URL and the element's rect; a chip's × still removes it.
 
 **The page.** A click on an image or a chip, Space and Enter on a
 focused one (each has `tabIndex` 0 and `role="button"`), or ⇧⌘-click
@@ -2235,11 +2286,12 @@ each image.
   it and does not abort; a step's `<img>` exists only after the first
   open.
 - `WebviewPaneTests`: a `koPreview` message with another generation,
-  a foreign URL or a non-key window is dropped; a valid one writes
-  the fetched bytes to `kido-previews/<pid>/<uuid>/<name>` with the
-  name of `Content-Disposition` and the data source answers that
-  item; a body over a lowered cap writes no file and shows the
-  notice; the file is gone after the pane is disposed. A drag over a
+  a foreign or non-prefixed URL, a bad rect, a non-key window or a
+  fetch in flight is dropped; a valid one makes `ImagePreview.ready`
+  with a file of the `Content-Disposition` name, mode 0600, in the
+  preview directory, and `ImagePreview` answers that item; a body
+  over a lowered cap or a 404 writes no file and shows the notice;
+  `close()` removes the file, as for a kitty preview. A drag over a
   webview pane: `draggingEntered` answers `.copy` only for a local
   pane with file URLs on the pasteboard (a fake `NSDraggingInfo` with
   a pasteboard; the test sets the owner's host and the pane's

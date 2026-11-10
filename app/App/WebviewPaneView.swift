@@ -57,6 +57,8 @@ final class WebviewPaneView: NSView, WKNavigationDelegate, WKUIDelegate {
     private var pendingDocument: (navigation: WKNavigation, generation: String)?
     private var theme = ""
     #if KIDO_VISUAL
+    var visualPreview: ((PreviewSource, NSRect) -> Void)?
+    var visualPreviewLimit = Upload.fileLimit
     var visualFeedScript: String?
     var visualFeedPath: String?
     private(set) var visualFeedBytes = 0
@@ -64,10 +66,19 @@ final class WebviewPaneView: NSView, WKNavigationDelegate, WKUIDelegate {
     private(set) var visualDocuments = 0
     #endif
 
+    private final class Preview {
+        struct File { let name: String; var data = Data() }
+        let url: URL
+        let rect: NSRect
+        var file: File?
+        init(url: URL, rect: NSRect) { self.url = url; self.rect = rect }
+    }
     private final class Fetch {
-        let task: any WKURLSchemeTask
+        enum Target { case page(any WKURLSchemeTask), preview(Preview) }
+        let target: Target
         var transfer: KoWebviewFetch?
-        init(_ task: any WKURLSchemeTask) { self.task = task }
+        init(_ target: Target) { self.target = target }
+        var request: URLRequest { switch target { case .page(let task): task.request; case .preview(let preview): URLRequest(url: preview.url) } }
     }
 
     init(pane: PaneView, client: KoClient) {
@@ -82,6 +93,7 @@ final class WebviewPaneView: NSView, WKNavigationDelegate, WKUIDelegate {
         config.mediaTypesRequiringUserActionForPlayback = .all
         config.setURLSchemeHandler(bridge, forURLScheme: "ko")
         config.userContentController.add(bridge, contentWorld: .page, name: "koSocket")
+        config.userContentController.add(bridge, contentWorld: .page, name: "koPreview")
         browser = WebviewBrowser(frame: .zero, configuration: config)
         super.init(frame: .zero)
         // WebKit's base background overwrites the layer colour before the page paints.
@@ -173,6 +185,7 @@ final class WebviewPaneView: NSView, WKNavigationDelegate, WKUIDelegate {
         sockets = [:]
         bridge.owner = nil
         browser.configuration.userContentController.removeScriptMessageHandler(forName: "koSocket", contentWorld: .page)
+        browser.configuration.userContentController.removeScriptMessageHandler(forName: "koPreview", contentWorld: .page)
         browser.navigationDelegate = nil
         browser.uiDelegate = nil
         browser.removeFromSuperview()
@@ -197,7 +210,7 @@ final class WebviewPaneView: NSView, WKNavigationDelegate, WKUIDelegate {
             return
         }
         let id = ObjectIdentifier(task)
-        tasks[id] = Fetch(task)
+        tasks[id] = Fetch(.page(task))
         pending.append(id)
         drain()
     }
@@ -209,6 +222,31 @@ final class WebviewPaneView: NSView, WKNavigationDelegate, WKUIDelegate {
         drain()
     }
 
+    private func failPreview(_ reason: String) {
+        (pane?.window?.delegate as? WindowOwner)?.notices.show("Kido could not preview the file", reason)
+    }
+
+    private func finish(_ fetch: Fetch, _ result: Result<Void, Error>) {
+        let id: ObjectIdentifier
+        switch fetch.target { case .page(let task): id = ObjectIdentifier(task); case .preview(let preview): id = ObjectIdentifier(preview) }
+        guard tasks.removeValue(forKey: id) != nil else { return }
+        fetch.transfer?.cancel()
+        switch fetch.target {
+        case .page(let task):
+            switch result { case .success: task.didFinish(); case .failure(let error): task.didFailWithError(error) }
+        case .preview(let preview):
+            if case .success = result, let file = preview.file {
+                #if KIDO_VISUAL
+                if let visualPreview { visualPreview(.file(file.data, name: file.name), preview.rect); drain(); return }
+                #endif
+                ImagePreview.shared.show(.file(file.data, name: file.name), rect: preview.rect)
+            } else if case .failure(let error) = result, (error as? URLError)?.code == .dataLengthExceedsMaximum {
+                failPreview("The file is over 64 MB")
+            } else { failPreview("The file could not be loaded.") }
+        }
+        drain()
+    }
+
     private func drain() {
         var active = tasks.values.filter { $0.transfer != nil }.count
         var consumed = 0
@@ -217,28 +255,41 @@ final class WebviewPaneView: NSView, WKNavigationDelegate, WKUIDelegate {
             consumed += 1
             guard let fetch = tasks[id], let pane, let client else { continue }
             do {
-                fetch.transfer = try KoWebviewFetch(client: client, pane: pane.pane, request: fetch.task.request, response: { [weak fetch] status, headers in
-                    guard let fetch else { return }
-                    let response = HTTPURLResponse(url: fetch.task.request.url!, statusCode: Int(status), httpVersion: "HTTP/1.1", headerFields: headers)!
-                    fetch.task.didReceive(response)
+                fetch.transfer = try KoWebviewFetch(client: client, pane: pane.pane, request: fetch.request, response: { [weak self, weak fetch] status, headers in
+                    guard let self, let fetch, tasks[id] === fetch else { return }
+                    switch fetch.target {
+                    case .page(let task):
+                        task.didReceive(HTTPURLResponse(url: task.request.url!, statusCode: Int(status), httpVersion: "HTTP/1.1", headerFields: headers)!)
+                    case .preview(let preview):
+                        guard status == 200 else { finish(fetch, .failure(URLError(.badServerResponse))); return }
+                        let disposition = headers.first { $0.key.lowercased() == "content-disposition" }?.value ?? ""
+                        let name = disposition.range(of: "filename*=UTF-8''", options: .caseInsensitive).flatMap { String(disposition[$0.upperBound...].prefix { $0 != ";" }).removingPercentEncoding } ?? "preview"
+                        preview.file = Preview.File(name: name)
+                    }
                 }, body: { [weak self, weak fetch] data in
-                    fetch?.task.didReceive(data)
-                    #if KIDO_VISUAL
-                    if let self, let path = visualFeedPath, fetch?.task.request.url?.path == path { visualFeedBytes += data.count }
-                    #endif
+                    guard let self, let fetch, tasks[id] === fetch else { return }
+                    switch fetch.target {
+                    case .page(let task):
+                        task.didReceive(data)
+                        #if KIDO_VISUAL
+                        if task.request.url?.path == visualFeedPath { visualFeedBytes += data.count }
+                        #endif
+                    case .preview(let preview):
+                        var limit = Upload.fileLimit
+                        #if KIDO_VISUAL
+                        limit = visualPreviewLimit
+                        #endif
+                        guard let count = preview.file?.data.count, data.count <= limit - count else { finish(fetch, .failure(URLError(.dataLengthExceedsMaximum))); return }
+                        preview.file?.data.append(data)
+                    }
                 }, end: { [weak self, weak fetch] result in
                     guard let self, let fetch else { return }
-                    switch result {
-                    case .success: fetch.task.didFinish()
-                    case .failure(let error): fetch.task.didFailWithError(error)
-                    }
-                    tasks.removeValue(forKey: ObjectIdentifier(fetch.task))
-                    drain()
+                    finish(fetch, result)
                 })
                 active += 1
             } catch {
-                fetch.task.didFailWithError(error)
                 tasks.removeValue(forKey: id)
+                switch fetch.target { case .page(let task): task.didFailWithError(error); case .preview: failPreview("The file could not be loaded.") }
             }
         }
         pending.removeFirst(consumed)
@@ -250,8 +301,10 @@ final class WebviewPaneView: NSView, WKNavigationDelegate, WKUIDelegate {
 
     func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
         guard let navigation else { return }
+        for (id, fetch) in tasks { if case .preview = fetch.target { tasks.removeValue(forKey: id); pending.removeAll { $0 == id }; fetch.transfer?.cancel() } }
         pendingDocument = (navigation, UUID().uuidString)
         installScripts()
+        drain()
     }
 
     func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
@@ -350,7 +403,7 @@ final class WebviewPaneView: NSView, WKNavigationDelegate, WKUIDelegate {
         for (index, color) in colors.palette.enumerated() { properties["--ko-color-\(index)"] = rgb(color) }
         let value: [String: Any] = ["pane": pane.pane.description, "local": (pane.window?.delegate as? WindowOwner)?.isLocalProgram(pane) == true, "theme": properties, "cell": ["width": pane.cell.width, "height": pane.cell.height]]
         let json = String(data: try! JSONSerialization.data(withJSONObject: value, options: [.sortedKeys]), encoding: .utf8)!
-        return "(()=>{const ko=\(json);window.ko=ko;const apply=()=>{for(const [k,v] of Object.entries(ko.theme))document.documentElement.style.setProperty(k,v)};if(document.documentElement)apply();else {const observer=new MutationObserver(()=>{if(document.documentElement){apply();observer.disconnect()}});observer.observe(document,{childList:true,subtree:true})}})()"
+        return "(()=>{const ko=\(json);ko.preview=(url,rect)=>window.__koPreview(new URL(url,location.href).href,rect);window.ko=ko;const apply=()=>{for(const [k,v] of Object.entries(ko.theme))document.documentElement.style.setProperty(k,v)};if(document.documentElement)apply();else {const observer=new MutationObserver(()=>{if(document.documentElement){apply();observer.disconnect()}});observer.observe(document,{childList:true,subtree:true})}})()"
     }
 
     func drop(files: [String], refused: Bool) {
@@ -358,6 +411,20 @@ final class WebviewPaneView: NSView, WKNavigationDelegate, WKUIDelegate {
         let value: [String: Any] = ["files": files, "refused": refused]
         guard let data = try? JSONSerialization.data(withJSONObject: value), let json = String(data: data, encoding: .utf8) else { return }
         browser.evaluateJavaScript("window.__koDrop('\(generation)',\(json))", completionHandler: nil)
+    }
+
+    private func preview(_ data: [String: Any]) {
+        guard pendingDocument == nil, let raw = data["url"] as? String, let url = URL(string: raw), allowed(url),
+              ["/images/", "/attachments/", "/steps/"].contains(where: url.path.hasPrefix),
+              let numbers = data["rect"] as? [String: NSNumber], ["x", "y", "width", "height"].allSatisfy({ numbers[$0].map { CFGetTypeID($0) != CFBooleanGetTypeID() } == true }),
+              let x = numbers["x"]?.doubleValue, let y = numbers["y"]?.doubleValue, let width = numbers["width"]?.doubleValue, let height = numbers["height"]?.doubleValue,
+              [x, y, width, height].allSatisfy({ $0.isFinite }), width >= 0, height >= 0,
+              let window, window.isKeyWindow, window.firstResponder === browser,
+              !tasks.values.contains(where: { if case .preview = $0.target { true } else { false } }),
+              pending.count < Self.maxPendingFetches else { return }
+        let screen = window.convertToScreen(convert(NSRect(x: x, y: y, width: width, height: height), to: nil))
+        let preview = Preview(url: url, rect: screen), id = ObjectIdentifier(preview)
+        tasks[id] = Fetch(.preview(preview)); pending.append(id); drain()
     }
 
     private enum SocketAction: String { case open, send, close, buffer, abort }
@@ -371,8 +438,9 @@ final class WebviewPaneView: NSView, WKNavigationDelegate, WKUIDelegate {
 
     func userContentController(_ controller: WKUserContentController, didReceive message: WKScriptMessage) {
         guard !stopped, message.frameInfo.isMainFrame, allowed(message.frameInfo.request.url),
-              let data = message.body as? [String: Any], data["document"] as? String == generation,
-              let id = data["id"] as? Int, id >= 0, let rawAction = data["action"] as? String, let action = SocketAction(rawValue: rawAction) else { return }
+              let data = message.body as? [String: Any], data["document"] as? String == generation else { return }
+        if message.name == "koPreview" { preview(data); return }
+        guard message.name == "koSocket", let id = data["id"] as? Int, id >= 0, let rawAction = data["action"] as? String, let action = SocketAction(rawValue: rawAction) else { return }
         let generation = generation
         switch action {
         case .open:
@@ -427,6 +495,7 @@ final class WebviewPaneView: NSView, WKNavigationDelegate, WKUIDelegate {
     (()=>{
       const bridge=window.webkit.messageHandlers.koSocket, sockets=new Map();let serial=0;
       const documentID='__KO_DOCUMENT__',MAX_PENDING_BYTES=1048576,MAX_PENDING_SENDS=256;
+      window.__koPreview=(url,rect)=>window.webkit.messageHandlers.koPreview.postMessage({document:documentID,url,rect:{x:rect.x,y:rect.y,width:rect.width,height:rect.height}});
       const post=(s,action,args={})=>bridge.postMessage({document:documentID,id:s._id,action,...args});
       class Socket extends EventTarget {
         static CONNECTING=0;static OPEN=1;static CLOSING=2;static CLOSED=3;

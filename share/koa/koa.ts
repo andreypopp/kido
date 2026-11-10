@@ -16,7 +16,7 @@ import { webview } from "../webview/index.ts";
 import { assemblePage } from "./koa-assemble.ts";
 import { complete, findFd, agentDiscovery } from "./koa-complete.ts";
 import { signalChild } from "./koa-child.ts";
-import { attachments, UPLOAD_IDLE_MS } from "./koa-attach.ts";
+import { attachments, stepFile, UPLOAD_IDLE_MS } from "./koa-attach.ts";
 import { nameCommand, promptBody } from "./prompt.ts";
 import { prompts } from "./koa-queue.ts";
 import type { Exit, Pi, State, ThinkingLevel, DialogMethod, CompletionCommand } from "./records.ts";
@@ -457,6 +457,7 @@ async function main(): Promise<void> {
         respond(response, 200, "{}"); return;
       }
       if (await attached.handle(request, response, !stopping && pi.type !== "exited")) return;
+      if (await stepFile(request, response, feed.stepPath, state.cwd, state.home)) return;
       if (feed.handle(request, response)) return;
       if (request.method === "GET" && request.url === "/") {
         try {

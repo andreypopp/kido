@@ -19,6 +19,14 @@ final class WebviewToy: @unchecked Sendable {
             documents = []
         }
     }
+    private var previewRequests: [String] = []
+    private var heldPreviews: [NWConnection] = []
+    var previews: [String] { queue.sync { previewRequests } }
+    func releasePreviews() { queue.sync { for connection in heldPreviews { previewReply(connection, path: "held") }; heldPreviews = [] } }
+    private func previewReply(_ connection: NWConnection, path: String) {
+        let body = Data((path.contains("big") ? String(repeating: "x", count: 32) : "preview").utf8), status = path.contains("missing") ? "404 Not Found" : "200 OK"
+        connection.send(content: Data("HTTP/1.1 \(status)\r\nContent-Type: text/plain\r\nContent-Disposition: inline; filename*=UTF-8''folder%2Fsource.swift\r\nContent-Length: \(body.count)\r\nConnection: close\r\n\r\n".utf8) + body, completion: .contentProcessed { _ in connection.cancel() })
+    }
     private var opened = Set<ObjectIdentifier>()
     private var messages = 0
     var messageCount: Int { queue.sync { messages } }
@@ -120,6 +128,11 @@ final class WebviewToy: @unchecked Sendable {
                 return
             }
             let text = String(decoding: data[..<end.upperBound], as: UTF8.self)
+            if let path = text.split(separator: " ").dropFirst().first, path.hasPrefix("/images/") || path.hasPrefix("/attachments/") || path.hasPrefix("/steps/") {
+                previewRequests.append(String(path))
+                if path.contains("held") { heldPreviews.append(connection) } else { previewReply(connection, path: String(path)) }
+                return
+            }
             if text.hasPrefix("GET /held ") { documents.append(connection); return }
             if text.hasPrefix("GET /encoded ") {
                 encodedHead = text

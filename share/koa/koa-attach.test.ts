@@ -2,11 +2,28 @@ import assert from 'node:assert/strict';
 import { test, type TestContext } from 'node:test';
 import { createServer, request } from 'node:http';
 import { once } from 'node:events';
-import { mkdtempSync, rmSync, existsSync } from 'node:fs';
+import { mkdtempSync, rmSync, existsSync, writeFileSync, appendFileSync, renameSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { attachments } from './koa-attach.ts';
+import { attachments, fileResponse } from './koa-attach.ts';
+import { connect } from 'node:net';
 import { pollUntil } from '../pi/ko-pi-fixture.ts';
+
+test('a file response keeps its validated descriptor and byte boundary', async t => {
+  const dir = mkdtempSync(join(tmpdir(), 'koa-file-response-')); t.after(() => rmSync(dir, { recursive: true, force: true }));
+  const path = join(dir, 'file.txt'); writeFileSync(path, 'original');
+  const server = createServer((_request, response) => {
+    response.on('pipe', () => { appendFileSync(path, 'growth'); renameSync(path, path + '.old'); writeFileSync(path, 'replacement'); });
+    void fileResponse(response, path);
+  });
+  server.listen(0, '127.0.0.1'); await once(server, 'listening');
+  t.after(async () => { server.closeAllConnections(); await new Promise<void>(resolve => server.close(() => resolve())); });
+  const address = server.address(); assert.ok(address && typeof address !== 'string');
+  const socket = connect(address.port, '127.0.0.1'), chunks: Buffer[] = [];
+  socket.on('data', chunk => chunks.push(chunk)); socket.write('GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n');
+  await once(socket, 'end');
+  const wire = Buffer.concat(chunks).toString(); assert.equal(wire.slice(wire.indexOf('\r\n\r\n') + 4), 'original');
+});
 
 async function fixture(t: TestContext, idleMs: number) {
   const dir = mkdtempSync(join(tmpdir(), 'koa-upload-cleanup-'));

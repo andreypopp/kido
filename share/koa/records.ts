@@ -35,5 +35,10 @@ export type Dialog = { type: "extension_ui_request"; id: string; title: string; 
   { method: "editor"; prefill?: string }
 );
 export type State = { working: boolean; since?: number; aborted: boolean; name: string; model?: { provider: string; id: string }; thinking?: ThinkingLevel; levels: ThinkingLevel[]; context?: { tokens: number | null; window: number; percent: number | null }; cwd: string; home: string; sessionFile?: string; queue: { steering: readonly QueuedPrompt[]; followUp: readonly QueuedPrompt[] }; dialogs: Dialog[]; statuses: Record<string, string>; editor?: { id: string; text: string }; pi: Pi };
+export function pathArg(block: Block | undefined): string | undefined {
+  if (block?.type !== 'tool' || !['read', 'edit', 'write'].includes(block.name)) return;
+  try { const value = JSON.parse(block.args.text); return value && typeof value.path === 'string' && value.path && !/[\p{Cc}]/u.test(value.path) ? value.path : undefined; } catch { return; }
+}
+
 export type Patch = { type: "patch"; seq: number; blocks: ({ index: number; block: Block } | { index: number; suffix: string })[]; final: boolean; stop: string; error: string; ended?: number };
 export type PageRecord = { type: "reset"; epoch: string; more: boolean; items: WireItem[] } | { type: "item"; item: WireItem } | Patch | ({ type: "state" } & State) | { type: "notify"; message: string; level: "info" | "warning" | "error" } | { type: "flush"; bytes: number; t: number };

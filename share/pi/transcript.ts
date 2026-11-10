@@ -1,9 +1,10 @@
 import type { IncomingMessage, ServerResponse, OutgoingHttpHeaders } from "node:http";
 import { createHash } from "node:crypto";
 import { constants, mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { join, basename } from "node:path";
 import { open } from "node:fs/promises";
-import { imageInfo } from "./image.ts";
+import { imageInfo, imageExtensions } from "./image.ts";
+import { pathArg } from "../koa/records.ts";
 import { promptText } from "../koa/prompt.ts";
 import type { Text, Block, Item, Assistant, WireItem, State, PageRecord, CompletionQuery, ImageRef, Attachment } from "../koa/records.ts";
 import { mintId, contentText, utf8Prefix, type Content } from "./text.ts";
@@ -75,7 +76,12 @@ export function respond(response: ServerResponse, status: number, text: string, 
   response.end(text);
 }
 
-export async function serveFile(response: ServerResponse, path: string, headers: OutgoingHttpHeaders): Promise<void> {
+export function fileDisposition(name: string): string {
+  const file = basename(name);
+  return 'inline; filename="' + file.replace(/[^\x20-\x21\x23-\x5b\x5d-\x7e]/g, '_') + '"; filename*=UTF-8\'\'' + encodeURIComponent(file);
+}
+
+async function serveFile(response: ServerResponse, path: string, headers: OutgoingHttpHeaders): Promise<void> {
   const file = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
   try {
     const stat = await file.stat();
@@ -343,7 +349,7 @@ export function transcript({ dir, flushMs, metrics = false }: { dir: string; flu
       const image = images.get(url.pathname.slice(8));
       if (!image) { respond(req, 404, "{}"); return true; }
       req.setHeader("Content-Type", image.ref.mimeType);
-      void serveFile(req, image.path, { "Content-Type": image.ref.mimeType }).catch(error => {
+      void serveFile(req, image.path, { "Content-Type": image.ref.mimeType, "Content-Disposition": fileDisposition(image.ref.id + "." + (imageExtensions[image.ref.mimeType] ?? "bin")) }).catch(error => {
         if (req.headersSent) req.destroy();
         else respond(req, error instanceof Error && "code" in error && error.code === "ENOENT" ? 410 : 500, "{}");
       });
@@ -372,5 +378,9 @@ export function transcript({ dir, flushMs, metrics = false }: { dir: string; flu
     } else return false;
     return true;
   };
-  return { message, thinking, rebuild, toolRunning, toolPartial, toolDone, state, send: (record: Extract<PageRecord, { type: "notify" }>) => broadcast(record), handle, close, get metrics() { return counters && { ...counters, subscribers: subscribers.size }; } };
+  const stepPath = (seq: number, index: number): string | undefined => {
+    const item = items[seq], block = item?.kind === 'assistant' ? item.blocks[index] : undefined;
+    return pathArg(block);
+  };
+  return { stepPath, message, thinking, rebuild, toolRunning, toolPartial, toolDone, state, send: (record: Extract<PageRecord, { type: "notify" }>) => broadcast(record), handle, close, get metrics() { return counters && { ...counters, subscribers: subscribers.size }; } };
 }

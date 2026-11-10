@@ -18,6 +18,11 @@ struct PreviewPixels: Sendable {
     let data: Data
 }
 
+enum PreviewSource: Sendable {
+    case pixels(PreviewPixels, id: UInt32)
+    case file(Data, name: String)
+}
+
 extension PreviewPixels {
     init?(taking image: inout ghostty_image_s) {
         guard let pixels = image.data else { return nil }
@@ -42,19 +47,19 @@ extension PreviewPixels {
     nonisolated private static let stopped = Mutex(false)
     nonisolated static var directory: URL { files.directory }
 
-    func show(_ pixels: PreviewPixels, id: UInt32, rect: NSRect) {
+    func show(_ source: PreviewSource, rect: NSRect) {
         Task {
-            guard await prepare(pixels, id: id, rect: rect) else { return }
+            guard await prepare(source, rect: rect) else { return }
             guard NSApp.isActive else { return close() }
             QLPreviewPanel.shared()?.makeKeyAndOrderFront(nil)
         }
     }
 
-    func prepare(_ pixels: PreviewPixels, id: UInt32, rect: NSRect) async -> Bool {
+    func prepare(_ source: PreviewSource, rect: NSRect) async -> Bool {
         close()
         let token = UUID()
         preview = .writing(token)
-        let result = await Task.detached(priority: .userInitiated) { Result { try Self.write(pixels, id: id) } }.value
+        let result = await Task.detached(priority: .userInitiated) { Result { try Self.write(source) } }.value
         guard case .writing(let current) = preview, current == token else {
             if case .success(let url) = result { Self.remove(url) }
             return false
@@ -65,7 +70,7 @@ extension PreviewPixels {
             return true
         case .failure(let error):
             preview = nil
-            debug("image preview failed: \(error)")
+            debug("preview failed: \(error)")
             return false
         }
     }
@@ -127,35 +132,47 @@ extension PreviewPixels {
 
     func windowWillClose(_ notification: Notification) { close() }
 
-    nonisolated private static func write(_ image: PreviewPixels, id: UInt32) throws -> URL {
+    nonisolated private static func write(_ source: PreviewSource) throws -> URL {
         guard !stopped.withLock({ $0 }) else { throw CocoaError(.userCancelled) }
-        let channels: Int
-        switch image.format {
-        case GHOSTTY_IMAGE_FORMAT_GRAY: channels = 1
-        case GHOSTTY_IMAGE_FORMAT_GRAY_ALPHA: channels = 2
-        case GHOSTTY_IMAGE_FORMAT_RGB: channels = 3
-        case GHOSTTY_IMAGE_FORMAT_RGBA: channels = 4
-        default: throw CocoaError(.fileWriteUnknown)
+        let data: Data, name: String
+        switch source {
+        case .file(let bytes, let raw):
+            data = bytes
+            var safe = raw.components(separatedBy: CharacterSet(charactersIn: "/\\")).last ?? "preview"
+            safe = safe.components(separatedBy: .controlCharacters).joined(separator: "_")
+            while safe.utf8.count > 255 { safe.removeLast() }
+            name = safe.isEmpty || safe == "." || safe == ".." ? "preview" : safe
+        case .pixels(let image, let id):
+            let channels: Int
+            switch image.format {
+            case GHOSTTY_IMAGE_FORMAT_GRAY: channels = 1
+            case GHOSTTY_IMAGE_FORMAT_GRAY_ALPHA: channels = 2
+            case GHOSTTY_IMAGE_FORMAT_RGB: channels = 3
+            case GHOSTTY_IMAGE_FORMAT_RGBA: channels = 4
+            default: throw CocoaError(.fileWriteUnknown)
+            }
+            let alpha = channels == 2 || channels == 4
+            guard let space = CGColorSpace(name: channels <= 2 ? CGColorSpace.genericGrayGamma2_2 : CGColorSpace.sRGB),
+                  let provider = CGDataProvider(data: image.data as CFData),
+                  let cg = CGImage(width: image.width, height: image.height, bitsPerComponent: 8,
+                                   bitsPerPixel: channels * 8, bytesPerRow: image.width * channels,
+                                   space: space, bitmapInfo: CGBitmapInfo(rawValue: (alpha ? CGImageAlphaInfo.last : .none).rawValue),
+                                   provider: provider, decode: nil, shouldInterpolate: false, intent: .defaultIntent)
+            else { throw CocoaError(.fileWriteUnknown) }
+            let encoded = NSMutableData()
+            guard let png = CGImageDestinationCreateWithData(encoded, UTType.png.identifier as CFString, 1, nil) else { throw CocoaError(.fileWriteUnknown) }
+            CGImageDestinationAddImage(png, cg, nil)
+            guard CGImageDestinationFinalize(png) else { throw CocoaError(.fileWriteUnknown) }
+            data = encoded as Data
+            name = "image-\(id).png"
         }
-        let alpha = channels == 2 || channels == 4
-        guard let space = CGColorSpace(name: channels <= 2 ? CGColorSpace.genericGrayGamma2_2 : CGColorSpace.sRGB),
-              let provider = CGDataProvider(data: image.data as CFData),
-              let cg = CGImage(width: image.width, height: image.height, bitsPerComponent: 8,
-                               bitsPerPixel: channels * 8, bytesPerRow: image.width * channels,
-                               space: space, bitmapInfo: CGBitmapInfo(rawValue: (alpha ? CGImageAlphaInfo.last : .none).rawValue),
-                               provider: provider, decode: nil, shouldInterpolate: false, intent: .defaultIntent)
-        else { throw CocoaError(.fileWriteUnknown) }
-        let encoded = NSMutableData()
-        guard let png = CGImageDestinationCreateWithData(encoded, UTType.png.identifier as CFString, 1, nil) else { throw CocoaError(.fileWriteUnknown) }
-        CGImageDestinationAddImage(png, cg, nil)
-        guard CGImageDestinationFinalize(png) else { throw CocoaError(.fileWriteUnknown) }
         return try stopped.withLock { stopped in
             guard !stopped else { throw CocoaError(.userCancelled) }
             try files.prepare()
             let folder = directory.appendingPathComponent(UUID().uuidString, isDirectory: true)
             try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
-            let url = folder.appendingPathComponent("image-\(id).png")
-            guard FileManager.default.createFile(atPath: url.path, contents: encoded as Data, attributes: [.posixPermissions: 0o600]) else {
+            let url = folder.appendingPathComponent(name)
+            guard FileManager.default.createFile(atPath: url.path, contents: data, attributes: [.posixPermissions: 0o600]) else {
                 try? FileManager.default.removeItem(at: folder)
                 throw CocoaError(.fileWriteUnknown)
             }
@@ -197,7 +214,7 @@ extension PaneView {
             defer { ghostty_image_free(&image) }
             guard let pixels = PreviewPixels(taking: &image), window != nil else { return }
             let rect = screenRect(NSRect(x: hit.rect.x, y: hit.rect.y, width: hit.rect.width, height: hit.rect.height))
-            ImagePreview.shared.show(pixels, id: hit.image_id, rect: rect)
+            ImagePreview.shared.show(.pixels(pixels, id: hit.image_id), rect: rect)
         }
     }
 }

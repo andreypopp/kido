@@ -1,5 +1,6 @@
 import { ATTACHMENT_LIMITS } from '../records.ts';
 import { fetchJSON } from './http.ts';
+import { preview } from './preview.ts';
 import type { Attachment } from '../records.ts';
 
 type Chip = { view: HTMLDivElement; icon: HTMLSpanElement; name: HTMLSpanElement; detail: HTMLSpanElement; body: HTMLButtonElement; controller: AbortController; state: { type: 'pending'; name: string; size: number; received: number; id?: string } | { type: 'ready'; file: Attachment } | { type: 'refused'; name: string; reason: string } };
@@ -28,6 +29,7 @@ export function attach(host: HTMLElement, changed: () => void, displayPath: (val
     chip.body.disabled = state.type !== 'ready';
     chip.view.classList.toggle('refused', state.type === 'refused');
     chip.icon.className = state.type === 'pending' ? 'attach-icon spin' : 'attach-icon';
+    chip.body.onclick = () => { if (chip.state.type === 'ready') preview('/attachments/' + chip.state.file.id, chip.body, chip.state.file.kind, chip.state.file.name); };
     if (file?.kind === 'image') { const image = document.createElement('img'); image.src = '/attachments/' + file.id; image.alt = ''; chip.icon.replaceChildren(image); }
     else chip.icon.innerHTML = state.type === 'pending' ? '' : '<svg viewBox="0 0 16 16"><path d="M4 1.5h5.5L13 5v9.5H4z"/><path d="M9.5 1.5V5H13"/></svg>';
     chip.detail.classList.toggle('path', file?.origin === 'path');

@@ -3,9 +3,17 @@ import WebKit
 import GhosttyKit
 import XCTest
 import SnapshotTesting
+import QuickLookUI
 import KoModel
 import KoClient
 @testable import Kido
+
+@MainActor private final class PreviewTestWindow: NSWindow {
+    var key = false
+    var responder: NSResponder?
+    override var firstResponder: NSResponder? { responder ?? super.firstResponder }
+    override var isKeyWindow: Bool { key }
+}
 
 @MainActor private final class WebviewMenuProbe: NSObject {
     var keys: [String] = []
@@ -64,6 +72,74 @@ extension VisualTests {
         let cropped = try XCTUnwrap(bitmap.cgImage?.cropping(to: CGRect(x: area.minX * scale, y: area.minY * scale, width: area.width * scale, height: area.height * scale)))
         let page = try XCTUnwrap(NSBitmapImageRep(data: try XCTUnwrap(image?.tiffRepresentation))?.converting(to: .sRGB, renderingIntent: .default))
         return (try XCTUnwrap(NSBitmapImageRep(cgImage: cropped).converting(to: .sRGB, renderingIntent: .default)), page)
+    }
+
+    func testWebviewNativePreview() async throws {
+        let toy = try WebviewToy(path: directory.appendingPathComponent("webview.sock").path)
+        _ = try await webviewStart(toy: toy)
+        let owner = WindowOwner(host: .local, runtime: runtime, start: false)
+        owner.testServerDir = directory.path; owner.start()
+        defer { owner.close(); ImagePreview.shared.close() }
+        try await wait("preview owner page") { owner.testSession?.activePane?.webviewView?.browser.isLoading == false && owner.testSession?.activePane?.webviewView?.browser.url != nil }
+        let pane = try XCTUnwrap(owner.testSession?.activePane), view = try XCTUnwrap(pane.webviewView), web = view.browser
+        let key = PreviewTestWindow(contentRect: NSRect(x: -10000, y: -10000, width: 600, height: 400), styleMask: [.borderless], backing: .buffered, defer: false)
+        key.isReleasedWhenClosed = false; key.delegate = owner; key.contentView = view; key.responder = web
+        defer { key.key = false; key.contentView = nil; key.close() }
+        view.visualPreviewLimit = 8
+        var prepared = 0
+        view.visualPreview = { source, rect in Task { if await ImagePreview.shared.prepare(source, rect: rect) { prepared += 1 } } }
+        try await webviewEqual(web, "typeof window.ko.preview", "\"function\"")
+        _ = try await webviewJS(web, "(()=>{window.ko.preview('/images/nonkey',{x:0,y:0,width:10,height:10});return true})()")
+        key.key = true
+        XCTAssertTrue(key.isKeyWindow)
+        XCTAssertTrue(view.window === key)
+        XCTAssertTrue(key.firstResponder === web, String(describing: key.firstResponder))
+        _ = try await webviewJS(web, """
+        (()=>{
+          const r={x:1,y:2,width:30,height:40};
+          webkit.messageHandlers.koPreview.postMessage({document:'wrong',url:location.origin+'/images/generation',rect:r});
+          ko.preview('ko://other/images/foreign',r);ko.preview('/secret',r);ko.preview('/images/rect',{...r,width:-1});ko.preview('/images/bool',{...r,x:true});ko.preview('/images/infinite',{...r,x:Infinity});
+          ko.preview('/steps/held',r);ko.preview('/images/second',r);
+          return true;
+        })()
+        """)
+        try await wait("one held preview") { toy.previews.contains("/steps/held") }
+        toy.releasePreviews()
+        try await wait("preview file prepared") { prepared == 1 }
+        XCTAssertEqual(toy.previews, ["/steps/held"])
+        let panel = try XCTUnwrap(QLPreviewPanel.shared())
+        let item = try XCTUnwrap(ImagePreview.shared.previewPanel(panel, previewItemAt: 0)), url = try XCTUnwrap(item.previewItemURL)
+        XCTAssertEqual(url.lastPathComponent, "source.swift")
+        XCTAssertEqual(url.deletingLastPathComponent().deletingLastPathComponent().path, ImagePreview.directory.path)
+        XCTAssertEqual((try FileManager.default.attributesOfItem(atPath: url.deletingLastPathComponent().path)[.posixPermissions] as? NSNumber)?.intValue, 0o700)
+        XCTAssertEqual(try Data(contentsOf: url), Data("preview".utf8))
+        XCTAssertEqual((try FileManager.default.attributesOfItem(atPath: url.path)[.posixPermissions] as? NSNumber)?.intValue, 0o600)
+        ImagePreview.shared.close(); XCTAssertFalse(FileManager.default.fileExists(atPath: url.path))
+        for path in ["/images/big", "/images/missing"] {
+            let notices = owner.notices.testTransients.entries.count
+            _ = try await webviewJS(web, "(()=>{ko.preview('\(path)',{x:0,y:0,width:1,height:1});return true})()")
+            try await wait("preview failure notice") { owner.notices.testTransients.entries.count > notices }
+            XCTAssertEqual(prepared, 1); XCTAssertFalse(ImagePreview.shared.ready)
+            for entry in owner.notices.testTransients.entries { XCTAssertEqual(entry.title, "Kido could not preview the file"); if path.hasSuffix("big") { XCTAssertEqual(entry.detail, "The file is over 64 MB") }; owner.notices.dismiss(entry.id) }
+        }
+        _ = try await webviewJS(web, "(()=>{ko.preview('/attachments/held',{x:0,y:0,width:1,height:1});return true})()")
+        try await wait("preview waiting at navigation") { toy.previews.contains("/attachments/held") }
+        let documents = view.visualDocuments
+        web.reload()
+        try await wait("new preview document") { view.visualDocuments > documents }
+        toy.releasePreviews()
+        _ = try await webviewJS(web, "(()=>{ko.preview('/images/after',{x:0,y:0,width:1,height:1});return true})()")
+        try await wait("new document preview") { prepared == 2 }
+        XCTAssertEqual(prepared, 2)
+        _ = web.load(URLRequest(url: try XCTUnwrap(URL(string: "ko://\(pane.pane)/held"))))
+        try await wait("provisional preview navigation") { toy.heldDocumentCount == 1 }
+        _ = try await webviewJS(web, "(()=>{ko.preview('/images/provisional',{x:0,y:0,width:1,height:1});return true})()")
+        let heldDocuments = view.visualDocuments
+        toy.releaseDocuments()
+        try await wait("held navigation committed") { view.visualDocuments > heldDocuments }
+        _ = try await webviewJS(web, "(()=>{ko.preview('/images/committed',{x:0,y:0,width:1,height:1});return true})()")
+        try await wait("committed document preview") { prepared == 3 }
+        XCTAssertFalse(toy.previews.contains("/images/provisional"))
     }
 
     func testWebviewNativeFileDrop() async throws {

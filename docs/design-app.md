@@ -1435,6 +1435,25 @@ link to the same pane or a reload) cancels the old document's sockets,
 and a failed navigation keeps the old generation. A bridge message or a
 core event of another generation is dropped.
 
+**Quick Look from a page.** A page asks for a preview through
+`window.ko.preview(url, rect)`, which posts the document's generation,
+the URL and the clicked element's rect to the script message handler
+`koPreview`. The handler drops the message silently, as `koSocket` does,
+unless the view is not stopped, the message is the main frame's, the
+frame's URL is allowed, the generation matches, no navigation is
+pending, the URL is on the pane's own origin under `/images/`,
+`/attachments/` or `/steps/`, the rect is four finite numbers with a
+width and a height that are not negative, the web
+view is the first responder of a key window, and no other preview of the
+view is in flight. It fetches the URL through the page's own fetch path,
+so a remote server and a runtime work as for the page, and stops past
+`Upload.fileLimit` (64 MiB) or on a status other than 200 with the
+pane's notice. The file's name is the base name of the response's
+`filename*`, else `preview`. `ImagePreview` takes it as a `file` source
+beside the terminal's `pixels`, so the panel, its control, its file and
+its removal are the terminal's. The panel zooms from the clicked
+element's rect.
+
 **Focus and keys.** A click in the page selects the pane through the
 pane's left-mouse-down monitor and makes the web view first responder.
 `PaneView.owner` maps the web view to its pane, so the window's active
