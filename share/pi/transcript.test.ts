@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { transcript } from "./transcript.ts";
-import type { WireItem } from "../koa/records.ts";
+import type { WireItem } from "./records.ts";
 
 function directory(t: TestContext) {
   const dir = mkdtempSync(join(tmpdir(), "koa-transcript-test-"));
@@ -35,6 +35,64 @@ function record(line: string) {
 function assistant(text: string, stopReason: "stop" | "error" = "stop"): Extract<AgentMessage, { role: "assistant" }> {
   return { role: "assistant", content: [{ type: "text", text }], api: "openai-responses", provider: "openai", model: "test", usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } }, stopReason, timestamp: 123 };
 }
+
+test('structured agent and job details render identically live and on rebuild', t => {
+  const view = transcript({ dir: directory(t), flushMs: 1 });
+  const messages: AgentMessage[] = [
+    { role: 'custom', customType: 'ko-message', display: true, timestamp: 1, content: 'Do not parse this header', details: { agent: { name: 'boss', session: 'boss-id', pane: 'pane_2' }, body: 'Review the module', inbound: { form: 'message', relation: 'parent', runtime: 'dev' } } },
+    { role: 'custom', customType: 'ko-stream', display: true, timestamp: 2, content: 'Do not parse this output', details: { job: { id: 'j1', name: 'build', service: false, log: '/tmp/build.log' }, batch: 'compiled', omitted: 2, cut: true } },
+    { role: 'custom', customType: 'other-extension', display: true, timestamp: 3, content: 'plain notice', details: {} },
+  ];
+  for (const message of messages) view.message(message, 'end');
+  const live = JSON.parse(request(view, '/items?before=100').join('')).items;
+  assert.deepEqual(live[0], { seq: 0, at: 1, final: true, kind: 'agent', direction: 'in', from: { name: 'boss', session: 'boss-id', pane: 'pane_2' }, text: { text: 'Review the module', cut: 0 }, inbound: { form: 'message', relation: 'parent', runtime: 'dev' } });
+  assert.deepEqual(live[1], { seq: 1, at: 2, final: true, kind: 'job', job: { id: 'j1', name: 'build', service: false, log: '/tmp/build.log' }, event: { type: 'stream', batch: { text: 'compiled', cut: 0 }, omitted: 2, cut: true } });
+  assert.equal(live[2].kind, 'notice'); view.rebuild(messages);
+  assert.deepEqual(JSON.parse(request(view, '/items?before=100').join('')).items, live); view.close();
+});
+
+test('agent forms and every job ending use typed details, capped bodies and strict shape checks', t => {
+  const view = transcript({ dir: directory(t), flushMs: 1 }), agent = { name: 'worker' }, job = { id: 'j', name: 'build', service: false, log: '/tmp/log' };
+  const forms = [
+    { customType: 'ko-steer', details: { agent, body: 'redirect', inbound: { form: 'steer' } }, inbound: { form: 'steer' } },
+    { customType: 'ko-notice', details: { agent, inbound: { form: 'report' }, body: 'x'.repeat(20000) }, inbound: { form: 'report' } },
+    { customType: 'ko-notice', details: { agent, inbound: { form: 'notice' }, body: 'notice' }, inbound: { form: 'notice' } },
+    { customType: 'ko-notice', details: { agent, inbound: { form: 'ended', reported: false }, body: 'ended' }, inbound: { form: 'ended', reported: false } },
+  ];
+  for (const [index, value] of forms.entries()) view.message({ role: 'custom', display: true, timestamp: index, customType: value.customType, content: 'Do not read me', details: value.details }, 'end');
+  const ends = [{ type: 'exit', code: 0 }, { type: 'exit', code: 1 }, { type: 'signal', signal: 'SIGKILL' }, { type: 'failed', message: 'could not start' }, { type: 'timeout', seconds: 600 }, { type: 'stopped' }];
+  for (const end of ends) view.message({ role: 'custom', display: true, timestamp: 5, customType: 'ko-notice', content: 'wrong', details: { kind: 'job', job: { ...job, end }, tail: 'tail' } }, 'end');
+  view.message({ role: 'custom', display: true, timestamp: 6, customType: 'ko-notice', content: 'unknown', details: { agent, inbound: { form: 'ended' }, body: 'not a typed ending' } }, 'end');
+  const items = JSON.parse(request(view, '/items?before=100').join('')).items;
+  assert.deepEqual(items.slice(0, forms.length).map((item: { inbound: unknown }) => item.inbound), forms.map(value => value.inbound));
+  assert.deepEqual(items[1].text, { text: 'x'.repeat(16384), cut: 3616 });
+  assert.deepEqual(items.slice(forms.length, forms.length + ends.length).map((item: { event: { end: unknown } }) => item.event.end), ends);
+  assert.equal(items.at(-1).kind, 'notice'); view.close();
+});
+
+test('agent tool cards keep full capped arguments and typed outcomes on live and replay paths', t => {
+  const view = transcript({ dir: directory(t), flushMs: 1 }), message = assistant('');
+  message.content = [
+    { type: 'toolCall', id: 'spawn', name: 'spawn_agent', arguments: { name: 'worker', task: 'x'.repeat(20000), model: 'provider/model' } },
+    { type: 'toolCall', id: 'send', name: 'message_agent', arguments: { to: 'worker', message: 'Review', mode: 'steer' } },
+    { type: 'toolCall', id: 'job', name: 'async_bash', arguments: { command: 'make', name: 'build' } },
+  ];
+  view.message(message, 'start');
+  const before = JSON.parse(request(view, '/items?before=100').join('')).items[0].blocks;
+  assert.deepEqual(before[0].agent.text, { text: 'x'.repeat(16384), cut: 3616 }); assert.equal(before[0].agent.outcome, undefined);
+  const results: Extract<AgentMessage, { role: 'toolResult' }>[] = [
+    { role: 'toolResult', toolCallId: 'spawn', toolName: 'spawn_agent', content: [{ type: 'text', text: 'do not parse this result' }], isError: false, timestamp: 200, details: { name: 'worker', session: 'worker-id', pane: 'pane_2', outcome: { ok: true } } },
+    { role: 'toolResult', toolCallId: 'send', toolName: 'message_agent', content: [], isError: false, timestamp: 201, details: { to: 'worker', outcome: { ok: false, failure: 'refused', message: 'Not now' } } },
+    { role: 'toolResult', toolCallId: 'job', toolName: 'async_bash', content: [], isError: false, timestamp: 202, details: { job: { id: 'j1', name: 'build', log: '/tmp/build.log', service: true }, stream: false } },
+  ];
+  for (const result of results) view.toolDone(result.toolCallId, result.content, result.isError, result.timestamp, undefined, undefined, result.details);
+  const live = JSON.parse(request(view, '/items?before=100').join('')).items[0].blocks;
+  assert.deepEqual(live[0].agent.to, { name: 'worker', session: 'worker-id', pane: 'pane_2' });
+  assert.deepEqual(live[1].agent.outcome, { ok: false, failure: 'refused', message: 'Not now' }); assert.equal(live[1].agent.text.text, 'Review');
+  assert.deepEqual(live[2].job, { id: 'j1', name: 'build', log: '/tmp/build.log', service: true });
+  view.rebuild([message, ...results]); const replay = JSON.parse(request(view, '/items?before=100').join('')).items[0].blocks;
+  assert.deepEqual(replay.map((block: { agent?: unknown; job?: unknown }) => [block.agent, block.job]), live.map((block: { agent?: unknown; job?: unknown }) => [block.agent, block.job])); view.close();
+});
 
 test("events use SSE framing", t => {
   const view = transcript({ dir: directory(t), flushMs: 10 });

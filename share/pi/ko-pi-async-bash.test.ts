@@ -20,7 +20,8 @@ test("a local job uses the call cwd and environment, logs both streams, and anno
     const command = `printf '%s\\n' "$PWD" "$KO_PANE"; ${gatedCommand(gate, "stdout\n", "stderr\n", 3)}`;
     const abort = new AbortController();
     const result = await s.tools.get("async_bash").execute("c", { command, name: "build" }, abort.signal, undefined, { cwd: fx.dir });
-    const { job, log } = result.details;
+    const { job: { id: job, log } } = result.details;
+    assert.equal(result.details.job.service, false);
     assert.match(job, /^j[a-z0-9]{7}$/);
     await pollUntil(() => logHas(log, "stdout\n"));
     assert.equal(readFileSync(log, "utf8"), `${realpathSync(fx.dir)}\npane_1\nstdout\n`);
@@ -33,6 +34,10 @@ test("a local job uses the call cwd and environment, logs both streams, and anno
     assert.match(notices(s)[0]!, new RegExp(`job "build" \\(${job}\\) exit 3`));
     assert.ok(notices(s)[0]!.includes("stdout\nstderr"));
     assert.ok(notices(s)[0]!.endsWith(`log: ${log}`));
+    const details = customMessages(s, 'ko-notice')[0]!.message.details;
+    assert.equal(details.kind, 'job');
+    assert.deepEqual(details.job, { id: job, name: 'build', service: false, log, end: { type: 'exit', code: 3 } });
+    assert.ok(details.tail.endsWith('stdout\nstderr\n'));
     assert.equal(readFileSync(log, "utf8"), `${realpathSync(fx.dir)}\npane_1\nstdout\nstderr\n`);
     const [{ startedAt, ...row }] = await list(s);
     assert.ok(Number.isFinite(Date.parse(startedAt)));
@@ -76,9 +81,9 @@ test("running jobs and children reserve names, endings release them, and stop pr
     assert.match(text(again), /started job/);
     assert.equal((await list(s)).filter((row: any) => row.name.toLowerCase() === "twin").length, 2);
     const stop = s.tools.get("stop_async_bash");
-    assert.match(text(await stop.execute("s", { job: "twin" })), new RegExp(`stopped job ${again.details.job}`));
-    await pollUntil(async () => (await list(s)).find((row: any) => row.job === again.details.job).state === "ended");
-    assert.match(text(await stop.execute("s", { job: "twin" })), new RegExp(`job ${again.details.job} .*had already ended: stopped`));
+    assert.match(text(await stop.execute("s", { job: "twin" })), new RegExp(`stopped job ${again.details.job.id}`));
+    await pollUntil(async () => (await list(s)).find((row: any) => row.job === again.details.job.id).state === "ended");
+    assert.match(text(await stop.execute("s", { job: "twin" })), new RegExp(`job ${again.details.job.id} .*had already ended: stopped`));
   } finally { await fx.restore(); }
 });
 
@@ -91,15 +96,16 @@ test("stream batches strip escapes and flush the partial line before the notice"
     await s.emit("agent_start");
     const gate = join(fx.dir, "gate");
     const result = await s.tools.get("async_bash").execute("c", { command: gatedCommand(gate, "\x1b[32mgreen\x1b[0m\n", "partial"), name: "stream", stream: true });
-    await pollUntil(() => logHas(result.details.log, "green"));
+    await pollUntil(() => logHas(result.details.job.log, "green"));
     await s.emit("turn_end", { toolResults: [{}] });
     assert.ok(customMessages(s, "ko-stream")[0]!.message.content.endsWith("\ngreen"));
+    assert.deepEqual(customMessages(s, 'ko-stream')[0]!.message.details, { from: 'stream', job: { id: result.details.job.id, name: 'stream', service: false, log: result.details.job.log }, batch: 'green', omitted: 0, cut: false });
     writeFileSync(gate, "");
     await pollUntil(() => notices(s).length === 1);
     const messages = s.messages.map((m) => m.message.content);
     assert.match(messages.at(-2), /\npartial$/);
     assert.match(messages.at(-1), /partial/);
-    assert.ok(readFileSync(result.details.log, "utf8").includes("\x1b[32m"));
+    assert.ok(readFileSync(result.details.job.log, "utf8").includes("\x1b[32m"));
   } finally { await fx.restore(); }
 });
 
@@ -114,7 +120,7 @@ test("busy boundaries hold a second batch until the throttle permits it", async 
     const end = join(fx.dir, "end");
     const wait = gatedCommand(gate, "first\n").replace(/^exec /, "");
     const result = await s.tools.get("async_bash").execute("c", { command: `${wait}; ${gatedCommand(end, "second\n")}`, name: "throttle", stream: true });
-    const stream = registry().jobs.get(result.details.job).mode.stream;
+    const stream = registry().jobs.get(result.details.job.id).mode.stream;
     await pollUntil(() => stream.lines.includes("first"));
     stream.lastBatch -= 10000;
     await s.emit("turn_end", { toolResults: [{}] });
@@ -128,7 +134,7 @@ test("busy boundaries hold a second batch until the throttle permits it", async 
     await s.emit("turn_end", { toolResults: [{}] });
     assert.equal(customMessages(s, "ko-stream").length, 2);
     assert.match(customMessages(s, "ko-stream")[1]!.message.content, /\nsecond$/);
-    assert.equal(registry().jobs.get(result.details.job).state.type, "running");
+    assert.equal(registry().jobs.get(result.details.job.id).state.type, "running");
     writeFileSync(end, "");
     await pollUntil(() => notices(s).length === 1);
   } finally { await fx.restore(); }
@@ -141,7 +147,7 @@ test("an idle send failure schedules its retry one interval after the attempt", 
     fx.setPanes([selfPane()]);
     const s = await startSession(fx);
     const result = await s.tools.get("async_bash").execute("c", { command: gatedCommand(join(fx.dir, "gate"), "held\n"), name: "retry", stream: true });
-    const stream = registry().jobs.get(result.details.job).mode.stream;
+    const stream = registry().jobs.get(result.details.job.id).mode.stream;
     await pollUntil(() => stream.timer !== null);
     const send = t.mock.method(s.pi, "sendMessage", () => { throw new Error("send failed"); });
     try {
@@ -167,7 +173,7 @@ test("a timer that fires while busy waits for agent_end to send held lines", asy
     const s = await startSession(fx);
     const gate = join(fx.dir, "gate");
     const result = await s.tools.get("async_bash").execute("c", { command: gatedCommand(gate, "held\n"), name: "busy-timer", stream: true });
-    const job = registry().jobs.get(result.details.job);
+    const job = registry().jobs.get(result.details.job.id);
     const stream = job.mode.stream;
     await pollUntil(() => stream.timer !== null);
     await s.emit("agent_start");
@@ -218,8 +224,8 @@ test("stop by name and id stops owned groups, sends no notice, and handles ended
       const command = `'${sleeper}' 30 & echo ready > '${ready}'; wait`;
       const result = await s.tools.get("async_bash").execute("c", { command, name: address });
       await pollUntil(() => existsSync(ready));
-      await s.tools.get("stop_async_bash").execute("s", { job: address === "name" ? "NAME" : result.details.job });
-      assert.equal((await list(s)).find((row: any) => row.job === result.details.job).end, "stopped");
+      await s.tools.get("stop_async_bash").execute("s", { job: address === "name" ? "NAME" : result.details.job.id });
+      assert.equal((await list(s)).find((row: any) => row.job === result.details.job.id).end, "stopped");
       await pollUntil(() => processGone(marker));    }
     assert.deepEqual(notices(s), []);
     assert.match(text(await s.tools.get("stop_async_bash").execute("s", { job: "name" })), /had already ended: stopped/);
@@ -234,13 +240,13 @@ test("stop_async_bash refuses to signal an exited leader", async (t) => {
     const s = await startSession(fx);
     const result = await s.tools.get("async_bash").execute("c", { command: "true", name: "ended" });
     await pollUntil(() => notices(s).length === 1);
-    const job = registry().jobs.get(result.details.job);
+    const job = registry().jobs.get(result.details.job.id);
     const ended = job.state;
     const kill = t.mock.method(process, "kill", () => true);
     try {
       job.state = { type: "running" };
       assert.equal(job.where.child.exitCode, 0);
-      const stopped = await s.tools.get("stop_async_bash").execute("s", { job: result.details.job });
+      const stopped = await s.tools.get("stop_async_bash").execute("s", { job: result.details.job.id });
       assert.match(text(stopped), /stopped job/);
       assert.equal(kill.mock.callCount(), 0);
     } finally {
@@ -281,7 +287,7 @@ for (const reason of ["quit", "new", "resume", "fork", "reload"]) {
       await s.emit("session_shutdown", { reason });
       if (reason === "reload") {
         assert.equal(registry(), owner);
-        assert.equal((await list(s)).find((row: any) => row.job === result.details.job).state, "running");
+        assert.equal((await list(s)).find((row: any) => row.job === result.details.job.id).state, "running");
         assert.equal(owner.owner, null);
       } else {
         assert.equal(registry(), undefined);
@@ -310,7 +316,7 @@ test("splitLines drops escape sequences and keeps the last state of a progress l
 });
 
 test("streamBatch bounds batches and names the output log", () => {
-  const batch = streamBatch(Array.from({ length: 2100 }, (_, i) => `line ${i}`), "/tmp/output.log", 5).split("\n");
+  const batch = streamBatch(Array.from({ length: 2100 }, (_, i) => `line ${i}`), "/tmp/output.log", 5).content.split("\n");
   assert.equal(batch[0], "... 105 lines omitted (log: /tmp/output.log)");
   assert.equal(batch.at(-1), "line 2099");
 });
@@ -326,7 +332,7 @@ test("held streams bound long complete and partial lines while the log stays com
     const fill = `head -c ${size} /dev/zero | tr '\\000' x`;
     const command = `${fill}; printf '\\n'; ${fill}; ${gatedCommand(gate)}`;
     const result = await s.tools.get("async_bash").execute("c", { command, name: "large", stream: true });
-    const { job, log } = result.details;
+    const { job: { id: job, log } } = result.details;
     await pollUntil(() => existsSync(log) && statSync(log).size === size * 2 + 1);
     const held = registry().jobs.get(job);
     const stream = held.mode.stream;

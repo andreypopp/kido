@@ -12,6 +12,18 @@ const peer = { type: "pane", pane: "pane_3", session: "peer-session", name: "pee
 const acked = async (fx: ReturnType<typeof makeFixture>, id: string): Promise<void> =>
   pollUntil(() => fx.acks().some((ack) => ack.id === id), 2000, `the ack of ${id}`);
 
+test('TUI custom messages without typed details retain their original content', async () => {
+  const fx = makeFixture();
+  try {
+    fx.setPanes([selfPane()]); const s = await startSession(fx);
+    for (const customType of ['ko-message', 'ko-steer', 'ko-notice', 'ko-stream']) for (const details of [undefined, { from: 'worker' }]) {
+      const content = 'original header\noriginal body';
+      const renderer = s.renderers.get(customType)!({ customType, content, details, timestamp: 1 }, {}, { fg: (_color: string, text: string) => text });
+      assert.equal(renderer.render(1000).join('\n'), content, customType);
+    }
+  } finally { await fx.restore(); }
+});
+
 test("each kind reaches pi as its own kind of message and is acked once handed over", async () => {
   const fx = makeFixture();
   try {
@@ -28,6 +40,8 @@ test("each kind reaches pi as its own kind of message and is acked once handed o
     assert.equal(message!.message.content, "message from @boss (your parent, who spawned you):\nwhen you can");
     assert.deepEqual(message!.opts, { deliverAs: "followUp", triggerTurn: true });
     assert.equal(message!.message.details.work, true, "work from the parent is marked");
+    assert.deepEqual(message!.message.details.agent, { name: 'boss', session: 'boss-session', pane: 'pane_2' });
+    assert.equal(message!.message.details.body, 'when you can');
 
     fx.feed({ id: "kind-msg-002", kind: "message", text: "fyi", relation: "sibling", from: peer });
     await acked(fx, "kind-msg-002");
@@ -41,10 +55,14 @@ test("each kind reaches pi as its own kind of message and is acked once handed o
     assert.equal(steer!.message.content, "boss is redirecting this work: do X instead");
     assert.deepEqual(steer!.opts, { deliverAs: "steer", triggerTurn: true }, "a steer joins the running turn");
     assert.equal(steer!.message.details.work, true);
+    assert.deepEqual(steer!.message.details.agent, { name: 'boss', session: 'boss-session', pane: 'pane_2' });
+    assert.equal(steer!.message.details.body, 'do X instead');
 
     fx.feed({ id: "kind-note-01", kind: "notice", text: "heads up", relation: "sibling", from: peer });
     await acked(fx, "kind-note-01");
     assert.deepEqual(notices(s), ["notice from peer (a subagent or background job's report, not the user):\nheads up"]);
+    assert.equal(customMessages(s, 'ko-notice')[0]!.message.details.inbound.form, 'notice');
+    assert.equal(customMessages(s, 'ko-notice')[0]!.message.details.body, 'heads up');
 
     fx.feedRaw({ id: "kind-weird-01", kind: "weird", text: "?", relation: "sibling", from: peer });
     await acked(fx, "kind-weird-01");

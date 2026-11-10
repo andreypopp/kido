@@ -1,3 +1,5 @@
+import type { components } from "./ko-api.d.ts";
+
 export const ATTACHMENT_LIMITS = { files: 16, fileBytes: 64 * 1024 * 1024, chunkBytes: 768 * 1024, pendingBytes: 256 * 1024 * 1024 };
 
 export type CompletionCommand = { name: string; description?: string; source: "extension" | "prompt" | "skill" };
@@ -13,12 +15,40 @@ export type UploadProgress = { received: number; attachment?: Attachment };
 export type QueuedPrompt = { text: string; attachments: Attachment[] };
 
 export type ImageRef = { id: string; revision: number; mimeType: string; bytes: number; width?: number; height?: number };
+export type Relation = components["schemas"]["Relation"];
+const relations = new Set<string>(["parent", "child", "sibling", "descendant", "sibling_descendant"] satisfies Relation[]);
+export const isRelation = (value: unknown): value is Relation => typeof value === "string" && relations.has(value);
+export type AgentRef = { name: string; session?: string; pane?: string };
+export type AgentOutcome = { ok: true } | { ok: false; failure: 'refused' | 'not_found' | 'ambiguous' | 'not_running' | 'gone' | 'error'; message: string };
+const failures = new Set<string>(['refused', 'not_found', 'ambiguous', 'not_running', 'gone', 'error'] satisfies Extract<AgentOutcome, { ok: false }>['failure'][]);
+export const isAgentFailure = (value: unknown): value is Extract<AgentOutcome, { ok: false }>['failure'] => typeof value === 'string' && failures.has(value);
+export type Inbound = { form: 'message'; relation: Relation; runtime?: string } | { form: 'notice' } | { form: 'steer'; relation?: Relation } | { form: 'report'; relation?: Relation } | { form: 'ended'; reported: boolean; relation?: Relation };
+export type AgentCall = { direction: 'out'; to: AgentRef; text: Text; call: { tool: 'spawn'; model?: string; fork: boolean; runtime?: string } | { tool: 'message'; mode: 'message' | 'steer' | 'interrupt-and-steer' }; outcome?: AgentOutcome };
+export type JobEnd = { type: 'exit'; code: number } | { type: 'signal'; signal: string } | { type: 'failed'; message: string } | { type: 'stopped' } | { type: 'timeout'; seconds: number };
+export type JobRef = { id: string; name: string; service: boolean; log: string };
+export type AgentDetails = { agent: AgentRef; body: string; inbound: Inbound };
+export type MessageDetails = AgentDetails & { from?: string; work?: boolean; inbound: Extract<Inbound, { form: 'message' }> };
+export type SteerDetails = AgentDetails & { from?: string; work?: boolean; inbound: Extract<Inbound, { form: 'steer' }> };
+export type NoticeDetails = ((AgentDetails & { inbound: Extract<Inbound, { form: 'notice' | 'report' | 'ended' }> }) | { kind: 'job'; job: JobRef & { end: JobEnd }; tail: string }) & { from?: string; noticeId?: string };
+export type StreamDetails = { from?: string; job: JobRef; batch: string; omitted: number; cut: boolean };
+export function jobEndText(end: JobEnd): string {
+  switch (end.type) {
+    case 'exit': return `exit ${end.code}`;
+    case 'signal': return `signal ${end.signal}`;
+    case 'failed': return `failed: ${end.message}`;
+    case 'stopped': return 'stopped';
+    case 'timeout': return `timed out after ${end.seconds} s`;
+  }
+}
+
 type ToolResult = Text & { images: ImageRef[] };
 type ToolState = { type: "pending" } | { type: "running"; result?: ToolResult } | { type: "done"; result: ToolResult; error: boolean } | { type: "not_run" };
-export type Block = (({ type: "text" } | { type: "thinking" }) & { text: string; redacted?: boolean; started?: number; ended?: number }) | { type: "tool"; id: string; name: string; args: Text; state: ToolState; started?: number; ended?: number; durationMs?: number; exit?: number };
+export type Block = (({ type: "text" } | { type: "thinking" }) & { text: string; redacted?: boolean; started?: number; ended?: number }) | { type: "tool"; id: string; name: string; args: Text; state: ToolState; started?: number; ended?: number; durationMs?: number; exit?: number; agent?: AgentCall; job?: JobRef };
 export type Item = { seq: number; at: number; final: boolean } & (
   { kind: "user"; text: string; images: ImageRef[]; attachments: Attachment[] } |
   { kind: "assistant"; blocks: Block[]; stop: string; error: string; ended?: number; lifecycle: "streaming" | "ended" } |
+  { kind: 'agent'; direction: 'in'; from: AgentRef; text: Text; inbound: Inbound } |
+  { kind: 'job'; job: JobRef; event: { type: 'ended'; end: JobEnd; tail: Text } | { type: 'stream'; batch: Text; omitted: number; cut: boolean } } |
   { kind: "notice"; customType: string; from: string; text: string } |
   { kind: "bash"; command: string; output: Text; exit?: number } |
   { kind: "summary"; text: string }

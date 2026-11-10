@@ -1,4 +1,4 @@
-import type { Attachment, QueuedPrompt, UploadProgress } from '../records.ts';
+import type { Attachment, QueuedPrompt, UploadProgress } from '../../pi/records.ts';
 
 export async function fetchJSON(path: '/models', body: undefined, method: 'GET'): Promise<{ models: { id: string; provider: string }[] }>;
 export async function fetchJSON(path: '/queue/clear'): Promise<{ steering: QueuedPrompt[]; followUp: QueuedPrompt[] }>;

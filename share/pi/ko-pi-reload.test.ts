@@ -14,8 +14,8 @@ test("a live job is adopted by the second instance, which alone announces its en
     const gate = join(fx.dir, "gate");
     const result = await first.tools.get("async_bash").execute("a", { command: gatedCommand(gate, "before\n", "after\n", 3), name: "build" });
     const owner = registry();
-    const job = owner.jobs.get(result.details.job);
-    await pollUntil(() => logHas(result.details.log, "before"));
+    const job = owner.jobs.get(result.details.job.id);
+    await pollUntil(() => logHas(result.details.job.log, "before"));
     await first.emit("session_shutdown", { reason: "reload" });
     assert.equal(first.terminalListeners.size, 0);
     assert.equal(owner.owner, null);
@@ -46,7 +46,7 @@ test("a job that ends between instances is announced at adopt, before the startu
     const first = await startSession(fx);
     const gate = join(fx.dir, "gate");
     const result = await first.tools.get("async_bash").execute("a", { command: gatedCommand(gate, "", "gap-output\n"), name: "gap" });
-    const job = registry().jobs.get(result.details.job);
+    const job = registry().jobs.get(result.details.job.id);
     await first.emit("session_shutdown", { reason: "reload" });
     writeFileSync(gate, "");
     await pollUntil(() => job.state.type === "ended");
@@ -83,7 +83,7 @@ for (const changed of ["shape", "session"]) {
       const first = await startSession(fx);
       const result = await first.tools.get("async_bash").execute("a", { command: gatedCommand(join(fx.dir, "gate")), name: "old-build" });
       const old = registry();
-      const job = old.jobs.get(result.details.job);
+      const job = old.jobs.get(result.details.job.id);
       await first.emit("session_shutdown", { reason: "reload" });
       old[changed] = changed === "shape" ? old.shape + 1 : "another-session";
       let stops = 0;
@@ -119,7 +119,7 @@ test("a replaced registry keeps its exit handler until a stopped job closes", as
     const command = `trap '' TERM; printf ready > '${ready}'; ${gatedCommand(gate)}`;
     const result = await first.tools.get("async_bash").execute("a", { command, name: "slow-stop" });
     const old = registry();
-    const job = old.jobs.get(result.details.job);
+    const job = old.jobs.get(result.details.job.id);
     await pollUntil(() => existsSync(ready));
     await first.emit("session_shutdown", { reason: "reload" });
     old.shape++;
@@ -143,7 +143,7 @@ test("a shutdown wait timeout keeps exit coverage until the retained pipes close
     const result = await first.tools.get("async_bash").execute("a", { command: `${gatedCommand(gate)} & exit 0`, name: "pipes" });
     const old = registry();
     oldExit = old.exit;
-    const job = old.jobs.get(result.details.job);
+    const job = old.jobs.get(result.details.job.id);
     await pollUntil(() => job.where.child.exitCode === 0);
     await first.emit("session_shutdown", { reason: "new" });
     assert.equal(registry(), undefined);
@@ -168,7 +168,7 @@ test("held stream lines and a UTF-8 carry cross the reload and flush once from t
     const gate = join(fx.dir, "gate");
     const wait = gatedCommand(gate).replace(/^exec /, "");
     const result = await first.tools.get("async_bash").execute("a", { command: `printf 'held-before\\n\\303'; ${wait}; printf '\\251\\nafter\\npartial'`, name: "stream", stream: true });
-    const job = registry().jobs.get(result.details.job);
+    const job = registry().jobs.get(result.details.job.id);
     await pollUntil(() => job.mode.stream.lines.includes("held-before") && job.mode.stream.carry.length === 1);
     assert.deepEqual(customMessages(first, "ko-stream"), []);
     await first.emit("session_shutdown", { reason: "reload" });
@@ -184,7 +184,7 @@ test("held stream lines and a UTF-8 carry cross the reload and flush once from t
     assert.equal(streams.join("\n").split("held-before").length - 1, 1);
     assert.deepEqual(first.messages, []);
     assert.equal(second.messages.at(-1)!.message.customType, "ko-notice");
-    assert.equal(readFileSync(result.details.log, "utf8"), "held-before\né\nafter\npartial");
+    assert.equal(readFileSync(result.details.job.log, "utf8"), "held-before\né\nafter\npartial");
   } finally { await fx.restore(); }
 });
 
@@ -234,7 +234,7 @@ test("stream and ending-notice failures retry independently at adoption", async 
     const first = await startSession(fx);
     const gate = join(fx.dir, "gate");
     const result = await first.tools.get("async_bash").execute("a", { command: gatedCommand(gate, "held-line\n"), name: "retry", stream: true });
-    const job = registry().jobs.get(result.details.job);
+    const job = registry().jobs.get(result.details.job.id);
     await first.emit("session_shutdown", { reason: "reload" });
     writeFileSync(gate, "");
     await pollUntil(() => job.state.type === "ended");
@@ -260,7 +260,7 @@ test("stream and ending-notice failures retry independently at adoption", async 
     const fourth = await startSession(fx, { factory: await freshExtension() });
     assert.equal(notices(fourth).length, 1);
     assert.deepEqual(customMessages(fourth, "ko-stream"), []);
-    assert.equal(readFileSync(result.details.log, "utf8"), "held-line\n");
+    assert.equal(readFileSync(result.details.job.log, "utf8"), "held-line\n");
     assert.deepEqual(notices(first), []);
     assert.deepEqual(notices(second), []);
   } finally { await fx.restore(); }

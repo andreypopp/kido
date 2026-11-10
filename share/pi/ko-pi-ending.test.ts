@@ -2,7 +2,7 @@ import { test } from "node:test";
 
 import assert from "node:assert/strict";
 
-import { makeFixture, agentPane, selfPane, startSession, entriesOf, notices, pollUntil, exited, text, type Fixture, type Started } from "./ko-pi-fixture.ts";
+import { makeFixture, agentPane, selfPane, startSession, entriesOf, notices, customMessages, pollUntil, exited, text, type Fixture, type Started } from "./ko-pi-fixture.ts";
 
 const INSTANCE = "a".repeat(32);
 const kid = { role: "subagent", owner: "self-session", name: "kid", session: "kid-session", model: "acme/m:low", fork: false, cwd: "/work/kid", pane: { instance: INSTANCE, pane: "pane_5" } };
@@ -27,6 +27,10 @@ test("the ended message of a child that reported is a one-line notice", async ()
     await pollUntil(() => notices(s).length === 1, 2000, "the ending notice");
     assert.deepEqual(notices(s), ["notice from kid (a subagent or background job's report, not the user):\nsubagent \"kid\" ended: exit 0; it had reported"]);
     assert.equal(fx.apiCalls().some((call) => call.path.includes("/screen")), false, "no screen when it had reported");
+    const details = customMessages(s, 'ko-notice')[0]!.message.details;
+    assert.deepEqual(details.inbound, { form: 'ended', reported: true, relation: 'child' });
+    assert.deepEqual(details.agent, { name: 'kid', session: 'kid-session', pane: 'pane_5' });
+    assert.equal(details.body, 'subagent "kid" ended: exit 0; it had reported');
     assert.deepEqual(entriesOf(s, "ko-pi.ended").map((e) => [e.child, e.pane]), [["kid-session", "pane_5"]]);
   } finally {
     await fx.restore();

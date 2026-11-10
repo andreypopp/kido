@@ -345,8 +345,18 @@ koa sends an image to pi as an image and any other file as a path line.
 An upload that is aborted, or that stalls between chunks for
 `KOA_UPLOAD_IDLE_MS` (30 s), is removed with its file and its share of
 the limits. A queued prompt keeps its attachments across a compaction,
-so taking the queue back restores its chips. Jobs and subagent reports are the notices that
-ko-pi already puts in the session; the page has no live list of jobs.
+so taking the queue back restores its chips.
+
+**Agents and jobs.** ko-pi writes the facts of each agent message and
+job notice into the message's `details`, typed by `share/pi/records.ts`:
+the inbound form with the sender and its relation, a tool's outcome, and
+a job's reference, end and output. The transcript turns them into agent
+cards and job records, so the page parses no text, and a message
+without such details stays a plain notice, as do the sessions written
+before them. `spawn_agent`, `message_agent` and every inbound message
+are a card that splits its run; a job's notices are one line, and the
+stream batches of one job join into one entry. The page has no live
+list of jobs.
 A rebuild (a new runtime, `session_tree`,
 `session_compact`) mints a new epoch. The model, its caps, its window
 and its delivery are `Transcript` in `share/pi/transcript.ts`; koa

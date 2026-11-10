@@ -5,7 +5,7 @@ import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 import { imageInfo } from '../pi/image.ts';
 import { mintId } from '../pi/text.ts';
 import { readBody, respond, fileDisposition } from '../pi/transcript.ts';
-import { ATTACHMENT_LIMITS, type Attachment, type UploadProgress } from './records.ts';
+import { ATTACHMENT_LIMITS, type Attachment, type UploadProgress } from '../pi/records.ts';
 import type { RpcCommand } from '@earendil-works/pi-coding-agent';
 
 export const UPLOAD_IDLE_MS = 30000;

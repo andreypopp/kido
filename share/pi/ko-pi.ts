@@ -48,6 +48,7 @@ import { fileURLToPath } from "node:url";
 import { Type } from "typebox";
 import type { components } from "./ko-api.d.ts";
 import { atToken } from "./token.ts";
+import { isRelation, isAgentFailure, jobEndText, type Relation, type AgentRef, type AgentOutcome, type MessageDetails, type SteerDetails, type NoticeDetails, type StreamDetails, type JobRef, type JobEnd } from "./records.ts";
 import { parsePanes, placesOf, piAgent, peerPanes, ancestorsOf, runningRows, agentCache, MIN_ID_PREFIX, VAR_SESSION, VAR_NAME, VAR_ACTIVITY, VAR_TASK, VAR_RUNTIME, type PaneInfo, type AgentCompletionRow } from "./agents.ts";
 
 type Api = components["schemas"];
@@ -200,8 +201,6 @@ const MESSAGE_CUSTOM_TYPE = "ko-message";
 
 const STEER_CUSTOM_TYPE = "ko-steer";
 
-type Relation = Api["Relation"];
-
 export const RELATION_TEXT: Record<Relation, string> = {
   parent: "your parent, who spawned you",
   child: "your subagent",
@@ -328,7 +327,7 @@ type ShutdownReason = "quit" | "reload" | "new" | "resume" | "fork";
 
 // pi /reload keeps the process, its message stream and its received-id ring.
 type ReceiverHold = { child: ChildProcess; partial: Buffer };
-type JobEnd = { type: "exit"; code: number } | { type: "signal"; signal: NodeJS.Signals } | { type: "failed"; message: string } | { type: "stopped" } | { type: "timeout"; seconds: number };
+
 type JobCall = {
   forward(bytes: Buffer): void;
   resolve(result: { exitCode: number | null }): void;
@@ -360,6 +359,7 @@ type Job = {
 type BackgroundJob = Job & { mode: JobOutput };
 const isBackgroundJob = (job: Job): job is BackgroundJob => job.mode.type === "job";
 const serviceJob = (job: BackgroundJob): boolean => job.mode.origin.type === "async_bash" && job.mode.origin.service;
+const jobReference = (job: BackgroundJob): JobRef => ({ id: job.id, name: job.mode.name, service: serviceJob(job), log: job.mode.log });
 const jobRecordState = (job: BackgroundJob): "idle" | "working" => serviceJob(job) ? "idle" : "working";
 const streams = (job: BackgroundJob): boolean => job.mode.origin.type === "async_bash" && job.mode.origin.stream;
 const TAIL_BYTES = 4000;
@@ -410,21 +410,11 @@ function signalJob(job: Job, signal: NodeJS.Signals): boolean {
   }
 }
 
-const jobEndText = (end: JobEnd): string => {
-  switch (end.type) {
-    case "exit": return `exit ${end.code}`;
-    case "signal": return `signal ${end.signal}`;
-    case "failed": return `failed: ${end.message}`;
-    case "stopped": return "stopped";
-    case "timeout": return `timed out after ${end.seconds} s`;
-  }
-};
 
 function execCode(end: JobEnd, where: Job["where"]["type"]): number | null {
   if (end.type === "exit") return end.code;
   if (end.type !== "signal") return null;
-  const signal = where === "local" ? os.constants.signals[end.signal]
-    : Object.entries(SIGNAL_NUMBERS).find(([name]) => `SIG${name}` === end.signal)?.[1];
+  const signal = Object.entries(where === "local" ? os.constants.signals : SIGNAL_NUMBERS).find(([name]) => (where === "local" ? name : `SIG${name}`) === end.signal)?.[1];
   return signal === undefined ? null : 128 + signal;
 }
 
@@ -728,9 +718,6 @@ const runtimeOf = (data: unknown): string | undefined => (isRecord(data) && type
 
 const isString = (value: unknown): value is string => typeof value === "string";
 
-function isRelation(value: unknown): value is Relation {
-  return isString(value) && Object.hasOwn(RELATION_TEXT, value);
-}
 
 function isCause(value: unknown): value is Dead["cause"] {
   if (!isRecord(value)) return false;
@@ -886,13 +873,13 @@ export function splitLines(state: SplitState, text: string): string[] {
   return lines;
 }
 
-export function streamBatch(lines: string[], log: string, alreadyDropped = 0, cut = false): string {
+export function streamBatch(lines: string[], log: string, alreadyDropped = 0, cut = false) {
   const tail = truncateTail(lines.join("\n"));
   const omitted = tail.totalLines - tail.outputLines + alreadyDropped;
   const notes: string[] = [];
   if (omitted > 0) notes.push(`... ${omitted} lines omitted (log: ${log})`);
   if (cut || tail.lastLinePartial) notes.push(`... long lines were truncated (log: ${log})`);
-  return [...notes, tail.content].join("\n");
+  return { content: [...notes, tail.content].join("\n"), batch: tail.content, omitted, cut: cut || tail.lastLinePartial };
 }
 
 function checkName(name: string): string | null {
@@ -1656,7 +1643,7 @@ export default function (pi: ExtensionAPI) {
 
   const agentName = (a: AgentRow): string => a.name || a.id;
 
-  type Resolution<T extends Addressable = AgentRow> = { agent: T } | { error: string };
+  type Resolution<T extends Addressable = AgentRow> = { agent: T } | { error: string; failure: Extract<AgentOutcome, { ok: false }>['failure'] };
 
   const decide = <T extends Addressable>(candidates: T[], wanted: string, by: "name" | "id"): Resolution<T> | null => {
     const only = candidates[0];
@@ -1666,7 +1653,7 @@ export default function (pi: ExtensionAPI) {
         .map((a) => `${a.id} (${a.name || a.id})`)
         .sort()
         .join(", ");
-      return { error: `"${wanted}" matches several by ${by}: ${list}` };
+      return { error: `"${wanted}" matches several by ${by}: ${list}`, failure: "ambiguous" };
     }
     return null;
   };
@@ -1687,14 +1674,14 @@ export default function (pi: ExtensionAPI) {
     if (wanted.length < MIN_ID_PREFIX &&
         !known.some((a) => matchesId(a, wanted) || (!mention && a.named && a.name.toLowerCase() === wanted.toLowerCase())) &&
         known.some((a) => a.id.startsWith(wanted))) {
-      return { error: `id prefixes need at least ${MIN_ID_PREFIX} characters` };
+      return { error: `id prefixes need at least ${MIN_ID_PREFIX} characters`, failure: "error" };
     }
     const first = matchAddress(snapshot.all, address);
     if (first) return first;
     const second = matchAddress(snapshot.elsewhere, address);
-    if (second && "agent" in second) return { error: `${wanted} (${second.agent.id}) is in another session, not this one` };
-    if (second) return { error: `${second.error}, none in this session` };
-    return { error: `no agent session matches "${wanted}"` };
+    if (second && "agent" in second) return { error: `${wanted} (${second.agent.id}) is in another session, not this one`, failure: "not_found" };
+    if (second) return { error: `${second.error}, none in this session`, failure: second.failure };
+    return { error: `no agent session matches "${wanted}"`, failure: "not_found" };
   };
 
   // ---- sending ----
@@ -1791,19 +1778,24 @@ export default function (pi: ExtensionAPI) {
     }));
   };
 
-  const deliverNotice = (text: string, from: string): void => {
+  const deliverNotice = (text: string, details: NoticeDetails): void => {
+    const from = 'job' in details ? details.job.name : details.agent.name;
     const noticeId = mintId();
     pendingNotices.set(noticeId, { from, text });
     renderNoticeWidget();
-    pi.sendMessage({ customType: NOTICE_CUSTOM_TYPE, content: `${noticeHeader(from)}\n${text}`, display: true, details: { from, noticeId } }, { deliverAs: "steer", triggerTurn: true });
+    pi.sendMessage({ customType: NOTICE_CUSTOM_TYPE, content: `${noticeHeader(from)}\n${text}`, display: true, details: { from, noticeId, ...details } satisfies NoticeDetails }, { deliverAs: "steer", triggerTurn: true });
   };
 
   const labelOf = (from: Api["Sender"]): string => (from.type === "pane" ? from.name || from.session || from.pane : "the user");
 
-  const deliverAgentMessage = (from: string, relation: Relation, text: string, work: boolean, runtime?: string): void => {
-    const header = senderHeader(from, relation, runtime);
+  const childRef = (child: ChildData): AgentRef => ({ name: child.name, session: child.session, pane: child.pane.pane });
+
+  const refOf = (from: Api['Sender']): AgentRef => ({ name: labelOf(from), ...(from.type === 'pane' ? { session: from.session, pane: from.pane } : {}) });
+
+  const deliverAgentMessage = (agent: AgentRef, relation: Relation, text: string, work: boolean, runtime?: string): void => {
+    const from = agent.name, header = senderHeader(from, relation, runtime);
     pi.sendMessage(
-      { customType: MESSAGE_CUSTOM_TYPE, content: `${header}\n${text}`, display: true, details: { from, header, relation, work } },
+      { customType: MESSAGE_CUSTOM_TYPE, content: `${header}\n${text}`, display: true, details: { from, work, agent, body: text, inbound: { form: 'message', relation, ...(runtime ? { runtime } : {}) } } satisfies MessageDetails },
       { deliverAs: "followUp", triggerTurn: true },
     );
   };
@@ -1816,7 +1808,7 @@ export default function (pi: ExtensionAPI) {
       deliver(held.text);
       return;
     }
-    deliverAgentMessage(labelOf(from), relation, held.text, relation === "parent", held.runtime);
+    deliverAgentMessage(refOf(from), relation, held.text, relation === "parent", held.runtime);
   };
 
   const interrupted: Held[] = [];
@@ -1835,12 +1827,12 @@ export default function (pi: ExtensionAPI) {
     const report = isRecord(data) && data.report === true;
     const child = from.type === "pane" ? currentChild(from.session ?? "", from.pane) : undefined;
     if (!report || !child) {
-      if (text) deliverNotice(text, labelOf(from));
+      if (text) deliverNotice(text, { inbound: { form: 'notice' }, agent: refOf(from), body: text });
       return;
     }
     if (entries().some((entry) => entry.customType === ENTRY_REPORT && entry.data.id === id)) return;
     append(ENTRY_REPORT, { child: child.session, name: child.name, text, id });
-    deliverNotice(reportNotice(child, text), child.name);
+    deliverNotice(reportNotice(child, text), { inbound: { form: 'report', relation: 'child' }, agent: childRef(child), body: text });
   };
 
   const screenTail = async (route: string): Promise<string | undefined> => {
@@ -1858,7 +1850,7 @@ export default function (pi: ExtensionAPI) {
       if (tail !== undefined) body += `\n--- last ${TAIL_BYTES} bytes of its screen ---\n${tail}`;
       body += "\nmessage it to continue it, or stop_agent to end it";
     }
-    deliverNotice(body, child.name);
+    deliverNotice(body, { inbound: { form: 'ended', relation: 'child', reported }, agent: childRef(child), body });
   };
 
   const handleEnded = async (source: string, end: Api["End"]): Promise<void> => {
@@ -1881,7 +1873,7 @@ export default function (pi: ExtensionAPI) {
         workStarted();
         // pi drains followUp only once the agent has decided to stop; steer joins the run under way.
         pi.sendMessage(
-          { customType: STEER_CUSTOM_TYPE, content: steerHeader(from) + m.text, display: true, details: { from, work: m.relation === "parent" } },
+          { customType: STEER_CUSTOM_TYPE, content: steerHeader(from) + m.text, display: true, details: { from, work: m.relation === "parent", agent: refOf(m.from), body: m.text, inbound: { form: 'steer', ...(m.relation ? { relation: m.relation } : {}) } } satisfies SteerDetails },
           { deliverAs: "steer", triggerTurn: true },
         );
         return "ack";
@@ -2082,12 +2074,12 @@ export default function (pi: ExtensionAPI) {
   const streamInterval = (): number => envMs("KO_STREAM_INTERVAL_MS", 5000);
   const untilDue = (stream: BackgroundJob["mode"]["stream"]): number => stream.lastBatch + streamInterval() - performance.now();
   let agentWorking = false;
-  const sendStream = (job: BackgroundJob, body: string): void => {
+  const sendStream = (job: BackgroundJob, body: ReturnType<typeof streamBatch>): void => {
     pi.sendMessage({
       customType: STREAM_CUSTOM_TYPE,
-      content: `job ${JSON.stringify(job.mode.name)} output (job ${job.id})\n${body}`,
+      content: `job ${JSON.stringify(job.mode.name)} output (job ${job.id})\n${body.content}`,
       display: true,
-      details: { from: job.mode.name, job: job.id },
+      details: { from: job.mode.name, job: jobReference(job), batch: body.batch, omitted: body.omitted, cut: body.cut } satisfies StreamDetails,
     }, { deliverAs: "steer", triggerTurn: true });
   };
   const flushJob = (job: BackgroundJob): void => {
@@ -2157,7 +2149,8 @@ export default function (pi: ExtensionAPI) {
         if (job.state.type !== "ended" || job.state.announced) return;
         if (job.state.end.type !== "stopped") {
           if (streams(job)) flushJob(job);
-          deliverNotice(`job ${quote(job.mode.name)} (${job.id}) ${jobEndText(job.state.end)}\n--- last ${TAIL_BYTES} bytes of its output ---\n${jobTail(job)}\nlog: ${job.mode.log}`, job.mode.name);
+          const tail = jobTail(job);
+          deliverNotice(`job ${quote(job.mode.name)} (${job.id}) ${jobEndText(job.state.end)}\n--- last ${TAIL_BYTES} bytes of its output ---\n${tail}\nlog: ${job.mode.log}`, { kind: "job", job: { ...jobReference(job), end: job.state.end }, tail });
         }
         job.state.announced = true;
         job.tail = Buffer.alloc(0);
@@ -2171,7 +2164,8 @@ export default function (pi: ExtensionAPI) {
       } else if (job.state.type !== "ended" && streams(job)) scheduleFlush(job);
     }
     if (stopped) {
-      try { deliverNotice(`${stopped.length} async_bash jobs of the previous ko-pi version were stopped at /reload: ${stopped.join(", ")}`, "ko-pi"); } catch {}
+      const text = `${stopped.length} async_bash jobs of the previous ko-pi version were stopped at /reload: ${stopped.join(", ")}`;
+      try { deliverNotice(text, { inbound: { form: "notice" }, agent: { name: "ko-pi" }, body: text }); } catch {}
     }
   };
   type BashCall = { type: "bash"; hint: "waiting" | "shown"; cancel(reason?: ShutdownReason): void; move(reason: "timeout" | "key" | "reload"): boolean };
@@ -2579,7 +2573,7 @@ export default function (pi: ExtensionAPI) {
         deliver(text);
         ending = { kind: "awaiting-first-turn" };
       } else {
-        deliverAgentMessage(str(from.name) || str(from.session) || "another agent", "sibling", text, false);
+        deliverAgentMessage({ name: str(from.name) || str(from.session) || "another agent", ...(typeof from.session === "string" ? { session: from.session } : {}), ...(typeof from.pane === "string" ? { pane: from.pane } : {}) }, "sibling", text, false);
       }
     }
     if (!startupCancelled) await apiCall("DELETE", varPath(VAR_TASK));
@@ -2602,7 +2596,8 @@ export default function (pi: ExtensionAPI) {
 
   const inboundExpanded = new Map<string, boolean>();
 
-  const renderInbound = (message: Parameters<MessageRenderer>[0], theme: Pick<Theme, "fg">, sender: string | undefined, verb: string | undefined, body: string) => {
+  const renderInbound = (message: Parameters<MessageRenderer>[0], theme: Pick<Theme, "fg">, sender: string | undefined, verb: string | undefined, body: string | undefined) => {
+    if (body === undefined) return { render: (width: number) => wrapTextWithAnsi(contentText(message.content), width), invalidate: () => {} };
     const key = JSON.stringify([message.customType, message.timestamp, message.details]);
     const expanded = () => pi.getSettings().tuiMode === "regular" || (inboundExpanded.get(key) ?? false);
     const paint: Paint = (color, text) => (color ? theme.fg(color, text) : text);
@@ -2617,29 +2612,22 @@ export default function (pi: ExtensionAPI) {
     };
   };
 
-  pi.registerMessageRenderer<{ from: string; header?: string }>(MESSAGE_CUSTOM_TYPE, (message, _options, theme) => {
-    const raw = typeof message.content === "string" ? message.content : "";
-    const header = message.details?.header ? `${message.details.header}\n` : "";
-    return renderInbound(message, theme, message.details?.from, "says", header && raw.startsWith(header) ? raw.slice(header.length) : raw);
+  pi.registerMessageRenderer<MessageDetails>(MESSAGE_CUSTOM_TYPE, (message, _options, theme) =>
+    renderInbound(message, theme, message.details?.agent?.name, "says", message.details?.body));
+
+  pi.registerMessageRenderer<SteerDetails>(STEER_CUSTOM_TYPE, (message, _options, theme) =>
+    renderInbound(message, theme, message.details?.agent?.name, "redirects", message.details?.body));
+
+  pi.registerMessageRenderer<NoticeDetails>(NOTICE_CUSTOM_TYPE, (message, _options, theme) => {
+    const details = message.details;
+    const from = details && 'job' in details ? details.job.name : details?.agent?.name;
+    const content = details && 'job' in details ? `${jobEndText(details.job.end)}\n${details.tail}\nlog: ${details.job.log}` : details?.body;
+    return renderInbound(message, theme, from, "notifies", content);
   });
 
-  pi.registerMessageRenderer<{ from: string }>(STEER_CUSTOM_TYPE, (message, _options, theme) => {
-    const raw = typeof message.content === "string" ? message.content : "";
-    const header = steerHeader(message.details?.from ?? "");
-    return renderInbound(message, theme, message.details?.from, "redirects", raw.startsWith(header) ? raw.slice(header.length) : raw);
-  });
-
-  pi.registerMessageRenderer<{ from: string }>(NOTICE_CUSTOM_TYPE, (message, _options, theme) => {
-    const from = message.details?.from || "another agent";
-    const raw = typeof message.content === "string" ? message.content : "";
-    const header = `${noticeHeader(from)}\n`;
-    const content = raw.startsWith(header) ? raw.slice(header.length) : raw;
-    return renderInbound(message, theme, message.details?.from, "notifies", content);
-  });
-
-  pi.registerMessageRenderer<{ from: string }>(STREAM_CUSTOM_TYPE, (message, _options, theme) => {
-    const content = typeof message.content === "string" ? message.content : "";
-    return renderInbound(message, theme, message.details?.from, undefined, content.slice(content.indexOf("\n") + 1));
+  pi.registerMessageRenderer<StreamDetails>(STREAM_CUSTOM_TYPE, (message, _options, theme) => {
+    const details = message.details, content = contentText(message.content);
+    return renderInbound(message, theme, details?.job?.name, undefined, typeof details?.batch === 'string' ? content.slice(content.indexOf('\n') + 1) : undefined);
   });
 
   pi.on("message_start", (event) => {
@@ -2739,30 +2727,32 @@ export default function (pi: ExtensionAPI) {
       { additionalProperties: false },
     ),
     async execute(_toolCallId, params) {
-      if (!params.message) return reply(`could not message ${params.to}: the message is empty; nothing sent`);
-      if (!params.message.isWellFormed()) return reply(`could not message ${params.to}: the message is not valid UTF-8`);
-      if (Buffer.byteLength(params.message, "utf8") > MAX_MESSAGE_BYTES) return reply(`could not message ${params.to}: the message is over ${MAX_MESSAGE_BYTES} bytes`);
+      const refuse = (message: string, failure: Extract<AgentOutcome, { ok: false }>['failure'] = 'error', to = params.to) => reply(`could not message ${params.to}: ${message}`, { to, outcome: { ok: false, failure, message } satisfies AgentOutcome });
+      if (!params.message) return refuse('the message is empty; nothing sent');
+      if (!params.message.isWellFormed()) return refuse('the message is not valid UTF-8');
+      if (Buffer.byteLength(params.message, "utf8") > MAX_MESSAGE_BYTES) return refuse(`the message is over ${MAX_MESSAGE_BYTES} bytes`);
       const mode = params.mode ?? "message";
       const snapshot = await discovery();
-      if (!snapshot.ok) return reply(`could not message ${params.to}: could not read the layout`);
+      if (!snapshot.ok) return refuse('could not read the layout');
       const resolved = resolveIn(snapshot, normalizeAddress(params.to));
-      if ("error" in resolved) return reply(`could not message ${params.to}: ${resolved.error}`);
+      if ("error" in resolved) return refuse(resolved.error, resolved.failure);
       let target = resolved.agent;
       const name = agentName(target);
-      if (target.self) return reply(`${name} is this agent`);
+      if (target.self) return reply(`${name} is this agent`, { to: name, outcome: { ok: false, failure: 'error', message: `${name} is this agent` } satisfies AgentOutcome });
       const child = agents().find((c) => c.session === target.id);
       if (target.state === "ended") {
-        if (!child || mode !== "message") return reply(`could not message ${params.to}: ${name} is no longer running`);
+        if (!child || mode !== "message") return refuse(`${name} is no longer running`, 'not_running', name);
         const restarted = await restartAgent(child, params.message);
-        if ("error" in restarted) return reply(`could not message ${params.to}: ${restarted.error}`);
-        if ("placement" in restarted) return reply(`restarted ${name} in pane ${restarted.placement.pane}; ${child.role === "peer" ? PEER_RESULT_RULE : liveRunRule(SPAWN_RESULT_RULE)}`);
+        if ("error" in restarted) return refuse(restarted.error, 'error', name);
+        if ("placement" in restarted) return reply(`restarted ${name} in pane ${restarted.placement.pane}; ${child.role === "peer" ? PEER_RESULT_RULE : liveRunRule(SPAWN_RESULT_RULE)}`, { to: name, outcome: { ok: true } satisfies AgentOutcome });
         target = restarted.running;
       }
       if (child?.role === "subagent") markChildWork(child);
       const kind: SendKind = mode === "interrupt-and-steer" ? "interrupt" : mode;
       const result = await sendIntent(target.pane, kind, params.message, routed && !("refusal" in routed) ? { data: { runtime: routed.name } } : {});
       const sent = deliveryText(name, mode, result, target.status === "working", true);
-      return reply(sent.ok ? sent.text : `could not message ${params.to}: ${sent.text}`);
+      const outcome: AgentOutcome = sent.ok ? { ok: true } : { ok: false, failure: isAgentFailure(result.state) ? result.state : 'error', message: 'message' in result ? result.message : sent.text };
+      return reply(sent.ok ? sent.text : `could not message ${params.to}: ${sent.text}`, { to: name, outcome });
     },
   });
 
@@ -2810,7 +2800,7 @@ export default function (pi: ExtensionAPI) {
       { additionalProperties: false },
     ),
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
-      const refuse = (text: string) => reply(`could not spawn agent: ${text}`);
+      const refuse = (text: string) => reply(`could not spawn agent: ${text}`, { outcome: { ok: false, failure: "error", message: text } satisfies AgentOutcome });
       if (!ko) return refuse("ko is not on PATH");
       if (!ownSessionId) return refuse("this session has no id");
       if (!pane) return refuse("this session has no pane");
@@ -2903,7 +2893,7 @@ export default function (pi: ExtensionAPI) {
           const inRuntime = childRuntime?.name ?? process.env.KO_RUNTIME;
           return reply(
             `spawned ${name} (session ${childSession}, window ${window}, pane ${childPane}${inRuntime ? `, in runtime ${inRuntime}` : ""})${mode.kind === "copy" ? `, forked from session ${source?.id ?? ownSessionId}` : ""}; session id is what resume_from takes later; ${toplevel ? PEER_RESULT_RULE : task ? liveRunRule(SPAWN_RESULT_RULE) : SPAWN_RESULT_RULE}`,
-            { session: childSession, name, window, pane: childPane, fork: mode.kind === "copy" },
+            { session: childSession, name, window, pane: childPane, fork: mode.kind === "copy", outcome: { ok: true } satisfies AgentOutcome },
           );
         } finally { releaseName(name); }
       });
@@ -3027,7 +3017,7 @@ export default function (pi: ExtensionAPI) {
         const lifecycle = serviceJob(job)
           ? "it does not hold your report; a notice with its exit status still arrives when it ends"
           : liveRunRule("a notice with its exit status and an output tail arrives when it ends and starts your next turn; you stay alive while it runs, so ending your turn now is safe - do not sleep or poll for it, and end your turn if nothing else is left");
-        return reply(`started job ${job.id} (${job.mode.name}); list_async_bash lists it and stop_async_bash stops it; ${lifecycle}; ${progress}; log: ${job.mode.log}`, { job: job.id, name: job.mode.name, log: job.mode.log, stream: !!params.stream, service: !!params.service });
+        return reply(`started job ${job.id} (${job.mode.name}); list_async_bash lists it and stop_async_bash stops it; ${lifecycle}; ${progress}; log: ${job.mode.log}`, { job: jobReference(job), stream: !!params.stream });
       } catch (error) {
         const message = controller.signal.aborted ? `start cancelled by ${errorText(controller.signal.reason)}; no job was started` : errorText(error);
         return { ...reply(`could not start background command: ${message}`), isError: true };

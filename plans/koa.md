@@ -2406,16 +2406,27 @@ the same `details`:
   the model); `ko-stream` gets `job: { id, name, service, log }`,
   `batch: string`, `omitted: number` and `cut: boolean` (the inputs of
   `streamBatch`, `:889-896`). A relation is already there for
-  `ko-message`.
+  `ko-message`; the steer's `details` get `relation` from the
+  message's own relation (`:1883-1886`), and a report and an ended
+  notice get `relation: "child"`, because only the agent's own
+  children send them (`handleNotice` resolves `currentChild`,
+  `announceEnding` has the child); a steer from the user has none,
+  and the card then shows no relation word.
 - `async_bash`'s result already has `details: { job, name, log }`
   (`:3030`); it gains `service: boolean`, so the step that started a
   job is typed too.
-- `message_agent`'s result gets `details: { to: name, state }`, with
-  `state` the `SendOutcome` state that `deliveryText` switches on
-  (`queued`, `delivered`, `acked`, `refused`, `gone`, ...) or
-  `"error"` for a "could not message" reply, so the card's outcome
-  is a typed fact. `spawn_agent`'s result already has `details`; a
-  failed spawn gets `details: { error: true }`.
+- `message_agent`'s result gets `details: { to: name, outcome }`,
+  where `outcome` is `{ ok: true }` for every success branch (queued,
+  delivered, acked, restarted) and `{ ok: false; failure; message }`
+  for a failure, `failure` one of `refused`, `not_found`,
+  `ambiguous`, `not_running`, `gone`, `error`, set at ko-pi's own
+  branches (`:2744-2766`, `deliveryText` `:1725-1740`): the card
+  shows nothing for a success and a word for a failure, so that is
+  what the record carries. `spawn_agent`'s result keeps its
+  `details` and gains the same `outcome` (`{ ok: true }` with the
+  session, or `failure: "error"` with the refusal's text). The
+  ended notice's `details` carry `reported: boolean`, which
+  `announceEnding` knows (`:1849`).
 
 **The record.** One new item kind and one new field in
 `records.ts`, both filled by the transcript module from `details`
@@ -2425,8 +2436,8 @@ and from the parsed arguments it already has:
 type AgentRef = { name: string; session?: string; pane?: string };
 type Inbound =
   | { form: "message"; relation: Relation; runtime?: string }
-  | { form: "steer" }
-  | { form: "notice" } | { form: "report" } | { form: "ended" };
+  | { form: "steer"; relation?: Relation }
+  | { form: "notice" } | { form: "report"; relation?: Relation } | { form: "ended"; reported: boolean; relation?: Relation };
 // an item: a message from an agent
 { kind: "agent"; direction: "in"; from: AgentRef; text: Text; inbound: Inbound }
 // an item: a job's notification (a job is not an agent, design-subagents.md, "A job")
@@ -2438,14 +2449,18 @@ type JobRef = { id: string; name: string; service: boolean; log: string };
 agent: { direction: "out"; to: AgentRef; text: Text; call:
   | { tool: "spawn"; model?: string; fork: boolean; runtime?: string }
   | { tool: "message"; mode: "message" | "steer" | "interrupt-and-steer" };
-  outcome?: { ok: boolean; state: string; session?: string } }
+  outcome?: { ok: true; session?: string }
+    | { ok: false; failure: "refused" | "not_found" | "ambiguous" | "not_running" | "gone" | "error"; message: string } }
 // a field of a tool block, for async_bash: the job it started
 job?: JobRef
 ```
 
 `Relation` and `JobEnd` (`:331`: `exit`, `signal`, `failed`,
 `stopped`, `timeout`) are unions in `records.ts` that `koa.ts` proves
-equal to ko-pi's at compile time, as `ThinkingLevel` is (section 7).
+equal to ko-pi's at compile time, as `ThinkingLevel` is (section 7);
+the check covers `JobEnd`'s tags, and its `signal` is a string as
+`jobEndText` prints it, because the signal names are the OS's set,
+which the page only shows.
 A custom message whose `details` lack these fields (another
 extension's message) stays a `notice` item as today. Every text is
 capped as a tool result is (`MAX_WEBVIEW_RESULT_BYTES`), because a
@@ -2460,17 +2475,21 @@ message's block with a header line. A block with `agent` is not a
 step line: it splits the run as a text block does (the run
 derivation of section 3 treats it as a boundary) and sits in the
 transcript's flow. The header: "to @name" or "from @name", for an
-inbound message the relation shortened after a "·" (none for ko-pi's
-own notices), the kind tag at the right (`task` for a spawn,
+inbound card the relation shortened after a "·" when the form
+carries one (a message always; a steer, a report and an ended child
+when ko-pi set it, section "The design"; none for ko-pi's own
+notices or a steer from the user), the kind tag at the right (`task` for a spawn,
 `message`, `steer`, `interrupt`; `message`, `steer`, `report`,
 `ended`, `notice`) and the time. No delivery status and no meta
-lines: `outcome.state` is not shown while it is a success, a spawn
-shows no session, window, pane or model, and a cut report has no
-"full report" trailer (ko-pi's `body` excludes `PARENT_GUIDANCE` and
-that trailer). A failure alone shows, in the error colour, in the
-kind's place: "refused", ko-pi's "no agent named …", "not reported"
-for an ended child that had not reported; the body is then ko-pi's
-refusal text or the message that was refused. Collapsed, the body is
+lines: a success shows nothing of `outcome`, a spawn shows no
+session, window, pane or model, and a cut report has no "full
+report" trailer (ko-pi's `body` excludes `PARENT_GUIDANCE` and that
+trailer). A failure alone shows, in the error colour, in the kind's
+place, as the word of `outcome.failure` ("refused", "no agent named
+…" from the `not_found` message, "ambiguous", "not running", "gone",
+"failed") or "not reported" for an ended child whose `reported` is
+false; the body is then the message that was refused, or
+`outcome.message` when the record's text is empty. Collapsed, the body is
 one line, the first line of the text cut with an ellipsis, so a card
 is two lines at most; a click anywhere on the card shows the whole
 text, a second click collapses it. `stop_agent`, `list_agents`,
@@ -2532,7 +2551,14 @@ request.
 
 **Replay.** A rebuild from `get_messages` converts the same custom
 messages and tool results through the same `details`, so a reloaded
-transcript shows the same cards. Messages written by a ko-pi before
+transcript shows the same cards. The facts are in `details`, never in
+`structuredContent`: ko-pi's `reply(text, details)` sets `details`,
+which pi keeps as its own field on a tool result (pi-agent-core
+`dist/types.d.ts:374`), carries in the `tool_execution_end` event's
+`result` (`docs/json.md:114`) and stores in the session's `toolResult`
+message (`agent-session.js:368-376`); the transcript module reads
+`result.details` live and `message.details` on a rebuild, checks the
+shape, and leaves an unknown shape a plain step. Messages written by a ko-pi before
 this change have no `agent` in `details` and show as `notice` items,
 which is the "state from an older ko" that a new session clears.
 
@@ -2546,14 +2572,19 @@ at one edge" and "The user message is the accent at 18%", both
 2026-11-10), applied in unit 16: the user message's block is
 `color-mix(in srgb, var(--ko-color-4) 18%, var(--ko-bg))`, so it
 carries more weight than the agent cards, which keep the 5 % well;
-and the time of a run line, a step line and a job line ends where the
-user message's time ends, 12pt in from the transcript's edge
-(`.run .line { padding-right: 12px }`, the same on a job line).
+and every time ends at the transcript column's edge: the user
+message's block and the agent cards outset by their horizontal
+padding under the shared `--pad` rule (a 4px minimum when narrow),
+so the time inside them ends at the column's edge, and a run line, a
+step line and a job line have no right inset, so their times end at
+the same edge (decided 2026-11-10; this replaces the 12px right
+padding of the first decision).
 
 **Tests.** ko-pi: each `sendMessage` site's `details` (the fixture
 suite's message assertions gain `agent`, `body`, `kind`, `job`,
-`tail`, `batch`), the `message_agent` result's `details.state` for
-each `SendOutcome`, `async_bash`'s `service`. transcript: a custom
+`tail`, `batch`, `relation`, `reported`), the `message_agent` and
+`spawn_agent` results' `details.outcome` for each success and each
+`failure`, `async_bash`'s `service`. transcript: a custom
 message with and without the fields (card item or notice item), each
 agent form's fields, each job event's fields, the caps, a spawn and
 a message block's `agent` field and an `async_bash` block's `job`

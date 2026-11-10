@@ -19,7 +19,7 @@ import { signalChild } from "./koa-child.ts";
 import { attachments, stepFile, UPLOAD_IDLE_MS } from "./koa-attach.ts";
 import { nameCommand, promptBody } from "./prompt.ts";
 import { prompts } from "./koa-queue.ts";
-import type { Exit, Pi, State, ThinkingLevel, DialogMethod, CompletionCommand } from "./records.ts";
+import type { Exit, Pi, State, ThinkingLevel, DialogMethod, CompletionCommand, Attachment } from "../pi/records.ts";
 
 type Same<A, B> = [A] extends [B] ? ([B] extends [A] ? true : false) : false;
 const thinkingLevelsMatch: Same<ThinkingLevel, PiThinkingLevel> = true;
@@ -214,7 +214,7 @@ async function main(): Promise<void> {
     await Promise.all([rebuild(), levels(false), stats(false)]);
     if (pi.type === "starting") { pi = { type: "ready" }; publish(); }
   };
-  let userAttachments: import("./records.ts").Attachment[] = [];
+  let userAttachments: Attachment[] = [];
   let partial: Assistant | undefined;
   let outcome: { type: "done" } | { type: "error"; message: string } = { type: "done" };
   let compaction: { root: Root; working: boolean; since?: number } | undefined;
@@ -272,7 +272,7 @@ async function main(): Promise<void> {
         break;
       case "tool_execution_start": feed.toolRunning(event.toolCallId, Date.now()); break;
       case "tool_execution_update": feed.toolPartial(event.toolCallId, event.partialResult.content); break;
-      case "tool_execution_end": feed.toolDone(event.toolCallId, event.result.content, event.isError, Date.now(), event.durationMs, event.result.structuredContent); break;
+      case "tool_execution_end": feed.toolDone(event.toolCallId, event.result.content, event.isError, Date.now(), event.durationMs, event.result.structuredContent, event.result.details); break;
       case "agent_start": state.working = true; state.since = Date.now(); state.aborted = false; outcome = { type: "done" }; status("working"); publish(); break;
       case "compaction_start": compaction = { root, working: state.working, since: state.since }; state.working = true; state.since ??= Date.now(); status("working"); publish(); break;
       case "agent_settled": state.working = false; delete state.since; state.aborted = event.aborted; status(event.aborted ? "idle" : outcome.type, outcome.type === "error" ? outcome.message : state.name); publish(); background(stats()); break;

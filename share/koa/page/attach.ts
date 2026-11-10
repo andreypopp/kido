@@ -1,7 +1,7 @@
-import { ATTACHMENT_LIMITS } from '../records.ts';
+import { ATTACHMENT_LIMITS } from '../../pi/records.ts';
 import { fetchJSON } from './http.ts';
 import { preview } from './preview.ts';
-import type { Attachment } from '../records.ts';
+import type { Attachment } from '../../pi/records.ts';
 
 type Chip = { view: HTMLDivElement; icon: HTMLSpanElement; name: HTMLSpanElement; detail: HTMLSpanElement; body: HTMLButtonElement; controller: AbortController; state: { type: 'pending'; name: string; size: number; received: number; id?: string } | { type: 'ready'; file: Attachment } | { type: 'refused'; name: string; reason: string } };
 const sizeLabel = (size: number) => size >= 1048576 ? (size / 1048576).toFixed(size >= 10 * 1048576 ? 0 : 1) + ' MB' : size >= 1024 ? Math.ceil(size / 1024) + ' KB' : size + ' B';

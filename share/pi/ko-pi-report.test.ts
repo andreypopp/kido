@@ -165,7 +165,7 @@ test("a child reports with a live service, lists it, and receives its ending not
       assert.deepEqual(notices(s), []);
       writeFileSync(gate, "");
       await pollUntil(() => notices(s).length === 1);
-      assert.ok(notices(s)[0]!.includes(job.details.job));
+      assert.ok(notices(s)[0]!.includes(job.details.job.id));
       assert.match(notices(s)[0]!, /exit 0/);
       await idleTurn(s, "service ended");
       assert.equal(fx.posts(NOTICES).length, 1);
@@ -181,7 +181,7 @@ test("a child reports nothing while a bash run of its own lives or a subagent of
       const job = await s.tools.get("async_bash").execute("c", { command: gatedCommand(`${fx.dir}/gate`), name: "build" });
       await idleTurn(s, "waiting");
       assert.deepEqual(fx.posts(NOTICES), [], "a live run");
-      await s.tools.get("stop_async_bash").execute("c", { job: job.details.job });
+      await s.tools.get("stop_async_bash").execute("c", { job: job.details.job.id });
       s.entries.push({ type: "custom", customType: "ko-pi.agent", data: { role: "subagent", owner: "self-session", name: "kid", session: "kid-session", model: "m", fork: false, cwd: "/tmp", pane: { instance: "a".repeat(32), pane: "pane_5" } } });
       s.entries.push({ type: "custom", customType: "ko-pi.work", data: { owner: "self-session", child: "kid-session", at: 1 } });
       fx.setPanes([...fx.panes(), agentPane({ pane: "pane_5", session: "kid-session", name: "kid", parent: "pane_1" })]);

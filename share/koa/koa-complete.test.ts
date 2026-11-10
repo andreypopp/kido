@@ -4,7 +4,7 @@ import { mkdtemp, mkdir, writeFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { complete, findFd } from "./koa-complete.ts";
-import type { CompletionCommand } from "./records.ts";
+import type { CompletionCommand } from "../pi/records.ts";
 
 test("command completion follows pi fuzzy order, skill names and command apply", async () => {
   let calls = 0;

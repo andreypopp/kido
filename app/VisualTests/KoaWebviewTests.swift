@@ -7,7 +7,7 @@ import SidebarFeed
 @testable import Kido
 
 extension VisualTests {
-    private enum KoaScenario { case transcript, dialogs, controls, exit, feed, completion, markdown, media, attachments, userMarkdown, preview, lightbox }
+    private enum KoaScenario { case transcript, dialogs, controls, exit, feed, completion, markdown, media, attachments, userMarkdown, preview, lightbox, agents }
     func testKoaInterruptRestoresNativeInput() async throws {
         let script = directory.appendingPathComponent("quit-script.jsonl")
         try "".write(to: script, atomically: true, encoding: .utf8)
@@ -133,6 +133,14 @@ extension VisualTests {
         try await koaWebview(width: 470, height: 560, scenario: .exit, captures: ["narrow-exited"])
     }
 
+    func testKoaWebviewAgentsWide() async throws {
+        try await koaWebview(width: 980, height: 560, scenario: .agents, captures: Set(["out", "failed", "in", "jobs", "fold-a", "fold-b", "tools"].map { "agents-" + $0 }))
+    }
+
+    func testKoaWebviewAgentsNarrow() async throws {
+        try await koaWebview(width: 470, height: 560, scenario: .agents, captures: Set(["out", "failed", "in", "jobs", "fold-a", "fold-b", "tools"].map { "narrow-agents-" + $0 }))
+    }
+
     func testKoaWebviewLightbox() async throws {
         try await koaWebview(width: 980, height: 560, scenario: .lightbox, captures: ["media-lightbox"])
     }
@@ -186,7 +194,7 @@ extension VisualTests {
         let attachmentPaths = (shot: home.appendingPathComponent("Desktop/Screenshot 2026-11-10 at 09.11.42.png"), diagram: home.appendingPathComponent("Desktop/diagram.png"), notes: home.appendingPathComponent("Desktop/notes.md"), source: cwd.appendingPathComponent("app/App/SidebarRow.swift"))
         try FileManager.default.createDirectory(at: cwd, withIntermediateDirectories: true)
         try JSONSerialization.data(withJSONObject: ["cwd": cwd.path]).write(to: sessionFile)
-        let mediaClock = scenario == .media || scenario == .attachments || scenario == .preview || scenario == .lightbox
+        let mediaClock = scenario == .media || scenario == .attachments || scenario == .preview || scenario == .lightbox || scenario == .agents
         let stamp = Int(try XCTUnwrap(Calendar.current.date(from: DateComponents(year: 2026, month: 11, day: mediaClock ? 10 : 8, hour: mediaClock ? 9 : 14, minute: mediaClock ? 12 : 32))).timeIntervalSince1970 * 1000)
         let usage: [String: Any] = ["input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0, "totalTokens": 0, "cost": ["input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0, "total": 0]]
         func assistant(_ content: [[String: Any]], stop: String = "stop") -> [String: Any] {
@@ -366,6 +374,96 @@ extension VisualTests {
             (label as NSString).draw(in: NSRect(x: 0, y: h * 0.015, width: w, height: h * 0.08), withAttributes: [.font: NSFont.monospacedSystemFont(ofSize: max(10, h * 0.045), weight: .regular), .foregroundColor: NSColor.white.withAlphaComponent(0.85), .paragraphStyle: paragraph])
             return ["type": "image", "mimeType": "image/png", "data": try XCTUnwrap(bitmap.representation(using: .png, properties: [:])).base64EncodedString()]
         }
+        if scenario == .agents {
+            let task = """
+            Implement the sidebar's right-side status indicators in ~/Workspace/kido-sidebar-right (app/App/SidebarRow.swift, SidebarView.swift, Packages/SidebarFeed).
+
+            Rules from the approved mockup (app/design/sidebar/mockup.html, NOTES.md "Indicator on the right"):
+            1. status and the hover-close × share one 12pt trailing slot centred 18pt from the row's right edge;
+            2. title, activity and folded circles start at 12pt;
+            3. nesting stays 15pt per level;
+            4. the session + aligns with the rightmost indicator;
+            5. idle indicators are muted gray at 50% on every row.
+
+            Add snapshot tests for every state of the mockup (light and dark, docked and floating). Run the app's make test; report the pre-fix failures and the diff summary. Do not commit.
+            """
+            let report = """
+            Built the right-side indicators. Pre-fix failures: 6 snapshot tests (SidebarTests.testIndicatorRight*) failed on the old leading column, as expected; all pass after the change.
+
+            Changed: SidebarRow.swift (the trailing slot, 12pt, centred 18pt from the edge; the title inset), SidebarView.swift (the session + alignment), Rows.swift (the fold-state key for record rows).
+
+            Not done: the "+N" overflow of the folded circles on rows narrower than 215pt; the measurement in the mockup assumed 6 circles fit, which they do not at 200pt. Needs a decision.
+
+            Snapshots: app/Tests/__Snapshots__/SidebarTests/ (12 new).
+            """
+            func person(_ text: String) -> [String: Any] { var value = user; value["content"] = [["type": "text", "text": text]]; return value }
+            func prose(_ text: String) -> [String: Any] { assistant([["type": "text", "text": text]]) }
+            func call(_ id: String, _ name: String, _ args: [String: Any], _ details: [String: Any]?, _ minute: Int = 2, start: Int = 0, duration: Int = 100) -> [[String: Any]] {
+                var value = assistant([["type": "toolCall", "id": id, "name": name, "arguments": args]], stop: "toolUse"); value["timestamp"] = stamp + minute * 60000 + start
+                guard let details else { return [value] }
+                return [value, ["role": "toolResult", "toolCallId": id, "toolName": name, "timestamp": stamp + minute * 60000 + start + duration, "isError": false, "content": [["type": "text", "text": details["text"] ?? "Opaque model-facing result"]], "details": details]]
+            }
+            func inbound(_ name: String, _ form: String, _ body: String, _ minute: Int, relation: String? = nil, reported: Bool? = nil) -> [String: Any] {
+                var inbound: [String: Any] = ["form": form]
+                if let relation { inbound["relation"] = relation }
+                else if form == "report" || form == "ended" { inbound["relation"] = "child" }
+                if let reported { inbound["reported"] = reported }
+                let details: [String: Any] = ["agent": ["name": name, "session": name + "-session"], "body": body, "inbound": inbound]
+                let type = form == "message" ? "ko-message" : form == "steer" ? "ko-steer" : "ko-notice"
+                return ["role": "custom", "customType": type, "display": true, "timestamp": stamp + minute * 60000, "content": "Header is not parsed by the page", "details": details]
+            }
+            func job(_ id: String, _ name: String, _ end: [String: Any]?, _ body: String, _ minute: Int, service: Bool = false, omitted: Int = 0) -> [String: Any] {
+                var ref: [String: Any] = ["id": id, "name": name, "log": "/Users/andrepopp/Library/Caches/ko-pi/jobs/" + name + "-" + id + ".log", "service": service]
+                var details: [String: Any] = ["job": ref]
+                if let end { ref["end"] = end; details = ["kind": "job", "job": ref, "tail": body] }
+                else { details["batch"] = body; details["omitted"] = omitted; details["cut"] = false }
+                return ["role": "custom", "customType": end == nil ? "ko-stream" : "ko-notice", "display": true, "timestamp": stamp + minute * 60000, "content": "Do not parse this output", "details": details]
+            }
+            let success: [String: Any] = ["outcome": ["ok": true]]
+            var out: [[String: Any]] = [person("Hand the sidebar unit to an implementer and tell the reviewer when it builds")]
+            out += call("a-read", "read", ["path": "app/design/sidebar/NOTES.md"], ["text": Array(repeating: "line", count: 612).joined(separator: "\n")], 0, duration: 100)
+            out += call("a-bash", "bash", ["command": "git worktree add --detach ~/Workspace/kido-sidebar-right main"], ["text": "Done"], 0, start: 100, duration: 1100)
+            out += call("a-spawn", "spawn_agent", ["name": "sidebar-right", "task": task], success.merging(["name": "sidebar-right", "session": "9702ddd1"]) { _, last in last })
+            out += [prose("The implementer is building. I will tell the reviewer when it reports.")]
+            out += call("a-msg", "message_agent", ["to": "sidebar-right", "message": "The user decided the chevron reflects explicit fold state, not whether waiting children are visible: a folded parent keeps › even when a waiting child is force-shown."], success.merging(["to": "sidebar-right"]) { _, last in last }, 10)
+            out += call("a-steer", "message_agent", ["to": "html-refine", "mode": "steer", "message": "Pause the koa-runline implementer until the user approves; the mockups show the five decisions but nothing is approved yet."], success.merging(["to": "html-refine"]) { _, last in last }, 11)
+            out += call("a-interrupt", "message_agent", ["to": "sidebar-right", "mode": "interrupt-and-steer", "message": "Stop: the user changed the indicator side back to the left. Wait for the new spec."], success.merging(["to": "sidebar-right"]) { _, last in last }, 13)
+            out += call("a-pending", "spawn_agent", ["name": "correctness-review", "task": "Review the diff of ~/Workspace/kido-sidebar-right against AGENTS.md \"Review\"; trace the fold state of a record row end to end."], nil, 14)
+            let refusal = "refusing window name \"modules/review\": it must be one path-safe name, not an empty, dot or slashed path"
+            var failed = [person("Spawn the reviewer")]
+            failed += call("b-spawn", "spawn_agent", ["name": "modules-review", "task": "Review"], ["outcome": ["ok": false, "failure": "error", "message": refusal]])
+            failed += call("b-message", "message_agent", ["to": "sidebar-right", "message": "Please also update the NOTES.md heading."], ["to": "sidebar-right", "outcome": ["ok": false, "failure": "not_found", "message": "no agent named sidebar-right"]], 15)
+            failed += [prose("The implementer has ended; I will resume it with the message instead.")]
+            let incoming: [[String: Any]] = [
+                inbound("kido-app", "message", "User approval for the sidebar redesign, just now: \"approved\". Start the sidebar-right unit; the reference is app/design/sidebar/mockup.html and NOTES.md as of 12:35.", 204, relation: "parent"),
+                prose("Starting the unit: a planner first, then the implementer."),
+                inbound("sidebar-right", "report", report, 230),
+                inbound("kido-app", "steer", "Skip the Linux check; CI runs it.", 232, relation: "parent"),
+                inbound("html-refine", "message", "The koa page is on webview at ae5abf40; your mockups are unchanged in content and clean against HEAD.", 238, relation: "sibling"),
+                inbound("simplify-reuse", "ended", "ended: exit 0; it had reported on its last work.\n--- last 4000 bytes of its screen ---\n> Reported. Waiting for the manager.\n$ \n\nmessage it to continue it, or stop_agent to end it", 239, reported: true),
+                inbound("perf-notes", "ended", "ended: signal SIGKILL; it had not reported on its last work.\n--- last 4000 bytes of its screen ---\n…measuring the sidebar at 200pt\nKilled: 9\n\nmessage it to continue it, or stop_agent to end it", 239, reported: false),
+                inbound("ko-pi", "notice", "2 async_bash jobs of the previous ko-pi version were stopped at /reload: main-watch, lint", 240)
+            ]
+            let lint = "scripts/lint.sh: docs/design-app.md:1466 names app/App/Toolbar.swift, which does not exist\nscripts/lint.sh: 1 broken reference\nFAIL lint 3s"
+            let jobs: [[String: Any]] = [
+                person("Run the unit stage in the background and watch main"), prose("Both are running; I will read the notices when they end."),
+                job("3", "verify-unit", ["type": "exit", "code": 0], "test sweep::tests::keeps_a_start_failure ... ok\ntest sweep::tests::linger_waits_for_focus ... ok\n\ntest result: ok. 212 passed; 0 failed; 0 ignored; finished in 41.02s\n\nPASS unit 44s", 19),
+                job("4", "lint", ["type": "exit", "code": 1], lint, 20),
+                job("5", "main-watch", nil, "main 88bdb070: CI queued\nmain 88bdb070: ubuntu running · macos running", 28, omitted: 212),
+                job("5", "main-watch", nil, "main 88bdb070: ubuntu PASS 6m12s\nmain 88bdb070: macos running", 33),
+                job("5", "main-watch", nil, "main 88bdb070: macos PASS 9m03s\nmain 88bdb070: CI green", 37),
+                job("6", "ci-like", ["type": "timeout", "seconds": 600], "[podman] pulling ko-ci-like:4f2a9c1e8b77 …\n[podman] layer 7/12", 40),
+                job("7", "demo", ["type": "signal", "signal": "SIGKILL"], "Kido.app 0.32 (debug) · pid 48112\nwindow 1 connected to /tmp/ko-demo/socket", 50, service: true)
+            ]
+            let folded = [inbound("sidebar-right", "report", report, 230), job("4", "lint", ["type": "exit", "code": 1], "scripts/lint.sh: docs/design-app.md:1466 names app/App/Toolbar.swift, which does not exist\nscripts/lint.sh: share/pi/ko-pi.ts:3381 is not a line of ko-pi.ts\nscripts/lint.sh: 2 broken references\nscripts/lint.sh: run make lint after the fix\nFAIL lint 3s", 20)]
+            var tools = [person("What are my agents doing? Stop the stale one.")]
+            tools += call("t-list", "list_agents", [:], ["text": "sidebar-right  subagent  running  \"applying the review findings\"  reported: no\nsimplify-reuse subagent  ended    reported: yes\nhtml-refine    peer      running  \"unit 12\""], 0, duration: 300)
+            tools += call("t-read", "read_report", ["agent": "simplify-reuse"], ["text": "The report"], 0, start: 300, duration: 100)
+            tools += call("t-stop", "stop_agent", ["agent": "simplify-reuse"], ["text": "Stopped"], 0, start: 400, duration: 1700)
+            tools += [prose("sidebar-right is applying the review findings; simplify-reuse had reported and is stopped.")]
+            steps = Array(steps.prefix(3)); steps[1] = ["type": "respond", "command": "get_messages", "data": ["messages": out]]
+            for messages in [failed, incoming, jobs, folded, tools] { replay(messages) }
+        }
         if scenario == .preview {
             var first = user; first["content"] = [["type": "text", "text": "Move the weight rule into the row state"]]
             var messages = [first]
@@ -506,7 +604,7 @@ extension VisualTests {
         }
         func capture(_ name: String) async throws {
             guard captures.contains(name) else { return }
-            let top = scenario == .media || scenario == .lightbox
+            let top = scenario == .media || scenario == .lightbox || scenario == .agents
             window.contentView?.layoutSubtreeIfNeeded()
             pane.webviewView?.layoutSubtreeIfNeeded()
             _ = try await webviewJS(web, "(()=>{if(!document.querySelector('.lightbox')&&!document.querySelector('.dialog')&&!document.querySelector('#exited:not([hidden])')&&document.querySelector('#picker').hidden)window.composer.focus();const scroll=document.querySelector('#scroll');scroll.scrollTop=\(top ? "0" : "scroll.scrollHeight");return true})()")
@@ -530,6 +628,35 @@ extension VisualTests {
         _ = try await webviewJS(web, "(()=>{const NativeDate=Date;window.Date=class extends NativeDate{constructor(...args){super(...(args.length?args:[\(stamp + 12000)]))}static now(){return \(stamp + 12000)}};const style=document.createElement('style');style.textContent='.caret,.spin,.spin::before,.dot.on{animation:none!important}';document.head.append(style);return true})()")
         let idleHint = try await webviewJS(web, "document.querySelector('#hint .spin')===null")
         XCTAssertEqual(idleHint, "true")
+        if scenario == .agents {
+            let prefix = width < 750 ? "narrow-agents-" : "agents-"
+            func size(_ height: CGFloat) { var frame = window.frame; frame.size.height = height; window.setFrame(frame, display: false) }
+            func openRuns(_ firstStep: Bool = false) async throws {
+                _ = try await webviewJS(web, "(()=>{document.querySelectorAll('.run>.line').forEach(line=>{if(line.getAttribute('aria-expanded')!=='true')line.click()});if(\(firstStep)){const line=document.querySelector('.step>.line');if(line?.getAttribute('aria-expanded')!=='true')line?.click()}return true})()")
+            }
+            func aligned() async throws {
+                let result = try await webviewJS(web, "(()=>{const column=document.querySelector('#transcript'),edge=column.getBoundingClientRect().right-parseFloat(getComputedStyle(column).paddingRight),scroll=document.querySelector('#scroll').getBoundingClientRect();return Array.from(document.querySelectorAll('.user time,.amsg time,.run .time,.job time')).every(time=>Math.abs(time.getBoundingClientRect().right-edge)<.5)&&Array.from(document.querySelectorAll('.amsg,.user')).every(card=>{const r=card.getBoundingClientRect();return r.left>=scroll.left+4&&r.right<=scroll.right-4})})()")
+                XCTAssertEqual(result, "true", "All times end at the column edge and wells keep the narrow paper margin")
+            }
+            try await webviewUntil(web, "document.querySelectorAll('.amsg').length===5")
+            try await openRuns(); try await aligned(); try await capture(prefix + "out")
+            try await advance(); try await webviewUntil(web, "document.querySelectorAll('.amsg').length===2&&document.querySelectorAll('.amsg .tag.err').length===2")
+            size(330); try await capture(prefix + "failed")
+            try await advance(); try await webviewUntil(web, "document.querySelectorAll('.amsg').length===7")
+            size(560)
+            _ = try await webviewJS(web, "(()=>{document.querySelectorAll('.amsg')[1].click();return true})()")
+            try await capture(prefix + "in")
+            try await advance(); try await webviewUntil(web, "document.querySelectorAll('.job').length===5")
+            _ = try await webviewJS(web, "(()=>{Array.from(document.querySelectorAll('.job')).find(job=>job.querySelector('.nm').textContent==='lint').querySelector('.hd').click();return true})()")
+            try await aligned(); try await capture(prefix + "jobs")
+            try await advance(); try await webviewUntil(web, "document.querySelectorAll('.job').length===1&&document.querySelectorAll('.amsg').length===1")
+            size(330); try await capture(prefix + "fold-a")
+            _ = try await webviewJS(web, "(()=>{document.querySelector('.amsg').click();document.querySelector('.job .hd').click();return true})()")
+            try await capture(prefix + "fold-b")
+            try await advance(); try await webviewUntil(web, "document.querySelectorAll('.step').length===3&&document.querySelectorAll('.amsg').length===0")
+            size(300); try await openRuns(true); try await capture(prefix + "tools")
+            return
+        }
         if scenario == .preview {
             try await webviewUntil(web, "document.querySelectorAll('.step').length===3")
             _ = try await webviewJS(web, "(()=>{document.querySelector('.run>.line').click();document.dispatchEvent(new KeyboardEvent('keydown',{key:'Meta',metaKey:true,shiftKey:true}));return true})()")
@@ -911,7 +1038,7 @@ extension VisualTests {
             try await capture("narrow-exited")
         }
         switch scenario {
-        case .transcript, .feed, .completion, .markdown, .media, .attachments, .userMarkdown, .preview, .lightbox: break
+        case .transcript, .feed, .completion, .markdown, .media, .attachments, .userMarkdown, .preview, .lightbox, .agents: break
         case .dialogs: try await dialogScenario()
         case .controls: try await controlsScenario()
         case .exit: try await exitScenario()

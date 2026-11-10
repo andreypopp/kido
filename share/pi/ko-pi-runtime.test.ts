@@ -448,7 +448,7 @@ test("a routed async_bash is an exec session with a host log, a notice, and canc
     const gate = join(t.rt, "gate");
     const command = `env; printf 'before\\n'; ${gatedCommand(gate, "", "after\n", 3)}`;
     const result = await withEnv({ HOST_SECRET: "host-only" }, () => run(s, "async_bash", { command, name: "build", stream: true }));
-    const records = () => fx.posts(`/panes/${process.env.KO_PANE}/status`).filter(record => record.id === `job/${result.details.job}`);
+    const records = () => fx.posts(`/panes/${process.env.KO_PANE}/status`).filter(record => record.id === `job/${result.details.job.id}`);
     await pollUntil(() => records()[0]?.state === "working");
     await pollUntil(() => fx.running() === baseline + 1);
     await pollUntil(() => fx.execLog().at(-1)?.request.argv?.[2] === command);
@@ -459,12 +459,12 @@ test("a routed async_bash is an exec session with a host log, a notice, and canc
     assert.equal(exec.request.cwd, join(t.rt, "proj"));
     assert.equal(exec.request.env, undefined);
     assert.equal(exec.request.stdin, false);
-    await pollUntil(() => logHas(result.details.log, "before"));
-    assert.match(readFileSync(result.details.log, "utf8"), /KO_RUNTIME=dev/);
-    assert.doesNotMatch(readFileSync(result.details.log, "utf8"), /HOST_SECRET|KO_PANE|KO_SOCKET/);
+    await pollUntil(() => logHas(result.details.job.log, "before"));
+    assert.match(readFileSync(result.details.job.log, "utf8"), /KO_RUNTIME=dev/);
+    assert.doesNotMatch(readFileSync(result.details.job.log, "utf8"), /HOST_SECRET|KO_PANE|KO_SOCKET/);
     const rows = JSON.parse(text(await run(s, "list_async_bash", {})));
     assert.equal(rows[0].runtime, "dev");
-    assert.equal(rows[0].log, result.details.log);
+    assert.equal(rows[0].log, result.details.job.log);
     writeFileSync(gate, "");
     await pollUntil(() => notices(s).length === 1);
     assert.match(notices(s)[0]!, /exit 3/);
@@ -474,8 +474,8 @@ test("a routed async_bash is an exec session with a host log, a notice, and canc
     assert.match(notices(s)[0]!, /before\nafter/);
     await pollUntil(() => fx.running() === baseline);
     const service = await run(s, "async_bash", { command: `printf 'ready\\n'; ${gatedCommand(join(t.rt, "service"))}`, name: "service" });
-    await pollUntil(() => logHas(service.details.log, "ready"));
-    await run(s, "stop_async_bash", { job: service.details.job });
+    await pollUntil(() => logHas(service.details.job.log, "ready"));
+    await run(s, "stop_async_bash", { job: service.details.job.id });
     await pollUntil(() => fx.running() === baseline);
     assert.equal(notices(s).length, 1, "a stopped job sends no notice");
     await s.emit("session_shutdown", { reason: "quit" });
@@ -785,7 +785,7 @@ test("the exec client drives a real ko server with a command-kind runtime the wa
       await pollUntil(() => notices(s).length === 1, 5000, "the real runtime job notice");
       assert.match(notices(s)[0]!, /exit 3/);
       assert.match(notices(s)[0]!, /real-runtime-job/);
-      assert.equal(readFileSync(job.details.log, "utf8"), "real-runtime-job");
+      assert.equal(readFileSync(job.details.job.log, "utf8"), "real-runtime-job");
       assert.match(text(await run(s, "bash", { command: "kill -9 $$" })), /exited with code 137/);
       const awkward = `it's "a" file.txt`;
       const big = Array.from({ length: 4000 }, (_, line) => `line ${line} é ${"y".repeat(60)}`).join("\n");

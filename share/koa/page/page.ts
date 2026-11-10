@@ -4,11 +4,14 @@ import { attach } from './attach.ts';
 import { preview, previewKey } from './preview.ts';
 import { nameCommand } from '../prompt.ts';
 import { fetchJSON } from './http.ts';
-import { ATTACHMENT_LIMITS, pathArg } from '../records.ts';
-import type { State, WireItem, WireAssistant, Block, Patch, PageRecord, PromptMode, ImageRef } from '../records.ts';
+import { ATTACHMENT_LIMITS, pathArg, jobEndText } from '../../pi/records.ts';
+import type { State, WireItem, WireAssistant, Block, Patch, PageRecord, PromptMode, ImageRef, AgentCall, Relation } from '../../pi/records.ts';
 
 type Step = { block: Exclude<Block, { type: 'text' }>;  item: WireAssistant; index: number; key: string; slots: Map<string, Slot> };
-type Slot = (HTMLDivElement | HTMLButtonElement) & { signature?: string };
+type AgentCard = AgentCall | Extract<WireItem, { kind: 'agent' }>;
+type JobItem = Extract<WireItem, { kind: 'job' }>;
+type JobGroup = { first: JobItem; next: number; items: JobItem[]; shown: number; shownStreams?: number; streams: number; omitted: number; cut: boolean; view: HTMLDivElement; details: HTMLDivElement; footer?: HTMLDivElement; kind: HTMLSpanElement; end: HTMLSpanElement };
+type Slot = { type: 'image'; view: HTMLButtonElement } | { type: 'run'; view: HTMLDivElement; signature?: string } | { type: 'agent'; view: HTMLDivElement; rendered?: { card: AgentCard; at: number } } | { type: 'job'; view: HTMLDivElement; group: JobGroup };
 declare global {
   interface Window {
     composer: Pick<ReturnType<typeof composer>, 'text' | 'setText' | 'focus'>;
@@ -58,6 +61,72 @@ if (!window.ko) {
   theme();
 }
 
+const relationWords: Record<Relation, string> = { parent: 'your parent', child: 'your subagent', sibling: 'another agent in this session', descendant: 'a subagent of your subagent', sibling_descendant: 'a subagent of another agent in this session' };
+function agentCard(card: AgentCard, at: number, key: string, slots: Map<string, Slot>) {
+  const saved = slots.get(key), slot: Extract<Slot, { type: 'agent' }> = saved?.type === 'agent' ? saved : { type: 'agent', view: node('div') };
+  slots.set(key, slot);
+  if (slot.rendered?.card === card && slot.rendered.at === at) return slot.view;
+  slot.rendered = { card, at };
+  const inbound = card.direction === 'in', ref = inbound ? card.from : card.to;
+  let kind = inbound ? card.inbound.form : card.call.tool === 'spawn' ? 'task' : card.call.mode === 'interrupt-and-steer' ? 'interrupt' : card.call.mode;
+  let failed = false;
+  if (card.direction === 'out' && card.outcome?.ok === false) { failed = true; kind = card.call.tool === 'spawn' ? 'refused' : card.outcome.failure === 'refused' || card.outcome.failure === 'gone' ? card.outcome.failure : card.outcome.message; }
+  if (card.direction === 'in' && card.inbound.form === 'ended' && !card.inbound.reported) { failed = true; kind = 'not reported'; }
+  const view = slot.view; view.className = 'amsg';
+  const header = node('div', undefined, 'hd'), who = node('span', '@' + ref.name, 'who'); if (ref.session) who.title = ref.session;
+  if (failed && card.direction === 'out' && card.call.tool === 'spawn') who.classList.add('err');
+  header.append(node('span', inbound ? 'from' : 'to', 'dir'), who);
+  if (card.direction === 'in' && 'relation' in card.inbound && card.inbound.relation) header.append(node('span', '· ' + relationWords[card.inbound.relation], 'rel'));
+  header.append(node('span', kind, failed ? 'tag err' : 'tag'), node('time', timestamp(at)));
+  const body = card.text.text || (card.direction === 'out' && card.outcome?.ok === false ? card.outcome.message : '');
+  view.replaceChildren(header);
+  fold(view, key, view, node('div', body, 'bd'), undefined, 'expanded');
+  return view;
+}
+function jobCard(first: JobItem, slots: Map<string, Slot>): JobGroup {
+  const view = node('div', undefined, 'job'), line = node('div', undefined, 'hd'), details = node('div', undefined, 'out');
+  const kind = node('span', undefined, 'kind'), end = node('span', undefined, 'end'), time = node('time', timestamp(first.at));
+  line.append(node('span', '›', 'chev'), node('span', first.job.name, 'nm'), kind, end, time);
+  const group: JobGroup = { first, next: first.seq, items: [], shown: 0, streams: 0, omitted: 0, cut: false, view, details, kind, end };
+  slots.set('job', { type: 'job', view, group });
+  fold(view, 'job:' + first.seq, line, details, () => showJob(group));
+  return group;
+}
+function showJob(group: JobGroup) {
+  if (!group.footer) { group.footer = node('div', undefined, 'ft'); group.details.append(group.footer); }
+  let batches = group.shownStreams ?? 0;
+  for (; group.shown < group.items.length; group.shown++) {
+    const item = group.items[group.shown];
+    if (item.event.type === 'stream') {
+      if (batches++) group.details.insertBefore(node('div', '+ ' + timestamp(item.at), 'sep'), group.footer);
+      group.details.insertBefore(node('pre', item.event.batch.text), group.footer);
+    } else if (!group.streams && item.event.tail.text) group.details.insertBefore(node('pre', item.event.tail.text), group.footer);
+  }
+  group.shownStreams = batches;
+  group.footer.textContent = 'log: ' + group.first.job.log + (group.omitted ? ' · … ' + group.omitted + ' lines omitted' : '') + (group.cut ? ' · long lines truncated' : '');
+}
+const jobOwners = new Map<number, JobGroup>();
+function reconcileJobs(seq: number) {
+  const current = items.get(seq); if (current?.kind !== 'job') return;
+  const previous = jobOwners.get(seq - 1);
+  let group = previous && previous.first.job.id === current.job.id && previous.items.at(-1)?.event.type === 'stream' ? previous : jobOwners.get(seq);
+  if (!group) { const owner = views.get(seq); if (!owner) return; group = jobCard(current, owner.slots); owner.view.replaceChildren(group.view); }
+  while (group.items.at(-1)?.event.type !== 'ended') {
+    const item = items.get(group.next), wrapper = views.get(group.next);
+    if (item?.kind !== 'job' || item.job.id !== group.first.job.id || !wrapper) break;
+    group.items.push(item); jobOwners.set(group.next, group);
+    if (group.next !== group.first.seq) { wrapper.view.replaceChildren(); wrapper.view.hidden = true; }
+    group.next++;
+    if (item.event.type === 'stream') { group.streams++; group.omitted += item.event.omitted; group.cut ||= item.event.cut || item.event.batch.cut > 0; }
+    else { group.end.textContent = jobEndText(item.event.end); group.view.classList.toggle('err', item.event.end.type === 'exit' ? item.event.end.code !== 0 : item.event.end.type !== 'stopped'); break; }
+  }
+  const owner = views.get(group.first.seq);
+  if (owner && owner.view.firstElementChild !== group.view) owner.view.replaceChildren(group.view);
+  group.kind.textContent = group.first.job.service ? 'service' : group.streams ? 'stream' : ''; group.kind.hidden = !group.kind.textContent;
+  group.end.hidden = !group.end.textContent;
+  if (group.view.classList.contains('open')) showJob(group);
+}
+
 function timestamp(at: number) {
   const date = new Date(at), today = new Date();
   const time = date.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
@@ -102,9 +171,9 @@ function thumbnails(refs: ImageRef[], slots: Map<string, Slot>, name?: string) {
     if (view.childNodes.length) return;
     for (const ref of refs) {
       const key = 'image:' + ref.id;
-      let thumb = slots.get(key);
-      if (!thumb) { thumb = node('button', undefined, 'thumb'); thumb.type = 'button'; thumb.append(node('img'), node('span', undefined, 'sz')); slots.set(key, thumb); }
-      if (!(thumb instanceof HTMLButtonElement)) throw Error('Invalid thumbnail slot');
+      const saved = slots.get(key);
+      const thumb = saved?.type === 'image' ? saved.view : node('button', undefined, 'thumb');
+      if (!saved || saved.type !== 'image') { thumb.type = 'button'; thumb.append(node('img'), node('span', undefined, 'sz')); slots.set(key, { type: 'image', view: thumb }); }
       const image = thumb.firstElementChild, label = thumb.children[1];
       if (!(image instanceof HTMLImageElement) || !(label instanceof HTMLElement)) throw Error('Invalid image slot');
       const src = '/images/' + encodeURIComponent(ref.id) + '?e=' + encodeURIComponent(epoch) + '&r=' + ref.revision;
@@ -143,6 +212,7 @@ function stepInfo(step: Step & { args: Record<string, unknown> }) {
   if (block.type === 'thinking') return { label: 'thinking', labelClass: 'name', detail: block.redacted ? 'redacted' : block.text.split('\n')[0], kind: 'thinking' };
   const values = step.args;
   const kind = block.name;
+  if (block.name === 'async_bash') return { label: block.job?.name ?? (typeof values.name === 'string' ? values.name : 'async_bash'), labelClass: 'path', detail: '', kind };
   const first = Object.values(values)[0];
   const labelClass = block.name === 'bash' ? 'cmd' : ['read', 'edit', 'write'].includes(block.name) ? 'path' : '';
   const label = labelClass === 'cmd' ? values.command : labelClass === 'path' ? values.path : block.name + (first === undefined ? '' : ' ' + (typeof first === 'string' ? first : JSON.stringify(first)));
@@ -162,14 +232,15 @@ function stepInfo(step: Step & { args: Record<string, unknown> }) {
   }
   return { edit, labelClass, label: typeof label === 'string' ? label : label === undefined ? block.name + ' ' + block.args.text : JSON.stringify(label), detail, kind, aborted: item.stop === 'aborted' && block.state.type !== 'done' };
 }
-function fold(view: HTMLElement, key: string, line: HTMLElement, details: HTMLElement, show?: () => void) {
-  view.classList.toggle('open', folds.get(key) === true);
+function fold(view: HTMLElement, key: string, line: HTMLElement, details: HTMLElement, show?: () => void, className = 'open') {
+  view.classList.toggle(className, folds.get(key) === true);
   line.setAttribute('role', 'button'); line.tabIndex = 0;
   line.setAttribute('aria-expanded', String(folds.get(key) === true));
-  const toggle = () => { const open = !view.classList.contains('open'); folds.set(key, open); view.classList.toggle('open', open); line.setAttribute('aria-expanded', String(open)); if (open) show?.(); };
+  const toggle = () => { const open = !view.classList.contains(className); folds.set(key, open); view.classList.toggle(className, open); line.setAttribute('aria-expanded', String(open)); if (open) show?.(); };
   line.onclick = toggle;
   line.onkeydown = event => { if (!event.metaKey && !event.ctrlKey && (event.key === 'Enter' || event.key === ' ')) { event.preventDefault(); toggle(); } };
-  view.append(line, details);
+  if (view !== line) view.append(line);
+  view.append(details);
   if (folds.get(key)) show?.();
 }
 function run(input: Step[]) {
@@ -229,8 +300,9 @@ function run(input: Step[]) {
         if (suffix) old.slice(-suffix).forEach(text => line(text, '', 'ctx'));
         detail.append(diff);
       } else {
-        if (block.name === 'bash') detail.append(node('div', 'cwd ' + displayPath(state.cwd), 'kv'));
-        if ('result' in block.state && block.state.result?.text) detail.append(node(images && block.name === 'read' ? 'div' : 'pre', block.state.result.text, images && block.name === 'read' ? 'note' : ''));
+        if (block.name === 'async_bash') { if (typeof step.args.command === 'string') detail.append(node('pre', step.args.command)); if (block.job) detail.append(node('div', 'log: ' + block.job.log, 'delta')); }
+        else if (block.name === 'bash') detail.append(node('div', 'cwd ' + displayPath(state.cwd), 'kv'));
+        if ((block.name !== 'async_bash' || !block.job) && 'result' in block.state && block.state.result?.text) detail.append(node(images && block.name === 'read' ? 'div' : 'pre', block.state.result.text, images && block.name === 'read' ? 'note' : ''));
       }
       if ('result' in block.state && block.state.result?.cut) detail.append(node('div', block.state.result.cut + ' bytes omitted', 'delta'));
     }
@@ -257,12 +329,12 @@ function reconcileRuns(seq: number) {
   const flush = () => {
     if (!steps.length) return;
     const owner = views.get(steps[0].item.seq)?.slots.get(steps[0].key);
-    if (owner) {
+    if (owner?.type === 'run') {
       const signature = JSON.stringify(steps.map(step => [step.block, step.item.final, step.item.stop, step.item.ended]));
-      if (owner.signature !== signature) { owner.replaceChildren(run(steps)); owner.signature = signature; }
+      if (owner.signature !== signature) { owner.view.replaceChildren(run(steps)); owner.signature = signature; }
       for (const step of steps.slice(1)) {
         const slot = views.get(step.item.seq)?.slots.get(step.key);
-        if (slot && slot !== owner) { slot.replaceChildren(); slot.signature = undefined; }
+        if (slot?.type === 'run' && slot !== owner) { slot.view.replaceChildren(); slot.signature = undefined; }
       }
     }
     steps = [];
@@ -271,7 +343,7 @@ function reconcileRuns(seq: number) {
     const item = items.get(current), owner = views.get(current);
     if (item?.kind !== 'assistant' || !owner) continue;
     item.blocks.forEach((block, index) => {
-      if (block.type === 'text') flush();
+      if (block.type === 'text' || block.type === 'tool' && block.agent) flush();
       else steps.push({ block, item, index, key: item.seq + ':' + index, slots: owner.slots });
     });
     if (item.error) flush();
@@ -291,8 +363,9 @@ function put(item: WireItem) {
   let steps: Step[] = [];
   const flush = () => {
     if (steps.length) {
-      const key = steps[0].key, slot = previous?.slots.get(key) ?? node('div');
-      slots.set(key, slot); children.push(slot);
+      const key = steps[0].key, saved = previous?.slots.get(key);
+      const slot: Slot = saved?.type === 'run' ? saved : { type: 'run', view: node('div') };
+      slots.set(key, slot); children.push(slot.view);
     }
     steps = [];
   };
@@ -301,6 +374,7 @@ function put(item: WireItem) {
     item.blocks.forEach((block, index) => {
       const key = item.seq + ':' + index;
       if (block.type === 'text') { flush(); if (block.text) children.push(prose(key, block.text, item.final)); }
+      else if (block.type === 'tool' && block.agent) { flush(); const saved = previous?.slots.get('agent:' + key); if (saved?.type === 'agent') slots.set('agent:' + key, saved); children.push(agentCard(block.agent, block.started ?? item.at, 'agent:' + key, slots)); }
       else steps.push({ block, item, key, index, slots });
     });
     flush();
@@ -314,7 +388,9 @@ function put(item: WireItem) {
       const paths = item.attachments.filter(file => file.kind === 'file').map(file => file.path);
       if (paths.length) text.append(node('div', paths.join('\n'), 'paths'));
       children.push(time, text);
-    } else if (item.kind === 'bash') children.push(node('div', '$ ' + item.command), node('pre', item.output.text), node('div', 'Exit ' + (item.exit ?? 'unknown'), 'delta'));
+    } else if (item.kind === 'agent') { view.className = ''; children.push(agentCard(item, item.at, 'agent:' + item.seq, slots)); }
+    else if (item.kind === 'job') { view.className = ''; const saved = previous?.slots.get('job'); if (saved?.type === 'job') slots.set('job', saved); }
+    else if (item.kind === 'bash') children.push(node('div', '$ ' + item.command), node('pre', item.output.text), node('div', 'Exit ' + (item.exit ?? 'unknown'), 'delta'));
     else children.push(node('div', item.text, 'notice'));
   }
   children.forEach((child, index) => { if (view.childNodes[index] !== child) view.insertBefore(child, view.childNodes[index] ?? null); });
@@ -325,6 +401,7 @@ function put(item: WireItem) {
     element('items').insertBefore(view, views.get(next)?.view ?? null);
   }
   if (slots.size || previous?.slots.size || !previous) reconcileRuns(item.seq);
+  if (item.kind === 'job') reconcileJobs(item.seq);
   element('older').hidden = !more;
   after = Math.max(after, first - 1);
   while (items.get(after + 1)?.final) after++;
@@ -538,7 +615,7 @@ function toast(record: Extract<PageRecord, { type: 'notify' }>) {
 }
 function apply(record: PageRecord) {
   if (record.type === 'reset') {
-    epoch = record.epoch; after = -1; first = undefined; items.clear(); views.clear(); texts.clear(); folds.clear(); pagingPatches.length = 0; more = record.more;
+    epoch = record.epoch; after = -1; first = undefined; items.clear(); views.clear(); texts.clear(); folds.clear(); jobOwners.clear(); pagingPatches.length = 0; more = record.more;
     element('items').replaceChildren();
     element('older').hidden = !more;
     for (const item of record.items) put(item);

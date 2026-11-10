@@ -4,10 +4,10 @@ import { constants, mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs
 import { join, basename } from "node:path";
 import { open } from "node:fs/promises";
 import { imageInfo, imageExtensions } from "./image.ts";
-import { pathArg } from "../koa/records.ts";
+import { pathArg, isRelation, isAgentFailure } from "./records.ts";
 import { promptText } from "../koa/prompt.ts";
-import type { Text, Block, Item, Assistant, WireItem, State, PageRecord, CompletionQuery, ImageRef, Attachment } from "../koa/records.ts";
-import { mintId, contentText, utf8Prefix, type Content } from "./text.ts";
+import type { Text, Block, Item, Assistant, WireItem, State, PageRecord, CompletionQuery, ImageRef, Attachment, AgentRef, AgentCall, AgentOutcome, JobRef, JobEnd, Inbound, AgentDetails, NoticeDetails, StreamDetails } from "./records.ts";
+import { mintId, contentText, utf8Prefix, isRecord, type Content } from "./text.ts";
 import type { AgentMessage, ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { RpcExtensionUIRequest, RpcExtensionUIResponse } from "@earendil-works/pi-coding-agent";
 
@@ -53,12 +53,82 @@ export function dialogBody(value: unknown, dialog: Extract<RpcExtensionUIRequest
   return { error: "A valid dialog answer is required" };
 }
 
+const sameText = (a: Text | undefined, b: Text | undefined): boolean => a?.text === b?.text && a?.cut === b?.cut;
 const sameTiming = (a: Block, b: Block): boolean => a.started === b.started && a.ended === b.ended;
 
 function cap(text: string, limit: number): Text {
   const bytes = Buffer.byteLength(text);
   const prefix = utf8Prefix(text, limit);
   return { text: prefix, cut: bytes - Buffer.byteLength(prefix) };
+}
+
+function agentRef(value: unknown): AgentRef | undefined {
+  if (!isRecord(value) || typeof value.name !== 'string' || !value.name || value.session !== undefined && typeof value.session !== 'string' || value.pane !== undefined && typeof value.pane !== 'string') return;
+  return { name: value.name, ...(typeof value.session === 'string' ? { session: value.session } : {}), ...(typeof value.pane === 'string' ? { pane: value.pane } : {}) };
+}
+function jobRef(value: unknown): JobRef | undefined {
+  if (!isRecord(value) || typeof value.id !== 'string' || !value.id || typeof value.name !== 'string' || typeof value.log !== 'string' || typeof value.service !== 'boolean') return;
+  return { id: value.id, name: value.name, log: value.log, service: value.service };
+}
+function outcome(value: unknown): AgentOutcome | undefined {
+  if (!isRecord(value)) return;
+  if (value.ok === true) return { ok: true };
+  if (value.ok === false && typeof value.message === 'string' && isAgentFailure(value.failure)) return { ok: false, failure: value.failure, message: cap(value.message, MAX_WEBVIEW_RESULT_BYTES).text };
+}
+function jobEnd(value: unknown): JobEnd | undefined {
+  if (!isRecord(value)) return;
+  switch (value.type) {
+    case 'exit': return typeof value.code === 'number' && Number.isInteger(value.code) ? { type: 'exit', code: value.code } : undefined;
+    case 'signal': return typeof value.signal === 'string' ? { type: 'signal', signal: value.signal } : undefined;
+    case 'failed': return typeof value.message === 'string' ? { type: 'failed', message: cap(value.message, MAX_WEBVIEW_RESULT_BYTES).text } : undefined;
+    case 'stopped': return { type: 'stopped' };
+    case 'timeout': return typeof value.seconds === 'number' && Number.isFinite(value.seconds) && value.seconds >= 0 ? { type: 'timeout', seconds: value.seconds } : undefined;
+    default: return;
+  }
+}
+function inbound(value: unknown): Inbound | undefined {
+  if (!isRecord(value) || value.relation !== undefined && !isRelation(value.relation)) return;
+  const related = isRelation(value.relation) ? { relation: value.relation } : {};
+  switch (value.form) {
+    case 'message': return isRelation(value.relation) && (value.runtime === undefined || typeof value.runtime === 'string') ? { form: 'message', relation: value.relation, ...(typeof value.runtime === 'string' ? { runtime: value.runtime } : {}) } : undefined;
+    case 'steer': return { form: 'steer', ...related };
+    case 'report': return { form: 'report', ...related };
+    case 'notice': return { form: 'notice' };
+    case 'ended': return typeof value.reported === 'boolean' ? { form: 'ended', reported: value.reported, ...related } : undefined;
+    default: return;
+  }
+}
+function agentDetails(value: unknown): AgentDetails | undefined {
+  if (!isRecord(value) || typeof value.body !== 'string') return;
+  const agent = agentRef(value.agent), form = inbound(value.inbound);
+  return agent && form ? { agent, body: value.body, inbound: form } : undefined;
+}
+function noticeDetails(value: unknown): Extract<NoticeDetails, { kind: 'job' }> | undefined {
+  if (!isRecord(value)) return;
+  const job = jobRef(value.job), end = isRecord(value.job) ? jobEnd(value.job.end) : undefined;
+  return value.kind === 'job' && job && end && typeof value.tail === 'string' ? { kind: 'job', job: { ...job, end }, tail: value.tail } : undefined;
+}
+function streamDetails(value: unknown): StreamDetails | undefined {
+  if (!isRecord(value)) return;
+  const job = jobRef(value.job);
+  return job && typeof value.batch === 'string' && typeof value.omitted === 'number' && Number.isSafeInteger(value.omitted) && value.omitted >= 0 && typeof value.cut === 'boolean' ? { job, batch: value.batch, omitted: value.omitted, cut: value.cut } : undefined;
+}
+function sameJob(a: JobRef | undefined, b: JobRef | undefined): boolean {
+  return a === b || !!a && !!b && a.id === b.id && a.name === b.name && a.service === b.service && a.log === b.log;
+}
+
+function agentCall(name: string, value: unknown): AgentCall | undefined {
+  if (!isRecord(value)) return;
+  if (name === 'spawn_agent' && typeof value.name === 'string') return { direction: 'out', to: { name: value.name }, text: cap(typeof value.task === 'string' ? value.task : '', MAX_WEBVIEW_RESULT_BYTES), call: { tool: 'spawn', fork: value.fork === true, ...(typeof value.model === 'string' ? { model: value.model } : {}), ...(typeof value.runtime === 'string' ? { runtime: value.runtime } : {}) } };
+  if (name !== 'message_agent' || typeof value.to !== 'string' || typeof value.message !== 'string') return;
+  const mode = value.mode ?? 'message';
+  if (mode !== 'message' && mode !== 'steer' && mode !== 'interrupt-and-steer') return;
+  return { direction: 'out', to: { name: value.to.replace(/^@/, '') }, text: cap(value.message, MAX_WEBVIEW_RESULT_BYTES), call: { tool: 'message', mode } };
+}
+function sameAgent(a: AgentCall | undefined, b: AgentCall | undefined): boolean {
+  return a === b || !!a && !!b && a.to.name === b.to.name && a.to.session === b.to.session && a.to.pane === b.to.pane && sameText(a.text, b.text)
+    && (a.call.tool === 'spawn' && b.call.tool === 'spawn' ? a.call.model === b.call.model && a.call.fork === b.call.fork && a.call.runtime === b.call.runtime : a.call.tool === 'message' && b.call.tool === 'message' && a.call.mode === b.call.mode)
+    && (a.outcome === b.outcome || !!a.outcome && !!b.outcome && a.outcome.ok === b.outcome.ok && (a.outcome.ok || !b.outcome.ok && a.outcome.failure === b.outcome.failure && a.outcome.message === b.outcome.message));
 }
 
 function wireItem(item: Item): WireItem {
@@ -126,7 +196,7 @@ export function transcript({ dir, flushMs, metrics = false }: { dir: string; flu
   const dirty = new Set<number>();
   const sent = new Map<number, Assistant>();
   const pending = new Map<number, { message: Extract<AgentMessage, { role: "assistant" }>; phase: "update" | "end" }>();
-  const pendingTools = new Map<string, { type: "running"; content: Content } | { type: "done"; content: Content; error: boolean; at?: number; durationMs?: number; structuredContent?: unknown }>();
+  const pendingTools = new Map<string, { type: "running"; content: Content } | { type: "done"; content: Content; error: boolean; at?: number; durationMs?: number; structuredContent?: unknown; details?: unknown }>();
   let flushTimer: NodeJS.Timeout | null = null;
 
   const frame = (json: string): string => "data: " + json + "\n\n";
@@ -177,6 +247,8 @@ export function transcript({ dir, flushMs, metrics = false }: { dir: string; flu
       if (block.type !== "toolCall") return [];
       const existing = tools.get(block.id)?.block;
       const next: Extract<Block, { type: "tool" }> = { ...existing, type: "tool", id: block.id, name: block.name, args: existing && existing.state.type !== "pending" ? existing.args : cap(JSON.stringify(block.arguments), MAX_WEBVIEW_ARGS_BYTES), state: existing?.state ?? { type: "pending" } };
+      const card = existing && existing.state.type !== 'pending' ? existing.agent : agentCall(block.name, block.arguments);
+      if (card) next.agent = sameAgent(existing?.agent, card) ? existing?.agent : card;
       tools.set(block.id, { item, block: next });
       return [next];
     });
@@ -188,13 +260,12 @@ export function transcript({ dir, flushMs, metrics = false }: { dir: string; flu
     }
     publish(item);
   };
-  const sameText = (a: Text | undefined, b: Text | undefined): boolean => a?.text === b?.text && a?.cut === b?.cut;
   const sameBlock = (a: Block, b: Block): boolean => {
     if (a.type !== b.type) return false;
     if (a.type !== "tool" && b.type !== "tool") return a.text === b.text && a.redacted === b.redacted && (a.type !== "thinking" || sameTiming(a, b));
     if (a.type !== "tool" || b.type !== "tool") return false;
     const left = "result" in a.state ? a.state.result?.images : undefined, right = "result" in b.state ? b.state.result?.images : undefined;
-    return sameTiming(a, b) && a.durationMs === b.durationMs && a.exit === b.exit && a.id === b.id && a.name === b.name && sameText(a.args, b.args) && a.state.type === b.state.type
+    return sameTiming(a, b) && a.durationMs === b.durationMs && a.exit === b.exit && a.id === b.id && a.name === b.name && sameAgent(a.agent, b.agent) && sameJob(a.job, b.job) && sameText(a.args, b.args) && a.state.type === b.state.type
       && sameText("result" in a.state ? a.state.result : undefined, "result" in b.state ? b.state.result : undefined)
       && left?.length === right?.length && (left?.every((ref, index) => ref === right?.[index]) ?? true)
       && (a.state.type !== "done" || b.state.type === "done" && a.state.error === b.state.error);
@@ -219,6 +290,15 @@ export function transcript({ dir, flushMs, metrics = false }: { dir: string; flu
           found.block.exit = code;
           if (footer && code !== 0 && code === Number(footer[1])) text = text.slice(0, footer.index);
         }
+      }
+      if (held.type === 'done') {
+        const details = isRecord(held.details) ? held.details : undefined;
+        const done = outcome(details?.outcome), card = found.block.agent;
+        if (card && done) {
+          const to = card.call.tool === 'spawn' ? agentRef(details) ?? card.to : { ...card.to, ...(typeof details?.to === 'string' ? { name: details.to } : {}) };
+          found.block.agent = { ...card, to, text: !done.ok && (card.call.tool === 'spawn' || !card.text.text) ? cap(done.message, MAX_WEBVIEW_RESULT_BYTES) : card.text, outcome: done };
+        } else if (card) delete found.block.agent;
+        if (found.block.name === 'async_bash' && details) { const job = jobRef(details.job); if (job) found.block.job = job; }
       }
       const previous = "result" in found.block.state ? found.block.state.result?.images : undefined;
       const result = { ...cap(text, MAX_WEBVIEW_RESULT_BYTES), images: saveImages(found.item.seq + "." + found.item.blocks.indexOf(found.block), held.content, previous) };
@@ -256,7 +336,7 @@ export function transcript({ dir, flushMs, metrics = false }: { dir: string; flu
     const branch = phase === "branch";
     if (message.role === "toolResult") {
       if (phase === "end" || branch) {
-        pendingTools.set(message.toolCallId, { type: "done", content: message.content, error: message.isError, ...(branch ? { at: message.timestamp } : {}) });
+        pendingTools.set(message.toolCallId, { type: "done", content: message.content, error: message.isError, details: message.details, ...(branch ? { at: message.timestamp } : {}) });
         if (!branch) flush();
       }
       return;
@@ -285,9 +365,16 @@ export function transcript({ dir, flushMs, metrics = false }: { dir: string; flu
         const files = phase === "branch" ? [] : attachments;
         item = { seq, at: message.timestamp, final: true, kind: "user", text: promptText(contentText(message.content), files), images: saveImages(String(seq), message.content), attachments: files }; break;
       }
-      case "custom":
+      case 'custom': {
         if (!message.display) return;
-        item = { seq, at: message.timestamp, final: true, kind: "notice", customType: message.customType, from: message.details && typeof message.details === "object" && "from" in message.details && typeof message.details.from === "string" ? message.details.from : "", text: contentText(message.content) }; break;
+        const details = isRecord(message.details) ? message.details : undefined;
+        const agent = agentDetails(details), notice = agent ? undefined : noticeDetails(details), stream = agent || notice ? undefined : streamDetails(details);
+        if (agent) item = { seq, at: message.timestamp, final: true, kind: 'agent', direction: 'in', from: agent.agent, text: cap(agent.body, MAX_WEBVIEW_RESULT_BYTES), inbound: agent.inbound };
+        else if (notice) { const { end, ...job } = notice.job; item = { seq, at: message.timestamp, final: true, kind: 'job', job, event: { type: 'ended', end, tail: cap(notice.tail, MAX_WEBVIEW_RESULT_BYTES) } }; }
+        else if (stream) item = { seq, at: message.timestamp, final: true, kind: 'job', job: stream.job, event: { type: 'stream', batch: cap(stream.batch, MAX_WEBVIEW_RESULT_BYTES), omitted: stream.omitted, cut: stream.cut } };
+        else item = { seq, at: message.timestamp, final: true, kind: 'notice', customType: message.customType, from: typeof details?.from === 'string' ? details.from : '', text: contentText(message.content) };
+        break;
+      }
       case "bashExecution": item = { seq, at: message.timestamp, final: true, kind: "bash", command: message.command, output: cap(message.output, MAX_WEBVIEW_RESULT_BYTES), ...(message.exitCode === undefined ? {} : { exit: message.exitCode }) }; break;
       case "branchSummary": case "compactionSummary": item = { seq, at: message.timestamp, final: true, kind: "summary", text: message.summary }; break;
       default: return;
@@ -331,8 +418,8 @@ export function transcript({ dir, flushMs, metrics = false }: { dir: string; flu
   const toolPartial = (id: string, content: Content): void => {
     pendingTools.set(id, { type: "running", content }); schedule();
   };
-  const toolDone = (id: string, content: Content, error: boolean, at: number, durationMs?: number, structuredContent?: unknown): void => {
-    pendingTools.set(id, { type: "done", content, error, at, durationMs, structuredContent }); flush();
+  const toolDone = (id: string, content: Content, error: boolean, at: number, durationMs?: number, structuredContent?: unknown, details?: unknown): void => {
+    pendingTools.set(id, { type: "done", content, error, at, durationMs, structuredContent, details }); flush();
   };
   const close = (): void => {
     if (flushTimer) clearTimeout(flushTimer);

@@ -1,4 +1,4 @@
-import { ATTACHMENT_LIMITS, type Attachment, type PromptMode } from './records.ts';
+import { ATTACHMENT_LIMITS, type Attachment, type PromptMode } from '../pi/records.ts';
 
 export function promptBody(value: unknown): { text: string; mode: PromptMode | "steer"; attachments: string[] } | { error: string } {
   if (value && typeof value === "object" && "text" in value && typeof value.text === "string" && "attachments" in value && Array.isArray(value.attachments) && value.attachments.length <= ATTACHMENT_LIMITS.files && value.attachments.every(id => typeof id === "string") && (value.text.trim() || value.attachments.length) && "mode" in value && (value.mode === "prompt" || value.mode === "steer" || value.mode === "follow_up")) return { text: value.text, mode: value.mode, attachments: value.attachments };

@@ -178,7 +178,7 @@ These requirements are fixed:
   and `koa` shims), `share/ko/shim.sh`, `share/pi/ko-pi.ts`,
   `share/pi/text.ts`, `share/pi/ko-api.d.ts`,
   `share/pi/transcript.ts`, `share/pi/image.ts`, `share/pi/agents.ts`,
-  `share/pi/token.ts` and `share/pi/skills` (in
+  `share/pi/token.ts`, `share/pi/records.ts` and `share/pi/skills` (in
   `share/ko/pi/`), koa's program and its bundled page (in `share/ko/koa/`), and the SDK
   `share/webview/` (in `share/ko/webview/`) beside `bin/ko` in
   `build/ko/`, the layout
@@ -754,7 +754,8 @@ maps the coordinator's modules.
                         the transcript model of koa's page, with
                         image.ts, its image sniffer; agents.ts and
                         token.ts, the completion rules that ko-pi and
-                        koa share
+                        koa share; records.ts, the records and their
+                        guards that ko-pi, koa and its page share
     share/koa/          koa.ts, the pi harness that renders through a
                         webview (plans/koa.md); page/, the TypeScript
                         sources of its page (page.ts, markdown.ts, the
@@ -764,8 +765,7 @@ maps the coordinator's modules.
                         package.json and its lockfile pin esbuild,
                         TypeScript 7 (the one type checker of every
                         TypeScript in the repository) and the page's
-                        npm packages; records.ts, the record types of
-                        koa and its page; koa-assemble.ts, the one
+                        npm packages; koa-assemble.ts, the one
                         HTML response; koa-complete.ts, completion;
                         koa-attach.ts, attachments; koa-queue.ts, the
                         queue's attachments; koa-child.ts, the signals
@@ -859,8 +859,8 @@ Every C file of `bench/` starts with `#define _DARWIN_C_SOURCE` and
 agent tool. It calls only `ko api`, with `--stream` for its message
 stream and a routed pi's exec sessions (docs/design.md, "The pi
 extension, ko-pi", lists the routes). At run time it imports `text.ts`,
-`agents.ts` and `token.ts` beside itself, which koa shares, and nothing
-else of the checkout. It has no run command: its
+`agents.ts`, `token.ts` and `records.ts` beside itself, which koa shares,
+and nothing else of the checkout. It has no run command: its
 background commands are jobs, child processes of pi
 (docs/design-subagents.md, "A job"). It never opens ko's socket.
 That command, its flags, exit codes and JSON are the contract between

@@ -124,7 +124,8 @@ test("message_agent resolves by name, session id, unique prefix and pane, and ex
     tree(fx);
     const s = await startSession(fx, { name: "Self" });
     const message = s.tools.get("message_agent");
-    const send = async (to: string) => text(await message.execute("c", { to, message: "x" }));
+    const outcomes = new Map<string, unknown>();
+    const send = async (to: string) => { const result = await message.execute('c', { to, message: 'x' }); outcomes.set(to, result.details.outcome); return text(result); };
 
     assert.equal(await send("peer"), "delivered to Peer", "a name is caseless");
     assert.equal(await send("@Peer"), "delivered to Peer", "a leading @ is ignored");
@@ -138,6 +139,9 @@ test("message_agent resolves by name, session id, unique prefix and pane, and ex
     assert.equal(await send("twin"), 'could not message twin: "twin" matches several by name: abc12345-one (twin), abc12345-two (twin)');
     assert.equal(await send("nope"), 'could not message nope: no agent session matches "nope"');
     assert.equal(await send("Self"), "Self is this agent");
+    assert.deepEqual(outcomes.get('peer'), { ok: true });
+    assert.deepEqual(outcomes.get('nope'), { ok: false, failure: 'not_found', message: 'no agent session matches "nope"' });
+    assert.deepEqual(outcomes.get('twin'), { ok: false, failure: 'ambiguous', message: '"twin" matches several by name: abc12345-one (twin), abc12345-two (twin)' });
     assert.equal(await send("elsewhere"), "could not message elsewhere: elsewhere (elsewhere-session) is in another session, not this one");
 
     assert.equal(text(await message.execute("c", { to: "Peer", message: "" })), "could not message Peer: the message is empty; nothing sent");
@@ -163,8 +167,9 @@ test("a send resends the same id on a delivered or io answer, and reports what t
     const call = async (script: Array<{ status: number; body: unknown }>) => {
       fx.scriptSends(script);
       const before = fx.posts("/panes/pane_3/messages").length;
-      const said = text(await message.execute("c", { to: "Peer", message: "hello" }));
-      return { said, posts: fx.posts("/panes/pane_3/messages").slice(before) };
+      const result = await message.execute('c', { to: 'Peer', message: 'hello' });
+      const said = text(result);
+      return { said, details: result.details, posts: fx.posts("/panes/pane_3/messages").slice(before) };
     };
     const io = { status: 500, body: { kind: "io", message: "the queue broke" } };
     const delivered = { status: 200, body: { state: "delivered", seq: 1 } };
@@ -172,6 +177,7 @@ test("a send resends the same id on a delivered or io answer, and reports what t
 
     const lost = await call([delivered, io, acked]);
     assert.equal(lost.said, "delivered to Peer");
+    assert.deepEqual(lost.details, { to: 'Peer', outcome: { ok: true } });
     assert.equal(lost.posts.length, 3);
     assert.equal(new Set(lost.posts.map((post) => post.id)).size, 1, "the resends carry the one id");
 
@@ -181,6 +187,7 @@ test("a send resends the same id on a delivered or io answer, and reports what t
 
     const down = await call([io, io, io]);
     assert.equal(down.said, "could not message Peer: the queue broke");
+    assert.deepEqual(down.details.outcome, { ok: false, failure: 'error', message: 'the queue broke' });
 
     const queued = await call([{ status: 200, body: { state: "queued", seq: 4 } }]);
     assert.equal(queued.posts.length, 1, "a queued answer is final");
@@ -188,8 +195,10 @@ test("a send resends the same id on a delivered or io answer, and reports what t
 
     const refused = await call([{ status: 409, body: { kind: "refused", message: "pane_3 is not in your scope" } }]);
     assert.equal(refused.said, "could not message Peer: Peer refused the message: pane_3 is not in your scope");
+    assert.deepEqual(refused.details.outcome, { ok: false, failure: 'refused', message: 'pane_3 is not in your scope' });
     const gone = await call([{ status: 410, body: { kind: "gone", message: "pane_3 is dead" } }]);
     assert.equal(gone.said, "could not message Peer: Peer is dead: pane_3 is dead");
+    assert.deepEqual(gone.details.outcome, { ok: false, failure: 'gone', message: 'pane_3 is dead' });
   } finally {
     await fx.restore();
   }
