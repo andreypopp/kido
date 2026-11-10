@@ -2108,37 +2108,28 @@ public enum KoSchema {
         }
     }
 
-    public enum WebviewLinks: String, Codable, Equatable, Sendable {
-        case deny
-        case `open` = "open"
-    }
-
     public typealias WebviewPath = String
 
     public struct WebviewSettings: Codable, Equatable, Sendable {
         public var enabled: Bool
         public var inspector: Bool
         public var keepHidden: HiddenPages
-        public var links: WebviewLinks
-        public init(enabled: Bool, inspector: Bool, keepHidden: HiddenPages, links: WebviewLinks) {
+        public init(enabled: Bool, inspector: Bool, keepHidden: HiddenPages) {
             self.enabled = enabled
             self.inspector = inspector
             self.keepHidden = keepHidden
-            self.links = links
         }
         public init(from decoder: Decoder) throws {
             let container = try decoder.container(keyedBy: CodingKeys.self)
             self.enabled = try container.decode(Bool.self, forKey: .enabled)
             self.inspector = try container.decode(Bool.self, forKey: .inspector)
             self.keepHidden = try container.decode(HiddenPages.self, forKey: .keepHidden)
-            self.links = try container.decode(WebviewLinks.self, forKey: .links)
             guard 0 <= self.keepHidden, self.keepHidden <= 16 else { throw DecodingError.dataCorruptedError(forKey: .keepHidden, in: container, debugDescription: "keep_hidden is 0...16, not \(self.keepHidden)") }
         }
         private enum CodingKeys: String, CodingKey {
             case enabled
             case inspector
             case keepHidden = "keep_hidden"
-            case links
         }
     }
 

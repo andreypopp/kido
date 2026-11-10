@@ -313,6 +313,9 @@ renders every `html` token as escaped text and parses marked's output
 into a detached document; no model text reaches `innerHTML`
 unescaped. A link is a link only when it is an absolute `http`,
 `https` or `mailto` URL, so model text cannot point at koa's routes.
+A click on it opens as every webview page's link does
+(design-webview.md, "The sandbox"): the app opens
+`http` and `https`, and refuses `mailto` with a notice.
 The user's text renders through the same renderer.
 
 ## The composer

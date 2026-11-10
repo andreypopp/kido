@@ -44,8 +44,8 @@ Goals, in priority order:
 Non-goals:
 
 - A browser. A page cannot navigate to another origin, open windows,
-  download or reach the network. A link to `http(s)` is a decision of
-  the user's configuration (`app.webview.links`), not of the page.
+  download or reach the network. A clicked link leaves the page as a
+  terminal's OSC 8 link does (design-app.md, "Content").
 - Inline documents in the escape. The page always comes from the
   program through the serve stream, so a host without ko (a plain
   `ko ssh` to a host that has no `ko`) cannot show HTML: the pane
@@ -270,9 +270,13 @@ reasons are these:
   the first document of a `srcdoc` frame, and WebKit has no public
   switch, so the app relies on WebKit's gates, and its tests fail when
   a gate opens.
-- **`app.webview.links: open`** (`ko_config/src/app.rs`) is
-  configuration only, with no prompt: the user who writes it has
-  decided.
+- **A clicked link is an OSC 8 link.** A program in a terminal pane
+  can already put any link under the user's click, so a page gets
+  nothing new: the app gives the link to `WindowOwner.openLink`, with
+  its rules, and cancels the navigation. Only a real mouse click
+  counts, as for OSC 8: a script's `click()` on a link opens nothing,
+  so a page cannot open the browser without the user. There is no setting and no
+  page capability: a name or path that a page reports proves nothing.
 
 ## Keys, focus, copy, find, theme and memory
 

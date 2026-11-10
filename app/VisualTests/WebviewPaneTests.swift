@@ -74,6 +74,48 @@ extension VisualTests {
         return (try XCTUnwrap(NSBitmapImageRep(cgImage: cropped).converting(to: .sRGB, renderingIntent: .default)), page)
     }
 
+    func testWebviewLinks() async throws {
+        _ = try await webviewStart()
+        var opened: [URL] = []
+        let owner = WindowOwner(host: .local, runtime: runtime, start: false, openBrowser: { opened.append($0) })
+        owner.testServerDir = directory.path; owner.start()
+        defer { owner.close() }
+        try await wait("link owner page") { owner.testSession?.activePane?.webviewView?.browser.isLoading == false && owner.testSession?.activePane?.webviewView?.browser.url != nil }
+        let pane = try XCTUnwrap(owner.testSession?.activePane), view = try XCTUnwrap(pane.webviewView), web = view.browser
+        let click: (String, String, Bool) async throws -> Void = { href, target, real in
+            let rect = try await self.webviewJS(web, "(()=>{document.body.innerHTML='<a style=\"display:block;padding:20px\" href=\"\(href)\" target=\"\(target)\">link</a>';const r=document.querySelector('a').getBoundingClientRect();return [r.x+r.width/2,r.y+r.height/2]})()")
+            let coordinates = try JSONDecoder().decode([Double].self, from: Data(rect.utf8))
+            if real {
+                let point = web.convert(NSPoint(x: coordinates[0], y: web.isFlipped ? coordinates[1] : web.bounds.height - coordinates[1]), to: nil)
+                for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
+                    let event = try XCTUnwrap(NSEvent.mouseEvent(with: type, location: point, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: owner.window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: type == .leftMouseDown ? 1 : 0))
+                    if type == .leftMouseDown { web.mouseDown(with: event) } else { web.mouseUp(with: event) }
+                }
+            } else {
+                _ = try await self.webviewJS(web, "(()=>{document.querySelector('a').click();return true})()")
+            }
+        }
+        var rejected = view.visualRejectedNavigations
+        try await click("https://example.com/a", "", true)
+        try await wait("same-frame link policy") { view.visualRejectedNavigations > rejected }
+        XCTAssertEqual(opened.map(\.absoluteString), ["https://example.com/a"])
+        rejected = view.visualRejectedNavigations
+        try await click("https://example.com/b", "_blank", true)
+        try await wait("new-window link policy") { view.visualRejectedNavigations > rejected }
+        XCTAssertEqual(opened.map(\.absoluteString), ["https://example.com/a", "https://example.com/b"])
+        rejected = view.visualRejectedNavigations
+        try await click("https://example.com/script", "", false)
+        try await wait("script link policy") { view.visualRejectedNavigations > rejected }
+        XCTAssertEqual(opened.map(\.absoluteString), ["https://example.com/a", "https://example.com/b"])
+        rejected = view.visualRejectedNavigations
+        try await click("mailto:test@example.com", "", true)
+        try await wait("mail link policy") { view.visualRejectedNavigations > rejected }
+        XCTAssertEqual(opened.map(\.absoluteString), ["https://example.com/a", "https://example.com/b"])
+        try await click("javascript:void(0)", "", true)
+        _ = try await webviewJS(web, "true")
+        XCTAssertEqual(opened.map(\.absoluteString), ["https://example.com/a", "https://example.com/b"])
+    }
+
     func testWebviewNativePreview() async throws {
         let toy = try WebviewToy(path: directory.appendingPathComponent("webview.sock").path)
         _ = try await webviewStart(toy: toy)

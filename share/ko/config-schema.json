@@ -39,8 +39,7 @@
         "webview": {
           "enabled": true,
           "inspector": false,
-          "keep_hidden": 4,
-          "links": "deny"
+          "keep_hidden": 4
         },
         "window": {
           "sidebar_shade": 5.0,
@@ -155,8 +154,7 @@
           "default": {
             "enabled": true,
             "inspector": false,
-            "keep_hidden": 4,
-            "links": "deny"
+            "keep_hidden": 4
           }
         },
         "window": {
@@ -1018,20 +1016,6 @@
       "type": "string",
       "pattern": "^/[^:\\u0000]*$"
     },
-    "WebviewLinks": {
-      "oneOf": [
-        {
-          "description": "Do not open external links.",
-          "type": "string",
-          "const": "deny"
-        },
-        {
-          "description": "Open HTTP and HTTPS links in the default browser.",
-          "type": "string",
-          "const": "open"
-        }
-      ]
-    },
     "WebviewSettings": {
       "type": "object",
       "properties": {
@@ -1049,11 +1033,6 @@
           "description": "The number of hidden pages that stay live in each native window.",
           "$ref": "#/$defs/HiddenPages",
           "default": 4
-        },
-        "links": {
-          "description": "Whether a link may open in the default browser.",
-          "$ref": "#/$defs/WebviewLinks",
-          "default": "deny"
         }
       },
       "additionalProperties": false

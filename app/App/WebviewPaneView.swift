@@ -377,8 +377,10 @@ final class WebviewPaneView: NSView, WKNavigationDelegate, WKUIDelegate {
             #if KIDO_VISUAL
             visualRejectedNavigations += 1
             #endif
-            if action.navigationType == .linkActivated, pane?.runtime.values.webview.links == .open,
-               let url = action.request.url, ["http", "https"].contains(url.scheme) { NSWorkspace.shared.open(url) }
+            // WebKit reports button 1 for a trusted left click and 0 for a script click.
+            if action.navigationType == .linkActivated, action.buttonNumber == 1, let url = action.request.url {
+                pane?.onURL(url.absoluteString)
+            }
             decisionHandler(.cancel)
         }
     }

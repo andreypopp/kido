@@ -799,8 +799,8 @@ copy mode. A Shift-Command press on a link or an image is the app's
 to Ghostty, which keeps its own mouse selection.
 
 A link click is Ghostty's open-URL action. In a local window, Ghostty opens a
-link that it detected in the text itself. An OSC 8 link, and every link in a
-remote window, goes from the pane through its session to `WindowOwner.openLink`.
+link that it detected in the text itself. An OSC 8 link, a link clicked in a webview
+page, and every link in a remote window, goes from the pane through its session to `WindowOwner.openLink`.
 A program in the pane chooses an OSC 8 target, so the owner opens only a safe
 set of URLs. A local window opens `http`, `https` and a `file` URL with an
 absolute path, no user, password or port, and a host that is empty,
@@ -1399,8 +1399,10 @@ regex alternation ("Disjunctions are not supported yet"). The scheme handler, th
 WebSocket shim accept only a `ko:` URL whose host is the view's pane,
 with no port or user. The navigation delegate refuses every other
 navigation, a new window, a download and a response that WebKit cannot
-show; with `app.webview.links: open` it opens a clicked `http(s)` link
-through `NSWorkspace` and still cancels the navigation. Link previews,
+show. It gives a link that a real mouse click activated, also one with
+a `_blank` target, to the
+pane's `onURL`, the path of an OSC 8 link to `WindowOwner.openLink`
+("Content"), and cancels the navigation. Link previews,
 automatic windows and media autoplay are off. The UI delegate answers
 `alert`, `confirm` and `prompt` with nothing, returns no web view for
 `window.open`, and denies media capture and geolocation.
