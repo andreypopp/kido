@@ -2,20 +2,21 @@ import { Compartment, EditorState, Prec, Transaction, StateField } from '@codemi
 import { Decoration, EditorView, drawSelection, keymap, placeholder, type Command } from '@codemirror/view';
 import { history, historyKeymap, standardKeymap, insertNewline } from '@codemirror/commands';
 import { markdownLanguage, insertNewlineContinueMarkup, deleteMarkupBackward } from '@codemirror/lang-markdown';
-import { Language, syntaxHighlighting, HighlightStyle } from '@codemirror/language';
+import { Language, languageDataProp, syntaxHighlighting, HighlightStyle } from '@codemirror/language';
 import { tags } from '@lezer/highlight';
-import type { MarkdownParser } from '@lezer/markdown';
+import { parser, GFM, Subscript, Superscript, Emoji } from '@lezer/markdown';
 
 import { bashCommand } from '../prompt.ts';
 import { completion } from './complete.ts';
 import type { PromptMode } from '../koa-records.ts';
 
-export const composerLanguage = new Language(markdownLanguage.data, (markdownLanguage.parser as MarkdownParser).configure({
+export const composerLanguage = new Language(markdownLanguage.data, parser.configure([GFM, Subscript, Superscript, Emoji, {
+  props: [languageDataProp.add({ Document: markdownLanguage.data })],
   parseBlock: [{
     name: 'QuoteAnswer',
     endLeaf: (context, line) => context.parentType().name === 'Blockquote' && !/^ {0,3}>/.test(line.text),
   }],
-}), [], 'markdown');
+}]), [], 'markdown');
 
 const outsideComposition = (command: Command): Command => view => !view.compositionStarted && command(view);
 
