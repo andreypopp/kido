@@ -778,9 +778,12 @@ maps the coordinator's modules.
                         page share; koa-complete.ts, completion;
                         koa-attach.ts, attachments; koa-queue.ts, the
                         queue's attachments; koa-child.ts, the signals
-                        of koa's own children; prompt.ts, the prompt
+                        of koa's own children and the session picker's
+                        run; koa-resume.ts, the picker extension of
+                        `koa --resume`; prompt.ts, the prompt
                         text rules that koa and its page share; koa-fake-pi.ts, the scripted pi
-                        of its suite koa-*.test.ts; stress/, the stress
+                        of its suite koa-*.test.ts, and koa-fake-tty.ts,
+                        its terminal preload; stress/, the stress
                         workloads and runner (not installed)
     share/webview/      @kido/webview, the Node SDK for webview pages
                         (index.ts, README.md), installed as share/ko/webview

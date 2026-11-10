@@ -124,6 +124,39 @@ pi's session and model flags and ko-pi's `--runtime` work as in a TUI
 pane. koa adds nothing to pi's environment: the pane identity reaches
 ko-pi as it does in a TUI pane. `koa --help` lists koa's own flags.
 
+**`--resume` picks before the webview.** pi runs its session picker
+for `--resume` (`-r`) in every mode, also in RPC, where it would wait
+for keys on the RPC pipe. Thus, when an argument is `--resume` or
+`-r`, koa first runs a picker child on the terminal, before the SDK's
+view exists: `pi --mode rpc --no-session --no-extensions --extension
+koa-resume.ts`, with the terminal as its streams, koa's pi arguments
+in `KOA_RESUME_ARGS` and a pipe on fd 3 (`pickSession` in
+`koa-child.ts`). The extension decides with pi's exported `parseArgs`,
+so koa has no copy of pi's grammar: when pi would not run its picker
+(`--session`, `--fork`, `--no-session` and the other flags that
+precede the picker in pi's `main.js`), it answers `skip`. Else it
+shows pi's exported `SessionSelectorComponent` with pi's two session
+loaders and the session directory that pi resolves, answers `ready`
+when the screen takes input, then `selected` with the file or
+`cancel`, restores the terminal and exits. On `selected`, koa adds
+`--session <file>` before `--` and keeps `--resume`, because pi's
+`--session` wins over it, so the restart's rules stay as they are.
+On `cancel`, koa prints "No session selected" and exits 0 with no
+webview. Subagent sessions do not show, because ko-pi keeps them out
+of pi's session tree.
+
+The picker relies on one pi detail: pi awaits an extension's factory
+before it starts its RPC loop, so the factory owns the terminal and
+exits the process. A pi that changes this never hangs koa: koa waits
+for `ready` for `KOA_RESUME_READY_MS` (default 10 s), and an exit or
+an end of fd 3 without a result, an invalid line or a picker that
+does not exit after its result is an error that names `pi
+--version`'s output, with exit code 1. koa forwards `SIGTERM`,
+`SIGHUP` and `SIGINT` to the picker while it runs and stops it on
+every exit. pi exports its keybindings manager only as a type, so the
+picker's list uses pi's app bindings, but its search field has
+pi-tui's default editing keys.
+
 **A child takes its parent's harness** (the user's decision). ko-pi
 learns its harness from the explicit `--harness` flag, never from
 pi's mode. A ko-pi with the flag spawns its children as `koa`, with
@@ -195,12 +228,13 @@ close; pi's stdin closes, koa waits for pi's exit
 group; koa's directory goes; the SDK's view closes, and its waits have
 their own deadlines. A stuck bridge or pi thus never keeps koa
 alive. The reply to the page's own quit request is sent before the
-shutdown starts, with a deadline (`QUIT_REPLY_MS`). Every signal of
-koa goes through one function, `signalChild` in `koa-child.ts`, which
-takes a child that koa spawned (pi or `fd`) and ignores `ESRCH` and
-`EPERM`, as `signalJob` does (design-subagents.md, "Stopping a
-job"); `scripts/lint.sh` permits
-`process.kill` only there.
+shutdown starts, with a deadline (`QUIT_REPLY_MS`). Every group
+signal of koa goes through one function, `signalChild` in
+`koa-child.ts`, which takes a child that koa spawned (pi or `fd`) and
+ignores `ESRCH` and `EPERM`, as `signalJob` does (design-subagents.md,
+"Stopping a job"); `scripts/lint.sh` permits `process.kill` only
+there. The session picker shares koa's group, so it gets its signals
+through its own `ChildProcess.kill`.
 
 **The private directory.** koa makes one directory `koa-<pid>-*` under
 the temporary directory at start (0700) for the image store and the

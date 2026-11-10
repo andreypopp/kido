@@ -1,10 +1,35 @@
 #!/usr/bin/env node
-import { readFileSync, appendFileSync, writeFileSync } from "node:fs";
+import { readFileSync, appendFileSync, writeFileSync, writeSync, closeSync } from "node:fs";
 import { once } from "node:events";
 import { setTimeout } from "node:timers/promises";
 import { spawn } from "node:child_process";
 import { connect } from "node:net";
 import type { RpcCommand } from "@earendil-works/pi-coding-agent";
+
+if (process.argv.includes('--version')) { process.stdout.write('fake-pi-resume-1\n'); process.exit(0); }
+if (process.argv.some(arg => arg.endsWith('/koa-resume.ts'))) {
+  const log = (value: object) => { if (process.env.KOA_FAKE_LOG) appendFileSync(process.env.KOA_FAKE_LOG, JSON.stringify(value) + '\n'); };
+  log({ type: 'picker', args: JSON.parse(process.env.KOA_RESUME_ARGS ?? '[]') });
+  process.once('exit', code => log({ type: 'picker_exit', code }));
+  process.once('SIGTERM', () => { log({ type: 'picker_signal', signal: 'SIGTERM' }); process.exit(1); });
+  const args: string[] = JSON.parse(process.env.KOA_RESUME_ARGS ?? '[]');
+  let result = args.some(arg => ['--session', '--fork', '--no-session'].includes(arg)) ? 'skip' : '{"type":"cancel"}';
+  if (process.env.KOA_FAKE_PICKER_GATE) {
+    const gate = connect(process.env.KOA_FAKE_PICKER_GATE);
+    const [bytes] = await once(gate, 'data'); gate.end();
+    result = String(bytes);
+  }
+  if (result === 'skip') {
+    if (!args.some(arg => ['--session', '--fork', '--no-session'].includes(arg))) process.exit(2);
+    writeSync(3, '{"type":"skip"}\n');
+  } else {
+    if (result !== 'rpc') writeSync(3, '{"type":"ready"}\n');
+    if (result === 'eof') closeSync(3);
+    if (['rpc', 'signal', 'eof'].includes(result)) { process.stdin.resume(); await once(process.stdin, 'end'); }
+    else if (result !== 'exit') writeSync(3, result + '\n');
+  }
+  process.exit(0);
+}
 
 type Step = { type: "respond"; command: "get_state" | "get_entries" | "get_messages" | "get_session_stats" | "get_available_thinking_levels" | "get_commands"; data: object; after?: object[] } | { type: "emit"; event: object } | { type: "raw"; text: string } | { type: "stderr"; text: string } | { type: "wait"; command: string; events?: object[]; after?: object[]; data?: object; error?: string; echo?: boolean } | { type: "exit"; code: number } | { type: "repeat"; count: number; events: object[]; delayMs?: number };
 const script: Step[] = process.env.KOA_FAKE_SCRIPT ? readFileSync(process.env.KOA_FAKE_SCRIPT, "utf8").trim().split("\n").filter(Boolean).map(line => JSON.parse(line)) : [];

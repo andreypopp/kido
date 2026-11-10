@@ -23,6 +23,76 @@ test("--help prints usage without starting pi or a webview", { timeout: 5000 }, 
   assert.match(stdout, /Other arguments go to pi/);
 });
 
+test('resume requires a terminal before starting a webview', { timeout: 5000 }, async t => {
+  const child = spawn(process.execPath, [resolve('../koa/koa.ts'), '--browser', '--resume', '--pi', resolve('../koa/koa-fake-pi.ts')], { stdio: 'pipe' });
+  t.after(() => { if (child.exitCode === null) child.kill('SIGTERM'); });
+  let stderr = ''; child.stderr.on('data', bytes => { stderr += bytes; });
+  const [code] = await once(child, 'close');
+  assert.equal(code, 1);
+  assert.match(stderr, /resume requires a terminal/);
+  assert.doesNotMatch(stderr, /koa: http:/);
+});
+
+test('resume selects before the browser, cancels, and reports a broken picker', { timeout: 10000 }, async t => {
+  const dir = await mkdtemp('/tmp/koa-resume-');
+  const log = join(dir, 'log'), urls = join(dir, 'urls'), script = join(dir, 'steps');
+  const server = createServer();
+  const children = new Set<ReturnType<typeof spawn>>();
+  const sockets = new Set<import('node:net').Socket>();
+  server.on('connection', socket => { sockets.add(socket); socket.once('close', () => sockets.delete(socket)); });
+  t.after(async () => {
+    for (const child of children) child.kill('SIGTERM');
+    for (const socket of sockets) socket.destroy();
+    server.close();
+    await rm(dir, { recursive: true, force: true });
+  });
+  server.listen(join(dir, 'gate')); await once(server, 'listening');
+  await writeFile(script, '{"type":"wait","command":"prompt"}\n{"type":"exit","code":0}\n');
+  await writeFile(join(dir, process.platform === 'darwin' ? 'open' : 'xdg-open'), '#!/bin/sh\nprintf "%s\\n" "$1" >> "$OPEN_LOG"\n', { mode: 0o700 });
+  const readLog = async () => (await readFile(log, 'utf8')).trim().split('\n').map(line => JSON.parse(line));
+  const chosen = join(dir, 'chosen.jsonl');
+  for (const item of [
+    { gate: JSON.stringify({ type: 'selected', path: chosen }), code: 0, output: /koa: http:/ },
+    { gate: '{"type":"cancel"}', code: 0, output: /No session selected/ },
+    { gate: 'exit', code: 1, output: /fake-pi-resume-1.*session picker exited without a result/ },
+    { gate: 'rpc', code: 1, output: /fake-pi-resume-1.*session picker did not become ready/ },
+    { gate: 'eof', code: 1, output: /fake-pi-resume-1.*session picker exited without a result/ },
+    { gate: 'signal', code: 1, output: /session picker interrupted by SIGTERM/ },
+    { gate: 'skip', code: 0, output: /koa: http:/ },
+  ]) {
+    await writeFile(log, ''); await rm(urls, { force: true });
+    const connected = once(server, 'connection');
+    const pass = item.gate === 'skip' ? ['--resume', '--session', 'existing.jsonl'] : ['--resume', '-r', '--session-dir', dir, '--', 'prompt'];
+    const child = spawn(process.execPath, ['--import', resolve('../koa/koa-fake-tty.ts'), resolve('../koa/koa.ts'), '--browser', '--pi', resolve('../koa/koa-fake-pi.ts'), ...pass], { stdio: 'pipe', env: { ...process.env, KO_PANE: '', KOA_FAKE_LOG: log, KOA_FAKE_SCRIPT: script, KOA_FAKE_PICKER_GATE: join(dir, 'gate'), KOA_RESUME_READY_MS: '1000', OPEN_LOG: urls, PATH: `${dir}:${process.env.PATH}` } });
+    children.add(child);
+    let output = ''; child.stdout.on('data', bytes => { output += bytes; }); child.stderr.on('data', bytes => { output += bytes; });
+    const closed = once(child, 'close');
+    const [gate] = await Promise.race([connected, closed.then(() => { throw new Error(output); })]);
+    assert.deepEqual((await readLog()).map(record => record.type), ['picker']);
+    assert.doesNotMatch(output, /koa: http:/);
+    await assert.rejects(readFile(urls), { code: 'ENOENT' });
+    gate.end(item.gate);
+    if (item.gate === 'signal') child.kill('SIGTERM');
+    if (item.gate === 'skip' || item.gate.startsWith('{"type":"selected"')) {
+      await pollUntil(async () => (await readLog()).some(record => record.type === 'get_state'));
+      const argv = (await readLog()).find(record => record.type === 'argv').args;
+      const expected = [...pass];
+      if (item.gate !== 'skip') expected.splice(expected.indexOf('--'), 0, '--session', chosen);
+      assert.deepEqual(argv.slice(6), expected);
+      await pollUntil(async () => { try { return (await readFile(urls, 'utf8')).startsWith('http:'); } catch { return false; } });
+      const base = output.match(/koa: (http:\/\/127\.0\.0\.1:\d+\/)/)?.[1]; assert.ok(base, output);
+      await fetch(base + 'prompt', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text: 'exit', mode: 'prompt', attachments: [] }) });
+    }
+    assert.equal((await closed)[0], item.code, output);
+    children.delete(child);
+    assert.match(output, item.output);
+    if (item.gate === 'signal') {
+      assert.ok((await readLog()).some(record => record.type === 'picker_signal' && record.signal === 'SIGTERM'));
+      assert.ok((await readLog()).some(record => record.type === 'picker_exit'));
+    }
+    if (!output.includes('koa: http:')) await assert.rejects(readFile(urls), { code: 'ENOENT' });
+  }
+});
 async function fixture(t: TestContext, steps: object[], env: NodeJS.ProcessEnv = {}, pi?: string, startup = true, args: string[] = [], program = resolve("../../build/ko/share/ko/koa/koa.ts")) {
   const dir = await mkdtemp(join(tmpdir(), "koa-test-"));
   const script = join(dir, "script");
@@ -624,7 +694,7 @@ test("restart keeps the saved picker selection, harness and runtime", { timeout:
     { type: "wait", command: "set_model", data: { provider: "test", id: "picked" } },
     { type: "wait", command: "set_thinking_level", events: [{ type: "thinking_level_changed", level: "high" }] },
     { type: "wait", command: "prompt" }, { type: "exit", code: 7 },
-  ], { KOA_FAKE_SELECTION_FILE: selection }, undefined, true, ["--runtime", "remote", "--session", "old.jsonl", "--fork", "source.jsonl", "--model", "test/original", "--thinking", "low"]);
+  ], { KOA_FAKE_SELECTION_FILE: selection }, undefined, true, ["--runtime", "remote", "--resume", "-r", "--session", "old.jsonl", "--fork", "source.jsonl", "--model", "test/original", "--thinking", "low", "--system-prompt", "--resume", "--", "--session", "literal", "--resume"]);
   assert.equal((await app.post("pi/start")).status, 409);
   assert.equal((await app.post("model", { provider: "test", modelId: "picked" })).status, 200);
   assert.equal((await app.post("thinking", { level: "high" })).status, 200);
@@ -637,7 +707,7 @@ test("restart keeps the saved picker selection, harness and runtime", { timeout:
   assert.equal(restarted.thinking, "high");
   const argv = (await app.log()).filter(record => record.type === "argv").map(record => record.args);
   assert.equal(argv.length, 2);
-  assert.deepEqual(argv[1], ["--mode", "rpc", "--extension", resolve("../../build/ko/share/ko/pi/ko-pi.ts"), "--harness", "koa-browser", "--runtime", "remote", "--session", session]);
+  assert.deepEqual(argv[1], ["--mode", "rpc", "--extension", resolve("../../build/ko/share/ko/pi/ko-pi.ts"), "--harness", "koa-browser", "--runtime", "remote", "--resume", "-r", "--system-prompt", "--resume", "--session", session, "--", "--session", "literal", "--resume"]);
 });
 
 test("spawn failure is distinct from an exit code", { timeout: 10000 }, async t => {

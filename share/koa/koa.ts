@@ -16,7 +16,7 @@ import { isRecord, errorText, replaceControlCharacters, utf8Prefix, contentText 
 import { webview } from "../webview/index.ts";
 import { assemblePage } from "./koa-assemble.ts";
 import { complete, findFd, agentDiscovery } from "./koa-complete.ts";
-import { signalChild } from "./koa-child.ts";
+import { pickSession, signalChild } from "./koa-child.ts";
 import { attachments, stepFile, UPLOAD_IDLE_MS, isChunkRoute } from "./koa-attach.ts";
 import { nameCommand } from "./prompt.ts";
 import { prompts } from "./koa-queue.ts";
@@ -158,6 +158,16 @@ async function main(): Promise<void> {
       if (!path) throw new Error("--pi requires a path");
       executable = path;
     } else if (arg !== undefined) pass.push(arg);
+  }
+  if (pass.some(arg => arg === "--resume" || arg === "-r")) {
+    const configured = Number(process.env.KOA_RESUME_READY_MS ?? 10000);
+    const readyMs = Number.isFinite(configured) && configured > 0 ? configured : 10000;
+    const result = await pickSession(executable, pass, fileURLToPath(new URL("./koa-resume.ts", location)), readyMs);
+    if (result.type === "cancel") { process.stderr.write("No session selected\n"); return; }
+    if (result.type === "selected") {
+      const end = pass.indexOf("--");
+      pass.splice(end < 0 ? pass.length : end, 0, "--session", result.path);
+    }
   }
   if (metricsMode && !metricsFile) throw new Error("--metrics-mode requires --metrics");
   const configured = Number(process.env.KOA_PI_EXIT_MS ?? 5000);
@@ -481,11 +491,16 @@ async function main(): Promise<void> {
         const args: string[] = [];
         for (let i = 0; i < pass.length; i++) {
           const arg = pass[i];
+          if (arg === "--") { args.push(...pass.slice(i)); break; }
           if (state.sessionFile && ["--session", "--session-id", "--fork", "--model", "--thinking"].includes(arg ?? "")) { i++; continue; }
           if (state.sessionFile && ["--continue", "-c", "--no-session"].includes(arg ?? "")) continue;
           if (arg !== undefined) args.push(arg);
         }
-        child = spawnPi([...args, ...(state.sessionFile ? ["--session", state.sessionFile] : [])]); link = rpc(child);
+        if (state.sessionFile) {
+          const end = args.indexOf("--");
+          args.splice(end < 0 ? args.length : end, 0, "--session", state.sessionFile);
+        }
+        child = spawnPi(args); link = rpc(child);
         pi = { type: "starting" }; state.aborted = false; pendingPrompts.reset(); userAttachments = []; attached.reset();
         partial = undefined; argumentsText.clear(); outcome = { type: "done" };
         watch(child, link); link.events(records); status("idle");
