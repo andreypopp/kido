@@ -208,15 +208,17 @@ export function makeFixture(): Fixture {
   writeFileSync(sendScript, "[]");
   writeFileSync(file("sent.json"), "[]");
 
-  const saved: Record<string, string | undefined> = { TMPDIR: process.env.TMPDIR };
+  const saved: Record<string, string | undefined> = { TMPDIR: process.env.TMPDIR, HOME: process.env.HOME };
   for (const key of Object.keys(process.env)) {
     if (key.startsWith("KO_") || key === "PATH") saved[key] = process.env[key];
   }
   for (const key of Object.keys(process.env)) {
-    if (key.startsWith("KO_AGENT_") || key.startsWith("KO_FAKE_")) delete process.env[key];
+    if (key.startsWith("KO_")) delete process.env[key];
   }
   process.env.PATH = binDir + delimiter + (saved.PATH ?? "");
   process.env.TMPDIR = dir;
+  mkdirSync(file("home"));
+  process.env.HOME = file("home");
   process.env.KO_SOCKET = "/tmp/ko-pi-test/socket";
   process.env.KO_PANE = "pane_1";
   process.env.KO_FAKE_KO = cachedFakeKo;

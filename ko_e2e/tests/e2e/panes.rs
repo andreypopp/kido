@@ -527,11 +527,19 @@ fn abandoned_stop(s: &Server) {
 fn closing(s: &Server) {
     let gone = new_pane(s, &json!({"command": dies(), "close": "on_exit"}));
     let kept = new_pane(s, &json!({"command": dies(), "close": "keep"}));
-    let shown = new_pane(s, &json!({"command": dies(), "close": "on_exit"}));
+    let release = s.scratch.join("shown-release");
+    let shown = new_pane(
+        s,
+        &json!({"close": "on_exit", "command": {"type": "shell", "command": format!("while [ ! -f '{}' ]; do sleep 0.05; done", release.display())}}),
+    );
     let unfocused = new_pane(s, &json!({"command": dies(), "close": "on_exit"}));
     let (mut client, _) = s.app_client(json!({"pane": shown}), true, (80, 24));
     let (_other, _) = s.app_client(json!({"pane": kept}), true, (80, 24));
     let (_unfocused, _) = s.app_client(json!({"pane": unfocused}), false, (80, 24));
+    fs::write(&release, "").unwrap();
+    poll("the shown pane to die", || {
+        s.row(&shown)["dead"].is_object()
+    });
     wait_pane_gone(s, &unfocused);
     wait_pane_gone(s, &gone);
     sweep_witness(s);

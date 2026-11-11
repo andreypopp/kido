@@ -1,10 +1,10 @@
 import { test, type TestContext } from "node:test";
 import assert from "node:assert/strict";
-import { appendFile, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { appendFile, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { dirname, join } from "node:path";
 import { selfPane, pollUntil } from "../pi/ko-pi-fixture.ts";
-import { fixture } from "./koa-program-fixture.ts";
+import { fixture, linkFakeKo } from "./koa-program-fixture.ts";
 
 const f_notified = (app: Awaited<ReturnType<typeof fixture>>, text: string) => app.until(record => record.type === "item" && record.item.kind === "notify" && record.item.text.text === text);
 
@@ -12,7 +12,7 @@ async function editing(t: TestContext, env: NodeJS.ProcessEnv = {}, steps: objec
   const dir = await mkdtemp(join(tmpdir(), "koa-editor-test-"));
   t.after(() => rm(dir, { recursive: true, force: true }));
   const panes = join(dir, "panes.json"), feed = join(dir, "feed"), apiLog = join(dir, "api");
-  await symlink(resolve("../../target/debug/fake_ko"), join(dir, "ko"));
+  await linkFakeKo(dir);
   await writeFile(panes, JSON.stringify([selfPane()]));
   await writeFile(feed, "");
   const app = await fixture(t, steps, { KO_PANE: "pane_1", KO_SOCKET: "", KO_PANE_TOKEN: "", KO_RUNTIME: "", KO_FAKE_PANES: panes, KO_FAKE_CLIENT_FEED: feed, KO_FAKE_API_LOG: apiLog, KO_FAKE_INSTANCE: "a".repeat(32), KO_FAKE_CLIENT_DROP: join(dir, "client-drop"), KO_FAKE_PUT_STALE: join(dir, "stale"), ...(env.KO_FAKE_PUT_GATE === "gate" ? { KO_FAKE_PUT_GATE: join(dir, "put-gate") } : {}), VISUAL: "", EDITOR: "myeditor --flag", PI_CODING_AGENT_DIR: join(dir, "agent"), PATH: `${dir}:${process.env.PATH}`, ...env, ...(env.KO_FAKE_PUT_GATE === "gate" ? { KO_FAKE_PUT_GATE: join(dir, "put-gate") } : {}) });
@@ -64,13 +64,16 @@ test("a failed or unchanged edit keeps the draft", { timeout: 15000 }, async t =
   let pane = await f.float(), file = pane.file;
   await writeFile(file, "ignored");
   await f.dead(pane.id, { type: "exited", code: 3 });
-  await f.app.until(record => record.type === "item" && record.item.kind === "notify" && record.item.text.text === "Editor exited 3; draft kept");
+  await f.notified("Editor exited 3; draft kept");
   await f.closed(pane.id); await f.gone(dirname(file));
-  await f.open("same");
+  const first = pane.id;
+  assert.equal((await f.open("same")).status, 200);
   pane = await f.float(); file = pane.file;
+  assert.notEqual(pane.id, first);
   await writeFile(file, "same\n");
   await f.dead(pane.id, { type: "exited", code: 0 });
   await f.closed(pane.id); await f.gone(dirname(file));
+  assert.equal(f.app.records().filter(record => record.type === "item" && record.item.kind === "notify" && record.item.text.text === "Editor exited 3; draft kept").length, 1);
   assert.equal(f.app.records().some(record => record.type === "state" && record.editor), false);
 });
 

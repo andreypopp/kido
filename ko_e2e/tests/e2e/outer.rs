@@ -261,8 +261,8 @@ impl Outer {
             let (shared, master) = (shared.clone(), master.clone());
             thread::spawn(move || pump(&shared, &master, keys));
         }
-        write_all(&master, b"set +m\r").unwrap();
-        Outer {
+        write_all(&master, b"set +m\rprintf 'OUTER%sSYNC\\n' -\r").unwrap();
+        let outer = Outer {
             shared,
             master,
             shell: Some(shell),
@@ -274,7 +274,11 @@ impl Outer {
             env,
             state: state.to_path_buf(),
             attaches: AtomicUsize::new(0),
-        }
+        };
+        outer.wait("the outer shell to be ready", || {
+            outer.screen().contains("OUTER-SYNC")
+        });
+        outer
     }
 
     fn lock(&self) -> MutexGuard<'_, Screen> {

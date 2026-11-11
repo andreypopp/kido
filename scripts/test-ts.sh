@@ -10,6 +10,9 @@
 
 set -eu
 
+unset KO_STATE_DIR KO_PANE KO_PANE_TOKEN KO_SOCKET
+for name in $(env | sed -n 's/^\(KO_AGENT_[A-Za-z0-9_]*\)=.*/\1/p'); do unset "$name"; done
+
 fail_or_skip() {
 	if [ "${KO_TS_TEST_REQUIRED:-}" = "1" ]; then
 		echo "test-ts: $1" >&2

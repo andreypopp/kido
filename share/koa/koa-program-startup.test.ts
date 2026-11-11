@@ -48,15 +48,13 @@ test('resume requires a terminal before starting a webview', { timeout: 5000 }, 
   assert.doesNotMatch(stderr, /koa: http:/);
 });
 
-test('resume selects before the browser, cancels, and reports a broken picker', { timeout: 10000 }, async t => {
+test('resume selects before the browser, cancels, and reports a broken picker', { timeout: 70000 }, async t => {
   const dir = await mkdtemp('/tmp/koa-resume-');
   const log = join(dir, 'log'), urls = join(dir, 'urls'), script = join(dir, 'steps');
   const server = createServer();
-  const children = new Set<ReturnType<typeof spawn>>();
   const sockets = new Set<import('node:net').Socket>();
   server.on('connection', socket => { sockets.add(socket); socket.on('error', (error: NodeJS.ErrnoException) => { if (error.code !== 'ECONNRESET') throw error; }); socket.once('close', () => sockets.delete(socket)); });
   t.after(async () => {
-    for (const child of children) child.kill('SIGTERM');
     for (const socket of sockets) socket.destroy();
     server.close();
     await rm(dir, { recursive: true, force: true });
@@ -74,15 +72,15 @@ test('resume selects before the browser, cancels, and reports a broken picker', 
     { gate: 'eof', code: 1, output: /fake-pi-resume-1.*session picker exited without a result/ },
     { gate: 'signal', code: 1, output: /session picker interrupted by SIGTERM/ },
     { gate: 'skip', code: 0, output: /koa: http:/ },
-  ]) {
+  ]) await t.test(item.gate.startsWith('{') ? (item.gate.includes('selected') ? 'selected' : 'cancel') : item.gate, { timeout: 10000 }, async c => {
     await writeFile(log, ''); await rm(urls, { force: true });
     await writeFile(script, (item.gate.startsWith('{"type":"selected"') ? '{"type":"wait","command":"prompt"}\n' : '') + '{"type":"wait","command":"prompt"}\n{"type":"exit","code":0}\n');
     const connected = once(server, 'connection');
     const pass = item.gate === 'skip' ? ['--resume', '--session', 'existing.jsonl'] : ['--resume', '-r', '--session-dir', dir, '--', 'prompt'];
     const child = spawn(process.execPath, ['--import', resolve('../koa/koa-fake-tty.ts'), resolve('../../build/ko/share/ko/koa/koa.ts'), '--browser', '--pi', resolve('../koa/koa-fake-pi.ts'), ...pass], { stdio: 'pipe', env: { ...process.env, KO_PANE: '', KOA_FAKE_LOG: log, KOA_FAKE_SCRIPT: script, KOA_FAKE_PICKER_GATE: join(dir, 'gate'), KOA_RESUME_READY_MS: '1000', OPEN_LOG: urls, PATH: `${dir}:${process.env.PATH}` } });
-    children.add(child);
-    let output = ''; child.stdout.on('data', bytes => { output += bytes; }); child.stderr.on('data', bytes => { output += bytes; });
     const closed = once(child, 'close');
+    c.after(async () => { if (child.exitCode === null && child.signalCode === null) child.kill('SIGTERM'); await closed; for (const socket of sockets) socket.destroy(); });
+    let output = ''; child.stdout.on('data', bytes => { output += bytes; }); child.stderr.on('data', bytes => { output += bytes; });
     const [gate] = await Promise.race([connected, closed.then(() => { throw new Error(output); })]);
     assert.deepEqual((await readLog()).map(record => record.type), ['picker']);
     assert.doesNotMatch(output, /koa: http:/);
@@ -100,24 +98,25 @@ test('resume selects before the browser, cancels, and reports a broken picker', 
       await fetch(base + 'prompt', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ sessionId: 'fake', text: 'exit', mode: 'prompt', attachments: [] }) });
     }
     assert.equal((await closed)[0], item.code, output);
-    children.delete(child);
     assert.match(output, item.output);
     if (item.gate === 'signal') {
       assert.ok((await readLog()).some(record => record.type === 'picker_signal' && record.signal === 'SIGTERM'));
       assert.ok((await readLog()).some(record => record.type === 'picker_exit'));
     }
     if (!output.includes('koa: http:')) await assert.rejects(readFile(urls), { code: 'ENOENT' });
-  }
+  });
 });
-test('startup refuses incompatible flags before opening a webview', { timeout: 10000 }, async () => {
-  for (const args of [['--mode','text'], ['-p'], ['--export','out.html'], ['--list-models'], ['-v'], ['--tui-mode','fullscreen'], ['--theme','dark'], ['--use-theme','dark'], ['--no-themes'], ['@notes.txt']]) {
+test('startup refuses incompatible flags before opening a webview', { timeout: 70000 }, async t => {
+  for (const args of [['--mode','text'], ['-p'], ['--export','out.html'], ['--list-models'], ['-v'], ['--tui-mode','fullscreen'], ['--theme','dark'], ['--use-theme','dark'], ['--no-themes'], ['@notes.txt']]) await t.test(args.join(' '), { timeout: 10000 }, async c => {
     const child = spawn(process.execPath, [resolve('../../build/ko/share/ko/koa/koa.ts'), '--browser', '--pi', resolve('../koa/koa-fake-pi.ts'), ...args]);
+    const closed = once(child, 'close');
+    c.after(async () => { if (child.exitCode === null && child.signalCode === null) child.kill('SIGTERM'); await closed; });
     let output = ''; child.stderr.on('data', bytes => { output += bytes; });
-    const [code] = await once(child, 'close');
+    const [code] = await closed;
     assert.equal(code, 1, output);
     assert.match(output, /koa: /);
     assert.doesNotMatch(output, /koa: http:/);
-  }
+  });
 });
 
 test('startup messages run separately after readiness without a page connection', { timeout: 10000 }, async t => {

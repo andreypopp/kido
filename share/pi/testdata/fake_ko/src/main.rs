@@ -84,8 +84,11 @@ impl Locked {
             .create_new(true)
             .open(&lock)
             .is_err()
-            && Instant::now() < deadline
         {
+            if Instant::now() >= deadline {
+                eprintln!("fake ko: timed out waiting for {lock}");
+                std::process::exit(1);
+            }
             std::thread::sleep(POLL);
         }
         Locked(lock)
@@ -117,6 +120,12 @@ fn with_table<T>(change: impl FnOnce(&mut Vec<Value>) -> T) -> T {
     let mut table = rows("KO_FAKE_PANES");
     let result = change(&mut table);
     write_rows(&path, &table);
+    if !path.is_empty() {
+        let temp = format!("{}.tmp", high_water_path());
+        if fs::write(&temp, high_water(&table).to_string()).is_ok() {
+            let _ = fs::rename(temp, high_water_path());
+        }
+    }
     result
 }
 
@@ -268,14 +277,26 @@ fn layout(table: &[Value]) -> LayoutPanes {
     }
 }
 
-fn next_pane(table: &[Value]) -> u64 {
+fn high_water_path() -> String {
+    format!("{}.high", panes_path())
+}
+
+fn high_water(table: &[Value]) -> u64 {
+    let minted = fs::read_to_string(high_water_path())
+        .ok()
+        .and_then(|raw| raw.trim().parse::<u64>().ok())
+        .unwrap_or(0);
     table
         .iter()
         .filter_map(|row| text(row, "id").strip_prefix("pane_")?.parse::<u64>().ok())
         .max()
         .unwrap_or(1)
+        .max(minted)
         .max(9)
-        + 1
+}
+
+fn next_pane(table: &[Value]) -> u64 {
+    high_water(table) + 1
 }
 
 fn draft_panes<'a>(node: &'a Node<DraftLeaf>, out: &mut Vec<&'a PaneRef>) {

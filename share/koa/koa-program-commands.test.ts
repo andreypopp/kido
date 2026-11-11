@@ -11,6 +11,7 @@ import { EventEmitter } from 'node:events';
 import { stripTypeScriptTypes } from 'node:module';
 import { runInNewContext } from 'node:vm';
 import { assistant } from "../pi/ko-pi-fixture.ts";
+import { pollUntil } from "../pi/ko-pi-fixture.ts";
 import { fixture } from "./koa-program-fixture.ts";
 test('history comes from the whole transcript and omits consecutive duplicates', { timeout: 10000 }, async t => {
   const messages = Array.from({ length: 110 }, (_, i) => ({ role: 'user', content: 'prompt ' + i, timestamp: i + 1 }));
@@ -57,9 +58,12 @@ test('manual compaction has one result per attempt and restores the working stat
     { type: 'wait', command: 'compact', events: [{ type: 'compaction_start', reason: 'manual' }], after: [{ type: 'compaction_end', reason: 'manual', result, willRetry: false }] },
     { type: 'wait', command: 'compact', error: 'request failed', events: [{ type: 'compaction_start', reason: 'manual' }], after: [{ type: 'compaction_end', reason: 'manual', errorMessage: 'request failed', willRetry: false }] },
   ], {}, undefined, true, [], resolve('../../build/ko/share/ko/koa/koa.ts'));
-  for (let i = 0; i < 2; i++) assert.equal((await f.post('prompt', { text: '/compact', mode: 'prompt', attachments: [] })).status, 200);
-  await f.until(record => record.type === 'state' && record.compaction === 'idle' && !record.working);
-  await f.until(record => record.type === 'item' && record.item.kind === 'command' && record.item.result.type === 'compaction' && record.item.result.state.type === 'failed');
+  for (const state of ['done', 'failed']) {
+    const cursor = f.count();
+    assert.equal((await f.post('prompt', { text: '/compact', mode: 'prompt', attachments: [] })).status, 200);
+    await f.until(record => record.type === 'item' && record.item.kind === 'command' && record.item.result.type === 'compaction' && record.item.result.state.type === state, cursor);
+    await f.until(record => record.type === 'state' && record.compaction === 'idle' && !record.working, cursor);
+  }
   assert.equal(f.records().filter(record => record.type === 'item' && record.item.kind === 'command' && record.item.result.type === 'compaction' && record.item.result.state.type === 'failed').length, 1);
   assert.ok(f.records().some(record => record.type === 'item' && record.item.kind === 'command' && record.item.result.type === 'compaction' && record.item.result.state.type === 'done' && record.item.result.state.before === 10000 && record.item.result.state.after === 2000));
 });
@@ -442,10 +446,12 @@ test('bang commands run outside the prompt queue and stream until cancelled', { 
   await app.until(record => record.type === 'state' && record.bash?.[0]?.phase === 'completed' && record.bash[0].result.cancelled === true);
   await app.post('abort');
   await app.until(record => record.type === 'state' && record.working === false && record.bash?.length === 0);
+  const quiet = app.count();
   assert.equal((await app.post('prompt', { text: '!! quiet', mode: 'prompt', attachments: [] })).status, 200);
-  await app.until(record => record.type === 'state' && record.bash?.[0]?.phase === 'completed' && record.bash[0].result.output.text === 'quiet');
-  await app.until(record => record.type === 'state' && record.bash?.length === 0 && record.working === false);
-  const stored = await (await fetch(app.base + 'items?before=99')).json();
+  await app.until(record => record.type === 'state' && record.bash?.[0]?.phase === 'completed' && record.bash[0].result.output.text === 'quiet', quiet);
+  await app.until(record => record.type === 'state' && record.bash?.length === 0 && record.working === false, quiet);
+  let stored: { items: { kind: string; command: string }[] } = { items: [] };
+  await pollUntil(async () => { stored = await (await fetch(app.base + 'items?before=99')).json(); return stored.items.some(item => item.kind === 'bash' && item.command === 'quiet'); });
   assert.deepEqual(stored.items.filter((item: { kind: string }) => item.kind === 'bash').map((item: { command: string }) => item.command), ['echo hi', 'quiet']);
   const log = await app.log();
   assert.deepEqual(log.filter(record => record.type === 'bash').map(({ command, excludeFromContext }) => ({ command, excludeFromContext })), [{ command: 'echo hi', excludeFromContext: false }, { command: 'quiet', excludeFromContext: true }]);

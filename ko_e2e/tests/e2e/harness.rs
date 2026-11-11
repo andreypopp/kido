@@ -99,14 +99,20 @@ pub(crate) fn poll(what: &str, check: impl FnMut() -> bool) {
     poll_for(what, (DEADLINE, Duration::from_millis(10)), check);
 }
 
-pub(crate) fn poll_for(
+pub(crate) fn poll_for(what: &str, tick: (Duration, Duration), mut check: impl FnMut() -> bool) {
+    poll_detailed(what, tick, || {
+        if check() { Ok(()) } else { Err(String::new()) }
+    });
+}
+
+pub(crate) fn poll_detailed(
     what: &str,
     (limit, tick): (Duration, Duration),
-    mut check: impl FnMut() -> bool,
+    mut check: impl FnMut() -> Result<(), String>,
 ) {
     let deadline = Instant::now() + limit;
-    while !check() {
-        assert!(Instant::now() < deadline, "wait for {what}");
+    while let Err(detail) = check() {
+        assert!(Instant::now() < deadline, "wait for {what}{detail}");
         // A poll tick for a condition that has no descriptor to wait on: an event-less condition.
         thread::park_timeout(tick);
     }
@@ -1251,9 +1257,18 @@ impl Server {
     }
 
     pub(crate) fn screen_has(&self, pane: &str, needle: &str) {
-        poll(&format!("{needle} on the screen of {pane}"), || {
-            self.screen(pane).contains(needle)
-        });
+        poll_detailed(
+            &format!("{needle} on the screen of {pane}"),
+            (DEADLINE, Duration::from_millis(10)),
+            || {
+                let screen = self.screen(pane);
+                if screen.contains(needle) {
+                    Ok(())
+                } else {
+                    Err(format!("; last screen:\n{screen}"))
+                }
+            },
+        );
     }
 
     pub(crate) fn rows(&self) -> Vec<Value> {

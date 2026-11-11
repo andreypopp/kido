@@ -1,14 +1,14 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdtemp, readFile, writeFile, rm, mkdir, cp, symlink } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile, rm, mkdir, cp } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { once } from "node:events";
 import { createServer } from "node:net";
 import { Readable } from "node:stream";
 import { sse, selfPane, agentPane, pollUntil } from "../pi/ko-pi-fixture.ts";
-import { fixture, assistantMessage } from "./koa-program-fixture.ts";
+import { linkFakeKo, fixture, assistantMessage } from "./koa-program-fixture.ts";
 test('completion limits active searches and kills expired children', { timeout: 10000 }, async t => {
   const dir = await mkdtemp('/tmp/koa-search-limit-'); t.after(() => rm(dir, { recursive: true, force: true }));
   const gate = join(dir, 'gate'), fd = join(dir, 'fd');
@@ -60,7 +60,7 @@ test("completion serves files and live agents during startup and cancels its fd 
   const dir = await mkdtemp("/tmp/koa-completion-");
   t.after(() => rm(dir, { recursive: true, force: true }));
   const layout = join(dir, "panes.json"), gate = join(dir, "gate"), fd = join(dir, "fd");
-  await symlink(resolve("../../target/debug/fake_ko"), join(dir, "ko"));
+  await linkFakeKo(dir);
   await writeFile(layout, JSON.stringify([selfPane(), agentPane({ pane: "pane_2", session: "22222222aaaa", name: "sidebar" }), agentPane({ pane: "pane_3", session: "22222222bbbb", name: "fix-sidebar" }), agentPane({ pane: "pane_4", session: "elsewhere", name: "sidebar-elsewhere", koSession: "session_2" }), agentPane({ pane: "pane_5", session: "other", name: "sidebar-other", parent: "pane_99" })]));
   await writeFile(fd, `#!/usr/bin/env node
 const fs=require('node:fs'),net=require('node:net'),path=${JSON.stringify(dir)},args=process.argv.slice(2);
