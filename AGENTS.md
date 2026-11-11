@@ -632,7 +632,8 @@ delegates as its brief says and does not write code.
   top-level session spawns one implementer in the quick worktree
   ("Worktrees"). The implementer makes the change, runs the tests of
   the package that it changed, records only the affected visual tests
-  (`make -C app visual ONLY="<class> ..." RECORD=1`), opens the
+  (`make -C app visual ONLY="<class>[/<test>] ..." RECORD=1`; a test
+  in an `extension VisualTests` file has the class `VisualTests`), opens the
   changed snapshots and reports. It does not run `scripts/checks.sh`,
   `ko-test` or the full visual stage; CI runs the rest. A finding
   outside the request (a defect seen on the way, a reviewer's idea)
