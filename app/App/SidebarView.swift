@@ -303,7 +303,10 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSM
         }
         items = sidebarDividers(items)
         if let edit = editing, !items.contains(where: { $0.id == edit.id }) { endRename() }
-        if editing != nil {
+        if let edit = editing {
+            if let row = items.first(where: { $0.id == edit.id }) {
+                edit.cell.configure(row, now: clockNow)
+            }
             let changes = items.map(\.id).difference(from: previous.map(\.id))
             table.beginUpdates()
             for change in changes {

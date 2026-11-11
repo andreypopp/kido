@@ -114,6 +114,43 @@ import XCTest
         renamedCell.finishRename(false)
     }
 
+    func testRenameDrawingTracksWindowSplits() throws {
+        let window = NSWindow(contentRect: NSRect(x: -10000, y: -10000, width: 292, height: 220), styleMask: [.titled], backing: .buffered, defer: false)
+        window.isReleasedWhenClosed = false
+        defer { window.close() }
+        let list = SidebarView()
+        window.contentView = list
+        let single = fixtureSnapshot(window: 0, pane: 0, [("main", [fixtureNode(0, "Shell", shellLifecycle())])])
+        let split = fixtureSnapshot(window: 0, pane: 0, [("main", [.window(.init(id: WindowID(number: 0), children: [
+            fixtureItem(0, window: 0, "Shell", shellLifecycle()), fixtureItem(1, window: 0, "Other", shellLifecycle())
+        ]))])])
+        list.show(single)
+        window.layoutIfNeeded()
+        let cell = try XCTUnwrap(list.visualTable.view(atColumn: 0, row: 1, makeIfNecessary: true) as? SidebarCell)
+        cell.beginRename()
+        let editor = try XCTUnwrap(cell.nameField.currentEditor() as? NSTextView)
+        editor.string = "typed name"
+        editor.setSelectedRange(NSRange(location: 2, length: 3))
+        func drawing() throws -> Data {
+            window.layoutIfNeeded()
+            cell.layoutSubtreeIfNeeded()
+            let bitmap = try XCTUnwrap(cell.bitmapImageRepForCachingDisplay(in: cell.bounds))
+            cell.cacheDisplay(in: cell.bounds, to: bitmap)
+            return try XCTUnwrap(bitmap.tiffRepresentation)
+        }
+        for snapshot in [split, single] {
+            list.show(snapshot)
+            let actual = try drawing()
+            let row = try XCTUnwrap(sidebarRows(snapshot, expanded: []).rows.first { $0.target?.pane == PaneID(number: 0) })
+            cell.configure(row, now: 0)
+            XCTAssertEqual(actual, try drawing(), "Edited cell must draw the current window block")
+            XCTAssertTrue(cell.nameField.currentEditor() === editor)
+            XCTAssertEqual(editor.string, "typed name")
+            XCTAssertEqual(editor.selectedRange(), NSRange(location: 2, length: 3))
+        }
+        cell.finishRename(false)
+    }
+
     func testRenameEditingAndErrorImages() throws {
         let window = NSWindow(contentRect: NSRect(x: -10000, y: -10000, width: 292, height: 150), styleMask: [.titled], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
