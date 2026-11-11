@@ -69,6 +69,28 @@ also one connection each, but the core's I/O thread owns them and
 their callbacks stream on the caller's serial queue; the header comment
 of `ko_client.h` gives their contract.
 
+**The C ABI.** `ko_client::ffi` builds only for `target_vendor =
+"apple"`; no other crate uses it, and the Linux build has none of it.
+The header comment of `ko_client/include/ko_client.h` is the
+contract: handles, memory, threads, close and reconnect. The ffi
+lives in the app's process, so it has threads: one I/O thread
+(`ffi::engine`) on `ko_sys::event` that owns the `/client` link,
+every view link and the reconnect, and one decoder thread for each
+view (`ffi::view`) that runs the restore and feed callbacks. A call
+wakes the I/O thread through a `ko_sys::event::Wake`. A second
+`Wake`, set at close, is the cancellation that ends the blocking
+calls (`ko_sys::fd::wait` with a cancel descriptor). Events reach
+the app only through `dispatch_async_f` on the caller's serial queue.
+`ko_client_put_layout` is conditional on the document's revision:
+when the layout changed, it returns `KO_ERR_CONFLICT` with the newer
+document in its buffer, and the caller applies its edit to that
+document and sends it again. A view gives the restore the
+`continuation_max_bytes` of the client's `Welcome` (protocol.md,
+section 4). `ko_config_defaults`, `ko_config_load` and
+`ko_config_set_theme` take no handle and block on at most one file;
+the app calls them on main. build.md, "The ko_client xcframework",
+describes the library's build.
+
 The app and `ko` share one server: the server directory is ko's default
 directory, which `ko_client_default_dir` reads from
 `ko_wire::local::dir` with the app's environment, so the rule has one

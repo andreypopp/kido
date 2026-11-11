@@ -114,9 +114,22 @@ an idle `ko-pane` costs little memory. The price is one hop for each
 record, tens of microseconds.
 
 Every ko process is one thread on the readiness loop of
-`ko_sys/src/event.rs` (AGENTS.md, "The loop"). Backpressure toward a
+`ko_sys/src/event.rs` (AGENTS.md, "The loop"): non-blocking
+descriptors, the nearest deadline as the `poll` timeout and none
+without one, at most 16 reads of a source per turn. The server's
+listener accepts at most 16 connections per turn. Backpressure toward a
 program is the ring: if the coordinator falls a whole ring behind,
 `ko-pane` blocks, stops reading the pty, and the program blocks.
+
+`ko-pane` holds its program's zombie: it never waits for the child
+before the final group kill, so the pid and the group id cannot be
+reused while it lives. `ko_sys::pty::spawn` forks and execs the
+program itself: between `fork` and `execve` the child calls only
+async-signal-safe functions on memory prepared before the fork, and
+it reports a failed step and its errno through a close-on-exec pipe.
+A setup failure sends an `error` frame that names the failing call
+and its OS error ("openpty: ..."). The frame is flushed before the
+process exits.
 
 A pane's exit status comes from `ko-pane`, which reaps its program and
 sends a `dead` frame; the coordinator reaps `ko-pane` itself on
@@ -132,7 +145,7 @@ there is no other authentication.
 
 ### 4.2 Crates
 
-AGENTS.md, "Layout", names each crate. The coordinator's modules in
+build.md, "The crates", names each crate. The coordinator's modules in
 `ko_server/src/`:
 
 `server.rs` runs the listener, the signals and the output tick over
@@ -143,7 +156,7 @@ waiters; `state/pane_ops.rs` holds `POST /panes`, the pane stop with
 its escalation and what a pane identity may do (`router.rs` checks
 the identity itself), and `state/sweep.rs` the sweep. `view.rs` and `delivery.rs`
 are the verified stream path
-(AGENTS.md, "Verus"); `webview.rs` holds a pane's webview record
+(verification.md, "Verus"); `webview.rs` holds a pane's webview record
 (its page, its serve stream and its requests in flight) and
 `state/webview.rs` the proxy and the serve stream (protocol.md,
 section 16), with the wire types in `ko_wire`'s `protocol/webview.rs`;
@@ -169,7 +182,15 @@ incremental response reader that `ko_client`'s upstream also uses,
 for `ko webview serve` and the C ABI), `ws.rs` (the record parser, the
 upgrade and the frame reader), `exec_wire.rs` (the exec session's frames), `api.rs`, `route.rs` and `schema.rs`
 (the routes and the OpenAPI document), `ssh.rs`, `local.rs` (the state
-directory and the socket path) and the build id. It holds no proof:
+directory and the socket path) and the build id. `api.rs` declares
+every route in one `routes!` block (the macro is in `route.rs`). The
+block generates `Route` (path and query, parsed from the head before
+the body), `Request` (the route with its decoded body), one marker
+type for each route in `routes::` and `ROUTES`, the catalog from
+which `schema.rs` builds the OpenAPI document of `ko api-schema`.
+`router.rs` matches `Request` exhaustively and replies through
+`ok::<routes::X>` and `alt::<routes::X, STATUS>`, so a reply that the
+declaration does not name does not compile. It holds no proof:
 the verified modules of `ko_server` see its ids and `Dead` only as the
 opaque types of their existing external type specifications.
 
@@ -241,9 +262,10 @@ because of the delay. Each later read then gets a few hundred bytes.
 macOS `poll` takes whole milliseconds, so `ko_sys::event` waits with
 `select`, which takes microseconds, for a deadline below 1 ms; Linux
 waits with `ppoll`. The coordinator copies nothing: for each attached view it
-writes the ring region with one `write_vectored` (AGENTS.md, "The
-view write path"), and it allocates nothing on the heap for each
-record in steady state.
+writes the ring region with one `write_vectored` (4.6), and it
+allocates nothing on the heap for each record in steady state;
+`ko-bench` counts the server thread's allocations with its global
+allocator and prints `allocations/record`.
 
 A resize, a reset and the pane's death are **markers** in the ring at
 their byte offset. A mirror applies them in order.
@@ -363,11 +385,22 @@ unsent bytes passed the threshold gets a snapshot anyway, so it never
 holds the writer. No pending write ever references the ring: a partial
 write copies the rest of its frame into the connection's queue.
 
+**The view write path.** `ko_server::conn` writes a view record
+with `write_vectored` over `IoSlice`s, only while the connection's
+queue is empty. A `bytes` record borrows the ring; a snapshot slice
+is deflated into the scratch buffer of the coordinator's one
+`Deflate` (`ko_server::deflate`) and written from it. A partial write
+copies the rest into the queue. Every other byte of a WebSocket goes
+through tungstenite into the same queue. No other code writes a
+connection's descriptor.
+
 A view's queue has a cap, and output past it goes to an unlinked spill
-file (`ko_server/src/spill.rs`) that the connection drains after the
+file (`ko_server/src/spill.rs`, over `ko_sys::file::unlinked`) that
+the connection drains after the
 queue, so a snapshot larger than the cap reaches a slow reader whole
 and the memory of each view stays at the cap; a spill over its limit
-closes the view with a close frame (protocol.md, section 4). The cap
+closes the view with close code 1013 (protocol.md, section 4); every
+other link closes at the cap. The cap
 and the spill limit are `KO_VIEW_QUEUE_BYTES` and
 `KO_VIEW_SPILL_BYTES`, read by `ko_server/src/config.rs`.
 
@@ -451,6 +484,21 @@ every pane in a sidebar grouped by session, with a subagent's pane one
 column deeper than its parent's. It is a client like any other: it
 opens one view for each visible pane, mirrors each in libghostty-vt
 and closes the view when the pane leaves the screen.
+
+Its loop watches stdin, the `/client` link, the view of each visible
+pane and the signal pipe. Its plain requests (create, delete, list,
+layout edits, the pager's `/screen`) block with the deadlines of `ko
+api`; a view's open and upgrade never block, so the `/client` link
+answers its pings. While the pager runs, the loop keeps every link
+and stops reading stdin and painting until `SIGCHLD` reports the
+pager's exit, so pings get their answers. A turn handles `SIGWINCH`
+after it dispatches the stdin events that it read, so input that the
+terminal sent before a resize maps to the old layout. It handles the
+other signals at once. The compressor thread of each mirror shares it
+under a `Mutex` and a `Condvar`. It does CPU work only and never
+wakes the loop. `ko_vt::Terminal` is `Send` only for these threads,
+and the `Mutex` serializes every call. vte tokenizes the outer
+terminal's input, and `ko_tui::input` translates its events.
 
 `ko_tui/src/geometry.rs` walks the window into one rectangle for each
 leaf, with one divider cell between the children of a split, as the

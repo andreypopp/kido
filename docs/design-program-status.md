@@ -25,6 +25,16 @@ no whole-second tie and no polling: a report is an event.
 
 ## Sources
 
+Two programs identify agent panes through OSC 7501 root records:
+`pi` (design.md, "The pi extension, ko-pi") and `claude-code`. Claude
+Code 2.1.295 queries OSC 7501. Then it emits a root `app=claude-code`
+record: idle, working, done, or blocked with permission/question kind
+and a base64 message. Escape on a permission dialog emits idle
+immediately. Exit clears all records.
+`CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1` also disables this reporting.
+Its OSC 0 title is "Claude Code" at startup and "Reply with ok" for
+the session. Kido ships no Claude Code shim.
+
 ### The record set
 
 `ko_server/src/program_status.rs` keeps one record set for each pane

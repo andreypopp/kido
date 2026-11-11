@@ -199,6 +199,34 @@ make install    # binary to $PREFIX/bin (default ~/.local), shared files to $PRE
 make verify     # the whole verification: build, the static Linux ko, lint, unit tests, e2e, the pi extension's suite, Verus
 ```
 
+The other targets:
+
+    make checks  the checks of the paths that a unit changed (scripts/checks.sh); DRY=1 prints the plan
+    make verus   cargo verus verify on ko_pane_wire and ko_server with the pinned Verus release, downloaded once into build/verus/
+    make build-linux  the static Linux ko (LINUX_ARCHS, default the host's); check-static checks it
+    make test  ko's cargo tests and the loom models, without the e2e suite
+    make e2e E2E=name  the e2e suite against build/ko/bin/ko
+    make cargo ARGS='test -p ko_server'  one cargo command, with --locked added after the subcommand, for iterating on one package
+    make fmt     cargo fmt on the workspace
+    make lint    cargo fmt --check, clippy and scripts/lint.sh
+    make build-fake-ko  the fake ko of the TypeScript suite
+    make koa-page  koa's page bundle in build/ko/share/ko/koa/ (npm ci when the lockfile changed); make build runs it
+    make koa-watch  rebuild koa's page on each source change, for ⌘R in a webview pane of a koa started with KOA_PAGE_RELOAD=1
+    make bindgen  regenerate ko_vt_sys/src/bindings.rs
+    make probe BYTES=N  ko-bench throughput: the server's ring reader under ko-pane, N bytes of bench/streams (default 1 GiB); not part of verify
+    make build-bench  the C helpers of bench/ in build/bench/, after build
+    make prompts regenerate the prompt fixture through scripts/lint.sh --update-prompts
+    make schemas regenerate share/ko/openapi.json, share/ko/client-model.json, share/ko/config-schema.json and share/pi/ko-api.d.ts through scripts/lint.sh --update-schemas
+    make api-docs  one static HTML page of share/ko/openapi.json (Redocly) in build/ko-api.html; not part of verify
+    make fuzz TARGET=ring TIME=600  one time-boxed fuzz run; no TARGET lists the targets
+    make miri    Miri on ko's modules without sockets or FFI (scripts/miri.sh)
+    make ci-like ARGS=...  a CPU/memory-capped Linux container (docs/verification.md, "Reproducing a CI-only failure")
+    make preview-pi  replace the installed share/ko/pi, share/ko/koa and share/ko/webview files with the checkout's; unpreview-pi restores them
+    make website the website's dev server at http://localhost:4321 (website/README.md)
+
+docs/build.md describes the build and the layout; docs/verification.md
+describes the checks.
+
 The first build compiles libghostty-vt and the crates in a few
 minutes. Kido.app is in `app/` (docs/design-app.md). CI verifies every push to
 `main` and every pull request on Linux and macOS.

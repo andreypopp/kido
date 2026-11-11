@@ -67,7 +67,34 @@ grammar: ko-pi's `@` agent token runs through the file token rules),
 `text.ts`, `completion-context.ts` (the place where a command runs,
 from ko-pi to `koa-sessions.ts`; "Shell completion") and `runtime-exec.ts` (the client of a runtime's exec
 route, ko-pi's routed commands and koa's shell completion). The records of koa and its page are
-`share/koa/koa-records.ts`. AGENTS.md, "Layout", names each file.
+`share/koa/koa-records.ts`.
+
+The files of `share/koa/`: `koa.ts`, the program; `page/`, the
+TypeScript sources of its page (`page.ts`, `markdown.ts`, the
+streaming markdown over marked and remend, `page.html`, `page.css`),
+which `make koa-page` bundles with esbuild into one unminified
+`page.js`; `package.json` and its lockfile pin esbuild, TypeScript 7
+(the one type checker of every TypeScript in the repository) and the
+page's npm packages; `koa-assemble.ts`, the one HTML response;
+`koa-transcript.ts`, the transcript model, its delivery and the image
+store; `koa-image.ts`, the image sniffer; `koa-timer.ts`, the timer
+that reports a throw; `koa-http.ts`, the HTTP helpers and the one
+file server with its checked, size-capped open; `koa-records.ts`, the
+records that koa and its page share; `koa-complete.ts`, completion;
+`koa-shell.ts` and `koa-shell.sh`, Tab completion in `!` mode from
+bash; `koa-attach.ts`, attachments; `koa-queue.ts`, the queue's
+attachments; `koa-child.ts`, the signals of koa's own children, pi's
+package lookup and the runs of the startup helper and the session
+picker; `koa-startup.ts`, the startup helper's extension;
+`koa-args.ts`, its rules for pi's parsed arguments; `koa-resume.ts`,
+the picker extension of `koa --resume`; `koa-commands.ts`, the
+built-in slash commands; `koa-sessions.ts`, the extension in the pi
+child that lists sessions for the page's `/resume`, over
+`koa-channel.ts`; `koa-session-dir.ts`, the session directory rule of
+both pickers; `prompt.ts`, the prompt text rules that koa and its
+page share; `koa-fake-pi.ts`, the scripted pi of its suite
+`koa-*.test.ts`, and `koa-fake-tty.ts`, its terminal preload;
+`stress/`, the stress workloads and runner (not installed).
 
 `make build` installs the program and the built page in
 `share/ko/koa/` and the shim `share/ko/bin/koa`. The installed layout

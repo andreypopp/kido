@@ -684,7 +684,7 @@ guess.
 
 **The ko inside.** `ko: "shipped"`, the default, mounts the static
 Linux ko of `share/ko/linux/aarch64` beside the server's installation
-(AGENTS.md, "Layout") read-only at `/opt/ko`, so an image needs no ko
+(build.md, "The static Linux ko") read-only at `/opt/ko`, so an image needs no ko
 of its own. `make install` builds the layout, and a Release Kido.app
 bundles it (docs/design-app.md). A missing layout fails only a start
 that must create the container, with the path and `make build-linux`. `{ "mount": DIR }`
