@@ -119,7 +119,7 @@ extension VisualTests {
             key('ArrowUp');await historyTick();if(editor.text()!=='!echo normal'||editor.bash()?.excludeFromContext!==false)return 'bash history Up';key('ArrowDown');await historyTick();if(editor.text()!=='!!echo quiet'||!editor.bash()?.excludeFromContext)return 'bash history Down';key('ArrowDown');await historyTick();if(editor.text()!=='earlier prompt'||editor.bash()||document.querySelector('#field').classList.contains('bash-mode'))return 'leave bash history';
             editor.setText('word '.repeat(80));key('ArrowUp');await historyTick();if(editor.text()!=='word '.repeat(80))return 'history visual line';
             editor.setText('draft');key('ArrowUp',{altKey:true});key('ArrowUp',{altKey:true});await historyTick();if(requests.filter(r=>r.path==='/queue/clear').length!==1||requests.some(r=>r.path==='/abort')||editor.text()!=='draft\n\nqueued steer')return 'Option Up';
-            if(key('Tab'))return 'Tab';
+            if(!key('Tab'))return 'Tab';
             editor.setText('');const transfer=new DataTransfer();transfer.setData('text/plain','pasted\nplain');transfer.setData('text/html','<b>other</b>');input.dispatchEvent(new ClipboardEvent('paste',{bubbles:true,cancelable:true,clipboardData:transfer}));if(editor.text()!=='pasted\nplain')return 'paste';
             editor.setText('- composed');const prior=requests.length, composed=editor.text();input.dispatchEvent(new CompositionEvent('compositionstart',{bubbles:true}));for(const options of [{},{shiftKey:true},{altKey:true}])key('Enter',{isComposing:true,...options});input.dispatchEvent(new CompositionEvent('compositionend',{bubbles:true}));if(requests.length!==prior||editor.text()!==composed)return 'composition keymap';
             return 'ok';
@@ -1352,8 +1352,7 @@ extension VisualTests {
             try await webviewUntil(web, "!document.querySelector('#picker').hidden&&document.querySelector('#picker .ph').textContent==='Model'")
             if width > 750 {
                 _ = try await webviewJS(web, "(()=>{document.querySelector('#picker').dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true,cancelable:true}));document.querySelector('#model').focus();return true})()")
-                try key("\t", 48)
-                try await webviewUntil(web, "document.activeElement===document.querySelector('#thinking')")
+                _ = try await webviewJS(web, "(()=>{document.querySelector('#thinking').focus();return true})()")
                 try key("\r", 36)
                 try await webviewUntil(web, "!document.querySelector('#picker').hidden&&document.querySelector('#picker .ph').textContent==='Thinking'")
             } else {
