@@ -127,6 +127,11 @@ private class AlertEscape: NSView {
     private var koModel: KoModel? { received.ko }
     var snapshot: Snapshot? { received.snapshot }
     var projection: PaneProjection { received.projection }
+    private var pendingJump: (pane: PaneID, deadline: Date)?
+
+    func jumpWhenPlaced(_ pane: PaneID) {
+        pendingJump = (pane, Date().addingTimeInterval(2))
+    }
     private var paneSlots = PaneSlots()
     private var editor: LayoutEditor?
     private var welcomed = false
@@ -1215,6 +1220,13 @@ private class AlertEscape: NSView {
             do { navigationPhase.sent(try client.select(KO_SELECT_PANE, position.pane)) }
             catch { navigationPhase = .idle }
         }
+        if let wanted = pendingJump {
+            if wanted.deadline < Date() { pendingJump = nil }
+            else if let position = projection.placements[wanted.pane]?.position {
+                pendingJump = nil
+                perform(.jump(position))
+            }
+        }
         guard welcomed else { return }
         if ko.layout.layout.sessions.isEmpty {
             switch layoutSeen {
@@ -1240,9 +1252,16 @@ private class AlertEscape: NSView {
         let selected = ko.selection.pane.flatMap { pane -> PaneID? in
             guard let placement = projection.placements[pane] else { return nil }
             let actual = navigationPhase.isTravelling ? paneSlots.selected(in: placement.slot.window, fallback: placement.slot.pane) : pane
-            return projection.placements[actual]?.slot.pane
+            guard let placement = projection.placements[actual] else { return nil }
+            if case .floating = placement.presentation { return actual }
+            return placement.slot.pane
         }
-        session?.update(roots, alive: Set(ko.layout.layout.windows.map(\.id)), selected: selected, marks: marks, shown: shown)
+        let children = shown.compactMap { root, entry -> ChildFloats? in
+            guard entry.shown.position.window != projection.placements[root]?.position.window,
+                  let floats = ko.layout.layout.windows.first(where: { $0.id == entry.shown.position.window })?.floats, !floats.isEmpty else { return nil }
+            return ChildFloats(slot: root, floats: floats)
+        }
+        session?.update(roots, alive: Set(ko.layout.layout.windows.map(\.id)), selected: selected, marks: marks, shown: shown, children: children)
         guard let snapshot else {
             if let session { present(session) } else { updateTabs() }
             menuChanged()
@@ -1616,6 +1635,7 @@ private class AlertEscape: NSView {
     }
 
     func perform(_ navigation: Navigation, focus: SelectionFocus = .pane) {
+        pendingJump = nil
         if case .switchWindow(let next) = navigation,
            navigationPhase.enqueue(WindowDirection(next: next), focus: focus) { return }
         if case .jump(let target) = navigation { sidebar.list.select(target) }

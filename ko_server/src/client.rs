@@ -198,13 +198,16 @@ impl Client {
                     .map(|(session, window)| {
                         let mut root = window;
                         for _ in 0..session.windows.len() {
-                            let Some(parent) = root.panes().into_iter().find_map(parent_of) else {
+                            let mut tiled = Vec::new();
+                            root.tree.leaves(&mut tiled);
+                            let Some(parent) = tiled.iter().find_map(|leaf| parent_of(leaf.pane))
+                            else {
                                 break;
                             };
                             let Some((owner, ancestor)) = layout.locate(parent) else {
                                 break;
                             };
-                            if owner.id != session.id {
+                            if owner.id != session.id || ancestor.id == root.id {
                                 break;
                             }
                             root = ancestor;

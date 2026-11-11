@@ -431,8 +431,9 @@ breaks most easily:
   or dead (the linger collection waits while a focused client shows
   the pane). Every removal takes the pane's descendants in the same
   change; the server owns that cascade. A child's pane gets `close:
-  on_exit` and its spawner's pane as `parent`, and a pane with a
-  `parent` is alone in its window.
+  on_exit` and its spawner's pane as `parent`. A tiled pane with a
+  `parent` is alone in its window; a floating child may share only
+  its parent's window.
 - A message (`/panes/{id}/messages`) is enqueued once for each
   `(pane, id)`; a repeat answers from the original. The queue drops
   with its pane, and nothing tells its senders. The server never

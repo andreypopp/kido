@@ -71,3 +71,29 @@ import KoModel
     slots.observe(parent, in: after)
     #expect(slots.shown(root) == parent)
 }
+
+@Test func aChildInItsParentsWindowFloatsAndNeverReplacesIt() {
+    func id(_ number: Int) -> PaneID { PaneID(number: UInt32(number)) }
+    let tree = pane(0, children: [pane(1, window: 0), pane(2, children: [pane(3, window: 2)])])
+    let projection = PaneProjection(makeSnapshot([tree]))
+    let owner = try! #require(projection.placements[id(0)]?.position)
+    #expect(projection.placements[id(1)]?.presentation == .floating(owner: owner))
+    #expect(projection.placements[id(2)]?.presentation == .replacement)
+    #expect(projection.placements[id(3)]?.presentation == .floating(owner: try! #require(projection.placements[id(2)]?.position)))
+    #expect(projection.rootWindows[WindowID(number: 2)] == WindowID(number: 0))
+
+    var slots = PaneSlots()
+    slots.show(id(1), in: projection)
+    #expect(slots.shown(id(0)) == id(0))
+    #expect(slots.selected(in: WindowID(number: 0), fallback: id(0)) == id(1))
+    slots.show(id(3), in: projection)
+    #expect(slots.shown(id(0)) == id(2), "selecting a float of a child window shows that child, never the float")
+    #expect(slots.selected(in: WindowID(number: 0), fallback: id(0)) == id(3))
+    #expect(slots.step(from: id(0), direction: .child, in: projection) == id(2))
+    #expect(slots.step(from: id(3), direction: .parent, in: projection) == id(2))
+
+    let removed = PaneProjection(makeSnapshot([pane(0, children: [pane(1, window: 0), pane(2)])]))
+    slots.reconcile(removed)
+    #expect(slots.shown(id(0)) == id(2))
+    #expect(slots.selected(in: WindowID(number: 0), fallback: id(0)) == id(2), "a removed float leaves the child it floated over shown")
+}

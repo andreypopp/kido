@@ -29,7 +29,7 @@ async function page() {
     remove() { if (this.contains(document.activeElement)) document.activeElement = undefined; if (this.parent) this.parent.children = this.parent.children.filter(child => child !== this); this.parent = undefined; }
     replaceChildren(...children: Node[]) { this.children.forEach(child => { if (child instanceof Node) child.parent = undefined; }); this.children = []; this.append(...children); }
     content = { childNodes: [] };
-    tagName = 'DIV'; isContentEditable = false; selectionStart = 0; selectionEnd = 0; hidden = true;
+    tagName = 'DIV'; isContentEditable = false; readOnly = false; selectionStart = 0; selectionEnd = 0; hidden = true;
     oninput?: () => void;
     onclick?: () => void;
     onkeydown?: (event: unknown) => void;
@@ -51,7 +51,7 @@ async function page() {
   const windowListeners = new Map<string, (event?: unknown) => void>();
   let activeElement: Node | undefined;
   const document = { documentElement: new Node(), body: new Node(), hasFocus: () => true, get activeElement() { return activeElement; }, set activeElement(node: Node | undefined) { if (activeElement === node) return; const previous = activeElement; activeElement = node; if (previous) listeners.get('focusout')?.({ target: previous }); if (node) listeners.get('focusin')?.({ target: node }); }, querySelector: (selector?: string): Node | null => selector === '.cm-content' ? document.getElementById('prompt').children[0] ?? null : selector === '.lightbox' ? document.body.children.find(node => node.classList.contains('lightbox')) ?? null : null, getElementById(id: string) { let node = elements.get(id); if (!node) { node = new Node(); elements.set(id, node); if (id === 'prompt') document.getElementById('field').append(node); if (id === 'composer') node.hidden = false; } return node; }, createElement: (tag: string) => { const node = new Node(); node.tagName = tag.toUpperCase(); return node; }, createElementNS: () => new Node(), createTextNode: (text: string) => { const node = new Node(); node.tagName = '#text'; node.textContent = text; return node; }, addEventListener(type: string, handler: (event: unknown) => void) { listeners.set(type, handler); }, querySelectorAll: () => [] };
-  type Handlers = { input(user: boolean): void; send(mode: PromptMode): void; quit(): void };
+  type Handlers = { input(user: boolean): void; send(mode: PromptMode): void; quit(): void; edit(): void };
   let handlers: Handlers | undefined;
   let text = () => '';
   let prompt: Node | undefined;
@@ -72,6 +72,7 @@ async function page() {
       running(value: boolean) { running = value; refresh(); },
       setText(text: string) { content.value = text; content.selectionStart = content.selectionEnd = text.length; refresh(); callbacks.input(false); },
       insert(text: string) { content.setRangeText(text); refresh(); callbacks.input(true); },
+      readonly(value: boolean) { content.readOnly = value; },
       focus: () => content.focus(),
       hasFocus: () => document.activeElement === content,
       placeholder(text: string) { content.placeholder = text; },
@@ -1228,4 +1229,70 @@ test("a tool creates its image only when its step first opens", async () => {
     if(count(view)!==1)return false;
     step.children[0].onclick();step.children[0].onclick();return count(view)===1;
   })()`), true);
+});
+
+test('C-g sends the draft to the editor route and focuses the float, and a refusal shows as a notice', async () => {
+  const app = await page(), requests: { path: string; body: unknown }[] = [], focused: string[] = [];
+  Object.assign(app.context, { focused });
+  app.run("window.ko.focus = pane => { focused.push(pane); }");
+  let refuse = false;
+  app.context.fetch = async (path?: string, init?: { body: string }) => { requests.push({ path: path ?? '', body: JSON.parse(init?.body ?? '') }); return refuse ? { ok: false, json: async () => ({ error: 'C-g needs a ko pane' }) } : { ok: true, json: async () => ({ pane: 'pane_10' }) }; };
+  app.run("state={...state,pi:{type:'ready'},sessionId:'s1'};editor.setText('draft')");
+  app.handlers()?.edit();
+  await new Promise<void>(resolve => setImmediate(resolve));
+  assert.deepEqual(requests, [{ path: '/editor/open', body: { sessionId: 's1', text: 'draft' } }]);
+  assert.deepEqual(focused, ['pane_10']);
+  refuse = true;
+  app.handlers()?.edit();
+  await new Promise<void>(resolve => setImmediate(resolve));
+  assert.equal(app.run("element('error').textContent"), 'C-g needs a ko pane');
+});
+
+test('while an editor is open the draft is read-only, sending and Escape do nothing and the status names the editor', async () => {
+  const app = await page(), requests: string[] = [];
+  app.context.fetch = async (path?: string) => { requests.push(path ?? ''); return { ok: true, json: async () => ({}) }; };
+  const result = app.run(`
+    state={...state,pi:{type:'ready'},working:true,sessionId:'s1',edit:{pane:'pane_10',editor:'nano'}};
+    editor.setText('draft');refreshComposer();
+    const open={status:element('status').textContent,send:canSend('draft')};
+    [open,()=>{apply({type:'state',...state,edit:undefined})}];
+  `);
+  assert.equal(app.prompt()?.readOnly, true);
+  assert.deepEqual(JSON.parse(JSON.stringify(result[0])), { status: 'Editing in nano…', send: false });
+  app.listeners.get('keydown')?.({ key: 'Escape', target: app.prompt(), preventDefault() {} });
+  app.listeners.get('keydown')?.({ key: 'Escape', target: app.prompt(), preventDefault() {} });
+  await new Promise<void>(resolve => setImmediate(resolve));
+  assert.deepEqual(requests, []);
+  assert.equal(app.text(), 'draft');
+  result[1]();
+  assert.equal(app.prompt()?.readOnly, false);
+});
+
+test('the draft is locked from the first C-g until the editor request answers', async () => {
+  const app = await page();
+  let answer: (value: object) => void = () => {};
+  app.context.fetch = async () => new Promise(resolve => { answer = value => resolve({ ok: true, json: async () => value }); });
+  const result = app.run(`
+    state={...state,pi:{type:'ready'},sessionId:'s1'};editor.setText('draft');
+    openEditor();
+    const locked={send:canSend('draft')};
+    [locked,()=>state];
+  `);
+  assert.equal(app.prompt()?.readOnly, true);
+  assert.equal(JSON.parse(JSON.stringify(result[0])).send, false, JSON.stringify(result[0]));
+  answer({ pane: 'pane_10' });
+  await new Promise<void>(resolve => setImmediate(resolve));
+  assert.equal(app.prompt()?.readOnly, false);
+});
+
+test('the end of an edit returns focus to the composer', async () => {
+  const app = await page();
+  const end = app.run(`
+    state={...state,pi:{type:'ready'},sessionId:'s1',edit:{pane:'pane_10',editor:'nano'}};
+    refreshComposer();document.activeElement=undefined;
+    () => { apply({type:'state',...state,edit:undefined}); };
+  `);
+  assert.notEqual(app.context.document.activeElement, app.prompt());
+  end();
+  assert.equal(app.context.document.activeElement, app.prompt());
 });

@@ -291,7 +291,7 @@ final class WindowView: NSView {
                 backing.isHidden = view.isHidden
                 backings[pane.id] = backing
                 tiled += [backing, view, chrome]
-            case .floating(let z):
+            case .floating(let z, _):
                 if view.isHidden { floating.append((z, [view, chrome])) }
                 else {
                     let backing = box(chrome.frame, border: pixel, fill: runtime.background)
@@ -515,8 +515,10 @@ final class WindowView: NSView {
             session?.selectPane(id)
             let slot = shownPanes.first { $0.value.shown.position.pane == id }?.key ?? id
             let floats = shown?.visible.root.panes.filter { $0.layer != .tiled } ?? []
-            if case .floating(let z) = floats.first(where: { $0.id == slot })?.layer, z < floats.count - 1 {
-                session?.edit(.float(KoSchema.EditFloat(pane: slot, z: floats.count)), nil)
+            switch floats.first(where: { $0.id == slot })?.layer {
+            case .floating(_, .child(_, let z, let count)): if z < count - 1 { session?.edit(.float(KoSchema.EditFloat(pane: slot, z: count)), nil) }
+            case .floating(let z, .window): if z < floats.count - 1 { session?.edit(.float(KoSchema.EditFloat(pane: slot, z: floats.count)), nil) }
+            default: break
             }
         }
         view.onCommand = { [weak self] command in self?.session?.paneCommand(command, id) }
@@ -567,12 +569,16 @@ final class WindowView: NSView {
         if let liveFrame {
             switch liveFrame {
             case .dragging(let pane, let frame), .held(let pane, let frame):
-                if pane == id { return placement.clamp(frame) }
+                if pane == id { return placement.clamp(frame, clip: clip(id)) }
             }
         }
         if let frame = freeFrames[id], placement.geometry(frame) == geometry { return frame }
         freeFrames[id] = nil
-        return placement.clamp(placement.frame(geometry))
+        return placement.clamp(placement.frame(geometry), clip: clip(id))
+    }
+
+    private func clip(_ id: PaneID) -> Geometry? {
+        shown?.visible.root.panes.first { $0.id == id }?.layer.clip
     }
 
     private func validateFrames(_ placement: PaneLayout) {
@@ -611,7 +617,7 @@ final class WindowView: NSView {
     private func floatEdge(_ point: NSPoint) -> (Pane, NSCursor.FrameResizePosition)? {
         guard !zoomed, let placement else { return nil }
         for pane in (shown?.visible.root.panes ?? []).filter({ $0.layer != .tiled }).sorted(by: {
-            guard case .floating(let a) = $0.layer, case .floating(let b) = $1.layer else { return false }; return a > b
+            guard case .floating(let a, _) = $0.layer, case .floating(let b, _) = $1.layer else { return false }; return a > b
         }) {
             let frame = floatFrame(pane.id, pane.geometry, placement)
             guard frame.contains(point) else { continue }
@@ -721,7 +727,7 @@ final class WindowView: NSView {
                 if edge?.left == true { frame.size.width = max(minimum.width, initial.width - dx); frame.origin.x = initial.maxX - frame.width }
                 if edge?.top == true { frame.size.height = max(minimum.height, initial.height - dy); frame.origin.y = initial.maxY - frame.height }
             }
-            frame = placement.clamp(frame, resizing: edge)
+            frame = placement.clamp(frame, resizing: edge, clip: pane.layer.clip)
             liveFrame = .dragging(pane.id, frame)
             placeFloat(pane.id, placement)
             let geometry = placement.geometry(frame)
@@ -729,7 +735,7 @@ final class WindowView: NSView {
                 let moves = edge == nil || edge?.left == true || edge?.top == true
                 sendFloat(.float(KoSchema.EditFloat(
                     cols: edge == nil ? nil : geometry.width, pane: pane.id, rows: edge == nil ? nil : geometry.height,
-                    x: moves ? max(0, geometry.x) : nil, y: moves ? max(0, geometry.y) : nil)), pane.id)
+                    x: moves ? max(0, geometry.x - (pane.layer.clip?.x ?? 0)) : nil, y: moves ? max(0, geometry.y - (pane.layer.clip?.y ?? 0)) : nil)), pane.id)
             }
             if event.type == .leftMouseUp {
                 let sent = lastFloatEdit != nil
@@ -747,7 +753,7 @@ final class WindowView: NSView {
         if moved {
             let tiled = shown?.visible.root.panes.filter { $0.layer == .tiled } ?? []
             let hit = (shown?.visible.root.panes ?? []).sorted {
-                switch ($0.layer, $1.layer) { case (.floating(let a), .floating(let b)): a > b; case (.floating, .tiled): true; default: false }
+                switch ($0.layer, $1.layer) { case (.floating(let a, _), .floating(let b, _)): a > b; case (.floating, .tiled): true; default: false }
             }.lazy.compactMap { self.displayed($0.id)?.chrome }.first { !$0.isHidden && $0.frame.contains(point) }
             if tiled.count > 1, let placement,
                hit == nil || tiled.contains(where: { $0.id == hit?.pane }) {
@@ -898,7 +904,7 @@ final class WindowView: NSView {
         }
         if !zoomed {
             for pane in (shown?.visible.root.panes ?? []).filter({ $0.layer != .tiled }).sorted(by: {
-                guard case .floating(let a) = $0.layer, case .floating(let b) = $1.layer else { return false }; return a > b
+                guard case .floating(let a, _) = $0.layer, case .floating(let b, _) = $1.layer else { return false }; return a > b
             }) {
                 let r = floatFrame(pane.id, pane.geometry, placement)
                 defer { covered.append(r) }

@@ -821,3 +821,36 @@ fn a_new_pane_reports_its_size_to_a_program_that_asks_at_startup() {
         probe_round(&s, &pane, 0, (cols, rows), (16, 35));
     }
 }
+
+#[test]
+fn window_switching_skips_only_real_child_windows_not_windows_with_child_floats() {
+    let s = start(&[]);
+    let cat = json!({"command": {"type": "shell", "command": "exec cat"}});
+    let root = crate::panes::new_pane(&s, &cat);
+    let child = crate::panes::new_pane(
+        &s,
+        &json!({"parent": root, "command": {"type": "shell", "command": "exec cat"}}),
+    );
+    let plain = crate::panes::new_pane(
+        &s,
+        &json!({"session": "session_1", "command": {"type": "shell", "command": "exec cat"}}),
+    );
+    let float = |owner: &str| json!({"pane": {"new": {"parent": owner, "close": "on_exit", "command": {"type": "shell", "command": "exec cat"}}}, "border": true});
+    s.edit(|layout| {
+        for window in layout["sessions"][0]["windows"].as_array_mut().unwrap() {
+            for owner in [&root, &child] {
+                if window["tree"]["pane"] == json!(owner) {
+                    window["floats"] = json!([float(owner)]);
+                }
+            }
+        }
+    });
+    let (mut c, _) = s.app_client(json!({"pane": root}), true, (80, 24));
+    let shown = |c: &mut crate::harness::Ws, direction: &str| {
+        c.send(&json!({"type": "switch", "request": 1, "over": "window", "direction": direction}));
+        c.event("selected")["pane"].clone()
+    };
+    assert_eq!(shown(&mut c, "next"), json!(plain));
+    assert_eq!(shown(&mut c, "next"), json!(root));
+    assert_eq!(shown(&mut c, "previous"), json!(plain));
+}

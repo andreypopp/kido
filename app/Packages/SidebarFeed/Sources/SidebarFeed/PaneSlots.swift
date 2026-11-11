@@ -5,6 +5,12 @@ public struct PaneProjection: Equatable, Sendable {
         public let position: Snapshot.Position
         public let slot: Snapshot.Position
         let parent: PaneID?
+        public let presentation: Presentation
+    }
+    // A child in its parent's own window floats over it; a child in another window replaces it in its slot.
+    public enum Presentation: Equatable, Sendable {
+        case replacement
+        case floating(owner: Snapshot.Position)
     }
     public struct Entry: Equatable, Sendable {
         let session: SessionID
@@ -16,18 +22,19 @@ public struct PaneProjection: Equatable, Sendable {
     private(set) var children: [PaneID: [PaneID]] = [:]
 
     public init(_ snapshot: Snapshot?) {
-        func visit(_ node: Node, session: SessionID, slot: Snapshot.Position?, parent: PaneID?) {
+        func visit(_ node: Node, session: SessionID, slot: Snapshot.Position?, parent: Snapshot.Position?) {
             switch node {
             case .window(let window):
                 window.children.forEach { visit(.item($0), session: session, slot: slot, parent: parent) }
             case .item(let item):
                 let position = Snapshot.Position(session: session, window: item.window, pane: item.id)
                 let root = slot ?? position
-                placements[item.id] = Placement(position: position, slot: root, parent: parent)
+                let presentation: Presentation = parent.flatMap { $0.window == item.window ? .floating(owner: $0) : nil } ?? .replacement
+                placements[item.id] = Placement(position: position, slot: root, parent: parent?.pane, presentation: presentation)
                 items[item.id] = Entry(session: session, item: item)
                 rootWindows[item.window] = root.window
-                if let parent { children[parent, default: []].append(item.id) }
-                item.children.forEach { visit($0, session: session, slot: root, parent: item.id) }
+                if let parent { children[parent.pane, default: []].append(item.id) }
+                item.children.forEach { visit($0, session: session, slot: root, parent: position) }
             }
         }
         snapshot?.sessions.forEach { session in
@@ -72,16 +79,31 @@ public struct PaneSlots: Equatable, Sendable {
         var lastChild: [PaneID: PaneID] = [:]
     }
     private var choices: [PaneID: Choice] = [:]
-    private var focused: [WindowID: PaneID] = [:]
+    private enum Focus: Equatable, Sendable {
+        case slot(PaneID)
+        case float(PaneID)
+    }
+    private var focused: [WindowID: Focus] = [:]
     private var repairs: Set<PaneID> = []
     public init() {}
 
     public func shown(_ root: PaneID) -> PaneID { choices[root]?.shown ?? root }
-    public func selected(in window: WindowID, fallback root: PaneID) -> PaneID { shown(focused[window] ?? root) }
+    public func selected(in window: WindowID, fallback root: PaneID) -> PaneID {
+        switch focused[window] {
+        case .float(let pane): pane
+        case .slot(let slot): shown(slot)
+        case nil: shown(root)
+        }
+    }
     public mutating func cancelRepair() { repairs = [] }
 
     @discardableResult public mutating func reconcile(_ projection: PaneProjection, selected: PaneID? = nil) -> [Snapshot.Position] {
-        focused = focused.filter { projection.placements[$0.value]?.slot.window == $0.key && projection.placements[$0.value]?.slot.pane == $0.value }
+        focused = focused.filter { window, focus in
+            switch focus {
+            case .slot(let slot): projection.placements[slot]?.slot.window == window && projection.placements[slot]?.slot.pane == slot
+            case .float(let pane): projection.placements[pane]?.slot.window == window
+            }
+        }
         repairs = repairs.filter { projection.placements[$0]?.slot.pane == $0 }
         var select: [Snapshot.Position] = []
         for root in Array(choices.keys) {
@@ -116,7 +138,12 @@ public struct PaneSlots: Equatable, Sendable {
     private mutating func remember(_ pane: PaneID, in projection: PaneProjection) {
         guard let placement = projection.placements[pane] else { return }
         let root = placement.slot.pane
-        focused[placement.slot.window] = root
+        if case .floating(let owner) = placement.presentation {
+            remember(owner.pane, in: projection)
+            focused[placement.slot.window] = .float(pane)
+            return
+        }
+        focused[placement.slot.window] = .slot(root)
         var choice = choices[root] ?? Choice(shown: root)
         choice.shown = pane
         var child = pane

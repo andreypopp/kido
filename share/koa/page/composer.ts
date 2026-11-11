@@ -21,8 +21,8 @@ export const composerLanguage = new Language(markdownLanguage.data, parser.confi
 
 const outsideComposition = (command: Command): Command => view => !view.compositionStarted && command(view);
 
-export function composer(host: HTMLElement, handlers: { input(user: boolean): void; send(mode: PromptMode): void; quit(): void; takeBack(): void; drop(event: DragEvent): boolean; paste(event: ClipboardEvent): boolean }) {
-  const hint = new Compartment(), language = new Compartment();
+export function composer(host: HTMLElement, handlers: { input(user: boolean): void; send(mode: PromptMode): void; quit(): void; edit(): void; takeBack(): void; drop(event: DragEvent): boolean; paste(event: ClipboardEvent): boolean }) {
+  const hint = new Compartment(), language = new Compartment(), locked = new Compartment();
   let label = 'Message koa…', running = false;
   const mode = StateField.define<ReturnType<typeof bashCommand>>({
     create: () => undefined,
@@ -95,12 +95,14 @@ export function composer(host: HTMLElement, handlers: { input(user: boolean): vo
         { key: 'Shift-Enter', run: outsideComposition(insertNewline) },
         { key: 'Backspace', run: outsideComposition(view => !view.state.field(mode) && deleteMarkupBackward(view)) },
         { key: 'Alt-Enter', run: outsideComposition(() => { handlers.send('follow_up'); return true; }) },
+        { key: 'Ctrl-g', run: () => { handlers.edit(); return true; } },
         { key: 'Ctrl-d', run: () => { if (!empty()) return false; handlers.quit(); return true; } },
       ])),
       EditorView.lineWrapping,
       drawSelection(),
       EditorView.contentAttributes.of({ 'aria-label': 'Message koa' }),
       hint.of(placeholder(label)),
+      locked.of(EditorState.readOnly.of(false)),
       EditorView.updateListener.of(update => { if (update.docChanged) { refreshMode(); if (!recalling) prompts.reset(); handlers.input(update.transactions.some(transaction => transaction.annotation(Transaction.userEvent) !== undefined)); } }),
     ],
   });
@@ -113,6 +115,7 @@ export function composer(host: HTMLElement, handlers: { input(user: boolean): vo
     text: () => view.state.doc.toString(),
     setText(text: string) { prompts.reset(); view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: text }, selection: { anchor: text.length }, scrollIntoView: true }); },
     insert(text: string) { view.dispatch(view.state.replaceSelection(text), { scrollIntoView: true, userEvent: 'input.type' }); },
+    readonly(value: boolean) { if (value !== view.state.readOnly) view.dispatch({ effects: locked.reconfigure(EditorState.readOnly.of(value)) }); },
     focus: () => view.focus(),
     hasFocus: () => view.hasFocus,
     placeholder(text: string) { if (text !== label) { label = text; view.dispatch({ effects: hint.reconfigure(placeholder(text)) }); } },

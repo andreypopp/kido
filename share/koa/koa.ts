@@ -1,5 +1,6 @@
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { once } from "node:events";
+import { randomUUID } from "node:crypto";
 import { appendFile, writeFile } from "node:fs/promises";
 import { mkdtempSync, rmSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
@@ -23,6 +24,7 @@ import { attachments, stepFile, UPLOAD_IDLE_MS, isChunkRoute } from "./koa-attac
 import { commandCatalog, parseCommand, dispatchCommand } from './koa-commands.ts';
 import { bashCommand } from "./prompt.ts";
 import { prompts } from "./koa-queue.ts";
+import { koaEditor } from "./koa-editor.ts";
 import { ATTACHMENT_LIMITS, type PromptMode, type Exit, type Pi, type State, type ThinkingLevel, type DialogMethod, type CompletionCommand, type Attachment, type CompletionQuery, type SessionStats, type CommandResult, type Bash } from "./koa-records.ts";
 
 function completeBody(value: unknown): CompletionQuery | { error: string } {
@@ -245,9 +247,15 @@ async function main(): Promise<void> {
     let compaction: { root: Root; working: boolean; since?: number } | undefined;
     let compactRequest: { ended: boolean } | undefined;
     let settled: (() => void) | undefined;
-    const state: Omit<State, "pi" | "queue"> = { agents: [], bash: [], get compaction() { return compaction ? 'running' : 'idle'; }, working: false, aborted: false, name: "pi", levels: [], cwd: process.cwd(), home: homedir(), dialogs: [], statuses: {} };
+    const state: Omit<State, "pi" | "queue"> = { get edit() { return edits.view(); }, agents: [], bash: [], get compaction() { return compaction ? 'running' : 'idle'; }, working: false, aborted: false, name: "pi", levels: [], cwd: process.cwd(), home: homedir(), dialogs: [], statuses: {} };
     let stopping = false;
     teardown.push(() => { stopping = true; });
+    const edits = koaEditor({
+      agentDir: agentDir.replace(/^~(?=\/|$)/, homedir()), cwd: () => state.cwd, session: () => state.sessionId,
+      replace: text => { state.editor = { id: randomUUID(), text }; publish(); },
+      notify: text => feed.notify(text, "warning"), changed: () => publish(),
+    });
+    teardown.push(() => edits.cancel());
     let pi: Pi = { type: "starting" };
     const running = () => !stopping && pi.type === "ready";
     let root: Root = { value: "idle", message: state.name };
@@ -469,7 +477,7 @@ async function main(): Promise<void> {
     };
     const resetSession = () => {
       state.working = false; state.aborted = false; delete state.since; delete state.editor; delete state.context;
-      dropBash(); pendingPrompts.reset(); userAttachments = []; attached.reset();
+      void edits.cancel(); dropBash(); pendingPrompts.reset(); userAttachments = []; attached.reset();
       clearTimeout(argumentTimer); argumentTimer = undefined; argumentsText.clear(); partial = undefined;
       compaction = undefined; outcome = { type: "done" }; state.dialogs = []; state.statuses = {};
       for (const timer of dialogTimers.values()) clearTimeout(timer);
@@ -686,6 +694,11 @@ async function main(): Promise<void> {
         if ("error" in answer) throw new Error(answer.error);
         removeDialog(dialog.id);
         await link.answer(answer); respond(response, 200, "{}");
+      } },
+      "/editor/open": { method: "POST", access: "session", handle: async (value, response) => {
+        if (!isRecord(value) || typeof value.text !== "string") { respond(response, 400, JSON.stringify({ error: "A draft text is required" })); return; }
+        const result = await edits.open(value.text);
+        respond(response, "error" in result ? 409 : 200, JSON.stringify(result));
       } },
       "/editor/ack": { method: "POST", access: "session", handle: (value, response) => {
         const id = idBody(value);

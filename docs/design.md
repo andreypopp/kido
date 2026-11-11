@@ -632,16 +632,18 @@ rows (`ko_client/src/model.rs`, with the walk of
 spawned it, one level deeper, not after the whole parent window: the
 subagents belong to the coordinating agent, not a shell sharing its
 window. The edge is the row's immutable `parent`, which the server
-sets at create: a child's pane gets its spawner's pane. A pane with a
-`parent` is alone in its window, which the server enforces for every
-client (protocol.md, section 7), so a child window is one pane and
-nests under the pane that its `parent` names. A parent that is absent
+sets at create: a child's pane gets its spawner's pane. A tiled pane
+with a `parent` is alone in its window, except for floating children
+in the window of their parent, which the server enforces for every
+client (protocol.md, section 7), so a child window is one tiled pane
+and nests under the pane that its `parent` names. A floating child,
+such as koa's editor, nests under its parent in the same window. A parent that is absent
 or in another session leaves the window a root of its session's tree,
 but its pane is still a child: it stays alone in its window, and a
 removal of its parent still takes it.
 
-A **top-level window** is one whose pane has no parent pane in the
-same session; every other window is a child window of the pane that
+A **top-level window** is one whose tiled pane has no parent pane in
+the same session; every other window is a child window of the pane that
 its pane's `parent` names. The server's window switch (protocol.md,
 section 3) steps over top-level windows only: from a child window it
 steps from the child's top-level ancestor, so Next and Previous Window

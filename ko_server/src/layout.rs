@@ -140,14 +140,19 @@ impl Document {
         )
         .map_err(PutError::Invalid)?;
         self.ids = normalized.ids;
-        self.replace(normalized.layout);
+        self.replace(normalized.layout, parent_of);
         Ok(normalized.created)
     }
 
-    fn removal(&mut self, panes: Vec<PaneId>, change: impl FnOnce(&mut Layout)) -> Removal {
+    fn removal(
+        &mut self,
+        panes: Vec<PaneId>,
+        parent_of: &dyn Fn(PaneId) -> Option<PaneId>,
+        change: impl FnOnce(&mut Layout),
+    ) -> Removal {
         let before = self.layout.clone();
         change(&mut self.layout);
-        settle(&before, &mut self.layout);
+        settle(&before, &mut self.layout, parent_of);
         self.unpublished = true;
         Removal { panes, before }
     }
@@ -198,7 +203,7 @@ impl Document {
                 }
             }
         }
-        Some(self.removal(panes.clone(), |layout| {
+        Some(self.removal(panes.clone(), parent_of, |layout| {
             for pane in panes {
                 remove_pane(layout, pane);
             }
@@ -261,8 +266,8 @@ impl Document {
         }
     }
 
-    fn replace(&mut self, mut layout: Layout) {
-        settle(&self.layout, &mut layout);
+    fn replace(&mut self, mut layout: Layout, parent_of: &dyn Fn(PaneId) -> Option<PaneId>) {
+        settle(&self.layout, &mut layout, parent_of);
         if layout != self.layout {
             self.layout = layout;
             self.unpublished = true;
@@ -293,7 +298,7 @@ fn prune(layout: &mut Layout) {
         .retain(|session| !session.windows.is_empty());
 }
 
-fn settle(before: &Layout, after: &mut Layout) {
+fn settle(before: &Layout, after: &mut Layout, parent_of: &dyn Fn(PaneId) -> Option<PaneId>) {
     let olds: BTreeMap<WindowId, &Window> = before
         .windows()
         .map(|(_, window)| (window.id, window))
@@ -311,6 +316,12 @@ fn settle(before: &Layout, after: &mut Layout) {
             continue;
         }
         let (now, order) = (window.panes(), old.panes());
+        if let Some(parent) = std::iter::successors(parent_of(old.focus), |pane| parent_of(*pane))
+            .find(|pane| now.contains(pane))
+        {
+            window.focus = parent;
+            continue;
+        }
         if let Some(pane) = order
             .iter()
             .position(|pane| *pane == old.focus)
@@ -652,8 +663,8 @@ struct Claims<'a> {
     current: &'a Layout,
     shell: &'a dyn Fn() -> Option<Name>,
     parent_of: &'a dyn Fn(PaneId) -> Option<PaneId>,
-    parented: Option<PaneId>,
     shell_name: OnceCell<Option<Name>>,
+    tiled: Vec<(PaneId, Option<PaneId>)>,
     live: &'a BTreeSet<PaneId>,
     seen: BTreeSet<PaneId>,
     ids: Ids,
@@ -679,7 +690,7 @@ impl Claims<'_> {
         word.and_then(base_name).or_else(shell)
     }
 
-    fn pane(&mut self, reference: PaneRef) -> Result<PaneId, String> {
+    fn pane(&mut self, reference: PaneRef) -> Result<(PaneId, Option<PaneId>), String> {
         let (pane, parent) = match reference {
             PaneRef::Existing(pane) if self.live.contains(&pane) => (pane, (self.parent_of)(pane)),
             PaneRef::Existing(pane) => return Err(format!("{pane} is not a live pane")),
@@ -694,16 +705,17 @@ impl Claims<'_> {
         if !self.seen.insert(pane) {
             return Err(format!("{pane} is in the layout twice"));
         }
-        if parent.is_some() {
-            self.parented = Some(pane);
-        }
-        Ok(pane)
+        Ok((pane, parent))
     }
 
     fn node(&mut self, node: Node<DraftLeaf>) -> Result<Node<Raw>, String> {
         match node {
             Node::Leaf(leaf) => Ok(Node::Leaf(Raw {
-                pane: self.pane(leaf.pane)?,
+                pane: {
+                    let placed = self.pane(leaf.pane)?;
+                    self.tiled.push(placed);
+                    placed.0
+                },
                 cols: leaf.cols.map(|cells| usize::from(cells.get())),
                 rows: leaf.rows.map(|cells| usize::from(cells.get())),
             })),
@@ -736,10 +748,11 @@ fn window(
             .and_then(|leaf| claims.default_name(&leaf.pane))
             .ok_or("the window needs a name")?,
     };
-    claims.parented = None;
+    claims.tiled.clear();
     let tree = claims.node(draft.tree)?;
     let focus = first_leaf(&tree).ok_or("a window needs a pane")?.pane;
     let mut floats = vec![];
+    let mut floated = vec![];
     for float in draft.floats {
         let DraftFloat {
             pane,
@@ -752,7 +765,11 @@ fn window(
             title,
         } = float;
         floats.push(FloatIn {
-            pane: claims.pane(pane)?,
+            pane: {
+                let placed = claims.pane(pane)?;
+                floated.push(placed);
+                placed.0
+            },
             x: x.map(usize::from),
             y: y.map(usize::from),
             cols: cols.map(|cells| usize::from(cells.get())),
@@ -762,12 +779,33 @@ fn window(
             title,
         });
     }
-    if let Some(pane) = claims.parented
-        && (!matches!(tree, Node::Leaf(_)) || !floats.is_empty())
+    let here: BTreeSet<PaneId> = claims
+        .tiled
+        .iter()
+        .chain(&floated)
+        .map(|(pane, _)| *pane)
+        .collect();
+    if let Some((pane, _)) = claims
+        .tiled
+        .iter()
+        .find(|(_, parent)| parent.is_some())
+        .filter(|_| claims.tiled.len() > 1)
+        .or_else(|| {
+            let child_tiled = claims.tiled.iter().any(|(_, parent)| parent.is_some());
+            floated
+                .iter()
+                .find(|(_, parent)| child_tiled && parent.is_none())
+        })
     {
         return Err(format!(
             "child pane {pane} must be the only pane in its window"
         ));
+    }
+    if let Some((pane, _)) = floated
+        .iter()
+        .find(|(_, parent)| parent.is_some_and(|parent| !here.contains(&parent)))
+    {
+        return Err(format!("child float {pane} must be in its parent's window"));
     }
     let wanted = |given: Option<Cells>, old: Option<Cells>, default: Dim| {
         usize::from(given.or(old).map_or(default.get(), Cells::get))
@@ -819,8 +857,8 @@ fn normalize(
         current,
         shell,
         parent_of,
-        parented: None,
         shell_name: OnceCell::new(),
+        tiled: vec![],
         live: &live,
         seen: BTreeSet::new(),
         ids,

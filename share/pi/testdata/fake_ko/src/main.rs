@@ -184,10 +184,28 @@ fn listing(row: &Value) -> Listing {
 
 type Windows = Vec<(String, Vec<String>)>;
 
+fn revision_path() -> String {
+    format!("{}.rev", panes_path())
+}
+
+fn revision() -> u64 {
+    fs::read_to_string(revision_path())
+        .ok()
+        .and_then(|raw| raw.trim().parse().ok())
+        .unwrap_or(1)
+}
+
 fn layout(table: &[Value]) -> LayoutPanes {
     let mut sessions: Vec<(String, Windows)> = Vec::new();
+    let mut floats: Vec<(String, Float)> = Vec::new();
     for row in table {
         let (session, window, pane) = (text(row, "session"), text(row, "window"), text(row, "id"));
+        if let Some(float) = row.get("float") {
+            let mut float = float.clone();
+            float["pane"] = json!(pane);
+            floats.push((window, fixture(&float)));
+            continue;
+        }
         let at = match sessions.iter().position(|(id, _)| *id == session) {
             Some(at) => at,
             None => {
@@ -232,18 +250,146 @@ fn layout(table: &[Value]) -> LayoutPanes {
                             children: many.iter().map(leaf).collect(),
                         },
                     },
-                    floats: Vec::new(),
+                    floats: floats
+                        .iter()
+                        .filter(|(owner, _)| owner == window)
+                        .map(|(_, float)| float.clone())
+                        .collect(),
                 })
                 .collect(),
         })
         .collect();
     LayoutPanes {
         snapshot: Snapshot {
-            revision: fixture(&json!(1)),
+            revision: fixture(&json!(revision())),
             layout: Layout { sessions },
         },
         panes: table.iter().map(listing).collect(),
     }
+}
+
+fn next_pane(table: &[Value]) -> u64 {
+    table
+        .iter()
+        .filter_map(|row| text(row, "id").strip_prefix("pane_")?.parse::<u64>().ok())
+        .max()
+        .unwrap_or(1)
+        .max(9)
+        + 1
+}
+
+fn draft_panes<'a>(node: &'a Node<DraftLeaf>, out: &mut Vec<&'a PaneRef>) {
+    match node {
+        Node::Leaf(leaf) => out.push(&leaf.pane),
+        Node::Split { children, .. } => children.iter().for_each(|child| draft_panes(child, out)),
+    }
+}
+
+fn pane_row(table: &[Value], pane: &CreatePane, session: &str, window: &str) -> Value {
+    let id = format!("pane_{}", next_pane(table));
+    let mut row = json!({
+        "id": id,
+        "session": session,
+        "window": window,
+        "cwd": pane.cwd,
+        "command": match &pane.command { Some(Command::Argv { argv }) => Some(argv), _ => None },
+        "vars": pane.vars,
+        "close": pane.close,
+        "parent": pane.parent,
+    });
+    if let Some(fields) = row.as_object_mut() {
+        fields.retain(|_, value| !value.is_null());
+    }
+    row
+}
+
+// The server's side of a layout put, enough for a float: the revision must be current, every
+// existing pane must exist, and each new float pane joins its window, centered when it has no
+// position. A gate file makes the next put stale, as another writer would.
+fn put_layout(body: &str) -> ExitCode {
+    let Ok(request) = protocol::decode::<PutLayout>(body.as_bytes()) else {
+        return http_error(400, ErrorKind::Invalid, "not a PutLayout");
+    };
+    wait_gate("KO_FAKE_PUT_GATE");
+    let stale = env("KO_FAKE_PUT_STALE");
+    let injected = !stale.is_empty() && fs::remove_file(&stale).is_ok();
+    if injected {
+        let _ = fs::write(revision_path(), (revision() + 1).to_string());
+    }
+    let table = rows("KO_FAKE_PANES");
+    if injected || request.revision != fixture(&json!(revision())) {
+        println!("{}", protocol::json(&layout(&table).snapshot));
+        eprintln!("ko api: HTTP 409");
+        return ExitCode::FAILURE;
+    }
+    let result = with_table(|table| {
+        let mut added = Vec::new();
+        for session in &request.layout.sessions {
+            for window in &session.windows {
+                let (Some(session_id), Some(window_id)) = (&session.id, &window.id) else {
+                    return Err("the fake needs session and window ids".to_owned());
+                };
+                let mut tree = Vec::new();
+                draft_panes(&window.tree, &mut tree);
+                for pane in tree {
+                    if let PaneRef::Existing(id) = pane
+                        && row_of(table, &id.to_string()).is_none()
+                    {
+                        return Err(format!("no pane {id}"));
+                    }
+                }
+                for float in &window.floats {
+                    match &float.pane {
+                        PaneRef::Existing(id) => {
+                            if row_of(table, &id.to_string()).is_none() {
+                                return Err(format!("no pane {id}"));
+                            }
+                        }
+                        PaneRef::New { new } => {
+                            let (cols, rows) = (
+                                float.cols.map_or(40, |cells| cells.get()),
+                                float.rows.map_or(12, |cells| cells.get()),
+                            );
+                            if cols > 80 || rows > 24 {
+                                return Err("the float is larger than its window".to_owned());
+                            }
+                            let mut row = pane_row(
+                                &table
+                                    .iter()
+                                    .chain(added.iter())
+                                    .cloned()
+                                    .collect::<Vec<_>>(),
+                                new,
+                                &session_id.to_string(),
+                                &window_id.to_string(),
+                            );
+                            row["float"] = json!({
+                                "x": float.x.unwrap_or((80 - cols) / 2),
+                                "y": float.y.unwrap_or((24 - rows) / 2),
+                                "cols": cols,
+                                "rows": rows,
+                                "z": float.z.unwrap_or(0),
+                                "border": float.border,
+                                "title": float.title,
+                            });
+                            added.push(row);
+                        }
+                    }
+                }
+            }
+        }
+        table.extend(added);
+        Ok(())
+    });
+    if let Err(message) = result {
+        return http_error(400, ErrorKind::Invalid, &message);
+    }
+    let _ = fs::write(revision_path(), (revision() + 1).to_string());
+    println!(
+        "{}",
+        protocol::json(&layout(&rows("KO_FAKE_PANES")).snapshot)
+    );
+    ExitCode::SUCCESS
 }
 
 fn http_error(status: u16, kind: ErrorKind, message: &str) -> ExitCode {
@@ -268,13 +414,7 @@ fn new_pane(body: &str) -> ExitCode {
     }
     let caller = env("KO_PANE");
     let placed = with_table(|table| {
-        let next = table
-            .iter()
-            .filter_map(|row| text(row, "id").strip_prefix("pane_")?.parse::<u64>().ok())
-            .max()
-            .unwrap_or(1)
-            .max(9)
-            + 1;
+        let next = next_pane(table);
         let session_of = |pane: &str| row_of(table, pane).map(|row| text(row, "session"));
         let session = request
             .session
@@ -945,6 +1085,14 @@ fn api(argv: &[String]) -> ExitCode {
                     }
                 })
             );
+        }
+        ("PUT", ["", "layout"]) => return put_layout(&body),
+        ("DELETE", ["", "panes", pane]) => {
+            let refusal = env("KO_FAKE_DELETE_FAIL");
+            if !refusal.is_empty() {
+                return http_error(409, ErrorKind::Refused, &refusal);
+            }
+            return stop_pane(pane);
         }
         ("POST", ["", "panes"]) => return new_pane(&body),
         ("POST", ["", "panes", pane, "stop"]) => {

@@ -26,7 +26,7 @@ fn child_windows_refuse_a_second_pane_without_changing_the_document() {
             .error(1)
             .contains("must be the only pane")
     );
-    for case in 0..4 {
+    for case in 0..3 {
         let mut draft = before.clone();
         let windows = draft["layout"]["sessions"][0]["windows"]
             .as_array_mut()
@@ -53,10 +53,6 @@ fn child_windows_refuse_a_second_pane_without_changing_the_document() {
                         json!({"pane": {"new": {"parent": parent["pane"], "command": {"type": "shell", "command": "exec cat"}}}}),
                     ],
                 )
-            }
-            3 => {
-                windows[root_at]["floats"] = json!([{"pane": child["pane"]}]);
-                windows.remove(child_at);
             }
             _ => unreachable!(),
         }
@@ -791,4 +787,107 @@ fn a_title_change_moves_no_revision_and_a_pop_restores_the_pushed_title() {
     s.wait_row(&pane, "the restored title", |row| row["title"] == "changed");
     let path = format!("/panes/{pane}");
     assert_eq!(s.ko(&["api", &path], "").json()["title"], "changed");
+}
+
+#[test]
+fn a_child_float_sits_over_its_parent_and_goes_with_it() {
+    let s = start(&[]);
+    let cat = json!({"command": {"type": "shell", "command": "exec cat"}});
+    let parent = crate::panes::new_pane(&s, &cat);
+    let elsewhere = crate::panes::new_pane(
+        &s,
+        &json!({"session": "session_1", "command": {"type": "shell", "command": "exec cat"}}),
+    );
+    let child = json!({"parent": parent, "close": "on_exit", "command": {"type": "shell", "command": "exec cat"}});
+    let sibling = crate::panes::new_pane(
+        &s,
+        &json!({"session": "session_1", "command": {"type": "shell", "command": "exec cat"}}),
+    );
+    s.edit(|layout| {
+        let windows = layout["sessions"][0]["windows"].as_array_mut().unwrap();
+        windows.retain(|window| window["tree"]["pane"] != sibling);
+        for window in windows {
+            if window["tree"]["pane"] == parent {
+                window["tree"] = split("h", vec![old(&parent), old(&sibling)]);
+            }
+        }
+    });
+    let before = s.doc();
+    let window_of = |pane: &str| -> Value {
+        windows(&before)
+            .into_iter()
+            .find(|window| {
+                shape(&window["tree"]).contains(&format!("{}:", pane.trim_start_matches("pane_")))
+            })
+            .unwrap()["id"]
+            .clone()
+    };
+    let with_float = |window: &Value| {
+        let mut draft = s.doc();
+        for one in draft["layout"]["sessions"][0]["windows"]
+            .as_array_mut()
+            .unwrap()
+        {
+            if one["id"] == *window {
+                one["floats"] = json!([{"pane": {"new": child}, "border": true}]);
+            }
+        }
+        draft
+    };
+
+    crate::panes::refused(
+        crate::panes::api(
+            &s,
+            None,
+            "PUT",
+            "/layout",
+            &with_float(&window_of(&elsewhere)),
+        ),
+        400,
+        "invalid",
+        "must be in its parent's window",
+    );
+    assert_eq!(s.doc()["layout"], before["layout"]);
+
+    let parent_window = window_of(&parent);
+    let snapshot = s.put(&with_float(&parent_window));
+    let float = windows(&snapshot)
+        .into_iter()
+        .find(|window| window["id"] == parent_window)
+        .unwrap()["floats"][0]["pane"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert_eq!(s.row(&float)["parent"], json!(parent));
+
+    let (mut client, _) = s.app_client(json!({"pane": parent}), true, (80, 24));
+    client.send(&json!({"type": "select", "request": 1, "pane": float}));
+    poll("the float to take the window's focus", || {
+        windows(&s.doc())
+            .into_iter()
+            .any(|window| window["id"] == parent_window && window["focus"] == json!(float))
+    });
+    s.delete(&format!("/panes/{float}"));
+    poll("the parent to take the window's focus", || {
+        windows(&s.doc()).into_iter().any(|window| {
+            window["id"] == parent_window
+                && window["focus"] == json!(parent)
+                && window["floats"] == json!([])
+        })
+    });
+
+    s.put(&with_float(&parent_window));
+    let again = windows(&s.doc())
+        .into_iter()
+        .find(|window| window["id"] == parent_window)
+        .unwrap()["floats"][0]["pane"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    s.delete(&format!("/panes/{parent}"));
+    poll("the cascade to remove the parent and its float", || {
+        s.rows()
+            .iter()
+            .all(|row| row["id"] != json!(parent) && row["id"] != json!(again))
+    });
 }

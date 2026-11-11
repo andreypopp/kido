@@ -1,9 +1,12 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import os from "node:os";
-import { isRecord, isString } from "./text.ts";
+import { errorText, isRecord, isString } from "./text.ts";
 import type { components } from "./ko-api.d.ts";
 import type { JobEnd } from "./records.ts";
 type Api = components["schemas"];
+export const KO_TIMEOUT_MS = 5000;
+export type RunResult = { ok: true; out: string; raw: string } | { ok: false; error: string; code?: number; out: string; err: string };
+
 export type ExecResult = { end: JobEnd };
 const EXEC_CHUNK = 64 * 1024;
 const isNodeSignal = (signal: string): signal is NodeJS.Signals => Object.hasOwn(os.constants.signals, signal);
@@ -116,3 +119,50 @@ export function runtimeExec(ko: string, runtime: string, opts: ExecOptions): Pro
   opts.onSpawn?.(child, completion);
   return completion;
 }
+
+export async function runCommand(command: string, args: string[], opts: { timeoutMs: number; env?: NodeJS.ProcessEnv; input?: string } = { timeoutMs: KO_TIMEOUT_MS }): Promise<RunResult> {
+  return new Promise((resolve) => {
+    const child = spawn(command, args, { stdio: [opts.input === undefined ? "ignore" : "pipe", "pipe", "pipe"], env: opts.env ?? process.env });
+    if (opts.input !== undefined) {
+      child.stdin?.on("error", () => {});
+      child.stdin?.end(opts.input);
+    }
+    const stdout: Buffer[] = [];
+    const stderr: Buffer[] = [];
+    const finish = (result: RunResult): void => {
+      clearTimeout(timer);
+      resolve(result);
+    };
+    const timer = setTimeout(() => {
+      child.kill();
+      finish({ ok: false, error: `${command} timed out after ${opts.timeoutMs}ms`, out: "", err: "" });
+    }, opts.timeoutMs);
+    timer.unref();
+    child.stdout?.on("data", (c: Buffer) => stdout.push(c));
+    child.stderr?.on("data", (c: Buffer) => stderr.push(c));
+    child.on("error", (err) => finish({ ok: false, error: errorText(err), out: "", err: "" }));
+    child.on("close", (code) => {
+      const out = Buffer.concat(stdout).toString("utf8");
+      const err = Buffer.concat(stderr).toString("utf8");
+      if (code === 0) finish({ ok: true, out: out.trim(), raw: out });
+      else finish({ ok: false, error: err.trim() || `${command} exited with code ${code}`, ...(code === null ? {} : { code }), out, err });
+    });
+  });
+}
+
+export type Reply = { status: number; body: string } | { error: string };
+
+export const apiArgs = (method: string, path: string, body: unknown): string[] => [
+  "api",
+  ...(method === "GET" ? [] : ["-X", method]),
+  ...(body === undefined ? [] : ["--input", "-"]),
+  path,
+];
+
+export async function apiCall(method: string, path: string, body?: unknown, timeoutMs = KO_TIMEOUT_MS): Promise<Reply> {
+  const res = await runCommand("ko", apiArgs(method, path, body), { timeoutMs, input: body === undefined ? undefined : JSON.stringify(body) });
+  if (res.ok) return { status: 200, body: res.raw };
+  const status = /ko api: HTTP (\d+)/.exec(res.err)?.[1];
+  return status ? { status: Number(status), body: res.out.trim() } : { error: res.error };
+}
+

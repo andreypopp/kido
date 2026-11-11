@@ -43,7 +43,7 @@ import { randomBytes } from "node:crypto";
 import { type WriteStream, accessSync, constants, createWriteStream, mkdirSync, readFileSync, readdirSync, realpathSync, statSync } from "node:fs";
 import os from "node:os";
 import { setCompletionContext } from "./completion-context.ts";
-import { runtimeExec, lineReader, openStream, type ExecOptions, type ExecResult } from "./runtime-exec.ts";
+import { runtimeExec, lineReader, openStream, runCommand, apiCall, apiArgs, KO_TIMEOUT_MS, type Reply, type ExecOptions, type ExecResult } from "./runtime-exec.ts";
 import { contentText, mintId, utf8Prefix, utf8Suffix, errorText, replaceControlCharacters, isRecord, isString, str } from "./text.ts";
 import { dirname, delimiter, extname, join, posix, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -55,7 +55,6 @@ import { parsePanes, placesOf, piAgent, peerPanes, ancestorsOf, runningRows, age
 
 type Api = components["schemas"];
 
-const KO_TIMEOUT_MS = 5000;
 const PEER_RESULT_RULE = "independent peer; no report or ending notice";
 const reconnectBackoff = (previous: number): number => Math.min(previous ? previous * 2 : envMs("KO_RECEIVER_BACKOFF_MS", 200), 5000);
 
@@ -71,7 +70,6 @@ const ENTRY_SENT = "ko-pi.sent";
 type SendKind = Api["SendKind"];
 type Dead = Api["Dead"];
 
-type RunResult = { ok: true; out: string; raw: string } | { ok: false; error: string; code?: number; out: string; err: string };
 
 function findKo(): string | null {
   const path = process.env.PATH;
@@ -85,52 +83,6 @@ function findKo(): string | null {
     } catch {}
   }
   return null;
-}
-
-async function runCommand(command: string, args: string[], opts: { timeoutMs: number; env?: NodeJS.ProcessEnv; input?: string } = { timeoutMs: KO_TIMEOUT_MS }): Promise<RunResult> {
-  return new Promise((resolve) => {
-    const child = spawn(command, args, { stdio: [opts.input === undefined ? "ignore" : "pipe", "pipe", "pipe"], env: opts.env ?? process.env });
-    if (opts.input !== undefined) {
-      child.stdin?.on("error", () => {});
-      child.stdin?.end(opts.input);
-    }
-    const stdout: Buffer[] = [];
-    const stderr: Buffer[] = [];
-    const finish = (result: RunResult): void => {
-      clearTimeout(timer);
-      resolve(result);
-    };
-    const timer = setTimeout(() => {
-      child.kill();
-      finish({ ok: false, error: `${command} timed out after ${opts.timeoutMs}ms`, out: "", err: "" });
-    }, opts.timeoutMs);
-    timer.unref();
-    child.stdout?.on("data", (c: Buffer) => stdout.push(c));
-    child.stderr?.on("data", (c: Buffer) => stderr.push(c));
-    child.on("error", (err) => finish({ ok: false, error: errorText(err), out: "", err: "" }));
-    child.on("close", (code) => {
-      const out = Buffer.concat(stdout).toString("utf8");
-      const err = Buffer.concat(stderr).toString("utf8");
-      if (code === 0) finish({ ok: true, out: out.trim(), raw: out });
-      else finish({ ok: false, error: err.trim() || `${command} exited with code ${code}`, ...(code === null ? {} : { code }), out, err });
-    });
-  });
-}
-
-type Reply = { status: number; body: string } | { error: string };
-
-const apiArgs = (method: string, path: string, body: unknown): string[] => [
-  "api",
-  ...(method === "GET" ? [] : ["-X", method]),
-  ...(body === undefined ? [] : ["--input", "-"]),
-  path,
-];
-
-async function apiCall(method: string, path: string, body?: unknown, timeoutMs = KO_TIMEOUT_MS): Promise<Reply> {
-  const res = await runCommand("ko", apiArgs(method, path, body), { timeoutMs, input: body === undefined ? undefined : JSON.stringify(body) });
-  if (res.ok) return { status: 200, body: res.raw };
-  const status = /ko api: HTTP (\d+)/.exec(res.err)?.[1];
-  return status ? { status: Number(status), body: res.out.trim() } : { error: res.error };
 }
 
 const apiCallSync = (method: string, path: string, body: unknown): void => {

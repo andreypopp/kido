@@ -701,6 +701,36 @@ private extension PaneView {
         XCTAssertEqual(owner.testModel?.layout.layout.window(child.window)?.panes, [child.pane])
     }
 
+    func testAFloatOfAShownChildWindowDrawsOverItsSlotAndTakesFocusWithoutReplacingIt() async throws {
+        let fixture = try await ownerFixture()
+        let owner = fixture.owner, child = fixture.children[0]
+        owner.perform(.jump(child))
+        try await wait("the slot shows its child") { owner.testModel?.selection.pane == child.pane }
+        let text = try await ko(["api", "/layout"], dir: fixture.dir)
+        var document = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any])
+        document["panes"] = nil
+        var layout = try XCTUnwrap(document["layout"] as? [String: Any])
+        var sessions = try XCTUnwrap(layout["sessions"] as? [[String: Any]])
+        var windows = try XCTUnwrap(sessions[0]["windows"] as? [[String: Any]])
+        let at = try XCTUnwrap(windows.firstIndex { ($0["id"] as? String) == child.window.description })
+        windows[at]["floats"] = [["pane": ["new": ["parent": child.pane.description, "close": "on_exit", "command": ["type": "shell", "command": "stty raw -echo; exec cat"]]], "border": true, "cols": 30, "rows": 6, "x": 1, "y": 1]]
+        sessions[0]["windows"] = windows
+        layout["sessions"] = sessions
+        document["layout"] = layout
+        let draft = fixture.dir + "/float.json"
+        try JSONSerialization.data(withJSONObject: document).write(to: URL(fileURLWithPath: draft))
+        try await ko(["api", "-X", "PUT", "--input", draft, "/layout"], dir: fixture.dir)
+        try await wait("the child's float") { owner.testModel?.layout.layout.window(child.window)?.floats.count == 1 }
+        let float = try XCTUnwrap(owner.testModel?.layout.layout.window(child.window)?.floats.first?.pane)
+        try await wait("the float is displayed over the slot") { owner.testSession?.pane(float) != nil && owner.testSession?.windows.values.first?.displayedPanes.contains { $0.pane == float } == true }
+        owner.perform(.jump(Snapshot.Position(session: child.session, window: child.window, pane: float)))
+        try await wait("the float is selected") { owner.testModel?.selection.pane == float }
+        let displayed = try XCTUnwrap(owner.testSession?.windows.values.first?.displayedPanes.map(\.pane))
+        XCTAssertTrue(displayed.contains(child.pane) && displayed.contains(float), "the child stays shown under its float")
+        try await ko(["api", "-X", "DELETE", "/panes/\(float)"], dir: fixture.dir)
+        try await wait("focus returns to the child") { owner.testModel?.selection.pane == child.pane && owner.testSession?.windows.values.first?.displayedPanes.contains { $0.pane == float } != true }
+    }
+
     func testSlotNavigationSizingAndClose() async throws {
         let fixture = try await ownerFixture()
         let owner = fixture.owner

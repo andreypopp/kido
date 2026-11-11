@@ -64,6 +64,7 @@ final class WebviewPaneView: NSView, WKNavigationDelegate, WKUIDelegate {
     private var theme = ""
     #if KIDO_VISUAL
     var visualFocus: ((Snapshot.Position) -> Void)?
+    var visualAttended: Bool?
     var visualPreview: ((PreviewSource, NSRect) -> Void)?
     var visualPreviewLimit = Upload.fileLimit
     var visualFeedScript: String?
@@ -520,10 +521,18 @@ final class WebviewPaneView: NSView, WKNavigationDelegate, WKUIDelegate {
         drain()
     }
 
+    private func attended(_ window: NSWindow) -> Bool {
+        #if KIDO_VISUAL
+        if let visualAttended { return visualAttended }
+        #endif
+        return window.isKeyWindow && window.firstResponder === browser
+    }
+
     private func focusPane(_ data: [String: Any]) {
         guard pendingDocument == nil, let raw = data["pane"] as? String, let id = PaneID(ko: raw),
-              let window, window.isKeyWindow, window.firstResponder === browser,
-              let owner = window.delegate as? WindowOwner, let target = owner.projection.placements[id]?.position else { return }
+              let window, attended(window),
+              let owner = window.delegate as? WindowOwner else { return }
+        guard let target = owner.projection.placements[id]?.position else { owner.jumpWhenPlaced(id); return }
         #if KIDO_VISUAL
         if let visualFocus { visualFocus(target); return }
         #endif

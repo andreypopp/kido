@@ -63,6 +63,34 @@ import SidebarFeed
             XCTAssertEqual(result[mode == "up" || mode == "fractional-up" ? "stationary" : "bottom"] as? Bool, true, String(describing: result))
         }
     }
+    func testKoaEditorFloatTakesFocusAndReturnsTheEditedText() async throws {
+        let script = directory.appendingPathComponent("script"), gate = directory.appendingPathComponent("gate"), editor = directory.appendingPathComponent("editor.sh")
+        try "".write(to: script, atomically: true, encoding: .utf8)
+        try "#!/bin/sh\nwhile [ ! -e \(SSH.quote(gate.path)) ]; do sleep 0.05; done\nprintf 'edited by editor' > \"$1\"\n".write(to: editor, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: editor.path)
+        let path = [tools.prefix + "/bin", "/opt/homebrew/bin", ProcessInfo.processInfo.environment["PATH"] ?? "/usr/bin:/bin"].joined(separator: ":")
+        let fake = checkoutRoot.appendingPathComponent("share/koa/koa-fake-pi.ts").path
+        try await start(pane: "export PATH=\(SSH.quote(path)) VISUAL=\(SSH.quote(editor.path)) KOA_FAKE_SCRIPT=\(SSH.quote(script.path)); exec \(SSH.quote(tools.prefix + "/share/ko/bin/koa")) --pi \(SSH.quote(fake))")
+        let owner = WindowOwner(host: .local, runtime: runtime, start: false)
+        owner.testServerDir = directory.path; owner.start()
+        defer { owner.close() }
+        try await wait("koa page in the owner") { owner.testSession?.activePane?.webviewView?.browser.isLoading == false && owner.testSession?.activePane?.webviewView?.browser.url?.scheme == "ko" }
+        let pane = try XCTUnwrap(owner.testSession?.activePane), view = try XCTUnwrap(pane.webviewView), web = view.browser
+        view.visualAttended = true
+        try await webviewUntil(web, "window.composer&&document.querySelector('#status').textContent==='idle'")
+        _ = try await webviewJS(web, "(()=>{composer.setText('draft');composer.focus();return true})()")
+        _ = try await webviewJS(web, "(()=>{document.querySelector('.cm-content').dispatchEvent(new KeyboardEvent('keydown',{key:'g',ctrlKey:true,bubbles:true,cancelable:true}));return true})()")
+        let floats = { owner.testModel?.layout.layout.windows.flatMap(\.floats).map(\.pane) ?? [] }
+        try await wait("the editor float", within: 15) { !floats().isEmpty }
+        let float = try XCTUnwrap(floats().first)
+        try await wait("the float has the focus", within: 10) { owner.testModel?.selection.pane == float }
+        try await webviewUntil(web, "document.querySelector('#status').textContent.startsWith('Editing in editor.sh')")
+        try "".write(to: gate, atomically: true, encoding: .utf8)
+        try await wait("the float is gone", within: 15) { floats().isEmpty }
+        try await webviewUntil(web, "composer.text()==='edited by editor'", within: 15)
+        try await wait("the selection is back on koa", within: 10) { owner.testModel?.selection.pane == pane.pane }
+    }
+
     func testKoaInterruptRestoresNativeInput() async throws {
         WebviewPaneView.visualInitialScript = "document.hasFocus=()=>true;window.requestAnimationFrame=callback=>setTimeout(()=>callback(performance.now()),0);window.cancelAnimationFrame=clearTimeout;"
         defer { WebviewPaneView.visualInitialScript = nil }

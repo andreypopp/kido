@@ -95,7 +95,7 @@ website:
 # zig keeps its caches in the KO_ZIG_CACHE of .cargo/config.toml.
 KO := build/ko
 SHARE := bin pi webview koa shim.sh terminfo
-KOA_SRC := koa-timer.ts koa-records.ts koa-transcript.ts koa-image.ts koa-http.ts koa.ts koa-attach.ts koa-queue.ts koa-complete.ts koa-shell.ts koa-shell.sh koa-child.ts koa-resume.ts koa-startup.ts koa-args.ts koa-commands.ts koa-sessions.ts koa-channel.ts koa-session-dir.ts koa-assemble.ts prompt.ts package.json
+KOA_SRC := koa-timer.ts koa-editor.ts koa-records.ts koa-transcript.ts koa-image.ts koa-http.ts koa.ts koa-attach.ts koa-queue.ts koa-complete.ts koa-shell.ts koa-shell.sh koa-child.ts koa-resume.ts koa-startup.ts koa-args.ts koa-commands.ts koa-sessions.ts koa-channel.ts koa-session-dir.ts koa-assemble.ts prompt.ts package.json
 KOA_FILES := $(KOA_SRC) page.html page.css page.js
 KOA_ESBUILD = share/koa/node_modules/.bin/esbuild share/koa/page/page.ts share/koa/page/page.css share/koa/page/page.html --loader:.html=copy --bundle --format=esm --platform=browser --target=safari26 --outdir=$(KO)/share/ko/koa
 

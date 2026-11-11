@@ -778,6 +778,67 @@ completion source for each mode.
   the spec's "Tab accepts" conflicted with its hints, and the hints
   won. Measured: 28 ms on the host, 311 ms for a cold command runtime.
 
+## The external editor
+
+Control-G in the composer opens the draft in the user's editor, as
+pi's external-editor key does (`koa-editor.ts`). The editor runs in a
+ko pane, so it gets a real terminal, and its result replaces the
+composer's text; koa never sends it.
+
+- **The command** is pi's, in pi's order: `externalEditor` of the
+  project's `.pi/settings.json`, then of the agent directory's
+  `settings.json`, then `$VISUAL`, `$EDITOR` and `nano`, split on
+  spaces as pi splits it. The draft's path is the last argument.
+- **The draft** is `koa-draft-<pane>.md` in a new private directory
+  under the temporary directory, so the editor highlights Markdown;
+  the file is `0600` and is created, never reused. koa removes the
+  directory on every end: a result, a failure, a session change and
+  koa's own exit.
+- **The float.** koa adds the editor as a bordered float over its
+  own pane, not the whole window, because the editor belongs to that
+  pane's draft and must not hide a terminal beside it: centred on
+  koa's pane, 80% of it, at least 60 columns by 16 rows, moved to stay
+  inside the window; only a pane below that minimum gets the float
+  centred on the window, clipped to it. A nested koa is the only
+  tiled pane of its child window, so there its pane is the window.
+  koa writes the float through `PUT /layout` with the
+  revision it read, and reads the layout again on a `409`, three
+  times at most. The float is a child pane: `parent` is koa's pane
+  and `close` is `on_exit`, so the sweep removes it with koa, and a
+  child float may share only its parent's window (protocol.md,
+  section 7). The editor runs on the host also when pi's tools are
+  routed to a runtime, because koa and the draft are on the host; a
+  koa inside a runtime refuses Control-G.
+- **The end.** A `/client` connection that does not size or focus
+  anything, opened before the float, gives the float's `dead` event
+  with its cause; the parent's `ended` message is not used, because a
+  full queue drops it, and ko-pi acknowledges it without a notice,
+  because the editor is not in its registry. Exit 0 with a text that
+  differs from the draft (without a leading BOM and the final newline,
+  as pi compares) replaces the composer's text through the same
+  `editor` record as `set_editor_text`, only while the session is
+  the one that opened it. Any other end keeps the draft with a
+  notice, such as "Editor exited 1; draft kept": a non-zero exit, a
+  signal, a failed start, a float that leaves the layout alive (the
+  user closed it), and the loss of the `/client` connection. A
+  session change or koa's exit during the opening or the edit cancels
+  it and removes a float that the opening already made. koa then removes the
+  float itself and the server gives the window's focus back to koa's
+  pane, the removed pane's parent.
+- **Focus.** The page focuses the new float at once through
+  `window.ko.focus` (Kido.app, "Focus from a page" in
+  design-app.md); a second Control-G while the editor is open
+  focuses it again and opens nothing. When the edit ends, the page
+  focuses the composer. The terminal client has no `window.ko`, and
+  no koa page, so the float stays unfocused there.
+- **While the editor is open**, from the Control-G on, the draft is
+  locked; once the float exists, the state record's `edit` names the
+  float and the editor. The draft stays visible and read-only, the
+  state cell says "Editing in <editor>…", sending, the take-back and
+  the pickers are off, and Escape does nothing; the queue and the
+  transcript stay live. A page without a ko pane (`--browser`) shows
+  "C-g needs a ko pane" for 4 s.
+
 ## The composer's foot
 
 The user decided with the mockup that koa has no status bar: the

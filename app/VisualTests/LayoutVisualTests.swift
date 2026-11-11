@@ -2,6 +2,7 @@ import AppKit
 import KoModel
 import SnapshotTesting
 import PaneGeometry
+import SidebarFeed
 import XCTest
 @testable import Kido
 
@@ -88,6 +89,78 @@ import XCTest
 
     private func geometry(_ pane: PaneID) -> Geometry? {
         window.flatMap { Layout($0).root.panes.first { $0.id == pane }?.geometry }
+    }
+
+    private func api(_ args: [String]) async throws -> String {
+        let run = try await Child.run(tools.ko, ["api", "--server", dir] + args)
+        XCTAssertEqual(run.status, 0, run.err)
+        return run.out
+    }
+
+    // A new float over `parent`, in the window `window`, added to the layout that the server holds.
+    private func addFloat(window: String, parent: String) async throws {
+        let text = try await api(["/layout"])
+        var document = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any])
+        document["panes"] = nil
+        var layout = try XCTUnwrap(document["layout"] as? [String: Any])
+        var sessions = try XCTUnwrap(layout["sessions"] as? [[String: Any]])
+        var windows = try XCTUnwrap(sessions[0]["windows"] as? [[String: Any]])
+        let at = try XCTUnwrap(windows.firstIndex { ($0["id"] as? String) == window })
+        let float: [String: Any] = ["pane": ["new": ["parent": parent, "close": "on_exit", "command": ["type": "argv", "argv": ["/bin/sleep", "600"]]]], "border": true, "cols": 20, "rows": 6, "x": 3, "y": 2]
+        windows[at]["floats"] = [float]
+        sessions[0]["windows"] = windows
+        layout["sessions"] = sessions
+        document["layout"] = layout
+        let draft = dir + "/float.json"
+        try JSONSerialization.data(withJSONObject: document).write(to: URL(fileURLWithPath: draft))
+        _ = try await api(["-X", "PUT", "--input", draft, "/layout"])
+    }
+
+    func testAFloatOverASplitPanesKoaNeverReplacesItsSlot() async throws {
+        try await put(#"[{"name":"w","tree":{"split":"h","children":[\#(sleep),\#(sleep)]}}]"#)
+        try await placed("two panes") { Layout($0).root.panes.count == 2 }
+        try await addFloat(window: try XCTUnwrap(window).id.description, parent: "pane_2")
+        try await placed("the float") { $0.floats.count == 1 }
+        let float = try XCTUnwrap(window?.floats.first?.pane)
+        let session = try XCTUnwrap(owner.testModel?.layout.layout.sessions.first?.id), id = try XCTUnwrap(window).id
+        owner.perform(.jump(Snapshot.Position(session: session, window: id, pane: float)))
+        try await wait("the float is selected", within: 5) { self.owner.testModel?.selection.pane == float }
+        let shown = try XCTUnwrap(terminal).displayedPanes.map(\.pane)
+        XCTAssertEqual(Set(shown), [PaneID(number: 1), PaneID(number: 2), float], "the float is shown with both panes; none is replaced")
+        XCTAssertEqual(owner.testModel?.layout.layout.windows.count, 1)
+    }
+
+    func testADragOfAChildWindowFloatWritesItsPositionToTheChildWindow() async throws {
+        try await put(#"[{"name":"w","tree":{"split":"h","children":[\#(sleep),\#(sleep)]}}]"#)
+        try await placed("two panes") { Layout($0).root.panes.count == 2 }
+        let body = dir + "/child.json"
+        try #"{"parent":"pane_2","command":{"type":"argv","argv":["/bin/sleep","600"]}}"#.write(toFile: body, atomically: true, encoding: .utf8)
+        let created = try await api(["-X", "POST", "--input", body, "/panes"])
+        let child = try JSONDecoder().decode(Snapshot.Position.self, from: Data(created.utf8))
+        try await addFloat(window: child.window.description, parent: child.pane.description)
+        let source = { self.owner.testModel?.layout.layout.window(child.window)?.floats.first }
+        try await wait("the child's float", within: 5) { source() != nil }
+        let float = try XCTUnwrap(source())
+        owner.perform(.jump(child))
+        try await wait("the child is shown in the slot", within: 5) {
+            let displayed = self.terminal?.displayedPanes.map(\.pane) ?? []
+            return self.owner.testModel?.selection.pane == child.pane && displayed.contains(float.pane)
+        }
+        let terminal = try XCTUnwrap(terminal), cell = try cell()
+        let frame = try chrome(float.pane).frame
+        let slot = try XCTUnwrap(geometry(PaneID(number: 2)))
+        XCTAssertGreaterThan(slot.x, 0)
+        XCTAssertEqual(frame.minX, CGFloat(slot.x + float.x) * cell.width, accuracy: cell.width + 6, "the float lies over the slot, offset by it")
+        let start = NSPoint(x: frame.midX, y: frame.minY + 4)
+        terminal.visualBeginDrag(float.pane, try mouse(.leftMouseDown, start))
+        let end = NSPoint(x: start.x + 2 * cell.width, y: start.y + cell.height)
+        terminal.mouseDragged(with: try mouse(.leftMouseDragged, end))
+        terminal.mouseUp(with: try mouse(.leftMouseUp, end))
+        let expected = [float.x + 2, float.y + 1]
+        try await wait("the child window has the new position", within: 5) {
+            guard let moved = source() else { return false }
+            return [moved.x, moved.y] == expected
+        }
     }
 
     func testSplitZoomFloat() async throws {

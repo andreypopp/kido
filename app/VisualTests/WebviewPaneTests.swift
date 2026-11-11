@@ -127,6 +127,11 @@ import SidebarFeed
         view.visualFocus = nil
         _ = try await webviewJS(web, "(()=>{ko.focus('\(target.pane)');return true})()")
         try await wait("focus selects the pane") { owner.snapshot?.client.pane == target.pane }
+        let next = "pane_\((Int(target.pane.description.dropFirst(5)) ?? 0) + 1)"
+        _ = try await webviewJS(web, "(()=>{ko.focus('\(next)');return true})()")
+        let late = try JSONDecoder().decode(Snapshot.Position.self, from: Data(try await ko(["api", "-X", "POST", "--input", other.path, "/panes"], dir: directory.path).utf8))
+        XCTAssertEqual(late.pane.description, next)
+        try await wait("focus waits for a pane that appears") { owner.snapshot?.client.pane == late.pane }
     }
 
     func testWebviewNativePreview() async throws {

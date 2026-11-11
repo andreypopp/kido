@@ -1505,7 +1505,11 @@ web view is the first responder of a key window, so a background or
 unfocused page never moves the selection, and the id names a pane of
 the window owner's current projection. It then does exactly what a
 click on that pane's sidebar row does, `perform(.jump)`, and nothing
-else.
+else. A page can name a pane that its program has just created, such
+as koa's editor float, before the snapshot that adds it arrives: an
+unknown id becomes the window owner's one pending jump, which the
+snapshot that places the pane performs. A later `focus` replaces it,
+any other selection drops it, and it expires after 2 s.
 
 **Drops on a page.** A Finder drop on a local program's page
 (`WindowOwner.isLocalProgram`) is the one grant of a host path to a
@@ -2232,9 +2236,22 @@ so a child has exactly its parent's cell grid. Geometry, the toolbar's
 drag and every layout edit address the top-level pane: a split adds
 the new pane beside the slot in the top-level window and leaves the
 child in its slot; zoom zooms the slot; resize and float edits move
-the slot. The app never sends a layout edit to a child window. Input,
+the slot. The app sends a layout edit to a child window only for a
+float of that window that it draws over the slot (below). Input,
 the clipboard, find, the cwd and runtime of a new pane, and Close Pane
-act on the shown pane. Close Window and the tab's × close the
+act on the shown pane.
+
+A child pane that floats in its parent's own window, such as koa's
+editor (protocol.md, section 7), is not a replacement:
+`PaneProjection` gives it a floating placement with its parent as
+owner, so it is never the pane that a slot shows. A float of the
+top-level window draws as any float. The floats of a child window
+that a slot shows draw over that slot, offset by the slot's origin
+and clipped to it (`PaneLayout.clamp(clip:)`), above the slot in the
+child window's z order; a drag subtracts the offset before the edit
+goes to the child window. Selecting such a float focuses the float
+and keeps its owner shown in the slot; when it goes, the owner keeps
+the slot and the focus. Close Window and the tab's × close the
 top-level window. The focused row is the pane on screen in the focused
 slot; a child on screen in another slot has no mark.
 

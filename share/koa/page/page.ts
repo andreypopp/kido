@@ -43,7 +43,7 @@ let epoch = '', after = -1, first: number | undefined, more = false, follow = tr
 let escaped = false, dialogId: string | undefined;
 let submitting = false, editorId: string | undefined, dialogTimer: number | undefined, shownExit: number | undefined, pickerButton: HTMLElement | undefined, shownQueue: string | undefined, shownStatuses: string | undefined;
 let historyRequest: { patches: Patch[] } | undefined;
-let attachmentRefusalTimer: number | undefined;
+let attachmentRefusalTimer: number | undefined, editorOpening = false;
 const draft = attach(element('attachments'), () => refreshComposer(), displayPath, () => !!editor.bash(), () => {
   clearTimeout(attachmentRefusalTimer);
   element('error').textContent = 'a command takes no attachments';
@@ -55,7 +55,8 @@ const editor = composer(element('prompt'), {
   input(user) { if (user) escaped = false; refreshComposer(); },
   send(mode) { void send(mode); },
   quit() { if (!draft.count && !draft.busy) void fetchJSON('/quit'); },
-  takeBack() { if (state.pi.type === 'ready' && !state.dialogs.length && !submitting) void takeBack().catch(reportError); },
+  edit() { void openEditor(); },
+  takeBack() { if (state.pi.type === 'ready' && !editing() && !state.dialogs.length && !submitting) void takeBack().catch(reportError); },
 });
 window.composer = editor;
 const composerBlocked = () => state.pi.type !== 'ready' || state.dialogs.length > 0 || sessionPicker !== 'closed';
@@ -551,6 +552,7 @@ function refreshComposer() {
   element('field').classList.toggle('drop', draft.hover);
   const running = state.bash.some(item => item.phase !== 'completed') && !working && editor.empty();
   editor.running(running);
+  editor.readonly(editing());
   if (!editor.bash() && element('error').textContent === 'a command takes no attachments') { clearTimeout(attachmentRefusalTimer); element('error').textContent = ''; }
   editor.placeholder(state.pi.type === 'switching' ? 'loading…' : running ? 'running… ⎋ cancels' : draft.hover ? 'Drop to attach' : hasExited() ? 'pi has exited' : working && state.compaction !== 'running' ? 'Steer koa…' : 'Message koa…');
   status();
@@ -561,7 +563,7 @@ function status() {
   const bang = editor.bash(), running = state.bash.find(item => item.phase !== 'completed');
   label.classList.toggle('err', !!bang && draft.count > 0);
   label.title = bang && draft.count ? 'remove the attachments' : '';
-  const word = cause ? (cause.kind === 'code' ? 'exited' : cause.kind) + ' ' + cause.value : waiting ? 'waiting' : state.pi.type === 'starting' ? 'starting' : state.pi.type === 'switching' ? 'loading' : state.working ? state.compaction === 'running' ? 'compacting' : 'working' : running ? 'running' : bang ? bang.excludeFromContext ? 'run, quiet' : 'run' : state.aborted ? 'aborted' : 'idle';
+  const word = cause ? (cause.kind === 'code' ? 'exited' : cause.kind) + ' ' + cause.value : waiting ? 'waiting' : state.edit ? `Editing in ${state.edit.editor}…` : state.pi.type === 'starting' ? 'starting' : state.pi.type === 'switching' ? 'loading' : state.working ? state.compaction === 'running' ? 'compacting' : 'working' : running ? 'running' : bang ? bang.excludeFromContext ? 'run, quiet' : 'run' : state.aborted ? 'aborted' : 'idle';
   const completing = editor.completionStatus();
   label.textContent = bang && completing === 'pending' ? 'completing…' : bang && completing === 'none' ? 'no completions' : word;
   label.classList.toggle('completion-hint', !!bang && completing !== 'idle');
@@ -717,6 +719,7 @@ function positionPicker() {
   host.style.maxHeight = Math.max(0, rect.top - 16) + 'px';
 }
 async function picker(kind: 'model' | 'thinking', search = '') {
+  if (editing()) return;
   if (state.pi.type !== 'ready') return;
   const trigger = element(kind), host = element('picker');
   if (pickerButton === trigger) { closePicker(); return; }
@@ -795,12 +798,14 @@ function apply(record: PageRecord) {
     if (state.sessionId !== record.sessionId || state.pi.type !== record.pi.type) editor.resetCompletion();
     if (state.sessionId && state.sessionId !== record.sessionId) { closeSessions(); closePicker(); editorId = undefined; }
     const agentsChanged = JSON.stringify(state.agents) !== JSON.stringify(record.agents);
+    const wasEditing = !!state.edit;
     state = record; if (agentsChanged) refreshAgentCards(); document.body.dataset.sessionId = state.sessionId ?? ''; element('items').hidden = state.pi.type === 'switching'; refreshBash(); refreshComposer(); dialogs(); queue(); exited();
     if (state.pi.type === 'ready' && state.editor && editorId !== state.editor.id) {
       editor.setText(state.editor.text); editorId = state.editor.id;
       void fetchJSON('/editor/ack', { sessionId: state.sessionId, id: state.editor.id }).catch(reportError);
     }
     statuses();
+    if (wasEditing && !state.edit) focusComposer();
   }
 }
 
@@ -950,6 +955,7 @@ function renderSessions(selected?: number) {
 sessionSearch.oninput = () => renderSessions(0);
 sessionCurrent.onclick = () => { void openSessions('current'); }; sessionAll.onclick = () => { void openSessions('all'); };
 async function openSessions(scope: SessionScope = 'current') {
+  if (editing()) return;
   closePicker(); sessionScan?.abort(); sessionScan = undefined;
   sessionScope = scope; sessionPicker = 'loading'; visibleSessions = []; sessionCursor = undefined;
   sessionHost.dataset.state = sessionPicker; sessionHost.hidden = false;
@@ -1014,7 +1020,21 @@ async function sessionCommand(kind: 'resume' | 'new') {
   sessionHost.onkeydown = event => { if (event.key === 'Escape' || event.key === 'Enter') { event.preventDefault(); event.stopPropagation(); if (event.key === 'Escape') closeSessions(); else void perform(); } };
   refreshComposer(); confirm.focus();
 }
-function canSend(text: string) { if (state.compaction === 'running') return false; const bang = editor.bash(); if (bang) return !!bang.command.trim() && !state.bash.some(item => item.phase !== 'completed') && !draft.busy && !draft.count; return /^\/\S+/.test(text.trim()) || !draft.busy && draft.count <= ATTACHMENT_LIMITS.files && (!!text.trim() || draft.count > 0); }
+function canSend(text: string) { if (state.compaction === 'running' || editing()) return false; const bang = editor.bash(); if (bang) return !!bang.command.trim() && !state.bash.some(item => item.phase !== 'completed') && !draft.busy && !draft.count; return /^\/\S+/.test(text.trim()) || !draft.busy && draft.count <= ATTACHMENT_LIMITS.files && (!!text.trim() || draft.count > 0); }
+let noticeTimer: number | undefined;
+function notice(text: string) {
+  clearTimeout(noticeTimer);
+  element('error').textContent = text;
+  noticeTimer = setTimeout(() => { if (element('error').textContent === text) element('error').textContent = ''; }, 4000);
+}
+function editing() { return !!state.edit || editorOpening; }
+async function openEditor() {
+  if (state.pi.type !== 'ready' || state.dialogs.length || submitting || editorOpening) return;
+  editorOpening = true; refreshComposer();
+  try { const { pane } = await fetchJSON('/editor/open', { sessionId: state.sessionId, text: editor.text() }); window.ko?.focus?.(pane); }
+  catch (error) { notice(error instanceof Error ? error.message : String(error)); }
+  finally { editorOpening = false; refreshComposer(); }
+}
 function reportError(error: unknown) { element('error').textContent = error instanceof Error ? error.message : String(error); }
 async function send(mode: PromptMode = 'prompt') {
   const text = editor.text(), files = draft.files;
@@ -1062,7 +1082,7 @@ const previewModifiers = (event: MouseEvent | KeyboardEvent) => event.shiftKey &
 const previewHover = (event: KeyboardEvent) => document.documentElement.classList.toggle('preview-modifiers', previewModifiers(event));
 document.addEventListener('keyup', previewHover);
 window.addEventListener('blur', () => { document.documentElement.classList.remove('preview-modifiers'); composerFocus(); });
-document.addEventListener('keydown', event => { previewHover(event); if (previewKey(event)) return; if (event.defaultPrevented || event.metaKey || event.ctrlKey || event.isComposing || state.dialogs.length || pickerButton || sessionPicker !== 'closed') return; if (event.key === 'Tab') { event.preventDefault(); if (!element('field').inert) editor.focus(); return; } if (composerReceivesKeys() && !event.altKey && event.key.length === 1 && !(event.key === ' ' && isControl(event.target)) && !isTextInput(event.target)) { event.preventDefault(); editor.focus(); editor.insert(event.key); return; } if (event.key === 'Enter' && hasExited() && event.target === document.body) element('exited').querySelector('button')?.click(); if (event.key === 'Escape') { event.preventDefault(); if (state.bash.some(item => item.phase === 'running')) { escaped = false; void stop(); } else if (state.working) { escaped = true; void stop(); } else if (escaped) { editor.setText(''); } else { escaped = true; } } });
+document.addEventListener('keydown', event => { previewHover(event); if (previewKey(event)) return; if (event.defaultPrevented || event.metaKey || event.ctrlKey || event.isComposing || state.dialogs.length || pickerButton || sessionPicker !== 'closed') return; if (event.key === 'Tab') { event.preventDefault(); if (!element('field').inert) editor.focus(); return; } if (composerReceivesKeys() && !event.altKey && event.key.length === 1 && !(event.key === ' ' && isControl(event.target)) && !isTextInput(event.target)) { event.preventDefault(); editor.focus(); editor.insert(event.key); return; } if (event.key === 'Enter' && hasExited() && event.target === document.body) element('exited').querySelector('button')?.click(); if (event.key === 'Escape') { event.preventDefault(); if (editing()) return; if (state.bash.some(item => item.phase === 'running')) { escaped = false; void stop(); } else if (state.working) { escaped = true; void stop(); } else if (escaped) { editor.setText(''); } else { escaped = true; } } });
 element('model').onclick = () => picker('model'); element('thinking').onclick = () => picker('thinking');
 document.addEventListener('pointerdown', event => { if (!element('picker').contains(event.target instanceof Node ? event.target : null) && !pickerButton?.contains(event.target instanceof Node ? event.target : null)) closePicker(); });
 element('scroll').onscroll = () => { const scroll = element('scroll'); if (Math.abs(scroll.scrollTop - lastScrollTop) >= 1) { follow = scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight < 60; lastScrollTop = scroll.scrollTop; } if (scroll.scrollTop < 80) void older(); };
