@@ -1113,6 +1113,12 @@ pane's edge; the user block pads 8pt 16pt, the field 12pt 16pt 8pt
 (was 9pt 12pt 5pt). The narrow rule keeps only its top and bottom,
 as decided for the narrow padding.
 
+**7 · Radii** (user, 2026-11-11): the composer's field and the user
+block are 12pt (were 9pt and 8pt, which looked square beside
+macOS 27's rounder controls); 12pt is the pane capsule family's
+radius. The other radii (code blocks 7pt, chips, the queue 8pt)
+stay.
+
 **4 · `@name` links to the agent's pane.** Every name of an agent
 (an agent line's, a `@name` in the answer's or the user's prose, a
 `list_agents` step) is an `<a class="who">`: 600, the text's colour,

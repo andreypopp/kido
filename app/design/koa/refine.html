@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en" data-theme="light" data-width="wide" data-um="solid" data-al="plain" data-guides="on" data-rows="unified" data-cpad="v3">
+<html lang="en" data-theme="light" data-width="wide" data-um="solid" data-al="plain" data-guides="on" data-rows="unified" data-cpad="v3" data-radius="r12">
 <head>
 <meta charset="utf-8">
 <title>koa — width, user messages, agent lines, @names</title>
@@ -455,6 +455,10 @@ html[data-cpad=v2] .pane.aligned .field{padding:12px 16px 8px}
 html[data-cpad=v3] .pane.aligned .transcript,html[data-cpad=v3] .pane.aligned .composer{--side-pad:24px;--pad:16px}
 html[data-cpad=v3] .pane.aligned .field{padding:12px 16px 8px}
 html[data-cpad=v3] .pane.aligned .msg.user{padding:8px var(--pad)}
+/* 7 · radii (user, 2026-11-11, chose 12/12): the shipped 9pt field and 8pt user block looked square beside macOS 27's rounder controls */
+html[data-radius=r12] .pane.aligned .field{border-radius:12px}html[data-radius=r12] .pane.aligned .msg.user{border-radius:12px}
+html[data-radius=r14] .pane.aligned .field{border-radius:14px}html[data-radius=r14] .pane.aligned .msg.user{border-radius:12px}
+html[data-radius=r16] .pane.aligned .field{border-radius:16px}html[data-radius=r16] .pane.aligned .msg.user{border-radius:14px}
 </style>
 </head>
 <body>
@@ -467,6 +471,7 @@ html[data-cpad=v3] .pane.aligned .msg.user{padding:8px var(--pad)}
   <label>Agent line <select id="al"><option value="line">with a chevron, like a run</option><option value="plain">without</option></select></label>
   <label>Rows <select id="rows"><option value="unified">unified (proposal 2026-11-11)</option><option value="shipped">shipped</option></select></label>
   <label>Composer padding <select id="cpad"><option value="shipped">shipped (9 12 5)</option><option value="v1">v1 · 12 16 8, field grows 4pt outward</option><option value="v2">v2 · 12 16 8, text moves 4pt in</option><option value="v3">v3 · side 24, pad 16, everything aligned (chosen)</option></select></label>
+  <label>Radius <select id="radius"><option value="shipped">shipped · field 9, user 8</option><option value="r12">field 12, user 12 (chosen)</option><option value="r14">field 14, user 12</option><option value="r16">field 16, user 14</option></select></label>
   <label>Guides <select id="guides"><option value="on">on</option><option value="off">off</option></select></label>
 </div>
 
@@ -572,7 +577,7 @@ for(const pane of document.querySelectorAll('.pane')){pane.innerHTML=states[pane
 function placeGuides(){for(const pane of document.querySelectorAll('.pane[data-state=width]')){const t=pane.querySelector('.transcript'),pr=pane.getBoundingClientRect(),tr=t.getBoundingClientRect(),cs=getComputedStyle(t);const l=tr.left+parseFloat(cs.paddingLeft)-pr.left-1,r=tr.right-parseFloat(cs.paddingRight)-pr.left-1;pane.querySelector('[data-g=l]').style.left=l+'px';pane.querySelector('[data-g=r]').style.left=r+'px'}
   const pane=document.querySelector('.pane[data-state=names]');const a=pane.querySelector('.who.hover');const pr=pane.getBoundingClientRect(),ar=a.getBoundingClientRect();const tip=pane.querySelector('[data-tip]'),cur=pane.querySelector('[data-cursor]');cur.style.left=(ar.left-pr.left+ar.width*0.55)+'px';cur.style.top=(ar.top-pr.top+8)+'px';tip.style.left=(ar.left-pr.left+ar.width*0.55+14)+'px';tip.style.top=(ar.top-pr.top+22)+'px'}
 placeGuides();
-for(const id of ['theme','width','um','al','guides','rows','cpad']){const el=document.getElementById(id);el.value=document.documentElement.dataset[id];el.onchange=e=>{document.documentElement.dataset[id]=e.target.value;placeGuides()}}
+for(const id of ['theme','width','um','al','guides','rows','cpad','radius']){const el=document.getElementById(id);el.value=document.documentElement.dataset[id];el.onchange=e=>{document.documentElement.dataset[id]=e.target.value;placeGuides()}}
 document.addEventListener('click',e=>{const w=e.target.closest('a.who');if(w){e.preventDefault();return}const h=e.target.closest('.aline .hd');if(h){const a=h.parentElement;a.classList.toggle('open');h.setAttribute('aria-expanded',a.classList.contains('open'));return}const line=e.target.closest('.run>.line');if(line)line.parentElement.classList.toggle('open')});
 </script>
 </body>
