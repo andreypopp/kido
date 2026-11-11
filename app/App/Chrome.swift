@@ -19,11 +19,11 @@ enum Chrome {
     static var hairline: NSColor { .separatorColor }
     static var defaultPaper: NSColor { .windowBackgroundColor }
     static var closeHover: NSColor { NSColor.labelColor.withAlphaComponent(0.1) }
-    static var windowSelection: NSColor { NSColor.labelColor.withAlphaComponent(0.075) }
+    static var windowSelection: NSColor { NSColor.quaternarySystemFill }
     static var sidebarIdleCircle: NSColor { inkSecondary.withAlphaComponent(inkSecondary.alphaComponent * 0.5) }
     static var sidebarChevron: NSColor { inkSecondary.withAlphaComponent(inkSecondary.alphaComponent * 0.7) }
     static var sidebarDivider: NSColor { ink.withAlphaComponent(0.1) }
-    static var rowSelection: NSColor { NSColor.labelColor.withAlphaComponent(0.1) }
+    static var rowSelection: NSColor { NSColor.systemFill }
     static var rowHover: NSColor { NSColor.labelColor.withAlphaComponent(0.05) }
     static var iconHover: NSColor { NSColor.labelColor.withAlphaComponent(0.12) }
     static var tabPill: NSColor { NSColor.labelColor.withAlphaComponent(0.075) }

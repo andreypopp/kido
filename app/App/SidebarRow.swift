@@ -289,13 +289,27 @@ final class SidebarCell: NSTableCellView, NSTextFieldDelegate {
             NSGraphicsContext.saveGraphicsState()
             defer { NSGraphicsContext.restoreGraphicsState() }
             NSBezierPath(rect: bounds).addClip()
+            let selected = row.target != nil && (superview as? NSTableRowView)?.isSelected == true
+                && (enclosingScrollView?.documentView as? Table)?.keyboardSelection == true
+                && window?.firstResponder === enclosingScrollView?.documentView
+            let rowFill = NSBezierPath(roundedRect: NSRect(x: CGFloat(row.indent) * 15, y: 0,
+                                                         width: bounds.width - CGFloat(row.indent) * 15, height: bounds.height),
+                                       xRadius: 7, yRadius: 7)
             if let block = row.block {
                 let top: CGFloat = block == .last || block == .middle ? -7 : 0
                 let bottom: CGFloat = block == .first || block == .middle ? 7 : 0
                 let slice = NSBezierPath(roundedRect: NSRect(x: 0, y: top, width: bounds.width, height: bounds.height - top + bottom), xRadius: 7, yRadius: 7)
                 slice.addClip()
+                NSGraphicsContext.saveGraphicsState()
+                if row.focused || selected {
+                    let outside = NSBezierPath(rect: bounds)
+                    outside.append(rowFill)
+                    outside.windingRule = .evenOdd
+                    outside.addClip()
+                }
                 Chrome.windowSelection.setFill()
                 bounds.fill()
+                NSGraphicsContext.restoreGraphicsState()
             }
             if case .divider = row.kind {
                 Chrome.sidebarDivider.setFill()
@@ -304,14 +318,9 @@ final class SidebarCell: NSTableCellView, NSTextFieldDelegate {
             }
             let pane: Bool = switch row.kind { case .pane, .program: true; default: false }
             let leading = pane ? CGFloat(row.leading) : 5
-            let selected = row.target != nil && (superview as? NSTableRowView)?.isSelected == true
-                && (enclosingScrollView?.documentView as? Table)?.keyboardSelection == true
-                && window?.firstResponder === enclosingScrollView?.documentView
             if row.focused || selected {
                 Chrome.rowSelection.setFill()
-                NSBezierPath(roundedRect: NSRect(x: CGFloat(row.indent) * 15, y: 0,
-                                               width: bounds.width - CGFloat(row.indent) * 15, height: bounds.height),
-                             xRadius: 7, yRadius: 7).fill()
+                rowFill.fill()
             }
             if case .gap = row.kind { return }
             let header = { if case .header = row.kind { return true }; return false }()

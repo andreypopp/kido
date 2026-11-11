@@ -1891,16 +1891,22 @@ its centre, labelColor at 10%, inset 5pt on both sides; there is none
 after the header, after the last window, or inside a window. The visible
 window of the client's current session (the top-level window of the
 client's window, also when a child shows in its slot) is one block: a
-labelColor 7.5% rounded rectangle, 7pt corners, behind every row of that
-window, its descendants and records included. The row model gives each
-of those rows its place in the block (`SidebarRow.Block`: single, first,
-middle or last, in `sidebarRows`), and each cell fills its own slice and
-clips its other fills to it, so a row's fill never leaves the block and
-a change of the visible window reloads only the rows whose place
-changed. A single-pane window gets the block too. The divider rows come
+`quaternarySystemFill` rounded rectangle (labelColor at about 2.7% in
+both appearances), 7pt corners, behind every row of that window, its
+descendants and records included. The row model gives each of those
+rows its place in the block (`SidebarRow.Block`: first, middle or last,
+in `sidebarRows`), and each cell fills its own slice and clips its other
+fills to it, so a row's fill never leaves the block and a change of the
+visible window reloads only the rows whose place changed. Only a window
+with two or more panes of its own gets the block. A one-pane window gets
+none, also with expanded children or records, so folding never adds or
+removes the block: its row fill is the window. The divider rows come
 from one pass over the finished rows, after the captions and after a
-window drag removes the dragged rows. On top of it, the focused pane row has a labelColor 10% fill with 7pt
-corners, from its indentation to the row's right edge; the keyboard
+window drag removes the dragged rows. The focused pane row has a
+`systemFill` fill (labelColor at 10%) with 7pt corners, from its
+indentation to the row's right edge. Inside a block it is flat over the
+sidebar colour, not over the block, so a focused pane reads the same in
+every window. The keyboard
 selection is the same layer (one fill when both mark one row) and clears
 on mouse press. Rows have no hover fill, and sidebar focus does not
 change the fills.

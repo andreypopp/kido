@@ -247,6 +247,13 @@ private extension PaneView {
                 window.contentView = list
                 var snapshot = sidebarChildrenFixture(records: name == "records-and-children")
                 if name == "single" { snapshot = fixtureSnapshot(window: 0, pane: 0, [("main", [fixtureNode(0, "One pane", piLifecycle())])]) }
+                if name == "records-and-children" {
+                    var first = snapshot.sessions[0].nodes[0].item
+                    first.children.append(.item(fixtureItem(3002, parent: 3000, "Child agent", piLifecycle())))
+                    snapshot.sessions[0].nodes[0] = .window(.init(id: .init(number: 3000), children: [
+                        first, fixtureItem(3001, window: 3000, "Second pane", shellLifecycle()),
+                    ]))
+                }
                 if name == "folded-focus" { snapshot.client = .init(session: .init(number: 0), window: .init(number: 824), pane: .init(number: 936)) }
                 list.show(snapshot)
                 if name == "records-and-children" || name == "scroll-clipped" { list.visualExpandAll() }

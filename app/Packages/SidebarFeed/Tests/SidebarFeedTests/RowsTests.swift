@@ -175,7 +175,7 @@ private func fixture(client: Int = 0, sessions: [Int] = [0], grouped: Bool = fal
 
 @Test func visibleWindowBlockSlices() {
     let single = sidebarRows(makeSnapshot([pane(0)])).rows
-    #expect(single.compactMap(\.block) == [.single])
+    #expect(single.compactMap(\.block).isEmpty)
     let snapshot = fixture(client: 2, grouped: true, descendants: true, records: [.working(.init(id: "task"))])
     let rows = expandedRows(snapshot)
     let block = rows.filter { $0.root == WindowID(number: 0) }
@@ -184,10 +184,14 @@ private func fixture(client: Int = 0, sessions: [Int] = [0], grouped: Bool = fal
     #expect(block.dropFirst().dropLast().allSatisfy { $0.block == .middle })
     #expect(block.contains { if case .program = $0.kind { true } else { false } })
     #expect(rows.filter { $0.root == nil }.allSatisfy { $0.block == nil })
-    let folded = sidebarRows(makeSnapshot([pane(0, children: [pane(1)])], client: 1)).rows
-    #expect(folded.compactMap(\.block) == [.single])
-    let sessions = expandedRows(fixture(sessions: [0, 1]))
-    #expect(sessions.filter { $0.id.session != SessionID(number: 0) }.allSatisfy { $0.block == nil })
+    let parent = makeSnapshot([pane(0, children: [pane(1)])], client: 1)
+    let folded = sidebarRows(parent).rows
+    #expect(folded.compactMap(\.block).isEmpty)
+    #expect(expandedRows(parent).compactMap(\.block).isEmpty)
+    let sessions = expandedRows(fixture(sessions: [0, 1], grouped: true))
+    let current = sessions.filter { $0.id.session == SessionID(number: 0) && $0.root == WindowID(number: 0) }
+    #expect(current.compactMap(\.block) == [.first, .last])
+    #expect(sessions.filter { $0.id.session != SessionID(number: 0) || $0.root != WindowID(number: 0) }.allSatisfy { $0.block == nil })
 }
 
 @Test func dividerPassAfterWindowRemoval() {

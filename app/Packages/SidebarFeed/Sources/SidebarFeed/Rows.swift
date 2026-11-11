@@ -41,7 +41,7 @@ public struct SidebarRow: Equatable, Sendable {
     public let status: Status
     public var indicatorDescription = ""
     public let focused: Bool
-    public enum Block: Equatable, Sendable { case single, first, middle, last }
+    public enum Block: Equatable, Sendable { case first, middle, last }
     public var block: Block?
     public var quietShell = false
     public var agent = false
@@ -301,8 +301,11 @@ public func sidebarRows(_ snapshot: Snapshot?, expanded: Set<SidebarRow.ID> = []
     }
     let root = PaneProjection(snapshot).rootWindows[snapshot.client.window]
     let block = rows.indices.filter { rows[$0].id.session == snapshot.client.session && root != nil && rows[$0].root == root }
-    for (offset, index) in block.enumerated() {
-        rows[index].block = block.count == 1 ? .single : offset == 0 ? .first : offset == block.count - 1 ? .last : .middle
+    let rootNode = snapshot.sessions.first { $0.id == snapshot.client.session }?.nodes.first { $0.window == root }
+    if case .window(let window) = rootNode, window.children.count > 1 {
+        for (offset, index) in block.enumerated() {
+            rows[index].block = offset == 0 ? .first : offset == block.count - 1 ? .last : .middle
+        }
     }
     return SidebarOutline(rows: rows, ids: ids, expandable: expandable)
 }
