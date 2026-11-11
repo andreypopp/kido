@@ -425,6 +425,41 @@ import SidebarFeed
         }
     }
 
+    func testWebviewReshownAtNewSizeStaysCovered() async throws {
+        let pane = try await webviewStart()
+        let web = try XCTUnwrap(pane.webviewView?.browser)
+        XCTAssertEqual(web.alphaValue, 1, "first load is not covered")
+        try await split(1, .h)
+        try await wait("reshow split") { self.terminal?.displayedPanes.count == 2 }
+        try await wait("split laid out") { web.frame.size == pane.webviewView?.bounds.size }
+        var lifted: Bool?
+        pane.webviewView?.visualUncovered = { lifted = $0 }
+        let same = try XCTUnwrap(terminal)
+        let settled = web.frame.size
+        same.isHidden = true
+        same.isHidden = false
+        window.contentView?.layoutSubtreeIfNeeded()
+        if web.frame.size == settled { XCTAssertEqual(web.alphaValue, 1, "a reshow at the same size is not covered") }
+        else { try await wait("late layout settled") { lifted != nil }; lifted = nil }
+        let wide = pane.bounds.width
+        window.setContentSize(NSSize(width: window.contentView!.bounds.width + 80, height: window.contentView!.bounds.height))
+        try await wait("live resize") { pane.bounds.width != wide }
+        window.contentView?.layoutSubtreeIfNeeded()
+        XCTAssertEqual(web.alphaValue, 1, "a live resize while visible is not covered")
+        XCTAssertNil(lifted)
+        let hidden = try XCTUnwrap(terminal)
+        let before = web.frame.width
+        hidden.isHidden = true
+        let content = window.contentView!.bounds
+        window.setContentSize(NSSize(width: content.width - 120, height: content.height))
+        try await wait("pane resized while hidden") { pane.bounds.width != before }
+        hidden.isHidden = false
+        window.contentView?.layoutSubtreeIfNeeded()
+        XCTAssertEqual(web.alphaValue, 0, "covered at the reshow layout")
+        try await wait("cover lifted") { lifted != nil }
+        XCTAssertEqual(lifted, true, "the page signal lifted the cover, not the timeout")
+    }
+
     func testWebviewUnpaintedPaper() async throws {
         let toy = try WebviewToy(path: directory.appendingPathComponent("webview.sock").path)
         try await toy.start()

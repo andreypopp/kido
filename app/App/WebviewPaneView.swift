@@ -62,9 +62,13 @@ final class WebviewPaneView: NSView, WKNavigationDelegate, WKUIDelegate {
     private var generation = UUID().uuidString
     private var pendingDocument: (navigation: WKNavigation, generation: String)?
     private var theme = ""
+    private enum Reshow { case shown, unhidden, covered(DispatchWorkItem) }
+    private var reshow = Reshow.shown
+    private static let coverLimit = 0.5
     #if KIDO_VISUAL
     var visualFocus: ((Snapshot.Position) -> Void)?
     var visualAttended: Bool?
+    var visualUncovered: ((Bool) -> Void)?
     var visualPreview: ((PreviewSource, NSRect) -> Void)?
     var visualPreviewLimit = Upload.fileLimit
     var visualFeedScript: String?
@@ -175,10 +179,53 @@ final class WebviewPaneView: NSView, WKNavigationDelegate, WKUIDelegate {
     override var isFlipped: Bool { true }
     override var acceptsFirstResponder: Bool { true }
     override func becomeFirstResponder() -> Bool { serving ? window?.makeFirstResponder(browser) == true : super.becomeFirstResponder() }
+    override func viewDidUnhide() {
+        super.viewDidUnhide()
+        if case .shown = reshow { reshow = .unhidden }
+        needsLayout = true
+    }
+
+    override func viewDidHide() {
+        super.viewDidHide()
+        uncover()
+    }
+
+    private func uncover(signalled: Bool = false) {
+        if case .covered(let timeout) = reshow {
+            timeout.cancel()
+            #if KIDO_VISUAL
+            visualUncovered?(signalled)
+            #endif
+        }
+        reshow = .shown
+        browser.alphaValue = 1
+    }
+
     override func layout() {
         super.layout()
+        let resized = browser.frame.size != bounds.size
         browser.frame = bounds
+        switch reshow {
+        case .shown: break
+        case .unhidden, .covered:
+            if serving, resized { cover() }
+            else if case .unhidden = reshow { reshow = .shown }
+        }
         unavailable.frame = NSRect(x: 8, y: bounds.midY - 12, width: max(0, bounds.width - 16), height: 24)
+    }
+
+    private func cover() {
+        if case .covered(let previous) = reshow { previous.cancel() }
+        let timeout = DispatchWorkItem { [weak self] in self?.uncover() }
+        reshow = .covered(timeout)
+        browser.alphaValue = 0
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.coverLimit, execute: timeout)
+        let script = "const deadline = Date.now() + limit; const matches = () => Math.abs(innerWidth - width) <= 1 && Math.abs(innerHeight - height) <= 1; while (!matches() && Date.now() < deadline) await new Promise(done => setTimeout(done, 16)); if (!matches()) return false; await new Promise(done => { requestAnimationFrame(() => requestAnimationFrame(done)); setTimeout(done, 50) }); return true"
+        let size = browser.safeAreaRect.size
+        browser.callAsyncJavaScript(script, arguments: ["width": size.width, "height": size.height, "limit": Self.coverLimit * 1000], in: nil, in: .page) { [weak self] result in
+            guard let self, case .covered(let current) = reshow, current === timeout, case .success(let matched) = result, matched as? Bool == true else { return }
+            uncover(signalled: true)
+        }
     }
 
     func update(path: String, serving: Bool) {
@@ -202,6 +249,7 @@ final class WebviewPaneView: NSView, WKNavigationDelegate, WKUIDelegate {
     func close() {
         guard !stopped else { return }
         stopped = true
+        uncover()
         NotificationCenter.default.removeObserver(self, name: NSColor.systemColorsDidChangeNotification, object: nil)
         browser.stopLoading()
         let cancelled = Array(tasks.values)

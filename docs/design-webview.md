@@ -293,7 +293,9 @@ goes to the page; the selection is WebKit's and copy mode is off
 while the page has focus; find is WebKit's, which gives no count; the
 pane's theme reaches the page as CSS properties, so a page that sets
 nothing shows the pane's paper, also the shifted paper of an unfocused
-pane, and no white flash.
+pane, and no white flash; a hidden page that comes back at a new size
+shows the paper until it has laid out at that size, not its old
+layout.
 
 **Memory.** Each live web view is its own WebContent process of about
 27 MB (21 views of one data store measured 23 processes and 634 MB),

@@ -1601,8 +1601,21 @@ window, and a slot only names the pane whose view shows. The view
 and its chrome are stored once, by pane. `SessionView` keeps
 the order in which pages hid, for the whole native window, and releases
 the oldest beyond `app.webview.keep_hidden`; 0 releases a page when its
-pane hides. A pane that comes back with its page shows that live page
-in the same layout pass, so a switch shows no frame of paper. A
+pane hides. A pane that comes back with its page at the same size
+shows that live page in the same layout pass, so a switch shows no
+frame of paper. A hidden view gets no layout, so a page whose size
+changed while it was hidden (a window resize, then a tab switch) gets
+its new frame only in the pass that shows it, and its old frame would
+show while the page lays out again: koa's dock and scroll anchor follow
+the size through `ResizeObserver`. Thus the first layout after an
+unhide that changes the size covers the page with the pane's paper
+(`WebviewPaneView.cover`): the browser's alpha is 0 until a page
+script sees the inner size equal the browser's safe-area size, within
+one point, and then two animation frames or 50 ms pass, whichever is
+first. WebKit does not run animation frames for an offscreen page, so
+the timer bounds that wait. A page that never matches shows after
+0.5 s. A new size while covered starts the cover again. A first load
+and a resize of a visible page are not covered. A
 released page loads again when its pane shows; the pane that takes a
 slot gets its page in the same layout pass that adds it, so no frame
 shows its terminal, and until WebKit paints, the page shows the pane's
