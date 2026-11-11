@@ -1119,6 +1119,18 @@ macOS 27's rounder controls); 12pt is the pane capsule family's
 radius. The other radii (code blocks 7pt, chips, the queue 8pt)
 stay.
 
+**8 · The composer's depth** (user, 2026-11-11: "contact"). The
+shipped glow (an inset top highlight at white 28%, a 6pt/22pt
+shadow at 14% of the foreground and a 1pt/3pt at 10%) goes: on a
+dark theme the light foreground made it a halo, and the glass blur
+already lifts the field off the content that scrolls under it. The
+field takes the pane capsule family's treatment (design/pane/NOTES.md):
+no inset highlight, a 0.5pt edge at 16% of the foreground in a
+light theme and 14% in a dark one, and a tight contact shadow,
+black 8% at y 1pt blur 2pt in light, black 30% at y 1pt blur 3pt
+in dark. The glass background and blur stay. The same for the
+dock's dialog, exited card and queue, which share the field's rule.
+
 **4 · `@name` links to the agent's pane.** Every name of an agent
 (an agent line's, a `@name` in the answer's or the user's prose, a
 `list_agents` step) is an `<a class="who">`: 600, the text's colour,
