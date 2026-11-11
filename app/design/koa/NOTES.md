@@ -1042,10 +1042,18 @@ the agent line's and the run's at the edge.
 (720 − 2×20), the user block 704 (−12/+12 of margin), the composer's
 field 672 (720 − 2×24) and its text 648. Proposed: the composer takes
 `--side-pad` − `--pad` (8pt; 4pt narrow) of padding and the field
-`--pad` (12pt; 8pt narrow) of its own, so the field is the user
-block's width and its text edge is the assistant's. `.dialogs` and
-`.exited` take the same 8pt. One rule in page.css; nothing moves in
-the transcript.
+`--pad` (12pt) of its own, so the field is the user block's width
+and its text edge is the assistant's. `.dialogs` and `.exited` take
+the same 8pt. One rule in page.css; nothing moves in the transcript.
+
+The sides do not shrink in a narrow pane (user, 2026-11-11): the
+narrow 12pt/8pt put the user block and the field 4pt from the pane's
+edge, where they blended with its border. `--side-pad` stays the wide
+value and `--pad` too at every width (20pt and 12pt then; 24pt and
+16pt since item 6); the narrow rule keeps only its
+top and bottom (10pt and 6pt in the transcript, 10pt under the
+composer). The "Compact spacing" table's narrow row becomes
+10 20 6.
 
 **2 · The user message**, six treatments, a picker on the page:
 A the shipped 18% accent tint; B a bubble at the right, at most 82%
@@ -1070,6 +1078,31 @@ an 8pt gap separates it from the body's start. A click opens the body under the 
 start; a second click closes it. A refused call or a failed spawn
 colours the kind, the name and the start red. This replaces
 agents.html's card: no fill, no two-line header.
+
+**5 · One look for run lines and agent lines** (user, 2026-11-11;
+the "Rows" picker, `unified`). A run line and an agent line (and a
+job line) are the same row: no chevron (the whole line is still the
+click that opens it); the prose font at the row's .95em for the tool
+names, the step names and the lead, the mono only for a command or a
+path inside a step; the time in the prose font at .8em with
+`font-variant-numeric: tabular-nums`. While a tool runs the line
+says its name, then the spinner 6pt after it ("bash ◌"), not the
+command. Every row is indented by `--pad` (12pt; 16pt with item 6)
+from the transcript's text edge; an opened run's steps and an
+opened agent line's body (its bar at the row's start, the text 12pt
+in) indent from that point, never back to the edge; the times end on the text edge, as the user
+block's timestamp does (the run line's 12pt right padding goes).
+Consecutive run, agent and job lines sit 4pt apart; the last of the
+group keeps the 14pt gap after it, and an opened row keeps 14pt
+under its body.
+
+**6 · The composer's padding** (user, 2026-11-11, v3 of three): the
+scale grows so the alignment of item 1 holds. `--side-pad` is 24pt
+and `--pad` 16pt at every width, so the transcript's text is 672
+wide, the user block and the field 704, and both sit 8pt from the
+pane's edge; the user block pads 8pt 16pt, the field 12pt 16pt 8pt
+(was 9pt 12pt 5pt). The narrow rule keeps only its top and bottom,
+as decided for the narrow padding.
 
 **4 · `@name` links to the agent's pane.** Every name of an agent
 (an agent line's, a `@name` in the answer's or the user's prose, a

@@ -835,12 +835,12 @@ test("a pending tool shows its name until its label arguments arrive", async () 
   const app = await page();
   const labels = app.run(`
     put({seq:1,revision:0,at:0,kind:'assistant',final:false,blocks:[{type:'tool',id:'call',name:'bash',args:{text:'{}'},state:{type:'pending'}}]});
-    const label=()=>{const item=items.get(1);return run([{key:'1:0',index:0,item,block:item.blocks[0]}]).children[0].children[1].children.at(-1).textContent;};
+    const label=()=>{const item=items.get(1);return run([{key:'1:0',index:0,item,block:item.blocks[0]}]).children[1].children[0].children[0].children[1].children.map(c=>c.textContent).join('').trim();};
     const before=label();
     apply({type:'patch',baseRevision:0,revision:1,seq:1,final:false,blocks:[{index:0,block:{type:'tool',id:'call',name:'bash',args:{text:JSON.stringify({command:'make verify'})},state:{type:'pending'}}}]});
     [before,label()];
   `);
-  assert.deepEqual(Array.from(labels), ['bash', 'make verify']);
+  assert.deepEqual(Array.from(labels), ['bashbash', 'bashmake verify']);
   assert.equal(app.run(`['bash','read','edit','write','custom'].every(name=>{
     const block={type:'tool',name,args:{text:'{}'},state:{type:'pending'}};
     return stepInfo({block,item:{final:false},args:{}}).label===name;
@@ -853,12 +853,12 @@ test("a pending tool shows its name until its label arguments arrive", async () 
 
 test("a running tool takes priority over a later pending step", async () => {
   const app = await page();
-  assert.equal(app.run("const item={final:false,stop:'',blocks:[]};const steps=['running','pending'].map((type,index)=>({key:'0:'+index,index,item,block:{type:'tool',name:'bash',args:{text:JSON.stringify({command:type+' command'})},state:{type}}}));run(steps).children[0].children[1].children.some(child=>child?.textContent==='running command')"), true);
+  assert.equal(app.run("const item={final:false,stop:'',blocks:[]};const steps=[['running','read'],['pending','edit']].map(([type,name],index)=>({key:'0:'+index,index,item,block:{type:'tool',name,args:{text:'{}'},state:{type}}}));run(steps).children[0].children[0].children[0].textContent"), 'read');
 });
 
 test("ended thinking is not active while assistant text streams", async () => {
   const app = await page();
-  assert.equal(app.run("const block={type:'thinking',text:'done',started:1,ended:2};const item={final:false,blocks:[block,{type:'text',text:'streaming'}]};run([{block,item,index:0,key:'0:0'}]).children[0].children[1].children.some(child=>child?.className==='spin')"), false);
+  assert.equal(app.run("const block={type:'thinking',text:'done',started:1,ended:2};const item={final:false,blocks:[block,{type:'text',text:'streaming'}]};run([{block,item,index:0,key:'0:0'}]).children[0].children[0].children.some(child=>child?.className==='spin')"), false);
 });
 
 test("model picker matches provider and id", async () => {

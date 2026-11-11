@@ -1,5 +1,5 @@
 <!doctype html>
-<html lang="en" data-theme="light" data-width="wide" data-um="solid" data-al="plain" data-guides="on">
+<html lang="en" data-theme="light" data-width="wide" data-um="solid" data-al="plain" data-guides="on" data-rows="unified" data-cpad="v3">
 <head>
 <meta charset="utf-8">
 <title>koa — width, user messages, agent lines, @names</title>
@@ -347,14 +347,14 @@ html[data-width=narrow] .foot .sep,.pane.narrow .foot .sep{margin:0 7px}
 
 /* ---- 1 · width: the composer's text edge is the transcript's text edge ---- */
 /* shipped: transcript 720 − 2×20 = 680 of text; user block −12/+12 = 704; composer 720 − 2×24 = 672 of field, 648 of text */
-/* aligned: the composer takes the transcript's --side-pad and the user block's --pad: field = user block = 704, text = 680 */
+/* aligned: the composer takes the transcript's --side-pad and the user block's --pad: field = user block = 704, text = 680. The sides are the same at every width (user, 2026-11-11: the narrow 12/8 put the blocks 4pt from the pane's edge, blending with its border) */
 .pane.aligned .transcript{--side-pad:20px;--pad:12px;padding:14px var(--side-pad) 8px}
-.pane.aligned.narrow .transcript,html[data-width=narrow] .pane.aligned .transcript{--side-pad:12px;--pad:8px;padding:10px var(--side-pad) 6px}
+.pane.aligned.narrow .transcript,html[data-width=narrow] .pane.aligned .transcript{padding:10px var(--side-pad) 6px}
 .pane.aligned .msg.user,.pane.aligned .aline.open .bd{margin-left:calc(-1*var(--pad));margin-right:calc(-1*var(--pad))}
 .pane.aligned .msg.user{padding:7px var(--pad)}
 .pane.aligned .run .time{padding-right:0}
 .pane.aligned .composer{--side-pad:20px;--pad:12px;padding:0 calc(var(--side-pad) - var(--pad)) 12px}
-.pane.aligned.narrow .composer,html[data-width=narrow] .pane.aligned .composer{--side-pad:12px;--pad:8px;padding:0 calc(var(--side-pad) - var(--pad)) 10px}
+.pane.aligned.narrow .composer,html[data-width=narrow] .pane.aligned .composer{padding:0 calc(var(--side-pad) - var(--pad)) 10px}
 .pane.aligned .field{padding-left:var(--pad);padding-right:var(--pad)}
 .pane.aligned .exited,.pane.aligned .dialogs{padding-left:8px;padding-right:8px}
 /* the guides: the transcript's text edges, drawn through the pane */
@@ -428,6 +428,25 @@ html[data-al=plain] .aline .bd{margin-left:0}
 .tip{position:absolute;font:.82em/1.4 var(--prose);color:var(--ko-bg);background:color-mix(in srgb,var(--ko-fg) 88%,var(--ko-bg));padding:2px 7px;border-radius:5px;pointer-events:none;white-space:nowrap;box-shadow:0 2px 8px color-mix(in srgb,var(--ko-fg) 20%,transparent)}
 .cursor{position:absolute;width:12px;height:18px;pointer-events:none}
 .cursor svg{width:12px;height:18px;fill:#fff;stroke:#000;stroke-width:1}
+/* 5 · unified rows (user, 2026-11-11): a run line and an agent line look the same: no chevron, the prose font, the tool's name while it runs, times in prose with tabular numerals; consecutive rows sit 4pt apart, the group keeps the 14pt gap after it */
+html[data-rows=unified] .run>.line .chev,html[data-rows=unified] .aline .hd .chev,html[data-rows=unified] .job .hd .chev{display:none}
+html[data-rows=unified] .run .names,html[data-rows=unified] .run .sum,html[data-rows=unified] .step .name,html[data-rows=unified] .step .sum{font-family:var(--prose);font-size:1em}
+html[data-rows=unified] .step .cmd,html[data-rows=unified] .step .path{font-family:var(--mono);font-size:.92em}
+html[data-rows=unified] .run .time,html[data-rows=unified] .aline .hd time,html[data-rows=unified] .job .hd time{font:.8em/1.5 var(--prose);font-variant-numeric:tabular-nums}
+html[data-rows=unified] .run .sum .spin{margin:0 0 0 6px}
+html[data-rows=unified] .run>.line,html[data-rows=unified] .step>.line{padding-right:0}
+html[data-rows=unified] .run>.line,html[data-rows=unified] .aline .hd,html[data-rows=unified] .job .hd{padding-left:var(--pad,12px)}
+html[data-rows=unified] .run>.steps{margin-left:calc(var(--pad,12px) + 4px)}
+html[data-rows=unified] :is(.run,.aline,.job){margin-bottom:4px}
+html[data-rows=unified] :is(.run,.aline,.job):not(:has(+ :is(.run,.aline,.job))){margin-bottom:14px}
+html[data-rows=unified] :is(.run,.aline).open{margin-bottom:14px}
+html[data-rows=unified] .aline.open .bd,html[data-rows=unified] .pane.aligned .aline.open .bd{margin-left:var(--pad,12px);margin-right:0}
+/* 6 · composer padding (user, 2026-11-11, to choose): v1 the field pads 12 16 8 and grows 4pt outward so its text stays on the edge; v2 same pads, the field keeps its width, the text moves 4pt in; v3 the scale grows: --side-pad 24, --pad 16, so the user block, the field and the text stay aligned */
+html[data-cpad=v1] .pane.aligned .field{padding:12px 16px 8px;margin:0 -4px}
+html[data-cpad=v2] .pane.aligned .field{padding:12px 16px 8px}
+html[data-cpad=v3] .pane.aligned .transcript,html[data-cpad=v3] .pane.aligned .composer{--side-pad:24px;--pad:16px}
+html[data-cpad=v3] .pane.aligned .field{padding:12px 16px 8px}
+html[data-cpad=v3] .pane.aligned .msg.user{padding:8px var(--pad)}
 </style>
 </head>
 <body>
@@ -438,6 +457,8 @@ html[data-al=plain] .aline .bd{margin-left:0}
   <label>Pane width <select id="width"><option value="wide">wide (980pt)</option><option value="narrow">narrow (60 columns)</option></select></label>
   <label>User message <select id="um"><option value="tint">A · accent tint 18% (shipped)</option><option value="bubble">B · bubble at the right</option><option value="bar">C · accent bar, no fill</option><option value="card">D · the composer's card</option><option value="heading">E · heading with a rule</option><option value="solid">F · solid accent</option></select></label>
   <label>Agent line <select id="al"><option value="line">with a chevron, like a run</option><option value="plain">without</option></select></label>
+  <label>Rows <select id="rows"><option value="unified">unified (proposal 2026-11-11)</option><option value="shipped">shipped</option></select></label>
+  <label>Composer padding <select id="cpad"><option value="shipped">shipped (9 12 5)</option><option value="v1">v1 · 12 16 8, field grows 4pt outward</option><option value="v2">v2 · 12 16 8, text moves 4pt in</option><option value="v3">v3 · side 24, pad 16, everything aligned (chosen)</option></select></label>
   <label>Guides <select id="guides"><option value="on">on</option><option value="off">off</option></select></label>
 </div>
 
@@ -455,6 +476,16 @@ html[data-al=plain] .aline .bd{margin-left:0}
 <p>Outgoing and incoming alike: <i>kind</i> to|from <b>@name</b> relation, then the start of the body, ellipsized, and the time at the right; the same line as a job notice and a run, in the transcript's muted tone. A click opens the body under it, indented with a hairline like a run's steps; a second click closes it. A refused call or a failed spawn colours the kind and the body red. With the chevron, the line is a run's; without it, the name is the handle. The second pane has two open.</p>
 <div class="grid"><div class="pane aligned" data-state="agents"></div><div class="pane aligned" data-state="agents-open"></div></div>
 <div class="grid" style="margin-top:22px"><div class="pane aligned narrow" data-state="agents"></div></div>
+</section>
+
+<section><h2>5 · One look for run lines and agent lines</h2>
+<p>User, 2026-11-11: no chevron on a run line; the prose font for the tool names, the step names and the times (tabular numerals, no monospace); while a tool runs the line says its name, not the command, with the spinner after the name; an agent line starts where a run line starts; consecutive run, agent and job lines sit 4pt apart, and the group keeps the 14pt gap after it. The "Rows" picker compares with the shipped look.</p>
+<div class="grid"><div><div class="pane aligned" data-state="rows"></div><p class="cap">a running run, three agent lines and finished runs in one group</p></div><div><div class="pane aligned narrow" data-state="rows"></div><p class="cap">narrow</p></div></div>
+</section>
+
+<section><h2>6 · The composer's padding</h2>
+<p>User, 2026-11-11: more room inside the composer. The "Composer padding" picker above compares the shipped 9pt 12pt 5pt with three options: v1 keeps the text on the transcript's edge by growing the field 4pt outward; v2 keeps the field and moves the text 4pt in; v3 (chosen by the user) grows the whole scale, side padding 24pt and block pad 16pt, so the user block, the field and the text stay aligned and the blocks sit 8pt from the pane's edge. The field's top is 12pt and its bottom 8pt in all three.</p>
+<div class="grid"><div><div class="pane aligned" data-state="width"></div><p class="cap">wide</p></div><div><div class="pane aligned narrow" data-state="width"></div><p class="cap">narrow</p></div></div>
 </section>
 
 <section><h2>4 · @name is a link to the agent's pane</h2>
@@ -510,6 +541,15 @@ const states={
     +aline({kind:'steer',dir:'to',name:'html-refine',text:'Pause the koa-runline implementer until the user approves; the mockups show the five decisions but nothing is approved yet.',time:'09:19'})
     +aline({kind:'refused',dir:'to',name:'modules-review',err:true,text:'refusing window name "modules/review": it must be one path-safe name, not an empty, dot or slashed path',time:'09:22',open:true})
     +aline({kind:'report',dir:'from',name:'sidebar-right',rel:'subagent',text:report,time:'13:02'}))+composer(),
+  rows:(p)=>transcript(userMsg('Start koa-pad for the narrow padding and tell the designer when it lands','17:24')
+    +assistant('No planner and no reviewers. The designer\'s updated mockup and NOTES go in with the change.')
+    +aline({kind:'message',dir:'from',name:'kido-app-design',rel:'peer',text:'User decision for koa\'s page (2026-11-11): more inner padding in narrow panes. In share/koa/page/page.css the narrow rule sets --side-pad:12px',time:'17:25'})
+    +runLine('thinking, bash','13.7s')
+    +aline({kind:'task',dir:'to',name:'koa-pad',text:'Implementer, trivial track (AGENTS.md: no checks.sh, no full visual, no ko-test; CI runs the rest). Change the narrow rule of share/koa/page/page.css',time:'17:26'})
+    +runLine('bash<span class="spin"></span>','4s')
+    +assistant('I started koa\'s narrow padding as a second trivial-track unit, <code>koa-pad</code>, in its own worktree <code>kido-koa-pad</code>.')
+    +aline({kind:'message',dir:'from',name:'koa-pad',rel:'subagent',text:'Done: the narrow rule keeps only its top and bottom; the sides are 20px and 12px at every width. make koa-test passes.',time:'17:31'})
+    +runLine('read, bash x2','6.0s'))+composer(),
   names:(p)=>transcript(userMsg(`Ask ${who('sidebar-right')} for the snapshot paths, and stop ${who('simplify-reuse',{gone:true})} if it has reported`)
     +runLine('list_agents, read_report, stop_agent','2.1s')
     +aline({kind:'message',dir:'to',name:'sidebar-right',text:'Which snapshots did make visual record? Paths, please.',time:'09:31'})
@@ -521,7 +561,7 @@ for(const pane of document.querySelectorAll('.pane')){pane.innerHTML=states[pane
 function placeGuides(){for(const pane of document.querySelectorAll('.pane[data-state=width]')){const t=pane.querySelector('.transcript'),pr=pane.getBoundingClientRect(),tr=t.getBoundingClientRect(),cs=getComputedStyle(t);const l=tr.left+parseFloat(cs.paddingLeft)-pr.left-1,r=tr.right-parseFloat(cs.paddingRight)-pr.left-1;pane.querySelector('[data-g=l]').style.left=l+'px';pane.querySelector('[data-g=r]').style.left=r+'px'}
   const pane=document.querySelector('.pane[data-state=names]');const a=pane.querySelector('.who.hover');const pr=pane.getBoundingClientRect(),ar=a.getBoundingClientRect();const tip=pane.querySelector('[data-tip]'),cur=pane.querySelector('[data-cursor]');cur.style.left=(ar.left-pr.left+ar.width*0.55)+'px';cur.style.top=(ar.top-pr.top+8)+'px';tip.style.left=(ar.left-pr.left+ar.width*0.55+14)+'px';tip.style.top=(ar.top-pr.top+22)+'px'}
 placeGuides();
-for(const id of ['theme','width','um','al','guides']){const el=document.getElementById(id);el.value=document.documentElement.dataset[id];el.onchange=e=>{document.documentElement.dataset[id]=e.target.value;placeGuides()}}
+for(const id of ['theme','width','um','al','guides','rows','cpad']){const el=document.getElementById(id);el.value=document.documentElement.dataset[id];el.onchange=e=>{document.documentElement.dataset[id]=e.target.value;placeGuides()}}
 document.addEventListener('click',e=>{const w=e.target.closest('a.who');if(w){e.preventDefault();return}const h=e.target.closest('.aline .hd');if(h){const a=h.parentElement;a.classList.toggle('open');h.setAttribute('aria-expanded',a.classList.contains('open'));return}const line=e.target.closest('.run>.line');if(line)line.parentElement.classList.toggle('open')});
 </script>
 </body>

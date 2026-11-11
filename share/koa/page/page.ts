@@ -112,7 +112,7 @@ function refreshAgentCards() {
 function jobCard(first: JobItem, slots: Map<string, Slot>): JobGroup {
   const view = node('div', undefined, 'job'), line = node('div', undefined, 'hd'), details = node('div', undefined, 'out');
   const kind = node('span', undefined, 'kind'), end = node('span', undefined, 'end'), time = node('time', timestamp(first.at));
-  line.append(node('span', '›', 'chev'), node('span', first.job.name, 'nm'), kind, end, time);
+  line.append(node('span', first.job.name, 'nm'), kind, end, time);
   const group: JobGroup = { first, next: first.seq, items: [], shown: 0, streams: 0, omitted: 0, cut: false, view, details, kind, end };
   slots.set('job', { type: 'job', view, group });
   fold(view, 'job:' + first.seq, line, details, () => showJob(group));
@@ -291,7 +291,7 @@ function run(input: Step[]) {
   const aborted = steps.some(step => step.item.stop === 'aborted' && step.item.blocks.slice(step.index + 1).every(block => block.type !== 'text' || !block.text));
   const active = steps.find(step => step.block.type === 'tool' && step.block.state.type === 'running') ?? steps.findLast(step => step.block.type === 'tool' ? step.block.state.type === 'pending' && !step.item.final : !step.item.final && step.block.ended === undefined);
   if (aborted) summary.append('aborted, you pressed Escape');
-  else if (active) summary.append(node('span', undefined, 'spin'), ' ', node('span', active.info.label, 'names'));
+  else if (active) summary.append(node('span', active.info.kind, 'names'), node('span', undefined, 'spin'));
   else {
     const counts = new Map<string, number>();
     for (const step of steps) { const kind = step.info.kind; counts.set(kind, (counts.get(kind) || 0) + 1); }
@@ -305,7 +305,7 @@ function run(input: Step[]) {
   const timed = steps.filter(step => step.block.started !== undefined);
   const started = steps[0].block.started ?? steps[0].item.at;
   const ended = aborted ? steps.at(-1)?.item.ended : timed.at(-1)?.block.ended ?? (active ? Date.now() : undefined);
-  line.append(node('span', '›', 'chev'), summary, node('span', duration(started === undefined || ended === undefined ? undefined : ended - started), 'time'));
+  line.append(summary, node('span', duration(started === undefined || ended === undefined ? undefined : ended - started), 'time'));
   const children = node('div', undefined, 'steps');
   for (const step of steps) {
     const { block, key, info } = step;

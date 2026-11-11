@@ -540,6 +540,9 @@ replay from `get_messages` and the live stream use one conversion.
   `--pad` past the transcript's text edge, so the field's text starts
   where the assistant's text starts, and every item's time ends on the
   text edge (the user block's time on its own padding). A user message
+  The sides do not shrink in a narrow pane: `--side-pad` and `--pad`
+  are the same at every width, so the blocks keep 8pt from the pane's
+  edge; the narrow rule changes only the vertical padding. A user message
   is a solid block of the accent colour; its quotes, code and time
   derive from its ink, not from the accent.
 - **A rebuild** (at start, after `new_session`, `switch_session`,
@@ -1016,7 +1019,7 @@ The user decided the look with the mockups `agents.html` and
   one line, like a step's line, not a card: one phrase in the prose
   font, `<kind> to|from @<name> <relation>` ("steer from @kido-app
   parent"), then the first line of the text, then the time at the
-  text edge, in the terminal font. The relation is one word,
+  text edge, in the prose font. The relation is one word,
   `subagent`, `peer` or `parent`, that folds ko-pi's five relations;
   ko-pi's own notices have none. The line splits its run as a text
   does. The first line is plain text with its Markdown syntax
@@ -1030,6 +1033,15 @@ The user decided the look with the mockups `agents.html` and
   meta lines: only a failure shows, in the error colour in the
   kind's place ("refused to @name", "not reported from @name
   subagent").
+- **Run, agent and job lines are one look.** None has a chevron; the
+  whole line folds it. Tool names, step names and the agent lead are
+  prose at the row's size; only a command or path inside a step is
+  terminal text. Times are prose at .8em with tabular digits. A
+  running tool shows its name and then the spinner, not its command.
+  Rows indent by `--pad` from the text edge and their times end on it;
+  an opened body, a run's steps or an agent's text, indents from that
+  point. Consecutive rows sit 4pt apart; the last of a group and an
+  opened row keep 14pt.
 - **`@name` focuses the agent's pane.** An agent's name in an agent
   line, and an `@name` in the prose of a reply or a user message, is a
   link while the name is in koa's list of live agents; a click calls
