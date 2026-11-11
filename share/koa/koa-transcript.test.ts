@@ -33,6 +33,8 @@ function record(line: string | undefined) {
   return JSON.parse(line.slice(6, -2));
 }
 
+const fresh = (items: object[]) => items.map(item => ({ ...item, revision: 0 }));
+
 function assistant(text: string, stopReason: "stop" | "error" = "stop"): Extract<AgentMessage, { role: "assistant" }> {
   return { role: "assistant", content: [{ type: "text", text }], api: "openai-responses", provider: "openai", model: "test", usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } }, stopReason, timestamp: 123 };
 }
@@ -47,9 +49,9 @@ test('stored bash facts survive live conversion and authoritative rebuild', t =>
   const message = { role: 'bashExecution' as const, command: 'quiet', output: 'partial', exitCode: 2, cancelled: true, truncated: true, fullOutputPath: '/tmp/full', excludeFromContext: true, timestamp: 42 };
   view.message(message, 'end');
   const live = JSON.parse(request(view, '/items?before=100').join('')).items;
-  assert.deepEqual(live, [{ seq: 0, at: 42, final: true, kind: 'bash', command: 'quiet', result: { output: { text: 'partial', cut: 0 }, exit: 2, cancelled: true, truncated: true, fullOutputPath: '/tmp/full' }, excludeFromContext: true }]);
+  assert.deepEqual(live, [{ seq: 0, revision: 1, at: 42, final: true, kind: 'bash', command: 'quiet', result: { output: { text: 'partial', cut: 0 }, exit: 2, cancelled: true, truncated: true, fullOutputPath: '/tmp/full' }, excludeFromContext: true }]);
   view.rebuild([message]);
-  assert.deepEqual(JSON.parse(request(view, '/items?before=100').join('')).items, live);
+  assert.deepEqual(JSON.parse(request(view, '/items?before=100').join('')).items, fresh(live));
 });
 
 test('reply annotations resolve live and replay, validate code points and keep cursor and paging items', t => {
@@ -61,7 +63,7 @@ test('reply annotations resolve live and replay, validate code points and keep c
   view.message(message, 'start'); view.message(message, 'end');
   const events = request(view, '/events'), epoch = record(events[0]).epoch;
   view.annotation(entry);
-  const item = { seq: 1, at: 124, final: true, kind: 'annotations', reply: { seq: 0, block: 0 }, annotations: [{ ...question, options: [[7, 10], [14, 17]] }] };
+  const item = { seq: 1, revision: 1, at: 124, final: true, kind: 'annotations', reply: { seq: 0, block: 0 }, annotations: [{ ...question, options: [[7, 10], [14, 17]] }] };
   assert.deepEqual(record(events.at(-1)).item, item);
   assert.deepEqual(record(request(view, '/events?epoch=' + epoch + '&after=0')[0]).item, item);
   const live = JSON.parse(request(view, '/items?before=100').join('')).items;
@@ -73,9 +75,9 @@ test('reply annotations resolve live and replay, validate code points and keep c
   assert.equal(replaced[2].annotations[0].kind, 'open'); assert.equal(replaced[2].annotations[0].options, undefined);
   view.rebuild([message, { ...assistant('Later'), timestamp: 130 }], 'same', [entry, replacement], replacement.id);
   const replay = JSON.parse(request(view, '/items?before=100').join('')).items;
-  assert.deepEqual(replay.slice(0, 3), replaced);
+  assert.deepEqual(replay.slice(0, 3), fresh(replaced));
   assert.deepEqual(replay.map((item: WireItem) => item.kind), ['assistant', 'annotations', 'annotations', 'assistant']);
-  assert.deepEqual(JSON.parse(request(view, '/items?before=2').join('')).items, live);
+  assert.deepEqual(JSON.parse(request(view, '/items?before=2').join('')).items, fresh(live));
 });
 
 test('reply annotations keep disjoint questions and options in text order', t => {
@@ -135,9 +137,9 @@ test('notifications are retained transcript items across reconnect and same-sess
   assert.equal(live.length, 2);
   assert.equal(live[1].kind, 'notify'); assert.equal(live[1].text.text, 'Remember this warning');
   view.rebuild([first], 'session-one');
-  assert.deepEqual(JSON.parse(request(view, '/items?before=100').join('')).items, live);
+  assert.deepEqual(JSON.parse(request(view, '/items?before=100').join('')).items, fresh(live));
   const reconnect = record(request(view, '/events')[0]);
-  assert.deepEqual(reconnect.items, live);
+  assert.deepEqual(reconnect.items, fresh(live));
   const later = { ...assistant('after'), timestamp: live[1].at + 1 };
   view.rebuild([first, later], 'session-one');
   assert.deepEqual(JSON.parse(request(view, '/items?before=100').join('')).items.map((item: WireItem) => item.kind), ['assistant', 'notify', 'assistant']);
@@ -155,10 +157,10 @@ test('structured agent and job details render identically live and on rebuild', 
   ];
   for (const message of messages) view.message(message, 'end');
   const live = JSON.parse(request(view, '/items?before=100').join('')).items;
-  assert.deepEqual(live[0], { seq: 0, at: 1, final: true, kind: 'agent', direction: 'in', from: { name: 'boss', session: 'boss-id', pane: 'pane_2' }, text: { text: 'Review the module', cut: 0 }, inbound: { form: 'message', relation: 'parent', runtime: 'dev' } });
-  assert.deepEqual(live[1], { seq: 1, at: 2, final: true, kind: 'job', job: { id: 'j1', name: 'build', service: false, log: '/tmp/build.log' }, event: { type: 'stream', batch: { text: 'compiled', cut: 0 }, omitted: 2, cut: true } });
+  assert.deepEqual(live[0], { seq: 0, revision: 1, at: 1, final: true, kind: 'agent', direction: 'in', from: { name: 'boss', session: 'boss-id', pane: 'pane_2' }, text: { text: 'Review the module', cut: 0 }, inbound: { form: 'message', relation: 'parent', runtime: 'dev' } });
+  assert.deepEqual(live[1], { seq: 1, revision: 1, at: 2, final: true, kind: 'job', job: { id: 'j1', name: 'build', service: false, log: '/tmp/build.log' }, event: { type: 'stream', batch: { text: 'compiled', cut: 0 }, omitted: 2, cut: true } });
   assert.equal(live[2].kind, 'notice'); view.rebuild(messages);
-  assert.deepEqual(JSON.parse(request(view, '/items?before=100').join('')).items, live); view.close();
+  assert.deepEqual(JSON.parse(request(view, '/items?before=100').join('')).items, fresh(live)); view.close();
 });
 
 test('agent forms and every job ending use typed details, capped bodies and strict shape checks', t => {
@@ -266,6 +268,21 @@ test("patches append only unchanged text prefixes and replace changed blocks", t
   view.close();
 });
 
+test("a history snapshot holds only published state and carries the stream's revision", t => {
+  const view = transcript({ dir: directory(t), flushMs: 1000 });
+  const lines = request(view, "/events");
+  view.message(assistant("hello"), "start");
+  view.message(assistant("hello world"), "update");
+  const page = JSON.parse(request(view, "/items?before=100").join("")).items[0];
+  const patch = record(lines.findLast(line => line.includes('"type":"patch"')));
+  assert.deepEqual([page.revision, page.blocks[0].text, patch.baseRevision, patch.revision, patch.blocks], [2, "hello world", 1, 2, [{ index: 0, suffix: " world" }]]);
+  view.message(assistant("hello world!"), "update");
+  request(view, "/events");
+  const next = record(lines.findLast(line => line.includes('"type":"patch"')));
+  assert.deepEqual([next.baseRevision, next.revision, next.blocks], [2, 3, [{ index: 0, suffix: "!" }]]);
+  view.close();
+});
+
 test("tool timing survives assistant updates and reaches patches", t => {
   const view = transcript({ dir: directory(t), flushMs: 1000 });
   const message = assistant("");
@@ -353,7 +370,7 @@ test("rebuild sends reset then exactly one caller-supplied state and keeps the e
   view.state({ ...state, working: true, name: "after" });
   const records = lines.map(record);
   assert.deepEqual(records.map(record => record.type), ["reset", "state"]);
-  assert.deepEqual(records[0].items, [{ seq: 0, at: 456, final: true, kind: "user", text: "restored", images: [], attachments: [] }]);
+  assert.deepEqual(records[0].items, [{ seq: 0, revision: 0, at: 456, final: true, kind: "user", text: "restored", images: [], attachments: [] }]);
   assert.match(records[0].epoch, /^[A-Za-z0-9_-]{22}$/);
   assert.notEqual(records[0].epoch, firstEpoch);
   assert.deepEqual(records[1], { ...state, type: "state", working: true, name: "after" });

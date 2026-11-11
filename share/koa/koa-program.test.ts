@@ -520,7 +520,7 @@ test('a resumed bash message has one stored item and no running state', { timeou
   const app = await fixture(t, [{ type: 'respond', command: 'get_messages', data: { messages: [message] } }], {}, undefined, true, ['--session', '/tmp/saved-session'], resolve('../../build/ko/share/ko/koa/koa.ts'));
   const page = await (await fetch(app.base + 'items?before=99')).json();
   assert.equal(page.items.length, 1);
-  assert.deepEqual(page.items[0], { seq: 0, at: 42, final: true, kind: 'bash', command: 'saved', result: { output: { text: 'saved output', cut: 0 }, exit: 0, cancelled: false, truncated: true, fullOutputPath: '/tmp/saved-output' }, excludeFromContext: true });
+  assert.deepEqual(page.items[0], { seq: 0, revision: 0, at: 42, final: true, kind: 'bash', command: 'saved', result: { output: { text: 'saved output', cut: 0 }, exit: 0, cancelled: false, truncated: true, fullOutputPath: '/tmp/saved-output' }, excludeFromContext: true });
   const ready = app.records().findLast(record => record.type === 'state');
   assert.deepEqual(ready?.bash, []);
 });
@@ -984,7 +984,7 @@ test('reply annotations reach events live and on get_entries rebuild', { timeout
   const count = app.count();
   await app.post('prompt', { text: 'rebuild', mode: 'prompt', attachments: [] });
   const replay = await app.until(record => record.type === 'reset' && record.items?.some((item: { kind: string }) => item.kind === 'annotations'), count);
-  assert.deepEqual(replay.items.find((item: { kind: string }) => item.kind === 'annotations'), live.item);
+  assert.deepEqual(replay.items.find((item: { kind: string }) => item.kind === 'annotations'), { ...live.item, revision: 0 });
   assert.ok((await app.log()).filter(record => record.type === 'get_entries').length >= 2);
 });
 

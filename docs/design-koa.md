@@ -566,6 +566,22 @@ stream of tokens must not cost the square of its size.
   raw message and converts it once for each flush (`FLUSH_MS` in
   `koa.ts`). A flush sends `patch` records: for each changed block its
   new suffix when the block only grew, else the block whole.
+- **Revisions order a snapshot and the stream.** `/items` is a
+  separate request, so a patch can reach the page before or after a
+  snapshot that already holds it, and an item outside the loaded
+  window can still stream; arrival order says nothing, and the epoch
+  only separates rebuilds. Each item has a revision that each
+  published change raises by one; a patch names the revision it
+  applies to and the one it makes. `/items` flushes first, so a
+  snapshot holds only published state at its revision. The page
+  applies a patch only on its own revision, skips an older one, and
+  on a gap reconnects without its epoch, which gets a `reset`: a gap
+  is recoverable, unlike a record that the page cannot apply. While a
+  history request is outstanding, the page keeps the patches for the
+  items that it lacks and applies them after the snapshot by the same
+  rule; otherwise such a patch is for an item that a later snapshot
+  gives whole. A reset invalidates the outstanding request, whatever
+  epoch its answer names.
 - **A slow page.** A `write` that returns false is ordinary buffering.
   Only an event response whose buffered output passes its cap is
   ended; that page reconnects with its epoch and gets what it lacks,

@@ -36,7 +36,7 @@ extension VisualTests {
             const frames=[],before=s.scrollTop;let pending,clamped;
             window.requestAnimationFrame=callback=>(frames.push(callback),frames.length);
             window.fetch=async(path,options)=>{if(path!=='/prompt')return originalFetch(path,options);pending=JSON.parse(options.body).text;return {ok:true,json:async()=>({})}};
-            await new Promise((resolve,reject)=>{const timer=setTimeout(()=>{observer.disconnect();reject(Error('No dock clamp'))},10000);const observer=new ResizeObserver(()=>{if(pending===undefined||composer.text()||dock.getBoundingClientRect().height>100)return;void s.scrollHeight;clamped=s.scrollTop;if(mode!=='up'&&clamped>=before){observer.disconnect();clearTimeout(timer);reject(Error('Expected the dock shrink to clamp scrollTop'));return}scrollSource.dispatchEvent(new MessageEvent('message',{data:JSON.stringify({type:'item',item:{kind:'user',seq:seq++,at:Date.now(),final:true,text:pending,images:[],attachments:[]}})}));pending=undefined;observer.disconnect();clearTimeout(timer);resolve()});observer.observe(dock);document.querySelector('#prompt .cm-content').dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',keyCode:13,bubbles:true,cancelable:true}));});
+            await new Promise((resolve,reject)=>{const timer=setTimeout(()=>{observer.disconnect();reject(Error('No dock clamp'))},10000);const observer=new ResizeObserver(()=>{if(pending===undefined||composer.text()||dock.getBoundingClientRect().height>100)return;void s.scrollHeight;clamped=s.scrollTop;if(mode!=='up'&&clamped>=before){observer.disconnect();clearTimeout(timer);reject(Error('Expected the dock shrink to clamp scrollTop'));return}scrollSource.dispatchEvent(new MessageEvent('message',{data:JSON.stringify({type:'item',item:{kind:'user',seq:seq++,revision:0,at:Date.now(),final:true,text:pending,images:[],attachments:[]}})}));pending=undefined;observer.disconnect();clearTimeout(timer);resolve()});observer.observe(dock);document.querySelector('#prompt .cm-content').dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',keyCode:13,bubbles:true,cancelable:true}));});
             s.dispatchEvent(new Event('scroll'));window.requestAnimationFrame=raf;for(const callback of frames)callback(performance.now());await tick();
             window.fetch=originalFetch;results.push({mode,before,clamped,top:s.scrollTop,distance:s.scrollHeight-s.scrollTop-s.clientHeight,bottom:s.scrollHeight-s.scrollTop-s.clientHeight<1&&document.querySelector('.user:last-child').getBoundingClientRect().bottom<=dock.getBoundingClientRect().top,stationary:s.scrollTop===200});
           }
@@ -45,12 +45,12 @@ extension VisualTests {
           if(s.scrollTop===bottom-.5){
             for(let i=1;i<=130;i++){s.scrollTop=bottom-i*.5;s.dispatchEvent(new Event('scroll'))}
             const top=s.scrollTop;
-            scrollSource.dispatchEvent(new MessageEvent('message',{data:JSON.stringify({type:'item',item:{kind:'user',seq:seq++,at:Date.now(),final:true,text:'After fractional scroll up',images:[],attachments:[]}})}));await tick();
+            scrollSource.dispatchEvent(new MessageEvent('message',{data:JSON.stringify({type:'item',item:{kind:'user',seq:seq++,revision:0,at:Date.now(),final:true,text:'After fractional scroll up',images:[],attachments:[]}})}));await tick();
             results.push({mode:'fractional-up',stationary:s.scrollTop===top});
             const end=s.scrollHeight-s.clientHeight;
             for(let next=s.scrollTop;next<end;next+=.5){s.scrollTop=next;s.dispatchEvent(new Event('scroll'))}
             s.scrollTop=end;s.dispatchEvent(new Event('scroll'));
-            scrollSource.dispatchEvent(new MessageEvent('message',{data:JSON.stringify({type:'item',item:{kind:'user',seq:seq++,at:Date.now(),final:true,text:'After fractional scroll down',images:[],attachments:[]}})}));await tick();
+            scrollSource.dispatchEvent(new MessageEvent('message',{data:JSON.stringify({type:'item',item:{kind:'user',seq:seq++,revision:0,at:Date.now(),final:true,text:'After fractional scroll down',images:[],attachments:[]}})}));await tick();
             results.push({mode:'fractional-down',bottom:s.scrollHeight-s.scrollTop-s.clientHeight<1});
           }else results.push({mode:'fractional-unsupported'});
           return results;

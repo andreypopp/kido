@@ -40,10 +40,10 @@ const template = document.createElement('template');
 const folds = new Map<string, boolean>();
 const texts = new Map<string, { render: ReturnType<typeof markdown>; view: HTMLElement; blocks: { block: ReturnType<ReturnType<typeof markdown>>[number]; nodes: ChildNode[] }[]; final?: boolean; source?: string; annotationItem?: Extract<WireItem, { kind: 'annotations' }> }>();
 let state: State = { agents: [], bash: [], compaction: 'idle', pi: { type: 'starting' }, working: false, aborted: false, name: '', levels: [], cwd: '', home: '', statuses: {}, queue: { steering: [], followUp: [] }, dialogs: [] };
-let epoch = '', after = -1, first: number | undefined, more = false, paging = false, follow = true, lastScrollTop = 0, delay = 200, scrollFrame: number | undefined;
+let epoch = '', after = -1, first: number | undefined, more = false, follow = true, lastScrollTop = 0, delay = 200, scrollFrame: number | undefined;
 let escaped = false, dialogId: string | undefined;
 let submitting = false, editorId: string | undefined, dialogTimer: number | undefined, shownExit: number | undefined, pickerButton: HTMLElement | undefined, shownQueue: string | undefined, shownStatuses: string | undefined;
-const pagingPatches: Patch[] = [];
+let historyRequest: { patches: Patch[] } | undefined;
 let attachmentRefusalTimer: number | undefined;
 const draft = attach(element('attachments'), () => refreshComposer(), displayPath, () => !!editor.bash(), () => {
   clearTimeout(attachmentRefusalTimer);
@@ -758,30 +758,42 @@ function statuses() {
     const segment = node('span', undefined, 'ext'); segment.append(node('i', undefined, 'sep'), node('span', key, 'k'), node('span', text)); return segment;
   }));
 }
+function resync() {
+  historyRequest = undefined; epoch = ''; after = -1;
+  if (source) source.onmessage = source.onerror = source.onopen = null;
+  source?.close(); clearTimeout(reconnect);
+  connect();
+}
+function applyPatch(record: Patch, buffer: boolean) {
+  const current = items.get(record.seq);
+  if (!current) { if (buffer) historyRequest?.patches.push(record); return; }
+  if (current.kind !== 'assistant') return resync();
+  if (record.revision <= current.revision) return;
+  if (record.baseRevision !== current.revision) return resync();
+  const item = { ...current, blocks: current.blocks.slice(), revision: record.revision };
+  Object.assign(item, { final: record.final, stop: record.stop, error: record.error, ended: record.ended });
+  for (const change of record.blocks) {
+    if ('block' in change) { item.blocks[change.index] = change.block; texts.delete(record.seq + ':' + change.index); }
+    else {
+      const block = item.blocks[change.index];
+      if (block.type !== 'tool') item.blocks[change.index] = { ...block, text: block.text + change.suffix };
+    }
+  }
+  put(item);
+}
 function apply(record: PageRecord) {
   if (record.type === 'reset') {
     editor.resetCompletion();
-    epoch = record.epoch; after = -1; first = undefined; items.clear(); views.clear(); texts.clear(); annotationItems.clear(); folds.clear(); jobOwners.clear(); pagingPatches.length = 0; more = record.more;
+    epoch = record.epoch; after = -1; first = undefined; items.clear(); views.clear(); texts.clear(); annotationItems.clear(); folds.clear(); jobOwners.clear(); historyRequest = undefined; more = record.more;
     element('items').replaceChildren();
     element('older').hidden = !more;
     for (const item of record.items) put(item);
     refreshBash(); refreshComposer();
-  } else if (record.type === 'item') put(record.item);
-  else if (record.type === 'patch') {
-    const current = items.get(record.seq);
-    if (!current) { if (paging) pagingPatches.push(record); return; }
-    if (current.kind !== 'assistant') return;
-    const item = { ...current, blocks: current.blocks.slice() };
-    Object.assign(item, { final: record.final, stop: record.stop, error: record.error, ended: record.ended });
-    for (const change of record.blocks) {
-      if ('block' in change) { item.blocks[change.index] = change.block; texts.delete(record.seq + ':' + change.index); }
-      else {
-        const block = item.blocks[change.index];
-        if (block.type !== 'tool') item.blocks[change.index] = { ...block, text: block.text + change.suffix };
-      }
-    }
-    put(item);
-  } else if (record.type === 'state') {
+  } else if (record.type === 'item') {
+    const current = items.get(record.item.seq);
+    if (!current || record.item.revision >= current.revision) put(record.item);
+  } else if (record.type === 'patch') applyPatch(record, true);
+  else if (record.type === 'state') {
     if (state.sessionId !== record.sessionId || state.pi.type !== record.pi.type) editor.resetCompletion();
     if (state.sessionId && state.sessionId !== record.sessionId) { closeSessions(); closePicker(); editorId = undefined; }
     const agentsChanged = JSON.stringify(state.agents) !== JSON.stringify(record.agents);
@@ -879,21 +891,21 @@ function connect() {
 window.addEventListener('pagehide', () => { closed = true; source?.close(); clearTimeout(reconnect); });
 window.addEventListener('pageshow', event => { if (event.persisted && closed && !failed) { closed = false; connect(); } });
 async function older() {
-  if (!more || paging || first === undefined) return;
-  paging = true;
+  if (!more || historyRequest || first === undefined) return;
+  const patches: Patch[] = [], mine = historyRequest = { patches };
   const scroll = element('scroll'), anchor = views.get(first)?.view;
   const top = anchor?.getBoundingClientRect().top;
   try {
     const response = await fetch('/items?before=' + first); if (!response.ok) throw Error('Could not load earlier messages');
     const result: Extract<PageRecord, { type: 'reset' }> = await response.json();
-    if (result.epoch === epoch) {
+    if (historyRequest === mine && result.epoch === epoch) {
       more = result.more;
       for (const item of result.items) if (!items.has(item.seq)) put(item);
-      for (const patch of pagingPatches.splice(0)) apply(patch);
+      for (const patch of mine.patches) { applyPatch(patch, false); if (historyRequest !== mine) return; }
       element('older').hidden = !more;
       if (anchor && top !== undefined) scroll.scrollTop += anchor.getBoundingClientRect().top - top;
     }
-  } catch (error) { reportError(error); } finally { paging = false; }
+  } catch (error) { reportError(error); } finally { if (historyRequest === mine) historyRequest = undefined; }
 }
 const sessionHost = element('session-picker');
 const sessionSearch = node('input', undefined, 'q'); sessionSearch.placeholder = 'Search sessions…'; sessionSearch.setAttribute('aria-label', 'Search sessions');

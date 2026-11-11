@@ -292,9 +292,10 @@ export function transcript({ dir, flushMs, metrics = false }: { dir: string; flu
           return [{ index, block }];
         });
         if (blocks.length || item.final !== previous.final || item.stop !== previous.stop || item.error !== previous.error || item.ended !== previous.ended) {
-          broadcast({ type: "patch", seq, blocks, final: item.final, stop: item.stop, error: item.error, ended: item.ended });
+          const baseRevision = item.revision++;
+          broadcast({ type: "patch", seq, baseRevision, revision: item.revision, blocks, final: item.final, stop: item.stop, error: item.error, ended: item.ended });
         }
-      } else broadcast({ type: "item", item: wireItem(item) });
+      } else { item.revision++; broadcast({ type: "item", item: wireItem(item) }); }
       if (item.kind === "assistant" && !item.final) sent.set(seq, { ...item, blocks: item.blocks.map((block) => ({ ...block })) });
       else sent.delete(seq);
     }
@@ -313,7 +314,7 @@ export function transcript({ dir, flushMs, metrics = false }: { dir: string; flu
     if (message.role === "assistant") {
       let item = !branch && assistant !== undefined ? items[assistant] : undefined;
       if (phase === "start" || branch || item?.kind !== "assistant") {
-        item = { seq: items.length, at: message.timestamp, get final() { return final(this); }, kind: "assistant", blocks: [], stop: "", error: "", lifecycle: "streaming" };
+        item = { seq: items.length, revision: 0, at: message.timestamp, get final() { return final(this); }, kind: "assistant", blocks: [], stop: "", error: "", lifecycle: "streaming" };
         items.push(item);
         if (!branch) assistant = item.seq;
       }
@@ -332,20 +333,20 @@ export function transcript({ dir, flushMs, metrics = false }: { dir: string; flu
     switch (message.role) {
       case "user": {
         const files = phase === "branch" ? [] : attachments;
-        item = { seq, at: message.timestamp, final: true, kind: "user", text: promptText(contentText(message.content), files), images: saveImages(String(seq), message.content), attachments: files }; break;
+        item = { seq, revision: 0, at: message.timestamp, final: true, kind: "user", text: promptText(contentText(message.content), files), images: saveImages(String(seq), message.content), attachments: files }; break;
       }
       case 'custom': {
         if (!message.display) return;
         const details = isRecord(message.details) ? message.details : undefined;
         const agent = agentDetails(details), notice = agent ? undefined : noticeDetails(details), stream = agent || notice ? undefined : streamDetails(details);
-        if (agent) item = { seq, at: message.timestamp, final: true, kind: 'agent', direction: 'in', from: agent.agent, text: cap(agent.body, MAX_WEBVIEW_RESULT_BYTES), inbound: agent.inbound };
-        else if (notice) { const { end, ...job } = notice.job; item = { seq, at: message.timestamp, final: true, kind: 'job', job, event: { type: 'ended', end, tail: cap(notice.tail, MAX_WEBVIEW_RESULT_BYTES) } }; }
-        else if (stream) item = { seq, at: message.timestamp, final: true, kind: 'job', job: stream.job, event: { type: 'stream', batch: cap(stream.batch, MAX_WEBVIEW_RESULT_BYTES), omitted: stream.omitted, cut: stream.cut } };
-        else item = { seq, at: message.timestamp, final: true, kind: 'notice', customType: message.customType, from: typeof details?.from === 'string' ? details.from : '', text: contentText(message.content) };
+        if (agent) item = { seq, revision: 0, at: message.timestamp, final: true, kind: 'agent', direction: 'in', from: agent.agent, text: cap(agent.body, MAX_WEBVIEW_RESULT_BYTES), inbound: agent.inbound };
+        else if (notice) { const { end, ...job } = notice.job; item = { seq, revision: 0, at: message.timestamp, final: true, kind: 'job', job, event: { type: 'ended', end, tail: cap(notice.tail, MAX_WEBVIEW_RESULT_BYTES) } }; }
+        else if (stream) item = { seq, revision: 0, at: message.timestamp, final: true, kind: 'job', job: stream.job, event: { type: 'stream', batch: cap(stream.batch, MAX_WEBVIEW_RESULT_BYTES), omitted: stream.omitted, cut: stream.cut } };
+        else item = { seq, revision: 0, at: message.timestamp, final: true, kind: 'notice', customType: message.customType, from: typeof details?.from === 'string' ? details.from : '', text: contentText(message.content) };
         break;
       }
-      case "bashExecution": item = { seq, at: message.timestamp, final: true, kind: "bash", command: message.command, excludeFromContext: message.excludeFromContext ?? false, result: bashResult(message) }; break;
-      case "branchSummary": case "compactionSummary": item = { seq, at: message.timestamp, final: true, kind: "summary", text: message.summary }; break;
+      case "bashExecution": item = { seq, revision: 0, at: message.timestamp, final: true, kind: "bash", command: message.command, excludeFromContext: message.excludeFromContext ?? false, result: bashResult(message) }; break;
+      case "branchSummary": case "compactionSummary": item = { seq, revision: 0, at: message.timestamp, final: true, kind: "summary", text: message.summary }; break;
       default: return;
     }
     items.push(item);
@@ -380,7 +381,7 @@ export function transcript({ dir, flushMs, metrics = false }: { dir: string; flu
       }
     }), value => value.range);
     if (!annotations.length) return;
-    const item: Item = { kind: 'annotations', seq: items.length, at, final: true, reply: { seq: target.seq, block: reply.block }, annotations };
+    const item: Item = { kind: 'annotations', seq: items.length, revision: 0, at, final: true, reply: { seq: target.seq, block: reply.block }, annotations };
     items.push(item);
     if (notify) { publish(item); flush(); }
   };
@@ -413,7 +414,7 @@ export function transcript({ dir, flushMs, metrics = false }: { dir: string; flu
     for (const event of replay) {
       switch (event.type) {
         case 'message': applyMessage(event.message, 'branch'); break;
-        case 'notice': items.push({ ...event.notice, seq: items.length }); break;
+        case 'notice': items.push({ ...event.notice, seq: items.length, revision: 0 }); break;
         case 'annotation': annotation(event.entry, false); break;
       }
     }
@@ -435,7 +436,7 @@ export function transcript({ dir, flushMs, metrics = false }: { dir: string; flu
   };
   const append = (value: { kind: 'notify'; level: NotifyLevel; text: Text } | { kind: 'command'; result: CommandResult }): void => {
     flush();
-    const item: Item = { seq: items.length, at: Date.now(), final: !(value.kind === 'command' && value.result.type === 'compaction' && value.result.state.type === 'running'), ...value };
+    const item: Item = { seq: items.length, revision: 0, at: Date.now(), final: !(value.kind === 'command' && value.result.type === 'compaction' && value.result.state.type === 'running'), ...value };
     items.push(item); publish(item); flush();
   };
   const notify = (text: string, level: NotifyLevel): void => append({ kind: 'notify', level, text: cap(text, MAX_WEBVIEW_RESULT_BYTES) });
@@ -472,6 +473,7 @@ export function transcript({ dir, flushMs, metrics = false }: { dir: string; flu
       }
       respond(req, 200, JSON.stringify({ entries: history }));
     } else if (request.method === "GET" && url.pathname === "/items") {
+      flush();
       const before = Number(url.searchParams.get("before"));
       if (!Number.isSafeInteger(before) || before < 0) respond(req, 400, "{}");
       else respond(req, 200, '{"epoch":' + JSON.stringify(epoch) + ',' + window(before) + '}');
@@ -485,7 +487,7 @@ export function transcript({ dir, flushMs, metrics = false }: { dir: string; flu
         const after = Number(url.searchParams.get("after") ?? -1);
         if (!Number.isSafeInteger(after) || after < -1) { body(req, ""); return true; }
         for (const item of items.slice(after + 1)) {
-          body(req, frame(JSON.stringify({ type: "item", item })), true);
+          body(req, frame(JSON.stringify({ type: "item", item: wireItem(item) })), true);
           if (req.writableEnded || req.destroyed) break;
         }
       } else { if (counters) counters.resets++; body(req, reset(), true); }

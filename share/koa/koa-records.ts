@@ -33,7 +33,7 @@ type ToolResult = Text & { images: ImageRef[] };
 type ToolState = { type: "pending" } | { type: "running"; result?: ToolResult } | { type: "done"; result: ToolResult; error: boolean } | { type: "not_run" };
 export type Block = (({ type: "text" } | { type: "thinking" }) & { text: string; redacted?: boolean; started?: number; ended?: number }) | { type: "tool"; id: string; name: string; args: Text; state: ToolState; started?: number; ended?: number; durationMs?: number; exit?: number; agent?: AgentCall; job?: JobRef };
 export type Annotation = { type: "question"; range: [number, number] } & ({ kind: "choice"; options: [number, number][] } | { kind: "yes_no" } | { kind: "open" });
-export type Item = { seq: number; at: number; final: boolean } & (
+export type Item = { seq: number; revision: number; at: number; final: boolean } & (
   { kind: "user"; text: string; images: ImageRef[]; attachments: Attachment[] } |
   { kind: "assistant"; blocks: Block[]; stop: string; error: string; ended?: number; lifecycle: "streaming" | "ended" } |
   { kind: "agent"; direction: "in"; from: AgentRef; text: Text; inbound: Inbound } |
@@ -64,5 +64,5 @@ export function pathArg(block: Block | undefined): string | undefined {
   try { const value = JSON.parse(block.args.text); return value && typeof value.path === "string" && value.path && !/[\p{Cc}]/u.test(value.path) ? value.path : undefined; } catch { return; }
 }
 
-export type Patch = { type: "patch"; seq: number; blocks: ({ index: number; block: Block } | { index: number; suffix: string })[]; final: boolean; stop: string; error: string; ended?: number };
+export type Patch = { type: "patch"; seq: number; baseRevision: number; revision: number; blocks: ({ index: number; block: Block } | { index: number; suffix: string })[]; final: boolean; stop: string; error: string; ended?: number };
 export type PageRecord = { type: "reset"; epoch: string; more: boolean; items: WireItem[] } | { type: "item"; item: WireItem } | Patch | ({ type: "state" } & State) | { type: "flush"; bytes: number; t: number };

@@ -764,8 +764,8 @@ test("finished prose and view change checks retain no extra text strings", async
   const app = await page();
   const retained = app.run("const text='payload '.repeat(10000);put({seq:0,kind:'assistant',final:true,blocks:[{type:'text',text}]});({source:texts.get('0:0').source,signature:views.get(0).signature})");
   assert.deepEqual({ source: retained.source?.length ?? 0, signature: retained.signature?.length ?? 0 }, { source: 0, signature: 0 });
-  assert.equal(app.run("const initial={seq:1,kind:'assistant',final:false,blocks:[{type:'text',text:'first'}]};put(initial);apply({type:'patch',seq:1,final:false,blocks:[{index:0,suffix:' last'}]});const updated=items.get(1),streaming=texts.get('1:0').source==='first last';apply({type:'patch',seq:1,final:true,blocks:[]});initial!==updated&&initial.blocks!==updated.blocks&&initial.blocks[0]!==updated.blocks[0]&&initial.blocks[0].text==='first'&&streaming&&texts.get('1:0').source===undefined&&views.get(1).item===items.get(1)"), true);
-  assert.equal(app.run("const finished={seq:0,kind:'assistant',final:true,blocks:[{type:'text',text:'same'}]};put(finished);const proseView=texts.get('0:0').view;put({...finished,blocks:[{type:'text',text:'same'}]});apply({type:'patch',seq:0,final:true,stop:'stop',ended:42,blocks:[]});texts.get('0:0').view===proseView&&items.get(0).stop==='stop'&&items.get(0).ended===42"), true);
+  assert.equal(app.run("const initial={seq:1,revision:0,kind:'assistant',final:false,blocks:[{type:'text',text:'first'}]};put(initial);apply({type:'patch',baseRevision:0,revision:1,seq:1,final:false,blocks:[{index:0,suffix:' last'}]});const updated=items.get(1),streaming=texts.get('1:0').source==='first last';apply({type:'patch',baseRevision:1,revision:2,seq:1,final:true,stop:'',error:'',blocks:[]});initial!==updated&&initial.blocks!==updated.blocks&&initial.blocks[0]!==updated.blocks[0]&&initial.blocks[0].text==='first'&&streaming&&texts.get('1:0').source===undefined&&views.get(1).item===items.get(1)"), true);
+  assert.equal(app.run("const finished={seq:0,revision:0,kind:'assistant',final:true,blocks:[{type:'text',text:'same'}]};put(finished);const proseView=texts.get('0:0').view;put({...finished,blocks:[{type:'text',text:'same'}]});apply({type:'patch',baseRevision:0,revision:1,seq:0,final:true,stop:'stop',ended:42,blocks:[]});texts.get('0:0').view===proseView&&items.get(0).stop==='stop'&&items.get(0).ended===42"), true);
 });
 
 test('thinking Markdown renders only on expand and stays current across streaming rebuilds', async () => {
@@ -782,7 +782,7 @@ test('thinking Markdown renders only on expand and stays current across streamin
     };
   };
   app.run(`
-    put({seq:0,at:1,kind:'assistant',final:false,blocks:[{type:'thinking',text:'**Plan**\\n\\n- Use \`code\`'}]});
+    put({seq:0,revision:0,at:1,kind:'assistant',final:false,blocks:[{type:'thinking',text:'**Plan**\\n\\n- Use \`code\`'}]});
     if (texts.has('0:0')) throw Error('Collapsed thinking rendered');
     const item=items.get(0);
     if (stepInfo({block:item.blocks[0],item,args:{}}).detail!=='Plan') throw Error('Markdown syntax in summary');
@@ -791,12 +791,12 @@ test('thinking Markdown renders only on expand and stays current across streamin
     if (step.children[1].children.length) throw Error('Collapsed details have children');
     step.children[0].onclick();
     if (texts.get('0:0').view.className!=='think prose') throw Error('Missing Markdown class');
-    apply({type:'patch',seq:0,final:false,blocks:[{index:0,suffix:' and **more'}]});
+    apply({type:'patch',baseRevision:0,revision:1,seq:0,final:false,blocks:[{index:0,suffix:' and **more'}]});
     if (texts.get('0:0').source!=='**Plan**\\n\\n- Use \`code\` and **more') throw Error('Stale thinking');
     folds.set('0:0',false);
-    apply({type:'patch',seq:0,final:false,blocks:[{index:0,suffix:' words**'}]});
+    apply({type:'patch',baseRevision:1,revision:2,seq:0,final:false,blocks:[{index:0,suffix:' words**'}]});
     if (texts.get('0:0').source!=='**Plan**\\n\\n- Use \`code\` and **more') throw Error('Collapsed thinking updated');
-    folds.set('0:0',true);apply({type:'patch',seq:0,final:true,blocks:[]});
+    folds.set('0:0',true);apply({type:'patch',baseRevision:2,revision:3,seq:0,final:true,blocks:[]});
   `);
   assert.equal(renderers, 1);
   assert.equal(rendered.length, 3);
@@ -834,10 +834,10 @@ test("invalid tool arguments do not stop rendering", async () => {
 test("a pending tool shows its name until its label arguments arrive", async () => {
   const app = await page();
   const labels = app.run(`
-    put({seq:1,at:0,kind:'assistant',final:false,blocks:[{type:'tool',id:'call',name:'bash',args:{text:'{}'},state:{type:'pending'}}]});
+    put({seq:1,revision:0,at:0,kind:'assistant',final:false,blocks:[{type:'tool',id:'call',name:'bash',args:{text:'{}'},state:{type:'pending'}}]});
     const label=()=>{const item=items.get(1);return run([{key:'1:0',index:0,item,block:item.blocks[0]}]).children[0].children[1].children.at(-1).textContent;};
     const before=label();
-    apply({type:'patch',seq:1,final:false,blocks:[{index:0,block:{type:'tool',id:'call',name:'bash',args:{text:JSON.stringify({command:'make verify'})},state:{type:'pending'}}}]});
+    apply({type:'patch',baseRevision:0,revision:1,seq:1,final:false,blocks:[{index:0,block:{type:'tool',id:'call',name:'bash',args:{text:JSON.stringify({command:'make verify'})},state:{type:'pending'}}}]});
     [before,label()];
   `);
   assert.deepEqual(Array.from(labels), ['bash', 'make verify']);
@@ -975,13 +975,57 @@ test("thinking and aborted steps use live times without inventing replay times",
   assert.doesNotMatch(result.replay, /27s|4s|23s/);
 });
 
-test("a patch before an older-items reply is replayed after that reply", async () => {
+test("buffered patches drain against the snapshot by revision", async () => {
+  const gated = async (setup: string, buffered: string, items: object[]) => {
+    const app = await page();
+    let release: (value: { ok: boolean; json: () => Promise<object> }) => void = () => {};
+    app.context.fetch = () => new Promise(resolve => { release = resolve; });
+    const result = app.run(`let connects=0;connect=()=>{connects++};put=item=>items.set(item.seq,item);epoch='e';first=4;more=true;${setup};const loading=older();const patch=(seq,baseRevision,revision,suffix)=>apply({type:'patch',seq,baseRevision,revision,final:false,stop:'',error:'',blocks:[{index:0,suffix}]});${buffered};loading.then(()=>[items.get(3).blocks[0].text,items.get(2)?.blocks[0].text,connects])`);
+    release({ ok: true, json: async () => ({ epoch: "e", more: false, items }) });
+    return Array.from(await result);
+  };
+  const text = (seq: number, revision: number, value: string) => ({ seq, revision, kind: "assistant", final: false, blocks: [{ type: "text", text: value }] });
+  assert.deepEqual(await gated("", "patch(3,0,1,' world');patch(2,1,2,' world')", [text(2, 1, "Hello"), text(3, 1, "Hello world")]), ["Hello world", "Hello world", 0]);
+  assert.deepEqual(await gated("", "patch(3,5,6,' gap');patch(3,0,1,' late')", [text(3, 0, "Hello")]), ["Hello", undefined, 1]);
+});
+
+test("a history reply from before an epoch reset is dropped and does not block the next request", async () => {
   const app = await page();
-  let release: (value: { ok: boolean; json: () => Promise<object> }) => void = () => {};
-  app.context.fetch = () => new Promise(resolve => { release = resolve; });
-  const result = app.run("put=item=>items.set(item.seq,item);epoch='e';first=4;more=true;const loading=older();apply({type:'patch',seq:3,final:false,blocks:[{index:0,suffix:' new'}]});loading.then(()=>items.get(3).blocks[0].text)");
-  release({ ok: true, json: async () => ({ epoch: "e", more: false, items: [{ seq: 3, kind: "assistant", final: false, blocks: [{ type: "text", text: "old" }] }] }) });
-  assert.equal(await result, "old new");
+  const releases: ((value: { ok: boolean; json: () => Promise<object> }) => void)[] = [];
+  app.context.fetch = () => new Promise(resolve => { releases.push(resolve); });
+  Object.assign(app.context, {
+    release: (index: number, epoch: string, seq: number) => releases[index]({ ok: true, json: async () => ({ epoch, more: false, items: [{ seq, revision: 0, kind: "assistant", final: true, blocks: [] }] }) }),
+    count: () => releases.length,
+  });
+  const result = await app.run(`(async()=>{
+    put=item=>items.set(item.seq,item);epoch='e';first=4;more=true;
+    const one=older();
+    apply({type:'reset',epoch:'f',more:true,items:[{seq:7,revision:0,kind:'assistant',final:true,blocks:[]}]});first=7;
+    const two=older(), started=count();
+    release(0,'f',3);await one;older();
+    const stale=[items.has(3),count()];
+    release(1,'e',5);await two;
+    const wrong=[items.has(5),more];
+    const third=older();release(2,'f',6);await third;
+    return {started,stale,wrong,added:[count(),items.has(6)]};
+  })()`);
+  assert.deepEqual(JSON.parse(JSON.stringify(result)), { started: 2, stale: [false, 2], wrong: [false, true], added: [3, true] });
+});
+
+test("a duplicate patch is skipped and a gap or non-assistant target reconnects from a reset", async () => {
+  const app = await page();
+  const result = app.run(`(()=>{
+    let connects=0;connect=()=>{connects++};put=item=>items.set(item.seq,item);epoch='e';
+    items.set(1,{seq:1,revision:0,kind:'assistant',final:false,blocks:[{type:'text',text:'a'}]});
+    items.set(2,{seq:2,revision:0,kind:'notify'});
+    const patch=(seq,baseRevision,revision,suffix)=>apply({type:'patch',seq,baseRevision,revision,final:false,stop:'',error:'',blocks:[{index:0,suffix}]});
+    patch(1,0,1,'b');patch(1,0,1,'b');
+    const duplicate=items.get(1).blocks[0].text+items.get(1).revision+connects;
+    patch(1,2,3,'c');const gap=epoch+'|'+connects;
+    epoch='e';patch(2,0,1,'c');
+    return [duplicate,gap,epoch+'|'+connects];
+  })()`);
+  assert.deepEqual(Array.from(result), ["ab10", "|1", "|2"]);
 });
 
 test("failed and aborted runs keep their outcomes", async () => {
