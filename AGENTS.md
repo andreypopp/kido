@@ -1354,6 +1354,17 @@ delegates as its brief says and does not write code.
   verification. A small product change (one behaviour, a few files)
   takes the small track: no planner, one implementer and one
   correctness reviewer, and the manager says that it chose it.
+  A trivial visual change (a colour, a spacing, a font or a text, with
+  an exact rule from `@kido-app-design` in the brief) takes the
+  trivial track: no manager, no planner and no reviewer. The
+  top-level session spawns one implementer in the quick worktree
+  ("Worktrees"). The implementer makes the change, runs the tests of
+  the package that it changed, records only the affected visual tests
+  (`make -C app visual ONLY="<class> ..." RECORD=1`), opens the
+  changed snapshots and reports. It does not run `scripts/checks.sh`,
+  `ko-test` or the full visual stage; CI runs the rest. A finding
+  outside the request (a defect seen on the way, a reviewer's idea)
+  goes to the user as a follow-up item, not into the same unit.
 - **Approval for new unsafe code and new routes.** Before an
   implementer writes a new `unsafe` block, `unsafe fn`, `unsafe impl`
   or `unsafe extern`, or adds a route to the `routes!` block, the
@@ -1456,7 +1467,10 @@ delegates as its brief says and does not write code.
   permits `git worktree add --detach` only to an absolute path there
   or under `/tmp`. The submodule makes `git worktree remove` refuse.
   Remove the worktree directory with `rm -rf`. Then use `git worktree
-  prune`.
+  prune`. The quick worktree `~/Workspace/kido-quick` is permanent:
+  it keeps the submodule, its GhosttyKit and a warm `make build`, and
+  the top-level session resets it to `origin/main` before each trivial
+  unit, so the unit starts without setup or a cold build.
 - **Every wait has a deadline.**
   Do not poll without a deadline in code or your shell.
   A build or test run that can take more than 10 seconds runs through
