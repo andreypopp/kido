@@ -433,15 +433,6 @@ breaks most easily:
   change; the server owns that cascade. A child's pane gets `close:
   on_exit` and its spawner's pane as `parent`, and a pane with a
   `parent` is alone in its window.
-- `ko prompt` uses the pane's message stream when it is open, else a
-  paste. It mints the message id and resends once with the same id
-  only when the connection failed and the candidate's stream was
-  open; the server's once-per-id rule makes that safe. A paste has no
-  id and is never repeated. Exit codes: 0 sent, 1 empty stdin or an
-  error, 4 no agent in scope, 5 several. Scope is the caller's
-  window, widened to the session only when the window has no agents;
-  `--window` never widens. The prompt routes take the scope pane as
-  `from`; the identity headers are identity only.
 - A message (`/panes/{id}/messages`) is enqueued once for each
   `(pane, id)`; a repeat answers from the original. The queue drops
   with its pane, and nothing tells its senders. The server never
