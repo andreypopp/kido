@@ -434,6 +434,14 @@ html[data-rows=unified] .run .names,html[data-rows=unified] .run .sum,html[data-
 html[data-rows=unified] .step .cmd,html[data-rows=unified] .step .path{font-family:var(--mono);font-size:.92em}
 html[data-rows=unified] .run .time,html[data-rows=unified] .aline .hd time,html[data-rows=unified] .job .hd time{font:.8em/1.5 var(--prose);font-variant-numeric:tabular-nums}
 html[data-rows=unified] .run .sum .spin{margin:0 0 0 6px}
+/* job lines take the run line's look (user, 2026-11-11, unit koa-jobline): prose .95em, the name in the row's colour, no end text on the folded line; muted when it succeeded, --err when it failed */
+html[data-rows=unified] .job{margin:0 0 2px;font:.95em/1.5 var(--prose);color:var(--muted)}
+html[data-rows=unified] .job .hd{padding-right:0;padding-left:var(--pad,12px);gap:8px}
+html[data-rows=unified] .job .hd .nm{color:inherit}
+html[data-rows=unified] .job .hd .end{display:none}
+html[data-rows=unified] .job.err .hd .nm{color:var(--err)}
+html[data-rows=unified] .job .out{margin-left:calc(var(--pad,12px) + 4px);padding-left:12px}
+html[data-rows=unified] .job.open{margin-bottom:14px}
 html[data-rows=unified] .run>.line,html[data-rows=unified] .step>.line{padding-right:0}
 html[data-rows=unified] .run>.line,html[data-rows=unified] .aline .hd,html[data-rows=unified] .job .hd{padding-left:var(--pad,12px)}
 html[data-rows=unified] .run>.steps{margin-left:calc(var(--pad,12px) + 4px)}
@@ -480,7 +488,7 @@ html[data-cpad=v3] .pane.aligned .msg.user{padding:8px var(--pad)}
 
 <section><h2>5 · One look for run lines and agent lines</h2>
 <p>User, 2026-11-11: no chevron on a run line; the prose font for the tool names, the step names and the times (tabular numerals, no monospace); while a tool runs the line says its name, not the command, with the spinner after the name; an agent line starts where a run line starts; consecutive run, agent and job lines sit 2pt apart, and the group keeps the 14pt gap after it. The "Rows" picker compares with the shipped look.</p>
-<div class="grid"><div><div class="pane aligned" data-state="rows"></div><p class="cap">a running run, three agent lines and finished runs in one group</p></div><div><div class="pane aligned narrow" data-state="rows"></div><p class="cap">narrow</p></div></div>
+<div class="grid"><div><div class="pane aligned" data-state="rows"></div><p class="cap">a running run, three agent lines, finished runs and two job lines (one failed) in groups</p></div><div><div class="pane aligned narrow" data-state="rows"></div><p class="cap">narrow</p></div></div>
 </section>
 
 <section><h2>6 · The composer's padding</h2>
@@ -504,6 +512,7 @@ const transcript=(inner)=>`<div class="scroll"><div class="transcript">${inner}<
 const userMsg=(html,t='09:12')=>`<div class="msg user"><div class="t">${html}</div><time datetime="2026-11-10T${t}">${t}</time></div>`;
 const assistant=(t)=>`<div class="msg assistant"><p>${t}</p></div>`;
 const composer=(ph='Message koa…')=>`<div class="composer"><div class="field focus"><div class="text ph">${ph}</div>${shippedFoot({state:'idle'})}</div></div>`;
+const jobLine=(o)=>`<div class="job${o.err?' err':''}"><div class="hd"><span class="chev">›</span><span class="nm">${esc(o.name)}</span>${o.kind?`<span class="kind">${o.kind}</span>`:''}<span class="end">${esc(o.end)}</span><time>${o.time}</time></div></div>`;
 const runLine=(sum,time)=>`<div class="run"><div class="line"><span class="chev">›</span><span class="sum"><span class="names">${sum}</span></span><span class="time">${time}</span></div></div>`;
 const aline=(o)=>`<div class="aline${o.err?' err':''}${o.open?' open':''}"><div class="hd" role="button" aria-expanded="${!!o.open}"><span class="chev">›</span><span class="lead${o.err?' err':''}">${esc(o.kind)} ${o.dir} ${who(o.name,{err:o.err,gone:o.gone})}${o.rel?` <span class="rel">${esc(o.rel)}</span>`:''}</span><span class="tx">${esc(o.text.split('\n')[0])}</span><time>${o.time||'09:14'}</time></div><div class="bd">${o.html||esc(o.text)}</div></div>`;
 const task=`Implement the sidebar's right-side status indicators in ~/Workspace/kido-sidebar-right (app/App/SidebarRow.swift, SidebarView.swift, Packages/SidebarFeed).
@@ -549,7 +558,9 @@ const states={
     +runLine('bash<span class="spin"></span>','4s')
     +assistant('I started koa\'s narrow padding as a second trivial-track unit, <code>koa-pad</code>, in its own worktree <code>kido-koa-pad</code>.')
     +aline({kind:'message',dir:'from',name:'koa-pad',rel:'subagent',text:'Done: the narrow rule keeps only its top and bottom; the sides are 20px and 12px at every width. make koa-test passes.',time:'17:31'})
-    +runLine('read, bash x2','6.0s'))+composer(),
+    +runLine('read, bash x2','6.0s')
+    +jobLine({name:'koa-test',end:'exit 0',time:'17:33'})
+    +jobLine({name:'make-verify',end:'exit 2',err:true,time:'17:35'}))+composer(),
   names:(p)=>transcript(userMsg(`Ask ${who('sidebar-right')} for the snapshot paths, and stop ${who('simplify-reuse',{gone:true})} if it has reported`)
     +runLine('list_agents, read_report, stop_agent','2.1s')
     +aline({kind:'message',dir:'to',name:'sidebar-right',text:'Which snapshots did make visual record? Paths, please.',time:'09:31'})

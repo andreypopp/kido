@@ -612,7 +612,13 @@ padding 6pt 12pt 7pt, with a header line above the text.
   "delivered".
 
 **A job notice** (`async_bash`'s end notice, a `ko-stream` batch) is
-one line in the terminal font at .92em, muted: a chevron (as a
+one line; since 2026-11-11 (unit koa-jobline) it takes the run
+line's look of item 5 in "refine.html": prose .95em, muted, the
+name as plain row-coloured text, no end text on the folded line
+(the exit code or the failure is in the opened body), the name in
+`--ko-color-1` when it failed, as a failed tool call; the kind
+label, the time and the opened body are as before. Before that it
+was one line in the terminal font at .92em, muted: a chevron (as a
 step's), the job's name in fg, the kind only when it is not a plain
 job (`service`, `stream`, faint .85em), the end in ko-pi's words
 ("exit 0", "exit 1", "signal SIGKILL", "failed: …", "timed out
@@ -1081,7 +1087,9 @@ agents.html's card: no fill, no two-line header.
 
 **5 · One look for run lines and agent lines** (user, 2026-11-11;
 the "Rows" picker, `unified`). A run line and an agent line (and a
-job line) are the same row: no chevron (the whole line is still the
+job line, which drops its end text and shows a failure by its name
+in `--err`; unit koa-jobline) are the same row: no chevron (the
+whole line is still the
 click that opens it); the prose font at the row's .95em for the tool
 names, the step names and the lead, the mono only for a command or a
 path inside a step; the time in the prose font at .8em with

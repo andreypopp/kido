@@ -5,14 +5,13 @@ import { attach } from './attach.ts';
 import { preview, previewKey } from './preview.ts';
 import { fetchJSON } from './http.ts';
 import { ATTACHMENT_LIMITS, pathArg } from '../koa-records.ts';
-import { jobEndText } from '../../pi/records.ts';
 import type { State, WireItem, WireAssistant, Block, Patch, PageRecord, PromptMode, ImageRef, AgentCall, Bash, SessionRow, SessionScope } from '../koa-records.ts';
 import type { Relation } from '../../pi/records.ts';
 
 type Step = { block: Exclude<Block, { type: 'text' }>;  item: WireAssistant; index: number; key: string; slots: Map<string, Slot> };
 type AgentCard = AgentCall | Extract<WireItem, { kind: 'agent' }>;
 type JobItem = Extract<WireItem, { kind: 'job' }>;
-type JobGroup = { first: JobItem; next: number; items: JobItem[]; shown: number; shownStreams?: number; streams: number; omitted: number; cut: boolean; view: HTMLDivElement; details: HTMLDivElement; footer?: HTMLDivElement; kind: HTMLSpanElement; end: HTMLSpanElement };
+type JobGroup = { first: JobItem; next: number; items: JobItem[]; shown: number; shownStreams?: number; streams: number; omitted: number; cut: boolean; view: HTMLDivElement; details: HTMLDivElement; footer?: HTMLDivElement; kind: HTMLSpanElement };
 type Slot = { type: 'image'; view: HTMLButtonElement } | { type: 'run'; view: HTMLDivElement; signature?: string } | { type: 'agent'; view: HTMLDivElement; rendered?: { card: AgentCard; at: number; key: string } } | { type: 'job'; view: HTMLDivElement; group: JobGroup };
 declare global {
   interface Window {
@@ -111,9 +110,9 @@ function refreshAgentCards() {
 }
 function jobCard(first: JobItem, slots: Map<string, Slot>): JobGroup {
   const view = node('div', undefined, 'job'), line = node('div', undefined, 'hd'), details = node('div', undefined, 'out');
-  const kind = node('span', undefined, 'kind'), end = node('span', undefined, 'end'), time = node('time', timestamp(first.at));
-  line.append(node('span', first.job.name, 'nm'), kind, end, time);
-  const group: JobGroup = { first, next: first.seq, items: [], shown: 0, streams: 0, omitted: 0, cut: false, view, details, kind, end };
+  const kind = node('span', undefined, 'kind'), time = node('time', timestamp(first.at));
+  line.append(node('span', first.job.name, 'nm'), kind, time);
+  const group: JobGroup = { first, next: first.seq, items: [], shown: 0, streams: 0, omitted: 0, cut: false, view, details, kind };
   slots.set('job', { type: 'job', view, group });
   fold(view, 'job:' + first.seq, line, details, () => showJob(group));
   return group;
@@ -144,12 +143,11 @@ function reconcileJobs(seq: number) {
     if (group.next !== group.first.seq) { wrapper.view.replaceChildren(); wrapper.view.hidden = true; }
     group.next++;
     if (item.event.type === 'stream') { group.streams++; group.omitted += item.event.omitted; group.cut ||= item.event.cut || item.event.batch.cut > 0; }
-    else { group.end.textContent = jobEndText(item.event.end); group.view.classList.toggle('err', item.event.end.type === 'exit' ? item.event.end.code !== 0 : item.event.end.type !== 'stopped'); break; }
+    else { group.view.classList.toggle('err', item.event.end.type === 'exit' ? item.event.end.code !== 0 : item.event.end.type !== 'stopped'); break; }
   }
   const owner = views.get(group.first.seq);
   if (owner && owner.view.firstElementChild !== group.view) owner.view.replaceChildren(group.view);
   group.kind.textContent = group.first.job.service ? 'service' : group.streams ? 'stream' : ''; group.kind.hidden = !group.kind.textContent;
-  group.end.hidden = !group.end.textContent;
   if (group.view.classList.contains('open')) showJob(group);
 }
 

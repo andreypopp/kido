@@ -1064,8 +1064,9 @@ The user decided the look with the mockups `agents.html` and
   `stop_async_bash` stay steps: they are the caller's own actions, not
   messages.
 - A job is not an agent (design-subagents.md, "A job"): its end
-  notice is one line in the terminal font that opens to its output,
-  gray on success and in the error colour on failure, and the stream
+  notice is one prose line, like a run line, with no end text; it opens
+  to its output, gray on success and in the error colour on failure,
+  and the stream
   batches of one job join into one entry. The page has no live list of
   jobs; the sidebar shows them.
 
