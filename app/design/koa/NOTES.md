@@ -1131,6 +1131,41 @@ black 8% at y 1pt blur 2pt in light, black 30% at y 1pt blur 3pt
 in dark. The glass background and blur stay. The same for the
 dock's dialog, exited card and queue, which share the field's rule.
 
+**9 · Streaming reveal, "G"** (user, 2026-11-11; chosen on the iOS
+comparison page ~/Workspace/kido-ios/app/design/ios/streaming.html,
+column G, and wanted on the desktop page too). The reply does not
+grow by the chunk; it grows by blocks and by slices of whole lines.
+
+- A finished top-level block (the lexer's token: paragraph, list,
+  code fence, table, heading, quote) appears when it is complete,
+  that is when the next block has begun or the item is final, and
+  grows in over 220 ms (max-height from 0 to its height, opacity
+  0 to 1). While a block is still arriving, typing dots (three 6pt
+  circles in the faint tone, bouncing) stand where the caret stood.
+- Height cap: while the tail block is incomplete, when its hidden
+  part reaches 40% of the transcript's viewport height, the page
+  reveals a slice of whole lines and repeats: a paragraph by its
+  wrapped lines (measured off-screen at the transcript's width), a
+  code fence by lines, a table by rows, a list by items; never a
+  half line. A nested block (a quote with a code fence, a list
+  with a fence) is not sliced: it appears whole. The slice is the
+  tail block's raw text cut at that line, through the existing
+  repair-and-lex path for a streaming block.
+- Time cap: when nothing was revealed for 1.5 s and text waits,
+  reveal the whole lines that arrived.
+- The scroll glides to the bottom once per reveal (ease-out, time
+  constant 150 ms) instead of jumping; the follow flag works as
+  before, so a user who scrolled up is not pulled down.
+- A code fence with more than 15 lines is folded: the first 15
+  lines, then a full-width bar "Show N more lines" under the pre
+  (the well's fill, a hairline above, the accent colour, the
+  prose at .88em), a click expands it in place for good. While a
+  fence streams it stays folded and the bar's count grows, so a
+  long fence costs at most 15 lines during the stream. The fold
+  applies to every fence in the transcript, history included.
+- Annotations, agent cards, images and the user block are not
+  touched: marks apply to final text only, which is never sliced.
+
 **4 · `@name` links to the agent's pane.** Every name of an agent
 (an agent line's, a `@name` in the answer's or the user's prose, a
 `list_agents` step) is an `<a class="who">`: 600, the text's colour,

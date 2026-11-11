@@ -3,7 +3,7 @@ import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 import { runInNewContext } from "node:vm";
 import { stripTypeScriptTypes } from "node:module";
-import { markdown, markdownLine } from "./page/markdown.ts";
+import { markdown, markdownLine, sliceEnd } from "./page/markdown.ts";
 import { bashCommand } from "./prompt.ts";
 import { promptHistory } from './page/history.ts';
 import { ATTACHMENT_LIMITS, isAttachment, pathArg } from "./koa-records.ts";
@@ -13,7 +13,7 @@ import type { PromptMode } from "./koa-records.ts";
 async function page() {
   const source = stripTypeScriptTypes(await readFile(new URL("page/page.ts", import.meta.url), "utf8"));
   class Node {
-    value = ""; private text = ""; style = {}; disabled = false; placeholder = ""; scrollHeight = 20; children: Node[] = []; dataset = {};
+    value = ""; private text = ""; style: Record<string, unknown> = { setProperty() {} }; innerHTML = ''; clientWidth = 320; clientHeight = 100; disabled = false; placeholder = ""; scrollHeight = 20; children: Node[] = []; dataset = {};
     get textContent() { return this.text; }
     set textContent(value: unknown) { this.text = String(value); this.children = []; }
     private classes = new Set<string>();
@@ -28,7 +28,7 @@ async function page() {
     before(...children: Node[]) { this.append(...children); }
     remove() { if (this.contains(document.activeElement)) document.activeElement = undefined; if (this.parent) this.parent.children = this.parent.children.filter(child => child !== this); this.parent = undefined; }
     replaceChildren(...children: Node[]) { this.children.forEach(child => { if (child instanceof Node) child.parent = undefined; }); this.children = []; this.append(...children); }
-    content = { childNodes: [] };
+    content: { childNodes: Node[]; querySelectorAll(): Node[] } = { childNodes: [], querySelectorAll: () => [] };
     tagName = 'DIV'; isContentEditable = false; readOnly = false; selectionStart = 0; selectionEnd = 0; hidden = true;
     oninput?: () => void;
     onclick?: () => void;
@@ -39,6 +39,7 @@ async function page() {
     setRangeText(text: string) { this.value = this.value.slice(0, this.selectionStart) + text + this.value.slice(this.selectionEnd); }
     dispatchEvent() { this.oninput?.(); }
     querySelector() { return undefined; }
+    querySelectorAll(): Node[] { return []; }
     get isConnected(): boolean { return this === document.body || this === document.documentElement || this.parent?.isConnected === true; }
     get childNodes() { return this.children; }
     insertBefore(child: Node, next: Node | null) { if (child === next) return; child.remove(); const index = next ? this.children.indexOf(next) : this.children.length; this.children.splice(index < 0 ? this.children.length : index, 0, child); child.parent = this; }
@@ -50,7 +51,7 @@ async function page() {
   const listeners = new Map<string, (event: unknown) => void>();
   const windowListeners = new Map<string, (event?: unknown) => void>();
   let activeElement: Node | undefined;
-  const document = { documentElement: new Node(), body: new Node(), hasFocus: () => true, get activeElement() { return activeElement; }, set activeElement(node: Node | undefined) { if (activeElement === node) return; const previous = activeElement; activeElement = node; if (previous) listeners.get('focusout')?.({ target: previous }); if (node) listeners.get('focusin')?.({ target: node }); }, querySelector: (selector?: string): Node | null => selector === '.cm-content' ? document.getElementById('prompt').children[0] ?? null : selector === '.lightbox' ? document.body.children.find(node => node.classList.contains('lightbox')) ?? null : null, getElementById(id: string) { let node = elements.get(id); if (!node) { node = new Node(); elements.set(id, node); if (id === 'prompt') document.getElementById('field').append(node); if (id === 'composer') node.hidden = false; } return node; }, createElement: (tag: string) => { const node = new Node(); node.tagName = tag.toUpperCase(); return node; }, createElementNS: () => new Node(), createTextNode: (text: string) => { const node = new Node(); node.tagName = '#text'; node.textContent = text; return node; }, addEventListener(type: string, handler: (event: unknown) => void) { listeners.set(type, handler); }, querySelectorAll: () => [] };
+  const document = { hidden: false, documentElement: new Node(), body: new Node(), hasFocus: () => true, get activeElement() { return activeElement; }, set activeElement(node: Node | undefined) { if (activeElement === node) return; const previous = activeElement; activeElement = node; if (previous) listeners.get('focusout')?.({ target: previous }); if (node) listeners.get('focusin')?.({ target: node }); }, querySelector: (selector?: string): Node | null => selector === '.cm-content' ? document.getElementById('prompt').children[0] ?? null : selector === '.lightbox' ? document.body.children.find(node => node.classList.contains('lightbox')) ?? null : null, getElementById(id: string) { let node = elements.get(id); if (!node) { node = new Node(); elements.set(id, node); if (id === 'prompt') document.getElementById('field').append(node); if (id === 'composer') node.hidden = false; } return node; }, createElement: (tag: string) => { const node = new Node(); node.tagName = tag.toUpperCase(); return node; }, createElementNS: () => new Node(), createTextNode: (text: string) => { const node = new Node(); node.tagName = '#text'; node.textContent = text; return node; }, addEventListener(type: string, handler: (event: unknown) => void) { listeners.set(type, handler); }, querySelectorAll: () => [] };
   type Handlers = { input(user: boolean): void; send(mode: PromptMode): void; quit(): void; edit(): void };
   let handlers: Handlers | undefined;
   let text = () => '';
@@ -78,7 +79,7 @@ async function page() {
       placeholder(text: string) { content.placeholder = text; },
     };
   };
-  const context = { Date: class extends Date { constructor(value: string | number = 1700000012000) { super(value); } static now() { return 1700000012000; } }, getComputedStyle: () => ({ display: 'block' }), composer, bashCommand, ATTACHMENT_LIMITS, isAttachment, pathArg, jobEndText, AbortController, AbortSignal, CustomEvent: class { type: string; detail?: unknown; constructor(type: string, options?: { detail?: unknown }) { this.type = type; this.detail = options?.detail; } }, Node, Element: Node, HTMLElement: Node, HTMLButtonElement: Node, HTMLImageElement: Node, markdown, markdownLine, document, window: { ko: {}, addEventListener(type: string, handler: (event?: unknown) => void) { windowListeners.set(type, handler); } }, innerWidth: 980, innerHeight: 560, Event: class { type: string; constructor(type: string) { this.type = type; } }, console, setInterval() {}, clearInterval() {}, setTimeout, clearTimeout, requestAnimationFrame() {}, fetch: async () => ({ ok: true, json: async () => ({}) }) };
+  const context = { Date: class extends Date { constructor(value: string | number = 1700000012000) { super(value); } static now() { return 1700000012000; } }, getComputedStyle: () => ({ display: 'block' }), composer, bashCommand, ATTACHMENT_LIMITS, isAttachment, pathArg, jobEndText, AbortController, AbortSignal, CustomEvent: class { type: string; detail?: unknown; constructor(type: string, options?: { detail?: unknown }) { this.type = type; this.detail = options?.detail; } }, Node, Element: Node, HTMLElement: Node, HTMLButtonElement: Node, HTMLImageElement: Node, markdown, markdownLine, sliceEnd, document, window: { ko: {}, addEventListener(type: string, handler: (event?: unknown) => void) { windowListeners.set(type, handler); } }, innerWidth: 980, innerHeight: 560, Event: class { type: string; constructor(type: string) { this.type = type; } }, console, setInterval() {}, clearInterval() {}, setTimeout, clearTimeout, requestAnimationFrame() {}, cancelAnimationFrame() {}, performance: { now: () => 0 }, fetch: async () => ({ ok: true, json: async () => ({}) }) };
   const answersSource = stripTypeScriptTypes(await readFile(new URL('page/answers.ts', import.meta.url), 'utf8')).replace(/^export /gm, '');
   const annotationsSource = stripTypeScriptTypes(await readFile(new URL('page/annotations.ts', import.meta.url), 'utf8')).replace(/^import .*;\n/gm, '').replace(/^export /gm, '');
   Object.assign(context, runInNewContext(answersSource + '\n' + annotationsSource + '\n({annotations,update})', context));
@@ -89,7 +90,8 @@ async function page() {
   const previewSource = stripTypeScriptTypes(await readFile(new URL('page/preview.ts', import.meta.url), 'utf8')).replace(/^export /gm, '');
   Object.assign(context, runInNewContext(previewSource + '\n({preview,previewKey})', context));
   Object.assign(context, { fetchJSON: runInNewContext(httpSource + '\nfetchJSON', context), attach: runInNewContext(attachSource + '\nattach', context) });
-  return { context, elements, listeners, windowListeners, completionResets: () => completionResets, handlers: () => handlers, prompt: () => prompt, text: () => text(), run: (code: string) => runInNewContext("{\n" + source.replace(/^import .*;\n/gm, "").replace(/^setInterval\([\s\S]*$/m, "") + "\n" + code + "\n}", context) };
+  const body = source.replace(/^import .*;\n/gm, "").replace(/^setInterval\([\s\S]*$/m, "");
+  return { repl: (): ((code: string) => unknown) => runInNewContext("(() => {\n" + body + "\nreturn code => eval(code);\n})()", context), context, elements, listeners, windowListeners, completionResets: () => completionResets, handlers: () => handlers, prompt: () => prompt, text: () => text(), run: (code: string) => runInNewContext("{\n" + body + "\n" + code + "\n}", context) };
 }
 
 test('Tab outside the composer returns focus without changing dialog keys', async () => {
@@ -974,6 +976,143 @@ test("thinking and aborted steps use live times without inventing replay times",
   assert.match(result.live, /4s/);
   assert.match(result.live, /aborted 23s/);
   assert.doesNotMatch(result.replay, /27s|4s|23s/);
+});
+
+async function revealPage(clientHeight = 100) {
+  const app = await page(), html: string[] = [], bars: InstanceType<typeof app.context.Node>[] = [], pres: InstanceType<typeof app.context.Node>[] = [], queued = new Map<number, () => void>(), timers = new Map<number, { at: number; callback: () => void }>();
+  let clock = 0, id = 0;
+  const create = app.context.document.createElement;
+  const lines = (markup: string) => 20 * [...markup.matchAll(/<(p|li|h\d|pre|tr)\b[^>]*>([\s\S]*?)<\/\1>/g)].reduce((total, [, tag, inner]) => {
+    const text = inner.replace(/<[^>]*>/g, '');
+    return total + (tag === 'pre' ? text.replace(/\n$/, '').split('\n').length : Math.ceil(text.split(/\s+/).filter(Boolean).length / 3));
+  }, 0);
+  app.context.document.createElement = (tag: string) => {
+    const node = create(tag);
+    node.getBoundingClientRect = () => ({ left: 0, height: node.className.includes('measure') ? lines(node.innerHTML) : 0 });
+    if (tag === 'template') Object.defineProperty(node, 'innerHTML', { set(value: string) {
+      html.push(value);
+      const child = create(value.startsWith('<pre') ? 'pre' : 'p');
+      Object.assign(child, { textContent: value.replace(/<[^>]*>/g, '').replace(/\n$/, ''), after: (bar: typeof child) => bars.push(bar), getBoundingClientRect: () => ({ height: 0 }) });
+      if (child.tagName === 'PRE') pres.push(child);
+      node.content = { childNodes: value.trim() ? [child] : [], querySelectorAll: () => child.tagName === 'PRE' ? [child] : [] };
+    } });
+    return node;
+  };
+  Object.assign(app.context, { performance: { now: () => clock }, requestAnimationFrame: (callback: () => void) => { queued.set(++id, callback); return id; }, cancelAnimationFrame: (frame: number) => queued.delete(frame), setTimeout: (callback: () => void, delay: number) => { timers.set(++id, { at: clock + delay, callback }); return id; }, clearTimeout: (timer: number) => timers.delete(timer) });
+  const evaluate = app.repl();
+  evaluate(`Object.assign(element('scroll'),{clientHeight:${clientHeight},scrollTop:0})`);
+  const step = (ms: number) => {
+    clock += ms;
+    for (const [timer, { at, callback }] of [...timers]) if (at <= clock) { timers.delete(timer); callback(); }
+    for (const [frame, callback] of [...queued]) { queued.delete(frame); callback(); }
+  };
+  const patch = (revision: number, suffix: string, final = false) => evaluate(`apply({type:'patch',seq:0,baseRevision:${revision - 1},revision:${revision},final:${final},stop:'',error:'',blocks:[{index:0,suffix:${JSON.stringify(suffix)}}]})`);
+  const put = (text: string) => evaluate(`put({seq:0,revision:0,kind:'assistant',final:false,blocks:[{type:'text',text:${JSON.stringify(text)}}]})`);
+  return { app, evaluate, html, bars, pres, queued, timers, step, patch, put };
+}
+
+test('reveal waits for a whole line, caps hidden height and time, and finalizes the rest', async () => {
+  const fixture = await revealPage(200);
+  fixture.put('Intro.\n\none two three four five six');
+  assert.deepEqual(fixture.html, ['<p>Intro.</p>\n', '', '']);
+  assert.equal(fixture.evaluate("texts.get('0:0').view.children.at(-1).className"), 'typing');
+  fixture.step(1000);
+  assert.equal(fixture.html.length, 3);
+  assert.deepEqual([fixture.queued.size, fixture.timers.size], [0, 1]);
+  fixture.step(500);
+  assert.equal(fixture.html.at(-1), '<p>one two three</p>\n');
+  fixture.patch(1, ' seven eight nine ten eleven twelve thirteen fourteen');
+  fixture.step(16);
+  assert.equal(fixture.html.at(-1), '<p>one two three four five six seven eight nine ten eleven twelve</p>\n');
+  fixture.patch(2, ' more', true);
+  assert.equal(fixture.html.at(-1), '<p>one two three four five six seven eight nine ten eleven twelve thirteen fourteen more</p>\n');
+  assert.deepEqual([fixture.evaluate("revealing.size"), fixture.evaluate("texts.get('0:0').view.children.at(-1).className === 'typing'"), fixture.queued.size], [0, false, 1]);
+});
+
+test('a duplicate revision repeats nothing and a replaced block restarts its own reveal', async () => {
+  const fixture = await revealPage(200);
+  fixture.put('Intro.\n\none two three four five six');
+  fixture.patch(1, ' seven');
+  const shown = fixture.html.length;
+  fixture.patch(1, ' seven');
+  fixture.evaluate("apply({type:'patch',seq:0,baseRevision:1,revision:1,final:false,stop:'',error:'',blocks:[{index:0,suffix:' dup'}]})");
+  assert.equal(fixture.html.length, shown);
+  const old = fixture.evaluate("texts.get('0:0')");
+  fixture.evaluate("apply({type:'patch',seq:0,baseRevision:1,revision:2,final:false,stop:'',error:'',blocks:[{index:0,block:{type:'text',text:'Fresh.\\n\\nnew tail words here'}}]})");
+  assert.deepEqual(fixture.html.slice(shown), ['<p>Fresh.</p>\n', '', '']);
+  assert.deepEqual([fixture.evaluate("revealing.size"), fixture.evaluate("revealing.has(texts.get('0:0'))"), fixture.evaluate("texts.get('0:0')") !== old], [1, true, true]);
+});
+
+test('a hidden page holds no frames until it is shown again', async () => {
+  const fixture = await revealPage();
+  fixture.app.context.document.hidden = true;
+  fixture.put('Intro.\n\nwaiting tail');
+  assert.equal(fixture.queued.size, 0);
+  fixture.app.context.document.hidden = false;
+  fixture.app.listeners.get('visibilitychange')?.({});
+  assert.equal(fixture.queued.size, 1);
+  fixture.app.listeners.get('visibilitychange')?.({});
+  assert.equal(fixture.queued.size, 1);
+  fixture.app.windowListeners.get('pagehide')?.();
+  assert.equal(fixture.queued.size, 0);
+});
+
+test('a reveal glides to the bottom in one step per frame and never pulls a user who scrolled up', async () => {
+  const fixture = await revealPage();
+  fixture.evaluate("Object.assign(element('scroll'),{scrollHeight:1000,clientHeight:200,scrollTop:0})");
+  fixture.put('Intro.\n\nwaiting tail');
+  fixture.step(16);
+  const first = Number(fixture.evaluate("element('scroll').scrollTop"));
+  assert.ok(first > 20 && first < 400, String(first));
+  for (let frame = 0; frame < 80; frame++) fixture.step(16);
+  assert.ok(Number(fixture.evaluate("element('scroll').scrollTop")) > 799);
+  assert.equal(fixture.queued.size, 0);
+  fixture.evaluate("element('scroll').scrollTop=100;element('scroll').onscroll()");
+  fixture.patch(1, '\n\nsecond block\n\nthird');
+  fixture.step(16); fixture.step(16);
+  assert.equal(fixture.evaluate("element('scroll').scrollTop"), 100);
+  assert.equal(fixture.evaluate("scrollMode"), undefined);
+});
+
+test('finishing a sliced tail glides to the new bottom instead of jumping', async () => {
+  const fixture = await revealPage(200);
+  fixture.evaluate("Object.assign(element('scroll'),{scrollHeight:1000,clientHeight:200,scrollTop:0})");
+  fixture.put('Intro.\n\none two three four five six');
+  fixture.step(1000); fixture.step(500);
+  for (let frame = 0; frame < 90; frame++) fixture.step(16);
+  assert.deepEqual([fixture.evaluate("scrollMode"), fixture.queued.size], [undefined, 0]);
+  fixture.evaluate("element('scroll').scrollHeight=1400");
+  fixture.patch(1, ' seven', true);
+  fixture.evaluate("followBottom()");
+  fixture.step(16);
+  const moved = Number(fixture.evaluate("element('scroll').scrollTop"));
+  assert.ok(moved > 800 && moved < 1000, String(moved));
+  assert.equal(fixture.evaluate("scrollMode"), 'glide');
+});
+
+test('a text block followed by a later block is complete and shows no dots', async () => {
+  const fixture = await revealPage();
+  fixture.evaluate("put({seq:0,revision:0,kind:'assistant',final:false,blocks:[{type:'text',text:'Hello there.'},{type:'tool',id:'call',name:'bash',args:{text:'{}'},state:{type:'pending'}}]})");
+  assert.equal(fixture.html[0], '<p>Hello there.</p>\n');
+  assert.deepEqual([fixture.evaluate("texts.get('0:0').reveal"), fixture.evaluate("texts.get('0:0').view.children.some(child => child.className === 'typing')")], [undefined, false]);
+});
+
+test('a folded fence counts its lines while streaming and stays open after its bar is clicked', async () => {
+  const fixture = await revealPage();
+  const code = (count: number) => Array.from({ length: count }, (_, index) => 'line ' + index).join('\n');
+  fixture.put('Intro.\n\n```js\n' + code(20));
+  fixture.step(16);
+  assert.deepEqual(fixture.bars.map(bar => bar.textContent), ['Show 4 more lines']);
+  assert.equal(fixture.pres.at(-1)?.classList.contains('folded'), true);
+  fixture.patch(1, '\n' + code(5));
+  fixture.step(16);
+  assert.equal(fixture.bars.at(-1)?.textContent, 'Show 9 more lines');
+  fixture.bars.at(-1)?.onclick?.();
+  const bars = fixture.bars.length;
+  fixture.patch(2, '\nmore\nlines\n');
+  fixture.step(16);
+  assert.equal(fixture.bars.length, bars);
+  assert.equal(fixture.pres.at(-1)?.classList.contains('folded'), false);
 });
 
 test("buffered patches drain against the snapshot by revision", async () => {

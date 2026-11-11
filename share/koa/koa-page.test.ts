@@ -6,7 +6,7 @@ import { Marked } from "marked";
 import remend from "remend";
 
 import { assemblePage } from "./koa-assemble.ts";
-import { markdown, markdownLine, type Mark } from "./page/markdown.ts";
+import { markdown, markdownLine, sliceEnd, type Mark } from "./page/markdown.ts";
 import { answer, current, quote } from "./page/answers.ts";
 import { composerLanguage } from "./page/composer.ts";
 import { highlightTree, tags } from '@lezer/highlight';
@@ -185,4 +185,40 @@ test('user quotes end before answers; assistant quotes keep lazy continuation', 
     else assert.match(render(true, source), /<\/blockquote>\n<p>answer<\/p>/);
   }
   assert.equal(render(true, '```\n> q\nanswer\n```'), '<pre><code>&gt; q\nanswer\n</code></pre>\n');
+});
+
+test('tail cuts keep whole units and the rest of the lexing path', () => {
+  const words = (text: string) => Math.ceil(text.split(/\s+/).filter(Boolean).length / 3);
+  const shown = (source: string) => {
+    const tail = markdown()(source).at(-1)?.tail;
+    assert.ok(tail);
+    const end = sliceEnd(tail.token, at => words(source.slice(tail.start, tail.start + at)));
+    const html = markdown()(source, false, [], { start: tail.start, end }).map(block => block.html).join('');
+    return [tail.token.raw.slice(0, end), html] as const;
+  };
+  assert.deepEqual(shown('Intro.\n\naa bb cc dd ee ff gg')[0], 'aa bb cc dd ee ff');
+  assert.deepEqual(shown('aa bb cc')[0], '');
+  assert.deepEqual(shown('```ts\na\nb\nc')[0], '```ts\na\nb\n');
+  assert.match(shown('```ts\na\nb\nc')[1], /<code class="language-ts">a\nb\n<\/code>/);
+  assert.equal(shown('```ts\nco')[0], '');
+  assert.equal(shown('```ts\r\na\r\nb\r\nc')[0], '```ts\na\nb\n');
+  assert.equal(shown('| a | b |\n| - | - |\n| 1 | 2 |\n| 3 |')[0], '| a | b |\n| - | - |\n| 1 | 2 |\n');
+  assert.doesNotMatch(shown('| a | b |\n| - | - |\n| 1 | 2 |\n| 3 |')[1], /<td>3<\/td>/);
+  assert.equal(shown('| a | b |\n| - | - |\n')[0], '');
+  assert.equal(shown('- one\n- two\n- thr')[0], '- one\n- two\n');
+  assert.equal(shown('- one')[0], '');
+  assert.equal(shown('- one\n  ```\n  x\n  ```\n- two')[0], '');
+  assert.equal(shown('> q\n> ```\n> x')[0], '');
+  assert.equal(shown('- outer\n  - inner\n\n    ```js\n    a\n    b\n    ```\n- last')[0], '');
+  assert.equal(shown('### Heading')[0], '');
+  assert.match(shown('Intro.\n\n[id]: https://x.test\n\n- [one][id]\n- two\n- th')[1], /<a href="https:\/\/x.test">one<\/a>/);
+  const bold = markdown()('**aa bb cc dd**');
+  assert.match(bold[0].tail?.html(8) ?? '', /<strong>aa bb<\/strong>/);
+  const render = markdown(), list = 'Done.\n\n- one\n- two\n- thr';
+  const cutTo = (start: number, end: number) => render(list, false, [], { start, end }).at(-1);
+  const first = cutTo(7, 6);
+  assert.equal(cutTo(7, 6), first);
+  assert.notEqual(cutTo(7, 12), first);
+  assert.match(cutTo(7, 12)?.html ?? '', /<li>two<\/li>/);
+  assert.equal(cutTo(0, 12)?.html, '');
 });

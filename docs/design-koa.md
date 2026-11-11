@@ -609,6 +609,42 @@ A click on it opens as every webview page's link does
 `http` and `https`, and refuses `mailto` with a notice.
 The user's text renders through the same renderer.
 
+**The reveal.** An answer grows by blocks and by slices of whole
+lines, not by the chunk (app/design/koa/NOTES.md, item 9; `REVEAL`
+in `page/page.ts` holds its parameters). It is presentation only:
+the page applies every patch to its items at once, by the revision
+rule above, and the reveal only chooses how much of the assistant
+text to show.
+
+- **What it covers.** Only assistant text that the page first sees
+  unfinished. History, the user block, agent bodies, thinking,
+  images and annotations render whole at once; marks apply to final
+  text only, which is never cut. A text block is complete when its
+  item is final or a later block of the same item began (a tool
+  step, an agent card).
+- **Blocks.** A top-level block of the lexer appears when it is
+  complete, that is when the next block began, and grows in. Typing
+  dots stand where the caret stood while a block arrives.
+- **Slices.** The tail block's raw text is cut at a whole unit
+  before `remend` and the lexer, so a slice is never a half line:
+  a code fence by lines, a table by rows, a list by items, a
+  paragraph by its wrapped lines, which the page finds on an
+  off-screen copy at the transcript's width. A quote, a heading and
+  a list with a fence or a quote at any depth are not cut; they
+  appear whole. A slice is revealed when the hidden part reaches the
+  height cap, a share of the viewport, or when nothing was revealed
+  for the time cap and whole units wait. Without a whole unit the
+  page waits for new text or a new width.
+- **The fold.** A code fence of assistant prose, history included,
+  longer than the fold limit shows its first lines and a bar "Show N
+  more lines". A click expands it for good, also while it streams;
+  until then a streaming fence stays folded and the count grows, so
+  a long fence costs a fixed height during the stream.
+- **Frames.** The reveal, the grow and the glide run in one frame
+  loop, which runs only while something animates or waits for a
+  measurement; the time cap is one timeout. A hidden page and a
+  `reset` cancel both, so a background page accumulates no timers.
+
 ## The composer
 
 The composer is a CodeMirror 6 editor (`page/composer.ts`), so
@@ -688,7 +724,11 @@ the command first ("`!` commands" below).
   the scroll position that it caused itself (its own scroll, and the
   clamp of a resize), and a scroll event at that position does not
   change the following. Only a scroll to another position, the
-  user's, decides it again.
+  user's, decides it again. A reveal does not jump: it glides to
+  the bottom once, ease-out, through the same scheduler, which owns
+  every write of the scroll position; the glide stops when the user
+  scrolls away, and a patch whose text stays hidden does not
+  scroll.
 
 **Completion.** pi's RPC mode offers only its command list
 (`get_commands`: extension commands, prompt templates and skills, no
@@ -1247,10 +1287,14 @@ routes, the attachments, the restart, the session switch and the
 status bytes (`koa-program.test.ts`), the session channel over the
 pinned real pi in a private directory (`koa-sessions.test.ts`), the transcript module, completion, the
 queue's matching, the image sniffer, and the page's DOM rules over a
-fake document with the page's types stripped (`koa-dom.test.ts`). The
+fake document with the page's types stripped (`koa-dom.test.ts`);
+its reveal tests drive the frame loop and the clock by hand over a
+height model. The
 Markdown memo is a pure module, tested under Node against a full
-render of every prefix, and its annotation marks over each kind of block
-(`koa-page.test.ts`). Kido.app's `KoaWebviewTests` snapshot each
+render of every prefix, its annotation marks over each kind of block
+and the reveal's cut at whole units (`koa-page.test.ts`). Kido.app's `KoaWebviewTests` snapshot each
 state of the mockups in light and dark, windowed and narrow, and
 check the composer's keys, focus and popup, and the question
-controls' placement and clicks, in a real WebKit.
+controls' placement and clicks, in a real WebKit. The `reveal`
+scenario injects its own clock and pauses the grow at a fixed
+point, so a mid-reveal frame is deterministic.

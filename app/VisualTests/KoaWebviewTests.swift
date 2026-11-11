@@ -7,7 +7,7 @@ import SidebarFeed
 @testable import Kido
 
 @MainActor final class KoaWebviewTests: AppWindowCase {
-    private enum KoaScenario { case transcript, dialogs, controls, exit, feed, completion, markdown, media, attachments, userMarkdown, thinkingMarkdown, preview, lightbox, agents, composer, questions, bang, commands, sessions }
+    private enum KoaScenario { case transcript, dialogs, controls, exit, feed, completion, markdown, media, attachments, userMarkdown, thinkingMarkdown, reveal, preview, lightbox, agents, composer, questions, bang, commands, sessions }
     func testKoaWebviewSubmitFollowsClampedBottom() async throws {
         WebviewPaneView.visualInitialScript = "const ClockDate=Date;window.Date=class extends ClockDate{constructor(...args){super(...(args.length?args:[1700000012000]))}static now(){return 1700000012000}};window.requestAnimationFrame=callback=>setTimeout(()=>callback(performance.now()),16);window.cancelAnimationFrame=clearTimeout;const Source=EventSource;window.EventSource=class extends Source{constructor(...args){super(...args);window.scrollSource=this}};"
         defer { WebviewPaneView.visualInitialScript = nil }
@@ -365,6 +365,10 @@ import SidebarFeed
         try await koaWebview(width: 470, height: 560, scenario: .userMarkdown, captures: ["narrow-user-markdown", "narrow-user-quote", "narrow-user-quote2", "narrow-user-code"])
     }
 
+    func testKoaWebviewReveal() async throws {
+        try await koaWebview(width: 980, height: 560, scenario: .reveal, captures: ["reveal-fold", "reveal-mid"])
+    }
+
     func testKoaWebviewThinkingMarkdownWide() async throws {
         try await koaWebview(width: 980, height: 560, scenario: .thinkingMarkdown, captures: ["thinking-markdown"])
     }
@@ -477,6 +481,9 @@ import SidebarFeed
         if measured {
             WebviewPaneView.visualInitialScript = measurementClock + "window.koaPendingFrames=new Set();window.requestAnimationFrame=callback=>{const id=setTimeout(()=>{koaPendingFrames.delete(id);callback(performance.now())},0);koaPendingFrames.add(id);return id};window.cancelAnimationFrame=id=>{koaPendingFrames.delete(id);clearTimeout(id)};"
         }
+        if scenario == .reveal {
+            WebviewPaneView.visualInitialScript = measurementClock + "Object.defineProperty(document,'hidden',{value:false});window.koaClock=0;window.koaFrames=new Map();window.koaFrame=0;performance.now=()=>koaClock;window.requestAnimationFrame=callback=>{koaFrames.set(++koaFrame,callback);return koaFrame};window.cancelAnimationFrame=id=>koaFrames.delete(id);const nativeTimeout=window.setTimeout,nativeClear=window.clearTimeout;window.koaTimers=new Map();window.setTimeout=(callback,ms,...args)=>{if(!(ms>=1000&&ms<=1500))return nativeTimeout(callback,ms,...args);const id=-(++koaFrame);koaTimers.set(id,{at:koaClock+ms,callback});return id};window.clearTimeout=id=>{koaTimers.delete(id);nativeClear(id)};window.koaStep=ms=>{koaClock+=ms;for(const [id,timer] of [...koaTimers])if(timer.at<=koaClock){koaTimers.delete(id);timer.callback()}for(const [id,callback] of [...koaFrames]){koaFrames.delete(id);callback(koaClock)}};"
+        }
         if captures.contains("focus") || captures.contains("focus-border-transcript") || captures.contains("focus-border-dialog") {
             // The off-screen WKWebView reports no document focus.
             WebviewPaneView.visualInitialScript = "document.hasFocus=()=>true;" + (WebviewPaneView.visualInitialScript ?? "")
@@ -549,7 +556,7 @@ import SidebarFeed
         func prompt(_ events: [[String: Any]]) { steps.append(["type": "wait", "command": "prompt", "events": events]) }
         prompt([["type": "agent_start"]])
         prompt([["type": "message_end", "message": streamUser], ["type": "message_start", "message": text]])
-        prompt([["type": "message_update", "usage": usage, "assistantMessageEvent": ["type": "text_delta", "contentIndex": 0, "delta": " The patch keeps the earlier selection."]]])
+        prompt([["type": "message_update", "usage": usage, "assistantMessageEvent": ["type": "text_delta", "contentIndex": 0, "delta": "\n\nThe patch keeps the earlier selection.\n\n"]]])
         prompt([["type": "message_end", "message": text], ["type": "compaction_end"]])
         steps.append(["type": "respond", "command": "get_messages", "data": ["messages": [user]], "after": [["type": "message_start", "message": calls], ["type": "tool_execution_start", "toolCallId": "bash", "toolName": "bash", "args": ["command": "make cargo ARGS='test -p ko_server sweep'"]]]])
         let done = assistant([["type": "text", "text": "Done. `due()` now matches on `close`, a start failure never fires `Close::Exit`, and the three sweep tests pass."]])
@@ -793,6 +800,15 @@ import SidebarFeed
             let content: [[String: Any]] = [["type": "thinking", "thinking": thinking]]
             let messages: [[String: Any]] = [user, assistant(content)]
             steps[1] = ["type": "respond", "command": "get_messages", "data": ["messages": messages]]
+        }
+        if scenario == .reveal {
+            let code = (1...20).map { "    let value\($0) = \($0)" }.joined(separator: "\n")
+            let history = assistant([["type": "text", "text": "The sweep keeps this helper:\n\n```swift\n\(code)\n```\n\nIt reads each row once."]])
+            steps = Array(steps.prefix(3))
+            steps[1] = ["type": "respond", "command": "get_messages", "data": ["messages": [user, history]]]
+            let arriving = assistant([["type": "text", "text": "First the rows are read.\n\n- one\n- two\n\n```swift\nlet a = 1\nlet b = 2\nlet c"]])
+            prompt([["type": "agent_start"]])
+            prompt([["type": "message_end", "message": streamUser], ["type": "message_start", "message": arriving]])
         }
         if scenario == .userMarkdown {
             var rich = user; rich["content"] = [["type": "text", "text": "Use `inline` and the same Markdown rules, see [the reference](https://example.com/ref).\n\n> Keep the quoted instruction clear on the tint.\n\n- First item\n- Second item\n\n```js\nconst x = 1;\n```\n\n<b>raw HTML stays text</b>"]]
@@ -1120,7 +1136,25 @@ import SidebarFeed
             _ = try await webviewJS(web, "fetch('/prompt',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sessionId:document.body.dataset.sessionId,text:'next',mode:'prompt',attachments:[]})}).then(async r=>{const result=await r.json();if(!r.ok)throw Error(result.error||'Prompt failed');return result})")
         }
         try await webviewUntil(web, "document.querySelector('#status').textContent==='idle'&&document.querySelector('#model-name').textContent==='claude-opus-5-5'")
-        _ = try await webviewJS(web, "(()=>{const NativeDate=Date;window.Date=class extends NativeDate{constructor(...args){super(...(args.length?args:[\(stamp + 12000)]))}static now(){return \(stamp + 12000)}};const style=document.createElement('style');style.textContent='.caret,.spin,.spin::before,.dot.on,.cm-cursorLayer{animation:none!important}.info .chev{transition:none!important}';document.head.append(style);return true})()")
+        _ = try await webviewJS(web, "(()=>{const NativeDate=Date;window.Date=class extends NativeDate{constructor(...args){super(...(args.length?args:[\(stamp + 12000)]))}static now(){return \(stamp + 12000)}};const style=document.createElement('style');style.textContent='.caret,.spin,.spin::before,.dot.on,.cm-cursorLayer,.typing i\(scenario == .reveal ? "" : ",.grow"){animation:none!important}\(scenario == .reveal ? ".grow{animation-play-state:paused!important;animation-delay:-110ms!important}" : "").info .chev{transition:none!important}';document.head.append(style);return true})()")
+        if scenario == .reveal {
+            try await webviewUntil(web, "document.querySelector('.more')?.textContent==='Show 5 more lines'")
+            let history = try await webviewJS(web, "document.querySelector('.assistant pre').classList.contains('folded')&&!document.querySelector('.grow,.typing')")
+            XCTAssertEqual(history, "true", "A history fence is folded and nothing is revealed")
+            try await capture("reveal-fold")
+            let opened = try await webviewJS(web, "(()=>{const pre=document.querySelector('.assistant pre'),before=pre.getBoundingClientRect().height;document.querySelector('.more').click();return !document.querySelector('.more')&&!pre.classList.contains('folded')&&pre.getBoundingClientRect().height>before})()")
+            XCTAssertEqual(opened, "true", "A click expands the fence in place")
+            try await advance(); try await advance()
+            try await webviewUntil(web, "document.querySelector('.typing')")
+            _ = try await webviewJS(web, "(()=>{koaStep(16);return true})()")
+            try await webviewUntil(web, "document.querySelectorAll('.grow').length>=2")
+            try await capture("reveal-mid")
+            let hidden = try await webviewJS(web, "document.querySelectorAll('.assistant')[1].querySelector('pre')===null")
+            XCTAssertEqual(hidden, "true", "A tail fence with unfinished lines stays hidden until the time cap")
+            _ = try await webviewJS(web, "(()=>{koaStep(1500);return true})()")
+            try await webviewUntil(web, "document.querySelectorAll('.assistant')[1].querySelector('pre code')?.textContent==='let a = 1\\nlet b = 2\\n'")
+            return
+        }
         if scenario == .thinkingMarkdown {
             try await webviewUntil(web, "document.querySelector('.step')!==null")
             _ = try await webviewJS(web, "(()=>{document.querySelector('.run>.line').click();document.querySelector('.step>.line').click();return true})()")
@@ -1707,7 +1741,7 @@ import SidebarFeed
         XCTAssertEqual(workingState, "true")
         try await capture("user-well")
         try await advance()
-        try await webviewUntil(web, "document.querySelector('.caret')&&document.querySelector('table')")
+        try await webviewUntil(web, "document.querySelector('.typing')&&document.querySelector('table')")
         if captures.contains("focus") {
             try await split(1, .h)
             try await wait("koa focus split") { self.terminal?.displayedPanes.count == 2 }
@@ -1732,7 +1766,7 @@ import SidebarFeed
         try await capture("composer-working")
         _ = try await webviewJS(web, "(()=>{window.composer.setText('');return true})()")
         try await capture("narrow-stream")
-        let caretCount = try await webviewJS(web, "document.querySelectorAll('.caret').length")
+        let caretCount = try await webviewJS(web, "document.querySelectorAll('.typing').length")
         XCTAssertEqual(caretCount, "1")
         _ = try await webviewJS(web, "(()=>{document.querySelector('#prompt .cm-content').blur();window.savedUser=document.querySelector('.user .t');window.savedText=savedUser.querySelector('p').firstChild;const range=document.createRange();range.setStart(savedText,0);range.setEnd(savedText,4);getSelection().removeAllRanges();getSelection().addRange(range);return true})()")
         let initialSelection = try await webviewJS(web, "getSelection().toString()")
@@ -1851,7 +1885,7 @@ import SidebarFeed
             try await capture("narrow-exited")
         }
         switch scenario {
-        case .transcript, .feed, .completion, .markdown, .media, .attachments, .userMarkdown, .thinkingMarkdown, .preview, .lightbox, .agents, .composer, .questions, .bang, .commands, .sessions: break
+        case .transcript, .feed, .completion, .markdown, .media, .attachments, .userMarkdown, .thinkingMarkdown, .reveal, .preview, .lightbox, .agents, .composer, .questions, .bang, .commands, .sessions: break
         case .dialogs: try await dialogScenario()
         case .controls: try await controlsScenario()
         case .exit: try await exitScenario()

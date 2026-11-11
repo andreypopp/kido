@@ -1,5 +1,5 @@
 import { annotations, update } from './annotations.ts';
-import { markdown, markdownLine } from './markdown.ts';
+import { markdown, markdownLine, sliceEnd, type Tail } from './markdown.ts';
 import { composer } from './composer.ts';
 import { attach } from './attach.ts';
 import { preview, previewKey } from './preview.ts';
@@ -37,9 +37,15 @@ const items = new Map<number, WireItem>();
 const views = new Map<number, { view: HTMLElement; item: WireItem; slots: Map<string, Slot> }>();
 const template = document.createElement('template');
 const folds = new Map<string, boolean>();
-const texts = new Map<string, { render: ReturnType<typeof markdown>; view: HTMLElement; blocks: { block: ReturnType<ReturnType<typeof markdown>>[number]; nodes: ChildNode[] }[]; final?: boolean; source?: string; annotationItem?: Extract<WireItem, { kind: 'annotations' }> }>();
+const REVEAL = { cap: .4, wait: 1500, fold: 15, grow: 220, glide: 150 };
+type Reveal = { at: number; tail?: Tail; measured?: { tail: Tail; width: number; full: number; waiting: number; end?: number } };
+type TextMemo = { render: ReturnType<typeof markdown>; view: HTMLElement; blocks: { block: ReturnType<ReturnType<typeof markdown>>[number]; nodes: ChildNode[] }[]; final?: boolean; source?: string; annotationItem?: Extract<WireItem, { kind: 'annotations' }>; assistant: boolean; reveal?: Reveal; grown: number; open: Set<string> };
+const texts = new Map<string, TextMemo>();
+const revealing = new Set<TextMemo>();
+let measurer: HTMLElement | undefined, frame: number | undefined, frameAt = 0, capTimer: number | undefined, scrollMode: 'snap' | 'glide' | undefined, glideUntil = 0, dirty = false;
+const growing: HTMLElement[] = [];
 let state: State = { agents: [], bash: [], compaction: 'idle', pi: { type: 'starting' }, working: false, aborted: false, name: '', levels: [], cwd: '', home: '', statuses: {}, queue: { steering: [], followUp: [] }, dialogs: [] };
-let epoch = '', after = -1, first: number | undefined, more = false, follow = true, lastScrollTop = 0, delay = 200, scrollFrame: number | undefined;
+let epoch = '', after = -1, first: number | undefined, more = false, follow = true, lastScrollTop = 0, delay = 200;
 let escaped = false, dialogId: string | undefined;
 let submitting = false, editorId: string | undefined, dialogTimer: number | undefined, shownExit: number | undefined, pickerButton: HTMLElement | undefined, shownQueue: string | undefined, shownStatuses: string | undefined;
 let historyRequest: { patches: Patch[] } | undefined;
@@ -166,37 +172,131 @@ function timestamp(at: number, today = new Date(), kind: 'message' | 'session' =
   return (date.getFullYear() === today.getFullYear() ? '' : date.getFullYear() + ' ') + date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) + (kind === 'session' ? '' : ' ' + time);
 }
 
-function prose(key: string | undefined, source: string, final: boolean, annotationItem?: Extract<WireItem, { kind: 'annotations' }>, user = false) {
+function prose(key: string | undefined, source: string, final: boolean, annotationItem?: Extract<WireItem, { kind: 'annotations' }>, kind: 'assistant' | 'user' | 'plain' = 'plain') {
   let memo = key === undefined ? undefined : texts.get(key);
-  if (!memo) { memo = { render: markdown(user), view: node('div', undefined, 'msg prose'), blocks: [] }; if (key !== undefined) texts.set(key, memo); }
+  if (!memo) {
+    memo = { render: markdown(kind === 'user'), view: node('div', undefined, 'msg prose'), blocks: [], assistant: kind === 'assistant', reveal: kind === 'assistant' && !final ? { at: performance.now() } : undefined, grown: 0, open: new Set() };
+    if (key !== undefined) texts.set(key, memo);
+  }
   if (memo.annotationItem === annotationItem && (memo.final && final || memo.source === source && memo.final === final)) return memo.view;
   if (final) delete memo.source;
   else memo.source = source;
   memo.annotationItem = annotationItem;
-  const annotated = annotationItem ? annotations(source, annotationItem.annotations, editor) : undefined;
   memo.final = final;
-  memo.view.querySelector('.caret')?.remove();
-  const blocks = memo.render(source, final, annotated?.marks);
+  show(memo, source, final);
+  return memo.view;
+}
+function show(memo: TextMemo, source: string, final: boolean) {
+  const { reveal } = memo, before = reveal?.tail;
+  const annotated = memo.annotationItem ? annotations(source, memo.annotationItem.annotations, editor) : undefined;
+  memo.view.querySelector(reveal ? '.typing' : '.caret')?.remove();
+  const blocks = memo.render(source, final, annotated?.marks, reveal && (before ?? { start: -1, end: 0 }));
   let first = 0;
   while (first < blocks.length && memo.blocks[first]?.block === blocks[first]) first++;
   for (const saved of memo.blocks.splice(first)) for (const child of saved.nodes) child.remove();
-  for (const block of blocks.slice(first)) {
+  blocks.slice(first).forEach((block, offset) => {
+    const index = first + offset;
     template.innerHTML = linkNames(block.html ?? '');
     annotated?.decorate(template.content);
-    const nodes = [...template.content.childNodes];
-    for (const pre of nodes.flatMap(child => child instanceof Element ? [child, ...child.querySelectorAll('pre')] : []).filter(child => child.tagName === 'PRE')) {
+    const pres = [...template.content.querySelectorAll<HTMLElement>('pre')];
+    pres.forEach((pre, ordinal) => {
+      if (memo.assistant) foldFence(memo, pre, index + '.' + ordinal);
       const language = pre.querySelector('code')?.className.match(/language-(\S+)/)?.[1];
       if (language) pre.append(node('span', language, 'lang'));
-    }
+    });
+    const nodes = [...template.content.childNodes];
     if (!block.streaming) delete block.html;
     memo.blocks.push({ block, nodes });
     memo.view.append(...nodes);
+    const elements = nodes.filter(child => child instanceof HTMLElement);
+    if (!reveal || !elements.length) return;
+    const { tail } = block, fresh = index >= memo.grown;
+    if (fresh) { memo.grown = index + 1; growing.push(...elements); }
+    if (fresh || !tail || tail.start !== before?.start || tail.end > (before?.end ?? 0)) startGlide(reveal);
+  });
+  if (reveal) {
+    reveal.tail = blocks.at(-1)?.tail;
+    if (reveal.tail && !final) revealing.add(memo); else revealing.delete(memo);
+    dirty = true;
+    schedule();
+    armCap();
   }
   if (!final) {
-    const last = memo.view.lastElementChild;
-    (last?.tagName === 'P' ? last : memo.view).append(node('span', undefined, 'caret'));
+    if (reveal) {
+      const dots = node('span', undefined, 'typing');
+      dots.append(node('i'), node('i'), node('i'));
+      memo.view.append(dots);
+    } else {
+      const last = memo.view.lastElementChild;
+      (last?.tagName === 'P' ? last : memo.view).append(node('span', undefined, 'caret'));
+    }
   }
-  return memo.view;
+}
+function foldFence(memo: TextMemo, pre: HTMLElement, key: string) {
+  const count = (pre.textContent ?? '').replace(/\n$/, '').split('\n').length;
+  if (count <= REVEAL.fold || memo.open.has(key)) return;
+  const bar = node('button', 'Show ' + (count - REVEAL.fold) + ' more lines', 'more');
+  pre.classList.add('folded');
+  pre.style.setProperty('--fold', String(REVEAL.fold));
+  bar.onclick = () => { memo.open.add(key); pre.classList.remove('folded'); bar.remove(); };
+  pre.after(bar);
+}
+function startGlide(reveal: Reveal) {
+  reveal.at = performance.now();
+  glideUntil = reveal.at + REVEAL.grow;
+  scrollMode = 'glide';
+}
+function schedule(urgent = false) {
+  if (frame !== undefined || document.hidden && !urgent || !dirty && !growing.length && !scrollMode) return;
+  frameAt = performance.now();
+  frame = requestAnimationFrame(tick);
+}
+function armCap() {
+  if (capTimer !== undefined || document.hidden) return;
+  const now = performance.now(), next = Math.min(...[...revealing].flatMap(({ reveal }) => reveal && reveal.at + REVEAL.wait > now ? [reveal.at + REVEAL.wait] : []));
+  if (next < Infinity) capTimer = setTimeout(() => { capTimer = undefined; dirty = true; schedule(); }, next - now);
+}
+function stopFrames() {
+  if (frame !== undefined) cancelAnimationFrame(frame);
+  clearTimeout(capTimer);
+  frame = capTimer = undefined;
+}
+function tick() {
+  frame = undefined;
+  const now = performance.now(), dt = Math.min(50, now - frameAt);
+  if (dirty) { dirty = false; for (const memo of revealing) revealStep(memo, now); }
+  const targets = growing.splice(0), heights = targets.map(target => target.getBoundingClientRect().height);
+  targets.forEach((target, index) => {
+    if (heights[index]) target.style.setProperty('--h', heights[index] + 'px');
+    target.style.animationDuration = REVEAL.grow + 'ms';
+    target.classList.add('grow');
+    target.addEventListener('animationend', () => target.classList.remove('grow'), { once: true });
+  });
+  const scroll = element('scroll'), gap = scroll.scrollHeight - scroll.clientHeight - scroll.scrollTop;
+  if (scrollMode && follow) {
+    scroll.scrollTop = scrollMode === 'snap' ? scroll.scrollHeight : scroll.scrollTop + gap * (1 - Math.exp(-dt / REVEAL.glide));
+    lastScrollTop = scroll.scrollTop;
+    if (scrollMode === 'snap' || gap < .5 && now >= glideUntil) scrollMode = undefined;
+  } else scrollMode = undefined;
+  schedule();
+  armCap();
+}
+function revealStep(memo: TextMemo, now: number) {
+  const { reveal, view, source } = memo, tail = reveal?.tail, width = view.clientWidth;
+  if (!reveal || !tail || source === undefined || !width) return;
+  if (!measurer) { measurer = node('div', undefined, 'prose measure'); document.body.append(measurer); }
+  const host = measurer;
+  const measure = (end: number) => { host.style.width = width + 'px'; host.innerHTML = tail.html(end); return host.getBoundingClientRect().height; };
+  let measured = reveal.measured;
+  if (measured?.tail !== tail || measured.width !== width) {
+    const full = measure(tail.token.raw.length);
+    measured = reveal.measured = { tail, width, full, waiting: full - measure(tail.end) };
+  }
+  const { full } = measured;
+  if (measured.end === undefined && (measured.waiting >= REVEAL.cap * element('scroll').clientHeight || now - reveal.at >= REVEAL.wait && tail.end < tail.token.raw.length)) measured.end = sliceEnd(tail.token, end => end >= tail.token.raw.length ? full : measure(end));
+  if (measured.end === undefined || measured.end <= tail.end) return;
+  reveal.tail = { ...tail, end: measured.end };
+  show(memo, source, false);
 }
 
 function thumbnails(refs: ImageRef[], slots: Map<string, Slot>, name?: string) {
@@ -417,7 +517,7 @@ function put(item: WireItem) {
     view.className = 'assistant';
     item.blocks.forEach((block, index) => {
       const key = item.seq + ':' + index;
-      if (block.type === 'text') { flush(); if (block.text) children.push(prose(key, block.text, item.final, annotationItems.get(item.seq)?.get(index))); }
+      if (block.type === 'text') { flush(); if (block.text) children.push(prose(key, block.text, item.final || index < item.blocks.length - 1, annotationItems.get(item.seq)?.get(index), 'assistant')); }
       else if (block.type === 'tool' && block.agent) { flush(); const saved = previous?.slots.get('agent:' + key); if (saved?.type === 'agent') slots.set('agent:' + key, saved); children.push(agentCard(block.agent, block.started ?? item.at, 'agent:' + key, slots)); }
       else steps.push({ block, item, key, index, slots });
     });
@@ -427,7 +527,7 @@ function put(item: WireItem) {
     view.className = 'msg ' + item.kind;
     if (item.kind === 'user') {
       const time = node('time', timestamp(item.at)); time.dateTime = new Date(item.at).toISOString();
-      const text = node('div', undefined, 't'); text.append(prose(item.seq + ':user', item.text, true, undefined, true));
+      const text = node('div', undefined, 't'); text.append(prose(item.seq + ':user', item.text, true, undefined, 'user'));
       if (item.images.length) { const images = thumbnails(item.images, slots); images.load(); text.append(images.view); }
       const paths = item.attachments.filter(file => file.kind === 'file').map(file => file.path);
       if (paths.length) text.append(node('div', paths.join('\n'), 'paths'));
@@ -774,7 +874,12 @@ function applyPatch(record: Patch, buffer: boolean) {
   const item = { ...current, blocks: current.blocks.slice(), revision: record.revision };
   Object.assign(item, { final: record.final, stop: record.stop, error: record.error, ended: record.ended });
   for (const change of record.blocks) {
-    if ('block' in change) { item.blocks[change.index] = change.block; texts.delete(record.seq + ':' + change.index); }
+    if ('block' in change) {
+      const key = record.seq + ':' + change.index, memo = texts.get(key);
+      item.blocks[change.index] = change.block;
+      if (memo) revealing.delete(memo);
+      texts.delete(key);
+    }
     else {
       const block = item.blocks[change.index];
       if (block.type !== 'tool') item.blocks[change.index] = { ...block, text: block.text + change.suffix };
@@ -785,7 +890,7 @@ function applyPatch(record: Patch, buffer: boolean) {
 function apply(record: PageRecord) {
   if (record.type === 'reset') {
     editor.resetCompletion();
-    epoch = record.epoch; after = -1; first = undefined; items.clear(); views.clear(); texts.clear(); annotationItems.clear(); folds.clear(); jobOwners.clear(); historyRequest = undefined; more = record.more;
+    epoch = record.epoch; after = -1; first = undefined; items.clear(); views.clear(); texts.clear(); revealing.clear(); growing.length = 0; scrollMode = undefined; dirty = false; stopFrames(); annotationItems.clear(); folds.clear(); jobOwners.clear(); historyRequest = undefined; more = record.more;
     element('items').replaceChildren();
     element('older').hidden = !more;
     for (const item of record.items) put(item);
@@ -810,19 +915,13 @@ function apply(record: PageRecord) {
 }
 
 function followBottom() {
-  if (scrollFrame !== undefined) return;
-  scrollFrame = requestAnimationFrame(() => {
-    scrollFrame = undefined;
-    if (follow) {
-      const scroll = element('scroll');
-      scroll.scrollTop = scroll.scrollHeight;
-      lastScrollTop = scroll.scrollTop;
-    }
-  });
+  scrollMode ??= 'snap';
+  schedule(true);
 }
 function followResize() {
   const scroll = element('scroll');
   lastScrollTop = Math.min(lastScrollTop, Math.max(0, scroll.scrollHeight - scroll.clientHeight));
+  dirty ||= revealing.size > 0;
   followBottom();
 }
 const metricsMode = document.querySelector<HTMLMetaElement>('meta[name="koa-metrics"]')?.content;
@@ -1076,6 +1175,8 @@ document.addEventListener('click', event => {
   const pane = state.agents.find(agent => '@' + agent.name === link.textContent)?.pane;
   if (pane) window.ko?.focus?.(pane);
 });
+window.addEventListener('pagehide', stopFrames);
+document.addEventListener('visibilitychange', () => { if (document.hidden) stopFrames(); else { dirty ||= revealing.size > 0; schedule(); armCap(); } });
 document.addEventListener('focusin', composerFocus);
 document.addEventListener('focusout', composerFocus);
 const previewModifiers = (event: MouseEvent | KeyboardEvent) => event.shiftKey && event.metaKey && !event.ctrlKey && !event.altKey;
