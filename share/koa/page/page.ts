@@ -13,7 +13,7 @@ type Step = { block: Exclude<Block, { type: 'text' }>;  item: WireAssistant; ind
 type AgentCard = AgentCall | Extract<WireItem, { kind: 'agent' }>;
 type JobItem = Extract<WireItem, { kind: 'job' }>;
 type JobGroup = { first: JobItem; next: number; items: JobItem[]; shown: number; shownStreams?: number; streams: number; omitted: number; cut: boolean; view: HTMLDivElement; details: HTMLDivElement; footer?: HTMLDivElement; kind: HTMLSpanElement; end: HTMLSpanElement };
-type Slot = { type: 'image'; view: HTMLButtonElement } | { type: 'run'; view: HTMLDivElement; signature?: string } | { type: 'agent'; view: HTMLDivElement; rendered?: { card: AgentCard; at: number } } | { type: 'job'; view: HTMLDivElement; group: JobGroup };
+type Slot = { type: 'image'; view: HTMLButtonElement } | { type: 'run'; view: HTMLDivElement; signature?: string } | { type: 'agent'; view: HTMLDivElement; rendered?: { card: AgentCard; at: number; key: string } } | { type: 'job'; view: HTMLDivElement; group: JobGroup };
 declare global {
   interface Window {
     composer: Pick<ReturnType<typeof composer>, 'text' | 'setText' | 'focus'>;
@@ -39,7 +39,7 @@ const views = new Map<number, { view: HTMLElement; item: WireItem; slots: Map<st
 const template = document.createElement('template');
 const folds = new Map<string, boolean>();
 const texts = new Map<string, { render: ReturnType<typeof markdown>; view: HTMLElement; blocks: { block: ReturnType<ReturnType<typeof markdown>>[number]; nodes: ChildNode[] }[]; final?: boolean; source?: string; annotationItem?: Extract<WireItem, { kind: 'annotations' }> }>();
-let state: State = { bash: [], compaction: 'idle', pi: { type: 'starting' }, working: false, aborted: false, name: '', levels: [], cwd: '', home: '', statuses: {}, queue: { steering: [], followUp: [] }, dialogs: [] };
+let state: State = { agents: [], bash: [], compaction: 'idle', pi: { type: 'starting' }, working: false, aborted: false, name: '', levels: [], cwd: '', home: '', statuses: {}, queue: { steering: [], followUp: [] }, dialogs: [] };
 let epoch = '', after = -1, first: number | undefined, more = false, paging = false, follow = true, lastScrollTop = 0, delay = 200, scrollFrame: number | undefined;
 let escaped = false, dialogId: string | undefined;
 let submitting = false, editorId: string | undefined, dialogTimer: number | undefined, shownExit: number | undefined, pickerButton: HTMLElement | undefined, shownQueue: string | undefined, shownStatuses: string | undefined;
@@ -69,27 +69,45 @@ if (!window.ko) {
 }
 
 const relationWords: Record<Relation, string> = { parent: 'parent', child: 'subagent', sibling: 'peer', descendant: 'subagent', sibling_descendant: 'peer' };
+const htmlEscape = (text: string) => text.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;');
+function who(name: string) {
+  if (!state.agents.some(agent => agent.name === name)) { const gone = node('span', '@' + name, 'who gone'); gone.title = 'ended'; return gone; }
+  const link = node('a', '@' + name, 'who'); link.href = '#pane:' + name; link.title = 'Focus the pane of @' + name;
+  return link;
+}
+function linkNames(html: string) {
+  if (!state.agents.length) return html;
+  const names = state.agents.map(agent => htmlEscape(agent.name).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).sort((a, b) => b.length - a.length);
+  const mention = new RegExp('(^|[^\\w@])@(' + names.join('|') + ')(?![\\w-])', 'g');
+  let hidden = 0;
+  return html.split(/(<[^>]*>)/).map(part => {
+    if (part.startsWith('<')) { const tag = /^<(\/?)(a|code|pre)\b/.exec(part); if (tag) hidden += tag[1] ? -1 : 1; return part; }
+    return hidden > 0 ? part : part.replace(mention, (_, before, name) => before + '<a class="who" href="#pane:' + name + '" title="Focus the pane of @' + name + '">@' + name + '</a>');
+  }).join('');
+}
 function agentCard(card: AgentCard, at: number, key: string, slots: Map<string, Slot>) {
   const saved = slots.get(key), slot: Extract<Slot, { type: 'agent' }> = saved?.type === 'agent' ? saved : { type: 'agent', view: node('div') };
   slots.set(key, slot);
   if (slot.rendered?.card === card && slot.rendered.at === at) return slot.view;
-  slot.rendered = { card, at };
+  slot.rendered = { card, at, key };
   const inbound = card.direction === 'in', ref = inbound ? card.from : card.to;
   let kind = inbound ? card.inbound.form : card.call.tool === 'spawn' ? 'task' : card.call.mode === 'interrupt-and-steer' ? 'interrupt' : card.call.mode;
   let failed = false;
   if (card.direction === 'out' && card.outcome?.ok === false) { failed = true; kind = card.call.tool === 'spawn' ? 'refused' : card.outcome.failure === 'refused' || card.outcome.failure === 'gone' ? card.outcome.failure : card.outcome.message; }
   if (card.direction === 'in' && card.inbound.form === 'ended' && !card.inbound.reported) { failed = true; kind = 'not reported'; }
-  const view = slot.view; view.className = 'amsg';
-  const header = node('div', undefined, 'hd'), who = node('span', '@' + ref.name, 'who'); if (ref.session) who.title = ref.session;
-  header.append(node('span', kind, failed ? 'kind err' : 'kind'), node('span', inbound ? 'from' : 'to', 'dir'), who);
-  if (card.direction === 'in' && 'relation' in card.inbound && card.inbound.relation) header.append(node('span', relationWords[card.inbound.relation], 'rel'));
-  header.append(node('time', timestamp(at)));
+  const view = slot.view; view.className = failed ? 'aline err' : 'aline';
+  const header = node('div', undefined, 'hd'), lead = node('span', undefined, 'lead');
+  lead.append(kind + ' ' + (inbound ? 'from' : 'to') + ' ', who(ref.name));
+  if (card.direction === 'in' && 'relation' in card.inbound && card.inbound.relation) lead.append(' ', node('span', relationWords[card.inbound.relation], 'rel'));
   const body = card.text.text || (card.direction === 'out' && card.outcome?.ok === false ? card.outcome.message : '');
-  view.replaceChildren(header);
-  view.append(node('div', markdownLine(body), 'preview'));
+  header.append(lead, node('span', markdownLine(body), 'tx'), node('time', timestamp(at)));
   const details = prose(undefined, body, true); details.className = 'bd prose';
-  fold(view, key, view, details, undefined, 'expanded');
+  view.replaceChildren();
+  fold(view, key, header, details);
   return view;
+}
+function refreshAgentCards() {
+  for (const { slots } of views.values()) for (const slot of slots.values()) if (slot.type === 'agent' && slot.rendered) { const { card, at, key } = slot.rendered; slot.rendered = undefined; agentCard(card, at, key, slots); }
 }
 function jobCard(first: JobItem, slots: Map<string, Slot>): JobGroup {
   const view = node('div', undefined, 'job'), line = node('div', undefined, 'hd'), details = node('div', undefined, 'out');
@@ -164,7 +182,7 @@ function prose(key: string | undefined, source: string, final: boolean, annotati
   while (first < blocks.length && memo.blocks[first]?.block === blocks[first]) first++;
   for (const saved of memo.blocks.splice(first)) for (const child of saved.nodes) child.remove();
   for (const block of blocks.slice(first)) {
-    template.innerHTML = block.html ?? '';
+    template.innerHTML = linkNames(block.html ?? '');
     annotated?.decorate(template.content);
     const nodes = [...template.content.childNodes];
     for (const pre of nodes.flatMap(child => child instanceof Element ? [child, ...child.querySelectorAll('pre')] : []).filter(child => child.tagName === 'PRE')) {
@@ -766,7 +784,8 @@ function apply(record: PageRecord) {
   } else if (record.type === 'state') {
     if (state.sessionId !== record.sessionId || state.pi.type !== record.pi.type) editor.resetCompletion();
     if (state.sessionId && state.sessionId !== record.sessionId) { closeSessions(); closePicker(); editorId = undefined; }
-    state = record; document.body.dataset.sessionId = state.sessionId ?? ''; element('items').hidden = state.pi.type === 'switching'; refreshBash(); refreshComposer(); dialogs(); queue(); exited();
+    const agentsChanged = JSON.stringify(state.agents) !== JSON.stringify(record.agents);
+    state = record; if (agentsChanged) refreshAgentCards(); document.body.dataset.sessionId = state.sessionId ?? ''; element('items').hidden = state.pi.type === 'switching'; refreshBash(); refreshComposer(); dialogs(); queue(); exited();
     if (state.pi.type === 'ready' && state.editor && editorId !== state.editor.id) {
       editor.setText(state.editor.text); editorId = state.editor.id;
       void fetchJSON('/editor/ack', { sessionId: state.sessionId, id: state.editor.id }).catch(reportError);
@@ -1020,6 +1039,13 @@ function composerFocus() { element('field').classList.toggle('focus', composerRe
 function focusComposer() { composerFocus(); if (composerReceivesKeys() && !pickerButton && sessionPicker === 'closed' && (!isControl(document.activeElement) || editor.hasFocus())) editor.focus(); }
 window.addEventListener('focus', focusComposer);
 window.addEventListener('load', focusComposer);
+document.addEventListener('click', event => {
+  const link = event.target instanceof Element ? event.target.closest('a') : null;
+  if (!link?.classList.contains('who')) return;
+  event.preventDefault();
+  const pane = state.agents.find(agent => '@' + agent.name === link.textContent)?.pane;
+  if (pane) window.ko?.focus?.(pane);
+});
 document.addEventListener('focusin', composerFocus);
 document.addEventListener('focusout', composerFocus);
 const previewModifiers = (event: MouseEvent | KeyboardEvent) => event.shiftKey && event.metaKey && !event.ctrlKey && !event.altKey;

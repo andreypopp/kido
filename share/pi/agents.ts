@@ -14,7 +14,7 @@ const MAX_AGENT_COMPLETIONS = 10;
 const NAME_WORD_SEPARATORS = /[\s\-_/]+/;
 
 export type AgentCompletionRow = {
-  id: string; name: string; named: boolean; self: boolean; status: string; activity: string; parent: string;
+  id: string; pane: string; name: string; named: boolean; self: boolean; status: string; activity: string; parent: string;
   state: "running" | "ended"; relationship: "parent" | "peer" | "own" | "relative" | "other";
 };
 
@@ -119,7 +119,7 @@ export function runningRows(panes: PaneInfo[], me: PaneInfo | undefined): { pane
   const byPane = new Map(panes.map(p => [p.pane, p]));
   const related = relationships(panes, me);
   return panes.filter(p => !p.dead).map(p => ({ pane: p, row: {
-    id: piAgent(p.kind)?.session ?? p.pane, name: p.name || p.title, named: p.name !== "", self: p.pane === me?.pane,
+    id: piAgent(p.kind)?.session ?? p.pane, pane: p.pane, name: p.name || p.title, named: p.name !== "", self: p.pane === me?.pane,
     status: p.root?.state ?? "starting", activity: p.activity, parent: piAgent(byPane.get(p.parent)?.kind ?? null)?.session ?? "",
     state: "running", relationship: p.pane === me?.pane ? "own" : related.get(p.pane) ?? "other",
   } }));
@@ -128,12 +128,15 @@ export function runningRows(panes: PaneInfo[], me: PaneInfo | undefined): { pane
 export function agentCache(load: () => Promise<{ rows: AgentCompletionRow[]; all: AgentCompletionRow[] }>, configured: string | undefined) {
   const parsed = Number(configured ?? 1000), ttl = Number.isFinite(parsed) && parsed > 0 ? parsed : 1000;
   let rows: AgentCompletionRow[] = [], all: AgentCompletionRow[] = [], at: number | undefined, refreshing: Promise<void> | undefined;
-  return (token: string) => {
+  const refresh = () => {
     if (!refreshing && (at === undefined || Date.now() - at >= ttl)) {
       refreshing = load().then(result => { rows = result.rows; all = result.all; }).catch(() => { rows = []; all = []; }).finally(() => { at = Date.now(); refreshing = undefined; });
     }
-    return agentCompletionItems(rows, all, token);
+    return refreshing;
   };
+  const lookup = (token: string) => { void refresh(); return agentCompletionItems(rows, all, token); };
+  lookup.live = async () => { await refreshing; at = undefined; await refresh(); return rows; };
+  return lookup;
 }
 
 function completionValue(ids: AgentCompletionRow[], agent: AgentCompletionRow): string {

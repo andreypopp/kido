@@ -253,7 +253,7 @@ const reply = (text: string, details: unknown = {}) => ({ content: [{ type: "tex
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
 type AgentRow = AgentCompletionRow & {
-  pane: string; window: string; depth: number; cwd: string; runtime?: string; canMessage: boolean;
+  window: string; depth: number; cwd: string; runtime?: string; canMessage: boolean;
   kind: "agent" | "subagent"; ended?: string; model?: string; reported?: boolean; report?: string;
 };
 

@@ -1496,6 +1496,17 @@ beside the terminal's `pixels`, so the panel, its control, its file and
 its removal are the terminal's. The panel zooms from the clicked
 element's rect.
 
+**Focus from a page.** `window.ko.focus(pane)` posts the document's
+generation and the pane id to the script message handler `koFocus`.
+Every page has it, not only koa's, so the handler drops the message
+silently unless it passes `koPreview`'s guards (not stopped, main
+frame, allowed URL, matching generation, no pending navigation), the
+web view is the first responder of a key window, so a background or
+unfocused page never moves the selection, and the id names a pane of
+the window owner's current projection. It then does exactly what a
+click on that pane's sidebar row does, `perform(.jump)`, and nothing
+else.
+
 **Drops on a page.** A Finder drop on a local program's page
 (`WindowOwner.isLocalProgram`) is the one grant of a host path to a
 page's program. The app posts each dropped path to `/attachments`

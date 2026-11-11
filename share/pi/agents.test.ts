@@ -4,7 +4,7 @@ import { setImmediate } from "node:timers/promises";
 import { agentCache, agentCompletionItems, relationships, type AgentCompletionRow, type PaneInfo } from "./agents.ts";
 
 test("completion ranks names before words and inserts unique session prefixes", () => {
-  const row = (id: string, name: string, relationship: AgentCompletionRow["relationship"] = "peer"): AgentCompletionRow => ({ id, name, named: true, self: false, status: "working", activity: "reading", parent: "", state: "running", relationship });
+  const row = (id: string, name: string, relationship: AgentCompletionRow["relationship"] = "peer"): AgentCompletionRow => ({ id, pane: id, name, named: true, self: false, status: "working", activity: "reading", parent: "", state: "running", relationship });
   const parent = row("11111111aaaa", "manager");
   const word = { ...row("22222222aaaa", "fix-sidebar"), parent: parent.id };
   const prefix = row("22222222bbbb", "sidebar");
@@ -17,7 +17,7 @@ test("completion ranks names before words and inserts unique session prefixes", 
 
 test("agent completion cache shares refreshes and expires at its TTL", async t => {
   t.mock.timers.enable({ apis: ["Date"], now: 10000 });
-  const row: AgentCompletionRow = { id: "123456789", name: "sidebar", named: true, self: false, status: "working", activity: "", parent: "", state: "running", relationship: "peer" };
+  const row: AgentCompletionRow = { id: "123456789", pane: "p1", name: "sidebar", named: true, self: false, status: "working", activity: "", parent: "", state: "running", relationship: "peer" };
   let calls = 0, release: ((value: { rows: AgentCompletionRow[]; all: AgentCompletionRow[] }) => void) | undefined;
   const cache = agentCache(() => { calls++; return new Promise(resolve => { release = resolve; }); }, "1000");
   assert.deepEqual(cache("si"), []);

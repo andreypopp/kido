@@ -511,7 +511,7 @@ replay from `get_messages` and the live stream use one conversion.
   tool block between two texts; nothing stores it. Fold state is
   page-local and a reload loses it.
 - **Thinking is Markdown when open.** A thinking step's line shows
-  its first line without Markdown syntax, as an agent card does. Its
+  its first line without Markdown syntax, as an agent line does. Its
   text renders through the reply's Markdown memo only when the step
   is open: the first open renders it, and while it streams open, each
   rebuild gives the memo the new text, as a reply streams. A closed
@@ -534,6 +534,14 @@ replay from `get_messages` and the live stream use one conversion.
   or pi's exit or restart during it), or cancelled (an aborted
   `compaction_end`). A rebuild of the same session keeps these items
   as it keeps notifications.
+- **One text edge.** The user decided with `refine.html` that the
+  transcript, the user block, the composer, the dialogs and the exit
+  card share edges: the user block and the composer's field extend
+  `--pad` past the transcript's text edge, so the field's text starts
+  where the assistant's text starts, and every item's time ends on the
+  text edge (the user block's time on its own padding). A user message
+  is a solid block of the accent colour; its quotes, code and time
+  derive from its ink, not from the accent.
 - **A rebuild** (at start, after `new_session`, `switch_session`,
   `fork`, `clone` and `compaction_end`) mints a new epoch.
 
@@ -973,7 +981,7 @@ In a browser, `window.ko` does not exist: an image opens in a lightbox
 inside the page, which Escape closes before it aborts anything, and a
 file opens in a new tab.
 
-## Agent cards and job lines
+## Agent lines and job lines
 
 ko-pi is the only writer of agent messages and job notices, and ko-pi
 and koa ship together, so ko-pi writes the facts that the page needs
@@ -982,29 +990,48 @@ into each message's `details` (and into the `details` of the
 `share/pi/records.ts`. The transcript reads `details` only, never the
 header lines, which stay in the text for the model and for pi's TUI.
 `details` is also in the session file, so a rebuild shows the same
-cards. A custom message without these details (another extension's,
+lines. A custom message without these details (another extension's,
 or a session written before them) stays a plain notice.
 
-The user decided the look with the mockup `agents.html`:
+The user decided the look with the mockups `agents.html` and
+`refine.html`:
 
 - `spawn_agent`, `message_agent` and every inbound agent message are
-  a card whose header is one phrase in the prose font,
-  `<kind> to|from @<name> <relation>` ("steer from @kido-app
-  parent"), with only the time at the right, in the terminal font.
-  The relation is one word, `subagent`, `peer` or `parent`, that
-  folds ko-pi's five relations; ko-pi's own notices have none. The
-  card splits its run as a text does. A card shows one line of its text until a
-  click: the first line as plain text with its Markdown syntax
+  one line, like a step's line, not a card: one phrase in the prose
+  font, `<kind> to|from @<name> <relation>` ("steer from @kido-app
+  parent"), then the first line of the text, then the time at the
+  text edge, in the terminal font. The relation is one word,
+  `subagent`, `peer` or `parent`, that folds ko-pi's five relations;
+  ko-pi's own notices have none. The line splits its run as a text
+  does. The first line is plain text with its Markdown syntax
   removed (the first code line when the text starts with a fence),
-  so a closed card keeps its height. Open, the text is Markdown,
-  rendered as final text by the reply's renderer. A custom message
-  without agent details is not Markdown: it stays a one-line notice
-  of its first line, with the same syntax removed and no expansion,
-  because another extension's text need not be Markdown. A card
-  shows no delivery status and no meta lines: only a failure
-  shows, in the error colour in the kind's place ("refused to
-  @name", "not reported from @name subagent"). The `@name` has no action: a
-  focus of another pane would be a new page-to-app surface.
+  and it ellipsizes, so a closed line keeps its height. A click opens
+  the text under the line, as Markdown rendered as final text by the
+  reply's renderer. A custom message without agent details is not
+  Markdown: it stays a one-line notice of its first line, with the
+  same syntax removed and no expansion, because another extension's
+  text need not be Markdown. A line shows no delivery status and no
+  meta lines: only a failure shows, in the error colour in the
+  kind's place ("refused to @name", "not reported from @name
+  subagent").
+- **`@name` focuses the agent's pane.** An agent's name in an agent
+  line, and an `@name` in the prose of a reply or a user message, is a
+  link while the name is in koa's list of live agents; a click calls
+  `window.ko.focus(pane)` (design-app.md, "Focus from a page"), as a
+  click on the agent's sidebar row does. The list is the state's
+  `agents` (`koa-records.ts`): the named running pi agents of koa's ko
+  session, except koa's own, from the same `/layout` read as `@`
+  completion (`agentDiscovery`). koa reads it at start and after each
+  `spawn_agent`, `message_agent`, `stop_agent` and `list_agents`
+  result and each displayed custom message, not on a timer, and
+  publishes the state only when the list changed. A change elsewhere
+  (another pane starts or ends an agent) shows at the next of these
+  events; a stale pane id is harmless, because the app refuses a pane
+  that is not in its layout. Prose links a name only when it renders
+  (never inside code or an existing link), so a name in an older reply
+  does not follow later changes; an agent line renders again when its
+  agent joins or leaves the list, and a name that left it is muted,
+  with no link ("ended"). In a browser, a click does nothing.
 - `stop_agent`, `list_agents`, `read_report`, `list_async_bash` and
   `stop_async_bash` stay steps: they are the caller's own actions, not
   messages.

@@ -1032,12 +1032,13 @@ test('agent body changes render fresh final Markdown without a retained prose me
     const card={direction:'out',to:{name:'worker'},text:{text:'**Review**',cut:0},call:{tool:'spawn',fork:false}};
     const slots=new Map();
     const view=agentCard(card,0,'agent:0',slots);
-    view.onclick({});
-    const link=document.createElement('a'), label=document.createElement('strong'); link.append(label); view.append(link);
-    view.onclick({target:label});
-    const clicked=view.classList.contains('expanded');
-    view.onkeydown({target:label,key:'Enter',preventDefault(){throw Error('Link Enter was intercepted');}});
-    const entered=view.classList.contains('expanded');
+    const header=view.children[0];
+    header.onclick({});
+    const link=document.createElement('a'), label=document.createElement('strong'); link.append(label); header.append(link);
+    header.onclick({target:label});
+    const clicked=view.classList.contains('open');
+    header.onkeydown({target:label,key:'Enter',preventDefault(){throw Error('Link Enter was intercepted');}});
+    const entered=view.classList.contains('open');
     agentCard({...card,text:{text:'Use \`code\`',cut:0},outcome:{ok:false,failure:'refused',message:'No'}},0,'agent:0',slots);
     const fallback=put({seq:1,at:0,kind:'notice',final:true,customType:'other',from:'',text:'## **Ready**\\nSecond line'});
     [clicked,entered,texts.size,fallback.className,fallback.children[0].textContent,fallback.children[1].tagName];
@@ -1049,7 +1050,49 @@ test('agent body changes render fresh final Markdown without a retained prose me
 
 test('agent cards split runs and toggle their one-line body without success metadata', async () => {
   const app = await page();
-  assert.equal(app.run(`(()=>{const tool=name=>({type:'tool',id:name,name,args:{text:'{}'},state:{type:'done',error:false,result:{text:'',images:[]}}});const card={...tool('spawn_agent'),agent:{direction:'out',to:{name:'worker',session:'worker-id'},text:{text:'Check the module\\nReturn findings',cut:0},call:{tool:'spawn',fork:false},outcome:{ok:true}}};const view=put({seq:0,at:0,kind:'assistant',final:true,stop:'stop',error:'',blocks:[tool('read'),card,tool('bash')]});const agent=view.children.find(child=>child.classList.contains('amsg'));if(!agent||view.children.length!==3)return false;const closed=!agent.classList.contains('expanded');agent.onclick({});const open=agent.classList.contains('expanded');agent.onclick({});return closed&&open&&!agent.classList.contains('expanded')&&agent.children[0].children.some(child=>child.textContent==='@worker')&&agent.children[0].children.slice(0,-1).map(child=>child.textContent).join(' ')==='task to @worker'})()`), true);
+  assert.deepEqual(Array.from(app.run(`(()=>{const tool=name=>({type:'tool',id:name,name,args:{text:'{}'},state:{type:'done',error:false,result:{text:'',images:[]}}});const card={...tool('spawn_agent'),agent:{direction:'out',to:{name:'worker',session:'worker-id'},text:{text:'Check the module\\nReturn findings',cut:0},call:{tool:'spawn',fork:false},outcome:{ok:true}}};const view=put({seq:0,at:0,kind:'assistant',final:true,stop:'stop',error:'',blocks:[tool('read'),card,tool('bash')]});const agent=view.children.find(child=>child.classList.contains('aline'));if(!agent||view.children.length!==3)return [];const header=agent.children[0];const closed=!agent.classList.contains('open');header.onclick({});const open=agent.classList.contains('open');const expanded=header.getAttribute('aria-expanded');header.onclick({});return [closed,open,expanded,agent.classList.contains('open'),header.children.map(child=>child.className).join(),header.children[0].children[0],header.children[1].textContent,agent.children[1].className]})()`)), [true, true, 'true', false, 'lead,tx,', 'task to ', 'Check the module', 'bd prose']);
+});
+
+test('agent names link to live agents, a gone name is plain, a click focuses the pane and keeps the line closed', async () => {
+  const app = await page();
+  const names = Array.from(app.run(`(()=>{
+    state={...state,agents:[{name:'worker',pane:'p7'}]};
+    const card=name=>({direction:'out',to:{name},text:{text:'Hello',cut:0},call:{tool:'message',mode:'message'}});
+    const live=agentCard(card('worker'),0,'a',new Map()), gone=agentCard(card('ghost'),0,'b',new Map());
+    const link=live.children[0].children[0].children[1], ended=gone.children[0].children[0].children[1];
+    window.testLink=link; window.testLine=live;
+    return [link.tagName,link.className,link.href,link.title,link.textContent,ended.tagName,ended.className,ended.title,ended.textContent];
+  })()`));
+  assert.deepEqual(names, ['A', 'who', '#pane:worker', 'Focus the pane of @worker', '@worker', 'SPAN', 'who gone', 'ended', '@ghost']);
+  const focused: string[] = [];
+  const ko: { focus?: (pane: string) => void } = { focus: pane => { focused.push(pane); } }; app.context.window.ko = ko;
+  let prevented = false;
+  const target = app.run(`window.testLink`);
+  app.run(`state={...state,agents:[{name:'worker',pane:'p7'}]}`);
+  app.listeners.get('click')?.({ target, preventDefault() { prevented = true; } });
+  assert.deepEqual(focused, ['p7']);
+  assert.equal(prevented, true);
+  assert.equal(app.run(`window.testLine.classList.contains('open')`), false);
+  delete ko.focus;
+  app.listeners.get('click')?.({ target, preventDefault() {} });
+  assert.deepEqual(focused, ['p7']);
+});
+
+test('prose links only live agent names outside code and links, and a membership change re-renders agent lines', async () => {
+  const app = await page(), html: string[] = [];
+  const create = app.context.document.createElement;
+  app.context.document.createElement = tag => { const node = create(tag); if (tag === 'template') Object.defineProperty(node, 'innerHTML', { set(value: string) { html.push(value); } }); return node; };
+  app.run(`state={...state,agents:[{name:'sidebar',pane:'p1'},{name:'sidebar-right',pane:'p2'}]};prose(undefined,'Ask @sidebar-right and @sidebar, not @nobody or me@sidebar; \`@sidebar\` and [@sidebar](https://x.test)',true)`);
+  const who = (name: string) => `<a class="who" href="#pane:${name}" title="Focus the pane of @${name}">@${name}</a>`;
+  assert.equal(html.join(''), `<p>Ask ${who('sidebar-right')} and ${who('sidebar')}, not @nobody or me@sidebar; <code>@sidebar</code> and <a href="https://x.test">@sidebar</a></p>\n`);
+  assert.deepEqual(Array.from(app.run(`(()=>{
+    state={...state,agents:[{name:'sidebar',pane:'p1'}]};
+    const slots=new Map(),view=agentCard({direction:'out',to:{name:'sidebar'},text:{text:'x',cut:0},call:{tool:'message',mode:'message'}},0,'k',slots);
+    const before=view.children[0].children[0].children[1].className;
+    views.set(0,{view,item:{},slots});
+    apply({...state,type:'state',agents:[]});
+    return [before,view.children[0].children[0].children[1].className]
+  })()`)), ['who', 'who gone']);
 });
 
 test('agent card header phrases preserve kinds, directions, relations and failures', async () => {
@@ -1083,10 +1126,10 @@ test('agent card header phrases preserve kinds, directions, relations and failur
     [outgoing({ tool: 'message', mode: 'message' }, { ok: false, failure: 'error', message: 'send failed' }), 'send failed to @worker', true],
   ];
   for (const [card, phrase, failed] of cases) {
-    const result = app.run(`(()=>{const view=agentCard(${JSON.stringify(card)},0,'card',new Map());const header=view.children[0],children=header.children;return {phrase:children.slice(0,-1).map(child=>child.textContent).join(' '),classes:children.slice(0,-1).map(child=>child.className),title:children[2].title,time:children.at(-1).tagName}})()`);
+    const result = app.run(`(()=>{const view=agentCard(${JSON.stringify(card)},0,'card',new Map());const header=view.children[0],lead=header.children[0];return {phrase:lead.children.map(child=>child.textContent??child).join(''),classes:header.children.map(child=>child.className),time:header.children.at(-1).tagName,view:view.className}})()`);
     assert.equal(result.phrase, phrase);
-    assert.deepEqual(Array.from(result.classes), [failed ? 'kind err' : 'kind', 'dir', 'who', ...(phrase.endsWith('parent') || phrase.endsWith('peer') || phrase.endsWith('subagent') ? ['rel'] : [])]);
-    assert.equal(result.title, 'worker-id');
+    assert.deepEqual(Array.from(result.classes), ['lead', 'tx', '']);
+    assert.equal(result.view, failed ? 'aline err' : 'aline');
     assert.equal(result.time, 'TIME');
   }
 });

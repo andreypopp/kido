@@ -245,13 +245,18 @@ async function main(): Promise<void> {
     let compaction: { root: Root; working: boolean; since?: number } | undefined;
     let compactRequest: { ended: boolean } | undefined;
     let settled: (() => void) | undefined;
-    const state: Omit<State, "pi" | "queue"> = { bash: [], get compaction() { return compaction ? 'running' : 'idle'; }, working: false, aborted: false, name: "pi", levels: [], cwd: process.cwd(), home: homedir(), dialogs: [], statuses: {} };
+    const state: Omit<State, "pi" | "queue"> = { agents: [], bash: [], get compaction() { return compaction ? 'running' : 'idle'; }, working: false, aborted: false, name: "pi", levels: [], cwd: process.cwd(), home: homedir(), dialogs: [], statuses: {} };
     let stopping = false;
     teardown.push(() => { stopping = true; });
     let pi: Pi = { type: "starting" };
     const running = () => !stopping && pi.type === "ready";
     let root: Root = { value: "idle", message: state.name };
     const publish = (dialogsChanged = false) => { if (pi.type !== "starting" || dialogsChanged) feed.state({ ...state, queue: pendingPrompts.view(), pi }); };
+    const refreshAgents = () => void agents.live().then(rows => {
+      const next = rows.filter(row => !row.self && row.named).map(({ name, pane }) => ({ name, pane }));
+      if (JSON.stringify(next) !== JSON.stringify(state.agents)) { state.agents = next; publish(); }
+    });
+    refreshAgents();
     const status = (value: Root["value"] | "clear", message = state.name) => {
       if (value !== "clear") root = { value, message };
       const dialog = state.dialogs[0];
@@ -436,6 +441,7 @@ async function main(): Promise<void> {
           break;
         }
         case "message_end":
+          if (event.message.role === "custom" && event.message.display) refreshAgents();
           feed.message(event.message, "end", event.message.role === "assistant" ? Date.now() : undefined, event.message.role === "user" ? userAttachments : []);
           if (event.message.role === "user") userAttachments = [];
           if (event.message.role === "assistant") {
@@ -445,7 +451,7 @@ async function main(): Promise<void> {
           break;
         case "tool_execution_start": feed.toolRunning(event.toolCallId, Date.now()); break;
         case "tool_execution_update": feed.toolPartial(event.toolCallId, event.partialResult.content); break;
-        case "tool_execution_end": feed.toolDone(event.toolCallId, event.result.content, event.isError, Date.now(), event.durationMs, event.result.structuredContent, event.result.details); break;
+        case "tool_execution_end": if (event.toolName === "spawn_agent" || event.toolName === "message_agent" || event.toolName === "list_agents" || event.toolName === "stop_agent") refreshAgents(); feed.toolDone(event.toolCallId, event.result.content, event.isError, Date.now(), event.durationMs, event.result.structuredContent, event.result.details); break;
         case "agent_start": state.working = true; state.since = Date.now(); state.aborted = false; outcome = { type: "done" }; status("working"); publish(); break;
         case 'compaction_start': compaction ??= { root, working: state.working, since: state.since }; feed.command({ type: 'compaction', state: { type: 'running' } }); state.working = true; state.since ??= Date.now(); status('working'); publish(); break;
         case "agent_settled": settled?.(); settled = undefined; state.working = false; delete state.since; state.aborted = event.aborted; status(event.aborted ? "idle" : outcome.type, outcome.type === "error" ? outcome.message : state.name); publish(); background(stats()); background(settleBash()); break;

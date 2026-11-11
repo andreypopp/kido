@@ -1,5 +1,5 @@
 declare global {
-  interface Window { ko?: { local: boolean; preview?: (url: string, rect: DOMRect) => void }; }
+  interface Window { ko?: { local: boolean; preview?: (url: string, rect: DOMRect) => void; focus?: (pane: string) => void }; }
 }
 
 let lightbox: { view: HTMLDivElement; target: HTMLElement; onChange: () => void } | undefined;

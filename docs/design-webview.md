@@ -233,9 +233,13 @@ A page talks to its program with HTTP and WebSockets only:
   API that goes through `ko_client`. The app opens no TCP listener.
 
 `window.ko` gives a page what HTTP cannot: the pane id, the theme and
-the cell size, with a `ko-theme` event on a change. It has no method
-that reaches the program or the server: the app is not a message bus
-between a page and ko.
+the cell size, with a `ko-theme` event on a change. Its two methods act
+in the app only: `preview(url, rect)` opens Quick Look, and
+`focus(pane)` moves the window's selection to a pane as a sidebar
+click does, and only from the focused page of the key window
+(design-app.md, "Quick Look from a page" and "Focus from a page"). No
+method reaches the program or the server: the app is not a message
+bus between a page and ko.
 
 A page reads a live stream with `EventSource`, not with a `fetch`
 body. WebKit before 319981@main (bug 322545, commit `718031552ba1`),

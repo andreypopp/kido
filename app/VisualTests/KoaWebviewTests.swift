@@ -767,7 +767,7 @@ extension VisualTests {
             steps[1] = ["type": "respond", "command": "get_messages", "data": ["messages": messages]]
         }
         if scenario == .userMarkdown {
-            var rich = user; rich["content"] = [["type": "text", "text": "Use `inline` and the same Markdown rules.\n\n> Keep the quoted instruction clear on the tint.\n\n- First item\n- Second item\n\n```js\nconst x = 1;\n```\n\n<b>raw HTML stays text</b>"]]
+            var rich = user; rich["content"] = [["type": "text", "text": "Use `inline` and the same Markdown rules, see [the reference](https://example.com/ref).\n\n> Keep the quoted instruction clear on the tint.\n\n- First item\n- Second item\n\n```js\nconst x = 1;\n```\n\n<b>raw HTML stays text</b>"]]
             var plain = user; plain["timestamp"] = stamp + 1; plain["content"] = [["type": "text", "text": "A plain one-line message"]]
             steps = Array(steps.prefix(3)); steps[1] = ["type": "respond", "command": "get_messages", "data": ["messages": [rich, assistant([["type": "text", "text": "The text column is the same width."]]), plain]]]
             for text in [
@@ -1369,33 +1369,33 @@ extension VisualTests {
                 _ = try await webviewJS(web, "(()=>{document.querySelectorAll('.run>.line').forEach(line=>{if(line.getAttribute('aria-expanded')!=='true')line.click()});if(\(firstStep)){const line=document.querySelector('.step>.line');if(line?.getAttribute('aria-expanded')!=='true')line?.click()}return true})()")
             }
             func aligned() async throws {
-                let result = try await webviewJS(web, "(()=>{const column=document.querySelector('#transcript'),edge=column.getBoundingClientRect().right-parseFloat(getComputedStyle(column).paddingRight),scroll=document.querySelector('#scroll').getBoundingClientRect();return Array.from(document.querySelectorAll('.user time,.amsg time,.run .time,.job time')).every(time=>Math.abs(time.getBoundingClientRect().right-edge)<.5)&&Array.from(document.querySelectorAll('.amsg,.user')).every(card=>{const r=card.getBoundingClientRect();return r.left>=scroll.left+4&&r.right<=scroll.right-4})})()")
+                let result = try await webviewJS(web, "(()=>{const column=document.querySelector('#transcript'),edge=column.getBoundingClientRect().right-parseFloat(getComputedStyle(column).paddingRight),scroll=document.querySelector('#scroll').getBoundingClientRect();return Array.from(document.querySelectorAll('.user time,.aline time,.run .time,.job time')).every(time=>Math.abs(time.getBoundingClientRect().right-edge)<.5)&&Array.from(document.querySelectorAll('.user')).every(card=>{const r=card.getBoundingClientRect();return r.left>=scroll.left+4&&r.right<=scroll.right-4})})()")
                 XCTAssertEqual(result, "true", "All times end at the column edge and wells keep the narrow paper margin")
             }
-            try await webviewUntil(web, "document.querySelectorAll('.amsg').length===5")
+            try await webviewUntil(web, "document.querySelectorAll('.aline').length===5")
             try await openRuns(); try await aligned()
-            _ = try await webviewJS(web, "(()=>{document.querySelector('.amsg').click();return true})()")
-            let taskMarkdown = try await webviewJS(web, "(()=>{const body=document.querySelector('.amsg .bd');return !!body.querySelector('ul li')&&!!body.querySelector('code')&&!!body.querySelector('strong')&&body.querySelector('a')?.getAttribute('href')==='https://example.com/sidebar'})()")
+            _ = try await webviewJS(web, "(()=>{document.querySelector('.aline .hd').click();return true})()")
+            let taskMarkdown = try await webviewJS(web, "(()=>{const body=document.querySelector('.aline .bd');return !!body.querySelector('ul li')&&!!body.querySelector('code')&&!!body.querySelector('strong')&&body.querySelector('a')?.getAttribute('href')==='https://example.com/sidebar'})()")
             XCTAssertEqual(taskMarkdown, "true", "Outbound task renders Markdown elements")
             try await capture(prefix + "out")
-            try await advance(); try await webviewUntil(web, "document.querySelectorAll('.amsg').length===2&&document.querySelectorAll('.amsg .kind.err').length===2")
-            size(330); try await capture(prefix + "failed")
-            try await advance(); try await webviewUntil(web, "document.querySelectorAll('.amsg').length===7")
+            try await advance(); try await webviewUntil(web, "document.querySelectorAll('.aline').length===2&&document.querySelectorAll('.aline.err').length===2")
+            size(330); try await aligned(); try await capture(prefix + "failed")
+            try await advance(); try await webviewUntil(web, "document.querySelectorAll('.aline').length===7")
             size(560)
-            _ = try await webviewJS(web, "(()=>{document.querySelectorAll('.amsg')[1].click();return true})()")
-            let rendered = try await webviewJS(web, "(()=>{const body=document.querySelectorAll('.amsg')[1].querySelector('.bd');return !!body.querySelector('ul li')&&!!body.querySelector('code')&&!!body.querySelector('strong')&&body.querySelector('a')?.getAttribute('href')==='https://example.com/sidebar'&&!body.querySelector('.caret')})()")
+            _ = try await webviewJS(web, "(()=>{document.querySelectorAll('.aline .hd')[1].click();return true})()")
+            let rendered = try await webviewJS(web, "(()=>{const body=document.querySelectorAll('.aline')[1].querySelector('.bd');return !!body.querySelector('ul li')&&!!body.querySelector('code')&&!!body.querySelector('strong')&&body.querySelector('a')?.getAttribute('href')==='https://example.com/sidebar'&&!body.querySelector('.caret')})()")
             XCTAssertEqual(rendered, "true", "Expanded agent body renders final Markdown elements")
             try await capture(prefix + "in")
             try await advance(); try await webviewUntil(web, "document.querySelectorAll('.job').length===5")
             _ = try await webviewJS(web, "(()=>{Array.from(document.querySelectorAll('.job')).find(job=>job.querySelector('.nm').textContent==='lint').querySelector('.hd').click();return true})()")
             try await aligned(); try await capture(prefix + "jobs")
-            try await advance(); try await webviewUntil(web, "document.querySelectorAll('.job').length===1&&document.querySelectorAll('.amsg').length===1")
-            let summary = try await webviewJS(web, "document.querySelector('.amsg .preview').textContent==='Built the right-side indicators with SidebarRow.swift; see the reference. Pre-fix failures: 6 snapshot tests (SidebarTests.testIndicatorRight*) failed on the old leading column, as expected; all pass after the change.'")
+            try await advance(); try await webviewUntil(web, "document.querySelectorAll('.job').length===1&&document.querySelectorAll('.aline').length===1")
+            let summary = try await webviewJS(web, "document.querySelector('.aline .tx').textContent==='Built the right-side indicators with SidebarRow.swift; see the reference. Pre-fix failures: 6 snapshot tests (SidebarTests.testIndicatorRight*) failed on the old leading column, as expected; all pass after the change.'")
             XCTAssertEqual(summary, "true", "Collapsed agent body has no Markdown syntax")
             size(330); try await capture(prefix + "fold-a")
-            _ = try await webviewJS(web, "(()=>{document.querySelector('.amsg').click();document.querySelector('.job .hd').click();return true})()")
+            _ = try await webviewJS(web, "(()=>{document.querySelector('.aline .hd').click();document.querySelector('.job .hd').click();return true})()")
             try await capture(prefix + "fold-b")
-            try await advance(); try await webviewUntil(web, "document.querySelectorAll('.step').length===3&&document.querySelectorAll('.amsg').length===0")
+            try await advance(); try await webviewUntil(web, "document.querySelectorAll('.step').length===3&&document.querySelectorAll('.aline').length===0")
             size(300); try await openRuns(true); try await capture(prefix + "tools")
             return
         }

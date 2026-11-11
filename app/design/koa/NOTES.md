@@ -33,9 +33,16 @@ question controls, is approved but not built yet.
 | `!` runs a command | `bang.html` | "`!` runs a command" |
 | Built-in slash commands | `commands.html` | "Built-in slash commands" |
 | Sessions inside the page | `sessions.html` | "Sessions inside the page" |
+| Markdown in a thinking step | `thinking.html` | "Markdown inside a thinking step" |
+| The foot at narrow widths | `foot.html` | "The foot at narrow widths" |
 
 `working.html` holds the five working-state variants from which the
 user chose; the foot of `composer.html` replaced the chosen one.
+On 2026-11-11 `mockup.html`, `agents.html`, `complete.html`,
+`media.html` and `working.html` got the shipped composer foot of
+`composer.html` (status, model and level, context, cwd; no button)
+and lost their bottom status bar, which the page has not had since
+24b2451e. `composer.html` stays the reference for the foot's states.
 `mockup.html`'s "Composer" and "User message" controls keep earlier
 treatments for reference only.
 
@@ -572,21 +579,22 @@ toggle for the output.
 incoming: ko-pi's `ko-message`, `ko-steer`, `ko-notice` and a
 report) is the user message's block: `--well` fill, radius 8pt,
 padding 6pt 12pt 7pt, with a header line above the text.
-- The header, in the muted prose at .92em: "to @name" (outgoing) or
-  "from @name" (incoming), the @name in the prose font, 600, in the fg
-  (not the terminal font: three fonts in one card were too many,
-  user 2026-11-10; the kind and the time stay in the terminal font as
-  metadata, as a run line's time does); for incoming the relation faint after a "·" (RELATION_TEXT
+- The header, one phrase in the muted prose at .92em (user,
+  2026-11-10; nothing in the header is in the terminal font except
+  the time): `<kind> to|from @<name> <relation>`, as "message to
+  @sidebar-right", "steer from @kido-app parent", "report from
+  @sidebar-right subagent"; the @name in 600 in the fg; the relation
+  one word in the faint tone (`subagent`, `peer`, `parent`; none for
+  ko-pi's own notices); at the right only the time, .8em terminal
+  faint tabular; for incoming the relation faint after a "·" (RELATION_TEXT
   shortened: "your parent", "your subagent", "another agent in this
   session", "a subagent of your subagent"; none for ko-pi's own
-  notices); at the right, before the time, the kind in the faint
-  terminal font at .8em: `task` (a spawn), `message`, `steer`,
+  notices); the kinds: `task` (a spawn), `message`, `steer`,
   `interrupt` (outgoing); `message`, `steer`, `report`, `ended` (a
-  child's end), `notice` (ko-pi's own) (incoming); then the time in
-  tabular digits. No delivery status (user, 2026-11-10: no
-  delivered, queued, sent, spawned): a failure alone shows, in red,
-  in the kind's place ("refused", "no agent named …", "not reported"
-  for an ended child that had not reported). A card splits the run
+  child's end), `notice` (ko-pi's own) (incoming). No delivery status
+  (user, 2026-11-10: no delivered, queued, sent, spawned): a failure
+  takes the kind's place, in red ("refused to @name", "not reported
+  from @name subagent"). A card splits the run
   it sits in.
 - The body is the text as prose. Collapsed (the default), it is one
   line: the first line of the text, cut with an ellipsis (nowrap,
@@ -767,7 +775,7 @@ clicks), narrow; and `questions-reply-slash-light-wide.png` (the TUI's
 labels). Approved by the user; the chips version is built
 (docs/design-koa.md, "Reply annotations").
 
-## `!` runs a command (bang.html; 2026-11-10)
+## `!` runs a command (bang.html; shipped 2026-11-10: 3695fb19, Tab completion 16c79407)
 
 As pi's TUI: a message that starts with `!` is a shell command, not a
 prompt. koa sends pi's `bash` RPC command (docs/rpc-commands.md,
@@ -865,7 +873,7 @@ lightbox, show the hairline (keys go to them); pi exited shows the
 hairline always (the field is disabled). The mockups already show the
 treatment as a static `.focus` class and do not change.
 
-## Built-in slash commands (commands.html; 2026-11-10)
+## Built-in slash commands (commands.html; shipped: 172b8bcc)
 
 koa runs seven of pi's built-ins itself through RPC: `/model`,
 `/thinking`, `/compact`, `/session`, `/copy`, `/export`, `/quit`
@@ -909,7 +917,7 @@ in koa", and the text never reaches the model.
 Renders: `/tmp/koa-shots/commands-<state>-<theme>-<width>.png`, states
 pop, pop-filter, outcomes, picker, session, compact.
 
-## Sessions inside the page (sessions.html; 2026-11-10)
+## Sessions inside the page (sessions.html; shipped: 55094dd9)
 
 `/resume` opens a session picker; `/new` starts a new session (pi's
 `switch_session`, `new_session`). The picker is a card in the dock
@@ -947,3 +955,128 @@ dialog's; the composer under it is inert (text in `--faint`).
 
 Renders: `/tmp/koa-shots/sessions-<state>-<theme>-<width>.png`, states
 pick, pick-all, pick-search, pick-empty, loading, after, confirm.
+
+## Markdown inside a thinking step (thinking.html; shipped: 5e339b57, rendered when the step is expanded)
+
+An expanded thinking step (`.think`) renders its text through the
+reply's Markdown renderer. The rule: the thinking tone stays. The
+whole block is `--muted`; bold is weight alone; code and quotes go a
+shade quieter, not louder; headings are body size; the 260pt scroller
+is the one scroll. The reply's `.prose` rules for `p`, `ul`, `ol`,
+`li`, `blockquote`'s geometry, `a`'s geometry, `hr` and `table`
+apply as they are. What changes, on `.think`:
+
+- `.think`: `font: 1em/1.5 var(--prose); color: var(--muted);
+  white-space: normal` (was pre-wrap); `max-height: 260px; overflow:
+  auto; padding: 0 12px 0 0; margin: 0`. `.think > :first-child
+  { margin-top: 0 }`, `.think > :last-child { margin-bottom: 0 }`.
+- `li::marker`: `--faint`. `strong`: weight 600, colour inherited.
+- `code`: `.92em var(--ko-font-family)`, colour inherited, background
+  `--well` (the reply's inline code has `--well2`), radius 4pt,
+  padding 1pt 5pt.
+- `pre`: `.88em/1.45`, colour inherited, `--well`, 1pt `--hair`,
+  radius 7pt, padding 8pt 10pt, margin .3em 0 .75em, `max-height:
+  none`, `overflow: auto hidden` (horizontal scroll only), no
+  `.lang` label (`display: none`). `pre code`: no background, 1em.
+- `h1`–`h6`: `600 1em/1.35`, colour inherited, margin .8em 0 .3em.
+- `blockquote`: colour `--faint`, bar 2pt `--hair2`, margin .3em 0
+  .75em. `hr`: 1pt `--hair`, margin .6em 0. `table`: .95em, `th`
+  `--faint`, rules `--hair`. `a`: colour inherited, 1pt `--hair2`
+  underline (not the accent).
+
+Renders: `/tmp/koa-shots/thinking-<state>-<theme>-<width>.png`,
+states basic, rich, long.
+
+## The foot at narrow widths (foot.html; shipped: 9b218d82)
+
+Shipped with the 540, 340 and 200 steps below as CSS px of the field container (page.css), plus a 630px step for the extension status that the mockup does not draw.
+
+The composer's foot drops its cells by its own width, a container
+query on `.field` (`container-type: inline-size`), not the window's:
+the field is what the cells must fit, whatever the pane and the
+sidebar do. The pane is the foot plus 74pt (the composer's 24pt and
+the field's 12pt on each side, and the 1pt borders).
+
+- **Full**, foot 540pt and up: state · model · level · context bar,
+  numbers, percent · cwd. Natural widths at 13px: state 106 (its
+  reserved width), separators 1 + 10 each side, model 145 (level 38 of
+  it), context 137 (numbers 63), cwd 100.
+- **Step 1**, under 540: the thinking level, the cwd's leading
+  directories and the context numbers go (`.lvl`, `.cwd .lead`,
+  `.ctxc .n` display none; `.ctxc` min-width 44px + 6px + 3ch). The
+  bar and the percent stay, "kido" stays.
+- **Step 2**, under 340: the model, its separator, the gap and the
+  cwd go (`.model`, `.model + .sep`, `.gap`, `.cwd`); the context takes
+  `margin-left: auto`: the state at the left, the context at the
+  right.
+- **Step 3**, under 200: the context and the state's separator go
+  (`.ctxc`, `.st + .sep`); the state's reserved `min-width` is
+  released (0, overflow hidden, its text ellipsized), so the widest
+  texts ("working 12m 34s", "completing…") fit a 200pt foot and
+  ellipsize under it.
+- The cwd is `flex: 0 1 auto; min-width: 0; max-width: 40cqw` with an
+  ellipsis at its end, in every step, so a deep directory never pushes
+  the other cells; the gap has no min-width (`padding: 0 5px`).
+- **Reachable**: `/model` and `/thinking` open the pickers the hidden
+  cell opened; `/session` lists the model and the context numbers;
+  the cwd is the pane's title in the sidebar and in `/session`.
+- The state texts of every mode go through the same steps with the
+  cell's reserved width intact in steps 1 and 2: "run", "run, quiet",
+  "completing…" with the spinner, "compacting Ns", "working Ns".
+
+Renders: `/tmp/koa-shots/foot-<row>-<theme>.png`, rows idle, run,
+quiet, comp, compact, work, cwd; each row the foot at 600, 480, 300,
+200 and 150pt. Measured: no foot overflows at any width.
+
+## refine.html: the width, the user message, agent lines, @names (2026-11-11, proposals)
+
+Four refinements the user asked for, on the shipped page. Decided
+2026-11-11: the width (1); the user message is F, solid accent (2),
+with its dark rule below; the agent line without the chevron, its
+lead "kind to @name relation" one run of text with ordinary spaces
+(3); the links (4). Every item's time ends on the transcript's text
+edge: the user block's time sits `--pad` in from the block's edge,
+the agent line's and the run's at the edge.
+
+**1 · The composer's width.** Shipped: the transcript's text is 680pt
+(720 − 2×20), the user block 704 (−12/+12 of margin), the composer's
+field 672 (720 − 2×24) and its text 648. Proposed: the composer takes
+`--side-pad` − `--pad` (8pt; 4pt narrow) of padding and the field
+`--pad` (12pt; 8pt narrow) of its own, so the field is the user
+block's width and its text edge is the assistant's. `.dialogs` and
+`.exited` take the same 8pt. One rule in page.css; nothing moves in
+the transcript.
+
+**2 · The user message**, six treatments, a picker on the page:
+A the shipped 18% accent tint; B a bubble at the right, at most 82%
+wide, the time under it; C no fill, a 2pt accent bar, the text on
+the transcript's text edge; D the composer's own card (background,
+`--hair2` hairline, 9pt radius, a 1pt shadow at 8%), the time faint;
+E no block, the text at 600 and 1.04em, a `--hair` rule under the
+message; F the accent as the fill and `--ko-bg` as ink in a light
+theme; in a dark theme (`--ko-appearance: dark`) the fill is the
+accent at 82% over `--ko-bg` and the ink is white, because the dark
+themes' accent is darker and the page's background on it does not
+read. The quote, the code and the paths take the ink at 80%, 18%
+and 80%; `pre code` keeps no background.
+
+**3 · A message between agents is one line**: `kind` to|from
+`@name` relation, the first line of the body ellipsized in the muted
+tone, the time at the right on the text edge; .95em prose like a
+run line, without a chevron (the picker shows it with one). The lead
+is one run of text with ordinary spaces, not flex items with gaps;
+an 8pt gap separates it from the body's start. A click opens the body under the line, 16pt in with a
+`--hair` left rule like a run's steps, and hides the ellipsized
+start; a second click closes it. A refused call or a failed spawn
+colours the kind, the name and the start red. This replaces
+agents.html's card: no fill, no two-line header.
+
+**4 · `@name` links to the agent's pane.** Every name of an agent
+(an agent line's, a `@name` in the answer's or the user's prose, a
+`list_agents` step) is an `<a class="who">`: 600, the text's colour,
+no underline; hover is the accent with a 1pt underline at 45% and
+the hand pointer; the title is "Focus the pane of @name". A click
+asks the host to focus that pane, as a sidebar click does. koa links
+a `@name` in prose only when the name is in ko-pi's agent list at
+render time; otherwise it stays text. An ended agent keeps 600 in
+the muted tone and is no link.

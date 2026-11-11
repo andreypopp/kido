@@ -6,6 +6,7 @@ import SnapshotTesting
 import QuickLookUI
 import KoModel
 import KoClient
+import SidebarFeed
 @testable import Kido
 
 @MainActor private final class PreviewTestWindow: NSWindow {
@@ -114,6 +115,49 @@ extension VisualTests {
         try await click("javascript:void(0)", "", true)
         _ = try await webviewJS(web, "true")
         XCTAssertEqual(opened.map(\.absoluteString), ["https://example.com/a", "https://example.com/b"])
+    }
+
+    func testWebviewFocusPane() async throws {
+        let toy = try WebviewToy(path: directory.appendingPathComponent("webview.sock").path)
+        _ = try await webviewStart(toy: toy)
+        let other = directory.appendingPathComponent("other.json")
+        try Data(#"{"command":{"type":"shell","command":"exec cat"}}"#.utf8).write(to: other)
+        let target = try JSONDecoder().decode(Snapshot.Position.self, from: Data(try await ko(["api", "-X", "POST", "--input", other.path, "/panes"], dir: directory.path).utf8))
+        let owner = WindowOwner(host: .local, runtime: runtime, start: false)
+        owner.testServerDir = directory.path; owner.start()
+        defer { owner.close() }
+        try await wait("focus owner page") { owner.testSession?.activePane?.webviewView?.browser.isLoading == false && owner.projection.placements[target.pane] != nil }
+        let pane = try XCTUnwrap(owner.testSession?.activePane), view = try XCTUnwrap(pane.webviewView), web = view.browser
+        let key = PreviewTestWindow(contentRect: NSRect(x: -10000, y: -10000, width: 600, height: 400), styleMask: [.borderless], backing: .buffered, defer: false)
+        key.isReleasedWhenClosed = false; key.delegate = owner; key.contentView = view; key.responder = web
+        defer { key.key = false; key.contentView = nil; key.close() }
+        var focused: [Snapshot.Position] = []
+        view.visualFocus = { focused.append($0) }
+        try await webviewEqual(web, "typeof window.ko.focus", "\"function\"")
+        _ = try await webviewJS(web, "(()=>{ko.focus('\(target.pane)');return true})()")
+        key.key = true
+        _ = try await webviewJS(web, """
+        (()=>{
+          webkit.messageHandlers.koFocus.postMessage({document:'wrong',pane:'\(target.pane)'});
+          ko.focus('pane_9999');ko.focus('not a pane');
+          ko.focus('\(target.pane)');
+          return true;
+        })()
+        """)
+        try await wait("one focus") { !focused.isEmpty }
+        _ = try await webviewJS(web, "true")
+        XCTAssertEqual(focused, [target])
+        key.responder = nil
+        _ = try await webviewJS(web, "(()=>{ko.focus('\(target.pane)');return true})()")
+        _ = try await webviewJS(web, "true")
+        key.responder = web
+        _ = try await webviewJS(web, "(()=>{ko.focus('\(target.pane)');return true})()")
+        try await wait("focus after the unfocused page") { !focused.isEmpty && focused.count >= 2 }
+        _ = try await webviewJS(web, "true")
+        XCTAssertEqual(focused, [target, target], "a page that is not the first responder asks for nothing")
+        view.visualFocus = nil
+        _ = try await webviewJS(web, "(()=>{ko.focus('\(target.pane)');return true})()")
+        try await wait("focus selects the pane") { owner.snapshot?.client.pane == target.pane }
     }
 
     func testWebviewNativePreview() async throws {

@@ -1,6 +1,7 @@
 import AppKit
 import WebKit
 import KoModel
+import SidebarFeed
 
 @MainActor private final class WebviewBridge: NSObject, WKURLSchemeHandler, WKScriptMessageHandler {
     weak var owner: WebviewPaneView?
@@ -62,6 +63,7 @@ final class WebviewPaneView: NSView, WKNavigationDelegate, WKUIDelegate {
     private var pendingDocument: (navigation: WKNavigation, generation: String)?
     private var theme = ""
     #if KIDO_VISUAL
+    var visualFocus: ((Snapshot.Position) -> Void)?
     var visualPreview: ((PreviewSource, NSRect) -> Void)?
     var visualPreviewLimit = Upload.fileLimit
     var visualFeedScript: String?
@@ -116,6 +118,7 @@ final class WebviewPaneView: NSView, WKNavigationDelegate, WKUIDelegate {
         config.setURLSchemeHandler(bridge, forURLScheme: "ko")
         config.userContentController.add(bridge, contentWorld: .page, name: "koSocket")
         config.userContentController.add(bridge, contentWorld: .page, name: "koPreview")
+        config.userContentController.add(bridge, contentWorld: .page, name: "koFocus")
         browser = WebviewBrowser(frame: .zero, configuration: config)
         super.init(frame: .zero)
         // WebKit's base background overwrites the layer colour before the page paints.
@@ -210,6 +213,7 @@ final class WebviewPaneView: NSView, WKNavigationDelegate, WKUIDelegate {
         bridge.owner = nil
         browser.configuration.userContentController.removeScriptMessageHandler(forName: "koSocket", contentWorld: .page)
         browser.configuration.userContentController.removeScriptMessageHandler(forName: "koPreview", contentWorld: .page)
+        browser.configuration.userContentController.removeScriptMessageHandler(forName: "koFocus", contentWorld: .page)
         browser.navigationDelegate = nil
         browser.uiDelegate = nil
         browser.removeFromSuperview()
@@ -459,7 +463,7 @@ final class WebviewPaneView: NSView, WKNavigationDelegate, WKUIDelegate {
         for (index, color) in colors.palette.enumerated() { properties["--ko-color-\(index)"] = rgb(color) }
         let value: [String: Any] = ["pane": pane.pane.description, "local": (pane.window?.delegate as? WindowOwner)?.isLocalProgram(pane) == true, "theme": properties, "cell": ["width": pane.cell.width, "height": pane.cell.height]]
         let json = String(data: try! JSONSerialization.data(withJSONObject: value, options: [.sortedKeys]), encoding: .utf8)!
-        return "(()=>{const ko=\(json);ko.preview=(url,rect)=>window.__koPreview(new URL(url,location.href).href,rect);window.ko=ko;const apply=()=>{for(const [k,v] of Object.entries(ko.theme))document.documentElement.style.setProperty(k,v)};if(document.documentElement)apply();else {const observer=new MutationObserver(()=>{if(document.documentElement){apply();observer.disconnect()}});observer.observe(document,{childList:true,subtree:true})}})()"
+        return "(()=>{const ko=\(json);ko.preview=(url,rect)=>window.__koPreview(new URL(url,location.href).href,rect);ko.focus=(pane)=>window.__koFocus(pane);window.ko=ko;const apply=()=>{for(const [k,v] of Object.entries(ko.theme))document.documentElement.style.setProperty(k,v)};if(document.documentElement)apply();else {const observer=new MutationObserver(()=>{if(document.documentElement){apply();observer.disconnect()}});observer.observe(document,{childList:true,subtree:true})}})()"
     }
 
     private func discardDrops(_ files: [[String: Any]]) {
@@ -516,6 +520,16 @@ final class WebviewPaneView: NSView, WKNavigationDelegate, WKUIDelegate {
         drain()
     }
 
+    private func focusPane(_ data: [String: Any]) {
+        guard pendingDocument == nil, let raw = data["pane"] as? String, let id = PaneID(ko: raw),
+              let window, window.isKeyWindow, window.firstResponder === browser,
+              let owner = window.delegate as? WindowOwner, let target = owner.projection.placements[id]?.position else { return }
+        #if KIDO_VISUAL
+        if let visualFocus { visualFocus(target); return }
+        #endif
+        owner.perform(.jump(target))
+    }
+
     private func preview(_ data: [String: Any]) {
         guard pendingDocument == nil, let raw = data["url"] as? String, let url = URL(string: raw), allowed(url),
               let numbers = data["rect"] as? [String: NSNumber], ["x", "y", "width", "height"].allSatisfy({ numbers[$0].map { CFGetTypeID($0) != CFBooleanGetTypeID() } == true }),
@@ -542,6 +556,7 @@ final class WebviewPaneView: NSView, WKNavigationDelegate, WKUIDelegate {
         guard !stopped, message.frameInfo.isMainFrame, allowed(message.frameInfo.request.url),
               let data = message.body as? [String: Any], data["document"] as? String == generation else { return }
         if message.name == "koPreview" { preview(data); return }
+        if message.name == "koFocus" { focusPane(data); return }
         guard message.name == "koSocket", let id = data["id"] as? Int, id >= 0, let rawAction = data["action"] as? String, let action = SocketAction(rawValue: rawAction) else { return }
         let generation = generation
         switch action {
@@ -597,6 +612,7 @@ final class WebviewPaneView: NSView, WKNavigationDelegate, WKUIDelegate {
     (()=>{
       const bridge=window.webkit.messageHandlers.koSocket, sockets=new Map();let serial=0;
       const documentID='__KO_DOCUMENT__',MAX_PENDING_BYTES=1048576,MAX_PENDING_SENDS=256;
+      window.__koFocus=(pane)=>window.webkit.messageHandlers.koFocus.postMessage({document:documentID,pane:String(pane)});
       window.__koPreview=(url,rect)=>window.webkit.messageHandlers.koPreview.postMessage({document:documentID,url,rect:{x:rect.x,y:rect.y,width:rect.width,height:rect.height}});
       const post=(s,action,args={})=>bridge.postMessage({document:documentID,id:s._id,action,...args});
       class Socket extends EventTarget {
