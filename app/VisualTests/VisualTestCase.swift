@@ -79,7 +79,6 @@ let rawScript = "stty raw -echo; printf '\\033]2;raw-ready\\007'; exec /bin/cat"
 
     func sidebarSnapshot(_ list: SidebarView, _ name: String, file: StaticString = #filePath, testName: String = #function) {
         let window = list.window!
-        if list.remoteHost == nil { list.abbreviate = fixtureAbbreviate }
         window.layoutIfNeeded()
         list.layoutSubtreeIfNeeded()
         list.visualTable.tile()

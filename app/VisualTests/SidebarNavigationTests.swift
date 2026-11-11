@@ -368,7 +368,7 @@ import XCTest
         let shownAt = ProcessInfo.processInfo.systemUptime
         list.show(changed)
         let index = try XCTUnwrap(list.visualRows.firstIndex { $0.id == id })
-        XCTAssertEqual(list.visualRows[index].second, .directory(path: fixtureHome + "/Workspace/kido", destination: nil))
+        XCTAssertEqual(list.visualRows[index].second, .none)
         XCTAssertEqual(list.visualTable.rect(ofRow: index).height, 42)
         try await wait("caption deadline") { list.visualRows[index].second == .activity("Delayed caption") }
         XCTAssertGreaterThanOrEqual(ProcessInfo.processInfo.systemUptime - shownAt, 0.2)
@@ -377,11 +377,11 @@ import XCTest
         list.show(initial)
         XCTAssertEqual(list.visualRows[index].second, .activity("Delayed caption"))
         XCTAssertEqual(list.visualTable.rect(ofRow: index).height, 42)
-        try await wait("caption hide deadline") { list.visualRows[index].second == .directory(path: fixtureHome + "/Workspace/kido", destination: nil) }
+        try await wait("caption hide deadline") { list.visualRows[index].second == .none }
         XCTAssertGreaterThanOrEqual(ProcessInfo.processInfo.systemUptime - hiddenAt, 0.2)
         XCTAssertEqual(list.visualTable.rect(ofRow: index).height, 42)
         list.show(changed)
-        XCTAssertEqual(list.visualRows[index].second, .directory(path: fixtureHome + "/Workspace/kido", destination: nil))
+        XCTAssertEqual(list.visualRows[index].second, .none)
         list.show(nil)
         list.show(changed)
         XCTAssertEqual(list.visualRows[index].second, .activity("Delayed caption"), "identical reconnect snapshot must show its caption immediately")

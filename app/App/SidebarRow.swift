@@ -136,9 +136,7 @@ final class SidebarCell: NSTableCellView, NSTextFieldDelegate {
     private(set) var visualClockDirtyRect = NSRect.zero
     #endif
     var terminalDark = false
-    var abbreviate: (String) -> String = { $0 }
-    var remoteHost: String?
-    private var second = (text: "", dim: false)
+    private var second = ""
     private var runtimeText: NSAttributedString?
     let close = IconButton("xmark", "Close pane", size: 8, hoverStyle: .close)
     let children: SidebarChildren
@@ -196,7 +194,7 @@ final class SidebarCell: NSTableCellView, NSTextFieldDelegate {
         setAccessibilityRole(.staticText)
         toolTip = row.runtime?.failure
         runtimeText = row.runtime.map(Self.suffixText)
-        setAccessibilityLabel([row.title, row.runtime.map { "runtime " + $0.name }, second.text, folded, row.indicatorDescription].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: ", "))
+        setAccessibilityLabel([row.title, row.runtime.map { "runtime " + $0.name }, second, folded, row.indicatorDescription].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: ", "))
         setAccessibilityValue(nil)
         updateClock(now: now)
         needsLayout = true
@@ -318,9 +316,8 @@ final class SidebarCell: NSTableCellView, NSTextFieldDelegate {
             let tailEnd = children.isHidden ? bounds.width - 5 : children.frame.minX - 6
             let tailRect = NSRect(x: leading, y: row.tailY, width: max(0, tailEnd - leading), height: 14)
             if tailRect.width >= 16, dirtyRect.intersects(tailRect) {
-                let ink = second.dim ? Chrome.sidebarDirectory : Chrome.inkSecondary
-                (second.text as NSString).draw(in: tailRect,
-                                          withAttributes: [.font: fonts.tail, .foregroundColor: ink, .paragraphStyle: paragraph])
+                (second as NSString).draw(in: tailRect,
+                                          withAttributes: [.font: fonts.tail, .foregroundColor: Chrome.inkSecondary, .paragraphStyle: paragraph])
             }
             (clock as NSString).draw(at: clockRect.origin,
                                      withAttributes: [.font: fonts.clock, .foregroundColor: Chrome.inkSecondary])
@@ -344,16 +341,13 @@ extension SidebarRow.Status {
 }
 
 extension SidebarCell {
-    fileprivate func secondLine(_ line: SidebarRow.SecondLine, status: SidebarRow.Status) -> (text: String, dim: Bool) {
-        let (text, dim): (String, Bool) = switch line {
-        case .none: ("", false)
-        case .activity(let text): (text, false)
-        case .directory(let path, let destination):
-            (destination ?? remoteHost).map { ("\($0):\(path)", true) } ?? (abbreviate(path), true)
-        case .record(let msg):
-            (msg.flatMap { $0.isEmpty ? nil : $0 } ?? status.recordWord, false)
+    fileprivate func secondLine(_ line: SidebarRow.SecondLine, status: SidebarRow.Status) -> String {
+        let text: String = switch line {
+        case .none: ""
+        case .activity(let text): text
+        case .record(let msg): msg.flatMap { $0.isEmpty ? nil : $0 } ?? status.recordWord
         }
-        return (text.split(whereSeparator: \.isNewline).joined(separator: " "), dim)
+        return text.split(whereSeparator: \.isNewline).joined(separator: " ")
     }
 
     // The runtime's name after the title, with its state when it is not up.

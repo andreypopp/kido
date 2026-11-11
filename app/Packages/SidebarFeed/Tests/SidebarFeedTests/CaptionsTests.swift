@@ -8,7 +8,7 @@ import Testing
     var captions = SidebarCaptions()
     #expect(captions.apply(rows("busy"), now: 0, delay: 1)[1].second == .activity("busy"))
     #expect(captions.apply(rows(""), now: 0.1, delay: 1)[1].second == .activity("busy"))
-    #expect(captions.apply(rows(""), now: 1.2, delay: 1)[1].second == .directory(path: "/work", destination: nil))
+    #expect(captions.apply(rows(""), now: 1.2, delay: 1)[1].second == .none)
 }
 
 @Test func captionTransitions() {

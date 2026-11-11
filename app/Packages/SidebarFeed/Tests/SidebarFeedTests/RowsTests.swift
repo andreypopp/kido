@@ -48,17 +48,17 @@ private func programs(_ rows: [SidebarRow]) -> [String] { rows.filter { if case 
     #expect(content.map(\.leading) == [5, 20, 20])
 }
 
-@Test func secondLineIsActivityElseDirectory() {
+@Test func secondLineIsActivityElseNone() {
     let report = report(working(), msg: "Building")
     let cases: [(Lifecycle, SidebarRow.SecondLine)] = [
         (agent(working(), msg: "Thinking"), .activity("Thinking")),
-        (agent(working()), .directory(path: "/work", destination: nil)),
-        (terminal(), .directory(path: "/work", destination: nil)),
-        (terminal(running(), report: report), .directory(path: "/work", destination: nil)),
-        (remote(.terminal(.init(interactive: true, status: shell()))), .directory(path: "/work", destination: "alice@devbox")),
+        (agent(working()), .none),
+        (terminal(), .none),
+        (terminal(running(), report: report), .none),
+        (remote(.terminal(.init(interactive: true, status: shell()))), .none),
         (.ended(.exited(.init(code: 2))), .activity("exited with code 2")),
-        (.ended(.exited(.init(code: 0))), .directory(path: "/work", destination: nil)),
-        (.lingering(.exited(.init(code: 2))), .directory(path: "/work", destination: nil))
+        (.ended(.exited(.init(code: 0))), .none),
+        (.lingering(.exited(.init(code: 2))), .none)
     ]
     for (lifecycle, expected) in cases {
         let rows = sidebarRows(makeSnapshot([pane(0, cwd: "/work", lifecycle: lifecycle)]))
@@ -375,10 +375,9 @@ func heightAndPaddingMatrix(_ nested: Bool, _ multi: Bool) throws {
            case .item(let item) = snapshot.sessions[0].nodes[0] {
             #expect(item.lastCommand == exit.last)
         }
-        let isSSH = if case .live(let kind) = lifecycle, case .ssh = kind { true } else { false }
         #expect(row.status == status)
         #expect(row.indicatorDescription == description)
-        #expect(row.second == activity.map { .activity($0) } ?? .directory(path: "", destination: isSSH ? "alice@devbox" : nil))
+        #expect(row.second == activity.map { .activity($0) } ?? .none)
         #expect(sidebarWindows(snapshot, projection: PaneProjection(snapshot), session: SessionID(number: 0), surviving: [WindowID(number: 0)]).statuses[WindowID(number: 0)] == status.mergingTabStatus(.quiet))
     }
 }

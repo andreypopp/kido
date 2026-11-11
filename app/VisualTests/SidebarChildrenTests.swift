@@ -31,7 +31,6 @@ private extension PaneView {
         let runtime = try XCTUnwrap(GhosttyRuntime(pasteboard: board))
         let owner = WindowOwner(host: .local, runtime: runtime, start: false)
         owner.testServerDir = dir
-        owner.sidebar.list.abbreviate = { _ in "~/Workspace/kido" }
         SidebarView.visualNow = 0
         runtime.onConfigChange = { [weak owner] in owner?.updateAppearance() }
         runtime.onConfigReload = { [weak owner] font in owner?.testSession?.reloadConfig(font: font) }
@@ -61,7 +60,7 @@ private extension PaneView {
         SidebarView.visualNow = sidebarChildrenNow
         defer { SidebarView.visualNow = previousNow }
         enum Scenario: CaseIterable {
-            case collapsed, expanded, narrow, recordsCollapsed, recordsExpanded, waitCleared, sixPlus, singleIdle, ellipsis, directories, directoryNarrow, remoteWindow, singleLong, narrowNine, paneWaitFolded, paneWaitExpanded, recordWaitFolded, recordWaitExpanded, closeHover, countOnly, summaryAbsent
+            case collapsed, expanded, narrow, recordsCollapsed, recordsExpanded, waitCleared, sixPlus, singleIdle, ellipsis, directories, directoryNarrow, singleLong, narrowNine, paneWaitFolded, paneWaitExpanded, recordWaitFolded, recordWaitExpanded, closeHover, countOnly, summaryAbsent
             var configuration: (name: String, records: Bool, width: Int) {
                 switch self {
                 case .collapsed: ("stress-collapsed", false, 292)
@@ -75,7 +74,6 @@ private extension PaneView {
                 case .ellipsis: ("activity-ellipsis", false, 292)
                 case .directories: ("directories", false, 292)
                 case .directoryNarrow: ("directory-narrow-circles", false, 150)
-                case .remoteWindow: ("remote-window-directories", false, 292)
                 case .singleLong: ("single-long-name", false, 236)
                 case .narrowNine: ("narrow-nine-hidden", false, 80)
                 case .countOnly: ("deep-count-only", false, 96)
@@ -121,7 +119,7 @@ private extension PaneView {
                     if scenario == .countOnly || scenario == .summaryAbsent {
                         snapshot = fixtureSnapshot(window: 101, pane: 101, [("main", [fixtureNode(100, "Root", piLifecycle(), children: [fixtureNode(101, "Ancestor", piLifecycle(), children: snapshot.sessions[0].nodes)])])])
                     }
-                case .directories, .remoteWindow:
+                case .directories:
                     let ssh = Lifecycle.live(.ssh(.init(destination: "dev@devbox", pane: .terminal(.init(interactive: true, status: .init(phase: .idle(.init())))))))
                     snapshot = fixtureSnapshot(window: 99, pane: 99, [("main", [
                         .item(fixtureItem(1, cwd: "/Users/dev/Workspace/kido", "Terminal", shellLifecycle())),
@@ -147,7 +145,6 @@ private extension PaneView {
                     snapshot.client = .init(session: .init(number: 0), window: .init(number: 458), pane: .init(number: 937))
                 case .collapsed, .narrow, .recordsExpanded, .closeHover: break
                 }
-                if scenario == .remoteWindow { list.remoteHost = "devbox" }
                 list.show(snapshot)
                 if scenario == .recordsCollapsed {
                     XCTAssertEqual(list.visualRows.compactMap { if case .program = $0.id { $0.title } else { nil } }, ["Investigate sidebar layout", "Approve test command"])

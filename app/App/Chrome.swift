@@ -15,7 +15,6 @@ enum Chrome {
     static var errorText: NSColor { .systemRed }
     static var ink: NSColor { .labelColor }
     static var inkSecondary: NSColor { .secondaryLabelColor }
-    static var sidebarDirectory: NSColor { inkSecondary.withAlphaComponent(inkSecondary.alphaComponent * 0.8) }
     static var inkTertiary: NSColor { .tertiaryLabelColor }
     static var hairline: NSColor { .separatorColor }
     static var defaultPaper: NSColor { .windowBackgroundColor }

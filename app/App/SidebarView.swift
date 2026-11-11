@@ -64,8 +64,6 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSM
 
     private var items: [SidebarRow] = []
     // A runtime's swatch takes its colour for the terminal's light or dark theme, not the sidebar's own.
-    var abbreviate: (String) -> String = { $0 } { didSet { table.reloadData() } }
-    var remoteHost: String? { didSet { table.reloadData() } }
     var terminalDark = false { didSet { if terminalDark != oldValue { table.reloadData() } } }
     private func entry(_ row: Int) -> SidebarRow? { items.indices.contains(row) ? items[row] : nil }
 
@@ -612,8 +610,6 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSM
             }
         }
         cell.terminalDark = terminalDark
-        cell.abbreviate = abbreviate
-        cell.remoteHost = remoteHost
         cell.configure(item, now: clockNow)
         cell.close.invoke = { [weak self] in self?.closePane(item) }
         cell.addWindow.invoke = { [weak self] in self?.newWindow(item.id.session) }

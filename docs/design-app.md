@@ -1888,11 +1888,7 @@ children](#folded-children)). The second line of a pane with a live
 agent and a caption is that caption, and of an Ended pane of a failure
 its cause, in the secondary ink; every other pane (a Terminal, an app,
 an ssh pane, a job, an agent without a caption, a completed or lingering
-pane) shows its cwd, the feed's pane `cwd`, in the
-secondary ink at 80%. A local cwd under the Mac's home starts with `~`;
-a remote pane's cwd is `destination:path`, with the ssh destination of
-an ssh pane, else the window's host. The app does not know a remote home,
-so a remote path keeps its form. A record row shows its `msg`, else its
+pane) has an empty second line. A record row shows its `msg`, else its
 state word: working, needs your input, error, done or idle. The weight marks selection, not
 kind: only the focused pane's row and the keyboard-selected row have a semibold
 title, and every other title is regular, whatever the pane runs. The status

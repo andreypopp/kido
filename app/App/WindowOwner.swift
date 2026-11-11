@@ -290,7 +290,6 @@ private class AlertEscape: NSView {
         Notifier.shared.register(self)
         window.isReleasedWhenClosed = false
         window.title = host.label
-        if case .remote(let destination) = host { sidebar.list.remoteHost = destination } else { sidebar.list.abbreviate = runtime.abbreviate }
         window.collectionBehavior = .fullScreenPrimary
         window.contentMinSize = Sidebar.minSize
         let width = background ? 292 : UserDefaults.standard.object(forKey: "nativeSidebarWidth") as? Double ?? 292

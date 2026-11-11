@@ -27,7 +27,6 @@ public struct SidebarRow: Equatable, Sendable {
     public enum SecondLine: Equatable, Sendable {
         case none
         case activity(String)
-        case directory(path: String, destination: String?)
         case record(msg: String?)
     }
     public enum Kind: Equatable, Sendable {
@@ -134,17 +133,13 @@ extension Item {
         }
     }
 
-    var destination: String? {
-        if case .live(let kind) = lifecycle, case .ssh(let ssh) = kind { ssh.destination } else { nil }
-    }
-
     var second: SidebarRow.SecondLine {
         let shown: String = switch lifecycle {
         case .live: agent == nil ? "" : caption
         case .ended: caption
         case .lingering: ""
         }
-        return shown.isEmpty ? .directory(path: pane.cwd, destination: destination) : .activity(shown)
+        return shown.isEmpty ? .none : .activity(shown)
     }
 
     var caption: String {

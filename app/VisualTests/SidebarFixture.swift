@@ -6,7 +6,6 @@ import PaneGeometry
 // The sidebar tree of a live session list: five sessions, nested child panes, window groups.
 
 let fixtureHome = "/Users/dev"
-func fixtureAbbreviate(_ path: String) -> String { path.hasPrefix(fixtureHome + "/") ? "~" + path.dropFirst(fixtureHome.count) : path }
 
 let fixtureSince = 1_791_131_000_000_000_000
 

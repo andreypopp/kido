@@ -480,14 +480,14 @@ The mockup's "Rows" picker (`rows=auto`, the default; `chevrons` is
 the shipped design) shows two changes.
 
 - **Every row is two lines** (42pt): the title, and under it the
-  agent's status (its `tail`, what `set_status` set) or, when the
-  agent has none, its cwd; a Terminal, an app, an ssh pane and a job
-  show their cwd. The cwd line is the activity's 11pt in the muted
-  tone at 80%, home as `~`, a remote pane as `host:path`. A Claude
+  agent's status (its `tail`, what `set_status` set). A pane without
+  a status, and every Terminal, app, ssh pane and job, has an empty
+  second line (user, 2026-11-11: no cwd there, it is too noisy; an
+  empty line is fine). An ended failure's second line is its cause
+  ("exited with code 2", the signal, the start failure). A Claude
   Code record row shows its `msg`; a record without one shows its
-  state word (working, needs your input, error, done, idle; user,
-  2026-11-11).
-  The folded-children circles keep their place at the right of the
+  state word (working, needs your input, error, done, idle). The
+  folded-children circles keep their place at the right of the
   second line; the text ellipsizes before them.
 - **No chevrons.** A row's children show when the row is focused,
   or when the focused pane is one of its descendants (so a focused
@@ -497,9 +497,6 @@ the shipped design) shows two changes.
   records, an unfocused one folds them. Left and Right do nothing;
   Cmd-Up and Cmd-Down still step the hierarchy. With the chevron
   slot gone, the text starts at the row's 5pt padding.
-
-The cwd comes from the feed's pane row (`cwd`); the mockup derives
-it from the session for its fixtures.
 
 ## Approved sidebar geometry
 
