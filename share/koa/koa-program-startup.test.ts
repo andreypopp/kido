@@ -81,23 +81,37 @@ test('resume selects before the browser, cancels, and reports a broken picker', 
     const closed = once(child, 'close');
     c.after(async () => { if (child.exitCode === null && child.signalCode === null) child.kill('SIGTERM'); await closed; for (const socket of sockets) socket.destroy(); });
     let output = ''; child.stdout.on('data', bytes => { output += bytes; }); child.stderr.on('data', bytes => { output += bytes; });
-    const [gate] = await Promise.race([connected, closed.then(() => { throw new Error(output); })]);
+    const deadline = Date.now() + 7500;
+    const within = async <T,>(what: string, work: Promise<T>): Promise<T> => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      try {
+        return await Promise.race([work, new Promise<never>((_, reject) => {
+          timer = setTimeout(() => reject(new Error(`deadline waiting for ${what}`)), Math.max(0, deadline - Date.now()));
+        })]);
+      } catch (error) {
+        const fakeLog = await readFile(log, 'utf8').catch(error => String(error));
+        throw new Error(`${what}: ${error}\nChild output:\n${output}\nFake log:\n${fakeLog}`);
+      } finally { clearTimeout(timer); }
+    };
+    const [gate] = await within('picker connection', Promise.race([connected, closed.then(() => { throw new Error(output); })]));
     assert.deepEqual((await readLog()).map(record => record.type), ['picker']);
     assert.doesNotMatch(output, /koa: http:/);
     await assert.rejects(readFile(urls), { code: 'ENOENT' });
     gate.end(item.gate);
     if (item.gate === 'signal') child.kill('SIGTERM');
     if (item.gate === 'skip' || item.gate.startsWith('{"type":"selected"')) {
-      await pollUntil(async () => (await readLog()).some(record => record.type === 'get_state'));
+      await within('pi get_state', pollUntil(async () => (await readLog()).some(record => record.type === 'get_state'), 2000, 'pi get_state'));
       const argv = (await readLog()).find(record => record.type === 'argv').args;
       const expected = [...pass];
       if (item.gate !== 'skip') expected.splice(expected.indexOf('--'), 0, '--session', chosen);
       assert.deepEqual(argv.slice(argv.indexOf('--harness') + 2), expected);
-      await pollUntil(async () => { try { return (await readFile(urls, 'utf8')).startsWith('http:'); } catch { return false; } });
+      await within('browser URL log', pollUntil(async () => { try { return (await readFile(urls, 'utf8')).startsWith('http:'); } catch { return false; } }, 2000, 'browser URL log'));
       const base = output.match(/koa: (http:\/\/127\.0\.0\.1:\d+\/)/)?.[1]; assert.ok(base, output);
-      await fetch(base + 'prompt', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ sessionId: 'fake', text: 'exit', mode: 'prompt', attachments: [] }) });
+      const response = await within('exit prompt response', fetch(base + 'prompt', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ sessionId: 'fake', text: 'exit', mode: 'prompt', attachments: [] }) }));
+      const body = await within('exit prompt body', response.text());
+      assert.equal(response.status, 200, `${body}\nChild output:\n${output}\nFake log:\n${await readFile(log, 'utf8')}`);
     }
-    assert.equal((await closed)[0], item.code, output);
+    assert.equal((await within('koa close after picker result and exit prompt', closed))[0], item.code, output);
     assert.match(output, item.output);
     if (item.gate === 'signal') {
       assert.ok((await readLog()).some(record => record.type === 'picker_signal' && record.signal === 'SIGTERM'));
