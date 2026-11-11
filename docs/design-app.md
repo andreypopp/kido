@@ -1818,7 +1818,7 @@ Command-T.
 new-window plus; hovering brightens only its icon. Sessions do not fold.
 Each pane's child-window trees immediately follow that pane, before its
 next sibling; drawn order and navigation share the row-model traversal.
-The rows under a pane are folded by default ([Folded children](#folded-children)).
+The rows under a pane show only while the pane or one of its descendants is focused ([Folded children](#folded-children)).
 OSC 7501 non-root records follow their pane before its child windows, ordered
 by slash components in UTF-8 byte order. A record row is indented one level
 under its pane, plus one level for each ancestor id (a slash prefix) that is
@@ -1831,8 +1831,7 @@ parent's seen suppression for done/error) and drawn through the same row
 path as every other row; there is no separate record view. A record differs
 from a child-window agent row only in having no @ prefix, and
 in being display-only: its body is never a navigation, click, hover or
-selection target, and arrow navigation skips it; only its chevron and
-its folded children's circles take clicks ([Folded children](#folded-children)).
+selection target, and arrow navigation skips it.
 
 Hovering a pane row's status-indicator slot, the 12pt square of the
 trailing column, replaces the indicator with a 12pt × close button; the rest of the row has no hover
@@ -1874,23 +1873,33 @@ when the owner has no current ko window or is not connected: a
 connecting, down, mismatch or refused window. The Window and Session
 menus' items are disabled without a current session or while the owner
 cannot navigate.
-Captions use a display-only 200ms debounce per row. New text must remain
-stable for 200ms; empty text must persist for 200ms before the old caption
-is hidden. The first snapshot after launch or reconnect shows captions
-immediately. Row height and accessibility use the displayed caption. One
-timer serves the next pending deadline; removed rows lose their state.
+Second lines use a display-only 200ms debounce per row. A new line must
+remain stable for 200ms before it replaces the old one, so a caption that
+comes and goes does not flicker between it and the cwd. The first snapshot
+after launch or reconnect shows second lines immediately. Accessibility
+uses the displayed line. One timer serves the next pending deadline;
+removed rows lose their state.
 
-All pane and program rows are 28pt single-line or 42pt with a second line,
-with 5pt vertical padding: the second line holds the caption, the circles
-of folded children ([Folded children](#folded-children)), or both. Titles are 13pt regular on an 18pt line; captions are
-11pt on a 14pt line, 23pt from the row's top. The weight marks selection, not
+All pane and program rows are two lines, 42pt, with 5pt vertical padding,
+at every depth. Titles are 13pt regular on an 18pt line; the second line
+is 11pt on a 14pt line, 23pt from the row's top, and holds the row's
+second line and the circles of folded children ([Folded
+children](#folded-children)). The second line of a pane with a live
+agent and a caption is that caption, and of an Ended pane of a failure
+its cause, in the secondary ink; every other pane (a Terminal, an app,
+an ssh pane, a job, an agent without a caption, a completed or lingering
+pane) shows its cwd, the feed's pane `cwd`, in the
+secondary ink at 80%. A local cwd under the Mac's home starts with `~`;
+a remote pane's cwd is `destination:path`, with the ssh destination of
+an ssh pane, else the window's host. The app does not know a remote home,
+so a remote path keeps its form. A record row shows its `msg`, else its
+state word: working, needs your input, error, done or idle. The weight marks selection, not
 kind: only the focused pane's row and the keyboard-selected row have a semibold
 title, and every other title is regular, whatever the pane runs. The status
 indicator, the @ and the dimmed `Terminal` title carry the agent/shell
 distinction. Rows and session headers have 5pt of horizontal padding.
-A row has a 12pt leading slot for its disclosure chevron and a 6pt gap,
-so the title and the caption start 23pt from the row's edge; there are no
-leading icons. The trailing column holds, on the title line, the 10pt
+The title and the second line start at the row's 5pt padding; there are
+no leading icons. The trailing column holds, on the title line, the 10pt
 tabular clock (`fonts.clock`, secondary ink) and the 6pt status indicator,
 whose centre is 11pt from the row's right edge. The clock ends 4pt before the
 indicator, the same gap as between the folded-child circles.
@@ -1913,7 +1922,7 @@ has a clock and updates only the visible cells. The `started` rule is in
 `sidebarRows` alone. The activity line is one
 line, truncated with an ellipsis, from the title's leading edge to the
 trailing padding, or to 6pt before the circles of folded children. Nesting
-steps 15pt at every depth, chevron and text alike; the trailing column
+steps 15pt at every depth; the trailing column
 does not move. Nesting alone shows the hierarchy: there are no tree guides
 and no brackets.
 
@@ -1932,8 +1941,8 @@ in `sidebarRows`), and each cell fills its own slice and clips its other
 fills to it, so a row's fill never leaves the block and a change of the
 visible window reloads only the rows whose place changed. Only a window
 with two or more panes of its own gets the block. A one-pane window gets
-none, also with expanded children or records, so folding never adds or
-removes the block: its row fill is the window. The divider rows come
+none, also with its children or records shown, so a change of focus never
+adds or removes the block: its row fill is the window. The divider rows come
 from one pass over the finished rows, after the captions and after a
 window drag removes the dragged rows. The focused pane row has a
 `systemFill` fill (labelColor at 10%) with 7pt corners, from its
@@ -1959,7 +1968,7 @@ except that a local shell without a program report shows a
 non-empty running non-fullscreen command, and a remote terminal shows
 `ssh <destination>`, adding `: command` only for an interactive, report-free,
 non-fullscreen running command. The destination is the core's string as
-it is, in the title, in the notification subtitle and for an upload. The caption is the agent's or report's `msg`
+it is, in the title, in the notification subtitle and for an upload. An agent's caption is its `msg`
 and progress percentage, joined by a space; an Ended row of a failure
 shows its cause (`exited with code 2`, the signal, the start failure),
 and a completed one shows none: the green check alone marks
@@ -2047,8 +2056,8 @@ without a connection. While the table is first responder, docked or
 floating, a pane menu command (Command-W, Command-T, the splits, pane
 selection, zoom) first leaves the sidebar as Escape does and then acts on
 the active pane, as it would without sidebar focus; the menu's
-nil-target action otherwise finds no responder there. Right expands and Left folds the selected row's children; session
-headers do not activate or fold. Down from the last pane row goes to the Runtimes header when the
+nil-target action otherwise finds no responder there. Left and Right do
+nothing; session headers do not activate. Down from the last pane row goes to the Runtimes header when the
 section exists ([Runtimes section](#runtimes-section)). Only the first selected event after a request installs deferred
 focus; failures preserve focus. One monotonic UI-intent revision advances
 on selection/focus changes and navigation. Each request captures it; only
@@ -2235,15 +2244,16 @@ slot; a child on screen in another slot has no mark.
 
 ### Folded children
 
-A row with children (child windows and OSC 7501 child records alike) is
-folded by default. Its leading slot holds the disclosure chevron: a 10pt
-glyph with a 1.75pt stroke in the secondary label colour at 70%, centred
-on the title line, pointing right while the row is folded and down while
-the user has expanded it. It shows the fold state, not what is visible,
-so a folded row whose children all show for a wait points right. It has
-no hover or pressed state, only the pointing-hand cursor; a click folds
-or unfolds, and so do → and ← on the selected row. A row without
-children leaves the slot empty, so titles align.
+Focus alone decides which children (child windows and OSC 7501 child
+records alike) show. A pane row is open when it is the focused pane or
+an ancestor of the focused pane, so a focused child keeps its path open;
+an open row shows every child, and its records show their whole record
+tree. Every other row is folded. Records never take focus: they follow
+their pane. No fold state exists, there is no chevron, and no key or
+click folds or opens a row. `sidebarRows` in `SidebarFeed/Rows.swift`
+computes the rule from the snapshot alone; a pane or record row carries
+only its hidden children (`SidebarRow.HiddenChild`), none when it is
+open or has no children.
 
 The children of a folded row that do not show as rows appear as circles
 on the row's second line, right-aligned so that the last one ends under
@@ -2267,32 +2277,24 @@ right edge. With exactly one hidden child that is an agent (a pane with a
 live agent of any kind, or a program record), its title comes first, in the
 caption's style, ending in an ellipsis 4pt before its circle. A single hidden
 job (a run, a stream monitor, a subagent whose agent is gone) is a circle
-alone, as in a line of several. The caption keeps the rest of the line and ends in an ellipsis 6pt
-before the circles; a row without a caption has the circles alone. The
-circles win the room: the caption shrinks and hides below 16pt, then
+alone, as in a line of several. The second line keeps the rest of the line and ends in an ellipsis 6pt
+before the circles. The circles win the room: the second line shrinks and hides below 16pt, then
 circles go into `+N` from the end, down to one circle and `+N`, then
-`+N` alone (the count of every hidden child), then no line, and the
-chevron alone says that children exist; a single child's name
-ellipsizes instead. Nothing clips or reaches the trailing column. The circles are a toggle too: a click expands the children. They
-have no hover fill. A click on a pane row's body still focuses the pane; a
-record row stays display-only, and its chevron and circles are its only
-clickable parts. `SidebarExpansion` in `SidebarFeed/Rows.swift` keeps the
-expanded rows, panes and records alike, in memory; a row's choice goes
-with its pane, and a new server instance clears every choice.
-`SidebarRow.Children` names the cases of a row: a leaf (no children),
-folded (with the hidden children, possibly none), and expanded.
+`+N` alone (the count of every hidden child), then no line; a single
+child's name ellipsizes instead. Nothing clips or reaches the trailing
+column. The circles are drawing only: a click on them is a click on the
+row, which focuses a pane and so opens it; a record row stays
+display-only.
 
-Only a wait expands on its own: a folded row whose descendant waits for
-input (a live agent, or a blocked record) shows that descendant's row and
-the rows on the path to it, and its circles list only the children that
-do not show as rows. A row whose every child shows this way has no
-circles and keeps its right chevron; a click sets it expanded and changes
-nothing visible, and a click on the down chevron folds it again, with the
-waiting children still shown. When the wait clears, the rows fold back
-unless the user expanded the row. A failure or a completion expands
-nothing: its circle shows it. A row that the user folds stays folded also
-when its child is on screen; the sidebar's keyboard selection then goes
-to the nearest visible ancestor.
+A wait also opens a path: a folded row whose descendant waits for input
+(a live agent, or a blocked record) shows that descendant's row and the
+rows on the path to it, and its circles list only the children that do
+not show as rows. When the wait clears, the rows fold back unless focus
+keeps them open. A failure or a completion opens nothing: its circle
+shows it. A focused child in another slot keeps its path open. A change
+of focus moves the keyboard selection to the focused row; when a wait
+clears and the selected row folds away, the selection goes to the
+nearest visible ancestor.
 
 ## Command palette
 
@@ -2841,7 +2843,7 @@ target session, then the key window; else any window of the host, key
 first. It activates the app, deminiaturizes and orders the window front
 (not in background builds), and performs the jump, a `ko_client_select`
 that moves that window's client; a child shows in its top-level slot
-without a change of the sidebar's folding, the pane becomes active in an
+and its path in the sidebar opens, the pane becomes active in an
 attended window, is seen, and the notification withdraws on its own. With no
 window for the host, the click opens it through `WindowRoutes.connect`
 (Local as a new-window cause) and keeps a pending jump for 30s, consumed

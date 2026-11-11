@@ -31,7 +31,7 @@ func remote(_ pane: KoSchema.Remote, user: String = "alice", host: String = "dev
     .live(.ssh(.init(destination: user.isEmpty ? host : user + "@" + host, pane: pane)))
 }
 
-func pane(_ id: Int, window: Int? = nil, parent: Int? = nil, title: String = "", lifecycle: Lifecycle = terminal(),
+func pane(_ id: Int, window: Int? = nil, parent: Int? = nil, title: String = "", cwd: String = "", lifecycle: Lifecycle = terminal(),
           records: [KoSchema.ProgramRecord] = [], serial: Int = 0, recordsSeen: Bool = false, mark: KoSchema.Mark = .none_, children: [Node] = []) -> Node {
     let live: KoSchema.Live?
     let dead: KoSchema.Dead?
@@ -42,17 +42,15 @@ func pane(_ id: Int, window: Int? = nil, parent: Int? = nil, title: String = "",
     case .lingering(let cause): live = nil; dead = .init(at: 0, cause: cause); close = .onExit
     }
     let pi = if case .host(let host) = live, case .piAgent = host.pane { true } else { false }
-    return .item(Item(pane: .init(close: close, command: [], cwd: "", dead: dead, id: PaneID(number: UInt32(id)), inbox: pi,
+    return .item(Item(pane: .init(close: close, command: [], cwd: cwd, dead: dead, id: PaneID(number: UInt32(id)), inbox: pi,
                                  label: title, mark: mark, parent: parent.map { PaneID(number: UInt32($0)) }, recordsSeen: recordsSeen, started: 0,
                                  status: live.map { .init(kind: $0, programStatus: .init(records: records, serial: serial), since: 0, title: title) },
                                  title: title, vars: [:]), window: WindowID(number: UInt32(window ?? id)), children: children))
 }
 
-func expandedRows(_ snapshot: Snapshot?) -> [SidebarRow] {
-    var expanded = SidebarExpansion()
-    expanded.expandAll(sidebarRows(snapshot))
+func renderedRows(_ snapshot: Snapshot?) -> [SidebarRow] {
     var captions = SidebarCaptions()
-    return sidebarDividers(captions.apply(sidebarRows(snapshot, expanded: expanded.expanded).rows, now: 0, delay: 0))
+    return sidebarDividers(captions.apply(sidebarRows(snapshot), now: 0, delay: 0))
 }
 
 func group(_ id: Int, _ children: [Node]) -> Node {
@@ -83,5 +81,11 @@ func markedSeen(_ snapshot: Snapshot) -> Snapshot {
     }
     var snapshot = snapshot
     snapshot.sessions = snapshot.sessions.map { SessionNodes(id: $0.id, name: $0.name, nodes: $0.nodes.map(node)) }
+    return snapshot
+}
+
+func focusing(_ pane: Int, in snapshot: Snapshot) -> Snapshot {
+    var snapshot = snapshot
+    snapshot.client = PaneProjection(snapshot).placements[PaneID(number: UInt32(pane))]!.position
     return snapshot
 }

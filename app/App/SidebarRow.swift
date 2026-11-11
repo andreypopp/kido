@@ -42,35 +42,14 @@ struct SidebarFonts {
     let clock = NSFont.monospacedDigitSystemFont(ofSize: 10, weight: .regular)
 }
 
-final class SidebarDisclosure: ActionButton {
-    var content = SidebarRow.Children.leaf { didSet { needsDisplay = true } }
-    override func draw(_ dirtyRect: NSRect) {
-        let path = NSBezierPath()
-        switch content {
-        case .leaf: return
-        case .folded:
-            path.move(to: NSPoint(x: 4.5, y: 3))
-            path.line(to: NSPoint(x: 7.5, y: 6))
-            path.line(to: NSPoint(x: 4.5, y: 9))
-        case .expanded:
-            path.move(to: NSPoint(x: 3, y: 4.5))
-            path.line(to: NSPoint(x: 6, y: 7.5))
-            path.line(to: NSPoint(x: 9, y: 4.5))
-        }
-        path.lineWidth = 1.75
-        path.lineCapStyle = .round
-        path.lineJoinStyle = .round
-        Chrome.sidebarChevron.setStroke()
-        path.stroke()
-    }
-}
-
-final class SidebarChildren: ActionButton {
+final class SidebarChildren: NSView {
     var content: [SidebarRow.HiddenChild] = [] { didSet { needsDisplay = true } }
     private let fonts: SidebarFonts
     private let limit = 6
     private var name: String? { content.count == 1 ? content[0].title : nil }
-    init(_ fonts: SidebarFonts) { self.fonts = fonts; super.init() }
+    override var isFlipped: Bool { true }
+    override func hitTest(_ point: NSPoint) -> NSView? { nil }
+    init(_ fonts: SidebarFonts) { self.fonts = fonts; super.init(frame: .zero) }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
     private func width(showing count: Int) -> CGFloat {
         if content.isEmpty { return 0 }
@@ -157,9 +136,11 @@ final class SidebarCell: NSTableCellView, NSTextFieldDelegate {
     private(set) var visualClockDirtyRect = NSRect.zero
     #endif
     var terminalDark = false
+    var abbreviate: (String) -> String = { $0 }
+    var remoteHost: String?
+    private var second = (text: "", dim: false)
     private var runtimeText: NSAttributedString?
     let close = IconButton("xmark", "Close pane", size: 8, hoverStyle: .close)
-    let disclosure: SidebarDisclosure
     let children: SidebarChildren
     private var hovered = false
     override func mouseEntered(with event: NSEvent) { hovered = close.frame.contains(convert(event.locationInWindow, from: nil)); updateClose() }
@@ -170,7 +151,6 @@ final class SidebarCell: NSTableCellView, NSTextFieldDelegate {
 
     init(_ fonts: SidebarFonts) {
         self.fonts = fonts
-        disclosure = SidebarDisclosure()
         children = SidebarChildren(fonts)
         super.init(frame: .zero)
         identifier = Self.id
@@ -178,7 +158,6 @@ final class SidebarCell: NSTableCellView, NSTextFieldDelegate {
         focusRingType = .none
         addSubview(addWindow)
         addSubview(close)
-        addSubview(disclosure)
         addSubview(children)
         nameField.cell = SessionNameCell(textCell: "")
         nameField.isEditable = true
@@ -204,34 +183,20 @@ final class SidebarCell: NSTableCellView, NSTextFieldDelegate {
 
     func configure(_ row: SidebarRow, now: Int) {
         self.row = row
-        disclosure.content = row.children
-        children.content = []
-        children.isHidden = true
-        switch row.children {
-        case .folded(let hidden):
-            children.content = hidden
-            children.isHidden = hidden.isEmpty
-            children.setAccessibilityLabel("Show \(hidden.count) hidden children of " + row.title)
-            disclosure.isHidden = false
-            disclosure.setAccessibilityLabel("Show children of " + row.title)
-            disclosure.setAccessibilityValue("folded")
-        case .expanded:
-            disclosure.isHidden = false
-            disclosure.setAccessibilityLabel("Hide children of " + row.title)
-            disclosure.setAccessibilityValue("expanded")
-        case .leaf:
-            disclosure.isHidden = true
-        }
+        children.content = row.hidden
+        children.isHidden = row.hidden.isEmpty
+        let folded = row.hidden.isEmpty ? "" : "\(row.hidden.count) folded children"
+        second = secondLine(row.second, status: row.status)
         updateClose()
         close.setAccessibilityLabel("Close pane: " + row.title)
         addWindow.isHidden = { if case .header = row.kind { return false }; return true }()
         addWindow.toolTip = nil
         addWindow.setAccessibilityLabel("New window in " + row.title)
         setAccessibilityElement(row.kind != .divider && row.kind != .gap)
-        setAccessibilityRole(disclosure.isHidden ? .staticText : .group)
+        setAccessibilityRole(.staticText)
         toolTip = row.runtime?.failure
         runtimeText = row.runtime.map(Self.suffixText)
-        setAccessibilityLabel([row.title, row.runtime.map { "runtime " + $0.name }, row.tail, row.indicatorDescription].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: ", "))
+        setAccessibilityLabel([row.title, row.runtime.map { "runtime " + $0.name }, second.text, folded, row.indicatorDescription].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: ", "))
         setAccessibilityValue(nil)
         updateClock(now: now)
         needsLayout = true
@@ -267,7 +232,6 @@ final class SidebarCell: NSTableCellView, NSTextFieldDelegate {
         super.layout()
         close.frame = NSRect(x: bounds.width - 17, y: CGFloat(row?.padding ?? 5) + 3, width: 12, height: 12)
         if let row {
-            disclosure.frame = NSRect(x: row.leading - 18, y: row.padding + 3, width: 12, height: 12)
             let width = children.fittingWidth(max(0, bounds.width - row.leading - 6))
             children.isHidden = children.content.isEmpty || width == 0
             children.frame = NSRect(x: bounds.width - 6 - width, y: row.tailY, width: width, height: 12)
@@ -354,8 +318,9 @@ final class SidebarCell: NSTableCellView, NSTextFieldDelegate {
             let tailEnd = children.isHidden ? bounds.width - 5 : children.frame.minX - 6
             let tailRect = NSRect(x: leading, y: row.tailY, width: max(0, tailEnd - leading), height: 14)
             if tailRect.width >= 16, dirtyRect.intersects(tailRect) {
-                (row.tail.split(whereSeparator: \.isNewline).joined(separator: " ") as NSString).draw(in: tailRect,
-                                          withAttributes: [.font: fonts.tail, .foregroundColor: Chrome.inkSecondary, .paragraphStyle: paragraph])
+                let ink = second.dim ? Chrome.sidebarDirectory : Chrome.inkSecondary
+                (second.text as NSString).draw(in: tailRect,
+                                          withAttributes: [.font: fonts.tail, .foregroundColor: ink, .paragraphStyle: paragraph])
             }
             (clock as NSString).draw(at: clockRect.origin,
                                      withAttributes: [.font: fonts.clock, .foregroundColor: Chrome.inkSecondary])
@@ -366,7 +331,31 @@ final class SidebarCell: NSTableCellView, NSTextFieldDelegate {
     }
 }
 
+extension SidebarRow.Status {
+    var recordWord: String {
+        switch self {
+        case .running: "working"
+        case .waiting: "needs your input"
+        case .error, .endedFailed: "error"
+        case .done, .endedClean: "done"
+        case .quiet: "idle"
+        }
+    }
+}
+
 extension SidebarCell {
+    fileprivate func secondLine(_ line: SidebarRow.SecondLine, status: SidebarRow.Status) -> (text: String, dim: Bool) {
+        let (text, dim): (String, Bool) = switch line {
+        case .none: ("", false)
+        case .activity(let text): (text, false)
+        case .directory(let path, let destination):
+            (destination ?? remoteHost).map { ("\($0):\(path)", true) } ?? (abbreviate(path), true)
+        case .record(let msg):
+            (msg.flatMap { $0.isEmpty ? nil : $0 } ?? status.recordWord, false)
+        }
+        return (text.split(whereSeparator: \.isNewline).joined(separator: " "), dim)
+    }
+
     // The runtime's name after the title, with its state when it is not up.
     fileprivate static func suffixText(_ mark: RuntimeMark) -> NSAttributedString {
         let paragraph = NSMutableParagraphStyle()

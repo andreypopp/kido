@@ -141,7 +141,7 @@ import XCTest
         for snapshot in [split, single] {
             list.show(snapshot)
             let actual = try drawing()
-            let row = try XCTUnwrap(sidebarRows(snapshot, expanded: []).rows.first { $0.target?.pane == PaneID(number: 0) })
+            let row = try XCTUnwrap(sidebarRows(snapshot).first { $0.target?.pane == PaneID(number: 0) })
             cell.configure(row, now: 0)
             XCTAssertEqual(actual, try drawing(), "Edited cell must draw the current window block")
             XCTAssertTrue(cell.nameField.currentEditor() === editor)

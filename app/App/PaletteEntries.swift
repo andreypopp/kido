@@ -38,12 +38,12 @@ struct PaletteEntry {
         let host = if case .remote(let destination) = owner.host { [destination] } else { [String]() }
         let resolve: @MainActor (SidebarRow) -> WindowOwner? = { [weak owner] row in
             guard let owner, owner.canNavigate, owner.snapshot?.serverInstance == instance,
-                  sidebarRows(owner.snapshot).rows.contains(where: { $0.id == row.id }) else { return nil }
+                  sidebarRows(owner.snapshot).contains(where: { $0.id == row.id }) else { return nil }
             return owner
         }
         let reachable = Set(snapshot.promptPanes.filter(\.agent).map(\.pane))
         var session = ""
-        return sidebarRows(owner.snapshot).rows.compactMap { row in
+        return sidebarRows(owner.snapshot).compactMap { row in
             if case .header = row.id { session = row.title }
             guard let target = row.topLevel else { return nil }
             return PaletteEntry(id: .pane(target), title: row.title, detail: (host + [session]).joined(separator: " › "), status: row.status, agent: row.agent, promptable: reachable.contains(target.pane), check: { resolve(row) == nil ? "That pane is gone" : nil }, operation: .run { let owner = resolve(row); owner?.reveal(); owner?.perform(.jump(target)) })

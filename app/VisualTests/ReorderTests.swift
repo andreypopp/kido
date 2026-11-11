@@ -57,11 +57,7 @@ import PaneGeometry
         try await super.tearDown()
     }
 
-    private func expandedRows(_ snapshot: Snapshot) -> [SidebarRow] {
-        var expansion = SidebarExpansion()
-        expansion.expandAll(sidebarRows(snapshot))
-        return sidebarDividers(sidebarRows(snapshot, expanded: expansion.expanded).rows)
-    }
+    private func shownRows(_ snapshot: Snapshot) -> [SidebarRow] { sidebarDividers(sidebarRows(snapshot)) }
 
     private func fixture(sessions count: UInt32? = nil) -> Snapshot {
         sidebarFixture { snapshot in
@@ -94,7 +90,6 @@ import PaneGeometry
             return try edit?.wait() ?? KoSchema.Edited(snapshot: KoSchema.Snapshot(layout: KoSchema.Layout(sessions: []), revision: 1))
         }
         owner.testReceive(snapshot)
-        owner.sidebar.list.visualExpandAll()
         owner.window.contentView?.superview?.layoutSubtreeIfNeeded()
         owner.sidebar.list.layoutSubtreeIfNeeded()
         XCTAssertFalse(owner.window.isVisible || owner.window.isKeyWindow || NSApp.isActive)
@@ -194,7 +189,7 @@ import PaneGeometry
         list.tableView(table, draggingSession: drag.session, endedAt: .zero, operation: .move)
         XCTAssertNil(list.visualDragging)
         XCTAssertNil(list.visualInsertion)
-        XCTAssertEqual(list.visualRows.map(\.id), expandedRows(moved).map(\.id))
+        XCTAssertEqual(list.visualRows.map(\.id), shownRows(moved).map(\.id))
         XCTAssertEqual(try XCTUnwrap(viewportY(list, .header(source))), dropped, accuracy: 0.5, "children return around the dropped heading")
         XCTAssertEqual(list.visualRows[table.selectedRow].id, .pane(SessionID(number: 13), PaneID(number: 905)), "selection survives by id")
         XCTAssertEqual(requests.count, 1, "no activation from the drag")
@@ -207,10 +202,10 @@ import PaneGeometry
         sent[0].reply(.reordered)
         try await wait("the reply", within: 5) { owner.reorder.state.pending?.replied == true }
         owner.testReceive(snapshot)
-        XCTAssertEqual(list.visualRows.map(\.id), expandedRows(moved).map(\.id), "a stale snapshot keeps the optimistic order")
+        XCTAssertEqual(list.visualRows.map(\.id), shownRows(moved).map(\.id), "a stale snapshot keeps the optimistic order")
         owner.testReceive(moved)
         XCTAssertNil(owner.reorder.state.pending)
-        XCTAssertEqual(list.visualRows.map(\.id), expandedRows(moved).map(\.id))
+        XCTAssertEqual(list.visualRows.map(\.id), shownRows(moved).map(\.id))
         XCTAssertNotNil(list.tableView(table, pasteboardWriterForRow: row))
         XCTAssertTrue(owner.reorder.claim(.tab))
         XCTAssertTrue(owner.notices.testTransients.entries.isEmpty)
@@ -334,7 +329,7 @@ import PaneGeometry
         XCTAssertTrue(scroll.prepareForDragOperation(live) && scroll.performDragOperation(live))
         table.draggingSession(session, endedAt: .zero, operation: .move)
         XCTAssertEqual(requests, [.reorder(.window(main, group, relativeTo: last, .after))])
-        XCTAssertEqual(list.visualRows.map(\.id), expandedRows(try XCTUnwrap(snapshot.reordered(.window(main, group, relativeTo: last, .after)))).map(\.id))
+        XCTAssertEqual(list.visualRows.map(\.id), shownRows(try XCTUnwrap(snapshot.reordered(.window(main, group, relativeTo: last, .after)))).map(\.id))
         sent[0].reply(.failure("no such top-level window in session"))
         try await wait("the failure", within: 5) { owner.reorder.state.pending == nil }
         XCTAssertEqual(list.visualRows.map(\.id), rows.map(\.id), "a failure brings the rows back")
@@ -435,7 +430,7 @@ import PaneGeometry
         let cancelled = try await nativeDrop(list, start: header, cancel: true) { self.center(table, 0, dy: -6) }
         XCTAssertEqual(cancelled.0, .move)
         XCTAssertEqual(requests, [], "a cancelled heading drag sends nothing")
-        XCTAssertEqual(list.visualRows.map(\.id), expandedRows(snapshot).map(\.id), "a cancelled drag restores every row")
+        XCTAssertEqual(list.visualRows.map(\.id), shownRows(snapshot).map(\.id), "a cancelled drag restores every row")
         let (operation, accepted) = try await nativeDrop(list, start: header, midway: { owner.testReceive(busy) }) {
             let first = list.visualRows.firstIndex { $0.id == .header(SessionID(number: 0)) }!
             return self.center(table, first, dy: -6)
@@ -505,7 +500,7 @@ import PaneGeometry
         XCTAssertEqual(requests, [.reorder(move)])
         let moved = try XCTUnwrap(snapshot.reordered(move))
         list.tableView(table, draggingSession: drag.session, endedAt: .zero, operation: .move)
-        XCTAssertEqual(list.visualRows.map(\.id), expandedRows(moved).map(\.id), "the whole block moves, children included")
+        XCTAssertEqual(list.visualRows.map(\.id), shownRows(moved).map(\.id), "the whole block moves, children included")
 
         sent[0].reply(.failure("no such top-level window in session"))
 
@@ -523,7 +518,7 @@ import PaneGeometry
         XCTAssertTrue(list.visualScroll.performDragOperation(retry))
         list.tableView(table, draggingSession: again.session, endedAt: .zero, operation: .move)
         XCTAssertEqual(owner.notices.testTransients.entries.count, 1, "the failure stays on its own clock")
-        XCTAssertEqual(list.visualRows.map(\.id), expandedRows(moved).map(\.id))
+        XCTAssertEqual(list.visualRows.map(\.id), shownRows(moved).map(\.id))
         sent[1].reply(.reordered)
         try await wait("the reply", within: 5) { owner.reorder.state.pending?.replied == true }
         owner.testReceive(moved)

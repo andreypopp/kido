@@ -5,6 +5,9 @@ import PaneGeometry
 
 // The sidebar tree of a live session list: five sessions, nested child panes, window groups.
 
+let fixtureHome = "/Users/dev"
+func fixtureAbbreviate(_ path: String) -> String { path.hasPrefix(fixtureHome + "/") ? "~" + path.dropFirst(fixtureHome.count) : path }
+
 let fixtureSince = 1_791_131_000_000_000_000
 
 func piLifecycle(_ state: KoSchema.AgentState = .idle(.init()), msg: String? = nil, session: String = "session") -> Lifecycle {
@@ -42,7 +45,7 @@ extension Item {
     }
 }
 
-func fixtureItem(_ id: UInt32, window: UInt32? = nil, parent: UInt32? = nil, _ title: String, _ lifecycle: Lifecycle,
+func fixtureItem(_ id: UInt32, window: UInt32? = nil, parent: UInt32? = nil, cwd: String = "", _ title: String, _ lifecycle: Lifecycle,
                  records: [KoSchema.ProgramRecord] = [], serial: Int = 0, mark: KoSchema.Mark = .none_, children: [SidebarFeed.Node] = []) -> Item {
     let live: KoSchema.Live?
     let dead: KoSchema.Dead?
@@ -53,7 +56,7 @@ func fixtureItem(_ id: UInt32, window: UInt32? = nil, parent: UInt32? = nil, _ t
     case .lingering(let cause): live = nil; dead = .init(at: 0, cause: cause); close = .onExit
     }
     let pi = if let live, case .piAgent = live.local { true } else { false }
-    return Item(pane: .init(close: close, command: [], cwd: "", dead: dead, id: PaneID(number: id), inbox: pi,
+    return Item(pane: .init(close: close, command: [], cwd: cwd, dead: dead, id: PaneID(number: id), inbox: pi,
                            label: title, mark: mark, parent: parent.map(PaneID.init(number:)), recordsSeen: false, started: 0,
                            status: live.map { .init(kind: $0, programStatus: .init(records: records, serial: serial), since: 0, title: title) },
                            title: title, vars: [:]), window: WindowID(number: window ?? id), children: children)
@@ -66,9 +69,11 @@ func fixtureNode(_ pane: UInt32, window: UInt32? = nil, _ title: String, _ lifec
 
 // A snapshot whose client is the given pane; the first session is the current one.
 func fixtureSnapshot(window: UInt32, pane: UInt32, _ sessions: [(name: String, nodes: [SidebarFeed.Node])]) -> Snapshot {
-    Snapshot(clock: .init(now: 0, local: 0), client: .init(session: SessionID(number: 0), window: WindowID(number: window), pane: PaneID(number: pane)),
+    var snapshot = Snapshot(clock: .init(now: 0, local: 0), client: .init(session: SessionID(number: 0), window: WindowID(number: window), pane: PaneID(number: pane)),
              serverInstance: ServerInstance("4242/1791000000"),
              sessions: sessions.enumerated().map { SessionNodes(id: SessionID(number: UInt32($0.offset)), name: $0.element.name, nodes: $0.element.nodes) })
+    snapshot.fillCwds()
+    return snapshot
 }
 
 func sidebarFixture(_ edit: (inout Snapshot) -> Void = { _ in }) -> Snapshot {
@@ -109,6 +114,7 @@ func sidebarFixture(_ edit: (inout Snapshot) -> Void = { _ in }) -> Snapshot {
             session(4, "umbrella", [fixtureNode(193, window: 166, "household", piLifecycle(session: "session-193"))]),
         ])
     edit(&snapshot)
+    snapshot.fillCwds()
     snapshot.mapItems { item in
         item.pane.inbox = if case .live(let kind) = item.lifecycle, case .piAgent = kind.local { true } else { false }
     }
@@ -128,20 +134,36 @@ extension SidebarFeed.Node {
 
 extension Snapshot {
     // Every pane of the tree, edited in place.
-    mutating func mapItems(_ edit: (inout Item) -> Void) {
-        func item(_ item: Item) -> Item {
-            var item = item
-            edit(&item)
-            item.children = item.children.map(node)
-            return item
-        }
-        func node(_ node: SidebarFeed.Node) -> SidebarFeed.Node {
-            switch node {
-            case .item(let i): .item(item(i))
-            case .window(var group): { group.children = group.children.map(item); return .window(group) }()
+    mutating func mapItems(_ edit: (inout Item) -> Void) { mapItems { _, item in edit(&item) } }
+
+    mutating func mapItems(_ edit: (String, inout Item) -> Void) {
+        sessions = sessions.map { session in
+            func item(_ item: Item) -> Item {
+                var item = item
+                edit(session.name, &item)
+                item.children = item.children.map(node)
+                return item
             }
+            func node(_ node: SidebarFeed.Node) -> SidebarFeed.Node {
+                switch node {
+                case .item(let i): .item(item(i))
+                case .window(var group): { group.children = group.children.map(item); return .window(group) }()
+                }
+            }
+            var session = session
+            session.nodes = session.nodes.map(node)
+            return session
         }
-        sessions = sessions.map { var session = $0; session.nodes = session.nodes.map(node); return session }
+    }
+
+    // Feed-shaped working directories: absolute local paths under `fixtureHome`, an absolute remote path for ssh panes.
+    mutating func fillCwds() {
+        let bases = ["main": "Workspace/kido", "work": "Workspace/kido-app", "visa": "Documents/visa", "pi": "Workspace/pi", "video": "Movies/kido", "umbrella": "Workspace/umbrella"]
+        mapItems { name, item in
+            guard item.pane.cwd.isEmpty else { return }
+            if case .live(let kind) = item.lifecycle, case .ssh = kind { item.pane.cwd = "/home/dev/src"; return }
+            item.pane.cwd = fixtureHome + "/" + (bases[name] ?? "Workspace/kido") + (name == "main" && item.agent == nil ? "/app" : "")
+        }
     }
 
     // Copies of the first session under the given numbers.
@@ -155,7 +177,7 @@ let sidebarChildrenNow = 2_951_768_000_000_000
 
 func sidebarChildrenFixture(records: Bool = false) -> Snapshot {
     var snapshot = sidebarFixture()
-    snapshot.client = .init(session: .init(number: 0), window: .init(number: 458), pane: .init(number: 502))
+    snapshot.client = .init(session: .init(number: 0), window: .init(number: 458), pane: .init(number: 937))
     snapshot.sessions[0].nodes[0].item.pane.mark = .done
     var parent = snapshot.sessions[0].nodes[1].group.children[0]
     parent.fixtureLifecycle = piLifecycle(.running(.init()), msg: "Refining the native sidebar")
@@ -201,5 +223,6 @@ func sidebarChildrenFixture(records: Bool = false) -> Snapshot {
         ], serial: 7, mark: .running)), at: 0)
         snapshot.client = .init(session: .init(number: 0), window: .init(number: 3000), pane: .init(number: 3000))
     }
+    snapshot.fillCwds()
     return snapshot
 }

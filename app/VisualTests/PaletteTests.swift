@@ -1327,9 +1327,8 @@ import PaneGeometry
             snapshot.sessions[0].nodes[0].item.pane.status?.programStatus = .init(records: [
                 .working(.init(app: "pi", id: "")), .working(.init(id: "review", title: "Review palette"))], serial: 1)
         }
-        XCTAssertFalse(sidebarRows(snapshot).rows.contains { $0.title == "Review palette" })
-        XCTAssertFalse(sidebarRows(snapshot).rows.contains { $0.title == "main-watch" })
-        XCTAssertFalse(sidebarRows(snapshot).rows.contains { $0.title == "@sidebar-mockup" })
+        XCTAssertFalse(sidebarRows(snapshot).contains { $0.title == "Review palette" })
+        XCTAssertFalse(sidebarRows(snapshot).contains { $0.title == "main-watch" })
         XCTAssertNotNil(PaneProjection(snapshot).placements[PaneID(number: 936)])
         local.testReceive(snapshot)
         remote.testReceive(sidebarFixture { snapshot in
@@ -1618,7 +1617,7 @@ import PaneGeometry
         let quiet = SessionID(number: 3)
         try await wait("quiet session appears") { owner.snapshot?.sessions.contains { $0.id == quiet } == true }
         var quietSnapshot = try XCTUnwrap(owner.snapshot)
-        let quietPanes = Set(sidebarRows(quietSnapshot).rows.compactMap { $0.target?.session == quiet ? $0.target?.pane : nil })
+        let quietPanes = Set(sidebarRows(quietSnapshot).compactMap { $0.target?.session == quiet ? $0.target?.pane : nil })
         XCTAssertFalse(quietPanes.isEmpty)
         quietSnapshot.mapItems {
             if quietPanes.contains($0.id) {

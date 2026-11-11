@@ -64,6 +64,8 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSM
 
     private var items: [SidebarRow] = []
     // A runtime's swatch takes its colour for the terminal's light or dark theme, not the sidebar's own.
+    var abbreviate: (String) -> String = { $0 } { didSet { table.reloadData() } }
+    var remoteHost: String? { didSet { table.reloadData() } }
     var terminalDark = false { didSet { if terminalDark != oldValue { table.reloadData() } } }
     private func entry(_ row: Int) -> SidebarRow? { items.indices.contains(row) ? items[row] : nil }
 
@@ -146,7 +148,6 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSM
     private let scroll = DropScroll()
     private var snapshot: Snapshot?
     private var projection = PaneProjection(nil)
-    private var expansion = SidebarExpansion()
     private let fonts = SidebarFonts()
     private var captionTimer: Timer?
     private var tick: Timer?
@@ -282,9 +283,7 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSM
         let previous = items
         if next == nil || next?.serverInstance != previousInstance { seededCaptions = nil }
         var renderedCaptions = seededCaptions ?? SidebarCaptions()
-        let outline = sidebarRows(snapshot, expanded: expansion.expanded)
-        expansion.reconcile(outline.ids)
-        items = renderedCaptions.apply(outline.rows, now: ProcessInfo.processInfo.systemUptime, delay: captionDelay)
+        items = renderedCaptions.apply(sidebarRows(snapshot), now: ProcessInfo.processInfo.systemUptime, delay: captionDelay)
         if next != nil, pin == nil || seededCaptions != nil { seededCaptions = renderedCaptions }
         captionTimer?.invalidate()
         captionTimer = nil
@@ -424,12 +423,7 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSM
     }
 
     func refresh() { show(snapshot) }
-    func resetExpansion() { expansion = SidebarExpansion(); seededCaptions = nil }
-
-    private func disclose(_ id: SidebarRow.ID, expanded: Bool) {
-        expansion.set(id, expanded: expanded)
-        show(snapshot, pin: id)
-    }
+    func resetCaptions() { seededCaptions = nil }
 
     fileprivate func key(_ event: NSEvent) -> Bool {
         guard editing == nil else { return true }
@@ -439,10 +433,6 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSM
             if let pane = entry(table.selectedRow)?.target?.pane { paneCommand(event.keyCode == 125 ? .child : .parent, pane) }
         case (125, _, []), (_, "j", []), (_, "n", .control): move(1)
         case (126, _, []), (_, "k", []), (_, "p", .control): move(-1)
-        case (124, _, []):
-            if let row = entry(table.selectedRow) { disclose(row.id, expanded: true) }
-        case (123, _, []):
-            if let row = entry(table.selectedRow) { disclose(row.id, expanded: false) }
         case (36, _, []), (76, _, []): activate(table.selectedRow, focus: .pane)
         case (53, _, []):
             navigate(.releaseSideFocus, .pane)
@@ -622,13 +612,10 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSM
             }
         }
         cell.terminalDark = terminalDark
+        cell.abbreviate = abbreviate
+        cell.remoteHost = remoteHost
         cell.configure(item, now: clockNow)
         cell.close.invoke = { [weak self] in self?.closePane(item) }
-        cell.disclosure.invoke = { [weak self] in
-            guard let self else { return }
-            disclose(item.id, expanded: !expansion.expanded.contains(item.id))
-        }
-        cell.children.invoke = { [weak self] in self?.disclose(item.id, expanded: true) }
         cell.addWindow.invoke = { [weak self] in self?.newWindow(item.id.session) }
         return cell
     }
@@ -642,11 +629,6 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSM
     var visualTable: NSTableView { table }
     var visualScroll: NSScrollView { scroll }
     var visualRows: [SidebarRow] { items }
-    func visualExpandAll() {
-        expansion.expandAll(sidebarRows(snapshot))
-        show(snapshot, pin: items.first?.id)
-    }
-    func visualSetExpanded(_ id: SidebarRow.ID, _ expanded: Bool) { disclose(id, expanded: expanded) }
     func visualJump(_ row: SidebarRow) { activate(items.firstIndex { $0.id == row.id } ?? -1, focus: .pane) }
     var visualDragging: String? { dragging.map { "\($0)" } }
     var visualInsertion: NSRect? { insertion.isHidden ? nil : insertion.frame }

@@ -52,16 +52,16 @@ private func items(_ snapshot: Snapshot) -> [PaneID: Item] {
         .idle(.init(id: "job/4", started: model.now - 12_000_000_000)),
         .error(.init(id: "job/5", started: model.now - 12_000_000_000)),
     ], serial: 1)
-    let snapshot = try #require(Snapshot(model: model))
-    let rows = expandedRows(snapshot)
+    let snapshot = focusing(7, in: try #require(Snapshot(model: model)))
+    let rows = renderedRows(snapshot)
     let child = try #require(rows.first { $0.target?.pane.number == 7 })
     let started = try #require(child.started)
     #expect(started == model.now - 12_000_000_000)
     #expect(snapshot.clock.now == model.now)
     #expect(snapshot.clock.local > 0)
     model.now += 1_000_000_000
-    let advanced = try #require(Snapshot(model: model))
-    #expect(expandedRows(advanced) == rows)
+    let advanced = focusing(7, in: try #require(Snapshot(model: model)))
+    #expect(renderedRows(advanced) == rows)
     let jobs = rows.filter { if case .program(_, let pane, _) = $0.id { pane.number == 7 } else { false } }
     #expect(jobs.prefix(5).map { $0.started != nil } == [true, true, false, false, false])
     #expect(rows.first { $0.target?.pane.number == 2 }?.started == nil)
@@ -204,10 +204,11 @@ private func edited(_ number: UInt32, _ edit: (inout KoSchema.PaneJson) -> Void)
     #expect(try edited(9) { $0.close = .onExit }.indicator == (.endedFailed, "gone, exited with code 3"))
 }
 
-@Test func theExpandedTreeDrawsOneRowForEachPane() throws {
+@Test func theFocusedPathOpensAndTheRestFolds() throws {
     let snapshot = try #require(Snapshot(model: recorded()))
-    let rows = expandedRows(snapshot)
-    #expect(rows.filter { $0.target != nil }.count == 9)
+    let rows = renderedRows(snapshot)
+    #expect(rows.filter { $0.target != nil }.count == 7)
+    #expect(renderedRows(focusing(8, in: snapshot)).filter { $0.target != nil }.count == 9)
     #expect(rows.filter(\.focused).map(\.title) == ["claude-code"])
 }
 
@@ -219,7 +220,7 @@ private func edited(_ number: UInt32, _ edit: (inout KoSchema.PaneJson) -> Void)
     #expect(item.caption == "")
     #expect(!item.isMessageable)
     #expect(!item.closesQuietly)
-    let rows = sidebarRows(makeSnapshot([.item(item)])).rows
+    let rows = sidebarRows(makeSnapshot([.item(item)]))
     #expect(rows.filter { if case .program = $0.id { true } else { false } }.isEmpty)
 }
 

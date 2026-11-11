@@ -1,33 +1,26 @@
 import Testing
 @testable import SidebarFeed
 
-@Test func captionDebounceKeepsTheSharedFoldedLine() {
+@Test func captionDebounceHoldsTheSecondLine() {
     func rows(_ text: String) -> [SidebarRow] {
-        sidebarRows(makeSnapshot([group(0, [pane(0, lifecycle: agent(working(), msg: text), mark: .running, children: [pane(1, parent: 0)]), pane(2, window: 0)])])).rows
+        sidebarRows(makeSnapshot([group(0, [pane(0, cwd: "/work", lifecycle: agent(working(), msg: text), mark: .running, children: [pane(1, parent: 0)]), pane(2, window: 0)])], client: 99))
     }
     var captions = SidebarCaptions()
-    let initial = captions.apply(rows("busy"), now: 0, delay: 1)
-    #expect(initial[1].height == 42)
-    #expect(initial[1].tail == "busy")
-    let held = captions.apply(rows(""), now: 0.1, delay: 1)
-    #expect(held[1].height == 42)
-    #expect(held[1].tail == "busy")
-    let cleared = captions.apply(rows(""), now: 1.2, delay: 1)
-    #expect(cleared[1].height == 42)
-    #expect(cleared[1].tail == "")
+    #expect(captions.apply(rows("busy"), now: 0, delay: 1)[1].second == .activity("busy"))
+    #expect(captions.apply(rows(""), now: 0.1, delay: 1)[1].second == .activity("busy"))
+    #expect(captions.apply(rows(""), now: 1.2, delay: 1)[1].second == .directory(path: "/work", destination: nil))
 }
 
 @Test func captionTransitions() {
     var captions = SidebarCaptions()
     func rows(_ text: String) -> [SidebarRow] {
-        [SidebarRow(id: .pane(.init(number: 0), .init(number: 0)), kind: .program(.leaf), indent: 0,
-                    title: "Title", tail: text,
+        [SidebarRow(id: .pane(.init(number: 0), .init(number: 0)), kind: .program([]), indent: 0,
+                    title: "Title", second: .activity(text),
                     status: .running, focused: false)]
     }
     func check(_ raw: String, _ time: Double, _ shown: String) {
         let row = captions.apply(rows(raw), now: time, delay: 0.2)[0]
-        #expect(row.tail == shown)
-        #expect(row.height == (shown.isEmpty ? 28 : 42))
+        #expect(row.second == .activity(shown))
     }
     check("A", 0, "A")
     check("", 1, "A")
@@ -55,7 +48,7 @@ import Testing
     #expect(captions.apply([], now: 8.1, delay: 0.2).isEmpty)
     #expect(captions.deadline == nil)
     check("D", 8.2, "D")
-    #expect(captions.apply(rows("Zero delay"), now: 8.3, delay: 0)[0].tail == "Zero delay")
+    #expect(captions.apply(rows("Zero delay"), now: 8.3, delay: 0)[0].second == .activity("Zero delay"))
     #expect(captions.deadline == nil)
     captions = SidebarCaptions()
     check("E", 9, "E")

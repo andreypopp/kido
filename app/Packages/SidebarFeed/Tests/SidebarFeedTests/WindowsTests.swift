@@ -41,7 +41,7 @@ private func windowsFixture(_ state: KoSchema.AgentState = waiting(), mark: KoSc
     for (state, mark) in cases {
         let snapshot = windowsFixture(state, mark: mark)
         let projection = sidebarWindows(snapshot, projection: PaneProjection(snapshot), session: SessionID(number: 0), surviving: [WindowID(number: 0)])
-        let status = try #require(expandedRows(snapshot).first { $0.target?.window == WindowID(number: 2) }?.status)
+        let status = try #require(renderedRows(snapshot).first { $0.target?.window == WindowID(number: 2) }?.status)
         #expect(projection.statuses[WindowID(number: 0)] == SidebarRow.Status.quiet.mergingTabStatus(status))
     }
 }
@@ -66,7 +66,7 @@ private func windowsFixture(_ state: KoSchema.AgentState = waiting(), mark: KoSc
 @Test func projectedTitlesUseActivePane() throws {
     let snapshot = windowsFixture(group: true)
     let window = WindowID(number: 0), session = SessionID(number: 0)
-    let rows = sidebarRows(snapshot).rows
+    let rows = sidebarRows(snapshot)
     for pane in [PaneID(number: 0), PaneID(number: 3)] {
         let projection = sidebarWindows(snapshot, projection: PaneProjection(snapshot), session: session, surviving: [window], activePanes: [window: pane])
         #expect(projection.labels[window]?.title == "Pane \(pane.number)")

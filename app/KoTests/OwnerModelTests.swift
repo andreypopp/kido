@@ -68,12 +68,12 @@ import XCTest
         for owner in [first, second] {
             wait("the failure is unseen") { self.items(owner).first?.pane.mark == .failed }
         }
-        XCTAssertEqual(sidebarRows(second.snapshot).rows.first { $0.target != nil }?.status, .error)
+        XCTAssertEqual(sidebarRows(second.snapshot).first { $0.target != nil }?.status, .error)
         first.testAttended = true
         for owner in [first, second] {
             wait("the failure is seen") { self.items(owner).first?.pane.mark == KoSchema.Mark.none_ }
         }
-        XCTAssertEqual(sidebarRows(second.snapshot).rows.first { $0.target != nil }?.status, .quiet,
+        XCTAssertEqual(sidebarRows(second.snapshot).first { $0.target != nil }?.status, .quiet,
                        "the other window of the host agrees without a shared record")
     }
 

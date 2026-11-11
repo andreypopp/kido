@@ -77,7 +77,6 @@ import KoModel
         list.frame = NSRect(x: 0, y: 0, width: 300, height: 110)
         window.contentView!.addSubview(list)
         list.show(snapshot)
-        list.visualExpandAll()
         list.layoutSubtreeIfNeeded()
         let index = try XCTUnwrap(list.visualRows.firstIndex { $0.target != nil })
         let cell = try XCTUnwrap(list.visualTable.view(atColumn: 0, row: index, makeIfNecessary: true) as? SidebarCell)
@@ -125,7 +124,7 @@ import KoModel
         let pane = try XCTUnwrap(owner.testSession?.windows[created]?.displayedPanes.first)
         try await wait("new window receives terminal focus") { owner.window.firstResponder === pane }
         func status(_ running: Bool, pane: PaneView, created: WindowID) async throws {
-            try await wait("the snapshot has the pane") { sidebarRows(owner.snapshot).rows.contains { $0.target?.pane == pane.pane } }
+            try await wait("the snapshot has the pane") { sidebarRows(owner.snapshot).contains { $0.target?.pane == pane.pane } }
             let phase: KoSchema.Phase = running ? .running(.init(fullscreen: false, origin: .command(.init(command: "sleep 60", startedAt: fixtureSince)))) : .idle(.init())
             let snapshot = withLifecycle(try XCTUnwrap(owner.snapshot), pane: pane.pane,
                 .live(.host(.init(pane: .terminal(KoSchema.Shell(phase: phase, report: nil))))), mark: running ? .running : .none_)

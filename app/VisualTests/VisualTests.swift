@@ -1240,7 +1240,7 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
                 let kido = firstMouse.filter { !$0.hasPrefix("NS") && !$0.hasPrefix("_") }
                 let toolbarButtons = PaneToolbar(runtime: runtime).subviews.compactMap { $0 as? IconButton }
                 XCTAssertTrue(toolbarButtons.allSatisfy { !$0.acceptsFirstMouse(for: nil) }, "a first click on a hover toolbar button only activates the window")
-                XCTAssertEqual(kido, ["IconButton", "MouseButton", "PaneView", "Table", "RuntimeSection", "SidebarDisclosure", "SidebarChildren"], "pane chrome, dividers, tabs and sidebar rows never take first mouse; PaneView, Table and RuntimeSection answer true only in the visual build")
+                XCTAssertEqual(kido, ["IconButton", "MouseButton", "PaneView", "Table", "RuntimeSection"], "pane chrome, dividers, tabs and sidebar rows never take first mouse; PaneView, Table and RuntimeSection answer true only in the visual build")
             }
             var image = try capture()
             let textRect = root.convert(CGRect(x: 20, y: active.bounds.maxY - 80, width: 240, height: 75), from: active)
@@ -1532,7 +1532,7 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         }
         let initial = fixture("")
         let changed = fixture("Delayed caption")
-        let id = try XCTUnwrap(sidebarRows(changed).rows.first { $0.tail == "Delayed caption" }?.id)
+        let id = try XCTUnwrap(sidebarRows(changed).first { $0.second == .activity("Delayed caption") }?.id)
         window = NSWindow(contentRect: NSRect(x: -10000, y: -10000, width: 292, height: 500),
                           styleMask: [.titled], backing: .buffered, defer: false)
         let list = SidebarView()
@@ -1543,28 +1543,28 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         let shownAt = ProcessInfo.processInfo.systemUptime
         list.show(changed)
         let index = try XCTUnwrap(list.visualRows.firstIndex { $0.id == id })
-        XCTAssertEqual(list.visualRows[index].tail, "")
+        XCTAssertEqual(list.visualRows[index].second, .directory(path: fixtureHome + "/Workspace/kido", destination: nil))
         XCTAssertEqual(list.visualTable.rect(ofRow: index).height, 42)
-        try await wait("caption deadline") { list.visualRows[index].tail == "Delayed caption" }
+        try await wait("caption deadline") { list.visualRows[index].second == .activity("Delayed caption") }
         XCTAssertGreaterThanOrEqual(ProcessInfo.processInfo.systemUptime - shownAt, 0.2)
         XCTAssertEqual(list.visualTable.rect(ofRow: index).height, 42)
         let hiddenAt = ProcessInfo.processInfo.systemUptime
         list.show(initial)
-        XCTAssertEqual(list.visualRows[index].tail, "Delayed caption")
+        XCTAssertEqual(list.visualRows[index].second, .activity("Delayed caption"))
         XCTAssertEqual(list.visualTable.rect(ofRow: index).height, 42)
-        try await wait("caption hide deadline") { list.visualRows[index].tail.isEmpty }
+        try await wait("caption hide deadline") { list.visualRows[index].second == .directory(path: fixtureHome + "/Workspace/kido", destination: nil) }
         XCTAssertGreaterThanOrEqual(ProcessInfo.processInfo.systemUptime - hiddenAt, 0.2)
         XCTAssertEqual(list.visualTable.rect(ofRow: index).height, 42)
         list.show(changed)
-        XCTAssertEqual(list.visualRows[index].tail, "")
+        XCTAssertEqual(list.visualRows[index].second, .directory(path: fixtureHome + "/Workspace/kido", destination: nil))
         list.show(nil)
         list.show(changed)
-        XCTAssertEqual(list.visualRows[index].tail, "Delayed caption", "identical reconnect snapshot must show its caption immediately")
+        XCTAssertEqual(list.visualRows[index].second, .activity("Delayed caption"), "identical reconnect snapshot must show its caption immediately")
         XCTAssertEqual(list.visualTable.rect(ofRow: index).height, 42)
         list.show(nil)
         list.show(changed, pin: id)
         list.show(fixture("Reconnected caption"))
-        XCTAssertEqual(list.visualRows[index].tail, "Reconnected caption", "drag during reconnect must not seed old captions")
+        XCTAssertEqual(list.visualRows[index].second, .activity("Reconnected caption"), "drag during reconnect must not seed old captions")
     }
 
     func testNestedSidebarRowHeightsAndNavigation() throws {
@@ -1573,7 +1573,7 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
             sibling.pane.id = PaneID(number: 999); sibling.window = WindowID(number: 999)
             snapshot.sessions[0].nodes[0].item.children.append(.item(sibling))
         }
-        let rows = sidebarDividers(sidebarRows(live, expanded: Set(PaneProjection(live).placements.values.map { .pane($0.position.session, $0.position.pane) })).rows)
+        let rows = sidebarDividers(sidebarRows(live))
         XCTAssertTrue(rows.contains { $0.indent > 0 && $0.target != nil })
         let invalid = rows.filter { $0.height <= 0 }
         XCTAssertTrue(invalid.isEmpty, "NSTableView requires positive row heights: \(invalid.map(\.id))")
@@ -1584,7 +1584,6 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         window.contentView = list
         list.layoutSubtreeIfNeeded()
         list.show(live)
-        list.visualExpandAll()
         let table = list.visualTable
         XCTAssertEqual(table.numberOfRows, rows.count)
         for index in rows.indices {
@@ -1634,7 +1633,6 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         for dark in [false, true] {
             window.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
             list.show(fixture)
-            list.visualExpandAll()
             sidebarSnapshot(list, dark ? "claude-dark" : "claude-light")
         }
         let programs = list.visualRows.indices.filter { if case .program = list.visualRows[$0].id { true } else { false } }
@@ -1645,7 +1643,7 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
             XCTAssertFalse(list.tableView(list.visualTable, shouldSelectRow: index))
             list.visualJump(list.visualRows[index])
             let cell = try XCTUnwrap(list.visualTable.view(atColumn: 0, row: index, makeIfNecessary: true) as? SidebarCell)
-            XCTAssertEqual(cell.accessibilityRole(), list.visualRows[index].children == .leaf ? .staticText : .group)
+            XCTAssertEqual(cell.accessibilityRole(), .staticText)
             XCTAssertTrue(cell.accessibilityLabel()?.contains(list.visualRows[index].indicatorDescription) == true)
             XCTAssertTrue(cell.addWindow.isHidden)
         }
@@ -1668,7 +1666,6 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         for dark in [false, true] {
             window.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
             list.show(live)
-            list.visualExpandAll()
             sidebarSnapshot(list, dark ? "live-dark" : "live-light")
         }
         let nested = sidebarFixture { snapshot in
@@ -1685,7 +1682,6 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
             snapshot.sessions[0].nodes[1].group.children[1].pane.mark = .done
         }
         list.show(nested)
-        list.visualExpandAll()
         sidebarSnapshot(list, "active-parent-dark")
         window.appearance = NSAppearance(named: .aqua)
         sidebarSnapshot(list, "active-parent-light")
@@ -1693,7 +1689,6 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         sidebarSnapshot(list, "narrow-light")
         window.setContentSize(NSSize(width: 292, height: 680))
         list.show(sidebarFixture { $0.client = .init(session: SessionID(number: 0), window: WindowID(number: 786), pane: PaneID(number: 892)) })
-        list.visualExpandAll()
         sidebarSnapshot(list, "child-active-light")
         let subtree = sidebarFixture { snapshot in
             let zsh = fixtureNode(1991, "zsh", shellLifecycle(shellExit(0)), mark: .done)
@@ -1704,9 +1699,7 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
             snapshot.sessions[0].nodes[1].group.children[0].children[0] = .item(child)
             snapshot.client = .init(session: SessionID(number: 0), window: child.window, pane: child.id)
         }
-        XCTAssertTrue(sidebarRows(subtree).rows.filter(\.focused).isEmpty)
         list.show(subtree)
-        list.visualExpandAll()
         sidebarSnapshot(list, "focused-child-subtree-light")
         window.appearance = NSAppearance(named: .darkAqua)
         sidebarSnapshot(list, "focused-child-subtree-dark")
@@ -2014,7 +2007,7 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         func shown() -> [PaneID] {
             owner.testSession?.windows.values.first { !$0.isHidden }?.displayedPanes.filter { !$0.isHidden }.map(\.pane) ?? []
         }
-        let rows = { sidebarRows(owner.snapshot).rows.filter { $0.topLevel != nil } }
+        let rows = { sidebarRows(owner.snapshot).filter { $0.topLevel != nil } }
         try await wait("the zoomed pane alone is shown") {
             shown() == [first] && rows().contains { $0.target?.pane == second }
         }
@@ -2138,8 +2131,6 @@ func clipboardQueryScript(ready: String, result: String, query: String, deadline
         let selected = list.visualTable.selectedRow
         try key(123)
         try key(124)
-        XCTAssertEqual(list.visualRows.first { $0.id == rows[selected].id }?.children, .expanded)
-        try key(123)
         XCTAssertEqual(list.visualRows, rows)
         XCTAssertEqual(list.visualTable.selectedRow, selected)
         for row in list.visualRows where row.target != nil {

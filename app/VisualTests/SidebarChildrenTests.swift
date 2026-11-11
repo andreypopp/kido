@@ -31,12 +31,15 @@ private extension PaneView {
         let runtime = try XCTUnwrap(GhosttyRuntime(pasteboard: board))
         let owner = WindowOwner(host: .local, runtime: runtime, start: false)
         owner.testServerDir = dir
+        owner.sidebar.list.abbreviate = { _ in "~/Workspace/kido" }
+        SidebarView.visualNow = 0
         runtime.onConfigChange = { [weak owner] in owner?.updateAppearance() }
         runtime.onConfigReload = { [weak owner] font in owner?.testSession?.reloadConfig(font: font) }
         owner.window.setContentSize(NSSize(width: 1040, height: 720))
         owner.window.colorSpace = .displayP3
         PaneView.renderOffscreen = true
         addTeardownBlock { @MainActor in
+            SidebarView.visualNow = nil
             owner.close()
             board.releaseGlobally()
             PaneView.renderOffscreen = false
@@ -58,7 +61,7 @@ private extension PaneView {
         SidebarView.visualNow = sidebarChildrenNow
         defer { SidebarView.visualNow = previousNow }
         enum Scenario: CaseIterable {
-            case collapsed, expanded, narrow, recordsCollapsed, recordsExpanded, waitCleared, foldedSelected, sixPlus, singleIdle, hover, ellipsis, singleLong, narrowNine, paneWaitFolded, paneWaitExpanded, recordWaitFolded, recordWaitExpanded, closeHover, countOnly, summaryAbsent
+            case collapsed, expanded, narrow, recordsCollapsed, recordsExpanded, waitCleared, sixPlus, singleIdle, ellipsis, directories, directoryNarrow, remoteWindow, singleLong, narrowNine, paneWaitFolded, paneWaitExpanded, recordWaitFolded, recordWaitExpanded, closeHover, countOnly, summaryAbsent
             var configuration: (name: String, records: Bool, width: Int) {
                 switch self {
                 case .collapsed: ("stress-collapsed", false, 292)
@@ -67,15 +70,16 @@ private extension PaneView {
                 case .recordsCollapsed: ("records-collapsed", true, 292)
                 case .recordsExpanded: ("records-expanded", true, 292)
                 case .waitCleared: ("stress-wait-cleared", false, 292)
-                case .foldedSelected: ("stress-folded-selected", false, 292)
                 case .sixPlus: ("six-plus", false, 292)
                 case .singleIdle: ("single-idle", false, 292)
-                case .hover: ("stress-hover", false, 292)
                 case .ellipsis: ("activity-ellipsis", false, 292)
+                case .directories: ("directories", false, 292)
+                case .directoryNarrow: ("directory-narrow-circles", false, 150)
+                case .remoteWindow: ("remote-window-directories", false, 292)
                 case .singleLong: ("single-long-name", false, 236)
                 case .narrowNine: ("narrow-nine-hidden", false, 80)
                 case .countOnly: ("deep-count-only", false, 96)
-                case .summaryAbsent: ("deep-summary-absent", false, 80)
+                case .summaryAbsent: ("deep-summary-absent", false, 56)
                 case .paneWaitFolded: ("pane-wait-folded", false, 292)
                 case .paneWaitExpanded: ("pane-wait-expanded", false, 292)
                 case .recordWaitFolded: ("record-wait-folded", true, 292)
@@ -104,36 +108,52 @@ private extension PaneView {
                 switch scenario {
                 case .waitCleared:
                     snapshot.mapItems { if $0.id.number == 940 { $0.fixtureLifecycle = piLifecycle(); $0.pane.mark = .none_ } }
-                case .expanded, .foldedSelected:
+                case .expanded:
                     snapshot.client = .init(session: .init(number: 0), window: .init(number: 824), pane: .init(number: 936))
                 case .sixPlus, .singleIdle:
                     let count = scenario == .singleIdle ? 1 : 8
                     let children = (1...count).map { index in fixtureNode(UInt32(index), "child-\(index)", piLifecycle(index == 1 ? .idle(.init()) : .running(.init())), mark: index == 1 ? .none_ : .running) }
-                    snapshot = fixtureSnapshot(window: 0, pane: 0, [("main", [fixtureNode(0, "Parent", piLifecycle(), children: children)])])
+                    snapshot = fixtureSnapshot(window: 99, pane: 99, [("main", [fixtureNode(0, "Parent", piLifecycle(), children: children)])])
                 case .singleLong, .narrowNine, .countOnly, .summaryAbsent:
                     let count = scenario == .singleLong ? 1 : 9
                     let children = (1...count).map { fixtureNode(UInt32($0), "A very long hidden child name that must ellipsize", piLifecycle(.running(.init())), mark: .running) }
-                    snapshot = fixtureSnapshot(window: 0, pane: 0, [("main", [fixtureNode(0, "Parent", piLifecycle(.running(.init()), msg: "A very long activity caption that must ellipsize before the circles"), mark: .running, children: children)])])
+                    snapshot = fixtureSnapshot(window: 99, pane: 99, [("main", [fixtureNode(0, "Parent", piLifecycle(.running(.init()), msg: "A very long activity caption that must ellipsize before the circles"), mark: .running, children: children)])])
                     if scenario == .countOnly || scenario == .summaryAbsent {
-                        snapshot = fixtureSnapshot(window: 0, pane: 0, [("main", [fixtureNode(100, "Root", piLifecycle(), children: [fixtureNode(101, "Ancestor", piLifecycle(), children: snapshot.sessions[0].nodes)])])])
+                        snapshot = fixtureSnapshot(window: 101, pane: 101, [("main", [fixtureNode(100, "Root", piLifecycle(), children: [fixtureNode(101, "Ancestor", piLifecycle(), children: snapshot.sessions[0].nodes)])])])
                     }
+                case .directories, .remoteWindow:
+                    let ssh = Lifecycle.live(.ssh(.init(destination: "dev@devbox", pane: .terminal(.init(interactive: true, status: .init(phase: .idle(.init())))))))
+                    snapshot = fixtureSnapshot(window: 99, pane: 99, [("main", [
+                        .item(fixtureItem(1, cwd: "/Users/dev/Workspace/kido", "Terminal", shellLifecycle())),
+                        .item(fixtureItem(2, cwd: "/Users/dev/Documents", "Idle agent", piLifecycle(), mark: .none_)),
+                        .item(fixtureItem(3, cwd: "/Users/dev/Workspace/kido", "Busy agent", piLifecycle(.running(.init()), msg: "Refactoring the sidebar rows"), mark: .running)),
+                        .item(fixtureItem(4, cwd: "/var/log", "ssh dev@devbox", ssh)),
+                        .item(fixtureItem(5, cwd: "/etc", "Ended", .ended(.exited(.init(code: 2))))),
+                    ])])
+                case .directoryNarrow:
+                    let children = (1...3).map { fixtureNode(UInt32($0), "Child \($0)", piLifecycle(.running(.init())), mark: .running) }
+                    snapshot = fixtureSnapshot(window: 99, pane: 99, [("main", [.item(fixtureItem(0, cwd: "/Users/dev/Workspace/kido/app/Packages/SidebarFeed", "Terminal", shellLifecycle(), children: children))])])
                 case .ellipsis:
                     snapshot.mapItems { if $0.id.number == 940 { $0.fixtureLifecycle = piLifecycle(.waiting(.init()), msg: "Allow running make test in the worktree before continuing?") } }
                     snapshot.client = .init(session: .init(number: 0), window: .init(number: 824), pane: .init(number: 936))
                 case .paneWaitFolded, .paneWaitExpanded:
-                    snapshot = fixtureSnapshot(window: 0, pane: 0, [("main", [fixtureNode(0, "Parent", piLifecycle(), children: [fixtureNode(1, "Waiting child", piLifecycle(.waiting(.init(kind: .permission))), mark: .waiting)])])])
+                    snapshot = fixtureSnapshot(window: 0, pane: scenario == .paneWaitExpanded ? 0 : 99, [("main", [fixtureNode(0, "Parent", piLifecycle(), children: [fixtureNode(1, "Waiting child", piLifecycle(.waiting(.init(kind: .permission))), mark: .waiting)])])])
                 case .recordWaitFolded, .recordWaitExpanded:
-                    snapshot = fixtureSnapshot(window: 0, pane: 0, [("main", [.item(fixtureItem(0, "Claude Code", agentLifecycle(.running(.init())), records: [
+                    snapshot = fixtureSnapshot(window: 0, pane: scenario == .recordWaitExpanded ? 0 : 99, [("main", [.item(fixtureItem(0, "Claude Code", agentLifecycle(.running(.init())), records: [
                         .working(.init(id: "a", msg: "Working", title: "Record parent")),
                         .blocked(.init(id: "a/b", msg: "Approve command", title: "Waiting record"))
                     ]))])])
-                case .collapsed, .narrow, .recordsCollapsed, .recordsExpanded, .hover, .closeHover: break
+                case .recordsCollapsed:
+                    snapshot.client = .init(session: .init(number: 0), window: .init(number: 458), pane: .init(number: 937))
+                case .collapsed, .narrow, .recordsExpanded, .closeHover: break
                 }
+                if scenario == .remoteWindow { list.remoteHost = "devbox" }
                 list.show(snapshot)
+                if scenario == .recordsCollapsed {
+                    XCTAssertEqual(list.visualRows.compactMap { if case .program = $0.id { $0.title } else { nil } }, ["Investigate sidebar layout", "Approve test command"])
+                }
                 switch scenario {
                 case .countOnly, .summaryAbsent:
-                    list.visualSetExpanded(.pane(.init(number: 0), .init(number: 100)), true)
-                    list.visualSetExpanded(.pane(.init(number: 0), .init(number: 101)), true)
                     window.layoutIfNeeded()
                     list.layoutSubtreeIfNeeded()
                     list.visualTable.tile()
@@ -143,18 +163,7 @@ private extension PaneView {
                     cell.layoutSubtreeIfNeeded()
                     XCTAssertEqual(cell.children.isHidden, scenario == .summaryAbsent, "row width \(cell.bounds.width), leading \(list.visualRows[index].leading), children \(cell.children.frame)")
                     XCTAssertLessThanOrEqual(cell.children.frame.maxX, cell.bounds.width - 5)
-                case .expanded, .ellipsis: list.visualSetExpanded(.pane(.init(number: 0), .init(number: 502)), true)
-                case .recordsExpanded: list.visualSetExpanded(.pane(.init(number: 0), .init(number: 3000)), true)
-                case .paneWaitExpanded: list.visualSetExpanded(.pane(.init(number: 0), .init(number: 0)), true)
-                case .recordWaitFolded, .recordWaitExpanded:
-                    list.visualSetExpanded(.pane(.init(number: 0), .init(number: 0)), true)
-                    if scenario == .recordWaitExpanded { list.visualSetExpanded(.program(.init(number: 0), .init(number: 0), Data("a".utf8)), true) }
                 default: break
-                }
-                if scenario == .hover, let index = list.visualRows.firstIndex(where: { if case .folded = $0.children { true } else { false } }),
-                   let cell = list.visualTable.view(atColumn: 0, row: index, makeIfNecessary: true) as? SidebarCell {
-                    let event = try XCTUnwrap(NSEvent.enterExitEvent(with: .mouseEntered, location: .zero, modifierFlags: [], timestamp: 0, windowNumber: window.windowNumber, context: nil, eventNumber: 0, trackingNumber: 0, userData: nil))
-                    cell.disclosure.mouseEntered(with: event)
                 }
                 if scenario == .closeHover,
                    let index = list.visualRows.firstIndex(where: { $0.target != nil && $0.started != nil }),
@@ -219,7 +228,6 @@ private extension PaneView {
                 try await theme(fixture.runtime, dark: dark)
                 for pane in owner.testSession?.windows.values.flatMap(\.displayedPanes) ?? [] where !pane.isHidden { await presentedFrame(pane) }
                 owner.testReceive(feed(split: split))
-                owner.sidebar.list.visualSetExpanded(.pane(child.session, .init(number: 1)), true)
                 owner.window.layoutIfNeeded()
                 owner.window.contentView?.layoutSubtreeIfNeeded()
                 owner.window.displayIfNeeded()
@@ -238,7 +246,7 @@ private extension PaneView {
         SidebarView.visualNow = sidebarChildrenNow
         defer { SidebarView.visualNow = previousNow }
         for dark in [false, true] {
-            for name in ["single", "records-and-children", "folded-focus", "keyboard-other", "keyboard-focused", "scroll-clipped"] {
+            for name in ["single", "records-and-children", "keyboard-other", "keyboard-focused", "scroll-clipped"] {
                 let window = NSWindow(contentRect: NSRect(x: -10000, y: -10000, width: 292, height: name == "scroll-clipped" ? 150 : 640), styleMask: [.titled], backing: .buffered, defer: false)
                 window.isReleasedWhenClosed = false
                 window.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
@@ -254,9 +262,9 @@ private extension PaneView {
                         first, fixtureItem(3001, window: 3000, "Second pane", shellLifecycle()),
                     ]))
                 }
-                if name == "folded-focus" { snapshot.client = .init(session: .init(number: 0), window: .init(number: 824), pane: .init(number: 936)) }
+                if name == "records-and-children" { snapshot.client = .init(session: .init(number: 0), window: .init(number: 3000), pane: .init(number: 3000)) }
+                if name == "scroll-clipped" { snapshot.client = .init(session: .init(number: 0), window: .init(number: 824), pane: .init(number: 936)) }
                 list.show(snapshot)
-                if name == "records-and-children" || name == "scroll-clipped" { list.visualExpandAll() }
                 if name.hasPrefix("keyboard") {
                     list.focus()
                     let row = try XCTUnwrap(list.visualRows.firstIndex { name == "keyboard-focused" ? $0.focused : $0.target?.pane.number == 905 })
@@ -464,7 +472,7 @@ private extension PaneView {
         }
     }
 
-    func testServerRestartResetsSlotsExpansionsAndSurfaces() async throws {
+    func testServerRestartResetsSlotsAndSurfaces() async throws {
         let fixture = try await ownerFixture()
         let owner = fixture.owner
         let root = PaneID(number: 1), window = WindowID(number: 1)
@@ -475,7 +483,6 @@ private extension PaneView {
         try await wait("child shown before restart") { owner.testModel?.selection.pane == child.pane }
         owner.paneCommand(.parent, child.pane)
         try await wait("parent shown before restart") { owner.testModel?.selection.pane == root && (owner.testSession?.pane(root)?.visualRestores ?? 0) > 0 }
-        owner.sidebar.list.visualSetExpanded(.pane(child.session, root), true)
         let old = try XCTUnwrap(owner.testSession?.pane(root))
         let instance = try XCTUnwrap(owner.snapshot?.serverInstance)
         try await ko(["kill-server"], dir: fixture.dir)
@@ -490,27 +497,25 @@ private extension PaneView {
             try await ko(["api", "-X", "POST", "--input", input, "/panes"], dir: fixture.dir)
         }
         try await wait("new children in semantic snapshot") { owner.projection.items[root]?.item.children.count == 3 }
-        XCTAssertFalse(owner.sidebar.list.visualRows.contains { $0.target?.pane == PaneID(number: 4) })
         owner.paneCommand(.child, root)
         try await wait("restart uses first child rather than a reused remembered id") { owner.testModel?.selection.pane == PaneID(number: 4) }
     }
 
     func testFoldedDoneUsesIdleDotAndSubtreeUsesRunningCircle() throws {
-        let rows = sidebarRows(sidebarChildrenFixture()).rows
+        let rows = sidebarRows(sidebarChildrenFixture())
         let parent = try XCTUnwrap(rows.first { $0.target?.pane == PaneID(number: 502) })
         let waiting = try XCTUnwrap(rows.first { $0.target?.pane == PaneID(number: 940) })
-        guard case .folded(let first) = parent.children, case .folded(let second) = waiting.children else { return XCTFail("missing folded indicators") }
-        XCTAssertEqual(first.map(\.status), [.running, .quiet])
-        XCTAssertEqual(second.map(\.status), [.running, .quiet])
+        XCTAssertEqual(parent.hidden.map(\.status), [.running, .quiet])
+        XCTAssertEqual(waiting.hidden.map(\.status), [.running, .quiet])
         let window = NSWindow(contentRect: NSRect(x: -10000, y: -10000, width: 44, height: 12), styleMask: [], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
         window.appearance = NSAppearance(named: .aqua)
         defer { window.close() }
         let host = NSView(frame: NSRect(x: 0, y: 0, width: 44, height: 12))
         window.contentView = host
-        for (index, content) in [parent.children, waiting.children].enumerated() {
+        for (index, hidden) in [parent.hidden, waiting.hidden].enumerated() {
             let control = SidebarChildren(SidebarFonts())
-            if case .folded(let hidden) = content { control.content = hidden }
+            control.content = hidden
             control.frame = NSRect(x: index * 24, y: 0, width: 20, height: 12)
             host.addSubview(control)
         }
@@ -534,34 +539,23 @@ private extension PaneView {
         control.mouseDown(with: down)
     }
 
-    func testWaitOnlyDisclosureClicks() throws {
-        for records in [false, true] {
-            let window = NSWindow(contentRect: NSRect(x: -10000, y: -10000, width: 292, height: 300), styleMask: [.titled], backing: .buffered, defer: false)
-            window.isReleasedWhenClosed = false
-            defer { window.close() }
-            let list = SidebarView()
-            window.contentView = list
-            let snapshot = records
-                ? fixtureSnapshot(window: 0, pane: 0, [("main", [.item(fixtureItem(0, "Claude", agentLifecycle(.running(.init())), records: [.working(.init(id: "a")), .blocked(.init(id: "a/b"))]))])])
-                : fixtureSnapshot(window: 0, pane: 0, [("main", [fixtureNode(0, "Parent", piLifecycle(), children: [fixtureNode(1, "Wait", piLifecycle(.waiting(.init())), mark: .waiting)])])])
-            list.show(snapshot)
-            let id: SidebarRow.ID = records ? .program(.init(number: 0), .init(number: 0), Data("a".utf8)) : .pane(.init(number: 0), .init(number: 0))
-            let ids = list.visualRows.map(\.id)
-            var navigations = 0
-            list.navigate = { _, _ in navigations += 1 }
-            for expanded in [true, false] {
-                let index = try XCTUnwrap(list.visualRows.firstIndex { $0.id == id })
-                let cell = try XCTUnwrap(list.visualTable.view(atColumn: 0, row: index, makeIfNecessary: true) as? SidebarCell)
-                XCTAssertTrue(cell.children.isHidden)
-                try click(cell.disclosure)
-                XCTAssertEqual(list.visualRows.map(\.id), ids)
-                XCTAssertEqual(list.visualRows[index].children, expanded ? .expanded : .folded([]))
-            }
-            XCTAssertEqual(navigations, 0)
+    func testRecordWordFollowsDisplayedStatus() throws {
+        let list = SidebarView()
+        var snapshot = fixtureSnapshot(window: 0, pane: 0, [("main", [.item(fixtureItem(0, "Claude", agentLifecycle(.running(.init())), records: [
+            .done(.init(id: "seen")), .error(.init(id: "failed", msg: "boom")),
+        ]))])])
+        snapshot.mapItems { $0.pane.recordsSeen = true }
+        list.show(snapshot)
+        let labels = list.visualRows.filter { if case .program = $0.id { true } else { false } }.map { row in
+            let cell = SidebarCell(SidebarFonts())
+            cell.configure(row, now: 0)
+            return cell.accessibilityLabel() ?? ""
         }
+        XCTAssertTrue(labels[1].contains("idle"), labels[1])
+        XCTAssertTrue(labels[0].contains("boom"), labels[0])
     }
 
-    func testDisclosureControlsAndProgramRowsDoNotNavigate() throws {
+    func testProgramRowsDoNotNavigate() throws {
         let window = NSWindow(contentRect: NSRect(x: -10000, y: -10000, width: 292, height: 600), styleMask: [.titled], backing: .buffered, defer: false)
         window.isReleasedWhenClosed = false
         defer { window.close() }
@@ -569,33 +563,26 @@ private extension PaneView {
         list.captionDelay = 0
         window.contentView = list
         var snapshot = sidebarChildrenFixture(records: true)
+        snapshot.client = .init(session: .init(number: 0), window: .init(number: 3000), pane: .init(number: 3000))
         snapshot.mapItems { if $0.id.number == 3000 { $0.pane.status?.programStatus.records.append(.working(.init(id: "agent-b/nested", title: "Nested record"))) } }
         list.show(snapshot)
         var navigations = 0
         list.navigate = { _, _ in navigations += 1 }
-        let root = try XCTUnwrap(list.visualRows.firstIndex { $0.target?.pane.number == 3000 })
-        let rootCell = try XCTUnwrap(list.visualTable.view(atColumn: 0, row: root, makeIfNecessary: true) as? SidebarCell)
-        try click(rootCell.children)
         let record = try XCTUnwrap(list.visualRows.firstIndex { if case .program(_, _, let id) = $0.id { id == Data("agent-b".utf8) } else { false } })
         let recordCell = try XCTUnwrap(list.visualTable.view(atColumn: 0, row: record, makeIfNecessary: true) as? SidebarCell)
         XCTAssertFalse(list.tableView(list.visualTable, shouldSelectRow: record))
         XCTAssertTrue(recordCell.close.isHidden)
-        XCTAssertEqual(recordCell.accessibilityRole(), .group)
-        XCTAssertTrue(recordCell.disclosure.isAccessibilityElement())
-        try click(recordCell.disclosure)
+        XCTAssertEqual(recordCell.accessibilityRole(), .staticText)
         XCTAssertTrue(list.visualRows.contains { $0.title == "Nested record" })
         list.visualJump(list.visualRows[record])
         XCTAssertEqual(navigations, 0)
-        list.visualSetExpanded(.pane(SessionID(number: 0), PaneID(number: 3000)), false)
-        XCTAssertFalse(list.visualRows.contains { $0.title == "Nested record" })
-        XCTAssertTrue(list.visualRows.contains { $0.title == "Approve test command" })
         list.focus()
         list.select(snapshot.client)
-        for (code, visible) in [(124, true), (123, false)] {
-            let key = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0, windowNumber: window.windowNumber, context: nil, characters: "", charactersIgnoringModifiers: "", isARepeat: false, keyCode: UInt16(code)))
+        for code: UInt16 in [123, 124] {
+            let key = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0, windowNumber: window.windowNumber, context: nil, characters: "", charactersIgnoringModifiers: "", isARepeat: false, keyCode: code))
+            let rows = list.visualRows
             list.visualTable.keyDown(with: key)
-            XCTAssertEqual(list.visualRows.contains { $0.title == "Nested record" }, visible)
-            XCTAssertTrue(list.visualRows.contains { $0.title == "Approve test command" })
+            XCTAssertEqual(list.visualRows, rows, "Left and Right do nothing")
         }
         var hierarchy: [String] = []
         list.paneCommand = { command, pane in
@@ -795,11 +782,8 @@ private extension PaneView {
         try await wait("unzoom restores the independent child memberships") {
             owner.testModel?.layout.layout.window(root)?.zoom == nil && fitted() && reports.last.map { Set($0) == Set([root, first.window, second.window]) } == true
         }
-        XCTAssertFalse(owner.sidebar.list.visualRows.contains { $0.target?.pane == second.pane })
-        owner.sidebar.list.visualSetExpanded(.pane(second.session, PaneID(number: 2)), true)
         XCTAssertTrue(owner.sidebar.list.visualRows.contains { $0.target?.pane == second.pane && $0.focused })
-        owner.sidebar.list.visualSetExpanded(.pane(first.session, PaneID(number: 1)), true)
-        XCTAssertTrue(owner.sidebar.list.visualRows.contains { $0.target?.pane == first.pane && !$0.focused })
+        XCTAssertFalse(owner.sidebar.list.visualRows.contains { $0.target?.pane == first.pane })
         for dark in [false, true] {
             try await theme(fixture.runtime, dark: dark)
             for pane in owner.testSession?.windows[root]?.displayedPanes ?? [] { await presentedFrame(pane) }
@@ -810,8 +794,6 @@ private extension PaneView {
             let content = try XCTUnwrap(owner.window.contentView?.superview)
             checkSnapshot { verifySnapshot(of: content, as: .image, named: "unfocused-shown-child-\(dark ? "dark" : "light")", record: $0) }
         }
-        owner.sidebar.list.visualSetExpanded(.pane(second.session, PaneID(number: 2)), false)
-        XCTAssertFalse(owner.sidebar.list.visualRows.contains { $0.target?.pane == second.pane })
         XCTAssertEqual(owner.testModel?.selection.pane, second.pane)
         let replaced = try XCTUnwrap(owner.testSession?.pane(second.pane))
         owner.paneCommand(.parent, second.pane)

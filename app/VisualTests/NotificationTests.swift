@@ -32,14 +32,14 @@ import XCTest
         let pane = PaneID(number: 2)
         try await koUntil(dir, "/panes", contains: "blocked")
         owner.start()
-        try await wait("notification baseline") { !owner.feedFresh && sidebarRows(owner.snapshot).rows.contains { $0.target?.pane == pane && $0.status == .waiting } }
+        try await wait("notification baseline") { !owner.feedFresh && sidebarRows(owner.snapshot).contains { $0.target?.pane == pane && $0.status == .waiting } }
         XCTAssertEqual(poster.posts.count, postsBefore)
         XCTAssertEqual(poster.authorizeCalls, max(1, authorizationBefore))
         Notifier.shared.connected()
         XCTAssertEqual(poster.authorizeCalls, max(1, authorizationBefore))
 
         try tty.write(contentsOf: Data("\u{1b}]7501;state=working:app=builder\u{7}".utf8))
-        try await wait("waiting left") { sidebarRows(owner.snapshot).rows.contains { $0.target?.pane == pane && $0.status == .running } }
+        try await wait("waiting left") { sidebarRows(owner.snapshot).contains { $0.target?.pane == pane && $0.status == .running } }
         try tty.write(contentsOf: Data("\u{1b}]7501;state=blocked:app=builder:msg=QXBwcm92ZQ==\u{7}".utf8))
         try await wait("waiting posts") { poster.posts.count == postsBefore + 1 }
         let notice = try XCTUnwrap(poster.posts.last)
@@ -109,7 +109,7 @@ import XCTest
         let instance = try XCTUnwrap(first.snapshot?.serverInstance)
         let data = try JSONSerialization.data(withJSONObject: ["host": "local", "instance": instance.description, "position": ["session": ids[0], "window": ids[1], "pane": ids[2]]])
         let target = try JSONDecoder().decode(NoticeTarget.self, from: data)
-        first.perform(.jump(try XCTUnwrap(sidebarRows(first.snapshot).rows.first { $0.target?.session == SessionID(number: 1) }?.target)))
+        first.perform(.jump(try XCTUnwrap(sidebarRows(first.snapshot).first { $0.target?.session == SessionID(number: 1) }?.target)))
         try await wait("first stays in original session") { first.snapshot?.client.session == SessionID(number: 1) }
         let second = try XCTUnwrap(app.open(.local, start: false))
         second.testServerDir = dir
@@ -118,9 +118,9 @@ import XCTest
         let client = try XCTUnwrap(second.testClient)
         _ = try await Task.detached { try client.edit(.addWindow(KoSchema.EditAddWindow(after: WindowID(number: 2), new: KoSchema.CreatePane(), session: SessionID(number: 2)))) }.value
         try await wait("other target-session window observed") {
-            sidebarRows(second.snapshot).rows.contains { $0.target?.session == target.position.session && $0.target?.pane != target.position.pane }
+            sidebarRows(second.snapshot).contains { $0.target?.session == target.position.session && $0.target?.pane != target.position.pane }
         }
-        let otherPosition = try XCTUnwrap(sidebarRows(second.snapshot).rows.first { $0.target?.session == target.position.session && $0.target?.pane != target.position.pane }?.target)
+        let otherPosition = try XCTUnwrap(sidebarRows(second.snapshot).first { $0.target?.session == target.position.session && $0.target?.pane != target.position.pane }?.target)
         second.perform(.jump(otherPosition))
         try await wait("second in target session") { second.snapshot?.client.pane == otherPosition.pane }
         app.route(target)
@@ -135,12 +135,11 @@ import XCTest
         let childData = try JSONSerialization.data(withJSONObject: childObject)
         let childTarget = try JSONDecoder().decode(NoticeTarget.self, from: childData)
         try await wait("folded child in the full semantic tree") { PaneProjection(second.snapshot).placements[placement.pane] != nil }
-        XCTAssertFalse(sidebarRows(second.snapshot).rows.contains { $0.target?.pane == placement.pane })
         app.route(childTarget)
         try await wait("child notification uses its ancestor slot and focuses the right owner") { second.snapshot?.client.pane == placement.pane && (second.window.firstResponder as? PaneView)?.pane == placement.pane }
         XCTAssertEqual(first.snapshot?.client.session, SessionID(number: 1))
         XCTAssertEqual(second.navigation.window, target.position.window)
-        XCTAssertFalse(second.sidebar.list.visualRows.contains { $0.target?.pane == placement.pane })
+        XCTAssertTrue(second.sidebar.list.visualRows.contains { $0.target?.pane == placement.pane })
 
         for (mode, cold) in zip(["matching", "mismatched", "expired"], coldApps) {
             let pending: NoticeTarget

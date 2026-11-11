@@ -6,13 +6,13 @@ import KoModel
 private let s0 = SessionID(number: 0), s1 = SessionID(number: 1)
 private func w(_ n: UInt32) -> WindowID { WindowID(number: n) }
 
-private func tree(instance: Int = 12345, sessions: [Int] = [0, 1]) -> Snapshot {
+private func tree(instance: Int = 12345, sessions: [Int] = [0, 1], client: Int = 0) -> Snapshot {
     makeSnapshot([
         pane(0, records: [.working(.init(id: "task", msg: "step", progress: 10, title: "Task"))], serial: 1,
              children: [pane(1, children: [pane(2)])]),
         group(3, [pane(3, children: [pane(5)]), pane(4, window: 3)]),
         pane(6),
-    ], sessions: sessions, instance: "\(instance)/1780000000")
+    ], client: client, sessions: sessions, instance: "\(instance)/1780000000")
 }
 
 @Test func placingRelativeToRemainingSiblings() {
@@ -27,13 +27,13 @@ private func tree(instance: Int = 12345, sessions: [Int] = [0, 1]) -> Snapshot {
 }
 
 @Test func rootMovesWithItsWholeSubtree() throws {
-    let snapshot = tree()
-    let rows = expandedRows(snapshot).filter { $0.id.session == s0 }
+    let snapshot = tree(client: 2)
+    let rows = renderedRows(snapshot).filter { $0.id.session == s0 }
     let moved = try #require(snapshot.reordered(.window(s0, w(0), relativeTo: w(6), .after)))
-    let after = expandedRows(moved).filter { $0.id.session == s0 }
+    let after = renderedRows(moved).filter { $0.id.session == s0 }
     func block(_ rows: [SidebarRow], _ root: UInt32) -> [SidebarRow] { rows.filter { $0.root == w(root) } }
     #expect(block(rows, 0).count == 4, "pane, its program record, and two nested runs")
-    #expect(block(rows, 3).count == 3, "both group panes and the group's nested run")
+    #expect(block(rows, 3).count == 2, "both group panes, the nested run folded")
     #expect(after.count == rows.count)
     #expect(after.first == rows.first)
     #expect(after.last == rows.last)

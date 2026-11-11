@@ -29,7 +29,7 @@ private func step(_ state: inout NotifierState, _ nodes: [Node], owner: String =
     let effects = state.step(owner: "a", host: "local", snapshot: snapshot, fresh: false, shown: [], appActive: false)
     #expect(effects.withdraw.count == 1)
     #expect(effects.post.isEmpty)
-    #expect(sidebarRows(snapshot).rows.contains { $0.status == .error })
+    #expect(sidebarRows(snapshot).contains { $0.status == .error })
     #expect(state.step(owner: "a", host: "local", snapshot: snapshot, fresh: false, shown: [], appActive: false).post.isEmpty)
 }
 
@@ -105,8 +105,8 @@ func notificationWithdraws(cause: String) throws {
     for owner in ["a", "b"] { #expect(try step(&state, nodes, owner: owner, seen: true).withdraw.count == 1) }
     #expect(try step(&state, nodes, fresh: true, seen: true).post.isEmpty)
     #expect(try step(&state, nodes, seen: true).post.isEmpty)
-    #expect(!sidebarRows(markedSeen(makeSnapshot(nodes))).rows.contains { $0.status == .error })
-    #expect(sidebarRows(makeSnapshot(nodes)).rows.contains { $0.status == .error })
+    #expect(!sidebarRows(markedSeen(makeSnapshot(nodes))).contains { $0.status == .error })
+    #expect(sidebarRows(makeSnapshot(nodes)).contains { $0.status == .error })
 }
 
 @Test func notificationTopLevelPanePosts() throws {
@@ -144,7 +144,7 @@ private func paneGroup() -> Node {
                  pane(5, lifecycle: terminal(running()), mark: .running), pane(6, lifecycle: terminal(.unknown)),
                  pane(7, lifecycle: terminal(.pending(.init(last: .init(code: 130, command: "cancel", endedAt: since + 1_000_000_000, startedAt: since)))), mark: .failed)]
     #expect(try step(&state, nodes).post.isEmpty)
-    #expect(sidebarRows(makeSnapshot(nodes)).rows.contains { $0.id == .pane(SessionID(number: 0), PaneID(number: 1)) && $0.status == .error })
+    #expect(sidebarRows(makeSnapshot(nodes)).contains { $0.id == .pane(SessionID(number: 0), PaneID(number: 1)) && $0.status == .error })
 }
 
 @Test(arguments: ["unknown", "idle", "pending", "running", "fullscreen"])
@@ -166,7 +166,7 @@ func notificationReportsFollowIndicator(phaseName: String) throws {
     #expect(try step(&state, quiet).post.isEmpty)
     let empty = [pane(1, lifecycle: terminal(phase, report: report(idle())))]
     #expect(try step(&state, empty).post.isEmpty)
-    #expect(!sidebarRows(makeSnapshot(empty)).rows.contains { $0.status == .error })
+    #expect(!sidebarRows(makeSnapshot(empty)).contains { $0.status == .error })
 }
 
 @Test func notificationOwnersAndForgetAreIndependent() throws {

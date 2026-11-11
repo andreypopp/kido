@@ -927,8 +927,8 @@ not after that agent's whole window (design.md, "The sidebar tree").
 The terminal client shows the nesting as one column of indentation
 for each level. Kido.app's sidebar (design-app.md, "Sidebar" and
 "Folded children") indents each level by 15pt and folds a pane's
-children by default into circles on its row, with a chevron that opens
-them.
+children into circles on its row unless the pane or one of its
+descendants is focused.
 
 The anchor is the `parent` of the child's pane row, which the server
 sets to the spawner's pane when it creates the pane. The edge stays
