@@ -14,15 +14,14 @@ UploadTests/testImagePasteUploadsOnePrivatePNGAndPastesItsPath  # fix: PNG and T
 UploadTests/testLocalDropPastesOriginalPathsThroughThePastePath  # fix: seven sheet round trips across fifteen drop cases
 UploadTests/testPromiseReplyAfterDeadlineCannotPasteOrLeaveFiles  # fix: shortened promise timeout plus a late reply after the expiry event
 UploadTests/testPromiseSweepsPreserveAnotherProcessLock  # fix: spawns a python lock helper and waits for it twice
-UploadTests/testTooLargePromiseIsRefusedAndRemoved  # fix: fresh Ghostty runtime and window for one refusal wait
-UploadTests/testTooManyPromisesAreRefusedBeforeCallingReceivers  # fix: fresh Ghostty runtime and window for one refusal wait
-VisualTests/testCaptionDisplayDelay  # inherent: waits out two fixed 0.2 s sidebar caption deadlines
-VisualTests/testCopySearchBarFocusAndExits  # fix: the 400 ms quiet window is the check; a search restart follows a 0.3 s connection deadline
-VisualTests/testFloatingSidebar  # inherent: a second WindowOwner and floating-sidebar layout round trips
-VisualTests/testOSC52ClipboardConsentAndPrivatePaneTransport  # fix: a real python clipboard query child plus consent-sheet round trips
-VisualTests/testPaneChromeSnapshots  # fix: two themes and about fourteen terminal snapshot compares
-VisualTests/testPendingInputRefusalsAndLateWork  # fix: many sheet, conversion and late-reply waits on a synthetic pane
-VisualTests/testWindowTabs  # fix: three new-window, one split and one rename round trip plus tab-layout waits
+UploadTests/testPromiseLimitsRefuseTooManyAndTooLargeFiles  # fix: fresh Ghostty runtime and window plus two refusal waits
+SidebarNavigationTests/testCaptionDisplayDelay  # inherent: waits out two fixed 0.2 s sidebar caption deadlines
+CopyModeTests/testCopySearchBarFocusAndExits  # fix: the 400 ms quiet window is the check; a search restart follows a 0.3 s connection deadline
+SidebarNavigationTests/testFloatingSidebar  # inherent: a second WindowOwner and floating-sidebar layout round trips
+AppFocusTests/testOSC52ClipboardConsentAndPrivatePaneTransport  # fix: a real python clipboard query child plus consent-sheet round trips
+CopyModeTests/testPaneChromeSnapshots  # fix: two themes and about fourteen terminal snapshot compares
+CopyModeTests/testPendingInputRefusalsAndLateWork  # fix: many sheet, conversion and late-reply waits on a synthetic pane
+SidebarNavigationTests/testWindowTabs  # fix: three new-window, one split and one rename round trip plus tab-layout waits
 RendererTests/testAnimatedShaderKeepsKittyDeadlines  # inherent: four image changes check the 0.4 s animation cadence
 RendererTests/testIdleFocusedPaneWithoutCursorBlinkDoesNotBlink  # inherent: a fixed 1.3 s window checks two blink intervals
 RendererTests/testThirtyTwoOffscreenSurfacesStayIdleAfterChurn  # inherent: builds 32 surfaces and samples idle CPU over fixed windows

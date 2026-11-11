@@ -271,7 +271,8 @@ test("a child ends itself when its parent pane is gone, dead or held by another 
       });
       assert.equal(s.shutdowns(), 0);
       fx.setPanes([selfPane({ parent: "pane_2" }), agentPane({ pane: "pane_2", session: "boss-session", name: "boss" })]);
-      await new Promise((resolve) => setTimeout(resolve, 60));
+      const live = layouts();
+      await pollUntil(() => layouts() >= live + 3, 1000, "ticks with a living parent");
       assert.equal(s.shutdowns(), 0, "a living parent keeps the child");
       fx.setPanes([selfPane({ parent: "pane_2" }), agentPane({ pane: "pane_2", session: "boss-session", name: "boss", dead: exited(0) })]);
       await pollUntil(() => s.shutdowns() === 1, 2000, "a dead parent");

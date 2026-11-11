@@ -21,7 +21,7 @@ import SidebarFeed
     @objc func invoke(_ sender: NSMenuItem) { keys.append(sender.keyEquivalent) }
 }
 
-extension VisualTests {
+@MainActor final class WebviewPaneTests: AppWindowCase {
     private func webviewEqual(_ web: WKWebView, _ script: String, _ expected: String) async throws {
         let actual = try await webviewJS(web, script)
         XCTAssertEqual(actual, expected, script)
@@ -42,37 +42,6 @@ extension VisualTests {
         XCTAssertTrue(result.contains("hello"), result)
         try await webviewEqual(web, "window.ready", "true")
         return pane
-    }
-
-    @discardableResult
-    func webviewSnapshot(_ pane: PaneView, _ name: String, testName: String = #function, afterCapture: (() -> Void)? = nil) async throws -> (chrome: NSBitmapImageRep, page: NSBitmapImageRep) {
-        let webview = try XCTUnwrap(pane.webviewView)
-        window.contentView?.layoutSubtreeIfNeeded()
-        webview.layoutSubtreeIfNeeded()
-        let done = expectation(description: "WebKit snapshot")
-        var image: NSImage?
-        webview.browser.takeSnapshot(with: nil) { result, error in
-            XCTAssertNil(error)
-            image = result
-            done.fulfill()
-        }
-        await fulfillment(of: [done], timeout: 10)
-        afterCapture?()
-        let overlay = NSImageView(frame: webview.browser.frame)
-        overlay.image = try XCTUnwrap(image)
-        overlay.imageScaling = .scaleAxesIndependently
-        webview.addSubview(overlay)
-        defer { overlay.removeFromSuperview() }
-        try await snapshot(name, testName: testName)
-        let chrome = try XCTUnwrap(webview.superview)
-        let terminal = try XCTUnwrap(terminal)
-        let bitmap = try XCTUnwrap(terminal.bitmapImageRepForCachingDisplay(in: terminal.bounds))
-        terminal.cacheDisplay(in: terminal.bounds, to: bitmap)
-        let scale = CGFloat(bitmap.pixelsWide) / terminal.bounds.width
-        let area = terminal.convert(chrome.bounds, from: chrome)
-        let cropped = try XCTUnwrap(bitmap.cgImage?.cropping(to: CGRect(x: area.minX * scale, y: area.minY * scale, width: area.width * scale, height: area.height * scale)))
-        let page = try XCTUnwrap(NSBitmapImageRep(data: try XCTUnwrap(image?.tiffRepresentation))?.converting(to: .sRGB, renderingIntent: .default))
-        return (try XCTUnwrap(NSBitmapImageRep(cgImage: cropped).converting(to: .sRGB, renderingIntent: .default)), page)
     }
 
     func testWebviewLinks() async throws {
@@ -424,7 +393,8 @@ extension VisualTests {
                 window.orderBack(nil)
                 defer { window.orderOut(nil) }
                 _ = try await webviewJS(web, "new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(()=>resolve(true))))")
-                let captured = try await webviewSnapshot(pane, "\(name)-\(dark ? "dark" : "light")", afterCapture: { self.window.orderOut(nil) })
+                let baseline = ["refocused": "focused", "not-key": "unfocused"][name] ?? name
+                let captured = try await webviewSnapshot(pane, "\(baseline)-\(dark ? "dark" : "light")", afterCapture: { self.window.orderOut(nil) })
                 let image = captured.chrome
                 let color = try XCTUnwrap(image.colorAt(x: image.pixelsWide / 2, y: image.pixelsHigh / 2))
                 for (actual, value) in zip([color.redComponent, color.greenComponent, color.blueComponent], [expected.redComponent, expected.greenComponent, expected.blueComponent]) {
@@ -501,12 +471,13 @@ extension VisualTests {
                         view.browser.needsDisplay = true
                         view.browser.displayIfNeeded()
                         let name = "keep-\(keep)-\(dark ? "dark" : "light")-\(shifted ? "shifted" : "focused")-\(exposure)"
+                        let baseline = "\(dark ? "dark" : "light")-\(shifted ? "shifted" : "focused")"
                         let bitmap = try XCTUnwrap(view.bitmapImageRepForCachingDisplay(in: view.bounds))
                         view.cacheDisplay(in: view.bounds, to: bitmap)
                         let image = try XCTUnwrap(bitmap.converting(to: .sRGB, renderingIntent: .default))
                         let captured = NSImage(size: view.bounds.size)
                         captured.addRepresentation(image)
-                        checkSnapshot { verifySnapshot(of: captured, as: .image, named: name, record: $0, snapshotDirectory: checkoutRoot.appendingPathComponent("app/VisualTests/__Snapshots__/VisualTests").path) }
+                        checkSnapshot { verifySnapshot(of: captured, as: .image, named: baseline, record: $0) }
                         let pixel = try XCTUnwrap(image.colorAt(x: image.pixelsWide / 2, y: image.pixelsHigh / 2))
                         let paper = try XCTUnwrap(pane.paperColor.usingColorSpace(.sRGB))
                         for (actual, expected) in zip([pixel.redComponent, pixel.greenComponent, pixel.blueComponent], [paper.redComponent, paper.greenComponent, paper.blueComponent]) {

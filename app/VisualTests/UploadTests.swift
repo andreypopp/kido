@@ -165,17 +165,6 @@ private final class PromisedFile: NSFilePromiseReceiver, @unchecked Sendable {
         XCTAssertNil(notice(owner))
     }
 
-    func testTooLargePromiseIsRefusedAndRemoved() async throws {
-        let (owner, pane, _, input, _) = try localPane()
-        let promise = PromisedFile()
-        promise.size = Upload.fileLimit + 1
-        owner.uploadPromises([promise], to: pane)
-        try await wait("oversized promise refused", within: 2) { !owner.uploading(pane) }
-        XCTAssertTrue(try XCTUnwrap(notice(owner)).contains("larger than 64 MiB"))
-        XCTAssertTrue(input.data.isEmpty)
-        XCTAssertFalse(FileManager.default.fileExists(atPath: try XCTUnwrap(promise.destination).deletingLastPathComponent().path))
-    }
-
     func testSeveralPromisedFilesReplyOnTheOperationQueue() async throws {
         let (owner, pane, _, input, root) = try localPane()
         let promises = (0..<3).map { index in
@@ -243,7 +232,7 @@ private final class PromisedFile: NSFilePromiseReceiver, @unchecked Sendable {
         XCTAssertNil(notice(owner))
     }
 
-    func testTooManyPromisesAreRefusedBeforeCallingReceivers() async throws {
+    func testPromiseLimitsRefuseTooManyAndTooLargeFiles() async throws {
         let (owner, pane, _, input, _) = try localPane()
         let promises = (0...Upload.countLimit).map { _ in PromisedFile() }
         owner.uploadPromises(promises, to: pane)
@@ -252,6 +241,14 @@ private final class PromisedFile: NSFilePromiseReceiver, @unchecked Sendable {
         XCTAssertTrue((try? FileManager.default.contentsOfDirectory(atPath: Upload.promiseDirectory.path).isEmpty) ?? true)
         XCTAssertTrue(try XCTUnwrap(notice(owner)).contains("at most 16 files"))
         XCTAssertTrue(input.data.isEmpty)
+        XCTAssertNil(notice(owner), "the count refusal's notice is dismissed")
+        let large = PromisedFile()
+        large.size = Upload.fileLimit + 1
+        owner.uploadPromises([large], to: pane)
+        try await wait("oversized promise refused", within: 2) { !owner.uploading(pane) }
+        XCTAssertTrue(try XCTUnwrap(notice(owner)).contains("larger than 64 MiB"))
+        XCTAssertTrue(input.data.isEmpty)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: try XCTUnwrap(large.destination).deletingLastPathComponent().path))
     }
 
     func testOwnerInvalidationRemovesPromisesSynchronously() async throws {

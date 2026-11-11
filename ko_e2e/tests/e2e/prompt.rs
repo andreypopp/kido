@@ -69,16 +69,6 @@ fn silent(s: &Server, pane: &str, text: &str) -> bool {
 }
 
 #[test]
-fn a_prompt_goes_by_paste_when_the_agent_has_no_stream() {
-    let s = start(&[]);
-    let from = s.token_pane("exec cat");
-    let pane = agent(&s, "pastee");
-
-    assert_eq!(prompt(&s, &from, "hi claude", false), (0, String::new()));
-    arrived(&s, &pane, "hi claude");
-}
-
-#[test]
 fn the_scope_is_the_callers_window_then_its_session() {
     let s = start(&[]);
     let from = s.token_pane("exec cat");

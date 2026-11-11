@@ -165,7 +165,7 @@ func assertPaperPixel(_ image: NSBitmapImageRep, x: Int, y: Int, expected: [Doub
                 let image = NSImage(size: shadow.frame.size)
                 image.addRepresentation(bitmap)
                 let record = ProcessInfo.processInfo.environment["KIDO_VISUAL_RECORD"] == "1"
-                if let failure = verifySnapshot(of: image, as: .image, named: "\(appearance.rawValue)-\(mode)", record: record),
+                if let failure = verifySnapshot(of: image, as: .image, named: "\(appearance.rawValue)-\(mode == "shrunk" || mode == "wide" ? "expanded" : mode)", record: record),
                    !record || !failure.hasPrefix("Record mode is on.") { XCTFail(failure) }
             }
         }
@@ -644,7 +644,7 @@ func assertPaperPixel(_ image: NSBitmapImageRep, x: Int, y: Int, expected: [Doub
                     let snapshot = NSImage(size: view.bounds.size)
                     snapshot.addRepresentation(image)
                     let record = ProcessInfo.processInfo.environment["KIDO_VISUAL_RECORD"] == "1"
-                    if let failure = verifySnapshot(of: snapshot, as: .image, named: "fullscreen-switch-\(index)-\(hex)", record: record),
+                    if let failure = verifySnapshot(of: snapshot, as: .image, named: "fullscreen-switch-\(index % 2)-\(hex)", record: record),
                        !record || !failure.hasPrefix("Record mode is on.") { XCTFail(failure) }
                 }
                 let pixels = try XCTUnwrap(image.converting(to: .sRGB, renderingIntent: .default))

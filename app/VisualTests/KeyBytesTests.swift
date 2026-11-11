@@ -6,7 +6,7 @@ import PaneGeometry
 import XCTest
 @testable import Kido
 
-extension VisualTests {
+@MainActor final class KeyBytesTests: AppWindowCase {
     struct KeyCase {
         let name: String
         let characters: String
@@ -43,7 +43,7 @@ extension VisualTests {
         let recorder = try XCTUnwrap(added.createdWindow)
         try XCTUnwrap(client).select(KO_SELECT_WINDOW, recorder)
         try await wait("recorder ready", within: 5) { FileManager.default.fileExists(atPath: ready.path) }
-        try await wait("the recorder is shown") { self.currentModel.window == recorder }
+        try await wait("the recorder is shown") { self.model.window == recorder }
         try await settle()
         // The surface answers a flags query through the server: its reply is not a key.
         if request.contains("\u{1b}[?u") {

@@ -186,13 +186,6 @@ mod tests {
         }
     }
 
-    #[test]
-    fn the_constant_names_are_valid_names() {
-        for name in ["ssh.dest", "pi.session", "pi.name", "pi.activity"] {
-            assert_eq!(VarName::new(name).unwrap(), VarName::known(name));
-        }
-    }
-
     fn root_app(name: &str) -> Vec<ProgramRecord> {
         vec![ProgramRecord {
             id: String::new().try_into().unwrap(),

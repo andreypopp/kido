@@ -3,7 +3,7 @@ import GhosttyKit
 import XCTest
 @testable import Kido
 
-extension VisualTests {
+@MainActor final class CellPixelsTests: AppWindowCase {
     private struct Reported: Equatable {
         let text: String
         let cell: String

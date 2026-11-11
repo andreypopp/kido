@@ -30,13 +30,8 @@ visual_all=0
 visual_file() {
   local names
   names=$(awk '
-    /extension VisualTests[[:space:]]*\{/ { extension = 1 }
-    /^}/ { extension = 0 }
-    /final class [A-Za-z_][A-Za-z_0-9]*: VisualTestCase/ {
+    /final class [A-Za-z_][A-Za-z_0-9]*: (VisualTestCase|AppWindowCase)/ {
       line = $0; sub(/.*final class /, "", line); sub(/:.*/, "", line); print line
-    }
-    extension && /func test[A-Za-z_0-9]*\(/ {
-      line = $0; sub(/.*func /, "", line); sub(/\(.*/, "", line); print "VisualTests/" line
     }
   ' "$1" 2>/dev/null) || names=
   if [[ -z $names ]]; then visual_all=1; fi

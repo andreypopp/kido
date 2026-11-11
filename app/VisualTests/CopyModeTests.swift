@@ -9,7 +9,7 @@ import UniformTypeIdentifiers
 import XCTest
 @testable import Kido
 
-extension VisualTests {
+@MainActor final class CopyModeTests: AppWindowCase {
     private var board: NSPasteboard { runtime.pasteboard }
 
     private func key(_ pane: PaneView, _ characters: String, _ mods: NSEvent.ModifierFlags = [], code: UInt16 = 0,
@@ -51,7 +51,7 @@ extension VisualTests {
     }
 
     private func serverLines(_ pane: PaneView) async throws -> [String] {
-        trimmed(try await serverScreen(pane.pane))
+        trimmed(try await ko(["api", "/panes/" + pane.pane.description + "/screen"], dir: directory.path))
     }
 
     private func sends(_ pane: PaneView, since: Int) -> [String] { pane.visualSent.dropFirst(since).map { String(decoding: $0, as: UTF8.self) } }
@@ -820,7 +820,7 @@ extension VisualTests {
             try await hover(pane, true)
             try await findThree(pane, "3 of 12")
             try await darken()
-            try await snapshot("theme-switch-dark")
+            try await snapshot("dark-find-3-of-12")
             try field(pane, #selector(NSResponder.cancelOperation(_:)))
             XCTAssertNil(pane.find)
         }
@@ -985,10 +985,6 @@ extension VisualTests {
         keys(pane, "q")
     }
 
-}
-
-
-extension VisualTests {
     private func mouseWindow() async throws {
         window.orderFront(nil)
         try await wait("visual window is on screen", within: 2) { self.window.isVisible && self.window.windowNumber != 0 }

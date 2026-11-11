@@ -132,7 +132,7 @@ let rawScript = "stty raw -echo; printf '\\033]2;raw-ready\\007'; exec /bin/cat"
         NSAppearance(named: .aqua)!.performAsCurrentDrawingAppearance { super.invokeTest() }
     }
 
-    func fullscreenHostImage(_ owner: WindowOwner, root: NSView) throws -> NSImage {
+    func fullscreenHostImage(_ owner: WindowOwner, root: NSView, crop: NSRect? = nil) throws -> NSImage {
         let size = root.bounds.size
         let header = fullscreenHeader(width: size.width, background: nil)
         header.titlebarAppearsTransparent = true
@@ -149,29 +149,28 @@ let rawScript = "stty raw -echo; printf '\\033]2;raw-ready\\007'; exec /bin/cat"
         host.addSubview(tabs)
         host.layoutSubtreeIfNeeded()
         header.display()
-        let bodyBitmap = try XCTUnwrap(root.bitmapImageRepForCachingDisplay(in: root.bounds))
-        root.cacheDisplay(in: root.bounds, to: bodyBitmap)
-        let body = NSImage(size: size)
-        body.addRepresentation(bodyBitmap)
-        let headerBitmap = try XCTUnwrap(host.bitmapImageRepForCachingDisplay(in: host.bounds))
-        host.cacheDisplay(in: host.bounds, to: headerBitmap)
-        let band = NSImage(size: host.bounds.size)
-        band.addRepresentation(headerBitmap)
-        return NSImage(size: size, flipped: false) { rect in
-            body.draw(in: rect)
+        let body = try croppedImage(root, to: root.bounds)
+        let band = try croppedImage(host, to: host.bounds)
+        let area = crop ?? NSRect(origin: .zero, size: size)
+        return NSImage(size: area.size, flipped: false) { _ in
+            NSGraphicsContext.current?.cgContext.translateBy(x: -area.minX, y: -area.minY)
+            body.draw(in: NSRect(origin: .zero, size: size))
             band.draw(in: NSRect(x: 0, y: size.height - 52, width: size.width, height: 52))
             return true
         }
     }
 
-    func headerImage(_ tabs: WindowTabs) throws -> NSImage {
-        let root = try XCTUnwrap(tabs.window?.contentView?.superview)
-        let rect = tabs.convert(tabs.bounds, to: root)
+    func croppedImage(_ root: NSView, to rect: NSRect) throws -> NSImage {
         let bitmap = try XCTUnwrap(root.bitmapImageRepForCachingDisplay(in: rect))
         root.cacheDisplay(in: rect, to: bitmap)
-        let image = NSImage(size: tabs.bounds.size)
+        let image = NSImage(size: rect.size)
         image.addRepresentation(bitmap)
         return image
+    }
+
+    func headerImage(_ tabs: WindowTabs) throws -> NSImage {
+        let root = try XCTUnwrap(tabs.window?.contentView?.superview)
+        return try croppedImage(root, to: tabs.convert(tabs.bounds, to: root))
     }
 
     override func setUp() async throws {

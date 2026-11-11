@@ -2928,6 +2928,23 @@ not covered. Re-record with `make visual RECORD=1` after intentional visual
 changes, a macOS update or a different backing scale, and review the images
 and layout diffs. References live in `app/VisualTests/__Snapshots__`.
 
+Each visual test file holds the classes of one area, and its references are in
+the directory named after the file, so `ONLY=<Class>` selects one area and
+`scripts/checks.sh` maps a changed reference to the classes of its file. The tests that
+drive a private server and a session view inherit `AppWindowCase`, which holds
+that fixture and has no test methods: XCTest runs an inherited test again in
+each subclass. Its Ghostty configuration file lives until the process exits,
+because the one process runtime reads it again on each appearance change.
+
+A snapshot shows the component under its test, so that a change elsewhere does
+not re-record it. The breadcrumb, notice and child-slot states crop to the pane
+area or the notice host in backing pixels; a few full-window anchors in each
+appearance and window mode keep the composition with the sidebar and the
+header. The koa states compare the WebKit page image; only the focus-border
+states take the native pane, whose frame is their check. States that reach the
+same pixels through different transitions compare against one baseline that
+the test names explicitly; each transition keeps its actions and assertions.
+
 `PaletteTests` records one image of the palette's content view for each
 state of the approved mockup, `app/design/palette/` (`mockup.html` with its
 `NOTES.md`), in light and dark: `palette.<theme>-<state>.png` for root,

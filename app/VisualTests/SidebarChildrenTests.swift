@@ -346,7 +346,7 @@ private extension PaneView {
         }
         let sibling = try XCTUnwrap(owner.testSession?.pane(fixture.children[1].pane))
         XCTAssertEqual(sibling.testBreadcrumb.entries.count, 2)
-        func capture(_ name: String) async throws {
+        func capture(_ name: String, anchor: Bool = false) async throws {
             try await wait("visible panes restored before \(name)") {
                 owner.testSession?.windows.values.flatMap(\.displayedPanes).filter { !$0.isHidden }.allSatisfy { !$0.restoring && $0.visualRestores > 0 } == true
             }
@@ -355,8 +355,15 @@ private extension PaneView {
             owner.window.contentView?.layoutSubtreeIfNeeded()
             owner.window.displayIfNeeded()
             let content = try XCTUnwrap(owner.window.contentView?.superview)
-            checkSnapshot { verifySnapshot(of: content, as: .image, named: name, record: $0, testName: "testBreadcrumbHierarchyAndOverlays") }
-            let fullscreen = try fullscreenHostImage(owner, root: content)
+            let slots = try XCTUnwrap(owner.testSession?.windows[root.window])
+            let crop = anchor ? nil : content.convert(slots.bounds, from: slots)
+            if let crop {
+                let image = try croppedImage(content, to: crop)
+                checkSnapshot { verifySnapshot(of: image, as: .image, named: name, record: $0, testName: "testBreadcrumbHierarchyAndOverlays") }
+            } else {
+                checkSnapshot { verifySnapshot(of: content, as: .image, named: name, record: $0, testName: "testBreadcrumbHierarchyAndOverlays") }
+            }
+            let fullscreen = try fullscreenHostImage(owner, root: content, crop: crop)
             checkSnapshot { verifySnapshot(of: fullscreen, as: .image, named: name + "-fullscreen", record: $0, testName: "testBreadcrumbHierarchyAndOverlays") }
         }
         func setBreadcrumbTitles(_ entries: [ShownPane.Entry]) async throws {
@@ -369,7 +376,7 @@ private extension PaneView {
         for dark in [false, true] {
             try await theme(fixture.runtime, dark: dark)
             let side = dark ? "dark" : "light"
-            try await capture("grandchild-" + side)
+            try await capture("grandchild-" + side, anchor: true)
             let grid = pane.geometry
             pane.toggleCopyMode(nil)
             try await wait("copy mode shows with breadcrumb") { if case .cursor = pane.copyMode { true } else { false } }
@@ -792,7 +799,9 @@ private extension PaneView {
             owner.window.displayIfNeeded()
             CATransaction.flush()
             let content = try XCTUnwrap(owner.window.contentView?.superview)
-            checkSnapshot { verifySnapshot(of: content, as: .image, named: "unfocused-shown-child-\(dark ? "dark" : "light")", record: $0) }
+            let slots = try XCTUnwrap(owner.testSession?.windows[root])
+            let image = try croppedImage(content, to: content.convert(slots.bounds, from: slots))
+            checkSnapshot { verifySnapshot(of: image, as: .image, named: "unfocused-shown-child-\(dark ? "dark" : "light")", record: $0) }
         }
         XCTAssertEqual(owner.testModel?.selection.pane, second.pane)
         let replaced = try XCTUnwrap(owner.testSession?.pane(second.pane))

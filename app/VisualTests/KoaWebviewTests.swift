@@ -6,7 +6,7 @@ import KoModel
 import SidebarFeed
 @testable import Kido
 
-extension VisualTests {
+@MainActor final class KoaWebviewTests: AppWindowCase {
     private enum KoaScenario { case transcript, dialogs, controls, exit, feed, completion, markdown, media, attachments, userMarkdown, thinkingMarkdown, preview, lightbox, agents, composer, questions, bang, commands, sessions }
     func testKoaWebviewSubmitFollowsClampedBottom() async throws {
         WebviewPaneView.visualInitialScript = "const ClockDate=Date;window.Date=class extends ClockDate{constructor(...args){super(...(args.length?args:[1700000012000]))}static now(){return 1700000012000}};window.requestAnimationFrame=callback=>setTimeout(()=>callback(performance.now()),16);window.cancelAnimationFrame=clearTimeout;const Source=EventSource;window.EventSource=class extends Source{constructor(...args){super(...args);window.scrollSource=this}};"
@@ -1051,6 +1051,15 @@ extension VisualTests {
             guard measured else { return }
             _ = try await webviewJS(web, "new Promise((resolve,reject)=>{let previous,stable=0,frame;const timer=setTimeout(()=>{cancelAnimationFrame(frame);reject(Error('Koa capture did not settle'))},5000);function sample(){const cursor=document.querySelector('#prompt .cm-cursor')?.getBoundingClientRect();const state=JSON.stringify([document.querySelector('#scroll').scrollTop,document.querySelector('#dock').getBoundingClientRect().height,cursor?[cursor.x,cursor.y,cursor.width,cursor.height]:null]);stable=koaPendingFrames.size===0&&state===previous?stable+1:0;previous=state;if(stable>=2){clearTimeout(timer);resolve(true)}else frame=requestAnimationFrame(sample)}frame=requestAnimationFrame(sample)})")
         }
+        func pageSnapshot(_ name: String, _ appearance: String) async throws {
+            if name.hasPrefix("focus-border") {
+                try await webviewSnapshot(pane, name + appearance, testName: "testKoaWebviewMockupStates()")
+            } else {
+                let baseline = ["foot-responsive-190-cwd": "foot-responsive-190-working", "foot-responsive-250-cwd": "foot-responsive-250-working",
+                                "foot-responsive-374-cwd": "foot-responsive-374-working", "narrow-foot-extras": "narrow-foot-idle"][name] ?? name
+                try await webviewPageSnapshot(pane, baseline + appearance, testName: "testKoaWebviewMockupStates()")
+            }
+        }
         func capture(_ name: String) async throws {
             guard captures.contains(name) || captures.contains("foot-responsive") else { return }
             let ordered = name == "questions-ordered" || name == "narrow-questions-ordered"
@@ -1069,12 +1078,12 @@ extension VisualTests {
                 XCTAssertEqual(order, "true", "Queued steers and follow-ups stay above the attachment chips and composer field")
             }
             try await settle()
-            try await webviewSnapshot(pane, name + "-light", testName: "testKoaWebviewMockupStates()")
+            try await pageSnapshot(name, "-light")
             try await darken()
             pane.webviewView?.updateTheme()
             try await webviewUntil(web, "getComputedStyle(document.body).getPropertyValue('--ko-appearance').trim()==='dark'")
             try await settle()
-            try await webviewSnapshot(pane, name + "-dark", testName: "testKoaWebviewMockupStates()")
+            try await pageSnapshot(name, "-dark")
             try await darken(.aqua)
             pane.webviewView?.updateTheme()
             try await webviewUntil(web, "getComputedStyle(document.body).getPropertyValue('--ko-appearance').trim()==='light'")
@@ -1520,7 +1529,7 @@ extension VisualTests {
                     XCTAssertEqual(shadow, "true", "The lightbox image has a shadow")
                     _ = try await webviewJS(web, "(()=>{const style=document.createElement('style');style.id='capture-lightbox';style.textContent='.lightbox img{box-shadow:none!important}';document.head.append(style);return true})()")
                     try await settle()
-                    try await webviewSnapshot(pane, "media-lightbox-" + appearance, testName: "testKoaWebviewMockupStates()")
+                    try await webviewPageSnapshot(pane, "media-lightbox-" + appearance, testName: "testKoaWebviewMockupStates()")
                     _ = try await webviewJS(web, "(()=>{document.querySelector('#capture-lightbox').remove();return true})()")
                 }
                 try await captureLightbox("light")
@@ -1685,7 +1694,7 @@ extension VisualTests {
             window.sendEvent(key)
             try await webviewUntil(web, "window.composer.text()==='z'&&document.activeElement===document.querySelector('#prompt .cm-content')")
             try await settle()
-            try await webviewSnapshot(pane, "composer-focus", testName: "testKoaWebviewComposerFocus()")
+            try await webviewPageSnapshot(pane, "composer-focus", testName: "testKoaWebviewComposerFocus()")
             return
         }
         try await capture("stream")

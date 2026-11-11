@@ -46,6 +46,7 @@ import XCTest
     }
 
     func testMockupStates() async throws {
+        let anchors: Set<String> = ["light-config", "dark-floating", "light-fullscreen-docked", "dark-fullscreen-floating"]
         for side in ["light", "dark"] {
             let owner = try await fixture(side)
             let error = ConfigError(path: owner.runtime.home + "/.config/ko/config.yaml", problem: .init(line: 14, column: 5, message: "runtimes: gpu-1: unknown field \"prot\""))
@@ -112,11 +113,16 @@ import XCTest
                 for card in cards {
                     XCTAssertEqual(card.accessibilityChildren()?.compactMap { $0 as? NSAccessibilityElement }.filter { $0.accessibilityRole() == .staticText }.count, 2)
                 }
+                let name = "\(side)-\(state)"
+                let crop = anchors.contains(name) ? nil : root.convert(owner.sidebar.content.bounds, from: owner.sidebar.content)
                 if state.hasPrefix("fullscreen-") {
-                    let image = try fullscreenHostImage(owner, root: root)
-                    checkSnapshot { verifySnapshot(of: image, as: .image, named: "\(side)-\(state)", record: $0) }
+                    let image = try fullscreenHostImage(owner, root: root, crop: crop)
+                    checkSnapshot { verifySnapshot(of: image, as: .image, named: name, record: $0) }
+                } else if let crop {
+                    let image = try croppedImage(root, to: crop)
+                    checkSnapshot { verifySnapshot(of: image, as: .image, named: name, record: $0) }
                 } else {
-                    checkSnapshot { verifySnapshot(of: root, as: .image, named: "\(side)-\(state)", record: $0) }
+                    checkSnapshot { verifySnapshot(of: root, as: .image, named: name, record: $0) }
                 }
             }
             owner.close()

@@ -73,7 +73,7 @@ visual visual-fast visual-slow: project
 		while read -r name _; do \
 			case $$name in ''|'#'*) continue ;; esac; \
 			cls=$${name%%/*}; testname=$${name#*/}; \
-			files=$$(grep -l -e "final class $$cls: VisualTestCase" -e "^extension $$cls {" VisualTests/*.swift) || true; \
+			files=$$(grep -lE "final class $$cls: (VisualTestCase|AppWindowCase)" VisualTests/*.swift) || true; \
 			test -n "$$files" || { echo "slow.txt: no class $$cls" >&2; exit 1; }; \
 			grep -q "func $$testname()" $$files || { echo "slow.txt: no test $$testname in $$cls" >&2; exit 1; }; \
 			select="$$select -$(VISUAL_FLAG)-testing:VisualTests/$$name"; \
@@ -91,7 +91,7 @@ visual visual-fast visual-slow: project
 koa-stress-root:
 	@printf '%s\n' '$(KOA_STRESS_OUTPUT)'
 
-koa-stress: ONLY = KoaStressTests VisualTests/testWebviewFetchSlots
+koa-stress: ONLY = KoaStressTests WebviewPaneTests/testWebviewFetchSlots
 koa-stress:
 	@mkdir -p '$(KOA_STRESS_OUTPUT)'; \
 	run=$${KOA_STRESS_RUN:-$$(mktemp -d '$(KOA_STRESS_OUTPUT)/run-XXXXXX')} || exit 1; \

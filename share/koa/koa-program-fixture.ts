@@ -1,0 +1,35 @@
+import type { TestContext } from "node:test";
+import assert from "node:assert/strict";
+import { spawn } from "node:child_process";
+import { mkdtemp, readFile, writeFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join, resolve } from "node:path";
+import { once } from "node:events";
+import { Readable } from "node:stream";
+import { assistant, sse } from "../pi/ko-pi-fixture.ts";
+export async function fixture(t: TestContext, steps: object[], env: NodeJS.ProcessEnv = {}, pi?: string, startup = true, args: string[] = [], program = resolve("../../build/ko/share/ko/koa/koa.ts")) {
+  const dir = await mkdtemp(join(tmpdir(), "koa-test-"));
+  const script = join(dir, "script");
+  const log = join(dir, "log");
+  await writeFile(join(dir, process.platform === "darwin" ? "open" : "xdg-open"), '#!/bin/sh\nprintf "%s\\n" "$1" >> "$OPEN_LOG"\n', { mode: 0o700 });
+  await writeFile(script, steps.map(value => JSON.stringify(value)).join("\n"));
+  const child = spawn(process.execPath, [program, "--browser", "--pi", pi ?? resolve("../koa/koa-fake-pi.ts"), "--no-session", ...args], { env: { ...process.env, OPEN_LOG: join(dir, "urls"), KO_PANE: "", KOA_FAKE_SCRIPT: script, KOA_FAKE_LOG: log, KOA_PI_EXIT_MS: "30", ...env, PATH: `${dir}:${env.PATH ?? process.env.PATH}` }, stdio: "pipe" });
+  let stdout = "";
+  let stderr = "";
+  child.stdout.on("data", bytes => { stdout += bytes; });
+  let ready: (url: string) => void = () => {};
+  const url = new Promise<string>(resolve => { ready = resolve; });
+  child.stderr.on("data", bytes => { stderr += bytes; const match = stderr.match(/koa: (http:\/\/127\.0\.0\.1:\d+\/)/); if (match?.[1]) ready(match[1]); });
+  const close = once(child, "close");
+  t.after(async () => { if (child.exitCode === null && child.signalCode === null) child.kill("SIGTERM"); await close; await rm(dir, { recursive: true, force: true }); });
+  const base = await url;
+  const controller = new AbortController();
+  t.after(() => controller.abort());
+  const response = await fetch(base + "events", { signal: controller.signal });
+  assert.ok(response.body);
+  const { state: stream, until } = sse(Readable.from(response.body));
+  const post = (path: string, body: object = {}) => fetch(base + path, { method: "POST", headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(Array.isArray(body) ? body : { sessionId: stream.records.filter(record => record.type === 'state').at(-1)?.sessionId, ...body }) });
+  if (startup) await until(record => record.type === "state" && (pi ? record.pi?.type === "exited" : Array.isArray(record.levels) && record.levels.length === 3));
+  return { script, post, until, records: () => stream.records, count: () => stream.records.length, close, stdout: () => stdout, stderr: () => stderr, log: async () => (await readFile(log, "utf8")).trim().split("\n").map(line => JSON.parse(line)), base };
+}
+export const assistantMessage = { ...assistant("stop"), api: "test", provider: "test", model: "test", usage: {}, timestamp: 42 };

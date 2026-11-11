@@ -389,7 +389,7 @@ import PaneGeometry
                 }
                 if state == "theme-filtered" { fixture.runtime.flushTheme() }
                 try await drain(fixture.runtime)
-                image(palette, "\(dark ? "dark" : "light")-\(state)")
+                image(palette, "\(dark && state != "theme-filtered" ? "dark" : "light")-\(state)")
             }
         }
     }
