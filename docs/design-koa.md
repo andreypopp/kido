@@ -593,7 +593,10 @@ the command first ("`!` commands" below).
 - **The cursor** is CodeMirror's `drawSelection()` in the pane's
   cursor and selection colours. WebKit's native caret lagged visibly
   when the Markdown highlighting rebuilt the spans around it.
-- **Focus.** The composer takes the focus at start, when pi's
+- **Focus.** Outside dialogs, pickers and the lightbox, Tab and
+  Shift-Tab keep keyboard focus in the composer. Tab keeps its completion
+  behaviour; without a completion it does nothing. Shift-Tab does nothing.
+  The composer takes the focus at start, when pi's
   readiness makes it available, and when the pane gets focus, each
   only while the document has focus and no dialog, picker or control
   of the page holds it. A printable key typed outside a field goes to

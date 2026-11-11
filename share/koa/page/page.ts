@@ -28,6 +28,7 @@ function element(id: string) {
 }
 const node = <K extends keyof HTMLElementTagNameMap>(tag: K, text?: string, className?: string) => {
   const result = document.createElement(tag);
+  if (tag === 'button') result.tabIndex = -1;
   if (text !== undefined) result.textContent = text;
   if (className) result.className = className;
   return result;
@@ -254,7 +255,7 @@ function stepInfo(step: Step & { args: Record<string, unknown> }) {
 }
 function fold(view: HTMLElement, key: string, line: HTMLElement, details: HTMLElement, show?: () => void, className = 'open') {
   view.classList.toggle(className, folds.get(key) === true);
-  line.setAttribute('role', 'button'); line.tabIndex = 0;
+  line.setAttribute('role', 'button'); line.tabIndex = -1;
   line.setAttribute('aria-expanded', String(folds.get(key) === true));
   const toggle = () => { const open = !view.classList.contains(className); folds.set(key, open); view.classList.toggle(className, open); line.setAttribute('aria-expanded', String(open)); if (open) show?.(); };
   line.onclick = event => { if (!(event?.target instanceof Element && event.target.closest('a'))) toggle(); };
@@ -613,6 +614,7 @@ function dialogs() {
   const foot = node('div', undefined, 'foot'); foot.append(node('span', request.method === 'select' ? '↑↓ choose' : request.method === 'editor' ? '⇧↩ newline' : ''), node('span', undefined, 'sp'));
   const cancel = button(request.method === 'confirm' ? 'No' : 'Cancel', '⎋');
   const submit = button(request.method === 'confirm' ? 'Yes' : request.method === 'select' ? 'Select' : 'Submit', request.method === 'editor' ? '⌃↩' : '↩', true);
+  cancel.tabIndex = submit.tabIndex = 0;
   const answer = async (cancelled: boolean) => {
     if (submit.disabled) return;
     submit.disabled = cancel.disabled = true;
@@ -965,6 +967,7 @@ async function sessionCommand(kind: 'resume' | 'new') {
   sessionPicker = 'confirm'; sessionHost.dataset.state = 'confirm'; sessionHost.hidden = false;
   const card = node('div', undefined, 'dialog'), head = node('div', undefined, 'head'); head.append(node('span', 'Switch session?', 'title'));
   const foot = node('div', '⎋ cancel · ↩ switch', 'foot'), cancel = button('Cancel'), confirm = button('Switch', '↩', true);
+  cancel.tabIndex = confirm.tabIndex = 0;
   const perform = async () => {
     if (confirm.disabled || action.signal.aborted) return;
     confirm.disabled = true;
@@ -1023,7 +1026,7 @@ const previewModifiers = (event: MouseEvent | KeyboardEvent) => event.shiftKey &
 const previewHover = (event: KeyboardEvent) => document.documentElement.classList.toggle('preview-modifiers', previewModifiers(event));
 document.addEventListener('keyup', previewHover);
 window.addEventListener('blur', () => { document.documentElement.classList.remove('preview-modifiers'); composerFocus(); });
-document.addEventListener('keydown', event => { previewHover(event); if (previewKey(event)) return; if (event.defaultPrevented || event.metaKey || event.ctrlKey || event.isComposing || state.dialogs.length || pickerButton || sessionPicker !== 'closed') return; if (composerReceivesKeys() && !event.altKey && event.key.length === 1 && !(event.key === ' ' && isControl(event.target)) && !isTextInput(event.target)) { event.preventDefault(); editor.focus(); editor.insert(event.key); return; } if (event.key === 'Enter' && hasExited() && event.target === document.body) element('exited').querySelector('button')?.click(); if (event.key === 'Escape') { event.preventDefault(); if (state.bash.some(item => item.phase === 'running')) { escaped = false; void stop(); } else if (state.working) { escaped = true; void stop(); } else if (escaped) { editor.setText(''); } else { escaped = true; } } });
+document.addEventListener('keydown', event => { previewHover(event); if (previewKey(event)) return; if (event.defaultPrevented || event.metaKey || event.ctrlKey || event.isComposing || state.dialogs.length || pickerButton || sessionPicker !== 'closed') return; if (event.key === 'Tab') { event.preventDefault(); if (!element('field').inert) editor.focus(); return; } if (composerReceivesKeys() && !event.altKey && event.key.length === 1 && !(event.key === ' ' && isControl(event.target)) && !isTextInput(event.target)) { event.preventDefault(); editor.focus(); editor.insert(event.key); return; } if (event.key === 'Enter' && hasExited() && event.target === document.body) element('exited').querySelector('button')?.click(); if (event.key === 'Escape') { event.preventDefault(); if (state.bash.some(item => item.phase === 'running')) { escaped = false; void stop(); } else if (state.working) { escaped = true; void stop(); } else if (escaped) { editor.setText(''); } else { escaped = true; } } });
 element('model').onclick = () => picker('model'); element('thinking').onclick = () => picker('thinking');
 document.addEventListener('pointerdown', event => { if (!element('picker').contains(event.target instanceof Node ? event.target : null) && !pickerButton?.contains(event.target instanceof Node ? event.target : null)) closePicker(); });
 element('scroll').onscroll = () => { const scroll = element('scroll'); if (Math.abs(scroll.scrollTop - lastScrollTop) >= 1) { follow = scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight < 60; lastScrollTop = scroll.scrollTop; } if (scroll.scrollTop < 80) void older(); };

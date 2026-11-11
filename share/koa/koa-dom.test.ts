@@ -91,6 +91,38 @@ async function page() {
   return { context, elements, listeners, windowListeners, completionResets: () => completionResets, handlers: () => handlers, prompt: () => prompt, text: () => text(), run: (code: string) => runInNewContext("{\n" + source.replace(/^import .*;\n/gm, "").replace(/^setInterval\([\s\S]*$/m, "") + "\n" + code + "\n}", context) };
 }
 
+test('Tab outside the composer returns focus without changing dialog keys', async () => {
+  const app = await page();
+  app.run("state={...state,pi:{type:'ready'}};document.body.focus()");
+  for (const shiftKey of [false, true]) {
+    let prevented = false;
+    app.listeners.get('keydown')?.({ key: 'Tab', shiftKey, target: app.context.document.body, preventDefault() { prevented = true; } });
+    assert.equal(prevented, true, 'page Tab must prevent focus navigation');
+    assert.equal(app.context.document.activeElement, app.prompt());
+  }
+  app.run("state={...state,dialogs:[{id:'q',method:'input',title:'Question'}]};dialogs();element('dialogs').children[0].children[1].focus()");
+  const input = app.context.document.activeElement;
+  let prevented = false;
+  app.listeners.get('keydown')?.({ key: 'Tab', target: input, preventDefault() { prevented = true; } });
+  assert.equal(prevented, false);
+  assert.equal(app.context.document.activeElement, input);
+});
+
+test('prose Tab consumes the key without an open completion', async () => {
+  const source = stripTypeScriptTypes(await readFile(new URL('page/complete.ts', import.meta.url), 'utf8')).replace(/^import .*;\n/gm, '').replace(/^export /gm, '');
+  const noop = () => ({});
+  const result = runInNewContext(source + '\ncompletion(host,()=>{},null,()=>{}).keys', {
+    host: { parentElement: {} }, document: { createElement: () => ({}) },
+    ViewPlugin: { define: noop }, EditorView: { updateListener: { of: noop } },
+    tooltips: noop, autocompletion: noop, moveCompletionSelection: noop,
+    completionStatus: () => null, acceptCompletion: () => { throw Error('No completion is open'); },
+  });
+  for (const key of ['Tab', 'Shift-Tab']) {
+    const binding = result.find((binding: { key: string }) => binding.key === key);
+    assert.equal(binding?.run({ state: { field: () => null } }), true, `${key} must consume the key`);
+  }
+});
+
 test('a transcript epoch reset closes completion from the prior session', async () => {
   const fixture = await page();
   fixture.run("apply({type:'reset',epoch:1,items:[],more:false})");
@@ -593,7 +625,6 @@ test("printable transcript keys reach the composer but native shortcuts and fiel
   let prevented = 0;
   const key = (extra = {}) => app.listeners.get('keydown')?.({ key: 'z', target, preventDefault() { prevented++; }, ...extra });
   for (const modifier of ['metaKey', 'ctrlKey', 'altKey', 'isComposing']) key({ [modifier]: true });
-  key({ key: 'Tab' });
   const button = app.context.document.createElement('div'); button.tagName = 'BUTTON';
   key({ key: ' ', target: button });
   key({ key: 'Enter', target: button });

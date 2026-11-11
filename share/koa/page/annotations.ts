@@ -33,7 +33,7 @@ export function annotations(source: string, questions: Annotation[], editor: Pic
     const data = actions[id], result = document.createElement(label ? 'button' : 'span');
     if (result instanceof HTMLButtonElement) result.type = 'button';
     else {
-      result.setAttribute('role', 'button'); result.tabIndex = 0;
+      result.setAttribute('role', 'button'); result.tabIndex = -1;
       result.onkeydown = event => {
         if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); result.click(); }
       };

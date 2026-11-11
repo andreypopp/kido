@@ -38,10 +38,10 @@ export function attach(host: HTMLElement, changed: () => void, displayPath: (val
   };
   const create = (state: Chip['state']) => {
     const view = document.createElement('div'); view.className = 'attach-chip';
-    const body = document.createElement('button'); body.type = 'button'; body.className = 'attach-body';
+    const body = document.createElement('button'); body.type = 'button'; body.tabIndex = -1; body.className = 'attach-body';
     const icon = document.createElement('span'), name = document.createElement('span'), detail = document.createElement('span');
     name.className = 'attach-name'; detail.className = 'attach-detail'; body.append(icon, name, detail);
-    const close = document.createElement('button'); close.type = 'button'; close.className = 'attach-remove'; close.innerHTML = '<svg viewBox="0 0 10 10"><path d="m2 2 6 6m0-6-6 6"/></svg>'; close.setAttribute('aria-label', 'Remove attachment');
+    const close = document.createElement('button'); close.type = 'button'; close.tabIndex = -1; close.className = 'attach-remove'; close.innerHTML = '<svg viewBox="0 0 10 10"><path d="m2 2 6 6m0-6-6 6"/></svg>'; close.setAttribute('aria-label', 'Remove attachment');
     view.append(body, close);
     const chip: Chip = { view, icon, name, detail, body, controller: new AbortController(), state };
     close.onclick = () => remove(chip);

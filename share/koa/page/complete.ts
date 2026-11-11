@@ -134,7 +134,8 @@ export function completion(host: HTMLElement, send: () => void, mode: StateField
     keys: [
       { key: 'ArrowDown', run: active(moveCompletionSelection(true)) },
       { key: 'ArrowUp', run: active(moveCompletionSelection(false)) },
-      { key: 'Tab', run: (view: EditorView) => view.state.field(mode) ? shellTab(view) : active(acceptCompletion)(view) },
+      { key: 'Tab', run: (view: EditorView) => { if (view.state.field(mode)) shellTab(view); else active(acceptCompletion)(view); return true; } },
+      { key: 'Shift-Tab', run: () => true },
       { key: 'Enter', run: active(view => { const selected = selectedCompletion(view.state); if (!selected || !acceptCompletion(view)) return false; if (options.get(selected)?.kind === 'command') send(); return true; }) },
       { key: 'Escape', run: (view: EditorView) => { const open = shell.type !== 'idle' || completionStatus(view.state) !== null; reset(); return open; } },
     ],
