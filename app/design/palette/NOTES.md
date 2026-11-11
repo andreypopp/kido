@@ -70,7 +70,7 @@ Root entry "View › Theme…" (no shortcut). States `theme*`.
 
 **Preview.** Moving the selection (Up/Down, or hover with the mouse) applies the theme live to every pane, the sidebar shade, the chrome and the palette card itself; the card's colours derive from the terminal theme, so it changes with the app and never floats in the old colours. A status line says "Previewing <name>. ↩ chooses where to use it, esc restores the current theme." Escape, click outside, window switch and ⌘P all restore the current theme. Hover previews only while the pointer is over the list and restores the keyboard selection's preview when it leaves.
 
-**Save step** (second step in the palette, not an alert). The head shows the chosen theme as a chip with its swatch and the field reads "Use for…". Three radio rows, keyboard Up/Down, ↩ confirms, Escape goes back to the list: "<Current appearance> mode · the current appearance" (preselected), the other mode, "Both · one theme whatever the appearance", "This session only · not saved to kido-app.conf" (state `theme-save-session` shows it selected; its foot reads "applies until quit; ~/.config/kido/kido-app.conf is not changed" at the left, "esc back" at the right). On ↩ with "This session only", the theme applies to both appearances until quit and the palette closes; the conf is untouched, so a read-only conf gives no error. The picker later previews from and restores to that session theme; a later real save replaces it; the "✓ Light" / "✓ Dark" marks keep showing what the conf names. The foot shows the exact line it will write: `theme = light:A,dark:B` into `~/.config/kido/kido-app.conf` (Ghostty syntax), with the other side kept from the config, or the current default when the config has no theme line. On ↩ the palette writes, applies and closes.
+**Save step** (second step in the palette, not an alert). The head shows the chosen theme as a chip with its swatch and the field reads "Use for…". Three radio rows, keyboard Up/Down, ↩ confirms, Escape goes back to the list: "<Current appearance> mode · the current appearance" (preselected), the other mode, "Both · one theme whatever the appearance", "This session only · not saved to the config file" (state `theme-save-session` shows it selected; its foot reads "applies until quit; config.yaml is not changed" at the left, "esc back" at the right). On ↩ with "This session only", the theme applies to both appearances until quit and the palette closes; the conf is untouched, so a read-only conf gives no error. The picker later previews from and restores to that session theme; a later real save replaces it; the "✓ Light" / "✓ Dark" marks keep showing what the conf names. The foot shows the exact line it will write: `theme: light: A, dark: B` into the YAML config file `config.yaml` (docs/design-ko.md, "The configuration file"; since 68fc22e1, before that the Ghostty-syntax kido-app.conf), with the other side kept from the config, or the current default when the config has no theme line. On ↩ the palette writes, applies and closes.
 
 **Errors.**
 
@@ -81,7 +81,7 @@ Root entry "View › Theme…" (no shortcut). States `theme*`.
 
 **Decided (user).** Pointer hover previews and restores on leave. "Both" with no theme line writes `theme = light:<name>,dark:<name>`. The current marks are the text "✓ Light" / "✓ Dark". Themes of the other appearance preview anyway. There is no check for inline colours in the config (dropped).
 
-## Match highlight (open, user to choose)
+## Match highlight (decided: C, shipped)
 
 The PR colours matched characters in `controlAccentColor` (A). The Match highlight control and `?match=accent|bold|run|dim|ul` switch the variants; the "Match highlight variants" section under the stage shows all five in both themes for the current state. Use the states "rm" (scattered matches over several rows), "mterm" (scattered across detail and title), "watch" (contiguous) and Connect typing "dev".
 
@@ -91,7 +91,7 @@ The PR colours matched characters in `controlAccentColor` (A). The Match highlig
 - **D dim the unmatched.** Unmatched characters at 55% of their colour, matched ones at full colour. Calm, but the list as a whole gets harder to read, and a one-character match dims a whole row.
 - **E underline.** 1pt underline at 55% label colour, 2pt offset. Fine for contiguous runs, noisy for scattered ones.
 
-Recommendation: C. Fallback: D.
+Shipped as C (docs/design-app.md, "Command palette"): each matched run gets a fill of the terminal foreground at 14% with a 3pt radius; the text keeps its colour and weight.
 
 ## States (gallery, light and dark)
 

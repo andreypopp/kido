@@ -308,6 +308,48 @@ html.cmd .step .path.file{cursor:pointer;text-decoration:underline;text-underlin
 .cursor{position:absolute;width:14px;height:20px;pointer-events:none;z-index:7}
 /* the times of run and step lines end where the user message's time ends: 12pt in from the transcript's edge (user, 2026-11-10) */
 .run .line{padding-right:12px}
+
+.field .foot{gap:0;min-height:20px;margin-top:2px;font:.8em/1.4 var(--mono);color:var(--muted);align-items:center}
+.foot .st{display:flex;align-items:center;gap:6px;min-width:calc(15ch + 12px);flex-shrink:0;white-space:nowrap;font-variant-numeric:tabular-nums}
+.foot .st .dot{width:6px;height:6px;border-radius:50%;background:var(--faint);flex-shrink:0}
+.foot .st .dot.on{background:var(--ko-color-2);animation:breathe 1.6s ease-in-out infinite}
+.foot .st .dot.wait{background:var(--ko-color-3)}
+.foot .st .dot.off{background:var(--ko-color-1)}
+.foot .st .t{color:var(--faint)}
+@keyframes breathe{50%{opacity:.35}}
+.foot .sep{width:1px;height:12px;background:var(--hair);margin:0 10px;flex-shrink:0}
+.foot .model{display:flex;align-items:baseline;gap:5px;border:0;background:none;padding:0 4px;margin:0 -4px;border-radius:4px;font:inherit;color:var(--muted);cursor:pointer;white-space:nowrap;flex-shrink:0}
+.foot .model .lvl{color:var(--faint)}
+.foot .model:hover,.foot .model.pick{background:var(--well2);color:var(--fg)}
+.foot .ctxc{display:flex;align-items:center;gap:6px;flex-shrink:0;white-space:nowrap;min-width:calc(44px + 6px + 3ch)}
+.foot .ctxc .ctx{display:inline-block;width:44px;height:4px;border-radius:2px;background:var(--hair2);position:relative}
+.foot .ctxc .ctx i{position:absolute;left:0;top:0;bottom:0;border-radius:2px;background:var(--faint)}
+.foot .ctxc.high .ctx i{background:var(--ko-color-3)}
+.foot .ctxc .n{color:var(--faint)}
+.foot .gap{flex:1;min-width:8px;display:flex;align-items:center;overflow:hidden;padding:0 10px}
+.foot .cwd{color:var(--muted);white-space:nowrap;flex-shrink:0}
+.foot .cwd .lead{color:var(--faint)}
+.foot .act{margin-right:-7px;margin-bottom:0;width:22px;height:22px;border-radius:6px}.foot .act svg{width:14px;height:14px}
+.pane .field{padding-bottom:5px}
+.foot .act.stop{color:var(--muted)}
+/* a notification is a line in the transcript: time at the right like a job line, no badge */
+.note{margin:0 0 10px;display:flex;align-items:baseline;gap:10px;font:.92em/1.5 var(--mono);color:var(--muted);white-space:nowrap;padding-right:12px}
+.note .tx{overflow:hidden;text-overflow:ellipsis;min-width:0}
+.note.error .tx{color:var(--err)}.note.warning .tx{color:var(--warn)}
+.note time{margin-left:auto;color:var(--faint);font-size:.85em;font-variant-numeric:tabular-nums}
+.foot .toast{display:inline-flex;align-items:center;gap:7px;min-width:0;background:none;border:0;padding:0;font:inherit}
+.foot .toast .i{display:inline-grid;place-items:center;width:12px;height:12px;border-radius:50%;font:700 9px/1 var(--ko-font-family);color:var(--ko-bg);flex-shrink:0}
+.foot .toast.info .i{background:var(--ko-color-4)}.foot .toast.warning .i{background:var(--ko-color-3)}.foot .toast.error .i{background:var(--ko-color-1)}
+.foot .toast .tx{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--fg)}
+/* narrow: what goes first */
+html[data-width=narrow] .foot .model .lvl,.pane.narrow .foot .model .lvl{display:none}
+html[data-width=narrow] .foot .cwd .lead,.pane.narrow .foot .cwd .lead{display:none}
+html[data-width=narrow] .foot .ctxc .n,.pane.narrow .foot .ctxc .n{display:none}
+html[data-width=narrow] .foot .ctxc,.pane.narrow .foot .ctxc{min-width:44px}
+html[data-width=narrow] .foot .sep,.pane.narrow .foot .sep{margin:0 7px}
+/* the shipped composer foot (composer.html): status, model and level, context, cwd; no button, Return sends. The page has no status bar since 24b2451e. */
+.status{display:none!important}
+.pane .field{padding-bottom:5px}
 </style>
 </head>
 <body>
@@ -360,6 +402,10 @@ html.cmd .step .path.file{cursor:pointer;text-decoration:underline;text-underlin
 <div class="pane" data-state="lightbox"></div></section>
 
 <script>
+function shippedFoot(o){
+  const st={idle:'<span class="dot"></span>idle',working:`<span class="dot on"></span>working <span class="t">${o.t||'12s'}</span>`,waiting:'<span class="dot wait"></span>waiting',starting:'<span class="dot"></span>starting',exited:`<span class="dot off"></span>exited <span class="t">${o.code??137}</span>`}[o.state];
+    return `<div class="foot"><span class="st">${st}</span><span class="sep"></span><button class="model${o.pick?' pick':''}" aria-label="Model and thinking level">claude-opus-5-5<span class="lvl">· high</span></button><span class="sep"></span><span class="ctxc${o.high?' high':''}"><span class="ctx"><i style="width:${o.high?78:42}%"></i></span><span class="n">${o.high?'156k / 200k':'84k / 200k'}</span>${o.high?'78%':'42%'}</span><span class="gap"></span><span class="cwd"><span class="lead">~/Workspace/</span>kido</span></div>`}
+
 const esc=s=>s.replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
 // drawn placeholders: a "screenshot" and a "diagram", as data URLs
 const shot=(w,h,a,b,label)=>'data:image/svg+xml;utf8,'+encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${h}" viewBox="0 0 ${w} ${h}"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="${a}"/><stop offset="1" stop-color="${b}"/></linearGradient></defs><rect width="${w}" height="${h}" fill="url(#g)"/><rect x="${w*0.08}" y="${h*0.14}" width="${w*0.84}" height="${h*0.72}" rx="${Math.min(w,h)*0.03}" fill="#fff" fill-opacity=".82"/><rect x="${w*0.12}" y="${h*0.2}" width="${w*0.5}" height="${h*0.05}" rx="3" fill="#333" fill-opacity=".55"/><rect x="${w*0.12}" y="${h*0.3}" width="${w*0.76}" height="${h*0.04}" rx="3" fill="#333" fill-opacity=".3"/><rect x="${w*0.12}" y="${h*0.38}" width="${w*0.7}" height="${h*0.04}" rx="3" fill="#333" fill-opacity=".3"/><rect x="${w*0.12}" y="${h*0.46}" width="${w*0.76}" height="${h*0.3}" rx="4" fill="${a}" fill-opacity=".35"/><text x="${w*0.5}" y="${h*0.94}" font-family="SF Mono,Menlo,monospace" font-size="${Math.max(10,h*0.045)}" fill="#fff" fill-opacity=".85" text-anchor="middle">${label}</text></svg>`);
@@ -374,7 +420,7 @@ const userMsg=(t,extra='')=>`<div class="msg user"><div class="t">${esc(t)}${ext
 const thumb=(src,sz,lg)=>`<button class="thumb${lg?' lg':''}" aria-label="Preview image ${sz}"><img src="${src}" alt=""><span class="sz">${sz}</span></button>`;
 const thumbs=(items)=>`<div class="thumbs">${items.join('')}</div>`;
 const paths=(ps)=>`<div class="paths">${ps.map(esc).join('\n')}</div>`;
-function composer(o={}){const chips=o.chips?`<div class="chips">${o.chips}</div>`:'';const before=o.after||'';o.after='';const hint=o.working?`<span class="spin" style="border-color:var(--hair2);border-top-color:var(--muted);margin-right:5px;vertical-align:-1px"></span>working 3s · <kbd>⎋</kbd> abort`:(o.text?'<kbd>⇧↩</kbd> newline':'');return `<div class="composer">${before}${chips}<div class="field${o.drop?' drop':o.working?' working':' focus'}"><div class="text${o.text?'':' ph'}">${o.text?esc(o.text)+'<span class="caret"></span>':o.drop?'Drop to attach':o.working?'Steer koa…':'Message koa…'}</div><div class="foot"><span class="hint">${hint}</span><span class="sp"></span><button class="act ${o.working?'stop':'send'}${o.text||o.chips?'':' off'}" aria-label="Send">${o.working?stop:send}</button></div></div>${o.after||''}</div>`}
+function composer(o={}){const chips=o.chips?`<div class="chips">${o.chips}</div>`:'';const before=o.after||'';o.after='';const hint=o.working?`<span class="spin" style="border-color:var(--hair2);border-top-color:var(--muted);margin-right:5px;vertical-align:-1px"></span>working 3s · <kbd>⎋</kbd> abort`:(o.text?'<kbd>⇧↩</kbd> newline':'');return `<div class="composer">${before}${chips}<div class="field${o.drop?' drop':o.working?' working':' focus'}"><div class="text${o.text?'':' ph'}">${o.text?esc(o.text)+'<span class="caret"></span>':o.drop?'Drop to attach':o.working?'Steer koa…':'Message koa…'}</div>${shippedFoot({state:o.working?'working':'idle'})}</div>${o.after||''}</div>`}
 const chip=(o)=>`<span class="chip${o.cls||''}" role="button" tabindex="0"><span class="ic">${o.img?`<img src="${o.img}" alt="">`:o.cls===' up'?'':doc}</span><span class="n">${esc(o.name)}</span>${o.dir?`<span class="dir">${esc(o.dir)}</span>`:''}<span class="m">${o.meta||''}</span><button class="x" aria-label="Remove">${xx}</button></span>`;
 const run=(o)=>`<div class="run open"><div class="line"><span class="chev">›</span><span class="sum"><span class="names">${o.sum}</span></span><span class="time">${o.time}</span></div><div class="steps">${o.steps.join('')}</div></div>`;
 const step=(o)=>`<div class="step${o.open?' open':''}"><div class="line"><span class="chev">›</span><span class="sum"><span class="name">${o.name}</span> <span class="path file${o.hover?' hover':''}">${esc(o.path)}</span> <span class="delta">${o.delta||''}</span></span><span class="time">${o.time}</span></div><div class="detail">${o.detail||''}</div></div>`;

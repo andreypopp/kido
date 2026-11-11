@@ -265,6 +265,48 @@ html:not([data-dock=band]) .dock .queued-next{text-shadow:0 0 6px var(--ko-bg),0
 .note code{font-size:.9em}
 /* the times of run and step lines end where the user message's time ends: 12pt in from the transcript's edge (user, 2026-11-10) */
 .run .line{padding-right:12px}
+
+.field .foot{gap:0;min-height:20px;margin-top:2px;font:.8em/1.4 var(--mono);color:var(--muted);align-items:center}
+.foot .st{display:flex;align-items:center;gap:6px;min-width:calc(15ch + 12px);flex-shrink:0;white-space:nowrap;font-variant-numeric:tabular-nums}
+.foot .st .dot{width:6px;height:6px;border-radius:50%;background:var(--faint);flex-shrink:0}
+.foot .st .dot.on{background:var(--ko-color-2);animation:breathe 1.6s ease-in-out infinite}
+.foot .st .dot.wait{background:var(--ko-color-3)}
+.foot .st .dot.off{background:var(--ko-color-1)}
+.foot .st .t{color:var(--faint)}
+@keyframes breathe{50%{opacity:.35}}
+.foot .sep{width:1px;height:12px;background:var(--hair);margin:0 10px;flex-shrink:0}
+.foot .model{display:flex;align-items:baseline;gap:5px;border:0;background:none;padding:0 4px;margin:0 -4px;border-radius:4px;font:inherit;color:var(--muted);cursor:pointer;white-space:nowrap;flex-shrink:0}
+.foot .model .lvl{color:var(--faint)}
+.foot .model:hover,.foot .model.pick{background:var(--well2);color:var(--fg)}
+.foot .ctxc{display:flex;align-items:center;gap:6px;flex-shrink:0;white-space:nowrap;min-width:calc(44px + 6px + 3ch)}
+.foot .ctxc .ctx{display:inline-block;width:44px;height:4px;border-radius:2px;background:var(--hair2);position:relative}
+.foot .ctxc .ctx i{position:absolute;left:0;top:0;bottom:0;border-radius:2px;background:var(--faint)}
+.foot .ctxc.high .ctx i{background:var(--ko-color-3)}
+.foot .ctxc .n{color:var(--faint)}
+.foot .gap{flex:1;min-width:8px;display:flex;align-items:center;overflow:hidden;padding:0 10px}
+.foot .cwd{color:var(--muted);white-space:nowrap;flex-shrink:0}
+.foot .cwd .lead{color:var(--faint)}
+.foot .act{margin-right:-7px;margin-bottom:0;width:22px;height:22px;border-radius:6px}.foot .act svg{width:14px;height:14px}
+.pane .field{padding-bottom:5px}
+.foot .act.stop{color:var(--muted)}
+/* a notification is a line in the transcript: time at the right like a job line, no badge */
+.note{margin:0 0 10px;display:flex;align-items:baseline;gap:10px;font:.92em/1.5 var(--mono);color:var(--muted);white-space:nowrap;padding-right:12px}
+.note .tx{overflow:hidden;text-overflow:ellipsis;min-width:0}
+.note.error .tx{color:var(--err)}.note.warning .tx{color:var(--warn)}
+.note time{margin-left:auto;color:var(--faint);font-size:.85em;font-variant-numeric:tabular-nums}
+.foot .toast{display:inline-flex;align-items:center;gap:7px;min-width:0;background:none;border:0;padding:0;font:inherit}
+.foot .toast .i{display:inline-grid;place-items:center;width:12px;height:12px;border-radius:50%;font:700 9px/1 var(--ko-font-family);color:var(--ko-bg);flex-shrink:0}
+.foot .toast.info .i{background:var(--ko-color-4)}.foot .toast.warning .i{background:var(--ko-color-3)}.foot .toast.error .i{background:var(--ko-color-1)}
+.foot .toast .tx{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--fg)}
+/* narrow: what goes first */
+html[data-width=narrow] .foot .model .lvl,.pane.narrow .foot .model .lvl{display:none}
+html[data-width=narrow] .foot .cwd .lead,.pane.narrow .foot .cwd .lead{display:none}
+html[data-width=narrow] .foot .ctxc .n,.pane.narrow .foot .ctxc .n{display:none}
+html[data-width=narrow] .foot .ctxc,.pane.narrow .foot .ctxc{min-width:44px}
+html[data-width=narrow] .foot .sep,.pane.narrow .foot .sep{margin:0 7px}
+/* the shipped composer foot (composer.html): status, model and level, context, cwd; no button, Return sends. The page has no status bar since 24b2451e. */
+.status{display:none!important}
+.pane .field{padding-bottom:5px}
 </style>
 </head>
 <body>
@@ -306,8 +348,8 @@ html:not([data-dock=band]) .dock .queued-next{text-shadow:0 0 6px var(--ko-bg),0
 <p>Empty and focused; multiline up to six lines, then scrolling; while the agent works. One 26pt rounded square (8pt radius, the palette's Send control) at the bottom right of the field, no border and no text: send (accent, arrow right) while there is text, dimmed to the 18% hairline tone while the field is empty, and stop (fg square with a stop glyph; red on hover) while koa works. The key hints are faint terminal-font text at the left, shown only while the field is focused or koa works.</p>
 <div class="grid"><div class="pane short" data-state="composer-empty"></div><div class="pane short" data-state="composer-multi"></div><div class="pane short" data-state="composer-working"></div></div></section>
 
-<section id="s-status"><h2>8 · The status bar</h2>
-<p>One terminal-font line, 24pt: state · model · thinking level · context use (bar and percent) · cwd at the right. In the narrow pane the numbers behind the context bar and the thinking label go first.</p>
+<section id="s-status"><h2>8 · The status, in the composer's foot</h2>
+<p>The page has no status bar (since 24b2451e). The state, the model and thinking level, the context use (bar and percent) and the cwd are the composer's foot; <a href="composer.html">composer.html</a> is the reference for its states and for the narrow pane, where the numbers behind the context bar and the thinking label go first. Idle, working with its breathing dot and time, and waiting with the orange dot and the context near its limit:</p>
 <div class="grid"><div class="pane short" data-state="status-idle"></div><div class="pane short" data-state="status-working"></div><div class="pane short" data-state="status-waiting"></div></div></section>
 
 <section id="s-narrow"><h2>9 · The narrow pane (60 columns)</h2>
@@ -326,12 +368,12 @@ html:not([data-dock=band]) .dock .queued-next{text-shadow:0 0 6px var(--ko-bg),0
 <p>Clicking the model or the thinking segment opens a popover above it; the segments are buttons, so Tab from the composer reaches them and Return or Space opens. The popover is a list in the terminal font, the current entry ticked, the highlighted row filled, the provider faint at the right. Arrows move, Return applies and closes, Escape closes without a change. The opened segment is filled while its popover is up.</p>
 <div class="grid"><div class="pane short" data-state="picker-model"></div><div class="pane short" data-state="picker-thinking"></div><div class="pane short narrow" data-state="picker-model"></div></div></section>
 
-<section id="s-toast"><h2>13 · Notifications and extension status in the bar</h2>
-<p>An extension's <code>notify</code> is a toast in the bar's flexible segment for 4 s: a 12pt badge (i, !, ✕ in accent, warning, error) and the message, ellipsized, replaced by a newer one. An extension's <code>setStatus</code> adds a segment under its key, between the context segment and the toast, in key order; an empty value removes it.</p>
+<section id="s-toast"><h2>13 · Notifications and extension status</h2>
+<p>Superseded with the status bar: an extension's <code>notify</code> is a muted transcript line with its time at the right (warning and error in their colours), and <code>setStatus</code> segments sit in the composer's foot; <a href="composer.html">composer.html</a> shows both. The panes below keep only the composer; the toasts they once showed in the bar are gone.</p>
 <div class="grid"><div class="pane short" data-state="toast-info"></div><div class="pane short" data-state="toast-warn"></div><div class="pane short" data-state="toast-error"></div><div class="pane short narrow" data-state="toast-warn"></div></div></section>
 
 <section id="s-exited"><h2>14 · pi has exited</h2>
-<p>The transcript stays. The composer's place holds a card with a red-tinted hairline: the exit cause, the last lines of pi's stderr in a well, and "Start pi again"; Return starts it. The status bar's dot is red and reads "pi exited · code 1" (or "signal SIGKILL"), the model and context segments keep their last values.</p>
+<p>The transcript stays. The composer's place holds a card with a red-tinted hairline: the exit cause, the last lines of pi's stderr in a well, and "Start pi again"; Return starts it. The foot's dot is red and reads "exited 1" (or the signal), and the model and context cells keep their last values.</p>
 <div class="grid"><div class="pane" data-state="exited"></div><div class="pane narrow" data-state="exited"></div></div></section>
 
 <section id="s-times"><h2>15 · Step and run times</h2>
@@ -341,6 +383,10 @@ html:not([data-dock=band]) .dock .queued-next{text-shadow:0 0 6px var(--ko-bg),0
 <p class="note">Open questions and the data each part needs are in NOTES.md beside this file.</p>
 
 <script>
+function shippedFoot(o){
+  const st={idle:'<span class="dot"></span>idle',working:`<span class="dot on"></span>working <span class="t">${o.t||'12s'}</span>`,waiting:'<span class="dot wait"></span>waiting',starting:'<span class="dot"></span>starting',exited:`<span class="dot off"></span>exited <span class="t">${o.code??137}</span>`}[o.state];
+    return `<div class="foot"><span class="st">${st}</span><span class="sep"></span><button class="model${o.pick?' pick':''}" aria-label="Model and thinking level">claude-opus-5-5<span class="lvl">· high</span></button><span class="sep"></span><span class="ctxc${o.high?' high':''}"><span class="ctx"><i style="width:${o.high?78:42}%"></i></span><span class="n">${o.high?'156k / 200k':'84k / 200k'}</span>${o.high?'78%':'42%'}</span><span class="gap"></span><span class="cwd"><span class="lead">~/Workspace/</span>kido</span></div>`}
+
 const $=(s,r=document)=>r.querySelector(s);
 const html=document.documentElement;
 $('#theme').onchange=e=>html.dataset.theme=e.target.value;
@@ -378,7 +424,7 @@ function status(kind){
 function composer(kind){
   const icon={send:'<svg viewBox="0 0 16 16"><path d="M3 8h9.5M8.3 3.8 12.5 8l-4.2 4.2"/></svg>',stop:'<svg viewBox="0 0 16 16"><rect x="4" y="4" width="8" height="8" rx="1.5" fill="currentColor" stroke="none"/></svg>'};
   const btn=(k,label,extra='')=>`<button class="act ${k}${extra}" aria-label="${label}" title="${label}">${icon[k==='stop'?'stop':'send']}</button>`;
-  const foot=(hint,buttons)=>`<div class="foot"><span class="hint">${hint}</span><span class="sp"></span>${buttons}</div>`;
+  const foot=(hint)=>shippedFoot({state:/working|abort/.test(hint)?'working':'idle'});
   if(kind==='multi')return `<div class="composer"><div class="field focus"><div class="text">Three things, in order:
 1. make the sweep keep a start failure for the linger grace
 2. add the e2e test \`sweep_keeps_a_start_failure\` beside the linger test
@@ -386,6 +432,8 @@ function composer(kind){
 
 Do not touch the cascade.<span class="caret"></span></div>${foot('<kbd>⇧↩</kbd> newline',btn('send','Send ↩'))}</div></div>`;
   if(kind==='working')return `<div class="composer"><div class="field working"><div class="text ph">Steer koa…</div>${foot('<span class="spin"></span>working 12s · <kbd>⎋</kbd> abort',btn('stop','Abort ⎋'))}</div></div>`;
+  if(kind==='waiting')return `<div class="composer"><div class="field focus"><div class="text ph">Message koa…</div>${shippedFoot({state:'waiting',high:true})}</div></div>`;
+  if(kind==='exited')return `<div class="composer"><div class="field"><div class="text ph">pi has exited</div>${shippedFoot({state:'exited',code:1})}</div></div>`;
   return `<div class="composer"><div class="field focus"><div class="text ph">Message koa…</div>${foot('',btn('send','Send ↩',' off'))}</div></div>`}
 const step={
   bash:(o)=>`<div class="step${o.open?' open':''}"><div class="line"><span class="chev">›</span><span class="sum"><span class="name${o.fail?' err':''}">bash</span> <span class="cmd">${o.cmd}</span></span>${o.res}</div><div class="detail"><div class="kv"><b>cwd</b> ~/Workspace/kido</div>${o.out?`<pre>${o.out}</pre>`:''}</div></div>`,
@@ -450,7 +498,7 @@ FAIL unit 40.2s`}),
   'composer-working':()=>transcript(userMsg('Make the sweep keep a start failure')+run({sum:`<span class="spin"></span> <span class="cmd">make cargo ARGS='test -p ko_server sweep'</span>`,res:`<span class="time">9s</span>`,steps:[]}))+composer('working')+status('working'),
   'status-idle':()=>transcript('')+composer('empty')+status('idle'),
   'status-working':()=>transcript('')+composer('working')+status('working'),
-  'status-waiting':()=>transcript(`<div class="msg assistant"><p>Two readings of "linger grace" differ. Which one: the server's <code>linger</code> key, or the pane's own value?</p></div>`)+composer('empty')+status('waiting'),
+  'status-waiting':()=>transcript(`<div class="msg assistant"><p>Two readings of "linger grace" differ. Which one: the server's <code>linger</code> key, or the pane's own value?</p></div>`)+composer('waiting')+status('waiting'),
 };
 
 const dialogCard=(o)=>`<div class="dialogs"><div class="dialog">${o.timeout?'<span class="fuse" style="width:'+o.timeout.pct+'%"></span>':''}<div class="head"><span class="title">${o.title}</span>${o.timeout?'<span class="count">'+o.timeout.left+'</span>':''}</div>${o.message?'<div class="msg2">'+o.message+'</div>':''}${o.body||''}<div class="foot">${o.hint}<span class="sp"></span>${o.buttons}</div></div>${o.next?'<div class="queued-next">+1 queued <b>·</b> <b>'+o.next+'</b></div>':''}</div>`;
@@ -467,7 +515,7 @@ Object.assign(states,{
   'dialog-confirm':()=>transcript('')+dialogCard({title:'Force-push main?',message:'origin/main moves from 20857320 to 88bdb070. Other clones need a reset.',buttons:'<button class="btn">No<kbd>⎋</kbd></button><button class="btn primary">Yes<kbd>↩</kbd></button>',hint:''})+inertComposer()+status('waiting'),
   'dialog-input':()=>transcript('')+dialogCard({title:'Version for the tap',timeout:{left:'43s',pct:88},body:'<div class="in focus">0.32.0<span class="caret"></span></div>',hint:'',buttons:'<button class="btn">Cancel<kbd>⎋</kbd></button><button class="btn primary">Submit<kbd>↩</kbd></button>'})+inertComposer()+status('waiting'),
   'dialog-editor':()=>transcript('')+dialogCard({title:'Release notes',message:'Edit the draft; empty cancels.',body:'<div class="in multi focus">## 0.32\n\n- The sidebar shows status at the right and folds children\n- A program can show a webview page in its pane<span class="caret"></span></div>',hint:'⇧↩ newline',buttons:'<button class="btn">Cancel<kbd>⎋</kbd></button><button class="btn primary">Submit<kbd>⌃↩</kbd></button>'})+inertComposer()+status('waiting'),
-  queue:()=>transcript(userMsg('Release 0.32')+run({sum:`<span class="spin"></span> <span class="cmd">make verify</span>`,res:`<span class="time">1m02s</span>`,steps:[]}))+`<div class="composer">${queueBlock()}<div class="field working"><div class="text ph">Steer koa…</div><div class="foot"><span class="hint"><span class="spin"></span>working 1m02s · <kbd>⎋</kbd> abort</span><span class="sp"></span><button class="act stop" aria-label="Abort"><svg viewBox="0 0 16 16"><rect x="4" y="4" width="8" height="8" rx="1.5" fill="currentColor" stroke="none"/></svg></button></div></div></div>`+status('working'),
+  queue:()=>transcript(userMsg('Release 0.32')+run({sum:`<span class="spin"></span> <span class="cmd">make verify</span>`,res:`<span class="time">1m02s</span>`,steps:[]}))+`<div class="composer">${queueBlock()}<div class="field working"><div class="text ph">Steer koa…</div>${shippedFoot({state:'working'})}</div></div>`+status('working'),
   'picker-model':()=>transcript('')+composer('empty')+picker({left:84,ph:'Model',rows:[{n:'claude-opus-5-5',p:'anthropic',on:true},{n:'claude-sonnet-5-5',p:'anthropic',cur:true},{n:'claude-fable-5-1',p:'claude-bridge'},{n:'gpt-6.1-sol',p:'openai-codex'},{n:'gpt-6-astra',p:'openai-codex'}]})+status('idle').replace('<span class="seg">claude-opus-5-5','<span class="seg pick">claude-opus-5-5'),
   'picker-thinking':()=>transcript('')+composer('empty')+picker({left:196,ph:'Thinking',rows:[{n:'off'},{n:'minimal'},{n:'low'},{n:'medium',cur:true},{n:'high',on:true},{n:'xhigh'}]})+status('idle'),
   'toast-info':()=>transcript('')+composer('empty')+statusWith('idle',ext([['git','↑2'],['tests','3 failing']])+toast('info','Switched to claude-sonnet-5-5 · thinking medium')),
@@ -477,7 +525,7 @@ Object.assign(states,{
     throw new ERR_MODULE_NOT_FOUND(packageName, fileURLToPath(base), null);
 Error [ERR_MODULE_NOT_FOUND]: Cannot find package '@kido/webview'
     at packageResolve (node:internal/modules/esm/resolve:873:9)
-    at moduleResolve (node:internal/modules/esm/resolve:946:18)</pre><div class="acts">last 5 lines of pi's stderr · the whole output is in the pane's terminal<span class="sp"></span><button class="btn primary">Start pi again<kbd style="font:.8em var(--mono);opacity:.6;margin-left:6px">↩</kbd></button></div></div></div>`+status('idle').replace('<span class="dot"></span>idle','<span class="dot off"></span>pi exited <span class="k">· code 1</span>'),
+    at moduleResolve (node:internal/modules/esm/resolve:946:18)</pre><div class="acts">last 5 lines of pi's stderr · the whole output is in the pane's terminal<span class="sp"></span><button class="btn primary">Start pi again<kbd style="font:.8em var(--mono);opacity:.6;margin-left:6px">↩</kbd></button></div></div></div>`+composer('exited')+status('idle').replace('<span class="dot"></span>idle','<span class="dot off"></span>pi exited <span class="k">· code 1</span>'),
   times:()=>transcript(userMsg('Make the sweep keep a start failure, then run the whole unit stage')+run({open:true,sum:`<span class="delta names">thinking, read, edit, bash</span>`,res:`<span class="time">10s</span>`,steps:runSteps()})+`<div class="msg assistant"><p>Done. Now the unit stage.</p></div>`+run({open:true,sum:`<span class="delta">aborted, you pressed Escape</span>`,res:`<span class="time">27s</span>`,steps:[
     step.think({sum:'<span class="name">thinking</span> <span class="delta">· which stages the unit stage runs</span>',res:ok('4s')}),
     step.bash({cmd:'make verify STAGES=unit',res:`<span class="time">aborted 23s</span>`,out:''}),

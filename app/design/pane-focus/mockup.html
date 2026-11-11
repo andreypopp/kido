@@ -62,17 +62,17 @@ body{margin:0;padding:24px;background:#8d8a84;font:13px/1.45 -apple-system,Blink
 </style></head><body>
 <div class="controls"><strong>Focused pane · treatments</strong>
 <label>Treatment <select id="treat">
-<option value="t-overlay">Current: inactive overlay, terminal bg 45%</option>
+<option value="t-overlay">Before: inactive overlay, terminal bg 45%</option>
 <option value="t-shift">Background shift: inactive panes take the sidebar shade, text full contrast</option>
 <option value="t-div">Active dividers: separators touching the focused pane in accent</option>
 <option value="t-edge">Focus edge: 1pt inner stroke on the focused pane, accent 50%</option>
 <option value="t-shiftdiv" selected>Shift + active dividers (recommended)</option>
-<option value="t-shiftedge">Shift + focus edge</option>
+<option value="t-shiftedge" selected>Shift + focus edge (shipped: 3% shift, 1pt accent stroke at 50%)</option>
 </select></label>
 <label>Theme <select id="theme"><option>Light</option><option>Dark</option></select></label>
 <label>Focus <select id="who"><option value="pane">Pane</option><option value="sidebar">Sidebar</option></select></label><label>Active pane <select id="focus"><option value="1">pi (left)</option><option value="2">build log (top right)</option><option value="3">shell (bottom right)</option></select></label>
-<label>Shift strength <select id="shift"><option value="5">5% (sidebar default)</option><option value="8">8%</option><option value="12">12%</option></select></label><label>Sidebar separation <select id="sep"><option value="">Divider only</option><option value="sep-shadow" selected>Soft shadow cast onto the terminal area (chosen; light divider 28%)</option><option value="sep-strong">Stronger divider (35% toward fg)</option><option value="sep-tone">Larger tone step (sidebar 12%, panes 5%)</option></select></label><label>Sidebar mode <select id="mode"><option value="">Docked</option><option value="floating">Floating (collapsed, shown over the terminal)</option></select></label><label><input type="checkbox" id="single"> Single pane (no treatment applies)</label>
-<p>Click a pane to focus it. Every treatment leaves selection and find highlights untouched and does nothing in a single-pane window. The shift is the same 5% rule as the sidebar, so inactive panes match the sidebar tone and the focused pane is the only surface with the pure terminal background.</p>
+<label>Shift strength <select id="shift"><option value="3" selected>3% (shipped default, window.unfocused_shift)</option><option value="5">5% (sidebar default)</option><option value="8">8%</option><option value="12">12%</option></select></label><label>Sidebar separation <select id="sep"><option value="">Divider only</option><option value="sep-shadow" selected>Soft shadow cast onto the terminal area (chosen; light divider 28%)</option><option value="sep-strong">Stronger divider (35% toward fg)</option><option value="sep-tone">Larger tone step (sidebar 12%, panes 5%)</option></select></label><label>Sidebar mode <select id="mode"><option value="">Docked</option><option value="floating">Floating (collapsed, shown over the terminal)</option></select></label><label><input type="checkbox" id="single"> Single pane (no treatment applies)</label>
+<p>Click a pane to focus it. Every treatment leaves selection and find highlights untouched and does nothing in a single-pane window. The shipped shift is 3% by default, the sidebar's direction rule at its own strength (the 5% option shows inactive panes matching the sidebar tone and the focused pane is the only surface with the pure terminal background.</p>
 </div>
 <div class="app light t-shiftdiv" id="app">
 <div class="header"><div class="lights"><i></i><i></i><i></i></div><div class="tabs"><div class="tab active agent"><i></i>@kido-app</div><div class="tab"><i style="background:var(--attention)"></i>@pi</div><div class="tab">zsh</div></div></div>

@@ -1,15 +1,15 @@
-# Focused pane treatment (proposal, not approved)
+# Focused pane treatment (shipped: Shift + focus edge)
 
-`mockup.html` is a self-contained reference for how Kido.app can show which pane has keyboard focus in a multi-pane window. Open it in a browser; no network access. Code is the source of truth: today `PaneChrome.draw` fills an inactive pane with the terminal background at 45% alpha.
+`mockup.html` is a self-contained reference for how Kido.app can show which pane has keyboard focus in a multi-pane window. Open it in a browser; no network access. Code is the source of truth (docs/design-app.md, "Focus treatment"). Shipped: **Shift + focus edge**, with a 3% shift by default (`window.unfocused_shift`, same range and direction rule as the sidebar shade) and the 1pt `controlAccentColor` stroke at 50% inside the chrome rect; where a corner of the pane is a corner of the window the stroke follows the window's rounded corner, concentric (macOS 27, outside full screen; square on macOS 26). The 45% overlay stays only on floating panes that are not active. Not shipped: the 5, 8 and 12% strengths, the accent dividers, the overlay on tiled panes.
 
 ## Treatments
 
-- **Current.** Inactive overlay, terminal background at 45%. Cost: text in inactive panes drops to about half contrast, and those panes are where output is read while typing elsewhere. The overlay also covers selection and find highlights.
+- **Before.** Inactive overlay, terminal background at 45%. Cost: text in inactive panes drops to about half contrast, and those panes are where output is read while typing elsewhere. The overlay also covers selection and find highlights.
 - **Background shift.** Inactive panes take the sidebar's shade rule: the terminal background mixed toward black on a light theme and toward white on a dark one. Glyphs, cursor, selection and highlights are untouched. The focused pane is then the only surface with the pure terminal background. The Shift strength control previews 5% (the sidebar default, so inactive panes match the sidebar tone), 8% and 12%. The shift is a fixed 5% and does not follow `kido-sidebar-shade`: a sidebar shade of −40% must not make inactive panes unreadable. Matching the sidebar tone is a side effect at the default, not a rule.
 - **Active dividers.** The separators that touch the focused pane are drawn in the accent colour (accent mixed 70% into `separatorColor`), 1pt as before. Separators between two inactive panes keep `separatorColor`.
 - **Focus edge.** A 1pt inset stroke on the focused pane in the accent at 50% opacity. It sits over the pane padding, not over cells.
 - **Shift + focus edge.** The shift plus the 1pt accent stroke on the focused pane. Louder than the dividers in a light theme because the stroke closes all four sides.
-- **Shift + active dividers.** The recommendation: the shift carries the focus reading at a glance, the dividers make the focused rectangle explicit without covering cells.
+- **Shift + active dividers.** Not chosen; was the recommendation: the shift carries the focus reading at a glance, the dividers make the focused rectangle explicit without covering cells.
 
 ## Sidebar focus
 

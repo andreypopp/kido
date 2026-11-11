@@ -280,15 +280,13 @@ html:not([data-dock=band]) .dock .queued-next{text-shadow:0 0 6px var(--ko-bg),0
 /* ---- agent messages: the user message's block, with a header "to @name" / "from @name" ---- */
 .amsg{margin:0 0 14px;background:var(--well);border-radius:8px;padding:6px 12px 7px;position:relative}
 .amsg.many{cursor:pointer}
-.amsg .hd{display:flex;align-items:baseline;gap:8px;font:.92em/1.5 var(--prose);color:var(--muted);white-space:nowrap;min-width:0}
-.amsg .hd .dir{color:var(--muted)}
+.amsg .hd{display:flex;align-items:baseline;gap:5px;font:.92em/1.5 var(--prose);color:var(--muted);white-space:nowrap;min-width:0}
+.amsg .hd .kind{color:var(--muted)}.amsg .hd .kind.err{color:var(--err)}
 /* the @name in the header is prose, not mono: three fonts in one card were too many (user, 2026-11-10) */
 .amsg .hd .who{font:600 1em/1.5 var(--prose);color:var(--fg)}
 .amsg .hd .who.err{color:var(--err)}
 .amsg .hd .rel{overflow:hidden;text-overflow:ellipsis;min-width:0;color:var(--faint)}
-.amsg .hd .tag{margin-left:auto;font:.8em/1.5 var(--mono);color:var(--faint);flex-shrink:0}
-.amsg .hd .tag.err{color:var(--err)}
-.amsg .hd time{font:.8em/1.5 var(--mono);color:var(--faint);flex-shrink:0;font-variant-numeric:tabular-nums}
+.amsg .hd time{margin-left:auto;font:.8em/1.5 var(--mono);color:var(--faint);flex-shrink:0;font-variant-numeric:tabular-nums}
 .amsg .bd{margin:1px 0 0;color:var(--fg);white-space:pre-wrap;overflow-wrap:anywhere}
 .amsg.fold .bd{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .amsg.many .bd::after{content:""}
@@ -312,11 +310,53 @@ html:not([data-dock=band]) .dock .queued-next{text-shadow:0 0 6px var(--ko-bg),0
 /* the times of run and step lines end where the user message's time ends: 12pt in from the transcript's edge (user, 2026-11-10) */
 .run .line{padding-right:12px}
 .job .hd{padding-right:12px}
+
+.field .foot{gap:0;min-height:20px;margin-top:2px;font:.8em/1.4 var(--mono);color:var(--muted);align-items:center}
+.foot .st{display:flex;align-items:center;gap:6px;min-width:calc(15ch + 12px);flex-shrink:0;white-space:nowrap;font-variant-numeric:tabular-nums}
+.foot .st .dot{width:6px;height:6px;border-radius:50%;background:var(--faint);flex-shrink:0}
+.foot .st .dot.on{background:var(--ko-color-2);animation:breathe 1.6s ease-in-out infinite}
+.foot .st .dot.wait{background:var(--ko-color-3)}
+.foot .st .dot.off{background:var(--ko-color-1)}
+.foot .st .t{color:var(--faint)}
+@keyframes breathe{50%{opacity:.35}}
+.foot .sep{width:1px;height:12px;background:var(--hair);margin:0 10px;flex-shrink:0}
+.foot .model{display:flex;align-items:baseline;gap:5px;border:0;background:none;padding:0 4px;margin:0 -4px;border-radius:4px;font:inherit;color:var(--muted);cursor:pointer;white-space:nowrap;flex-shrink:0}
+.foot .model .lvl{color:var(--faint)}
+.foot .model:hover,.foot .model.pick{background:var(--well2);color:var(--fg)}
+.foot .ctxc{display:flex;align-items:center;gap:6px;flex-shrink:0;white-space:nowrap;min-width:calc(44px + 6px + 3ch)}
+.foot .ctxc .ctx{display:inline-block;width:44px;height:4px;border-radius:2px;background:var(--hair2);position:relative}
+.foot .ctxc .ctx i{position:absolute;left:0;top:0;bottom:0;border-radius:2px;background:var(--faint)}
+.foot .ctxc.high .ctx i{background:var(--ko-color-3)}
+.foot .ctxc .n{color:var(--faint)}
+.foot .gap{flex:1;min-width:8px;display:flex;align-items:center;overflow:hidden;padding:0 10px}
+.foot .cwd{color:var(--muted);white-space:nowrap;flex-shrink:0}
+.foot .cwd .lead{color:var(--faint)}
+.foot .act{margin-right:-7px;margin-bottom:0;width:22px;height:22px;border-radius:6px}.foot .act svg{width:14px;height:14px}
+.pane .field{padding-bottom:5px}
+.foot .act.stop{color:var(--muted)}
+/* a notification is a line in the transcript: time at the right like a job line, no badge */
+.note{margin:0 0 10px;display:flex;align-items:baseline;gap:10px;font:.92em/1.5 var(--mono);color:var(--muted);white-space:nowrap;padding-right:12px}
+.note .tx{overflow:hidden;text-overflow:ellipsis;min-width:0}
+.note.error .tx{color:var(--err)}.note.warning .tx{color:var(--warn)}
+.note time{margin-left:auto;color:var(--faint);font-size:.85em;font-variant-numeric:tabular-nums}
+.foot .toast{display:inline-flex;align-items:center;gap:7px;min-width:0;background:none;border:0;padding:0;font:inherit}
+.foot .toast .i{display:inline-grid;place-items:center;width:12px;height:12px;border-radius:50%;font:700 9px/1 var(--ko-font-family);color:var(--ko-bg);flex-shrink:0}
+.foot .toast.info .i{background:var(--ko-color-4)}.foot .toast.warning .i{background:var(--ko-color-3)}.foot .toast.error .i{background:var(--ko-color-1)}
+.foot .toast .tx{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--fg)}
+/* narrow: what goes first */
+html[data-width=narrow] .foot .model .lvl,.pane.narrow .foot .model .lvl{display:none}
+html[data-width=narrow] .foot .cwd .lead,.pane.narrow .foot .cwd .lead{display:none}
+html[data-width=narrow] .foot .ctxc .n,.pane.narrow .foot .ctxc .n{display:none}
+html[data-width=narrow] .foot .ctxc,.pane.narrow .foot .ctxc{min-width:44px}
+html[data-width=narrow] .foot .sep,.pane.narrow .foot .sep{margin:0 7px}
+/* the shipped composer foot (composer.html): status, model and level, context, cwd; no button, Return sends. The page has no status bar since 24b2451e. */
+.status{display:none!important}
+.pane .field{padding-bottom:5px}
 </style>
 </head>
 <body>
 <h1>koa — agent messages and job notices</h1>
-<p class="lede">How koa's transcript shows what passes between agents and what background jobs report, beside the user, assistant and run items of mockup.html. Outgoing (koa's agent calls <code>spawn_agent</code> or <code>message_agent</code>) and incoming (ko-pi's custom messages: a message, a steer, a notice, a report) are <b>agent messages</b>: the user message's block with a header "to @name" or "from @name" and the kind at the right, and one line of the text, ellipsized: two lines at most (user, 2026-11-10); a click expands to the whole text and back. An <b>async job</b> notice (<code>async_bash</code>'s end notice, a streamed batch) is <b>one terminal line</b>: the job's name, its end and the time, gray for success and red for a failure; a click opens its output and the log path. The plain agent tools (<code>list_agents</code>, <code>read_report</code>, <code>stop_agent</code>) stay steps in a run. The texts are the ones ko-pi writes today (share/pi/ko-pi.ts); the fields are the planner's section 9.</p>
+<p class="lede">How koa's transcript shows what passes between agents and what background jobs report, beside the user, assistant and run items of mockup.html. Outgoing (koa's agent calls <code>spawn_agent</code> or <code>message_agent</code>) and incoming (ko-pi's custom messages: a message, a steer, a notice, a report) are <b>agent messages</b>: the user message's block with the header "<i>kind</i> to|from @name <i>relation</i>" and the time at the right, and one line of the text, ellipsized: two lines at most (user, 2026-11-10); a click expands to the whole text and back. An <b>async job</b> notice (<code>async_bash</code>'s end notice, a streamed batch) is <b>one terminal line</b>: the job's name, its end and the time, gray for success and red for a failure; a click opens its output and the log path. The plain agent tools (<code>list_agents</code>, <code>read_report</code>, <code>stop_agent</code>) stay steps in a run. The texts are the ones ko-pi writes today (share/pi/ko-pi.ts); the fields are the planner's section 9.</p>
 <div class="controls">
   <label>Theme <select id="theme"><option value="light">kido-light</option><option value="dark">kido-dark</option></select></label>
   <label>Pane width <select id="width"><option value="wide">wide (980pt)</option><option value="narrow">narrow (60 columns)</option></select></label>
@@ -324,15 +364,15 @@ html:not([data-dock=band]) .dock .queued-next{text-shadow:0 0 6px var(--ko-bg),0
 </div>
 
 <section><h2>1 · Outgoing: a spawn and the messages</h2>
-<p>A <code>spawn_agent</code> or <code>message_agent</code> call is a card, not a step: it splits the run it sits in (here between the read/bash run and the assistant's text). The header is "to @name" at the left and, at the right before the time, the kind in the faint terminal font: <code>task</code> for a spawn, the mode for a message (<code>message</code>, <code>steer</code>, <code>interrupt</code>). No delivery status (delivered, queued, sent, spawned) and no session, window or model line (user, 2026-11-10); a refusal alone shows, in red, in the kind's place. A card is two lines at most: the header and the first line of the text, ellipsized (section 5).</p>
+<p>A <code>spawn_agent</code> or <code>message_agent</code> call is a card, not a step: it splits the run it sits in (here between the read/bash run and the assistant's text). The header is one phrase in the prose font: the kind, then "to" or "from", then <code>@name</code> in 600, then the relation: "message to @sidebar-right", "steer to @html-refine", "task to @correctness-review" (a spawn); at the right only the time (user, 2026-11-10). No delivery status (delivered, queued, sent, spawned) and no session, window or model line; a refusal takes the kind's place, in red: "refused to @name". A card is two lines at most: the header and the first line of the text, ellipsized (section 5).</p>
 <div class="pane" data-state="out"></div></section>
 
 <section><h2>2 · A failed spawn and a refused message</h2>
-<p>A spawn that ko refuses or that fails to start is the same block with the name and "refused" (in the kind's place) in red and the reason as the body, in ko-pi's words. A refused <code>message_agent</code> keeps its text and shows the refusal in red in the kind's place.</p>
+<p>A spawn that ko refuses or that fails to start is the same block with "refused" in red in the kind's place and the reason as the body, in ko-pi's words. A refused <code>message_agent</code> keeps its text and shows "refused" the same way.</p>
 <div class="pane short" data-state="failed"></div></section>
 
 <section><h2>3 · Incoming: from the parent, a child, a peer; a steer</h2>
-<p>"from @name" with the relation faint after it (ko-pi's words, shortened: "your parent", "your subagent", "another agent in this session", "a subagent of your subagent") and, at the right before the time, the kind: <code>message</code>, <code>steer</code> ("is redirecting this work"), <code>report</code>, <code>ended</code> (a child's end: how, and whether it had reported, in the text; "not reported" in red in the kind's place; the screen tail behind the ellipsis), <code>notice</code> (ko-pi's own). A report is a child's work product: the same block with the kind <code>report</code> (shown expanded here); ko-pi's "full report: read_report(…)" trailer is not shown (user, 2026-11-10).</p>
+<p>"<i>kind</i> from @name <i>relation</i>", the relation one word in the faint tone after the name (<code>subagent</code>, <code>peer</code>, <code>parent</code>; none for ko-pi's own notices), the time alone at the right; the kinds: <code>message</code>, <code>steer</code> ("is redirecting this work"), <code>report</code>, <code>ended</code> (a child's end: how, and whether it had reported, in the text; "not reported" in red in the kind's place; the screen tail behind the ellipsis), <code>notice</code> (ko-pi's own). A report is a child's work product: the same block with the kind <code>report</code> (shown expanded here); ko-pi's "full report: read_report(…)" trailer is not shown (user, 2026-11-10).</p>
 <div class="pane" data-state="in"></div></section>
 
 <section><h2>4 · Job notices: ended, failed, streamed</h2>
@@ -348,19 +388,24 @@ html:not([data-dock=band]) .dock .queued-next{text-shadow:0 0 6px var(--ko-bg),0
 <div class="pane short" data-state="tools"></div></section>
 
 <script>
+function shippedFoot(o){
+  const st={idle:'<span class="dot"></span>idle',working:`<span class="dot on"></span>working <span class="t">${o.t||'12s'}</span>`,waiting:'<span class="dot wait"></span>waiting',starting:'<span class="dot"></span>starting',exited:`<span class="dot off"></span>exited <span class="t">${o.code??137}</span>`}[o.state];
+    return `<div class="foot"><span class="st">${st}</span><span class="sep"></span><button class="model${o.pick?' pick':''}" aria-label="Model and thinking level">claude-opus-5-5<span class="lvl">· high</span></button><span class="sep"></span><span class="ctxc${o.high?' high':''}"><span class="ctx"><i style="width:${o.high?78:42}%"></i></span><span class="n">${o.high?'156k / 200k':'84k / 200k'}</span>${o.high?'78%':'42%'}</span><span class="gap"></span><span class="cwd"><span class="lead">~/Workspace/</span>kido</span></div>`}
+
 const esc=s=>s.replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
 function status(kind){const map={idle:`<span class="seg"><span class="dot"></span>idle</span>`,working:`<span class="seg"><span class="dot on"></span>working <span class="k">3s</span></span>`};return `<div class="status">${map[kind]||map.idle}<span class="seg">claude-opus-5-5<span class="hide-n k"> · thinking high</span></span><span class="seg"><span class="ctx"><i style="width:42%"></i></span><span class="hide-n k">84k / 200k</span>42%</span><span class="seg grow"></span><span class="seg"><span class="hide-n">~/Workspace/</span>kido</span></div>`}
 const transcript=(inner)=>`<div class="scroll"><div class="transcript">${inner}</div></div>`;
 const userMsg=(t)=>`<div class="msg user"><div class="t">${esc(t)}</div><time datetime="2026-11-10T09:12">09:12</time></div>`;
 const assistant=(t)=>`<div class="msg assistant"><p>${t}</p></div>`;
 const send='<svg viewBox="0 0 16 16"><path d="M3 8h9.5M8.3 3.8 12.5 8l-4.2 4.2"/></svg>';
-const composer=()=>`<div class="composer"><div class="field focus"><div class="text ph">Message koa…</div><div class="foot"><span class="hint"></span><span class="sp"></span><button class="act send off" aria-label="Send">${send}</button></div></div></div>`;
+const composer=()=>`<div class="composer"><div class="field focus"><div class="text ph">Message koa…</div>${shippedFoot({state:'idle'})}</div></div>`;
 // an agent message, out or in
 function amsg(o){
   const who=`<span class="who${o.failed?' err':''}">@${esc(o.name)}</span>`;
-  const hd=o.dir==='to'?`<span class="dir">to</span> ${who}`:`<span class="dir">from</span> ${who}${o.rel?` <span class="rel">· ${esc(o.rel)}</span>`:''}`;
+  const kind=o.failed||o.resErr?`<span class="kind err">${esc(o.res||'refused')}</span>`:`<span class="kind">${o.tag}</span>`;
+  const hd=`${kind} <span class="kind">${o.dir}</span> ${who}${o.rel?` <span class="rel">${esc(o.rel)}</span>`:''}`;
   const many=true;const fold=o.fold!==false;
-  return `<div class="amsg${many?' many':''}${fold?' fold':''}"><div class="hd">${hd}<span class="tag${o.failed||o.resErr?' err':''}">${o.failed||o.resErr?esc(o.res||'refused'):o.tag}</span><time>${o.time||'09:14'}</time></div><div class="bd">${o.html||esc(o.text)}</div></div>`}
+  return `<div class="amsg${many?' many':''}${fold?' fold':''}"><div class="hd">${hd}<time>${o.time||'09:14'}</time></div><div class="bd">${o.html||esc(o.text)}</div></div>`}
 function job(o){
   return `<div class="job${o.err?' err':''}${o.open?' open':''}"><div class="hd" role="button" aria-expanded="${!!o.open}"><span class="chev">›</span><span class="nm">${esc(o.name)}</span>${o.kind&&o.kind!=='job'?`<span class="kind">${o.kind}</span>`:''}<span class="end">${esc(o.end||'')}</span><time>${o.time||'09:31'}</time></div><div class="out">${o.parts.map((p,i)=>(i?`<div class="sep">${esc(p.sep)}</div>`:'')+`<pre>${esc(p.text)}</pre>`).join('')}<div class="ft">log: ${esc(o.log)}${o.om?` · ${esc(o.om)}`:''}</div></div></div>`}
 const run=(sum,time,steps)=>`<div class="run open"><div class="line"><span class="chev">›</span><span class="sum"><span class="names">${sum}</span></span><span class="time">${time}</span></div><div class="steps">${steps.join('')}</div></div>`;
@@ -398,13 +443,13 @@ const states={
     +assistant('The implementer has ended; I will resume it with the message instead.'))
     +composer()+status('idle'),
   in:()=>transcript(
-     amsg({dir:'from',name:'kido-app',rel:'your parent',tag:'message',text:'User approval for the sidebar redesign, just now: "approved". Start the sidebar-right unit; the reference is app/design/sidebar/mockup.html and NOTES.md as of 12:35.',time:'12:36'})
+     amsg({dir:'from',name:'kido-app',rel:'parent',tag:'message',text:'User approval for the sidebar redesign, just now: "approved". Start the sidebar-right unit; the reference is app/design/sidebar/mockup.html and NOTES.md as of 12:35.',time:'12:36'})
     +assistant('Starting the unit: a planner first, then the implementer.')
-    +amsg({dir:'from',name:'sidebar-right',rel:'your subagent',tag:'report',text:report,fold:false,time:'13:02'})
-    +amsg({dir:'from',name:'kido-app',rel:'your parent',tag:'steer',text:'Skip the Linux check; CI runs it.',time:'13:04'})
-    +amsg({dir:'from',name:'html-refine',rel:'another agent in this session',tag:'message',text:'The koa page is on webview at ae5abf40; your mockups are unchanged in content and clean against HEAD.',time:'13:10'})
-    +amsg({dir:'from',name:'simplify-reuse',rel:'your subagent',tag:'ended',text:'ended: exit 0; it had reported on its last work.\n--- last 4000 bytes of its screen ---\n> Reported. Waiting for the manager.\n$ \n\nmessage it to continue it, or stop_agent to end it',time:'13:11'})
-    +amsg({dir:'from',name:'perf-notes',rel:'your subagent',tag:'ended',text:'ended: signal SIGKILL; it had not reported on its last work.\n--- last 4000 bytes of its screen ---\n…measuring the sidebar at 200pt\nKilled: 9\n\nmessage it to continue it, or stop_agent to end it',time:'13:11',resErr:true,res:'not reported'})
+    +amsg({dir:'from',name:'sidebar-right',rel:'subagent',tag:'report',text:report,fold:false,time:'13:02'})
+    +amsg({dir:'from',name:'kido-app',rel:'parent',tag:'steer',text:'Skip the Linux check; CI runs it.',time:'13:04'})
+    +amsg({dir:'from',name:'html-refine',rel:'peer',tag:'message',text:'The koa page is on webview at ae5abf40; your mockups are unchanged in content and clean against HEAD.',time:'13:10'})
+    +amsg({dir:'from',name:'simplify-reuse',rel:'subagent',tag:'ended',text:'ended: exit 0; it had reported on its last work.\n--- last 4000 bytes of its screen ---\n> Reported. Waiting for the manager.\n$ \n\nmessage it to continue it, or stop_agent to end it',time:'13:11'})
+    +amsg({dir:'from',name:'perf-notes',rel:'subagent',tag:'ended',text:'ended: signal SIGKILL; it had not reported on its last work.\n--- last 4000 bytes of its screen ---\n…measuring the sidebar at 200pt\nKilled: 9\n\nmessage it to continue it, or stop_agent to end it',time:'13:11',resErr:true,res:'not reported'})
     +amsg({dir:'from',name:'ko-pi',rel:'',tag:'notice',text:'2 async_bash jobs of the previous ko-pi version were stopped at /reload: main-watch, lint',time:'13:12'}))
     +composer()+status('idle'),
   jobs:()=>transcript(userMsg('Run the unit stage in the background and watch main')
@@ -415,8 +460,8 @@ const states={
     +job({name:'ci-like',id:6,kind:'job',end:'timed out 600 s',err:true,time:'09:52',log:'/Users/andrepopp/Library/Caches/ko-pi/jobs/ci-like-6.log',parts:[{text:'[podman] pulling ko-ci-like:4f2a9c1e8b77 …\n[podman] layer 7/12'}]})
     +job({name:'demo',id:7,kind:'service',end:'signal SIGKILL',err:true,time:'10:02',log:'/Users/andrepopp/Library/Caches/ko-pi/jobs/demo-7.log',parts:[{text:'Kido.app 0.32 (debug) · pid 48112\nwindow 1 connected to /tmp/ko-demo/socket'}]}))
     +composer()+status('idle'),
-  'fold-a':()=>transcript(amsg({dir:'from',name:'sidebar-right',rel:'your subagent',tag:'report',text:report,time:'13:02'})+job({name:'lint',id:4,kind:'job',end:'exit 1',err:true,time:'09:32',log:'/Users/andrepopp/Library/Caches/ko-pi/jobs/lint-4.log',parts:[{text:'scripts/lint.sh: docs/design-app.md:1466 names app/App/Toolbar.swift, which does not exist\nscripts/lint.sh: share/pi/ko-pi.ts:3381 is not a line of ko-pi.ts\nscripts/lint.sh: 2 broken references\nscripts/lint.sh: run make lint after the fix\nFAIL lint 3s'}]}))+composer()+status('idle'),
-  'fold-b':()=>transcript(amsg({dir:'from',name:'sidebar-right',rel:'your subagent',tag:'report',text:report,fold:false,time:'13:02'})+job({name:'lint',id:4,kind:'job',end:'exit 1',err:true,open:true,time:'09:32',log:'/Users/andrepopp/Library/Caches/ko-pi/jobs/lint-4.log',parts:[{text:'scripts/lint.sh: docs/design-app.md:1466 names app/App/Toolbar.swift, which does not exist\nscripts/lint.sh: share/pi/ko-pi.ts:3381 is not a line of ko-pi.ts\nscripts/lint.sh: 2 broken references\nscripts/lint.sh: run make lint after the fix\nFAIL lint 3s'}]}))+composer()+status('idle'),
+  'fold-a':()=>transcript(amsg({dir:'from',name:'sidebar-right',rel:'subagent',tag:'report',text:report,time:'13:02'})+job({name:'lint',id:4,kind:'job',end:'exit 1',err:true,time:'09:32',log:'/Users/andrepopp/Library/Caches/ko-pi/jobs/lint-4.log',parts:[{text:'scripts/lint.sh: docs/design-app.md:1466 names app/App/Toolbar.swift, which does not exist\nscripts/lint.sh: share/pi/ko-pi.ts:3381 is not a line of ko-pi.ts\nscripts/lint.sh: 2 broken references\nscripts/lint.sh: run make lint after the fix\nFAIL lint 3s'}]}))+composer()+status('idle'),
+  'fold-b':()=>transcript(amsg({dir:'from',name:'sidebar-right',rel:'subagent',tag:'report',text:report,fold:false,time:'13:02'})+job({name:'lint',id:4,kind:'job',end:'exit 1',err:true,open:true,time:'09:32',log:'/Users/andrepopp/Library/Caches/ko-pi/jobs/lint-4.log',parts:[{text:'scripts/lint.sh: docs/design-app.md:1466 names app/App/Toolbar.swift, which does not exist\nscripts/lint.sh: share/pi/ko-pi.ts:3381 is not a line of ko-pi.ts\nscripts/lint.sh: 2 broken references\nscripts/lint.sh: run make lint after the fix\nFAIL lint 3s'}]}))+composer()+status('idle'),
   tools:()=>transcript(userMsg('What are my agents doing? Stop the stale one.')
     +run('list_agents, read_report, stop_agent',' 2.1s',[
       step('list_agents','','0.3s','sidebar-right  subagent  running  "applying the review findings"  reported: no\nsimplify-reuse subagent  ended    reported: yes\nhtml-refine    peer      running  "unit 12"'),

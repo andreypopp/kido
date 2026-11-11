@@ -245,18 +245,25 @@ renders `dividers-{light,dark}.png`). Between
 two top-level windows of a session sits a 9pt divider row with a 1pt
 line in the separator colour, inset 5pt from both edges, like the row
 padding. No divider before the first window or after the last, and
-none between nested windows. The visible window of the focused
-client is one filled block (the window colour, labelColor at 7.5% in
-both appearances, 7pt corners, the block clips its rows) over all its
+none between nested windows. The fills are the standard system
+fills, measured on macOS 27 (changed 2026-11-11, user: the stacked
+fills were too dark). The focused pane row and the keyboard-selected
+row get `systemFill`, labelColor at 10% in both appearances, 7pt
+corners: the fill of a standard list selection, and the row fill that
+shipped. A single-pane window gets nothing else: its row fill is the
+window. A multi-pane visible window of the focused client is one
+block in `quaternarySystemFill`, labelColor at 2.7% in both
+appearances, 7pt corners, the block clips its rows, over all its
 rows, including its expanded descendants, the records among them and
-their circles lines; the focused pane row inside it gets the focus
-fill (labelColor at 10%, 7pt corners) on top, so it reads as a second
-step. The keyboard-selection fill is the same 10% layer. Rows have no
-hover fill, so nothing else stacks on the block. The separator is
-labelColor at 10% in both appearances. The session header is outside
-every block: no divider between it and the first window, and none
-after a session's last window; the 10pt session gap separates
-sessions. A single-pane window is filled the same way. The old
+their circles lines; the focused row inside it is the flat 10% over
+the sidebar colour, not 10% over the block, so a focused pane reads
+the same in every window. (In AppKit: draw the block, then the row
+fill as `systemFill` composited onto the sidebar colour, or clip the
+row's rect out of the block.) Rows have no hover fill, so nothing
+else stacks on the block. The separator is labelColor at 10% in both
+appearances. The session header is outside every block: no divider
+between it and the first window, and none after a session's last
+window; the 10pt session gap separates sessions. The old
 bracket and the other variants stay in the Grouping control for
 comparison; nested hierarchy still has no guides.
 
@@ -354,9 +361,9 @@ working session after one Split Right (a three-pane window).
   from the row's edge (was a 16pt slot, an 8pt gap and 36pt). The
   hover × fits the 12pt slot. The nesting step is 15pt again.
 
-## Current redesign draft: uniform rows and hierarchy guides
+## Superseded draft (2026-11-07): uniform rows and hierarchy guides
 
-This preview now explores a new direction requested by the user, superseding the older geometry and no-guide decisions below. Native window chrome remains unchanged.
+History only. The guides were removed on 2026-11-08 ("Children in place" above: chevrons, no guides); the uniform rows stayed. The text below is the draft as it was. Native window chrome remains unchanged.
 
 - All pane and child-record titles: 13pt system font, 18pt line height, regardless of depth or single-/multi-pane window; regular weight, semibold only on the focused and the keyboard-selected row (weight rule below).
 - All rows: 32pt single-line / 48pt with caption, 7pt vertical padding. Captions: 11pt system font, 15pt line height, 1pt gap below title.
@@ -410,7 +417,7 @@ Updated against `/tmp/kido-visual-macos27/index.html`: paired macOS 26/27 captur
 
 The old/new pairs primarily change native glyph shapes/rasterization, not the approved row geometry or palette. Keep system fonts at the existing point sizes rather than inventing larger sizes or heavier weights. Browser text uses the installed OS system font; CSS line boxes and SVG approximations cannot reproduce NSString/SF Symbol rasterization exactly.
 
-The sidebar is a solid colour, not a material: the effective terminal background (Ghostty `background`) mixed toward black or white by the `kido-sidebar-shade` percent of `kido-app.conf` (−100…100; negative toward black, positive toward white, 0 = the terminal background). With no key or an empty value the default depends on the theme: −5% (toward black) when the terminal background is light, +5% (toward white) when it is dark, where light/dark is the app's existing decision from the terminal background's luminance (below 0.5 is dark). An explicit value applies as given on both themes. It follows live theme changes. The preview computes it the same way with `color-mix(in srgb, bg (100 − |shade|)%, black | white)` from the bundled themes kido-light `#fff9ec` and kido-dark `#171717` (app/Resources/themes); the defaults render as `#f2ede0` light and `#232323` dark. The **Shade** control previews the default and −100, −30, −10, −5, 0, +5, +10, +30 and +100. There is no separate visual-test surface any more: a solid colour renders the same under the snapshot tests as in the live window.
+The sidebar is a solid colour, not a material: the effective terminal background (Ghostty `background`) mixed toward black or white by the `window.sidebar_shade` percent of the YAML config file (`kido-sidebar-shade` of kido-app.conf before 68fc22e1) (−100…100; negative toward black, positive toward white, 0 = the terminal background). With no key or an empty value the default depends on the theme: −5% (toward black) when the terminal background is light, +5% (toward white) when it is dark, where light/dark is the app's existing decision from the terminal background's luminance (below 0.5 is dark). An explicit value applies as given on both themes. It follows live theme changes. The preview computes it the same way with `color-mix(in srgb, bg (100 − |shade|)%, black | white)` from the bundled themes kido-light `#fff9ec` and kido-dark `#171717` (app/Resources/themes); the defaults render as `#f2ede0` light and `#232323` dark. The **Shade** control previews the default and −100, −30, −10, −5, 0, +5, +10, +30 and +100. There is no separate visual-test surface any more: a solid colour renders the same under the snapshot tests as in the live window.
 
 **Sidebar text appearance (approved, implemented).** The sidebar's light/dark appearance comes from the shade colour's own relative luminance, not from the terminal theme, so a large shade in the other direction (for example +100% on a dark theme) still reads. White text has the higher contrast ratio while the colour's relative luminance L is below 0.179 (the point where (L + 0.05) / 0.05 equals 1.05 / (L + 0.05)); above it, the light appearance (dark text) wins. In the app this is one `NSAppearance` choice for the sidebar subtree, computed from the same colour that fills it. The preview flips the sidebar's palette variables, not the terminal's.
 
@@ -434,9 +441,9 @@ The tab host is 36pt tall at y=8 within the 52pt toolbar. Tab surfaces stay 28pt
 
 **Fullscreen background fix is represented, implementation settled.** The docked shade extends through the 52pt toolbar band, identical to the colour below. The themed band begins only to the right of the sidebar divider. Collapsed and floating fullscreen modes retain the themed band across the entire window; the floating card starts below that band. Width changes, session switches and fullscreen re-entry preserve this boundary. The docked shade has square edges and no outline. Only the floating card has rounded corners and a hairline border. This replaces the previous preview's incorrect cream band over docked glass.
 
-## Proposal: closing, new windows and Connect to Remote Host — awaiting user review
+## Closing, new windows and Connect to Remote Host — shipped
 
-Previewed in the mockup; nothing of this is implemented natively yet.
+The close confirmation, the tab and row close buttons and the new-window controls shipped as below. The Connect to Remote Host sheet did not: the palette's Connect mode replaced it (../palette/NOTES.md); the sheet in the mockup is history.
 
 - **Close confirmation.** Closing a pane or window asks unless every live pane in it, descendants included, is a quiet shell (the row titled "Terminal") that holds the foreground; any agent, also idle, a running command, a full-screen program, a shell of unknown phase (no integration, ssh) or another foreground process makes it ask, and a dead or lingering pane does not. The question is a standard window-modal alert sheet: app icon, bold 13pt title `Close “name”?`, 11pt message ("A program is still running in this pane. Closing the pane will end it." / "Programs are still running in this window. Closing the window will end them."), then stacked full-width buttons: **Close** (default, blue, Enter) above **Cancel** (Escape). Windows of quiet shells close without asking. The user settled that every path that ends a pane or window goes through this one confirmation: the × buttons, Cmd-W, menu commands, and any other app-issued kill. Closing the native macOS window is not one of them: it only closes that window's control client, the app and every pane keep running, and reopening redials, so it never confirms. Native: NSAlert as a sheet on the window, `.warning` style, Close as the default button, Cancel bound to Escape.
 - **Tab status and close buttons.** The tab's status dot moves to the leading side: centered 15pt from the tab surface's leading edge. Hovering the indicator's own 16pt slot (not the rest of the tab) replaces the dot with a 16pt × close button centered on the same point; the dot returns when the pointer leaves the slot, and hovering elsewhere on the tab changes nothing. The label is always inset 26pt on both sides, so neither the dot nor the button changes the label's position or width on hover. Hovering the button only brightens it and adds a faint 4pt-radius fill. Click goes through the confirmation above. No press feedback beyond that. Cmd-W closes the focused pane through the same confirmation.
@@ -467,13 +474,40 @@ The preview's fixtures follow the 6.0 feed shape:
 
 The "Working session + states" fixture shows the regular-weight cases: the completed `pi-ui-perf`-style subagent under review-notes (gone, completed, `agent: null`) and the still-starting `perf-notes` subagent (a run with a clock, `agent: null`, idle dot).
 
+## Proposal (user, 2026-11-11): two lines always, focus expands
+
+The mockup's "Rows" picker (`rows=auto`, the default; `chevrons` is
+the shipped design) shows two changes.
+
+- **Every row is two lines** (42pt): the title, and under it the
+  agent's status (its `tail`, what `set_status` set) or, when the
+  agent has none, its cwd; a Terminal, an app, an ssh pane and a job
+  show their cwd. The cwd line is the activity's 11pt in the muted
+  tone at 80%, home as `~`, a remote pane as `host:path`. A Claude
+  Code record row shows its `msg`; a record without one shows its
+  state word (working, needs your input, error, done, idle; user,
+  2026-11-11).
+  The folded-children circles keep their place at the right of the
+  second line; the text ellipsizes before them.
+- **No chevrons.** A row's children show when the row is focused,
+  or when the focused pane is one of its descendants (so a focused
+  child keeps its path open); an unfocused row folds them into the
+  circles. A waiting descendant still forces its path open. Record
+  rows follow their pane: a focused Claude Code pane shows its
+  records, an unfocused one folds them. Left and Right do nothing;
+  Cmd-Up and Cmd-Down still step the hierarchy. With the chevron
+  slot gone, the text starts at the row's 5pt padding.
+
+The cwd comes from the feed's pane row (`cwd`); the mockup derives
+it from the session for its fixtures.
+
 ## Approved sidebar geometry
 
-Sessions are plain noninteractive 11pt semibold secondary labels in 29pt headers, followed by windows; no session card or folding. Label line-box y=6.5pt. The trailing 11pt plus (matching the 11pt heading type) creates a new window (preview placeholder), with icon-only hover and center aligned to status circles, 11pt from the item's right edge (since 2026-11-08; 15pt before). Session bottom gap is 16pt. The scrolling list has 8pt horizontal insets, 2pt top and 10pt bottom space.
+Sessions are plain noninteractive 11pt semibold secondary labels in 26pt headers (29pt before the 2026-11-07 density pass), followed by windows; no session card or folding. Label line-box y=6.5pt. The trailing 11pt plus (matching the 11pt heading type) creates a new window (preview placeholder), with icon-only hover and center aligned to status circles, 11pt from the item's right edge (since 2026-11-08; 15pt before). Session bottom gap is 10pt (16pt before the density pass). The scrolling list has 8pt horizontal insets, 2pt top and 10pt bottom space.
 
 Each window is one 7pt-rounded item containing its pane rows and their descendants. Active window gets continuous 10% labelColor fill, including all nested descendants. Focusing a child highlights its own subtree, not ancestors. Single-pane windows need no extra focus mark; multi-pane windows retain a 2pt leading mark with the row's vertical padding as its inset (85% white dark / 75% black light). Keyboard selection independently adds 10% fill and clears on mouse interaction.
 
-Render children immediately after their owning pane, before the next sibling pane. Indent 16pt per level, no guides. Window bottom spacing is 3pt, with an additional 3pt after a pane's children, matching the native rows. Top-level windows alone have separators BETWEEN windows: 7pt row, centered 1pt line, 12pt end insets, 7.5% labelColor. No nested dividers, no divider before the session's first window, none between panes of one window.
+Render children immediately after their owning pane, before the next sibling pane. Indent 16pt per level, no guides. Window bottom spacing is 3pt, with an additional 3pt after a pane's children, matching the native rows. Top-level windows alone have separators BETWEEN windows: the 9pt divider row with a 1pt line at 10% of the label colour, inset 5pt ("Grouping is Dividers + active fill" above). No nested dividers, no divider before the session's first window, none between panes of one window.
 
 | Window kind | One-line height | Activity height | Top padding | Activity y |
 | --- | --- | --- | --- | --- |

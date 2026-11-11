@@ -1,5 +1,7 @@
 # Runtimes section of the sidebar (design, mockups only)
 
+Later change (bcb079ac): a click on the section header or on Start/Stop keeps the pane's keyboard focus; the section takes focus only through Focus Sidebar and the keys. Runtime configuration moved to the YAML config file (68fc22e1): read the `runtime` keys of docs/design-ko.md, not the kido-app.conf lines quoted below.
+
 `mockup.html` is a self-contained reference for a collapsible
 **Runtimes** section at the bottom of Kido.app's sidebar. The user's
 motivation: "see which runtimes are configured and running; be able

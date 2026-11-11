@@ -282,6 +282,48 @@ html:not([data-dock=band]) .dock .queued-next{text-shadow:0 0 6px var(--ko-bg),0
 .cap{font-size:12px;color:var(--muted);margin:6px 0 0;max-width:720px}
 /* the times of run and step lines end where the user message's time ends: 12pt in from the transcript's edge (user, 2026-11-10) */
 .run .line{padding-right:12px}
+
+.field .foot{gap:0;min-height:20px;margin-top:2px;font:.8em/1.4 var(--mono);color:var(--muted);align-items:center}
+.foot .st{display:flex;align-items:center;gap:6px;min-width:calc(15ch + 12px);flex-shrink:0;white-space:nowrap;font-variant-numeric:tabular-nums}
+.foot .st .dot{width:6px;height:6px;border-radius:50%;background:var(--faint);flex-shrink:0}
+.foot .st .dot.on{background:var(--ko-color-2);animation:breathe 1.6s ease-in-out infinite}
+.foot .st .dot.wait{background:var(--ko-color-3)}
+.foot .st .dot.off{background:var(--ko-color-1)}
+.foot .st .t{color:var(--faint)}
+@keyframes breathe{50%{opacity:.35}}
+.foot .sep{width:1px;height:12px;background:var(--hair);margin:0 10px;flex-shrink:0}
+.foot .model{display:flex;align-items:baseline;gap:5px;border:0;background:none;padding:0 4px;margin:0 -4px;border-radius:4px;font:inherit;color:var(--muted);cursor:pointer;white-space:nowrap;flex-shrink:0}
+.foot .model .lvl{color:var(--faint)}
+.foot .model:hover,.foot .model.pick{background:var(--well2);color:var(--fg)}
+.foot .ctxc{display:flex;align-items:center;gap:6px;flex-shrink:0;white-space:nowrap;min-width:calc(44px + 6px + 3ch)}
+.foot .ctxc .ctx{display:inline-block;width:44px;height:4px;border-radius:2px;background:var(--hair2);position:relative}
+.foot .ctxc .ctx i{position:absolute;left:0;top:0;bottom:0;border-radius:2px;background:var(--faint)}
+.foot .ctxc.high .ctx i{background:var(--ko-color-3)}
+.foot .ctxc .n{color:var(--faint)}
+.foot .gap{flex:1;min-width:8px;display:flex;align-items:center;overflow:hidden;padding:0 10px}
+.foot .cwd{color:var(--muted);white-space:nowrap;flex-shrink:0}
+.foot .cwd .lead{color:var(--faint)}
+.foot .act{margin-right:-7px;margin-bottom:0;width:22px;height:22px;border-radius:6px}.foot .act svg{width:14px;height:14px}
+.pane .field{padding-bottom:5px}
+.foot .act.stop{color:var(--muted)}
+/* a notification is a line in the transcript: time at the right like a job line, no badge */
+.note{margin:0 0 10px;display:flex;align-items:baseline;gap:10px;font:.92em/1.5 var(--mono);color:var(--muted);white-space:nowrap;padding-right:12px}
+.note .tx{overflow:hidden;text-overflow:ellipsis;min-width:0}
+.note.error .tx{color:var(--err)}.note.warning .tx{color:var(--warn)}
+.note time{margin-left:auto;color:var(--faint);font-size:.85em;font-variant-numeric:tabular-nums}
+.foot .toast{display:inline-flex;align-items:center;gap:7px;min-width:0;background:none;border:0;padding:0;font:inherit}
+.foot .toast .i{display:inline-grid;place-items:center;width:12px;height:12px;border-radius:50%;font:700 9px/1 var(--ko-font-family);color:var(--ko-bg);flex-shrink:0}
+.foot .toast.info .i{background:var(--ko-color-4)}.foot .toast.warning .i{background:var(--ko-color-3)}.foot .toast.error .i{background:var(--ko-color-1)}
+.foot .toast .tx{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--fg)}
+/* narrow: what goes first */
+html[data-width=narrow] .foot .model .lvl,.pane.narrow .foot .model .lvl{display:none}
+html[data-width=narrow] .foot .cwd .lead,.pane.narrow .foot .cwd .lead{display:none}
+html[data-width=narrow] .foot .ctxc .n,.pane.narrow .foot .ctxc .n{display:none}
+html[data-width=narrow] .foot .ctxc,.pane.narrow .foot .ctxc{min-width:44px}
+html[data-width=narrow] .foot .sep,.pane.narrow .foot .sep{margin:0 7px}
+/* the shipped composer foot (composer.html): status, model and level, context, cwd; no button, Return sends. The page has no status bar since 24b2451e. */
+.status{display:none!important}
+.pane .field{padding-bottom:5px}
 </style>
 </head>
 <body>
@@ -318,6 +360,10 @@ html:not([data-dock=band]) .dock .queued-next{text-shadow:0 0 6px var(--ko-bg),0
 <div class="pane short" data-state="none"></div></section>
 
 <script>
+function shippedFoot(o){
+  const st={idle:'<span class="dot"></span>idle',working:`<span class="dot on"></span>working <span class="t">${o.t||'12s'}</span>`,waiting:'<span class="dot wait"></span>waiting',starting:'<span class="dot"></span>starting',exited:`<span class="dot off"></span>exited <span class="t">${o.code??137}</span>`}[o.state];
+    return `<div class="foot"><span class="st">${st}</span><span class="sep"></span><button class="model${o.pick?' pick':''}" aria-label="Model and thinking level">claude-opus-5-5<span class="lvl">· high</span></button><span class="sep"></span><span class="ctxc${o.high?' high':''}"><span class="ctx"><i style="width:${o.high?78:42}%"></i></span><span class="n">${o.high?'156k / 200k':'84k / 200k'}</span>${o.high?'78%':'42%'}</span><span class="gap"></span><span class="cwd"><span class="lead">~/Workspace/</span>kido</span></div>`}
+
 const esc=s=>s.replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
 function status(kind){return `<div class="status"><span class="seg"><span class="dot"></span>idle</span><span class="seg">claude-opus-5-5<span class="hide-n k"> · thinking high</span></span><span class="seg"><span class="ctx"><i style="width:42%"></i></span><span class="hide-n k">84k / 200k</span>42%</span><span class="seg grow"></span><span class="seg"><span class="hide-n">~/Workspace/</span>kido</span></div>`}
 const transcript=(inner)=>`<div class="scroll"><div class="transcript">${inner}</div></div>`;
@@ -326,7 +372,7 @@ const send='<svg viewBox="0 0 16 16"><path d="M3 8h9.5M8.3 3.8 12.5 8l-4.2 4.2"/
 // the field: text before the token, the token (where the popup anchors), the text after the caret
 function composer(before,tok,after,popup){
   const tokHtml=tok?`<span class="tok${tok[0]==='/'?' cmd':''}">${esc(tok)}</span>`:'';
-  return `<div class="composer"><div class="field focus"><div class="text">${esc(before)}${tokHtml}<span class="caret"></span>${esc(after||'')}</div><div class="foot"><span class="hint"></span><span class="sp"></span><button class="act send${before||tok?'':' off'}" aria-label="Send">${send}</button></div>${popup||''}</div></div>`}
+  return `<div class="composer"><div class="field focus"><div class="text">${esc(before)}${tokHtml}<span class="caret"></span>${esc(after||'')}</div>${shippedFoot({state:'idle'})}${popup||''}</div></div>`}
 function mark(label,typed){ // bold the fuzzy-matched letters, as pi's filter marks them
   if(!typed)return esc(label);let out='',i=0;const t=typed.toLowerCase();
   for(const ch of label){const m=i<t.length&&ch.toLowerCase()===t[i];out+=m?'<b>'+esc(ch)+'</b>':esc(ch);if(m)i++}return out}
