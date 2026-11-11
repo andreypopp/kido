@@ -83,7 +83,7 @@ share/pi/* share/koa/* share/webview/* .pi/* scripts/test-ts.sh|build lint ts
 app/VisualTests/__Snapshots__/*/*|snapshot
 app/VisualTests/*.swift|swift
 app/VisualTests/*|visual
-app/App/* app/Resources/*|app ko-test visual
+app/App/* app/Resources/* app/Packages/*|app ko-test visual
 app/*|app ko-test
 website/*|website
 scripts/* bench/*|build lint-sh lint-rs
