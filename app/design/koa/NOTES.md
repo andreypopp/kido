@@ -1092,8 +1092,9 @@ from the transcript's text edge; an opened run's steps and an
 opened agent line's body (its bar at the row's start, the text 12pt
 in) indent from that point, never back to the edge; the times end on the text edge, as the user
 block's timestamp does (the run line's 12pt right padding goes).
-Consecutive run, agent and job lines sit 4pt apart; the last of the
-group keeps the 14pt gap after it, and an opened row keeps 14pt
+Consecutive run, agent and job lines sit 2pt apart (4pt at first;
+the user asked for less); the last of the group keeps the 14pt gap
+after it, and an opened row keeps 14pt
 under its body.
 
 **6 · The composer's padding** (user, 2026-11-11, v3 of three): the

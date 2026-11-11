@@ -428,7 +428,7 @@ html[data-al=plain] .aline .bd{margin-left:0}
 .tip{position:absolute;font:.82em/1.4 var(--prose);color:var(--ko-bg);background:color-mix(in srgb,var(--ko-fg) 88%,var(--ko-bg));padding:2px 7px;border-radius:5px;pointer-events:none;white-space:nowrap;box-shadow:0 2px 8px color-mix(in srgb,var(--ko-fg) 20%,transparent)}
 .cursor{position:absolute;width:12px;height:18px;pointer-events:none}
 .cursor svg{width:12px;height:18px;fill:#fff;stroke:#000;stroke-width:1}
-/* 5 · unified rows (user, 2026-11-11): a run line and an agent line look the same: no chevron, the prose font, the tool's name while it runs, times in prose with tabular numerals; consecutive rows sit 4pt apart, the group keeps the 14pt gap after it */
+/* 5 · unified rows (user, 2026-11-11): a run line and an agent line look the same: no chevron, the prose font, the tool's name while it runs, times in prose with tabular numerals; consecutive rows sit 2pt apart (user, 2026-11-11: 4pt was too much), the group keeps the 14pt gap after it */
 html[data-rows=unified] .run>.line .chev,html[data-rows=unified] .aline .hd .chev,html[data-rows=unified] .job .hd .chev{display:none}
 html[data-rows=unified] .run .names,html[data-rows=unified] .run .sum,html[data-rows=unified] .step .name,html[data-rows=unified] .step .sum{font-family:var(--prose);font-size:1em}
 html[data-rows=unified] .step .cmd,html[data-rows=unified] .step .path{font-family:var(--mono);font-size:.92em}
@@ -437,7 +437,7 @@ html[data-rows=unified] .run .sum .spin{margin:0 0 0 6px}
 html[data-rows=unified] .run>.line,html[data-rows=unified] .step>.line{padding-right:0}
 html[data-rows=unified] .run>.line,html[data-rows=unified] .aline .hd,html[data-rows=unified] .job .hd{padding-left:var(--pad,12px)}
 html[data-rows=unified] .run>.steps{margin-left:calc(var(--pad,12px) + 4px)}
-html[data-rows=unified] :is(.run,.aline,.job){margin-bottom:4px}
+html[data-rows=unified] :is(.run,.aline,.job){margin-bottom:2px}
 html[data-rows=unified] :is(.run,.aline,.job):not(:has(+ :is(.run,.aline,.job))){margin-bottom:14px}
 html[data-rows=unified] :is(.run,.aline).open{margin-bottom:14px}
 html[data-rows=unified] .aline.open .bd,html[data-rows=unified] .pane.aligned .aline.open .bd{margin-left:var(--pad,12px);margin-right:0}
@@ -479,7 +479,7 @@ html[data-cpad=v3] .pane.aligned .msg.user{padding:8px var(--pad)}
 </section>
 
 <section><h2>5 · One look for run lines and agent lines</h2>
-<p>User, 2026-11-11: no chevron on a run line; the prose font for the tool names, the step names and the times (tabular numerals, no monospace); while a tool runs the line says its name, not the command, with the spinner after the name; an agent line starts where a run line starts; consecutive run, agent and job lines sit 4pt apart, and the group keeps the 14pt gap after it. The "Rows" picker compares with the shipped look.</p>
+<p>User, 2026-11-11: no chevron on a run line; the prose font for the tool names, the step names and the times (tabular numerals, no monospace); while a tool runs the line says its name, not the command, with the spinner after the name; an agent line starts where a run line starts; consecutive run, agent and job lines sit 2pt apart, and the group keeps the 14pt gap after it. The "Rows" picker compares with the shipped look.</p>
 <div class="grid"><div><div class="pane aligned" data-state="rows"></div><p class="cap">a running run, three agent lines and finished runs in one group</p></div><div><div class="pane aligned narrow" data-state="rows"></div><p class="cap">narrow</p></div></div>
 </section>
 

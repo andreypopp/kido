@@ -177,6 +177,7 @@ body .cm-tooltip.cm-tooltip-autocomplete.koa-complete::after{flex-shrink:0;conte
 .run>.line,.step>.line{padding-right:0}
 .run>.line,.aline .hd,.job .hd{padding-left:var(--pad)}
 .run>.steps{margin-left:calc(var(--pad) + 4px)}
-:is(.run,.aline,.job){margin-bottom:4px}
-:is(.run,.aline,.job):not(:has(+ :is(.run,.aline,.job))){margin-bottom:14px}
+:is(.run,.aline,.job){margin-bottom:2px}
+.user,.assistant>.msg,#items .cmdrun{margin-top:14px}
+#items>:first-child,#items>:first-child>:first-child{margin-top:0}
 :is(.run,.aline,.job).open{margin-bottom:14px}

@@ -1396,6 +1396,8 @@ import SidebarFeed
             try await capture(prefix + "in")
             try await advance(); try await webviewUntil(web, "document.querySelectorAll('.job').length===5")
             _ = try await webviewJS(web, "(()=>{Array.from(document.querySelectorAll('.job')).find(job=>job.querySelector('.nm').textContent==='lint').querySelector('.hd').click();return true})()")
+            let gaps = try await webviewJS(web, "(()=>{const jobs=Array.from(document.querySelectorAll('.job')).filter(job=>job.getClientRects().length);return jobs.slice(1).map((job,index)=>Math.round(job.getBoundingClientRect().top-jobs[index].getBoundingClientRect().bottom)-(jobs[index].classList.contains('open')?14:2)).every(gap=>gap===0)})()")
+            XCTAssertEqual(gaps, "true", "Consecutive job rows are 2pt apart, an opened row 14pt")
             try await aligned(); try await capture(prefix + "jobs")
             try await advance(); try await webviewUntil(web, "document.querySelectorAll('.job').length===1&&document.querySelectorAll('.aline').length===1")
             let summary = try await webviewJS(web, "document.querySelector('.aline .tx').textContent==='Built the right-side indicators with SidebarRow.swift; see the reference. Pre-fix failures: 6 snapshot tests (SidebarTests.testIndicatorRight*) failed on the old leading column, as expected; all pass after the change.'")
