@@ -1,25 +1,25 @@
 #![deny(clippy::indexing_slicing, clippy::arithmetic_side_effects)]
 
-use crate::protocol::webview::FrameKind;
+use ko_wire::protocol::webview::FrameKind;
 
 use crate::diagnostics::Cause;
 use std::io::{self, Cursor, Read, Write};
 use std::os::fd::AsFd;
 use std::time::{Duration, Instant};
 
-use ko_pane_wire::ring::{SLICE_HEADER, SLICE_MAX};
+use ko_pane_wire::ring::SLICE_HEADER;
 use ko_sys::event::{Poll, PollRead, Reads, Token};
-use tungstenite::protocol::frame::coding::{CloseCode, Data, OpCode};
+use tungstenite::protocol::frame::coding::{CloseCode as WireCloseCode, Data, OpCode};
 use tungstenite::protocol::frame::{Frame as WireFrame, FrameHeader};
 use tungstenite::protocol::{CloseFrame, Role as Side, WebSocketConfig, WebSocketContext};
 use tungstenite::{Error, Message, Utf8Bytes};
 
 use crate::conn::{Fit, Life, Output, Queue};
-use crate::deflate::{self, Deflate};
-use crate::http::{self, Head, MAX_HEAD};
-use crate::ids::ClientId;
+use crate::deflate::Deflate;
+use ko_wire::http::{Head, MAX_HEAD};
 
-const RECORD_HEADER: usize = 9;
+use ko_wire::protocol::{CloseCode, CloseReason, EXEC_CHUNK};
+use ko_wire::ws::{self, RECORD_HEADER};
 const MAX_HEADER: usize = 10 + RECORD_HEADER;
 const MAX_MESSAGE: usize = 1 << 20;
 const MAX_SENT: usize = 32 << 20;
@@ -41,19 +41,6 @@ pub(crate) enum Record {
     Snapshot,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BadRecord {
-    Short,
-    Kind(u8),
-    Inflate,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Parsed<'a> {
-    Output { offset: u64, data: &'a [u8] },
-    Snapshot { offset: u64, slice: Vec<u8> },
-}
-
 pub(crate) fn with_packed_slice<R>(
     deflate: &mut Deflate,
     payload: &[u8],
@@ -61,30 +48,6 @@ pub(crate) fn with_packed_slice<R>(
 ) -> Option<R> {
     let (header, body) = payload.split_at_checked(SLICE_HEADER)?;
     Some(deflate.with_deflated(header, body, send))
-}
-
-pub fn parse_record(payload: &[u8]) -> Result<Parsed<'_>, BadRecord> {
-    let (Some(&kind), Some(offset), Some(body)) = (
-        payload.first(),
-        payload
-            .get(1..RECORD_HEADER)
-            .and_then(|bytes| bytes.try_into().ok())
-            .map(u64::from_le_bytes),
-        payload.get(RECORD_HEADER..),
-    ) else {
-        return Err(BadRecord::Short);
-    };
-    match kind {
-        1 => Ok(Parsed::Output { offset, data: body }),
-        2 => {
-            let (header, packed) = body
-                .split_at_checked(SLICE_HEADER)
-                .ok_or(BadRecord::Short)?;
-            let slice = deflate::inflate(header, packed, SLICE_MAX).ok_or(BadRecord::Inflate)?;
-            Ok(Parsed::Snapshot { offset, slice })
-        }
-        other => Err(BadRecord::Kind(other)),
-    }
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -115,52 +78,16 @@ fn record_header(out: &mut [u8; MAX_HEADER], record: Record, offset: u64, len: u
         ..FrameHeader::default()
     };
     let mut cursor = Cursor::new(&mut out[..]);
-    let payload = u64::try_from(len).unwrap_or(u64::MAX).saturating_add(9);
+    let payload = u64::try_from(len)
+        .unwrap_or(u64::MAX)
+        .saturating_add(RECORD_HEADER as u64);
     let _ = header.format(payload, &mut cursor);
     let _ = cursor.write_all(&[match record {
-        Record::Output => 1,
-        Record::Snapshot => 2,
+        Record::Output => ws::OUTPUT,
+        Record::Snapshot => ws::SNAPSHOT,
     }]);
     let _ = cursor.write_all(&offset.to_le_bytes());
     usize::try_from(cursor.position()).unwrap_or(MAX_HEADER)
-}
-
-pub fn upgrade_request(
-    method: &str,
-    target: &crate::protocol::RequestTarget,
-    client: Option<ClientId>,
-    headers: &[(&str, &str)],
-) -> (Vec<u8>, String) {
-    let key = tungstenite::handshake::client::generate_key();
-    let mut extra = vec![
-        ("Upgrade", "websocket"),
-        ("Connection", "Upgrade"),
-        ("Sec-WebSocket-Version", "13"),
-        ("Sec-WebSocket-Key", key.as_str()),
-    ];
-    extra.extend_from_slice(headers);
-    (http::call(method, target, client, &extra, b""), key)
-}
-
-pub fn accepted(response: &http::Response, key: &str) -> io::Result<()> {
-    let accept = tungstenite::handshake::derive_accept_key(key.as_bytes());
-    if response.status == 101
-        && response.header("sec-websocket-accept") == Some(&accept)
-        && !response.headers.iter().any(|(name, value)| {
-            name.eq_ignore_ascii_case("sec-websocket-extensions") && !value.trim().is_empty()
-        })
-    {
-        Ok(())
-    } else {
-        Err(refused(response))
-    }
-}
-
-pub fn refused(response: &http::Response) -> io::Error {
-    io::Error::other(format!(
-        "WebSocket upgrade failed: {} {}",
-        response.status, response.reason
-    ))
 }
 
 pub(crate) fn handshake(head: &Head) -> Option<String> {
@@ -221,7 +148,7 @@ impl Write for Io<'_> {
 
 pub(crate) fn overflow_close() -> Vec<u8> {
     let frame = WireFrame::close(Some(CloseFrame {
-        code: CloseCode::Again,
+        code: WireCloseCode::Again,
         reason: OVERFLOW_REASON.into(),
     }));
     let mut bytes = Vec::new();
@@ -293,8 +220,8 @@ impl Ws {
     pub(crate) fn proxy(part: Vec<u8>) -> Ws {
         let mut ws = Ws::flow(part);
         ws.ctx.set_config(|config| {
-            config.max_message_size = Some(crate::protocol::EXEC_CHUNK);
-            config.max_frame_size = Some(crate::protocol::EXEC_CHUNK);
+            config.max_message_size = Some(EXEC_CHUNK);
+            config.max_frame_size = Some(EXEC_CHUNK);
         });
         ws
     }
@@ -328,8 +255,8 @@ impl Ws {
                 Err(Error::Capacity(_)) => {
                     out.closing(Cause::MessageTooLarge);
                     break Ok(Some(Message::Close(Some(CloseFrame {
-                        code: CloseCode::Size,
-                        reason: crate::protocol::CloseCode::SIZE_REASON.into(),
+                        code: WireCloseCode::Size,
+                        reason: CloseCode::SIZE_REASON.into(),
                     }))));
                 }
                 Err(
@@ -396,12 +323,7 @@ impl Ws {
         Ok(())
     }
 
-    pub(crate) fn proxy_close(
-        &mut self,
-        out: &mut Output,
-        code: crate::protocol::CloseCode,
-        reason: crate::protocol::CloseReason,
-    ) {
+    pub(crate) fn proxy_close(&mut self, out: &mut Output, code: CloseCode, reason: CloseReason) {
         let _ = self.ctx.close(
             &mut Io {
                 source: None,
@@ -449,24 +371,24 @@ impl Ws {
             Rejection::Io => "io",
             Rejection::Gone => "gone",
         };
-        self.close_with(out, CloseCode::Policy, reason);
+        self.close_with(out, WireCloseCode::Policy, reason);
         out.close();
     }
 
     pub(crate) fn abort(&mut self, out: &mut Output, reason: &'static str) {
-        self.close_with(out, CloseCode::Error, reason);
+        self.close_with(out, WireCloseCode::Error, reason);
     }
 
     pub(crate) fn shutdown(&mut self, out: &mut Output) {
-        self.close_with(out, CloseCode::Away, "shutdown");
+        self.close_with(out, WireCloseCode::Away, "shutdown");
     }
 
     pub(crate) fn finish(&mut self, out: &mut Output) {
         out.closing(Cause::Finished);
-        self.close_with(out, CloseCode::Normal, "done");
+        self.close_with(out, WireCloseCode::Normal, "done");
     }
 
-    fn close_with(&mut self, out: &mut Output, code: CloseCode, reason: &'static str) {
+    fn close_with(&mut self, out: &mut Output, code: WireCloseCode, reason: &'static str) {
         if out.is_open() {
             let frame = CloseFrame {
                 code,
@@ -522,7 +444,7 @@ impl Ws {
             && matches!(self.ping, Some(Awaiting::Pong(sent)) if now.saturating_duration_since(sent) >= PONG)
         {
             out.closing(Cause::PingTimeout);
-            self.close_with(out, CloseCode::Policy, "io");
+            self.close_with(out, WireCloseCode::Policy, "io");
             out.shut();
             return Ping::Expired;
         }
@@ -564,48 +486,12 @@ impl Ws {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Frame {
-    pub opcode: u8,
-    pub header: usize,
-    pub length: usize,
-}
-
-pub fn parse_frame(buffer: &[u8]) -> Option<Frame> {
-    let mut cursor = Cursor::new(buffer);
-    let (header, length) = FrameHeader::parse(&mut cursor).ok()??;
-    Some(Frame {
-        opcode: u8::from(header.opcode),
-        header: usize::try_from(cursor.position()).ok()?,
-        length: usize::try_from(length).ok()?,
-    })
-}
-
-pub fn masked(opcode: u8, fin: bool, payload: &[u8], key: [u8; 4], lie: i64) -> Vec<u8> {
-    let declared = i64::try_from(payload.len())
-        .unwrap_or(0)
-        .saturating_add(lie);
-    let header = FrameHeader {
-        is_final: fin,
-        opcode: OpCode::from(opcode),
-        mask: Some(key),
-        ..FrameHeader::default()
-    };
-    let mut frame = Vec::new();
-    let _ = header.format(u64::try_from(declared).unwrap_or(0), &mut frame);
-    frame.extend(
-        payload
-            .iter()
-            .zip(key.iter().cycle())
-            .map(|(byte, mask)| byte ^ mask),
-    );
-    frame
-}
-
 #[cfg(test)]
 #[allow(clippy::indexing_slicing, clippy::arithmetic_side_effects)]
 mod tests {
     use super::*;
+    use ko_pane_wire::ring::SLICE_MAX;
+    use ko_wire::ws::{BadRecord, Parsed, masked, parse_record};
     use std::os::unix::net::UnixStream;
 
     use crate::conn::Conn;

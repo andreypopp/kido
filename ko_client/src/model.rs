@@ -3,8 +3,8 @@ use std::time::Instant;
 
 use ko_config::values::RuntimeName;
 use ko_pane_wire::frame::Limits;
-use ko_server::ids::{ClientId, Instance, PaneId, SessionId, VarName, WindowId};
-use ko_server::protocol::{
+use ko_wire::ids::{ClientId, Instance, PaneId, SessionId, VarName, WindowId};
+use ko_wire::protocol::{
     self, ClientEvent, ClientRequest, ClientRuntime, ClipboardContent, ClipboardLocation, Hello,
     LayoutPanes, Listing, Live, Local, Row, Selection, Snapshot,
 };
@@ -647,16 +647,16 @@ pub fn cycle(order: &[PaneId], from: Option<PaneId>, steps: isize) -> Option<Pan
 mod tests {
     use std::collections::BTreeMap;
 
-    use ko_server::ids::Name;
-    use ko_server::protocol::{
+    use ko_wire::ids::Name;
+    use ko_wire::protocol::{
         Axis, Cause, Cells, Dead, Float, Layout, Leaf, Listing, Node, Revision, Session,
     };
-    use ko_server::vars::Vars;
+    use ko_wire::vars::Vars;
     use proptest::prelude::*;
     use serde_json::{Value, json};
 
     use super::*;
-    use ko_server::protocol::Window;
+    use ko_wire::protocol::Window;
 
     #[derive(Debug, Clone)]
     enum Shape {

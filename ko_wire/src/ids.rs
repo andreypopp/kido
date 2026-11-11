@@ -32,7 +32,7 @@ macro_rules! id {
         $vis struct $name(u64);
 
         impl $name {
-            pub(crate) fn new(number: u64) -> $name {
+            pub fn new(number: u64) -> $name {
                 $name(number)
             }
         }
@@ -83,7 +83,7 @@ id!(pub SessionId, "session_");
 id!(pub WindowId, "window_");
 
 impl SessionId {
-    pub(crate) fn number(self) -> u64 {
+    pub fn number(self) -> u64 {
         self.0
     }
 }
@@ -107,7 +107,7 @@ macro_rules! hex_id {
         $vis struct $name(String);
 
         impl $name {
-            pub(crate) fn mint() -> io::Result<$name> {
+            pub fn mint() -> io::Result<$name> {
                 ko_sys::entropy::hex(16).map($name)
             }
         }
@@ -156,7 +156,7 @@ hex_id!(pub Instance);
 hex_id!(pub PaneToken);
 
 impl PaneToken {
-    pub(crate) fn matches(&self, other: &PaneToken) -> bool {
+    pub fn matches(&self, other: &PaneToken) -> bool {
         let (ours, theirs) = (self.0.as_bytes(), other.0.as_bytes());
         ours.len() == theirs.len()
             && ours
@@ -181,7 +181,7 @@ impl MessageId {
         ))
     }
 
-    pub(crate) fn ended(pane: PaneId) -> MessageId {
+    pub fn ended(pane: PaneId) -> MessageId {
         MessageId(format!("ended-{pane}"))
     }
 }
@@ -224,8 +224,8 @@ impl From<MessageId> for String {
 const MAX_STATUS_ID: usize = 128;
 const MAX_STATUS_NAME: usize = 32;
 const MAX_STATUS_DEPTH: usize = 8;
-pub(crate) const MAX_STATUS_TITLE: usize = 192;
-pub(crate) const MAX_STATUS_MESSAGE: usize = 2048;
+pub const MAX_STATUS_TITLE: usize = 192;
+pub const MAX_STATUS_MESSAGE: usize = 2048;
 
 fn status_name(text: &str) -> bool {
     !text.is_empty()
@@ -240,13 +240,13 @@ fn status_name(text: &str) -> bool {
 pub struct StatusId(String);
 
 impl StatusId {
-    pub(crate) fn as_str(&self) -> &str {
+    pub fn as_str(&self) -> &str {
         &self.0
     }
-    pub(crate) fn is_root(&self) -> bool {
+    pub fn is_root(&self) -> bool {
         self.0.is_empty()
     }
-    pub(crate) fn is_within(&self, parent: &Self) -> bool {
+    pub fn is_within(&self, parent: &Self) -> bool {
         parent.is_root()
             || self == parent
             || self

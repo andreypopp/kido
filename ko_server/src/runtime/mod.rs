@@ -13,15 +13,16 @@ use ko_config::values::{RuntimeColor, RuntimeName, RuntimeTag};
 use ko_sys::event::{Poll, Ready, Timer, Token};
 use ko_sys::pid::{Exit, Pid, Waited};
 
-use crate::config::{Config, SUN_PATH_MAX, server_settings};
-use crate::exec_wire::Start as ExecStart;
-use crate::ids::{PaneId, PaneToken, SessionId};
-use crate::protocol::{
+use crate::config::{Config, server_settings};
+use crate::server::{Listener, Origin, Timing, Verified};
+use ko_sys::sock::SUN_PATH_MAX;
+use ko_wire::exec_wire::Start as ExecStart;
+use ko_wire::ids::{PaneId, PaneToken, SessionId};
+use ko_wire::protocol::{
     ClientEvent, ClientRuntime, Error, ErrorKind, ExecRequest, LinkState, RuntimeKind,
     RuntimeSource, Variable, Version, check_version, version,
 };
-use crate::server::{Listener, Origin, Timing, Verified};
-use crate::ssh::token_name;
+use ko_wire::ssh::token_name;
 
 pub(crate) mod command;
 pub(crate) mod container;

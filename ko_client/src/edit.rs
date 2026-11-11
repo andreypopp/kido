@@ -1,7 +1,7 @@
 use std::fmt;
 
-use ko_server::ids::{Name, PaneId, SessionId, WindowId};
-use ko_server::protocol::{
+use ko_wire::ids::{Name, PaneId, SessionId, WindowId};
+use ko_wire::protocol::{
     Axis, Cells, CreatePane, DraftFloat, DraftLayout, DraftLeaf, DraftSession, DraftWindow, Node,
     PaneRef, Tile, pick,
 };
@@ -796,7 +796,7 @@ pub(crate) fn apply(layout: &mut DraftLayout, edit: &Edit) -> Done {
 
 #[cfg(test)]
 mod tests {
-    use ko_server::ids::Name;
+    use ko_wire::ids::Name;
     use proptest::prelude::*;
 
     use super::*;

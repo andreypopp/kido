@@ -1,12 +1,12 @@
 use ko_pane_wire::frame::{Key, KeyAction, KeyCode};
 
 use super::*;
-use crate::api::routes;
-use crate::ids::WindowId;
 use crate::pane_kind::{self, Kind, LocalKind, RemoteKind};
 use crate::panes::{acts_as, is_descendant};
-use crate::protocol::{Candidate, Content, Error, ErrorKind, Payload, SendPrompt, Sent, Via};
 use crate::server::Origin;
+use ko_wire::api::routes;
+use ko_wire::ids::WindowId;
+use ko_wire::protocol::{Candidate, Content, Error, ErrorKind, Payload, SendPrompt, Sent, Via};
 
 use super::messages::{Posting, Reply};
 

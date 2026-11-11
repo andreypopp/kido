@@ -5,11 +5,12 @@ use ko_config::values::Operand;
 use ko_sys::pid::Exit;
 use serde::Deserialize;
 
-use crate::config::{env_path, installed, program_path};
-use crate::ids::PaneToken;
+use crate::config::installed;
 use crate::runtime::RuntimeKey;
 use crate::runtime::exec::Launch;
 use crate::runtime::{Cleanup, Ctx, Entry, Next, Outcome, pane, text, version_next, words};
+use ko_sys::file::{env_path, program_path};
+use ko_wire::ids::PaneToken;
 
 const PROGRAM: &str = "container";
 const PODMAN: &str = "podman";
@@ -481,8 +482,8 @@ pub(crate) fn next(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::protocol::version;
     use ko_config::runtime::{Container, Podman};
+    use ko_wire::protocol::version;
 
     const RUNNING: &str = r#"[{"configuration":{"id":"ko-dev","mounts":[
         {"destination":"/run/ko/socket","options":[],"source":"/state/runtimes/dev/io/socket","type":{"virtiofs":{}}},

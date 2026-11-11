@@ -3,7 +3,7 @@ use std::time::Duration;
 use ko_pane_wire::frame::Req;
 use ko_sys::event::{Poll, Timer};
 
-use crate::ids::{ClientId, PaneId};
+use ko_wire::ids::{ClientId, PaneId};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Viewer {

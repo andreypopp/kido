@@ -4,13 +4,13 @@ use ko_sys::pid::Exit;
 use ko_sys::signal::Signal;
 
 use super::*;
-use crate::exec_wire::ToKo;
-use crate::protocol::{EXEC_CHUNK, Ended, ExecClient, ExecRequest, ExecServer, LinkState, Text};
 use crate::runtime::exec::{
     Admit, Chunk, Limiter, MAX_SESSIONS, Mode, Retry, Running, Session, Source, Stage, Stream,
     spawn,
 };
 use crate::runtime::{Ending, RuntimeKey, Wait, Who};
+use ko_wire::exec_wire::ToKo;
+use ko_wire::protocol::{EXEC_CHUNK, Ended, ExecClient, ExecRequest, ExecServer, LinkState, Text};
 
 const FRAMING: usize = 80;
 const READS_PER_TURN: usize = 16;

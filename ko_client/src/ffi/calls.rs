@@ -4,10 +4,10 @@ use std::ffi::{c_char, c_int};
 use std::path::Path;
 use std::time::Duration;
 
-use ko_server::api::{Route, WindowOnly};
-use ko_server::ids::{ClientId, MessageId, PaneId};
-use ko_server::protocol::{self, Revision, SendPrompt};
 use ko_sys::event::Wake;
+use ko_wire::api::{Route, WindowOnly};
+use ko_wire::ids::{ClientId, MessageId, PaneId};
+use ko_wire::protocol::{self, Revision, SendPrompt};
 
 use super::engine::failure;
 use super::{Buffer, Client, Code, client, locked, put, slice_of, text_of};

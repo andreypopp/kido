@@ -7,24 +7,24 @@ use std::io::{self, Read};
 use crate::ids::ClientId;
 use crate::protocol::version_headers;
 
-pub(crate) const MAX_HEAD: usize = 16384;
+pub const MAX_HEAD: usize = 16384;
 pub const MAX_BODY: usize = 1 << 20;
 const STACK_HEADERS: usize = 128;
 const HEAP_HEADERS: usize = 4096;
 const MAX_RESPONSE_HEAD: usize = 65536;
 
-pub(crate) const BAD_REQUEST: &[u8] = b"HTTP/1.1 400 Bad Request\r\n\r\n400";
-pub(crate) const LAST_CHUNK: &[u8] = b"0\r\n\r\n";
+pub const BAD_REQUEST: &[u8] = b"HTTP/1.1 400 Bad Request\r\n\r\n400";
+pub const LAST_CHUNK: &[u8] = b"0\r\n\r\n";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct Head {
-    pub(crate) method: String,
-    pub(crate) target: String,
+pub struct Head {
+    pub method: String,
+    pub target: String,
     headers: Vec<(String, String)>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum Parsed {
+pub enum Parsed {
     Complete { head: Head, size: usize },
     Partial,
     BadLine,
@@ -33,14 +33,14 @@ pub(crate) enum Parsed {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Framing {
+pub enum Framing {
     Length(usize),
     Oversized(usize),
     Chunked,
     Invalid,
 }
 
-pub(crate) fn lossy(bytes: &[u8]) -> String {
+pub fn lossy(bytes: &[u8]) -> String {
     String::from_utf8_lossy(bytes).into_owned()
 }
 
@@ -82,7 +82,7 @@ fn ended(bytes: &[u8]) -> bool {
         .any(|pair| pair == b"\n\n" || pair == b"\n\r")
 }
 
-pub(crate) fn parse_head(bytes: &[u8], scanned: &mut usize) -> Parsed {
+pub fn parse_head(bytes: &[u8], scanned: &mut usize) -> Parsed {
     let from = scanned.saturating_sub(2);
     *scanned = bytes.len();
     let parsed = if bytes.get(from..).is_some_and(ended) {
@@ -100,14 +100,14 @@ pub(crate) fn parse_head(bytes: &[u8], scanned: &mut usize) -> Parsed {
 }
 
 impl Head {
-    pub(crate) fn headers(&self) -> &[(String, String)] {
+    pub fn headers(&self) -> &[(String, String)] {
         &self.headers
     }
-    pub(crate) fn header(&self, name: &str) -> Option<&str> {
+    pub fn header(&self, name: &str) -> Option<&str> {
         header(&self.headers, name)
     }
 
-    pub(crate) fn framing(&self) -> Framing {
+    pub fn framing(&self) -> Framing {
         if self.header("transfer-encoding").is_some() {
             return Framing::Chunked;
         }
@@ -133,14 +133,14 @@ impl Head {
     }
 }
 
-pub(crate) fn oversized(seen: usize) -> bool {
+pub fn oversized(seen: usize) -> bool {
     seen > MAX_BODY
 }
 
 macro_rules! statuses {
     ($($name:ident = $code:literal $reason:literal),* $(,)?) => {
         #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-        pub(crate) enum Status {
+        pub enum Status {
             $($name = $code),*
         }
 
@@ -201,14 +201,14 @@ fn message<'a>(
     out
 }
 
-pub(crate) const CSP: &str = "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'self'";
+const CSP: &str = "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-src 'none'; object-src 'none'; base-uri 'none'; form-action 'self'";
 const SECURITY_HEADERS: [(&str, &str); 2] = [
     ("cache-control", "no-store"),
     ("content-security-policy", CSP),
 ];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Policy {
+pub enum Policy {
     Control,
     Webview,
 }
@@ -309,12 +309,7 @@ fn hop_by_hop(name: &str, tokens: &[&str]) -> bool {
         || tokens.iter().any(|token| name.eq_ignore_ascii_case(token))
 }
 
-pub(crate) fn response(
-    status: Status,
-    headers: &[(&str, &str)],
-    body: &[u8],
-    policy: Policy,
-) -> Vec<u8> {
+pub fn response(status: Status, headers: &[(&str, &str)], body: &[u8], policy: Policy) -> Vec<u8> {
     message_policy(
         &format!("HTTP/1.1 {} {}", status.code(), status.reason()),
         headers.iter().copied(),
@@ -323,7 +318,7 @@ pub(crate) fn response(
     )
 }
 
-pub(crate) fn json_response(status: Status, body: &str, policy: Policy) -> Vec<u8> {
+pub fn json_response(status: Status, body: &str, policy: Policy) -> Vec<u8> {
     response(
         status,
         &[
@@ -335,15 +330,11 @@ pub(crate) fn json_response(status: Status, body: &str, policy: Policy) -> Vec<u
     )
 }
 
-pub(crate) fn error_reply(
-    error: &crate::protocol::Error,
-    status: Status,
-    policy: Policy,
-) -> Vec<u8> {
+pub fn error_reply(error: &crate::protocol::Error, status: Status, policy: Policy) -> Vec<u8> {
     json_response(status, &crate::protocol::json(error), policy)
 }
 
-pub(crate) fn proxy_head(
+pub fn proxy_head(
     status: crate::protocol::webview::Status,
     headers: &crate::protocol::webview::Headers,
 ) -> Vec<u8> {
@@ -370,11 +361,7 @@ pub(crate) fn proxy_head(
     )
 }
 
-pub(crate) fn switching_protocols(
-    accept: &str,
-    headers: &[(String, String)],
-    policy: Policy,
-) -> Vec<u8> {
+pub fn switching_protocols(accept: &str, headers: &[(String, String)], policy: Policy) -> Vec<u8> {
     let tokens = connection_tokens(headers);
     let mut fields: Vec<_> = headers
         .iter()
@@ -389,7 +376,7 @@ pub(crate) fn switching_protocols(
     message_policy("HTTP/1.1 101 Switching Protocols", fields, b"", policy)
 }
 
-pub(crate) fn chunk_header(length: usize) -> String {
+pub fn chunk_header(length: usize) -> String {
     format!("{length:x}\r\n")
 }
 

@@ -2,7 +2,7 @@
 
 ko identifies each pane as a terminal, an agent or a pi agent with
 ko's harness, and the state of each pane. The server computes one
-`status` for each pane (`PaneStatus` in `ko_server/src/protocol.rs`)
+`status` for each pane (`PaneStatus` in `ko_wire/src/protocol.rs`)
 and announces a change as a `status` event. Each client controls
 glyphs, labels, captions and seen outcomes.
 
@@ -30,7 +30,7 @@ no whole-second tie and no polling: a report is an event.
 `ko_server/src/program_status.rs` keeps one record set for each pane
 under these rules. A report comes from one of two edges, and both
 produce the one report type, `StatusReport` in
-`ko_server/src/protocol.rs`. libghostty-vt validates an OSC 7501
+`ko_wire/src/protocol.rs`. libghostty-vt validates an OSC 7501
 report before the callback; `ko-pane` and the coordinator parse
 nothing of it. The route decodes its body through that type, whose
 fields have the limits of Ghostty's parser. Where Ghostty drops an
@@ -248,7 +248,7 @@ exits is no `Ssh`.
 The sections below describe a `LocalKind`; it has the same rules on
 the host and in a runtime, except that a runtime pane's row title
 never falls back to the foreground process name. The wire's
-`Live` (`ko_server/src/protocol.rs`) has the same shape and carries
+`Live` (`ko_wire/src/protocol.rs`) has the same shape and carries
 no runtime name: the row's `runtime` is the one source of it.
 
 ### `Terminal`

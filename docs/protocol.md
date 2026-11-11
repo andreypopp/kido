@@ -6,10 +6,10 @@ this protocol serves.
 
 **The code is the source of truth for every message shape**:
 
-- `ko_server/src/protocol.rs`: the HTTP and WebSocket JSON types and
+- `ko_wire/src/protocol.rs`: the HTTP and WebSocket JSON types and
   their codecs, request and response bodies, events, input events,
   markers, ids.
-- `ko_server/src/api.rs`: the routes, their methods, paths, query
+- `ko_wire/src/api.rs`: the routes, their methods, paths, query
   parameters with their defaults, bodies, replies and extra statuses.
 - `share/ko/openapi.json`, generated from both by `ko api-schema`:
   the authority for shapes outside the code. Each WebSocket route is
@@ -222,7 +222,7 @@ anchor; it compares times with each other only. The reason (decided 2026-11-02):
 clocks of two machines agreeing, which remote panes do not
 promise.
 
-`ErrorKind` in `ko_server/src/protocol.rs` names the error kinds and
+`ErrorKind` in `ko_wire/src/protocol.rs` names the error kinds and
 their status codes. Two need a note: `precondition_failed` is a
 conditional delete whose condition does not hold, and `unknown` is the
 prompt case: the effect may have happened, do not retry. A route that takes no body refuses a
@@ -492,7 +492,7 @@ that `a=a` set live inside the mirror's own kitty state, delivered in
 the view stream as the program sends them or in the snapshot. Pixels
 are resources, one for each frame:
 `GET /panes/pane_N/images/<image_id>/frames/<n>?generation=<g>`
-(`ko_server/src/api.rs`, route `Image`). Frame 1 is the image itself;
+(`ko_wire/src/api.rs`, route `Image`). Frame 1 is the image itself;
 2 and up are its animation frames, as kitty numbers them. The
 generation is the frame's serial that the bytes alone decide (the
 Ghostty fork's counter over graphics commands, design-ko.md, "Images"), so the
@@ -506,7 +506,7 @@ Without `Ko-Accept-Shm: 1` the reply is the pixels as an
 `application/octet-stream` body, with the format, size, generation,
 frame gap and frame count in `ko-image-*` headers. With it, the reply
 is a JSON body that names a shared memory object and gives the same
-facts with its length (`ko_server/src/protocol.rs`). The
+facts with its length (`ko_wire/src/protocol.rs`). The
 client maps the object read-only and never unlinks it. A body comes
 from the coordinator's own read-only mapping of the object through a
 pull source on the connection (`Phase::Streaming` in
@@ -522,7 +522,7 @@ placements on screen, one connection each, in parallel, and caches by
 pixels inline (`t=d` in the live bytes) fetches nothing.
 `images=all`, a snapshot that keeps the payload records for a mirror
 that wants them inline, is refused (`Images` in
-`ko_server/src/api.rs`).
+`ko_wire/src/api.rs`).
 
 Pixels come from `ko-pane` through shared memory objects, never
 through the ring: an image can be larger than the 1 MiB ring, every
@@ -573,7 +573,7 @@ drops a larger image from a restored snapshot.
 
 Events arrive on the client connection, one text message per event,
 in the order the server produced them. The kinds, as `ClientEvent` in
-`ko_server/src/protocol.rs` defines them: the whole layout document on every
+`ko_wire/src/protocol.rs` defines them: the whole layout document on every
 change, with the rows of the panes that the change adds (section 7);
 a window's new `focus` when only the focus changed (section 7); a
 pane's title, pwd, pid, foreground, status, variable, death, bell,
@@ -601,14 +601,14 @@ views.
 There is no feed and no tree snapshot (decided 2026-10-30). The server
 computes one `status` per pane and announces a change for that pane
 only; a client builds its sidebar tree from the layout document and
-the pane rows. `PaneStatus` in `ko_server/src/protocol.rs` is
+the pane rows. `PaneStatus` in `ko_wire/src/protocol.rs` is
 the reference for its shape: tagged enums for the pane kind, the
 phase and the agent state, with the rules of
 [design-program-status.md](design-program-status.md).
 
 Pane state and pane events:
 
-- A pane's row (`Listing` in `ko_server/src/protocol.rs`) carries
+- A pane's row (`Listing` in `ko_wire/src/protocol.rs`) carries
   its title, pwd, foreground process, death, status, variables,
   progress (OSC 9;4), `inbox` while its message stream is open
   (section 7) and `webview` while it has a page or a serve stream
@@ -619,7 +619,7 @@ Pane state and pane events:
   absent after a `remove` report. `GET /panes` lists every row, `GET
   /panes/pane_N` one; both read the same rows as the layout.
 - Each row field that can change has its own event of `ClientEvent`
-  in `ko_server/src/protocol.rs`, and none moves the revision. A
+  in `ko_wire/src/protocol.rs`, and none moves the revision. A
   report that changes nothing
   sends no event: an unchanged OSC 7501 record from either edge, an equal `PUT` of a
   variable, a `DELETE` of an absent name, an unchanged progress.
@@ -644,7 +644,7 @@ Pane state and pane events:
 
 The layout is one JSON document for the whole server (decided
 2026-10-30). `ko_server/src/layout.rs` and the document types of
-`ko_server/src/protocol.rs` are the reference for its schema and
+`ko_wire/src/protocol.rs` are the reference for its schema and
 invariants.
 
 - `GET /layout` returns the document, its revision and every pane's
@@ -795,7 +795,7 @@ invariants.
   stays equal to the pane's terminal.
 **Messages.** A pane receives messages on one WebSocket, `GET
 /panes/pane_N/messages`; `POST /panes/pane_N/messages`
-(`SendMessage`) sends one. `ko_server/src/protocol.rs` defines the
+(`SendMessage`) sends one. `ko_wire/src/protocol.rs` defines the
 bodies (`SendMessage`, `Message`, `StreamRequest`, `Posted`);
 `ko_server/src/inbox.rs` owns the queue and `state/messages.rs` the
 routes. The server does not read a message's `kind` or `text`: it
@@ -822,7 +822,7 @@ stamps the sender, enforces the scope and carries the bytes.
   sibling's descendant. The user, and a prompt's pane that is not
   related to its target, have none.
 - **Ids.** The sender gives each message an id: 8 to 64 characters
-  of `[A-Za-z0-9_-]` (`MessageId` in `ko_server/src/ids.rs`), with at
+  of `[A-Za-z0-9_-]` (`MessageId` in `ko_wire/src/ids.rs`), with at
   least 96 random bits; `ko` mints 128 bits. The server enqueues each
   `(pane, id)` once. A repeat is not compared with the original; it
   is answered from it with `duplicate`: a queued one at once, a
@@ -879,7 +879,7 @@ new owner before the old one cleans up. A value is any JSON, at most 1 MiB minus
 not depend on the name (decided 2026-11-02). One pane holds
 at most 8 MiB and 1,024 names. All variables of the server, of panes,
 sessions and windows together, are at most 16 MiB of encoded JSON
-(`SERVER_MAX_TOTAL` in `ko_server/src/vars.rs`), so a welcome with
+(`SERVER_MAX_TOTAL` in `ko_server/src/state.rs`), so a welcome with
 every pane's row stays under the 32 MiB limit of a server message
 (section 1); a write or a `PUT` over it is refused. A name is UTF-8
 without control
@@ -895,7 +895,7 @@ pane's foreground process is `ssh`.
 ## 8. Input
 
 An input event is one JSON message, as the input type of
-`ko_server/src/protocol.rs` defines it: a key, already-encoded text, a paste or a mouse event. Focus is
+`ko_wire/src/protocol.rs` defines it: a key, already-encoded text, a paste or a mouse event. Focus is
 not input; the server derives it from the clients (section 3). It is sent as a text message on the pane's view, or as the
 body of `POST /panes/pane_N/input` when the sender has no view open
 (the CLI's prompt delivery).
@@ -1159,7 +1159,7 @@ signals no pid that it takes from another process without proof. It
 accepts the pid only if the OS reports that the process is a child of
 the `ko-pane` that the coordinator spawned and leads its own process
 group and session, and it is not 0, 1, the coordinator's pid or its
-group. It records the start time of the process. `Group::verify` in `ko_sys/src/pid.rs`
+group. It records the start time of the process. `Group::verify` in `ko_sys/src/pid/desktop.rs`
 is this check and the only constructor of the group that the
 coordinator can signal. A pid that fails
 this check fails the pane as an invalid frame. A pid with no process
@@ -1336,7 +1336,7 @@ where its runtime's name resolves to another runtime ("pane_N runs in
 runtime NAME of SESSION" for a pane of an ad-hoc runtime).
 
 **`GET /runtimes/NAME/visit`** is a WebSocket of JSON text messages
-(`VisitClient` and `VisitServer` in `ko_server/src/protocol.rs`)
+(`VisitClient` and `VisitServer` in `ko_wire/src/protocol.rs`)
 that holds a host pane in a runtime while the connection lives
 (design-runtimes.md, "A visit"). Only a host-connection pane identity
 of a live host pane may open it; a pane that is already in a runtime
@@ -1438,7 +1438,7 @@ the query.
 
 **The record.** `PaneWebview` in `ko_server/src/webview.rs` keeps a
 pane's page, its serve stream and its requests in flight. The wire
-form is `Webview` in `ko_server/src/protocol/webview.rs`: the page, if the
+form is `Webview` in `ko_wire/src/protocol/webview.rs`: the page, if the
 program entered one, and `serving`, derived from the open stream. The row carries it as `webview`, absent when there is no page and
 no stream, and a `webview` event carries the pane's whole record on each
 change (section 6). `leave`, the pane's death, RIS and a primary
@@ -1448,7 +1448,7 @@ persists. The status model does not read it.
 
 **The serve stream**, `GET /panes/{id}/webview_serve`, a WebSocket of
 JSON text messages (`ServeIn` and `ServeOut` in
-`ko_server/src/protocol/webview.rs`). Only the pane itself opens it: the
+`ko_wire/src/protocol/webview.rs`). Only the pane itself opens it: the
 user and every other pane are `refused`. It is in the runtime gate's
 list, so a program in a runtime serves over the runtime listener. A
 pane has at most one; a second upgrade is `refused`. The server sends
@@ -1462,14 +1462,14 @@ decodes, so no client or proxy writes another target into a request
 line) and the headers as the page sent them, with the hop-by-hop headers,
 `Host` and the identity headers (`Ko-Pane`, `Ko-Pane-Token`,
 `Ko-Client`) removed, and the server's own `Ko-Pane` added.
-`ko_server::http::forwarded` owns the rule, which `ko webview serve` and
+`ko_wire::http::forwarded` owns the rule, which `ko webview serve` and
 the client core also apply; it also replaces `Accept-Encoding` with
 `identity`. The program answers requests in any order.
 
 A response head reaches the page with the hop-by-hop headers, the
 `Proxy-*` headers, the headers that its `Connection` names and
 `Content-Length` removed, because each hop sets its own framing; the
-response reader of `ko_server/src/http/response.rs` owns the rule, and
+response reader of `ko_wire/src/http/response.rs` owns the rule, and
 the proxy and every client reader apply the same filter. A
 head whose `Content-Encoding` is not `identity` is refused by the
 client core's webview reader (`ko_client/src/webview.rs`), which `ko
@@ -1506,7 +1506,7 @@ identity is `refused`, an expired client is `gone`, and the runtime
 listener refuses it (it is not in the gate's list). These routes are
 the one exception to the `Origin` refusal of section 1, because the
 client passes on the page's headers and only a live client's id gets
-past the check. The request body is at most `MAX_BODY` (`ko_server/src/http.rs`),
+past the check. The request body is at most `MAX_BODY` (`ko_wire/src/http.rs`),
 else `invalid`.
 An unknown pane or a pane with no page is `not_found`, a dead pane is
 `gone`, and a pane with no serve stream is `503` (`unavailable`): the
@@ -1517,7 +1517,7 @@ the program gets `cancel`, or `close` for a WebSocket.
 
 Every proxy response, an error included, has `Cache-Control:
 no-store` and the `Content-Security-Policy` of `CSP` in
-`ko_server/src/http.rs`. The proxy drops a program's own
+`ko_wire/src/http.rs`. The proxy drops a program's own
 `Cache-Control`; this cache policy is the proxy's, separate from the
 transport filter. A program's own CSP passes through
 beside it, so both apply: a program can make the policy stricter, never
@@ -1551,4 +1551,4 @@ pane, and 1 with the server's message when the upgrade is refused. A connection 
 closes keeps its queue until the queue drains or `READ_TIMEOUT`
 (`ko_client/src/wire.rs`) ends, so the program gets the close code. Its HTTP client is
 `ko_client/src/webview.rs`, over the response reader of
-`ko_server/src/http/response.rs`.
+`ko_wire/src/http/response.rs`.

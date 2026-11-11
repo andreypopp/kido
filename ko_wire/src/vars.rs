@@ -10,7 +10,6 @@ use crate::ids::VarName;
 const MAX_VALUE: usize = (1 << 20) - 4096;
 const MAX_TOTAL: usize = 8 << 20;
 const MAX_NAMES: usize = 1024;
-pub(crate) const SERVER_MAX_TOTAL: usize = 16 << 20;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Refusal {
@@ -66,7 +65,7 @@ impl From<Vars> for BTreeMap<VarName, Value> {
 }
 
 impl Vars {
-    pub(crate) fn checked(loose: Loose) -> Result<Vars, String> {
+    pub fn checked(loose: Loose) -> Result<Vars, String> {
         let mut map = BTreeMap::new();
         for (name, value) in loose {
             map.insert(
@@ -84,19 +83,19 @@ impl Vars {
             .collect()
     }
 
-    pub(crate) fn is_empty(&self) -> bool {
+    pub fn is_empty(&self) -> bool {
         self.map.is_empty()
     }
 
-    pub(crate) fn get(&self, name: &VarName) -> Option<&Value> {
+    pub fn get(&self, name: &VarName) -> Option<&Value> {
         self.map.get(name).map(|(value, _)| value)
     }
 
-    pub(crate) fn text(&self, name: &VarName) -> Option<&str> {
+    pub fn text(&self, name: &VarName) -> Option<&str> {
         self.get(name).and_then(Value::as_str)
     }
 
-    pub(crate) fn bytes(&self) -> usize {
+    pub fn bytes(&self) -> usize {
         self.bytes
     }
 
@@ -104,7 +103,7 @@ impl Vars {
         self.set_within(name, value, usize::MAX)
     }
 
-    pub(crate) fn set_within(
+    pub fn set_within(
         &mut self,
         name: &VarName,
         value: Value,

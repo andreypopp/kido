@@ -8,6 +8,7 @@ publish.workspace = true
 cargo-fuzz = true
 
 [dependencies]
+ko_wire = { path = "../ko_wire", features = ["fuzz"] }
 ko_pane = { path = "../ko_pane" }
 ko_pane_wire = { path = "../ko_pane_wire", features = ["fuzz"] }
 ko_server = { path = "../ko_server", features = ["fuzz"] }

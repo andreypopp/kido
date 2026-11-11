@@ -9,9 +9,9 @@ use ko_sys::pid::{Exit, Pid, Waited};
 use ko_sys::signal::Signal;
 use ko_sys::spawn;
 
-use crate::exec_wire::{Frames, FromKo, Invalid, ToKo};
-use crate::protocol::{Ended, ExecClient, ExecRequest};
 use crate::runtime::RuntimeKey;
+use ko_wire::exec_wire::{Frames, FromKo, Invalid, ToKo};
+use ko_wire::protocol::{Ended, ExecClient, ExecRequest};
 
 pub(crate) const MAX_SESSIONS: usize = 32;
 const MAX_BACKLOG: usize = 16;

@@ -14,7 +14,7 @@ status=0
 boxed miri.sh 1500 make --no-print-directory nightly-cargo ARGS="miri test --locked -p ko_pane_wire -- \
   frame:: ring:: fuzz::tests::the_model --skip the_ring_agrees_with_a_list_of_records \
   --skip every_frame_size_in_a_stream_is_between_the_header_and_the_input" || status=1
-boxed miri.sh 1500 make --no-print-directory nightly-cargo ARGS="miri test --locked -p ko_server -- \
+boxed miri.sh 1500 make --no-print-directory nightly-cargo ARGS="miri test --locked -p ko_wire -- \
   ids:: protocol:: http:: --skip decoders_return_a_value_or_a_decode_error --skip routes_return_a_route_nothing_or_invalid \
   --skip a_request_cut_into_pieces --skip a_head_of_n_bytes_parses_up_to_the_limit_and_is_too_large_above" || status=1
 exit $status

@@ -65,7 +65,7 @@ enum RunKind {
         #[arg(verbatim_doc_comment, long, value_parser = |s: &str| Program::try_from(s.to_owned()))]
         program: Option<Program>,
         /// The host's agent at /var/host-services/ssh-auth.sock (`--ssh`).
-        #[arg(verbatim_doc_comment, long, default_value = "none", value_parser = |s: &str| ko_server::protocol::decode::<SshAgent>(ko_server::protocol::json(&s).as_bytes()).map_err(|error| error.to_string()))]
+        #[arg(verbatim_doc_comment, long, default_value = "none", value_parser = |s: &str| ko_wire::protocol::decode::<SshAgent>(ko_wire::protocol::json(&s).as_bytes()).map_err(|error| error.to_string()))]
         ssh_agent: SshAgent,
     },
     /// A Podman container on a Linux server.
@@ -107,7 +107,7 @@ struct Shared {
     #[arg(verbatim_doc_comment, long = "path", value_parser = path_map)]
     paths: Vec<PathMap>,
     /// Where pi runs for an agent in this runtime.
-    #[arg(verbatim_doc_comment, long, default_value = "host", value_parser = |s: &str| ko_server::protocol::decode::<RuntimePi>(ko_server::protocol::json(&s).as_bytes()).map_err(|error| error.to_string()))]
+    #[arg(verbatim_doc_comment, long, default_value = "host", value_parser = |s: &str| ko_wire::protocol::decode::<RuntimePi>(ko_wire::protocol::json(&s).as_bytes()).map_err(|error| error.to_string()))]
     pi: RuntimePi,
     /// How clients draw the runtime. Default: a colour that each client derives from the name.
     #[arg(verbatim_doc_comment, long, value_parser = |s: &str| RuntimeColor::try_from(s.to_owned()))]
@@ -166,7 +166,7 @@ fn inner_ko(s: &str) -> Result<Ko, String> {
     if let Some(dir) = s.strip_prefix("mount=") {
         return MountDir::try_from(dir.to_owned()).map(Ko::Mount);
     }
-    ko_server::protocol::decode(ko_server::protocol::json(&s).as_bytes())
+    ko_wire::protocol::decode(ko_wire::protocol::json(&s).as_bytes())
         .map_err(|error| error.to_string())
 }
 
@@ -297,7 +297,7 @@ pub(crate) fn run(args: RunArgsCli, server: Option<PathBuf>) -> ExitCode {
     };
     let requested_env = env
         .into_iter()
-        .map(|(name, value)| ko_server::protocol::Variable { name, value })
+        .map(|(name, value)| ko_wire::protocol::Variable { name, value })
         .collect();
     let Target { dir, caller } = target(server);
     let Some(caller) = caller else {
@@ -320,7 +320,7 @@ pub(crate) fn run(args: RunArgsCli, server: Option<PathBuf>) -> ExitCode {
         Err(error) => return fail("run", error),
     };
     let escalation = ko_server::config::stop_escalation() / 2;
-    let request = ko_server::protocol::VisitRequest {
+    let request = ko_wire::protocol::VisitRequest {
         cwd,
         command: (!command.is_empty()).then_some(command),
         env: requested_env,
@@ -353,7 +353,7 @@ mod tests {
     #[test]
     fn option_help_matches_the_configuration_schema() {
         use clap::CommandFactory;
-        let schema = ko_server::protocol::decode::<ko_server::vars::Loose>(
+        let schema = ko_wire::protocol::decode::<ko_wire::vars::Loose>(
             ko_config::config::schema().as_bytes(),
         )
         .unwrap();

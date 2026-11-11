@@ -14,6 +14,7 @@ pub mod pty;
 pub mod retry;
 pub mod signal;
 pub mod sock;
+#[cfg(not(target_os = "ios"))]
 pub mod spawn;
 pub mod tty;
 pub mod user;

@@ -1,14 +1,14 @@
 use std::ffi::{c_char, c_int};
 use std::path::Path;
 
-use ko_server::api::Route;
-use ko_server::http::Response;
-use ko_server::ids::ClientId;
-use ko_server::protocol::{
+use ko_sys::event::Wake;
+use ko_wire::api::Route;
+use ko_wire::http::Response;
+use ko_wire::ids::ClientId;
+use ko_wire::protocol::{
     self, ACCEPT_SHM_HEADER, IMAGE_FORMAT_HEADER, IMAGE_FRAMES_HEADER, IMAGE_GAP_HEADER,
     IMAGE_GENERATION_HEADER, IMAGE_HEIGHT_HEADER, IMAGE_WIDTH_HEADER, ImageShm, PixelFormat,
 };
-use ko_sys::event::Wake;
 
 use super::calls::{call, rejected};
 use super::{Buffer, Client, Code, client, hand_over, text_of};

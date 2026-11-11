@@ -2,11 +2,11 @@ use ko_pane_wire::frame::Req;
 
 use crate::client::Client;
 use crate::conn::Output;
-use crate::ids::PaneId;
 use crate::runtime::exec::Session;
 use crate::state::visit_ops::Visit;
 use crate::view::View;
 use crate::ws::Ws;
+use ko_wire::ids::PaneId;
 use vstd::prelude::*;
 
 #[derive(Debug)]

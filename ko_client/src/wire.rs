@@ -9,17 +9,17 @@ use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use ko_server::api::Route;
-use ko_server::http::{self, Response, Upgrade, call};
-use ko_server::ids::{ClientId, PaneId, PaneToken};
-use ko_server::protocol;
-use ko_server::ws::{accepted, refused, upgrade_request};
 use ko_sys::event::{Interest, Poll, PollRead, Reads, Ready, Token, Wake};
 use ko_sys::fd::{self, Queue, Waited, Want};
+use ko_wire::api::Route;
+use ko_wire::http::{self, Response, Upgrade, call};
+use ko_wire::ids::{ClientId, PaneId, PaneToken};
+use ko_wire::protocol;
+use ko_wire::ws::{accepted, refused, upgrade_request};
 use tungstenite::protocol::{Role, WebSocketConfig, WebSocketContext};
 use tungstenite::{Bytes, Error, Message, Utf8Bytes};
 
-use crate::launch::{self, PATIENCE};
+use crate::connect::{self, PATIENCE};
 
 const MAX_MESSAGE: usize = 128 << 20;
 const MAX_PENDING: usize = 1 << 20;
@@ -78,7 +78,7 @@ impl Read for Interruptible<'_> {
             Some(self.within.remaining()?),
         )? {
             Waited::Ready => fd::read(self.stream.as_fd(), buffer),
-            Waited::Cancelled => Err(launch::cancelled_error()),
+            Waited::Cancelled => Err(connect::cancelled_error()),
             Waited::TimedOut => Err(io::ErrorKind::TimedOut.into()),
         }
     }
@@ -104,7 +104,7 @@ fn write_until(
                     Some(within.remaining()?),
                 )? {
                     Waited::Ready => {}
-                    Waited::Cancelled => return Err(launch::cancelled_error()),
+                    Waited::Cancelled => return Err(connect::cancelled_error()),
                     Waited::TimedOut => return Err(io::ErrorKind::TimedOut.into()),
                 }
             }
@@ -152,14 +152,14 @@ fn borrowed<'a>(headers: &'a [(&'static str, String)]) -> Vec<(&'static str, &'a
 fn open(
     socket: &Path,
     (client, caller): Who,
-    (method, target): (&str, &ko_server::protocol::RequestTarget),
+    (method, target): (&str, &protocol::RequestTarget),
     headers: &[(&str, &str)],
     body: &[u8],
     within: Limit,
     cancel: Option<&Wake>,
 ) -> io::Result<UnixStream> {
     let stream = match within {
-        Limit::Idle(_) => launch::connect(socket, PATIENCE, cancel)?,
+        Limit::Idle(_) => connect::connect(socket, PATIENCE, cancel)?,
         Limit::Deadline(_) => loop {
             let remaining = within.remaining()?;
             match ko_sys::sock::connect_nonblocking(socket) {
@@ -187,7 +187,7 @@ fn open(
 pub(crate) fn exchange(
     socket: &Path,
     who: Who,
-    target: (&str, &ko_server::protocol::RequestTarget),
+    target: (&str, &protocol::RequestTarget),
     headers: &[(&str, &str)],
     body: &[u8],
     within: Limit,
@@ -412,7 +412,7 @@ pub struct Link {
     reads: Reads,
     token: Option<Token>,
     received: Instant,
-    closing: Option<(ko_server::protocol::CloseCode, String)>,
+    closing: Option<(protocol::CloseCode, String)>,
     cancel: Option<Arc<Wake>>,
     within: Duration,
 }
@@ -560,7 +560,7 @@ impl Link {
     pub fn of(stream: UnixStream, rest: Vec<u8>, limit: protocol::Upgrade) -> Link {
         let max_message = match limit {
             protocol::Upgrade::Control => MAX_MESSAGE,
-            protocol::Upgrade::Page => ko_server::protocol::EXEC_CHUNK,
+            protocol::Upgrade::Page => protocol::EXEC_CHUNK,
         };
         let config = WebSocketConfig::default()
             .read_buffer_size(1 << 15)
@@ -587,7 +587,7 @@ impl Link {
         cancel: Option<Arc<Wake>>,
         within: Duration,
     ) -> io::Result<Link> {
-        let stream = launch::connect(socket, PATIENCE, cancel.as_deref())?;
+        let stream = connect::connect(socket, PATIENCE, cancel.as_deref())?;
         Link::upgrade_within(stream, client, route, cancel, within)
     }
 
@@ -611,7 +611,7 @@ impl Link {
         }
     }
 
-    pub fn close_frame(&self) -> Option<&(ko_server::protocol::CloseCode, String)> {
+    pub fn close_frame(&self) -> Option<&(protocol::CloseCode, String)> {
         self.closing.as_ref()
     }
 
@@ -685,7 +685,7 @@ impl Link {
     fn pump(
         ctx: &mut WebSocketContext,
         io: &mut Io<'_>,
-        closing: &mut Option<(ko_server::protocol::CloseCode, String)>,
+        closing: &mut Option<(protocol::CloseCode, String)>,
     ) -> Result<Next, ReadError> {
         let next = loop {
             let message = match ctx.read(io) {
@@ -707,7 +707,7 @@ impl Link {
                     });
                     *closing = frame
                         .map(|frame| {
-                            ko_server::protocol::CloseCode::try_from(u16::from(frame.code))
+                            protocol::CloseCode::try_from(u16::from(frame.code))
                                 .map(|code| (code, frame.reason.to_string()))
                         })
                         .transpose()
@@ -755,7 +755,7 @@ impl Link {
 
     pub(crate) fn close(
         &mut self,
-        code: ko_server::protocol::CloseCode,
+        code: protocol::CloseCode,
         reason: protocol::CloseReason,
     ) -> io::Result<()> {
         self.ctx

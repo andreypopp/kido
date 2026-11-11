@@ -1,7 +1,31 @@
-use std::fs::{File, OpenOptions};
+use std::fs::{self, File, OpenOptions};
 use std::io;
-use std::os::unix::fs::OpenOptionsExt;
-use std::path::Path;
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+use std::path::{Path, PathBuf};
+
+pub fn look_path(path: &str, name: &str) -> Option<PathBuf> {
+    path.split(':')
+        .map(|dir| Path::new(if dir.is_empty() { "." } else { dir }).join(name))
+        .find(|candidate| is_executable(candidate))
+}
+
+pub fn env_path(env: &[Vec<u8>]) -> &[u8] {
+    env.iter()
+        .find_map(|entry| entry.strip_prefix(b"PATH="))
+        .unwrap_or_default()
+}
+
+pub fn program_path(path: &str, program: &str) -> Option<PathBuf> {
+    if program.contains('/') {
+        Some(PathBuf::from(program))
+    } else {
+        look_path(path, program)
+    }
+}
+
+pub fn is_executable(path: &Path) -> bool {
+    fs::metadata(path).is_ok_and(|meta| meta.is_file() && meta.permissions().mode() & 0o111 != 0)
+}
 
 pub fn unlinked(dir: &Path, prefix: &str) -> io::Result<File> {
     let path = dir.join(format!(".{prefix}-{}", crate::entropy::hex(8)?));

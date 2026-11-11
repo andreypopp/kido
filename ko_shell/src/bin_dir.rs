@@ -2,7 +2,8 @@ use std::fs;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
-use ko_server::config::{TERM_NAME, installed, is_executable, terminfo_of};
+use ko_server::config::{TERM_NAME, installed, terminfo_of};
+use ko_sys::file::is_executable;
 
 fn is_file(path: &Path) -> bool {
     fs::metadata(path).is_ok_and(|meta| meta.is_file())
@@ -64,7 +65,7 @@ PATH="$_ko_bin${{_ko_rest:+:$_ko_rest}}"
 export PATH
 unset _ko_bin _ko_rest
 "#,
-        ko_server::ssh::quote(&dir.to_string_lossy())
+        ko_wire::ssh::quote(&dir.to_string_lossy())
     )
 }
 

@@ -4,11 +4,11 @@ use std::os::fd::{AsFd, BorrowedFd, OwnedFd};
 #[cfg(target_os = "linux")]
 use std::os::fd::{AsRawFd, FromRawFd};
 use std::ptr::NonNull;
-#[cfg(target_os = "macos")]
+#[cfg(target_vendor = "apple")]
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use super::named::map_shared;
-#[cfg(target_os = "macos")]
+#[cfg(target_vendor = "apple")]
 use super::named::{Name, open_fd, unlink};
 #[cfg(target_os = "linux")]
 use crate::retry::{check, retry};
@@ -20,10 +20,10 @@ pub struct Mapping {
     fd: File,
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(target_vendor = "apple")]
 static NEXT: AtomicU32 = AtomicU32::new(0);
 
-#[cfg(target_os = "macos")]
+#[cfg(target_vendor = "apple")]
 fn create() -> io::Result<OwnedFd> {
     loop {
         let name = Name::new(&format!(

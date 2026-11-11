@@ -60,6 +60,7 @@ ko_sys
 ko_tui
 ko_vt
 ko_vt_sys
+ko_wire
 lazy_static
 libc
 libfuzzer-sys

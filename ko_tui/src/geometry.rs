@@ -1,8 +1,8 @@
 use std::collections::BTreeSet;
 
 use ko_client::edit::Edge;
-use ko_server::ids::PaneId;
-use ko_server::protocol::{Axis, Cells, Leaf, Node, Window, pick};
+use ko_wire::ids::PaneId;
+use ko_wire::protocol::{Axis, Cells, Leaf, Node, Window, pick};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Rect {
@@ -333,11 +333,11 @@ pub(crate) fn window(window: &Window) -> Geometry {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ko_server::protocol::Cells;
+    use ko_wire::protocol::Cells;
     use proptest::prelude::*;
 
     fn sample() -> Window {
-        ko_server::protocol::decode(br#"{"id":"window_1","name":"w","vars":{},"cols":80,"rows":24,"focus":"pane_1","tree":{"split":"h","children":[{"pane":"pane_1","cols":40,"rows":24},{"split":"v","children":[{"pane":"pane_2","cols":39,"rows":12},{"pane":"pane_3","cols":39,"rows":11}]}]},"floats":[]}"#).unwrap()
+        ko_wire::protocol::decode(br#"{"id":"window_1","name":"w","vars":{},"cols":80,"rows":24,"focus":"pane_1","tree":{"split":"h","children":[{"pane":"pane_1","cols":40,"rows":24},{"split":"v","children":[{"pane":"pane_2","cols":39,"rows":12},{"pane":"pane_3","cols":39,"rows":11}]}]},"floats":[]}"#).unwrap()
     }
 
     #[test]
@@ -354,7 +354,7 @@ mod tests {
         assert!(left_edge(&w, panes[1]));
         assert!(left_edge(&w, panes[2]));
         let float = "pane_4".parse().unwrap();
-        w.floats.push(ko_server::protocol::decode(br#"{"pane":"pane_4","x":0,"y":0,"cols":5,"rows":4,"z":0,"border":false,"title":""}"#).unwrap());
+        w.floats.push(ko_wire::protocol::decode(br#"{"pane":"pane_4","x":0,"y":0,"cols":5,"rows":4,"z":0,"border":false,"title":""}"#).unwrap());
         assert!(!left_edge(&w, float));
         if let Node::Split { children, .. } = &mut w.tree {
             children.swap(0, 1);
@@ -384,7 +384,7 @@ mod tests {
             assert_eq!(hit.first_size(0, 0), None);
         }
         assert_eq!(window(&w).divider(3, 3), None);
-        w.floats.push(ko_server::protocol::decode(br#"{"pane":"pane_4","x":40,"y":10,"cols":5,"rows":4,"z":0,"border":true,"title":""}"#).unwrap());
+        w.floats.push(ko_wire::protocol::decode(br#"{"pane":"pane_4","x":40,"y":10,"cols":5,"rows":4,"z":0,"border":true,"title":""}"#).unwrap());
         assert_eq!(window(&w).divider(40, 12), None);
         assert_eq!(window(&w).divider(40, 9), None);
         w.zoom = Some(panes[0]);
@@ -416,7 +416,7 @@ mod tests {
             Some(panes[2])
         );
         let float = "pane_4".parse().unwrap();
-        w.floats.push(ko_server::protocol::decode(format!(r#"{{"pane":"{float}","x":0,"y":0,"cols":10,"rows":10,"z":0,"border":false,"title":""}}"#).as_bytes()).unwrap());
+        w.floats.push(ko_wire::protocol::decode(format!(r#"{{"pane":"{float}","x":0,"y":0,"cols":10,"rows":10,"z":0,"border":false,"title":""}}"#).as_bytes()).unwrap());
         assert_eq!(neighbour(&w, float, Edge::Right, (0, 0)), None);
         assert_eq!(neighbour(&w, panes[0], Edge::Right, (0, 3)), Some(panes[1]));
     }
@@ -484,7 +484,7 @@ mod tests {
     fn overlapping_floats_follow_z_order_after_the_tree() {
         let mut w = sample();
         for (id, z) in [(4, 10), (5, 2)] {
-            w.floats.push(ko_server::protocol::Float {
+            w.floats.push(ko_wire::protocol::Float {
                 pane: format!("pane_{id}").parse().unwrap(),
                 x: 2,
                 y: 2,

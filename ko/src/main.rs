@@ -10,21 +10,23 @@ use clap::{Args, CommandFactory, Parser, Subcommand};
 use clap_complete::CompleteEnv;
 use clap_complete::engine::ArgValueCompleter;
 use ko_client::api;
+use ko_client::connect::PATIENCE;
 use ko_client::edit::Edit;
-use ko_client::launch::{self, PATIENCE};
+use ko_client::launch;
 use ko_client::layout::Document;
 use ko_client::remote::Remote;
 use ko_client::wire::{Caller, Link};
 use ko_server::agent;
-use ko_server::api::Route;
 use ko_server::config::{self, Config};
-use ko_server::ids::PaneId;
-use ko_server::protocol::{self, Cause, Row};
-use ko_server::schema;
 use ko_server::server::{Server, Status, Timing};
 use ko_shell::{bin_dir, shell, ssh};
 use ko_sys::signal::{Signal, Signals};
 use ko_tui::client;
+use ko_wire::api::Route;
+use ko_wire::ids::PaneId;
+use ko_wire::local;
+use ko_wire::protocol::{self, Cause, Row};
+use ko_wire::schema;
 
 mod complete;
 mod prompt;
@@ -220,7 +222,7 @@ pub(crate) fn target(server: Option<PathBuf>) -> Target {
     let own = std::env::var_os("KO_SOCKET")
         .map(PathBuf::from)
         .and_then(|socket| socket.parent().map(std::path::Path::to_path_buf));
-    let dir = config::dir(server.or_else(|| own.clone()));
+    let dir = local::dir(server.or_else(|| own.clone()));
     let same = |path: &std::path::Path| path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
     let pane = std::env::var("KO_PANE")
         .ok()
@@ -286,13 +288,13 @@ fn invoked() -> PathBuf {
 
 fn server(args: ServerArgs, server: Option<PathBuf>) -> ExitCode {
     if args.print_socket {
-        let socket = std::path::absolute(config::dir(server))
+        let socket = std::path::absolute(local::dir(server))
             .map_err(|error| error.to_string())
             .and_then(|dir| {
                 if args.ensure {
                     launch::attach(&dir, &invoked(), None, None, PATIENCE).map(|(socket, _)| socket)
                 } else {
-                    config::socket_path(&dir)
+                    local::socket_path(&dir)
                 }
             });
         return match socket {
@@ -474,7 +476,9 @@ fn ssh_binary() -> Result<PathBuf, String> {
     match bin_dir::of_exe(&invoked()) {
         Some(dir) => bin_dir::look_path_past(&path, &dir, "ssh")
             .ok_or_else(|| format!("no ssh on PATH past {}", dir.display())),
-        None => config::look_path(&path, "ssh").ok_or_else(|| "ssh not found on PATH".to_owned()),
+        None => {
+            ko_sys::file::look_path(&path, "ssh").ok_or_else(|| "ssh not found on PATH".to_owned())
+        }
     }
 }
 
@@ -488,7 +492,7 @@ fn open_remote(host: &str) -> Result<(Remote, Signals), ExitCode> {
     ])
     .map_err(|error| fail(host, error))?;
     let ssh = ssh_binary().map_err(|message| fail(host, message))?;
-    Remote::open(host, &ssh, &config::dir(None), &signals)
+    Remote::open(host, &ssh, &local::dir(None), &signals)
         .map(|remote| (remote, signals))
         .map_err(|error| fail(host, error))
 }
@@ -653,9 +657,9 @@ fn attach(server: Option<PathBuf>, host: Option<String>) -> ExitCode {
         .filter(|pager| !pager.is_empty())
         .unwrap_or_else(|| "less -R +G -+F".to_owned());
     let attached = match &host {
-        None => client::run(&config::dir(server), &invoked(), &pager),
+        None => client::run(&local::dir(server), &invoked(), &pager),
         Some(host) => {
-            ssh_binary().and_then(|ssh| client::run_remote(host, &ssh, &config::dir(None), &pager))
+            ssh_binary().and_then(|ssh| client::run_remote(host, &ssh, &local::dir(None), &pager))
         }
     };
     match attached {
@@ -708,7 +712,7 @@ fn main() -> ExitCode {
     };
     match command {
         Command::Server(args) => server(args, cli.server),
-        Command::KillServer => match launch::stop(&config::dir(cli.server), PATIENCE) {
+        Command::KillServer => match launch::stop(&local::dir(cli.server), PATIENCE) {
             Ok(()) => ExitCode::SUCCESS,
             Err(message) => fail("kill-server", message),
         },

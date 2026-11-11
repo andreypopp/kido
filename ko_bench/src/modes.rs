@@ -7,15 +7,13 @@ use std::sync::mpsc::{self, Sender};
 use std::time::{Duration, Instant};
 
 use ko_pane_wire::frame::{CellPx, Dim, History, Size};
-use ko_server::api::Route;
 use ko_server::config::scratch;
-use ko_server::protocol::{
-    self, ClientRequest, Hello, Images, Row, ViewOptions, ViewRequest, json,
-};
 use ko_server::server::{Server, Status, Timing};
 use ko_sys::clock::{Mono, children_cpu_time, process_cpu, thread_cpu_time};
 use ko_sys::pid::Pid;
 use ko_sys::signal::Signal;
+use ko_wire::api::Route;
+use ko_wire::protocol::{self, ClientRequest, Hello, Images, Row, ViewOptions, ViewRequest, json};
 
 use crate::alloc::allocations;
 use crate::client::{

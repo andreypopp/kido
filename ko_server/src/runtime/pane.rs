@@ -2,12 +2,12 @@ use std::path::{Component, Path, PathBuf};
 
 use ko_config::runtime::PathMap;
 
-use crate::ids::PaneId;
-use crate::protocol::Variable;
 use crate::runtime::RuntimeKey;
 use crate::runtime::{Ctx, Tokens};
-use crate::ssh::quote_bytes;
 use ko_config::runtime::Runtime;
+use ko_wire::ids::PaneId;
+use ko_wire::protocol::Variable;
+use ko_wire::ssh::quote_bytes;
 
 pub(crate) fn directory(root: &Path, key: &RuntimeKey) -> PathBuf {
     root.join(key.tag().to_string())
@@ -33,7 +33,7 @@ pub(crate) fn io_directory(root: &Path, key: &RuntimeKey) -> PathBuf {
 }
 
 pub(crate) fn control_path(root: &Path, key: &RuntimeKey) -> PathBuf {
-    directory(root, key).join(crate::ssh::CONTROL)
+    directory(root, key).join(ko_wire::ssh::CONTROL)
 }
 
 pub(crate) fn socket_path(root: &Path, key: &RuntimeKey) -> PathBuf {

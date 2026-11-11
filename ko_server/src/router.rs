@@ -3,20 +3,11 @@ use std::sync::Arc;
 use ko_sys::event::{Poll, Token};
 use serde::Serialize;
 
-use crate::api::{Offset, Request, Route, routes};
 use crate::client::Client;
 use crate::conn::{Conn, Payload, Phase, Request as Incoming};
-use crate::http::{self, LAST_CHUNK, Status};
-use crate::ids::{ClientId, PaneId, PaneToken};
 use crate::link::{Link, Role};
 use crate::pane_proc::{Life, Refusal};
 use crate::panes::acts_as;
-use crate::protocol::{
-    self, ACCEPT_SHM_HEADER, Empty, Error, ErrorKind, IMAGE_FORMAT_HEADER, IMAGE_FRAMES_HEADER,
-    IMAGE_GAP_HEADER, IMAGE_GENERATION_HEADER, IMAGE_HEIGHT_HEADER, IMAGE_WIDTH_HEADER, ImageShm,
-    InputResult, PROTOCOL_HEADER, PasteResult, ServerVersion, VT_HEADER, check_version,
-};
-use crate::route::{self, Alt, Endpoint, Invalid};
 use crate::runtime::exec::Session;
 use crate::server::Origin;
 use crate::state::{Owner, PutFailure, State};
@@ -24,6 +15,15 @@ use crate::view::View;
 use crate::ws::{self, Ws};
 use ko_pane_wire::frame::ImageKey;
 use ko_sys::mapping::Named;
+use ko_wire::api::{Offset, Request, Route, routes};
+use ko_wire::http::{self, LAST_CHUNK, Status};
+use ko_wire::ids::{ClientId, PaneId, PaneToken};
+use ko_wire::protocol::{
+    self, ACCEPT_SHM_HEADER, Empty, Error, ErrorKind, IMAGE_FORMAT_HEADER, IMAGE_FRAMES_HEADER,
+    IMAGE_GAP_HEADER, IMAGE_GENERATION_HEADER, IMAGE_HEIGHT_HEADER, IMAGE_WIDTH_HEADER, ImageShm,
+    InputResult, PROTOCOL_HEADER, PasteResult, ServerVersion, VT_HEADER, check_version,
+};
+use ko_wire::route::{self, Alt, Endpoint, Invalid};
 
 fn reply<E: Endpoint>(conn: &mut Conn, result: Result<E::Reply, Error>)
 where
@@ -203,10 +203,7 @@ pub(crate) fn handle(state: &mut State, poll: &mut Poll, index: usize, incoming:
         Err(Invalid::NoRoute) => None,
         Err(invalid) => return error(conn, ErrorKind::Invalid, invalid.to_string()),
     };
-    let policy = if route
-        .as_ref()
-        .is_some_and(|route| matches!(route.kind(), route::Kind::Proxy { .. }))
-    {
+    let policy = if route.as_ref().is_some_and(|route| route.is_proxy()) {
         http::Policy::Webview
     } else {
         http::Policy::Control
@@ -679,6 +676,7 @@ fn finish(state: &mut State, poll: &mut Poll, conn: Token, reply: impl FnOnce(&m
 }
 
 pub(crate) fn screen<E: Endpoint<Reply = route::text>>(
+    _route: E,
     state: &mut State,
     poll: &mut Poll,
     conn: Token,
@@ -729,6 +727,7 @@ pub(crate) enum ImageReply<'a> {
 }
 
 pub(crate) fn image<E: Endpoint<Reply = route::pixels>>(
+    _route: E,
     state: &mut State,
     poll: &mut Poll,
     conn: Token,
@@ -797,10 +796,10 @@ pub(crate) fn failed(
 mod tests {
     use super::*;
     use crate::fuzz::Rig;
-    use crate::protocol::{ClientEvent, Title, version_headers};
     use crate::server::Verified;
-    use crate::ws::masked;
     use ko_sys::event::Mode;
+    use ko_wire::protocol::{ClientEvent, Title, version_headers};
+    use ko_wire::ws::masked;
     use proptest::prelude::*;
     use std::io::Write;
     use std::os::unix::net::UnixStream;
@@ -1030,7 +1029,7 @@ mod tests {
     fn a_client_that_never_reads_is_closed_before_its_queue_grows_without_bound() {
         let mut server = harness("unread");
         let long = ClientEvent::Title(Title {
-            pane: crate::ids::PaneId::new(1),
+            pane: ko_wire::ids::PaneId::new(1),
             title: "x".repeat(400_000),
         });
         let hello = r#"{"type":"hello","webview":false,"name":"t","focused":false,"sizing":{"type":"disabled"}}"#;
@@ -1221,7 +1220,7 @@ mod tests {
             }
             let mut found = Vec::new();
             while self.upgraded
-                && let Some(frame) = ws::parse_frame(&self.pending)
+                && let Some(frame) = ko_wire::ws::parse_frame(&self.pending)
                 && self.pending.len() >= frame.header + frame.length
             {
                 let bytes: Vec<u8> = self.pending.drain(..frame.header + frame.length).collect();
@@ -1563,7 +1562,7 @@ mod tests {
         server
             .state
             .panes
-            .find(crate::ids::PaneId::new(3))
+            .find(ko_wire::ids::PaneId::new(3))
             .unwrap()
             .proc()
             .kill()
@@ -1585,7 +1584,7 @@ mod tests {
                     server
                         .state
                         .panes
-                        .find(crate::ids::PaneId::new(pane))
+                        .find(ko_wire::ids::PaneId::new(pane))
                         .unwrap()
                         .focused()
                 })

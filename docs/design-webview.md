@@ -262,7 +262,7 @@ reasons are these:
   `pane_1` pages of two servers, or of one server across a restart.
 - **One scheme, one host for each view.** The pages of two panes are
   two origins, and a page reaches nothing but its own program.
-- **The server's CSP** (`CSP` in `ko_server/src/http.rs`) keeps
+- **The server's CSP** (`CSP` in `ko_wire/src/http.rs`) keeps
   `'unsafe-inline'`, so a page can be one file. An author who shows
   text that the page did not write escapes it, or sends a stricter
   CSP of its own: both apply, and the server never weakens it.

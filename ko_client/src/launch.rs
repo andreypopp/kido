@@ -1,3 +1,4 @@
+use crate::connect::{Patience, absent, connect};
 use std::fs::{File, OpenOptions, TryLockError};
 use std::io::{self, Read, Seek, SeekFrom};
 use std::os::fd::AsFd;
@@ -7,37 +8,11 @@ use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
-use ko_server::config::{self, Dir};
-use ko_sys::event::Wake;
 use ko_sys::pid::Pid;
 use ko_sys::signal::Signal;
-
-pub const PATIENCE: Patience = Patience {
-    deadline: Duration::from_secs(5),
-    retry: Duration::from_millis(10),
-};
-
-pub const BACKOFF_FIRST: Duration = Duration::from_millis(100);
-const BACKOFF_LAST: Duration = Duration::from_secs(2);
-
-pub fn backoff_after(backoff: Duration) -> Duration {
-    (backoff * 2).min(BACKOFF_LAST)
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Patience {
-    deadline: Duration,
-    retry: Duration,
-}
-
-pub(crate) fn absent(error: &io::Error) -> bool {
-    matches!(
-        error.kind(),
-        io::ErrorKind::NotFound | io::ErrorKind::ConnectionRefused
-    )
-}
+use ko_wire::local::{self, Dir};
 
 fn remove_stale(socket: &Path, error: &io::Error) -> io::Result<()> {
     if error.kind() != io::ErrorKind::ConnectionRefused {
@@ -49,30 +24,6 @@ fn remove_stale(socket: &Path, error: &io::Error) -> io::Result<()> {
     }
 }
 
-pub(crate) fn cancelled_error() -> io::Error {
-    io::Error::other("cancelled")
-}
-
-pub(crate) fn connect(
-    socket: &Path,
-    patience: Patience,
-    cancel: Option<&Wake>,
-) -> io::Result<UnixStream> {
-    let deadline = Instant::now() + patience.deadline;
-    loop {
-        if cancel.is_some_and(Wake::is_set) {
-            return Err(cancelled_error());
-        }
-        match UnixStream::connect(socket) {
-            Err(error)
-                if error.kind() == io::ErrorKind::WouldBlock && Instant::now() < deadline =>
-            {
-                std::thread::sleep(patience.retry);
-            }
-            connected => return connected,
-        }
-    }
-}
 // The servers that this process started. A server is this process's child, so a thread waits for
 // it, or it stays a zombie that looks alive; after that wait its pid may name another process, so
 // the thread marks it ended.
@@ -143,7 +94,7 @@ pub fn attach(
     cwd: Option<&Path>,
     patience: Patience,
 ) -> Result<(PathBuf, UnixStream), String> {
-    let socket = config::socket(Dir::Create, dir)?;
+    let socket = local::socket(Dir::Create, dir)?;
     let message = |error: io::Error| error.to_string();
     match connect(&socket, patience, None) {
         Ok(stream) => return Ok((socket, stream)),
@@ -210,7 +161,7 @@ pub fn attach(
 }
 
 pub fn stop(dir: &Path, patience: Patience) -> Result<(), String> {
-    let socket = config::socket(Dir::Existing, dir)?;
+    let socket = local::socket(Dir::Existing, dir)?;
     let message = |error: io::Error| error.to_string();
     let stream = connect(&socket, patience, None).map_err(message)?;
     if ko_sys::sock::peer_uid(stream.as_fd()).map_err(message)? != ko_sys::sock::uid() {
@@ -242,23 +193,14 @@ pub fn stop(dir: &Path, patience: Patience) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::connect::PATIENCE;
     use std::path::PathBuf;
+    use std::time::Duration;
 
     fn scratch(name: &str) -> PathBuf {
         let dir = PathBuf::from(format!("/tmp/ko-launch-{name}-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         dir
-    }
-
-    #[test]
-    fn the_backoff_doubles_up_to_its_last_value() {
-        let mut backoff = BACKOFF_FIRST;
-        let mut seen = Vec::new();
-        for _ in 0..7 {
-            seen.push(backoff.as_millis());
-            backoff = backoff_after(backoff);
-        }
-        assert_eq!(seen, [100, 200, 400, 800, 1600, 2000, 2000]);
     }
 
     // A child forked while the bind test drops its listener holds that socket open until it

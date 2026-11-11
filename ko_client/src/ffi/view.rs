@@ -5,9 +5,9 @@ use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::thread::JoinHandle;
 
 use ko_pane_wire::frame::History;
-use ko_server::ids::PaneId;
-use ko_server::protocol::{Images, Marker, ViewOptions};
 use ko_sys::event::Wake;
+use ko_wire::ids::PaneId;
+use ko_wire::protocol::{Images, Marker, ViewOptions};
 use tungstenite::Bytes;
 
 use crate::wire::Resume;

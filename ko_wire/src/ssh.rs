@@ -3,8 +3,8 @@ use std::path::Path;
 use ko_config::ssh_args::remote_dir_valid;
 use ko_sys::pid::Exit;
 
-use crate::config::SUN_PATH_MAX;
 use crate::ids::PaneId;
+use ko_sys::sock::SUN_PATH_MAX;
 
 pub const SOCKET: &str = "socket";
 pub const TOKEN_SUFFIX: &str = ".token";
@@ -18,7 +18,7 @@ pub const CONTROL: &str = "ctl";
 
 // ssh creates the master's socket as "<ControlPath>." and 16 random characters before it renames
 // the file into place, and that name must fit in sun_path too.
-pub(crate) const MASTER_SUFFIX: usize = "/".len() + CONTROL.len() + ".".len() + 16;
+pub const MASTER_SUFFIX: usize = "/".len() + CONTROL.len() + ".".len() + 16;
 pub const MAX_DIR: usize = SUN_PATH_MAX - MASTER_SUFFIX;
 
 pub const MASTER_OPTIONS: [&str; 3] = [
@@ -31,7 +31,7 @@ pub fn quote(word: &str) -> String {
     String::from_utf8_lossy(&quote_bytes(word.as_bytes())).into_owned()
 }
 
-pub(crate) fn quote_bytes(word: &[u8]) -> Vec<u8> {
+pub fn quote_bytes(word: &[u8]) -> Vec<u8> {
     let mut quoted = vec![b'\''];
     for &byte in word {
         if byte == b'\'' {

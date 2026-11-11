@@ -181,7 +181,7 @@ impl<T: Serialize + DeserializeOwned> Body for T {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct RawBody(pub(crate) Vec<u8>);
+pub struct RawBody(pub Vec<u8>);
 
 impl Body for RawBody {
     const FORMAT: BodyFormat = BodyFormat::Binary;
@@ -223,7 +223,7 @@ impl<T: JsonSchema> Media for T {
 
 #[allow(non_camel_case_types)]
 #[derive(Debug)]
-pub(crate) struct text;
+pub struct text;
 
 impl Media for text {
     const CONTENT: Content = Content::Text;
@@ -231,7 +231,7 @@ impl Media for text {
 
 #[allow(non_camel_case_types)]
 #[derive(Debug)]
-pub(crate) struct binary;
+pub struct binary;
 
 impl Media for binary {
     const CONTENT: Content = Content::Binary;
@@ -240,17 +240,17 @@ impl Media for binary {
 // An image frame: the pixels as a body, or a JSON description of a shared memory object.
 #[allow(non_camel_case_types)]
 #[derive(Debug)]
-pub(crate) struct pixels;
+pub struct pixels;
 
 impl Media for pixels {
     const CONTENT: Content = Content::Pixels(json::<protocol::ImageShm>);
 }
 
-pub(crate) trait Endpoint {
+pub trait Endpoint {
     type Reply;
 }
 
-pub(crate) trait Alt<const CODE: u16>: Endpoint {
+pub trait Alt<const CODE: u16>: Endpoint {
     const STATUS: Status;
     type Body;
 }
@@ -444,18 +444,18 @@ macro_rules! routes {
         }
 
         #[derive(Debug, Clone, PartialEq, Eq)]
-        pub(crate) enum Request {
+        pub enum Request {
             $(
                 $(#[doc = $doc])*
                 $name { $( $( $pn: $pt, )? )* $( $( $qn: $qt, )* )? $( body: $bt, )? },
             )*
         }
 
-        pub(crate) mod routes {
+        pub mod routes {
             $( $(
                 #[doc = concat!("The route replies with ", stringify!($reply), ".")]
                 #[derive(Debug)]
-                pub(crate) enum $name {}
+                pub struct $name;
             )? )*
         }
 
@@ -582,6 +582,10 @@ macro_rules! routes {
                 match self { $( Route::$name { .. } => &ROUTES[RouteIndex::$name as usize].kind, )* }
             }
 
+            pub fn is_proxy(&self) -> bool {
+                matches!(self.kind(), $crate::route::Kind::Proxy { .. })
+            }
+
             pub fn upgrade(&self) -> Option<$crate::protocol::Upgrade> {
                 match self.kind() {
                     $crate::route::Kind::Ws { .. } => Some($crate::protocol::Upgrade::Control),
@@ -595,7 +599,7 @@ macro_rules! routes {
             }
 
             #[allow(unused_variables)]
-            pub(crate) fn pane(&self) -> Option<$crate::ids::PaneId> {
+            pub fn pane(&self) -> Option<$crate::ids::PaneId> {
                 match self {
                     $(
                         Route::$name { $( $( $pn, )? )* .. } => {
@@ -606,7 +610,7 @@ macro_rules! routes {
             }
 
             #[allow(unused_variables)]
-            pub(crate) fn with_body(
+            pub fn with_body(
                 self,
                 payload: Option<&[u8]>,
             ) -> Result<Request, $crate::route::Invalid> {

@@ -1,11 +1,9 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use ko_server::ids::PaneId;
-use ko_server::protocol::Local;
-use ko_server::protocol::{
-    AgentState, CommandExit, Live, Outcome, OutcomeResult, PaneStatus, Phase,
-};
+use ko_wire::ids::PaneId;
+use ko_wire::protocol::Local;
+use ko_wire::protocol::{AgentState, CommandExit, Live, Outcome, OutcomeResult, PaneStatus, Phase};
 use schemars::JsonSchema;
 use serde::Serialize;
 
@@ -205,7 +203,7 @@ pub fn title(pane: &Pane) -> String {
 
 #[cfg(test)]
 mod tests {
-    use ko_server::protocol::{Agent, Cause, Dead, Origin, ProgramStatus, Shell};
+    use ko_wire::protocol::{Agent, Cause, Dead, Origin, ProgramStatus, Shell};
 
     use super::*;
 
@@ -215,7 +213,7 @@ mod tests {
 
     fn pane(number: u64, status: Option<Live>) -> Pane {
         Pane {
-            row: ko_server::protocol::Row {
+            row: ko_wire::protocol::Row {
                 webview: None,
                 id: id(number),
                 started: 0,

@@ -166,11 +166,21 @@ These requirements are fixed:
   clippy checks it on stable, and only `make fuzz` runs it.
   `ko_tui/` is the terminal client that `ko` runs without a
   command: the mirror, the renderer, the input and the tty.
+  `ko_wire/` is the crate `ko_wire`: what the server and its clients
+  share. It holds the wire types (`protocol`), the ids, the pane
+  variables, the HTTP framing, the route declarations and the OpenAPI
+  schema, the portable half of the WebSocket (the record parser, the
+  upgrade, the frame reader), the exec session's frames
+  (`exec_wire.rs`), the ssh grammar, the local endpoint
+  (`local.rs`: the state directory and the socket path) and the build
+  id. It has no platform gate and no process code.
   `ko_client/` is the client core that `ko_tui` and `ko` use and
   Kido.app links: the launcher, the wire layer, the API client, the
-  `/client` model and the SSH remote (`remote.rs`: the master, the
-  forward and their cleanup). It never depends on `ko_vt` or
-  libghostty-vt. `ko_shell/` is the crate `ko_shell` that `ko shell`,
+  `/client` model and the SSH remote (`remote.rs`: the portable
+  failure classifiers; `remote/desktop.rs`: the master, the forward
+  and their cleanup). It never depends on `ko_vt`, libghostty-vt or
+  `ko_server` (only the macOS FFI tests take `ko_server` as a
+  dev-dependency, for a real server). `ko_shell/` is the crate `ko_shell` that `ko shell`,
   `ko ssh` and `ko server --bin-dir` use: the priming of a local or
   remote login shell, the ssh arguments, the bin directory lookup,
   and `ko enter`, with the exec session's supervisor (`session.rs`).
@@ -195,7 +205,7 @@ These requirements are fixed:
   of the TypeScript suite, a workspace member outside
   `default-members` that `make build-fake-ko` builds for
   `scripts/test-ts.sh`. It reads and writes ko's wire only through
-  `ko_server::protocol`'s types. `ko_bench/` is the binary `ko-bench`, the
+  `ko_wire::protocol`'s types. `ko_bench/` is the binary `ko-bench`, the
   benchmark modes, which `make build-bench` builds into `target/release`
   and never installs. ko has no C of its own; the only C is the
   measurement helpers of `bench/`, which `make build-bench` compiles.
@@ -218,8 +228,9 @@ These requirements are fixed:
   `.minimum_zig_version` of `third_party/ghostty/build.zig.zon`, and
   `scripts/lint.sh` checks that. `rust-toolchain.toml` also lists the
   targets `aarch64-unknown-linux-musl` and `x86_64-unknown-linux-musl`
-  of the static Linux ko ("Layout" below), so `rustup toolchain
-  install` adds them. For them, `.cargo/config.toml` names the linker
+  of the static Linux ko ("Layout" below), and `aarch64-apple-ios`
+  and `aarch64-apple-ios-sim` of `ko_client`'s iOS slices, so `rustup
+  toolchain install` adds them. For them, `.cargo/config.toml` names the linker
   wrappers `scripts/zig-cc-<arch>-linux-musl` (`zig cc -target
   <arch>-linux-musl`) and sets `-C link-self-contained=no`: with
   rustc's own `crt1.o`, `_start` is defined twice. Both names are
@@ -235,7 +246,15 @@ These requirements are fixed:
   not install it.
 - **Platforms.** ko builds and is verified on macOS and Linux (glibc
   2.34 or newer, for `posix_spawn_file_actions_addclosefrom_np`; the
-  static Linux ko uses musl).
+  static Linux ko uses musl). `ko_client` also builds for iOS, as a
+  library: `ko_sys` leaves out its process code there (`spawn`,
+  `pid/desktop.rs`, `pty/desktop.rs`), and `ko_client` leaves out
+  `launch`, `visit`, `remote::desktop` and `ffi::launch`, each gated
+  once at its module declaration. A module whose desktop half is a
+  submodule (`pid`, `pty`, `remote`) keeps that half private and
+  re-exports its items from the parent, so callers name
+  `ko_sys::pid::Pid` on every platform and the gate stays at one
+  site.
   Each OS call that differs has its two halves in `ko_sys`, behind
   `cfg(target_os)`. The static Linux ko builds against musl, which
   has no `addclosefrom_np`: `ko_sys::spawn` adds a close for each
@@ -255,7 +274,7 @@ These requirements are fixed:
   `derive` only), `vte` and `clap` (`default-features = false`, with
   exactly `std`, `derive`, `help`, `usage` and `error-context`),
   `miniz_oxide` (`default-features = false`, with `with-alloc`
-  only; it brings `adler2`) in `ko_server` and as a
+  only; it brings `adler2`) in `ko_server` and `ko_wire` and as a
   dev-dependency of `ko_client`, `ko_tui` and `ko_e2e`, and `vstd`
   and `verus_state_machines_macros` in `ko_pane_wire` and `vstd` in
   `ko_server`, pinned with `=` to the crates version of `scripts/verus.sh`
@@ -278,9 +297,9 @@ These requirements are fixed:
   `[workspace.lints]` in `Cargo.toml` holds the denied lints, and
   every crate inherits them. `clippy.toml` permits `unwrap`, `expect`,
   `panic!` and indexing in tests. The readers of untrusted bytes
-  (`ko_pane_wire`'s `frame.rs`, `ring.rs` and `webview.rs`, `ko_server`'s
-  `pane_proc.rs`, `exec_wire.rs`, `http.rs` and `ws.rs`, `ko_pane`'s
-  `io.rs`) also deny `clippy::indexing_slicing` and
+  (`ko_pane_wire`'s `frame.rs`, `ring.rs` and `webview.rs`, `ko_wire`'s
+  `http.rs`, `ws.rs` and `exec_wire.rs`, `ko_server`'s `pane_proc.rs`
+  and `ws.rs`, `ko_pane`'s `io.rs`) also deny `clippy::indexing_slicing` and
   `clippy::arithmetic_side_effects`. `print_stdout` and `print_stderr`
   are denied: the CLI writes through `writeln!` on a locked stream, and
   only `ko_bench/src/main.rs` and the fake ko's `main.rs` allow the
@@ -510,7 +529,7 @@ Conventions:
   handler only sets its pending flag and writes its pipe. A callback
   from libghostty-vt never unwinds and never calls back into the
   terminal.
-- **JSON.** serde derives every codec. `ko_server::protocol` owns
+- **JSON.** serde derives every codec. `ko_wire::protocol` owns
   the wire types. An enum with a payload variant has `#[serde(tag =
   "type", rename_all = "snake_case")]`, so a message is one flat
   object; a primitive, list, id or enum payload is a struct variant
@@ -530,12 +549,12 @@ Conventions:
   with a `try_from` codec writes its `JsonSchema` by hand, with the
   pattern or range that its `TryFrom` checks. A range that a `///`
   states is also a `#[schemars(range(...))]`.
-- **Routes.** `ko_server::api` declares every route in one
-  `routes!` block (the macro is in `ko_server::route`). The block
+- **Routes.** `ko_wire::api` declares every route in one
+  `routes!` block (the macro is in `ko_wire::route`). The block
   generates `Route` (path and query, parsed from the head before the
   body), `Request` (the route with its decoded body), one marker type
   for each route in `routes::` and `ROUTES`, the catalog from which
-  `ko_server::schema` builds the OpenAPI document of `ko api-schema`. A query or path parameter type implements
+  `ko_wire::schema` builds the OpenAPI document of `ko api-schema`. A query or path parameter type implements
   `Param`, and its validation (the wait cap, a range) is in that type,
   not in the router. `router.rs` matches `Request` exhaustively and
   replies through `ok::<routes::X>` and `alt::<routes::X, STATUS>`, so
@@ -548,7 +567,7 @@ Conventions:
   openapi-typescript (pinned in `share/pi/package.json`). lint fails
   when a file differs from the generated output. `ko-pi.ts` takes its
   HTTP and `/client` shapes from `ko-api.d.ts` and writes none by hand.
-- **HTTP.** `ko_server::http` is the only code that reads or writes
+- **HTTP.** `ko_wire::http` is the only code that reads or writes
   HTTP framing, for the server and for the client. httparse parses
   heads. A request head has a limit of 16 KiB of bytes; a longer head
   gets `431` after the responses to earlier pipelined requests.
@@ -570,7 +589,7 @@ Conventions:
   `scripts/lint.sh` refuses any other `Ordering` in `ko_pane`,
   `ko_pane_wire` and `ko_server`, except in the loom model
   `ring/model.rs`.
-- **Signals.** `libc::kill` occurs only in `ko_sys/src/pid.rs`.
+- **Signals.** `libc::kill` occurs only in `ko_sys/src/pid/desktop.rs`.
   `scripts/lint.sh` refuses it, `killpg`, `nix::sys::signal` and a
   `kill` command elsewhere. `Pid::new` refuses 1 or less, values over
   `i32::MAX`, the own pid and the own process group. A `Group` exists
@@ -666,7 +685,7 @@ Conventions:
   `ko_now_ns` reads it, and of `CLOCK_MONOTONIC` on Linux. The loop's deadlines are `std::time::Instant`.
   Timeouts are `Duration` arguments, not statics.
 - **Environment.** Read the environment at the edge
-  (`ko_server/src/config.rs`, `ko/src/main.rs`). Pass its values to
+  (`ko_server/src/config.rs`, `ko_wire/src/local.rs`, `ko/src/main.rs`). Pass its values to
   functions as arguments. Tests pass a temporary directory. No test
   sets an environment variable of its own process.
 - **FFI bindings.** `scripts/bindgen.sh` (`make bindgen`) generates
@@ -735,6 +754,7 @@ Conventions:
 ## Layout
 
 ko's crates: `ko/` (the binary), `ko_server/` (the coordinator),
+`ko_wire/` (what the server and its clients share),
 `ko_client/` (the client core), `ko_config/` (the configuration
 file), `ko_tui/` (the terminal client),
 `ko_shell/` (shell priming, `ko ssh` and the bin directory), `ko_pane/`
@@ -852,20 +872,27 @@ Cortex-A53.
 `ko version` prints the JSON of `protocol::version()`, with the build id
 from `git describe` at build time in `.build`. The Makefile reads the
 build id and the ghostty pin of the index once and exports them to every
-cargo command as `KO_BUILD_ID` and `KO_VT`; `ko_server/build.rs` runs
+cargo command as `KO_BUILD_ID` and `KO_VT`; `ko_wire/build.rs` runs
 no git and tracks only these two variables. A build script must not
 track the git index: `git describe --dirty` rewrites it on each make,
-which would rebuild `ko_server` and every crate above it.
+which would rebuild `ko_wire` and every crate above it.
 
 `make ko-client-xcframework` builds `ko_client` as a static library
-for arm64 macOS into `build/ko_client.xcframework`
+for each rust target of `KO_CLIENT_TARGETS` (default
+`aarch64-apple-darwin`; also `aarch64-apple-ios` and
+`aarch64-apple-ios-sim`) into `build/ko_client.xcframework`
 (`KO_CLIENT_XC` overrides the path), with `ko_client/include/` (the header and the
-module map) for Kido.app. It needs `MACOSX_DEPLOYMENT_TARGET` (26.0: Kido.app supports only Apple
-Silicon and macOS 26 or later) and the rust target `aarch64-apple-darwin`. It fails when `ko_client` depends on `ko_vt`:
-the app links its own libghostty-vt. The slice goes through
-`ld -r -exported_symbols_list ko_client/exports.txt`, which makes
+module map) for Kido.app. The macOS slice needs `MACOSX_DEPLOYMENT_TARGET` (26.0: Kido.app supports only Apple
+Silicon and macOS 26 or later), an iOS slice `IPHONEOS_DEPLOYMENT_TARGET`;
+the Makefile's one table maps each target to its SDK and clang
+triple and refuses another. It fails when the production graph of
+`ko_client` has `ko_vt` or `ko_server`: the app links its own
+libghostty-vt, and no server code ships in a client. Each slice goes through
+`ld -r -exported_symbols_list` over `ko_client/exports.txt` after the C
+preprocessor with `TargetConditionals.h` for that slice (iOS has no
+`default_dir`, launch or stop exports), which makes
 every other symbol local, and then `nm` must show exactly the names
-of `exports.txt`. The reason: Rust's `compiler_builtins` and Zig's
+of that list. The reason: Rust's `compiler_builtins` and Zig's
 `compiler_rt` in the app's libghostty define the same symbols, and
 the app's link refuses the duplicates. A new exported function goes
 into `ko_client.h`, `ffi.rs` and `exports.txt` together.
@@ -1180,7 +1207,8 @@ in `fuzz/fuzz_targets/`, each with a dictionary in
   changes, sends, full buffers, peer closes, timers and signals,
   compared with a model (`ko_sys::fuzz`). It simulates a signal
   through the handler body and sends no signal.
-- `head`, `http`, `decode` and `frames` (`ko_server::fuzz`): the
+- `head` and `decode` (`ko_wire::fuzz`), `http` and `frames`
+  (`ko_server::fuzz`): the
   head reader over the bytes cut at the chosen points; one connection
   of an in-process server fed the bytes; each request decoder, whose
   value must encode and decode to itself; `pane_proc`'s frame reader,
@@ -1190,7 +1218,7 @@ in `fuzz/fuzz_targets/`, each with a dictionary in
   pane starts `/usr/bin/true` in place of `ko-pane`, so a fuzzed
   request never runs its command. It needs `ko-pane` in
   `KO_PANE_EXE`, which the script builds.
-- `client` and `ws` (`ko_server::fuzz`): the client's response and
+- `client` (`ko_wire::fuzz`) and `ws` (`ko_server::fuzz`): the client's response and
   upgrade readers over the bytes, whole and cut at the chosen points,
   with the same result; a server-side WebSocket over a connection fed
   the bytes as client frames, whole and in two parts, with the same

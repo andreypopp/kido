@@ -12,7 +12,6 @@ use ko_pane_wire::ring::Invalid;
 use ko_sys::event::{Events, Mode, Poll, Reads, Ready, Timer, Token};
 use tungstenite::Utf8Bytes;
 
-use crate::api::routes;
 use crate::client::{self, Change, Client, Current};
 use crate::clipboard;
 use crate::config::{Config, Read, Settings};
@@ -20,28 +19,31 @@ use crate::conn::{Conn, Phase};
 use crate::deflate::Deflate;
 use crate::delivery::{Delivery, Handle};
 use crate::diagnostics::{self, Cause, InputSource};
-use crate::http::lossy;
-use crate::ids::{ClientId, Instance, Name, PaneId, SessionId, VarName, WindowId};
 use crate::layout::{self, Document, PutError, Removal, Resized};
 use crate::link::{Role, Wire};
 use crate::model::{self, Model};
 use crate::pane::{Birth, Pane};
 use crate::pane_proc::{self, Event, Io, Refusal, discard};
 use crate::panes::{AddError, Panes};
-use crate::protocol::{
-    self, CellPixels, ClientEvent, ClientRequest, CreatePane, DeleteVars, End, Input, Layout,
-    LayoutPanes, Limits, Listing, PaneDead, PasteResult, PutLayout, Pwd, Row, Selection, Snapshot,
-    StatusChange, Title, VarCondition, ViewEvent, ViewRequest, Welcome,
-};
 use crate::router;
 use crate::runtime::Registry;
 use crate::runtime::leaving::Leaving;
 use crate::runtime::pane::Dir;
 use crate::server::{Origin, Verified};
 use crate::shm::Leaks;
-use crate::vars::{Refusal as VarRefusal, SERVER_MAX_TOTAL};
 use crate::view::View;
 use crate::ws::{Next, Ping};
+use ko_wire::api::routes;
+use ko_wire::http::lossy;
+use ko_wire::ids::{ClientId, Instance, Name, PaneId, SessionId, VarName, WindowId};
+use ko_wire::protocol::{
+    self, CellPixels, ClientEvent, ClientRequest, CreatePane, DeleteVars, End, Input, Layout,
+    LayoutPanes, Limits, Listing, PaneDead, PasteResult, PutLayout, Pwd, Row, Selection, Snapshot,
+    StatusChange, Title, VarCondition, ViewEvent, ViewRequest, Welcome,
+};
+use ko_wire::vars::Refusal as VarRefusal;
+
+const SERVER_MAX_TOTAL: usize = 16 << 20;
 
 mod exec_ops;
 mod media;
@@ -374,7 +376,7 @@ impl State {
         &mut self,
         poll: &mut Poll,
         id: PaneId,
-        report: crate::protocol::StatusReport,
+        report: ko_wire::protocol::StatusReport,
     ) {
         let now = ko_sys::clock::Mono::now();
         if let Some(pane) = self.panes.find_mut(id)
@@ -588,7 +590,7 @@ impl State {
         poll: &mut Poll,
         request: &CreatePane,
     ) -> Result<PaneId, PutFailure> {
-        use crate::protocol::{DraftLayout, DraftSession};
+        use ko_wire::protocol::{DraftLayout, DraftSession};
         let name = Name::try_from("s".to_owned())
             .map_err(|message| PutFailure::Invalid(message.to_owned()))?;
         let mut layout = DraftLayout::from(self.document.layout());
@@ -1142,7 +1144,7 @@ impl State {
                         },
                     );
                 }
-                router::screen::<routes::Screen>(self, poll, conn, started, &chunk, last);
+                router::screen(routes::Screen, self, poll, conn, started, &chunk, last);
             }
             Event::Pasted {
                 req,
@@ -1912,10 +1914,10 @@ impl State {
 #[cfg(test)]
 mod tests {
     use crate::fuzz::Rig;
-    use crate::ids::{MessageId, PaneId};
-    use crate::protocol::{Command, CreatePane, NewWindow};
     use crate::server::tests::scratch;
     use ko_sys::event::Mode;
+    use ko_wire::ids::{MessageId, PaneId};
+    use ko_wire::protocol::{Command, CreatePane, NewWindow};
     use std::path::PathBuf;
     use std::time::{Duration, Instant};
 

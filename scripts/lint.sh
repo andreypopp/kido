@@ -15,7 +15,7 @@ signals=$( {
   grep -rnE '\bos\.kill' bench --include='*.py' \
     | grep -vE '^bench/client\.py:[0-9]+:    os\.kill\(pid, sig\)$'
   grep -rnE '\blibc::kill(pg)?\b|\bkillpg\b|nix::sys::signal|Command::new\([[:space:]]*"kill"' ko ko_* fuzz --include='*.rs' \
-    | grep -vE '^ko_sys/src/pid\.rs:'
+    | grep -vE '^ko_sys/src/pid/desktop\.rs:'
 } || true)
 if [[ -n "$signals" ]]; then
   echo "$signals" | sed 's/$/: signals must go through ko_sys::pid or signal_child/'
@@ -112,7 +112,7 @@ for path, site in signal_sites.items():
 
 # A glob or named import of libc's kill makes a bare kill( call; only ko_sys::pid signals.
 for path in glob.glob('ko/**/*.rs', recursive=True) + glob.glob('ko_*/**/*.rs', recursive=True):
-    if path == 'ko_sys/src/pid.rs':
+    if path == 'ko_sys/src/pid/desktop.rs':
         continue
     text = pathlib.Path(path).read_text()
     code, _ = lexical(text)

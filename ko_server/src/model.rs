@@ -3,11 +3,11 @@ use std::time::Duration;
 use ko_sys::clock::Mono;
 use ko_sys::event::{Poll, Timer};
 
-use crate::http::lossy;
 use crate::pane::Pane;
 use crate::pane_kind::{self, Kind, LocalKind, RemoteKind};
 use crate::pane_status::{self, DEBOUNCE, Track};
-use crate::protocol::{AgentState, Live, PaneStatus};
+use ko_wire::http::lossy;
+use ko_wire::protocol::{AgentState, Live, PaneStatus};
 
 const TICK: Duration = Duration::from_millis(16);
 
@@ -69,7 +69,7 @@ fn row_title(kind: &Kind, live: &Live, pane_title: &str, label: String) -> Strin
                 pane: RemoteKind::Terminal,
             },
             Live::Ssh {
-                pane: crate::protocol::Remote::Terminal { interactive, .. },
+                pane: ko_wire::protocol::Remote::Terminal { interactive, .. },
                 ..
             },
         ) => match command.filter(|_| *interactive) {

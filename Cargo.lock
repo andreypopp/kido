@@ -275,9 +275,9 @@ dependencies = [
 name = "fake_ko"
 version = "0.0.0"
 dependencies = [
+ "ko_wire",
  "ko_config",
  "ko_pane_wire",
- "ko_server",
  "ko_sys",
  "serde",
  "serde_json",
@@ -305,6 +305,7 @@ checksum = "3f9eec918d3f24069decb9af1554cad7c880e2da24a9afd88aca000531ab82c1"
 name = "fuzz"
 version = "0.0.0"
 dependencies = [
+ "ko_wire",
  "ko_pane",
  "ko_pane_wire",
  "ko_server",
@@ -415,6 +416,7 @@ dependencies = [
 name = "ko"
 version = "0.0.0"
 dependencies = [
+ "ko_wire",
  "clap",
  "clap_complete",
  "ko_client",
@@ -430,6 +432,7 @@ dependencies = [
 name = "ko_bench"
 version = "0.0.0"
 dependencies = [
+ "ko_wire",
  "ko_client",
  "ko_config",
  "ko_pane_wire",
@@ -442,6 +445,7 @@ dependencies = [
 name = "ko_client"
 version = "0.0.0"
 dependencies = [
+ "ko_wire",
  "ko_config",
  "ko_pane_wire",
  "ko_server",
@@ -501,7 +505,7 @@ dependencies = [
 name = "ko_server"
 version = "0.0.0"
 dependencies = [
- "httparse",
+ "ko_wire",
  "ko_config",
  "ko_pane_wire",
  "ko_sys",
@@ -509,7 +513,6 @@ dependencies = [
  "libc",
  "miniz_oxide",
  "proptest",
- "schemars",
  "serde",
  "serde_json",
  "tungstenite",
@@ -520,6 +523,7 @@ dependencies = [
 name = "ko_shell"
 version = "0.0.0"
 dependencies = [
+ "ko_wire",
  "ko_client",
  "ko_config",
  "ko_pane_wire",
@@ -540,6 +544,7 @@ dependencies = [
 name = "ko_tui"
 version = "0.0.0"
 dependencies = [
+ "ko_wire",
  "ko_client",
  "ko_config",
  "ko_pane_wire",
@@ -564,6 +569,23 @@ dependencies = [
 [[package]]
 name = "ko_vt_sys"
 version = "0.0.0"
+
+[[package]]
+name = "ko_wire"
+version = "0.0.0"
+dependencies = [
+ "httparse",
+ "ko_config",
+ "ko_pane_wire",
+ "ko_sys",
+ "libc",
+ "miniz_oxide",
+ "proptest",
+ "schemars",
+ "serde",
+ "serde_json",
+ "tungstenite",
+]
 
 [[package]]
 name = "lazy_static"

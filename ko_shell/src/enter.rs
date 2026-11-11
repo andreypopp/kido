@@ -10,8 +10,8 @@ use std::process::Command;
 
 use ko_config::values::{RuntimeName, RuntimeTag};
 use ko_server::config::{path_with, terminal, terminfo_of};
-use ko_server::ids::{PaneId, PaneToken};
-use ko_server::ssh;
+use ko_wire::ids::{PaneId, PaneToken};
+use ko_wire::ssh;
 
 use crate::bin_dir;
 

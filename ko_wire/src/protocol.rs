@@ -88,13 +88,12 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::api::WaitMs;
-use crate::config::BUILD;
+pub const BUILD: &str = env!("KO_BUILD");
 use crate::http::Status;
 use crate::ids::{
     ClientId, Instance, MAX_STATUS_MESSAGE, MAX_STATUS_TITLE, MessageId, Name, PaneId, SessionId,
     StatusApp, StatusId, StatusText, VarName, WindowId,
 };
-use crate::pane_proc::{self, Death};
 use crate::route::{Body, Invalid};
 use crate::vars::{Loose, Vars};
 
@@ -110,11 +109,10 @@ impl CloseReason {
     pub const EMPTY: Self = Self(Cow::Borrowed(""));
     pub const SIZE: Self = Self(Cow::Borrowed(CloseCode::SIZE_REASON));
     pub const PROGRAM_CLOSED: Self = Self(Cow::Borrowed("program socket closed"));
-    pub(crate) const INVALID_UTF8: Self = Self(Cow::Borrowed("invalid UTF-8"));
-    pub(crate) const EXTENSIONS: Self =
-        Self(Cow::Borrowed("WebSocket extensions are not supported"));
-    pub(crate) const STREAM_CLOSED: Self = Self(Cow::Borrowed("webview stream closed"));
-    pub(crate) const CLIENT_CLOSED: Self = Self(Cow::Borrowed("client closed"));
+    pub const INVALID_UTF8: Self = Self(Cow::Borrowed("invalid UTF-8"));
+    pub const EXTENSIONS: Self = Self(Cow::Borrowed("WebSocket extensions are not supported"));
+    pub const STREAM_CLOSED: Self = Self(Cow::Borrowed("webview stream closed"));
+    pub const CLIENT_CLOSED: Self = Self(Cow::Borrowed("client closed"));
     pub fn as_str(&self) -> &str {
         &self.0
     }
@@ -145,9 +143,9 @@ impl JsonSchema for CloseReason {
 
 impl CloseCode {
     pub const NORMAL: Self = Self(1000);
-    pub(crate) const AWAY: Self = Self(1001);
-    pub(crate) const PROTOCOL: Self = Self(1002);
-    pub(crate) const INVALID: Self = Self(1007);
+    pub const AWAY: Self = Self(1001);
+    pub const PROTOCOL: Self = Self(1002);
+    pub const INVALID: Self = Self(1007);
     pub const SIZE: Self = Self(1009);
     pub const INTERNAL: Self = Self(1011);
     pub const SIZE_REASON: &'static str = "message exceeds 64 KiB";
@@ -187,12 +185,12 @@ const VT: &str = env!("KO_VT");
 
 pub const PANE_HEADER: &str = "Ko-Pane";
 pub const PANE_TOKEN_HEADER: &str = "Ko-Pane-Token";
-pub(crate) const CLIENT_HEADER: &str = "Ko-Client";
+pub const CLIENT_HEADER: &str = "Ko-Client";
 
-pub(crate) const PROTOCOL_HEADER: &str = "ko-protocol";
-pub(crate) const VT_HEADER: &str = "ko-vt";
+pub const PROTOCOL_HEADER: &str = "ko-protocol";
+pub const VT_HEADER: &str = "ko-vt";
 
-pub(crate) fn version_headers() -> [(&'static str, String); 2] {
+pub fn version_headers() -> [(&'static str, String); 2] {
     [
         (PROTOCOL_HEADER, PROTOCOL.to_owned()),
         (VT_HEADER, VT.to_owned()),
@@ -271,7 +269,7 @@ pub enum ErrorKind {
 }
 
 impl ErrorKind {
-    pub(crate) fn status(&self) -> Status {
+    pub fn status(&self) -> Status {
         match self {
             ErrorKind::Invalid => Status::BadRequest,
             ErrorKind::Refused | ErrorKind::VtMismatch(_) => Status::Conflict,
@@ -293,7 +291,7 @@ pub struct Error {
 }
 
 impl Error {
-    pub(crate) fn new(kind: ErrorKind, message: impl Into<String>) -> Error {
+    pub fn new(kind: ErrorKind, message: impl Into<String>) -> Error {
         Error {
             kind,
             message: message.into(),
@@ -397,22 +395,6 @@ impl From<Exit> for Cause {
     }
 }
 
-impl From<&Death> for Dead {
-    fn from(death: &Death) -> Dead {
-        Dead {
-            at: death.at.nanos(),
-            cause: match &death.cause {
-                pane_proc::Cause::Exit(exit) => Cause::from(*exit),
-                pane_proc::Cause::StartFailed(message) | pane_proc::Cause::Failed(message) => {
-                    Cause::Failed {
-                        message: message.clone(),
-                    }
-                }
-            },
-        }
-    }
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ProgramKind {
@@ -483,15 +465,15 @@ pub enum StatusReport {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct StatusRecord {
-    pub(crate) id: StatusId,
+    pub id: StatusId,
     #[serde(flatten)]
-    pub(crate) state: ProgramState,
+    pub state: ProgramState,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) app: Option<StatusApp>,
+    pub app: Option<StatusApp>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) title: Option<StatusText<MAX_STATUS_TITLE>>,
+    pub title: Option<StatusText<MAX_STATUS_TITLE>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) msg: Option<StatusText<MAX_STATUS_MESSAGE>>,
+    pub msg: Option<StatusText<MAX_STATUS_MESSAGE>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -913,20 +895,6 @@ pub enum Input {
     Text { data: Text },
 }
 
-impl<'a> From<&'a Input> for pane_proc::Input<'a> {
-    fn from(input: &'a Input) -> pane_proc::Input<'a> {
-        match input {
-            Input::Key(key) => pane_proc::Input::Key(&key.0),
-            Input::Mouse(mouse) => pane_proc::Input::Mouse(mouse.0),
-            Input::Paste(paste) => pane_proc::Input::Paste {
-                text: &paste.text,
-                check_safe: paste.check_safe,
-            },
-            Input::Text { data } => pane_proc::Input::Text(&data.0),
-        }
-    }
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Command {
@@ -1041,7 +1009,7 @@ impl Cells {
         Dim::new(count).map(Cells)
     }
 
-    pub(crate) fn clamped(count: usize) -> Cells {
+    pub fn clamped(count: usize) -> Cells {
         let count = u16::try_from(count).unwrap_or(u16::MAX);
         Cells(Dim::new(count).unwrap_or(if count == 0 { Dim::MIN } else { Dim::MAX }))
     }
@@ -1090,7 +1058,7 @@ impl Revision {
         self.0
     }
 
-    pub(crate) fn next(self) -> Revision {
+    pub fn next(self) -> Revision {
         Revision(self.0.saturating_add(1))
     }
 }
@@ -1447,7 +1415,7 @@ impl Window {
             .collect()
     }
 
-    pub(crate) fn has(&self, pane: PaneId) -> bool {
+    pub fn has(&self, pane: PaneId) -> bool {
         self.tree.contains(pane) || self.floats.iter().any(|float| float.pane == pane)
     }
 
@@ -1691,13 +1659,13 @@ impl From<WindowSizes> for Vec<WindowSize> {
 }
 
 impl WindowSizes {
-    pub(crate) fn iter(&self) -> impl Iterator<Item = &WindowSize> {
+    pub fn iter(&self) -> impl Iterator<Item = &WindowSize> {
         self.0.iter()
     }
 }
 
 impl Sizing {
-    pub(crate) fn size(&self, window: WindowId) -> Option<frame::Size> {
+    pub fn size(&self, window: WindowId) -> Option<frame::Size> {
         match self {
             Self::Disabled => None,
             Self::Windows { windows, .. } => windows
@@ -1707,7 +1675,7 @@ impl Sizing {
         }
     }
 
-    pub(crate) fn retain(&mut self, keep: impl FnMut(&WindowSize) -> bool) {
+    pub fn retain(&mut self, keep: impl FnMut(&WindowSize) -> bool) {
         if let Self::Windows { windows, .. } = self {
             windows.0.retain(keep);
         }
@@ -1817,26 +1785,26 @@ pub enum ViewRequest {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-pub(crate) struct Bounds {
+pub struct Bounds {
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) max_bytes: Option<NonZeroUsize>,
+    pub max_bytes: Option<NonZeroUsize>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) max_lines: Option<NonZeroUsize>,
+    pub max_lines: Option<NonZeroUsize>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
-pub(crate) enum Scrollback {
+pub enum Scrollback {
     Disabled,
     Scrollback(Bounds),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct Terminal {
-    pub(crate) scrollback: Scrollback,
-    pub(crate) apc_max_bytes: usize,
-    pub(crate) kitty_images_max_bytes: u64,
-    pub(crate) continuation_max_bytes: usize,
+    pub scrollback: Scrollback,
+    pub apc_max_bytes: usize,
+    pub kitty_images_max_bytes: u64,
+    pub continuation_max_bytes: usize,
 }
 
 #[derive(Serialize, Deserialize, JsonSchema)]
@@ -1850,12 +1818,12 @@ enum MediumDef {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[schemars(with = "MediumDef")]
-pub(crate) struct Medium(#[serde(with = "MediumDef")] pub(crate) frame::Medium);
+pub struct Medium(#[serde(with = "MediumDef")] pub frame::Medium);
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct Limits {
     pub terminal: Terminal,
-    pub(crate) media: Vec<Medium>,
+    pub media: Vec<Medium>,
 }
 
 impl Limits {
@@ -2316,7 +2284,7 @@ impl From<Data> for Value {
 }
 
 impl Data {
-    pub(crate) fn len(&self) -> usize {
+    pub fn byte_len(&self) -> usize {
         self.1
     }
 }
@@ -2408,7 +2376,7 @@ pub enum Content {
 }
 
 impl Content {
-    pub(crate) fn sent(kind: SendKind, payload: Payload) -> Content {
+    pub fn sent(kind: SendKind, payload: Payload) -> Content {
         match kind {
             SendKind::Message => Content::Message(payload),
             SendKind::Steer => Content::Steer(payload),
@@ -2464,14 +2432,14 @@ pub enum ViewEvent {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(untagged)]
-pub(crate) enum InputResult {
+pub enum InputResult {
     Pasted(PasteResult),
     Sent(Empty),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, JsonSchema)]
 #[serde(transparent)]
-pub(crate) struct VarValue(pub(crate) Value);
+pub struct VarValue(pub Value);
 
 impl Body for VarValue {
     const OVERSIZED: &'static str = "variable too large";
@@ -3190,7 +3158,7 @@ fn invalid_argv(argv: &[String]) -> Option<&'static str> {
 }
 
 impl VisitRequest {
-    pub(crate) fn invalid(&self) -> Option<&'static str> {
+    pub fn invalid(&self) -> Option<&'static str> {
         self.command.as_deref().and_then(invalid_argv).or_else(|| {
             self.env
                 .iter()
@@ -3201,7 +3169,7 @@ impl VisitRequest {
 }
 
 impl ExecRequest {
-    pub(crate) fn invalid(&self) -> Option<&'static str> {
+    pub fn invalid(&self) -> Option<&'static str> {
         invalid_argv(&self.argv).or_else(|| {
             self.env
                 .iter()

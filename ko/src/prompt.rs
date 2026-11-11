@@ -5,8 +5,8 @@ use std::process::ExitCode;
 use clap::Args;
 use ko_client::api::ReplyError;
 use ko_client::prompt;
-use ko_server::ids::MessageId;
-use ko_server::protocol::SendPrompt;
+use ko_wire::ids::MessageId;
+use ko_wire::protocol::SendPrompt;
 
 use crate::{Target, complain, fail, target};
 

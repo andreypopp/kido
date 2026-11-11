@@ -7,9 +7,9 @@ use ko_sys::event::{Events, Interest, Mode, Poll, Timer, Token};
 use ko_sys::signal::{Signal, Signals};
 
 use crate::config::Config;
-use crate::ids::Instance;
 use crate::runtime::RuntimeKey;
 use crate::state::{State, Wake};
+use ko_wire::ids::Instance;
 
 const ACCEPT_BURST: usize = 16;
 const SEND_BUFFER: usize = 1 << 20;
@@ -495,9 +495,9 @@ pub(crate) mod tests {
             ..Timing::DEFAULT
         };
         let mut server = Server::new(config, UnixListener::bind(&socket).unwrap(), timing).unwrap();
-        let request = crate::protocol::CreatePane {
+        let request = ko_wire::protocol::CreatePane {
             cwd: None,
-            command: Some(crate::protocol::Command::Argv {
+            command: Some(ko_wire::protocol::Command::Argv {
                 argv: vec!["/bin/sleep".to_owned(), "30".to_owned()],
             }),
             env: Vec::new(),

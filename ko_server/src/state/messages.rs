@@ -1,10 +1,10 @@
 use super::*;
-use crate::api::routes;
-use crate::ids::MessageId;
 use crate::inbox::{Admit, Outcome, Status};
 use crate::pane_kind::{self, Kind, LocalKind};
 use crate::panes::{Edge, relation};
-use crate::protocol::{
+use ko_wire::api::routes;
+use ko_wire::ids::MessageId;
+use ko_wire::protocol::{
     Content, End, Error, ErrorKind, MessageState, Payload, Posted, Relation, SendMessage, Sender,
     Sent, StreamRequest,
 };

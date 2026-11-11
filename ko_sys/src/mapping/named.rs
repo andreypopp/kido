@@ -81,7 +81,7 @@ fn reserve(fd: &File, len: usize) -> io::Result<()> {
     retry(|| check_code(unsafe { libc::posix_fallocate(fd.as_raw_fd(), 0, size) }))
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(target_vendor = "apple")]
 fn reserve(_fd: &File, _len: usize) -> io::Result<()> {
     Ok(())
 }

@@ -1,13 +1,13 @@
 use std::collections::BTreeMap;
 
-use crate::ids::StatusId;
 use crate::pane_kind::{self, Kind, LocalKind, RemoteKind};
 use crate::program_status::{app, root};
-use crate::protocol::{
+use crate::telemetry::Telemetry;
+use ko_wire::ids::StatusId;
+use ko_wire::protocol::{
     Agent, AgentState, CommandExit, Foreground, Live, Local, Origin, Outcome, OutcomeResult, Phase,
     ProgramKind, ProgramRecord, ProgramState, ProgramStatus, Remote, Shell,
 };
-use crate::telemetry::Telemetry;
 
 pub(crate) const DEBOUNCE: u64 = 200_000_000;
 
@@ -477,10 +477,10 @@ mod tests {
     use serde_json::json;
 
     use super::*;
-    use crate::ids::VarName;
     use crate::pane_kind::classify;
     use crate::telemetry::{CommandRun, LastExit};
-    use crate::vars::Vars;
+    use ko_wire::ids::VarName;
+    use ko_wire::vars::Vars;
 
     const T0: u64 = 1_000_000_000_000;
     const MS: u64 = 1_000_000;

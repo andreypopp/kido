@@ -1,9 +1,9 @@
-use crate::ids::VarName;
 use crate::pane::Pane;
 use crate::program_status::{app, root};
-use crate::protocol::{Foreground, ProgramRecord};
 use crate::runtime::RuntimeKey;
-use crate::vars::Vars;
+use ko_wire::ids::VarName;
+use ko_wire::protocol::{Foreground, ProgramRecord};
+use ko_wire::vars::Vars;
 
 const SSH_DEST: VarName = VarName::known("ssh.dest");
 pub(crate) const PI_SESSION: VarName = VarName::known("pi.session");
@@ -148,8 +148,8 @@ mod tests {
     use serde_json::{Value, json};
 
     use super::*;
-    use crate::protocol::ProgramState;
     use crate::telemetry::Telemetry;
+    use ko_wire::protocol::ProgramState;
 
     struct Fixture {
         telemetry: Telemetry,

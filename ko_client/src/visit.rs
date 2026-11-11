@@ -4,13 +4,13 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 use ko_config::values::RuntimeName;
-use ko_server::api::Route;
-use ko_server::config::{env_path, program_path};
-use ko_server::protocol::{self, VisitClient, VisitRequest, VisitServer};
 use ko_sys::event::{Events, Interest, Mode, Poll, Timer, Token};
+use ko_sys::file::{env_path, program_path};
 use ko_sys::pid::{Exit, Pid};
 use ko_sys::signal::{Signal, Signals};
 use ko_sys::spawn::{self, Env};
+use ko_wire::api::Route;
+use ko_wire::protocol::{self, VisitClient, VisitRequest, VisitServer};
 
 use crate::api::{self, Failure, ReplyError};
 use crate::runtimes::STILL_STARTING;

@@ -17,7 +17,7 @@ fn read(clock: libc::clockid_t) -> Duration {
 }
 
 // CLOCK_UPTIME_RAW is ko_now_ns's clock on macOS.
-#[cfg(target_os = "macos")]
+#[cfg(target_vendor = "apple")]
 const MONO: libc::clockid_t = libc::CLOCK_UPTIME_RAW;
 #[cfg(target_os = "linux")]
 const MONO: libc::clockid_t = libc::CLOCK_MONOTONIC;

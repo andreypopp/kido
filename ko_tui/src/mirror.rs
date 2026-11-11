@@ -6,16 +6,16 @@ use std::time::{Duration, Instant};
 use ko_client::wire::{self, Connecting, Link, Next, Resume, UpgradeStep, text};
 use ko_pane_wire::frame::{History, Limits};
 use ko_pane_wire::ring::Slice;
-use ko_server::api::{Offset, Route};
-use ko_server::ids::{ClientId, PaneId};
-use ko_server::protocol::{self, Images, Marker, ViewEvent, ViewOptions, ViewRequest, json};
-use ko_server::ws::{BadRecord, Parsed, parse_record};
 use ko_sys::clock::Mono;
 use ko_sys::event::{Poll, Ready, Token};
 use ko_vt::compress::{Compress, Tick};
 use ko_vt::render::Frame;
 use ko_vt::search::{Progress, SearchId};
 use ko_vt::{Extent, ReadyScan, Shape as SelectionShape, Span, Terminal};
+use ko_wire::api::{Offset, Route};
+use ko_wire::ids::{ClientId, PaneId};
+use ko_wire::protocol::{self, Images, Marker, ViewEvent, ViewOptions, ViewRequest, json};
+use ko_wire::ws::{BadRecord, Parsed, parse_record};
 use tungstenite::Bytes;
 
 use crate::copy::{self, Entry, Outcome, Row};
@@ -390,7 +390,7 @@ impl Mirror {
                     if response.status == 404 {
                         return Ok(());
                     }
-                    return Err(text(ko_server::ws::refused(&response)));
+                    return Err(text(ko_wire::ws::refused(&response)));
                 }
                 Err(error) => {
                     poll.unwatch(token);

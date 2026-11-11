@@ -29,7 +29,7 @@ and of which socket its processes talk to.
 
 **The key.** The server identifies a runtime by its key
 (`RuntimeKey` in `ko_server/src/runtime/mod.rs`): its name and its
-source (`RuntimeSource` in `ko_server/src/protocol.rs`), an entry of
+source (`RuntimeSource` in `ko_wire/src/protocol.rs`), an entry of
 the configuration file or a definition of one layout session. The
 registry, the connection's `Origin`, the pane record, the exec
 sessions and the start's waiters hold the key; the wire keeps the
@@ -314,7 +314,7 @@ The server owns every link. It is one thread on the loop, so a link
 is a state machine driven by `SIGCHLD`, readiness and timers, with no
 thread and no blocking wait. The states are `Down`, `Starting`, `Up`
 and `Failed` with a message (`LinkState` in
-`ko_server/src/protocol.rs`). A runtime's entry in the registry is
+`ko_wire/src/protocol.rs`). A runtime's entry in the registry is
 optional: a runtime that has not started, or that is down, has
 none, and a kind can have panes without a link.
 
@@ -567,7 +567,7 @@ appears in an argv, which `ps` shows to every user.
 **The inside ko** (`ko_shell/src/session.rs`) starts the command as
 the leader of a new session and process group, with its own pipes. The
 helper's stdin and stdout carry the frames of
-`ko_server/src/exec_wire.rs`, server to ko and ko to server. The
+`ko_wire/src/exec_wire.rs`, server to ko and ko to server. The
 helper's stderr stays raw: it is the transport's and the inside ko's
 own text (ssh's errors, a missing ko, `ko enter: ...`), and reaches
 the client as stderr. A signal and an exit cross as the JSON of the

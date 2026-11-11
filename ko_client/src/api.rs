@@ -4,16 +4,16 @@ use std::os::fd::BorrowedFd;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use ko_server::api::Route;
-use ko_server::config::{self, Dir};
-use ko_server::http::Response;
-use ko_server::protocol::{self, ErrorKind, Snapshot, Version};
 use ko_sys::event::{Events, Interest, Mode, Poll, Wake};
+use ko_wire::api::Route;
+use ko_wire::http::Response;
+use ko_wire::local::{self, Dir};
+use ko_wire::protocol::{self, ErrorKind, Snapshot, Version};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 
+use crate::connect;
 use crate::edit::Edit;
-use crate::launch;
 use crate::layout::{self, Document, Edited};
 use crate::wire::{self, Caller, Link, Next};
 
@@ -36,7 +36,7 @@ pub fn put_runtime(
     caller: Option<Caller>,
     name: ko_config::values::RuntimeName,
     runtime: &ko_config::runtime::Runtime,
-) -> Result<ko_server::protocol::RuntimeInfo, ReplyError> {
+) -> Result<ko_wire::protocol::RuntimeInfo, ReplyError> {
     call(
         dir,
         &Route::PutRuntime { name },
@@ -120,7 +120,7 @@ pub enum Error {
 
 fn socket(dir: &Path, caller: Option<&Caller>) -> Result<PathBuf, Failure> {
     if let Err(error) = dir.symlink_metadata()
-        && launch::absent(&error)
+        && connect::absent(&error)
     {
         return Err(Failure::NoServer);
     }
@@ -129,13 +129,13 @@ fn socket(dir: &Path, caller: Option<&Caller>) -> Result<PathBuf, Failure> {
     } else {
         Dir::Existing
     };
-    config::socket(mode, dir).map_err(Failure::Failed)
+    local::socket(mode, dir).map_err(Failure::Failed)
 }
 
 pub(crate) fn exchange(
     dir: &Path,
     caller: Option<Caller>,
-    (method, path): (&str, &ko_server::protocol::RequestTarget),
+    (method, path): (&str, &ko_wire::protocol::RequestTarget),
     body: &[u8],
     within: Duration,
 ) -> Result<Response, Failure> {
@@ -152,7 +152,7 @@ pub(crate) fn exchange(
 }
 
 fn failure(error: std::io::Error) -> Failure {
-    if launch::absent(&error) {
+    if connect::absent(&error) {
         Failure::NoServer
     } else {
         Failure::Failed(error.to_string())
@@ -181,7 +181,7 @@ pub fn request_within(
     if route.is_some_and(|route| route.websocket()) {
         return Err(Error::Websocket);
     }
-    let path = ko_server::protocol::RequestTarget::try_from(path.to_owned())
+    let path = ko_wire::protocol::RequestTarget::try_from(path.to_owned())
         .map_err(|message| Error::Server(Failure::Failed(message.into())))?;
     exchange(dir, caller, (method, &path), body, within).map_err(Error::Server)
 }
@@ -217,7 +217,7 @@ pub fn stream(
     let route = Route::of_request("GET", path).map_err(|_| Error::NotWebsocket)?;
     let limit = route.upgrade().ok_or(Error::NotWebsocket)?;
     let stream = socket(dir, caller.as_ref())
-        .and_then(|socket| launch::connect(&socket, launch::PATIENCE, None).map_err(failure))
+        .and_then(|socket| connect::connect(&socket, connect::PATIENCE, None).map_err(failure))
         .map_err(Error::Server)?;
     Link::handshake(
         stream,

@@ -31,7 +31,7 @@ down), gpu-1 (ssh, failed, the configured amber `#d08a2a`), e2e
   colour, link state) and the `runtime` and `runtime_deleted` events
   follow it (protocol.md, section 15). The link state is one of
   `Down`, `Starting`, `Up` and `Failed { message }` (`LinkState` in
-  `ko_server/src/protocol.rs`). **There is no `Stopping` on the
+  `ko_wire/src/protocol.rs`). **There is no `Stopping` on the
   wire.**
 - The pane count is the app's: `WindowOwner.runtimePaneCount` counts
   the live panes whose row `runtime` is the name. The same count feeds
@@ -207,7 +207,7 @@ link up has to close.
 
 ## 3. Ad-hoc runtimes (decided: the current session's only; state `adhoc`)
 
-`ClientRuntime` has a `source` (`ko_server/src/protocol.rs`):
+`ClientRuntime` has a `source` (`ko_wire/src/protocol.rs`):
 `config` or `session { id }`, configured first, then the ad-hoc ones
 in session order. The section lists the configured runtimes and the runtimes of
 the window's current session only; another session's runtimes do

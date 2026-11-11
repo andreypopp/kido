@@ -12,11 +12,11 @@ use ko_sys::event::Token;
 
 use crate::config::{Config, Settings, path_with, terminal};
 use crate::delivery::{Stamps, mint_stamps};
-use crate::ids::{PaneId, PaneToken, SessionId};
 use crate::pane::{Birth, Pane, Program};
 use crate::pane_proc::{Io, Launch, Life};
-use crate::protocol::{Close, Command, CreatePane, Error, ErrorKind, Relation, Variable};
 use crate::runtime::RuntimeKey;
+use ko_wire::ids::{PaneId, PaneToken, SessionId};
+use ko_wire::protocol::{Close, Command, CreatePane, Error, ErrorKind, Relation, Variable};
 
 #[derive(Debug)]
 pub(crate) enum AddError {
@@ -68,7 +68,7 @@ fn environment(
         ("KO_SHELL", shell.as_os_str().as_encoded_bytes().to_vec()),
     ]);
     if let Some(dir) = &config.bin_dir {
-        let path = path_with(dir, crate::config::env_path(&config.env));
+        let path = path_with(dir, ko_sys::file::env_path(&config.env));
         forced.push(("PATH", path));
     }
     let agent = (
@@ -487,7 +487,7 @@ pub(crate) fn relation(edges: &[Edge], sender: PaneId, receiver: PaneId) -> Opti
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::BUILD;
+    use ko_wire::protocol::BUILD;
     use std::path::PathBuf;
 
     #[test]

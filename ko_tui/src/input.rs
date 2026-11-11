@@ -1050,7 +1050,7 @@ impl Input {
 
 #[cfg(test)]
 mod tests {
-    use ko_server::protocol::{Input as Wire, Key, ViewRequest, json};
+    use ko_wire::protocol::{Input as Wire, Key, ViewRequest, json};
 
     use super::*;
 

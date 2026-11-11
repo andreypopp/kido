@@ -4,15 +4,15 @@ use ko_sys::pid::Pid;
 
 use super::runtime_ops::resolve_runtime;
 use super::*;
-use crate::api::{WaitMs, routes};
 use crate::pane_proc::Place;
 use crate::panes::{self, Edge, Standing, acts_as, scope};
-use crate::protocol::{
+use crate::runtime::pane::{Dir, host_cwd};
+use crate::server::Origin;
+use ko_wire::api::{WaitMs, routes};
+use ko_wire::protocol::{
     CreatePane, Cwd, DraftLayout, DraftSession, DraftWindow, Empty, Error, ErrorKind, NewWindow,
     PanePatch, Placement, SessionRef,
 };
-use crate::runtime::pane::{Dir, host_cwd};
-use crate::server::Origin;
 
 #[derive(Debug)]
 struct Stop {

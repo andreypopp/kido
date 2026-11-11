@@ -1,7 +1,9 @@
 pub mod api;
+pub mod connect;
 pub mod edit;
 #[cfg(target_vendor = "apple")]
 pub mod ffi;
+#[cfg(not(target_os = "ios"))]
 pub mod launch;
 pub mod layout;
 pub mod model;
@@ -11,6 +13,7 @@ pub mod runtimes;
 pub mod schema;
 pub mod status;
 mod tree;
+#[cfg(not(target_os = "ios"))]
 pub mod visit;
 pub mod webview;
 pub mod wire;

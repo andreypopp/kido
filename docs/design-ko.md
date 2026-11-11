@@ -146,30 +146,38 @@ are the verified stream path
 (AGENTS.md, "Verus"); `webview.rs` holds a pane's webview record
 (its page, its serve stream and its requests in flight) and
 `state/webview.rs` the proxy and the serve stream (protocol.md,
-section 16), with the wire types in `protocol/webview.rs`; `conn.rs`,
-`ws.rs`, `http.rs` (with `http/response.rs`, the incremental response
-reader that `ko_client`'s upstream also uses, for `ko webview serve`
-and the C ABI) and
-`deflate.rs` the connection, the framing and the slice codec; `api.rs`, `route.rs`,
-`router.rs`, `protocol.rs` and `schema.rs` the routes, the wire types
-and the OpenAPI document. The status model is `telemetry.rs`,
+section 16), with the wire types in `ko_wire`'s `protocol/webview.rs`;
+`conn.rs`, `ws.rs` (the WebSocket's state, queue and pings) and
+`deflate.rs` the connection, the server's framing and the slice codec;
+`router.rs` answers the routes. The status model is `telemetry.rs`,
 `program_status.rs`, `pane_kind.rs`, `pane_status.rs` and `model.rs`
-([design-program-status.md](design-program-status.md)); `vars.rs`,
-`inbox.rs`, `clipboard.rs`, `shm.rs` and
-`agent.rs` own the variables, a pane's
+([design-program-status.md](design-program-status.md)); `inbox.rs`,
+`clipboard.rs`, `shm.rs` and `agent.rs` own a pane's
 message queue (its routes in `state/messages.rs`), the clipboard
 answerer, the shared-memory leak record and the `agent.sock` link; `config.rs` the
-state directory, the options and the knobs. `runtime/` holds the
+options and the knobs. `runtime/` holds the
 runtimes' registry, links and exec helpers over the configuration of
 `ko_config`, with
 `state/runtime_ops.rs`, `state/exec_ops.rs` and `state/visit_ops.rs`
 over them
 ([design-runtimes.md](design-runtimes.md)).
 
+`ko_wire` is what the server and its clients share, so a client links
+no server code: `protocol.rs` (the wire types), `ids.rs`, `vars.rs`
+(the checked variable map), `http.rs` (with `http/response.rs`, the
+incremental response reader that `ko_client`'s upstream also uses,
+for `ko webview serve` and the C ABI), `ws.rs` (the record parser, the
+upgrade and the frame reader), `exec_wire.rs` (the exec session's frames), `api.rs`, `route.rs` and `schema.rs`
+(the routes and the OpenAPI document), `ssh.rs`, `local.rs` (the state
+directory and the socket path) and the build id. It holds no proof:
+the verified modules of `ko_server` see its ids and `Dead` only as the
+opaque types of their existing external type specifications.
+
 `ko_vt` is the safe binding of libghostty-vt for both processes: the
 terminal, the snapshot encoder and decoder, the render state, the
 search and the frame API. `ko_pane_wire` is the frame codec and the
-ring. `ko_client` is the client core that `ko_tui` and Kido.app share.
+ring. `ko_client` is the client core that `ko_tui` and Kido.app share;
+it also builds for iOS.
 
 ### 4.3 The pane's terminal
 
@@ -767,7 +775,7 @@ live bytes, so a restore or a later view has nothing to show.
 
 `ko server --server DIR` runs in the foreground and listens on
 `DIR/socket`. `DIR` is `$KO_STATE_DIR`, else `$XDG_STATE_HOME/ko`,
-else `~/.local/state/ko` (`ko_server/src/config.rs`), created with
+else `~/.local/state/ko` (`ko_wire/src/local.rs`), created with
 mode 0700. The server refuses a directory with other permissions or
 another owner, a path with a comma, and a socket path over 103 bytes,
 the macOS limit, on every platform.
@@ -1008,7 +1016,7 @@ codes and the JSON.
 ## 5. Remote
 
 Transport: a unix socket forward on an SSH master. `ko HOST`
-(`ko_client/src/remote.rs`) starts `ssh -M -N -T` with a private
+(`ko_client/src/remote/desktop.rs`) starts `ssh -M -N -T` with a private
 `ControlPath`, asks for `-O forward -L <local>:<dir>/socket`, and
 attaches to `<local>` as to a local server. Each connection is one
 `direct-streamlocal` channel with SSH's own window as its
@@ -1159,7 +1167,7 @@ Each decision names its date. The code states the rest.
 
 - The protocol version changes only with a release; between releases
   a change of shape changes the docs and both clients in one commit.
-  The version is 1.0 (`ko_server/src/protocol.rs`).
+  The version is 1.0 (`ko_wire/src/protocol.rs`).
 - Tagged serde enums for the status shape; both clients share
   `ko_client`, which Kido.app links through a hand-written C ABI with
   no libghostty-vt inside the core. The seen record lives in the core.

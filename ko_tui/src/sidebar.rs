@@ -3,8 +3,8 @@ use std::collections::BTreeMap;
 use ko_client::model::{Item, Pane, Place};
 use ko_client::status::{self, Mark};
 use ko_config::values::RuntimeName;
-use ko_server::ids::PaneId;
-use ko_server::protocol::{Cause, ClientRuntime, Dead, LinkState};
+use ko_wire::ids::PaneId;
+use ko_wire::protocol::{Cause, ClientRuntime, Dead, LinkState};
 
 pub(crate) const DEFAULT_WIDTH: usize = 24;
 
@@ -166,7 +166,7 @@ pub(crate) fn lines(
 
 #[cfg(test)]
 mod tests {
-    use ko_server::protocol::Row;
+    use ko_wire::protocol::Row;
 
     use super::*;
 
@@ -265,15 +265,15 @@ mod tests {
     #[test]
     fn a_runtime_follows_the_title_with_a_mark_for_a_link_that_is_starting_or_failed() {
         let runtime = |state| ClientRuntime {
-            source: ko_server::protocol::RuntimeSource::Config,
+            source: ko_wire::protocol::RuntimeSource::Config,
             name: "buildbox".parse().unwrap(),
-            kind: ko_server::protocol::RuntimeKind::Ssh,
+            kind: ko_wire::protocol::RuntimeKind::Ssh,
             color: None,
             state,
         };
         let place = || {
             Some(Place::Routed {
-                source: ko_server::protocol::RuntimeSource::Config,
+                source: ko_wire::protocol::RuntimeSource::Config,
                 name: "buildbox".parse().unwrap(),
             })
         };

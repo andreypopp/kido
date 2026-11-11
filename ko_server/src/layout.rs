@@ -4,12 +4,12 @@ use std::path::Path;
 
 use ko_pane_wire::frame::{Dim, Size};
 
-use crate::ids::{Name, PaneId, SessionId, WindowId};
-use crate::protocol::{
+use ko_wire::ids::{Name, PaneId, SessionId, WindowId};
+use ko_wire::protocol::{
     Axis, CellPixels, Cells, Command, CreatePane, DraftFloat, DraftLayout, DraftLeaf, DraftWindow,
     Float, Layout, Leaf, Node, PaneRef, PutLayout, Revision, Session, Snapshot, Tile, Window, pick,
 };
-use crate::vars::Vars;
+use ko_wire::vars::Vars;
 
 const UNSIZED_WINDOW: Size = Size {
     cell_px: None,
@@ -882,8 +882,8 @@ mod tests {
     use serde_json::{Value, json};
 
     use super::*;
-    use crate::protocol::Cwd;
     use ko_config::values::AbsPath;
+    use ko_wire::protocol::Cwd;
 
     fn new_pane() -> Value {
         json!({"new": {}})
@@ -1329,7 +1329,7 @@ mod tests {
                 {"name": "w", "cols": cols, "tree": {"pane": {"new": {}}}}]}]}})
             .to_string()
         };
-        assert!(crate::protocol::decode::<PutLayout>(body("ok", 80).as_bytes()).is_ok());
+        assert!(ko_wire::protocol::decode::<PutLayout>(body("ok", 80).as_bytes()).is_ok());
         for bad in [
             body("a\nb", 80),
             body(&"x".repeat(257), 80),
@@ -1337,7 +1337,7 @@ mod tests {
             body("ok", 4097),
         ] {
             assert!(
-                crate::protocol::decode::<PutLayout>(bad.as_bytes()).is_err(),
+                ko_wire::protocol::decode::<PutLayout>(bad.as_bytes()).is_err(),
                 "{bad}"
             );
         }

@@ -87,19 +87,19 @@ fn webview_ffi_uses_the_real_proxy_and_cancels_the_program_request() {
     let mut stream = UnixStream::connect(server.dir.join("socket")).unwrap();
     stream.set_read_timeout(Some(WAIT)).unwrap();
     stream.set_write_timeout(Some(WAIT)).unwrap();
-    let (request, key) = ko_server::ws::upgrade_request(
+    let (request, key) = ko_wire::ws::upgrade_request(
         "GET",
         &format!("/panes/{pane}/webview_serve").try_into().unwrap(),
         None,
         &[("Ko-Pane", pane), ("Ko-Pane-Token", &token)],
     );
     stream.write_all(&request).unwrap();
-    let ko_server::http::Upgrade::Accepted(response, rest) =
-        ko_server::http::read_upgrade(&mut stream).unwrap()
+    let ko_wire::http::Upgrade::Accepted(response, rest) =
+        ko_wire::http::read_upgrade(&mut stream).unwrap()
     else {
         panic!("serve refused");
     };
-    ko_server::ws::accepted(&response, &key).unwrap();
+    ko_wire::ws::accepted(&response, &key).unwrap();
     let mut program = WebSocket::from_partially_read(stream, rest, Role::Client, None);
     assert_eq!(event(&mut program, "supported")["supported"], false);
     let fixture = Fixture::new();
@@ -188,7 +188,7 @@ fn webview_ffi_uses_the_real_proxy_and_cancels_the_program_request() {
                     .recv_timeout(Duration::from_micros([170, 2300, 490, 7100, 40][i % 5]))
                     .is_err()
             );
-            let data = ko_server::protocol::webview::Data::new(record.into_bytes()).unwrap();
+            let data = ko_wire::protocol::webview::Data::new(record.into_bytes()).unwrap();
             send(
                 &mut program,
                 &serde_json::json!({"type":"body","req":req,"data":data,"more":true}).to_string(),

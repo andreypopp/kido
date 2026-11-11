@@ -286,7 +286,7 @@ fn hangup_events(_fd: RawFd) -> libc::c_short {
 // macOS poll reports a hangup only for a descriptor that asks for an event that it cannot have
 // yet: POLLOUT on a pipe's read end, POLLPRI on a pipe's write end or a socket (measured: they
 // report nothing while the peer is open, with data unread or not).
-#[cfg(target_os = "macos")]
+#[cfg(target_vendor = "apple")]
 fn hangup_events(fd: RawFd) -> libc::c_short {
     // SAFETY: F_GETFL only reads the flags of the descriptor.
     let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
@@ -317,7 +317,7 @@ pub struct Poll {
 // macOS poll takes whole milliseconds, so sub-ms waits round up; select takes microseconds.
 // Select only waits. A first poll detects pending hangups that the sets cannot express;
 // a poll after readiness reports revents. Descriptors at or above FD_SETSIZE use poll.
-#[cfg(target_os = "macos")]
+#[cfg(target_vendor = "apple")]
 fn wait_for(
     fds: &mut [libc::pollfd],
     count: libc::nfds_t,

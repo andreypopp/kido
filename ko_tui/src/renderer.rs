@@ -2,10 +2,10 @@ use std::fmt::Write;
 
 use crate::copy;
 use ko_client::status::Mark;
-use ko_server::ids::{PaneId, WindowId};
-use ko_server::protocol::{LinkState, Session, Window};
 use ko_vt::render::{Attribute, Attributes, Cell, Colour, CursorShape, Frame, Style};
 use ko_vt::unicode::{clusters, width};
+use ko_wire::ids::{PaneId, WindowId};
+use ko_wire::protocol::{LinkState, Session, Window};
 
 use crate::differ::Differ;
 use crate::geometry::{Connections, Geometry, Rect};
@@ -876,7 +876,7 @@ mod tests {
 
     #[test]
     fn runtime_rows_are_pinned_below_the_tree_with_a_blank_row_and_a_red_failure() {
-        use ko_server::protocol::LinkState;
+        use ko_wire::protocol::LinkState;
         let layout = Layout {
             cols: 30,
             rows: 10,
@@ -1267,7 +1267,7 @@ mod tests {
 
     #[test]
     fn dividers_follow_the_active_pane_and_small_frames_leave_blank_cells() {
-        let mut window: Window = ko_server::protocol::decode(br#"{"id":"window_1","name":"w","vars":{},"cols":9,"rows":5,"focus":"pane_1","tree":{"split":"h","children":[{"pane":"pane_1","cols":4,"rows":5},{"split":"v","children":[{"pane":"pane_2","cols":4,"rows":2},{"pane":"pane_3","cols":4,"rows":2}]}]},"floats":[]}"#).unwrap();
+        let mut window: Window = ko_wire::protocol::decode(br#"{"id":"window_1","name":"w","vars":{},"cols":9,"rows":5,"focus":"pane_1","tree":{"split":"h","children":[{"pane":"pane_1","cols":4,"rows":5},{"split":"v","children":[{"pane":"pane_2","cols":4,"rows":2},{"pane":"pane_3","cols":4,"rows":2}]}]},"floats":[]}"#).unwrap();
         let mut layout = Layout {
             cols: 9,
             rows: 6,
@@ -1324,12 +1324,12 @@ mod tests {
         assert_eq!(frame.cells[2 * 9 + 5].style.fg, Colour::Indexed(2));
         assert_eq!(frame.cells[4 * 9 + 4].style.fg, Colour::Default);
 
-        window.floats.push(ko_server::protocol::Float {
+        window.floats.push(ko_wire::protocol::Float {
             pane: "pane_4".parse().unwrap(),
             x: 3,
             y: 2,
-            cols: ko_server::protocol::Cells::try_from(3u16).unwrap(),
-            rows: ko_server::protocol::Cells::try_from(1u16).unwrap(),
+            cols: ko_wire::protocol::Cells::try_from(3u16).unwrap(),
+            rows: ko_wire::protocol::Cells::try_from(1u16).unwrap(),
             z: 1,
             border: true,
             title: "pop".to_owned(),
@@ -1492,7 +1492,7 @@ mod tests {
             window(2, "b"),
             window(3, "c")
         );
-        ko_server::protocol::decode(text.as_bytes()).unwrap()
+        ko_wire::protocol::decode(text.as_bytes()).unwrap()
     }
 
     #[test]

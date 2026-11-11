@@ -4,6 +4,10 @@ mod calls;
 mod config;
 mod engine;
 mod images;
+#[cfg(not(target_os = "ios"))]
+pub use launch::*;
+#[cfg(not(target_os = "ios"))]
+mod launch;
 mod remote;
 mod view;
 mod webview;
@@ -19,21 +23,20 @@ use std::collections::{BTreeMap, VecDeque};
 use std::ffi::{CStr, CString, c_char, c_int, c_void};
 use std::num::NonZeroU16;
 use std::os::unix::ffi::OsStrExt;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
 use ko_pane_wire::frame::{self, History, ServedBuf};
-use ko_server::ids::{ClientId, PaneId, WindowId};
-use ko_server::protocol::{
+use ko_sys::event::Wake;
+use ko_wire::ids::{ClientId, PaneId, WindowId};
+use ko_wire::protocol::{
     self, ClientRequest, ClipboardContent, ClipboardLocation, Direction, ErrorKind, Input, Over,
     Selection, Switch, Text, Version,
 };
-use ko_sys::event::Wake;
 
-use crate::launch::{self, PATIENCE};
 use crate::model::{Model, Notice};
 use view::{Restored, View};
 
@@ -940,96 +943,6 @@ fn start(
     Ok(handle)
 }
 
-/// # Safety
-///
-/// `out` is writable for one `ko_buffer`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn ko_client_default_dir(out: *mut Buffer) -> Code {
-    if out.is_null() {
-        return Code::Argument;
-    }
-    let (code, bytes) = match std::path::absolute(ko_server::config::dir(None)) {
-        Ok(path) => match path.to_str() {
-            Some(path) => (Code::Ok, path.as_bytes().to_vec()),
-            None => (Code::Io, b"the server directory is not UTF-8".to_vec()),
-        },
-        Err(error) => (Code::Io, error.to_string().into_bytes()),
-    };
-    // SAFETY: out is null or writable for one ko_buffer (ko_client.h).
-    unsafe { put(out, bytes) };
-    code
-}
-
-/// # Safety
-///
-/// `dir` and `executable` are NUL-terminated strings. `path` and `cwd` are null or
-/// NUL-terminated strings. `socket` is writable for
-/// one `ko_buffer`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn ko_client_launch(
-    dir: *const c_char,
-    executable: *const c_char,
-    path: *const c_char,
-    cwd: *const c_char,
-    socket: *mut Buffer,
-) -> Code {
-    let scope = ();
-    // SAFETY: ko_client.h requires these inputs to remain readable for this call.
-    let (dir_text, executable_text, path_text, cwd_text) = unsafe {
-        (
-            text_of(dir, &scope),
-            text_of(executable, &scope),
-            text_of(path, &scope),
-            text_of(cwd, &scope),
-        )
-    };
-
-    let (Some(dir), Some(executable)) = (dir_text, executable_text) else {
-        return Code::Argument;
-    };
-    if socket.is_null() {
-        return Code::Argument;
-    }
-    let path = match (path.is_null(), path_text) {
-        (false, None) => return Code::Argument,
-        (_, path) => path,
-    };
-    let cwd = match (cwd.is_null(), cwd_text) {
-        (false, None) => return Code::Argument,
-        (_, cwd) => cwd.map(Path::new),
-    };
-    let (code, bytes) =
-        match launch::attach(Path::new(dir), Path::new(executable), path, cwd, PATIENCE) {
-            Ok((path, _stream)) => (Code::Ok, path.as_os_str().as_bytes().to_vec()),
-            Err(message) => (Code::Io, message.into_bytes()),
-        };
-    // SAFETY: out is null or writable for one ko_buffer (ko_client.h).
-    unsafe { put(socket, bytes) };
-    code
-}
-
-/// # Safety
-///
-/// `dir` is a NUL-terminated string. `error` is null or writable for one
-/// `ko_buffer`.
-#[unsafe(no_mangle)]
-pub unsafe extern "C" fn ko_client_stop_server(dir: *const c_char, error: *mut Buffer) -> Code {
-    let scope = ();
-    // SAFETY: ko_client.h requires these inputs to remain readable for this call.
-    let dir_text = unsafe { text_of(dir, &scope) };
-
-    let Some(dir) = dir_text else {
-        return Code::Argument;
-    };
-    let (code, bytes) = match launch::stop(Path::new(dir), PATIENCE) {
-        Ok(()) => (Code::Ok, Vec::new()),
-        Err(message) => (Code::Io, message.into_bytes()),
-    };
-    // SAFETY: out is null or writable for one ko_buffer (ko_client.h).
-    unsafe { put(error, bytes) };
-    code
-}
-
 struct VersionTexts {
     protocol: CString,
     vt: CString,
@@ -1618,15 +1531,18 @@ pub extern "C" fn ko_code_message(code: c_int) -> *const c_char {
 }
 
 #[cfg(test)]
+#[cfg(not(target_os = "ios"))]
 mod tests {
+    use super::launch::{ko_client_launch, ko_client_stop_server};
     use std::io::{Read, Write};
     use std::os::unix::net::{UnixListener, UnixStream};
+    use std::path::Path;
     use std::sync::atomic::AtomicPtr;
     use std::sync::mpsc::{Receiver, Sender, channel};
     use std::thread::ThreadId;
     use std::time::{Duration, Instant};
 
-    use ko_server::protocol::{
+    use ko_wire::protocol::{
         CommandExit, Listing, Live, PaneStatus, Phase, ProgramStatus, Row, Shell,
     };
     use serde_json::{Value, json};
@@ -3239,7 +3155,7 @@ mod tests {
     fn failed_idle_status() -> PaneStatus {
         PaneStatus {
             kind: Live::Host {
-                pane: ko_server::protocol::Local::Terminal(Shell {
+                pane: ko_wire::protocol::Local::Terminal(Shell {
                     phase: Phase::Idle {
                         last: Some(CommandExit {
                             code: 1,
@@ -4988,7 +4904,7 @@ mod tests {
         });
         view.feed(view::Feed::Marker {
             offset: 5,
-            marker: ko_server::protocol::Marker::Resize(ko_server::protocol::Size(
+            marker: ko_wire::protocol::Marker::Resize(ko_wire::protocol::Size(
                 ko_pane_wire::frame::Size::DEFAULT,
             )),
         });

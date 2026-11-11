@@ -3,7 +3,6 @@ use std::env;
 use std::ffi::OsString;
 use std::fs;
 use std::io;
-use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -11,9 +10,9 @@ use ko_config::config::LoadError;
 use ko_config::server::{Scrollback as Kept, Server};
 use ko_pane_wire::frame::{Limits, Medium, Scrollback};
 
-pub(crate) const BUILD: &str = env!("KO_BUILD");
-
-pub const SUN_PATH_MAX: usize = 103;
+use ko_sys::file::is_executable;
+use ko_wire::local::{Dir, dir, home, set, socket};
+use ko_wire::protocol::BUILD;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Config {
@@ -173,10 +172,6 @@ pub fn overlay(given: &[(&[u8], &[u8])], inherited: &[Vec<u8>]) -> Vec<Vec<u8>> 
         .collect()
 }
 
-fn set(name: &str) -> Option<OsString> {
-    env::var_os(name).filter(|value| !value.is_empty())
-}
-
 fn count(value: Option<OsString>) -> Option<u64> {
     value?.to_str()?.parse().ok().filter(|count| *count > 0)
 }
@@ -189,23 +184,6 @@ pub fn stop_escalation() -> Duration {
     positive("KO_STOP_ESCALATION_MS").map_or(STOP_ESCALATION, Duration::from_millis)
 }
 
-pub fn dir(chosen: Option<PathBuf>) -> PathBuf {
-    if let Some(dir) = chosen.or_else(|| set("KO_STATE_DIR").map(PathBuf::from)) {
-        return dir;
-    }
-    if let Some(state) = set("XDG_STATE_HOME") {
-        return PathBuf::from(state).join("ko");
-    }
-    home().join(".local/state/ko")
-}
-
-fn home() -> PathBuf {
-    set("HOME")
-        .map(PathBuf::from)
-        .or_else(env::home_dir)
-        .unwrap_or_else(|| PathBuf::from("/"))
-}
-
 fn config_file(chosen: Option<PathBuf>) -> PathBuf {
     chosen.unwrap_or_else(|| {
         ko_config::config::default_path(
@@ -213,49 +191,6 @@ fn config_file(chosen: Option<PathBuf>) -> PathBuf {
             &home(),
         )
     })
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Dir {
-    Create,
-    Existing,
-    /// The server of the caller's own pane, which KO_SOCKET named.
-    Own,
-}
-
-pub fn socket_path(dir: &Path) -> Result<PathBuf, String> {
-    let socket = dir.join("socket");
-    if dir.as_os_str().as_encoded_bytes().contains(&b',') {
-        return Err("server directory contains a comma".to_owned());
-    }
-    if socket.as_os_str().len() > SUN_PATH_MAX {
-        return Err(format!("server socket path exceeds {SUN_PATH_MAX} bytes"));
-    }
-    Ok(socket)
-}
-
-pub fn socket(mode: Dir, dir: &Path) -> Result<PathBuf, String> {
-    let socket = socket_path(dir)?;
-    if mode == Dir::Create {
-        fs::DirBuilder::new()
-            .recursive(true)
-            .mode(0o700)
-            .create(dir)
-            .map_err(|error| error.to_string())?;
-    }
-    let meta = fs::symlink_metadata(dir).map_err(|error| error.to_string())?;
-    if !meta.is_dir() {
-        Err("server path is not a directory".to_owned())
-    } else if mode == Dir::Own {
-        // A container runtime makes the parent of the mounted socket, root-owned and 0755.
-        Ok(socket)
-    } else if meta.uid() != ko_sys::sock::uid() {
-        Err("server directory is not owned by this user".to_owned())
-    } else if meta.permissions().mode() & 0o077 != 0 {
-        Err("server directory is accessible to other users".to_owned())
-    } else {
-        Ok(socket)
-    }
 }
 
 pub const TERM_NAME: &str = "xterm-ghostty";
@@ -288,26 +223,6 @@ pub fn path_with(dir: &Path, inherited: &[u8]) -> Vec<u8> {
     path
 }
 
-pub fn look_path(path: &str, name: &str) -> Option<PathBuf> {
-    path.split(':')
-        .map(|dir| Path::new(if dir.is_empty() { "." } else { dir }).join(name))
-        .find(|candidate| is_executable(candidate))
-}
-
-pub fn env_path(env: &[Vec<u8>]) -> &[u8] {
-    env.iter()
-        .find_map(|entry| entry.strip_prefix(b"PATH="))
-        .unwrap_or_default()
-}
-
-pub fn program_path(path: &str, program: &str) -> Option<PathBuf> {
-    if program.contains('/') {
-        Some(PathBuf::from(program))
-    } else {
-        look_path(path, program)
-    }
-}
-
 pub fn installed(exe: &Path, relative: &str) -> Vec<PathBuf> {
     candidates(exe)
         .iter()
@@ -326,10 +241,6 @@ fn candidates(exe: &Path) -> Vec<PathBuf> {
         .ok()
         .filter(|resolved| resolved != exe);
     std::iter::once(exe.to_path_buf()).chain(resolved).collect()
-}
-
-pub fn is_executable(path: &Path) -> bool {
-    fs::metadata(path).is_ok_and(|meta| meta.is_file() && meta.permissions().mode() & 0o111 != 0)
 }
 
 fn shipped(exe: &Path) -> Result<(PathBuf, PathBuf), String> {
@@ -428,27 +339,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn a_server_directory_must_be_private_and_short() {
-        let scratch = tempdir();
-        let dir = scratch.join("state");
-        assert_eq!(socket(Dir::Create, &dir), Ok(dir.join("socket")));
-        fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).unwrap();
-        assert_eq!(
-            socket(Dir::Existing, &dir),
-            Err("server directory is accessible to other users".to_owned())
-        );
-        assert_eq!(
-            socket(Dir::Existing, &scratch.join("a,b")),
-            Err("server directory contains a comma".to_owned())
-        );
-        assert_eq!(
-            socket(Dir::Existing, &scratch.join("x".repeat(100))),
-            Err("server socket path exceeds 103 bytes".to_owned())
-        );
-        fs::remove_dir_all(scratch).unwrap();
-    }
-
-    #[test]
     fn a_duration_knob_is_a_positive_whole_number_or_the_default() {
         let read = |text: &str| count(Some(OsString::from(text)));
         assert_eq!(
@@ -464,11 +354,5 @@ mod tests {
             (Some(30), Some(1), None, None, None, None, None)
         );
         assert_eq!(count(None), None);
-    }
-
-    fn tempdir() -> PathBuf {
-        let dir = PathBuf::from(format!("/tmp/ko-config-{}", std::process::id()));
-        fs::create_dir(&dir).unwrap();
-        dir
     }
 }

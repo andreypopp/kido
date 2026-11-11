@@ -3,8 +3,8 @@ use std::collections::{HashMap, VecDeque};
 use ko_sys::event::Token;
 use tungstenite::Utf8Bytes;
 
-use crate::ids::MessageId;
-use crate::protocol::{self, Content, Data, Message, Relation, Sender};
+use ko_wire::ids::MessageId;
+use ko_wire::protocol::{self, Content, Data, Message, Relation, Sender};
 
 const WINDOW: usize = 16;
 const CAP_BYTES: usize = 64 << 20;
@@ -203,7 +203,7 @@ fn size(content: &Content) -> usize {
         | Content::User(payload) => payload
             .text
             .len()
-            .saturating_add(payload.data.as_ref().map_or(0, Data::len)),
+            .saturating_add(payload.data.as_ref().map_or(0, Data::byte_len)),
         Content::Ended { .. } => 0,
     }
 }
@@ -213,8 +213,8 @@ mod tests {
     use proptest::prelude::*;
 
     use super::*;
-    use crate::ids::PaneId;
-    use crate::protocol::Payload;
+    use ko_wire::ids::PaneId;
+    use ko_wire::protocol::Payload;
 
     fn id(number: usize) -> MessageId {
         MessageId::try_from(format!("id{number:06}")).unwrap()

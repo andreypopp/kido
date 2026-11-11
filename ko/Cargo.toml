@@ -5,6 +5,7 @@ edition.workspace = true
 publish.workspace = true
 
 [dependencies]
+ko_wire = { path = "../ko_wire" }
 clap.workspace = true
 clap_complete.workspace = true
 ko_client = { path = "../ko_client" }

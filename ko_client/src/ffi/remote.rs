@@ -5,7 +5,7 @@ use std::ffi::{c_char, c_int};
 use ko_sys::pid::Exit;
 
 use super::{Buffer, Code, put, slice_of, text_of};
-use crate::remote::{self, Error};
+use crate::remote::{self, Failure};
 
 #[repr(C)]
 #[derive(Debug, Clone, Copy)]
@@ -56,8 +56,8 @@ pub unsafe extern "C" fn ko_remote_socket(
         Ok(path) => (Code::Ok, path.into_bytes()),
         Err(error) => {
             let code = match error {
-                Error::NoRemoteKo { .. } => Code::NotFound,
-                Error::Query { .. } => Code::Invalid,
+                Failure::NoRemoteKo { .. } => Code::NotFound,
+                Failure::Query { .. } => Code::Invalid,
                 _ => Code::Io,
             };
             (code, error.to_string().into_bytes())

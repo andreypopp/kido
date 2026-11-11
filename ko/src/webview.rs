@@ -58,9 +58,9 @@ pub(crate) fn run(args: WebviewArgs, server: Option<PathBuf>) -> ExitCode {
                     writeln!(
                         io::stdout().lock(),
                         "{}",
-                        ko_server::protocol::json(
-                            &ko_server::protocol::webview::ServeOut::Supported { supported }
-                        )
+                        ko_wire::protocol::json(&ko_wire::protocol::webview::ServeOut::Supported {
+                            supported
+                        })
                     )
                 },
             )

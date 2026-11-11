@@ -17,11 +17,11 @@ pub struct Webview {
 pub struct Rest(String);
 
 impl Rest {
-    pub(crate) fn as_str(&self) -> &str {
+    pub fn as_str(&self) -> &str {
         &self.0
     }
 
-    pub(crate) fn into_target(self) -> RequestTarget {
+    pub fn into_target(self) -> RequestTarget {
         RequestTarget::rendered(format!("/{}", self.0))
     }
 }
@@ -224,7 +224,7 @@ impl FrameKind {
             }
         }
     }
-    pub(crate) fn from_message(
+    pub fn from_message(
         message: tungstenite::Message,
     ) -> Result<(Self, Vec<u8>), tungstenite::Message> {
         match message {

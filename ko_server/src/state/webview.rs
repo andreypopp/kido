@@ -1,18 +1,18 @@
-use crate::protocol::webview::FrameKind;
+use ko_wire::protocol::webview::FrameKind;
 
 use crate::webview::{Phase, ProxyRequest, Refusal, Serving, Wait};
 use std::collections::VecDeque;
 
 use super::*;
-use crate::http::{self, Policy, Status};
-use crate::protocol::Method;
-use crate::protocol::webview::{
-    AbortReason, Data, Headers, MAX_IN_FLIGHT, Page, ServeIn, ServeOut,
-};
-use crate::protocol::{CloseCode, CloseReason};
-use crate::protocol::{Error, ErrorKind};
 use crate::ws::Ws;
 use ko_sys::event::Interest;
+use ko_wire::http::{self, Policy, Status};
+use ko_wire::protocol::Method;
+use ko_wire::protocol::webview::{
+    AbortReason, Data, Headers, MAX_IN_FLIGHT, Page, ServeIn, ServeOut,
+};
+use ko_wire::protocol::{CloseCode, CloseReason};
+use ko_wire::protocol::{Error, ErrorKind};
 
 #[derive(Debug)]
 enum Outcome {

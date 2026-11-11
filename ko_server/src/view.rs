@@ -1,4 +1,3 @@
-use crate::protocol::Dead;
 use ko_pane_wire::frame::History;
 use ko_pane_wire::ring::{self, Invalid, Mark, Pos, Reach, Reader, Record, RecordKind};
 #[cfg(verus_only)]
@@ -6,6 +5,7 @@ use ko_pane_wire::ring::{
     Log, boundary, cursor_grows, cursor_ok, log_le, log_le_boundary, log_le_head, log_le_same,
     log_le_trans, log_wf, lost, lost_at, off_at, reach_cursor, rec_bounds, sent_cursor, wf_rec,
 };
+use ko_wire::protocol::Dead;
 use vstd::prelude::*;
 #[cfg(verus_only)]
 use vstd::view::View as _;
@@ -17,10 +17,10 @@ use crate::deflate::Deflate;
 #[cfg(verus_only)]
 use crate::delivery::instance_of;
 use crate::delivery::{Delivery, Done, Handle};
-use crate::ids::{ClientId, PaneId};
 use crate::link::Wire;
-use crate::protocol::{self, Marked, Skipped, ViewEvent};
 use crate::ws::{self, Ws};
+use ko_wire::ids::{ClientId, PaneId};
+use ko_wire::protocol::{self, Marked, Skipped, ViewEvent};
 
 verus! {
 

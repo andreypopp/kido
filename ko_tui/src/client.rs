@@ -8,23 +8,24 @@ use std::process::Child;
 use std::time::{Duration, Instant};
 
 use crate::clipboard;
+use ko_client::connect::{BACKOFF_FIRST, PATIENCE, backoff_after};
 use ko_client::edit::{Edge, Edit};
-use ko_client::launch::{self, BACKOFF_FIRST, PATIENCE, backoff_after};
+use ko_client::launch;
 use ko_client::layout::{EditError, Edited};
 use ko_client::model::{Applied, Item, JoinError, Model, NavigationIds, Notice, Rejoin, cycle};
 use ko_client::remote::{Progress, Remote};
 use ko_client::wire::{self, Link, Next, WATCHDOG, silent, text};
 use ko_config::values::{AbsPath, RuntimeName};
 use ko_pane_wire::frame::{Dim, ScreenFormat, ScreenRows, Size};
-use ko_server::api::Route;
-use ko_server::ids::{Name, PaneId, SessionId, WindowId};
-use ko_server::protocol::{
-    self, ClientRequest, ClipboardContent, ClipboardServed, CreatePane, Cwd, Direction, Hello,
-    Input as Wire, Key as WireKey, Mouse as WireMouse, Paste, Selection, Switch, json,
-};
 use ko_sys::event::{Due, Events, Interest, Mode, Poll, Ready, Timer, Token};
 use ko_sys::signal::{Signal, Signals};
 use ko_vt::render::{Frame, MouseTracking};
+use ko_wire::api::Route;
+use ko_wire::ids::{Name, PaneId, SessionId, WindowId};
+use ko_wire::protocol::{
+    self, ClientRequest, ClipboardContent, ClipboardServed, CreatePane, Cwd, Direction, Hello,
+    Input as Wire, Key as WireKey, Mouse as WireMouse, Paste, Selection, Switch, json,
+};
 
 use crate::copy::Outcome;
 use crate::geometry;

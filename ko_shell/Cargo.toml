@@ -5,6 +5,7 @@ edition.workspace = true
 publish.workspace = true
 
 [dependencies]
+ko_wire = { path = "../ko_wire" }
 ko_client = { path = "../ko_client" }
 ko_config = { path = "../ko_config" }
 ko_pane_wire = { path = "../ko_pane_wire" }

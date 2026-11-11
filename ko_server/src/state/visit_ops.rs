@@ -1,11 +1,11 @@
 use std::path::PathBuf;
 
 use super::*;
-use crate::ids::PaneToken;
+use ko_wire::ids::PaneToken;
 
-use crate::protocol::{Error, ErrorKind, LinkState, VisitClient, VisitRequest, VisitServer};
 use crate::runtime::pane::{self, Dir, Wrap};
 use crate::runtime::{RuntimeKey, Wait, Who};
+use ko_wire::protocol::{Error, ErrorKind, LinkState, VisitClient, VisitRequest, VisitServer};
 
 #[derive(Debug)]
 pub(crate) enum Stage {

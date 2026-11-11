@@ -1,10 +1,10 @@
 use std::path::{Path, PathBuf};
 
-use crate::config::program_path;
-use crate::protocol::ExecRequest;
 use crate::runtime::exec::Launch;
 use crate::runtime::{Ctx, Entry, Next, Outcome, text, words};
 use ko_config::runtime::{Command, Runtime};
+use ko_sys::file::program_path;
+use ko_wire::protocol::ExecRequest;
 
 pub(crate) const DEFAULT_PATH: &str = "/usr/bin:/bin";
 

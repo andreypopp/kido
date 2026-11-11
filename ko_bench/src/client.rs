@@ -4,14 +4,14 @@ use std::path::Path;
 
 use ko_config::values::AbsPath;
 use ko_pane_wire::frame::History;
-use ko_server::api::Route;
-use ko_server::http::{Response, Upgrade, call, read_response, read_upgrade};
-use ko_server::ids::PaneId;
-use ko_server::protocol::{
+use ko_sys::clock::Mono;
+use ko_wire::api::Route;
+use ko_wire::http::{Response, Upgrade, call, read_response, read_upgrade};
+use ko_wire::ids::PaneId;
+use ko_wire::protocol::{
     self, Command, CreatePane, Cwd, Images, Input, Marker, Row, Text, ViewEvent, json,
 };
-use ko_server::ws::{Parsed, accepted, masked, parse_frame, parse_record, upgrade_request};
-use ko_sys::clock::Mono;
+use ko_wire::ws::{Parsed, accepted, masked, parse_frame, parse_record, upgrade_request};
 
 fn send(stream: &mut UnixStream, route: &Route, body: &[u8]) -> io::Result<()> {
     let (method, target) = route.to_request();

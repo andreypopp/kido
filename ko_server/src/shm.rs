@@ -5,7 +5,7 @@ use std::path::{Path, PathBuf};
 use ko_pane_wire::frame::ImageKey;
 use ko_sys::mapping::{self, Name};
 
-use crate::ids::PaneId;
+use ko_wire::ids::PaneId;
 
 // macOS cannot list POSIX shared memory objects.
 #[derive(Debug)]

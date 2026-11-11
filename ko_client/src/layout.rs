@@ -1,11 +1,11 @@
 use std::path::Path;
 
-use ko_server::api::Route;
-use ko_server::ids::{Name, PaneId, SessionId, WindowId};
-use ko_server::protocol::{
+use ko_sys::event::Wake;
+use ko_wire::api::Route;
+use ko_wire::ids::{Name, PaneId, SessionId, WindowId};
+use ko_wire::protocol::{
     self, CreatePane, DraftLayout, LayoutPanes, Node, PutLayout, Revision, Snapshot,
 };
-use ko_sys::event::Wake;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use std::fmt::Display;
@@ -242,7 +242,7 @@ pub fn add_window(
 mod tests {
     use super::*;
     use crate::edit::Edge;
-    use ko_server::protocol::{Axis, Cells};
+    use ko_wire::protocol::{Axis, Cells};
 
     fn busy(revision: u64, extra: bool) -> Snapshot {
         let more = if extra {
@@ -484,7 +484,7 @@ mod tests {
             created(
                 Edit::Split {
                     pane: "pane_3".parse().unwrap(),
-                    axis: ko_server::protocol::Axis::Horizontal,
+                    axis: ko_wire::protocol::Axis::Horizontal,
                     before: false,
                     new: new(),
                 },

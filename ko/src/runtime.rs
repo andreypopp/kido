@@ -10,9 +10,9 @@ use ko_client::runtimes::{self, Up};
 use ko_client::wire::Caller;
 use ko_config::values::RuntimeName;
 use ko_server::config::variable;
-use ko_server::ids::{InvalidId, PaneId};
 use ko_shell::enter::{self, Enter, TokenSource};
 use ko_shell::session::{self, End};
+use ko_wire::ids::{InvalidId, PaneId};
 
 use crate::{Target, assignment, complain, invoked, say, target};
 
@@ -129,7 +129,7 @@ pub(crate) fn enter(args: EnterArgs) -> ExitCode {
             return crate::fail("enter", "the runtime directory is not UTF-8");
         };
         say(dir);
-        say(&ko_server::protocol::json(&ko_server::protocol::version()));
+        say(&ko_wire::protocol::json(&ko_wire::protocol::version()));
         return ExitCode::SUCCESS;
     }
     let Some(pane) = pane else {

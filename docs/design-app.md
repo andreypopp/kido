@@ -71,7 +71,7 @@ of `ko_client.h` gives their contract.
 
 The app and `ko` share one server: the server directory is ko's default
 directory, which `ko_client_default_dir` reads from
-`ko_server::config::dir` with the app's environment, so the rule has one
+`ko_wire::local::dir` with the app's environment, so the rule has one
 source. A `ko` in a terminal and Kido.app attach to the same sessions. An app that
 Finder or the Dock opens gets launchd's environment, not the shell's: a
 `KO_STATE_DIR` or `XDG_STATE_HOME` that only the shell sets selects another

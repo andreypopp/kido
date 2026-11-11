@@ -1,5 +1,5 @@
-use ko_server::protocol;
-use ko_server::schema;
+use ko_wire::protocol;
+use ko_wire::schema;
 use serde_json::{Value, json};
 
 use crate::edit::Edit;

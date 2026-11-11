@@ -1,8 +1,8 @@
 use std::time::{Duration, Instant};
 
 use ko_client::edit::Edge;
-use ko_server::ids::PaneId;
-use ko_server::protocol::{Axis, Direction, Over};
+use ko_wire::ids::PaneId;
+use ko_wire::protocol::{Axis, Direction, Over};
 
 use crate::copy::Entry;
 use crate::input::{KeyEvent, Kind, Name};

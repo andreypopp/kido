@@ -4,7 +4,7 @@ use std::os::unix::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use ko_server::config::is_executable;
+use ko_sys::file::is_executable;
 
 use crate::bin_dir::{self, path_prepend_script};
 use crate::prime::{self, Mode};

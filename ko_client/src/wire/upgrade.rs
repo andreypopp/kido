@@ -4,15 +4,15 @@ use std::os::unix::net::UnixStream;
 use std::path::Path;
 use std::sync::Arc;
 
-use ko_server::api::Route;
-use ko_server::http::{self, Response};
-use ko_server::ids::ClientId;
-use ko_server::ws::upgrade_request;
 use ko_sys::event::{Interest, Poll, PollRead, Reads, Ready, Token, Wake};
 use ko_sys::fd::Queue;
+use ko_wire::api::Route;
+use ko_wire::http::{self, Response};
+use ko_wire::ids::ClientId;
+use ko_wire::ws::upgrade_request;
 
 use crate::wire::Link;
-use ko_server::protocol;
+use ko_wire::protocol;
 
 struct Buffered<'a> {
     bytes: &'a [u8],

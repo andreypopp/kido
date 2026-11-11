@@ -1,6 +1,6 @@
 use crate::program_status::Set;
-use crate::protocol::{Foreground, Progress};
 use ko_pane_wire::frame::PromptStep;
+use ko_wire::protocol::{Foreground, Progress};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct CommandRun {

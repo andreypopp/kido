@@ -160,41 +160,47 @@ $(TERMINFO)/x/xterm-ghostty: ko_vt/terminfo.zig $(wildcard third_party/ghostty/s
 # Kido.app links Zig's compiler_rt (GhosttyKit), which clashes with the Rust
 # compiler_builtins in libko_client.a: ld -r exports only ko_client/exports.txt.
 # FORCE runs cargo on every build, because cargo decides whether a slice is current.
-KO_CLIENT_TARGET := aarch64-apple-darwin
+KO_CLIENT_TARGETS ?= aarch64-apple-darwin
 KO_CLIENT_XC ?= $(CURDIR)/build/ko_client.xcframework
-KO_CLIENT_SLICE := target/$(KO_CLIENT_TARGET)/release/libko_client_private.a
+KO_CLIENT_SLICES := $(foreach target,$(KO_CLIENT_TARGETS),target/$(target)/release/libko_client_private.a)
 XCDEV := DEVELOPER_DIR=$${DEVELOPER_DIR:-/Applications/Xcode.app/Contents/Developer}
 
 ko-client-xcframework: $(KO_CLIENT_XC)/Info.plist
 
-$(KO_CLIENT_XC)/Info.plist: $(KO_CLIENT_SLICE) $(wildcard ko_client/include/*)
+$(KO_CLIENT_XC)/Info.plist: $(shell printf '%s\n' "$(KO_CLIENT_TARGETS)" | cmp -s - $(KO_CLIENT_XC).targets || printf FORCE) $(KO_CLIENT_SLICES) $(wildcard ko_client/include/*)
 	rm -rf $(KO_CLIENT_XC)
-	$(XCDEV) xcodebuild -create-xcframework -library $(KO_CLIENT_SLICE) -headers ko_client/include -output $(KO_CLIENT_XC)
+	$(XCDEV) xcodebuild -create-xcframework $(foreach slice,$(KO_CLIENT_SLICES),-library $(slice) -headers ko_client/include) -output $(KO_CLIENT_XC)
+	@printf '%s\n' "$(KO_CLIENT_TARGETS)" > $(KO_CLIENT_XC).targets
 
 target/%/release/libko_client_private.a: target/%/release/libko_client.a ko_client/exports.txt
-	@: $${MACOSX_DEPLOYMENT_TARGET:?set MACOSX_DEPLOYMENT_TARGET}
-	arch=arm64; r=target/$*/release; set -e; \
-	$(XCDEV) xcrun ld -r -arch $$arch -platform_version macos $$MACOSX_DEPLOYMENT_TARGET $$MACOSX_DEPLOYMENT_TARGET -all_load -exported_symbols_list ko_client/exports.txt $$r/libko_client.a -o $$r/ko_client.o; \
+	set -e; case "$*" in \
+	  aarch64-apple-darwin) sdk=macosx; platform=macos; min=$${MACOSX_DEPLOYMENT_TARGET:?set MACOSX_DEPLOYMENT_TARGET}; triple=arm64-apple-macos$$min ;; \
+	  aarch64-apple-ios) sdk=iphoneos; platform=ios; min=$${IPHONEOS_DEPLOYMENT_TARGET:?set IPHONEOS_DEPLOYMENT_TARGET}; triple=arm64-apple-ios$$min ;; \
+	  aarch64-apple-ios-sim) sdk=iphonesimulator; platform=ios-simulator; min=$${IPHONEOS_DEPLOYMENT_TARGET:?set IPHONEOS_DEPLOYMENT_TARGET}; triple=arm64-apple-ios$$min-simulator ;; \
+	  *) echo "ko-client-xcframework: unknown target $*" >&2; exit 1 ;; \
+	esac; \
+	arch=arm64; r=target/$*/release; \
+	$(XCDEV) xcrun --sdk $$sdk clang -target $$triple -E -P -x c -include TargetConditionals.h ko_client/exports.txt -o $$r/exports.txt; \
+	$(XCDEV) xcrun --sdk $$sdk ld -r -arch $$arch -platform_version $$platform $$min $$min -all_load -exported_symbols_list $$r/exports.txt $$r/libko_client.a -o $$r/ko_client.o; \
 	trap 'rm -f $@.tmp' EXIT; \
 	$(XCDEV) xcrun libtool -static -D -o $@.tmp $$r/ko_client.o; \
-	test "$$(nm -arch $$arch -g -U $@.tmp | awk 'NF==3 {print $$3}' | sort)" = "$$(sort ko_client/exports.txt)" || \
-	{ echo "ko-client-xcframework: the $* slice does not export exactly ko_client/exports.txt" >&2; exit 1; }; \
+	test "$$(nm -arch $$arch -g -U $@.tmp | awk 'NF==3 {print $$3}' | sort)" = "$$(grep -v '^[[:space:]]*$$' $$r/exports.txt | sort)" || \
+	{ echo "ko-client-xcframework: the $* slice does not export exactly $$r/exports.txt" >&2; exit 1; }; \
 	mv $@.tmp $@
 
 target/%/release/libko_client.a: build/.ko_client_deps FORCE
-	@: $${MACOSX_DEPLOYMENT_TARGET:?set MACOSX_DEPLOYMENT_TARGET}
 	@test -d "$$(rustc --print target-libdir --target $*)" || \
 	{ echo "ko-client-xcframework: rust target $* is not installed for $$(rustc --version); run: rustup target add $*" >&2; exit 1; }
 	$(CARGO) rustc --locked --release -p ko_client --lib --crate-type staticlib --target $*
 
 build/.ko_client_deps: Cargo.lock ko_client/Cargo.toml
-	set -e; tree=$$($(CARGO) tree --locked -p ko_client -e normal --prefix none); \
-	! echo "$$tree" | grep -q '^ko_vt' || \
-	{ echo "ko-client-xcframework: ko_client depends on ko_vt; the app has its own libghostty-vt" >&2; exit 1; }
+	set -e; tree=$$($(CARGO) tree --locked --target all -p ko_client -e normal,build --prefix none); \
+	! echo "$$tree" | grep -qE '^ko_(server|vt)' || \
+	{ echo "ko-client-xcframework: ko_client depends on ko_server or ko_vt" >&2; exit 1; }
 	mkdir -p build && touch $@
 
 FORCE:
-.SECONDARY: $(KO_CLIENT_SLICE:_private.a=.a)
+.SECONDARY: $(KO_CLIENT_SLICES:_private.a=.a)
 
 # The loom models of the ring handshake build with --cfg loom, so they get their own target
 # directory and do not rebuild the workspace's.

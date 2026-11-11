@@ -1,7 +1,7 @@
 use super::*;
 use crate::ffi::webview::{Request, Task, WebviewEvent, Write, post_webview};
 use crate::webview::{Event, Kind, Upstream};
-use ko_server::protocol::CloseCode;
+use ko_wire::protocol::CloseCode;
 
 #[derive(Debug)]
 pub(super) struct Open {
@@ -156,7 +156,7 @@ impl Open {
                 let event = match event {
                     Event::Response(head) => {
                         if self.task.socket() {
-                            return Err(failure(&ko_server::ws::refused(&head)));
+                            return Err(failure(&ko_wire::ws::refused(&head)));
                         }
                         WebviewEvent::Response {
                             status: head.status,

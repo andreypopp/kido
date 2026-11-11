@@ -1,7 +1,7 @@
 use std::collections::VecDeque;
 
 use ko_pane_wire::frame::{self, MAX_CLIPBOARD};
-use ko_server::protocol::{ClipboardContent, ClipboardLocation, Text};
+use ko_wire::protocol::{ClipboardContent, ClipboardLocation, Text};
 
 const MAX_PENDING: usize = 16;
 

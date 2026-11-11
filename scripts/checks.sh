@@ -79,7 +79,7 @@ third_party/ghostty Makefile app/Makefile app/project.yml rust-toolchain.toml Ca
 docs/* plans/* *.md|build lint-sh
 ko_e2e/tests/e2e/*.rs|module
 ko_e2e/*|build lint unit e2e
-ko_pane_wire/* ko_server/*|build lint unit e2e verus
+ko_pane_wire/* ko_server/* ko_wire/*|build lint unit e2e verus app ko-test
 ko_client/* share/ko/*.json|build lint unit e2e app ko-test
 ko_sys/* ko_vt_sys/*|build build-linux lint unit e2e
 ko/* ko_*/* fuzz/* share/ko/*|build lint unit e2e

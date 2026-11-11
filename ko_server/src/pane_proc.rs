@@ -23,12 +23,42 @@ use ko_sys::signal::Signal;
 
 use crate::config::Config;
 use crate::delivery::{self, Delivery, Done, Handle, Stamps};
-use crate::ids::{PaneId, StatusId};
-use crate::protocol::{
+use crate::telemetry::Prompt;
+use ko_wire::ids::{PaneId, StatusId};
+use ko_wire::protocol::{
     ClipboardContent, ClipboardLocation, ClipboardServed, Foreground, ImageShm, ProgramKind,
     ProgramState, Progress, ProgressState, SearchMatch, StatusRecord, StatusReport, Text,
 };
-use crate::telemetry::Prompt;
+
+impl From<&Death> for ko_wire::protocol::Dead {
+    fn from(death: &Death) -> ko_wire::protocol::Dead {
+        ko_wire::protocol::Dead {
+            at: death.at.nanos(),
+            cause: match &death.cause {
+                Cause::Exit(exit) => ko_wire::protocol::Cause::from(*exit),
+                Cause::StartFailed(message) | Cause::Failed(message) => {
+                    ko_wire::protocol::Cause::Failed {
+                        message: message.clone(),
+                    }
+                }
+            },
+        }
+    }
+}
+
+impl<'a> From<&'a ko_wire::protocol::Input> for Input<'a> {
+    fn from(input: &'a ko_wire::protocol::Input) -> Input<'a> {
+        match input {
+            ko_wire::protocol::Input::Key(key) => Input::Key(&key.0),
+            ko_wire::protocol::Input::Mouse(mouse) => Input::Mouse(mouse.0),
+            ko_wire::protocol::Input::Paste(paste) => Input::Paste {
+                text: &paste.text,
+                check_safe: paste.check_safe,
+            },
+            ko_wire::protocol::Input::Text { data } => Input::Text(&data.0),
+        }
+    }
+}
 
 const RING_CAPACITY: u64 = SLICE_MAX as u64;
 const INPUT: usize = 65536;
@@ -77,7 +107,7 @@ pub(crate) enum Event {
     Dead(Death),
     Snapshot {
         done: Done,
-        dead: Option<crate::protocol::Dead>,
+        dead: Option<ko_wire::protocol::Dead>,
     },
     Screen {
         req: Req,
@@ -103,7 +133,7 @@ pub(crate) enum Event {
         title: Option<String>,
         body: String,
     },
-    Webview(Option<crate::protocol::webview::Page>),
+    Webview(Option<ko_wire::protocol::webview::Page>),
     Progress(Option<Progress>),
     Image {
         req: Req,
@@ -1000,7 +1030,7 @@ impl PaneProc {
             FromPane::Webview(report) => {
                 io.events.push(Event::Webview(match report {
                     frame::WebviewReport::Enter { path } => {
-                        Some(crate::protocol::webview::Page { path: path.into() })
+                        Some(ko_wire::protocol::webview::Page { path: path.into() })
                     }
                     frame::WebviewReport::Leave => None,
                 }));

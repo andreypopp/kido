@@ -7,14 +7,14 @@ use ko_sys::event::Token;
 
 use crate::config::Config;
 use crate::delivery::Stamps;
-use crate::ids::{PaneId, PaneToken};
 use crate::inbox::Inbox;
 use crate::model::PaneModel;
 use crate::pane_proc::{Input, Io, Launch, PaneProc};
-use crate::protocol::{Close, Variable};
 use crate::runtime::RuntimeKey;
 use crate::telemetry::Telemetry;
-use crate::vars::Vars;
+use ko_wire::ids::{PaneId, PaneToken};
+use ko_wire::protocol::{Close, Variable};
+use ko_wire::vars::Vars;
 
 #[derive(Debug)]
 pub(crate) struct Program {

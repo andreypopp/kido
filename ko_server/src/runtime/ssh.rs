@@ -3,18 +3,19 @@ use std::path::{Path, PathBuf};
 
 use ko_sys::pid::Exit;
 
-use crate::config::{SUN_PATH_MAX, env_path, program_path};
-use crate::ids::PaneId;
 use crate::runtime::exec::Launch;
 use crate::runtime::{
     Cleanup, Ctx, Ending, Entry, Next, Outcome, last_line, pane, text, version_next, words,
 };
-use crate::ssh::{
+use ko_config::runtime::Ssh;
+use ko_config::ssh_args::has_syntax;
+use ko_sys::file::{env_path, program_path};
+use ko_sys::sock::SUN_PATH_MAX;
+use ko_wire::ids::PaneId;
+use ko_wire::ssh::{
     MASTER_OPTIONS, MASTER_SUFFIX, QueryFailure, SOCKET, control_args, forwarding_refused,
     no_remote_ko, query_failure, quote, reported_path, token_name,
 };
-use ko_config::runtime::Ssh;
-use ko_config::ssh_args::has_syntax;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Stage {
@@ -325,7 +326,7 @@ mod tests {
     use ko_config::runtime::{Kind, Runtime};
 
     use super::*;
-    use crate::protocol::{Version, json, version};
+    use ko_wire::protocol::{Version, json, version};
 
     fn ssh_runtime(extra: &str) -> Runtime {
         serde_json::from_str(&format!(r#"{{"ssh":{{"destination":"box"{extra}}}}}"#)).unwrap()

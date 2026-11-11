@@ -1,0 +1,26 @@
+[package]
+name = "ko_wire"
+version = "0.0.0"
+edition.workspace = true
+publish.workspace = true
+
+[features]
+fuzz = []
+
+[dependencies]
+ko_config = { path = "../ko_config" }
+ko_pane_wire = { path = "../ko_pane_wire" }
+ko_sys = { path = "../ko_sys" }
+httparse.workspace = true
+libc.workspace = true
+miniz_oxide.workspace = true
+schemars.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tungstenite.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+
+[lints]
+workspace = true

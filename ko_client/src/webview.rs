@@ -1,4 +1,4 @@
-use ko_server::protocol::webview::FrameKind;
+use ko_wire::protocol::webview::FrameKind;
 
 use std::io;
 use std::ops::Range;
@@ -7,17 +7,17 @@ use std::os::unix::net::UnixStream;
 use std::path::Path;
 use std::time::Instant;
 
-use ko_server::api::Route;
-use ko_server::http::{self, response};
-#[cfg(target_vendor = "apple")]
-use ko_server::ids::ClientId;
-use ko_server::protocol::Method;
-use ko_server::protocol::webview::{
-    AbortReason, Data, Headers, MAX_IN_FLIGHT, ServeIn, ServeOut, Status,
-};
-use ko_server::protocol::{self, CloseCode, CloseReason};
 use ko_sys::event::{Events, Interest, Mode, Poll, Read, Reads, Token};
 use ko_sys::fd::Queue;
+use ko_wire::api::Route;
+use ko_wire::http::{self, response};
+#[cfg(target_vendor = "apple")]
+use ko_wire::ids::ClientId;
+use ko_wire::protocol::Method;
+use ko_wire::protocol::webview::{
+    AbortReason, Data, Headers, MAX_IN_FLIGHT, ServeIn, ServeOut, Status,
+};
+use ko_wire::protocol::{self, CloseCode, CloseReason};
 use tungstenite::{Bytes, Message};
 
 use crate::api;
@@ -91,7 +91,7 @@ impl Upstream {
         poll: &mut Poll,
         path: &Path,
         kind: Kind,
-        target: &ko_server::protocol::RequestTarget,
+        target: &ko_wire::protocol::RequestTarget,
         headers: &Headers,
         destination: Target,
         body: &[u8],
@@ -116,7 +116,7 @@ impl Upstream {
         let fields: Vec<_> = http::forwarded(headers.pairs(), length, identity).collect();
         let (bytes, upgrade) = match kind {
             Kind::Upgrade => {
-                let (bytes, key) = ko_server::ws::upgrade_request("GET", target, client, &fields);
+                let (bytes, key) = ko_wire::ws::upgrade_request("GET", target, client, &fields);
                 (bytes, Some(key))
             }
             Kind::Http(method) => {
@@ -287,7 +287,7 @@ impl Upstream {
                                 let key = upgrade
                                     .as_ref()
                                     .ok_or_else(|| invalid("unexpected WebSocket upgrade"))?;
-                                ko_server::ws::accepted(&head, key)?;
+                                ko_wire::ws::accepted(&head, key)?;
                                 let link = Link::of(
                                     stream.try_clone()?,
                                     reader.take_rest(),

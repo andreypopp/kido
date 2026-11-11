@@ -5,10 +5,10 @@ use super::*;
 use crate::clipboard::{self, Viewer};
 use crate::link::Searching;
 use crate::pane_proc::Object;
-use crate::protocol::{
+use crate::router::ImageReply;
+use ko_wire::protocol::{
     ClipboardContent, ClipboardLocation, ClipboardServed, SearchEvent, SearchMatch,
 };
-use crate::router::ImageReply;
 
 const IMAGE_WAIT: Duration = Duration::from_secs(10);
 
@@ -83,10 +83,10 @@ impl State {
             return;
         };
         let Some(Object { name, shm: info }) = object else {
-            return router::image::<routes::Image>(self, poll, conn, ImageReply::Missing);
+            return router::image(routes::Image, self, poll, conn, ImageReply::Missing);
         };
         if shm {
-            return router::image::<routes::Image>(self, poll, conn, ImageReply::Shm(&info));
+            return router::image(routes::Image, self, poll, conn, ImageReply::Shm(&info));
         }
         let map = usize::try_from(info.length)
             .ok()
@@ -95,7 +95,7 @@ impl State {
             Some(map) => ImageReply::Pixels(&info, map),
             None => ImageReply::Missing,
         };
-        router::image::<routes::Image>(self, poll, conn, reply);
+        router::image(routes::Image, self, poll, conn, reply);
     }
 
     pub(super) fn image_due(&mut self, poll: &mut Poll, timer: Timer) -> bool {

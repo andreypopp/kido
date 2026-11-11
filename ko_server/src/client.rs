@@ -2,9 +2,9 @@ use std::collections::BTreeMap;
 
 use ko_pane_wire::frame::Size;
 
-use crate::ids::{ClientId, PaneId, SessionId, WindowId};
 use crate::layout::nearest;
-use crate::protocol::{
+use ko_wire::ids::{ClientId, PaneId, SessionId, WindowId};
+use ko_wire::protocol::{
     ClientRequest, ClipboardServed, Direction, Layout, NavigationId, Over, Selection, Sizing,
     Switch,
 };
@@ -389,8 +389,8 @@ mod tests {
             current: None,
             focused: false,
             sizing: Sizing::Windows {
-                viewport: crate::protocol::Size(Size::DEFAULT),
-                windows: crate::protocol::WindowSizes::default(),
+                viewport: ko_wire::protocol::Size(Size::DEFAULT),
+                windows: ko_wire::protocol::WindowSizes::default(),
             },
         });
         client.set_current(Some(current));
@@ -666,10 +666,10 @@ mod tests {
                 Sizing::Disabled
             } else {
                 Sizing::Windows {
-                    viewport: crate::protocol::Size(Size::DEFAULT),
-                    windows: vec![crate::protocol::WindowSize {
+                    viewport: ko_wire::protocol::Size(Size::DEFAULT),
+                    windows: vec![ko_wire::protocol::WindowSize {
                         window: WindowId::new(window),
-                        size: crate::protocol::Size(Size::DEFAULT),
+                        size: ko_wire::protocol::Size(Size::DEFAULT),
                     }]
                     .try_into()
                     .unwrap(),

@@ -3,8 +3,11 @@ use std::os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, OwnedFd};
 use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
 
+#[cfg(not(target_os = "ios"))]
 use crate::pid::Pid;
 use crate::retry::check;
+
+pub const SUN_PATH_MAX: usize = 103;
 
 pub fn peer_closed(fd: BorrowedFd<'_>) -> bool {
     let mut byte = 0u8;
@@ -103,7 +106,7 @@ impl<T> OptionKey<T> {
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(target_vendor = "apple")]
 const PEER_CREDENTIALS: OptionKey<libc::xucred> =
     OptionKey::new(libc::SOL_LOCAL, libc::LOCAL_PEERCRED);
 #[cfg(target_os = "linux")]
@@ -129,7 +132,7 @@ fn get<T>(fd: BorrowedFd<'_>, key: OptionKey<T>, value: &mut T) -> io::Result<()
     Ok(())
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(target_vendor = "apple")]
 pub fn peer_uid(fd: BorrowedFd<'_>) -> io::Result<u32> {
     // SAFETY: an all-zero xucred is valid.
     let mut credentials: libc::xucred = unsafe { std::mem::zeroed() };

@@ -9,18 +9,18 @@ use std::time::{Duration, Instant};
 
 use ko_pane_wire::frame::Limits;
 use ko_pane_wire::ring::Slice as Header;
-use ko_server::api::{Offset, Route};
-use ko_server::ids::ClientId;
-use ko_server::protocol::{
+use ko_sys::event::{Events, Interest, Mode, Poll, Ready, Timer, Token};
+use ko_wire::api::{Offset, Route};
+use ko_wire::ids::ClientId;
+use ko_wire::protocol::{
     self, ClientEvent, ClientRequest, Hello, Version, ViewEvent as Wire, ViewRequest, json,
 };
-use ko_server::ws::{Parsed, parse_record};
-use ko_sys::event::{Events, Interest, Mode, Poll, Ready, Timer, Token};
+use ko_wire::ws::{Parsed, parse_record};
 use tungstenite::Bytes;
 
 use super::view::{Feed, Slice, View};
 use super::{Code, Command, Posted, Shared, ViewEvent, layout_of, locked, post, string};
-use crate::launch::{self, BACKOFF_FIRST, backoff_after};
+use crate::connect::{self, BACKOFF_FIRST, backoff_after};
 use crate::model::{Applied, JoinError, Model, Rejoin};
 use crate::wire::{Connecting, Link, Next, READ_TIMEOUT, UpgradeStep, buffered, silent, text};
 
@@ -67,7 +67,7 @@ struct Engine<'a> {
 type Failed = (Code, String);
 
 pub(super) fn failure(error: &io::Error) -> Failed {
-    let code = if launch::absent(error) {
+    let code = if connect::absent(error) {
         Code::NoServer
     } else if error.kind() == io::ErrorKind::InvalidData {
         Code::Protocol
@@ -645,7 +645,7 @@ impl Engine<'_> {
                 Ok(UpgradeStep::Refused(response)) => {
                     self.poll.stop(open.deadline);
                     self.poll.unwatch(conn.token);
-                    let (code, message) = failure(&ko_server::ws::refused(&response));
+                    let (code, message) = failure(&ko_wire::ws::refused(&response));
                     self.lose(code, &message);
                     return;
                 }

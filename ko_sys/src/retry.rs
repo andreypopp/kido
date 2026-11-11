@@ -9,7 +9,7 @@ pub fn retry<T>(mut call: impl FnMut() -> io::Result<T>) -> io::Result<T> {
     }
 }
 
-#[cfg(target_os = "macos")]
+#[cfg(target_vendor = "apple")]
 pub(crate) fn errno() -> *mut libc::c_int {
     // SAFETY: __error has no preconditions.
     unsafe { libc::__error() }

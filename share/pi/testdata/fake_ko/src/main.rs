@@ -10,11 +10,11 @@ use std::time::{Duration, Instant};
 
 use ko_config::runtime::RuntimePi;
 use ko_pane_wire::frame;
-use ko_server::protocol::{self, *};
 use ko_sys::fd::Want;
 use ko_sys::pid::Waited;
 use ko_sys::signal::{Signal, Signals};
 use ko_sys::spawn::Env;
+use ko_wire::protocol::{self, *};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::{Value, json};
 

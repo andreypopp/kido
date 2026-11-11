@@ -1,16 +1,16 @@
 use std::collections::BTreeMap;
 
 use super::*;
-use crate::api::{Route, WaitMs, routes};
 use crate::pane::Birth;
 use crate::panes::{AddError, Start, is_descendant, program, scope};
-use crate::protocol::{
-    ClientRuntime, Empty, Error, ErrorKind, LinkState, RuntimeInfo, RuntimeSource, RuntimeWait,
-};
 use crate::runtime::pane::{self, Dir, Wrap as Entering, socket_path};
 use crate::runtime::{CLEANUP_LIMIT, Due, PASS_HOLD, RuntimeKey, Wait, Who};
 use crate::server::Origin;
-use crate::vars::Vars;
+use ko_wire::api::{Route, WaitMs, routes};
+use ko_wire::protocol::{
+    ClientRuntime, Empty, Error, ErrorKind, LinkState, RuntimeInfo, RuntimeSource, RuntimeWait,
+};
+use ko_wire::vars::Vars;
 
 pub(super) fn resolve_runtime(
     origin: &Origin,

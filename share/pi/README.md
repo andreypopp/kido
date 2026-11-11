@@ -108,7 +108,7 @@ once for each piece of work, and the parent keeps it whole.
 TypeScript support, on the fake `ko` of `testdata/fake_ko/` (a Rust
 binary that `make build-fake-ko` builds). The fake answers the routes
 that the extension calls with the real server's shapes: it decodes and
-encodes every wire message through `ko_server::protocol`'s types, so a
+encodes every wire message through `ko_wire::protocol`'s types, so a
 change of a wire shape breaks its build. A test sends a deliberately
 malformed stream message through `feedRaw`, which the fake prints verbatim. It serves the
 message stream from files that a test writes, reading the acks on

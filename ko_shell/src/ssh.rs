@@ -5,8 +5,8 @@ use std::time::{Duration, Instant};
 use ko_client::api;
 use ko_client::wire::Caller;
 use ko_config::ssh_args::{SshArgs, connection_args, interactive, parse};
-use ko_server::api::Route;
-use ko_server::ids::VarName;
+use ko_wire::api::Route;
+use ko_wire::ids::VarName;
 use serde_json::json;
 
 use crate::prime::ssh_bootstrap;

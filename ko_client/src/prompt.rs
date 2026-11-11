@@ -1,8 +1,8 @@
 use std::path::Path;
 
-use ko_server::api::{Route, WindowOnly};
-use ko_server::ids::PaneId;
-use ko_server::protocol::{Candidate, Empty, SendPrompt, Sent};
+use ko_wire::api::{Route, WindowOnly};
+use ko_wire::ids::PaneId;
+use ko_wire::protocol::{Candidate, Empty, SendPrompt, Sent};
 
 use crate::api::{ReplyError, call};
 use crate::wire::{self, Caller};

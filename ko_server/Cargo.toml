@@ -8,13 +8,12 @@ publish.workspace = true
 fuzz = []
 
 [dependencies]
-httparse.workspace = true
+ko_wire = { path = "../ko_wire" }
 libc.workspace = true
 ko_config = { path = "../ko_config" }
 ko_pane_wire = { path = "../ko_pane_wire" }
 ko_sys = { path = "../ko_sys" }
 miniz_oxide.workspace = true
-schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tungstenite.workspace = true

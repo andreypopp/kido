@@ -1,5 +1,5 @@
-use crate::ids::{ClientId, PaneId};
-use crate::protocol::Selection;
+use ko_wire::ids::{ClientId, PaneId};
+use ko_wire::protocol::Selection;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Cause {

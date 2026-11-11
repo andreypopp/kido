@@ -1,6 +1,6 @@
 use ko_sys::clock::Mono;
 
-use crate::protocol::{ProgramRecord, ProgramState, ProgramStatus, StatusReport};
+use ko_wire::protocol::{ProgramRecord, ProgramState, ProgramStatus, StatusReport};
 
 const MAX_RECORDS: usize = 64;
 
@@ -124,7 +124,7 @@ mod tests {
 
     fn set(id: &str, state: ProgramState, app: &str) -> StatusReport {
         StatusReport::Set {
-            record: crate::protocol::StatusRecord {
+            record: ko_wire::protocol::StatusRecord {
                 id: id.to_owned().try_into().unwrap(),
                 state,
                 app: (!app.is_empty()).then(|| app.to_owned().try_into().unwrap()),
@@ -234,7 +234,7 @@ mod tests {
         found.apply(working("bare", 0), Mono::from_nanos(1));
         found.apply(
             StatusReport::Set {
-                record: crate::protocol::StatusRecord {
+                record: ko_wire::protocol::StatusRecord {
                     msg: Some("A".to_owned().try_into().unwrap()),
                     ..match working("msg", 0) {
                         StatusReport::Set { record } => record,

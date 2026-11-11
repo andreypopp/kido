@@ -1,9 +1,9 @@
-use ko_server::protocol::webview::FrameKind;
+use ko_wire::protocol::webview::FrameKind;
 
 use super::*;
-use ko_server::api::Route;
-use ko_server::protocol::CloseCode;
-use ko_server::protocol::webview::Headers;
+use ko_wire::api::Route;
+use ko_wire::protocol::CloseCode;
+use ko_wire::protocol::webview::Headers;
 use std::ops::Range;
 use std::sync::Weak;
 
@@ -360,7 +360,7 @@ unsafe fn request_of(
     // SAFETY: pane and path are NUL-terminated for scope by contract.
     let (pane, path) = unsafe { (text_of(pane, scope)?, text_of(path, scope)?) };
     let pane = pane.parse::<PaneId>().ok()?;
-    if !path.starts_with('/') || len > ko_server::http::MAX_BODY {
+    if !path.starts_with('/') || len > ko_wire::http::MAX_BODY {
         return None;
     }
     let route = Route::of_request(method, &format!("/panes/{pane}/webview{path}")).ok()?;

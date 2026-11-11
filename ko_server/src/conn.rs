@@ -13,13 +13,13 @@ use ko_sys::event::{Interest, Poll, Read, Reads, Timer, Token};
 use ko_sys::mapping::Named;
 use vstd::prelude::*;
 
-use crate::http::{self, Framing, Head, MAX_HEAD, Parsed, Status};
-use crate::ids::PaneId;
 use crate::link::{Link, Role, Wire};
 use crate::runtime::RuntimeKey;
 use crate::server::{Origin, Verified};
 use crate::spill::Spill;
 use crate::ws::{Header, Record};
+use ko_wire::http::{self, Framing, Head, MAX_HEAD, Parsed, Status};
+use ko_wire::ids::PaneId;
 
 const SLICES: usize = 64;
 const PIECE: usize = 1 << 20;
@@ -825,7 +825,7 @@ pub(crate) enum Phase {
     },
     Handling,
     Webview {
-        pane: crate::ids::PaneId,
+        pane: ko_wire::ids::PaneId,
         req: u64,
     },
     Streaming,
@@ -850,8 +850,8 @@ pub(crate) struct Conn {
 }
 
 fn request_policy(head: &http::Head) -> http::Policy {
-    if crate::api::Route::of_request(&head.method, &head.target)
-        .is_ok_and(|route| matches!(route.kind(), crate::route::Kind::Proxy { .. }))
+    if ko_wire::api::Route::of_request(&head.method, &head.target)
+        .is_ok_and(|route| route.is_proxy())
     {
         http::Policy::Webview
     } else {

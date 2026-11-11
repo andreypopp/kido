@@ -1,8 +1,8 @@
-use crate::http::Head;
-use crate::ids::{ClientId, PaneId};
-use crate::protocol::webview::{Page, Rest, ServeOut, Webview};
-use crate::protocol::{Error, Method};
 use ko_sys::event::Token;
+use ko_wire::http::Head;
+use ko_wire::ids::{ClientId, PaneId};
+use ko_wire::protocol::webview::{Page, Rest, ServeOut, Webview};
+use ko_wire::protocol::{Error, Method};
 use std::collections::{BTreeMap, VecDeque};
 
 #[derive(Debug, Default)]

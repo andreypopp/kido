@@ -3,9 +3,9 @@ use std::path::Path;
 use std::time::{Duration, Instant};
 
 use ko_config::values::RuntimeName;
-use ko_server::api::{Route, WaitMs};
+use ko_wire::api::{Route, WaitMs};
 
-use ko_server::protocol::{Empty, LinkState, RuntimeWait};
+use ko_wire::protocol::{Empty, LinkState, RuntimeWait};
 
 use crate::api::{call, describe};
 use crate::wire::{self, Caller};

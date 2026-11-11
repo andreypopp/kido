@@ -14,16 +14,18 @@ use ko_vt::{Extent, Format, Terminal};
 use proptest::prelude::*;
 use proptest::test_runner::TestCaseError;
 
-use crate::api::{Offset, Route};
 use crate::config::default_limits;
 use crate::conn::Phase;
 use crate::fuzz::Rig;
-use crate::http::{Response, read_response, request};
 use crate::link::Role;
 use crate::pane_proc::{Cause, Life};
-use crate::protocol::{self, Images, Marker, ViewEvent, ViewOptions, ViewRequest, version_headers};
 use crate::server::Verified;
-use crate::ws::{BadRecord, Frame, Parsed, masked, parse_frame, parse_record};
+use ko_wire::api::{Offset, Route};
+use ko_wire::http::{Response, read_response, request};
+use ko_wire::protocol::{
+    self, Images, Marker, ViewEvent, ViewOptions, ViewRequest, version_headers,
+};
+use ko_wire::ws::{BadRecord, Frame, Parsed, masked, parse_frame, parse_record};
 
 #[derive(Debug, Clone, Copy)]
 enum Source {

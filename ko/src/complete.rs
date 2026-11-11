@@ -7,8 +7,8 @@ use std::time::{Duration, Instant};
 use clap::CommandFactory;
 use clap_complete::engine::CompletionCandidate;
 use ko_client::api;
-use ko_server::api::Route;
-use ko_server::protocol::{LayoutPanes, LinkState, Listing, RuntimeInfo, RuntimeKind};
+use ko_wire::api::Route;
+use ko_wire::protocol::{LayoutPanes, LinkState, Listing, RuntimeInfo, RuntimeKind};
 
 use crate::{Cli, Target};
 
@@ -210,7 +210,7 @@ pub(crate) fn paths(current: &OsStr) -> Vec<CompletionCandidate> {
     };
     let mut sources = HashMap::new();
     let mut paths = Vec::new();
-    for (template, docs) in ko_server::api::route_paths() {
+    for (template, docs) in ko_wire::api::route_paths() {
         if !template.contains('{') {
             paths.push((template.to_owned(), docs.join(" ")));
             continue;

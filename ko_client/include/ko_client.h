@@ -1,6 +1,7 @@
 #ifndef KO_CLIENT_H
 #define KO_CLIENT_H
 
+#include <TargetConditionals.h>
 #include <dispatch/dispatch.h>
 #include <stdbool.h>
 #include <stddef.h>
@@ -397,6 +398,7 @@ ko_code ko_client_connect(const char *socket,
 
 ko_code ko_client_close(ko_client *client);
 
+#if !TARGET_OS_IPHONE
 /*
  * Writes to `out` the absolute path of the server directory that ko uses without
  * --server. The caller frees `out`. KO_ERR_IO: the path cannot be made absolute or
@@ -422,6 +424,7 @@ ko_code ko_client_launch(const char *dir, const char *executable, const char *pa
  * blocks: call it off the main queue.
  */
 ko_code ko_client_stop_server(const char *dir, ko_buffer *error);
+#endif
 
 /* The protocol, terminal revision and build of this core; the strings are static. */
 ko_code ko_client_version(ko_version *out);

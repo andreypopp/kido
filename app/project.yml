@@ -79,7 +79,7 @@ targets:
           set -eu
           : "${KO_CHECKOUT:?set KO_CHECKOUT to the repository root}"
           env -i HOME="$HOME" PATH=/usr/bin:/bin:/usr/sbin:/sbin DEVELOPER_DIR="$DEVELOPER_DIR" MACOSX_DEPLOYMENT_TARGET="$MACOSX_DEPLOYMENT_TARGET" \
-            make -C "$KO_CHECKOUT" ko-client-xcframework KO_CLIENT_XC="$SRCROOT/build/ko_client.xcframework"
+            make -C "$KO_CHECKOUT" ko-client-xcframework KO_CLIENT_TARGETS=aarch64-apple-darwin KO_CLIENT_XC="$SRCROOT/build/ko_client.xcframework"
         basedOnDependencyAnalysis: false
     postBuildScripts:
       - name: Bundle ko

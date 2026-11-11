@@ -2,14 +2,18 @@ _ko_buffer_free
 _ko_client_clipboard_answer
 _ko_client_close
 _ko_client_connect
+#if !TARGET_OS_IPHONE
 _ko_client_default_dir
+#endif
 _ko_client_delete
 _ko_client_edit
 _ko_client_focus
 _ko_client_webview_fetch
 _ko_client_webview_ws_open
 _ko_client_image
+#if !TARGET_OS_IPHONE
 _ko_client_launch
+#endif
 _ko_client_limits
 _ko_client_model
 _ko_client_observe
@@ -21,7 +25,9 @@ _ko_client_runtime_down
 _ko_client_runtime_up
 _ko_client_select
 _ko_client_size
+#if !TARGET_OS_IPHONE
 _ko_client_stop_server
+#endif
 _ko_client_switch
 _ko_client_version
 _ko_code_message
