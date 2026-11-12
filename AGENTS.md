@@ -501,6 +501,17 @@ on the host and runs in the visual-test VM on one pinned macOS build
 host. A visual test never asserts a position that AppKit decides: it
 reads the live view or checks the rule.
 
+**Record the snapshots once, at the end.** A visual run costs minutes
+(the host build and the one VM that every unit shares), and its
+duration does not depend on the number of tests. So a unit records
+its snapshots once: after the last code change, after the review
+findings are applied, before the final `scripts/checks.sh`. While it
+iterates, the implementer checks the page or the view through its
+DOM and unit tests and the mockup, not through snapshots. A
+difference that the manager finds in the recorded snapshots goes
+back in one batch, and the unit records again only the tests that
+batch changes.
+
 **Which verification.** Agents verify a unit with `scripts/checks.sh`
 (`make checks`; `DRY=1` prints only the plan, `BASE=ref` sets the
 base). It reads the paths that the unit changed, finds the checks of
