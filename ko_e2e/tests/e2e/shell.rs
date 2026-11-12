@@ -5,8 +5,8 @@ use std::path::{Path, PathBuf};
 use serde_json::json;
 
 use crate::harness::{
-    DEADLINE, Dir, Server, enabled, ko, poll, quote, run_ko, run_program, sh, start_with, test_env,
-    text_of, which,
+    DEADLINE, Dir, Server, enabled, ko, poll, poll_detailed, quote, run_ko, run_program, sh,
+    start_with, test_env, text_of, which,
 };
 use crate::status::{Flavour, dotfiles, shell_of};
 
@@ -421,6 +421,24 @@ fn pane_runs_the_shims() {
     );
 }
 
+fn wait_screen(s: &Server, pane: &str, needle: &str) {
+    poll_detailed(
+        &format!("{needle} on the screen of {pane}"),
+        (DEADLINE, std::time::Duration::from_millis(10)),
+        || {
+            let screen = s.screen(pane);
+            if screen.contains(needle) {
+                return Ok(());
+            }
+            let trace = fs::read_to_string(s.dir.join("zsh-trace")).unwrap_or_default();
+            Err(format!(
+                "; last screen:\n{screen}\nrow: {}\nzsh trace:\n{trace}",
+                s.row(pane)
+            ))
+        },
+    );
+}
+
 #[test]
 fn shell_completions_survive_priming_cleanup() {
     let s = start_with(
@@ -440,13 +458,18 @@ fn shell_completions_survive_priming_cleanup() {
             &flavour,
             &s.dir,
             if zsh {
-                r#"fpath=("$HOME/site-functions" "${fpath[@]}")
+                r#"zmodload zsh/datetime
+trace() { print -r -- "$EPOCHREALTIME $*" >> "$HOME/zsh-trace" }
+fpath=("$HOME/site-functions" "${(@)fpath:#*/(site-functions|vendor-*)}")
 export FPATH
+trace "zshrc zsh=$ZSH_VERSION FPATH=$FPATH ZDOTDIR=$ZDOTDIR"
 autoload -Uz compinit add-zsh-hook
 recompinit() {
+  trace "compinit start"
   unset _comps
   # A runner's group-writable fpath directories can block compinit on its insecure-directories prompt.
   compinit -u
+  trace "compinit end"
   print reinitialized >> "$HOME/compinit-calls"
 }
 recompinit
@@ -458,6 +481,8 @@ _auto_compinit_if_fpath_changed() {
   fi
 }
 add-zsh-hook precmd _auto_compinit_if_fpath_changed
+add-zsh-hook precmd trace_precmd
+trace_precmd() { trace "precmd" }
 precmd() { eval "$PROMPT_COMMAND" }
 print -r -- "$_ko_dir" > "$HOME/ko-completion-dir""#
             } else {
@@ -479,9 +504,9 @@ print -r -- "$_ko_dir" > "$HOME/ko-completion-dir""#
         ));
         request["close"] = json!("keep");
         let pane = s.new_pane(request);
-        s.screen_has(&pane, "READY>");
+        wait_screen(&s, &pane, "READY>");
         s.text(&pane, "printf 'PRIMED_%s\\n' READY\r");
-        s.screen_has(&pane, "PRIMED_READY");
+        wait_screen(&s, &pane, "PRIMED_READY");
         let out = s
             .dir
             .join(if zsh { "zsh-complete" } else { "bash-complete" });
@@ -504,7 +529,7 @@ print -r -- "$_ko_dir" > "$HOME/ko-completion-dir""#
                     &pane,
                     "(exit 0); : $(exit 1); unfunction _ko; autoload -Uz _ko; fpath+=(\"$HOME/site-functions\"); printf 'SECOND_%s\\n' PROMPT\r",
                 );
-                s.screen_has(&pane, "SECOND_PROMPT");
+                wait_screen(&s, &pane, "SECOND_PROMPT");
                 let dir = fs::read_to_string(s.dir.join("ko-completion-dir")).unwrap();
                 assert!(
                     Path::new(dir.trim()).join("completions/_ko").is_file(),
@@ -516,7 +541,7 @@ print -r -- "$_ko_dir" > "$HOME/ko-completion-dir""#
                 &pane,
                 &format!("{script}; printf 'COMPLETION_{attempt}_%s\\n' DONE\r"),
             );
-            s.screen_has(&pane, &format!("COMPLETION_{attempt}_DONE"));
+            wait_screen(&s, &pane, &format!("COMPLETION_{attempt}_DONE"));
             let written = fs::read_to_string(&out).unwrap();
             assert!(
                 written.contains(&format!("/panes/{pane}/screen")),
