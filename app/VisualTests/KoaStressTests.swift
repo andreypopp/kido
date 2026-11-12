@@ -1,5 +1,6 @@
 import AppKit
 import Darwin
+import KoClientKit
 import WebKit
 import KoClient
 import KoModel

@@ -340,8 +340,8 @@ localhost without delay. The 100k-line restore, the echo at 50, 150 and
 
 ## make -j can race on the xcframework
 
-The app's build writes `app/build/ko_client.xcframework` in place
-(`app/project.yml`). No target starts two builds at once, but `make -j`
+The app's build writes `app/Packages/KoClientKit/build/ko_client.xcframework`
+in place (`app/Makefile`). No target starts two builds at once, but `make -j`
 with several targets can run two of them on the same xcframework. Status:
 accepted; run targets one at a time.
 

@@ -1,5 +1,6 @@
 import GhosttyKit
 import ImageIO
+import KoClientKit
 import QuickLookUI
 import KoClient
 import KoModel

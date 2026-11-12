@@ -1,5 +1,6 @@
 import Foundation
 import KoClient
+import KoClientKit
 import KoModel
 import PaneGeometry
 

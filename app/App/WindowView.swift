@@ -1,5 +1,6 @@
 import AppKit
 import GhosttyKit
+import KoClientKit
 import KoModel
 import PaneGeometry
 import SidebarFeed

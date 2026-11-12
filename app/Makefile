@@ -1,4 +1,5 @@
 export DEVELOPER_DIR ?= /Applications/Xcode.app/Contents/Developer
+export MACOSX_DEPLOYMENT_TARGET := 26.0
 
 KO_CHECKOUT ?= ..
 KO_ABS = $(abspath $(KO_CHECKOUT))
@@ -17,9 +18,15 @@ APP = $(DERIVED)/Build/Products/$(CONFIG)/Kido.app
 INSTALL_DIR ?= /Applications
 RELEASE_APP = build/xcode.noindex/derived-release/Build/Products/Release/Kido.app
 
-.PHONY: vm vm-up vm-down install release-build ko-test ko-model ko-fixtures visual visual-fast visual-slow project all run test clean tsan asan stress tsan-stress asan-stress demo demo-debug demo-build demo-stop release rtt
+.PHONY: ko-client vm vm-up vm-down install release-build ko-test ko-model ko-fixtures visual visual-fast visual-slow project all run test clean tsan asan stress tsan-stress asan-stress demo demo-debug demo-build demo-stop release rtt
 
-project:
+KO_CLIENT_XC = $(CURDIR)/Packages/KoClientKit/build/ko_client.xcframework
+
+# The package's binary target: ko builds it on every run, because cargo decides whether a slice is current.
+ko-client:
+	$(MAKE) -C $(KO_ABS) ko-client-xcframework KO_CLIENT_XC=$(KO_CLIENT_XC)
+
+project: ko-client
 	ln -sfn "$$(GHOSTTY_OPTIMIZE=$(GHOSTTY_OPTIMIZE) scripts/build-ghosttykit.sh)" build/GhosttyKit.xcframework
 	xcodegen --quiet --spec project.yml
 
@@ -144,7 +151,7 @@ demo-stop:
 test:
 	scripts/lint.sh
 	$(MAKE) all
-	@set -eo pipefail; for package in KoModel PaneGeometry SidebarFeed PromptMarkdown; do \
+	@set -eo pipefail; for package in KoModel KoClientKit PaneGeometry SidebarFeed PromptMarkdown; do \
 		(cd Packages/$$package && swift test 2>&1 | $(SWIFT_PROGRESS)); \
 	done
 

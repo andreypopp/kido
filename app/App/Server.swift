@@ -1,4 +1,5 @@
 import Foundation
+import KoClientKit
 
 struct BundledTools: Sendable {
     let prefix: String

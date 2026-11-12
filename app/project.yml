@@ -2,7 +2,7 @@ name: Kido
 options:
   bundleIdPrefix: com.andreypopp
   deploymentTarget:
-    macOS: "26.0"
+    macOS: "${MACOSX_DEPLOYMENT_TARGET}"
 settings:
   base:
     SWIFT_VERSION: "6.0"
@@ -19,10 +19,6 @@ settings:
       DEVELOPMENT_TEAM: LC2633WWXE
       CODE_SIGN_INJECT_BASE_ENTITLEMENTS: NO
       ENABLE_HARDENED_RUNTIME: NO
-settingGroups:
-  KoClientHeaders:
-    KO_CLIENT_SLICE: "$(SRCROOT)/build/ko_client.xcframework/macos-arm64"
-    SWIFT_INCLUDE_PATHS: "$(KO_CLIENT_SLICE)/Headers"
 packages:
   SnapshotTesting:
     url: https://github.com/pointfreeco/swift-snapshot-testing
@@ -35,6 +31,8 @@ packages:
     path: Packages/PromptMarkdown
   KoModel:
     path: Packages/KoModel
+  KoClientKit:
+    path: Packages/KoClientKit
 targets:
   Kido:
     type: application
@@ -53,12 +51,10 @@ targets:
           - CFBundleURLName: com.andreypopp.kido.connect
             CFBundleURLSchemes: [kido-app]
     settings:
-      groups: [KoClientHeaders]
       base:
         KIDO_PRODUCT_NAME: Kido
         PRODUCT_NAME: "$(KIDO_PRODUCT_NAME)"
         ENABLE_USER_SCRIPT_SANDBOXING: NO
-        LIBRARY_SEARCH_PATHS: "$(KO_CLIENT_SLICE)"
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         LM_SKIP_METADATA_EXTRACTION: NO
         GENERATE_INFOPLIST_FILE: YES
@@ -66,21 +62,12 @@ targets:
         CURRENT_PROJECT_VERSION: "0.1.0"
         INFOPLIST_KEY_NSPrincipalClass: NSApplication
         INFOPLIST_KEY_CFBundleDisplayName: Kido
-        OTHER_LDFLAGS: [-lko_client_private, -lc++]
         SWIFT_OBJC_BRIDGING_HEADER: "$(SRCROOT)/App/Shm.h"
       configs:
         Debug:
           PRODUCT_BUNDLE_IDENTIFIER: com.andreypopp.kido.debug
         Release:
           PRODUCT_BUNDLE_IDENTIFIER: com.andreypopp.kido
-    preBuildScripts:
-      - name: Build ko_client
-        script: |
-          set -eu
-          : "${KO_CHECKOUT:?set KO_CHECKOUT to the repository root}"
-          env -i HOME="$HOME" PATH=/usr/bin:/bin:/usr/sbin:/sbin DEVELOPER_DIR="$DEVELOPER_DIR" MACOSX_DEPLOYMENT_TARGET="$MACOSX_DEPLOYMENT_TARGET" \
-            make -C "$KO_CHECKOUT" ko-client-xcframework KO_CLIENT_TARGETS=aarch64-apple-darwin KO_CLIENT_XC="$SRCROOT/build/ko_client.xcframework"
-        basedOnDependencyAnalysis: false
     postBuildScripts:
       - name: Bundle ko
         script: python3 "$SRCROOT/scripts/bundle-ko.py"
@@ -92,6 +79,7 @@ targets:
       - package: SidebarFeed
       - package: PromptMarkdown
       - package: KoModel
+      - package: KoClientKit
       - framework: build/GhosttyKit.xcframework
         embed: false
       - sdk: Metal.framework
@@ -106,7 +94,6 @@ targets:
         excludes: ["__Snapshots__"]
       - path: TestSupport
     settings:
-      groups: [KoClientHeaders]
       base:
         GENERATE_INFOPLIST_FILE: YES
         TEST_HOST: "$(BUILT_PRODUCTS_DIR)/Kido.app/Contents/MacOS/Kido"
@@ -118,6 +105,8 @@ targets:
       - package: PaneGeometry
       - package: SidebarFeed
       - package: KoModel
+      - package: KoClientKit
+        link: false
       - package: PromptMarkdown
         link: false
       - framework: build/GhosttyKit.xcframework
@@ -130,7 +119,6 @@ targets:
       - path: KoTests
       - path: TestSupport
     settings:
-      groups: [KoClientHeaders]
       base:
         GENERATE_INFOPLIST_FILE: YES
         TEST_HOST: "$(BUILT_PRODUCTS_DIR)/Kido.app/Contents/MacOS/Kido"
@@ -138,6 +126,8 @@ targets:
     dependencies:
       - target: Kido
       - package: KoModel
+      - package: KoClientKit
+        link: false
       - framework: build/GhosttyKit.xcframework
         embed: false
         link: false

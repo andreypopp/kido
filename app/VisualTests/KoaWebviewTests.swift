@@ -1,4 +1,5 @@
 import AppKit
+import KoClientKit
 import WebKit
 import XCTest
 import KoClient

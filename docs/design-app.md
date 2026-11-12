@@ -6,7 +6,10 @@ Kido.app (`app/`) is a native macOS client of a ko server. It renders
 every pane with libghostty, beside a native sidebar. The app talks to
 the server only through `ko_client`, ko's Rust client core, which it
 links as a static library and calls through its C ABI
-(`ko_client/include/ko_client.h`, wrapped by `app/App/Ko/KoClient.swift`).
+(`ko_client/include/ko_client.h`). The Swift package
+`app/Packages/KoClientKit` wraps it without AppKit or GhosttyKit, so the
+native iOS client can share it; `app/App/Ko/KoClient.swift` keeps the
+part that needs Ghostty: the views and their surfaces.
 Sessions, windows, panes, layout, history and status live in the server;
 the app holds none of them. The core owns the connection, the reconnect,
 the client model, seen marks, layout-edit convergence and each pane's
@@ -81,6 +84,8 @@ wakes the I/O thread through a `ko_sys::event::Wake`. A second
 `Wake`, set at close, is the cancellation that ends the blocking
 calls (`ko_sys::fd::wait` with a cancel descriptor). Events reach
 the app only through `dispatch_async_f` on the caller's serial queue.
+KoClientKit turns each into a `KoEvent`, the view events included; the
+app's `KoClient.connect` gives the view events to their `KoView`.
 `ko_client_put_layout` is conditional on the document's revision:
 when the layout changed, it returns `KO_ERR_CONFLICT` with the newer
 document in its buffer, and the caller applies its edit to that
@@ -2948,8 +2953,7 @@ poster.
 
 CI's `app` job runs on GitHub's `xcode-27` image (macOS 27 and Xcode 27,
 the toolchain of local development). It installs Homebrew's `rustup`,
-because the ko_client build phase runs make with a system PATH and the
-Makefile finds cargo only there, `xcodegen`, and the Metal toolchain, which
+because the Makefile finds cargo only there, `xcodegen`, and the Metal toolchain, which
 Ghostty's build needs and Xcode downloads separately,
 restores GhosttyKit from a cache keyed by the pin and
 `app/scripts/build-ghosttykit.sh`, and runs `make test` and `make ko-test`.
@@ -3168,9 +3172,10 @@ it does not support. A struct with a bounded integer field (through its
 `$ref`) gets an `init(from:)` that refuses a value out of the schema's
 range with `DecodingError.dataCorrupted`; the typealiases stay `Int`.
 
-The build phase "Build ko_client" runs `make -C $KO_CHECKOUT
-ko-client-xcframework` (`KO_CHECKOUT` defaults to the repository root) and
-links `-lko_client_private` from the `macos-arm64` slice. `bundle-ko.py`
+`make -C app project` runs `make -C $KO_CHECKOUT ko-client-xcframework`
+(`KO_CHECKOUT` defaults to the repository root) before xcodegen, into the
+KoClientKit package, which the app and both test bundles depend on
+(build.md, "The ko_client xcframework"). `bundle-ko.py`
 puts `ko` and `ko-pane` with their `BUILD-ID` into `Resources/ko`.
 A Release build (`make install`, the demo, `scripts/release.sh`) also
 runs `make build-linux check-static LINUX_ARCHS=aarch64` and bundles
@@ -3186,7 +3191,7 @@ again, also when the app did not relink. The script signs only
 the Mach-O files; the Linux ELF needs no signature, and `codesign
 --verify --strict --deep` of the app passes with it inside. No make
 target starts two builds at once; `make -j` with several targets would
-race on `build/ko_client.xcframework`.
+race on `Packages/KoClientKit/build/ko_client.xcframework`.
 
 Test steps print one line per test case. Every build or test run that can
 take more than 10 s runs under `quiet-limit 60`, which stops it after 60 s

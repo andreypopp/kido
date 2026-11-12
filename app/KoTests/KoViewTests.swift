@@ -1,5 +1,6 @@
 import GhosttyKit
 import KoClient
+import KoClientKit
 import KoModel
 import XCTest
 @testable import Kido

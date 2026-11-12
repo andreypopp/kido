@@ -1,4 +1,5 @@
 import AppKit
+import KoClientKit
 
 enum PasteboardMIME {
     static let limit = 64 << 20, textLimit = 1 << 20

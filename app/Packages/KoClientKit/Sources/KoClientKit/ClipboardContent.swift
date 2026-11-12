@@ -1,12 +1,17 @@
 import Foundation
 
-struct KoClipboardContent: Equatable {
-    let mime: String
-    let data: Data
+public struct KoClipboardContent: Equatable {
+    public let mime: String
+    public let data: Data
+
+    public init(mime: String, data: Data) {
+        self.mime = mime
+        self.data = data
+    }
 }
 
 // The C view of clipboard contents and of the type names that go with them, for the call's duration.
-func withClipboard<Item, Result>(
+public func withClipboard<Item, Result>(
     _ contents: [KoClipboardContent], available: [String] = [],
     item: (UnsafePointer<CChar>, UnsafeRawPointer, Int) -> Item,
     _ body: (UnsafeBufferPointer<Item>, UnsafeBufferPointer<UnsafePointer<CChar>?>) -> Result

@@ -1,4 +1,5 @@
 import KoClient
+import KoClientKit
 import KoModel
 import XCTest
 @testable import Kido
@@ -12,7 +13,7 @@ import XCTest
             XCTAssertTrue(Thread.isMainThread)
             events.append(event)
         }
-        let connection = try KoClient(socket: dir + "/socket", sink: record)
+        let connection = try KoClient.connect(socket: dir + "/socket", sink: record)
         wait("welcome and layout") { events.count >= 2 }
         guard case .welcome(let client, let fresh) = events.first else { return XCTFail("\(events)") }
         XCTAssertTrue(client.hasPrefix("client_"))
@@ -27,7 +28,7 @@ import XCTest
         connection.close()
         let seen = events.count
         var later: [KoEvent] = []
-        let witness = try KoClient(socket: dir + "/socket") { later.append($0) }
+        let witness = try KoClient.connect(socket: dir + "/socket") { later.append($0) }
         try put(#"{"revision":1,"layout":{"sessions":[{"id":"session_1","name":"s","windows":[{"id":"window_1","name":"renamed","tree":{"pane":"pane_1"}}]}]}}"#, dir: dir)
         wait("the witness sees the edit") { later.contains(.layout(revision: 2)) }
         mainQueueDrained()
@@ -65,7 +66,7 @@ import XCTest
 
     func testAMissingServerEndsInOneFailedEventOnTheMainQueue() throws {
         var events: [KoEvent] = []
-        let connection = try KoClient(socket: "/tmp/ko-kp-none/socket") { event in
+        let connection = try KoClient.connect(socket: "/tmp/ko-kp-none/socket") { event in
             dispatchPrecondition(condition: .onQueue(.main))
             events.append(event)
         }
@@ -78,7 +79,7 @@ import XCTest
     }
 
     func testAnEmptySocketPathIsRefusedWithACode() {
-        XCTAssertThrowsError(try KoClient(socket: "") { _ in }) { error in
+        XCTAssertThrowsError(try KoClient.connect(socket: "") { _ in }) { error in
             XCTAssertEqual((error as? KoError)?.code, KO_ERR_ARGUMENT)
         }
     }
@@ -96,7 +97,7 @@ import XCTest
         XCTAssertEqual(again, socket, "a running server is reused and the executable is not started")
 
         var events: [KoEvent] = []
-        let client = try KoClient(socket: socket) { events.append($0) }
+        let client = try KoClient.connect(socket: socket) { events.append($0) }
         wait("welcome") { events.contains { if case .welcome = $0 { true } else { false } } }
         XCTAssertFalse(events.isEmpty, "\(events)")
         client.close()
@@ -131,7 +132,7 @@ import XCTest
                 server.stop()
             }
             var events: [KoEvent] = []
-            let client = try KoClient(socket: server.socket) { events.append($0) }
+            let client = try KoClient.connect(socket: server.socket) { events.append($0) }
             wait("the mismatch") { !events.isEmpty }
             // The core posts nothing after the mismatch: a late event would be queued before the close returns.
             var closed = false

@@ -1,5 +1,6 @@
 import AppKit
 import GhosttyKit
+import KoClientKit
 import KoModel
 import KoClient
 import SnapshotTesting

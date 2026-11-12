@@ -1,6 +1,7 @@
 import AppKit
 import GhosttyKit
 import KoClient
+import KoClientKit
 import KoModel
 import SnapshotTesting
 import SidebarFeed
@@ -150,7 +151,7 @@ import XCTest
         window.contentView = session
         _ = try await KoServer.launch(dir: directory.path)
         try await koPut(directory.path, #"[{"name":"visual","windows":\#(windows ?? #"[{"name":"zsh","tree":\#(koPane(pane))}]"#)}]"#)
-        let client = try KoClient(socket: directory.path + "/socket", hello: KoHello(name: "visual", viewport: KoSize(cols: 80, rows: 24, cell: nil), webview: runtime.values.webview.enabled)) { [weak self] event in
+        let client = try KoClient.connect(socket: directory.path + "/socket", hello: KoHello(name: "visual", viewport: KoSize(cols: 80, rows: 24, cell: nil), webview: runtime.values.webview.enabled)) { [weak self] event in
             self?.handle(event)
         }
         self.client = client
@@ -191,7 +192,7 @@ import XCTest
             receive()
             editor?.layoutChanged(revision: Int(revision))
         case .welcome, .model, .selected: receive()
-        case .failed, .mismatch: break
+        case .failed, .mismatch, .viewRestored, .viewClosed, .viewLink: break
         case .clipboardWrite(_, let contents): (window.delegate as? WindowOwner)?.writeClipboard(contents)
         case .clipboardRead(let read): session.pane(read.pane)?.receiveClipboardRead(read)
         }

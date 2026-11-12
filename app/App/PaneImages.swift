@@ -1,6 +1,7 @@
 import Foundation
 import GhosttyKit
 import KoClient
+import KoClientKit
 import os
 
 extension ghostty_surface_t {

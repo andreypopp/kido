@@ -1,5 +1,6 @@
 import AppKit
 import KoClient
+import KoClientKit
 import KoModel
 import SidebarFeed
 import PaneGeometry

@@ -1,5 +1,6 @@
 import AppKit
 import GhosttyKit
+import KoClientKit
 import KoModel
 import KoClient
 import PaneGeometry
@@ -787,7 +788,7 @@ private extension PaneView {
         try await wait("temporary tab removed") { owner.testModel?.layout.layout.window(createdWindow) == nil }
         owner.window.setContentSize(NSSize(width: 1140, height: 780))
         try await wait("children follow slot resize") { fitted() }
-        let peer = try KoClient(socket: fixture.dir + "/socket", hello: KoHello(focused: true, viewport: KoSize(cols: 80, rows: 24, cell: nil))) { _ in }
+        let peer = try KoClient.connect(socket: fixture.dir + "/socket", hello: KoHello(focused: true, viewport: KoSize(cols: 80, rows: 24, cell: nil))) { _ in }
         addTeardownBlock { @MainActor in peer.close() }
         try await wait("competing sizing client joined") { (try? peer.model()) != nil }
         try peer.size(viewport: KoSize(cols: 127, rows: 57, cell: nil), windows: [KoWindowSize(window: first.window, size: KoSize(cols: 127, rows: 57, cell: nil))])

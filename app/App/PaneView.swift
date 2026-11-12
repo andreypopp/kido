@@ -1,4 +1,5 @@
 import AppKit
+import KoClientKit
 import os
 import GhosttyKit
 import IOSurface

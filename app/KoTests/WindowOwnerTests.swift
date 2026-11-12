@@ -1,6 +1,7 @@
 import AppKit
 import GhosttyKit
 import KoClient
+import KoClientKit
 import PaneGeometry
 import XCTest
 import KoModel

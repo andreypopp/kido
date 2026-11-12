@@ -1,6 +1,7 @@
 import Foundation
 import GhosttyKit
 import KoClient
+import KoClientKit
 import KoModel
 
 // Why a remote host is not connected, with the text of its banner.

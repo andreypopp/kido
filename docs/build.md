@@ -204,8 +204,18 @@ an affected Cortex-A53.
 for each rust target of `KO_CLIENT_TARGETS` (default
 `aarch64-apple-darwin`; also `aarch64-apple-ios` and
 `aarch64-apple-ios-sim`) into `build/ko_client.xcframework`
-(`KO_CLIENT_XC` overrides the path), with `ko_client/include/` (the
-header and the module map) for Kido.app. The macOS slice needs
+(`KO_CLIENT_XC` overrides the path). The xcframework holds only the
+libraries, no headers: a headered xcframework copies its module map
+into the products' `include/`, where it collides with GhosttyKit's. The
+Swift package `app/Packages/KoClientKit` consumes it: a binary target
+`KoClientCore` for `build/ko_client.xcframework` inside the package
+(`app/Makefile`'s `ko-client` target builds it there), a C target
+`KoClient` whose `include/ko_client.h` is a symlink to
+`ko_client/include/ko_client.h`, so SwiftPM generates the module, and
+the Swift target `KoClientKit`. SwiftPM resolves the binary target
+when xcodebuild opens the project, so `make -C app project` builds the
+xcframework first, on every app build; an Xcode build alone does not
+refresh it. The macOS slice needs
 `MACOSX_DEPLOYMENT_TARGET` (26.0: Kido.app supports only Apple
 Silicon and macOS 26 or later), an iOS slice
 `IPHONEOS_DEPLOYMENT_TARGET`; the Makefile's one table maps each

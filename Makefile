@@ -164,9 +164,9 @@ XCDEV := DEVELOPER_DIR=$${DEVELOPER_DIR:-/Applications/Xcode.app/Contents/Develo
 
 ko-client-xcframework: $(KO_CLIENT_XC)/Info.plist
 
-$(KO_CLIENT_XC)/Info.plist: $(shell printf '%s\n' "$(KO_CLIENT_TARGETS)" | cmp -s - $(KO_CLIENT_XC).targets || printf FORCE) $(KO_CLIENT_SLICES) $(wildcard ko_client/include/*)
+$(KO_CLIENT_XC)/Info.plist: $(shell printf '%s\n' "$(KO_CLIENT_TARGETS)" | cmp -s - $(KO_CLIENT_XC).targets || printf FORCE) $(KO_CLIENT_SLICES)
 	rm -rf $(KO_CLIENT_XC)
-	$(XCDEV) xcodebuild -create-xcframework $(foreach slice,$(KO_CLIENT_SLICES),-library $(slice) -headers ko_client/include) -output $(KO_CLIENT_XC)
+	$(XCDEV) xcodebuild -create-xcframework $(foreach slice,$(KO_CLIENT_SLICES),-library $(slice)) -output $(KO_CLIENT_XC)
 	@printf '%s\n' "$(KO_CLIENT_TARGETS)" > $(KO_CLIENT_XC).targets
 
 target/%/release/libko_client_private.a: target/%/release/libko_client.a ko_client/exports.txt

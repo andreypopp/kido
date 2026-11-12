@@ -1,4 +1,0 @@
-module KoClient {
-    header "ko_client.h"
-    export *
-}
