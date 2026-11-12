@@ -1,6 +1,6 @@
 import type { TestContext } from "node:test";
 import assert from "node:assert/strict";
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import { mkdtemp, mkdir, readFile, writeFile, rm, stat, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -14,6 +14,18 @@ export async function linkFakeKo(dir: string) {
   await symlink(fake, join(dir, "ko"));
 }
 const hostEnv = Object.fromEntries(["PATH", "LANG", "LC_ALL", "TERM"].flatMap(key => process.env[key] === undefined ? [] : [[key, process.env[key]]]));
+export async function stopChild(child: ChildProcess, closed: Promise<unknown>, ms = 5000) {
+  for (const stream of child.stdio) stream?.destroy();
+  const exited = () => child.exitCode !== null || child.signalCode !== null;
+  for (const signal of ["SIGTERM", "SIGKILL"] as const) {
+    if (!exited()) child.kill(signal);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const done = await Promise.race([closed.then(() => true), new Promise<boolean>(resolve => { timer = setTimeout(resolve, ms, false); })]);
+    clearTimeout(timer);
+    if (done) return;
+  }
+  throw new Error(`child ${child.pid} did not close after SIGKILL: ${child.spawnargs.join(" ")}`);
+}
 export async function fixture(t: TestContext, steps: object[], env: NodeJS.ProcessEnv = {}, pi?: string, startup = true, args: string[] = [], program = resolve("../../build/ko/share/ko/koa/koa.ts")) {
   const dir = await mkdtemp(join(tmpdir(), "koa-test-"));
   const script = join(dir, "script");
@@ -29,7 +41,7 @@ export async function fixture(t: TestContext, steps: object[], env: NodeJS.Proce
   const url = new Promise<string>(resolve => { ready = resolve; });
   child.stderr.on("data", bytes => { stderr += bytes; const match = stderr.match(/koa: (http:\/\/127\.0\.0\.1:\d+\/)/); if (match?.[1]) ready(match[1]); });
   const close = once(child, "close");
-  t.after(async () => { if (child.exitCode === null && child.signalCode === null) child.kill("SIGTERM"); await close; await rm(dir, { recursive: true, force: true }); });
+  t.after(async () => { await stopChild(child, close); await rm(dir, { recursive: true, force: true }); });
   const base = await url;
   const controller = new AbortController();
   t.after(() => controller.abort());

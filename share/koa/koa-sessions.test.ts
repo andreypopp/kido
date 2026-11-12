@@ -8,6 +8,7 @@ import { createInterface } from 'node:readline';
 import type { RpcResponse } from '@earendil-works/pi-coding-agent';
 import { SessionManager } from '../pi/node_modules/@earendil-works/pi-coding-agent/dist/index.js';
 import { koaChannel } from './koa-channel.ts';
+import { stopChild } from './koa-program-fixture.ts';
 
 test('session list channel survives a real pi session switch and new session', { timeout: 20000 }, async t => {
   const dir = await mkdtemp('/tmp/koa-sessions-');
@@ -23,7 +24,7 @@ test('session list channel survives a real pi session switch and new session', {
   const closed = once(child, 'close');
   const channel = koaChannel(child.stdio[3]);
   const lines = createInterface({ input: child.stdout });
-  t.after(async () => { channel.close(); lines.close(); child.kill('SIGTERM'); await closed; await rm(dir, { recursive: true, force: true }); });
+  t.after(async () => { channel.close(); lines.close(); await stopChild(child, closed); await rm(dir, { recursive: true, force: true }); });
   let serial = 0;
   const command = async (value: object) => {
     const id = String(++serial);

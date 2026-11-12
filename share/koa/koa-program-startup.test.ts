@@ -5,8 +5,9 @@ import { mkdtemp, readFile, writeFile, rm } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { once } from "node:events";
 import { createServer } from "node:net";
-import { pollUntil } from "../pi/ko-pi-fixture.ts";
-import { fixture } from "./koa-program-fixture.ts";
+import { Readable } from "node:stream";
+import { pollUntil, sse } from "../pi/ko-pi-fixture.ts";
+import { fixture, stopChild } from "./koa-program-fixture.ts";
 test('bang completion asks the child for its cwd and returns shell replacements', { timeout: 7000 }, async t => {
   const cwd = await mkdtemp('/tmp/koa-tab-context-');
   t.after(() => rm(cwd, { recursive: true, force: true }));
@@ -79,7 +80,8 @@ test('resume selects before the browser, cancels, and reports a broken picker', 
     const pass = item.gate === 'skip' ? ['--resume', '--session', 'existing.jsonl'] : ['--resume', '-r', '--session-dir', dir, '--', 'prompt'];
     const child = spawn(process.execPath, ['--import', resolve('../koa/koa-fake-tty.ts'), resolve('../../build/ko/share/ko/koa/koa.ts'), '--browser', '--pi', resolve('../koa/koa-fake-pi.ts'), ...pass], { stdio: 'pipe', env: { ...process.env, KO_PANE: '', KOA_FAKE_LOG: log, KOA_FAKE_SCRIPT: script, KOA_FAKE_PICKER_GATE: join(dir, 'gate'), KOA_RESUME_READY_MS: '1000', OPEN_LOG: urls, PATH: `${dir}:${process.env.PATH}` } });
     const closed = once(child, 'close');
-    c.after(async () => { if (child.exitCode === null && child.signalCode === null) child.kill('SIGTERM'); await closed; for (const socket of sockets) socket.destroy(); });
+    const events = new AbortController();
+    c.after(async () => { events.abort(); for (const socket of sockets) socket.destroy(); await stopChild(child, closed); });
     let output = ''; child.stdout.on('data', bytes => { output += bytes; }); child.stderr.on('data', bytes => { output += bytes; });
     const deadline = Date.now() + 7500;
     const within = async <T,>(what: string, work: Promise<T>): Promise<T> => {
@@ -107,7 +109,10 @@ test('resume selects before the browser, cancels, and reports a broken picker', 
       assert.deepEqual(argv.slice(argv.indexOf('--harness') + 2), expected);
       await within('browser URL log', pollUntil(async () => { try { return (await readFile(urls, 'utf8')).startsWith('http:'); } catch { return false; } }, 2000, 'browser URL log'));
       const base = output.match(/koa: (http:\/\/127\.0\.0\.1:\d+\/)/)?.[1]; assert.ok(base, output);
-      const response = await within('exit prompt response', fetch(base + 'prompt', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ sessionId: 'fake', text: 'exit', mode: 'prompt', attachments: [] }) }));
+      const stream = await within('events', fetch(base + 'events', { signal: events.signal }));
+      assert.ok(stream.body);
+      const ready = await within('pi ready', sse(Readable.from(stream.body)).until(record => record.type === 'state' && record.pi?.type === 'ready'));
+      const response = await within('exit prompt response', fetch(base + 'prompt', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ sessionId: ready.sessionId, text: 'exit', mode: 'prompt', attachments: [] }) }));
       const body = await within('exit prompt body', response.text());
       assert.equal(response.status, 200, `${body}\nChild output:\n${output}\nFake log:\n${await readFile(log, 'utf8')}`);
     }
@@ -124,7 +129,7 @@ test('startup refuses incompatible flags before opening a webview', { timeout: 7
   for (const args of [['--mode','text'], ['-p'], ['--export','out.html'], ['--list-models'], ['-v'], ['--tui-mode','fullscreen'], ['--theme','dark'], ['--use-theme','dark'], ['--no-themes'], ['@notes.txt']]) await t.test(args.join(' '), { timeout: 10000 }, async c => {
     const child = spawn(process.execPath, [resolve('../../build/ko/share/ko/koa/koa.ts'), '--browser', '--pi', resolve('../koa/koa-fake-pi.ts'), ...args]);
     const closed = once(child, 'close');
-    c.after(async () => { if (child.exitCode === null && child.signalCode === null) child.kill('SIGTERM'); await closed; });
+    c.after(() => stopChild(child, closed));
     let output = ''; child.stderr.on('data', bytes => { output += bytes; });
     const [code] = await closed;
     assert.equal(code, 1, output);

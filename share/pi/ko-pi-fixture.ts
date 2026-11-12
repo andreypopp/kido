@@ -325,22 +325,32 @@ export function makeFixture(): Fixture {
       return [...work].filter((child) => !child.spawnargs.includes("/client")).length;
     },
     async restore() {
-      for (const shutdown of sessions.reverse()) await shutdown();
-      globalThis.__koPiExtensionReceiver?.child.kill();
-      globalThis.__koPiExtensionReceiver = undefined;
-      globalThis.__koCompletionContext?.stop.abort();
-      globalThis.__koCompletionContext = undefined;
-      await pollUntil(() => work.size === 0, 15000, "all fake commands to close");
-      commandWork.delete(command);
-      barePathWork = undefined;
-      for (const key of Object.keys(process.env)) {
-        if (key.startsWith("KO_")) delete process.env[key];
+      let first: unknown;
+      for (const shutdown of sessions.reverse()) {
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        try {
+          await Promise.race([shutdown(), new Promise<never>((_, reject) => { timer = setTimeout(reject, 5000, new Error("timed out waiting for session shutdown")); })]);
+        } catch (error) { first ??= error; } finally { clearTimeout(timer); }
       }
-      for (const [k, v] of Object.entries(saved)) {
-        if (v !== undefined) process.env[k] = v;
-        else delete process.env[k];
+      try {
+        globalThis.__koPiExtensionReceiver?.child.kill();
+        globalThis.__koPiExtensionReceiver = undefined;
+        globalThis.__koCompletionContext?.stop.abort();
+        globalThis.__koCompletionContext = undefined;
+        await pollUntil(() => work.size === 0, 15000, "all fake commands to close");
+      } catch (error) { first ??= error; } finally {
+        commandWork.delete(command);
+        barePathWork = undefined;
+        for (const key of Object.keys(process.env)) {
+          if (key.startsWith("KO_")) delete process.env[key];
+        }
+        for (const [k, v] of Object.entries(saved)) {
+          if (v !== undefined) process.env[k] = v;
+          else delete process.env[k];
+        }
+        rmSync(dir, { recursive: true, force: true });
       }
-      rmSync(dir, { recursive: true, force: true });
+      if (first) throw first;
     },
   };
 }
