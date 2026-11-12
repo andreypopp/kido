@@ -21,7 +21,7 @@ export function deferralText(deferral: Deferral): string {
     case 'jobs': return `reloaded · a newer koa waits for ${plural(deferral.count, 'job')}`;
     case 'children': return `reloaded · a newer koa waits for ${plural(deferral.count, 'subagent')} to report`;
     case 'no_session': return 'reloaded · a newer koa needs a saved session';
-    case 'no_answer': return 'reloaded · a newer koa waits; ko-pi did not answer, try /reload again';
+    case 'no_answer': return 'reloaded · a newer koa waits; the extension did not answer, try /reload again';
   }
 }
 

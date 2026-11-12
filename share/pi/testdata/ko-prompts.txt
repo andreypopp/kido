@@ -216,7 +216,6 @@ child: (your subagent):
 sibling: (another agent in this session, not the user):
 descendant: (a subagent of your subagent):
 sibling_descendant: (a subagent of another agent in this session):
-the TUI takes the header back off and shows "@<name> says:" with the text, collapsed to its first line until clicked
 ```
 delivered as: followUp
 
@@ -245,7 +244,7 @@ delivered as: steer
 
 ```
 notice from <from> (a subagent or background job's report, not the user):
-<text> verbatim, as a custom message of type ko-notice; the TUI takes the header back off and shows it collapsed as "@<from> notifies: <first line>"
+<text> verbatim, as a custom message of type ko-notice
 ```
 delivered as: steer
 
@@ -263,7 +262,7 @@ delivered as: steer; starts a turn
 still running after <N> s; it continues as job <id>; a notice arrives when it ends; output so far:
 <the output tail>
 log: <log>
-For ctrl+b or /reload, the prefix is only "still running".
+For /reload, the prefix is only "still running".
 ```
 delivered as: tool result, not an error
 

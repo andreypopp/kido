@@ -106,7 +106,7 @@ test('resume selects before the browser, cancels, and reports a broken picker', 
       const argv = (await readLog()).find(record => record.type === 'argv').args;
       const expected = [...pass];
       if (item.gate !== 'skip') expected.splice(expected.indexOf('--'), 0, '--session', chosen);
-      assert.deepEqual(argv.slice(argv.indexOf('--harness') + 2), expected);
+      assert.deepEqual(argv.slice(argv.indexOf('--koa-browser') + 1), expected);
       await within('browser URL log', pollUntil(async () => { try { return (await readFile(urls, 'utf8')).startsWith('http:'); } catch { return false; } }, 2000, 'browser URL log'));
       const base = output.match(/koa: (http:\/\/127\.0\.0\.1:\d+\/)/)?.[1]; assert.ok(base, output);
       const stream = await within('events', fetch(base + 'events', { signal: events.signal }));

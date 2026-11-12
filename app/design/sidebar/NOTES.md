@@ -186,9 +186,9 @@ A running `async_bash(..., service: true)` job does not make its
 ancestors look running (user, 2026-11-08): its OSC 7501 record is
 `state=idle` with the msg "service: <name>", so its own row shows the
 gray idle dot and the caption, and it reduces as idle in a folded
-circle; its end still writes done or error. (ko-pi writes `working`
-today; the client cannot tell a service from a job without parsing
-the msg, so the change is in ko-pi.)
+circle; its end still writes done or error. (The agent extension
+wrote `working` then; the client cannot tell a service from a job
+without parsing the msg, so the change is in the extension.)
 
 An idle pane is a gray circle (the muted colour at 50%) everywhere:
 in the folded circles line, where the line counts the children so
@@ -318,7 +318,7 @@ working session after one Split Right (a three-pane window).
   the trailing column (third line on 2026-11-07; on the activity
   line, right aligned, since 2026-11-08).
 - A job row (an `async_bash` job, an OSC 7501 record `job/<id>` that
-  ko-pi writes under its pi's pane) reads name first: the record's
+  koa's agent extension writes under its pi's pane) reads name first: the record's
   title is the job's name and its message is the command while it
   runs (`main-watch` over `scripts/main-watch.sh --stream`), and the
   end text when it ended (`lint` over `exit 1`). A running service
@@ -326,7 +326,7 @@ working session after one Split Right (a three-pane window).
   its idle state (the gray dot) marks it as a service (user,
   2026-11-09; the fixture's `preview` row). Before 2026-11-09 the
   title was the command and the message the name; the user asked for
-  the swap. The change is in ko-pi's writer and
+  the swap. The change is in the extension's writer and
   docs/design-subagents.md "A job's row", not in the app: the app
   draws a record's title over its message as for every record. The
   "Claude Code + records" fixture shows both forms.

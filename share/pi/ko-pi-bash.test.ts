@@ -2,7 +2,6 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { stripVTControlCharacters } from "node:util";
 import { makeFixture, selfPane, startSession, notices, pollUntil, text, gatedCommand, movedId, logHas, captureStatusRecords } from "./ko-pi-fixture.ts";
 
 const listed = async (s: Awaited<ReturnType<typeof startSession>>) => JSON.parse(text(await s.tools.get("list_async_bash").execute("l", {})));
@@ -53,48 +52,6 @@ test("a short timeout stops bash without moving it, while a longer timeout becom
   } finally { await fx.restore(); }
 });
 
-test("ctrl+b moves all running calls, removes the hint and disconnects the turn abort", async () => {
-  const fx = makeFixture();
-  try {
-    process.env.KO_JOB_MOVE_MS = "10000";
-    process.env.KO_JOB_HINT_MS = "5";
-    fx.setPanes([selfPane()]);
-    const s = await startSession(fx);
-    assert.equal(s.terminalListeners.size, 1);
-    assert.deepEqual(s.terminalInput("\x02"), [undefined]);
-    const controller = new AbortController();
-    const updates: string[] = [];
-    const gates = [join(fx.dir, "a"), join(fx.dir, "b")];
-    const work = gates.map((gate, i) => s.tools.get("bash").execute(`b${i}`, { command: `printf 'ready-${i}\\n'; ${gatedCommand(gate)}` }, controller.signal, capture(updates)));
-    await pollUntil(() => updates.some((u) => u?.includes("ready-0")) && updates.some((u) => u?.includes("ready-1")));
-    await pollUntil(() => s.widgets.get("ko-job-hint")?.content !== undefined);
-    const hint = s.widgets.get("ko-job-hint")?.content;
-    assert.ok(Array.isArray(hint));
-    assert.match(stripVTControlCharacters(hint.join("")), /ctrl\+b.*moves this command to a job/);
-    assert.deepEqual(await listed(s), [], "foreground commands have no job rows");
-    assert.deepEqual(notices(s), [], "foreground commands have no notices");
-    assert.deepEqual(s.terminalInput("x"), [undefined]);
-    assert.deepEqual(s.terminalInput("\x02"), [{ consume: true }]);
-    const results = await Promise.all(work);
-    for (const [i, result] of results.entries()) {
-      const id = movedId(result);
-      const row = (await listed(s)).find((row: any) => row.job === id);
-      assert.match(text(result), new RegExp(`ready-${i}`));
-      assert.match(text(result), /still running; it continues as job/);
-      assert.equal(row.name, id);
-    }
-    assert.equal(s.widgets.get("ko-job-hint")?.content, undefined);
-    assert.deepEqual(s.terminalInput("\x02"), [undefined]);
-    controller.abort();
-    assert.equal((await listed(s)).filter((row: any) => row.state === "running").length, 2);
-    for (const gate of gates) writeFileSync(gate, "");
-    await pollUntil(() => notices(s).length === 2);
-    assert.ok(notices(s).every((notice) => notice.includes("exit 0")));
-    await s.emit("session_shutdown", { reason: "new" });
-    assert.equal(s.terminalListeners.size, 0);
-  } finally { await fx.restore(); }
-});
-
 test("foreground bash keeps pi's settings, cwd, environment and exit result and leaves no registry row", async () => {
   const fx = makeFixture();
   try {
@@ -112,7 +69,6 @@ test("foreground bash keeps pi's settings, cwd, environment and exit result and 
     assert.equal(readFileSync(used, "utf8"), "used");
     assert.deepEqual(await listed(s), []);
     assert.deepEqual(notices(s), []);
-    assert.equal(s.widgets.get("ko-job-hint")?.content, undefined);
   } finally { await fx.restore(); }
 });
 
@@ -123,7 +79,6 @@ test("another extension's bash is not replaced and async_bash still works", asyn
     const s = await startSession(fx, { bashSource: "/extensions/other.ts" });
     assert.equal(s.tools.has("bash"), false);
     assert.equal(s.pi.getAllTools().find((tool) => tool.name === "bash")?.sourceInfo.path, "/extensions/other.ts");
-    assert.equal(s.terminalListeners.size, 0);
     await s.tools.get("async_bash").execute("a", { command: "printf async", name: "still-available" });
     await pollUntil(() => notices(s).length === 1);
     assert.match(notices(s)[0]!, /async/);
@@ -148,7 +103,6 @@ test("a reload moves a running bash call and preserves its output without an old
     assert.deepEqual(output, []);
     const id = movedId(await work);
     const row = (await listed(s)).find((row: any) => row.job === id);
-    assert.equal(s.terminalListeners.size, 0);
     writeFileSync(gate, "");
     await pollUntil(async () => (await listed(s)).find((row: any) => row.job === id).state === "ended");
     assert.equal(readFileSync(row.log, "utf8"), "before\nafter\n");
@@ -167,7 +121,7 @@ test("a moved log starts with only the held 64 KiB and marks the earlier cut", a
     const updates: string[] = [];
     const work = s.tools.get("bash").execute("b", { command: gatedCommand(gate, before, "done\n") }, undefined, capture(updates));
     await pollUntil(() => updates.some((u) => u?.includes("TAIL")));
-    assert.deepEqual(s.terminalInput("\x02"), [{ consume: true }]);
+    await s.emit("session_shutdown", { reason: "reload" });
     const result = await work;
     const row = (await listed(s)).find((row: any) => row.job === movedId(result));
     const marker = "--- earlier output is cut; this log starts with the last 64 KiB before the move ---\n";
@@ -175,8 +129,7 @@ test("a moved log starts with only the held 64 KiB and marks the earlier cut", a
     assert.equal(readFileSync(row.log, "utf8"), marker + before.slice(-65536));
     assert.match(text(result), /TAIL/);
     writeFileSync(gate, "");
-    await pollUntil(() => notices(s).length === 1);
-    assert.ok(readFileSync(row.log, "utf8").endsWith("TAIL\ndone\n"));
+    await pollUntil(() => logHas(row.log, "TAIL\ndone\n"));
   } finally { await fx.restore(); }
 });
 

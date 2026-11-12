@@ -36,10 +36,6 @@ for (const mode of ["interactive", "rpc"]) test(`job reports use the status rout
     const second = await startSession(fx, { factory: await freshExtension(), ctx: { hasUI: true, mode } });
     await pollUntil(() => reported(liveId, "working").length === 2);
     assert.deepEqual(reports()[before], { type: "clear", id: "job" });
-    await second.emit("input", { text: "next", source: "interactive" });
-    await pollUntil(() => reported(liveId, "working").length === 3);
-    await second.emit("agent_start");
-    await pollUntil(() => reported(liveId, "working").length === 4);
     for (const record of reported(liveId, "working")) {
       assert.equal(record.title, "live");
       assert.equal(record.msg, gatedCommand(join(fx.dir, "live")));
@@ -92,12 +88,8 @@ test("service reports stay idle and job text and capacity are bounded", async (t
     assert.equal(reported("extra31").length, 0);
     assert.ok(reported(job.id).some(r => r.type === "clear"));
     await s.emit("session_shutdown", { reason: "reload" });
-    const second = await startSession(fx, { factory: await freshExtension() });
+    await startSession(fx, { factory: await freshExtension() });
     await pollUntil(() => reported(service.details.job.id, "idle").length === 2);
-    await second.emit("input", { text: "next", source: "interactive" });
-    await pollUntil(() => reported(service.details.job.id, "idle").length === 3);
-    await second.emit("agent_start");
-    await pollUntil(() => reported(service.details.job.id, "idle").length === 4);
     assert.equal(reported(service.details.job.id, "working").length, 0);
     assert.deepEqual(stdout, []);
   } finally { await fx.restore(); }

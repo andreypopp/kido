@@ -165,8 +165,8 @@ was overwritten in place after an earlier run (`Killed: 9`). `make
 install PREFIX=<prefix>` copies that layout under `<prefix>/bin` and
 `<prefix>/share/ko` (default `~/.local`), Homebrew's `pkgshare` layout.
 
-`make build` installs `share/ko/bin` (the `ko`, `ssh`, `ko-pi` and
-`koa` shims), `share/ko/shim.sh`, `share/pi/ko-pi.ts`,
+`make build` installs `share/ko/bin` (the `ko`, `ssh` and `koa`
+shims), `share/ko/shim.sh`, `share/pi/ko-pi.ts`,
 `share/pi/text.ts`, `share/pi/ko-api.d.ts`, `share/pi/agents.ts`,
 `share/pi/token.ts`, `share/pi/records.ts`,
 `share/pi/completion-context.ts`, `share/pi/runtime-exec.ts` and
@@ -296,21 +296,21 @@ What the setup does, and why:
 ## The share tree and the scripts
 
     share/ko/           the source of share/ko as installed:
-      bin/              the bin directory's sh shims (ko, ssh, ko-pi, koa)
+      bin/              the bin directory's sh shims (ko, ssh, koa)
       shim.sh           their shared helper
       bash/, zsh/       the OSC 133 integrations every primed shell sources
       openapi.json, client-model.json, config-schema.json   the generated schemas (make schemas)
-    share/pi/           ko-pi.ts, the harness, which the ko-pi shim loads
-                        with --extension; its suite ko-pi-*.test.ts on
+    share/pi/           ko-pi.ts, the agent extension, which koa loads
+                        into its pi with --extension; its suite ko-pi-*.test.ts on
                         the fake ko of testdata/fake_ko/; ko-api.d.ts,
                         generated from openapi.json; testdata/ko-prompts.txt,
                         the prompt snapshot; skills/ko/SKILL.md, the ko
-                        skill that ko-pi offers to pi; the modules that
-                        ko-pi and koa share at run time and nothing
+                        skill that the extension offers to pi; the modules that
+                        the extension and koa share at run time and nothing
                         else: text.ts; agents.ts, the agent rows;
                         token.ts, the token grammar; records.ts, the facts of
-                        ko-pi's message details and their guards;
-                        completion-context.ts, where ko-pi hands koa's
+                        the extension's message details and their guards;
+                        completion-context.ts, where the extension hands koa's
                         extension the place where a command runs; runtime-exec.ts,
                         the client of a runtime's exec route
     share/koa/          koa, the pi harness that renders through a

@@ -181,7 +181,7 @@ platforms and the installed layout. These requirements are fixed:
   generates `--help` and the usage errors: the doc comment on each
   command and argument is its help text. A usage error exits 124.
   `ko api`'s flags, exit codes and output are the contract with the
-  pi extension (docs/design.md, "The pi extension, ko-pi").
+  agent extension (docs/design.md, "The harness extension").
 
 Conventions:
 
@@ -271,7 +271,7 @@ Conventions:
   `Param` and holds its own validation. `router.rs` matches `Request`
   exhaustively. To add a route: add its block with its `///` doc, add
   the arm in `router.rs`, then run `make schemas`; lint fails when a
-  generated file differs. `ko-pi.ts` takes its shapes from
+  generated file differs. The agent extension takes its shapes from
   `ko-api.d.ts` and writes none by hand.
 - **HTTP.** `ko_wire::http` is the only code that reads or writes
   HTTP framing, for the server and for the client.
@@ -359,9 +359,16 @@ Conventions:
   `fuzz/Cargo.toml` enables. A model in a target never reuses the
   formula of the code under test. Only `fuzz/` reads `KO_FUZZ_*`.
 
-**The harness is one pi extension.** `share/pi/ko-pi.ts` holds every
-agent tool. It calls only `ko api` (docs/design.md, "The pi
-extension, ko-pi", lists the routes) and imports only `text.ts`,
+**koa is the one harness.** koa (`share/koa/`) is Kido's one pi
+harness, and no other program loads its agent extension: there is no
+terminal harness and no `ko-pi` command. A plain `pi` is not Kido's
+harness. The agent extension, `share/pi/ko-pi.ts`, runs in koa's pi
+child beside `koa-sessions.ts` and holds every agent tool. Nothing
+in it exists only for pi's terminal UI: no widgets, renderers,
+terminal input or autocomplete providers. It learns browser mode from
+the boolean flag `--koa-browser` that koa passes, never from pi's
+mode or the environment. It calls only `ko api` (docs/design.md,
+"The harness extension", lists the routes) and imports only `text.ts`,
 `agents.ts`, `token.ts`, `records.ts`, `completion-context.ts` and
 `runtime-exec.ts` beside itself, which koa shares. Its background
 commands are jobs, child processes of pi. It never opens ko's socket,
@@ -410,7 +417,8 @@ most easily:
 `claude-code` identify agent panes (docs/design-program-status.md,
 "Sources"). Three pane variables supply local pi identity, never
 detection: `pi.session`, `pi.name` and `pi.activity`. ko trusts them
-only while the pane has an OSC 7501 root with `app=pi`. ssh panes use
+only while the pane has an OSC 7501 root with `app=pi`, which koa
+writes for its RPC pi. ssh panes use
 `ssh.dest` and `ssh.args`, trusted only while the foreground is `ssh`.
 A routed pi's `pi.runtime` follows the same rule in the harness and
 in the clients, where only `ko_client`'s `Model::place` reads it; the
@@ -794,13 +802,17 @@ delegates as its brief says and does not write code.
   `make verify`. Report PASS/FAIL/SKIP as printed. An unrelated
   failure gets one run of that test alone, not a suite rerun. If a
   failure is in a file you do not own, report it. Do not fix it.
+- **No repeated test runs.** A test runs again only after a change
+  that can change its result. Do not run the same test or suite on
+  the same code again, alone or in a loop, to reproduce a failure, to
+  learn whether it was a flake, or to verify a fix: a second run of
+  unchanged code shows nothing that the first did not. A fix is
+  verified by a test that fails before it and passes after it.
 - **A flake has a time box of 5 minutes, and no loops.** When a test
   fails only sometimes, find the cause from the failure itself: its
-  output, the logs and the test's waits. Do not run the test again and
-  again, neither to reproduce the failure nor to verify a fix: a count
-  of passes finds no cause and proves no fix. First suspect the test:
-  a race in its waits, a read that discards what it waits for later, a
-  wall-clock bound. When the output does not show the cause, add the
+  output, the logs and the test's waits (see "No repeated test
+  runs"). First suspect the test: a race in its waits, a read that
+  discards what it waits for later, a wall-clock bound. When the output does not show the cause, add the
   diagnostics that would show it next time. A fix is verified by a
   test that forces the bad order and fails before the fix, not by
   repeated runs. A flaky test is rewritten to wait for the event, or
@@ -824,7 +836,7 @@ pin changed, then ko. After the change is on `main`, run
 `scripts/release.sh VERSION`; `--dry-run` inspects its actions. It
 requires HEAD equal to origin/main and green CI, and a removed or
 renamed command or tool requires a minor bump. It never runs `brew
-upgrade`. The user's agents run the `ko-pi` that Kido.app bundles, so
+upgrade`. The user's agents run the `koa` that Kido.app bundles, so
 a harness change reaches them only through a Kido.app release
 (docs/release.md).
 

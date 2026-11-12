@@ -17,11 +17,9 @@ test("a live job is adopted by the second instance, which alone announces its en
     const job = owner.jobs.get(result.details.job.id);
     await pollUntil(() => logHas(result.details.job.log, "before"));
     await first.emit("session_shutdown", { reason: "reload" });
-    assert.equal(first.terminalListeners.size, 0);
     assert.equal(owner.owner, null);
     const second = await startSession(fx, { factory: await freshExtension() });
     assert.equal(registry(), owner);
-    assert.equal(second.terminalListeners.size, 1);
     assert.equal(process.listeners("exit").filter((listener) => listener === owner.exit).length, 1);
     assert.equal(process.listenerCount("exit"), exits + 2);
     assert.equal(typeof owner.owner.onEnd, "function");

@@ -26,7 +26,9 @@ no whole-second tie and no polling: a report is an event.
 ## Sources
 
 Two programs identify agent panes through OSC 7501 root records:
-`pi` (design.md, "The pi extension, ko-pi") and `claude-code`. Claude
+`pi` (design.md, "The harness extension") and `claude-code`. The
+`pi` root comes from koa, which writes it for its RPC pi, or from a
+plain pi's own interactive mode. Claude
 Code 2.1.295 queries OSC 7501. Then it emits a root `app=claude-code`
 record: idle, working, done, or blocked with permission/question kind
 and a base64 message. Escape on a permission dialog emits idle
@@ -92,7 +94,8 @@ Kido.app draws non-root records as child rows under the pane row,
 nested by id, in id order: a record nests under each ancestor id that
 is present among the non-root records. Each child row shows the record's title, or
 its id, its raw state and its message. A visit does not acknowledge
-them. Claude Code reports each subagent this way, and ko-pi each job
+them. Claude Code reports each subagent this way, and koa's agent extension
+each job
 (design-subagents.md, "A job's row").
 
 ### Reduction
@@ -180,8 +183,8 @@ it unchanged for `SomeAgent`, and for `PiAgent` without a name. A
 `Terminal` row does not use it. Claude Code sets `Claude Code` at
 startup, then a session summary.
 
-A local pi that runs ko's harness (`ko-pi`) owns the `pi.*`
-variables (`share/pi/ko-pi.ts`). The server reads only `pi.session`,
+A local pi that runs ko's harness (koa) owns the `pi.*` variables,
+through its agent extension (`share/pi/ko-pi.ts`). The server reads only `pi.session`,
 `pi.name` and `pi.activity`, and trusts them only while the pane has
 an OSC 7501 root with `app=pi`. ko stores nothing for a pi session.
 
@@ -240,8 +243,9 @@ order. A variable that is not a JSON string counts as absent.
    variable: `SomeAgent` with the app as its name.
 5. Anything else: `Terminal`.
 
-On the host, steps 3 to 5 give `Host`. A routed pi (`ko-pi
---runtime`) runs on the host, so it is a `Host` pane.
+On the host, steps 3 to 5 give `Host`. A routed pi (`koa
+--runtime`) runs on the host, so it is a `Host` pane. A plain `pi`
+(not koa) has the root without `pi.session`, so it is a `SomeAgent`.
 
 The trust rule is the gate above and nothing else: a stale
 `pi.session` on a shell pane is no agent; a stale `ssh.dest` after ssh
@@ -253,7 +257,7 @@ exits is no `Ssh`.
 |------------------|---------------------|------------------------|--------------------------------------|
 | shell            | `Host { Terminal }` | `Runtime { Terminal }` | `Ssh { pane: RemoteKind::Terminal }` |
 | some agent       | `Host { SomeAgent }` | `Runtime { SomeAgent }` | `Ssh { pane: RemoteKind::Agent }`   |
-| pi with ko-pi    | `Host { PiAgent }`  | `Runtime { PiAgent }`  |                                      |
+| koa              | `Host { PiAgent }`  | `Runtime { PiAgent }`  |                                      |
 
 The sections below describe a `LocalKind`; it has the same rules on
 the host and in a runtime, except that a runtime pane's row title

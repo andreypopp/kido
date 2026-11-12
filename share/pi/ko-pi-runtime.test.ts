@@ -49,12 +49,12 @@ test('completion context follows current routed session, host switch and runtime
   const fx = makeFixture();
   try {
     const t = tree(fx); fx.setRuntimes({ dev: dev(t) });
-    await startSession(fx, { flags: { harness: 'koa', runtime: 'dev' }, ctx: { cwd: t.hostCwd } });
+    await startSession(fx, { flags: { runtime: 'dev' }, ctx: { cwd: t.hostCwd } });
     const request = () => resolveCompletionContext(new AbortController().signal);
     assert.deepEqual(await request(), { type: 'runtime', name: 'dev', cwd: join(t.rt, 'proj') });
-    await startSession(fx, { sessionId: 'other', flags: { harness: 'koa' }, ctx: { cwd: '/new-host' } });
+    await startSession(fx, { sessionId: 'other', flags: {}, ctx: { cwd: '/new-host' } });
     assert.deepEqual(await request(), { type: 'host', cwd: '/new-host' });
-    await startSession(fx, { sessionId: 'refused', flags: { harness: 'koa', runtime: 'missing' }, ctx: { cwd: '/never-host' } });
+    await startSession(fx, { sessionId: 'refused', flags: { runtime: 'missing' }, ctx: { cwd: '/never-host' } });
     assert.deepEqual(await request(), { type: 'unavailable' });
   } finally { await fx.restore(); }
 });
@@ -500,21 +500,20 @@ test("a routed async_bash is an exec session with a host log, a notice, and canc
   } finally { await fx.restore(); }
 });
 
-test("a routed bash moves to one exec-session job by timer or ctrl+b and stop closes that exec child", async () => {
+test("a routed bash moves to one exec-session job by timer and stop closes that exec child", async () => {
   const fx = makeFixture();
   try {
     const t = tree(fx);
     const s = await routed(fx, t);
     await run(s, "bash", { command: "true" });
     const baseline = fx.running();
-    for (const move of ["timeout", "key"]) {
-      process.env.KO_JOB_MOVE_MS = move === "timeout" ? "50" : "10000";
+    for (const move of ["timeout"]) {
+      process.env.KO_JOB_MOVE_MS = "50";
       const ready = join(t.rt, `ready-${move}`);
       const command = `printf ready > '${ready}'; ${gatedCommand(join(t.rt, `gate-${move}`))}`;
       const count = fx.execLog().length;
       const work = run(s, "bash", { command });
       await pollUntil(() => existsSync(ready));
-      if (move === "key") assert.deepEqual(s.terminalInput("\x02"), [{ consume: true }]);
       const result = await work;
       assert.notEqual(result.isError, true);
       const id = movedId(result);
@@ -535,7 +534,6 @@ test("reload during a routed startup moves the eventual child without restoring 
   const fx = makeFixture();
   try {
     process.env.KO_JOB_MOVE_MS = "10000";
-    process.env.KO_JOB_HINT_MS = "1";
     const t = tree(fx);
     const first = await routed(fx, t);
     await first.emit("before_agent_start", { systemPromptOptions: { promptGuidelines: [], contextFiles: [], sections: {} } });
@@ -555,14 +553,11 @@ test("reload during a routed startup moves the eventual child without restoring 
     const [row] = JSON.parse(text(await run(second, "list_async_bash", {})));
     assert.equal(row.job, id);
     assert.equal(row.runtime, "dev");
-    assert.equal(first.terminalListeners.size, 0);
-    assert.equal(first.widgets.get("ko-job-hint")?.content, undefined);
     await pollUntil(() => logHas(row.log, "running"));
     writeFileSync(jobGate, "");
     await pollUntil(() => notices(second).length === 1);
     assert.match(notices(second)[0]!, /running\nfinished/);
     assert.deepEqual(first.messages, []);
-    assert.equal(first.widgets.get("ko-job-hint")?.content, undefined);
   } finally { await fx.restore(); }
 });
 
@@ -653,7 +648,7 @@ test("spawn_agent with a runtime starts a routed child, or an inside child by th
     const [first] = fx.posts("/panes") as Body[];
     assert.equal(first!.runtime, undefined, "a routed child is a host pane");
     assert.ok(first!.command.argv.includes("--session-dir"));
-    assert.deepEqual(first!.command.argv.slice(1, 6), ["shell", "--", "ko-pi", "--runtime", "dev"]);
+    assert.deepEqual(first!.command.argv.slice(1, 6), ["shell", "--", "koa", "--runtime", "dev"]);
     assert.equal(first!.cwd, repo);
     assert.equal(env(first!, "KO_AGENT_TRUSTED_CWD"), repo, "the host cwd, unmapped");
     assert.match(routedChild, /^spawned viahost \(session [0-9a-f]{32}, window window_10, pane pane_10, in runtime dev\);/);
@@ -663,7 +658,7 @@ test("spawn_agent with a runtime starts a routed child, or an inside child by th
     const insideChild = text(await spawnAgent({ name: "inside", runtime: "inner" }));
     const [, second] = fx.posts("/panes") as Body[];
     assert.equal(second!.runtime, "inner");
-    assert.deepEqual(second!.command.argv.slice(0, 4), ["ko", "shell", "--", "ko-pi"]);
+    assert.deepEqual(second!.command.argv.slice(0, 4), ["ko", "shell", "--", "koa"]);
     assert.ok(!second!.command.argv.includes("--runtime"));
     assert.ok(!second!.command.argv.includes("--session-dir"));
     assert.equal(second!.cwd, repo, "the host path, which the server maps");

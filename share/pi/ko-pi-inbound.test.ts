@@ -12,18 +12,6 @@ const peer = { type: "pane", pane: "pane_3", session: "peer-session", name: "pee
 const acked = async (fx: ReturnType<typeof makeFixture>, id: string): Promise<void> =>
   pollUntil(() => fx.acks().some((ack) => ack.id === id), 2000, `the ack of ${id}`);
 
-test('TUI custom messages without typed details retain their original content', async () => {
-  const fx = makeFixture();
-  try {
-    fx.setPanes([selfPane()]); const s = await startSession(fx);
-    for (const customType of ['ko-message', 'ko-steer', 'ko-notice', 'ko-stream']) for (const details of [undefined, { from: 'worker' }]) {
-      const content = 'original header\noriginal body';
-      const renderer = s.renderers.get(customType)!({ customType, content, details, timestamp: 1 }, {}, { fg: (_color: string, text: string) => text });
-      assert.equal(renderer.render(1000).join('\n'), content, customType);
-    }
-  } finally { await fx.restore(); }
-});
-
 test("each kind reaches pi as its own kind of message and is acked once handed over", async () => {
   const fx = makeFixture();
   try {

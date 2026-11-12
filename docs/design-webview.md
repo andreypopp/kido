@@ -16,7 +16,7 @@ give the behaviour and do not repeat it here:
   sandbox, the WebSocket shim, keys, find, the theme and hidden pages.
 - [design-ko.md](design-ko.md), section 4.11, "The terminal client": the `[webview]`
   status word.
-- [design.md](design.md), "The pi extension, ko-pi": the interfaces
+- [design.md](design.md), "The harness extension": the interfaces
   of ko that the harness uses.
 - [design-koa.md](design-koa.md): koa, the pi harness that renders
   through a page.

@@ -1,10 +1,9 @@
-# pi extension: ko-pi
+# koa's agent extension
 
-`ko-pi.ts` is Kido's harness for pi: the agent tools, the message
-stream, the subagent lifecycle and the pane variables that ko reads.
-pi natively reports status through OSC 7501 in interactive mode after
-terminal feature detection. Its pane title, set through OSC 0/2, names
-the session. These work without the extension.
+`ko-pi.ts` is the extension that koa (`share/koa/`), Kido's one pi
+harness, loads into its pi: the agent tools, the message stream, the
+subagent lifecycle and the pane variables that ko reads. koa writes
+the pane's OSC 7501 status and its title for its pi.
 
 The extension reaches ko only through `ko` commands: `ko api` for
 routes (`/layout`, `/version`, `POST /panes`, the pane messages and
@@ -15,23 +14,16 @@ opens ko's socket itself, never reads ko's state directory and has no
 state directory of its own: its registry of children and their
 reports are custom entries in its own pi session.
 
-docs/design.md, "The pi extension, ko-pi" and "Messages", and
+docs/design.md, "The harness extension" and "Messages", and
 docs/design-subagents.md give the design. The shapes of the API come
 from `ko-api.d.ts`, which `make schemas` generates from
 `share/ko/openapi.json`; the extension writes none by hand.
 
 ## Install
 
-Nothing to install: `ko-pi` in ko's bin directory runs the real pi
-with `--extension` for this file where the package ships it, and
-`PI_IMAGE_PROTOCOL=kitty` unless that variable is set. A bare `pi` is
-plain pi, without the harness.
-
-To run it against a checkout:
-
-```sh
-pi -e /path/to/ko-pi.ts
-```
+Nothing to install: `koa` in ko's bin directory runs pi with
+`--extension` for this file where the package ships it. A bare `pi`
+is plain pi, without the harness.
 
 ## Behaviour
 
@@ -50,8 +42,8 @@ session id:
   delivers the `ko-pi.task` variable once, watches its parent's pane,
   and sends its report to the parent when a turn of its work settles.
 - replaces pi's builtin `bash` with pi's own definition over its job
-  operations: a call that runs past 60 s, or that ctrl+b moves,
-  continues as a job, and the call returns at once.
+  operations: a call that runs past 60 s continues as a job, and the
+  call returns at once.
 - keeps its jobs across `/reload`; at quit, `/new`, `/resume` and
   `/fork` it stops them.
 - with `--runtime NAME` (the routed mode), runs its built-in tools,
@@ -81,12 +73,12 @@ unavailable.
   prefix of at least eight characters, or a mention such as
   `@impl (session 9702ddd1)`, which `@` completion inserts.
 - `spawn_agent(task, name, model?, cwd?, resume_from?, fork?, toplevel?, runtime?)`:
-  a child in a new window through `POST /panes`, as `ko shell -- ko-pi`
+  a child in a new window through `POST /panes`, as `ko shell -- koa`
   in the user's login-shell environment and the caller's model unless
   `model` names one. `resume_from` continues a saved pi session by id
   or unique prefix; with `fork`, it starts a copy. `toplevel` starts a
   peer with no parent, report or notice. `runtime` works in a
-  configured runtime: a routed child (`ko-pi --runtime NAME` on the
+  configured runtime: a routed child (`koa --runtime NAME` on the
   host) or, for a runtime with `pi: "runtime"`, a child inside it. A
   child's ending arrives as a notice.
 - `stop_agent(agent, force?)`: one agent in scope, by a stop message

@@ -7,8 +7,9 @@ Website: <https://kido.tools>
 Kido runs `ko`, its server and command-line client. ko holds the
 terminal of every pane, collects the status of every agent and shell,
 and runs agents as subagents of each other. Kido.app is the native
-macOS client. ko-pi is the pi harness for process management: subagents,
-messages between agents and an async bash tool.
+macOS client. koa is the pi harness: it shows a pi session as a page
+in a pane and adds subagents, messages between agents and an async
+bash tool.
 
 ## Install
 
@@ -154,17 +155,14 @@ Claude Code runs unmodified, without a shim or settings.
 `CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1` also disables its native
 status.
 
-Kido's pi harness has two entry points:
-
-- `ko-pi` starts pi with its terminal UI in the pane.
-- `koa` starts pi under a page in Kido.app: its transcript, a prompt
-  field with completion and attachments, its dialogs, its queue and
-  its pickers. `koa --browser` shows the same page in your browser.
-
-Both load the same harness, so agent discovery, `list_agents`,
-`spawn_agent` and `message_agent` work in both, and a subagent starts
-with its parent's entry point. A pi that you start as plain `pi` has
-none of this. koa runs where its pane's program runs, so that host
+Kido's pi harness is `koa`. It starts pi under a page in Kido.app:
+its transcript, a prompt field with completion and attachments, its
+dialogs, its queue and its pickers. `koa --browser` shows the same
+page in your browser. Agent discovery, `list_agents`, `spawn_agent`
+and `message_agent` work in it, and a subagent starts as `koa` in
+its parent's mode. A terminal client, such as `ko` itself, shows a
+koa pane as a webview placeholder. A pi that you start as plain `pi`
+has none of this: it shows its status, as Claude Code does. koa runs where its pane's program runs, so that host
 (the Mac, a server of `ko HOST`, or a runtime) needs Node 24 or newer
 and `pi` on PATH (docs/design-koa.md).
 

@@ -17,8 +17,10 @@ a pane with a `parent`; an agent's background command is a job of its
 harness, not a pane.
 
 The **harness** is everything that only an agent has: the pi session,
-the tools, the task, the report and the names. It is one pi
-extension, `share/pi/ko-pi.ts`, which the `ko-pi` shim loads. The two
+the tools, the task, the report and the names. It is koa
+(design-koa.md), which runs pi in RPC mode with one pi extension, the
+agent extension `share/pi/ko-pi.ts`, and renders the session through
+a webview page. The two
 parts talk only through `ko api` on ko's routes and streams, and
 the `@kido/webview` SDK (`ko webview serve`, `enter` and `leave`) for
 the harness's page. ko never
@@ -80,20 +82,23 @@ gets a message, any other agent a paste.
 
 There is no locking, because every writer is the server's loop thread.
 
-## The pi extension, ko-pi
+## The harness extension
 
-`share/ko/bin/ko-pi` starts pi with `--extension <share>/pi/ko-pi.ts`
-in front of every argument and `PI_IMAGE_PROTOCOL=kitty` unless the
-variable is set. A bare `pi` in a pane is plain pi: it reports OSC
-7501 status and has no harness.
+koa is Kido's one pi harness: no other program loads the agent
+extension. koa starts its pi as `pi --mode rpc --extension
+<share>/pi/ko-pi.ts` (design-koa.md, "The spawn"), so the extension
+is koa's, as `koa-sessions.ts` is. koa writes the pane's OSC 7501
+root with `app=pi` and its OSC 0 title for its pi, because pi reports
+neither in RPC mode (design-koa.md, "Status and title").
 
-After interactive terminal feature detection, pi natively emits OSC
-7501 root records with `app=pi`. Its lifecycle supplies working,
-blocked, done, idle and error. pi reports blocked for its own
-dialogs and for an extension dialog that declares itself blocked.
-`PI_PROGRAM_STATUS=0` disables reporting, and `=1` forces it. OSC 0
-sets the pane title to "π - <session name> - <cwd basename>". The
-caption omits a local pi message that duplicates its session name.
+A bare `pi` in a pane is plain pi, not Kido's harness. Its
+interactive mode natively emits OSC 7501 root records with `app=pi`
+after terminal feature detection (working, blocked, done, idle and
+error; `PI_PROGRAM_STATUS=0` disables them, `=1` forces them) and
+sets the title to "π - <session name> - <cwd basename>". It has no
+Kido agent tools, no message stream and no `pi.session`, so its pane is a
+`SomeAgent` (design-program-status.md): it has status and a title,
+and `ko prompt` reaches it by paste.
 
 The extension uses only these interfaces of ko:
 
@@ -146,14 +151,13 @@ kind's `session`. Discovery and addressing apply it. `pi.runtime`
 places only a host pi agent; a runtime pane's row `runtime` and `cwd`
 win. A stale variable on a
 shell pane is no agent. Liveness of a known session is the exception,
-because pi clears its root while it runs: pi-tui's `stop()` writes a
-`clear` record while pi opens the external editor and while Ctrl+Z
-suspends it. The parent watch finds a parent alive while its pane is
-not dead and holds the parent's `pi.session`, with or without a pi
-root, and a resume refuses a session that a live pane holds in
-`pi.session` for the same reason. Thus, an agent in its external editor or suspended is not
-listed and cannot be addressed by name, but its children stay. A
-suspended pi reads its message stream only after `fg`.
+because the root can be absent while the agent's pane lives: koa
+writes `clear` when its pi exits. The parent watch finds a parent
+alive while its pane is not dead and holds the parent's `pi.session`,
+with or without a pi root, and a resume refuses a session that a
+live pane holds in `pi.session` for the same reason. Thus, an agent
+without a root is not listed and cannot be addressed by name, but
+its children stay.
 
 **Project trust.** The extension handles pi's `project_trust` event,
 which pi sends to `--extension` extensions before it reads its trust
@@ -415,8 +419,8 @@ environment and the request's. A pi that the user starts in a pane
 runs under `ko shell`, which read the user's dotfiles: EDITOR, PATH
 additions, API keys, LANG. So that every agent gets the same
 environment, the extension starts each pi, child or top-level, new or
-restarted, as `<its ko path> shell -- ko-pi ...` (or `-- koa ...`
-under `--harness`, design-subagents.md). A job runs its
+restarted, as `<its ko path> shell -- koa ...` (with `--browser`
+under `--koa-browser`, design-koa.md). A job runs its
 command through pi's shell configuration, as pi's `bash` does,
 because its command is not an agent.
 
@@ -540,7 +544,7 @@ nothing more is needed, or continue it with `message_agent`.
 
 **An ended child restarts on a message.** `message_agent` to an ended
 own child starts it again in a new pane under the same pi session,
-with `ko-pi --session-id <id>` and the message as its task. A reused
+with `koa --session-id <id>` and the message as its task. A reused
 name means "message it". design-subagents.md, "Restarting through a
 message", gives the rules. An ended peer that a top-level pi
 recorded restarts the same way, as a top-level agent
@@ -847,15 +851,16 @@ has no `ko`, Tab completes nothing for `ko`.
 ## The bin directory
 
 ko ships three `sh` shims in `<prefix>/share/ko/bin`: `ko`, `ssh` and
-`ko-pi`. Their source is `share/ko/bin`; the shared helper is
+`koa`. Their source is `share/ko/bin`; the shared helper is
 `share/ko/shim.sh`. Inside a pane, those names resolve to these shims:
 
 - `ko` execs `<prefix>/bin/ko` relative to its shim. Pane commands use
   this prefix's binary, not another installation on PATH.
 - `ssh` runs `ko ssh "$@"`. `ko ssh` finds the real ssh after the bin
   directory (`look_path_past` in `ko_shell/src/bin_dir.rs`).
-- `ko-pi` runs the real pi with `--extension share/ko/pi/ko-pi.ts` in
-  front of every argument. It writes nothing to `~/.pi/agent/extensions`.
+- `koa` checks for Node 24 and `pi` and runs `share/ko/koa/koa.ts`
+  (design-koa.md, "The host's needs"). It writes nothing to
+  `~/.pi/agent/extensions`.
 
 A shim never embeds an installed path. It calculates every location
 from `$0`. For user-installed programs, the shim selects the first
@@ -886,8 +891,8 @@ order.
 
 **Install layout.** `make build` lays out `build/ko/` as installed:
 `bin/ko`, `bin/ko-pane` and `share/ko` with `bin/`, `shim.sh`,
-`pi/` (ko-pi, the modules that it shares with koa, `ko-api.d.ts` and
-the skills), `koa/`, `webview/` (the SDK) and the terminfo. `make
+`pi/` (the agent extension, the modules that it shares with koa,
+`ko-api.d.ts` and the skills), `koa/`, `webview/` (the SDK) and the terminfo. `make
 install` copies it under
 `PREFIX`, default `~/.local`. This is Homebrew's `pkgshare` layout.
 
@@ -910,8 +915,7 @@ that the process under test reads when it uses it:
   (the first restart delay of the message stream),
   `KO_AGENT_LIST_TTL_MS`, `KO_STREAM_INTERVAL_MS` (the least time
   between two batches of a streamed job), `KO_JOB_MOVE_MS`
-  (when a `bash` call becomes a job), `KO_JOB_HINT_MS` (when the
-  ctrl+b hint shows), `KO_JOB_KILL_MS` (a job's `SIGTERM` to
+  (when a `bash` call becomes a job), `KO_JOB_KILL_MS` (a job's `SIGTERM` to
   `SIGKILL`) and `KO_JOB_RECORD_LINGER_MS` (how long a finished job's
   status record stays), read by the extension.
 
@@ -955,8 +959,8 @@ Each decision names its date. The code states the rest.
   watches an agent's command, so it gets no window and no sidebar
   row, and a pipe gives the exact exit code, both streams and every
   byte.
-- A `bash` call that runs past 60 s, or that the user moves with
-  ctrl+b, becomes a job instead of a blocked turn. An explicit
+- A `bash` call that runs past 60 s becomes a job instead of a
+  blocked turn. An explicit
   timeout under 60 s keeps its meaning; a longer one becomes the
   job's deadline, because the model asked for it.
 - One log holds both streams in arrival order, as a `bash` result
@@ -969,7 +973,8 @@ Each decision names its date. The code states the rest.
   and only the new instance can call pi.
 - A routed pi's jobs are exec sessions of its runtime, in the same
   registry.
-- ko-pi signals only its own process groups, through one function,
+- The agent extension signals only its own process groups, through
+  one function,
   and a pi killed with `SIGKILL` can leave an orphan job: pi's own
   detached `bash` commands already have that limit.
 - Runs leave ko with `async_bash`: the run commands, the `/runs`

@@ -19,7 +19,7 @@ test('session list channel survives a real pi session switch and new session', {
   const second = SessionManager.create(other, sessions);
   second.appendMessage({ role: 'user', timestamp: 2, content: [{ type: 'text', text: 'Second history' }] });
   const firstFile = first.getSessionFile(); assert.ok(firstFile);
-  const child = spawn(process.execPath, [resolve('node_modules/@earendil-works/pi-coding-agent/dist/cli.js'), '--mode', 'rpc', '--no-extensions', '--no-skills', '--no-prompt-templates', '--no-themes', '--session-dir', sessions, '--session', firstFile, '--extension', resolve('ko-pi.ts'), '--extension', resolve('../koa/koa-sessions.ts'), '--harness', 'koa'], { cwd, env: { ...process.env, HOME: dir, PI_CODING_AGENT_DIR: agent }, stdio: ['pipe', 'pipe', 'pipe', 'pipe'] });
+  const child = spawn(process.execPath, [resolve('node_modules/@earendil-works/pi-coding-agent/dist/cli.js'), '--mode', 'rpc', '--no-extensions', '--no-skills', '--no-prompt-templates', '--no-themes', '--session-dir', sessions, '--session', firstFile, '--extension', resolve('ko-pi.ts'), '--extension', resolve('../koa/koa-sessions.ts')], { cwd, env: { ...process.env, HOME: dir, PI_CODING_AGENT_DIR: agent }, stdio: ['pipe', 'pipe', 'pipe', 'pipe'] });
   let stderr = ''; child.stderr.on('data', bytes => { stderr += bytes; });
   const closed = once(child, 'close');
   const channel = koaChannel(child.stdio[3]);

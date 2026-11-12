@@ -42,7 +42,7 @@ Only `kido-app/N.N.N` tags mark Kido.app releases.
 `app/scripts/release.sh` builds them from `main`. They are published
 as `Casks/kido-app.rb` in `andreypopp/homebrew-tap`. The app bundles
 its own `ko` (`app/scripts/bundle-ko.py`), so the user's agents run
-the `ko-pi` that Kido.app bundles, because the app's shim is first on
+the `koa` that Kido.app bundles, because the app's shim is first on
 PATH: a harness change reaches them only through a Kido.app release.
 A Ghostty pin bump changes `Ko-Vt`, so it is a coordinated release of
 ko and Kido.app. design-app.md, "Release signing", describes the

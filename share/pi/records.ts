@@ -15,7 +15,7 @@ export type JobRef = { id: string; name: string; service: boolean; log: string }
 export type AgentDetails = { agent: AgentRef; body: string; inbound: Inbound };
 export type MessageDetails = AgentDetails & { from?: string; work?: boolean; inbound: Extract<Inbound, { form: 'message' }> };
 export type SteerDetails = AgentDetails & { from?: string; work?: boolean; inbound: Extract<Inbound, { form: 'steer' }> };
-export type NoticeDetails = ((AgentDetails & { inbound: Extract<Inbound, { form: 'notice' | 'report' | 'ended' }> }) | { kind: 'job'; job: JobRef & { end: JobEnd }; tail: string }) & { from?: string; noticeId?: string };
+export type NoticeDetails = ((AgentDetails & { inbound: Extract<Inbound, { form: 'notice' | 'report' | 'ended' }> }) | { kind: 'job'; job: JobRef & { end: JobEnd }; tail: string }) & { from?: string };
 export type StreamDetails = { from?: string; job: JobRef; batch: string; omitted: number; cut: boolean };
 export function jobEndText(end: JobEnd): string {
   switch (end.type) {

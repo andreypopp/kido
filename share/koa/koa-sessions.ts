@@ -53,7 +53,7 @@ export default function (pi: ExtensionAPI) {
         pi.events.emit(RESTART_STATE_CHANNEL, { reply: (state: RestartState) => { clearTimeout(timer); resolve(state); } });
       }).then(state => {
         if (controller.signal.aborted) return;
-        send(state ? { type: 'restart_state', id: query.id, state } : { type: 'error', id: query.id, error: 'ko-pi did not answer' });
+        send(state ? { type: 'restart_state', id: query.id, state } : { type: 'error', id: query.id, error: 'the extension did not answer' });
       }).finally(() => scans.delete(query.id));
       return;
     }

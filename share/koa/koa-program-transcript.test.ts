@@ -455,5 +455,5 @@ test("restart keeps the saved picker selection, harness and runtime", { timeout:
   assert.equal(restarted.thinking, "high");
   const argv = (await app.log()).filter(record => record.type === "argv").map(record => record.args);
   assert.equal(argv.length, 2);
-  assert.deepEqual(argv[1], ["--mode", "rpc", "--extension", resolve("../../build/ko/share/ko/pi/ko-pi.ts"), '--extension', resolve('../../build/ko/share/ko/koa/koa-sessions.ts'), "--harness", "koa-browser", "--runtime", "remote", "--resume", "-r", "--system-prompt", "--resume", "--session", session, "--", "--session", "literal", "--resume"]);
+  assert.deepEqual(argv[1], ["--mode", "rpc", "--extension", resolve("../../build/ko/share/ko/pi/ko-pi.ts"), '--extension', resolve('../../build/ko/share/ko/koa/koa-sessions.ts'), "--koa-browser", "--runtime", "remote", "--resume", "-r", "--system-prompt", "--resume", "--session", session, "--", "--session", "literal", "--resume"]);
 });

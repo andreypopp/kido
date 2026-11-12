@@ -461,7 +461,7 @@ six states, light and dark, wide and 60 columns:
 1. `/` at the start: every command of `get_commands` (templates,
    skills, extension commands), first row current, 8 of 10 visible.
 2. `/re`: pi's fuzzy filter; `skill:` names by their bare name first.
-3. `@si`: the session's agents first, as ko-pi shows them, then
+3. `@si`: the session's agents first, as the agent extension shows them, then
    files; a directory ends with `/`.
 4. `@ko_s`: files and directories alone, the base directory's
    entries first.
@@ -566,7 +566,7 @@ good, please go ahead"), as shown.
 `agents.html` is the reference for agent cards and job lines
 (docs/design-koa.md): what passes between agents and what background
 jobs report, light and dark, wide and 60 columns. It copies
-`mockup.html`'s style block. The texts are ko-pi's (`noticeHeader`,
+`mockup.html`'s style block. The texts are the agent extension's (`noticeHeader`,
 `senderHeader`, `RELATION_TEXT`, `steerHeader`, `jobEndText`,
 `streamBatch`, the `spawn_agent` reply). The user's direction
 (2026-11-10): messages look
@@ -576,7 +576,7 @@ name, exit and time, gray for success and red for failure, with a
 toggle for the output.
 
 **An agent message** (outgoing: `spawn_agent`, `message_agent`;
-incoming: ko-pi's `ko-message`, `ko-steer`, `ko-notice` and a
+incoming: the agent extension's `ko-message`, `ko-steer`, `ko-notice` and a
 report) is the user message's block: `--well` fill, radius 8pt,
 padding 6pt 12pt 7pt, with a header line above the text.
 - The header, one phrase in the muted prose at .92em (user,
@@ -585,13 +585,13 @@ padding 6pt 12pt 7pt, with a header line above the text.
   @sidebar-right", "steer from @kido-app parent", "report from
   @sidebar-right subagent"; the @name in 600 in the fg; the relation
   one word in the faint tone (`subagent`, `peer`, `parent`; none for
-  ko-pi's own notices); at the right only the time, .8em terminal
+  the agent extension's own notices); at the right only the time, .8em terminal
   faint tabular; for incoming the relation faint after a "·" (RELATION_TEXT
   shortened: "your parent", "your subagent", "another agent in this
-  session", "a subagent of your subagent"; none for ko-pi's own
+  session", "a subagent of your subagent"; none for the agent extension's own
   notices); the kinds: `task` (a spawn), `message`, `steer`,
   `interrupt` (outgoing); `message`, `steer`, `report`, `ended` (a
-  child's end), `notice` (ko-pi's own) (incoming). No delivery status
+  child's end), `notice` (the agent extension's own) (incoming). No delivery status
   (user, 2026-11-10: no delivered, queued, sent, spawned): a failure
   takes the kind's place, in red ("refused to @name", "not reported
   from @name subagent"). A card splits the run
@@ -607,7 +607,7 @@ padding 6pt 12pt 7pt, with a header line above the text.
 - No meta lines: a spawn shows no session, window, pane or model
   line, and a cut report shows no "full report: read_report(…)"
   trailer (user, 2026-11-10). A failed spawn has the name and
-  "refused" in red and ko-pi's refusal as the body; a refused
+  "refused" in red and the agent extension's refusal as the body; a refused
   `message_agent` keeps its text and the refusal in red in place of
   "delivered".
 
@@ -620,7 +620,7 @@ name as plain row-coloured text, no end text on the folded line
 label, the time and the opened body are as before. Before that it
 was one line in the terminal font at .92em, muted: a chevron (as a
 step's), the job's name in fg, the kind only when it is not a plain
-job (`service`, `stream`, faint .85em), the end in ko-pi's words
+job (`service`, `stream`, faint .85em), the end in the agent extension's words
 ("exit 0", "exit 1", "signal SIGKILL", "failed: …", "timed out
 600 s"; none for a stream batch), and the time at the right in faint
 tabular digits. Gray when it succeeded; the name and the end in
@@ -1172,6 +1172,6 @@ grow by the chunk; it grows by blocks and by slices of whole lines.
 no underline; hover is the accent with a 1pt underline at 45% and
 the hand pointer; the title is "Focus the pane of @name". A click
 asks the host to focus that pane, as a sidebar click does. koa links
-a `@name` in prose only when the name is in ko-pi's agent list at
+a `@name` in prose only when the name is in the agent extension's agent list at
 render time; otherwise it stays text. An ended agent keeps 600 in
 the muted tone and is no link.

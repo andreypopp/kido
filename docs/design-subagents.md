@@ -11,7 +11,7 @@ tool call that creates it to the sweep that removes its pane.
 
 [design.md](design.md) describes the mechanisms that subagents use:
 
-- The pi extension, ko-pi
+- The harness extension
 - Messages
 - Addressing
 - Identity
@@ -162,10 +162,9 @@ in a resumed session's own directory. Then the harness reads
 `/layout` and checks the depth: the child's depth, the length of the
 caller's `parent` chain over the rows plus one, is at most 2. Then
 `createPane` in `ko-pi.ts` sends one `POST /panes` (protocol.md,
-section 7). The pane's command is `ko shell -- ko-pi`, or `ko shell
--- koa` when ko-pi runs inside koa (`--harness koa`, with
-`--browser` for `--harness koa-browser`), so a child takes its
-parent's harness, with the
+section 7). The pane's command is `ko shell -- koa`, with
+`--browser` when the caller's pi has `--koa-browser`, so a child
+takes its parent's mode (design-koa.md), with the
 session (`--session-id` for a fresh or copied session, `--session`
 for a continued one), the name, the model, for a copy `--fork`, for a
 routed child `--runtime` and, except for an inside child,
@@ -248,7 +247,7 @@ pi and gets it.
 
 ## Forking the caller's context
 
-`spawn_agent(fork: true)` starts the child as `ko-pi --session-id
+`spawn_agent(fork: true)` starts the child as `koa --session-id
 <minted id> --fork <caller's session file>`. The task is its first
 message, and a copy requires one. Everything else is a fresh spawn.
 The child starts with the caller's whole transcript, so the parent
@@ -270,7 +269,7 @@ match one file. Then it reads the header line of the match, where pi
 records the session's working directory. A session that never ran a
 turn has no file ("The registry"), so it cannot be resumed.
 
-**Continue** (`resume_from` alone) starts `ko-pi --session <session
+**Continue** (`resume_from` alone) starts `koa --session <session
 file>`: the same session id, with its history, in its recorded
 directory; a different `cwd` is refused. A session is refused while a
 pane that is not dead holds its `pi.session`, and when it is an
@@ -280,7 +279,7 @@ parent's registry entry stays, and that parent sees the session live
 under another pane and cannot restart it. The checks and the request
 run under the restart lock for that session.
 
-**Copy** (`resume_from` with `fork: true`) starts `ko-pi --session-id
+**Copy** (`resume_from` with `fork: true`) starts `koa --session-id
 <minted id> --fork <session file>`. The original is unchanged, and
 a live original is not refused, because pi only reads it.
 
@@ -639,9 +638,8 @@ has no window, and its row in the sidebar is a status record of pi's
 own pane ("A job's row"). Two tools make one:
 
 - `async_bash(command, name, stream?, service?)` starts a job.
-- A `bash` call that still runs after `KO_JOB_MOVE_MS` (60 000), or
-  that the user moves with ctrl+b, becomes a job ("The bash tool's
-  move").
+- A `bash` call that still runs after `KO_JOB_MOVE_MS` (60 000)
+  becomes a job ("The bash tool's move").
 
 **The registry.** Every job is a `Job` record of one registry for
 each process, `globalThis[Symbol.for("ko-pi.jobs")]`. Its envelope
@@ -651,7 +649,7 @@ job write its log and its buffers and never call pi; only the hooks
 of the current extension instance call pi. Thus, a job and its
 output survive `/reload`, whose old instance can no longer send a
 message ("Jobs across /reload"). It is a `Symbol.for` key with a
-fixed envelope, not a typed global, because a ko-pi of another
+fixed envelope, not a typed global, because an extension of another
 version must still read and stop it. The registry keeps every running
 job, every ended job whose notice is still owed, and the newest 20
 announced ones, so a list can show more than 20 ended jobs while
@@ -691,7 +689,7 @@ The first line names the end: `exit N`, `signal NAME`, `failed:
 with escape sequences stripped, because failure information comes
 last. A job that `stop_async_bash` stopped sends none; a stop of an
 ended job answers `had already ended` with its end. Each job sends
-its own notice; ko-pi groups none.
+its own notice; the extension groups none.
 
 A job is not an agent. `message_agent` and `stop_agent` do not
 resolve it.
@@ -706,14 +704,15 @@ flag: a `bash` call that moves is never a service.
 
 ## A job's row
 
-Each job is an OSC 7501 child record of pi's pane, which ko-pi writes
+Each job is an OSC 7501 child record of pi's pane, which the agent
+extension writes
 through the status route (protocol.md, section 6), so Kido.app
 draws it as a child row under the pane row (design-program-status.md,
 "The record set"). A foreground `bash` call has no record. It gets
 one when it moves. A routed job has one as a local job does.
 
 - The id is `job/<job id>`. A job id is unique in the registry. Only
-  ko-pi writes the namespace `job`, so a clear of `job` removes every
+  the extension writes the namespace `job`, so a clear of `job` removes every
   job record and nothing else.
 - The title is the job's name, so a row reads name first and command
   second. While the job runs, the state is working and the message is
@@ -723,51 +722,42 @@ one when it moves. A routed job has one as a local job does.
   for exit 0. Every other end is error: an exit code, a signal, a
   failure to start, a timeout or a stop. The message is the end text
   of its notice (`exit 3`, `signal SIGTERM`).
-- The title and the message are sanitized by ko-pi's own rule:
+- The title and the message are sanitized by the extension's own rule:
   pi-tui's control character replacement, then whitespace collapses
   to one space. The text is cut at a UTF-8 boundary to the route's
   limits. An empty title or message is omitted.
 - A finished record lingers for `KO_JOB_RECORD_LINGER_MS` (5000).
-  Then ko-pi clears its id. A job's record never changes the pane's
+  Then the extension clears its id. A job's record never changes the pane's
   status: an agent's status comes from its root record alone
   (design-program-status.md, "Reduction").
 
-**The writer.** ko-pi writes each record as one `ko api POST
-/panes/$KO_PANE/status`, never on its stdout, so a record reaches the
-server in every mode of pi with a UI: the TUI, RPC mode, a routed pi in a
+**The writer.** The extension writes each record as one `ko api POST
+/panes/$KO_PANE/status`, never on its stdout, which is koa's RPC
+stream, so a record reaches the server from koa's pi, a routed pi in a
 runtime and a pi on a remote server. A record needs no OSC 7501
-support of the outer terminal. ko-pi writes only while it is active in
+support of the outer terminal. The extension writes only while it is active in
 the pane, as for its message stream: a headless pi that a tool starts
 inherits `KO_PANE`, and it must not touch its parent's rows. The posts go through one queue, one
 after another, in the order of the changes; a failed post is dropped,
 and the next change of the job writes it again. A shutdown waits for
 the queue, so a post of the old instance never follows the clear of a
 `/reload`'s new instance. The queue is ordered only against itself: a
-post in flight can land after pi's root clear ("pi's clears") and
-bring that row back early.
+post in flight can land after koa's root clear and bring that row
+back early.
 
 **At most 32 records.** The server's set has a limit, and a new record
 over the limit removes the oldest record. That can be pi's root
-record. Thus ko-pi admits at most 32 job records at once. When a new
-job needs a slot, ko-pi clears the oldest finished record first. When
-all 32 jobs run, the new job gets no row, also not at its end. The cap
-is ko-pi's own, not a server rule.
+record. Thus the extension admits at most 32 job records at once.
+When a new job needs a slot, it clears the oldest finished record
+first. When all 32 jobs run, the new job gets no row, also not at its
+end. The cap is the extension's own, not a server rule.
 
-**pi's clears.** pi-tui's `Terminal.stop()` writes a root clear. This
-removes every record of the pane, the job records too. It runs at
-pi's exit, at a suspend (ctrl+z) and around the external editor.
-`start()` sends only pi's root record again. Thus ko-pi writes its
-running job records again at `input` and `agent_start`, and it writes
-a job's record at each change of that job. It never writes on a timer
-or on each key. While the editor is open or pi is suspended, and
-until the next submit or agent start, the rows are absent. A finished
-record that such a clear removed does not come back.
-
-A prompt start (OSC 133 `A`) removes every record of the pane that has
-not ended: working, blocked and idle, so also a service's.
-pi 1.5.0's TUI strips its OSC 133 zone markers before it writes, so
-the job rows and pi's own working status stay.
-`share/pi/package.json` pins 1.5.0.
+**Root clears.** A root clear removes every record of the pane, the
+job records too. koa writes one only when its pi exits
+(design-koa.md, "Status and title"), after the extension's exit
+handler has cleared `job` and stopped the jobs ("Across /reload and
+quit"). Thus the extension writes a job's record only at each change
+of that job, never on a timer or on each key.
 
 **Across /reload and quit.** A `/reload` cancels the linger timers of
 the old instance. The new instance clears `job` at adopt. Then it
@@ -782,7 +772,7 @@ flight at the exit can land after it.
 
 ## Stopping a job
 
-Every signal of ko-pi goes through `signalJob(job, signal)`, which
+Every signal of the extension goes through `signalJob(job, signal)`, which
 takes a record of the registry, never a pid from an argument, a
 message or a tool parameter. A local job's signal goes to the group
 that its `detached` spawn created. The function refuses when the
@@ -794,7 +784,7 @@ member can get it, not an error: macOS returns `EPERM` for a group
 whose members are all zombies, which occurs after the shell exits and
 before Node reaps it. A routed job's stop is `kill()` of its own `ko api` child:
 ko closes the exec session, and the inside ko signals the command's
-group (design-runtimes.md, "The exec session"). ko-pi sends no
+group (design-runtimes.md, "The exec session"). The extension sends no
 `signal` frame. A process that leaves its group (`setsid`) escapes.
 
 A stop sends `SIGTERM`, then `SIGKILL` after `KO_JOB_KILL_MS` (5000)
@@ -852,13 +842,13 @@ it ended" before the output.
 ## The bash tool's move
 
 At `session_start`, when the `bash` of `pi.getAllTools()` is pi's
-builtin (`sourceInfo.path` starts with `builtin:`), ko-pi registers
+builtin (`sourceInfo.path` starts with `builtin:`), the extension registers
 a `bash` with pi's own definition (`createBashToolDefinition`, with
 the user's `shellPath` and `shellCommandPrefix`), whose operations
 are `handoff(localExec)`. An extension tool with a builtin's name
-replaces it. A routed pi's `bash` is ko-pi's routed tool, with
+replaces it. A routed pi's `bash` is the extension's routed tool, with
 `handoff` over the exec session. Another extension's `bash` stays
-alone: no move and no ctrl+b. `!` commands are not wrapped.
+alone: no move. `!` commands are not wrapped.
 
 - A `timeout` under `KO_JOB_MOVE_MS` passes through: the command is
   stopped at its timeout with pi's timeout error.
@@ -868,10 +858,6 @@ alone: no move and no ctrl+b. `!` commands are not wrapped.
   arrives when it ends; output so far:`, the tail, and the log. The
   command is not stopped. An explicit timeout becomes the job's
   deadline, and its notice reads `timed out after N s`.
-- With a UI, ctrl+b (`ctx.ui.onTerminalInput`) moves every running
-  call at once; the key is consumed only then. After
-  `KO_JOB_HINT_MS` (3000) of a call, the widget `ko-job-hint` shows
-  `ctrl+b moves this command to a job`, until the call ends or moves.
 - A call that runs at a `/reload` shutdown moves, because the new
   instance cannot complete the old call.
 
@@ -895,9 +881,8 @@ design; a probe extension observed them through one `/reload`:
 
 Thus the registry keeps a job's output and ending as plain data, and
 only the current instance calls pi. At `session_shutdown` with reason
-`reload`, ko-pi moves its running `bash` calls, clears each job's
-hooks and flush timers, removes the hint and the ctrl+b listener,
-and leaves the registry on `globalThis`. At the next `session_start`,
+`reload`, the extension moves its running `bash` calls, clears each
+job's hooks and flush timers, and leaves the registry on `globalThis`. At the next `session_start`,
 after the pane variables and before the task, the new instance:
 
 - adopts the registry when its shape and session are its own: it
@@ -914,7 +899,7 @@ The other reasons (`quit`, `new`, `resume`, `fork`) stop every job,
 wait up to `KO_JOB_KILL_MS` for the ends and clear the registry.
 
 koa's `/reload` restarts pi only when nothing would be lost this way:
-ko-pi answers a request on pi's event bus (`RESTART_STATE_CHANNEL` in
+the extension answers a request on pi's event bus (`RESTART_STATE_CHANNEL` in
 `records.ts`) with its running jobs, services included, and its
 children that have not reported on their last work
 (design-koa.md, "`/reload` reloads pi").
@@ -926,7 +911,7 @@ A human uses ko's own commands, not the tools:
 - `ko prompt` sends text to an agent in scope as kind `user`, which
   the agent reads as the user's own words (design.md, "Delivery, and
   when a paste is allowed").
-- `ko-pi` in a pane starts a top-level agent.
+- `koa` in a pane starts a top-level agent.
 
 A shell has no message stream and no session. It cannot receive a
 message or a notice.

@@ -360,12 +360,9 @@ type Entry = { type: "custom"; customType: string; data: Record<string, any> };
 export function createFakePi(sessionDir = "/tmp/ko-pi-no-sessions/caller", entries: Entry[] = []) {
   const tools = new Map<string, any>();
   const toolSources = [{ name: "bash", sourceInfo: { path: "builtin:bash" } }];
-  const terminalListeners = new Set<(data: string) => { consume?: boolean; data?: string } | undefined>();
   const handlers = new Map<string, Array<(...args: any[]) => unknown>>();
   const delivered: Array<{ text: string; opts: unknown }> = [];
   const messages: Array<{ message: any; opts: unknown }> = [];
-  const renderers = new Map<string, (message: any, options: any, theme: any) => { render(width: number): string[]; handleMouse(event: any): unknown }>();
-  const widgets = new Map<string, { content: string[] | ((tui: unknown, theme: any) => { render(width: number): string[]; handleMouse?(event: any): unknown }) | undefined; options?: unknown }>();
   const failAppends = new Set<string>();
   const flags = new Map<string, boolean | string>();
   const busListeners = new Map<string, Set<(data: unknown) => void>>();
@@ -378,7 +375,7 @@ export function createFakePi(sessionDir = "/tmp/ko-pi-no-sessions/caller", entri
     getFlag: (name: string) => flags.get(name),
     sessionName: undefined as string | undefined,
     getSessionName: (): string | undefined => pi.sessionName,
-    settings: { tuiMode: "regular" as "regular" | "fullscreen", shellPath: undefined as string | undefined, shellCommandPrefix: undefined as string | undefined },
+    settings: { shellPath: undefined as string | undefined, shellCommandPrefix: undefined as string | undefined },
     getSettings: () => pi.settings,
     getThinkingLevel: () => "high",
     getAllTools: () => [...toolSources.filter((tool) => !tools.has(tool.name)), ...tools.values()],
@@ -399,8 +396,8 @@ export function createFakePi(sessionDir = "/tmp/ko-pi-no-sessions/caller", entri
       if (failAppends.has(customType)) throw new Error(`cannot append ${customType}`);
       entries.push({ type: "custom", customType, data });
     },
-    registerMessageRenderer(customType: string, renderer: Parameters<typeof renderers.set>[1]) {
-      renderers.set(customType, renderer);
+    registerMessageRenderer() {
+      throw new Error("koa renders in its page: registerMessageRenderer");
     },
   };
   async function emit(event: string, ...args: unknown[]): Promise<unknown[]> {
@@ -409,35 +406,28 @@ export function createFakePi(sessionDir = "/tmp/ko-pi-no-sessions/caller", entri
     return results;
   }
   const notifications: Array<{ message: string; type?: string }> = [];
-  const autocompleteFactories: Array<(current: any) => any> = [];
   const ui = {
-    onTerminalInput(handler: (data: string) => { consume?: boolean; data?: string } | undefined) {
-      terminalListeners.add(handler);
-      return () => { terminalListeners.delete(handler); };
+    onTerminalInput() {
+      throw new Error("koa renders in its page: onTerminalInput");
     },
-    setWidget(key: string, content: string[] | ((tui: unknown, theme: any) => { render(width: number): string[]; handleMouse?(event: any): unknown }) | undefined, options?: unknown) {
-      widgets.set(key, { content, options });
+    setWidget() {
+      throw new Error("koa renders in its page: setWidget");
     },
     notify(message: string, type?: string) {
       notifications.push({ message, type });
     },
-    addAutocompleteProvider(factory: (current: any) => any) {
-      autocompleteFactories.push(factory);
+    addAutocompleteProvider() {
+      throw new Error("koa renders in its page: addAutocompleteProvider");
     },
   };
   return {
     pi,
     tools,
     toolSources,
-    terminalListeners,
-    terminalInput: (data: string) => [...terminalListeners].map((handler) => handler(data)),
     handlers,
     delivered,
     messages,
-    renderers,
-    widgets,
     notifications,
-    autocompleteFactories,
     ui,
     emit,
     entries,

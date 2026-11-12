@@ -24,11 +24,11 @@ function recordModelChanges(file: string) {
 
 const env = (body: Body, name: string): string | undefined => (body.env as Array<{ name: string; value: string }>).find((v) => v.name === name)?.value;
 
-for (const harness of ["tui", "koa", "koa-browser"]) test(`spawn_agent creates one pane with the ${harness} harness, a parent and the task`, async () => {
+for (const mode of ["koa", "koa-browser"]) test(`spawn_agent creates one pane with the ${mode} mode, a parent and the task`, async () => {
   const fx = makeFixture();
   try {
     fx.setPanes([selfPane()]);
-    const s = await startSession(fx, { name: "Self", flags: harness === "tui" ? {} : { harness } });
+    const s = await startSession(fx, { name: "Self", flags: mode === "koa-browser" ? { "koa-browser": true } : {} });
     const result = await s.tools.get("spawn_agent").execute("c", { name: "worker", task: "build it", model: undefined });
     const reply = text(result);
     const [body] = fx.posts("/panes") as Body[];
@@ -36,7 +36,7 @@ for (const harness of ["tui", "koa", "koa-browser"]) test(`spawn_agent creates o
     const session = result.details.session as string;
     assert.match(session, /^[0-9a-f]{32}$/);
     const ko = join(fx.binDir, "ko");
-    assert.deepEqual(body!.command, { type: "argv", argv: [ko, "shell", "--", harness === "tui" ? "ko-pi" : "koa", ...(harness === "koa-browser" ? ["--browser"] : []), "--session-id", session, "--name", "worker", "--model", "acme/caller:high", "--session-dir", join(getAgentDir(), "ko-subagents", `--${process.cwd().slice(1).split("/").join("-")}--`)] });
+    assert.deepEqual(body!.command, { type: "argv", argv: [ko, "shell", "--", "koa", ...(mode === "koa-browser" ? ["--browser"] : []), "--session-id", session, "--name", "worker", "--model", "acme/caller:high", "--session-dir", join(getAgentDir(), "ko-subagents", `--${process.cwd().slice(1).split("/").join("-")}--`)] });
     assert.deepEqual({ name: body!.name, cwd: body!.cwd, parent: body!.parent, close: body!.close, session: body!.session }, { name: "worker", cwd: process.cwd(), parent: "pane_1", close: "on_exit", session: undefined });
     assert.equal(env(body!, "KO_AGENT_SESSION"), session);
     assert.equal(env(body!, "KO_AGENT_PARENT_SESSION"), "self-session");
@@ -120,11 +120,11 @@ test("a name taken by an own child is refused, and a failed POST leaves no regis
   }
 });
 
-for (const harness of ["tui", "koa"]) test(`resume_from with ${harness} continues a saved session; fork copies it under a new id`, async () => {
+test(`resume_from continues a saved session; fork copies it under a new id`, async () => {
   const fx = makeFixture();
   try {
     fx.setPanes([selfPane()]);
-    const s = await startSession(fx, { flags: harness === "koa" ? { harness } : {} });
+    const s = await startSession(fx);
     const spawn = s.tools.get("spawn_agent");
     const sessions = join(fx.dir, "ko-subagents", "caller");
     const cwd = fx.dir;
@@ -135,7 +135,7 @@ for (const harness of ["tui", "koa"]) test(`resume_from with ${harness} continue
     const resumed = await withEnv({ PI_CODING_AGENT_DIR: fx.dir }, async () => text(await spawn.execute("c", { name: "again", task: "", resume_from: "01234567" })));
     assert.match(resumed, /^spawned again \(session 0123456789abcdef0123456789abcdef,/);
     const [body] = fx.posts("/panes") as Body[];
-    assert.deepEqual((body!.command.argv as string[]).slice(3, 7), [harness === "koa" ? "koa" : "ko-pi", "--session", file, "--name"]);
+    assert.deepEqual((body!.command.argv as string[]).slice(3, 7), ["koa", "--session", file, "--name"]);
     assert.equal(body!.command.argv[body!.command.argv.indexOf("--model") + 1], "acme/saved:medium");
     assert.equal(body!.cwd, cwd, "the recorded directory");
     assert.equal(body!.vars, undefined, "an empty task is no variable");
@@ -147,7 +147,7 @@ for (const harness of ["tui", "koa"]) test(`resume_from with ${harness} continue
     const forked = await withEnv({ PI_CODING_AGENT_DIR: fx.dir }, async () => text(await spawn.execute("c", { name: "copy", task: "do it differently", resume_from: "0123456789abcdef0123456789abcdef", fork: true })));
     assert.match(forked, /, forked from session 0123456789abcdef0123456789abcdef;/);
     const argv = (fx.posts("/panes").at(-1)!.command.argv as string[]).slice(3);
-    assert.deepEqual(argv.slice(0, 2), [harness === "koa" ? "koa" : "ko-pi", "--session-id"]);
+    assert.deepEqual(argv.slice(0, 2), ["koa", "--session-id"]);
     assert.notEqual(argv[2], "0123456789abcdef0123456789abcdef");
     assert.deepEqual(argv.slice(-2), ["--fork", file]);
     assert.equal(argv[argv.indexOf("--model") + 1], "acme/saved:medium");
@@ -237,7 +237,7 @@ test("a message to an ended subagent restarts it by --session-id in its recorded
     const posts = fx.posts("/panes") as Body[];
     assert.equal(posts.length, 1, "one restart");
     const argv = posts[0]!.command.argv as string[];
-    assert.deepEqual(argv.slice(3), ["ko-pi", "--session-id", "kid-session", "--name", "kid", "--model", "acme/m:low", "--session-dir", join(getAgentDir(), "ko-subagents", "--work-kid--")]);
+    assert.deepEqual(argv.slice(3), ["koa", "--session-id", "kid-session", "--name", "kid", "--model", "acme/m:low", "--session-dir", join(getAgentDir(), "ko-subagents", "--work-kid--")]);
     assert.equal(posts[0]!.cwd, "/work/kid");
     assert.equal(posts[0]!.parent, "pane_1");
     assert.equal(posts[0]!.vars["ko-pi.task"].text, winning);
@@ -268,7 +268,7 @@ test("message_agent continues an ended child's session file in the normal tree",
     s.entries.push({ type: "custom", customType: "ko-pi.agent", data: { role: "subagent", owner: "self-session", name: "kid", session: id, model: "acme/m:low", fork: false, cwd: fx.dir, pane: { instance: INSTANCE, pane: "pane_77" } } });
     const result = await withEnv({ PI_CODING_AGENT_DIR: fx.dir }, async () => text(await s.tools.get("message_agent").execute("c", { to: "kid", message: "continue" })));
     assert.match(result, /^restarted kid in pane pane_10;/);
-    assert.deepEqual(fx.posts("/panes")[0]!.command.argv.slice(3, 7), ["ko-pi", "--session", file, "--name"]);
+    assert.deepEqual(fx.posts("/panes")[0]!.command.argv.slice(3, 7), ["koa", "--session", file, "--name"]);
     const argv = fx.posts("/panes")[0]!.command.argv;
     assert.equal(argv[argv.indexOf("--model") + 1], "acme/saved:medium");
   } finally {

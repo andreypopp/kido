@@ -1,8 +1,0 @@
-#!/bin/sh
-# ko-pi: the real pi with ko's harness extension in front of every argument.
-. "${0%/*}/../shim.sh"
-set -- --extension "$ko_share/pi/ko-pi.ts" "$@"
-ko_real pi
-PI_IMAGE_PROTOCOL=${PI_IMAGE_PROTOCOL-kitty}
-export PI_IMAGE_PROTOCOL
-exec "$ko_found" "$@"

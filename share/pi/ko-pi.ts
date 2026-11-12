@@ -12,9 +12,7 @@ import {
   type GrepToolDetails,
   type GrepToolInput,
   type LsOperations,
-  type MessageRenderer,
   type ReadOperations,
-  type Theme,
   type ToolDefinition,
   type WriteOperations,
   createBashToolDefinition,
@@ -32,12 +30,10 @@ import {
   formatSize,
   getAgentDir,
   getShellConfig,
-  rawKeyHint,
   truncateHead,
   truncateTail,
   truncateLine,
 } from "@earendil-works/pi-coding-agent";
-import { Key, matchesKey, type AutocompleteProvider, type TuiMouseEvent, truncateToWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import { type ChildProcess, spawn, spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { type WriteStream, accessSync, constants, createWriteStream, mkdirSync, readFileSync, readdirSync, realpathSync, statSync } from "node:fs";
@@ -49,9 +45,8 @@ import { dirname, delimiter, extname, join, posix, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Type } from "typebox";
 import type { components } from "./ko-api.d.ts";
-import { atToken } from "./token.ts";
 import { isRelation, isAgentFailure, jobEndText, RESTART_STATE_CHANNEL, type RestartState, type Relation, type AgentRef, type AgentOutcome, type MessageDetails, type SteerDetails, type NoticeDetails, type StreamDetails, type JobRef, type JobEnd } from "./records.ts";
-import { parsePanes, placesOf, piAgent, peerPanes, ancestorsOf, runningRows, agentCache, MIN_ID_PREFIX, VAR_SESSION, VAR_NAME, VAR_ACTIVITY, VAR_TASK, VAR_RUNTIME, type PaneInfo, type AgentCompletionRow } from "./agents.ts";
+import { parsePanes, placesOf, piAgent, peerPanes, ancestorsOf, runningRows, MIN_ID_PREFIX, VAR_SESSION, VAR_NAME, VAR_ACTIVITY, VAR_TASK, VAR_RUNTIME, type PaneInfo, type AgentCompletionRow } from "./agents.ts";
 
 type Api = components["schemas"];
 
@@ -168,9 +163,6 @@ export const senderHeader = (from: string, relation: Relation, runtime?: string)
 
 const steerHeader = (from: string): string => `${from} is redirecting this work: `;
 
-const inboundHeader = (sender: string | undefined, verb: string | undefined): string =>
-  `${sender && sender !== "another agent" ? `@${sender}` : "another agent"}${verb ? ` ${verb}` : ""}:`;
-
 const MAX_NOTICE_BYTES = 4000;
 const MAX_JOB_TITLE_BYTES = 192;
 const MAX_JOB_MESSAGE_BYTES = 2048;
@@ -226,22 +218,6 @@ type ChildData = {
   pane: { instance: string; pane: string };
 };
 
-const handleClick = (event: TuiMouseEvent, click: () => void) => {
-  if (event.button !== "left") return;
-  if (event.type === "press") return { handled: true, render: false };
-  if (event.type !== "click") return;
-  click();
-  return { handled: true, render: true };
-};
-
-type Paint = (color: "border" | "dim" | undefined, text: string) => string;
-
-const collapsedInbound = (width: number, header: string, body: string, paint: Paint): string => {
-  if (width <= 2) return paint("border", "│ ".slice(0, width));
-  const preview = body ? ` ${body.split("\n", 1)[0]}${body.includes("\n") ? "..." : ""}` : "";
-  return paint("border", "│ ") + truncateToWidth(paint("dim", header) + paint(undefined, preview), width - 2);
-};
-
 function isMessageQueue(queue: unknown): queue is { messages: AgentSession["messages"] } {
   return typeof queue === "object" && queue !== null && "messages" in queue && Array.isArray(queue.messages);
 }
@@ -291,7 +267,7 @@ type JobCall = {
 type JobOutput = {
   type: "job";
   name: string;
-  origin: { type: "async_bash"; stream: boolean; service: boolean } | { type: "bash"; move: "timeout" | "key" | "reload" };
+  origin: { type: "async_bash"; stream: boolean; service: boolean } | { type: "bash"; move: "timeout" | "reload" };
   log: string;
   output: WriteStream;
   logClosed: Promise<void>;
@@ -323,7 +299,7 @@ type JobOperations = {
 };
 class MovedToJob extends Error {
   readonly job: BackgroundJob;
-  readonly reason: "timeout" | "key" | "reload";
+  readonly reason: "timeout" | "reload";
 
   constructor(job: BackgroundJob, reason: MovedToJob["reason"]) {
     super("moved to job");
@@ -338,13 +314,12 @@ type JobRegistry = {
   jobs: Map<string, Job>;
   owner: { onStart(job: BackgroundJob): void; onLines(job: BackgroundJob): void; onEnd(job: BackgroundJob): void; clearRecords(): void } | null;
   exit: () => void;
-  keys: () => void;
 };
 const JOBS = Symbol.for("ko-pi.jobs");
 const JOB_SHAPE = 3;
 function isJobRegistry(value: unknown): value is JobRegistry {
   return isRecord(value) && typeof value.shape === "number" && typeof value.session === "string"
-    && value.jobs instanceof Map && typeof value.stopAll === "function" && typeof value.exit === "function" && typeof value.keys === "function";
+    && value.jobs instanceof Map && typeof value.stopAll === "function" && typeof value.exit === "function";
 }
 
 function jobRunning(job: Job): boolean {
@@ -389,12 +364,6 @@ function detachJob(job: BackgroundJob): void {
   job.mode.stream.timer = null;
 }
 
-function detachKeys(registry: JobRegistry): void {
-  const detach = registry.keys;
-  registry.keys = () => {};
-  detach();
-}
-
 function stopJob(job: Job, end: JobEnd = { type: "stopped" }): void {
   if (job.state.type === "ended" || job.stopping) return;
   if (job.deadline) clearTimeout(job.deadline);
@@ -423,7 +392,7 @@ function pruneJobs(registry: JobRegistry): void {
 function createJobRegistry(session: string): JobRegistry {
   const jobs = new Map<string, Job>();
   const registry: JobRegistry = {
-    shape: JOB_SHAPE, session, jobs, owner: null, keys: () => {},
+    shape: JOB_SHAPE, session, jobs, owner: null,
     stopAll() {
       registry.owner = null;
       const live = [...jobs.values()].filter((job) => job.state.type !== "ended");
@@ -1133,7 +1102,7 @@ async function routedGrep(r: Routed, params: GrepToolInput, signal: AbortSignal 
 
 export default function (pi: ExtensionAPI) {
   if (!isFirstCopy()) return;
-  pi.registerFlag("harness", { description: "Use the koa harness for child agents", type: "string" });
+  pi.registerFlag("koa-browser", { description: "Child agents start koa in browser mode", type: "boolean" });
   pi.registerFlag("runtime", { description: "Run the built-in tools and ! commands in a configured runtime or an ad-hoc runtime of this session by name", type: "string" });
   pi.on("project_trust", async (event) => {
     const trusted = process.env.KO_AGENT_TRUSTED_CWD;
@@ -1154,7 +1123,6 @@ export default function (pi: ExtensionAPI) {
 
   const written = new Map<string, string>();
 
-  let completion: ReturnType<typeof agentCache> | undefined;
 
   const insideKo = (): boolean => !!process.env.KO_SOCKET && findKo() !== null;
   const offersSkill = (): boolean => insideKo() && !routed;
@@ -1303,7 +1271,7 @@ export default function (pi: ExtensionAPI) {
       };
       const child = openStream(ko, "/client");
       peerClient = child;
-      const hello: Api["ClientRequest"] = { type: "hello", name: "ko-pi", webview: false, focused: false, sizing: { type: "disabled" } };
+      const hello: Api["ClientRequest"] = { type: "hello", name: "koa", webview: false, focused: false, sizing: { type: "disabled" } };
       child.stdin?.write(JSON.stringify(hello) + "\n");
       child.stdout?.on("data", lineReader({ partial: Buffer.alloc(0) }, (line) => {
         try { receive(JSON.parse(line)); } catch {}
@@ -1603,31 +1571,9 @@ export default function (pi: ExtensionAPI) {
     pi.sendUserMessage(text, { deliverAs: "followUp" });
   };
 
-  const pendingNotices = new Map<string, { from: string; text: string }>();
-
-  const NOTICE_WIDGET_KEY = "ko-notice-pending";
-
-  const renderNoticeWidget = (): void => {
-    const ui = session?.ui;
-    if (!ui) return;
-    if (pendingNotices.size === 0) {
-      ui.setWidget(NOTICE_WIDGET_KEY, undefined);
-      return;
-    }
-    const entries = [...pendingNotices.values()];
-    ui.setWidget(NOTICE_WIDGET_KEY, (_tui, theme) => ({
-      render: (width: number): string[] =>
-        entries.map(({ from, text }) => collapsedInbound(width, inboundHeader(from, "notifies"), text, (_color, t) => theme.fg("dim", t))),
-      invalidate: () => {},
-    }));
-  };
-
   const deliverNotice = (text: string, details: NoticeDetails): void => {
     const from = 'job' in details ? details.job.name : details.agent.name;
-    const noticeId = mintId();
-    pendingNotices.set(noticeId, { from, text });
-    renderNoticeWidget();
-    pi.sendMessage({ customType: NOTICE_CUSTOM_TYPE, content: `${noticeHeader(from)}\n${text}`, display: true, details: { from, noticeId, ...details } satisfies NoticeDetails }, { deliverAs: "steer", triggerTurn: true });
+    pi.sendMessage({ customType: NOTICE_CUSTOM_TYPE, content: `${noticeHeader(from)}\n${text}`, display: true, details: { from, ...details } satisfies NoticeDetails }, { deliverAs: "steer", triggerTurn: true });
   };
 
   const labelOf = (from: Api["Sender"]): string => (from.type === "pane" ? from.name || from.session || from.pane : "the user");
@@ -1899,13 +1845,6 @@ export default function (pi: ExtensionAPI) {
       jobRecords.set(id, { type: "finished", timer });
     }
   };
-  const refreshJobRecords = (): void => {
-    for (const [id, record] of jobRecords) {
-      if (record.type !== "running") continue;
-      const job = registry?.jobs.get(id);
-      if (job && isBackgroundJob(job)) writeJobRecord(id, jobRecordState(job), job.mode.name, job.command);
-    }
-  };
   const savedJobs: unknown = Reflect.get(globalThis, JOBS);
   let registry = isJobRegistry(savedJobs) ? savedJobs : undefined;
   const jobRegistry = (): JobRegistry => {
@@ -1974,7 +1913,6 @@ export default function (pi: ExtensionAPI) {
   const adoptJobs = (): void => {
     let stopped: string[] | undefined;
     if (registry && (registry.shape !== JOB_SHAPE || registry.session !== (ownSessionId ?? ""))) {
-      detachKeys(registry);
       stopped = registry.stopAll();
       registry = undefined;
       Reflect.deleteProperty(globalThis, JOBS);
@@ -2012,12 +1950,9 @@ export default function (pi: ExtensionAPI) {
       try { deliverNotice(text, { inbound: { form: "notice" }, agent: { name: "ko-pi" }, body: text }); } catch {}
     }
   };
-  type BashCall = { type: "bash"; hint: "waiting" | "shown"; cancel(reason?: ShutdownReason): void; move(reason: "timeout" | "key" | "reload"): boolean };
+  type BashCall = { type: "bash"; cancel(reason?: ShutdownReason): void; move(reason: "timeout" | "reload"): boolean };
   type PendingCall = BashCall | { type: "async_bash"; cancel(reason?: ShutdownReason): void };
   const calls = new Set<PendingCall>();
-  const updateHint = (): void => {
-    if (session?.hasUI) session.ui.setWidget("ko-job-hint", [...calls].some((call) => call.type === "bash" && call.hint === "shown") ? [rawKeyHint("ctrl+b", "moves this command to a job")] : undefined);
-  };
   const handoff = (ops: JobOperations): BashOperations => ({
     exec(command, cwd, options) {
       validateJobTimeout(options.timeout);
@@ -2031,16 +1966,14 @@ export default function (pi: ExtensionAPI) {
         let job: Job | undefined;
         let pendingReload = false;
         let moveTimer: NodeJS.Timeout | undefined;
-        let hintTimer: NodeJS.Timeout | undefined;
         const cleanup = (): void => {
           clearTimeout(moveTimer);
-          clearTimeout(hintTimer);
           options.signal?.removeEventListener("abort", abort);
-          if (calls.delete(call)) updateHint();
+          calls.delete(call);
         };
         const call: BashCall = {
-          type: "bash", hint: "waiting", cancel: abort,
-          move(reason: "timeout" | "key" | "reload"): boolean {
+          type: "bash", cancel: abort,
+          move(reason: "timeout" | "reload"): boolean {
             if (!job && reason === "reload") { pendingReload = true; cleanup(); }
             if (!job || isBackgroundJob(job) || job.state.type === "ended" || controller.signal.aborted) return false;
             try {
@@ -2064,8 +1997,6 @@ export default function (pi: ExtensionAPI) {
           onStart(startedJob) {
             job = startedJob;
             if (pendingReload) { call.move("reload"); return; }
-            hintTimer = setTimeout(() => { call.hint = "shown"; updateHint(); }, Math.max(0, Math.ceil(started + envMs("KO_JOB_HINT_MS", 3000) - performance.now())));
-            hintTimer.unref();
             if (options.timeout === undefined || options.timeout * 1000 >= moveMs) {
               moveTimer = setTimeout(() => call.move("timeout"), Math.max(0, Math.ceil(started + moveMs - performance.now())));
               moveTimer.unref();
@@ -2084,8 +2015,8 @@ export default function (pi: ExtensionAPI) {
       return { content: [{ type: "text" as const, text: `${why}; it continues as job ${error.job.id}; a notice arrives when it ends; output so far:\n${jobTail(error.job)}\nlog: ${error.job.mode.log}` }], details: undefined };
     }
   };
-  const registerLocalBash = (ctx: ExtensionContext): boolean => {
-    if (routed || !pi.getAllTools().some((tool) => tool.name === "bash" && tool.sourceInfo.path.startsWith("builtin:"))) return false;
+  const registerLocalBash = (ctx: ExtensionContext): void => {
+    if (routed || !pi.getAllTools().some((tool) => tool.name === "bash" && tool.sourceInfo.path.startsWith("builtin:"))) return;
     const definition = createBashToolDefinition(ctx.cwd);
     pi.registerTool({
       ...definition,
@@ -2096,7 +2027,6 @@ export default function (pi: ExtensionAPI) {
         }), id, params, signal, onUpdate, context);
       },
     });
-    return true;
   };
 
   // ---- the parent: reports, the watch, the exit notice ----
@@ -2332,8 +2262,8 @@ export default function (pi: ExtensionAPI) {
       trusted = "error" in info ? undefined : mapHostPath(info.paths, trusted) ?? info.cwd;
     }
     const argv = [
-      inside ? "ko" : ko, "shell", "--", pi.getFlag("harness") === undefined ? "ko-pi" : "koa",
-      ...(pi.getFlag("harness") === "koa-browser" ? ["--browser"] : []),
+      inside ? "ko" : ko, "shell", "--", "koa",
+      ...(pi.getFlag("koa-browser") ? ["--browser"] : []),
       ...(plan.runtime?.mode === "routed" ? ["--runtime", plan.runtime.name] : []),
       ...(plan.mode.kind === "continue" ? ["--session", plan.mode.file] : ["--session-id", plan.session]),
       "--name", plan.name,
@@ -2445,53 +2375,10 @@ export default function (pi: ExtensionAPI) {
     }
   };
 
-  // ---- rendering ----
-
-  const inboundExpanded = new Map<string, boolean>();
-
-  const renderInbound = (message: Parameters<MessageRenderer>[0], theme: Pick<Theme, "fg">, sender: string | undefined, verb: string | undefined, body: string | undefined) => {
-    if (body === undefined) return { render: (width: number) => wrapTextWithAnsi(contentText(message.content), width), invalidate: () => {} };
-    const key = JSON.stringify([message.customType, message.timestamp, message.details]);
-    const expanded = () => pi.getSettings().tuiMode === "regular" || (inboundExpanded.get(key) ?? false);
-    const paint: Paint = (color, text) => (color ? theme.fg(color, text) : text);
-    return {
-      handleMouse: (event: TuiMouseEvent) => handleClick(event, () => inboundExpanded.set(key, !expanded())),
-      render: (width: number): string[] => {
-        const header = inboundHeader(sender, verb);
-        if (!expanded() || width <= 2) return [collapsedInbound(width, header, body, paint)];
-        return wrapTextWithAnsi(`${paint("dim", header)}\n${body}`, width - 2).map((line) => paint("border", "│ ") + line);
-      },
-      invalidate: () => {},
-    };
-  };
-
-  pi.registerMessageRenderer<MessageDetails>(MESSAGE_CUSTOM_TYPE, (message, _options, theme) =>
-    renderInbound(message, theme, message.details?.agent?.name, "says", message.details?.body));
-
-  pi.registerMessageRenderer<SteerDetails>(STEER_CUSTOM_TYPE, (message, _options, theme) =>
-    renderInbound(message, theme, message.details?.agent?.name, "redirects", message.details?.body));
-
-  pi.registerMessageRenderer<NoticeDetails>(NOTICE_CUSTOM_TYPE, (message, _options, theme) => {
-    const details = message.details;
-    const from = details && 'job' in details ? details.job.name : details?.agent?.name;
-    const content = details && 'job' in details ? `${jobEndText(details.job.end)}\n${details.tail}\nlog: ${details.job.log}` : details?.body;
-    return renderInbound(message, theme, from, "notifies", content);
-  });
-
-  pi.registerMessageRenderer<StreamDetails>(STREAM_CUSTOM_TYPE, (message, _options, theme) => {
-    const details = message.details, content = contentText(message.content);
-    return renderInbound(message, theme, details?.job?.name, undefined, typeof details?.batch === 'string' ? content.slice(content.indexOf('\n') + 1) : undefined);
-  });
-
   pi.on("message_start", (event) => {
     const m = event?.message;
     const details = isRecord(m) && isRecord(m.details) ? m.details : undefined;
     if (edge && details?.work === true) markOwnWork();
-    if (m?.role !== "custom" || m.customType !== NOTICE_CUSTOM_TYPE) return;
-    const noticeId = details?.noticeId;
-    if (typeof noticeId !== "string" || !noticeId || !pendingNotices.has(noticeId)) return;
-    pendingNotices.delete(noticeId);
-    renderNoticeWidget();
   });
 
   // ---- tools ----
@@ -2974,7 +2861,7 @@ export default function (pi: ExtensionAPI) {
     if (!ko) return refuse(`runtime ${name}: ko is not on PATH`);
     const info = await fetchRuntime(name);
     if ("error" in info) return refuse(info.error);
-    if (info.pi === "runtime") return refuse(`runtime ${name} runs pi inside it: start ko-pi in a pane of that runtime`);
+    if (info.pi === "runtime") return refuse(`runtime ${name} runs pi inside it: start koa in a pane of that runtime`);
     const found = mapHostPath(info.paths, ctx.cwd) ?? info.cwd;
     const program = ko;
     let facts: Promise<Facts> | undefined;
@@ -3015,10 +2902,8 @@ export default function (pi: ExtensionAPI) {
   let startupCancelled = false;
 
   pi.on("session_start", async (_event, ctx) => {
-    const flag = pi.getFlag("harness");
-    if (flag !== undefined && flag !== "koa" && flag !== "koa-browser") throw new Error("--harness must be koa or koa-browser");
     let completionReady = false;
-    if (flag) setCompletionContext(async signal => {
+    setCompletionContext(async signal => {
       const current = session;
       if (!completionReady || !current || current !== ctx || signal.aborted) return { type: "unavailable" };
       const r = routed ? await liveRouted(signal) : undefined;
@@ -3036,38 +2921,12 @@ export default function (pi: ExtensionAPI) {
     if (previousExit) process.removeListener("exit", previousExit);
     globalThis.__koPiExtensionExit = unsetVarsSync;
     process.on("exit", unsetVarsSync);
-    pendingNotices.clear();
     written.clear();
     ending = { kind: "ended", text: "" };
     settled = true;
     turnEndedByControl = false;
     leaving = null;
     parentPane = "";
-
-    // A headless session has no ui, and an older pi has one without this method:
-    // both simply get no `@name` completion.
-    const ui = ctx.ui;
-    if (ui?.addAutocompleteProvider && !completion) {
-      const cache = agentCache(discovery, process.env.KO_AGENT_LIST_TTL_MS);
-      completion = cache;
-      ui.addAutocompleteProvider((current: AutocompleteProvider): AutocompleteProvider => ({
-        triggerCharacters: current.triggerCharacters,
-        async getSuggestions(lines, cursorLine, cursorCol, options) {
-          const token = atToken((lines[cursorLine] ?? "").slice(0, cursorCol));
-          if (token === undefined) return current.getSuggestions(lines, cursorLine, cursorCol, options);
-          const items = cache(token);
-          const files = await current.getSuggestions(lines, cursorLine, cursorCol, options);
-          if (items.length === 0) return files;
-          const prefix = `@${token}`;
-          const fileItems = files && files.prefix === prefix ? files.items : [];
-          return { items: [...items, ...fileItems], prefix };
-        },
-        applyCompletion: current.applyCompletion.bind(current),
-        shouldTriggerFileCompletion(lines, cursorLine, cursorCol) {
-          return current.shouldTriggerFileCompletion?.(lines, cursorLine, cursorCol) ?? true;
-        },
-      }));
-    }
 
     await startRouted(ctx);
     completionReady = true;
@@ -3083,17 +2942,7 @@ export default function (pi: ExtensionAPI) {
       startPeerClient();
     }
     adoptJobs();
-    const wrapsBash = registerLocalBash(ctx) || !!(routed && !("refusal" in routed));
-    if (wrapsBash && ctx.hasUI) {
-      const owner = jobRegistry();
-      detachKeys(owner);
-      owner.keys = ctx.ui.onTerminalInput((data) => {
-        if (!matchesKey(data, Key.ctrl("b"))) return;
-        let moved = false;
-        for (const call of [...calls]) if (call.type === "bash") moved = call.move("key") || moved;
-        if (moved) return { consume: true };
-      });
-    }
+    registerLocalBash(ctx);
     if (!active) return;
     // Pi 1.5.0 subscribes interactive status after session_start returns.
     startup = setImmediate(() => {
@@ -3115,9 +2964,7 @@ export default function (pi: ExtensionAPI) {
     agentWorking = true;
     beginWork();
   };
-  pi.on("input", () => { refreshJobRecords(); });
   pi.on("agent_start", () => {
-    refreshJobRecords();
     workStarted();
     running();
   });
@@ -3177,19 +3024,17 @@ export default function (pi: ExtensionAPI) {
 
   pi.on("session_shutdown", async (event?: { reason?: ShutdownReason }) => {
     stopRestartState();
-    if (pi.getFlag("harness")) setCompletionContext();
+    setCompletionContext();
     startupCancelled = true;
     stopPeerClient();
     pendingPeers.clear();
     clearImmediate(startup);
     await starting;
     const reason = event?.reason;
-    if (registry) detachKeys(registry);
     if (reason === "reload") for (const call of [...calls]) {
       if (call.type === "bash") call.move("reload");
       else call.cancel(reason);
     }
-    if (session?.hasUI) session.ui.setWidget("ko-job-hint", undefined);
     stopTick();
     if (reason === "reload") {
       receiver.stop(true);

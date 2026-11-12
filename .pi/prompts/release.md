@@ -23,7 +23,7 @@ it.
      `third_party/ghostty` pin. Kido.app releases first only when one
      of them changed: a schema change needs a Kido.app change, and a
      pin change moves `Ko-Vt`, which the app's bundled ko must match.
-   - ko-pi.ts: the user's agents run the ko-pi that Kido.app bundles,
+   - koa and its agent extension: the user's agents run the koa that Kido.app bundles,
      because the Kido.app shim is first on PATH. Thus, a harness change
      reaches them only through a Kido.app release.
 3. When Kido.app must release first, send @kido-app (message_agent) the commit, the
@@ -46,7 +46,7 @@ it.
    Tell the user:
    - the two versions and the tap commits
    - to run `brew upgrade ko` and update Kido.app
-   - to restart the pi agents when ko-pi.ts changed (/reload is not
+   - to restart the koa agents when koa or its agent extension changed (/reload is not
      sufficient after a release that removes tools)
    - to restart the ko server (`ko kill-server`, then `ko`) when the
      server changed: until upgrade in place (plans/ko-upgrade.md), a
