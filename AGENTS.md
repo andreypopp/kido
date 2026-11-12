@@ -794,18 +794,20 @@ delegates as its brief says and does not write code.
   `make verify`. Report PASS/FAIL/SKIP as printed. An unrelated
   failure gets one run of that test alone, not a suite rerun. If a
   failure is in a file you do not own, report it. Do not fix it.
-- **A flake has a time box of 5 minutes.** When a test fails only
-  sometimes, run one bounded loop to reproduce it, such as a shell
-  loop of `make cargo ARGS='test -p ko_e2e NAME'` with a fixed count,
-  one run after another, and stop at the first failure. Quote it.
-  Never run a load loop that saturates the CPU: other agents work on
-  the same machine. First suspect the test: a race in its waits, a
-  read that discards what it waits for later, a wall-clock bound. A
-  flaky test is rewritten to wait for the event, or dropped if it
-  repeats another test. When the cause is a class of fault, such as
-  an inherited descriptor, fix the class once, not each test. When
-  the 5 minutes end without a cause, report the failure, the loop
-  counts and the best hypothesis, and stop. The manager or the user
+- **A flake has a time box of 5 minutes, and no loops.** When a test
+  fails only sometimes, find the cause from the failure itself: its
+  output, the logs and the test's waits. Do not run the test again and
+  again, neither to reproduce the failure nor to verify a fix: a count
+  of passes finds no cause and proves no fix. First suspect the test:
+  a race in its waits, a read that discards what it waits for later, a
+  wall-clock bound. When the output does not show the cause, add the
+  diagnostics that would show it next time. A fix is verified by a
+  test that forces the bad order and fails before the fix, not by
+  repeated runs. A flaky test is rewritten to wait for the event, or
+  dropped if it repeats another test. When the cause is a class of
+  fault, such as an inherited descriptor, fix the class once, not
+  each test. When the 5 minutes end without a cause, report the
+  failure and the best hypothesis, and stop. The manager or the user
   decides on more work. A fuzz run or a long property-test run that
   an agent starts has the same time box of 5 minutes.
 - **Your last message is your report. Keep it under 4000 characters**.
