@@ -5,7 +5,7 @@ import { attach } from './attach.ts';
 import { preview, previewKey } from './preview.ts';
 import { fetchJSON } from './http.ts';
 import { ATTACHMENT_LIMITS, pathArg } from '../koa-records.ts';
-import type { State, WireItem, WireAssistant, Block, Patch, PageRecord, PromptMode, ImageRef, AgentCall, Bash, SessionRow, SessionScope } from '../koa-records.ts';
+import type { State, WireItem, QueuedPrompt, WireAssistant, Block, Patch, PageRecord, PromptMode, ImageRef, AgentCall, Bash, SessionRow, SessionScope } from '../koa-records.ts';
 import type { Relation } from '../records.ts';
 
 type Step = { block: Exclude<Block, { type: 'text' }>;  item: WireAssistant; index: number; key: string; slots: Map<string, Slot> };
@@ -248,7 +248,7 @@ function startGlide(reveal: Reveal) {
   scrollMode = 'glide';
 }
 function schedule(urgent = false) {
-  if (frame !== undefined || document.hidden && !urgent || !dirty && !growing.length && !scrollMode) return;
+  if (frame !== undefined || document.hidden && !urgent || !dirty && !fitPending.size && !fitAll && !growing.length && !scrollMode) return;
   frameAt = performance.now();
   frame = requestAnimationFrame(tick);
 }
@@ -266,6 +266,7 @@ function tick() {
   frame = undefined;
   const now = performance.now(), dt = Math.min(50, now - frameAt);
   if (dirty) { dirty = false; for (const memo of revealing) revealStep(memo, now); }
+  if (fitPending.size || fitAll) measureNotices();
   const targets = growing.splice(0), heights = targets.map(target => target.getBoundingClientRect().height);
   targets.forEach((target, index) => {
     if (heights[index]) target.style.setProperty('--h', heights[index] + 'px');
@@ -491,9 +492,57 @@ function reconcileRuns(seq: number) {
   }
   flush();
 }
-function noteRow(view: HTMLElement, children: HTMLElement[], text: string | HTMLElement, at: number, level = '') {
-  view.className = 'note' + (level ? ' ' + level : '');
-  children.push(typeof text === 'string' ? node('span', text, 'tx') : text, node('time', timestamp(at)));
+type NoticeContent = { type: 'text'; text: string } | { type: 'markdown'; text: string } | { type: 'details'; text: string; body: HTMLElement } | { type: 'lead'; lead: string; preview: string; body: HTMLElement } | { type: 'inline'; head: () => HTMLElement[] };
+type NoticeRow = { key: string; at: number; level?: 'warning' | 'error'; content: NoticeContent };
+const fitPending = new Set<HTMLElement>();
+let fitAll = false, fitWidth = 0;
+function noticeRow({ key, at, level, content }: NoticeRow) {
+  const row = node('div', undefined, level ? 'nrow ' + level : 'nrow'), line = node('div', undefined, 'hd'), tx = node('span', undefined, 'tx'), details = node('div', undefined, 'bd');
+  let more = false;
+  if (content.type === 'text' || content.type === 'markdown') {
+    const [head, ...rest] = content.text.split(/\r\n?|\n/), body = rest.length ? rest.join('\n') : content.text;
+    more = rest.length > 0;
+    if (content.type === 'text') { tx.textContent = head; details.textContent = body; }
+    else { tx.textContent = markdownLine(head); details.className = 'bd prose'; details.append(prose(undefined, body, true)); }
+  } else if (content.type === 'details') { more = true; tx.textContent = content.text; details.append(content.body); }
+  else if (content.type === 'lead') { more = true; tx.append(node('span', content.lead, 'lead'), node('span', content.preview, 'prev')); details.append(content.body); }
+  else { tx.append(...content.head()); details.append(...content.head()); }
+  line.append(tx, node('time', timestamp(at)));
+  if (more) row.classList.add('more'); else { row.dataset.fit = ''; fitPending.add(row); }
+  fold(row, key, line, details);
+  return row;
+}
+function measureNotices() {
+  const rows = fitAll ? [...views.values()].flatMap(({ view }) => Array.from(view.children).filter((row): row is HTMLElement => row instanceof HTMLElement && row.dataset.fit !== undefined)) : [...fitPending];
+  const measured = rows.flatMap(row => { const tx = row.firstElementChild?.firstElementChild; return tx instanceof HTMLElement && tx.clientWidth ? [[row, tx.scrollWidth > tx.clientWidth] as const] : []; });
+  for (const [row, overflows] of measured) { row.classList.toggle('more', overflows); fitPending.delete(row); }
+  fitAll = false;
+}
+function paragraphs(text: string) {
+  const body = node('div');
+  for (const paragraph of text.split(/\n\s*\n/)) body.append(node('p', paragraph.trim()));
+  return body;
+}
+function commandNotice(item: Extract<WireItem, { kind: 'command' }>): NoticeRow {
+  const key = 'notice:' + item.seq, at = item.at, result = item.result;
+  switch (result.type) {
+    case 'copy': return { key, at, content: { type: 'text', text: 'copied the last reply · ' + quantity(result.characters) + ' characters' } };
+    case 'export': {
+      const head = () => { const path = node('span', result.path, 'path preview-file'); previewFile(path, '/steps/' + item.seq + '/0/file'); return [node('span', 'exported '), path]; };
+      return { key, at, content: { type: 'inline', head } };
+    }
+    case 'session': {
+      const stats = result.stats, grid = node('div', undefined, 'kv');
+      for (const [name, value, mono] of [['name', result.name, false], ['id', stats.sessionId, true], ['file', stats.sessionFile ?? '—', true], ['model', result.model ? result.model.id + (result.thinking ? ' · thinking ' + result.thinking : '') : '—', false], ['messages', stats.totalMessages + ' · ' + stats.userMessages + ' user · ' + stats.assistantMessages + ' assistant · ' + stats.toolResults + ' tool', false], ['tokens', quantity(stats.tokens.input) + ' in · ' + quantity(stats.tokens.output) + ' out · ' + quantity(stats.tokens.cacheRead) + ' cache read · ' + quantity(stats.tokens.cacheWrite) + ' cache write', false], ['cost', '$' + stats.cost.toFixed(2), false], ['context', stats.contextUsage?.tokens === null || !stats.contextUsage ? '—' : quantity(stats.contextUsage.tokens) + ' / ' + quantity(stats.contextUsage.contextWindow) + (stats.contextUsage.percent === null ? '' : ' · ' + Math.round(stats.contextUsage.percent) + '%'), false]] as const) grid.append(node('b', name), node('span', value, mono ? 'path' : ''));
+      return { key, at, content: { type: 'details', text: result.name + ' · ' + stats.totalMessages + ' messages · $' + stats.cost.toFixed(2), body: grid } };
+    }
+    case 'compaction': switch (result.state.type) {
+      case 'running': return { key, at, content: { type: 'inline', head: () => [node('span', 'compacting'), node('span', undefined, 'spin')] } };
+      case 'cancelled': return { key, at, content: { type: 'text', text: 'compaction cancelled' } };
+      case 'failed': return { key, at, level: 'error', content: { type: 'text', text: 'compaction · ' + result.state.message } };
+      case 'done': return { key, at, content: { type: 'details', text: 'compacted · ' + quantity(result.state.before) + ' → ' + (result.state.after === undefined ? '—' : quantity(result.state.after)) + ' tokens', body: paragraphs(result.state.summary) } };
+    }
+  }
 }
 function put(item: WireItem) {
   items.set(item.seq, item);
@@ -523,7 +572,7 @@ function put(item: WireItem) {
       else steps.push({ block, item, key, index, slots });
     });
     flush();
-    if (item.error) children.push(node('div', item.error, 'msg err'));
+    if (item.error) children.push(noticeRow({ key: item.seq + ':error', at: item.at, level: 'error', content: { type: 'text', text: item.error } }));
   } else {
     view.className = 'msg ' + item.kind;
     if (item.kind === 'user') {
@@ -533,47 +582,14 @@ function put(item: WireItem) {
       const paths = item.attachments.filter(file => file.kind === 'file').map(file => file.path);
       if (paths.length) text.append(node('div', paths.join('\n'), 'paths'));
       children.push(time, text);
-    } else if (item.kind === 'notify') noteRow(view, children, item.text.text, item.at, item.level);
-    else if (item.kind === 'command') {
-      const result = item.result;
-      if (result.type === 'copy' || result.type === 'export') {
-      view.className = 'note';
-      const text = node('span', undefined, 'tx');
-      if (result.type === 'copy') text.textContent = 'copied the last reply · ' + quantity(result.characters) + ' characters';
-      else {
-        const path = node('span', result.path, 'path preview-file'); text.append(node('span', 'exported '), path);
-        previewFile(path, '/steps/' + item.seq + '/0/file');
-      }
-      noteRow(view, children, text, item.at);
-      } else if (result.type === 'compaction' && result.state.type !== 'done') {
-        const text = node('span', undefined, 'tx');
-        if (result.state.type === 'running') text.append(node('span', undefined, 'spin'), node('span', 'compacting…'));
-        else text.textContent = result.state.type === 'cancelled' ? 'compaction cancelled' : 'compact failed: ' + result.state.message;
-        noteRow(view, children, text, item.at, result.state.type === 'failed' ? 'error' : '');
-      } else {
-        view.className = 'info' + (view.classList.contains('open') ? ' open' : '');
-        const line = node('div', undefined, 'line'), body = node('div', undefined, 'body'), caption = node('span', undefined, 'tx');
-        line.append(node('span', '›', 'chev'));
-        if (result.type === 'session') {
-          const stats = result.stats;
-          caption.append(node('span', result.name, 'nm'), node('span', ' · ' + stats.totalMessages + ' messages · $' + stats.cost.toFixed(2)));
-          const grid = node('div', undefined, 'kv');
-          for (const [key, value] of [['name', result.name], ['id', stats.sessionId], ['file', stats.sessionFile ?? '—'], ['model', result.model ? result.model.id + (result.thinking ? ' · thinking ' + result.thinking : '') : '—'], ['messages', stats.totalMessages + ' · ' + stats.userMessages + ' user · ' + stats.assistantMessages + ' assistant · ' + stats.toolResults + ' tool'], ['tokens', quantity(stats.tokens.input) + ' in · ' + quantity(stats.tokens.output) + ' out · ' + quantity(stats.tokens.cacheRead) + ' cache read · ' + quantity(stats.tokens.cacheWrite) + ' cache write'], ['cost', '$' + stats.cost.toFixed(2)], ['context', stats.contextUsage?.tokens === null || !stats.contextUsage ? '—' : quantity(stats.contextUsage.tokens) + ' / ' + quantity(stats.contextUsage.contextWindow) + (stats.contextUsage.percent === null ? '' : ' · ' + Math.round(stats.contextUsage.percent) + '%')]]) grid.append(node('b', String(key)), node('span', String(value)));
-          body.append(grid);
-        } else if (result.type === 'compaction' && result.state.type === 'done') {
-          caption.append(node('span', 'compacted', 'nm'), node('span', ' · ' + quantity(result.state.before) + ' → ' + (result.state.after === undefined ? '—' : quantity(result.state.after)) + ' tokens'));
-          body.append(node('p', result.state.summary));
-        }
-        line.append(caption, node('time', timestamp(item.at))); line.onclick = () => view.classList.toggle('open');
-        children.push(line, body);
-      }
-    }
+    } else if (item.kind === 'notify') { view.className = ''; children.push(noticeRow({ key: 'notice:' + item.seq, at: item.at, level: item.level === 'info' ? undefined : item.level, content: { type: 'text', text: item.text.text } })); }
+    else if (item.kind === 'command') { view.className = ''; children.push(noticeRow(commandNotice(item))); }
     else if (item.kind === 'agent') { view.className = ''; children.push(agentCard(item, item.at, 'agent:' + item.seq, slots)); }
     else if (item.kind === 'annotations') { view.hidden = true; }
     else if (item.kind === 'job') { view.className = ''; const saved = previous?.slots.get('job'); if (saved?.type === 'job') slots.set('job', saved); }
-    else if (item.kind === 'notice') { view.className = 'note'; children.push(node('span', markdownLine(item.text), 'tx'), node('time', timestamp(item.at))); }
+    else if (item.kind === 'notice') { view.className = ''; children.push(noticeRow({ key: 'notice:' + item.seq, at: item.at, content: { type: 'markdown', text: item.text } })); }
     else if (item.kind === 'bash') { view.className = ''; children.push(commandRun(item, 'bash:' + item.seq).view); }
-    else children.push(node('div', item.text, 'notice'));
+    else { view.className = ''; children.push(noticeRow({ key: 'notice:' + item.seq, at: item.at, content: { type: 'lead', lead: item.source === 'branch' ? 'branch' : 'compacted', preview: ' · ' + item.text.split('\n')[0], body: paragraphs(item.text) } })); }
   }
   children.forEach((child, index) => { if (view.childNodes[index] !== child) view.insertBefore(child, view.childNodes[index] ?? null); });
   while (view.childNodes.length > children.length) view.lastChild?.remove();
@@ -752,24 +768,34 @@ function dialogs() {
   foot.append(cancel, submit); card.append(foot); host.prepend(card); (field || card).focus();
 }
 function queue() {
-  const entries = [...state.queue.steering.map(entry => ['steer', entry] as const), ...state.queue.followUp.map(entry => ['follow-up', entry] as const)];
+  const entries = [...state.queue.steering.map((entry, index) => ({ kind: 'steer', index, entry }) as const), ...state.queue.followUp.map((entry, index) => ({ kind: 'follow-up', index, entry }) as const)];
   const signature = JSON.stringify(entries);
   if (shownQueue === signature) return;
   shownQueue = signature;
   const host = element('queue'); host.replaceChildren();
-  if (!entries.length) return;
-  for (const [tag, entry] of entries) {
-    const row = node('div', undefined, 'q'); row.append(node('span', tag, 'tag'), node('span', entry.text, 't'));
+  for (const { kind, index, entry } of entries) {
+    const row = node('div', undefined, 'qmsg user'), close = node('button', undefined, 'attach-remove');
+    row.dataset.kind = kind;
+    row.append(node('div', markdownLine(entry.text), 't'));
     if (entry.attachments.length) { const count = node('span', undefined, 'att'); count.innerHTML = '<svg viewBox="0 0 16 16"><path d="M10.5 5.5 6 10a1.6 1.6 0 0 0 2.3 2.3l5-5a3.2 3.2 0 0 0-4.5-4.5l-5.2 5.2a4.8 4.8 0 0 0 6.8 6.8l4-4"/></svg>'; count.append(document.createTextNode(String(entry.attachments.length))); row.append(count); }
+    close.type = 'button'; close.title = 'Remove from the queue'; close.setAttribute('aria-label', 'Remove from the queue');
+    close.innerHTML = '<svg viewBox="0 0 10 10"><path d="m2 2 6 6m0-6-6 6"/></svg>';
+    close.onclick = () => {
+      close.disabled = true;
+      fetchJSON('/queue/remove', { sessionId: state.sessionId, kind, index, text: entry.text }).catch(error => {
+        const unsent = error?.body?.unsent;
+        if (unsent) restoreQueued([...unsent.steering, ...unsent.followUp]);
+        reportError(error); close.disabled = false;
+      });
+    };
+    row.append(node('span', kind, 'kind'), close);
     host.append(row);
   }
-  const take = node('div', entries.length + ' queued', 'take'), back = button('take back');
-  take.append(node('span', undefined, 'sp'), back); host.append(take);
-  back.onclick = async () => {
-    back.disabled = true;
-    try { await takeBack(); }
-    catch (error) { reportError(error); back.disabled = false; }
-  };
+}
+function restoreQueued(entries: QueuedPrompt[]) {
+  editor.setText([editor.text(), ...entries.map(entry => entry.text)].filter(Boolean).join('\n\n'));
+  draft.restore(entries.flatMap(entry => entry.attachments));
+  refreshComposer(); editor.focus();
 }
 let takingBack: Promise<void> | undefined;
 function takeBack(): Promise<void> {
@@ -778,10 +804,7 @@ function takeBack(): Promise<void> {
     const session = state.sessionId;
     const result = await fetchJSON('/queue/clear', { sessionId: session });
     if (state.sessionId !== session) return;
-    const entries = [...result.steering, ...result.followUp];
-    editor.setText([editor.text(), ...entries.map(entry => entry.text)].filter(Boolean).join('\n\n'));
-    draft.restore(entries.flatMap(entry => entry.attachments));
-    refreshComposer(); editor.focus();
+    restoreQueued([...result.steering, ...result.followUp]);
   })().finally(() => { takingBack = undefined; });
 }
 async function stop() {
@@ -920,8 +943,15 @@ function followBottom() {
   scrollMode ??= 'snap';
   schedule(true);
 }
+function dockResized(height: number) {
+  const scroll = element('scroll');
+  document.body.style.setProperty('--dock-h', height + 'px');
+  if (follow) { scroll.scrollTop = scroll.scrollHeight; lastScrollTop = scroll.scrollTop; }
+  followResize();
+}
 function followResize() {
   const scroll = element('scroll');
+  if (scroll.clientWidth !== fitWidth) { fitWidth = scroll.clientWidth; fitAll = true; }
   lastScrollTop = Math.min(lastScrollTop, Math.max(0, scroll.scrollHeight - scroll.clientHeight));
   dirty ||= revealing.size > 0;
   followBottom();
@@ -1194,8 +1224,5 @@ element('scroll').onscroll = () => { const scroll = element('scroll'); if (Math.
 setInterval(() => { status(); for (const item of state.bash) pendingBash.get(item.id)?.update(item); }, 1000);
 window.addEventListener('resize', positionPicker);
 new ResizeObserver(followResize).observe(element('scroll'));
-new ResizeObserver(([entry]) => {
-  document.body.style.setProperty('--dock-h', entry.borderBoxSize[0].blockSize + 'px');
-  followResize();
-}).observe(element('dock'));
+new ResizeObserver(([entry]) => dockResized(entry.borderBoxSize[0].blockSize)).observe(element('dock'));
 refreshComposer(); focusComposer(); void connect();

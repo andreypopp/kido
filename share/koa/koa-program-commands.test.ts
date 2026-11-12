@@ -530,6 +530,84 @@ test("queue take-back returns attachment chips with their typed text", { timeout
   assert.deepEqual(restored, { steering: [{ text: "Compare", attachments: [file] }], followUp: [] });
 });
 
+const queueImage = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aWQAAAABJRU5ErkJggg==', 'base64');
+const queueScript = (cleared: { steering: string[]; followUp: string[] }, resent: [string[], string[]][], first: object = {}, after: object[] = []): object[] => [
+  { type: 'wait', command: 'prompt', events: [{ type: 'agent_start' }] },
+  { type: 'wait', command: 'prompt', events: [{ type: 'queue_update', steering: ['first'], followUp: [] }] },
+  { type: 'wait', command: 'prompt', events: [{ type: 'queue_update', steering: ['first', 'second'], followUp: [] }] },
+  { type: 'wait', command: 'prompt', events: [{ type: 'queue_update', steering: ['first', 'second'], followUp: ['later'] }] },
+  { type: 'wait', command: 'clear_queue', events: [{ type: 'queue_update', steering: [], followUp: [] }], data: cleared },
+  ...resent.map(([steering, followUp], index) => ({ type: 'wait', command: 'prompt', events: [{ type: 'queue_update', steering, followUp }], ...(index === 0 ? first : {}) })),
+  ...after,
+];
+async function queued(app: Awaited<ReturnType<typeof fixture>>) {
+  const created = await (await app.post('attachments', { name: 'image.png', type: 'image/png', size: queueImage.length })).json();
+  const file = (await (await fetch(app.base + `attachments/${created.id}/0`, { method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: new Uint8Array(queueImage) })).json()).attachment;
+  await app.post('prompt', { text: 'go', mode: 'prompt', attachments: [] });
+  await app.post('prompt', { text: 'first', mode: 'steer', attachments: [] });
+  await app.post('prompt', { text: 'second', mode: 'steer', attachments: [file.id] });
+  await app.post('prompt', { text: 'later', mode: 'follow_up', attachments: [] });
+  return file;
+}
+const state = (app: Awaited<ReturnType<typeof fixture>>) => app.records().findLast(record => record.type === 'state');
+
+test('removing one queued entry clears pi and re-queues the others in order with their kinds and images', { timeout: 10000 }, async t => {
+  const app = await fixture(t, queueScript({ steering: ['first', 'second'], followUp: ['later'] }, [[['first'], []], [['first'], ['later']]]));
+  const file = await queued(app);
+  assert.equal((await app.post('queue/remove', { kind: 'steer', index: 1, text: 'first' })).status, 409);
+  assert.equal((await app.log()).some(value => value.type === 'clear_queue'), false);
+  assert.equal((await app.post('queue/remove', { kind: 'steer', index: 1, text: 'second' })).status, 200);
+  const sent = (await app.log()).filter(value => value.type === 'clear_queue' || value.type === 'prompt').slice(4);
+  assert.deepEqual(sent.map(value => [value.type, value.message, value.streamingBehavior, value.images]), [['clear_queue', undefined, undefined, undefined], ['prompt', 'first', 'steer', undefined], ['prompt', 'later', 'followUp', undefined]]);
+  assert.deepEqual(state(app)?.queue, { steering: [{ text: 'first', attachments: [] }], followUp: [{ text: 'later', attachments: [] }] });
+  assert.equal((await app.post(`attachments/${file.id}/delete`)).status, 200);
+});
+
+test('removing a queued entry keeps the images of the others', { timeout: 10000 }, async t => {
+  const app = await fixture(t, queueScript({ steering: ['first', 'second'], followUp: ['later'] }, [[['second'], []], [['second'], ['later']]]));
+  const file = await queued(app);
+  assert.equal((await app.post('queue/remove', { kind: 'steer', index: 0, text: 'first' })).status, 200);
+  const sent = (await app.log()).filter(value => value.type === 'prompt').slice(4);
+  assert.deepEqual(sent.map(value => [value.message, value.streamingBehavior, value.images]), [['second', 'steer', [{ type: 'image', mimeType: 'image/png', data: queueImage.toString('base64') }]], ['later', 'followUp', undefined]]);
+  assert.deepEqual(state(app)?.queue, { steering: [{ text: 'second', attachments: [file] }], followUp: [{ text: 'later', attachments: [] }] });
+});
+
+test('a clear waits for a remove that is re-queueing, then takes back the survivors, and an abort still follows', { timeout: 10000 }, async t => {
+  const dir = await mkdtemp('/tmp/koa-queue-gate-'); t.after(() => rm(dir, { recursive: true, force: true }));
+  const gate = createServer(); gate.listen(join(dir, 'gate')); await once(gate, 'listening'); t.after(() => gate.close());
+  const app = await fixture(t, queueScript({ steering: ['first', 'second'], followUp: ['later'] }, [[['first'], []], [['first'], ['later']]], { gate: join(dir, 'gate') }, [{ type: 'wait', command: 'clear_queue', events: [{ type: 'queue_update', steering: [], followUp: [] }], data: { steering: ['first'], followUp: ['later'] } }]));
+  await queued(app);
+  const connected = once(gate, 'connection');
+  const removed = app.post('queue/remove', { kind: 'steer', index: 1, text: 'second' });
+  const [socket] = await connected;
+  const cleared = app.post('queue/clear');
+  await fetch(app.base + 'history');
+  socket.write('go');
+  assert.equal((await removed).status, 200);
+  const taken = await cleared;
+  assert.equal(taken.status, 200);
+  assert.deepEqual(await taken.json(), { steering: [{ text: 'first', attachments: [] }], followUp: [{ text: 'later', attachments: [] }] });
+  assert.equal((await app.post('abort')).status, 200);
+  assert.deepEqual((await app.log()).filter(value => ['clear_queue', 'prompt', 'abort'].includes(value.type)).slice(4).map(value => value.type), ['clear_queue', 'prompt', 'prompt', 'clear_queue', 'abort']);
+});
+
+test('a survivor that pi refuses is answered with the unsent entries', { timeout: 10000 }, async t => {
+  const app = await fixture(t, queueScript({ steering: ['first', 'second'], followUp: ['later'] }, [[['first'], []]], { error: 'refused' }));
+  await queued(app);
+  const response = await app.post('queue/remove', { kind: 'steer', index: 1, text: 'second' });
+  assert.equal(response.status, 409);
+  assert.deepEqual(await response.json(), { error: 'refused', unsent: { steering: [{ text: 'first', attachments: [] }], followUp: [{ text: 'later', attachments: [] }] } });
+  assert.deepEqual((await app.log()).filter(value => value.type === 'prompt').slice(4).map(value => value.message), ['first']);
+});
+
+test('a queue that changed under the click is re-queued whole and refused', { timeout: 10000 }, async t => {
+  const app = await fixture(t, queueScript({ steering: ['other', 'first'], followUp: ['later'] }, [[['other'], []], [['other', 'first'], []], [['other', 'first'], ['later']]]));
+  await queued(app);
+  assert.equal((await app.post('queue/remove', { kind: 'steer', index: 0, text: 'first' })).status, 409);
+  const sent = (await app.log()).filter(value => value.type === 'prompt').slice(4);
+  assert.deepEqual(sent.map(value => [value.message, value.streamingBehavior]), [['other', 'steer'], ['first', 'steer'], ['later', 'followUp']]);
+});
+
 test("attachments stream chunks into prompts", { timeout: 10000 }, async t => {
   const dir = await mkdtemp(join(tmpdir(), "koa-attachments-"));
   t.after(() => rm(dir, { recursive: true, force: true }));

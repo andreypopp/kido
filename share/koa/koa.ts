@@ -60,7 +60,6 @@ function promptBody(value: unknown): { text: string; mode: PromptMode | "steer";
   return { error: "Text or attachments and prompt, steer or follow_up mode are required" };
 }
 
-
 type Same<A, B> = [A] extends [B] ? ([B] extends [A] ? true : false) : false;
 const thinkingLevelsMatch: Same<ThinkingLevel, import("@earendil-works/pi-agent-core").ThinkingLevel> = true;
 const dialogMethodsMatch: Same<DialogMethod, Extract<RpcExtensionUIRequest, { method: DialogMethod }>["method"]> = true;
@@ -605,6 +604,19 @@ async function main(): Promise<void> {
       else { restartKoa(response); return; }
       answer();
     };
+    let queueChain: Promise<unknown> = Promise.resolve();
+    const serial = <T>(run: () => Promise<T>): Promise<T> => {
+      const next = queueChain.then(run, run);
+      queueChain = next.catch(() => undefined);
+      return next;
+    };
+    const queuePrompt = async (text: string, requested: PromptMode | "steer", files: Awaited<ReturnType<typeof attached.prepare>>) => {
+      const message = [text, ...files.paths].filter(Boolean).join("\n");
+      const mode = state.working ? requested === "follow_up" ? "followUp" : "steer" : "prompt";
+      const entry = pendingPrompts.add(message, mode, files.files);
+      const result = await link.command({ type: "prompt", message, ...(files.images.length ? { images: files.images } : {}), ...(mode !== "prompt" ? { streamingBehavior: mode } : {}) });
+      return { entry, result };
+    };
     const routes: Record<string, { method: "GET" | "POST"; access: Access; handle(value: unknown, response: ServerResponse): void | Promise<void> }> = {
       "/complete": { method: "POST", access: "alive", handle: async (value, response) => {
         const query = completeBody(value);
@@ -693,10 +705,7 @@ async function main(): Promise<void> {
         }
         const files = await attached.prepare(prompt.attachments);
         access("session", value);
-        const message = [prompt.text, ...files.paths].filter(Boolean).join("\n");
-        const mode = state.working ? prompt.mode === "follow_up" ? "followUp" : "steer" : "prompt";
-        const entry = pendingPrompts.add(message, mode, files.files);
-        const result = await link.command({ type: "prompt", message, ...(files.images.length ? { images: files.images } : {}), ...(mode !== "prompt" ? { streamingBehavior: mode } : {}) });
+        const { entry, result } = await serial(() => queuePrompt(prompt.text, prompt.mode, files));
         if (result.success && result.command === 'prompt' && result.data.disposition === 'handled') {
           pendingPrompts.reject(entry); respond(response, 200, JSON.stringify({ disposition: 'handled', action: { type: 'none' } })); return;
         }
@@ -708,7 +717,7 @@ async function main(): Promise<void> {
         if (running) { running.phase = 'cancelling'; publish(); }
         return command({ type: running ? 'abort_bash' : 'abort' }, response);
       } },
-      "/queue/clear": { method: "POST", access: "session", handle: async (_value, response) => {
+      "/queue/clear": { method: "POST", access: "session", handle: (_value, response) => serial(async () => {
         pendingPrompts.beginClear();
         try {
           const result = await link.command({ type: "clear_queue" });
@@ -718,7 +727,40 @@ async function main(): Promise<void> {
             publish(); respond(response, 200, JSON.stringify(restored));
           } else reply(response, result);
         } finally { pendingPrompts.endClear(); }
-      } },
+      }) },
+      "/queue/remove": { method: "POST", access: "session", handle: (value, response) => serial(async () => {
+        if (!isRecord(value) || value.kind !== "steer" && value.kind !== "follow-up" || typeof value.index !== "number" || !Number.isSafeInteger(value.index) || value.index < 0 || typeof value.text !== "string") { respond(response, 400, JSON.stringify({ error: "A queue kind, index and text are required" })); return; }
+        const { kind, index, text } = value;
+        const shown = pendingPrompts.view();
+        if ((kind === "steer" ? shown.steering : shown.followUp)[index]?.text !== text) { respond(response, 409, JSON.stringify({ error: "The queue changed" })); return; }
+        pendingPrompts.beginClear();
+        try {
+          const result = await link.command({ type: "clear_queue" });
+          if (!result.success || result.command !== "clear_queue") { reply(response, result); return; }
+          const restored = pendingPrompts.takeBack(result.data);
+          const all = [...restored.steering.map(entry => ({ entry, behavior: "steer" as const })), ...restored.followUp.map(entry => ({ entry, behavior: "follow_up" as const }))];
+          attached.restore(all.flatMap(({ entry }) => entry.attachments.map(file => file.id)));
+          const list = kind === "steer" ? restored.steering : restored.followUp;
+          const stale = list[index]?.text !== text;
+          const keep = all.filter(({ entry }) => stale || entry !== list[index]);
+          for (const [done, { entry, behavior }] of keep.entries()) {
+            const ids = entry.attachments.map(file => file.id);
+            let failure: string | undefined;
+            try {
+              const sent = await queuePrompt(entry.text, behavior, await attached.prepare(ids));
+              if (sent.result.success) attached.consume(ids, "queued"); else { pendingPrompts.reject(sent.entry); failure = sent.result.error; }
+            } catch (error) { failure = errorText(error); }
+            if (failure !== undefined) {
+              const unsent = keep.slice(done);
+              publish();
+              respond(response, 409, JSON.stringify({ error: failure, unsent: { steering: unsent.filter(item => item.behavior === "steer").map(item => item.entry), followUp: unsent.filter(item => item.behavior === "follow_up").map(item => item.entry) } }));
+              return;
+            }
+          }
+          publish();
+          respond(response, stale ? 409 : 200, JSON.stringify(stale ? { error: "The queue changed" } : {}));
+        } finally { pendingPrompts.endClear(); }
+      }) },
       "/model": { method: "POST", access: "session", handle: (value, response) => {
         const model = modelBody(value);
         if ("error" in model) throw new Error(model.error);

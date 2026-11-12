@@ -13,7 +13,7 @@ import type { PromptMode } from "./koa-records.ts";
 async function page() {
   const source = stripTypeScriptTypes(await readFile(new URL("page/page.ts", import.meta.url), "utf8"));
   class Node {
-    value = ""; private text = ""; style: Record<string, unknown> = { setProperty() {} }; innerHTML = ''; clientWidth = 320; clientHeight = 100; disabled = false; placeholder = ""; scrollHeight = 20; children: Node[] = []; dataset = {};
+    value = ""; private text = ""; style: Record<string, unknown> = { setProperty() {} }; innerHTML = ''; clientWidth = 320; scrollWidth = 0; clientHeight = 100; disabled = false; placeholder = ""; scrollHeight = 20; children: Node[] = []; dataset = {};
     get textContent() { return this.text; }
     set textContent(value: unknown) { this.text = String(value); this.children = []; }
     private classes = new Set<string>();
@@ -309,9 +309,9 @@ test('cancelled compaction is a muted notice', async () => {
   const f = await page();
   const result = f.run(`
     put({kind:'command',seq:0,at:1,final:true,result:{type:'compaction',state:{type:'cancelled'}}});
-    [views.get(0).view.className,views.get(0).view.children[0].textContent];
+    [views.get(0).view.children[0].className,views.get(0).view.children[0].children[0].children[0].textContent];
   `);
-  assert.deepEqual(Array.from(result), ['note', 'compaction cancelled']);
+  assert.deepEqual(Array.from(result), ['nrow', 'compaction cancelled']);
 });
 
 test('command results use notice lines and expandable session information', async () => {
@@ -320,10 +320,10 @@ test('command results use notice lines and expandable session information', asyn
     put({kind:'command',seq:0,at:1,final:true,result:{type:'copy',characters:2100}});
     put({kind:'command',seq:1,at:1,final:false,result:{type:'compaction',state:{type:'running'}}});
     put({kind:'command',seq:2,at:1,final:true,result:{type:'session',name:'session',stats:{sessionId:'id',totalMessages:212,tokens:{input:1,output:2,cacheRead:3,cacheWrite:4},cost:1.42}}});
-    const info=views.get(2).view;info.children[0].onclick();
-    [views.get(0).view.children[0].textContent,views.get(1).view.className,info.className];
+    const info=views.get(2).view.children[0];info.children[0].onclick({});
+    [views.get(0).view.children[0].children[0].children[0].textContent,views.get(1).view.children[0].className,info.className];
   `);
-  assert.deepEqual(Array.from(result), ['copied the last reply · 2.1k characters', 'note', 'info open']);
+  assert.deepEqual(Array.from(result), ['copied the last reply · 2.1k characters', 'nrow', 'nrow more open']);
 });
 
 test('session picker filters locally and keeps the draft on a switch', async () => {
@@ -955,11 +955,49 @@ test("a state record preserves a typed dialog answer", async () => {
   assert.equal(app.run("state={...state,working:true,dialogs:[{id:'a',method:'input',title:'Question'}]};refreshComposer();dialogs();const form=element('dialogs').children[0];const input=form.children[1];input.value='typed';state={...state,dialogs:[{id:'a',method:'input',title:'Question'}]};dialogs();apply({type:'reset',epoch:'next',more:false,items:[]});element('dialogs').children[0]===form&&input.value==='typed'&&element('prompt').children[0].placeholder==='Message koa…'&&element('field').inert"), true);
 });
 
+test("a queued block's × removes that entry only and leaves the draft alone", async () => {
+  const app = await page();
+  const requests: { path: string; body: unknown }[] = [];
+  app.context.fetch = async (path?: string, options?: { body?: string }) => { requests.push({ path: path ?? '', body: JSON.parse(options?.body ?? '{}') }); return { ok: true, json: async () => ({}) }; };
+  app.run("status=()=>{};dialogs=()=>{};exited=()=>{};editor.setText('draft');apply({...state,type:'state',sessionId:'s1',pi:{type:'ready'},queue:{steering:[{text:'a',attachments:[]},{text:'b',attachments:[]}],followUp:[{text:'c',attachments:[]}]}})");
+  assert.deepEqual(app.run("element('queue').children.map(row=>row.dataset.kind+':'+row.children[1].textContent)"), ['steer:steer', 'steer:steer', 'follow-up:follow-up']);
+  assert.deepEqual(JSON.parse(String(app.run("apply({...state,type:'state',queue:{steering:[{text:'**bold** first\\nsecond',attachments:[{id:'a',kind:'file'},{id:'b',kind:'file'}]}],followUp:[]}});const row=element('queue').children[0];JSON.stringify([row.children.map(c=>c.className),row.children[0].textContent,row.children[1].children.at(-1).textContent])"))), [['t', 'att', 'kind', 'attach-remove'], 'bold first', '2']);
+  app.run("apply({...state,type:'state',sessionId:'s1',queue:{steering:[{text:'a',attachments:[]},{text:'b',attachments:[]}],followUp:[{text:'c',attachments:[]}]}})");
+  app.run("element('queue').children[2].children.at(-1).onclick()");
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(requests, [{ path: '/queue/remove', body: { sessionId: 's1', kind: 'follow-up', index: 0, text: 'c' } }]);
+  assert.equal(app.text(), 'draft');
+});
+
+test('a dock that grows or shrinks keeps a bottom view at the bottom and a scrolled-up view in place', async () => {
+  const app = await page();
+  assert.deepEqual(Array.from(app.run(`(()=>{
+    const scroll=element('scroll'),props={};
+    document.body.style={setProperty(name,value){props[name]=value}};
+    scroll.scrollHeight=500;scroll.clientHeight=100;
+    follow=true;scroll.scrollTop=400;lastScrollTop=400;
+    scroll.scrollHeight=540;dockResized(170);
+    const bottom=[props['--dock-h'],scroll.scrollTop];
+    follow=false;scroll.scrollTop=123;lastScrollTop=123;
+    scroll.scrollHeight=560;dockResized(190);
+    return [...bottom,props['--dock-h'],scroll.scrollTop];
+  })()`)), ['170px', 540, '190px', 123]);
+});
+
+test('a remove that leaves unsent entries puts them into the draft and reports the error', async () => {
+  const app = await page();
+  app.context.fetch = async () => ({ ok: false, json: async () => ({ error: 'refused', unsent: { steering: [{ text: 'first', attachments: [] }], followUp: [{ text: 'later', attachments: [] }] } }) });
+  app.run("status=()=>{};dialogs=()=>{};exited=()=>{};editor.setText('draft');apply({...state,type:'state',sessionId:'s1',pi:{type:'ready'},queue:{steering:[{text:'x',attachments:[]}],followUp:[]}});element('queue').children[0].children.at(-1).onclick()");
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(app.text(), 'draft\n\nfirst\n\nlater');
+  assert.equal(app.run("element('error').textContent"), 'refused');
+});
+
 test("unchanged state keeps queue controls and status nodes and acknowledges editor once", async () => {
   const app = await page();
   const requests: string[] = [];
   app.context.fetch = async (path?: string) => { requests.push(path ?? ''); return {ok:true,json:async()=>({})}; };
-  assert.equal(app.run("status=()=>{};dialogs=()=>{};exited=()=>{};const record={...state,type:'state',pi:{type:'starting'},queue:{steering:[{text:'queued',attachments:[]}],followUp:[]},statuses:{tests:'ok'},editor:{id:'one',text:'draft'}};apply(record);const deferred=editorId===undefined;record.pi={type:'ready'};apply(record);const back=element('queue').children.at(-1).children.at(-1);apply({...record});deferred&&back===element('queue').children.at(-1).children.at(-1)&&element('status-extras').children.length===1"), true);
+  assert.equal(app.run("status=()=>{};dialogs=()=>{};exited=()=>{};const record={...state,type:'state',pi:{type:'starting'},queue:{steering:[{text:'queued',attachments:[]}],followUp:[]},statuses:{tests:'ok'},editor:{id:'one',text:'draft'}};apply(record);const deferred=editorId===undefined;record.pi={type:'ready'};apply(record);const back=element('queue').children[0].children.at(-1);apply({...record});deferred&&back===element('queue').children[0].children.at(-1)&&back.title==='Remove from the queue'&&element('queue').children[0].dataset.kind==='steer'&&element('queue').children[0].className==='qmsg user'&&element('status-extras').children.length===1"), true);
   assert.deepEqual(requests, ['/editor/ack']);
 });
 
@@ -1223,9 +1261,47 @@ test('a pointer on the active picker trigger child keeps it open until the click
   assert.equal(app.elements.get('picker')?.hidden, true);
 });
 
-test('notifications render as persistent coloured transcript lines', async () => {
+test('every notice is one nrow that opens only when it has more than its line', async () => {
   const app = await page();
-  assert.equal(app.run("const item={seq:0,at:0,final:true,kind:'notify',level:'warning',text:{text:'Notice stays',cut:0}};const view=put(item);apply({...state,type:'state'});view.className==='note warning'&&view.children[0].textContent==='Notice stays'&&view.children[1].tagName==='TIME'&&views.get(0).view===view"), true);
+  const result = app.run(`(()=>{
+    const row=seq=>views.get(seq).view.children[0], hd=r=>r.children[0], tx=r=>hd(r).children[0];
+    const out={};
+    put({seq:0,at:0,final:true,kind:'notify',level:'warning',text:{text:'Notice stays',cut:0}});apply({...state,type:'state'});
+    const a=row(0);
+    out.warning=[views.get(0).view.className,a.className,tx(a).textContent,hd(a).children[1].tagName,hd(a).children.length];
+    tx(a).scrollWidth=500;measureNotices();out.overflow=[a.classList.contains('more'),a.children[1].textContent];
+    tx(a).scrollWidth=100;fitAll=true;measureNotices();out.fits=a.classList.contains('more');
+    put({seq:8,at:0,final:true,kind:'command',result:{type:'export',path:'/very/long/export.html'}});
+    const x=row(8);tx(x).children[1].scrollWidth=0;x.children[0].children[0].scrollWidth=900;measureNotices();out.export=[x.classList.contains('more'),x.children[1].children.map(c=>c.textContent)];
+    put({seq:1,at:0,final:true,kind:'notify',level:'info',text:{text:'one\\ntwo',cut:0}});
+    const b=row(1);out.multi=[b.className,tx(b).textContent,b.children[1].textContent];
+    hd(b).onclick({});out.opened=b.classList.contains('open');
+    hd(b).onkeydown({key:' ',preventDefault(){}});out.closed=b.classList.contains('open');
+    hd(b).onkeydown({key:'Enter',preventDefault(){}});out.entered=b.classList.contains('open');
+    const stats={sessionId:'id',sessionFile:'/f',totalMessages:3,userMessages:1,assistantMessages:1,toolResults:1,cost:1.5,tokens:{input:1,output:2,cacheRead:3,cacheWrite:4}};
+    put({seq:2,at:0,final:true,kind:'command',result:{type:'session',stats,name:'Release'}});
+    const c=row(2);out.session=[c.className,tx(c).textContent];
+    hd(c).onclick({});out.sessionOpen=c.classList.contains('open');
+    put({seq:3,at:0,final:true,kind:'summary',source:'branch',text:'first line\\n\\nsecond'});
+    const d=row(3);out.summary=[d.className,tx(d).children.map(x=>x.className+':'+x.textContent),hd(d).children.length];
+    put({seq:4,at:0,final:true,kind:'summary',source:'compaction',text:'text'});out.compaction=tx(row(4)).children[0].textContent;
+    put({seq:5,at:0,final:true,kind:'command',result:{type:'compaction',state:{type:'failed',message:'pi restarted'}}});
+    const e=row(5);out.failed=[e.className,tx(e).textContent];
+    put({seq:6,at:0,final:true,kind:'command',result:{type:'compaction',state:{type:'running'}}});
+    out.running=[row(6).className,tx(row(6)).children.map(x=>x.className)];
+    put({seq:7,at:5,final:true,kind:'assistant',stop:'stop',error:'provider down',blocks:[{type:'text',text:'Done'}]});
+    const reply=views.get(7).view,last=reply.children.at(-1);
+    out.error=[reply.children.length,last.className,tx(last).textContent,hd(last).children[1].tagName];
+    return out;
+  })()`);
+  assert.deepEqual(JSON.parse(JSON.stringify(result)), {
+    warning: ['', 'nrow warning', 'Notice stays', 'TIME', 2], overflow: [true, 'Notice stays'], fits: false, export: [true, ['exported ', '/very/long/export.html']],
+    multi: ['nrow more', 'one', 'two'], opened: true, closed: false, entered: true,
+    session: ['nrow more', 'Release · 3 messages · $1.50'], sessionOpen: true,
+    summary: ['nrow more', ['lead:branch', 'prev: · first line'], 2], compaction: 'compacted',
+    failed: ['nrow error', 'compaction · pi restarted'], running: ['nrow', ['', 'spin']],
+    error: [2, 'nrow error', 'provider down', 'TIME'],
+  });
 });
 
 test('consecutive job batches join without replacing the open line or earlier output', async () => {
@@ -1250,11 +1326,11 @@ test('agent body changes render fresh final Markdown without a retained prose me
     const entered=view.classList.contains('open');
     agentCard({...card,text:{text:'Use \`code\`',cut:0},outcome:{ok:false,failure:'refused',message:'No'}},0,'agent:0',slots);
     const fallback=put({seq:1,at:0,kind:'notice',final:true,customType:'other',from:'',text:'## **Ready**\\nSecond line'});
-    [clicked,entered,texts.size,fallback.className,fallback.children[0].textContent,fallback.children[1].tagName];
+    [clicked,entered,texts.size,fallback.children[0].className,fallback.children[0].children[0].children[0].textContent,fallback.children[0].children[0].children[1].tagName];
   `);
   assert.match(html.join(''), /<strong>Review<\/strong>/);
   assert.match(html.join(''), /<code>code<\/code>/);
-  assert.deepEqual(Array.from(result), [true, true, 0, 'note', 'Ready', 'TIME']);
+  assert.deepEqual(Array.from(result), [true, true, 0, 'nrow more', 'Ready', 'TIME']);
 });
 
 test('agent cards split runs and toggle their one-line body without success metadata', async () => {

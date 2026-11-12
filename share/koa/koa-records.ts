@@ -44,7 +44,7 @@ export type Item = { seq: number; revision: number; at: number; final: boolean }
   { kind: 'command'; result: CommandResult } |
   { kind: "notice"; customType: string; from: string; text: string } |
   { kind: "bash"; command: string; excludeFromContext: boolean; result: BashResult } |
-  { kind: "summary"; text: string }
+  { kind: "summary"; source: "branch" | "compaction"; text: string }
 );
 export type Assistant = Extract<Item, { kind: "assistant" }>;
 export type WireAssistant = Omit<Assistant, "lifecycle">;

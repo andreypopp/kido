@@ -346,7 +346,7 @@ export function transcript({ dir, flushMs, metrics = false }: { dir: string; flu
         break;
       }
       case "bashExecution": item = { seq, revision: 0, at: message.timestamp, final: true, kind: "bash", command: message.command, excludeFromContext: message.excludeFromContext ?? false, result: bashResult(message) }; break;
-      case "branchSummary": case "compactionSummary": item = { seq, revision: 0, at: message.timestamp, final: true, kind: "summary", text: message.summary }; break;
+      case "branchSummary": case "compactionSummary": item = { seq, revision: 0, at: message.timestamp, final: true, kind: "summary", source: message.role === "branchSummary" ? "branch" : "compaction", text: message.summary }; break;
       default: return;
     }
     items.push(item);

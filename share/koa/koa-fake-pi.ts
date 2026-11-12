@@ -169,6 +169,7 @@ async function command(value: { type: string; id: string; sessionPath?: string; 
       else if (!step.gate) await finish();
       await advance(); return;
     }
+    if (value.type === 'prompt' && typeof step.gate === 'string') { const gate = connect(step.gate); await once(gate, 'data'); gate.end(); }
     if (step.defer) { await advance(); return; }
     const response = { type: "response", command: value.type, id: value.id, success: !step.error, ...(step.error ? { error: step.error } : { data: step.data ?? data }) };
     await respond(response);

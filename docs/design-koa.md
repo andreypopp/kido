@@ -635,6 +635,24 @@ replay from `get_messages` and the live stream use one conversion.
   edge; the narrow rule changes only the vertical padding. A user message
   is a solid block of the accent colour; its quotes, code and time
   derive from its ink, not from the accent.
+- **Every notice is one row.** The user decided with `lines.html`
+  (2026-11-12) that notifications, command outcomes, koa's own notes,
+  the reply's error, a custom message without agent details and a
+  summary from the history look like an agent line: one prose line in
+  the muted colour, the time at the text edge, no chevron and no
+  terminal text except a path or a session file. The item kinds stay
+  separate, because a rebuild keeps or drops them by kind; only the
+  page's renderer (`noticeRow` in `page/page.ts`) is one. A warning's
+  text is in the warning colour and an error's text in the error
+  colour; the time stays faint. A row opens on a click of the whole
+  line when it has more than its line: a body (the session's
+  statistics, the compaction summary), a text of more than one line,
+  or a line that does not fit, which opens to its whole text. A
+  summary from the history shows its kind ("compacted", "branch") and
+  the start of its text, and keeps only the kind when open. The reply's
+  error is a row after the reply's blocks, with the reply's time, so it
+  groups with the rows after it. The texts are the user's, family by
+  family, in the mockup's notes.
 - **A rebuild** (at start, after `new_session`, `switch_session`,
   `fork`, `clone` and `compaction_end`) mints a new epoch.
 
@@ -768,8 +786,8 @@ the command first ("`!` commands" below).
   come from koa's transcript (`GET /history`) when browsing starts;
   the page stores none (`page/history.ts`). A built-in command never
   reaches the transcript and is not in the history.
-- **Option-Up** takes the queue back into the composer, as the queue
-  card's button does, with no abort.
+- **Option-Up** takes the whole queue back into the composer, with no
+  abort.
 - **The cursor** is CodeMirror's `drawSelection()` in the pane's
   cursor and selection colours. WebKit's native caret lagged visibly
   when the Markdown highlighting rebuilt the spans around it.
@@ -1009,10 +1027,30 @@ has no send or stop button and says nothing about Return and Escape.
   field submits with Control-Return, because Return and Shift-Return
   are newlines there and every Command key goes to Kido first.
 - **The queue.** pi's `queue_update` carries the whole queue, so the
-  page lists the steering and follow-up messages above the composer,
-  so the field and its attachment chips stay together.
-  Taking it back calls `clear_queue` and puts the texts, with their
-  attachments, into the composer.
+  page shows the steering messages, then the follow-ups, in the dock
+  above the field. The user decided with `lines.html` (2026-11-12):
+  each entry is a dimmed user block of one line, the first line of
+  its text with the Markdown syntax removed, its attachments as a
+  count, its kind where a sent message has its time, and a × that
+  removes only that entry. The transcript's bottom padding is the
+  dock's height, so the bottom that the view follows is the top of
+  the queue: a block that arrives or goes keeps a view at the bottom
+  there and keeps the scroll position of a view scrolled up.
+  Taking it back (Option-Up, Escape) calls `clear_queue` and puts the
+  texts, with their attachments, into the composer.
+- **Removing one entry.** pi has no removal of one entry, only
+  `clear_queue`. So `POST /queue/remove` names the entry by kind,
+  index and text; koa refuses it when its queue view differs there,
+  clears the queue, and sends the other entries again in their order,
+  with their kinds and attachments. If the cleared queue no longer has
+  that text at that place, koa sends every entry again and refuses.
+  The user accepted that pi can take an entry or end the turn between
+  the clear and the resend, as with a take-back. A send that waits in
+  the queue, a take-back and a removal go one at a time through one
+  chain in koa, so Escape's take-back waits for a removal and then
+  aborts. When a resend fails, koa stops and returns the entries that
+  it did not send, and the page puts them into the composer as a
+  take-back does, so no queued work is lost.
 - **Context and model facts** come from `get_state`, the pickers'
   responses, `thinking_level_changed`, and `get_session_stats` after
   each turn, settle and compaction. koa runs no git: the user removed
@@ -1223,9 +1261,9 @@ The user decided the look with the mockups `agents.html` and
   and it ellipsizes, so a closed line keeps its height. A click opens
   the text under the line, as Markdown rendered as final text by the
   reply's renderer. A custom message without agent details is not
-  Markdown: it stays a one-line notice of its first line, with the
-  same syntax removed and no expansion, because another extension's
-  text need not be Markdown. A line shows no delivery status and no
+  an agent line: it is a notice row ("Every notice is one row" under
+  "The transcript") of its first line with the same syntax removed,
+  and it opens to the rest as Markdown when it has more lines. A line shows no delivery status and no
   meta lines: only a failure shows, in the error colour in the
   kind's place ("refused to @name", "not reported from @name
   subagent").
@@ -1236,8 +1274,8 @@ The user decided the look with the mockups `agents.html` and
   running tool shows its name and then the spinner, not its command.
   Rows indent by `--pad` from the text edge and their times end on it;
   an opened body, a run's steps or an agent's text, indents from that
-  point. Consecutive rows sit 4pt apart; the last of a group and an
-  opened row keep 14pt.
+  point. Consecutive run, agent, job and notice rows sit 2pt apart;
+  the last of a group and an opened row keep 14pt.
 - **`@name` focuses the agent's pane.** An agent's name in an agent
   line, and an `@name` in the prose of a reply or a user message, is a
   link while the name is in koa's list of live agents; a click calls
