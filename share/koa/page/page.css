@@ -33,8 +33,9 @@ pre.folded{max-height:calc(var(--fold)*1.45em + 10px);overflow:auto hidden;paddi
 @container (width < 200px){.foot .ctxc,.foot .st + .sep{display:none}.foot .st{min-width:0;overflow:hidden;flex:1}}
 .k{color:var(--faint)}#error{color:var(--ko-color-1)}#older{border:0;background:none;color:var(--muted)}.dialogs{flex-shrink:0;max-width:720px;width:100%;margin:0 auto;padding:0 0 10px}
 .dock{position:absolute;left:0;right:0;bottom:0;pointer-events:none}.dock>*{pointer-events:auto}
-.dock .field,.dock .dialog,.dock .exited .card,.dock .queue,.dock .sess{background:color-mix(in srgb,var(--ko-bg) 72%,transparent);-webkit-backdrop-filter:blur(18px) saturate(1.35);backdrop-filter:blur(18px) saturate(1.35);border:.5px solid color-mix(in srgb,var(--ko-fg) 16%,transparent);box-shadow:0 1px 2px rgba(0,0,0,.12)}
-@container style(--ko-appearance:dark){.dock .field,.dock .dialog,.dock .exited .card,.dock .queue,.dock .sess{border-color:color-mix(in srgb,var(--ko-fg) 14%,transparent);box-shadow:0 1px 3px rgba(0,0,0,.30)}}
+.dock .field,.dock .dialog,.dock .exited .card,.dock .queue{background:color-mix(in srgb,var(--ko-bg) 72%,transparent);-webkit-backdrop-filter:blur(18px) saturate(1.35);backdrop-filter:blur(18px) saturate(1.35);border:1px solid color-mix(in srgb,var(--ko-fg) 22%,transparent);box-shadow:inset 0 .5px 0 color-mix(in srgb,#fff 28%,transparent),0 1px 3px color-mix(in srgb,var(--ko-fg) 10%,transparent)}
+.dock .sess{background:color-mix(in srgb,var(--ko-bg) 72%,transparent);-webkit-backdrop-filter:blur(18px) saturate(1.35);backdrop-filter:blur(18px) saturate(1.35);border:.5px solid color-mix(in srgb,var(--ko-fg) 16%,transparent);box-shadow:0 1px 2px rgba(0,0,0,.12)}
+@container style(--ko-appearance:dark){.dock .sess{border-color:color-mix(in srgb,var(--ko-fg) 14%,transparent);box-shadow:0 1px 3px rgba(0,0,0,.30)}}
 .dock .field.focus{border-color:var(--ko-focus)}
 .dock .queue{border-radius:8px;padding:4px 8px 6px;margin:0 0 6px}.dock .queued-next{text-shadow:0 0 6px var(--ko-bg),0 0 2px var(--ko-bg)}
 .dialogs:empty{padding:0}
