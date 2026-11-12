@@ -16,6 +16,10 @@ class OwnerWindow: NSWindow {
 
     var allowsPaneInput: Bool { isKeyWindow || (NSApp.delegate as? AppDelegate)?.palettePanel == nil }
     override func sendEvent(_ event: NSEvent) {
+        if event.type == .otherMouseDown || event.type == .otherMouseUp, event.buttonNumber == 3 || event.buttonNumber == 4 {
+            if event.type == .otherMouseDown, allowsPaneInput, attachedSheet == nil { (delegate as? WindowOwner)?.go(event.buttonNumber == 3 ? .back : .forward) }
+            return
+        }
         if !allowsPaneInput, [.keyDown, .keyUp, .flagsChanged].contains(event.type) { return }
         super.sendEvent(event)
     }
@@ -62,7 +66,7 @@ private class AlertEscape: NSView {
     }
 }
 
-@MainActor final class WindowOwner: NSObject, NSWindowDelegate {
+@MainActor final class WindowOwner: NSObject, NSWindowDelegate, NSMenuItemValidation {
     #if KIDO_VISUAL
     static var welcomeTimeout: TimeInterval = 20
     static var visualPreparedUploads = 0
@@ -111,6 +115,7 @@ private class AlertEscape: NSView {
     private var session: SessionView?
     private var link = Link.down { didSet {
         sidebar.tabs.needsDisplay = true
+        sidebar.refreshHistory()
     } }
     let sidebar = Sidebar()
     let notices: Notices
@@ -133,6 +138,7 @@ private class AlertEscape: NSView {
         pendingJump = (pane, Date().addingTimeInterval(2))
     }
     private var paneSlots = PaneSlots()
+    private var history = NavigationHistory() { didSet { sidebar.refreshHistory() } }
     private var editor: LayoutEditor?
     private var welcomed = false
     private var selectedFirst = false
@@ -156,8 +162,13 @@ private class AlertEscape: NSView {
         init(next: Bool) { self = next ? .next : .previous }
         var raw: Int { switch self { case .next: KO_DIRECTION_NEXT; case .previous: KO_DIRECTION_PREVIOUS } }
     }
+    enum VisitCause: Equatable {
+        case user, automatic
+        case history(NavigationHistory.Step, to: Snapshot.Position)
+    }
     private struct SelectionWait {
         var focus: SelectionFocus
+        var cause = VisitCause.automatic
         var request: UInt64?
         var directions: [WindowDirection] = []
     }
@@ -187,9 +198,10 @@ private class AlertEscape: NSView {
         mutating func sent(_ request: UInt64) { wait?.request = request }
         var isIdle: Bool { if case .idle = self { true } else { false } }
         var isTravelling: Bool { switch self { case .switching, .restoring, .resuming: true; default: false } }
-        mutating func enqueue(_ direction: WindowDirection, focus: SelectionFocus) -> Bool {
+        mutating func enqueue(_ direction: WindowDirection, focus: SelectionFocus, cause: VisitCause) -> Bool {
             guard !isIdle else { return false }
             wait?.focus = focus
+            wait?.cause = cause
             wait?.directions.append(direction)
             return true
         }
@@ -315,9 +327,10 @@ private class AlertEscape: NSView {
         window.toolbarStyle = .unified
         window.setContentSize(NSSize(width: 900, height: 560))
         window.contentView?.layoutSubtreeIfNeeded()
-        sidebar.splitView.setPosition(max(200, min(360, width)), ofDividerAt: 0)
+        sidebar.splitView.setPosition(max(Sidebar.minSidebarWidth, min(360, width)), ofDividerAt: 0)
         if !background { sidebar.isCollapsed = UserDefaults.standard.bool(forKey: "sidebarCollapsed") }
         sidebar.changed = { [weak self] in self?.menuChanged() }
+        sidebar.canGo = { [weak self] in self?.canGo($0) == true }
         sidebar.list.navigate = { [weak self] navigation, focus in self?.perform(navigation, focus: focus) }
         sidebar.list.paneCommand = { [weak self] command, pane in self?.paneCommand(command, pane) }
         sidebar.list.onIntent = { [weak self] in self?.supersedeIntent() }
@@ -995,9 +1008,7 @@ private class AlertEscape: NSView {
             if let position = projection.placements[pane]?.position {
                 perform(.jump(position))
             } else {
-                supersedeIntent()
-                navigationPhase = .selecting(pane, SelectionWait(focus: .pane))
-                if let request = try? client.select(KO_SELECT_PANE, pane) { navigationPhase.sent(request) }
+                jumpWhenPlaced(pane)
             }
         }
         view.paneCommand = { [weak self] command, pane in
@@ -1045,6 +1056,7 @@ private class AlertEscape: NSView {
             layoutSeen = .none
             if fresh {
                 paneSlots = PaneSlots()
+                history = NavigationHistory()
                 sidebar.list.resetCaptions()
                 feedFresh = true
                 selectedFirst = false
@@ -1104,6 +1116,11 @@ private class AlertEscape: NSView {
                 do { try beginWindowSwitch(direction, waiting: following, client: client) }
                 catch { navigationPhase = .idle; notice("Could not select the window", String(describing: error)) }
                 return
+            }
+            switch wait.cause {
+            case .user: if let position = pane.flatMap({ projection.placements[$0]?.position }) { history.push(position) }
+            case .history(let step, let target): history.go(step, to: target)
+            case .automatic: break
             }
             if let session, let window, wait.focus == .pane {
                 focusTarget = pane.map { .pane(.init(session: session, window: window, pane: $0)) } ?? .window(session, window)
@@ -1213,6 +1230,7 @@ private class AlertEscape: NSView {
             paneSlots.observe(pane, in: projection)
         }
         received = Received(ko: ko, model: model, snapshot: snapshot, projection: projection)
+        history.prune { projection.placements[$0]?.position }
         defer { editor?.layoutChanged(revision: ko.layout.revision) }
         for position in repairs {
             focusTarget = .pane(position)
@@ -1274,6 +1292,7 @@ private class AlertEscape: NSView {
     }
 
     private func adopt(_ snapshot: Snapshot) {
+        sidebar.refreshHistory()
         markAttach("first-layout")
         reorder.state.observe(snapshot)
         // The core reads a pane's status after its listing: a live pane without one is not known yet,
@@ -1392,14 +1411,14 @@ private class AlertEscape: NSView {
 
     @objc func ensureSession() {
         connecting()
-        create(.ensureSession(.init(name: "session", new: .init()))) { [weak self] error in
+        create(.ensureSession(.init(name: "session", new: .init())), visit: .automatic) { [weak self] error in
             guard let self, let error else { return }
             down("Could not create a session", error, button: "Retry", action: #selector(ensureSession))
         }
     }
 
     // An edit that makes a session or a window selects it.
-    private func create(_ edit: KoSchema.Edit, done: ((String?) -> Void)? = nil) {
+    private func create(_ edit: KoSchema.Edit, visit: VisitCause = .user, done: ((String?) -> Void)? = nil) {
         guard let editor else {
             done?("\(host.label) is not connected.")
             return
@@ -1411,10 +1430,16 @@ private class AlertEscape: NSView {
             case .success(let edited):
                 done?(nil)
                 if case .connected(let client) = link {
+                    let request: UInt64?
                     switch edited.created {
-                    case .session(let created)?: try? client.select(KO_SELECT_SESSION, created.session)
-                    case .window(let created)?: try? client.select(KO_SELECT_WINDOW, created.window)
-                    case .pane?, nil: break
+                    case .session(let created)?: request = try? client.select(KO_SELECT_SESSION, created.session)
+                    case .window(let created)?: request = try? client.select(KO_SELECT_WINDOW, created.window)
+                    case .pane?, nil: request = nil
+                    }
+                    if let request, visit == .user {
+                        seedHistory()
+                        navigationPhase = .session(SelectionWait(focus: .sidebar, cause: visit))
+                        navigationPhase.sent(request)
                     }
                 }
             case .failure(let error):
@@ -1634,25 +1659,57 @@ private class AlertEscape: NSView {
         navigationPhase.sent(try client.switchOver(KO_OVER_WINDOW, direction.raw))
     }
 
-    func perform(_ navigation: Navigation, focus: SelectionFocus = .pane) {
+    private func seedHistory() {
+        guard history.isEmpty, let active = model.window.flatMap({ session?.windows[$0]?.active }),
+              let position = projection.placements[active]?.position else { return }
+        history.push(position)
+    }
+
+    func canGo(_ step: NavigationHistory.Step) -> Bool {
+        guard canNavigate else { return false }
+        switch step {
+        case .back: return history.canBack
+        case .forward: return history.canForward
+        }
+    }
+
+    func go(_ step: NavigationHistory.Step) {
+        guard canNavigate, let target = history.target(step) else { return }
+        perform(.jump(target), cause: .history(step, to: target))
+    }
+
+    func validateMenuItem(_ item: NSMenuItem) -> Bool {
+        switch item.action {
+        case #selector(goBack(_:)): canGo(.back)
+        case #selector(goForward(_:)): canGo(.forward)
+        default: true
+        }
+    }
+
+    @objc func goBack(_ sender: Any?) { go(.back) }
+    @objc func goForward(_ sender: Any?) { go(.forward) }
+
+    func perform(_ navigation: Navigation, focus: SelectionFocus = .pane, cause: VisitCause = .user) {
         pendingJump = nil
         if case .switchWindow(let next) = navigation,
-           navigationPhase.enqueue(WindowDirection(next: next), focus: focus) { return }
+           navigationPhase.enqueue(WindowDirection(next: next), focus: focus, cause: cause) { return }
         if case .jump(let target) = navigation { sidebar.list.select(target) }
         supersedeIntent()
         if case .releaseSideFocus = navigation { return sidebar.list.leave() }
         guard case .connected(let client) = link else { return }
+        if cause == .user { seedHistory() }
+        let wait = SelectionWait(focus: focus, cause: cause)
         let previousSlots = paneSlots
         func selectTab(_ id: WindowID) throws {
             guard let window = koModel?.layout.layout.window(id) else { return }
             let target = paneSlots.selected(in: id, fallback: window.focus)
-            navigationPhase = .selecting(target, SelectionWait(focus: focus))
+            navigationPhase = .selecting(target, wait)
             navigationPhase.sent(try client.select(KO_SELECT_PANE, target))
         }
         do {
             switch navigation {
             case .jump(let target):
-                navigationPhase = .selecting(target.pane, SelectionWait(focus: focus))
+                navigationPhase = .selecting(target.pane, wait)
                 paneSlots.show(target.pane, in: projection)
                 let slot = projection.placements[target.pane]?.slot ?? target
                 if let window = koModel?.layout.layout.window(slot.window),
@@ -1663,13 +1720,13 @@ private class AlertEscape: NSView {
             case .selectWindow(_, let window):
                 try selectTab(window)
             case .selectSession(let session):
-                navigationPhase = .session(SelectionWait(focus: focus))
+                navigationPhase = .session(wait)
                 navigationPhase.sent(try client.select(KO_SELECT_SESSION, session))
             case .switchSession(let next):
-                navigationPhase = .session(SelectionWait(focus: focus))
+                navigationPhase = .session(wait)
                 navigationPhase.sent(try client.switchOver(KO_OVER_SESSION, next ? KO_DIRECTION_NEXT : KO_DIRECTION_PREVIOUS))
             case .switchWindow(let next):
-                try beginWindowSwitch(WindowDirection(next: next), waiting: SelectionWait(focus: focus), client: client)
+                try beginWindowSwitch(WindowDirection(next: next), waiting: wait, client: client)
             case .releaseSideFocus: break
             }
         } catch {

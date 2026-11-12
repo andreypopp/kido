@@ -474,6 +474,64 @@ The preview's fixtures follow the 6.0 feed shape:
 
 The "Working session + states" fixture shows the regular-weight cases: the completed `pi-ui-perf`-style subagent under review-notes (gone, completed, `agent: null`) and the still-starting `perf-notes` subagent (a run with a clock, `agent: null`, idle dot).
 
+## Approved (user, 2026-11-12): back and forward
+
+The user asked for back/forward buttons in the sidebar header,
+because a pane is now reached by many jumps (a sidebar click, a
+koa `@name` link, Cmd-Up/Down, the palette, a tab). The mockup's
+header has them; a click on rows fills the history. The user
+approved the mockups and left the shortcut to the designer:
+Control-Command brackets, as below.
+
+- **Placement.** After the traffic lights, where Safari and Finder
+  put them, as one native 64pt toolbar item (two 32×28 buttons) in
+  the toolbar's own flow, so every point of both buttons is
+  clickable: the first item starts at 96pt in the unified title
+  bar, so back is at 96 and forward at 128, and the items after
+  it (New Session, the toggle, the tab strip) move right by the
+  item's width. Collapsed: lights, back, forward, New Session's
+  hidden slot (as before), then the toggle; the tab strip after
+  it. `chevron.left` and `chevron.right` at the sidebar
+  symbol size (`IconButton.sidebarSymbols`), the same hover
+  brightening and no background. Fullscreen (no lights): the item
+  is first, and the rest follows it in the same flow. Floating: as
+  docked. The mockup's hand-placed numbers (80/112, 142/184,
+  10/42) are the picture, not the spec; the native flow is.
+  The docked sidebar's minimum width rises from 200pt to 256pt
+  (one constant: the split's minimum, the initial clamp and the
+  saved-width threshold), the least at which lights, history, New
+  Session and the toggle fit without the toolbar's overflow menu
+  (the toggle ends at about 246pt in the native flow, plus
+  NSToolbar's margin); a narrower sidebar had no room for its rows
+  anyway. Disabled at 35% opacity when the history has nothing
+  that way; tooltips "Back ⌃⌘[" and "Forward ⌃⌘]".
+- **One entry** is a focus target `(session, window, pane)` of one
+  macOS window; each window has its own history. Only the shown
+  pane counts: the target of a jump, not the top-level slot.
+- **What pushes.** Every change of the window's focused pane that
+  the user asked for: a sidebar row, a tab, Cmd-1…9, a `@name`
+  link, the palette, Cmd-Up/Down, the directional pane moves
+  (h/j/k/l, Cmd-Opt-arrows, Next/Previous Pane), a session switch,
+  and a new pane or split (its new pane is the entry). Not: back
+  and forward themselves, and a focus that the app moved on its
+  own (the pane closed, the server reconnected, a window was
+  killed). A repeat of the current entry pushes nothing.
+- **Gone panes.** When a pane goes, its entries drop; the index
+  stays on the current entry. So Back always lands on a live pane,
+  and the buttons disable when nothing live remains that way.
+- **Length.** 100 entries for each window; the oldest drops.
+- **Shortcuts.** Cmd-[ and Cmd-] are Next/Previous Pane, Cmd-Shift
+  the windows, Cmd-Option the sessions; so back/forward are
+  Control-Command-[ and Control-Command-] (Xcode's Go Back/Forward
+  are Control-Command-arrows). The mouse's back and forward buttons
+  (buttons 4 and 5, `otherMouseDown` with buttonNumber 3 and 4)
+  do the same when over the window. No swipe: the terminal scrolls.
+- **Menu.** "Back" and "Forward" in the Shell menu's navigation
+  group, after Next Pane and Previous Pane, with the shortcuts;
+  disabled like the buttons. The palette lists them as commands.
+- **ko_tui** gets nothing: its one view is the pane it shows.
+- History is client state; no ko route.
+
 ## Proposal (user, 2026-11-11): two lines always, focus expands
 
 The mockup's "Rows" picker (`rows=auto`, the default; `chevrons` is

@@ -532,10 +532,10 @@ import PaneGeometry
         window.display()
         let root = try XCTUnwrap(window.contentView?.superview)
         root.layoutSubtreeIfNeeded()
-        sidebar.splitView.setPosition(236, ofDividerAt: 0)
+        sidebar.splitView.setPosition(256, ofDividerAt: 0)
         root.layoutSubtreeIfNeeded()
         sidebar.viewDidLayout()
-        try await wait("native sidebar width settles") { abs(sidebar.list.bounds.width - 236) < 1 }
+        try await wait("native sidebar width settles") { abs(sidebar.list.bounds.width - 256) < 1 }
         sidebar.viewDidLayout()
         let separator = sidebar.visualSeparator
         let start = separator.convert(NSPoint(x: separator.bounds.midX, y: separator.bounds.midY), to: nil)
@@ -639,7 +639,7 @@ import PaneGeometry
         window.setContentSize(NSSize(width: 900, height: 560))
         let root = try XCTUnwrap(window.contentView?.superview)
         root.layoutSubtreeIfNeeded()
-        sidebar.splitView.setPosition(236, ofDividerAt: 0)
+        sidebar.splitView.setPosition(256, ofDividerAt: 0)
         sidebar.viewDidLayout()
         let tabs = sidebar.tabs, reorder = Reorder()
         tabs.reorder = reorder

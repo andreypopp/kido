@@ -211,7 +211,7 @@ func assertPaperPixel(_ image: NSBitmapImageRep, x: Int, y: Int, expected: [Doub
             for mode in ["docked", "docked-wide", "collapsed", "floating"] {
                 owner.sidebar.dismissFloating()
                 owner.sidebar.isCollapsed = !mode.hasPrefix("docked")
-                if mode.hasPrefix("docked") { owner.sidebar.splitView.setPosition(mode == "docked-wide" ? 320 : 236, ofDividerAt: 0) }
+                if mode.hasPrefix("docked") { owner.sidebar.splitView.setPosition(mode == "docked-wide" ? 320 : 256, ofDividerAt: 0) }
                 if mode == "floating" { owner.sidebar.focusSidebar(nil) }
                 owner.window.display()
                 await mainQueueFence()
@@ -247,7 +247,7 @@ func assertPaperPixel(_ image: NSBitmapImageRep, x: Int, y: Int, expected: [Doub
                         MainActor.assumeIsolated { finishLayout() }
                     }
                     defer { NotificationCenter.default.removeObserver(observation) }
-                    for width in [CGFloat(236), 320] {
+                    for width in [CGFloat(256), 320] {
                         owner.sidebar.splitView.setPosition(width, ofDividerAt: 0)
                         root.layoutSubtreeIfNeeded()
                         owner.sidebar.viewDidLayout()
@@ -432,7 +432,7 @@ func assertPaperPixel(_ image: NSBitmapImageRep, x: Int, y: Int, expected: [Doub
                 for mode in ["docked", "floating"] {
                     owner.sidebar.dismissFloating()
                     owner.sidebar.isCollapsed = mode != "docked"
-                    if mode == "docked" { owner.sidebar.splitView.setPosition(236, ofDividerAt: 0) }
+                    if mode == "docked" { owner.sidebar.splitView.setPosition(256, ofDividerAt: 0) }
                     else { owner.sidebar.focusSidebar(nil) }
                     root.layoutSubtreeIfNeeded()
                     owner.sidebar.viewDidLayout()
@@ -572,7 +572,7 @@ func assertPaperPixel(_ image: NSBitmapImageRep, x: Int, y: Int, expected: [Doub
             owner.sidebar.dismissFloating()
             owner.sidebar.isCollapsed = floating
             if floating { owner.sidebar.focusSidebar(nil) }
-            else { owner.sidebar.splitView.setPosition(236, ofDividerAt: 0) }
+            else { owner.sidebar.splitView.setPosition(256, ofDividerAt: 0) }
             let root = try XCTUnwrap(owner.window.contentView?.superview)
             root.layoutSubtreeIfNeeded()
             owner.sidebar.viewDidLayout()
@@ -778,7 +778,7 @@ func assertPaperPixel(_ image: NSBitmapImageRep, x: Int, y: Int, expected: [Doub
         window.toolbarStyle = .unified
         let root = try XCTUnwrap(window.contentView?.superview)
         root.layoutSubtreeIfNeeded()
-        sidebar.splitView.setPosition(236, ofDividerAt: 0)
+        sidebar.splitView.setPosition(256, ofDividerAt: 0)
         for width in [900, 800] {
             window.setContentSize(NSSize(width: width, height: 560))
             for collapsed in [false, true] {

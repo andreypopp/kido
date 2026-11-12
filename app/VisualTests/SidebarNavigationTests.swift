@@ -40,7 +40,7 @@ import XCTest
         let root = try XCTUnwrap(owner.window.contentView?.superview)
         owner.window.display()
         root.layoutSubtreeIfNeeded()
-        sidebar.splitView.setPosition(236, ofDividerAt: 0)
+        sidebar.splitView.setPosition(256, ofDividerAt: 0)
         try await wait("tab titles are the focus panes' labels") { sidebar.tabs.entries.map(\.name) == ["Shell prompt", "Agent caption", "Build output"] }
         try await wait("the nested agent waits in its window's tab") { sidebar.tabs.entries.map(\.status) == [.quiet, .waiting, .quiet] }
         XCTAssertEqual((sidebar.tabs.accessibilityChildren()?[1] as? NSAccessibilityElement)?.accessibilityLabel(), "Window: Agent caption — waiting")

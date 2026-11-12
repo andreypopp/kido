@@ -394,7 +394,7 @@ import XCTest
         window.display()
         let root = try XCTUnwrap(window.contentView?.superview)
         root.layoutSubtreeIfNeeded()
-        sidebar.splitView.setPosition(236, ofDividerAt: 0)
+        sidebar.splitView.setPosition(256, ofDividerAt: 0)
         sidebar.list.show(sidebarFixture())
         session.sidebarFocused = { [weak sidebar] in sidebar?.list.containsFocus == true }
         (window as? OwnerWindow)?.focusChanged = { [weak self, weak sidebar] _, _ in

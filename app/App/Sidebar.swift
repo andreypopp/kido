@@ -1,4 +1,5 @@
 import AppKit
+import SidebarFeed
 
 final class SidebarSeparator: NSView {
     var color = Chrome.hairline { didSet { needsDisplay = true } }
@@ -107,6 +108,7 @@ final class Sidebar: NSSplitViewController, NSToolbarDelegate {
     var focusTerminal: () -> Void = {}
     private var sidebarItem: NSSplitViewItem!
     private var collapseObservation: NSKeyValueObservation?
+    static let minSidebarWidth: CGFloat = 256
     static let minSize = NSSize(width: 800, height: 500)
     var isCollapsed: Bool {
         get { sidebarItem.isCollapsed }
@@ -122,6 +124,14 @@ final class Sidebar: NSSplitViewController, NSToolbarDelegate {
         }
     }
     var changed: () -> Void = {}
+    private var historyButtons: [NavigationHistory.Step: MouseButton] = [:]
+    var canGo: (NavigationHistory.Step) -> Bool = { _ in false }
+    func refreshHistory() {
+        for (step, button) in historyButtons {
+            button.isEnabled = canGo(step)
+            button.alphaValue = button.isEnabled ? 1 : 0.35
+        }
+    }
     var listBackground: NSColor? { didSet { view.needsLayout = true } }
 
     func updateAppearance(runtime: GhosttyRuntime) {
@@ -148,7 +158,7 @@ final class Sidebar: NSSplitViewController, NSToolbarDelegate {
             focusTerminal()
         }
         sidebarItem = NSSplitViewItem(sidebarWithViewController: controller)
-        sidebarItem.minimumThickness = 200
+        sidebarItem.minimumThickness = Self.minSidebarWidth
         sidebarItem.maximumThickness = 360
         sidebarItem.canCollapse = true
         sidebarItem.allowsFullHeightLayout = true
@@ -235,7 +245,7 @@ final class Sidebar: NSSplitViewController, NSToolbarDelegate {
             outside.frame = NSRect(x: left, y: area.minY, width: max(0, area.maxX - left), height: area.height)
         }
         let left = terminalHost.safeAreaInsets.left
-        if !background, view.window != nil, !isCollapsed, !isFloating, left >= 200 {
+        if !background, view.window != nil, !isCollapsed, !isFloating, left >= Self.minSidebarWidth {
             UserDefaults.standard.set(left, forKey: "nativeSidebarWidth")
         }
         let tabActivity = tabs.showsActivity
@@ -259,7 +269,7 @@ final class Sidebar: NSSplitViewController, NSToolbarDelegate {
         dockedGlass?.layer?.cornerRadius = isFloating ? list.layer?.cornerRadius ?? 0 : 0
         #endif
     }
-    func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] { [.flexibleSpace, .init("newSession"), .init("toggleSidebar"), .sidebarTrackingSeparator, .init("windowTabs")] }
+    func toolbarDefaultItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] { [.init("history"), .flexibleSpace, .init("newSession"), .init("toggleSidebar"), .sidebarTrackingSeparator, .init("windowTabs")] }
     func toolbarAllowedItemIdentifiers(_ toolbar: NSToolbar) -> [NSToolbarItem.Identifier] { toolbarDefaultItemIdentifiers(toolbar) }
     func toolbar(_ toolbar: NSToolbar, itemForItemIdentifier id: NSToolbarItem.Identifier, willBeInsertedIntoToolbar flag: Bool) -> NSToolbarItem? {
         if id.rawValue == "windowTabs" {
@@ -284,6 +294,34 @@ final class Sidebar: NSSplitViewController, NSToolbarDelegate {
             item.view = host
             return item
         }
+        if id.rawValue == "history" {
+            let item = NSToolbarItem(itemIdentifier: id)
+            item.label = "History"
+            item.paletteLabel = item.label
+            item.isBordered = false
+            let host = NSView()
+            host.translatesAutoresizingMaskIntoConstraints = false
+            var previous: NSView?
+            for (step, symbol, label, action) in [(NavigationHistory.Step.back, "chevron.left", "Back", #selector(WindowOwner.goBack(_:))),
+                                                  (.forward, "chevron.right", "Forward", #selector(WindowOwner.goForward(_:)))] {
+                let button = toolbarButton(symbol, label: label, toolTip: label + (step == .back ? " ⌃⌘[" : " ⌃⌘]"), target: nil, action: action)
+                host.addSubview(button)
+                NSLayoutConstraint.activate([
+                    button.leadingAnchor.constraint(equalTo: previous?.trailingAnchor ?? host.leadingAnchor),
+                    button.centerYAnchor.constraint(equalTo: host.centerYAnchor),
+                ])
+                historyButtons[step] = button
+                previous = button
+            }
+            NSLayoutConstraint.activate([
+                host.widthAnchor.constraint(equalToConstant: 64),
+                host.heightAnchor.constraint(equalToConstant: 28),
+            ])
+            item.visibilityPriority = .high
+            item.view = host
+            refreshHistory()
+            return item
+        }
         if id == .sidebarTrackingSeparator { return NSTrackingSeparatorToolbarItem(identifier: id, splitView: splitView, dividerIndex: 0) }
         if id.rawValue == "newSession" || id.rawValue == "toggleSidebar" {
             let toggle = id.rawValue == "toggleSidebar"
@@ -292,25 +330,29 @@ final class Sidebar: NSSplitViewController, NSToolbarDelegate {
             item.paletteLabel = item.label
             item.toolTip = item.label
             item.isBordered = false
-            let button = MouseButton(frame: .zero)
-            button.cell = ToolbarButtonCell()
-            button.image = NSImage(systemSymbolName: toggle ? "sidebar.left" : "plus.square.on.square", accessibilityDescription: item.label)?
-                .withSymbolConfiguration(IconButton.sidebarSymbols)
-            button.imagePosition = .imageOnly
-            button.target = self
-            button.action = toggle ? #selector(NSSplitViewController.toggleSidebar(_:)) : #selector(newSession)
-            button.translatesAutoresizingMaskIntoConstraints = false
-            button.isBordered = false
-            button.toolTip = item.label
-            button.setAccessibilityLabel(item.label)
-            NSLayoutConstraint.activate([
-                button.widthAnchor.constraint(equalToConstant: 32),
-                button.heightAnchor.constraint(equalToConstant: 28),
-            ])
-            item.view = button
+            item.visibilityPriority = toggle ? .high : .low
+            item.view = toolbarButton(toggle ? "sidebar.left" : "plus.square.on.square", label: item.label, toolTip: item.label, target: self,
+                                      action: toggle ? #selector(NSSplitViewController.toggleSidebar(_:)) : #selector(newSession))
             return item
         }
         return nil
+    }
+    private func toolbarButton(_ symbol: String, label: String, toolTip: String, target: AnyObject?, action: Selector) -> MouseButton {
+        let button = MouseButton(frame: .zero)
+        button.cell = ToolbarButtonCell()
+        button.image = NSImage(systemSymbolName: symbol, accessibilityDescription: label)?.withSymbolConfiguration(IconButton.sidebarSymbols)
+        button.imagePosition = .imageOnly
+        button.target = target
+        button.action = action
+        button.translatesAutoresizingMaskIntoConstraints = false
+        button.isBordered = false
+        button.toolTip = toolTip
+        button.setAccessibilityLabel(label)
+        NSLayoutConstraint.activate([
+            button.widthAnchor.constraint(equalToConstant: 32),
+            button.heightAnchor.constraint(equalToConstant: 28),
+        ])
+        return button
     }
     @objc private func newSession() { list.newSession() }
 

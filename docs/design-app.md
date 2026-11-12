@@ -1765,8 +1765,11 @@ when its runtime equals that of the nearest ancestor pane row, so a
 routed pi's runs and children in its runtime show none.
 
 `Sidebar` is an `NSSplitViewController` with a sidebar item, which
-supplies the floating glass, collapse animation and saved width (200pt to
-360pt). The window has an icon-only unified toolbar only because the
+supplies the floating glass, collapse animation and saved width
+(`Sidebar.minSidebarWidth` to 360pt). The minimum is the narrowest width at
+which the traffic lights, the history pair, New Session and the toggle all
+fit in the toolbar's flow: below it AppKit moves New Session into the
+toolbar's overflow menu. The window has an icon-only unified toolbar only because the
 sidebar's glass reaches the top of the window, traffic lights inside it,
 when there is one; without it AppKit adds a plain titlebar strip. The
 chrome follows the Ghostty theme background. The native header band, the
@@ -1776,7 +1779,13 @@ content view, banners and a single-pane window's paper and padding stay pure.
 Full screen keeps the toolbar visible by removing `.autoHideToolbar` from
 the presentation options. New Session is a standard
 image toolbar item, as is the sidebar toggle, targeting the split view
-controller. Both are borderless and the toolbar is not customizable.
+controller. Both are borderless and the toolbar is not customizable. The
+first item is the Back and Forward pair ([Navigation
+history](#navigation-history)), one 64pt item in the toolbar's flow, so
+every point of both buttons is clickable and the items after it move
+right; its buttons send their action to the responder chain, which ends
+at the window's `WindowOwner`. When the sidebar collapses, New Session
+hides but keeps its slot.
 
 Titlebar tabs and the remote user@host label occupy a flexible native
 `NSToolbarItem` after `sidebarTrackingSeparator`, not a content overlay.
@@ -2322,6 +2331,48 @@ of focus moves the keyboard selection to the focused row; when a wait
 clears and the selected row folds away, the selection goes to the
 nearest visible ancestor.
 
+### Navigation history
+
+Each window has a history of the panes that the user went to, for Back
+and Forward (`SidebarFeed/NavigationHistory.swift`). It is client state:
+ko knows nothing of it, and a fresh welcome (a new server instance)
+clears it; a reconnect to the same instance keeps it. An entry is the
+position of the pane that the window shows, not its top-level slot.
+
+The history records only a selection that the user asked for and that
+landed. Every user navigation goes through `WindowOwner.perform`, which
+puts a `VisitCause` in the selection's wait; the one place that records is
+the completion of the matched select request in `handle(.selected)`. So a
+selection that fails, or that a later gesture supersedes, records nothing,
+and a selection that the app makes on its own (the first selection, a
+resume, the repair after a pane goes, a selection from another client,
+`ensureSession`) has the cause `automatic` and records nothing. The paths
+that used to select without `perform` (a new session or window from
+`create`, a click on a pane that has no placement yet) now wait in the
+same transaction. A window switch queued behind a pending selection
+gives the selection its own cause, so a superseded Back does not move
+the cursor. Before the first user navigation, the history takes the
+window's active pane as its start, so the first Back returns there.
+
+Back and Forward are a selection with the cause `history`, which carries
+its target entry: when it lands, the cursor moves to that entry only if it
+is still the step's target, and nothing is pushed. A push equal to the
+current entry does nothing, a push after Back drops the entries ahead,
+and the history keeps its last 100 entries. On each model update the
+history drops the entries of gone panes, follows moved panes and merges
+adjacent repeats, but not across the cursor. When the current entry goes, the cursor becomes a gap
+between its surviving neighbours, so Back and Forward go to the nearest
+live entries.
+
+Back and Forward are in the Shell menu after Previous Pane, with
+Control-Command-[ and Control-Command-] (Command-[ and Command-] are
+Previous and Next Pane); `ko_config` reserves both, so a keybind cannot
+take them. The toolbar pair, the menu items and the palette commands are
+enabled from the same state. The mouse's back and forward buttons
+(`buttonNumber` 3 and 4) act on the press anywhere in the window, but not
+while the palette or a sheet is up: `OwnerWindow.sendEvent` takes both
+their press and release before a terminal can receive them. ko_tui has no history.
+
 ## Command palette
 
 Command-P (View → Command Palette…) opens the palette and closes it.
@@ -2386,7 +2437,7 @@ The root list is built from live state, in this order:
 - A fixed list of commands, each read from its menu item (found by action and
   represented object, never by title) for its title, menu path and current
   key equivalent: New Session ("New Session…" with an anchor), Rename Session…, Close Session, New Window,
-  Close Window, Split Right, Split Down, Close Pane, Zoom Pane, Connect to
+  Close Window, Back, Forward, Split Right, Split Down, Close Pane, Zoom Pane, Connect to
   Local Host, Connect to Remote Host…, Hide/Show Sidebar, Focus Sidebar,
   Enter Full Screen, Find…, Copy Mode, Prompt…, Reset Clipboard and Upload
   Permissions and Theme…. The window
@@ -2394,7 +2445,7 @@ The root list is built from live state, in this order:
   connected anchor whose saved responder is a visible pane of that window, or
   a view inside one, such as its Find bar. Prompt… also needs an agent in the
   pane's session, as its menu item does.
-  Navigation items, Select Pane, the numbered lists, Find Next/Previous, Hide,
+  The other navigation items, Select Pane, the numbered lists, Find Next/Previous, Hide,
   Quit and the palette item are never in the list.
 
 While the palette is open, each owner snapshot or model change and each window

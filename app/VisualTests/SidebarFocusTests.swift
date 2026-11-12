@@ -180,7 +180,7 @@ import XCTest
             let wheel = try XCTUnwrap(CGEvent(scrollWheelEvent2Source: nil, units: .pixel, wheelCount: 1, wheel1: -60, wheel2: 0, wheel3: 0))
             scroll.scrollWheel(with: try XCTUnwrap(NSEvent(cgEvent: wheel)))
             XCTAssertTrue(window.firstResponder === pane)
-            sidebar.splitView.setPosition(236, ofDividerAt: 0)
+            sidebar.splitView.setPosition(256, ofDividerAt: 0)
             window.contentView?.superview?.layoutSubtreeIfNeeded()
             sidebar.viewDidLayout()
             let separator = sidebar.visualSeparator

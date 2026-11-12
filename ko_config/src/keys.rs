@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::values::{Payload, ranged};
 
-const MENU_OWNED: [&str; 52] = [
+const MENU_OWNED: [&str; 54] = [
     "super+1",
     "super+2",
     "super+3",
@@ -58,6 +58,8 @@ const MENU_OWNED: [&str; 52] = [
     "super+shift+]",
     "super+{",
     "super+}",
+    "super+ctrl+[",
+    "super+ctrl+]",
 ];
 
 #[rustfmt::skip]

@@ -95,7 +95,7 @@ struct PaletteEntry {
             if let submenu = item.submenu { return commands(submenu, owner: owner, responder: responder, path: path + [item.title].filter { !$0.isEmpty }) }
             guard let action = item.action, let (order, scope) = commandOrder(item), !item.isHidden else { return [] }
             let available = switch scope { case .always: true; case .window: owner != nil; case .pane: livePane(owner, responder) != nil }
-            guard available, enabled(item, responder: responder) else { return [] }
+            guard available, enabled(item, owner: owner, responder: responder) else { return [] }
             let operation: Operation
             var title = item.title
             if action == #selector(AppDelegate.connectRemoteHost) { operation = .enter(.connect) }
@@ -116,7 +116,7 @@ struct PaletteEntry {
                                  check: { [weak owner] in
                 if action == #selector(AppDelegate.newSession), let owner, owner.snapshot == nil { return "Not available now" }
                 if scope == .pane, livePane(owner, owner?.window.firstResponder) == nil { return "Not available now" }
-                return enabled(item, responder: owner?.window.firstResponder) ? nil : "Not available now"
+                return enabled(item, owner: owner, responder: owner?.window.firstResponder) ? nil : "Not available now"
             }, operation: operation)]
         }.sorted { $0.order < $1.order }
     }
@@ -127,7 +127,7 @@ struct PaletteEntry {
         return pane
     }
 
-    @MainActor private static func enabled(_ item: NSMenuItem, responder: NSResponder?) -> Bool {
+    @MainActor private static func enabled(_ item: NSMenuItem, owner: WindowOwner?, responder: NSResponder?) -> Bool {
         guard item.menu?.autoenablesItems != false else { return item.isEnabled }
         var target: Any? = item.target
         if target == nil, let action = item.action {
@@ -137,6 +137,7 @@ struct PaletteEntry {
                 next = candidate.nextResponder
             }
             if target == nil, let pane = PaneView.owner(responder), pane.responds(to: action) { target = pane }
+            if target == nil, let owner, owner.responds(to: action) { target = owner }
             if target == nil { target = NSApp.target(forAction: action, to: nil, from: item) }
         }
         if let pane = target as? PaneView { return pane.canPerformMenuItem(item) }
@@ -151,25 +152,27 @@ struct PaletteEntry {
         case #selector(SessionMenus.renameItem): (1, .window)
         case #selector(SessionMenus.closeItem): (2, .window)
         case #selector(AppDelegate.closeWindow): (4, .window)
+        case #selector(WindowOwner.goBack(_:)): (5, .window)
+        case #selector(WindowOwner.goForward(_:)): (6, .window)
         case #selector(PaneView.runCommand(_:)):
             switch item.representedObject as? PaneCommand {
             case .newWindow: (3, .pane)
-            case .split(.right): (5, .pane)
-            case .split(.down): (6, .pane)
-            case .close: (7, .pane)
-            case .zoom: (8, .pane)
+            case .split(.right): (7, .pane)
+            case .split(.down): (8, .pane)
+            case .close: (9, .pane)
+            case .zoom: (10, .pane)
             default: nil
             }
-        case #selector(AppDelegate.connectLocalHost): (9, .always)
-        case #selector(AppDelegate.connectRemoteHost): (10, .always)
-        case #selector(Sidebar.toggleSidebar(_:)): (11, .window)
-        case #selector(Sidebar.focusSidebar(_:)): (12, .window)
-        case NSSelectorFromString("toggleFullScreen:"): (13, .window)
-        case #selector(PaneView.showFind(_:)): (14, .pane)
-        case #selector(PaneView.toggleCopyMode(_:)): (15, .pane)
-        case #selector(PaneView.promptSelectionItem(_:)): (16, .pane)
-        case #selector(AppDelegate.resetClipboardPermissions): (17, .window)
-        case #selector(AppDelegate.showThemes): (18, .always)
+        case #selector(AppDelegate.connectLocalHost): (11, .always)
+        case #selector(AppDelegate.connectRemoteHost): (12, .always)
+        case #selector(Sidebar.toggleSidebar(_:)): (13, .window)
+        case #selector(Sidebar.focusSidebar(_:)): (14, .window)
+        case NSSelectorFromString("toggleFullScreen:"): (15, .window)
+        case #selector(PaneView.showFind(_:)): (16, .pane)
+        case #selector(PaneView.toggleCopyMode(_:)): (17, .pane)
+        case #selector(PaneView.promptSelectionItem(_:)): (18, .pane)
+        case #selector(AppDelegate.resetClipboardPermissions): (19, .window)
+        case #selector(AppDelegate.showThemes): (20, .always)
         default: nil
         }
     }
