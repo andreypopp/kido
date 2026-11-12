@@ -92,6 +92,8 @@ enum PaneAction: Equatable {
 func selectedPane(by edit: KoSchema.Edit, _ edited: KoSchema.Edited) -> PaneID? {
     switch (edit, edited.created) {
     case (.split, .pane(let created)?): created.pane
+    case (.float(let float), _): float.pane
+    case (.unfloat(let unfloat), _): unfloat.pane
     case (.toggleZoom(let toggle), _): edited.snapshot.layout.windows.contains { $0.zoom == toggle.pane } ? toggle.pane : nil
     default: nil
     }
@@ -125,10 +127,23 @@ extension KoModel {
     }
 }
 
+extension KoSchema.Window {
+    // The edit of the float command on `pane`: a float docks right of `last` if that is a tiled pane, else of the first
+    // tiled pane; a tiled pane floats where the server places it. nil while zoomed, and for the last tiled pane.
+    func floatEdit(_ pane: PaneID, last: PaneID? = nil) -> KoSchema.Edit? {
+        guard zoom == nil else { return nil }
+        let tiled = Layout(self).root.panes.filter { $0.layer == .tiled }
+        if floats.contains(where: { $0.pane == pane }) {
+            return (tiled.first { $0.id == last } ?? tiled.first).map { .unfloat(KoSchema.EditUnfloat(edge: .right, pane: pane, target: $0.id)) }
+        }
+        return tiled.count > 1 && tiled.contains { $0.id == pane } ? .float(KoSchema.EditFloat(pane: pane)) : nil
+    }
+}
+
 extension PaneCommand {
     // The layout action of a command on `pane` of `window`; nil for the commands of the owner and
     // for a select with no pane on that side. Ghostty's resize amount is in points.
-    func action(_ pane: PaneID, in window: KoSchema.Window, new: KoSchema.CreatePane, cell: CGSize) -> PaneAction? {
+    func action(_ pane: PaneID, in window: KoSchema.Window, new: KoSchema.CreatePane, cell: CGSize, lastTiled: PaneID? = nil) -> PaneAction? {
         let panes = Layout(window, visible: true).root.panes
         switch self {
         case .split(let side):
@@ -159,6 +174,7 @@ extension PaneCommand {
             return .select(panes[(at + step) % panes.count].id)
         case .zoom: return .edit(.toggleZoom(KoSchema.EditToggleZoom(pane: pane)))
         case .equalize: return .edit(.equalize(KoSchema.EditEqualize(pane: pane)))
+        case .float: return window.floatEdit(pane, last: lastTiled).map { .edit($0) }
         case .window, .newWindow, .close, .parent, .child: return nil
         }
     }

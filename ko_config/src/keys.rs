@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::values::{Payload, ranged};
 
-const MENU_OWNED: [&str; 54] = [
+const MENU_OWNED: [&str; 55] = [
     "super+1",
     "super+2",
     "super+3",
@@ -40,6 +40,7 @@ const MENU_OWNED: [&str; 54] = [
     "super+shift+d",
     "super+w",
     "super+shift+enter",
+    "super+alt+f",
     "super+alt+left",
     "super+alt+up",
     "super+alt+right",

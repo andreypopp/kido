@@ -163,9 +163,21 @@ final class PaneChrome: NSView {
 
 final class PaneDropPreview: NSView {
     var rect: CGRect? { didSet { if rect != oldValue { needsDisplay = true } } }
+    var ghost: CGRect? { didSet { if ghost != oldValue { needsDisplay = true } } }
+    var ghostRadius: CGFloat = 10
     override var isFlipped: Bool { true }
     override func hitTest(_ point: NSPoint) -> NSView? { nil }
     override func draw(_ dirtyRect: NSRect) {
+        if let ghost {
+            effectiveAppearance.performAsCurrentDrawingAppearance {
+                let path = NSBezierPath(roundedRect: ghost.insetBy(dx: 0.5, dy: 0.5), xRadius: ghostRadius, yRadius: ghostRadius)
+                Chrome.dropGhostFill.setFill()
+                path.fill()
+                Chrome.dropGhostStroke.setStroke()
+                path.lineWidth = 1
+                path.stroke()
+            }
+        }
         guard let rect else { return }
         effectiveAppearance.performAsCurrentDrawingAppearance {
             Chrome.dropPreview.setFill()

@@ -33,6 +33,8 @@ enum Chrome {
     static var disabledFill: NSColor { NSColor.labelColor.withAlphaComponent(0.14) }
     static var floatingListHairline: NSColor { NSColor.labelColor.withAlphaComponent(0.12) }
     static var focusStroke: NSColor { NSColor.controlAccentColor.withAlphaComponent(0.5) }
+    static var dropGhostFill: NSColor { NSColor.controlAccentColor.withAlphaComponent(0.08) }
+    static var dropGhostStroke: NSColor { NSColor.controlAccentColor.withAlphaComponent(0.5) }
     static var dropPreview: NSColor { NSColor.controlAccentColor.withAlphaComponent(0.3) }
     static var capsuleRing: NSColor { NSColor.controlAccentColor.withAlphaComponent(0.4) }
     static var insertion: NSColor { .controlAccentColor }

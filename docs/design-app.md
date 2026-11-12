@@ -1341,6 +1341,19 @@ The accent highlight follows
 the effective appearance. A drop sends one `swap`, `dock` or `dock_window` edit, and
 only the next layout moves the views. A click, Escape, a drop
 on the source or a floating pane cancels. Dragging is disabled while zoomed.
+A tiled grip pops the pane out (design: `app/design/floats/NOTES.md`,
+section A). Outside every target and outside the source, a ghost follows
+the pointer after 4pt of movement. Its size is the pane's size, limited to
+60% of the tiled area and not less than 20 columns × 6 rows. The pointer
+keeps its position relative to the grip. Option over a target or over the
+source shows the ghost instead of the bar. The drop sends a `float` edit
+with the ghost's cell geometry (PaneLayout's inverse), and the float becomes
+the active pane. The last tiled pane shows no ghost. A float's move gesture
+uses the edge targets of the tiled drag: over a pane's outer quarters or the
+window-edge band, it shows the bar and sends no move edit; its drop sends
+`dock` or `dock_window` with the float as the source and holds the release
+frame until the layout shows the dock. A pane's centre is no target for a
+float, so a float still moves over tiled panes.
 Floating grips and padding share one move gesture, starting after 4pt of
 movement; resize edges follow the pointer immediately. A press without movement
 raises a covered float with a `float` edit of its stacking order. Draggable padding is inside the
@@ -1383,8 +1396,15 @@ until a layout event shows the revision of the last accepted edit; then
 it reports the gestures settled. A failure ends the hold and shows the
 core's message. A divider drag is a `resize_pair` edit, a float move or
 resize a `float` edit, a grip drop a `swap`, `dock` or `dock_window` edit.
-The pane commands map to `split`, `resize_by`, `toggle_zoom` and
-`equalize` edits. The core evaluates `resize_by {pane, edge, delta}` and
+The pane commands map to `split`, `resize_by`, `toggle_zoom`, `float`,
+`unfloat` and `equalize` edits. One menu item (⌥⌘F) floats or docks the
+focused pane. On a tiled pane its title is "Float Pane", and it sends
+`float` without geometry, so the server places the float. On a float its
+title is "Dock Pane", and it sends `unfloat` to the right of the tiled
+pane that was active before a float took the focus. ko keeps no such
+record, so the app remembers that pane for each window and forgets it when
+the pane goes; without it, the target is the first tiled pane. The item is
+disabled while zoomed and for the last tiled pane. The core evaluates `resize_by {pane, edge, delta}` and
 `toggle_zoom` against the newest layout, so
 two presses inside one round trip are two steps: the divider on the
 `edge` side of the pane moves toward that edge (for the last pane of a
@@ -1392,7 +1412,8 @@ split, the divider before it), and a resize while zoomed unzooms first.
 `ko_client_edit` returns the id of what an edit created with the new
 layout;
 a directional pane select is `ko_client_select`, not an edit. After a
-split the new pane is selected, and after a zoom the zoomed pane. When
+split the new pane is selected, after a zoom the zoomed pane, and after a
+float or a dock the pane that moved. When
 the active pane changes while a pane of the window has focus, the focus
 follows it. Session and window creation, session rename and reorders are
 edits too (`add_session`, `ensure_session`, `add_window`, `rename_session`,
@@ -2456,7 +2477,7 @@ The root list is built from live state, in this order:
 - A fixed list of commands, each read from its menu item (found by action and
   represented object, never by title) for its title, menu path and current
   key equivalent: New Session ("New Session…" with an anchor), Rename Session…, Close Session, New Window,
-  Close Window, Back, Forward, Split Right, Split Down, Close Pane, Zoom Pane, Connect to
+  Close Window, Back, Forward, Split Right, Split Down, Close Pane, Zoom Pane, Float Pane or Dock Pane, Connect to
   Local Host, Connect to Remote Host…, Hide/Show Sidebar, Focus Sidebar,
   Enter Full Screen, Find…, Copy Mode, Prompt…, Reset Clipboard and Upload
   Permissions and Theme…. The window

@@ -53,8 +53,9 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
         case #selector(NSText.selectAll(_:)), #selector(NSText.paste(_:)): copyMode == nil
         case #selector(reloadPage(_:)): webviewView != nil
         case #selector(toggleCopyMode(_:)): !webviewFocused
-        case #selector(runCommand(_:)),
-             #selector(showFind(_:)), #selector(findNext(_:)), #selector(findPrevious(_:)): true
+        case #selector(runCommand(_:)):
+            if case .float? = item.representedObject as? PaneCommand { floatTitle().map { item.title = $0 } != nil } else { true }
+        case #selector(showFind(_:)), #selector(findNext(_:)), #selector(findPrevious(_:)): true
         default: false
         }
     }
@@ -85,6 +86,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
     var onCellChange: () -> Void = {}
     var onFontChange: (Float) -> Void = { _ in }
     var onCommand: (PaneCommand) -> Void = { _ in }
+    var floatTitle: () -> String? = { nil }
     var onFindChange: () -> Void = {}
     let scroller = PaneScroller()
     var find: PaneFind? { didSet { needsLayout = true; onFindChange() } }

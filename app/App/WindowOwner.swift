@@ -131,6 +131,8 @@ private class AlertEscape: NSView {
     private var received = Received()
     private var model: SessionModel { received.model }
     private var koModel: KoModel? { received.ko }
+    // Per window, the tiled pane that was active last: where Dock Pane docks a float.
+    private var lastTiled: [WindowID: PaneID] = [:]
     var snapshot: Snapshot? { received.snapshot }
     var projection: PaneProjection { received.projection }
     private var pendingJump: (pane: PaneID, deadline: Date)?
@@ -1003,6 +1005,8 @@ private class AlertEscape: NSView {
         view.sidebarFocused = { [weak sidebar] in sidebar?.list.containsFocus == true }
         view.reorder = reorder
         view.edit = { [weak self] edit, key in self?.editor?.submit(edit, key: key) }
+        view.editSelecting = { [weak self] in self?.submitSelecting($0) }
+        view.floatTitle = { [weak self] in self?.floatTitle($0) }
         view.editing = { [weak self] in self?.editor?.holding == true }
         view.selectPane = { [weak self] pane in
             guard let self, accepts(generation), case .connected(let client) = link else { return }
@@ -1232,6 +1236,10 @@ private class AlertEscape: NSView {
              || previousProjection.placements[pane]?.slot != projection.placements[pane]?.slot {
             paneSlots.observe(pane, in: projection)
         }
+        lastTiled = Dictionary(uniqueKeysWithValues: ko.layout.layout.windows.compactMap { window in
+            let tiled = Layout(window).root.panes.filter { $0.layer == .tiled }.map(\.id)
+            return (tiled.contains(window.focus) ? window.focus : lastTiled[window.id].flatMap { tiled.contains($0) ? $0 : nil }).map { (window.id, $0) }
+        })
         received = Received(ko: ko, model: model, snapshot: snapshot, projection: projection)
         history.prune { projection.placements[$0]?.position }
         defer { editor?.layoutChanged(revision: ko.layout.revision) }
@@ -1507,6 +1515,20 @@ private class AlertEscape: NSView {
         }
     }
 
+    func submitSelecting(_ edit: KoSchema.Edit) {
+        editor?.submit(edit) { [weak self] result in
+            guard case .success(let edited) = result, let pane = selectedPane(by: edit, edited), let self else { return }
+            session?.selectPane(paneSlots.shown(pane))
+        }
+    }
+
+    func floatTitle(_ pane: PaneID) -> String? {
+        let root = projection.placements[pane]?.slot.pane ?? pane
+        guard let window = koModel?.layout.layout.locate(root)?.window, let edit = window.floatEdit(root) else { return nil }
+        if case .unfloat = edit { return "Dock Pane" }
+        return "Float Pane"
+    }
+
     func paneCommand(_ command: PaneCommand, _ pane: PaneID, _ runtime: NewPaneRuntime = .inherit) {
         switch command {
         case .close:
@@ -1522,14 +1544,10 @@ private class AlertEscape: NSView {
         }
         let root = projection.placements[pane]?.slot.pane ?? pane
         guard let koModel, let window = koModel.layout.layout.locate(root)?.window,
-              let action = command.action(root, in: window, new: koModel.newPane(from: pane, runtime), cell: session?.cell ?? .zero) else { return }
+              let action = command.action(root, in: window, new: koModel.newPane(from: pane, runtime), cell: session?.cell ?? .zero, lastTiled: lastTiled[window.id]) else { return }
         switch action {
         case .edit(let edit):
-            editor?.submit(edit) { [weak self] result in
-                guard case .success(let edited) = result, let pane = selectedPane(by: edit, edited) else { return }
-                guard let self else { return }
-                session?.selectPane(paneSlots.shown(pane))
-            }
+            submitSelecting(edit)
         case .select(let target): session?.selectPane(paneSlots.shown(target))
         }
     }

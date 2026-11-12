@@ -161,18 +161,19 @@ struct PaletteEntry {
             case .split(.down): (8, .pane)
             case .close: (9, .pane)
             case .zoom: (10, .pane)
+            case .float: (11, .pane)
             default: nil
             }
-        case #selector(AppDelegate.connectLocalHost): (11, .always)
-        case #selector(AppDelegate.connectRemoteHost): (12, .always)
-        case #selector(Sidebar.toggleSidebar(_:)): (13, .window)
-        case #selector(Sidebar.focusSidebar(_:)): (14, .window)
-        case NSSelectorFromString("toggleFullScreen:"): (15, .window)
-        case #selector(PaneView.showFind(_:)): (16, .pane)
-        case #selector(PaneView.toggleCopyMode(_:)): (17, .pane)
-        case #selector(PaneView.promptSelectionItem(_:)): (18, .pane)
-        case #selector(AppDelegate.resetClipboardPermissions): (19, .window)
-        case #selector(AppDelegate.showThemes): (20, .always)
+        case #selector(AppDelegate.connectLocalHost): (12, .always)
+        case #selector(AppDelegate.connectRemoteHost): (13, .always)
+        case #selector(Sidebar.toggleSidebar(_:)): (14, .window)
+        case #selector(Sidebar.focusSidebar(_:)): (15, .window)
+        case NSSelectorFromString("toggleFullScreen:"): (16, .window)
+        case #selector(PaneView.showFind(_:)): (17, .pane)
+        case #selector(PaneView.toggleCopyMode(_:)): (18, .pane)
+        case #selector(PaneView.promptSelectionItem(_:)): (19, .pane)
+        case #selector(AppDelegate.resetClipboardPermissions): (20, .window)
+        case #selector(AppDelegate.showThemes): (21, .always)
         default: nil
         }
     }

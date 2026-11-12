@@ -120,6 +120,74 @@ import XCTest
         wait("the float is selected") { (try? client.model())?.selection.pane == PaneID(number: 2) }
     }
 
+    private func floatItem() throws -> NSMenuItem {
+        let menu = try XCTUnwrap(PaneCommand.menu.submenu)
+        return try XCTUnwrap(menu.items.first { if case .float? = $0.representedObject as? PaneCommand { true } else { false } })
+    }
+
+    func testFloatPaneFloatsATiledPaneAndDockPaneDocksItNextToTheFirstTiledPane() throws {
+        let (owner, client) = try shown(#"[{"name":"s","windows":[{"name":"w","tree":{"split":"h","children":[\#(sleep),\#(sleep)]}}]}]"#)
+        let session = try XCTUnwrap(owner.testSession)
+        let first = PaneID(number: 1), second = PaneID(number: 2)
+        let item = try floatItem()
+        XCTAssertEqual(item.keyEquivalent, "f")
+        XCTAssertEqual(item.keyEquivalentModifierMask, [.command, .option])
+        let view = try XCTUnwrap(session.pane(second))
+        XCTAssertTrue(view.canPerformMenuItem(item))
+        XCTAssertEqual(item.title, "Float Pane")
+        XCTAssertEqual(try XCTUnwrap(windows(client).first).floatEdit(second), .float(KoSchema.EditFloat(pane: second)))
+
+        session.paneCommand(.float, second)
+        wait("the pane floats, placed by the server") { self.windows(client).first?.floats.map(\.pane) == [second] }
+        wait("the float is the active pane") { (try? client.model())?.selection.pane == second }
+        wait("the item offers Dock Pane") { view.canPerformMenuItem(item) && item.title == "Dock Pane" }
+        XCTAssertEqual(try XCTUnwrap(windows(client).first).floatEdit(second), .unfloat(KoSchema.EditUnfloat(edge: .right, pane: second, target: first)))
+
+        session.paneCommand(.float, second)
+        wait("the float docks to the right of the first tiled pane") {
+            let panes = self.panes(client)
+            return self.windows(client).first?.floats.isEmpty == true && panes.map(\.id) == [first, second]
+                && panes[1].geometry.x > panes[0].geometry.x
+        }
+        wait("the docked pane stays active") { (try? client.model())?.selection.pane == second }
+    }
+
+    func testDockPaneDocksNextToTheLastFocusedTiledPaneElseTheFirst() throws {
+        let (owner, client) = try shown(#"[{"name":"s","windows":[{"name":"w","tree":{"split":"h","children":[\#(sleep),\#(sleep),\#(sleep)]}}]}]"#)
+        let session = try XCTUnwrap(owner.testSession)
+        let one = PaneID(number: 1), two = PaneID(number: 2), three = PaneID(number: 3)
+        session.selectPane(three)
+        wait("the third pane is active") { (try? client.model())?.selection.pane == three }
+        session.paneCommand(.float, one)
+        wait("the first pane floats and takes the focus") { self.windows(client).first?.floats.map(\.pane) == [one] && (try? client.model())?.selection.pane == one }
+        session.paneCommand(.float, one)
+        wait("the float docks right of the pane that was active before it") { self.panes(client).map(\.id) == [two, three, one] }
+        wait("the docked pane is active") { (try? client.model())?.selection.pane == one }
+
+        session.paneCommand(.float, one)
+        wait("the pane that was active floats, so it is gone from the tiled panes") { self.windows(client).first?.floats.map(\.pane) == [one] }
+        session.paneCommand(.float, one)
+        wait("with its record gone the float docks right of the first tiled pane") { self.panes(client).map(\.id) == [two, one, three] }
+    }
+
+    func testFloatPaneIsOffForTheLastTiledPaneAndWhileZoomed() throws {
+        let (owner, client) = try shown(#"[{"name":"s","windows":[{"name":"w","tree":\#(sleep)}]}]"#)
+        let session = try XCTUnwrap(owner.testSession)
+        let item = try floatItem()
+        let view = try XCTUnwrap(session.pane(PaneID(number: 1)))
+        XCTAssertFalse(view.canPerformMenuItem(item), "a window needs a tiled pane")
+        XCTAssertNil(try XCTUnwrap(windows(client).first).floatEdit(PaneID(number: 1)))
+
+        session.paneCommand(.split(.right), PaneID(number: 1))
+        wait("two panes") { self.panes(client).count == 2 }
+        let second = try XCTUnwrap(session.pane(PaneID(number: 2)))
+        wait("the second pane can float") { second.canPerformMenuItem(item) }
+        session.paneCommand(.zoom, PaneID(number: 2))
+        wait("the zoom") { self.windows(client).first?.zoom == PaneID(number: 2) }
+        XCTAssertFalse(second.canPerformMenuItem(item), "disabled while zoomed")
+        XCTAssertNil(try XCTUnwrap(windows(client).first).floatEdit(PaneID(number: 2)))
+    }
+
     func testADroppedPaneSwapsOrDocks() throws {
         let (owner, client) = try shown(#"[{"name":"s","windows":[{"name":"w","tree":{"split":"h","children":[\#(sleep),\#(sleep),\#(sleep)]}}]}]"#)
         let session = try XCTUnwrap(owner.testSession)

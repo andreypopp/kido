@@ -134,6 +134,7 @@ final class WindowView: NSView {
         return lines.joined(separator: "\n")
     }
     var visualPaneDragging: Bool { paneDrag != nil }
+    var visualPreview: PaneDropPreview { preview }
     func visualBeginDrag(_ pane: PaneID, _ event: NSEvent) { beginDrag(pane, event) }
     #endif
 
@@ -171,7 +172,7 @@ final class WindowView: NSView {
         shown = (layout, visible)
         if let paneDrag {
             let valid: Bool = switch paneDrag {
-            case .tiled(let id, _): visible.root.panes.contains { $0.id == id && $0.layer == .tiled }
+            case .tiled(let id, _, _): visible.root.panes.contains { $0.id == id && $0.layer == .tiled }
             case .floating(let pane, _, _, _): visible.root.panes.contains { $0.id == pane.id && $0.layer != .tiled }
             }
             if zoomed || !valid {
@@ -313,6 +314,7 @@ final class WindowView: NSView {
             box($0, border: 0, fill: runtime.separator)
         }
         preview.frame = bounds
+        preview.ghostRadius = floatingRadius
         preview.autoresizingMask = [.width, .height]
         let hidden = retainedPaneViews.values.filter { !actual.contains($0.view.pane) }.flatMap { [$0.view, $0.chrome] as [NSView] }
         subviews = hidden + dividers + tiled + floating.sorted { $0.z < $1.z }.flatMap(\.views) + [preview]
@@ -523,6 +525,7 @@ final class WindowView: NSView {
             }
         }
         view.onCommand = { [weak self] command in self?.session?.paneCommand(command, id) }
+        view.floatTitle = { [weak self] in self?.session?.floatTitle(id) }
         view.onShowAncestor = { [weak self] in self?.session?.selectPane($0.pane) }
         view.onAlternateChange = { [weak self] in self?.place() }
         view.onFindChange = { [weak self] in self?.place(); self?.invalidateCursorRects() }
@@ -549,10 +552,13 @@ final class WindowView: NSView {
         case window(PaneID, Edge)
     }
     private enum PaneDrag {
-        case tiled(PaneID, NSPoint)
+        case tiled(PaneID, NSPoint, grip: CGFloat)
         case floating(Pane, NSPoint, CGRect, NSCursor.FrameResizePosition?)
     }
     private var paneDrag: PaneDrag?
+    private var dragEvent: NSEvent?
+    private var dragStarted = false
+    private var flagsMonitor: Any?
     private var claimed: Reorder?
     private var dragWindow: NSWindow?
     #if KIDO_STRESS
@@ -659,7 +665,13 @@ final class WindowView: NSView {
         stressEvent("drag-started", pane.id.description)
         #endif
         switch pane.layer {
-        case .tiled: paneDrag = .tiled(pane.id, event.locationInWindow)
+        case .tiled:
+            let chrome = displayed(pane.id)?.chrome
+            paneDrag = .tiled(pane.id, event.locationInWindow, grip: (chrome?.toolbarFrame.minX ?? 0) + 16)
+            flagsMonitor = NSEvent.addLocalMonitorForEvents(matching: .flagsChanged) { [weak self] event in
+                if let self, let last = dragEvent { updateDrag(last, flags: event.modifierFlags) }
+                return event
+            }
         case .floating:
             guard let placement else { return endDrag() }
             paneDrag = .floating(pane, event.locationInWindow, floatFrame(pane.id, pane.geometry, placement), nil)
@@ -694,24 +706,30 @@ final class WindowView: NSView {
         }
         if case .dragging = liveFrame { liveFrame = nil }
         paneDrag = nil
+        dragEvent = nil
+        dragStarted = false
+        flagsMonitor.map(NSEvent.removeMonitor)
+        flagsMonitor = nil
         finishDividerDrag()
         lastFloatEdit = nil
         preview.rect = nil
+        preview.ghost = nil
         target?.invalidateCursorRects(for: self)
         if !defersRestore { displayedPanes.forEach { $0.endResizeIntent() } }
     }
 
-    private func updateDrag(_ event: NSEvent) {
+    private func updateDrag(_ event: NSEvent, flags: NSEvent.ModifierFlags? = nil) {
         guard let paneDrag else { return }
         if case .floating(let pane, let origin, let initial, let cursorEdge) = paneDrag {
             let edge = cursorEdge?.layoutEdge
             guard let cell = session?.cell, let placement else { return }
             let dx = event.locationInWindow.x - origin.x
             let dy = origin.y - event.locationInWindow.y
-            if edge == nil, lastFloatEdit == nil, hypot(dx, dy) < 4 {
+            if edge == nil, !dragStarted, hypot(dx, dy) < 4 {
                 if event.type == .leftMouseUp { endDrag(); focusActive(force: true) }
                 return
             }
+            dragStarted = true
             if dragWindow == nil, let window {
                 let cursor = cursorEdge.map { NSCursor.frameResize(position: $0, directions: .all) } ?? .closedHand
                 window.disableCursorRects()
@@ -732,7 +750,21 @@ final class WindowView: NSView {
             liveFrame = .dragging(pane.id, frame)
             placeFloat(pane.id, placement)
             let geometry = placement.geometry(frame)
-            if dx != 0 || dy != 0 || lastFloatEdit != nil {
+            var target = edge == nil && windowID != nil ? dropTarget(at: convert(event.locationInWindow, from: nil), source: pane.id) : nil
+            if case .centre? = target?.zone { target = nil }
+            preview.rect = target?.rect
+            if let target, let windowID, event.type == .leftMouseUp {
+                liveFrame = .held(pane.id, frame)
+                endDrag()
+                focusActive(force: true)
+                let edit = dropEdit(target.zone, pane.id, windowID)
+                #if KIDO_STRESS
+                stressEvent("drag-completed", "\(edit)")
+                #endif
+                session?.edit(edit, nil)
+                return
+            }
+            if target == nil, dx != 0 || dy != 0 || lastFloatEdit != nil {
                 let moves = edge == nil || edge?.left == true || edge?.top == true
                 sendFloat(.float(KoSchema.EditFloat(
                     cols: edge == nil ? nil : geometry.width, pane: pane.id, rows: edge == nil ? nil : geometry.height,
@@ -747,72 +779,100 @@ final class WindowView: NSView {
             }
             return
         }
-        guard case .tiled(let source, let origin) = paneDrag else { return }
+        guard case .tiled(let source, let origin, let grip) = paneDrag else { return }
         let point = convert(event.locationInWindow, from: nil)
         let moved = hypot(event.locationInWindow.x - origin.x, event.locationInWindow.y - origin.y) >= 4
-        var drop: (zone: DropZone, rect: CGRect)?
-        if moved {
-            let tiled = shown?.visible.root.panes.filter { $0.layer == .tiled } ?? []
-            let hit = (shown?.visible.root.panes ?? []).sorted {
-                switch ($0.layer, $1.layer) { case (.floating(let a, _), .floating(let b, _)): a > b; case (.floating, .tiled): true; default: false }
-            }.lazy.compactMap { self.displayed($0.id)?.chrome }.first { !$0.isHidden && $0.frame.contains(point) }
-            if tiled.count > 1, let placement,
-               hit == nil || tiled.contains(where: { $0.id == hit?.pane }) {
-                let area = tiled.reduce(CGRect.null) { area, pane in
-                    area.union(placement.tiled(pane.geometry, alternate: displayed(pane.id)?.view.alternate ?? false).chrome)
-                }
-                let outer = CGRect(x: bounds.minX, y: area.minY, width: bounds.width, height: bounds.maxY - area.minY)
-                let edge: Edge? = !outer.contains(point) ? nil
-                    : point.x < area.minX + 22 ? .left : point.x > area.maxX - 22 ? .right
-                    : point.y < area.minY + 22 ? .top : point.y > area.maxY - 22 ? .bottom : nil
-                if let edge, let target = tiled.first(where: { $0.id != source }) {
-                    drop = (.window(target.id, edge), area)
-                } else if let hit, hit.pane != source {
-                    let p = hit.convert(point, from: self), b = hit.bounds
-                    let x = p.x / b.width, y = p.y / b.height
-                    let edge: Edge? = x < 0.25 ? .left : x > 0.75 ? .right : y < 0.25 ? .top : y > 0.75 ? .bottom : nil
-                    drop = (edge.map { .pane(hit.pane, $0) } ?? .centre(hit.pane), hit.frame)
-                }
-                if let (zone, rect) = drop {
-                    let edge: Edge? = switch zone {
-                    case .centre: nil
-                    case .pane(_, let edge), .window(_, let edge): edge
-                    }
-                    let width: CGFloat, height: CGFloat
-                    switch zone {
-                    case .pane: width = 4; height = 4
-                    default: width = rect.width / 2; height = rect.height / 2
-                    }
-                    let result: CGRect = switch edge {
-                    case .left: CGRect(x: rect.minX, y: rect.minY, width: width, height: rect.height)
-                    case .right: CGRect(x: rect.maxX - width, y: rect.minY, width: width, height: rect.height)
-                    case .top: CGRect(x: rect.minX, y: rect.minY, width: rect.width, height: height)
-                    case .bottom: CGRect(x: rect.minX, y: rect.maxY - height, width: rect.width, height: height)
-                    case nil: rect
-                    }
-                    drop = (zone, result)
-                }
-            }
+        var drop = moved ? dropTarget(at: point, source: source) : nil
+        var ghost: CGRect?
+        let tiled = shown?.visible.root.panes.filter { $0.layer == .tiled } ?? []
+        if moved, tiled.count > 1, let placement, let cell = session?.cell, (drop == nil && displayed(source)?.chrome.frame.contains(point) != true) || (flags ?? event.modifierFlags).contains(.option) {
+            drop = nil
+            let area = paneArea(tiled, placement)
+            let chrome = displayed(source)?.chrome.frame ?? .zero
+            let padding = CGSize(width: placement.before.width + placement.after.width, height: placement.before.height + placement.after.height)
+            let size = CGSize(width: max(20 * cell.width + padding.width, min(chrome.width, area.width * 0.6)),
+                              height: max(6 * cell.height + padding.height, min(chrome.height, area.height * 0.6)))
+            ghost = placement.clamp(CGRect(origin: CGPoint(x: point.x - min(grip, size.width - 16), y: point.y - 14), size: size))
         }
         if event.type != .leftMouseUp {
+            dragEvent = event
             preview.rect = drop?.rect
+            preview.ghost = ghost
             return
         }
         endDrag()
         focusActive(force: true)
-        guard let (zone, _) = drop, let windowID else { return }
+        guard let windowID else { return }
+        if let ghost, let placement {
+            let geometry = placement.geometry(ghost)
+            let edit = KoSchema.Edit.float(KoSchema.EditFloat(cols: geometry.width, pane: source, rows: geometry.height, x: max(0, geometry.x), y: max(0, geometry.y)))
+            #if KIDO_STRESS
+            stressEvent("drag-completed", "\(edit)")
+            #endif
+            session?.editSelecting(edit)
+        } else if let (zone, _) = drop {
+            let edit = dropEdit(zone, source, windowID)
+            #if KIDO_STRESS
+            stressEvent("drag-completed", "\(edit)")
+            #endif
+            session?.edit(edit, nil)
+        }
+    }
+
+    private func paneArea(_ tiled: [Pane], _ placement: PaneLayout) -> CGRect {
+        tiled.reduce(CGRect.null) { area, pane in
+            area.union(placement.tiled(pane.geometry, alternate: displayed(pane.id)?.view.alternate ?? false).chrome)
+        }
+    }
+
+    private func dropEdit(_ zone: DropZone, _ source: PaneID, _ windowID: WindowID) -> KoSchema.Edit {
         func edge(_ edge: Edge) -> KoSchema.Edge {
             switch edge { case .left: .left; case .right: .right; case .top: .top; case .bottom: .bottom }
         }
-        let edit: KoSchema.Edit = switch zone {
+        return switch zone {
         case .centre(let target): .swap(KoSchema.EditSwap(other: target, pane: source))
         case .pane(let target, let side): .dock(KoSchema.EditDock(edge: edge(side), pane: source, target: target))
         case .window(_, let side): .dockWindow(KoSchema.EditDockWindow(edge: edge(side), pane: source, window: windowID))
         }
-        #if KIDO_STRESS
-        stressEvent("drag-completed", "\(edit)")
-        #endif
-        session?.edit(edit, nil)
+    }
+
+    // The drop target under `point` and its insertion bar, for a tiled pane or a float that `source` drags.
+    private func dropTarget(at point: NSPoint, source: PaneID) -> (zone: DropZone, rect: CGRect)? {
+        let tiled = shown?.visible.root.panes.filter { $0.layer == .tiled } ?? []
+        let hit = (shown?.visible.root.panes ?? []).filter { $0.id != source }.sorted {
+            switch ($0.layer, $1.layer) { case (.floating(let a, _), .floating(let b, _)): a > b; case (.floating, .tiled): true; default: false }
+        }.lazy.compactMap { self.displayed($0.id)?.chrome }.first { !$0.isHidden && $0.frame.contains(point) }
+        guard tiled.contains(where: { $0.id != source }), let placement,
+              hit == nil || tiled.contains(where: { $0.id == hit?.pane }) else { return nil }
+        let area = paneArea(tiled, placement)
+        let outer = CGRect(x: bounds.minX, y: area.minY, width: bounds.width, height: bounds.maxY - area.minY)
+        let edge: Edge? = !outer.contains(point) ? nil
+            : point.x < area.minX + 22 ? .left : point.x > area.maxX - 22 ? .right
+            : point.y < area.minY + 22 ? .top : point.y > area.maxY - 22 ? .bottom : nil
+        var drop: (zone: DropZone, rect: CGRect)?
+        if let edge, let target = tiled.first(where: { $0.id != source }) {
+            drop = (.window(target.id, edge), area)
+        } else if let hit {
+            let p = hit.convert(point, from: self), b = hit.bounds
+            let x = p.x / b.width, y = p.y / b.height
+            let edge: Edge? = x < 0.25 ? .left : x > 0.75 ? .right : y < 0.25 ? .top : y > 0.75 ? .bottom : nil
+            drop = (edge.map { .pane(hit.pane, $0) } ?? .centre(hit.pane), hit.frame)
+        }
+        guard let (zone, rect) = drop else { return nil }
+        let side: Edge?, width: CGFloat, height: CGFloat
+        switch zone {
+        case .centre: (side, width, height) = (nil, rect.width / 2, rect.height / 2)
+        case .pane(_, let edge): (side, width, height) = (edge, 4, 4)
+        case .window(_, let edge): (side, width, height) = (edge, rect.width / 2, rect.height / 2)
+        }
+        let bar: CGRect = switch side {
+        case .left: CGRect(x: rect.minX, y: rect.minY, width: width, height: rect.height)
+        case .right: CGRect(x: rect.maxX - width, y: rect.minY, width: width, height: rect.height)
+        case .top: CGRect(x: rect.minX, y: rect.minY, width: rect.width, height: height)
+        case .bottom: CGRect(x: rect.minX, y: rect.maxY - height, width: rect.width, height: height)
+        case nil: rect
+        }
+        return (zone, bar)
     }
 
     private var drag: (divider: Divider, origin: NSPoint, position: Int)?

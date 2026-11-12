@@ -1,5 +1,5 @@
 bounds=0.00,0.00,700.00,560.00 separator=0.00,0.00,700.00,0.50 banner=false
 pane_1 cells=Geometry(x: 0, y: 0, width: 85, height: 35) layer=tiled grid=9.50,5.50,680.00,542.50 content=9.50,0.50,680.00,559.50 chrome=0.00,0.50,700.00,559.50 insets=5.0,12.0 find=false alternate=false scroll=nil
-pane_2 cells=Geometry(x: 9, y: 5, width: 30, height: 8) layer=floating(z: 0) grid=81.50,83.00,240.00,124.00 content=81.50,83.00,240.00,124.00 chrome=78.00,75.50,247.50,139.00 insets=0.0,0.0 find=false alternate=false scroll=nil
+pane_2 cells=Geometry(x: 9, y: 11, width: 30, height: 8) layer=floating(z: 0) grid=81.50,176.00,240.00,124.00 content=81.50,176.00,240.00,124.00 chrome=78.00,168.50,247.50,139.00 insets=0.0,0.0 find=false alternate=false scroll=nil
 divider=0.00,0.00,700.00,0.50
-float pane_2=78.00,75.50,247.50,139.00
+float pane_2=78.00,168.50,247.50,139.00

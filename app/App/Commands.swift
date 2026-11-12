@@ -10,7 +10,7 @@ enum PaneCommand {
     case resize(Side, points: Double)
     case window(WindowStep)
     case parent, child
-    case next, previous, zoom, equalize, close, newWindow
+    case next, previous, zoom, float, equalize, close, newWindow
 
     @MainActor static var menu: NSMenuItem {
         let menu = NSMenu(title: "Shell")
@@ -25,6 +25,7 @@ enum PaneCommand {
         add("Close Pane", .close, "w")
         menu.addItem(.separator())
         add("Zoom Pane", .zoom, "\r", [.command, .shift])
+        add("Float Pane", .float, "f", [.command, .option])
         menu.addItem(.separator())
         add("Select Pane Left", .select(.left), arrow(NSLeftArrowFunctionKey), [.command, .option])
         add("Select Pane Above", .select(.up), arrow(NSUpArrowFunctionKey), [.command, .option])
