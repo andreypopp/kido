@@ -387,8 +387,9 @@ Every turn's system prompt then contains these standing instructions:
   of your own still owes a report, ending your turn sends nothing to
   your parent.
 - You were spawned. Your report is the last message of a turn that
-  ends after all of them finish, once for each piece of work from
-  your parent. It must stand on its own.
+  ends after all of them finish. A message that says you wait is a
+  report too; a later turn of the same work that ends with a new
+  message sends a further report. It must stand on its own.
 - If you stop to wait for another agent or the user, say so; when the
   work completes later, tell your parent with `message_agent`.
 - Reporting does not end this session: the parent ends it with
@@ -425,9 +426,13 @@ order:
 3. The turn did not stop on a provider error. Such a turn sends the
    error notice instead.
 4. The child has not reported on its last work, by the rule of "The
-   registry". Thus, a turn that something else started (a prompt
-   typed into the pane, a notice, a stream batch, a sibling's
-   message) sends nothing after the report.
+   registry", or the turn's last message is not empty and differs
+   from the text of its last report on that work. A child can report
+   while only a service job runs (rule 6), and a later turn of the
+   same work, which a stream batch or a notice woke, has the real
+   result. That turn sends it as a further report. A later turn that
+   ends with no message or with the same text sends nothing, so a
+   stream batch does not repeat a report.
 5. Its children are readable. A failed read sends nothing, and the
    next settle reads again.
 6. No own job is running, except service jobs ("A job"), and no own
@@ -436,8 +441,8 @@ order:
    a turn whose last message is the report.
 
 The reads of 5 and 6 wait on the server, so after them the child
-checks again: an accepted interrupt or stop, new work, or a report
-since the read cancels the report.
+checks again: an accepted interrupt or stop, new work, or a new own
+report since the read cancels the report.
 
 The child mints one message id for the report, appends `ko-pi.report
 { text, id }`, and sends `kind: notice` with `data: { report: true }`

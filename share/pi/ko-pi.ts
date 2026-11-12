@@ -273,7 +273,7 @@ export const SUBAGENT_RESULT_RULE =
   "; ending your turn now sends no report to your parent: your report is the last message of a turn that ends when no non-service job of yours is running and no subagent of yours owes you a report";
 
 const SUBAGENT_INSTRUCTION =
-  "While a non-service async job of yours is running, or a subagent of yours still owes you a report, ending your turn sends nothing to your parent. You were spawned as a subagent: your report is the last message of a turn that ends after all of them finish, once for each piece of work your parent gives you. Your parent is not watching this session and reads nothing else. End your work with a message that stands on its own: what you did, what failed, and what you left undone. " +
+  "While a non-service async job of yours is running, or a subagent of yours still owes you a report, ending your turn sends nothing to your parent. You were spawned as a subagent: your report is the last message of a turn that ends after all of them finish. A message that says you wait is a report too; a later turn of the same work that ends with a new message sends a further report. Your parent is not watching this session and reads nothing else. End your work with a message that stands on its own: what you did, what failed, and what you left undone. " +
   "If you must stop to wait for another agent or for the user, say so in that message; when the work completes later, tell your parent with message_agent. " +
   "Reporting does not end this session: it stays alive until your parent ends it with stop_agent, and the parent can continue it with message_agent.";
 
@@ -1356,6 +1356,12 @@ export default function (pi: ExtensionAPI) {
     const all = entries();
     const work = lastIndex(all, ENTRY_WORK, (data) => data.child === undefined);
     return work === -1 || lastIndex(all, ENTRY_REPORT, (data) => data.child === undefined) > work;
+  };
+
+  const lastOwnReport = (): Entry | undefined => {
+    const all = entries();
+    const work = lastIndex(all, ENTRY_WORK, (data) => data.child === undefined);
+    return work === -1 ? undefined : all.findLast((entry) => entry.customType === ENTRY_REPORT && entry.data.child === undefined && entry.index > work);
   };
 
   const markOwnWork = (): void => append(ENTRY_WORK, {});
@@ -3146,13 +3152,15 @@ export default function (pi: ExtensionAPI) {
       if (!sent && ending.kind === "error") ending.notified = false;
       return;
     }
-    if (ownReported()) return;
-    const generation = workGeneration;
-    if ((await ownLiveWork()) !== false) return;
-    if (turnEndedByControl || generation !== workGeneration || ownReported()) return;
+    const prior = lastOwnReport();
+    if (!prior && ownReported()) return;
     const name = quote(pi.getSessionName() ?? "");
     const last = ending.kind === "ended" ? ending.text : "";
     const text = utf8Prefix(last || `subagent ${name} ended its turn with no message`, MAX_MESSAGE_BYTES);
+    if (prior && (!last || text === str(prior.data.text))) return;
+    const generation = workGeneration;
+    if ((await ownLiveWork()) !== false) return;
+    if (turnEndedByControl || generation !== workGeneration || lastOwnReport()?.index !== prior?.index) return;
     const report = { id: mintId(), text };
     append(ENTRY_REPORT, { text, id: report.id, sent: false });
     await sendReport(report, false);

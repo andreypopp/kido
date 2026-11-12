@@ -34,8 +34,8 @@ test("a child reports its last message once the turn settles: an entry before th
       assert.deepEqual(entriesOf(s, "ko-pi.report").map((r) => [r.id, r.text]), [[post!.id, "the merge is done; two conflicts"]]);
       assert.deepEqual(entriesOf(s, "ko-pi.sent").map((r) => r.id), [post!.id], "the ack is a mark of its own, not a report");
 
-      await idleTurn(s, "again with nothing new");
-      assert.equal(fx.posts(NOTICES).length, 1, "a second turn on the same work reports nothing");
+      await idleTurn(s, "the merge is done; two conflicts");
+      assert.equal(fx.posts(NOTICES).length, 1, "a second turn on the same work with the same text reports nothing");
       await s.emit("message_start", { message: { role: "custom", customType: "ko-message", details: { work: true } } });
       await idleTurn(s, "second work done");
       assert.equal(fx.posts(NOTICES).length, 2, "new work owes a new report");
@@ -167,8 +167,32 @@ test("a child reports with a live service, lists it, and receives its ending not
       await pollUntil(() => notices(s).length === 1);
       assert.ok(notices(s)[0]!.includes(job.details.job.id));
       assert.match(notices(s)[0]!, /exit 0/);
-      await idleTurn(s, "service ended");
+      await idleTurn(s, "server ready");
       assert.equal(fx.posts(NOTICES).length, 1);
+    }, fx);
+  } finally { await fx.restore(); }
+});
+
+test("a later turn of the same work reports again only with a new last message and no live work", async () => {
+  const fx = makeFixture();
+  try {
+    asChild(fx);
+    await child(async (s) => {
+      const gate = `${fx.dir}/service-gate`;
+      await s.tools.get("async_bash").execute("c", { command: gatedCommand(gate), name: "server", service: true });
+      await idleTurn(s, "Waiting for the server.");
+      assert.deepEqual(fx.posts(NOTICES).map((p) => p.text), ["Waiting for the server."]);
+      await idleTurn(s, "Waiting for the server.");
+      await idleTurn(s);
+      assert.equal(fx.posts(NOTICES).length, 1, "the same text, or no message, after a report sends nothing");
+      const build = await s.tools.get("async_bash").execute("c", { command: gatedCommand(`${fx.dir}/build-gate`), name: "build" });
+      await idleTurn(s, "Building.");
+      assert.equal(fx.posts(NOTICES).length, 1, "a live run holds a later report");
+      await s.tools.get("stop_async_bash").execute("c", { job: build.details.job.id });
+      await pollUntil(async () => !JSON.parse(text(await s.tools.get("list_async_bash").execute("l", {}))).some((row: { job: string; state: string }) => row.job === build.details.job.id && row.state !== "ended"));
+      await idleTurn(s, "The real result.");
+      assert.deepEqual(fx.posts(NOTICES).map((p) => p.text), ["Waiting for the server.", "The real result."]);
+      assert.deepEqual(entriesOf(s, "ko-pi.report").map((r) => r.text), ["Waiting for the server.", "The real result."]);
     }, fx);
   } finally { await fx.restore(); }
 });

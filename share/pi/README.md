@@ -100,7 +100,8 @@ unavailable.
 
 A subagent has no report tool. When its turn ends with nothing of its
 own still running, its last message goes to its parent as a notice,
-once for each piece of work, and the parent keeps it whole.
+and the parent keeps it whole. A later turn of the same work that
+ends with a new message sends a further report.
 
 ## Tests
 
