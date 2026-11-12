@@ -33,6 +33,8 @@ packages:
     path: Packages/KoModel
   KoClientKit:
     path: Packages/KoClientKit
+  KidoTheme:
+    path: Packages/KidoTheme
 targets:
   Kido:
     type: application
@@ -126,6 +128,7 @@ targets:
     dependencies:
       - target: Kido
       - package: KoModel
+      - package: KidoTheme
       - package: KoClientKit
         link: false
       - framework: build/GhosttyKit.xcframework

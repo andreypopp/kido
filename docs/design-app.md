@@ -578,6 +578,20 @@ unchanged, from the release that the notice names.
 `app/Resources/ghostty/themes/LICENSE-iTerm2-Color-Schemes` is their MIT
 notice, with one line per copied file that names its original.
 
+`kido-light` and `kido-dark` are the one source of Kido's default
+colours, also for a native client that does not run Ghostty's config.
+The Swift package `app/Packages/KidoTheme` holds their background,
+foreground, palette 1 (failure) and palette 4 (blue) as plain values,
+so a client gets them without a parser or a copy of the files. Its
+source is generated: `KidoThemeTests` (`app/KoTests`) parses the two
+files with Ghostty, the one parser, and `make -C app kido-theme`
+records the result. Without the record flag the same test fails when
+the committed source differs from the parse, and `scripts/checks.sh`
+runs it on every change under `app/Resources`. A client mixes its own
+derived colours from these values. Kido.app does not use the package:
+it reads the active theme, which can be a user theme, through Ghostty
+(`GhosttyRuntime`).
+
 The palette's Theme mode ([Command palette](#command-palette)) previews and
 writes the theme. A preview never writes the file. `GhosttyRuntime` holds a
 theme override: none, a preview or a session theme. `loadConfig` loads the

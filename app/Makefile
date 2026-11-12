@@ -18,7 +18,7 @@ APP = $(DERIVED)/Build/Products/$(CONFIG)/Kido.app
 INSTALL_DIR ?= /Applications
 RELEASE_APP = build/xcode.noindex/derived-release/Build/Products/Release/Kido.app
 
-.PHONY: ko-client vm vm-up vm-down install release-build ko-test ko-model ko-fixtures visual visual-fast visual-slow project all run test clean tsan asan stress tsan-stress asan-stress demo demo-debug demo-build demo-stop release rtt
+.PHONY: ko-client vm vm-up vm-down install release-build ko-test ko-model ko-fixtures kido-theme visual visual-fast visual-slow project all run test clean tsan asan stress tsan-stress asan-stress demo demo-debug demo-build demo-stop release rtt
 
 KO_CLIENT_XC = $(CURDIR)/Packages/KoClientKit/build/ko_client.xcframework
 
@@ -121,6 +121,9 @@ ko-model:
 
 ko-fixtures:
 	$(MAKE) ko-test ONLY=KoFixtureRecorder KO_RECORD_FIXTURES=$(abspath Packages)
+
+kido-theme:
+	$(MAKE) ko-test ONLY=KidoThemeTests KO_RECORD_FIXTURES=$(abspath Packages)
 
 RTT_ARGS ?=
 
