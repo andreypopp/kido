@@ -6,7 +6,7 @@ import { join, resolve } from "node:path";
 import { once } from "node:events";
 import { createServer } from "node:net";
 import { Readable } from "node:stream";
-import { pollUntil, sse } from "./koa-agent-fixture.ts";
+import { pollUntil, sse, ofType } from "./koa-agent-fixture.ts";
 import { fixture, stopChild } from "./koa-program-fixture.ts";
 test('bang completion asks the child for its cwd and returns shell replacements', { timeout: 7000 }, async t => {
   const cwd = await mkdtemp('/tmp/koa-tab-context-');
@@ -111,7 +111,7 @@ test('resume selects before the browser, cancels, and reports a broken picker', 
       const base = output.match(/koa: (http:\/\/127\.0\.0\.1:\d+\/)/)?.[1]; assert.ok(base, output);
       const stream = await within('events', fetch(base + 'events', { signal: events.signal }));
       assert.ok(stream.body);
-      const ready = await within('pi ready', sse(Readable.from(stream.body)).until(record => record.type === 'state' && record.pi?.type === 'ready'));
+      const ready = await within('pi ready', sse(Readable.from(stream.body)).until(ofType('state', record => record.pi?.type === 'ready')));
       const response = await within('exit prompt response', fetch(base + 'prompt', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ sessionId: ready.sessionId, text: 'exit', mode: 'prompt', attachments: [] }) }));
       const body = await within('exit prompt body', response.text());
       assert.equal(response.status, 200, `${body}\nChild output:\n${output}\nFake log:\n${await readFile(log, 'utf8')}`);
@@ -146,7 +146,7 @@ test('startup messages run separately after readiness without a page connection'
   ], {}, undefined, true, ['--', 'first', '--help'], resolve('../../build/ko/share/ko/koa/koa.ts'));
   await pollUntil(async () => (await f.log()).filter(value => value.type === 'prompt').length === 2);
   assert.deepEqual((await f.log()).filter(value => value.type === 'prompt').map(value => value.message), ['first', '--help']);
-  await f.until(record => record.type === 'state' && record.pi?.type === 'exited');
+  await f.until(ofType('state', record => record.pi?.type === 'exited'));
   assert.equal((await f.post('pi/start')).status, 200);
   assert.equal((await f.log()).filter(value => value.type === 'prompt').length, 2);
 });

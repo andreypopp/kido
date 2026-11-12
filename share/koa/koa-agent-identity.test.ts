@@ -8,9 +8,7 @@ import { join, dirname } from "node:path";
 
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-import koaAgent from "./koa-agent.ts";
-
-import { makeFixture, createFakePi, startSession, freshExtension, withEnv, pollUntil, selfPane } from "./koa-agent-fixture.ts";
+import { makeFixture, createFakePi, startSession, freshExtension, withEnv, pollUntil, selfPane, at, getRows, koaExtension } from "./koa-agent-fixture.ts";
 
 const MESSAGES = "/panes/pane_1/messages";
 
@@ -18,12 +16,12 @@ test("the ko skill and its guideline are available only inside ko", async () => 
   const fx = makeFixture();
   try {
     const { pi, emit } = createFakePi();
-    koaAgent(pi as never);
+    koaExtension(pi);
     const skills = join(dirname(fileURLToPath(import.meta.url)), "skills");
     assert.deepEqual(await emit("resources_discover"), [{ skillPaths: [skills] }]);
     assert.ok(existsSync(join(skills, "ko/SKILL.md")));
     const guideline = "The user runs the ko terminal multiplexer, and this pi runs in one of its panes. When the user talks about windows, tabs, panes, sessions, splits, floats or the sidebar, read the ko skill first.";
-    const event = () => ({ systemPromptOptions: { promptGuidelines: [] as string[] } });
+    const event = (): { systemPromptOptions: { promptGuidelines: string[] } } => ({ systemPromptOptions: { promptGuidelines: [] } });
     const inside = event();
     await emit("before_agent_start", inside);
     assert.ok(inside.systemPromptOptions.promptGuidelines.includes(guideline));
@@ -40,14 +38,14 @@ test("the ko skill and its guideline are available only inside ko", async () => 
 
 test("a second copy of the extension at another path registers nothing, and a reload of the first still does", async () => {
   const first = createFakePi();
-  koaAgent(first.pi as never);
+  koaExtension(first.pi);
   assert.ok(first.tools.size > 0 && first.handlers.size > 0, "the extension registered nothing at all");
   assert.deepEqual([...first.tools.keys()], ["list_agents", "read_report", "list_async_bash", "message_agent", "spawn_agent", "stop_agent", "async_bash", "stop_async_bash"]);
 
   const here = dirname(fileURLToPath(import.meta.url));
   const dir = mkdtempSync(join(here, ".copy-"));
   try {
-    for (const file of ["koa-agent.ts", "text.ts", "agents.ts", "token.ts", "records.ts", "completion-context.ts", "runtime-exec.ts"]) copyFileSync(join(here, file), join(dir, file));
+    for (const file of ["koa-agent.ts", "text.ts", "agents.ts", "token.ts", "records.ts", "koa-records.ts", "koa-session-dir.ts", "completion-context.ts", "runtime-exec.ts"]) copyFileSync(join(here, file), join(dir, file));
     const copy = await import(pathToFileURL(join(dir, "koa-agent.ts")).href);
     const registered = createFakePi();
     copy.default(registered.pi);
@@ -58,7 +56,7 @@ test("a second copy of the extension at another path registers nothing, and a re
   }
 
   const reloaded = createFakePi();
-  koaAgent(reloaded.pi as never);
+  koaExtension(reloaded.pi);
   assert.deepEqual([...reloaded.tools.keys()].sort(), [...first.tools.keys()].sort());
 });
 
@@ -131,7 +129,7 @@ test("a /reload parks the stream and keeps the variables; the next module takes 
     fx.feed({ id: "gap-0001", kind: "user", text: "in the gap" });
     const s2 = await startSession(fx, { factory: await freshExtension() });
     await pollUntil(() => s2.delivered.length === 1, 2000, "the message of the gap");
-    assert.equal(s2.delivered[0]!.text, "in the gap");
+    assert.equal(at(s2.delivered, 0).text, "in the gap");
     assert.equal(s1.delivered.length, 0, "the module that shut down delivers nothing");
     assert.equal(fx.streamOpens(MESSAGES), 1, "the reload kept the one stream");
     fx.feed({ id: "after-0001", kind: "user", text: "after" });
@@ -155,7 +153,7 @@ test("project trust answers yes only for the real path of KO_AGENT_TRUSTED_CWD",
     mkdirSync(trusted);
     mkdirSync(other);
     const s = createFakePi();
-    koaAgent(s.pi as never);
+    koaExtension(s.pi);
     await withEnv({ KO_AGENT_TRUSTED_CWD: trusted }, async () => {
       assert.deepEqual(await s.emit("project_trust", { cwd: trusted }), [{ trusted: "yes" }]);
       assert.deepEqual(await s.emit("project_trust", { cwd: other }), [{ trusted: "undecided" }]);
@@ -182,9 +180,9 @@ test("spawn_agent passes the trusted cwd only while its parent trusts a reposito
     mkdirSync(outside);
     let trusted = true;
     const s = await startSession(fx, { ctx: { cwd: repo, isProjectTrusted: () => trusted } });
-    const spawn = s.tools.get("spawn_agent");
+    const spawn = s.tool("spawn_agent");
     await spawn.execute("c", { name: "trusted", task: "x", cwd: inside });
-    const env = (n: number) => fx.posts("/panes")[n]!.env as Array<{ name: string; value: string }>;
+    const env = (n: number) => getRows(at(fx.posts("/panes"), n), "env");
     assert.deepEqual(env(0).find((v) => v.name === "KO_AGENT_TRUSTED_CWD"), { name: "KO_AGENT_TRUSTED_CWD", value: inside });
     trusted = false;
     await spawn.execute("c", { name: "untrusted", task: "x", cwd: inside });

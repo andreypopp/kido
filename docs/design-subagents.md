@@ -899,8 +899,8 @@ The other reasons (`quit`, `new`, `resume`, `fork`) stop every job,
 wait up to `KO_JOB_KILL_MS` for the ends and clear the registry.
 
 koa's `/reload` restarts pi only when nothing would be lost this way:
-the extension answers a request on pi's event bus (`RESTART_STATE_CHANNEL` in
-`records.ts`) with its running jobs, services included, and its
+the extension answers a `restart_state` query on koa's session channel
+(`koa-channel.ts`) with its running jobs, services included, and its
 children that have not reported on their last work
 (design-koa.md, "`/reload` reloads pi").
 

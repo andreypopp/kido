@@ -2,7 +2,7 @@ import { test } from "node:test";
 
 import assert from "node:assert/strict";
 
-import { makeFixture, agentPane, selfPane, startSession, entriesOf, notices, customMessages, pollUntil, exited, text, type Fixture, type Started } from "./koa-agent-fixture.ts";
+import { makeFixture, agentPane, selfPane, startSession, entriesOf, notices, customMessages, pollUntil, exited, text, type Fixture, type Started, at, get, getStr } from "./koa-agent-fixture.ts";
 
 const INSTANCE = "a".repeat(32);
 const kid = { role: "subagent", owner: "self-session", name: "kid", session: "kid-session", model: "acme/m:low", fork: false, cwd: "/work/kid", pane: { instance: INSTANCE, pane: "pane_5" } };
@@ -27,10 +27,10 @@ test("the ended message of a child that reported is a one-line notice", async ()
     await pollUntil(() => notices(s).length === 1, 2000, "the ending notice");
     assert.deepEqual(notices(s), ["notice from kid (a subagent or background job's report, not the user):\nsubagent \"kid\" ended: exit 0; it had reported"]);
     assert.equal(fx.apiCalls().some((call) => call.path.includes("/screen")), false, "no screen when it had reported");
-    const details = customMessages(s, 'ko-notice')[0]!.message.details;
-    assert.deepEqual(details.inbound, { form: 'ended', reported: true, relation: 'child' });
-    assert.deepEqual(details.agent, { name: 'kid', session: 'kid-session', pane: 'pane_5' });
-    assert.equal(details.body, 'subagent "kid" ended: exit 0; it had reported');
+    const details = at(customMessages(s, 'ko-notice'), 0).message.details;
+    assert.deepEqual(get(details, "inbound"), { form: 'ended', reported: true, relation: 'child' });
+    assert.deepEqual(get(details, "agent"), { name: 'kid', session: 'kid-session', pane: 'pane_5' });
+    assert.equal(get(details, "body"), 'subagent "kid" ended: exit 0; it had reported');
     assert.deepEqual(entriesOf(s, "koa.ended").map((e) => [e.child, e.pane]), [["kid-session", "pane_5"]]);
   } finally {
     await fx.restore();
@@ -45,7 +45,7 @@ test("a child that had not reported ends with the tail of its lingering screen a
     fx.setScreen("pane_5", screen);
     fx.feed({ id: "ended-pane_5", kind: "ended", from: { type: "pane", pane: "pane_5" }, end: end(exited(1).cause) });
     await pollUntil(() => notices(s).length === 1, 2000, "the ending notice");
-    const body = notices(s)[0]!.split("\n").slice(1).join("\n");
+    const body = at(notices(s), 0).split("\n").slice(1).join("\n");
     assert.equal(body.split("\n")[0], 'subagent "kid" ended: exit 1; it had not reported on its last work');
     assert.equal(body.split("\n")[1], "--- last 4000 bytes of its screen ---");
     assert.ok(body.includes("the last line\n"));
@@ -70,9 +70,9 @@ test("a signal, a failed start and a removed pane each have their words, and a r
       s.entries.push({ type: "custom", customType: "koa.agent", data: kid });
       fx.feed({ id: `ended-pane_5-${i}`, kind: "ended", from: { type: "pane", pane: "pane_5" }, end: ending });
       await pollUntil(() => notices(s).length === i + 1, 2000, `notice ${i}`);
-      assert.equal(notices(s)[i]!.split("\n")[1], first);
+      assert.equal(at(notices(s), i).split("\n")[1], first);
     }
-    assert.equal(notices(s)[2]!.includes("--- last"), false, "a removed pane has no screen to read");
+    assert.equal(at(notices(s), 2).includes("--- last"), false, "a removed pane has no screen to read");
   } finally {
     await fx.restore();
   }
@@ -138,11 +138,11 @@ test("stop_agent stops a peer with a stop message and then the pane, and says so
   try {
     fx.setPanes([selfPane(), agentPane({ pane: "pane_3", session: "peer-session", name: "peer" })]);
     const s = await startSession(fx);
-    const result = await s.tools.get("stop_agent").execute("c", { agent: "peer" });
+    const result = await s.tool("stop_agent").execute("c", { agent: "peer" });
     assert.equal(text(result), "stopped peer");
-    const [stop] = fx.posts("/panes/pane_3/messages");
-    assert.deepEqual({ kind: stop!.kind, text: stop!.text }, { kind: "stop", text: "" });
-    assert.match(stop!.id, /^[A-Za-z0-9_-]{22}$/);
+    const stop = at(fx.posts("/panes/pane_3/messages"), 0);
+    assert.deepEqual({ kind: stop.kind, text: stop.text }, { kind: "stop", text: "" });
+    assert.match(getStr(stop, "id"), /^[A-Za-z0-9_-]{22}$/);
     assert.deepEqual(fx.posts("/panes/pane_3/stop"), [{ wait_ms: 5000 }]);
     assert.equal(fx.row("pane_3"), undefined, "the pane is gone");
     const order = fx.apiCalls().filter((call) => call.method === "POST" && call.path.startsWith("/panes/pane_3/")).map((call) => call.path);
@@ -156,14 +156,14 @@ test("stop_agent of an own child says whether it had reported and silences its e
   const fx = makeFixture();
   try {
     const s = await withKid(fx, { reported: false });
-    const stop = s.tools.get("stop_agent");
+    const stop = s.tool("stop_agent");
     assert.equal(text(await stop.execute("c", { agent: "kid" })), "stopped kid; it had not reported on its last work");
     fx.feed({ id: "ended-pane_5", kind: "ended", from: { type: "pane", pane: "pane_5" }, end: end({ type: "signaled", signal: 15 }) });
     await pollUntil(() => fx.acks().length === 1, 2000, "the ended message to be read");
     assert.deepEqual(notices(s), [], "a child that was stopped sends no ending notice");
 
     const reported = await withKid(fx, { reported: true });
-    assert.equal(text(await reported.tools.get("stop_agent").execute("c", { agent: "kid" })), "stopped kid; it had reported");
+    assert.equal(text(await reported.tool("stop_agent").execute("c", { agent: "kid" })), "stopped kid; it had reported");
   } finally {
     await fx.restore();
   }
@@ -174,7 +174,7 @@ test("stop_agent without an open stream refuses unless forced, and force kills w
   try {
     fx.setPanes([selfPane(), agentPane({ pane: "pane_3", session: "peer-session", name: "peer", inbox: false })]);
     const s = await startSession(fx);
-    const stop = s.tools.get("stop_agent");
+    const stop = s.tool("stop_agent");
     const refused = await stop.execute("c", { agent: "peer" });
     assert.equal(text(refused), "peer is not receiving messages; pass force to kill its pane");
     assert.equal(refused.isError, true);
@@ -193,7 +193,7 @@ test("stop_agent refuses only the caller, reports an ended child, and names a fa
     fx.setPanes([selfPane(), agentPane({ pane: "pane_3", session: "peer-session", name: "peer" }), agentPane({ pane: "pane_5", session: "kid-session", name: "kid", parent: "pane_1", dead: exited(1) })]);
     const s = await startSession(fx, { name: "Self" });
     s.entries.push({ type: "custom", customType: "koa.agent", data: kid });
-    const stop = s.tools.get("stop_agent");
+    const stop = s.tool("stop_agent");
     const self = await stop.execute("c", { agent: "Self" });
     assert.equal(text(self), "refusing to stop Self: it is this agent");
     assert.equal(text(await stop.execute("c", { agent: "kid" })), "kid had already ended: exit 1");

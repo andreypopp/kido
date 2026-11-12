@@ -8,6 +8,8 @@ import childProcess from "node:child_process";
 
 import { EventEmitter, once } from "node:events";
 import type { TestContext } from "node:test";
+import type { KoaQuery, KoaReply } from "./koa-channel.ts";
+import type { PageRecord, SessionScope } from "./koa-records.ts";
 
 import assert from "node:assert/strict";
 
@@ -19,10 +21,83 @@ import { join, delimiter } from "node:path";
 
 import { SessionManager, initTheme } from "@earendil-works/pi-coding-agent";
 
-import koaAgent from "./koa-agent.ts";
+import koaAgent, { isBackgroundJob, isJobRegistry, type BackgroundJob, type Job, type JobRegistry } from "./koa-agent.ts";
 import type { components } from "./ko-api.d.ts";
+import { isRecord } from "./text.ts";
 
 initTheme("dark");
+
+export function at<T>(items: readonly T[], index: number): T {
+  const item = items.at(index);
+  if (item === undefined) throw new Error(`no item at ${index} of ${items.length}`);
+  return item;
+}
+
+export function get(value: unknown, ...path: string[]): unknown {
+  let current = value;
+  for (const [i, key] of path.entries()) {
+    if (!isRecord(current)) throw new Error(`${path.slice(0, i).join(".") || "value"} is not an object`);
+    current = current[key];
+  }
+  return current;
+}
+
+export function getStr(value: unknown, ...path: string[]): string {
+  const found = get(value, ...path);
+  if (typeof found !== "string") throw new Error(`${path.join(".")} is not a string`);
+  return found;
+}
+
+export function getList(value: unknown, ...path: string[]): unknown[] {
+  const found = get(value, ...path);
+  if (!Array.isArray(found)) throw new Error(`${path.join(".")} is not a list`);
+  return found;
+}
+
+export function getRecord(value: unknown, ...path: string[]): Record<string, unknown> {
+  const found = get(value, ...path);
+  if (!isRecord(found)) throw new Error(`${path.join(".")} is not an object`);
+  return found;
+}
+
+export function getRows(value: unknown, ...path: string[]): Array<Record<string, unknown>> {
+  return getList(value, ...path).map((row) => {
+    if (!isRecord(row)) throw new Error(`${path.join(".")} holds a row that is not an object`);
+    return row;
+  });
+}
+
+export const jsonRows = (result: ToolResult): Array<Record<string, unknown>> => getRows(JSON.parse(text(result)));
+
+export const argvOf = (body: Record<string, unknown>): string[] => getList(body, "command", "argv").map((arg) => {
+  if (typeof arg !== "string") throw new Error("an argv entry is not a string");
+  return arg;
+});
+
+export const envOf = (body: Record<string, unknown>, name: string): unknown => getRows(body, "env").find((variable) => variable.name === name)?.value;
+
+export function rowWhere(rows: Array<Record<string, unknown>>, key: string, value: unknown): Record<string, unknown> {
+  const row = rows.find((candidate) => candidate[key] === value);
+  if (!row) throw new Error(`no row with ${key} ${String(value)}`);
+  return row;
+}
+
+export type ToolResult = { content: Array<{ type: string; text?: string }>; isError?: boolean; details?: unknown; structuredContent?: unknown };
+type CallContext = { cwd?: string; sessionManager?: Partial<ReturnType<typeof fakeCtx>["sessionManager"]> };
+type Tool = { name: string; execute(id: string, params: Record<string, unknown>, signal?: AbortSignal, update?: (result: ToolResult) => void, ctx?: CallContext): Promise<ToolResult> };
+type Handler = (...args: unknown[]) => unknown;
+type FakeMessage = { customType: string; content: string; details?: unknown };
+
+// The fake pi implements only what the extension calls, so the extension's
+// parameter type, which is pi's own, cannot take it. A method signature is
+// bivariant in its parameter, which lets the extension stand in for a loader
+// of any host.
+type Extension = { load(pi: unknown): void }["load"];
+
+export const koaExtension: Extension = koaAgent;
+
+export const jobId = (result: ToolResult): string => getStr(result.details, "job", "id");
+export const jobLog = (result: ToolResult): string => getStr(result.details, "job", "log");
 
 const statusRecords: string[] = [];
 const stdoutWrite = process.stdout.write.bind(process.stdout);
@@ -130,7 +205,7 @@ export interface Fixture {
   panes(): PaneRow[];
   row(pane: string): PaneRow | undefined;
   apiCalls(): ApiCall[];
-  posts(path: string): Array<Record<string, any>>;
+  posts(path: string): Array<Record<string, unknown>>;
   streamOpens(path: string): number;
   feed(message: FeedMessage): void;
   feedRaw(message: FeedMessage): void;
@@ -142,12 +217,12 @@ export interface Fixture {
   setScreen(name: string, text: string): void;
   scriptSends(replies: Array<{ status: number; body: unknown }>): void;
   setRuntimes(runtimes: Record<string, Record<string, unknown>>): void;
-  execLog(): Array<{ runtime: string; request: Record<string, any> }>;
+  execLog(): Array<{ runtime: string; request: Record<string, unknown> }>;
   running(): number;
   restore(): Promise<void>;
 }
 
-function jsonLines(file: string): any[] {
+function jsonLines<T>(file: string, parse: (value: unknown) => T): T[] {
   let raw: string;
   try {
     raw = readFileSync(file, "utf8");
@@ -158,7 +233,7 @@ function jsonLines(file: string): any[] {
     .trim()
     .split("\n")
     .filter(Boolean)
-    .map((l) => JSON.parse(l));
+    .map((l) => parse(JSON.parse(l)));
 }
 
 const commandWork = new Map<string, Set<childProcess.ChildProcess>>();
@@ -167,7 +242,7 @@ let barePathWork: Set<childProcess.ChildProcess> | undefined;
 
 const spawn = childProcess.spawn;
 
-childProcess.spawn = ((command: string, args: string[] = [], options: childProcess.SpawnOptions = {}) => {
+Reflect.set(childProcess, "spawn", (command: string, args: string[] = [], options: childProcess.SpawnOptions = {}) => {
   const child = spawn(command, args, options);
   const work = commandWork.get(command) ?? (command === "ko" ? barePathWork : undefined) ?? args?.map((arg) => commandWork.get(arg)).find(Boolean);
   if (work) {
@@ -175,7 +250,7 @@ childProcess.spawn = ((command: string, args: string[] = [], options: childProce
     child.once("close", () => work.delete(child));
   }
   return child;
-}) as typeof childProcess.spawn;
+});
 
 syncBuiltinESMExports();
 
@@ -248,7 +323,7 @@ export function makeFixture(): Fixture {
   globalThis.__koaAgentExtensionReceived = undefined;
 
   let seq = 0;
-  const calls = (): ApiCall[] => jsonLines(apiLog);
+  const calls = (): ApiCall[] => jsonLines(apiLog, (v) => ({ method: getStr(v, "method"), path: getStr(v, "path"), body: getStr(v, "body") }));
   const feed = (message: FeedMessage, raw: boolean) => {
     seq++;
     const from = message.from ?? { type: "pane", pane: "pane_2", session: "boss-session", name: "boss" };
@@ -277,7 +352,7 @@ export function makeFixture(): Fixture {
       writeFileSync(file("client-drop"), "");
     },
     clientLayouts() {
-      return jsonLines(file("client-layouts.jsonl"));
+      return jsonLines(file("client-layouts.jsonl"), (v) => ({ panes: getList(v, "panes") }));
     },
     panes() {
       return JSON.parse(readFileSync(panesFile, "utf8"));
@@ -299,9 +374,9 @@ export function makeFixture(): Fixture {
       feed(message, true);
     },
     serve(message) { appendFileSync(file("serve.jsonl"), JSON.stringify(message) + "\n"); },
-    webviewActions() { return jsonLines(file("ko.jsonl")).filter((args) => args[0] === "webview" && args[1] !== "serve").map((args) => args[1]); },
+    webviewActions() { return jsonLines(file("ko.jsonl"), getList).filter((args) => args[0] === "webview" && args[1] !== "serve").map((args) => String(args[1])); },
     acks() {
-      return jsonLines(acksFile);
+      return jsonLines(acksFile, (v) => ({ type: getStr(v, "type"), id: getStr(v, "id") }));
     },
     forgetAcks() {
       writeFileSync(acksFile, "");
@@ -319,7 +394,7 @@ export function makeFixture(): Fixture {
       writeFileSync(runtimesFile, JSON.stringify(runtimes));
     },
     execLog() {
-      return jsonLines(execLog);
+      return jsonLines(execLog, (v) => ({ runtime: getStr(v, "runtime"), request: getRecord(v, "request") }));
     },
     running() {
       return [...work].filter((child) => !child.spawnargs.includes("/client")).length;
@@ -335,8 +410,7 @@ export function makeFixture(): Fixture {
       try {
         globalThis.__koaAgentExtensionReceiver?.child.kill();
         globalThis.__koaAgentExtensionReceiver = undefined;
-        globalThis.__koCompletionContext?.stop.abort();
-        globalThis.__koCompletionContext = undefined;
+        globalThis.koaSessionsConnection = undefined;
         await pollUntil(() => work.size === 0, 15000, "all fake commands to close");
       } catch (error) { first ??= error; } finally {
         commandWork.delete(command);
@@ -355,44 +429,69 @@ export function makeFixture(): Fixture {
   };
 }
 
-type Entry = { type: "custom"; customType: string; data: Record<string, any> };
+type Entry = { type: "custom"; customType: string; data: Record<string, unknown> };
 
-export function createFakePi(sessionDir = "/tmp/koa-agent-no-sessions/caller", entries: Entry[] = []) {
-  const tools = new Map<string, any>();
+export function createChannel() {
+  const lines = new EventEmitter();
+  const waiting = new Map<string, (reply: KoaReply) => void>();
+  let serial = 0;
+  const connection = {
+    generation: 0,
+    lines,
+    channel: {
+      write(data: string) {
+        const reply: KoaReply = JSON.parse(data);
+        if ("id" in reply) waiting.get(reply.id)?.(reply);
+      },
+    },
+  };
+  return {
+    connection,
+    ask: (query: { type: "completion_context" | "restart_state" } | { type: "list"; scope: SessionScope }): Promise<KoaReply> => new Promise((resolve) => {
+      const id = `q${++serial}`;
+      waiting.set(id, (reply) => { waiting.delete(id); resolve(reply); });
+      const line: KoaQuery = { ...query, id };
+      lines.emit("line", JSON.stringify(line));
+    }),
+    receivers: () => lines.listenerCount("line"),
+  };
+}
+
+export function createFakePi(sessionDir = "/tmp/koa-agent-no-sessions/caller", entries: Entry[] = [], channel = createChannel()) {
+  const tools = new Map<string, Tool & { sourceInfo: { path: string } }>();
   const toolSources = [{ name: "bash", sourceInfo: { path: "builtin:bash" } }];
-  const handlers = new Map<string, Array<(...args: any[]) => unknown>>();
+  const handlers = new Map<string, Handler[]>();
   const delivered: Array<{ text: string; opts: unknown }> = [];
-  const messages: Array<{ message: any; opts: unknown }> = [];
+  const messages: Array<{ message: FakeMessage; opts: unknown }> = [];
   const failAppends = new Set<string>();
   const flags = new Map<string, boolean | string>();
-  const busListeners = new Map<string, Set<(data: unknown) => void>>();
+  const host: { sessionName?: string; settings: { shellPath?: string; shellCommandPrefix?: string } } = { settings: {} };
+  globalThis.koaSessionsConnection = channel.connection;
   const pi = {
-    events: {
-      on(channel: string, handler: (data: unknown) => void) { (busListeners.get(channel) ?? busListeners.set(channel, new Set()).get(channel)!).add(handler); return () => { busListeners.get(channel)?.delete(handler); }; },
-      emit(channel: string, data: unknown) { for (const handler of [...busListeners.get(channel) ?? []]) handler(data); },
-    },
+    ...host,
     registerFlag(_name: string, _options: unknown) {},
+    registerCommand(_name: string, _options: unknown) {},
     getFlag: (name: string) => flags.get(name),
-    sessionName: undefined as string | undefined,
     getSessionName: (): string | undefined => pi.sessionName,
-    settings: { shellPath: undefined as string | undefined, shellCommandPrefix: undefined as string | undefined },
     getSettings: () => pi.settings,
     getThinkingLevel: () => "high",
     getAllTools: () => [...toolSources.filter((tool) => !tools.has(tool.name)), ...tools.values()],
-    registerTool(tool: any) {
+    registerTool(tool: { name: string; execute(id: string, params: Record<string, unknown>, signal: AbortSignal | undefined, update: ((result: ToolResult) => void) | undefined, ctx: CallContext): Promise<ToolResult> }) {
       const execute = tool.execute;
-      tools.set(tool.name, { ...tool, sourceInfo: { path: "extension:test" }, execute: (id: string, params: unknown, signal?: AbortSignal, update?: unknown, ctx = fakeCtx("self-session", undefined, () => true, sessionDir, () => entries)) => execute(id, params, signal, update, ctx) });
+      tools.set(tool.name, { ...tool, sourceInfo: { path: "extension:test" }, execute: (id, params, signal, update, ctx) => execute(id, params, signal, update, ctx ?? fakeCtx("self-session", undefined, () => true, sessionDir, () => entries)) });
     },
-    on(event: string, handler: (...args: any[]) => unknown) {
-      (handlers.get(event) ?? handlers.set(event, []).get(event)!).push(handler);
+    on(event: string, handler: Handler) {
+      const list = handlers.get(event) ?? [];
+      handlers.set(event, list);
+      list.push(handler);
     },
     sendUserMessage(text: string, opts: unknown) {
       delivered.push({ text, opts });
     },
-    sendMessage(message: any, opts: unknown) {
+    sendMessage(message: FakeMessage, opts: unknown) {
       messages.push({ message, opts });
     },
-    appendEntry(customType: string, data: Record<string, any>) {
+    appendEntry(customType: string, data: Record<string, unknown>) {
       if (failAppends.has(customType)) throw new Error(`cannot append ${customType}`);
       entries.push({ type: "custom", customType, data });
     },
@@ -420,9 +519,16 @@ export function createFakePi(sessionDir = "/tmp/koa-agent-no-sessions/caller", e
       throw new Error("koa renders in its page: addAutocompleteProvider");
     },
   };
+  const tool = (name: string) => {
+    const found = tools.get(name);
+    if (!found) throw new Error(`no tool ${name}`);
+    return found;
+  };
   return {
     pi,
+    channel,
     tools,
+    tool,
     toolSources,
     handlers,
     delivered,
@@ -445,7 +551,15 @@ export function savedSession(dir: string, cwd: string, id: string): string {
   return path;
 }
 
-export function sse(input: NodeJS.ReadableStream, state = { text: "", records: [] as any[], ended: false }) {
+type Of<T extends PageRecord["type"]> = Extract<PageRecord, { type: T }>;
+
+export const isType = <T extends PageRecord["type"]>(record: PageRecord, type: T): record is Of<T> => record.type === type;
+
+export const ofType = <T extends PageRecord["type"]>(type: T, where: (record: Of<T>) => unknown = () => true) => (record: PageRecord): record is Of<T> => isType(record, type) && !!where(record);
+
+export const lastOf = <T extends PageRecord["type"]>(records: PageRecord[], type: T): Of<T> => at(records.filter(ofType(type)), -1);
+
+export function sse(input: NodeJS.ReadableStream, state: { text: string; records: PageRecord[]; ended: boolean } = { text: "", records: [], ended: false }) {
   const changes = new EventEmitter();
   const decoder = new TextDecoder();
   let partial = "";
@@ -462,16 +576,19 @@ export function sse(input: NodeJS.ReadableStream, state = { text: "", records: [
   });
   const end = () => { state.ended = true; changes.emit("record"); };
   input.once("end", end); input.once("error", end); input.once("close", end);
+  function until<T extends PageRecord>(predicate: (record: PageRecord) => record is T, after?: number): Promise<T>;
+  function until(predicate: (record: PageRecord) => boolean, after?: number): Promise<PageRecord>;
+  async function until(predicate: (record: PageRecord) => boolean, after = 0): Promise<PageRecord> {
+    for (;;) {
+      const record = state.records.slice(after).find(predicate);
+      if (record) return record;
+      if (state.ended) throw new Error("SSE stream ended before the expected record");
+      await once(changes, "record", { signal: AbortSignal.timeout(5000) });
+    }
+  }
   return {
     state,
-    async until(predicate: (record: any) => boolean, after = 0) {
-      for (;;) {
-        const record = state.records.slice(after).find(predicate);
-        if (record) return record;
-        if (state.ended) throw new Error("SSE stream ended before the expected record");
-        await once(changes, "record", { signal: AbortSignal.timeout(5000) });
-      }
-    },
+    until,
   };
 }
 
@@ -504,6 +621,7 @@ function fakeCtx(
       getSessionId: () => sessionId,
       getSessionName: () => undefined,
       getSessionDir: () => sessionDir,
+      getCwd: () => process.cwd(),
       getSessionFile: () => (sessionId ? "/tmp/" + sessionId + ".json" : undefined),
       getBranch: () => branch(),
     },
@@ -518,18 +636,22 @@ function fakeCtx(
   };
 }
 
+type FakeChannel = ReturnType<typeof createChannel>;
+
+type FakePi = ReturnType<typeof createFakePi>["pi"];
+
 export type Started = ReturnType<typeof createFakePi> & { aborts(): number; shutdowns(): number };
 
 export async function startSession(
   fx: Fixture,
-  opts: { mode?: "tui" | "print" | "rpc" | "json"; factory?: (pi: never) => void; sessionId?: string; name?: string; idle?: () => boolean; entries?: Entry[]; ctx?: Record<string, unknown>; record?: boolean; startup?: boolean; flags?: Record<string, string | boolean>; bashSource?: string } = {},
+  opts: { mode?: "tui" | "print" | "rpc" | "json"; factory?: (pi: FakePi) => void; sessionId?: string; name?: string; idle?: () => boolean; entries?: Entry[]; channel?: FakeChannel; ctx?: Record<string, unknown>; record?: boolean; startup?: boolean; flags?: Record<string, string | boolean>; bashSource?: string } = {},
 ): Promise<Started> {
-  const { factory = koaAgent, sessionId = "self-session", name, idle, entries = [], ctx, record = true, flags = {} } = opts;
-  const created = createFakePi(join(fx.dir, "sessions", "caller"), entries);
-  if (opts.bashSource) created.toolSources[0]!.sourceInfo.path = opts.bashSource;
+  const { factory = koaExtension, sessionId = "self-session", name, idle, entries = [], ctx, record = true, flags = {} } = opts;
+  const created = createFakePi(join(fx.dir, "sessions", "caller"), entries, opts.channel);
+  if (opts.bashSource) at(created.toolSources, 0).sourceInfo.path = opts.bashSource;
   for (const [flag, value] of Object.entries(flags)) created.flags.set(flag, value);
   if (name) created.pi.sessionName = name;
-  factory(created.pi as never);
+  factory(created.pi);
   let aborts = 0;
   let shutdowns = 0;
   const context = {
@@ -556,10 +678,10 @@ export async function startSession(
 // module instance in the same process and must be played as one.
 let freshImportCounter = 0;
 
-export async function freshExtension(): Promise<(pi: never) => void> {
+export async function freshExtension(): Promise<Extension> {
   const fresh = `?fresh=${process.pid}-${freshImportCounter++}`;
   const mod = await import(`./koa-agent.ts${fresh}`);
-  return mod.default as (pi: never) => void;
+  return mod.default;
 }
 
 export async function withEnv<T>(vars: Record<string, string | undefined>, fn: () => Promise<T>): Promise<T> {
@@ -600,7 +722,47 @@ export function gatedCommand(gate: string, before = "", after = "", code = 0): s
   return `exec /bin/sh -c ${quote(body)}`;
 }
 
-export const jobRegistry = () => Reflect.get(globalThis, Symbol.for("koa.jobs"));
+export function jobRegistry(): JobRegistry | undefined {
+  const held: unknown = Reflect.get(globalThis, Symbol.for("koa.jobs"));
+  return isJobRegistry(held) ? held : undefined;
+}
+
+export function liveRegistry(): JobRegistry {
+  const held = jobRegistry();
+  assert.ok(held);
+  return held;
+}
+
+export function jobOf(id: string): Job {
+  const job = liveRegistry().jobs.get(id);
+  assert.ok(job);
+  return job;
+}
+
+export function endedState(job: Job): Extract<Job["state"], { type: "ended" }> {
+  assert.ok(job.state.type === "ended");
+  return job.state;
+}
+
+export function timerFire(timer: NodeJS.Timeout | null): () => void {
+  assert.ok(timer);
+  const fire: unknown = Reflect.get(timer, "_onTimeout");
+  assert.ok(typeof fire === "function");
+  return () => Reflect.apply(fire, undefined, []);
+}
+
+export function timerDelay(timer: NodeJS.Timeout | null): number {
+  assert.ok(timer);
+  const delay: unknown = Reflect.get(timer, "_idleTimeout");
+  assert.ok(typeof delay === "number");
+  return delay;
+}
+
+export function backgroundJob(id: string): BackgroundJob {
+  const job = jobOf(id);
+  assert.ok(isBackgroundJob(job));
+  return job;
+}
 export const processGone = (marker: string): Promise<boolean> => new Promise((resolve) => {
   childProcess.execFile("/usr/bin/pgrep", ["-f", marker], (error) => resolve(error !== null));
 });
@@ -622,8 +784,12 @@ export function notices(s: Pick<ReturnType<typeof createFakePi>, "messages">): s
   return customMessages(s, "ko-notice").map((m) => String(m.message.content));
 }
 
-export function entriesOf(s: Pick<ReturnType<typeof createFakePi>, "entries">, customType: string): Array<Record<string, any>> {
+export function entriesOf(s: Pick<ReturnType<typeof createFakePi>, "entries">, customType: string): Array<Record<string, unknown>> {
   return s.entries.filter((entry) => entry.customType === customType).map((entry) => entry.data);
 }
 
-export const text = (result: { content: Array<{ text: string }> }): string => result.content[0]!.text;
+export function text(result: ToolResult): string {
+  const block = at(result.content, 0);
+  if (block.text === undefined) throw new Error(`a ${block.type} block has no text`);
+  return block.text;
+}

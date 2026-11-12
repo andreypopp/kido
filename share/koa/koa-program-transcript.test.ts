@@ -7,7 +7,7 @@ import { join, resolve } from "node:path";
 import { once } from "node:events";
 import { createServer } from "node:net";
 import { Readable } from "node:stream";
-import { sse, selfPane, agentPane, pollUntil } from "./koa-agent-fixture.ts";
+import { sse, selfPane, agentPane, pollUntil, ofType, get } from "./koa-agent-fixture.ts";
 import { linkFakeKo, fixture, assistantMessage } from "./koa-program-fixture.ts";
 test('completion limits active searches and kills expired children', { timeout: 10000 }, async t => {
   const dir = await mkdtemp('/tmp/koa-search-limit-'); t.after(() => rm(dir, { recursive: true, force: true }));
@@ -80,7 +80,7 @@ if(fs.existsSync(path+'/block')){fs.writeFileSync(path+'/pid',String(process.pid
   await pollUntil(async () => { items = (await (await app.post("complete", { text: "@si", pos: 3 })).json()).options; return items.some(item => item.kind === "agent"); }, 5000, "agent completion refresh").catch(async error => { throw new Error(String(error) + "\n" + app.stderr() + "\n" + JSON.stringify(items) + "\n" + await readFile(join(dir, "ko-log"), "utf8").catch(() => "no ko calls")); });
   assert.deepEqual(items.map(item => item.insert), ["@sidebar (session 22222222a) ", "@fix-sidebar (session 22222222b) ", "@sidebar.txt "]);
   startup.write("ready");
-  await app.until(record => record.type === "state" && record.pi?.type === "ready");
+  await app.until(ofType("state", record => record.pi?.type === "ready"));
   assert.equal((await (await app.post("complete", { text: "/fi", pos: 3 })).json()).options[0].insert, "/find ");
   await writeFile(join(dir, "block"), "");
   const connected = once(server, "connection"), controller = new AbortController();
@@ -129,7 +129,7 @@ test("metrics are opt-in and record frame samples with stream counters", { timeo
   t.after(() => rm(dir, { recursive: true, force: true }));
   const file = join(dir, "metrics.jsonl");
   const on = await fixture(t, [], {}, undefined, true, ["--metrics", file, "--metrics-mode", "frame"]);
-  const flush = await on.until(record => record.type === "flush");
+  const flush = await on.until(ofType("flush"));
   assert.equal(typeof flush.t, "number");
   assert.ok(flush.bytes > 0);
   assert.match(await (await fetch(on.base)).text(), /<meta name="koa-metrics" content="frame">/);
@@ -208,13 +208,13 @@ process.stdin.on('end', () => process.exit(0));
   const models = await fetch(app.base + "models");
   assert.equal(models.status, 409);
   assert.match((await models.json()).error, /starting/);
-  const startup = await app.until(record => record.type === "state" && record.dialogs?.[0]?.id === "startup-dialog");
+  const startup = await app.until(ofType("state", record => record.dialogs?.[0]?.id === "startup-dialog"));
   assert.equal(startup.pi.type, "starting");
   const afterDialog = app.count();
   assert.equal((await app.post("dialog", {id:"startup-dialog",value:"Yes"})).status, 200);
   assert.equal((await app.post("prompt", {text:"still starting",mode: "prompt", attachments: []})).status, 409);
   socket.write("ready");
-  const ready = await app.until(record => record.type === "state" && record.pi?.type === "ready", afterDialog);
+  const ready = await app.until(ofType("state", record => record.pi?.type === "ready"), afterDialog);
   assert.equal(ready.dialogs.length, 0);
   const page = await (await fetch(app.base + "items?before=99")).json();
   assert.equal(page.items[0].text, "snapshot");
@@ -231,11 +231,11 @@ test('reply annotations reach events live and on get_entries rebuild', { timeout
     { type: 'wait', command: 'prompt', events: [{ type: 'compaction_end' }] },
   ], {}, undefined, true, [], resolve('../../build/ko/share/ko/koa/koa.ts'));
   await app.post('prompt', { text: 'go', mode: 'prompt', attachments: [] });
-  const live = await app.until(record => record.type === 'item' && record.item?.kind === 'annotations');
-  assert.deepEqual(live.item.reply, { seq: 0, block: 0 });
+  const live = await app.until(ofType('item', record => record.item?.kind === 'annotations'));
+  assert.deepEqual(get(live.item, 'reply'), { seq: 0, block: 0 });
   const count = app.count();
   await app.post('prompt', { text: 'rebuild', mode: 'prompt', attachments: [] });
-  const replay = await app.until(record => record.type === 'reset' && record.items?.some((item: { kind: string }) => item.kind === 'annotations'), count);
+  const replay = await app.until(ofType('reset', record => record.items?.some((item: { kind: string }) => item.kind === 'annotations')), count);
   assert.deepEqual(replay.items.find((item: { kind: string }) => item.kind === 'annotations'), { ...live.item, revision: 0 });
   assert.ok((await app.log()).filter(record => record.type === 'get_entries').length >= 2);
 });
@@ -263,7 +263,7 @@ test("a malformed pi record does not stop later records", { timeout: 5000 }, asy
     ], data: { disposition: "started" } },
   ], {}, undefined, true, [], resolve('../../build/ko/share/ko/koa/koa.ts'));
   assert.equal((await app.post("prompt", { text: "go", mode: "prompt", attachments: [] })).status, 200);
-  await app.until(record => record.type === "state" && record.name === "After bad record");
+  await app.until(ofType("state", record => record.name === "After bad record"));
   assert.match(app.stderr(), /koa: pi record message_update: /);
   assert.equal(app.stderr().split("koa: pi record message_update:").length, 2);
 });
@@ -295,12 +295,12 @@ test("RPC deltas, authoritative ends, tools, state, status and command correlati
   assert.deepEqual(await (await app.post("prompt", { text: "steering", mode: "steer", attachments: [] })).json(), { disposition: "queued" });
   assert.deepEqual(await (await app.post("prompt", { text: "later", mode: "follow_up", attachments: [] })).json(), { disposition: "handled", action: { type: "none" } });
   assert.equal((await app.post("abort")).status, 200);
-  const patch = await app.until(record => record.type === "patch" && JSON.stringify(record).includes("final"));
+  const patch = await app.until(ofType("patch", record => JSON.stringify(record).includes("final")));
   assert.match(JSON.stringify(patch), /final/);
-  const state = await app.until(record => record.type === "state" && record.thinking === "high");
+  const state = await app.until(ofType("state", record => record.thinking === "high"));
   assert.deepEqual(state.queue, { steering: [{ text: "next", attachments: [] }], followUp: [] });
   assert.deepEqual(state.context, { tokens: 123, window: 1000, percent: 12.3 });
-  await app.until(record => record.type === "state" && record.name === "Renamed");
+  await app.until(ofType("state", record => record.name === "Renamed"));
   assert.match(app.stdout(), /\x1b\]7501;state=working:app=pi/);
   assert.match(app.stdout(), /\x1b\]7501;state=error:app=pi:msg=ZmFpbHVyZQ==/);
   assert.match(app.stdout(), /\x1b\]0;koa - Renamed - /);
@@ -334,7 +334,7 @@ test("tool deltas, end replacement, timing and compaction rebuild", { timeout: 1
     { type: "wait", command: "get_messages", data: { messages: [{ role: "user", content: "rebuilt", timestamp: 99 }] } },
   ]);
   await app.post("prompt", { text: "go", mode: "prompt", attachments: [] });
-  const record = await app.until(record => record.type === "patch" && JSON.stringify(record).includes('"durationMs":17'));
+  const record = await app.until(ofType("patch", record => JSON.stringify(record).includes('"durationMs":17')));
   const text = JSON.stringify(record);
   assert.match(text, /result/);
   assert.match(text, /durationMs":17/);
@@ -347,11 +347,11 @@ test("tool deltas, end replacement, timing and compaction rebuild", { timeout: 1
   assert.equal(typeof thinking.ended, "number");
   assert.ok(thinking.ended >= thinking.started);
   assert.equal(typeof timed.items[0].ended, "number");
-  await app.until(record => record.type === "patch" && JSON.stringify(record).includes("final thought"));
-  await app.until(record => record.type === "state" && record.working === false && record.aborted === false);
+  await app.until(ofType("patch", record => JSON.stringify(record).includes("final thought")));
+  await app.until(ofType("state", record => record.working === false && record.aborted === false));
   assert.match(app.stdout(), /\x1b\]7501;state=done:app=pi/);
   await app.post("abort");
-  const reset = await app.until(record => record.type === "reset" && JSON.stringify(record).includes("rebuilt"));
+  const reset = await app.until(ofType("reset", record => JSON.stringify(record).includes("rebuilt")));
   assert.match(JSON.stringify(reset), /"at":99/);
 });
 
@@ -384,36 +384,36 @@ test("queue, model, thinking and dialog routes carry RPC state", { timeout: 1000
 
   ]);
   assert.equal((await app.post("prompt", { text: "go", mode: "prompt", attachments: [] })).status, 200);
-  const state = await app.until(record => record.type === "state" && record.dialogs?.length === 2);
+  const state = await app.until(ofType("state", record => record.dialogs?.length === 2));
   assert.deepEqual(state.dialogs, [dialog, { ...dialog, id: "dialog-2", method: "confirm", message: "Really?" }]);
-  await app.until(record => record.type === "item" && record.item.kind === "notify" && record.item.text.text === "Notice" && record.item.level === "warning");
-  await app.until(record => record.type === "state" && record.editor?.text === "Draft");
-  await app.until(record => record.type === "state" && record.statuses?.check === "Checking");
+  await app.until(ofType("item", record => record.item.kind === "notify" && record.item.text.text === "Notice" && record.item.level === "warning"));
+  await app.until(ofType("state", record => record.editor?.text === "Draft"));
+  await app.until(ofType("state", record => record.statuses?.check === "Checking"));
   assert.match(app.stdout(), /state=blocked:app=pi:kind=question/);
   const controller = new AbortController();
   const reloaded = await fetch(app.base + "events", { signal: controller.signal });
   assert.ok(reloaded.body);
   const reload = sse(Readable.from(reloaded.body));
-  const reloadedState = await reload.until(record => record.type === "state");
+  const reloadedState = await reload.until(ofType("state"));
   assert.deepEqual(reloadedState.dialogs, state.dialogs);
   assert.deepEqual(reloadedState.editor, { id: "editor", text: "Draft" });
   controller.abort();
   assert.equal((await app.post("editor/ack", { id: "old" })).status, 200);
   const editorAfter = app.count();
   assert.equal((await app.post("editor/ack", { id: "editor" })).status, 200);
-  await app.until(record => record.type === "state" && !record.editor, editorAfter);
+  await app.until(ofType("state", record => !record.editor), editorAfter);
   assert.deepEqual(await (await app.post("queue/clear")).json(), { steering: [{ text: "steer", attachments: [] }], followUp: [{ text: "later", attachments: [] }] });
   assert.deepEqual(await (await fetch(app.base + "models")).json(), { models: [{ id: "new", provider: "test" }] });
   assert.equal((await app.post("model", { provider: "test", modelId: "new" })).status, 200);
-  await app.until(record => record.type === "state" && record.model?.provider === "test" && record.model.id === "new");
+  await app.until(ofType("state", record => record.model?.provider === "test" && record.model.id === "new"));
   assert.equal((await app.post("thinking", { level: "max" })).status, 409);
   assert.equal((await app.post("thinking", { level: "high" })).status, 200);
   assert.equal((await app.post("dialog", { id: "dialog-1", value: "Yes" })).status, 200);
   assert.equal((await app.post("dialog", { id: "dialog-1", value: "Yes" })).status, 409);
   assert.equal((await app.post("dialog", { id: "dialog-2", confirmed: true })).status, 200);
-  await app.until(record => record.type === "state" && record.dialogs[0]?.id === "dialog-3");
+  await app.until(ofType("state", record => record.dialogs[0]?.id === "dialog-3"));
   assert.equal((await app.post("dialog", { id: "dialog-3", value: "typed" })).status, 200);
-  await app.until(record => record.type === "state" && record.dialogs[0]?.id === "dialog-4");
+  await app.until(ofType("state", record => record.dialogs[0]?.id === "dialog-4"));
   assert.equal((await app.post("dialog", { id: "dialog-4", cancelled: true })).status, 200);
   await pollUntil(async () => (await app.log()).some(record => record.type === "extension_ui_response" && record.id === "dialog-4"), 1000, "last dialog answer received");
   const commands = await app.log();
@@ -423,7 +423,7 @@ test("queue, model, thinking and dialog routes carry RPC state", { timeout: 1000
 
 test('session metadata supplies cwd before the session has a file', { timeout: 10000 }, async t => {
   const app = await fixture(t, [], { KOA_FAKE_CWD: '/tmp/other-folder' });
-  const state = await app.until(record => record.type === 'state' && record.pi?.type === 'ready');
+  const state = await app.until(ofType('state', record => record.pi?.type === 'ready'));
   assert.equal(state.cwd, '/tmp/other-folder');
   assert.equal(state.sessionId, 'fake');
 });
@@ -447,13 +447,13 @@ test("restart keeps the saved picker selection, harness and runtime", { timeout:
   assert.equal((await app.post("model", { provider: "test", modelId: "picked" })).status, 200);
   assert.equal((await app.post("thinking", { level: "high" })).status, 200);
   await app.post("prompt", { text: "exit", mode: "prompt", attachments: [] });
-  await app.until(record => record.type === "state" && record.pi?.type === "exited");
+  await app.until(ofType("state", record => record.pi?.type === "exited"));
   const after = app.count();
   assert.equal((await app.post("pi/start")).status, 200);
-  const restarted = await app.until(record => record.type === "state" && record.pi?.type === "ready" && record.levels?.length === 3, after);
+  const restarted = await app.until(ofType("state", record => record.pi?.type === "ready" && record.levels?.length === 3), after);
   assert.deepEqual(restarted.model, {provider:"test",id:"picked"});
   assert.equal(restarted.thinking, "high");
   const argv = (await app.log()).filter(record => record.type === "argv").map(record => record.args);
   assert.equal(argv.length, 2);
-  assert.deepEqual(argv[1], ["--mode", "rpc", "--extension", resolve("../../build/ko/share/ko/koa/koa-agent.ts"), '--extension', resolve('../../build/ko/share/ko/koa/koa-sessions.ts'), "--koa-browser", "--runtime", "remote", "--resume", "-r", "--system-prompt", "--resume", "--session", session, "--", "--session", "literal", "--resume"]);
+  assert.deepEqual(argv[1], ["--mode", "rpc", "--extension", resolve("../../build/ko/share/ko/koa/koa-agent.ts"), "--koa-browser", "--runtime", "remote", "--resume", "-r", "--system-prompt", "--resume", "--session", session, "--", "--session", "literal", "--resume"]);
 });

@@ -333,12 +333,11 @@ What the setup does, and why:
                         registers; main-watch.sh, CI for each observed main
                         head; ci-website-watch.sh; ci-like.sh and
                         ci-like/Dockerfile, the Linux reproduction;
-                        install-zig.sh, the zig pin; move-subagent-sessions.py,
-                        the one-off move of child sessions out of pi's
-                        tree; zig-cc-musl, the musl linker wrapper of
-                        .cargo/config.toml, under its names
-                        zig-cc-<arch>-linux-musl; verus.sh, nightly.sh,
-                        fuzz.sh, miri.sh, bindgen.sh; quiet-limit
+                        install-zig.sh, the zig pin; zig-cc-musl, the
+                        musl linker wrapper of .cargo/config.toml, under
+                        its names zig-cc-<arch>-linux-musl; verus.sh,
+                        nightly.sh, fuzz.sh, miri.sh, bindgen.sh;
+                        quiet-limit
     third_party/ghostty the Ghostty fork, a git submodule (AGENTS.md, "One Ghostty")
     website/            the kido.tools site
     bench/              the benchmark scripts, streams and C helpers

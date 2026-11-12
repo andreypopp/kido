@@ -1,6 +1,7 @@
 import {
   AgentSession,
   SessionManager,
+  parseArgs,
   parseSessionEntries,
   type BashOperations,
   DEFAULT_MAX_BYTES,
@@ -37,15 +38,21 @@ import {
 import { type ChildProcess, spawn, spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { type WriteStream, createWriteStream, mkdirSync, readFileSync, readdirSync, realpathSync, statSync } from "node:fs";
+import { Socket } from "node:net";
 import os from "node:os";
-import { setCompletionContext } from "./completion-context.ts";
+import { createInterface } from "node:readline";
+import type { EventEmitter } from "node:events";
+import type { CompletionContext } from "./completion-context.ts";
+import type { KoaQuery, KoaReply } from "./koa-channel.ts";
+import { RELOAD_COMMAND } from "./koa-records.ts";
+import { sessionDir } from "./koa-session-dir.ts";
 import { runtimeExec, findKo, lineReader, openStream, runCommand, apiCall, apiArgs, KO_TIMEOUT_MS, type Reply, type ExecOptions, type ExecResult } from "./runtime-exec.ts";
 import { contentText, mintId, utf8Prefix, utf8Suffix, errorText, replaceControlCharacters, isRecord, isString, str } from "./text.ts";
 import { dirname, delimiter, extname, join, posix, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Type } from "typebox";
 import type { components } from "./ko-api.d.ts";
-import { isRelation, isAgentFailure, jobEndText, RESTART_STATE_CHANNEL, type RestartState, type Relation, type AgentRef, type AgentOutcome, type MessageDetails, type SteerDetails, type NoticeDetails, type StreamDetails, type JobRef, type JobEnd } from "./records.ts";
+import { isRelation, isAgentFailure, jobEndText, type RestartState, type Relation, type AgentRef, type AgentOutcome, type MessageDetails, type SteerDetails, type NoticeDetails, type StreamDetails, type JobRef, type JobEnd } from "./records.ts";
 import { parsePanes, placesOf, piAgent, peerPanes, ancestorsOf, runningRows, MIN_ID_PREFIX, VAR_SESSION, VAR_NAME, VAR_ACTIVITY, VAR_TASK, VAR_RUNTIME, type PaneInfo, type AgentCompletionRow } from "./agents.ts";
 
 type Api = components["schemas"];
@@ -259,7 +266,7 @@ type JobOutput = {
   logClosed: Promise<void>;
   stream: { held: number; lines: string[]; dropped: number; cut: boolean; split: SplitState; carry: Buffer; timer: NodeJS.Timeout | null; lastBatch: number };
 };
-type Job = {
+export type Job = {
   id: string;
   command: string;
   startedAt: string;
@@ -272,8 +279,8 @@ type Job = {
   stopping: { end: JobEnd; timer: NodeJS.Timeout } | null;
   closed: Promise<void>;
 };
-type BackgroundJob = Job & { mode: JobOutput };
-const isBackgroundJob = (job: Job): job is BackgroundJob => job.mode.type === "job";
+export type BackgroundJob = Job & { mode: JobOutput };
+export const isBackgroundJob = (job: Job): job is BackgroundJob => job.mode.type === "job";
 const serviceJob = (job: BackgroundJob): boolean => job.mode.origin.type === "async_bash" && job.mode.origin.service;
 const jobReference = (job: BackgroundJob): JobRef => ({ id: job.id, name: job.mode.name, service: serviceJob(job), log: job.mode.log });
 const jobRecordState = (job: BackgroundJob): "idle" | "working" => serviceJob(job) ? "idle" : "working";
@@ -293,7 +300,7 @@ class MovedToJob extends Error {
     this.reason = reason;
   }
 }
-type JobRegistry = {
+export type JobRegistry = {
   shape: number;
   session: string;
   stopAll(): string[];
@@ -303,7 +310,7 @@ type JobRegistry = {
 };
 const JOBS = Symbol.for("koa.jobs");
 const JOB_SHAPE = 3;
-function isJobRegistry(value: unknown): value is JobRegistry {
+export function isJobRegistry(value: unknown): value is JobRegistry {
   return isRecord(value) && typeof value.shape === "number" && typeof value.session === "string"
     && value.jobs instanceof Map && typeof value.stopAll === "function" && typeof value.exit === "function";
 }
@@ -603,6 +610,17 @@ declare global {
   var __koaAgentExtensionCopy: string | undefined;
   var __koaAgentExtensionClearQueue: AgentSession["clearQueue"] | undefined;
   var __koaAgentExtensionExit: (() => void) | undefined;
+  var koaSessionsConnection: { channel: { write(data: string): unknown }; lines: EventEmitter; generation: number } | undefined;
+}
+
+// Pi reloads this module on a cross-folder switch (dist/core/extensions/loader.js:94-104,481),
+// so the connection to koa lives on the global.
+function openChannel(): NonNullable<typeof globalThis.koaSessionsConnection> {
+  const channel = new Socket({ fd: 3, readable: true, writable: true });
+  const lines = createInterface({ input: channel });
+  channel.on("error", () => lines.close());
+  process.once("exit", () => channel.destroy());
+  return { channel, lines, generation: 0 };
 }
 
 const extensionPath = fileURLToPath(import.meta.url);
@@ -1088,6 +1106,8 @@ async function routedGrep(r: Routed, params: GrepToolInput, signal: AbortSignal 
 
 export default function (pi: ExtensionAPI) {
   if (!isFirstCopy()) return;
+  globalThis.koaSessionsConnection ??= openChannel();
+  const connection = globalThis.koaSessionsConnection;
   pi.registerFlag("koa-browser", { description: "Child agents start koa in browser mode", type: "boolean" });
   pi.registerFlag("runtime", { description: "Run the built-in tools and ! commands in a configured runtime or an ad-hoc runtime of this session by name", type: "string" });
   pi.on("project_trust", async (event) => {
@@ -2110,14 +2130,28 @@ export default function (pi: ExtensionAPI) {
     });
   };
 
-  const stopRestartState = pi.events.on(RESTART_STATE_CHANNEL, (request) => {
-    if (!isRecord(request) || typeof request.reply !== "function") return;
+  const restartState = (): RestartState => {
     const jobs = backgroundJobs().filter((job) => job.state.type !== "ended").length;
     const marks = childMarks();
     const waiting = children().filter((child) => !childReported(child, marks)).length;
-    const state: RestartState = jobs || waiting ? { type: "blocked", jobs, children: waiting } : { type: "ready" };
-    request.reply(state);
-  });
+    return jobs || waiting ? { type: "blocked", jobs, children: waiting } : { type: "ready" };
+  };
+
+  let completionStop = new AbortController();
+  let completionResolve: ((signal: AbortSignal) => Promise<CompletionContext>) | undefined;
+  const setCompletionContext = (resolve?: (signal: AbortSignal) => Promise<CompletionContext>) => {
+    completionStop.abort();
+    completionStop = new AbortController();
+    completionResolve = resolve;
+  };
+  const completionContext = async (signal: AbortSignal): Promise<CompletionContext> => {
+    if (!completionResolve) return { type: "unavailable" };
+    const current = AbortSignal.any([signal, completionStop.signal]);
+    try {
+      const context = await completionResolve(current);
+      return current.aborted ? { type: "unavailable" } : context;
+    } catch { return { type: "unavailable" }; }
+  };
 
   const exitNoticeText = (): string | undefined => {
     const name = quote(pi.getSessionName() ?? "");
@@ -3009,7 +3043,6 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.on("session_shutdown", async (event?: { reason?: ShutdownReason }) => {
-    stopRestartState();
     setCompletionContext();
     startupCancelled = true;
     stopPeerClient();
@@ -3052,4 +3085,38 @@ export default function (pi: ExtensionAPI) {
     active = false;
     session = null;
   });
+
+  const scans = new Map<string, AbortController>();
+  const args = parseArgs(process.argv.slice(2));
+  let cwd = process.cwd();
+  pi.registerCommand(RELOAD_COMMAND, { description: "Reload pi", handler: async (_args, ctx) => { await ctx.reload(); } });
+  const send = (reply: KoaReply) => connection.channel.write(JSON.stringify(reply) + "\n");
+  pi.on("session_shutdown", () => { for (const scan of scans.values()) scan.abort(); scans.clear(); send({ type: "reset" }); connection.lines.off("line", receive); });
+  pi.on("session_start", (_event, ctx) => {
+    cwd = ctx.sessionManager.getCwd();
+    send({ type: "session", id: ctx.sessionManager.getSessionId(), generation: ++connection.generation, cwd });
+  });
+  function receive(line: string) {
+    let query: KoaQuery;
+    try { query = JSON.parse(line); } catch { return; }
+    if (query.type === "cancel") { scans.get(query.id)?.abort(); scans.delete(query.id); return; }
+    const controller = new AbortController();
+    scans.set(query.id, controller);
+    if (query.type === "completion_context") {
+      void completionContext(controller.signal).then((context) => {
+        if (!controller.signal.aborted) send({ type: "completion_context", id: query.id, context });
+      }).finally(() => scans.delete(query.id));
+      return;
+    }
+    if (query.type === "restart_state") {
+      send({ type: "restart_state", id: query.id, state: restartState() });
+      scans.delete(query.id);
+      return;
+    }
+    const dir = sessionDir(args, cwd);
+    void (query.scope === "current" ? SessionManager.list(cwd, dir, undefined, controller.signal) : SessionManager.listAll(dir, undefined, controller.signal)).then((rows) => {
+      if (!controller.signal.aborted) send({ type: "list", id: query.id, rows: rows.map((row) => ({ path: row.path, id: row.id, cwd: row.cwd, name: row.name, firstMessage: (row.firstMessage.split(/\r?\n/, 1)[0] ?? "").slice(0, 200), modified: row.modified.getTime(), messageCount: row.messageCount })) });
+    }, (error) => { if (!controller.signal.aborted) send({ type: "error", id: query.id, error: errorText(error) }); }).finally(() => scans.delete(query.id));
+  }
+  connection.lines.on("line", receive);
 }

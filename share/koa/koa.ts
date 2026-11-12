@@ -278,7 +278,7 @@ async function main(): Promise<void> {
       process.stdout.write(`\x1b]7501;state=${value === "clear" ? value : dialog ? "blocked" : value}${value === "clear" ? "" : `:app=pi${dialog ? ":kind=question" : ""}:msg=${encoded}`}\x1b\\`);
     };
     const title = () => process.stdout.write(`\x1b]0;${utf8Prefix(replaceControlCharacters(`koa - ${state.name} - ${basename(state.cwd)}`), 2048)}\x1b\\`);
-    const spawnPi = (args: string[]) => spawn(executable, ["--mode", "rpc", "--extension", fileURLToPath(new URL("./koa-agent.ts", location)), "--extension", fileURLToPath(new URL("./koa-sessions.ts", location)), ...(browser ? ["--koa-browser"] : []), ...args], { detached: true, stdio: ["pipe", "pipe", "pipe", "pipe"] });
+    const spawnPi = (args: string[]) => spawn(executable, ["--mode", "rpc", "--extension", fileURLToPath(new URL("./koa-agent.ts", location)), ...(browser ? ["--koa-browser"] : []), ...args], { detached: true, stdio: ["pipe", "pipe", "pipe", "pipe"] });
     let child = spawnPi(pass);
     let sessions = koaChannel(child.stdio[3]);
     teardown.push(() => sessions.close());

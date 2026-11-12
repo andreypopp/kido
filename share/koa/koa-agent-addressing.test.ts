@@ -2,7 +2,7 @@ import { test } from "node:test";
 
 import assert from "node:assert/strict";
 
-import { makeFixture, agentPane, selfPane, startSession, text, exited, type Fixture } from "./koa-agent-fixture.ts";
+import { makeFixture, agentPane, selfPane, startSession, text, exited, type Fixture, at, jsonRows, get, getStr } from "./koa-agent-fixture.ts";
 
 const INSTANCE = "a".repeat(32);
 
@@ -32,8 +32,8 @@ test("list_agents lists the scope with each relationship, depth and the own suba
     s.entries.push({ type: "custom", customType: "koa.agent", data: { owner: "self-session", ...kid } });
     s.entries.push({ type: "custom", customType: "koa.work", data: { owner: "self-session", child: "kid-session", at: 1 } });
     s.entries.push({ type: "custom", customType: "koa.report", data: { owner: "self-session", child: "kid-session", name: "kid", text: "x".repeat(1500), at: 2, id: "r" } });
-    const list = s.tools.get("list_agents");
-    const rows = JSON.parse(text(await list.execute("c", {}))) as Array<Record<string, unknown>>;
+    const list = s.tool("list_agents");
+    const rows = jsonRows(await list.execute("c", {}));
     const byName = new Map(rows.map((row) => [row.name, row]));
     assert.deepEqual(rows.map((row) => row.name).sort(), ["Peer", "boss", "kid", "rootpeer", "top", "twin", "twin"].sort());
     assert.deepEqual(
@@ -46,21 +46,24 @@ test("list_agents lists the scope with each relationship, depth and the own suba
         ["top", "relative", 0, "agent"],
       ].sort(),
     );
-    const own = byName.get("kid")!;
+    const own = byName.get("kid");
+    assert.ok(own);
     assert.equal(own.state, "running");
     assert.equal(own.reported, true);
     assert.equal(own.model, "acme/m:high");
-    assert.equal((own.report as string).length, 1000, "the report is capped at 1000 bytes");
+    assert.equal(getStr(own, "report").length, 1000, "the report is capped at 1000 bytes");
     assert.equal(own.parent, "self-session");
     assert.equal(own.canMessage, true);
-    assert.equal(byName.get("boss")!.status, "working");
-    assert.equal(byName.get("boss")!.parent, "top-session");
+    const boss = byName.get("boss");
+    assert.ok(boss);
+    assert.equal(boss.status, "working");
+    assert.equal(boss.parent, "top-session");
     assert.equal(byName.has("cousin"), false, "a cousin is outside the scope");
     assert.equal(byName.has("elsewhere"), false, "another session is outside it too");
 
-    const peers = JSON.parse(text(await list.execute("c", { which: "peers" }))) as Array<Record<string, unknown>>;
+    const peers = jsonRows(await list.execute("c", { which: "peers" }));
     assert.deepEqual(peers.map((row) => row.name).sort(), ["Peer", "twin", "twin"]);
-    const subs = JSON.parse(text(await list.execute("c", { which: "subagents" }))) as Array<Record<string, unknown>>;
+    const subs = jsonRows(await list.execute("c", { which: "subagents" }));
     assert.deepEqual(subs.map((row) => row.name), ["kid"]);
   } finally {
     await fx.restore();
@@ -80,7 +83,7 @@ test("runtime agent placement uses the row before routed pi variables", async ()
     ssh.status = { kind: { type: "ssh", destination: "host", pane: { type: "agent", name: "pi", status: { since: 0, state: { type: "idle" } } } } };
     fx.setPanes([selfPane(), row, host, shell, ssh]);
     const s = await startSession(fx);
-    const rows = JSON.parse(text(await s.tools.get("list_agents").execute("c", {}))) as Array<Record<string, unknown>>;
+    const rows = jsonRows(await s.tool("list_agents").execute("c", {}));
     const agent = rows.find((row) => row.name === "runtime-pi");
     assert.equal(agent?.id, "classified-session");
     assert.equal(agent?.runtime, "actual");
@@ -103,7 +106,7 @@ test("an ended subagent lists from the registry, with the cause of its lingering
     s.entries.push({ type: "custom", customType: "koa.agent", data: { owner: "self-session", ...kid, name: "old", session: "old-session", pane: { instance: INSTANCE, pane: "pane_77" } } });
     s.entries.push({ type: "custom", customType: "koa.agent", data: { owner: "other-session", ...kid, name: "foreign", session: "foreign-session" } });
     s.entries.push({ type: "custom", customType: "koa.agent", data: { owner: "self-session", ...kid, name: "stale", session: "stale-session", pane: { instance: "b".repeat(32), pane: "pane_1" } } });
-    const rows = JSON.parse(text(await s.tools.get("list_agents").execute("c", {}))) as Array<Record<string, unknown>>;
+    const rows = jsonRows(await s.tool("list_agents").execute("c", {}));
     assert.deepEqual(
       rows.map((row) => [row.name, row.state, row.ended, row.canMessage]).sort(),
       [
@@ -123,9 +126,9 @@ test("message_agent resolves by name, session id, unique prefix and pane, and ex
   try {
     tree(fx);
     const s = await startSession(fx, { name: "Self" });
-    const message = s.tools.get("message_agent");
+    const message = s.tool("message_agent");
     const outcomes = new Map<string, unknown>();
-    const send = async (to: string) => { const result = await message.execute('c', { to, message: 'x' }); outcomes.set(to, result.details.outcome); return text(result); };
+    const send = async (to: string) => { const result = await message.execute('c', { to, message: 'x' }); outcomes.set(to, get(result.details, "outcome")); return text(result); };
 
     assert.equal(await send("peer"), "delivered to Peer", "a name is caseless");
     assert.equal(await send("@Peer"), "delivered to Peer", "a leading @ is ignored");
@@ -149,9 +152,9 @@ test("message_agent resolves by name, session id, unique prefix and pane, and ex
 
     const posts = fx.posts("/panes/pane_3/messages");
     assert.equal(posts.length, 5);
-    assert.match(posts[0]!.id, /^[A-Za-z0-9_-]{22}$/, "128 random bits as 22 base64url characters");
+    assert.match(getStr(at(posts, 0), "id"), /^[A-Za-z0-9_-]{22}$/, "128 random bits as 22 base64url characters");
     assert.equal(new Set(posts.map((post) => post.id)).size, 5, "one fresh id for each intent");
-    const { id: _id, ...body } = posts[0]!;
+    const { id: _id, ...body } = at(posts, 0);
     assert.deepEqual(body, { kind: "message", text: "x" });
   } finally {
     await fx.restore();
@@ -163,7 +166,7 @@ test("a send resends the same id on a delivered or io answer, and reports what t
   try {
     tree(fx);
     const s = await startSession(fx);
-    const message = s.tools.get("message_agent");
+    const message = s.tool("message_agent");
     const call = async (script: Array<{ status: number; body: unknown }>) => {
       fx.scriptSends(script);
       const before = fx.posts("/panes/pane_3/messages").length;
@@ -187,7 +190,7 @@ test("a send resends the same id on a delivered or io answer, and reports what t
 
     const down = await call([io, io, io]);
     assert.equal(down.said, "could not message Peer: the queue broke");
-    assert.deepEqual(down.details.outcome, { ok: false, failure: 'error', message: 'the queue broke' });
+    assert.deepEqual(get(down.details, "outcome"), { ok: false, failure: 'error', message: 'the queue broke' });
 
     const queued = await call([{ status: 200, body: { state: "queued", seq: 4 } }]);
     assert.equal(queued.posts.length, 1, "a queued answer is final");
@@ -195,10 +198,10 @@ test("a send resends the same id on a delivered or io answer, and reports what t
 
     const refused = await call([{ status: 409, body: { kind: "refused", message: "pane_3 is not in your scope" } }]);
     assert.equal(refused.said, "could not message Peer: Peer refused the message: pane_3 is not in your scope");
-    assert.deepEqual(refused.details.outcome, { ok: false, failure: 'refused', message: 'pane_3 is not in your scope' });
+    assert.deepEqual(get(refused.details, "outcome"), { ok: false, failure: 'refused', message: 'pane_3 is not in your scope' });
     const gone = await call([{ status: 410, body: { kind: "gone", message: "pane_3 is dead" } }]);
     assert.equal(gone.said, "could not message Peer: Peer is dead: pane_3 is dead");
-    assert.deepEqual(gone.details.outcome, { ok: false, failure: 'gone', message: 'pane_3 is dead' });
+    assert.deepEqual(get(gone.details, "outcome"), { ok: false, failure: 'gone', message: 'pane_3 is dead' });
   } finally {
     await fx.restore();
   }
@@ -209,7 +212,7 @@ test("steer and interrupt-and-steer send their kinds, and a message to a working
   try {
     tree(fx);
     const s = await startSession(fx);
-    const message = s.tools.get("message_agent");
+    const message = s.tool("message_agent");
     assert.equal(text(await message.execute("c", { to: "boss", message: "a" })), "queued for boss: it is running and reads this when its current turn ends; to reach it now, use message_agent with mode steer");
     assert.equal(text(await message.execute("c", { to: "boss", message: "b", mode: "steer" })), "delivered to boss");
     assert.equal(text(await message.execute("c", { to: "boss", message: "c", mode: "interrupt-and-steer" })), "delivered to boss");
@@ -226,7 +229,7 @@ test("read_report returns the whole last report or all of them, only for an own 
     const s = await startSession(fx);
     const data = (extra: Record<string, unknown>) => ({ owner: "self-session", child: "kid-session", name: "kid", id: "r", ...extra });
     s.entries.push({ type: "custom", customType: "koa.agent", data: { owner: "self-session", ...kid } });
-    const read = s.tools.get("read_report");
+    const read = s.tool("read_report");
     assert.equal(text(await read.execute("c", { agent: "kid" })), "kid has not reported");
     s.entries.push({ type: "custom", customType: "koa.report", data: data({ text: "first", at: 1 }) });
     s.entries.push({ type: "custom", customType: "koa.report", data: data({ text: "y".repeat(6000), at: 2 }) });

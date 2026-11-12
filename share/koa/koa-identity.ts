@@ -8,7 +8,7 @@ async function files(dir: URL, prefix: string, keep: (name: string) => boolean):
 export async function installedIdentity(location: URL): Promise<string> {
   const koa = new URL('./', location), root = new URL('../', location);
   const all = [
-    ...await files(koa, 'koa/', name => !name.endsWith('.test.ts') && name !== 'koa-agent.ts'),
+    ...await files(koa, 'koa/', name => !name.endsWith('.test.ts')),
     ...await files(new URL('webview/', root), 'webview/', name => !name.endsWith('.md')),
   ].sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0);
   const hash = createHash('sha256');

@@ -1,15 +1,15 @@
 import { test, type TestContext } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, writeFile, rm, cp, symlink } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile, appendFile, rm, cp, symlink } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { Readable } from "node:stream";
-import { pollUntil, sse } from "./koa-agent-fixture.ts";
+import type { NotifyLevel } from "./koa-records.ts";
+import { pollUntil, sse, ofType } from "./koa-agent-fixture.ts";
 import { fixture } from "./koa-program-fixture.ts";
 
 type App = Awaited<ReturnType<typeof fixture>>;
-type Notice = { type: string; item?: { kind: string; level?: string; text: { text: string } } };
 const state = (dir: string) => ({ type: "respond", command: "get_state", data: { sessionFile: join(dir, "session.jsonl") } });
-const note = (level: string, text: string) => (record: Notice) => record.type === "item" && record.item?.kind === "notify" && record.item.level === level && record.item.text.text === text;
+const note = (level: NotifyLevel, text: string) => ofType("item", record => record.item.kind === "notify" && record.item.level === level && record.item.text.text === text);
 const reload = (app: App) => app.post("prompt", { text: "/reload", mode: "prompt", attachments: [] });
 const argvs = async (app: App) => (await app.log()).filter(row => row.type === "argv").length;
 const instanceOf = async (base: string) => /name="koa-instance" content="([^"]+)"/.exec(await (await fetch(base)).text())?.[1];
@@ -81,6 +81,17 @@ test("/reload restarts koa in place on the same session with the new page", { ti
   assert.equal((await app.close)[0], 0);
 });
 
+test("/reload restarts koa when only the agent extension changed", { timeout: 15000 }, async t => {
+  const dir = await install(t);
+  const app = await fixture(t, [state(dir)], {}, undefined, true, [], join(dir, "koa/koa.ts"));
+  await appendFile(join(dir, "koa/koa-agent.ts"), "\n// changed\n");
+  assert.deepEqual(await (await reload(app)).json(), { disposition: "handled", action: { type: "reload" } });
+  await pollUntil(async () => (await app.log()).filter(row => row.type === "argv").length === 2, 10000, "the second pi");
+  await pollUntil(() => urls(app).length === 2, 10000, "the restarted koa's URL");
+  assert.equal((await fetch(urls(app)[1] + "quit", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" })).status, 200);
+  assert.equal((await app.close)[0], 0);
+});
+
 test("a newer koa waits while jobs or subagents run and restarts at the next /reload", { timeout: 15000 }, async t => {
   const dir = await install(t);
   const app = await fixture(t, [state(dir)], { KOA_FAKE_RESTART_FILE: join(dir, "restart-state") }, undefined, true, [], join(dir, "koa/koa.ts"));
@@ -117,7 +128,7 @@ test("/reload is refused while a turn runs", { timeout: 10000 }, async t => {
   t.after(() => rm(dir, { recursive: true, force: true }));
   const app = await fixture(t, [state(dir), { type: "wait", command: "prompt", events: [{ type: "agent_start" }] }], {}, undefined, true, [], resolve("../../build/ko/share/ko/koa/koa.ts"));
   await app.post("prompt", { text: "work", mode: "prompt", attachments: [] });
-  await app.until(record => record.type === "state" && record.working === true);
+  await app.until(ofType("state", record => record.working === true));
   assert.deepEqual(await (await reload(app)).json(), { disposition: "handled", action: { type: "none" } });
   await app.until(note("warning", "reload: not while a turn, a command, a queue, a dialog or an editor is open"));
   assert.equal(await argvs(app), 1);
@@ -129,7 +140,7 @@ test("a turn that starts during /reload stays visible and blocks the restart", {
   const app = await fixture(t, [state(dir)], { KOA_FAKE_RELOAD_TURN: "1" }, undefined, true, [], join(dir, "koa/koa.ts"));
   await update(dir);
   assert.deepEqual(await (await reload(app)).json(), { disposition: "handled", action: { type: "none" } });
-  await app.until(record => record.type === "state" && record.working === true && record.pi.type === "ready");
+  await app.until(ofType("state", record => record.working === true && record.pi.type === "ready"));
   const turn = () => app.records().flatMap(record => record.type === "reset" ? record.items : record.type === "item" ? [record.item] : []).filter(item => item.kind === "user" && item.text === "queued before reload");
   await pollUntil(() => turn().length > 0, 5000, "the turn's user message");
   await app.until(note("info", "reloaded"));

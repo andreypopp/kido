@@ -8,6 +8,7 @@ import { once } from "node:events";
 import { createServer, connect } from "node:net";
 import timers from "node:timers/promises";
 import { fixture, assistantMessage } from "./koa-program-fixture.ts";
+import { get, ofType } from "./koa-agent-fixture.ts";
 test('a missing pi fails package discovery before the webview', { timeout: 5000 }, async () => {
   const child = spawn(process.execPath, [resolve('../../build/ko/share/ko/koa/koa.ts'), '--browser', '--pi', '/koa-no-such-pi']);
   let stderr = ''; child.stderr.on('data', bytes => { stderr += bytes; });
@@ -27,10 +28,10 @@ test("clean pi exit closes koa", { timeout: 10000 }, async t => {
 test("pi crash keeps koa serving its transcript and exit state", { timeout: 10000 }, async t => {
   const app = await fixture(t, [{ type: "wait", command: "prompt" }, { type: "raw", text: "not json\r\n" }, { type: "stderr", text: "old1\nold2\na\nb\nc\npar" }, { type: "stderr", text: "tial\nlast\n" }, { type: "exit", code: 7 }]);
   await app.post("prompt", { text: "go", mode: "prompt", attachments: [] });
-  const state = await app.until(record => record.type === "state" && record.pi?.type === "exited");
-  assert.equal(state.pi.exited, 7);
-  assert.equal(typeof state.pi.at, "number");
-  assert.equal(state.pi.stderr, "a\nb\nc\npartial\nlast");
+  const state = await app.until(ofType("state", record => record.pi?.type === "exited"));
+  assert.equal(get(state.pi, "exited"), 7);
+  assert.equal(typeof get(state.pi, "at"), "number");
+  assert.equal(get(state.pi, "stderr"), "a\nb\nc\npartial\nlast");
   assert.match(app.stdout(), /\x1b\]7501;state=clear\x1b\\/);
   assert.match(app.stderr(), /koa: pi stdout: not json/);
   assert.equal((await app.post("abort")).status, 409);
@@ -99,7 +100,7 @@ test("tool argument JSON is parsed once per flush, not per delta", { timeout: 10
     ...['{"instrumented":', ...Array.from({ length: 98 }, () => " "), "1}"].map(delta => ({ type: "message_update", usage: {}, assistantMessageEvent: { type: "toolcall_delta", contentIndex: 0, delta } })),
   ] }], { NODE_OPTIONS: `--import=${hook}`, KOA_PARSE_LOG: log });
   await app.post("prompt", { text: "go", mode: "prompt", attachments: [] });
-  await app.until(record => record.type === "patch" && JSON.stringify(record).includes("instrumented"));
+  await app.until(ofType("patch", record => JSON.stringify(record).includes("instrumented")));
   assert.equal(await readFile(log, "utf8"), "parse\n");
 });
 
@@ -134,15 +135,15 @@ test("manual compaction restores status and retries stay working", { timeout: 10
   for (const expected of ["idle", "done", "error", "error"]) {
     let after = app.count();
     assert.equal((await app.post("prompt", { text: "compact", mode: "prompt", attachments: [] })).status, 200);
-    await app.until(record => record.type === "state" && record.working === true, after);
+    await app.until(ofType("state", record => record.working === true), after);
     after = app.count();
     assert.equal((await app.post("abort")).status, 200);
-    await app.until(record => record.type === "state" && record.working === false, after);
+    await app.until(ofType("state", record => record.working === false), after);
     assert.match(app.stdout().split("\x1b]7501;").at(-1) ?? "", new RegExp(`^state=${expected}:`));
   }
   assert.equal((await app.post("prompt", { text: "retry", mode: "prompt", attachments: [] })).status, 200);
   await app.post("abort");
-  const state = await app.until(record => record.type === "state" && JSON.stringify(record.queue).includes("retry"));
+  const state = await app.until(ofType("state", record => JSON.stringify(record.queue).includes("retry")));
   assert.equal(state.working, true);
   assert.match(app.stdout().split("\x1b]7501;").at(-1) ?? "", /^state=working:/);
 });

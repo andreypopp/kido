@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { join } from "node:path";
 import { appendFileSync, unlinkSync, writeFileSync } from "node:fs";
-import { makeFixture, selfPane, agentPane, startSession, savedSession, entriesOf, pollUntil, text, asSubagent, withEnv } from "./koa-agent-fixture.ts";
+import { makeFixture, selfPane, agentPane, startSession, savedSession, entriesOf, pollUntil, text, asSubagent, withEnv, at, jsonRows, get, getList } from "./koa-agent-fixture.ts";
 
 test("peers observed only on /client can end and resume as independent peers", async () => {
   const fx = makeFixture();
@@ -22,26 +22,26 @@ test("peers observed only on /client can end and resume as independent peers", a
     const live = agentPane({ pane: "pane_3", session: "0123456789abcdee", name: "PeerLive" });
     fx.setPanes([selfPane(), live]);
     fx.setClientPanes([selfPane(), live]);
-    await pollUntil(async () => JSON.parse(text(await s.tools.get("list_agents").execute("c", { which: "peers" }))).some((a: any) => a.id === id && a.state === "ended" && a.cwd === fx.dir));
+    await pollUntil(async () => jsonRows(await s.tool("list_agents").execute("c", { which: "peers" })).some((a) => a.id === id && a.state === "ended" && a.cwd === fx.dir));
     const completed = { value: `@Peer (session ${id})` };
     const calls = fx.apiCalls().length;
-    assert.match(text(await s.tools.get("stop_agent").execute("c", { agent: "Peer" })), /had already ended/);
+    assert.match(text(await s.tool("stop_agent").execute("c", { agent: "Peer" })), /had already ended/);
     assert.equal(fx.posts("/panes").length, 0);
     assert.ok(fx.apiCalls().slice(calls).every((c) => c.method === "GET"));
-    assert.match(text(await s.tools.get("message_agent").execute("c", { to: completed.value, message: "continue" })), /restarted Peer/);
-    const body = fx.posts("/panes")[0]!;
+    assert.match(text(await s.tool("message_agent").execute("c", { to: completed.value, message: "continue" })), /restarted Peer/);
+    const body = at(fx.posts("/panes"), 0);
     assert.equal(body.session, "session_1");
     assert.equal(body.cwd, process.cwd(), "resume uses the session header cwd, not the observed peer cwd");
     assert.equal(body.parent, undefined);
     assert.equal(body.close, undefined);
-    assert.ok(!body.env.some((e: any) => e.name === "KO_AGENT_PARENT_SESSION"));
-    assert.ok(!body.command.argv.includes("--session-dir"));
-    assert.ok(body.command.argv.includes(file));
-    assert.ok(body.command.argv.includes("acme/saved"));
-    assert.equal(body.vars["koa.task"].text, "continue");
+    assert.ok(!getList(body, "env").some((e) => get(e, "name") === "KO_AGENT_PARENT_SESSION"));
+    assert.ok(!getList(body, "command", "argv").includes("--session-dir"));
+    assert.ok(getList(body, "command", "argv").includes(file));
+    assert.ok(getList(body, "command", "argv").includes("acme/saved"));
+    assert.equal(get(body.vars, "koa.task", "text"), "continue");
     fx.setPanes([selfPane()]);
-    assert.match(text(await s.tools.get("spawn_agent").execute("c", { name: "Peer", resume_from: id, task: "again" })), /independent peer/);
-    assert.equal(fx.posts("/panes")[1]!.parent, undefined);
+    assert.match(text(await s.tool("spawn_agent").execute("c", { name: "Peer", resume_from: id, task: "again" })), /independent peer/);
+    assert.equal(at(fx.posts("/panes"), 1).parent, undefined);
     assert.deepEqual(entriesOf(s, "koa.work"), []);
     assert.deepEqual(entriesOf(s, "koa.ended"), []);
   } finally { await fx.restore(); }
@@ -57,12 +57,12 @@ test("ended peers use session ids when names collide and omit missing files", as
     fx.setClientPanes([selfPane(), ...ids.map((id, i) => agentPane({ pane: `pane_${i + 2}`, session: id, name: "Same" }))]);
     await pollUntil(() => entriesOf(s, "koa.agent").filter((e) => e.role === "peer").length === 2);
     fx.setClientPanes([selfPane()]);
-    const list = async () => JSON.parse(text(await s.tools.get("list_agents").execute("c", { which: "peers" })));
+    const list = async () => jsonRows(await s.tool("list_agents").execute("c", { which: "peers" }));
     assert.equal((await list()).length, 2);
-    assert.match(text(await s.tools.get("message_agent").execute("c", { to: "Same", message: "go" })), /matches several by name/);
-    assert.match(text(await s.tools.get("message_agent").execute("c", { to: ids[0], message: "go", mode: "steer" })), /no longer running/);
-    unlinkSync(files[0]!);
-    assert.deepEqual((await list()).map((a: any) => a.id), [ids[1]]);
+    assert.match(text(await s.tool("message_agent").execute("c", { to: "Same", message: "go" })), /matches several by name/);
+    assert.match(text(await s.tool("message_agent").execute("c", { to: ids[0], message: "go", mode: "steer" })), /no longer running/);
+    unlinkSync(at(files, 0));
+    assert.deepEqual((await list()).map((a) => a.id), [ids[1]]);
     assert.equal(entriesOf(s, "koa.agent").filter((e) => e.role === "peer").length, 2);
     assert.equal(fx.posts("/panes").length, 0);
   } finally { await fx.restore(); }
@@ -99,8 +99,8 @@ test("an untrusted stale pi.session does not hide an ended peer", async () => {
     fx.setClientPanes([selfPane(), agentPane({ pane: "pane_2", session: id, name: "Stale" })]);
     await pollUntil(() => entriesOf(s, "koa.agent").some((e) => e.session === id));
     fx.setPanes([selfPane(), { id: "pane_2", vars: { "pi.session": id } }]);
-    const rows = JSON.parse(text(await s.tools.get("list_agents").execute("c", { which: "peers" })));
-    assert.equal(rows.find((a: any) => a.id === id)?.state, "ended");
+    const rows = jsonRows(await s.tool("list_agents").execute("c", { which: "peers" }));
+    assert.equal(rows.find((a) => a.id === id)?.state, "ended");
   } finally { await fx.restore(); }
 });
 
@@ -116,11 +116,11 @@ test("concurrent peer messages reuse a pane before pi publishes its identity", a
       fx.setClientPanes([selfPane(), agentPane({ pane: "pane_2", session: id, name: "Pending" })]);
       await pollUntil(() => entriesOf(s, "koa.agent").some((e) => e.session === id));
       fx.setClientPanes([selfPane()]);
-      await Promise.all(["first", "second"].map((message) => s.tools.get("message_agent").execute("c", { to: "Pending", message })));
+      await Promise.all(["first", "second"].map((message) => s.tool("message_agent").execute("c", { to: "Pending", message })));
       assert.equal(fx.posts("/panes").length, 1);
       assert.equal(fx.posts("/panes/pane_10/messages").length, 1);
       writeFileSync(gate, "");
-      assert.equal(JSON.parse(text(await s.tools.get("list_agents").execute("c", {}))).find((a: any) => a.id === id)?.state, "running");
+      assert.equal(jsonRows(await s.tool("list_agents").execute("c", {})).find((a) => a.id === id)?.state, "running");
     });
   } finally { await fx.restore(); }
 });

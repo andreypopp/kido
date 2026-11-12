@@ -74,7 +74,8 @@ facts that the extension writes into its messages' details, with
 their guards), `agents.ts`, `token.ts` (the token grammar: the
 extension's `@` agent token runs through the file token rules),
 `text.ts`, `completion-context.ts` (the place where a command runs,
-from the extension to `koa-sessions.ts`; "Shell completion") and
+which the extension answers on the session channel; "Shell
+completion") and
 `runtime-exec.ts` (the client of a runtime's exec route, the
 extension's routed commands and koa's shell completion). The records of koa and its page are
 `share/koa/koa-records.ts`.
@@ -99,10 +100,10 @@ package lookup and the runs of the startup helper and the session
 picker; `koa-startup.ts`, the startup helper's extension;
 `koa-args.ts`, its rules for pi's arguments at startup and at a restart; `koa-resume.ts`,
 the picker extension of `koa --resume`; `koa-commands.ts`, the
-built-in slash commands; `koa-sessions.ts`, the extension in the pi
-child that lists sessions for the page's `/resume`, runs the pi
-reload of `/reload` and relays the agent extension's restart state, over
-`koa-channel.ts`; `koa-identity.ts`, the hash of koa's installed
+built-in slash commands; `koa-channel.ts`, the records of the
+session channel, on which the agent extension lists sessions for the
+page's `/resume`, runs the pi reload of `/reload` and answers its
+restart state; `koa-identity.ts`, the hash of koa's installed
 files; `koa-session-dir.ts`, the session directory rule of
 both pickers; `prompt.ts`, the prompt text rules that koa and its
 page share; `koa-fake-pi.ts`, the scripted pi of its suite
@@ -231,9 +232,8 @@ answers `handled`, an extension command), once after pi is ready,
 not when a page connects. A restart of pi does not send them again;
 they stay in pi's arguments, where RPC mode ignores them.
 
-koa also loads its own extension `koa-sessions.ts` and gives pi a
-fourth pipe on fd 3, the session channel ("Sessions inside the page"
-below).
+koa also gives pi a fourth pipe on fd 3, the session channel, which
+the agent extension answers ("Sessions inside the page" below).
 
 **`--resume` picks before the webview.** pi runs its session picker
 for `--resume` (`-r`) in every mode, also in RPC, where it would wait
@@ -310,7 +310,7 @@ the session name and the session's directory.
 
 **The session's directory.** For a session of another directory, pi
 runs in that directory, so koa takes `cwd` from the session channel's
-`session` record, which `koa-sessions.ts` sends at each
+`session` record, which the agent extension sends at each
 `session_start` from pi's own session manager, never from its own
 working directory or from the session file: pi writes a new session's
 file only at its first message, and `/new` after a switch to another
@@ -380,7 +380,7 @@ pi's `/reload` is a built-in of its TUI that RPC mode lacks. It has
 two layers (the user's decision):
 
 1. **pi in place.** koa sends the prompt `/koa-reload`, an extension
-   command of `koa-sessions.ts` whose handler only calls pi's
+   command of the agent extension whose handler only calls pi's
    `ctx.reload()`; the new instance of the extension registers it
    again, and completion hides it. pi answers the prompt only after
    the reload, so the answer is its end. koa holds pi in `reloading`,
@@ -396,12 +396,14 @@ two layers (the user's decision):
 2. **koa when it was updated.** A page of a new koa must not run
    against an old koa: one once crash-looped on a record's shape.
    koa hashes its installed files at start (`installedIdentity` in
-   `koa-identity.ts`: `koa/` with the page and `webview/`, but not
-   the agent extension, which layer 1 reloads) and again after layer 1. A content hash, not a build
+   `koa-identity.ts`: `koa/` with the page and the agent extension,
+   and `webview/`) and again after layer 1. The agent extension
+   counts although layer 1 reloads it, because it holds pi's side of
+   the session channel: a new extension must not run against an old
+   koa. A content hash, not a build
    stamp: ko's build id changes with every commit, and only koa's
    own files matter. A read that fails counts as no change. When the
-   hash differs, koa asks the extension, over the session channel and pi's
-   event bus (`RESTART_STATE_CHANNEL` in `records.ts`), for its
+   hash differs, koa asks the extension, over the session channel, for its
    running jobs, services included, and its children that have not
    reported on their last work, because a restart of pi is a quit of
    pi, which ends them or sends their parent an exit notice. koa
@@ -523,8 +525,8 @@ nothing for it. A cancelled switch changes nothing in koa.
 
 **The session channel.** pi has no RPC that lists sessions, and a
 list reads pi's session files with the settings of the session that
-runs, which only the pi child has. Thus `koa-sessions.ts`, an
-extension in the pi child, answers on fd 3 (`koa-channel.ts` holds its
+runs, which only the pi child has. Thus the agent extension, in the
+pi child, answers on fd 3 (`koa-channel.ts` holds its
 records): a `list` query with an id, for this folder or all, which it
 answers with pi's `SessionManager.list` or `listAll` over the session
 directory that pi resolves, a `completion_context` query ("Shell
@@ -534,8 +536,9 @@ id, cwd and a generation that increases, so a switch to the same file
 waits for the new record. The first message of a row is cut to its
 first line on the wire. Subagent sessions do not show, because the
 agent extension keeps them out of pi's session tree. pi loads the extension module
-again on a switch to another folder, so the channel lives on
-`globalThis`, once for each process.
+again on a switch to another folder and at `/reload`, so the channel
+lives on `globalThis`, once for each process, and each load registers
+its handlers on it (design.md, "One copy").
 
 **The switch.** koa's state has a `switching` phase. While it lasts,
 koa drops pi's events and RPC replies of the old session, and refuses
@@ -884,9 +887,9 @@ completion source for each mode.
   and checks a routed runtime itself, and a pane variable cannot say
   that a runtime is still starting or was refused. So koa asks on
   the session channel (`completion_context`, with the channel's
-  request ids), and `koa-sessions.ts` answers through the resolver
-  that the extension installs for its current session
-  (`share/koa/completion-context.ts`): the host with the session's
+  request ids), and the extension answers through the resolver of
+  its current session (`share/koa/completion-context.ts` holds the
+  type): the host with the session's
   cwd, a runtime with the cwd that `user_bash` would give the routed
   command, or `unavailable`. A refused or unready runtime, or no
   resolver, is `unavailable`, never the host. The channel's reset at

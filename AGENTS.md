@@ -363,14 +363,16 @@ Conventions:
 harness, and no other program loads its agent extension: there is no
 terminal harness. A plain `pi` is not Kido's
 harness. The agent extension, `share/koa/koa-agent.ts`, runs in koa's pi
-child beside `koa-sessions.ts` and holds every agent tool. Nothing
+child, answers koa's session channel on fd 3 and holds every agent
+tool. Nothing
 in it exists only for pi's terminal UI: no widgets, renderers,
 terminal input or autocomplete providers. It learns browser mode from
 the boolean flag `--koa-browser` that koa passes, never from pi's
 mode or the environment. It calls only `ko api` (docs/design.md,
 "The harness extension", lists the routes). Of `share/koa/` it
 imports only the modules that koa also uses: `text.ts`, `agents.ts`,
-`records.ts`, `completion-context.ts` and `runtime-exec.ts`, never
+`records.ts`, `completion-context.ts`, `runtime-exec.ts`,
+`koa-channel.ts`, `koa-session-dir.ts` and `koa-records.ts`, never
 koa's program modules. Its background
 commands are jobs, child processes of pi. It never opens ko's socket,
 never reads ko's state directory or another agent's files, and has no

@@ -10,7 +10,7 @@ import { request } from "node:http";
 import { EventEmitter } from 'node:events';
 import { stripTypeScriptTypes } from 'node:module';
 import { runInNewContext } from 'node:vm';
-import { assistant } from "./koa-agent-fixture.ts";
+import { assistant, ofType, lastOf, getList, get } from "./koa-agent-fixture.ts";
 import { pollUntil } from "./koa-agent-fixture.ts";
 import { fixture } from "./koa-program-fixture.ts";
 test('history comes from the whole transcript and omits consecutive duplicates', { timeout: 10000 }, async t => {
@@ -42,11 +42,11 @@ test('model selection, completion collisions, session statistics and export defa
   assert.deepEqual(completion.options.map(value => value.label), ['/model', '/thinking', '/compact', '/session', '/copy', '/export', '/name', '/resume', '/new', '/quit', '/reload', '/custom']);
   assert.equal(completion.options[0]?.source, 'builtin');
   for (const text of ['/model TEST/EXACT', '/thinking HIGH', '/session', '/export']) assert.equal((await f.post('prompt', { text, mode: 'prompt', attachments: [] })).status, 200);
-  await f.until(record => record.type === 'item' && record.item.kind === 'command' && record.item.result.type === 'session');
-  assert.deepEqual(f.records().find(record => record.type === 'item' && record.item.kind === 'command' && record.item.result.type === 'session')?.item.result.stats, stats);
+  await f.until(ofType('item', record => record.item.kind === 'command' && record.item.result.type === 'session'));
+  assert.deepEqual(get(f.records().find(ofType('item', record => record.item.kind === 'command' && record.item.result.type === 'session')), 'item', 'result', 'stats'), stats);
   assert.ok((await f.log()).some(value => value.type === 'set_thinking_level' && value.level === 'high'));
   assert.ok((await f.log()).some(value => value.type === 'export_html' && !('outputPath' in value)));
-  const notice = await f.until(record => record.type === 'item' && record.item.kind === 'command' && record.item.result.type === 'export');
+  const notice = await f.until(ofType('item', record => record.item.kind === 'command' && record.item.result.type === 'export'));
   assert.equal(await (await fetch(f.base + 'steps/' + notice.item.seq + '/0/file')).text(), '<html>exported session</html>');
   assert.equal((await f.post('prompt', { text: '/quit', mode: 'prompt', attachments: [] })).status, 200);
   assert.equal((await f.close)[0], 0);
@@ -61,8 +61,8 @@ test('manual compaction has one result per attempt and restores the working stat
   for (const state of ['done', 'failed']) {
     const cursor = f.count();
     assert.equal((await f.post('prompt', { text: '/compact', mode: 'prompt', attachments: [] })).status, 200);
-    await f.until(record => record.type === 'item' && record.item.kind === 'command' && record.item.result.type === 'compaction' && record.item.result.state.type === state, cursor);
-    await f.until(record => record.type === 'state' && record.compaction === 'idle' && !record.working, cursor);
+    await f.until(ofType('item', record => record.item.kind === 'command' && record.item.result.type === 'compaction' && record.item.result.state.type === state), cursor);
+    await f.until(ofType('state', record => record.compaction === 'idle' && !record.working), cursor);
   }
   assert.equal(f.records().filter(record => record.type === 'item' && record.item.kind === 'command' && record.item.result.type === 'compaction' && record.item.result.state.type === 'failed').length, 1);
   assert.ok(f.records().some(record => record.type === 'item' && record.item.kind === 'command' && record.item.result.type === 'compaction' && record.item.result.state.type === 'done' && record.item.result.state.before === 10000 && record.item.result.state.after === 2000));
@@ -75,11 +75,11 @@ test('a held compaction can be aborted and finishes as cancelled', { timeout: 10
     { type: 'wait', command: 'abort', events: [{ type: 'compaction_end', reason: 'manual', aborted: true, willRetry: false }] },
   ], {}, undefined, true, [], resolve('../../build/ko/share/ko/koa/koa.ts'));
   assert.equal((await f.post('prompt', { text: '/compact', mode: 'prompt', attachments: [] })).status, 200);
-  await f.until(record => record.type === 'state' && record.compaction === 'running');
+  await f.until(ofType('state', record => record.compaction === 'running'));
   assert.equal((await f.post('queue/clear')).status, 200);
   assert.equal((await f.post('abort')).status, 200);
-  await f.until(record => record.type === 'item' && record.item.kind === 'command' && record.item.result.type === 'compaction' && record.item.result.state.type === 'cancelled');
-  await f.until(record => record.type === 'state' && record.compaction === 'idle' && !record.working);
+  await f.until(ofType('item', record => record.item.kind === 'command' && record.item.result.type === 'compaction' && record.item.result.state.type === 'cancelled'));
+  await f.until(ofType('state', record => record.compaction === 'idle' && !record.working));
 });
 
 test('a compaction crash clears its state and restart accepts a prompt', { timeout: 10000 }, async t => {
@@ -88,14 +88,14 @@ test('a compaction crash clears its state and restart accepts a prompt', { timeo
     { type: 'wait', command: 'abort' }, { type: 'exit', code: 7 },
   ], {}, undefined, true, [], resolve('../../build/ko/share/ko/koa/koa.ts'));
   assert.equal((await f.post('prompt', { text: '/compact', mode: 'prompt', attachments: [] })).status, 200);
-  await f.until(record => record.type === 'state' && record.compaction === 'running');
+  await f.until(ofType('state', record => record.compaction === 'running'));
   await f.post('abort');
-  await f.until(record => record.type === 'state' && record.pi.type === 'exited' && record.compaction === 'idle' && !record.working);
+  await f.until(ofType('state', record => record.pi.type === 'exited' && record.compaction === 'idle' && !record.working));
   assert.ok(f.records().some(record => record.type === 'item' && record.item.kind === 'command' && record.item.result.type === 'compaction' && record.item.result.state.type === 'failed' && /code 7/.test(record.item.result.state.message)));
   await writeFile(f.script, JSON.stringify({ type: 'wait', command: 'prompt', echo: true }));
   assert.equal((await f.post('pi/start')).status, 200);
   assert.equal((await f.post('prompt', { text: 'after restart', mode: 'prompt', attachments: [] })).status, 200);
-  await f.until(record => record.type === 'item' && record.item.kind === 'user' && record.item.text === 'after restart');
+  await f.until(ofType('item', record => record.item.kind === 'user' && record.item.text === 'after restart'));
 });
 
 test('built-in commands use RPC and never become prompts', { timeout: 10000 }, async t => {
@@ -131,13 +131,13 @@ test('in-page session switches refresh only on success', { timeout: 10000 }, asy
   const before = app.records().filter(record => record.type === 'reset').length;
   assert.equal((await app.post('sessions/switch', { path: '/tmp/chosen.jsonl' })).status, 200);
   assert.equal(app.records().filter(record => record.type === 'reset').length, before);
-  const cancelled = app.records().filter(record => record.type === 'state').at(-1);
+  const cancelled = lastOf(app.records(), 'state');
   assert.equal(cancelled.queue.steering[0].text, 'keep queued');
-  assert.equal(app.records().filter(record => record.type === 'reset').at(-1).items[0].images.length, 1);
+  assert.equal(getList(lastOf(app.records(), 'reset').items[0], 'images').length, 1);
   assert.equal((await app.post('sessions/switch', { path: '/tmp/chosen.jsonl' })).status, 200);
-  await app.until(record => record.type === 'state' && record.sessionId === 'chosen' && record.pi.type === 'ready');
-  assert.ok(app.records().some(record => record.type === 'reset' && record.items.some((item: { text?: string }) => item.text === 'Chosen history')));
-  const ready = app.records().filter(record => record.type === 'state').at(-1);
+  await app.until(ofType('state', record => record.sessionId === 'chosen' && record.pi.type === 'ready'));
+  assert.ok(app.records().some(record => record.type === 'reset' && record.items.some(item => 'text' in item && item.text === 'Chosen history')));
+  const ready = lastOf(app.records(), 'state');
   assert.equal(ready.name, 'Chosen'); assert.equal(ready.cwd, process.cwd());
   assert.deepEqual(ready.queue, { steering: [], followUp: [] });
   assert.equal((await app.post('sessions/new')).status, 409);
@@ -150,7 +150,7 @@ test('session startup UI records survive switching and refresh', { timeout: 1000
     { type: 'respond', command: 'get_messages', data: { messages: [] }, after: [{ type: 'extension_ui_request', id: 'during', method: 'setStatus', statusKey: 'refresh', statusText: 'during refresh' }] },
   ], { KOA_FAKE_SESSIONS: JSON.stringify([{ path: '/tmp/chosen.jsonl' }]) }, undefined, true, [], resolve('../../build/ko/share/ko/koa/koa.ts'));
   assert.equal((await app.post('sessions/switch', { path: '/tmp/chosen.jsonl' })).status, 200);
-  const ready = await app.until(record => record.type === 'state' && record.pi.type === 'ready' && record.statuses.refresh === 'during refresh');
+  const ready = await app.until(ofType('state', record => record.pi.type === 'ready' && record.statuses.refresh === 'during refresh'));
   assert.equal(ready.statuses.startup, 'before response');
 });
 
@@ -212,9 +212,9 @@ test('a failed switch refresh clears old history and returns to a usable session
   assert.equal((await app.post('sessions/switch', { path: '/tmp/not-a-fixture-session' })).status, 409);
   assert.equal((await app.post('sessions/switch', { path })).status, 200);
   await app.until(record => JSON.stringify(record).includes('History unavailable'));
-  const state = app.records().filter(record => record.type === 'state').at(-1);
+  const state = lastOf(app.records(), 'state');
   assert.equal(state.pi.type, 'ready'); assert.equal(state.sessionId, 'chosen');
-  assert.deepEqual(app.records().filter(record => record.type === 'reset').at(-1).items, []);
+  assert.deepEqual(lastOf(app.records(), 'reset').items, []);
   assert.equal((await app.post('prompt', { text: 'fresh prompt', mode: 'prompt', attachments: [] })).status, 200);
 });
 
@@ -310,19 +310,19 @@ test('bash output is bounded live, replaced by the result, and replayed once', {
   ], {}, undefined, true, [], resolve('../../build/ko/share/ko/koa/koa.ts'));
   assert.equal((await app.post('prompt', { text: '!gated', mode: 'prompt', attachments: [] })).status, 200);
   const [gate] = await connected; t.after(() => gate.destroy());
-  const live = await app.until(record => record.type === 'state' && record.bash?.[0]?.phase === 'running' && record.bash[0].output.cut > 0);
-  assert.equal(live.bash[0].output.text, 'b'.repeat(16384)); assert.equal(live.bash[0].output.cut, 49152);
+  const live = await app.until(ofType('state', record => record.bash?.[0]?.phase === 'running' && record.bash[0].output.cut > 0));
+  assert.equal(get(live.bash[0], 'output', 'text'), 'b'.repeat(16384)); assert.equal(get(live.bash[0], 'output', 'cut'), 49152);
   gate.end('release');
-  const completed = await app.until(record => record.type === 'state' && record.bash?.[0]?.phase === 'completed');
-  assert.deepEqual(completed.bash[0].result, { output: { text: 'authoritative final', cut: 0 }, exit: 3, cancelled: false, truncated: true, fullOutputPath: '/tmp/full' });
-  await app.until(record => record.type === 'state' && record.bash?.length === 0);
-  await app.until(record => record.type === 'reset' && JSON.stringify(record).includes('authoritative final'));
+  const completed = await app.until(ofType('state', record => record.bash?.[0]?.phase === 'completed'));
+  assert.deepEqual(get(completed.bash[0], 'result'), { output: { text: 'authoritative final', cut: 0 }, exit: 3, cancelled: false, truncated: true, fullOutputPath: '/tmp/full' });
+  await app.until(ofType('state', record => record.bash?.length === 0));
+  await app.until(ofType('reset', record => JSON.stringify(record).includes('authoritative final')));
   const records = app.records(), completedIndex = records.indexOf(completed);
   const clearedIndex = records.findIndex((record, index) => index > completedIndex && record.type === 'state' && record.bash?.length === 0);
   const resetIndex = records.findIndex((record, index) => index > completedIndex && record.type === 'reset');
   assert.ok(clearedIndex > completedIndex && resetIndex > clearedIndex);
   const before = app.count(); await app.post('prompt', { text: 'rebuild', mode: 'prompt', attachments: [] });
-  await app.until(record => record.type === 'reset', before);
+  await app.until(ofType('reset'), before);
   const stored = await (await fetch(app.base + 'items?before=99')).json();
   assert.equal(stored.items.length, 1); assert.equal(stored.items[0].result.output.text, 'authoritative final');
 });
@@ -339,14 +339,14 @@ test('a late bash result cannot enter the switched session', { timeout: 10000 },
   ], { KOA_FAKE_SESSIONS: JSON.stringify([{ path: '/tmp/chosen.jsonl' }]) }, undefined, true, [], resolve('../../build/ko/share/ko/koa/koa.ts'));
   await app.post('prompt', { text: '!old command', mode: 'prompt', attachments: [] });
   const [gate] = await connected; t.after(() => gate.destroy());
-  await app.until(record => record.type === 'state' && record.bash?.[0]?.phase === 'running');
+  await app.until(ofType('state', record => record.bash?.[0]?.phase === 'running'));
   assert.equal((await app.post('sessions/switch', { path: '/tmp/chosen.jsonl' })).status, 200);
-  const ready = await app.until(record => record.type === 'state' && record.sessionId === 'chosen' && record.pi.type === 'ready');
+  const ready = await app.until(ofType('state', record => record.sessionId === 'chosen' && record.pi.type === 'ready'));
   assert.deepEqual(ready.bash, []);
   const before = app.count(); gate.end('release');
-  await app.until(record => record.type === 'item' && record.item.kind === 'notify' && record.item.text.text === 'late result delivered', before);
+  await app.until(ofType('item', record => record.item.kind === 'notify' && record.item.text.text === 'late result delivered'), before);
   assert.equal(JSON.stringify(app.records().slice(before)).includes('late old command output'), false);
-  assert.deepEqual(app.records().findLast(record => record.type === 'state')?.bash, []);
+  assert.deepEqual(lastOf(app.records(), 'state')?.bash, []);
   assert.equal(JSON.stringify(await (await fetch(app.base + 'items?before=99')).json()).includes('late old command output'), false);
 });
 
@@ -356,7 +356,7 @@ test('a resumed bash message has one stored item and no running state', { timeou
   const page = await (await fetch(app.base + 'items?before=99')).json();
   assert.equal(page.items.length, 1);
   assert.deepEqual(page.items[0], { seq: 0, revision: 0, at: 42, final: true, kind: 'bash', command: 'saved', result: { output: { text: 'saved output', cut: 0 }, exit: 0, cancelled: false, truncated: true, fullOutputPath: '/tmp/saved-output' }, excludeFromContext: true });
-  const ready = app.records().findLast(record => record.type === 'state');
+  const ready = lastOf(app.records(), 'state');
   assert.deepEqual(ready?.bash, []);
 });
 
@@ -373,15 +373,15 @@ test('a second abort reaches the turn while bash cancellation is still pending',
   await app.post('prompt', { text: '!slow cleanup', mode: 'prompt', attachments: [] });
   const [gate] = await connected; t.after(() => gate.destroy());
   await app.post('abort');
-  await app.until(record => record.type === 'state' && record.bash?.[0]?.phase === 'cancelling');
+  await app.until(ofType('state', record => record.bash?.[0]?.phase === 'cancelling'));
   await app.post('abort');
-  const settled = await app.until(record => record.type === 'state' && !record.working && record.bash?.[0]?.phase === 'cancelling');
+  const settled = await app.until(ofType('state', record => !record.working && record.bash?.[0]?.phase === 'cancelling'));
   assert.equal(settled.bash.length, 1);
   assert.deepEqual((await app.log()).filter(record => ['abort', 'abort_bash'].includes(record.type)).map(record => record.type), ['abort_bash', 'abort']);
   assert.equal((await app.log()).filter(record => record.type === 'get_messages').length, 1);
   const before = app.count(); gate.end('finished');
-  await app.until(record => record.type === 'state' && record.bash?.length === 0, before);
-  await app.until(record => record.type === 'reset', before);
+  await app.until(ofType('state', record => record.bash?.length === 0), before);
+  await app.until(ofType('reset'), before);
   const page = await (await fetch(app.base + 'items?before=99')).json();
   assert.equal(page.items[0].result.cancelled, true); assert.equal(page.items[0].result.output.text, 'kept output');
 });
@@ -394,9 +394,9 @@ test('an idle compaction rebuild clears its completed command before stored repl
   ], {}, undefined, true, [], resolve('../../build/ko/share/ko/koa/koa.ts'));
   await app.post('prompt', { text: 'compact', mode: 'prompt', attachments: [] });
   await app.post('prompt', { text: '!echo saved', mode: 'prompt', attachments: [] });
-  await app.until(record => record.type === 'state' && record.bash?.[0]?.phase === 'completed');
+  await app.until(ofType('state', record => record.bash?.[0]?.phase === 'completed'));
   const before = app.count(); await app.post('prompt', { text: 'finish compaction', mode: 'prompt', attachments: [] });
-  await app.until(record => record.type === 'reset', before);
+  await app.until(ofType('reset'), before);
   const records = app.records().slice(before);
   const cleared = records.findIndex(record => record.type === 'state' && !record.working && record.bash?.length === 0);
   assert.ok(cleared >= 0 && cleared < records.findIndex(record => record.type === 'reset'), 'completed command must clear before reset');
@@ -414,16 +414,16 @@ test('sequential commands during a turn keep acceptance order and enforce the pe
   await app.post('prompt', { text: 'turn', mode: 'prompt', attachments: [] });
   for (let index = 0; index < 16; index++) {
     assert.equal((await app.post('prompt', { text: '!echo ' + index, mode: 'prompt', attachments: [] })).status, 200);
-    await app.until(record => record.type === 'state' && record.bash?.length === index + 1 && record.bash[index].phase === 'completed');
+    await app.until(ofType('state', record => record.bash?.length === index + 1 && record.bash[index].phase === 'completed'));
   }
-  const pending = app.records().findLast(record => record.type === 'state');
+  const pending = lastOf(app.records(), 'state');
   assert.deepEqual(pending?.bash.map((item: { command: string }) => item.command), Array.from({ length: 16 }, (_, index) => 'echo ' + index));
   const refused = await app.post('prompt', { text: '!echo 17', mode: 'prompt', attachments: [] });
   assert.equal(refused.status, 409); assert.deepEqual(await refused.json(), { error: 'too many commands wait for the turn to end' });
-  await app.until(record => record.type === 'state' && record.name === 'command 15');
+  await app.until(ofType('state', record => record.name === 'command 15'));
   const before = app.count(); await app.post('abort');
-  await app.until(record => record.type === 'state' && record.bash?.length === 0, before);
-  await app.until(record => record.type === 'reset', before);
+  await app.until(ofType('state', record => record.bash?.length === 0), before);
+  await app.until(ofType('reset'), before);
   const page = await (await fetch(app.base + 'items?before=99')).json();
   assert.equal(page.items.length, 16); assert.deepEqual(page.items.map((item: { command: string }) => item.command), pending?.bash.map((item: { command: string }) => item.command));
 });
@@ -438,16 +438,16 @@ test('bang commands run outside the prompt queue and stream until cancelled', { 
   await app.post('prompt', { text: 'go', mode: 'prompt', attachments: [] });
   assert.equal((await app.post('prompt', { text: '! echo hi', mode: 'prompt', attachments: ['missing'] })).status, 409);
   assert.equal((await app.post('prompt', { text: '! echo hi', mode: 'follow_up', attachments: [] })).status, 200);
-  await app.until(record => record.type === 'state' && record.bash?.[0]?.phase === 'running' && record.bash[0].output.text === 'live output');
+  await app.until(ofType('state', record => record.bash?.[0]?.phase === 'running' && record.bash[0].output.text === 'live output'));
   assert.equal((await app.post('prompt', { text: '! other', mode: 'prompt', attachments: [] })).status, 409);
   await app.post('abort');
-  await app.until(record => record.type === 'state' && record.bash?.[0]?.phase === 'completed' && record.bash[0].result.cancelled === true);
+  await app.until(ofType('state', record => record.bash?.[0]?.phase === 'completed' && record.bash[0].result.cancelled === true));
   await app.post('abort');
-  await app.until(record => record.type === 'state' && record.working === false && record.bash?.length === 0);
+  await app.until(ofType('state', record => record.working === false && record.bash?.length === 0));
   const quiet = app.count();
   assert.equal((await app.post('prompt', { text: '!! quiet', mode: 'prompt', attachments: [] })).status, 200);
-  await app.until(record => record.type === 'state' && record.bash?.[0]?.phase === 'completed' && record.bash[0].result.output.text === 'quiet', quiet);
-  await app.until(record => record.type === 'state' && record.bash?.length === 0 && record.working === false, quiet);
+  await app.until(ofType('state', record => record.bash?.[0]?.phase === 'completed' && record.bash[0].result.output.text === 'quiet'), quiet);
+  await app.until(ofType('state', record => record.bash?.length === 0 && record.working === false), quiet);
   let stored: { items: { kind: string; command: string }[] } = { items: [] };
   await pollUntil(async () => { stored = await (await fetch(app.base + 'items?before=99')).json(); return stored.items.some(item => item.kind === 'bash' && item.command === 'quiet'); });
   assert.deepEqual(stored.items.filter((item: { kind: string }) => item.kind === 'bash').map((item: { command: string }) => item.command), ['echo hi', 'quiet']);
@@ -467,13 +467,13 @@ test('/name is a session command, with pi query and empty-name rules', { timeout
   await app.post('prompt', { text: '/name   test-koa  ', mode: 'prompt', attachments: [] });
   const commands = (await app.log()).filter(record => ['prompt', 'set_session_name'].includes(record.type));
   assert.deepEqual(commands.map(record => [record.type, record.name]), [['set_session_name', 'test-koa']]);
-  await app.until(record => record.type === 'state' && record.name === 'test-koa');
-  await app.until(record => record.type === 'item' && record.item.kind === 'notify' && record.item.text.text === 'Session name set: test-koa');
+  await app.until(ofType('state', record => record.name === 'test-koa'));
+  await app.until(ofType('item', record => record.item.kind === 'notify' && record.item.text.text === 'Session name set: test-koa'));
   assert.equal((await app.post('prompt', { text: '/name', mode: 'prompt', attachments: [] })).status, 200);
-  await app.until(record => record.type === 'item' && record.item.kind === 'notify' && record.item.text.text === 'Session name: test-koa');
+  await app.until(ofType('item', record => record.item.kind === 'notify' && record.item.text.text === 'Session name: test-koa'));
   await app.post('prompt', { text: ' /name second ', mode: 'prompt', attachments: ['unsent'] });
   await app.post('prompt', { text: '/name   ', mode: 'prompt', attachments: [] });
-  await app.until(record => record.type === 'item' && record.item.kind === 'notify' && record.item.level === 'warning' && record.item.text.text === 'Usage: /name <name>');
+  await app.until(ofType('item', record => record.item.kind === 'notify' && record.item.level === 'warning' && record.item.text.text === 'Usage: /name <name>'));
   assert.equal(app.records().some(record => record.type === 'item' && record.item.kind !== 'notify'), false);
   await app.post('prompt', { text: '/names other', mode: 'prompt', attachments: [] });
   assert.deepEqual((await app.log()).filter(record => record.type === 'prompt').map(record => record.message), ['/names other']);
@@ -511,7 +511,7 @@ test('a queued image survives compaction and take-back', { timeout: 10000 }, asy
   const file = (await (await fetch(app.base + `attachments/${created.id}/0`, { method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: new Uint8Array(bytes) })).json()).attachment;
   const before = app.count();
   await app.post('prompt', { text: '', mode: 'prompt', attachments: [file.id] });
-  await app.until(record => record.type === 'reset', before);
+  await app.until(ofType('reset'), before);
   assert.deepEqual(await (await app.post('queue/clear')).json(), { steering: [{ text: '', attachments: [file] }], followUp: [] });
 });
 
@@ -549,7 +549,7 @@ async function queued(app: Awaited<ReturnType<typeof fixture>>) {
   await app.post('prompt', { text: 'later', mode: 'follow_up', attachments: [] });
   return file;
 }
-const state = (app: Awaited<ReturnType<typeof fixture>>) => app.records().findLast(record => record.type === 'state');
+const state = (app: Awaited<ReturnType<typeof fixture>>) => lastOf(app.records(), 'state');
 
 test('removing one queued entry clears pi and re-queues the others in order with their kinds and images', { timeout: 10000 }, async t => {
   const app = await fixture(t, queueScript({ steering: ['first', 'second'], followUp: ['later'] }, [[['first'], []], [['first'], ['later']]]));

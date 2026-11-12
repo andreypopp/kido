@@ -77,7 +77,7 @@ def candidates(pattern, paths):
 
 # Mask literals before looking for comments, and comments before looking for code.
 def lexical(text):
-    pattern = r'"(?:\\[\s\S]|[^"\\])*"|\'(?:\\[\s\S]|[^\'\\])*\'|`(?:\\[\s\S]|[^`\\])*`|//[^\n]*|/\*[\s\S]*?\*/'
+    pattern = r'"(?:\\[\s\S]|[^"\\])*"|\'(?:\\[\s\S]|[^\'\\])*\'|`(?:\\[\s\S]|[^`\\])*`|(?<=[(,=:\[!&|?{};])[ \t]*/(?![/*])(?:\\.|\[(?:\\.|[^\]\\\n])*\]|[^/\\\[\n])+/[a-z]*|//[^\n]*|/\*[\s\S]*?\*/'
     comments = []
     def mask(match):
         token = match.group()
@@ -120,7 +120,7 @@ for path in glob.glob('ko/**/*.rs', recursive=True) + glob.glob('ko_*/**/*.rs', 
         for match in re.finditer(r'(?<![\w:])kill(?:pg)?\s*\(', code):
             report(path, text, match.start(), 'signals must go through ko_sys::pid')
 
-core = [path for path in ts_sources if path.startswith('share/koa/') and not re.fullmatch(r'share/koa/(koa-agent-(fixture\.ts|.*\.test\.ts)|koa-webview-sdk\.test\.ts|agents\.test\.ts)', path)]
+core = [path for path in ts_sources if path.startswith('share/koa/')]
 for path in candidates(r'(^|[^a-zA-Z_])(as|any)([^a-zA-Z_]|$)|!', core):
     text = pathlib.Path(path).read_text()
     code, _ = lexical(text)

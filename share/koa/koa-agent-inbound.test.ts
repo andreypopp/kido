@@ -2,7 +2,7 @@ import { test } from "node:test";
 
 import assert from "node:assert/strict";
 
-import { makeFixture, selfPane, startSession, pollUntil, customMessages, entriesOf, asSubagent, idleTurn, notices } from "./koa-agent-fixture.ts";
+import { makeFixture, selfPane, startSession, pollUntil, customMessages, entriesOf, asSubagent, idleTurn, notices, at, get } from "./koa-agent-fixture.ts";
 
 import { PARENT_GUIDANCE } from "./koa-agent.ts";
 
@@ -24,33 +24,33 @@ test("each kind reaches pi as its own kind of message and is acked once handed o
 
     fx.feed({ id: "kind-msg-001", kind: "message", text: "when you can", relation: "parent", from: parent });
     await acked(fx, "kind-msg-001");
-    const [message] = customMessages(s, "ko-message");
-    assert.equal(message!.message.content, "message from @boss (your parent, who spawned you):\nwhen you can");
-    assert.deepEqual(message!.opts, { deliverAs: "followUp", triggerTurn: true });
-    assert.equal(message!.message.details.work, true, "work from the parent is marked");
-    assert.deepEqual(message!.message.details.agent, { name: 'boss', session: 'boss-session', pane: 'pane_2' });
-    assert.equal(message!.message.details.body, 'when you can');
+    const message = at(customMessages(s, "ko-message"), 0);
+    assert.equal(message.message.content, "message from @boss (your parent, who spawned you):\nwhen you can");
+    assert.deepEqual(message.opts, { deliverAs: "followUp", triggerTurn: true });
+    assert.equal(get(message.message.details, "work"), true, "work from the parent is marked");
+    assert.deepEqual(get(message.message.details, "agent"), { name: 'boss', session: 'boss-session', pane: 'pane_2' });
+    assert.equal(get(message.message.details, "body"), 'when you can');
 
     fx.feed({ id: "kind-msg-002", kind: "message", text: "fyi", relation: "sibling", from: peer });
     await acked(fx, "kind-msg-002");
-    const second = customMessages(s, "ko-message")[1]!;
+    const second = at(customMessages(s, "ko-message"), 1);
     assert.equal(second.message.content, "message from @peer (another agent in this session, not the user):\nfyi");
-    assert.equal(second.message.details.work, false);
+    assert.equal(get(second.message.details, "work"), false);
 
     fx.feed({ id: "kind-steer-01", kind: "steer", text: "do X instead", relation: "parent", from: parent });
     await acked(fx, "kind-steer-01");
-    const [steer] = customMessages(s, "ko-steer");
-    assert.equal(steer!.message.content, "boss is redirecting this work: do X instead");
-    assert.deepEqual(steer!.opts, { deliverAs: "steer", triggerTurn: true }, "a steer joins the running turn");
-    assert.equal(steer!.message.details.work, true);
-    assert.deepEqual(steer!.message.details.agent, { name: 'boss', session: 'boss-session', pane: 'pane_2' });
-    assert.equal(steer!.message.details.body, 'do X instead');
+    const steer = at(customMessages(s, "ko-steer"), 0);
+    assert.equal(steer.message.content, "boss is redirecting this work: do X instead");
+    assert.deepEqual(steer.opts, { deliverAs: "steer", triggerTurn: true }, "a steer joins the running turn");
+    assert.equal(get(steer.message.details, "work"), true);
+    assert.deepEqual(get(steer.message.details, "agent"), { name: 'boss', session: 'boss-session', pane: 'pane_2' });
+    assert.equal(get(steer.message.details, "body"), 'do X instead');
 
     fx.feed({ id: "kind-note-01", kind: "notice", text: "heads up", relation: "sibling", from: peer });
     await acked(fx, "kind-note-01");
     assert.deepEqual(notices(s), ["notice from peer (a subagent or background job's report, not the user):\nheads up"]);
-    assert.equal(customMessages(s, 'ko-notice')[0]!.message.details.inbound.form, 'notice');
-    assert.equal(customMessages(s, 'ko-notice')[0]!.message.details.body, 'heads up');
+    assert.equal(get(at(customMessages(s, 'ko-notice'), 0).message.details, "inbound", "form"), 'notice');
+    assert.equal(get(at(customMessages(s, 'ko-notice'), 0).message.details, "body"), 'heads up');
 
     fx.feedRaw({ id: "kind-weird-01", kind: "weird", text: "?", relation: "sibling", from: peer });
     await acked(fx, "kind-weird-01");
@@ -62,7 +62,7 @@ test("each kind reaches pi as its own kind of message and is acked once handed o
 
     fx.feed({ id: "kind-plain-01", kind: "message", text: "from a terminal", from: { type: "user" } });
     await acked(fx, "kind-plain-01");
-    assert.equal(s.delivered.at(-1)!.text, "from a terminal", "a message with no calling agent is plain text");
+    assert.equal(at(s.delivered, -1).text, "from a terminal", "a message with no calling agent is plain text");
   } finally {
     await fx.restore();
   }
@@ -96,7 +96,7 @@ test("an interrupt aborts at once and delivers its text when the turn settles; i
     assert.equal(customMessages(s, "ko-message").length, 0, "held while the turn still runs");
     await s.emit("agent_settled", { aborted: true }, { isIdle: () => true });
     assert.equal(customMessages(s, "ko-message").length, 1);
-    assert.match(customMessages(s, "ko-message")[0]!.message.content, /new work$/);
+    assert.match(at(customMessages(s, "ko-message"), 0).message.content, /new work$/);
 
     fx.feed({ id: "int-0000002", kind: "interrupt", text: "more", relation: "parent", from: parent });
     await acked(fx, "int-0000002");
@@ -146,7 +146,7 @@ test("a notice that cannot be recorded is refused, and one that can is acked and
     assert.deepEqual(fx.acks(), [{ type: "ack", id: "rep-fail-001" }]);
     assert.deepEqual(entriesOf(s, "koa.report").map((entry) => [entry.child, entry.text]), [["kid-session", "done"]]);
     assert.equal(notices(s).length, 1);
-    assert.ok(notices(s)[0]!.endsWith(PARENT_GUIDANCE));
+    assert.ok(at(notices(s), 0).endsWith(PARENT_GUIDANCE));
   } finally {
     await fx.restore();
   }

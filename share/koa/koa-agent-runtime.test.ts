@@ -12,12 +12,22 @@ import { fileURLToPath } from "node:url";
 
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 
-import { makeFixture, agentPane, selfPane, startSession, text, entriesOf, customMessages, notices, gatedCommand, pollUntil, withEnv, freshExtension, movedId, logHas, captureStatusRecords, type Fixture, type Started } from "./koa-agent-fixture.ts";
+import { makeFixture, agentPane, selfPane, startSession, text, entriesOf, customMessages, notices, gatedCommand, pollUntil, withEnv, freshExtension, movedId, logHas, captureStatusRecords, type Fixture, type Started, at, jobId, jobLog, jsonRows, type ToolResult, argvOf, envOf, getStr, getList, get, createChannel } from "./koa-agent-fixture.ts";
 
-import { resolveCompletionContext } from './completion-context.ts';
+import { isRecord } from "./text.ts";
 import { mapHostPath, senderHeader } from "./koa-agent.ts";
 
-type Body = Record<string, any>;
+type PromptEvent = { systemPromptOptions: { cwd?: string; promptGuidelines: string[]; sections: Record<string, string>; contextFiles: Array<{ path: string; content: string }> } };
+
+type Operations = { exec(command: string, cwd: string, options: { onData(data: Buffer): void; timeout?: number }): Promise<{ exitCode: number | null }> };
+
+const isShell = (value: unknown): value is { operations: Operations } => isRecord(value) && isRecord(value.operations) && typeof value.operations.exec === "function";
+
+async function userBash(s: Started, cwd: string): Promise<Operations> {
+  const [shell] = await s.emit("user_bash", { command: "x", cwd, excludeFromContext: false });
+  assert.ok(isShell(shell));
+  return shell.operations;
+}
 
 const PNG = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==", "base64");
 
@@ -43,18 +53,24 @@ async function routed(fx: Fixture, t: ReturnType<typeof tree>, opts: { runtimes?
 }
 
 
-const run = (s: Started, tool: string, params: Record<string, unknown>, signal?: AbortSignal): Promise<any> => s.tools.get(tool).execute("c", params, signal, () => {});
+const run = (s: Started, tool: string, params: Record<string, unknown>, signal?: AbortSignal): Promise<ToolResult> => s.tool(tool).execute("c", params, signal, () => {});
 
 test('completion context follows current routed session, host switch and runtime refusal', async () => {
   const fx = makeFixture();
   try {
     const t = tree(fx); fx.setRuntimes({ dev: dev(t) });
-    await startSession(fx, { flags: { runtime: 'dev' }, ctx: { cwd: t.hostCwd } });
-    const request = () => resolveCompletionContext(new AbortController().signal);
+    const channel = createChannel();
+    const request = async () => {
+      assert.equal(channel.receivers(), 1);
+      return get(await channel.ask({ type: 'completion_context' }), 'context');
+    };
+    const first = await startSession(fx, { flags: { runtime: 'dev' }, ctx: { cwd: t.hostCwd }, channel });
     assert.deepEqual(await request(), { type: 'runtime', name: 'dev', cwd: join(t.rt, 'proj') });
-    await startSession(fx, { sessionId: 'other', flags: {}, ctx: { cwd: '/new-host' } });
+    await first.emit('session_shutdown', { reason: 'new' });
+    const second = await startSession(fx, { sessionId: 'other', flags: {}, ctx: { cwd: '/new-host' }, channel });
     assert.deepEqual(await request(), { type: 'host', cwd: '/new-host' });
-    await startSession(fx, { sessionId: 'refused', flags: { runtime: 'missing' }, ctx: { cwd: '/never-host' } });
+    await second.emit('session_shutdown', { reason: 'new' });
+    await startSession(fx, { sessionId: 'refused', flags: { runtime: 'missing' }, ctx: { cwd: '/never-host' }, channel });
     assert.deepEqual(await request(), { type: 'unavailable' });
   } finally { await fx.restore(); }
 });
@@ -96,11 +112,11 @@ test("the prompt gets the runtime cwd, the runtime's context files after the glo
   try {
     const t = tree(fx);
     const s = await routed(fx, t);
-    const event = {
+    const event: PromptEvent = {
       systemPromptOptions: {
         cwd: t.hostCwd,
-        promptGuidelines: [] as string[],
-        sections: {} as Record<string, string>,
+        promptGuidelines: [],
+        sections: {},
         contextFiles: [
           { path: join(getAgentDir(), "AGENTS.md"), content: "global" },
           { path: join(t.hostCwd, "AGENTS.md"), content: "host project" },
@@ -116,7 +132,8 @@ test("the prompt gets the runtime cwd, the runtime's context files after the glo
       { path: join(t.rt, "CLAUDE.md"), content: "outer claude" },
       { path: join(t.rt, "proj", "AGENTS.md"), content: "inner agents" },
     ]);
-    const section = event.systemPromptOptions.sections.runtime!;
+    const section = event.systemPromptOptions.sections.runtime;
+    assert.ok(section);
     assert.match(section, new RegExp(`^The tools bash, read, write, edit, ls, find, grep, async_bash and the user's ! commands run in runtime dev, at ${join(t.rt, "proj")}\\.`));
     assert.match(section, new RegExp(`Every other tool \\(list_agents, read_report, .*spawn_agent.*\\) runs on the host, at ${t.hostCwd}, not in the runtime\\.$`));
     assert.doesNotMatch(section, /\(.*\b(?:bash|async_bash)\b.*\)/);
@@ -136,10 +153,10 @@ test("bash runs in the runtime with no host environment, reports a failure's sta
     assert.match(output, /KO_RUNTIME=dev/);
     assert.match(output, /err/);
     assert.doesNotMatch(output, /HOST_SECRET|KO_PANE|KO_SOCKET/);
-    const [exec] = fx.execLog().slice(-1);
-    assert.equal(exec!.runtime, "dev");
-    assert.equal(exec!.request.env, undefined);
-    assert.equal(exec!.request.cwd, join(t.rt, "proj"));
+    const exec = at(fx.execLog(), -1);
+    assert.equal(exec.runtime, "dev");
+    assert.equal(exec.request.env, undefined);
+    assert.equal(exec.request.cwd, join(t.rt, "proj"));
 
     assert.match(text(await run(s, "bash", { command: "echo out; exit 3" })), /out[\s\S]*exited with code 3/);
     assert.match(text(await run(s, "bash", { command: "kill -9 $$" })), /exited with code 137/);
@@ -163,8 +180,8 @@ test("a cancelled bash ends its exec process, and a timeout ends it with pi's ti
     await assert.rejects(running, /aborted/);
     await pollUntil(() => fx.running() === baseline, 5000, "the exec process to end");
 
-    const [shell] = await s.emit("user_bash", { command: "x", cwd: t.hostCwd, excludeFromContext: false }) as Array<{ operations: any }>;
-    await assert.rejects(shell!.operations.exec("exec sleep 30", t.hostCwd, { onData: () => {}, timeout: 0.05 }), /timeout:0.05/);
+    const shell = await userBash(s, t.hostCwd);
+    await assert.rejects(shell.exec("exec sleep 30", t.hostCwd, { onData: () => {}, timeout: 0.05 }), /timeout:0.05/);
     await pollUntil(() => fx.running() === baseline, 5000, "the timed out exec process to end");
   } finally {
     await fx.restore();
@@ -176,9 +193,9 @@ test("! commands run in the runtime at its cwd through user_bash", async () => {
   try {
     const t = tree(fx);
     const s = await routed(fx, t);
-    const [result] = await s.emit("user_bash", { command: "pwd", cwd: t.hostCwd, excludeFromContext: false }) as Array<{ operations: any }>;
+    const shell = await userBash(s, t.hostCwd);
     let output = "";
-    const done = await result!.operations.exec("pwd; exit 4", t.hostCwd, { onData: (data: Buffer) => (output += data.toString()) });
+    const done = await shell.exec("pwd; exit 4", t.hostCwd, { onData: (data: Buffer) => (output += data.toString()) });
     assert.deepEqual([output.trim(), done.exitCode], [join(t.rt, "proj"), 4]);
   } finally {
     await fx.restore();
@@ -202,7 +219,7 @@ test("read, write, edit, ls and find keep bytes and names intact, and map an abs
     assert.ok(bytes.startsWith("hi") && bytes.endsWith("\ntail"), bytes);
     assert.equal(text(await read(join(t.hostCwd, "AGENTS.md"))), "inner agents", "a host path under a paths prefix maps");
     assert.equal(text(await read(join(outside, "o.txt"))), "outside runtime path", "any other absolute path is a runtime path");
-    assert.ok((await read("pic.png")).content.some((block: { type: string }) => block.type === "image"), "an image file reaches the model as an image");
+    assert.ok((await read("pic.png")).content.some((block) => block.type === "image"), "an image file reaches the model as an image");
     await assert.rejects(read("missing.txt"), /No such file/);
 
     const big = Array.from({ length: 5000 }, (_, line) => `line ${line} é ${"x".repeat(40)}`).join("\n");
@@ -237,7 +254,7 @@ test("grep finds lines with context, treats no match as a result and skips binar
   try {
     const t = tree(fx);
     const s = await routed(fx, t);
-    const grep = (params: Record<string, unknown>) => s.tools.get("grep").execute("c", params, undefined, () => {}).then(text);
+    const grep = (params: Record<string, unknown>) => s.tool("grep").execute("c", params, undefined, () => {}).then(text);
     writeFileSync(join(t.rt, "proj", "a b.txt"), "alpha\nneedle one\nomega\n");
     writeFileSync(join(t.rt, "proj", "sub", "c.log"), "NEEDLE two\n");
     writeFileSync(join(t.rt, "proj", "blob.bin"), Buffer.from([0x6e, 0x65, 0x65, 0x64, 0x6c, 0x65, 0x00, 0x01, 0x0a]));
@@ -317,9 +334,9 @@ test("a context read that fails with no known cwd is retried by the next call an
     const failed = { paths: [], pi: "host", state: { type: "failed", message: "the image is gone" } };
     const s = await routed(fx, t, { runtimes: { dev: failed }, cwd: "/elsewhere" });
     await pollUntil(() => s.notifications.length === 1, 5000, "the failure notice");
-    assert.equal(s.notifications[0]!.type, "error");
+    assert.equal(at(s.notifications, 0).type, "error");
     await assert.rejects(run(s, "bash", { command: "pwd" }), /the image is gone/);
-    const event = { systemPromptOptions: { cwd: "/host", promptGuidelines: [] as string[], sections: {} as Record<string, string>, contextFiles: [] } };
+    const event: PromptEvent = { systemPromptOptions: { cwd: "/host", promptGuidelines: [], sections: {}, contextFiles: [] } };
     await s.emit("before_agent_start", event);
     assert.equal(event.systemPromptOptions.cwd, "/host", "no runtime cwd is known yet");
     assert.equal(fx.row("pane_1")?.vars?.["pi.runtime"], undefined);
@@ -392,16 +409,16 @@ test("a runtime that is missing or runs pi itself refuses every routed tool and 
       const s = await routed(fx, t, { runtimes });
       assert.deepEqual(await s.emit("resources_discover"), [undefined]);
       assert.equal(s.notifications.length, 1);
-      assert.match(s.notifications[0]!.message, refusal);
-      assert.equal(s.notifications[0]!.type, "error");
+      assert.match(at(s.notifications, 0).message, refusal);
+      assert.equal(at(s.notifications, 0).type, "error");
       for (const [tool, params] of [["bash", { command: "pwd" }], ["read", { path: "x" }], ["write", { path: "x", content: "y" }], ["edit", { path: "x", edits: [] }], ["ls", {}], ["find", { pattern: "*" }], ["grep", { pattern: "x" }]] as const) {
         await assert.rejects(run(s, tool, params), refusal, tool);
       }
-      await assert.rejects(async () => s.handlers.get("user_bash")![0]!({ command: "pwd", cwd: t.hostCwd, excludeFromContext: false }), refusal);
+      await assert.rejects(async () => at(s.handlers.get("user_bash") ?? [], 0)({ command: "pwd", cwd: t.hostCwd, excludeFromContext: false }), refusal);
       assert.match(text(await run(s, "async_bash", { command: "true", name: "x" })), refusal);
       assert.equal(fx.row("pane_1")?.vars?.["pi.runtime"], undefined);
       assert.equal(fx.execLog().length, 0, "nothing reached the runtime");
-      const event = { systemPromptOptions: { promptGuidelines: [] as string[], sections: {}, contextFiles: [], cwd: "/host" } };
+      const event: PromptEvent = { systemPromptOptions: { promptGuidelines: [], sections: {}, contextFiles: [], cwd: "/host" } };
       await s.emit("before_agent_start", event);
       assert.ok(!event.systemPromptOptions.promptGuidelines.some((rule) => rule.includes("read the ko skill first")));
       assert.deepEqual(event.systemPromptOptions, { promptGuidelines: [event.systemPromptOptions.promptGuidelines[0]], sections: {}, contextFiles: [], cwd: "/host" });
@@ -422,7 +439,7 @@ test("session_start does not wait for the runtime; the first prompt waits for th
     const s = await routed(fx, t);
     assert.deepEqual(fx.row("pane_1")?.vars?.["pi.runtime"], { name: "dev", cwd: join(t.rt, "proj") }, "the cwd came from paths: the pane is marked at once");
     assert.equal(s.notifications.length, 1);
-    const event = { systemPromptOptions: { cwd: t.hostCwd, promptGuidelines: [] as string[], sections: {}, contextFiles: [] as Array<{ path: string; content: string }> } };
+    const event: PromptEvent = { systemPromptOptions: { cwd: t.hostCwd, promptGuidelines: [], sections: {}, contextFiles: [] } };
     let prompted = false;
     const prompt = s.emit("before_agent_start", event).then(() => (prompted = true));
     await pollUntil(() => fx.execLog().length === 1, 5000, "the context read to reach the runtime");
@@ -443,7 +460,7 @@ test("a failed runtime is no refusal: a tool reaches it and gets the start's err
     const s = await routed(fx, t, { runtimes: { dev: dev(t, { state: { type: "failed", message: "the image is gone" } }) } });
     await assert.rejects(run(s, "bash", { command: "pwd" }), /the image is gone/);
     assert.deepEqual(s.notifications.map((note) => note.type), ["info", "warning"]);
-    assert.match(s.notifications[1]!.message, /the image is gone; its context files are not read$/);
+    assert.match(at(s.notifications, 1).message, /the image is gone; its context files are not read$/);
   } finally {
     await fx.restore();
   }
@@ -463,34 +480,34 @@ test("a routed async_bash is an exec session with a host log, a notice, and canc
     const gate = join(t.rt, "gate");
     const command = `env; printf 'before\\n'; ${gatedCommand(gate, "", "after\n", 3)}`;
     const result = await withEnv({ HOST_SECRET: "host-only" }, () => run(s, "async_bash", { command, name: "build", stream: true }));
-    const records = () => fx.posts(`/panes/${process.env.KO_PANE}/status`).filter(record => record.id === `job/${result.details.job.id}`);
+    const records = () => fx.posts(`/panes/${process.env.KO_PANE}/status`).filter(record => record.id === `job/${jobId(result)}`);
     await pollUntil(() => records()[0]?.state === "working");
     await pollUntil(() => fx.running() === baseline + 1);
-    await pollUntil(() => fx.execLog().at(-1)?.request.argv?.[2] === command);
-    const exec = fx.execLog().at(-1)!;
+    await pollUntil(() => getList(at(fx.execLog(), -1).request, "argv")[2] === command);
+    const exec = at(fx.execLog(), -1);
     assert.equal(exec.runtime, "dev");
-    assert.match(exec.request.argv[0], /\/(bash|sh)$/);
-    assert.deepEqual(exec.request.argv.slice(1), ["-lc", command]);
+    assert.match(getStr(exec.request, "argv", "0"), /\/(bash|sh)$/);
+    assert.deepEqual(getList(exec.request, "argv").slice(1), ["-lc", command]);
     assert.equal(exec.request.cwd, join(t.rt, "proj"));
     assert.equal(exec.request.env, undefined);
     assert.equal(exec.request.stdin, false);
-    await pollUntil(() => logHas(result.details.job.log, "before"));
-    assert.match(readFileSync(result.details.job.log, "utf8"), /KO_RUNTIME=dev/);
-    assert.doesNotMatch(readFileSync(result.details.job.log, "utf8"), /HOST_SECRET|KO_PANE|KO_SOCKET/);
-    const rows = JSON.parse(text(await run(s, "list_async_bash", {})));
+    await pollUntil(() => logHas(jobLog(result), "before"));
+    assert.match(readFileSync(jobLog(result), "utf8"), /KO_RUNTIME=dev/);
+    assert.doesNotMatch(readFileSync(jobLog(result), "utf8"), /HOST_SECRET|KO_PANE|KO_SOCKET/);
+    const rows = jsonRows(await run(s, "list_async_bash", {}));
     assert.equal(rows[0].runtime, "dev");
-    assert.equal(rows[0].log, result.details.job.log);
+    assert.equal(rows[0].log, jobLog(result));
     writeFileSync(gate, "");
     await pollUntil(() => notices(s).length === 1);
-    assert.match(notices(s)[0]!, /exit 3/);
+    assert.match(at(notices(s), 0), /exit 3/);
     await pollUntil(() => records().at(-1)?.state === "error");
     assert.equal(records().at(-1)?.msg, "exit 3");
     assert.deepEqual(output, []);
-    assert.match(notices(s)[0]!, /before\nafter/);
+    assert.match(at(notices(s), 0), /before\nafter/);
     await pollUntil(() => fx.running() === baseline);
     const service = await run(s, "async_bash", { command: `printf 'ready\\n'; ${gatedCommand(join(t.rt, "service"))}`, name: "service" });
-    await pollUntil(() => logHas(service.details.job.log, "ready"));
-    await run(s, "stop_async_bash", { job: service.details.job.id });
+    await pollUntil(() => logHas(jobLog(service), "ready"));
+    await run(s, "stop_async_bash", { job: jobId(service) });
     await pollUntil(() => fx.running() === baseline);
     assert.equal(notices(s).length, 1, "a stopped job sends no notice");
     await s.emit("session_shutdown", { reason: "quit" });
@@ -517,12 +534,12 @@ test("a routed bash moves to one exec-session job by timer and stop closes that 
       const result = await work;
       assert.notEqual(result.isError, true);
       const id = movedId(result);
-      const row = JSON.parse(text(await run(s, "list_async_bash", {})))[0];
+      const row = at(jsonRows(await run(s, "list_async_bash", {})), 0);
       assert.equal(row.job, id);
       assert.equal(row.runtime, "dev");
       assert.equal(row.state, "running");
       assert.equal(fx.execLog().length, count + 1);
-      assert.equal(fx.execLog().at(-1)?.request.argv[2], command);
+      assert.equal(getList(at(fx.execLog(), -1).request, "argv")[2], command);
       await run(s, "stop_async_bash", { job: id });
       await pollUntil(() => fx.running() === baseline);
     }
@@ -550,13 +567,13 @@ test("reload during a routed startup moves the eventual child without restoring 
     const second = await startSession(fx, { factory: await freshExtension(), flags: { runtime: "dev" }, ctx: { cwd: t.hostCwd } });
     writeFileSync(startupGate, "");
     const id = movedId(await work);
-    const [row] = JSON.parse(text(await run(second, "list_async_bash", {})));
+    const [row] = jsonRows(await run(second, "list_async_bash", {}));
     assert.equal(row.job, id);
     assert.equal(row.runtime, "dev");
-    await pollUntil(() => logHas(row.log, "running"));
+    await pollUntil(() => logHas(getStr(row, "log"), "running"));
     writeFileSync(jobGate, "");
     await pollUntil(() => notices(second).length === 1);
-    assert.match(notices(second)[0]!, /running\nfinished/);
+    assert.match(at(notices(second), 0), /running\nfinished/);
     assert.deepEqual(first.messages, []);
   } finally { await fx.restore(); }
 });
@@ -579,7 +596,7 @@ test("new cancels a routed call still probing its shell before it can start a jo
     writeFileSync(startupGate, "");
     await pollUntil(() => fx.running() === 0);
     assert.ok(fx.execLog().every((entry) => !JSON.stringify(entry.request.argv).includes("should-not-start")));
-    assert.deepEqual(JSON.parse(text(await run(first, "list_async_bash", {}))), []);
+    assert.deepEqual(jsonRows(await run(first, "list_async_bash", {})), []);
   } finally {
     writeFileSync(startupGate, "");
     writeFileSync(jobGate, "");
@@ -614,8 +631,8 @@ for (const reason of ["quit", "new", "resume", "fork", "reload"]) {
       writeFileSync(factsGate, "");
       await pollUntil(() => fx.running() === (second ? 2 : 0));
       if (second) {
-        const rows = JSON.parse(text(await run(second, "list_async_bash", {})));
-        assert.equal(rows.filter((row: any) => row.name === "monitor").length, 1, "the old start must not create a second job with the same name");
+        const rows = jsonRows(await run(second, "list_async_bash", {}));
+        assert.equal(rows.filter((row) => row.name === "monitor").length, 1, "the old start must not create a second job with the same name");
       }
       assert.equal(result.isError, true, "shutdown must refuse a start that has no job yet");
       assert.match(text(result), new RegExp(`start cancelled.*${reason}`));
@@ -641,37 +658,36 @@ test("spawn_agent with a runtime starts a routed child, or an inside child by th
     });
     fx.setPanes([selfPane()]);
     const s = await startSession(fx, { name: "Self", ctx: { isProjectTrusted: () => true } });
-    const spawnAgent = (params: Record<string, unknown>) => s.tools.get("spawn_agent").execute("c", { task: "go", ...params });
-    const env = (body: Body, name: string) => (body.env as Array<{ name: string; value: string }>).find((v) => v.name === name)?.value;
-
+    const spawnAgent = (params: Record<string, unknown>) => s.tool("spawn_agent").execute("c", { task: "go", ...params });
+    
     const routedChild = text(await spawnAgent({ name: "viahost", runtime: "dev" }));
-    const [first] = fx.posts("/panes") as Body[];
-    assert.equal(first!.runtime, undefined, "a routed child is a host pane");
-    assert.ok(first!.command.argv.includes("--session-dir"));
-    assert.deepEqual(first!.command.argv.slice(1, 6), ["shell", "--", "koa", "--runtime", "dev"]);
-    assert.equal(first!.cwd, repo);
-    assert.equal(env(first!, "KO_AGENT_TRUSTED_CWD"), repo, "the host cwd, unmapped");
+    const [first] = fx.posts("/panes");
+    assert.equal(first.runtime, undefined, "a routed child is a host pane");
+    assert.ok(argvOf(first).includes("--session-dir"));
+    assert.deepEqual(argvOf(first).slice(1, 6), ["shell", "--", "koa", "--runtime", "dev"]);
+    assert.equal(first.cwd, repo);
+    assert.equal(envOf(first, "KO_AGENT_TRUSTED_CWD"), repo, "the host cwd, unmapped");
     assert.match(routedChild, /^spawned viahost \(session [0-9a-f]{32}, window window_10, pane pane_10, in runtime dev\);/);
     const [entry] = entriesOf(s, "koa.agent");
-    assert.deepEqual(entry!.runtime, { name: "dev", mode: "routed" });
+    assert.deepEqual(entry.runtime, { name: "dev", mode: "routed" });
 
     const insideChild = text(await spawnAgent({ name: "inside", runtime: "inner" }));
-    const [, second] = fx.posts("/panes") as Body[];
-    assert.equal(second!.runtime, "inner");
-    assert.deepEqual(second!.command.argv.slice(0, 4), ["ko", "shell", "--", "koa"]);
-    assert.ok(!second!.command.argv.includes("--runtime"));
-    assert.ok(!second!.command.argv.includes("--session-dir"));
-    assert.equal(second!.cwd, repo, "the host path, which the server maps");
-    assert.equal(env(second!, "KO_AGENT_TRUSTED_CWD"), "/work", "the path the child sees");
+    const [, second] = fx.posts("/panes");
+    assert.equal(second.runtime, "inner");
+    assert.deepEqual(argvOf(second).slice(0, 4), ["ko", "shell", "--", "koa"]);
+    assert.ok(!argvOf(second).includes("--runtime"));
+    assert.ok(!argvOf(second).includes("--session-dir"));
+    assert.equal(second.cwd, repo, "the host path, which the server maps");
+    assert.equal(envOf(second, "KO_AGENT_TRUSTED_CWD"), "/work", "the path the child sees");
     assert.match(insideChild, /pane pane_11, in runtime inner\);/);
 
     await spawnAgent({ name: "unmapped", runtime: "lost" });
-    const [, , third] = fx.posts("/panes") as Body[];
-    assert.equal(env(third!, "KO_AGENT_TRUSTED_CWD"), undefined, "an unmapped cwd gives no trust");
+    const [, , third] = fx.posts("/panes");
+    assert.equal(envOf(third, "KO_AGENT_TRUSTED_CWD"), undefined, "an unmapped cwd gives no trust");
 
     await spawnAgent({ name: "fallen", runtime: "fall" });
-    const [, , , fifth] = fx.posts("/panes") as Body[];
-    assert.equal(env(fifth!, "KO_AGENT_TRUSTED_CWD"), "/fallback", "an unmapped cwd falls back to the runtime's cwd, as the server maps it");
+    const [, , , fifth] = fx.posts("/panes");
+    assert.equal(envOf(fifth, "KO_AGENT_TRUSTED_CWD"), "/fallback", "an unmapped cwd falls back to the runtime's cwd, as the server maps it");
 
     for (const extra of [{ resume_from: "x".repeat(8) }, { fork: true }]) {
       assert.equal(text(await spawnAgent({ name: "nope", runtime: "inner", ...extra })), "could not spawn agent: a saved session is a file of this filesystem: resume_from and fork need a runtime whose pi runs on the host");
@@ -680,10 +696,10 @@ test("spawn_agent with a runtime starts a routed child, or an inside child by th
     assert.equal(fx.posts("/panes").length, 4);
 
     fx.setPanes([selfPane()]);
-    const restarted = text(await s.tools.get("message_agent").execute("c", { to: "viahost", message: "again" }));
+    const restarted = text(await s.tool("message_agent").execute("c", { to: "viahost", message: "again" }));
     assert.match(restarted, /^restarted viahost in pane/);
-    const [, , , , fourth] = fx.posts("/panes") as Body[];
-    assert.deepEqual(fourth!.command.argv.slice(4, 6), ["--runtime", "dev"], "a restart starts the child as it was started");
+    const [, , , , fourth] = fx.posts("/panes");
+    assert.deepEqual(argvOf(fourth).slice(4, 6), ["--runtime", "dev"], "a restart starts the child as it was started");
   } finally {
     await fx.restore();
   }
@@ -695,14 +711,14 @@ test("a routed spawner's child is routed in the same runtime; an inside spawner'
     const t = tree(fx);
     fx.setPanes([selfPane()]);
     const s = await routed(fx, t);
-    const reply = text(await s.tools.get("spawn_agent").execute("c", { name: "kid", task: "go" }));
-    const [body] = fx.posts("/panes") as Body[];
-    assert.deepEqual(body!.command.argv.slice(4, 6), ["--runtime", "dev"]);
-    assert.equal(body!.cwd, process.cwd(), "the child starts in the caller's host cwd and maps it itself");
+    const reply = text(await s.tool("spawn_agent").execute("c", { name: "kid", task: "go" }));
+    const [body] = fx.posts("/panes");
+    assert.deepEqual(argvOf(body).slice(4, 6), ["--runtime", "dev"]);
+    assert.equal(body.cwd, process.cwd(), "the child starts in the caller's host cwd and maps it itself");
     assert.match(reply, /in runtime dev\);/);
-    await s.tools.get("spawn_agent").execute("c2", { name: "kid2", task: "go", runtime: "dev" });
-    const [, second] = fx.posts("/panes") as Body[];
-    assert.deepEqual(second!.command.argv.slice(4, 6), ["--runtime", "dev"]);
+    await s.tool("spawn_agent").execute("c2", { name: "kid2", task: "go", runtime: "dev" });
+    const [, second] = fx.posts("/panes");
+    assert.deepEqual(argvOf(second).slice(4, 6), ["--runtime", "dev"]);
     assert.ok(fx.apiCalls().some((call) => call.path === "/runtimes/dev"));
   } finally {
     await fx.restore();
@@ -712,11 +728,11 @@ test("a routed spawner's child is routed in the same runtime; an inside spawner'
     inside.setPanes([selfPane()]);
     await withEnv({ KO_RUNTIME: "box" }, async () => {
       const s = await startSession(inside, { flags: { runtime: "ignored" } });
-      const spawnAgent = (params: Record<string, unknown>) => s.tools.get("spawn_agent").execute("c", { task: "go", ...params });
+      const spawnAgent = (params: Record<string, unknown>) => s.tool("spawn_agent").execute("c", { task: "go", ...params });
       const reply = text(await spawnAgent({ name: "kid" }));
-      const [body] = inside.posts("/panes") as Body[];
-      assert.equal(body!.runtime, undefined);
-      assert.ok(!body!.command.argv.includes("--runtime"));
+      const [body] = inside.posts("/panes");
+      assert.equal(body.runtime, undefined);
+      assert.ok(!argvOf(body).includes("--runtime"));
       assert.match(reply, /pane pane_10, in runtime box\);/);
       assert.match(text(await spawnAgent({ name: "other", runtime: "else" })), /runs inside runtime box; its children run there too/);
       assert.equal(inside.apiCalls().some((call) => call.path.startsWith("/runtimes")), false, "an inside agent reads no /runtimes route");
@@ -735,22 +751,22 @@ test("list_agents shows the runtime of a row or of a routed agent's pi.runtime, 
     fx.setPanes([
       selfPane(),
       agentPane({ pane: "pane_2", session: "s-routed", name: "Routed", cwd: "/host/proj", vars: { "pi.runtime": { name: "dev", cwd: "/work/proj" } } }),
-      { ...agentPane({ pane: "pane_3", session: "s-inside", name: "Inside", cwd: "/work" }), runtime: "inner" } as never,
+      { ...agentPane({ pane: "pane_3", session: "s-inside", name: "Inside", cwd: "/work" }), runtime: "inner" },
       agentPane({ pane: "pane_4", session: "s-host", name: "Host", cwd: "/host" }),
     ]);
     const s = await routed(fx, t);
-    const rows = JSON.parse(text(await s.tools.get("list_agents").execute("c", {}))) as Array<Record<string, any>>;
+    const rows = jsonRows(await s.tool("list_agents").execute("c", {}));
     const by = Object.fromEntries(rows.map((row) => [row.name, row]));
     assert.deepEqual([by.Routed.runtime, by.Routed.cwd], ["dev", "/work/proj"]);
     assert.deepEqual([by.Inside.runtime, by.Inside.cwd], ["inner", "/work"]);
     assert.deepEqual([by.Host.runtime, by.Host.cwd], [undefined, "/host"]);
 
-    await s.tools.get("message_agent").execute("c", { to: "Host", message: "hello" });
-    assert.deepEqual((fx.posts("/panes/pane_4/messages")[0] as Body).data, { runtime: "dev" });
+    await s.tool("message_agent").execute("c", { to: "Host", message: "hello" });
+    assert.deepEqual(at(fx.posts("/panes/pane_4/messages"), 0).data, { runtime: "dev" });
 
     fx.feed({ id: "from-routed-1", kind: "message", text: "hi", relation: "sibling", data: { runtime: "dev" }, from: { type: "pane", pane: "pane_2", session: "s-routed", name: "Routed" } });
     await pollUntil(() => customMessages(s, "ko-message").length === 1, 3000, "the message");
-    assert.equal(customMessages(s, "ko-message")[0]!.message.content, `${senderHeader("Routed", "sibling", "dev")}\nhi`);
+    assert.equal(at(customMessages(s, "ko-message"), 0).message.content, `${senderHeader("Routed", "sibling", "dev")}\nhi`);
     assert.equal(senderHeader("Routed", "sibling", "dev"), "message from @Routed (another agent in this session, not the user, in runtime dev):");
   } finally {
     await fx.restore();
@@ -793,9 +809,9 @@ test("the exec client drives a real ko server with a command-kind runtime the wa
       const job = await run(s, "async_bash", { command: "printf real-runtime-job; exit 3", name: "real-job" });
       assert.match(text(job), /^started job j[a-z0-9]{7}/);
       await pollUntil(() => notices(s).length === 1, 5000, "the real runtime job notice");
-      assert.match(notices(s)[0]!, /exit 3/);
-      assert.match(notices(s)[0]!, /real-runtime-job/);
-      assert.equal(readFileSync(job.details.job.log, "utf8"), "real-runtime-job");
+      assert.match(at(notices(s), 0), /exit 3/);
+      assert.match(at(notices(s), 0), /real-runtime-job/);
+      assert.equal(readFileSync(jobLog(job), "utf8"), "real-runtime-job");
       assert.match(text(await run(s, "bash", { command: "kill -9 $$" })), /exited with code 137/);
       const awkward = `it's "a" file.txt`;
       const big = Array.from({ length: 4000 }, (_, line) => `line ${line} é ${"y".repeat(60)}`).join("\n");

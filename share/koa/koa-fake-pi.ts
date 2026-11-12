@@ -189,7 +189,7 @@ let sessionSocket: Socket | undefined;
 let sessionCwd = process.cwd();
 let sessionId = "fake";
 let sessionGeneration = 0;
-if (process.argv.some(arg => arg.endsWith('/koa-sessions.ts'))) {
+if (process.argv.some(arg => arg.endsWith('/koa-agent.ts'))) {
   const channel = new Socket({ fd: 3, readable: true, writable: true }); sessionSocket = channel;
   channel.on('error', () => {});
   const lines = createInterface({ input: channel });

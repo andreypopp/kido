@@ -87,7 +87,7 @@ There is no locking, because every writer is the server's loop thread.
 koa is Kido's one pi harness: no other program loads the agent
 extension. koa starts its pi as `pi --mode rpc --extension
 <share>/koa/koa-agent.ts` (design-koa.md, "The spawn"), so the extension
-is koa's, as `koa-sessions.ts` is. koa writes the pane's OSC 7501
+is koa's: it also answers koa's session channel on fd 3. koa writes the pane's OSC 7501
 root with `app=pi` and its OSC 0 title for its pi, because pi reports
 neither in RPC mode (design-koa.md, "Status and title").
 
@@ -183,6 +183,11 @@ skill directory with `koa-agent.ts`.
 **One copy.** On its first factory call, the extension claims
 `globalThis.__koaAgentExtensionCopy` with its path. A copy at another path
 registers nothing, because pi dedupes extensions by real path only.
+A load at the claimed path registers again: pi loads the module again
+at `/reload` and on a switch to another folder. Only the claimed copy
+opens koa's session channel on fd 3, once for each process
+(design-koa.md, "Sessions inside the page"), and every load at that
+path answers it.
 
 **Subprocesses.** The extension starts every ko process with
 asynchronous `spawn`, never `execFileSync`, except the synchronous

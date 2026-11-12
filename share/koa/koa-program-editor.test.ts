@@ -3,10 +3,10 @@ import assert from "node:assert/strict";
 import { appendFile, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { selfPane, pollUntil } from "./koa-agent-fixture.ts";
+import { selfPane, pollUntil, ofType } from "./koa-agent-fixture.ts";
 import { fixture, linkFakeKo } from "./koa-program-fixture.ts";
 
-const f_notified = (app: Awaited<ReturnType<typeof fixture>>, text: string) => app.until(record => record.type === "item" && record.item.kind === "notify" && record.item.text.text === text);
+const f_notified = (app: Awaited<ReturnType<typeof fixture>>, text: string) => app.until(ofType("item", record => record.item.kind === "notify" && record.item.text.text === text));
 
 async function editing(t: TestContext, env: NodeJS.ProcessEnv = {}, steps: object[] = []) {
   const dir = await mkdtemp(join(tmpdir(), "koa-editor-test-"));
@@ -47,11 +47,11 @@ test("an edit with exit 0 replaces the draft, does not send it and leaves nothin
   assert.equal((await stat(file)).mode & 0o777, 0o600);
   assert.equal((await stat(dirname(file))).mode & 0o777, 0o700);
   assert.equal(await readFile(file, "utf8"), "draft text");
-  const editingState = await f.app.until(record => record.type === "state" && record.edit);
+  const editingState = await f.app.until(ofType("state", record => record.edit));
   assert.deepEqual(editingState.edit, { pane: pane.id, editor: "myeditor" });
   await writeFile(file, "edited text\n");
   await f.dead(pane.id, { type: "exited", code: 0 });
-  const replaced = await f.app.until(record => record.type === "state" && record.editor?.text === "edited text");
+  const replaced = await f.app.until(ofType("state", record => record.editor?.text === "edited text"));
   assert.equal(replaced.edit, undefined);
   await f.closed(pane.id);
   await f.gone(dirname(file));
@@ -92,7 +92,7 @@ test("a lost observer cancels the edit and cleans up", { timeout: 15000 }, async
   await f.open("lost");
   const pane = await f.float(), file = pane.file;
   await writeFile(join(f.dir, "client-drop"), "");
-  await f.app.until(record => record.type === "item" && record.item.kind === "notify" && record.item.text.text === "Editor link lost; draft kept");
+  await f.app.until(ofType("item", record => record.item.kind === "notify" && record.item.text.text === "Editor link lost; draft kept"));
   await f.closed(pane.id);
   await f.gone(dirname(file));
 });
@@ -122,7 +122,7 @@ test("a dead event that precedes the open ends the edit at once", { timeout: 150
   const f = await editing(t);
   await f.dead("pane_10", { type: "exited", code: 4 });
   await f.open("early");
-  await f.app.until(record => record.type === "item" && record.item.kind === "notify" && record.item.text.text === "Editor exited 4; draft kept");
+  await f.app.until(ofType("item", record => record.item.kind === "notify" && record.item.text.text === "Editor exited 4; draft kept"));
   await f.closed("pane_10");
 });
 

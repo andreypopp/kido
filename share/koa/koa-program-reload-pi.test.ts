@@ -15,7 +15,7 @@ test('koa-reload reloads the extensions of one real pi process', { timeout: 2000
   await Promise.all([cwd, sessions, agent].map(path => mkdir(path)));
   const write = (description: string) => writeFile(probe, `export default function (pi) { pi.registerCommand('probe', { description: '${description}', handler: async () => {} }); }\n`);
   await write('first');
-  const child = spawn(process.execPath, [resolve('node_modules/@earendil-works/pi-coding-agent/dist/cli.js'), '--mode', 'rpc', '--no-extensions', '--no-skills', '--no-prompt-templates', '--no-themes', '--session-dir', sessions, '--extension', resolve('koa-agent.ts'), '--extension', resolve('./koa-sessions.ts'), '--extension', probe], { cwd, env: { ...process.env, HOME: dir, PI_CODING_AGENT_DIR: agent }, stdio: ['pipe', 'pipe', 'pipe', 'pipe'] });
+  const child = spawn(process.execPath, [resolve('node_modules/@earendil-works/pi-coding-agent/dist/cli.js'), '--mode', 'rpc', '--no-extensions', '--no-skills', '--no-prompt-templates', '--no-themes', '--session-dir', sessions, '--extension', resolve('koa-agent.ts'), '--extension', probe], { cwd, env: { ...process.env, HOME: dir, PI_CODING_AGENT_DIR: agent }, stdio: ['pipe', 'pipe', 'pipe', 'pipe'] });
   let stderr = ''; child.stderr.on('data', bytes => { stderr += bytes; });
   const closed = once(child, 'close');
   const channel = koaChannel(child.stdio[3]);
