@@ -35,8 +35,8 @@ func drawStatusMark(_ status: SidebarRow.Status, at center: NSPoint, flipped: Bo
 }
 
 struct SidebarFonts {
-    let regular = NSFont.systemFont(ofSize: 13)
-    let selected = NSFont.systemFont(ofSize: 13, weight: .semibold)
+    let regular = NSFont.systemFont(ofSize: 14)
+    let selected = NSFont.systemFont(ofSize: 14, weight: .semibold)
     let section = NSFont.systemFont(ofSize: 11, weight: .semibold)
     let tail = NSFont.systemFont(ofSize: 11)
     let clock = NSFont.monospacedDigitSystemFont(ofSize: 10, weight: .regular)
@@ -211,7 +211,7 @@ final class SidebarCell: NSTableCellView, NSTextFieldDelegate {
         let leading = CGFloat(row.leading)
         let dirtyRect = oldWidth == clockWidth
             ? clockRect
-            : NSRect(x: leading, y: row.padding, width: max(0, bounds.width - 12 - leading), height: 18)
+            : NSRect(x: leading, y: row.padding, width: max(0, bounds.width - 12 - leading), height: 19)
         #if KIDO_VISUAL
         visualClockDirtyRect = dirtyRect
         #endif
@@ -287,11 +287,12 @@ final class SidebarCell: NSTableCellView, NSTextFieldDelegate {
             if case .gap = row.kind { return }
             let header = { if case .header = row.kind { return true }; return false }()
             let y: CGFloat = header ? 5 : row.padding
+            let line: CGFloat = header ? 18 : 19
             let dotX = bounds.width - 11
             let end = header ? addWindow.frame.minX : bounds.width - (clock.isEmpty ? 23 : trailing + clockWidth + 6)
             let paragraph = NSMutableParagraphStyle()
             paragraph.lineBreakMode = .byTruncatingTail
-            var titleRect = NSRect(x: leading, y: y, width: max(0, end - leading), height: 18)
+            var titleRect = NSRect(x: leading, y: y, width: max(0, end - leading), height: line)
             let titleFont = header ? fonts.section : (row.focused || selected) ? fonts.selected : fonts.regular
             var suffix = NSRect.zero
             if let text = runtimeText, !header {
@@ -300,7 +301,7 @@ final class SidebarCell: NSTableCellView, NSTextFieldDelegate {
                 let titleNatural = ceil((row.title as NSString).size(withAttributes: [.font: titleFont]).width)
                 let width = min(natural, titleRect.width)
                 titleRect.size.width = max(0, min(titleNatural, titleRect.width - width))
-                suffix = NSRect(x: titleRect.maxX, y: y, width: width, height: 18)
+                suffix = NSRect(x: titleRect.maxX, y: y, width: width, height: line)
             }
             if titleRect.width >= ceil(("…" as NSString).size(withAttributes: [.font: titleFont]).width),
                dirtyRect.intersects(titleRect), !header || nameField.isHidden {
@@ -310,8 +311,8 @@ final class SidebarCell: NSTableCellView, NSTextFieldDelegate {
                                                         .paragraphStyle: paragraph])
             }
             if let mark = row.runtime, let text = runtimeText, !header, suffix.width > 6 {
-                Chrome.drawRuntimeSwatch(mark, at: NSPoint(x: suffix.minX + 9, y: y + 9), dark: terminalDark)
-                text.draw(in: NSRect(x: suffix.minX + 16, y: y, width: max(0, suffix.width - 16), height: 18))
+                Chrome.drawRuntimeSwatch(mark, at: NSPoint(x: suffix.minX + 9, y: y + line / 2), dark: terminalDark)
+                text.draw(in: NSRect(x: suffix.minX + 16, y: y, width: max(0, suffix.width - 16), height: line))
             }
             let tailEnd = children.isHidden ? bounds.width - 5 : children.frame.minX - 6
             let tailRect = NSRect(x: leading, y: row.tailY, width: max(0, tailEnd - leading), height: 14)
@@ -322,7 +323,7 @@ final class SidebarCell: NSTableCellView, NSTextFieldDelegate {
             (clock as NSString).draw(at: clockRect.origin,
                                      withAttributes: [.font: fonts.clock, .foregroundColor: Chrome.inkSecondary])
             if pane && close.isHidden {
-                drawStatusMark(row.status, at: NSPoint(x: dotX, y: y + 9), flipped: true)
+                drawStatusMark(row.status, at: NSPoint(x: dotX, y: y + line / 2), flipped: true)
             }
         }
     }

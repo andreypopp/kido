@@ -43,7 +43,7 @@ private func programs(_ rows: [SidebarRow]) -> [String] { rows.filter { if case 
 @Test func paneAndProgramRowsAreTwoLines() {
     let tree = [pane(0, lifecycle: agent(working(), msg: "busy"), records: [.working(.init(id: "a"))], children: [pane(1)])]
     let rows = sidebarRows(makeSnapshot(tree, client: 0))
-    let content = rows.filter { $0.height == 42 }
+    let content = rows.filter { $0.height == 43 }
     #expect(content.count == 3)
     #expect(content.map(\.leading) == [5, 20, 20])
 }
@@ -83,7 +83,7 @@ private func programs(_ rows: [SidebarRow]) -> [String] { rows.filter { if case 
         let hidden = row.hidden
         #expect(hidden.count == count)
         #expect(hidden.allSatisfy { $0.status == .quiet })
-        #expect(row.height == 42)
+        #expect(row.height == 43)
     }
 }
 
@@ -252,7 +252,7 @@ private func fixture(client: Int = 0, sessions: [Int] = [0], grouped: Bool = fal
     let rows = renderedRows(fixture(client: 2))
     let panes = rows.filter { $0.target != nil }
     #expect(panes.map(\.indent) == [0, 0, 1, 2, 1, 1])
-    #expect(rows.map(\.height) == [26, 42, 9, 42, 42, 42, 42, 42, 10])
+    #expect(rows.map(\.height) == [26, 43, 9, 43, 43, 43, 43, 43, 10])
     #expect(panes.filter(\.focused).map(\.title) == ["pane-2"])
     #expect(renderedRows(fixture(client: 1)).filter(\.focused).map(\.title) == ["@pane-1"])
     #expect(renderedRows(fixture(client: 2)).filter(\.focused).map(\.title) == ["pane-2"])
@@ -260,7 +260,7 @@ private func fixture(client: Int = 0, sessions: [Int] = [0], grouped: Bool = fal
 
 @Test func groupedPanesStayContiguous() throws {
     let rows = renderedRows(fixture(grouped: true))
-    #expect(rows.map(\.height) == [26, 42, 42, 10])
+    #expect(rows.map(\.height) == [26, 43, 43, 10])
     #expect(rows.filter(\.focused).count == 1)
     #expect(rows.allSatisfy { $0.height > 0 })
 }
@@ -284,10 +284,10 @@ func heightAndPaddingMatrix(_ nested: Bool, _ multi: Bool) throws {
     let node = multi ? group(1, [leaf, pane(2, window: 1, lifecycle: lifecycle)]) : leaf
     let snapshot = makeSnapshot([nested ? pane(0, lifecycle: lifecycle, children: [node]) : node], client: 1)
     let row = try #require(renderedRows(snapshot).first { $0.target?.pane == PaneID(number: 1) })
-    #expect(row.height == 42)
+    #expect(row.height == 43)
     #expect(row.padding == 5)
     #expect(row.leading == (nested ? 20 : 5))
-    #expect(row.tailY == 23)
+    #expect(row.tailY == 24)
     #expect(row.focused)
     #expect(renderedRows(snapshot).filter(\.focused).count == 1)
     #expect(renderedRows(snapshot).allSatisfy { $0.height > 0 })
@@ -306,7 +306,7 @@ func heightAndPaddingMatrix(_ nested: Bool, _ multi: Bool) throws {
     let panes = renderedRows(fixture(client: 2)).filter { $0.target != nil }
     #expect(panes.allSatisfy { if case .pane = $0.kind { return true }; return false })
     #expect(panes.first { $0.title == "@pane-1" }?.second == .activity("working"))
-    #expect(panes.map(\.height) == [42, 42, 42, 42, 42, 42])
+    #expect(panes.map(\.height) == [43, 43, 43, 43, 43, 43])
 }
 
 @Test func agentWeightAndDisplayOnlyPrefix() throws {
@@ -406,8 +406,8 @@ func heightAndPaddingMatrix(_ nested: Bool, _ multi: Bool) throws {
     #expect(programs.map(\.title) == ["Record-only title", "a/child", "a/missing/leaf", "a-", "é", "z", "é"])
     #expect(programs.map(\.leading) == [20, 35, 35, 20, 20, 20, 20])
     #expect(programs.allSatisfy { $0.target == nil && $0.agent })
-    #expect(programs.allSatisfy { $0.height == 42 })
-    #expect(programs.allSatisfy { $0.padding == 5 && $0.tailY == 23 && !$0.focused && $0.target == nil })
+    #expect(programs.allSatisfy { $0.height == 43 })
+    #expect(programs.allSatisfy { $0.padding == 5 && $0.tailY == 24 && !$0.focused && $0.target == nil })
     #expect(programs.map(\.status) == [.running, .done, .waiting, .error, .quiet, .quiet, .quiet])
     #expect(rows[1].target?.pane == PaneID(number: 0))
     #expect(rows[9].target?.pane == PaneID(number: 1))

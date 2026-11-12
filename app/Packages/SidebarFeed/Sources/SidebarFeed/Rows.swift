@@ -35,7 +35,7 @@ public struct SidebarRow: Equatable, Sendable {
     public let id: ID
     public internal(set) var kind: Kind
     public let indent: Int
-    public var height: Double { switch kind { case .header: 26; case .divider: 9; case .gap: 10; case .pane, .program: 42 } }
+    public var height: Double { switch kind { case .header: 26; case .divider: 9; case .gap: 10; case .pane, .program: 43 } }
     public let title: String
     public fileprivate(set) var second: SecondLine
     // The runtime after the title; a nested row omits the one of the pane row above it.
@@ -51,7 +51,7 @@ public struct SidebarRow: Equatable, Sendable {
     public var started: Int?
     public var padding: Double { 5 }
     public var leading: Double { 5 + Double(indent) * 15 }
-    public var tailY: Double { 23 }
+    public var tailY: Double { 24 }
     public var hidden: [HiddenChild] {
         switch kind { case .pane(_, let hidden), .program(let hidden): hidden; default: [] }
     }

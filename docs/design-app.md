@@ -1906,9 +1906,9 @@ after launch or reconnect shows second lines immediately. Accessibility
 uses the displayed line. One timer serves the next pending deadline;
 removed rows lose their state.
 
-All pane and program rows are two lines, 42pt, with 5pt vertical padding,
-at every depth. Titles are 13pt regular on an 18pt line; the second line
-is 11pt on a 14pt line, 23pt from the row's top, and holds the row's
+All pane and program rows are two lines, 43pt, with 5pt vertical padding,
+at every depth. Titles are 14pt regular on a 19pt line; the second line
+is 11pt on a 14pt line, 24pt from the row's top, and holds the row's
 second line and the circles of folded children ([Folded
 children](#folded-children)). The second line of a pane with a live
 agent and a caption is that caption, and of an Ended pane of a failure
