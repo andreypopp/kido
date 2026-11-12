@@ -5,6 +5,7 @@ import KoModel
 import SidebarFeed
 import SnapshotTesting
 import XCTest
+import WebKit
 @testable import Kido
 
 @MainActor final class NavigationHistoryTests: AppWindowCase {
@@ -105,7 +106,7 @@ import XCTest
         XCTAssertEqual(items.map(\.title), ["Back", "Forward"])
         XCTAssertEqual(items.map(\.keyEquivalent), ["[", "]"])
         XCTAssertEqual(items.map(\.keyEquivalentModifierMask), [[.command, .control], [.command, .control]])
-        XCTAssertEqual(items.map(\.action), [#selector(WindowOwner.goBack(_:)), #selector(WindowOwner.goForward(_:))])
+        XCTAssertEqual(items.map(\.action), [#selector(WindowOwner.navigateHistoryBack(_:)), #selector(WindowOwner.navigateHistoryForward(_:))])
         XCTAssertFalse(owner.validateMenuItem(items[0]))
         XCTAssertFalse(owner.validateMenuItem(items[1]))
         try await wait("first window selected") { self.selected(owner) == windows[0].focus }
@@ -123,6 +124,77 @@ import XCTest
         XCTAssertEqual(selected(owner), windows[1].focus, "only a press acts")
         owner.window.sendEvent(try mouse(button: 3, down: true))
         try await wait("mouse button 4 goes back") { self.selected(owner) == windows[0].focus }
+    }
+
+    func testToolbarBackReceivesAWindowMouseClick() async throws {
+        let one = koPane()
+        let owner = try await launch(#"[{"name":"A","tree":\#(one)},{"name":"B","tree":\#(one)},{"name":"C","tree":\#(one)}]"#)
+        let windows = try XCTUnwrap(owner.testModel?.layout.layout.windows)
+        let session = try XCTUnwrap(owner.navigation.session)
+        try await wait("A") { self.selected(owner) == windows[0].focus }
+        owner.perform(.selectWindow(session, windows[1].id))
+        try await wait("B") { self.selected(owner) == windows[1].focus && owner.canGo(.back) }
+        try clickToolbarBack(owner)
+        let forward = try XCTUnwrap(historyButtons(owner).last)
+        try await wait("toolbar Back selects A and enables Forward") { self.selected(owner) == windows[0].focus && forward.isEnabled }
+    }
+
+    func testHistoryBackWithWebviewFirstResponder() async throws {
+        let toy = try WebviewToy(path: directory.appendingPathComponent("history-webview.sock").path)
+        try await toy.start()
+        defer { toy.stop() }
+        let page = koPane("'\(tools.ko)' webview enter --path '/'; exec '\(tools.ko)' webview serve --socket '\(toy.path)'")
+        let owner = try await launch(#"[{"name":"A","tree":\#(koPane())},{"name":"B","tree":\#(page)},{"name":"C","tree":\#(koPane())}]"#)
+        let windows = try XCTUnwrap(owner.testModel?.layout.layout.windows)
+        let session = try XCTUnwrap(owner.navigation.session)
+        let policy = NSApp.activationPolicy()
+        NSApp.setActivationPolicy(.regular)
+        defer { NSApp.setActivationPolicy(policy) }
+        NSApp.activate(ignoringOtherApps: true)
+        owner.window.makeKeyAndOrderFront(nil)
+        try await wait("the key command reaches the test window", within: 5) { NSApp.keyWindow === owner.window && NSApp.isActive }
+        try await wait("A") { self.selected(owner) == windows[0].focus }
+        for input in ["toolbar", "key"] {
+            owner.perform(.selectWindow(session, windows[1].id))
+            try await wait("B webview") {
+                self.selected(owner) == windows[1].focus && owner.testSession?.activePane?.webviewView?.browser.isLoading == false && owner.testSession?.activePane?.webviewView?.browser.url != nil
+            }
+            let web = try XCTUnwrap(owner.testSession?.activePane?.webviewView?.browser)
+            XCTAssertTrue(owner.window.makeFirstResponder(web))
+            XCTAssertTrue(owner.canGo(.back))
+            if input == "toolbar" {
+                try clickToolbarBack(owner)
+            } else {
+                for type in [NSEvent.EventType.keyDown, .keyUp] {
+                    let event = try XCTUnwrap(NSEvent.keyEvent(with: type, location: .zero, modifierFlags: [.control, .command], timestamp: ProcessInfo.processInfo.systemUptime,
+                                                            windowNumber: owner.window.windowNumber, context: nil, characters: "[", charactersIgnoringModifiers: "[", isARepeat: false, keyCode: 33))
+                    NSApp.postEvent(event, atStart: true)
+                    let queued = try XCTUnwrap(NSApp.nextEvent(matching: type == .keyDown ? .keyDown : .keyUp, until: Date().addingTimeInterval(1), inMode: .default, dequeue: true))
+                    NSApp.sendEvent(queued)
+                }
+            }
+            try await wait("\(input) Back from webview selects A", within: 5) { self.selected(owner) == windows[0].focus && owner.canGo(.forward) }
+        }
+    }
+
+    private func historyButtons(_ owner: WindowOwner) throws -> [NSButton] {
+        let host = try XCTUnwrap(owner.window.toolbar?.items.first { $0.itemIdentifier.rawValue == "history" }?.view)
+        return host.subviews.compactMap { $0 as? NSButton }
+    }
+
+    private func clickToolbarBack(_ owner: WindowOwner) throws {
+        let back = try XCTUnwrap(historyButtons(owner).first)
+        XCTAssertTrue(back.isEnabled)
+        owner.window.makeKeyAndOrderFront(nil)
+        owner.window.display()
+        let screen = owner.window.convertPoint(toScreen: back.convert(NSPoint(x: back.bounds.midX, y: back.bounds.midY), to: nil))
+        let point = owner.window.convertPoint(fromScreen: screen)
+        let up = try XCTUnwrap(NSEvent.mouseEvent(with: .leftMouseUp, location: point, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+                                                windowNumber: owner.window.windowNumber, context: nil, eventNumber: 2, clickCount: 1, pressure: 0))
+        let down = try XCTUnwrap(NSEvent.mouseEvent(with: .leftMouseDown, location: point, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+                                                  windowNumber: owner.window.windowNumber, context: nil, eventNumber: 1, clickCount: 1, pressure: 1))
+        NSApp.postEvent(up, atStart: true)
+        owner.window.sendEvent(down)
     }
 
     func testQueuedWindowSwitchSupersedesAPendingHistoryMove() async throws {

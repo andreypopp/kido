@@ -1680,14 +1680,14 @@ private class AlertEscape: NSView {
 
     func validateMenuItem(_ item: NSMenuItem) -> Bool {
         switch item.action {
-        case #selector(goBack(_:)): canGo(.back)
-        case #selector(goForward(_:)): canGo(.forward)
+        case #selector(navigateHistoryBack(_:)): canGo(.back)
+        case #selector(navigateHistoryForward(_:)): canGo(.forward)
         default: true
         }
     }
 
-    @objc func goBack(_ sender: Any?) { go(.back) }
-    @objc func goForward(_ sender: Any?) { go(.forward) }
+    @objc func navigateHistoryBack(_ sender: Any?) { go(.back) }
+    @objc func navigateHistoryForward(_ sender: Any?) { go(.forward) }
 
     func perform(_ navigation: Navigation, focus: SelectionFocus = .pane, cause: VisitCause = .user) {
         pendingJump = nil

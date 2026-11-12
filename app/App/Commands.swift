@@ -38,7 +38,7 @@ enum PaneCommand {
         add("Show Child Pane", .child, arrow(NSDownArrowFunctionKey))
         add("Next Pane", .next, "]")
         add("Previous Pane", .previous, "[")
-        for (title, action, key) in [("Back", #selector(WindowOwner.goBack(_:)), "["), ("Forward", #selector(WindowOwner.goForward(_:)), "]")] {
+        for (title, action, key) in [("Back", #selector(WindowOwner.navigateHistoryBack(_:)), "["), ("Forward", #selector(WindowOwner.navigateHistoryForward(_:)), "]")] {
             menu.addItem(withTitle: title, action: action, keyEquivalent: key).keyEquivalentModifierMask = [.command, .control]
         }
         let item = NSMenuItem(title: "Shell", action: nil, keyEquivalent: "")

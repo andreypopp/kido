@@ -2371,7 +2371,7 @@ take them. The toolbar pair, the menu items and the palette commands are
 enabled from the same state. The mouse's back and forward buttons
 (`buttonNumber` 3 and 4) act on the press anywhere in the window, but not
 while the palette or a sheet is up: `OwnerWindow.sendEvent` takes both
-their press and release before a terminal can receive them. ko_tui has no history.
+their press and release before a terminal can receive them. The actions are `navigateHistoryBack:` and `navigateHistoryForward:`, not `goBack:` and `goForward:`, because a focused webview implements those two itself and takes a responder-chain action of that name. ko_tui has no history.
 
 ## Command palette
 

@@ -152,8 +152,8 @@ struct PaletteEntry {
         case #selector(SessionMenus.renameItem): (1, .window)
         case #selector(SessionMenus.closeItem): (2, .window)
         case #selector(AppDelegate.closeWindow): (4, .window)
-        case #selector(WindowOwner.goBack(_:)): (5, .window)
-        case #selector(WindowOwner.goForward(_:)): (6, .window)
+        case #selector(WindowOwner.navigateHistoryBack(_:)): (5, .window)
+        case #selector(WindowOwner.navigateHistoryForward(_:)): (6, .window)
         case #selector(PaneView.runCommand(_:)):
             switch item.representedObject as? PaneCommand {
             case .newWindow: (3, .pane)

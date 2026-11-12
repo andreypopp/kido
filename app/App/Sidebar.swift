@@ -302,8 +302,8 @@ final class Sidebar: NSSplitViewController, NSToolbarDelegate {
             let host = NSView()
             host.translatesAutoresizingMaskIntoConstraints = false
             var previous: NSView?
-            for (step, symbol, label, action) in [(NavigationHistory.Step.back, "chevron.left", "Back", #selector(WindowOwner.goBack(_:))),
-                                                  (.forward, "chevron.right", "Forward", #selector(WindowOwner.goForward(_:)))] {
+            for (step, symbol, label, action) in [(NavigationHistory.Step.back, "chevron.left", "Back", #selector(WindowOwner.navigateHistoryBack(_:))),
+                                                  (.forward, "chevron.right", "Forward", #selector(WindowOwner.navigateHistoryForward(_:)))] {
                 let button = toolbarButton(symbol, label: label, toolTip: label + (step == .back ? " ⌃⌘[" : " ⌃⌘]"), target: nil, action: action)
                 host.addSubview(button)
                 NSLayoutConstraint.activate([
