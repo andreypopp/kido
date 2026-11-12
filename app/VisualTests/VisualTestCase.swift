@@ -9,6 +9,27 @@ import XCTest
 import WebKit
 @testable import Kido
 
+// Compares the decoded pixel values and ignores the embedded colour profile, which follows the display.
+private func pixelsDiffing() -> Diffing<NSImage> {
+    let reference = Diffing<NSImage>.image
+    return .init(toData: reference.toData, fromData: reference.fromData) { old, new in
+        func raw(_ image: NSImage) -> (Int, Int, [UInt8])? {
+            guard let rep = image.representations.lazy.compactMap({ $0 as? NSBitmapImageRep }).first, let bytes = rep.bitmapData else { return nil }
+            return (rep.pixelsWide, rep.pixelsHigh, Array(UnsafeBufferPointer(start: bytes, count: rep.bytesPerRow * rep.pixelsHigh)))
+        }
+        if let old = raw(old), let new = raw(new), old.0 == new.0, old.1 == new.1, old.2 == new.2 { return nil }
+        return reference.diff(old, new)
+    }
+}
+
+extension Snapshotting where Value == NSImage, Format == NSImage {
+    static var pixels: Snapshotting { .init(pathExtension: "png", diffing: pixelsDiffing()) }
+}
+
+extension Snapshotting where Value == NSView, Format == NSImage {
+    static var pixels: Snapshotting { .init(pathExtension: "png", diffing: pixelsDiffing(), asyncSnapshot: Snapshotting<NSView, NSImage>.image.snapshot) }
+}
+
 // A pane that runs `cat` in raw mode, so what a test writes to it comes back as output.
 let rawScript = "stty raw -echo; printf '\\033]2;raw-ready\\007'; exec /bin/cat"
 
@@ -93,7 +114,7 @@ let rawScript = "stty raw -echo; printf '\\033]2;raw-ready\\007'; exec /bin/cat"
         list.displayIfNeeded()
         CATransaction.flush()
         XCTAssertFalse(window.isVisible || window.isKeyWindow || window.isMainWindow || NSApp.isActive)
-        checkSnapshot { verifySnapshot(of: list, as: .image, named: name, record: $0, file: file, testName: testName) }
+        checkSnapshot { verifySnapshot(of: list, as: .pixels, named: name, record: $0, file: file, testName: testName) }
     }
 
     func mainQueueFence() async {

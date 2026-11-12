@@ -157,7 +157,7 @@ import XCTest
             XCTAssertTrue(owner.testEditing)
             owner.window.layoutIfNeeded()
             owner.sidebar.view.layoutSubtreeIfNeeded()
-            checkSnapshot { verifySnapshot(of: owner.sidebar.view, as: .image, named: "\(side)-connecting", record: $0) }
+            checkSnapshot { verifySnapshot(of: owner.sidebar.view, as: .pixels, named: "\(side)-connecting", record: $0) }
             gate.signal()
             try await wait("the held edit ends") { !owner.testEditing }
             owner.testEditor { _ in throw KoError(code: KO_ERR_INVALID, detail: "creation refused") }
@@ -166,7 +166,7 @@ import XCTest
             XCTAssertEqual(owner.testBanner.testText.button, "Retry")
             owner.window.layoutIfNeeded()
             owner.sidebar.view.layoutSubtreeIfNeeded()
-            checkSnapshot { verifySnapshot(of: owner.sidebar.view, as: .image, named: "\(side)-failed", record: $0) }
+            checkSnapshot { verifySnapshot(of: owner.sidebar.view, as: .pixels, named: "\(side)-failed", record: $0) }
             owner.close()
         }
     }
@@ -185,7 +185,7 @@ import XCTest
                 owner.testBanner.layoutSubtreeIfNeeded()
                 let record = ProcessInfo.processInfo.environment["KIDO_VISUAL_RECORD"] == "1"
                 let name = "\(side)-\(host == .local ? "local" : "remote")"
-                if let failure = verifySnapshot(of: owner.testBanner, as: .image, named: name, record: record),
+                if let failure = verifySnapshot(of: owner.testBanner, as: .pixels, named: name, record: record),
                    !record || !failure.hasPrefix("Record mode is on.") { XCTFail(failure) }
                 owner.close()
             }
@@ -682,7 +682,8 @@ import XCTest
                           CGPoint(x: sidebar.visualFocusEdge.bounds.midX, y: 0.25),
                           CGPoint(x: sidebar.visualFocusEdge.bounds.midX, y: sidebar.visualFocusEdge.bounds.maxY - 0.25)] {
                 let edge = try color(image, sidebar.visualFocusEdge, point)
-                XCTAssertGreaterThan(abs(edge.blueComponent * 255 - Double(shifted[2])), 5, "sidebar edge on all four sides")
+                let distance = zip([edge.redComponent, edge.greenComponent, edge.blueComponent], shifted).map { abs($0 * 255 - Double($1)) }.max() ?? 0
+                XCTAssertGreaterThan(distance, 5, "sidebar edge on all four sides")
             }
             window.makeFirstResponder(active)
             sidebar.isCollapsed = true

@@ -139,7 +139,7 @@ private func runtimeMark(_ name: String, _ state: KoSchema.LinkState = .up, kind
             var palette = try XCTUnwrap(app.palettePanel).palette
             func image(_ name: String) {
                 palette.layoutSubtreeIfNeeded()
-                checkSnapshot { verifySnapshot(of: palette, as: .image, named: "\(theme)-\(name)", record: $0, testName: "runtime") }
+                checkSnapshot { verifySnapshot(of: palette, as: .pixels, named: "\(theme)-\(name)", record: $0, testName: "runtime") }
             }
             XCTAssertEqual(palette.shown.prefix(3).map(\.entry.title), ["make verify", "@kido-app", "Host"], "the panes come first, then the runtimes")
             XCTAssertEqual(palette.selectedEntry?.id, .hostRuntime, "the host comes first and is selected while the pane in focus runs in a runtime")
@@ -224,7 +224,7 @@ private func runtimeMark(_ name: String, _ state: KoSchema.LinkState = .up, kind
             await mainQueueFence()
             alert.layout()
             let view = try XCTUnwrap(alert.window.contentView?.superview)
-            checkSnapshot { verifySnapshot(of: view, as: .image, named: name, record: $0, testName: "runtimeShutdownConfirmation") }
+            checkSnapshot { verifySnapshot(of: view, as: .pixels, named: name, record: $0, testName: "runtimeShutdownConfirmation") }
             owner.respondToAlert(.alertSecondButtonReturn)
             try await wait("the confirmation closes") { owner.window.attachedSheet == nil }
         }

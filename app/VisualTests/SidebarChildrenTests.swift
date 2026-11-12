@@ -231,9 +231,9 @@ private extension PaneView {
                 CATransaction.flush()
                 let content = try XCTUnwrap(owner.window.contentView?.superview)
                 let name = "\(split ? "split-adds-top-level-pane" : "stress-child-in-place")-\(dark ? "dark" : "light")"
-                checkSnapshot { verifySnapshot(of: content, as: .image, named: name, record: $0) }
+                checkSnapshot { verifySnapshot(of: content, as: .pixels, named: name, record: $0) }
                 let fullscreen = try fullscreenHostImage(owner, root: content)
-                checkSnapshot { verifySnapshot(of: fullscreen, as: .image, named: name + "-fullscreen", record: $0) }
+                checkSnapshot { verifySnapshot(of: fullscreen, as: .pixels, named: name + "-fullscreen", record: $0) }
             }
         }
     }
@@ -306,7 +306,7 @@ private extension PaneView {
                 crumb.frame = NSRect(x: 8, y: 24, width: fitted, height: 22)
                 XCTAssertEqual(crumb.isHidden, width == 100)
                 window.displayIfNeeded()
-                checkSnapshot { verifySnapshot(of: host, as: .image, named: "path-\(width)-\(dark ? "dark" : "light")", record: $0) }
+                checkSnapshot { verifySnapshot(of: host, as: .pixels, named: "path-\(width)-\(dark ? "dark" : "light")", record: $0) }
                 XCTAssertLessThanOrEqual(crumb.frame.maxX, CGFloat(width - 8))
                 if width < 560 && width != 100 { XCTAssertEqual(crumb.subviews.compactMap { $0 as? NSButton }.filter { !$0.isHidden }.count, 1) }
                 window.close()
@@ -356,12 +356,12 @@ private extension PaneView {
             let crop = anchor ? nil : content.convert(slots.bounds, from: slots)
             if let crop {
                 let image = try croppedImage(content, to: crop)
-                checkSnapshot { verifySnapshot(of: image, as: .image, named: name, record: $0, testName: "testBreadcrumbHierarchyAndOverlays") }
+                checkSnapshot { verifySnapshot(of: image, as: .pixels, named: name, record: $0, testName: "testBreadcrumbHierarchyAndOverlays") }
             } else {
-                checkSnapshot { verifySnapshot(of: content, as: .image, named: name, record: $0, testName: "testBreadcrumbHierarchyAndOverlays") }
+                checkSnapshot { verifySnapshot(of: content, as: .pixels, named: name, record: $0, testName: "testBreadcrumbHierarchyAndOverlays") }
             }
             let fullscreen = try fullscreenHostImage(owner, root: content, crop: crop)
-            checkSnapshot { verifySnapshot(of: fullscreen, as: .image, named: name + "-fullscreen", record: $0, testName: "testBreadcrumbHierarchyAndOverlays") }
+            checkSnapshot { verifySnapshot(of: fullscreen, as: .pixels, named: name + "-fullscreen", record: $0, testName: "testBreadcrumbHierarchyAndOverlays") }
         }
         func setBreadcrumbTitles(_ entries: [ShownPane.Entry]) async throws {
             for entry in entries {
@@ -524,7 +524,7 @@ private extension PaneView {
             host.addSubview(control)
         }
         host.displayIfNeeded()
-        checkSnapshot { verifySnapshot(of: host, as: .image, named: "subtree-running-and-idle-dots", record: $0) }
+        checkSnapshot { verifySnapshot(of: host, as: .pixels, named: "subtree-running-and-idle-dots", record: $0) }
     }
 
     private func click(_ control: NSView) throws {
@@ -828,7 +828,7 @@ private extension PaneView {
             let content = try XCTUnwrap(owner.window.contentView?.superview)
             let slots = try XCTUnwrap(owner.testSession?.windows[root])
             let image = try croppedImage(content, to: content.convert(slots.bounds, from: slots))
-            checkSnapshot { verifySnapshot(of: image, as: .image, named: "unfocused-shown-child-\(dark ? "dark" : "light")", record: $0) }
+            checkSnapshot { verifySnapshot(of: image, as: .pixels, named: "unfocused-shown-child-\(dark ? "dark" : "light")", record: $0) }
         }
         XCTAssertEqual(owner.testModel?.selection.pane, second.pane)
         let replaced = try XCTUnwrap(owner.testSession?.pane(second.pane))

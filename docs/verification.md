@@ -18,6 +18,7 @@ cargo tests (unit), ko's e2e (e2e), the TypeScript suite (ts), and
 e2e stage to the tests whose names contain the text (a cargo test
 filter). The stages `lint-sh` (`scripts/lint.sh` only), `app` (the
 app's `make test`), `ko-test` and `visual` (the app's `make visual`,
+which runs in the guest VM of docs/build.md, "The visual-test VM",
 limited by `VISUAL_ONLY`) are not in the default list;
 `scripts/checks.sh` selects them. Every selected stage runs even after
 a failure and prints PASS/FAIL/SKIP with its time.
@@ -50,7 +51,9 @@ the installed layout check (`make install PREFIX=$HOME/ko-install`,
 `ko version` from it, and the `ko` shim executable under its
 `share/ko/bin`). Its `app` job builds Kido.app and runs the app's
 `make test` and `make ko-test` (design-app.md, "Testing"), not `make
-visual` (known-issues-app.md, "Visual tests do not run in CI").
+visual` (known-issues-app.md, "Visual tests do not run in CI"). Visual
+snapshots are recorded and checked only in the guest, never on the host:
+the host's macOS build is not the reference.
 `scripts/main-watch.sh` watches main and reports each observed head's
 CI. `/gh-watch` starts it through streamed `async_bash`.
 

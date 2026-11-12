@@ -1750,9 +1750,7 @@ import SidebarFeed
             _ = try await webviewJS(web, "(()=>{document.querySelector('#prompt .cm-content').blur();return true})()")
             window.makeFirstResponder(pane.inputResponder)
             XCTAssertTrue(window.firstResponder === web)
-            _ = try await webviewJS(web, "(()=>{document.querySelector('#prompt .cm-content').blur();const range=document.createRange();range.selectNodeContents(document.querySelector('.assistant p'));getSelection().removeAllRanges();getSelection().addRange(range);return true})()")
-            let selected = try await webviewJS(web, "getSelection().toString().length>0")
-            XCTAssertEqual(selected, "true")
+            try await webviewUntil(web, "(()=>{const p=document.querySelector('.assistant p');if(!p)return false;document.querySelector('#prompt .cm-content').blur();const range=document.createRange();range.selectNodeContents(p);getSelection().removeAllRanges();getSelection().addRange(range);return getSelection().toString().length>0})()")
             let key = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0,
                 windowNumber: window.windowNumber, context: nil, characters: "z", charactersIgnoringModifiers: "z", isARepeat: false, keyCode: 6))
             window.sendEvent(key)

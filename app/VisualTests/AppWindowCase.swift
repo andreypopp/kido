@@ -283,7 +283,7 @@ import XCTest
 
     func webviewPageSnapshot(_ pane: PaneView, _ name: String, file: StaticString = #filePath, testName: String = #function) async throws {
         let image = try await webviewPage(pane)
-        checkSnapshot { verifySnapshot(of: image, as: .image, named: name, record: $0, file: file, testName: testName) }
+        checkSnapshot { verifySnapshot(of: image, as: .pixels, named: name, record: $0, file: file, testName: testName) }
     }
 
     @discardableResult
@@ -318,7 +318,7 @@ import XCTest
         CATransaction.flush()
         terminal.displayedPanes.forEach { $0.scroller.isHidden = true }
         CATransaction.flush()
-        checkSnapshot { verifySnapshot(of: view ?? terminal, as: .image, named: name, record: $0, file: file, testName: testName) }
+        checkSnapshot { verifySnapshot(of: view ?? terminal, as: .pixels, named: name, record: $0, file: file, testName: testName) }
         checkSnapshot { verifySnapshot(of: terminal.visualLayout, as: .lines, named: name, record: $0, file: file, testName: testName) }
     }
 }

@@ -360,7 +360,7 @@ import KoModel
         pane.scroller.isHidden = true
         CATransaction.flush()
         let record = ProcessInfo.processInfo.environment["KIDO_VISUAL_RECORD"] == "1"
-        if let failure = verifySnapshot(of: pane, as: .image, named: "restored", record: record),
+        if let failure = verifySnapshot(of: pane, as: .pixels, named: "restored", record: record),
            !record || !failure.hasPrefix("Record mode is on.") { XCTFail(failure) }
     }
 

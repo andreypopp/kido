@@ -517,7 +517,7 @@ import SidebarFeed
                         let image = try XCTUnwrap(bitmap.converting(to: .sRGB, renderingIntent: .default))
                         let captured = NSImage(size: view.bounds.size)
                         captured.addRepresentation(image)
-                        checkSnapshot { verifySnapshot(of: captured, as: .image, named: baseline, record: $0) }
+                        checkSnapshot { verifySnapshot(of: captured, as: .pixels, named: baseline, record: $0) }
                         let pixel = try XCTUnwrap(image.colorAt(x: image.pixelsWide / 2, y: image.pixelsHigh / 2))
                         let paper = try XCTUnwrap(pane.paperColor.usingColorSpace(.sRGB))
                         for (actual, expected) in zip([pixel.redComponent, pixel.greenComponent, pixel.blueComponent], [paper.redComponent, paper.greenComponent, paper.blueComponent]) {

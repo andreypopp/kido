@@ -272,7 +272,9 @@ import WebKit
             let tabsX = { owner.sidebar.tabs.convert(owner.sidebar.tabs.bounds, to: nil).minX }
             try await wait("the toolbar follows the sidebar") { mode != "docked" || tabsX() >= Sidebar.minSidebarWidth }
             let history = try frame("history"), toggle = try frame("toggleSidebar")
-            XCTAssertEqual(history.minX, 96, mode)
+            let lights = try XCTUnwrap(owner.window.standardWindowButton(.zoomButton)).convert(try XCTUnwrap(owner.window.standardWindowButton(.zoomButton)).bounds, to: nil)
+            XCTAssertGreaterThanOrEqual(history.minX, lights.maxX, mode)
+            XCTAssertLessThanOrEqual(history.minX - lights.maxX, 16, mode)
             XCTAssertEqual(history.width, 64, mode)
             XCTAssertGreaterThanOrEqual(toggle.minX, history.maxX, mode)
             if mode != "docked" {
@@ -301,12 +303,12 @@ import WebKit
             owner.sidebar.refreshHistory()
             XCTAssertEqual(buttons.map(\.alphaValue), [1, 1])
             let strip = root.convert(NSRect(x: 0, y: history.minY - 4, width: owner.window.frame.width, height: 36), from: nil)
-            if let failure = verifySnapshot(of: try croppedImage(root, to: strip), as: .image, named: "enabled-\(theme)-" + mode, record: record),
+            if let failure = verifySnapshot(of: try croppedImage(root, to: strip), as: .pixels, named: "enabled-\(theme)-" + mode, record: record),
                !record || !failure.hasPrefix("Record mode is on.") { XCTFail(failure) }
             owner.sidebar.canGo = { $0 == .forward }
             owner.sidebar.refreshHistory()
             await mainQueueFence()
-            if let failure = verifySnapshot(of: try croppedImage(root, to: strip), as: .image, named: "back-disabled-\(theme)-" + mode, record: record),
+            if let failure = verifySnapshot(of: try croppedImage(root, to: strip), as: .pixels, named: "back-disabled-\(theme)-" + mode, record: record),
                !record || !failure.hasPrefix("Record mode is on.") { XCTFail(failure) }
             owner.sidebar.canGo = { _ in false }
             owner.sidebar.refreshHistory()

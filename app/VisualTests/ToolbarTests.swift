@@ -73,7 +73,7 @@ func assertPaperPixel(_ image: NSBitmapImageRep, x: Int, y: Int, expected: [Doub
                 XCTAssertEqual(green > 0, activity, "\(mode) visible marks")
                 if mode != "floating" {
                     let record = ProcessInfo.processInfo.environment["KIDO_VISUAL_RECORD"] == "1"
-                    if let failure = verifySnapshot(of: image, as: .image, named: "\(name)-\(mode)", record: record),
+                    if let failure = verifySnapshot(of: image, as: .pixels, named: "\(name)-\(mode)", record: record),
                        !record || !failure.hasPrefix("Record mode is on.") { XCTFail(failure) }
                 }
             }
@@ -120,7 +120,7 @@ func assertPaperPixel(_ image: NSBitmapImageRep, x: Int, y: Int, expected: [Doub
                     XCTAssertEqual(selections, 0)
                     XCTAssertEqual(tabs.view(tabs, stringForToolTip: 0, point: .zero, userData: nil), "buildbox")
                 }
-                if let failure = verifySnapshot(of: try headerImage(tabs), as: .image, named: "\(name)-\(mode)", record: record),
+                if let failure = verifySnapshot(of: try headerImage(tabs), as: .pixels, named: "\(name)-\(mode)", record: record),
                    !record || !failure.hasPrefix("Record mode is on.") { XCTFail(failure) }
             }
         }
@@ -165,7 +165,7 @@ func assertPaperPixel(_ image: NSBitmapImageRep, x: Int, y: Int, expected: [Doub
                 let image = NSImage(size: shadow.frame.size)
                 image.addRepresentation(bitmap)
                 let record = ProcessInfo.processInfo.environment["KIDO_VISUAL_RECORD"] == "1"
-                if let failure = verifySnapshot(of: image, as: .image, named: "\(appearance.rawValue)-\(mode == "shrunk" || mode == "wide" ? "expanded" : mode)", record: record),
+                if let failure = verifySnapshot(of: image, as: .pixels, named: "\(appearance.rawValue)-\(mode == "shrunk" || mode == "wide" ? "expanded" : mode)", record: record),
                    !record || !failure.hasPrefix("Record mode is on.") { XCTFail(failure) }
             }
         }
@@ -208,6 +208,8 @@ func assertPaperPixel(_ image: NSBitmapImageRep, x: Int, y: Int, expected: [Doub
             header.setFrame(NSRect(x: owner.window.frame.minX, y: owner.window.frame.maxY - 52, width: 900, height: 52), display: false)
             let transferredShadow = ShadowStandIn()
             headerContent.addSubview(transferredShadow, positioned: .below, relativeTo: transferredTabs)
+            final class Gap { var value: CGFloat? }
+            let gap = Gap()
             for mode in ["docked", "docked-wide", "collapsed", "floating"] {
                 owner.sidebar.dismissFloating()
                 owner.sidebar.isCollapsed = !mode.hasPrefix("docked")
@@ -221,9 +223,10 @@ func assertPaperPixel(_ image: NSBitmapImageRep, x: Int, y: Int, expected: [Doub
                     XCTAssertEqual(terminal.width, owner.sidebar.splitView.bounds.width)
                 }
                 let tabsRect = owner.sidebar.tabs.convert(owner.sidebar.tabs.bounds, to: root)
-                windowedShadow.frame = NSRect(x: tabsRect.minX - 8, y: 0, width: 12, height: owner.window.contentView!.bounds.height)
+                let sidebarEdge = owner.sidebar.list.convert(owner.sidebar.list.bounds, to: root).maxX
+                windowedShadow.frame = NSRect(x: sidebarEdge, y: 0, width: 12, height: owner.window.contentView!.bounds.height)
                 transferredTabs.frame = NSRect(x: tabsRect.minX, y: 8, width: tabsRect.width, height: 36)
-                transferredShadow.frame = NSRect(x: tabsRect.minX - 8, y: 0, width: 12, height: headerContent.bounds.height)
+                transferredShadow.frame = NSRect(x: sidebarEdge, y: 0, width: 12, height: headerContent.bounds.height)
                 windowedShadow.isHidden = mode == "collapsed"
                 transferredShadow.isHidden = mode != "floating"
                 XCTAssertEqual(owner.sidebar.list.layer?.cornerRadius, mode == "floating" ? 18 : 0, "docked sidebar must have square corners")
@@ -239,7 +242,7 @@ func assertPaperPixel(_ image: NSBitmapImageRep, x: Int, y: Int, expected: [Doub
                     let finishLayout: @MainActor @Sendable () -> Void = {
                         let edge = owner.sidebar.list.convert(owner.sidebar.list.bounds, to: root).maxX
                         let left = tabs.convert(tabs.bounds, to: root).minX
-                        if abs(owner.sidebar.list.bounds.width - 320) < 0.5, abs(left - edge - 8) < 0.5 {
+                        if abs(owner.sidebar.list.bounds.width - 320) < 0.5, let first = gap.value, abs(left - edge - first) < 0.5 {
                             laidOut.fulfill()
                         }
                     }
@@ -248,6 +251,7 @@ func assertPaperPixel(_ image: NSBitmapImageRep, x: Int, y: Int, expected: [Doub
                     }
                     defer { NotificationCenter.default.removeObserver(observation) }
                     for width in [CGFloat(256), 320] {
+                        gap.value = tabs.convert(tabs.bounds, to: root).minX - owner.sidebar.list.convert(owner.sidebar.list.bounds, to: root).maxX
                         owner.sidebar.splitView.setPosition(width, ofDividerAt: 0)
                         root.layoutSubtreeIfNeeded()
                         owner.sidebar.viewDidLayout()
@@ -340,7 +344,7 @@ func assertPaperPixel(_ image: NSBitmapImageRep, x: Int, y: Int, expected: [Doub
                     let sidebarRect = owner.sidebar.list.convert(owner.sidebar.list.bounds, to: root)
                     if mode == "floating" {
                         let tabs = owner.sidebar.tabs
-                        XCTAssertEqual(tabs.convert(tabs.bounds, to: root).minX, sidebarRect.maxX + 8, accuracy: 0.5)
+                        XCTAssertEqual(tabs.convert(tabs.bounds, to: root).minX, sidebarRect.maxX + (try XCTUnwrap(gap.value)), accuracy: 0.5)
                         XCTAssertEqual(tabs.entries.count, 1)
                         XCTAssertEqual(tabs.entries.first?.active, true)
                         XCTAssertEqual(tabs.effectiveAppearance.name, owner.window.effectiveAppearance.name)
@@ -351,14 +355,14 @@ func assertPaperPixel(_ image: NSBitmapImageRep, x: Int, y: Int, expected: [Doub
                     let image = NSImage(size: corners.size)
                     image.addRepresentation(bitmap)
                     let record = ProcessInfo.processInfo.environment["KIDO_VISUAL_RECORD"] == "1"
-                    if let failure = verifySnapshot(of: image, as: .image, named: mode == "docked" ? "windowed-corners-\(hex)" : "windowed-floating-corners-\(hex)", record: record),
+                    if let failure = verifySnapshot(of: image, as: .pixels, named: mode == "docked" ? "windowed-corners-\(hex)" : "windowed-floating-corners-\(hex)", record: record),
                        !record || !failure.hasPrefix("Record mode is on.") { XCTFail(failure) }
                 }
                 // This white native-host stand-in pins uncovered geometry, not composited Liquid Glass.
                 let snapshot = NSImage(size: headerContent.bounds.size)
                 snapshot.addRepresentation(hostImage)
                 let record = ProcessInfo.processInfo.environment["KIDO_VISUAL_RECORD"] == "1"
-                if let failure = verifySnapshot(of: snapshot, as: .image, named: "fullscreen-\(hex)-\(mode)", record: record),
+                if let failure = verifySnapshot(of: snapshot, as: .pixels, named: "fullscreen-\(hex)-\(mode)", record: record),
                    !record || !failure.hasPrefix("Record mode is on.") { XCTFail(failure) }
                 for (name, view, tabs) in [("windowed", root, owner.sidebar.tabs), ("transferred", headerContent, transferredTabs)] {
                     let image = try XCTUnwrap(view.bitmapImageRepForCachingDisplay(in: view.bounds))
@@ -449,7 +453,7 @@ func assertPaperPixel(_ image: NSBitmapImageRep, x: Int, y: Int, expected: [Doub
                     let image = NSImage(size: rect.size)
                     image.addRepresentation(bitmap)
                     let record = ProcessInfo.processInfo.environment["KIDO_VISUAL_RECORD"] == "1"
-                    if let failure = verifySnapshot(of: image, as: .image, named: "\(hex)-\(value == "30%" ? "darker" : "lighter")-\(mode)", record: record),
+                    if let failure = verifySnapshot(of: image, as: .pixels, named: "\(hex)-\(value == "30%" ? "darker" : "lighter")-\(mode)", record: record),
                        !record || !failure.hasPrefix("Record mode is on.") { XCTFail(failure) }
                 }
             }
@@ -589,7 +593,7 @@ func assertPaperPixel(_ image: NSBitmapImageRep, x: Int, y: Int, expected: [Doub
             let image = NSImage(size: rect.size)
             image.addRepresentation(bitmap)
             let record = ProcessInfo.processInfo.environment["KIDO_VISUAL_RECORD"] == "1"
-            if let failure = verifySnapshot(of: image, as: .image, named: floating ? "floating" : "docked", record: record, testName: testName),
+            if let failure = verifySnapshot(of: image, as: .pixels, named: floating ? "floating" : "docked", record: record, testName: testName),
                !record || !failure.hasPrefix("Record mode is on.") { XCTFail(failure) }
         }
     }
@@ -644,7 +648,7 @@ func assertPaperPixel(_ image: NSBitmapImageRep, x: Int, y: Int, expected: [Doub
                     let snapshot = NSImage(size: view.bounds.size)
                     snapshot.addRepresentation(image)
                     let record = ProcessInfo.processInfo.environment["KIDO_VISUAL_RECORD"] == "1"
-                    if let failure = verifySnapshot(of: snapshot, as: .image, named: "fullscreen-switch-\(index % 2)-\(hex)", record: record),
+                    if let failure = verifySnapshot(of: snapshot, as: .pixels, named: "fullscreen-switch-\(index % 2)-\(hex)", record: record),
                        !record || !failure.hasPrefix("Record mode is on.") { XCTFail(failure) }
                 }
                 let pixels = try XCTUnwrap(image.converting(to: .sRGB, renderingIntent: .default))

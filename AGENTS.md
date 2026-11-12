@@ -486,6 +486,12 @@ selects them. `scripts/verify.sh` scrubs `KO_STATE_DIR`, `KO_PANE`,
 the tests. Kido.app has its own checks in `app/` (docs/design-app.md,
 "Testing").
 
+**Visual snapshots belong to the guest.** `make -C app visual` builds
+on the host and runs in the visual-test VM on one pinned macOS build
+(docs/build.md, "The visual-test VM"). Never record snapshots on the
+host. A visual test never asserts a position that AppKit decides: it
+reads the live view or checks the rule.
+
 **Which verification.** Agents verify a unit with `scripts/checks.sh`
 (`make checks`; `DRY=1` prints only the plan, `BASE=ref` sets the
 base). It reads the paths that the unit changed, finds the checks of

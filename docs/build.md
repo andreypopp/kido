@@ -233,6 +233,66 @@ which they source. `bench/client.py` runs the `ko` that `KO_BIN`
 names, which measures a reference build (design-ko.md,
 "Performance"), else it runs `make build` and uses `build/ko/bin/ko`.
 
+## The visual-test VM
+
+Kido.app's visual snapshots are recorded and checked only in one guest
+VM. The host's macOS and the host's GPU are not a reference, so a host
+update never changes a snapshot. `app/vm/` is a Swift package without
+dependencies. `make -C app vm` builds `kido-vm` and signs it ad hoc with
+the `com.apple.security.virtualization` entitlement. Its state is in
+`~/.local/state/kido-vm/`, outside the repository: the sparse disk, the
+restore image, the machine identity, the SSH key and the locks.
+
+`app/vm/Sources/kido-vm/main.swift` defines the commands, the shares and
+the guest settings. `install` downloads the latest supported macOS
+restore image and installs it. `up` starts the VM if it is not running,
+waits up to 300 s for SSH, and then sets up the guest once; it is safe to
+run again. `down` stops the guest. `exec --dir PATH -- CMD` runs a
+command in the guest in the same absolute path. PATH must be under
+`~/Workspace` or `/tmp`: the guest shares only those two, and `exec`
+refuses other paths. `exec` runs one command at a time; a second one
+prints that it waits for the VM and then goes on. `make visual`,
+`visual-fast` and `visual-slow` build for testing on the host, with the
+existing derived data, and run `test-without-building` in the guest
+through `exec`. `ONLY=` and `RECORD=1` work as before. `ko-test` and the
+app's unit tests stay on the host. `make vm-up` and `make vm-down` start
+and stop the guest.
+
+The guest is macOS 27.2.1, build 26B131. `pinnedGuestBuild` in `main.swift`
+is that build, and every `exec` prints the guest's macOS version and
+refuses to run when the build differs, so an unnoticed guest update
+never records new snapshots. To move to a new guest macOS, install it,
+change `pinnedGuestBuild` and record every snapshot again in the same
+commit.
+
+What the setup does, and why:
+
+- Xcode (read-only), Homebrew (read-only), `~/Workspace` and `/tmp`
+  are virtiofs shares. The guest links `~/Workspace` and `/opt/homebrew`
+  to the shares, so the host paths that the build products contain
+  exist in the guest. `xcode-select` points to the shared Xcode:
+  the tests start `/usr/bin/python3` with an environment without
+  `DEVELOPER_DIR`. `/usr/local/bin/node` links to Homebrew's `node`,
+  because koa needs `node` on the default `PATH`.
+- The display is 3840x2400 at 144 ppi.
+- `exec` mounts the share again before each run. Without this, the
+  guest keeps a stale view of a directory that the host deleted and
+  created again (`xcodegen` does this to `Kido.xcodeproj`). A new mount
+  makes the first run of each binary on a share slow (about 6 s for
+  `python3` and `node`), so `app/scripts/visual-guest.sh` runs both once
+  before the tests.
+- The guest installs no updates: the `AutomaticCheckEnabled`,
+  `AutomaticDownload`, `AutomaticallyInstallMacOSUpdates`,
+  `ConfigDataInstall` and `CriticalUpdateInstall` defaults are false,
+  `softwareupdate --schedule off` runs, and `/etc/hosts` sends the
+  Apple update servers (`swscan`, `swdist`, `swcdn`, `mesu`, `gdmf`
+  and `xp.apple.com`) to `0.0.0.0`. macOS 27.2.1 still prints that
+  automatic checking is on after `--schedule off`. The build pin is
+  the real guard.
+- The guest builds nothing: the host builds, and the guest uses the
+  derived data and the resolved packages of the host
+  (`-disableAutomaticPackageResolution`).
+
 ## The share tree and the scripts
 
     share/ko/           the source of share/ko as installed:

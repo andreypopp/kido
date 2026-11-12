@@ -2,6 +2,7 @@ export DEVELOPER_DIR ?= /Applications/Xcode.app/Contents/Developer
 
 KO_CHECKOUT ?= ..
 KO_ABS = $(abspath $(KO_CHECKOUT))
+VM_BIN = vm/.build/out/Products/Release/kido-vm
 
 # xcodebuild prints one unindented line for each task and each test case and indents the command lines
 # that follow; the filter keeps the progress and drops the commands.
@@ -16,7 +17,7 @@ APP = $(DERIVED)/Build/Products/$(CONFIG)/Kido.app
 INSTALL_DIR ?= /Applications
 RELEASE_APP = build/xcode.noindex/derived-release/Build/Products/Release/Kido.app
 
-.PHONY: install release-build ko-test ko-model ko-fixtures visual visual-fast visual-slow project all run test clean tsan asan stress tsan-stress asan-stress demo demo-debug demo-build demo-stop release rtt
+.PHONY: vm vm-up vm-down install release-build ko-test ko-model ko-fixtures visual visual-fast visual-slow project all run test clean tsan asan stress tsan-stress asan-stress demo demo-debug demo-build demo-stop release rtt
 
 project:
 	ln -sfn "$$(GHOSTTY_OPTIMIZE=$(GHOSTTY_OPTIMIZE) scripts/build-ghosttykit.sh)" build/GhosttyKit.xcframework
@@ -65,7 +66,7 @@ visual: VISUAL_FLAG =
 visual-fast: VISUAL_FLAG = skip
 visual-slow: VISUAL_FLAG = only
 visual visual-fast visual-slow: DERIVED = build/xcode.noindex/derived-visual
-visual visual-fast visual-slow: project
+visual visual-fast visual-slow: project vm
 	mkdir -p build/bundle/visual/{home,state}
 	clang -dynamiclib -Werror -Wno-deprecated-declarations scripts/renderer-probes.c -framework CoreVideo -o build/bundle/visual/renderer-probes.dylib
 	@set -eo pipefail; select=''; \
@@ -80,12 +81,11 @@ visual visual-fast visual-slow: project
 		done < VisualTests/slow.txt; \
 		test '$(VISUAL_FLAG)' != only || test -n "$$select" || { echo "slow.txt: selects no tests" >&2; exit 1; }; \
 	fi; \
-	server=$$(mktemp -d /tmp/ka-visual-XXXXXX) || exit 1; \
-	trap '$(KO_ABS)/build/ko/bin/ko kill-server --server "$$server" 2>/dev/null || true; rm -rf "$$server"' EXIT; \
-	xcodebuild -project Kido.xcodeproj -scheme Visual -configuration Debug KIDO_VISUAL_SERVER="$$server" \
-		-destination platform=macOS -derivedDataPath $(DERIVED) KO_CHECKOUT=$(KO_ABS) KIDO_VISUAL_CONDITION=KIDO_VISUAL \
-		KIDO_VISUAL_RECORD=$(RECORD) KOA_STRESS=$(KOA_STRESS) KOA_STRESS_VISIBLE=$(KOA_STRESS_VISIBLE) KOA_STRESS_TESTS="$(ONLY)" KOA_STRESS_OUTPUT=$(KOA_STRESS_OUTPUT) $(foreach test,$(ONLY),-only-testing:VisualTests/$(test)) $$select test 2>&1 | $(XCODE_PROGRESS)
-	python3 scripts/quit-check.py $(abspath $(APP))
+	settings="KIDO_VISUAL_SERVER=/tmp/ka-visual-vm KO_CHECKOUT=$(KO_ABS) KIDO_VISUAL_CONDITION=KIDO_VISUAL KIDO_VISUAL_RECORD=$(RECORD) KOA_STRESS=$(KOA_STRESS) KOA_STRESS_VISIBLE=$(KOA_STRESS_VISIBLE) KOA_STRESS_OUTPUT=$(KOA_STRESS_OUTPUT)"; \
+	only='$(foreach test,$(ONLY),-only-testing:VisualTests/$(test)) '"$$select"; \
+	xcodebuild -project Kido.xcodeproj -scheme Visual -configuration Debug -destination platform=macOS -derivedDataPath $(DERIVED) \
+		$$settings KOA_STRESS_TESTS="$(ONLY)" $$only build-for-testing 2>&1 | $(XCODE_PROGRESS); \
+	$(VM_BIN) exec --dir $(CURDIR) $(if $(filter 1,$(KOA_STRESS)),--link $(KOA_STRESS_OUTPUT)) -- scripts/visual-guest.sh "$$settings" "$(ONLY)" $$only
 
 .PHONY: koa-stress koa-stress-root
 koa-stress-root:
@@ -151,3 +151,13 @@ test:
 clean:
 	rm -rf build/xcode.noindex/derived build/xcode.noindex/derived-demo build/xcode.noindex/derived-tsan build/xcode.noindex/derived-asan build/xcode.noindex/derived-stress build/xcode.noindex/derived-tsan-stress build/xcode.noindex/derived-asan-stress
 	[ ! -d Kido.xcodeproj ] || find Kido.xcodeproj -type f ! -name Package.resolved -delete
+
+vm-up: vm
+	$(VM_BIN) up
+
+vm-down: vm
+	$(VM_BIN) down
+
+vm:
+	@set -eo pipefail; swift build --package-path vm -c release 2>&1 | $(SWIFT_PROGRESS)
+	codesign --force --sign - --entitlements vm/kido-vm.entitlements $(VM_BIN)

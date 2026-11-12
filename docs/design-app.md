@@ -2954,7 +2954,12 @@ Ghostty's build needs and Xcode downloads separately,
 restores GhosttyKit from a cache keyed by the pin and
 `app/scripts/build-ghosttykit.sh`, and runs `make test` and `make ko-test`.
 `make visual` runs only locally (docs/known-issues-app.md, "Visual tests do
-not run in CI").
+not run in CI"), and only in the guest VM (docs/build.md, "The visual-test
+VM"): the host builds, and the guest runs the tests. Snapshots are recorded
+and checked in the guest only, on its fixed macOS build. An assertion in a
+visual test never holds a position or a size that AppKit's own layout
+decides, because the guest's AppKit differs from the host's: the test reads
+the live view (the traffic lights, the first measured gap) or checks the rule.
 
 `app/Packages/PromptMarkdown/Package.resolved` pins only that package's graph,
 for `swift test`. The project's graph, with SnapshotTesting and its
@@ -2993,8 +2998,9 @@ applies pending window layout first and retries a discarded frame at most
 twice: the settle poll can end before a pane takes its new size, and Ghostty
 discards the frame drawn at the old size. A refused request or backend failure
 fails the test. Native fixture
-windows use Display P3, matching the references rather than the attached
-monitor's calibrated profile. The off-screen floating-sidebar fill takes its
+windows use Display P3, matching the references rather than the guest
+display's profile, and `Snapshotting.pixels` compares the decoded pixel
+values, so an embedded colour profile alone never fails a test. The off-screen floating-sidebar fill takes its
 rounded corners from the sidebar layer; the transparent corners show the
 underlying window/terminal, not a cached opaque material rectangle.
 Each visual target also launches a private, background copy and sends SIGTERM

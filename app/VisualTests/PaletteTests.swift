@@ -397,7 +397,7 @@ import PaneGeometry
     private func image(_ palette: PaletteView, _ name: String) {
         palette.layoutSubtreeIfNeeded()
         let record = ProcessInfo.processInfo.environment["KIDO_VISUAL_RECORD"] == "1"
-        if let failure = verifySnapshot(of: palette, as: .image, named: name, record: record, testName: "palette"),
+        if let failure = verifySnapshot(of: palette, as: .pixels, named: name, record: record, testName: "palette"),
            !record || !failure.hasPrefix("Record mode is on.") { XCTFail(failure) }
     }
 

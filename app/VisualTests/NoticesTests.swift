@@ -117,12 +117,12 @@ import XCTest
                 let crop = anchors.contains(name) ? nil : root.convert(owner.sidebar.content.bounds, from: owner.sidebar.content)
                 if state.hasPrefix("fullscreen-") {
                     let image = try fullscreenHostImage(owner, root: root, crop: crop)
-                    checkSnapshot { verifySnapshot(of: image, as: .image, named: name, record: $0) }
+                    checkSnapshot { verifySnapshot(of: image, as: .pixels, named: name, record: $0) }
                 } else if let crop {
                     let image = try croppedImage(root, to: crop)
-                    checkSnapshot { verifySnapshot(of: image, as: .image, named: name, record: $0) }
+                    checkSnapshot { verifySnapshot(of: image, as: .pixels, named: name, record: $0) }
                 } else {
-                    checkSnapshot { verifySnapshot(of: root, as: .image, named: name, record: $0) }
+                    checkSnapshot { verifySnapshot(of: root, as: .pixels, named: name, record: $0) }
                 }
             }
             owner.close()

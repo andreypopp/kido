@@ -179,7 +179,7 @@ import KoModel
                     list.displayIfNeeded()
                     XCTAssertEqual(section.frame, footer)
                     XCTAssertGreaterThan(list.visualScroll.contentView.bounds.minY, 0)
-                    checkSnapshot { verifySnapshot(of: list, as: .image, named: name, record: $0, testName: "runtime-section") }
+                    checkSnapshot { verifySnapshot(of: list, as: .pixels, named: name, record: $0, testName: "runtime-section") }
                 } else {
                     sidebarSnapshot(list, name, testName: "runtime-section")
                 }

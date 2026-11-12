@@ -85,14 +85,14 @@ import XCTest
         XCTAssertFalse(owner.window.isKeyWindow)
         XCTAssertFalse(NSApp.isActive)
         let record = ProcessInfo.processInfo.environment["KIDO_VISUAL_RECORD"] == "1"
-        if let failure = verifySnapshot(of: try headerImage(sidebar.tabs), as: .image, named: "middle", record: record),
+        if let failure = verifySnapshot(of: try headerImage(sidebar.tabs), as: .pixels, named: "middle", record: record),
            !record || !failure.hasPrefix("Record mode is on.") { XCTFail(failure) }
         sidebar.isCollapsed = true
         root.layoutSubtreeIfNeeded()
         sidebar.viewDidLayout()
         XCTAssertGreaterThanOrEqual(sidebar.tabs.convert(sidebar.tabs.bounds, to: root).minX, 116)
         await mainQueueFence()
-        if let failure = verifySnapshot(of: try headerImage(sidebar.tabs), as: .image, named: "collapsed", record: record),
+        if let failure = verifySnapshot(of: try headerImage(sidebar.tabs), as: .pixels, named: "collapsed", record: record),
            !record || !failure.hasPrefix("Record mode is on.") { XCTFail(failure) }
         let client = try XCTUnwrap(owner.testClient)
         _ = try await Task.detached { try client.delete(KO_DELETE_WINDOW, child) }.value
@@ -347,7 +347,7 @@ import XCTest
         }
         CATransaction.flush()
         let record = ProcessInfo.processInfo.environment["KIDO_VISUAL_RECORD"] == "1"
-        if let failure = verifySnapshot(of: root, as: .image, named: "collapsed-floating", record: record),
+        if let failure = verifySnapshot(of: root, as: .pixels, named: "collapsed-floating", record: record),
            !record || !failure.hasPrefix("Record mode is on.") { XCTFail(failure) }
     }
 
@@ -741,7 +741,7 @@ import XCTest
         }
         let record = ProcessInfo.processInfo.environment["KIDO_VISUAL_RECORD"] == "1"
         let snapshots = URL(fileURLWithPath: #filePath).deletingLastPathComponent().appendingPathComponent("__Snapshots__/PaletteTests").path
-        if let failure = verifySnapshot(of: scene, as: .image, named: "light-window-root", record: record, snapshotDirectory: snapshots, testName: "palette"),
+        if let failure = verifySnapshot(of: scene, as: .pixels, named: "light-window-root", record: record, snapshotDirectory: snapshots, testName: "palette"),
            !record || !failure.hasPrefix("Record mode is on.") { XCTFail(failure) }
     }
 

@@ -187,7 +187,7 @@ import XCTest
                 XCTAssertFalse(window.isVisible || NSApp.isActive)
                 let name = "\(error ? "error" : "editing")-\(dark ? "dark" : "light")"
                 let record = ProcessInfo.processInfo.environment["KIDO_VISUAL_RECORD"] == "1"
-                if let failure = verifySnapshot(of: list, as: .image, named: name, record: record),
+                if let failure = verifySnapshot(of: list, as: .pixels, named: name, record: record),
                    !record || !failure.hasPrefix("Record mode is on.") { XCTFail(failure) }
             }
             cell.nameField.stringValue = "typing"
