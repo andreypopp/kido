@@ -4,7 +4,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import type { components } from "./ko-api.d.ts";
-import { apiCall, KO_TIMEOUT_MS, lineReader, openStream } from "./runtime-exec.ts";
+import { apiCall, findKo, KO_TIMEOUT_MS, lineReader, openStream } from "./runtime-exec.ts";
 import { errorText, isRecord } from "./text.ts";
 import { later } from "./koa-timer.ts";
 
@@ -158,7 +158,7 @@ export function koaEditor(options: { agentDir: string; cwd: () => string; sessio
       if (put.status !== 409 || attempt >= STALE_RETRIES) return { error: `the layout was refused (${put.status})` };
     }
   };
-  const start = async (run: Run, text: string, self: string, argv: string[]): Promise<{ pane: string } | { error: string }> => {
+  const start = async (run: Run, text: string, self: string, ko: string, argv: string[]): Promise<{ pane: string } | { error: string }> => {
     const session = options.session();
     let dir: string | undefined, observer: ChildProcess | undefined, pane: string | undefined;
     const proceed = () => { if (run.cancelled) throw new Error("The editor was cancelled"); if (run.lost) throw new Error("Editor link lost"); };
@@ -170,7 +170,7 @@ export function koaEditor(options: { agentDir: string; cwd: () => string; sessio
       const watch = await observe(run);
       observer = watch.child;
       proceed();
-      const placed = await place({ command: { type: "argv", argv: [...argv, file] }, cwd: options.cwd(), parent: self, close: "on_exit" }, self);
+      const placed = await place({ command: { type: "argv", argv: [ko, "shell", "--", ...argv, file] }, cwd: options.cwd(), parent: self, close: "on_exit" }, self);
       if ("error" in placed) throw new Error(placed.error);
       pane = placed.pane;
       proceed();
@@ -196,9 +196,11 @@ export function koaEditor(options: { agentDir: string; cwd: () => string; sessio
       const self = process.env.KO_PANE;
       if (!self) return Promise.resolve({ error: "C-g needs a ko pane" });
       if (process.env.KO_RUNTIME) return Promise.resolve({ error: "C-g cannot open an editor from inside a runtime" });
+      const ko = findKo();
+      if (!ko) return Promise.resolve({ error: "ko is not on PATH" });
       const run: Run = { cancelled: false, lost: false, done: Promise.resolve() };
       stage = { type: "opening", run };
-      const work = start(run, text, self, editorCommand(options.agentDir, options.cwd(), process.env));
+      const work = start(run, text, self, ko, editorCommand(options.agentDir, options.cwd(), process.env));
       run.done = work;
       return work;
     },

@@ -919,6 +919,10 @@ composer's text; koa never sends it.
   project's `.pi/settings.json`, then of the agent directory's
   `settings.json`, then `$VISUAL`, `$EDITOR` and `nano`, split on
   spaces as pi splits it. The draft's path is the last argument.
+- **The login environment.** The float runs the command under `ko
+  shell --`, like a spawned agent, so the editor gets what the user's
+  dotfiles set, such as `NVIM_APPNAME` (docs/design.md, "The login
+  environment", names the shells whose dotfiles `ko shell` reads).
 - **The draft** is `koa-draft-<pane>.md` in a new private directory
   under the temporary directory, so the editor highlights Markdown;
   the file is `0600` and is created, never reused. koa removes the

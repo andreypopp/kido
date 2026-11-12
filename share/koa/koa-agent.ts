@@ -36,10 +36,10 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { type ChildProcess, spawn, spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { type WriteStream, accessSync, constants, createWriteStream, mkdirSync, readFileSync, readdirSync, realpathSync, statSync } from "node:fs";
+import { type WriteStream, createWriteStream, mkdirSync, readFileSync, readdirSync, realpathSync, statSync } from "node:fs";
 import os from "node:os";
 import { setCompletionContext } from "./completion-context.ts";
-import { runtimeExec, lineReader, openStream, runCommand, apiCall, apiArgs, KO_TIMEOUT_MS, type Reply, type ExecOptions, type ExecResult } from "./runtime-exec.ts";
+import { runtimeExec, findKo, lineReader, openStream, runCommand, apiCall, apiArgs, KO_TIMEOUT_MS, type Reply, type ExecOptions, type ExecResult } from "./runtime-exec.ts";
 import { contentText, mintId, utf8Prefix, utf8Suffix, errorText, replaceControlCharacters, isRecord, isString, str } from "./text.ts";
 import { dirname, delimiter, extname, join, posix, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -65,20 +65,6 @@ const ENTRY_SENT = "koa.sent";
 type SendKind = Api["SendKind"];
 type Dead = Api["Dead"];
 
-
-function findKo(): string | null {
-  const path = process.env.PATH;
-  if (!path) return null;
-  for (const dir of path.split(delimiter)) {
-    if (!dir) continue;
-    const candidate = join(dir, "ko");
-    try {
-      accessSync(candidate, constants.X_OK);
-      return candidate;
-    } catch {}
-  }
-  return null;
-}
 
 const apiCallSync = (method: string, path: string, body: unknown): void => {
   spawnSync("ko", apiArgs(method, path, body), { timeout: 1000, input: JSON.stringify(body), stdio: ["pipe", "ignore", "ignore"] });

@@ -1,5 +1,7 @@
 import { spawn, type ChildProcess } from "node:child_process";
+import { accessSync, constants } from "node:fs";
 import os from "node:os";
+import { delimiter, join } from "node:path";
 import { errorText, isRecord, isString } from "./text.ts";
 import type { components } from "./ko-api.d.ts";
 import type { JobEnd } from "./records.ts";
@@ -166,3 +168,16 @@ export async function apiCall(method: string, path: string, body?: unknown, time
   return status ? { status: Number(status), body: res.out.trim() } : { error: res.error };
 }
 
+export function findKo(): string | null {
+  const path = process.env.PATH;
+  if (!path) return null;
+  for (const dir of path.split(delimiter)) {
+    if (!dir) continue;
+    const candidate = join(dir, "ko");
+    try {
+      accessSync(candidate, constants.X_OK);
+      return candidate;
+    } catch {}
+  }
+  return null;
+}

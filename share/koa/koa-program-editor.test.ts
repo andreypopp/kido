@@ -39,7 +39,7 @@ test("an edit with exit 0 replaces the draft, does not send it and leaves nothin
   const pane = await f.float();
   assert.equal(opened.body.pane, pane.id);
   const file = pane.file;
-  assert.deepEqual(pane.command, ["myeditor", "--flag", file]);
+  assert.deepEqual(pane.command, [join(f.dir, "ko"), "shell", "--", "myeditor", "--flag", file]);
   assert.equal(pane.parent, "pane_1");
   assert.equal(pane.close, "on_exit");
   assert.deepEqual({ ...pane.float }, { x: 8, y: 2, cols: 64, rows: 19, z: 0, border: true, title: "" });
