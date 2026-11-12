@@ -22,7 +22,7 @@ import { restartArgs } from "./koa-args.ts";
 import { koaChannel } from "./koa-channel.ts";
 import { shellComplete } from "./koa-shell.ts";
 import { attachments, stepFile, UPLOAD_IDLE_MS, isChunkRoute } from "./koa-attach.ts";
-import { commandCatalog, parseCommand, dispatchCommand, deferralText, type Deferral } from './koa-commands.ts';
+import { commandCatalog, parseCommand, dispatchCommand, deferralText, RESTART_BUSY, type Deferral } from './koa-commands.ts';
 import { installedIdentity } from './koa-identity.ts';
 import { bashCommand } from "./prompt.ts";
 import { prompts } from "./koa-queue.ts";
@@ -288,12 +288,14 @@ async function main(): Promise<void> {
       try { return await Promise.race([link.exited.then(() => true), timers.setTimeout(exitMs, false, { signal: controller.signal })]); }
       finally { controller.abort(); }
     };
-    teardown.push(async () => {
+    const stopPi = async () => {
       child.stdin.end();
       try {
         if (!await waitExit()) { signalChild(child, "SIGTERM"); if (!await waitExit()) { signalChild(child, "SIGKILL"); await waitExit(); } }
       } finally { link.close(); child.unref(); child.stdin.destroy(); child.stdout.destroy(); child.stderr.destroy(); }
-    });
+    };
+    teardown.push(stopPi);
+    let replacing: ChildProcessWithoutNullStreams | undefined;
     const dialogTimers = new Map<string, NodeJS.Timeout>();
     teardown.push(() => { for (const timer of dialogTimers.values()) clearTimeout(timer); dialogTimers.clear(); });
     const background = (work: Promise<unknown>) => { void work.catch(error => { if (pi.type !== "exited" && !stopping) process.stderr.write(`koa: ${errorText(error)}\n`); }); };
@@ -308,25 +310,30 @@ async function main(): Promise<void> {
       compaction = undefined;
       publish();
     };
+    let stderr = "";
+    const exitPi = (exit: Exit, link: ReturnType<typeof rpc>) => {
+      pi = { type: "exited", ...exit, at: Date.now(), stderr: stderr.trimEnd() }; state.working = false; delete state.since;
+      state.dialogs = []; state.statuses = {}; dropBash();
+      link.events(() => {});
+      for (const timer of dialogTimers.values()) clearTimeout(timer);
+      dialogTimers.clear();
+      if ("failed" in exit) process.stderr.write(`koa: ${exit.failed}\n`);
+      status("clear"); publish();
+    };
     const watch = (child: ChildProcessWithoutNullStreams, link: ReturnType<typeof rpc>) => {
-      let stderr = "";
+      stderr = "";
       child.stderr.on("error", error => { process.stderr.write(`koa: pi stderr: ${errorText(error)}\n`); });
       child.stderr.setEncoding("utf8");
       child.stderr.on("data", (text: string) => { stderr = (stderr + text).split(/\n(?=.)/s).slice(-5).join("\n"); process.stderr.write(text); });
       background(link.exited.then(async exit => {
+        if (replacing === child) return;
         if (compaction) finishCompaction({ type: 'failed', message: 'failed' in exit ? exit.failed : 'signal' in exit ? 'pi exited by ' + exit.signal : 'pi exited with code ' + exit.exited });
         settled?.(); settled = undefined;
         if ("exited" in exit && exit.exited === 0) {
           await shutdown();
           return;
         }
-        pi = { type: "exited", ...exit, at: Date.now(), stderr: stderr.trimEnd() }; state.working = false; delete state.since;
-        state.dialogs = []; state.statuses = {}; dropBash();
-        link.events(() => {});
-        for (const timer of dialogTimers.values()) clearTimeout(timer);
-        dialogTimers.clear();
-        if ("failed" in exit) process.stderr.write(`koa: ${exit.failed}\n`);
-        status("clear"); publish();
+        exitPi(exit, link);
         return timers.setTimeout(exitMs, undefined, { ref: false }).then(() => { child.stdout.destroy(); child.stderr.destroy(); });
       }));
     };
@@ -562,7 +569,7 @@ async function main(): Promise<void> {
           if (stopping || pi.type === "exited") throw new Error("pi is not running");
           break;
         case "ready": if (!running()) throw new Error(pi.type === "starting" ? "pi is starting" : "pi is not ready"); break;
-        case "alive": if (stopping || pi.type === "exited" || pi.type === "switching" || pi.type === "reloading") throw new Error("pi is not running"); break;
+        case "alive": if (stopping || pi.type === "exited" || pi.type === "switching" || pi.type === "reloading" || pi.type === "restarting") throw new Error("pi is not running"); break;
         case "exited": if (stopping || pi.type !== "exited") throw new Error("pi is already running"); break;
         case "any": break;
         default: { const unexpected: never = mode; throw new Error(unexpected); }
@@ -581,6 +588,41 @@ async function main(): Promise<void> {
       respond(response, 200, JSON.stringify({ disposition: "handled", action: { type: "reload" } }));
     };
     const reloadBusy = () => !running() || state.working || compaction || compactRequest && !compactRequest.ended || state.bash.some(item => item.phase !== 'completed') || pendingPrompts.view().steering.length || pendingPrompts.view().followUp.length || state.dialogs.length || edits.busy();
+    const deferred = async (): Promise<Deferral | undefined> => {
+      const restart = await sessions.restartState(AbortSignal.any([lifetime.signal, AbortSignal.timeout(1000)]));
+      return restart?.type === "blocked" ? restart.jobs ? { type: "jobs", count: restart.jobs } : { type: "children", count: restart.children } : !state.sessionFile ? { type: "no_session" } : !restart ? { type: "no_answer" } : undefined;
+    };
+    const startPi = async () => {
+      const args = restartArgs(pass, state.sessionFile);
+      if (compaction) finishCompaction({ type: 'failed', message: 'pi restarted during compaction' });
+      compactRequest = undefined;
+      sessions.close(); child = spawnPi(args); link = rpc(child); sessions = koaChannel(child.stdio[3]);
+      pi = { type: "starting" }; resetSession(); publish(true);
+      watch(child, link); link.events(records);
+      await refresh();
+    };
+    const piType = () => pi.type;
+    const restartPi = async (response: ServerResponse) => {
+      const answer = () => respond(response, 200, JSON.stringify({ disposition: "handled", action: { type: "none" } }));
+      const deferral = await deferred();
+      if (deferral) { feed.notify(deferralText(deferral, "restart"), "info"); answer(); return; }
+      if (reloadBusy()) { feed.notify(RESTART_BUSY, "warning"); answer(); return; }
+      link.invalidate(); link.events(() => {}); sessions.cancel(); pi = { type: "restarting" }; state.statuses = {}; publish();
+      replacing = child;
+      try {
+        await stopPi();
+        if (!stopping) { await startPi(); feed.notify("pi restarted", "info"); }
+      } catch (error) {
+        const message = errorText(error);
+        if (piType() !== "exited") {
+          replacing = child;
+          await stopPi().catch(() => {});
+          exitPi({ failed: message }, link);
+        }
+        feed.notify(`pi did not start: ${message}`, "error");
+      } finally { replacing = undefined; }
+      answer();
+    };
     const reload = async (response: ServerResponse) => {
       const generation = sessions.generation;
       link.invalidate(); sessions.cancel(); switchingUI = []; pi = { type: "reloading" }; state.statuses = {}; publish();
@@ -597,9 +639,8 @@ async function main(): Promise<void> {
       if (failure !== undefined) { feed.notify(errorText(failure), "error"); answer(); return; }
       const now = await installedIdentity(location).catch(() => undefined);
       if (identity === undefined || now === undefined || now === identity) { feed.notify("reloaded", "info"); answer(); return; }
-      const restart = await sessions.restartState(lifetime.signal);
-      const deferral: Deferral | undefined = restart?.type === "blocked" ? restart.jobs ? { type: "jobs", count: restart.jobs } : { type: "children", count: restart.children } : !state.sessionFile ? { type: "no_session" } : !restart ? { type: "no_answer" } : undefined;
-      if (deferral) feed.notify(deferralText(deferral), "info");
+      const deferral = await deferred();
+      if (deferral) feed.notify(deferralText(deferral, "reload"), "info");
       else if (reloadBusy()) feed.notify("reloaded", "info");
       else { restartKoa(response); return; }
       answer();
@@ -701,6 +742,7 @@ async function main(): Promise<void> {
           });
           if (action.type === 'quit') { await routes['/quit']?.handle({}, response); return; }
           if (action.type === 'reload') { await reload(response); return; }
+          if (action.type === 'restart') { await restartPi(response); return; }
           respond(response, 200, JSON.stringify({ disposition: 'handled', action })); return;
         }
         const files = await attached.prepare(prompt.attachments);
@@ -793,13 +835,7 @@ async function main(): Promise<void> {
         respond(response, 200, "{}");
       } },
       "/pi/start": { method: "POST", access: "exited", handle: async (_value, response) => {
-        const args = restartArgs(pass, state.sessionFile);
-        if (compaction) finishCompaction({ type: 'failed', message: 'pi restarted during compaction' });
-        compactRequest = undefined;
-        sessions.close(); child = spawnPi(args); link = rpc(child); sessions = koaChannel(child.stdio[3]);
-        pi = { type: "starting" }; resetSession();
-        watch(child, link); link.events(records);
-        await refresh(); respond(response, 200, "{}");
+        await startPi(); respond(response, 200, "{}");
       } },
       "/quit": { method: "POST", access: "any", handle: (_value, response) => {
         response.setHeader("Connection", "close");

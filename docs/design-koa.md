@@ -439,6 +439,23 @@ no dialog and no external editor, opening and closing included,
 because each is state that a reload or a restart cannot carry.
 Otherwise it is refused with a warning line.
 
+**`/restart` starts pi again.** It replaces only pi: koa's process,
+the page and the transcript stay, and the new pi's events append.
+It has the safety of `/reload`'s second layer, because a quit of pi
+ends the same state: the same idle rule refuses it with a warning
+line, then koa asks the extension for its running jobs and its
+unreported children, and defers with one info note, in the same
+order of reasons and with the same 1 s limit (`deferralText`). When
+nothing defers it and pi is still idle, pi goes `restarting`: koa
+drops the old pi's events and channel answers, stops the old pi as
+the shutdown does, and starts the new one by the path of "Start pi
+again" ("pi exits by itself" above), so it gets `--session` of the
+last `get_state`. The old pi's exit is the restart's own, so it
+shows no exit card and a code 0 does not end koa. While pi is
+`restarting`, the page shows "Restarting pi…" in its error line and
+blocks the composer; then pi is `starting` and `ready` as at start.
+A failed start shows pi's error and the exit card.
+
 **The private directory.** koa makes one directory `koa-<pid>-*` under
 the temporary directory at start (0700) for the image store and the
 uploads, and removes it at exit. A koa that dies by a signal leaves
@@ -499,6 +516,8 @@ the supported set; each runs over pi's RPC:
 - `/quit` shuts koa down as Control-D does.
 - `/reload` reloads pi in place, and replaces koa on the same
   session when koa was updated ("`/reload` reloads pi" above).
+- `/restart` starts pi again on its session ("`/restart` starts pi
+  again" above).
 
 Every other built-in is refused with a warning line, "/settings is
 not available in koa", and its text stays out of pi; completion does

@@ -44,6 +44,7 @@ if (process.argv.some(arg => arg.endsWith('/koa-resume.ts'))) {
 type Step = { type: "respond"; command: "get_state" | "get_entries" | "get_messages" | "get_session_stats" | "get_available_thinking_levels" | "get_commands"; data: object; after?: object[] } | { type: "emit"; event: object } | { type: "raw"; text: string } | { type: "stderr"; text: string } | { type: "wait"; command: string; events?: object[]; after?: object[]; data?: object; error?: string; echo?: boolean; gate?: boolean | string; defer?: boolean } | { type: "exit"; code: number } | { type: "repeat"; count: number; events: object[]; delayMs?: number };
 const script: Step[] = process.env.KOA_FAKE_SCRIPT ? readFileSync(process.env.KOA_FAKE_SCRIPT, "utf8").trim().split("\n").filter(Boolean).map(line => JSON.parse(line)) : [];
 let next = 0;
+if (process.env.KOA_FAKE_FAIL_FILE && existsSync(process.env.KOA_FAKE_FAIL_FILE)) process.exit(3);
 let working = false;
 let bash: { id: string; cancel(): Promise<void> } | undefined;
 const bashMessages: object[] = [];
@@ -199,7 +200,8 @@ if (process.argv.some(arg => arg.endsWith('/koa-agent.ts'))) {
       channel.write(JSON.stringify({ type: 'completion_context', id: query.id, context: process.env.KOA_FAKE_COMPLETION_CONTEXT ? JSON.parse(process.env.KOA_FAKE_COMPLETION_CONTEXT) : { type: 'host', cwd: sessionCwd } }) + '\n');
     } else if (query.type === 'restart_state') {
       const file = process.env.KOA_FAKE_RESTART_FILE;
-      channel.write(JSON.stringify({ type: 'restart_state', id: query.id, state: file && existsSync(file) ? JSON.parse(readFileSync(file, 'utf8')) : { type: 'ready' } }) + '\n');
+      const answer = file && existsSync(file) ? JSON.parse(readFileSync(file, 'utf8')) : { type: 'ready' };
+      if (answer.type !== 'silent') channel.write(JSON.stringify({ type: 'restart_state', id: query.id, state: answer }) + '\n');
     } else if (query.type === 'list') {
       const rows = JSON.parse(process.env.KOA_FAKE_SESSIONS_FILE ? readFileSync(process.env.KOA_FAKE_SESSIONS_FILE, 'utf8') : process.env.KOA_FAKE_SESSIONS ?? '[]');
       rows.sort((a: { modified: number }, b: { modified: number }) => b.modified - a.modified);

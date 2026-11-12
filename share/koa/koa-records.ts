@@ -50,7 +50,7 @@ export type Assistant = Extract<Item, { kind: "assistant" }>;
 export type WireAssistant = Omit<Assistant, "lifecycle">;
 export type WireItem = Exclude<Item, Assistant> | WireAssistant;
 export type Exit = { exited: number } | { signal: string } | { failed: string };
-export type Pi = { type: "starting" } | { type: "switching" } | { type: "reloading" } | { type: "ready" } | ({ type: "exited"; at: number; stderr: string } & Exit);
+export type Pi = { type: "starting" } | { type: "switching" } | { type: "reloading" } | { type: "restarting" } | { type: "ready" } | ({ type: "exited"; at: number; stderr: string } & Exit);
 export type Dialog = { type: "extension_ui_request"; id: string; title: string; expires?: number } & (
   { method: "select"; options: string[]; timeout?: number } |
   { method: "confirm"; message: string; timeout?: number } |

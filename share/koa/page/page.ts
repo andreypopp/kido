@@ -66,6 +66,12 @@ const editor = composer(element('prompt'), {
 });
 window.composer = editor;
 let reloading = false;
+let restartShown = false;
+function restartingLine() {
+  const restarting = state.pi.type === 'restarting';
+  if (restarting || restartShown) element('error').textContent = restarting ? 'Restarting pi…' : '';
+  restartShown = restarting;
+}
 const composerBlocked = () => reloading || state.pi.type !== 'ready' || state.dialogs.length > 0 || sessionPicker !== 'closed';
 
 if (!window.ko) {
@@ -929,7 +935,7 @@ function apply(record: PageRecord) {
     if (state.sessionId && state.sessionId !== record.sessionId) { closeSessions(); closePicker(); editorId = undefined; }
     const agentsChanged = JSON.stringify(state.agents) !== JSON.stringify(record.agents);
     const wasEditing = !!state.edit;
-    state = record; if (agentsChanged) refreshAgentCards(); document.body.dataset.sessionId = state.sessionId ?? ''; element('items').hidden = state.pi.type === 'switching'; refreshBash(); refreshComposer(); dialogs(); queue(); exited();
+    state = record; if (agentsChanged) refreshAgentCards(); document.body.dataset.sessionId = state.sessionId ?? ''; element('items').hidden = state.pi.type === 'switching'; restartingLine(); refreshBash(); refreshComposer(); dialogs(); queue(); exited();
     if (state.pi.type === 'ready' && state.editor && editorId !== state.editor.id) {
       editor.setText(state.editor.text); editorId = state.editor.id;
       void fetchJSON('/editor/ack', { sessionId: state.sessionId, id: state.editor.id }).catch(reportError);
