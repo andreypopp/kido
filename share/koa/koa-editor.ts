@@ -202,6 +202,7 @@ export function koaEditor(options: { agentDir: string; cwd: () => string; sessio
       run.done = work;
       return work;
     },
+    busy: () => stage.type !== "idle",
     cancel: () => cancel(),
   };
 }

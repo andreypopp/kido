@@ -2,13 +2,14 @@ import type { AgentRef, AgentOutcome, JobRef, JobEnd, Inbound } from "../pi/reco
 
 export const ATTACHMENT_LIMITS = { files: 16, fileBytes: 64 * 1024 * 1024, chunkBytes: 768 * 1024, pendingBytes: 256 * 1024 * 1024 };
 
+export const RELOAD_COMMAND = 'koa-reload';
 export type CompletionCommand = { name: string; description?: string; source: "extension" | "prompt" | "skill" | "builtin" };
 export type CompletionOption = { label: string; detail?: string; insert: string; cursor?: number } & ({ kind: "command"; source: CompletionCommand["source"]; matched: number[] } | { kind: "agent"; matched: number[] } | { kind: "file" | "directory" });
 export type CompletionQuery = { text: string; pos: number };
 export type PromptCompletion = { type: 'prompt'; from: number; to: number; options: CompletionOption[] };
 export type ShellCompletion = { type: 'shell'; from: number; to: number; options: { label: string; insert: string }[]; common: string; more: number };
 export type CompletionResult = PromptCompletion | ShellCompletion;
-export type CommandAction = { type: 'none' } | { type: 'picker'; kind: 'model' | 'thinking'; search: string } | { type: 'session'; kind: 'resume' | 'new' } | { type: 'quit' };
+export type CommandAction = { type: 'none' } | { type: 'picker'; kind: 'model' | 'thinking'; search: string } | { type: 'session'; kind: 'resume' | 'new' } | { type: 'quit' } | { type: 'reload' };
 export type PromptResult = { disposition: 'handled'; action: CommandAction } | { disposition: 'started' | 'queued' };
 export type CommandResult = { type: 'copy'; characters: number } | { type: 'export'; path: string } | { type: 'session'; stats: SessionStats; name: string; model?: { provider: string; id: string }; thinking?: ThinkingLevel } | { type: 'compaction'; state: { type: 'running' } | { type: 'done'; before: number; after?: number; summary: string } | { type: 'failed'; message: string } | { type: 'cancelled' } };
 export type SessionStats = { sessionFile: string | undefined; sessionId: string; userMessages: number; assistantMessages: number; toolCalls: number; toolResults: number; totalMessages: number; tokens: { input: number; output: number; cacheRead: number; cacheWrite: number; total: number }; cost: number; contextUsage?: { tokens: number | null; contextWindow: number; percent: number | null } };
@@ -49,7 +50,7 @@ export type Assistant = Extract<Item, { kind: "assistant" }>;
 export type WireAssistant = Omit<Assistant, "lifecycle">;
 export type WireItem = Exclude<Item, Assistant> | WireAssistant;
 export type Exit = { exited: number } | { signal: string } | { failed: string };
-export type Pi = { type: "starting" } | { type: "switching" } | { type: "ready" } | ({ type: "exited"; at: number; stderr: string } & Exit);
+export type Pi = { type: "starting" } | { type: "switching" } | { type: "reloading" } | { type: "ready" } | ({ type: "exited"; at: number; stderr: string } & Exit);
 export type Dialog = { type: "extension_ui_request"; id: string; title: string; expires?: number } & (
   { method: "select"; options: string[]; timeout?: number } |
   { method: "confirm"; message: string; timeout?: number } |
@@ -65,4 +66,4 @@ export function pathArg(block: Block | undefined): string | undefined {
 }
 
 export type Patch = { type: "patch"; seq: number; baseRevision: number; revision: number; blocks: ({ index: number; block: Block } | { index: number; suffix: string })[]; final: boolean; stop: string; error: string; ended?: number };
-export type PageRecord = { type: "reset"; epoch: string; more: boolean; items: WireItem[] } | { type: "item"; item: WireItem } | Patch | ({ type: "state" } & State) | { type: "flush"; bytes: number; t: number };
+export type PageRecord = { type: "reset"; epoch: string; more: boolean; items: WireItem[] } | { type: "item"; item: WireItem } | Patch | ({ type: "state" } & State) | { type: "flush"; bytes: number; t: number } | { type: "reload" };

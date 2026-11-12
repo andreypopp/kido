@@ -3,15 +3,26 @@ import { pathToFileURL } from 'node:url';
 import type { RpcCommand, RpcResponse } from '@earendil-works/pi-coding-agent';
 import type { CompletionCommand, CommandAction, CommandResult, SessionStats } from './koa-records.ts';
 
-const SUPPORTED = ['model', 'thinking', 'compact', 'session', 'copy', 'export', 'name', 'resume', 'new', 'quit'] as const;
+const SUPPORTED = ['model', 'thinking', 'compact', 'session', 'copy', 'export', 'name', 'resume', 'new', 'quit', 'reload'] as const;
 type Action = typeof SUPPORTED[number] | 'refuse';
 type Builtin = CompletionCommand & { action: Action };
 type Model = Extract<RpcResponse, { command: 'get_available_models'; success: true }>['data']['models'][number];
 export async function commandCatalog(root: string) {
   const { BUILTIN_SLASH_COMMANDS }: { BUILTIN_SLASH_COMMANDS: { name: string; description: string }[] } = await import(pathToFileURL(join(root, 'dist/core/slash-commands.js')).href);
   const entries = [...BUILTIN_SLASH_COMMANDS, ...['debug', 'arminsayshi', 'dementedelves'].map(name => ({ name, description: 'Not available in koa' }))];
-  const catalog: Builtin[] = [...SUPPORTED.flatMap(name => entries.filter(value => value.name === name)), ...entries.filter(value => !SUPPORTED.some(name => name === value.name))].map(value => ({ ...value, description: value.name === 'export' ? 'Export session as HTML' : value.description, source: 'builtin', action: SUPPORTED.find(name => name === value.name) ?? 'refuse' }));
+  const catalog: Builtin[] = [...SUPPORTED.flatMap(name => entries.filter(value => value.name === name)), ...entries.filter(value => !SUPPORTED.some(name => name === value.name))].map(value => ({ ...value, description: value.name === 'export' ? 'Export session as HTML' : value.name === 'reload' ? 'Reload extensions, settings and koa' : value.description, source: 'builtin', action: SUPPORTED.find(name => name === value.name) ?? 'refuse' }));
   return { catalog, completion: catalog.filter(value => value.action !== 'refuse') };
+}
+
+export type Deferral = { type: 'jobs'; count: number } | { type: 'children'; count: number } | { type: 'no_session' } | { type: 'no_answer' };
+const plural = (count: number, noun: string) => `${count} ${noun}${count === 1 ? '' : 's'}`;
+export function deferralText(deferral: Deferral): string {
+  switch (deferral.type) {
+    case 'jobs': return `reloaded · a newer koa waits for ${plural(deferral.count, 'job')}`;
+    case 'children': return `reloaded · a newer koa waits for ${plural(deferral.count, 'subagent')} to report`;
+    case 'no_session': return 'reloaded · a newer koa needs a saved session';
+    case 'no_answer': return 'reloaded · a newer koa waits; ko-pi did not answer, try /reload again';
+  }
 }
 
 export function parseCommand(text: string, catalog: readonly Builtin[]): { command: Builtin; args: string } | undefined {
@@ -28,6 +39,7 @@ export async function dispatchCommand(input: NonNullable<ReturnType<typeof parse
   outcome(result: CommandResult): void;
   compact(instructions?: string): void;
   thinking(level: string): Promise<void>;
+  reloadBusy(): boolean;
   name: string;
 }): Promise<CommandAction> {
   const { command, args } = input;
@@ -71,6 +83,10 @@ export async function dispatchCommand(input: NonNullable<ReturnType<typeof parse
     }
     case 'resume': case 'new': return { type: 'session', kind: command.action };
     case 'quit': return { type: 'quit' };
+    case 'reload':
+      if (!host.reloadBusy()) return { type: 'reload' };
+      host.notify('reload: not while a turn, a command, a queue, a dialog or an editor is open', 'warning');
+      break;
   }
   return { type: 'none' };
 }

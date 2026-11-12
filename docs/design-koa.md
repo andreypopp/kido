@@ -86,11 +86,13 @@ bash; `koa-attach.ts`, attachments; `koa-queue.ts`, the queue's
 attachments; `koa-child.ts`, the signals of koa's own children, pi's
 package lookup and the runs of the startup helper and the session
 picker; `koa-startup.ts`, the startup helper's extension;
-`koa-args.ts`, its rules for pi's parsed arguments; `koa-resume.ts`,
+`koa-args.ts`, its rules for pi's arguments at startup and at a restart; `koa-resume.ts`,
 the picker extension of `koa --resume`; `koa-commands.ts`, the
 built-in slash commands; `koa-sessions.ts`, the extension in the pi
-child that lists sessions for the page's `/resume`, over
-`koa-channel.ts`; `koa-session-dir.ts`, the session directory rule of
+child that lists sessions for the page's `/resume`, runs the pi
+reload of `/reload` and relays ko-pi's restart state, over
+`koa-channel.ts`; `koa-identity.ts`, the hash of koa's installed
+files; `koa-session-dir.ts`, the session directory rule of
 both pickers; `prompt.ts`, the prompt text rules that koa and its
 page share; `koa-fake-pi.ts`, the scripted pi of its suite
 `koa-*.test.ts`, and `koa-fake-tty.ts`, its terminal preload;
@@ -132,7 +134,19 @@ its own code, so an install that replaces the files under it (a
 Kido.app update) cannot give an old koa a new page that expects state
 it does not send. A page file that is missing at startup stops koa.
 For development, `KOA_PAGE_RELOAD=1` assembles the page again for each
-load, so `make koa-watch` and ⌘R show a change.
+load, so `make koa-watch` and ⌘R show a change. A new page reaches a
+running pane only through `/reload`, which replaces koa itself
+when its files changed ("`/reload` reloads pi" below).
+
+**A page talks only to the koa that served it.** koa mints an
+instance id at start and puts it in the document's `koa-instance`
+meta; the page sends it with each open of `/events`. koa answers an
+open with another id with one `reload` record, and the page loads
+its document again. A page of an older koa that reconnects to a new
+one (the app missed the serve stream's drop, a hidden page comes
+back, a back/forward cache) thus never applies a new koa's records.
+The record and the parameter are the one contract between two koa
+versions.
 
 **A record that the page cannot apply ends the feed.** A throw while
 the page applies an event record closes the event source and shows
@@ -349,6 +363,69 @@ goes on; only the loss of the terminal stops it. The edges:
   the error is ignored. An error on koa's own stderr is ignored,
   because there is no other place to report it.
 
+**`/reload` reloads pi, and replaces koa when koa was updated.**
+pi's `/reload` is a built-in of its TUI that RPC mode lacks. It has
+two layers (the user's decision):
+
+1. **pi in place.** koa sends the prompt `/koa-reload`, an extension
+   command of `koa-sessions.ts` whose handler only calls pi's
+   `ctx.reload()`; the new instance of the extension registers it
+   again, and completion hides it. pi answers the prompt only after
+   the reload, so the answer is its end. koa holds pi in `reloading`,
+   which blocks the composer as a session switch does but keeps pi's
+   events: ko-pi's `session_start` can deliver a message and start a
+   turn during the reload, and the restart must see it. koa buffers
+   the UI records, drops the extensions' statuses (an extension that
+   is gone leaves none) and refreshes from the new session record. pi's settings, extensions,
+   skills and prompts load again; pi's process, the session, the
+   page and the transcript stay, and ko-pi adopts its jobs as in a
+   TUI (design-subagents.md, "Jobs across /reload"). A failure shows
+   pi's error and goes no further.
+2. **koa when it was updated.** A page of a new koa must not run
+   against an old koa: one once crash-looped on a record's shape.
+   koa hashes its installed files at start (`installedIdentity` in
+   `koa-identity.ts`: `koa/` with the page, `webview/` and the
+   `share/pi/` modules that koa imports, not `ko-pi.ts`, which layer
+   1 reloads) and again after layer 1. A content hash, not a build
+   stamp: ko's build id changes with every commit, and only koa's
+   own files matter. A read that fails counts as no change. When the
+   hash differs, koa asks ko-pi, over the session channel and pi's
+   event bus (`RESTART_STATE_CHANNEL` in `records.ts`), for its
+   running jobs, services included, and its children that have not
+   reported on their last work, because a restart of pi is a quit of
+   pi, which ends them or sends their parent an exit notice. koa
+   does not read ko-pi's registry. Then koa restarts only when ko-pi
+   answers ready, a session file exists (a restart without one loses
+   the conversation) and pi is still idle; else it keeps both
+   processes and shows one info note with the first reason, in the
+   order jobs, subagents, no session file, no answer within 1 s
+   (`deferralText` in `koa-commands.ts`). The next `/reload` tries
+   again.
+
+The restart answers the page, runs koa's one shutdown, except that
+the SDK's `close(false)` keeps the pane in webview mode, waits for
+its own stdout and stderr to drain, and calls `process.execve` with
+Node, its script path as the shim gave it, its own flags and pi's
+arguments by the rule of "Start pi again" ("pi exits by itself"
+above; `restartArgs` in `koa-args.ts`): the same pid in the same
+pane, so the pane's row and children stay, and the script path
+resolves to the files that a Kido.app update installed.
+`KOA_RELOAD=1` in the new process, which koa reads and removes at
+start before it spawns anything, skips the `--resume` picker and the
+positional messages and adds the note "reloaded" once pi is ready.
+While the restart runs, the page shows "Reloading…" in its error line
+and blocks the composer; during the gap the app shows its "The
+program is not serving", and the new serve stream loads the new page
+(the user's design, never a fall back to the terminal). Attachments
+in the composer and the scroll position go with the page. In browser
+mode, the new koa listens on a new port and opens a new tab.
+
+`/reload` runs only when pi is ready and idle: no turn, no
+compaction, no `!` command that has not completed, no queued prompt,
+no dialog and no external editor, opening and closing included,
+because each is state that a reload or a restart cannot carry.
+Otherwise it is refused with a warning line.
+
 **The private directory.** koa makes one directory `koa-<pid>-*` under
 the temporary directory at start (0700) for the image store and the
 uploads, and removes it at exit. A koa that dies by a signal leaves
@@ -407,6 +484,8 @@ the supported set; each runs over pi's RPC:
 - `/resume` and `/new` switch the session inside the page ("Sessions
   inside the page" below).
 - `/quit` shuts koa down as Control-D does.
+- `/reload` reloads pi in place, and replaces koa on the same
+  session when koa was updated ("`/reload` reloads pi" above).
 
 Every other built-in is refused with a warning line, "/settings is
 not available in koa", and its text stays out of pi; completion does
@@ -739,8 +818,8 @@ modules. So koa copies pi's rules (`koa-complete.ts`), behind its own
 `POST /complete`:
 
 - `/` at the start of the first line: koa's supported built-ins,
-  then `get_commands`, asked at each request so that a `/reload` in
-  pi shows at once, with pi's fuzzy filter over both. `@token`: the agents of the session first, then files from
+  then `get_commands`, asked at each request so that an extension's
+  new command shows at once, with pi's fuzzy filter over both. `@token`: the agents of the session first, then files from
   `fd` with pi's arguments and scoring. No forced Tab completion and
   no plain-path completion in a prompt (the user's decision).
 - In `!` mode, `/` and `@` offer nothing, and nothing completes as

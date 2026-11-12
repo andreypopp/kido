@@ -368,7 +368,12 @@ export function createFakePi(sessionDir = "/tmp/ko-pi-no-sessions/caller", entri
   const widgets = new Map<string, { content: string[] | ((tui: unknown, theme: any) => { render(width: number): string[]; handleMouse?(event: any): unknown }) | undefined; options?: unknown }>();
   const failAppends = new Set<string>();
   const flags = new Map<string, boolean | string>();
+  const busListeners = new Map<string, Set<(data: unknown) => void>>();
   const pi = {
+    events: {
+      on(channel: string, handler: (data: unknown) => void) { (busListeners.get(channel) ?? busListeners.set(channel, new Set()).get(channel)!).add(handler); return () => { busListeners.get(channel)?.delete(handler); }; },
+      emit(channel: string, data: unknown) { for (const handler of [...busListeners.get(channel) ?? []]) handler(data); },
+    },
     registerFlag(_name: string, _options: unknown) {},
     getFlag: (name: string) => flags.get(name),
     sessionName: undefined as string | undefined,

@@ -47,6 +47,7 @@ let next = 0;
 let working = false;
 let bash: { id: string; cancel(): Promise<void> } | undefined;
 const bashMessages: object[] = [];
+const turnMessages: object[] = [];
 let startupGate = process.env.KOA_FAKE_STARTUP_GATE;
 const selectionFile = process.env.KOA_FAKE_SELECTION_FILE;
 const selection: { model?: { id: string; provider: string }; thinkingLevel?: string } = selectionFile ? JSON.parse(readFileSync(selectionFile, "utf8")) : {};
@@ -101,6 +102,17 @@ async function command(value: { type: string; id: string; sessionPath?: string; 
     const gate = connect(process.env.KOA_FAKE_SESSION_GATE);
     await once(gate, 'data'); gate.end();
   }
+  if (value.type === "prompt" && value.message === "/koa-reload") {
+    sessionSocket?.write(JSON.stringify({ type: "reset" }) + "\n");
+    sessionSocket?.write(JSON.stringify({ type: "session", id: sessionId, generation: ++sessionGeneration, cwd: sessionCwd }) + "\n");
+    if (process.env.KOA_FAKE_RELOAD_TURN) {
+      const message = { role: "user", timestamp: Date.now(), content: [{ type: "text", text: "queued before reload" }] };
+      turnMessages.push(message);
+      await emit({ type: "agent_start" }); await emit({ type: "message_start", message }); await emit({ type: "message_end", message });
+    }
+    await write(JSON.stringify({ type: "response", command: "prompt", id: value.id, success: true, data: { disposition: "handled" } }) + "\n");
+    return;
+  }
   if (value.type === "prompt" && working && !["steer", "followUp"].includes(value.streamingBehavior ?? "")) {
     await emit({ type: "response", command: value.type, id: value.id, success: false, error: "prompt requires streamingBehavior while working" });
     return;
@@ -110,7 +122,7 @@ async function command(value: { type: string; id: string; sessionPath?: string; 
   else if (value.type === "get_commands") data = { commands: [] };
   else if (value.type === "get_state") data = { sessionName: "Fake pi", thinkingLevel: "low", sessionId: "fake", isStreaming: working };
   else if (value.type === "get_entries") data = { entries: [], leafId: null };
-  else if (value.type === "get_messages") data = { messages: working ? [] : bashMessages };
+  else if (value.type === "get_messages") data = { messages: working ? turnMessages : bashMessages };
   else if (value.type === "get_available_thinking_levels") data = { levels: ["off", "low", "high"] };
   else if (value.type === "get_session_stats") data = { contextUsage: { tokens: 123, contextWindow: 1000, percent: 12.3 } };
   const configured = responses.get(value.type);
@@ -129,7 +141,7 @@ async function command(value: { type: string; id: string; sessionPath?: string; 
     if (!('sessionId' in data) || typeof data.sessionId !== 'string') throw Error('get_state needs a session id');
     let cwd = process.env.KOA_FAKE_CWD ?? process.cwd();
     if ('sessionFile' in data && typeof data.sessionFile === 'string') { try { cwd = JSON.parse(readFileSync(data.sessionFile, 'utf8').split('\n')[0] ?? '{}').cwd ?? cwd; } catch {} }
-    sessionCwd = cwd;
+    sessionCwd = cwd; sessionId = data.sessionId;
     sessionSocket.write(JSON.stringify({ type: 'session', id: data.sessionId, generation: ++sessionGeneration, cwd }) + '\n');
   }
   const step = script[next];
@@ -174,6 +186,7 @@ async function command(value: { type: string; id: string; sessionPath?: string; 
 log({ type: "argv", args: process.argv.slice(2) });
 let sessionSocket: Socket | undefined;
 let sessionCwd = process.cwd();
+let sessionId = "fake";
 let sessionGeneration = 0;
 if (process.argv.some(arg => arg.endsWith('/koa-sessions.ts'))) {
   const channel = new Socket({ fd: 3, readable: true, writable: true }); sessionSocket = channel;
@@ -183,6 +196,9 @@ if (process.argv.some(arg => arg.endsWith('/koa-sessions.ts'))) {
     const query = JSON.parse(line); log({ type: 'session_query', ...query });
     if (query.type === 'completion_context') {
       channel.write(JSON.stringify({ type: 'completion_context', id: query.id, context: process.env.KOA_FAKE_COMPLETION_CONTEXT ? JSON.parse(process.env.KOA_FAKE_COMPLETION_CONTEXT) : { type: 'host', cwd: sessionCwd } }) + '\n');
+    } else if (query.type === 'restart_state') {
+      const file = process.env.KOA_FAKE_RESTART_FILE;
+      channel.write(JSON.stringify({ type: 'restart_state', id: query.id, state: file && existsSync(file) ? JSON.parse(readFileSync(file, 'utf8')) : { type: 'ready' } }) + '\n');
     } else if (query.type === 'list') {
       const rows = JSON.parse(process.env.KOA_FAKE_SESSIONS_FILE ? readFileSync(process.env.KOA_FAKE_SESSIONS_FILE, 'utf8') : process.env.KOA_FAKE_SESSIONS ?? '[]');
       rows.sort((a: { modified: number }, b: { modified: number }) => b.modified - a.modified);

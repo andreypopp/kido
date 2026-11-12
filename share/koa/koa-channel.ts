@@ -2,10 +2,11 @@ import { createInterface } from 'node:readline';
 import { Duplex, type Stream } from 'node:stream';
 import type { SessionRow, SessionScope } from './koa-records.ts';
 import type { CompletionContext } from '../pi/completion-context.ts';
+import type { RestartState } from '../pi/records.ts';
 import { later } from './koa-timer.ts';
 
-export type KoaQuery = { type: 'list'; id: string; scope: SessionScope } | { type: 'completion_context'; id: string } | { type: 'cancel'; id: string };
-export type KoaReply = { type: 'list'; id: string; rows: SessionRow[] } | { type: 'completion_context'; id: string; context: CompletionContext } | { type: 'error'; id: string; error: string } | { type: 'session'; id: string; generation: number; cwd: string } | { type: 'reset' };
+export type KoaQuery = { type: 'list'; id: string; scope: SessionScope } | { type: 'completion_context'; id: string } | { type: 'restart_state'; id: string } | { type: 'cancel'; id: string };
+export type KoaReply = { type: 'list'; id: string; rows: SessionRow[] } | { type: 'completion_context'; id: string; context: CompletionContext } | { type: 'restart_state'; id: string; state: RestartState } | { type: 'error'; id: string; error: string } | { type: 'session'; id: string; generation: number; cwd: string } | { type: 'reset' };
 const RESPONSE_MS = 10000;
 
 export function koaChannel(stream: Stream | null | undefined) {
@@ -13,7 +14,7 @@ export function koaChannel(stream: Stream | null | undefined) {
   let serial = 0, stop = new AbortController();
   let metadata: Extract<KoaReply, { type: 'session' }> | undefined;
   const waiting = new Map<string | undefined, { after: number; resolve(value: Extract<KoaReply, { type: 'session' }>): void; reject(error: Error): void }>();
-  const pending = new Map<string, { resolve(reply: Extract<KoaReply, { type: 'list' | 'completion_context' }>): void; reject(error: Error): void }>();
+  const pending = new Map<string, { resolve(reply: Extract<KoaReply, { type: 'list' | 'completion_context' | 'restart_state' }>): void; reject(error: Error): void }>();
   const lines = createInterface({ input: stream });
   const abort = (id: string) => {
     stream.write(JSON.stringify({ type: 'cancel', id } satisfies KoaQuery) + '\n');
@@ -42,7 +43,7 @@ export function koaChannel(stream: Stream | null | undefined) {
       if (reply.type === 'error') entry?.reject(new Error(reply.error)); else entry?.resolve(reply);
     }
   });
-  const request = (query: { type: 'list'; scope: SessionScope } | { type: 'completion_context' }, signal: AbortSignal): Promise<Extract<KoaReply, { type: 'list' | 'completion_context' }>> => {
+  const request = (query: { type: 'list'; scope: SessionScope } | { type: 'completion_context' } | { type: 'restart_state' }, signal: AbortSignal): Promise<Extract<KoaReply, { type: 'list' | 'completion_context' | 'restart_state' }>> => {
     const id = String(++serial);
     return new Promise((resolve, reject) => {
       const cancel = () => abort(id);
@@ -75,6 +76,12 @@ export function koaChannel(stream: Stream | null | undefined) {
         const reply = await request({ type: 'completion_context' }, signal);
         return reply.type === 'completion_context' ? reply.context : { type: 'unavailable' };
       } catch { return { type: 'unavailable' }; }
+    },
+    async restartState(signal: AbortSignal): Promise<RestartState | undefined> {
+      try {
+        const reply = await request({ type: 'restart_state' }, signal);
+        return reply.type === 'restart_state' ? reply.state : undefined;
+      } catch { return undefined; }
     },
     close,
   };

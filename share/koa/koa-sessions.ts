@@ -5,6 +5,10 @@ import type { KoaQuery, KoaReply } from './koa-channel.ts';
 import { sessionDir } from './koa-session-dir.ts';
 import { errorText } from '../pi/text.ts';
 import { resolveCompletionContext } from '../pi/completion-context.ts';
+import { RESTART_STATE_CHANNEL, type RestartState } from '../pi/records.ts';
+import { RELOAD_COMMAND } from './koa-records.ts';
+
+const RESTART_STATE_MS = 1000;
 
 // Pi reloads this module on a cross-folder switch (dist/core/extensions/loader.js:94-104,481).
 declare global {
@@ -24,6 +28,7 @@ export default function (pi: ExtensionAPI) {
   const scans = new Map<string, AbortController>();
   const args = parseArgs(process.argv.slice(2));
   let cwd = process.cwd();
+  pi.registerCommand(RELOAD_COMMAND, { description: 'Reload pi', handler: async (_args, ctx) => { await ctx.reload(); } });
   const send = (reply: KoaReply) => channel.write(JSON.stringify(reply) + '\n');
   pi.on('session_shutdown', () => { for (const scan of scans.values()) scan.abort(); scans.clear(); send({ type: 'reset' }); lines.off('line', receive); });
   pi.on('session_start', (_event, ctx) => {
@@ -39,6 +44,16 @@ export default function (pi: ExtensionAPI) {
     if (query.type === 'completion_context') {
       void resolveCompletionContext(controller.signal).then(context => {
         if (!controller.signal.aborted) send({ type: 'completion_context', id: query.id, context });
+      }).finally(() => scans.delete(query.id));
+      return;
+    }
+    if (query.type === 'restart_state') {
+      void new Promise<RestartState | undefined>(resolve => {
+        const timer = setTimeout(resolve, RESTART_STATE_MS, undefined);
+        pi.events.emit(RESTART_STATE_CHANNEL, { reply: (state: RestartState) => { clearTimeout(timer); resolve(state); } });
+      }).then(state => {
+        if (controller.signal.aborted) return;
+        send(state ? { type: 'restart_state', id: query.id, state } : { type: 'error', id: query.id, error: 'ko-pi did not answer' });
       }).finally(() => scans.delete(query.id));
       return;
     }

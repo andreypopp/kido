@@ -20,7 +20,7 @@ export type Webview = {
   off(event: "supported", listener: (supported: boolean) => void): void;
   show(path?: string): Promise<void>;
   hide(): Promise<void>;
-  close(): Promise<void>;
+  close(leave?: boolean): Promise<void>;
 };
 
 function stderrTail(child: ChildProcess): () => string {
@@ -247,7 +247,7 @@ export async function webview(options: Options = {}): Promise<Webview | null> {
       });
       return action;
     },
-    close() {
+    close(leave = true) {
       if (closing) return closing;
       closed = true; events.removeAllListeners();
       if (transport.kind === "pane" && transport.restart) clearTimeout(transport.restart);
@@ -264,7 +264,7 @@ export async function webview(options: Options = {}): Promise<Webview | null> {
             });
           } else {
             await action.catch(() => {});
-            if (shown && Date.now() < until) await command(ko, ["webview", "leave"], ["ignore", "inherit", "pipe"], until - Date.now()).catch(() => {});
+            if (leave && shown && Date.now() < until) await command(ko, ["webview", "leave"], ["ignore", "inherit", "pipe"], until - Date.now()).catch(() => {});
             await Promise.all([...children.keys()].map(child => new Promise<void>(resolve => {
               const cancelDeadline = deadline(until - Date.now(), () => { void stop(child).then(resolve); });
               child.once("close", () => { cancelDeadline(); resolve(); }); child.stdin?.end();

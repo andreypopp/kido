@@ -50,7 +50,7 @@ import { fileURLToPath } from "node:url";
 import { Type } from "typebox";
 import type { components } from "./ko-api.d.ts";
 import { atToken } from "./token.ts";
-import { isRelation, isAgentFailure, jobEndText, type Relation, type AgentRef, type AgentOutcome, type MessageDetails, type SteerDetails, type NoticeDetails, type StreamDetails, type JobRef, type JobEnd } from "./records.ts";
+import { isRelation, isAgentFailure, jobEndText, RESTART_STATE_CHANNEL, type RestartState, type Relation, type AgentRef, type AgentOutcome, type MessageDetails, type SteerDetails, type NoticeDetails, type StreamDetails, type JobRef, type JobEnd } from "./records.ts";
 import { parsePanes, placesOf, piAgent, peerPanes, ancestorsOf, runningRows, agentCache, MIN_ID_PREFIX, VAR_SESSION, VAR_NAME, VAR_ACTIVITY, VAR_TASK, VAR_RUNTIME, type PaneInfo, type AgentCompletionRow } from "./agents.ts";
 
 type Api = components["schemas"];
@@ -2194,6 +2194,15 @@ export default function (pi: ExtensionAPI) {
     });
   };
 
+  const stopRestartState = pi.events.on(RESTART_STATE_CHANNEL, (request) => {
+    if (!isRecord(request) || typeof request.reply !== "function") return;
+    const jobs = backgroundJobs().filter((job) => job.state.type !== "ended").length;
+    const marks = childMarks();
+    const waiting = children().filter((child) => !childReported(child, marks)).length;
+    const state: RestartState = jobs || waiting ? { type: "blocked", jobs, children: waiting } : { type: "ready" };
+    request.reply(state);
+  });
+
   const exitNoticeText = (): string | undefined => {
     const name = quote(pi.getSessionName() ?? "");
     if (ownReported()) return undefined;
@@ -3167,6 +3176,7 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.on("session_shutdown", async (event?: { reason?: ShutdownReason }) => {
+    stopRestartState();
     if (pi.getFlag("harness")) setCompletionContext();
     startupCancelled = true;
     stopPeerClient();

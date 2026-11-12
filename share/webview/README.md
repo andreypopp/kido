@@ -32,7 +32,9 @@ stdout; while a page is shown, a different path replaces it and the
 same path does nothing. `hide()` shows the terminal and does nothing
 when no page is shown. `shown` is the last state that the SDK set, not
 a report from the app. `close()` hides the page, ends the
-bridge and removes its private socket directory. Use `off` to remove a
+bridge and removes its private socket directory; `close(false)` keeps
+the pane in webview mode, for a program that replaces its own process
+and serves again. Use `off` to remove a
 `supported` listener. Pass `{ ko: "/path/to/ko" }` to select the executable.
 `timeoutMs` (default 5000) bounds the bridge's start, each `show` and
 `hide`, and `close`; a step that passes it rejects, and the SDK ends

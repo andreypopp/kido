@@ -39,7 +39,7 @@ test('model selection, completion collisions, session statistics and export defa
     { type: 'wait', command: 'export_html', data: { path: exported } },
   ], {}, undefined, true, [], resolve('../../build/ko/share/ko/koa/koa.ts'));
   const completion: { options: { label: string; source: string }[] } = await (await f.post('complete', { text: '/', pos: 1 })).json();
-  assert.deepEqual(completion.options.map(value => value.label), ['/model', '/thinking', '/compact', '/session', '/copy', '/export', '/name', '/resume', '/new', '/quit', '/custom']);
+  assert.deepEqual(completion.options.map(value => value.label), ['/model', '/thinking', '/compact', '/session', '/copy', '/export', '/name', '/resume', '/new', '/quit', '/reload', '/custom']);
   assert.equal(completion.options[0]?.source, 'builtin');
   for (const text of ['/model TEST/EXACT', '/thinking HIGH', '/session', '/export']) assert.equal((await f.post('prompt', { text, mode: 'prompt', attachments: [] })).status, 200);
   await f.until(record => record.type === 'item' && record.item.kind === 'command' && record.item.result.type === 'session');

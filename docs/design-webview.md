@@ -177,6 +177,10 @@ The README gives the calls; the rules that it does not state:
   shows by itself.
 - `close` removes the `supported` listeners before it leaves, so a
   listener that hides does not run during the close.
+- `close(false)` does not leave: the pane stays in webview mode and
+  the client shows that nothing serves until a new serve stream
+  opens. It is for a program that replaces its own process, such as
+  koa's `/reload`.
 - Every wait has a deadline, `timeoutMs` (5 s by default): the
   bridge's first `supported` line, each `enter` and `leave`, the
   browser opener and `close`. A child of the SDK that passes it, or

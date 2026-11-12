@@ -234,6 +234,31 @@ test('built-in results keep attachments and open the requested picker', async ()
   assert.deepEqual(Array.from(result), [1, '', false]);
 });
 
+test('a reload action blocks the composer and keeps its text through a lost stream', async () => {
+  const f = await page();
+  const result = await f.run(`
+    state={...state,pi:{type:'ready'}};
+    editor.setText('/reload');fetchJSON=async()=>({disposition:'handled',action:{type:'reload'}});
+    send().then(()=>[element('error').textContent,element('field').inert]);
+  `);
+  assert.deepEqual(Array.from(result), ['Reloading…', true]);
+  const connect = await connectSource('page/page.ts');
+  const error = { textContent: 'Reloading…' };
+  let source: EventSource | undefined;
+  class EventSource { onerror?: () => void; onopen?: () => void; constructor() { source = this; } close() {} }
+  runInNewContext(connect + ';connect()', { reloading: true, koaInstance: 'i1', EventSource, epoch: '', after: -1, delay: 200, element: () => error, setTimeout() {}, window: { addEventListener() {} } });
+  source?.onopen?.(); source?.onerror?.();
+  assert.equal(error.textContent, 'Reloading…');
+});
+
+test('a reload record reloads the page', async () => {
+  const f = await page();
+  const reloads: number[] = [];
+  Object.assign(f.context, { location: { reload: () => reloads.push(1) } });
+  f.run("apply({type:'reload'})");
+  assert.deepEqual(reloads, [1]);
+});
+
 test('take-back shortcut shares one in-flight request and never aborts', async () => {
   const f = await page();
   const result = await f.run(`
@@ -710,7 +735,7 @@ test("the transcript page applies SSE synchronously and reconnects with the appl
     let teardown: () => void = () => {};
     let restore: (event: { persisted: boolean }) => void = () => {};
     const error = { textContent: '' };
-    const context = { metrics: undefined, epoch: "", after: -1, delay: 200, disconnected: false, EventSource, Error, console: { error() {} }, window: { addEventListener(name: string, handler: (event?: { persisted: boolean }) => void) { if (name === "pagehide") teardown = handler; else if (name === "pageshow") restore = handler; } }, apply(record: { type: string; epoch?: string; after?: number }) {
+    const context = { metrics: undefined, koaInstance: "i1", reloading: false, epoch: "", after: -1, delay: 200, disconnected: false, EventSource, Error, console: { error() {} }, window: { addEventListener(name: string, handler: (event?: { persisted: boolean }) => void) { if (name === "pagehide") teardown = handler; else if (name === "pageshow") restore = handler; } }, apply(record: { type: string; epoch?: string; after?: number }) {
       if (record.type === "bad") throw Error("Apply failed");
       received.push(record);
       if (record.epoch) context.epoch = record.epoch;
@@ -723,14 +748,14 @@ test("the transcript page applies SSE synchronously and reconnects with the appl
     sources[0].onerror?.();
     assert.equal(sources[0].closed, true);
     retry();
-    assert.equal(sources[1].url, "/events?epoch=new&after=3");
+    assert.equal(sources[1].url, "/events?epoch=new&after=3&koa=i1");
     teardown();
     assert.equal(sources[1].closed, true);
     restore({ persisted: false });
     assert.equal(sources.length, 2);
     restore({ persisted: true });
     assert.equal(sources.length, 3);
-    assert.equal(sources[2].url, "/events?epoch=new&after=3");
+    assert.equal(sources[2].url, "/events?epoch=new&after=3&koa=i1");
     restore({ persisted: true });
     assert.equal(sources.length, 3);
     sources[2].onmessage?.({ data: '{"type":"bad"}' });
@@ -756,7 +781,7 @@ test("stream metrics use the selected mode in a Kido page", async () => {
       onmessage?: (event: { data: string }) => void;
       constructor() { queueMicrotask(() => this.onmessage?.({ data: '{"type":"flush","t":1000,"bytes":1234}' })); }
     }
-    runInNewContext(connect + ";connect()", { metrics, EventSource, window: { addEventListener() {} }, epoch: "", after: -1, delay: 200, console, element: () => ({}), followBottom() {}, performance: { timeOrigin: 1000, now: () => 12 }, Date: { now: () => 1012 }, sendMetrics() {}, setTimeout() {}, requestAnimationFrame(callback: () => void) { frames++; callback(); } });
+    runInNewContext(connect + ";connect()", { metrics, koaInstance: "i1", EventSource, window: { addEventListener() {} }, epoch: "", after: -1, delay: 200, console, element: () => ({}), followBottom() {}, performance: { timeOrigin: 1000, now: () => 12 }, Date: { now: () => 1012 }, sendMetrics() {}, setTimeout() {}, requestAnimationFrame(callback: () => void) { frames++; callback(); } });
     await Promise.resolve();
     assert.equal(frames, mode === "frame" ? 1 : 0);
     assert.deepEqual(JSON.parse(JSON.stringify(metrics.samples)), [{ t: 1000, [mode]: 1012, bytes: 1234, clockError: 0 }]);

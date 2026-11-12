@@ -913,6 +913,12 @@ after the pane variables and before the task, the new instance:
 The other reasons (`quit`, `new`, `resume`, `fork`) stop every job,
 wait up to `KO_JOB_KILL_MS` for the ends and clear the registry.
 
+koa's `/reload` restarts pi only when nothing would be lost this way:
+ko-pi answers a request on pi's event bus (`RESTART_STATE_CHANNEL` in
+`records.ts`) with its running jobs, services included, and its
+children that have not reported on their last work
+(design-koa.md, "`/reload` reloads pi").
+
 ## A human at a shell
 
 A human uses ko's own commands, not the tools:

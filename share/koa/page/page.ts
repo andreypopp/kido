@@ -65,7 +65,8 @@ const editor = composer(element('prompt'), {
   takeBack() { if (state.pi.type === 'ready' && !editing() && !state.dialogs.length && !submitting) void takeBack().catch(reportError); },
 });
 window.composer = editor;
-const composerBlocked = () => state.pi.type !== 'ready' || state.dialogs.length > 0 || sessionPicker !== 'closed';
+let reloading = false;
+const composerBlocked = () => reloading || state.pi.type !== 'ready' || state.dialogs.length > 0 || sessionPicker !== 'closed';
 
 if (!window.ko) {
   const scheme = matchMedia('(prefers-color-scheme: dark)');
@@ -899,6 +900,7 @@ function apply(record: PageRecord) {
     const current = items.get(record.item.seq);
     if (!current || record.item.revision >= current.revision) put(record.item);
   } else if (record.type === 'patch') applyPatch(record, true);
+  else if (record.type === 'reload') location.reload();
   else if (record.type === 'state') {
     if (state.sessionId !== record.sessionId || state.pi.type !== record.pi.type) editor.resetCompletion();
     if (state.sessionId && state.sessionId !== record.sessionId) { closeSessions(); closePicker(); editorId = undefined; }
@@ -924,6 +926,7 @@ function followResize() {
   dirty ||= revealing.size > 0;
   followBottom();
 }
+const koaInstance = document.querySelector<HTMLMetaElement>('meta[name="koa-instance"]')?.content;
 const metricsMode = document.querySelector<HTMLMetaElement>('meta[name="koa-metrics"]')?.content;
 const metrics: { mode: string; bytes: number; pending: number[]; samples: { t: number; bytes: number; clockError: number; applied?: number; frame?: number }[]; timer?: number; writes: Promise<void>; frames: Set<Promise<void>>; error?: string } | undefined = metricsMode ? { mode: metricsMode, bytes: 0, pending: [], samples: [], timer: undefined, writes: Promise.resolve(), frames: new Set(), error: undefined } : undefined;
 function sendMetrics(force = false) {
@@ -948,14 +951,14 @@ if (metrics) window.koaMetrics = {
 let source: EventSource, reconnect: number | undefined, closed = false, failed = false;
 function connect() {
   if (closed) return;
-  source = new EventSource('/events?epoch=' + encodeURIComponent(epoch) + '&after=' + after);
+  source = new EventSource('/events?epoch=' + encodeURIComponent(epoch) + '&after=' + after + '&koa=' + encodeURIComponent(koaInstance ?? ''));
   const lost = () => {
     source.onmessage = source.onerror = source.onopen = null;
     source.close();
-    element('error').textContent = 'Connection lost. Reconnecting…';
+    if (!reloading) element('error').textContent = 'Connection lost. Reconnecting…';
     reconnect = setTimeout(connect, delay); delay = Math.min(delay * 2, 5000);
   };
-  source.onopen = () => { delay = 200; element('error').textContent = ''; };
+  source.onopen = () => { delay = 200; if (!reloading) element('error').textContent = ''; };
   source.onerror = lost;
   source.onmessage = event => {
     try {
@@ -1153,6 +1156,7 @@ async function send(mode: PromptMode = 'prompt') {
       switch (result.action.type) {
         case 'picker': await picker(result.action.kind, result.action.search); break;
         case 'session': await sessionCommand(result.action.kind); break;
+        case 'reload': reloading = true; element('error').textContent = 'Reloading…'; refreshComposer(); break;
         case 'none': case 'quit': break;
       }
     }

@@ -1,5 +1,21 @@
 import type { parseArgs } from '@earendil-works/pi-coding-agent';
 
+export function restartArgs(pass: readonly string[], sessionFile: string | undefined): string[] {
+  const args: string[] = [];
+  for (let i = 0; i < pass.length; i++) {
+    const arg = pass[i];
+    if (arg === '--') { args.push(...pass.slice(i)); break; }
+    if (sessionFile && ['--session', '--session-id', '--fork', '--model', '--thinking'].includes(arg ?? '')) { i++; continue; }
+    if (sessionFile && ['--continue', '-c', '--no-session'].includes(arg ?? '')) continue;
+    if (arg !== undefined) args.push(arg);
+  }
+  if (sessionFile) {
+    const end = args.indexOf('--');
+    args.splice(end < 0 ? args.length : end, 0, '--session', sessionFile);
+  }
+  return args;
+}
+
 export function startupResult(args: ReturnType<typeof parseArgs>): { error: string } | { messages: string[]; resume: boolean } {
   const refused: [string, boolean, string][] = [
     ['--mode', (args.mode ?? args.unknownFlags.get('mode') ?? 'rpc') !== 'rpc', 'requires rpc'],
