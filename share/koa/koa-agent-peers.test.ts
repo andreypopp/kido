@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { join } from "node:path";
 import { appendFileSync, unlinkSync, writeFileSync } from "node:fs";
-import { makeFixture, selfPane, agentPane, startSession, savedSession, entriesOf, pollUntil, text, asSubagent, withEnv } from "./ko-pi-fixture.ts";
+import { makeFixture, selfPane, agentPane, startSession, savedSession, entriesOf, pollUntil, text, asSubagent, withEnv } from "./koa-agent-fixture.ts";
 
 test("peers observed only on /client can end and resume as independent peers", async () => {
   const fx = makeFixture();
@@ -13,12 +13,12 @@ test("peers observed only on /client can end and resume as independent peers", a
     const file = savedSession(join(fx.dir, "sessions", "peer"), process.cwd(), id);
     appendFileSync(file, JSON.stringify({ type: "model_change", id: "m", parentId: null, timestamp: new Date().toISOString(), provider: "acme", modelId: "saved" }) + "\n");
     fx.setClientPanes([selfPane(), agentPane({ pane: "pane_2", session: id, name: "Peer", cwd: process.cwd() })]);
-    await pollUntil(() => entriesOf(s, "ko-pi.agent").some((e) => e.role === "peer" && e.session === id), 2000, "peer registry entry");
+    await pollUntil(() => entriesOf(s, "koa.agent").some((e) => e.role === "peer" && e.session === id), 2000, "peer registry entry");
     fx.clientEvent({ type: "pwd", pane: "pane_2", pwd: fx.dir });
-    await pollUntil(() => entriesOf(s, "ko-pi.agent").some((e) => e.role === "peer" && e.cwd === fx.dir));
+    await pollUntil(() => entriesOf(s, "koa.agent").some((e) => e.role === "peer" && e.cwd === fx.dir));
     fx.dropClient();
     await pollUntil(() => fx.streamOpens("/client") === 2);
-    await pollUntil(() => entriesOf(s, "ko-pi.agent").filter((e) => e.role === "peer" && e.session === id && e.cwd === process.cwd()).length === 2);
+    await pollUntil(() => entriesOf(s, "koa.agent").filter((e) => e.role === "peer" && e.session === id && e.cwd === process.cwd()).length === 2);
     const live = agentPane({ pane: "pane_3", session: "0123456789abcdee", name: "PeerLive" });
     fx.setPanes([selfPane(), live]);
     fx.setClientPanes([selfPane(), live]);
@@ -38,12 +38,12 @@ test("peers observed only on /client can end and resume as independent peers", a
     assert.ok(!body.command.argv.includes("--session-dir"));
     assert.ok(body.command.argv.includes(file));
     assert.ok(body.command.argv.includes("acme/saved"));
-    assert.equal(body.vars["ko-pi.task"].text, "continue");
+    assert.equal(body.vars["koa.task"].text, "continue");
     fx.setPanes([selfPane()]);
     assert.match(text(await s.tools.get("spawn_agent").execute("c", { name: "Peer", resume_from: id, task: "again" })), /independent peer/);
     assert.equal(fx.posts("/panes")[1]!.parent, undefined);
-    assert.deepEqual(entriesOf(s, "ko-pi.work"), []);
-    assert.deepEqual(entriesOf(s, "ko-pi.ended"), []);
+    assert.deepEqual(entriesOf(s, "koa.work"), []);
+    assert.deepEqual(entriesOf(s, "koa.ended"), []);
   } finally { await fx.restore(); }
 });
 
@@ -55,7 +55,7 @@ test("ended peers use session ids when names collide and omit missing files", as
     const ids = ["11111111abcdef01", "22222222abcdef02"];
     const files = ids.map((id) => savedSession(join(fx.dir, "sessions", "peer"), process.cwd(), id));
     fx.setClientPanes([selfPane(), ...ids.map((id, i) => agentPane({ pane: `pane_${i + 2}`, session: id, name: "Same" }))]);
-    await pollUntil(() => entriesOf(s, "ko-pi.agent").filter((e) => e.role === "peer").length === 2);
+    await pollUntil(() => entriesOf(s, "koa.agent").filter((e) => e.role === "peer").length === 2);
     fx.setClientPanes([selfPane()]);
     const list = async () => JSON.parse(text(await s.tools.get("list_agents").execute("c", { which: "peers" })));
     assert.equal((await list()).length, 2);
@@ -63,7 +63,7 @@ test("ended peers use session ids when names collide and omit missing files", as
     assert.match(text(await s.tools.get("message_agent").execute("c", { to: ids[0], message: "go", mode: "steer" })), /no longer running/);
     unlinkSync(files[0]!);
     assert.deepEqual((await list()).map((a: any) => a.id), [ids[1]]);
-    assert.equal(entriesOf(s, "ko-pi.agent").filter((e) => e.role === "peer").length, 2);
+    assert.equal(entriesOf(s, "koa.agent").filter((e) => e.role === "peer").length, 2);
     assert.equal(fx.posts("/panes").length, 0);
   } finally { await fx.restore(); }
 });
@@ -78,14 +78,14 @@ test("sparse layouts retain existing rows and unchanged reconnects append nothin
     await pollUntil(() => fx.clientLayouts().some((event) => event.panes.length === 0));
     const id = "33333333abcdef03";
     fx.setClientPanes([selfPane(), agentPane({ pane: "pane_2", session: id, name: "Sparse" })]);
-    await pollUntil(() => entriesOf(s, "ko-pi.agent").some((e) => e.session === id), 2000, "peer after sparse layout");
-    const before = entriesOf(s, "ko-pi.agent").length;
+    await pollUntil(() => entriesOf(s, "koa.agent").some((e) => e.session === id), 2000, "peer after sparse layout");
+    const before = entriesOf(s, "koa.agent").length;
     fx.dropClient();
     await pollUntil(() => fx.clientLayouts().filter((event) => event.panes.length === 2).length === 1);
     const second = "44444444abcdef04";
     fx.setClientPanes([selfPane(), agentPane({ pane: "pane_2", session: id, name: "Sparse" }), agentPane({ pane: "pane_3", session: second, name: "After" })]);
-    await pollUntil(() => entriesOf(s, "ko-pi.agent").some((e) => e.session === second));
-    assert.equal(entriesOf(s, "ko-pi.agent").length, before + 1);
+    await pollUntil(() => entriesOf(s, "koa.agent").some((e) => e.session === second));
+    assert.equal(entriesOf(s, "koa.agent").length, before + 1);
   } finally { await fx.restore(); }
 });
 
@@ -97,7 +97,7 @@ test("an untrusted stale pi.session does not hide an ended peer", async () => {
     fx.setPanes([selfPane()]);
     const s = await startSession(fx);
     fx.setClientPanes([selfPane(), agentPane({ pane: "pane_2", session: id, name: "Stale" })]);
-    await pollUntil(() => entriesOf(s, "ko-pi.agent").some((e) => e.session === id));
+    await pollUntil(() => entriesOf(s, "koa.agent").some((e) => e.session === id));
     fx.setPanes([selfPane(), { id: "pane_2", vars: { "pi.session": id } }]);
     const rows = JSON.parse(text(await s.tools.get("list_agents").execute("c", { which: "peers" })));
     assert.equal(rows.find((a: any) => a.id === id)?.state, "ended");
@@ -114,7 +114,7 @@ test("concurrent peer messages reuse a pane before pi publishes its identity", a
       fx.setPanes([selfPane()]);
       const s = await startSession(fx);
       fx.setClientPanes([selfPane(), agentPane({ pane: "pane_2", session: id, name: "Pending" })]);
-      await pollUntil(() => entriesOf(s, "ko-pi.agent").some((e) => e.session === id));
+      await pollUntil(() => entriesOf(s, "koa.agent").some((e) => e.session === id));
       fx.setClientPanes([selfPane()]);
       await Promise.all(["first", "second"].map((message) => s.tools.get("message_agent").execute("c", { to: "Pending", message })));
       assert.equal(fx.posts("/panes").length, 1);

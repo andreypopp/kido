@@ -1,5 +1,5 @@
-share/pi/node_modules/
 share/koa/node_modules/
-share/pi/.copy-*/
+scripts/openapi/node_modules/
+share/koa/.copy-*/
 /build/
 /target/

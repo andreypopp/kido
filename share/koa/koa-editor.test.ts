@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { floatRect } from "./koa-editor.ts";
-import type { components } from "../pi/ko-api.d.ts";
+import type { components } from "./ko-api.d.ts";
 
 type Window = components["schemas"]["Window"];
 const leaf = (pane: string, cols: number, rows: number) => ({ pane, cols, rows });

@@ -1,7 +1,7 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
-import { mintId, errorText } from '../pi/text.ts';
+import { mintId, errorText } from './text.ts';
 import { readBody, respond, openFile, FileError, serveFile } from './koa-http.ts';
 import { later } from './koa-timer.ts';
 import { ATTACHMENT_LIMITS, type Attachment, type UploadProgress } from './koa-records.ts';

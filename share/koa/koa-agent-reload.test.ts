@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { makeFixture, selfPane, startSession, freshExtension, notices, customMessages, pollUntil, gatedCommand, text, jobRegistry as registry, logHas, movedId } from "./ko-pi-fixture.ts";
+import { makeFixture, selfPane, startSession, freshExtension, notices, customMessages, pollUntil, gatedCommand, text, jobRegistry as registry, logHas, movedId } from "./koa-agent-fixture.ts";
 
 
 test("a live job is adopted by the second instance, which alone announces its end", async () => {
@@ -50,7 +50,7 @@ test("a job that ends between instances is announced at adopt, before the startu
     await pollUntil(() => job.state.type === "ended");
     assert.equal(job.state.announced, false);
     assert.deepEqual(notices(first), []);
-    fx.setPanes([selfPane({ vars: { "pi.session": "old-holder", "ko-pi.task": { text: "startup-task", from: { session: "peer-session", name: "peer" } } } })]);
+    fx.setPanes([selfPane({ vars: { "pi.session": "old-holder", "koa.task": { text: "startup-task", from: { session: "peer-session", name: "peer" } } } })]);
     const factory = await freshExtension();
     const order: string[] = [];
     const second = await startSession(fx, {
@@ -97,7 +97,7 @@ for (const changed of ["shape", "session"]) {
       await pollUntil(() => job.state.type === "ended" && !process.listeners("exit").includes(old.exit));
       assert.equal(process.listeners("exit").filter((listener) => listener === owner.exit).length, 1);
       assert.equal(notices(second).length, 1);
-      assert.ok(notices(second)[0]!.endsWith("1 async_bash jobs of the previous ko-pi version were stopped at /reload: old-build"));
+      assert.ok(notices(second)[0]!.endsWith("1 async_bash jobs of the previous koa version were stopped at /reload: old-build"));
       await pollUntil(() => job.state.type === "ended");
       assert.equal(job.state.end.type, "stopped");
       assert.deepEqual(notices(first), []);

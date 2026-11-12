@@ -8,7 +8,7 @@ import { basename, join } from 'node:path';
 import { attachments } from './koa-attach.ts';
 import { serveFile } from './koa-http.ts';
 import { connect } from 'node:net';
-import { pollUntil } from '../pi/ko-pi-fixture.ts';
+import { pollUntil } from './koa-agent-fixture.ts';
 
 test('a file response keeps its validated descriptor and byte boundary', async t => {
   const dir = mkdtempSync(join(tmpdir(), 'koa-file-response-')); t.after(() => rmSync(dir, { recursive: true, force: true }));

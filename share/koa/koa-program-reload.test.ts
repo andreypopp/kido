@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { mkdtemp, readFile, writeFile, rm, cp, symlink } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { Readable } from "node:stream";
-import { pollUntil, sse } from "../pi/ko-pi-fixture.ts";
+import { pollUntil, sse } from "./koa-agent-fixture.ts";
 import { fixture } from "./koa-program-fixture.ts";
 
 type App = Awaited<ReturnType<typeof fixture>>;

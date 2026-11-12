@@ -86,8 +86,8 @@ def lexical(text):
         return re.sub(r'[^\n]', ' ', token)
     return re.sub(pattern, mask, text), comments
 
-ts_sources = glob.glob('share/pi/*.ts') + glob.glob('share/webview/*.ts') + glob.glob('share/koa/*.ts') + glob.glob('share/koa/stress/*.ts') + glob.glob('share/koa/page/*.ts')
-signal_sites = {'share/pi/ko-pi.ts': {'function': 'signalJob', 'count': 0}, 'share/koa/koa-child.ts': {'function': 'signalChild', 'count': 0}}
+ts_sources = glob.glob('share/webview/*.ts') + glob.glob('share/koa/*.ts') + glob.glob('share/koa/stress/*.ts') + glob.glob('share/koa/page/*.ts')
+signal_sites = {'share/koa/koa-agent.ts': {'function': 'signalJob', 'count': 0}, 'share/koa/koa-child.ts': {'function': 'signalChild', 'count': 0}}
 for path in ts_sources:
     text = pathlib.Path(path).read_text()
     code, _ = lexical(text)
@@ -120,7 +120,7 @@ for path in glob.glob('ko/**/*.rs', recursive=True) + glob.glob('ko_*/**/*.rs', 
         for match in re.finditer(r'(?<![\w:])kill(?:pg)?\s*\(', code):
             report(path, text, match.start(), 'signals must go through ko_sys::pid')
 
-core = [path for path in ts_sources if path.startswith('share/koa/') or path in ('share/pi/ko-pi.ts', 'share/pi/text.ts', 'share/pi/agents.ts', 'share/pi/token.ts', 'share/pi/records.ts', 'share/pi/completion-context.ts', 'share/pi/runtime-exec.ts')]
+core = [path for path in ts_sources if path.startswith('share/koa/') and not re.fullmatch(r'share/koa/(koa-agent-(fixture\.ts|.*\.test\.ts)|koa-webview-sdk\.test\.ts|agents\.test\.ts)', path)]
 for path in candidates(r'(^|[^a-zA-Z_])(as|any)([^a-zA-Z_]|$)|!', core):
     text = pathlib.Path(path).read_text()
     code, _ = lexical(text)
@@ -158,7 +158,7 @@ for path in candidates('[Pp]reviously|[Nn]o longer|[Uu]sed to|[Ff]ormerly|[Aa]s 
 # A backticked ko crate path or file in the docs must exist: `ko_x::a::b` names a crate directory
 # whose sources mention each segment, `ko_x/src/y.rs` a path in the tree.
 crate_code = {}
-for path in ['AGENTS.md', *glob.glob('docs/*.md'), 'share/pi/README.md']:
+for path in ['AGENTS.md', *glob.glob('docs/*.md')]:
     text = pathlib.Path(path).read_text()
     for match in re.finditer(r'`(ko(?:_[a-z0-9]+)*)((?:::[A-Za-z_]\w*)+)', text):
         crate, segments = match.group(1), match.group(2).split('::')[1:]
@@ -266,15 +266,15 @@ else
   echo 'lint: SKIP prompt and ko-api.d.ts snapshots (node cannot run TypeScript)'
   exit "$failed"
 fi
-make share/pi/node_modules/.package-lock.json
-share/pi/node_modules/.bin/openapi-typescript "$scratch/openapi.json" --default-non-nullable false -o "$scratch/ko-api.d.ts" >/dev/null
+make scripts/openapi/node_modules/.package-lock.json
+scripts/openapi/node_modules/.bin/openapi-typescript "$scratch/openapi.json" --default-non-nullable false -o "$scratch/ko-api.d.ts" >/dev/null
 if [[ "${1:-}" == --update-schemas ]]; then
-  cp "$scratch/ko-api.d.ts" share/pi/ko-api.d.ts
-elif ! diff -u share/pi/ko-api.d.ts "$scratch/ko-api.d.ts"; then
-  echo 'share/pi/ko-api.d.ts:1: generated types differ; regenerate: scripts/lint.sh --update-schemas'
+  cp "$scratch/ko-api.d.ts" share/koa/ko-api.d.ts
+elif ! diff -u share/koa/ko-api.d.ts "$scratch/ko-api.d.ts"; then
+  echo 'share/koa/ko-api.d.ts:1: generated types differ; regenerate: scripts/lint.sh --update-schemas'
   failed=1
 fi
-fixture=share/pi/testdata/ko-prompts.txt
+fixture=share/koa/testdata/ko-prompts.txt
 if ! node ${node_flags[@]+"${node_flags[@]}"} scripts/dump-prompts.ts > "$scratch/prompts.txt"; then
   echo 'scripts/dump-prompts.ts:1: prompt dump failed' >&2
   exit 1

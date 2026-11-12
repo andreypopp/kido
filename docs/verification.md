@@ -86,6 +86,28 @@ crash. It compares every view's mirror, and a fresh snapshot, with
 the pane's terminal. It runs 20 random cases under `cargo test`;
 `PROPTEST_CASES` scales them.
 
+## The TypeScript suite
+
+`scripts/test-ts.sh` runs `koa-*.test.ts` and `agents.test.ts` of
+`share/koa/` and the `.pi/tests/` guard under Node's native TypeScript support. koa's
+own tests run koa against the scripted pi of `koa-fake-pi.ts`. The
+agent extension's tests (`koa-agent-*.test.ts`, over
+`koa-agent-fixture.ts`) run it in a fake pi on the fake `ko` of
+`share/koa/testdata/fake_ko/`, a Rust binary that `make
+build-fake-ko` builds. The fake answers the routes that the extension
+calls with the real server's shapes: it decodes and encodes every
+wire message through `ko_wire::protocol`'s types, so a change of a
+wire shape breaks its build. A test sends a deliberately malformed
+stream message through `feedRaw`, which the fake prints verbatim. The
+fake serves the message stream from files that a test writes and
+reads the acks on stdin. Local jobs run real shells, gated on files
+that a test writes. It serves a runtime's exec session by running the
+argv on the host with only the requested environment; one test drives
+the same exec client against a real `ko server` with a `command`
+runtime. A fake delay is a `KO_FAKE_*` gate that a test releases.
+`share/koa/testdata/ko-prompts.txt` is the snapshot of every prompt
+text that the extension registers (`make prompts` regenerates it).
+
 ## The e2e suite
 
 The e2e suite is `ko_e2e/`: one integration-test binary,
@@ -383,9 +405,9 @@ the Dockerfile, `install-zig.sh` and `rust-toolchain.toml`, so a
 change of one rebuilds it. `target/` and `build/` are the named
 volumes `ko-ci-like-target` and `ko-ci-like-build` over the bind
 mount, so a Linux build never overwrites the host's macOS outputs.
-`share/pi/node_modules` and `share/koa/node_modules` are the named
-volumes `ko-ci-like-pi-node-modules` and
-`ko-ci-like-koa-node-modules`, so the container's `npm ci` installs
+`share/koa/node_modules` and `scripts/openapi/node_modules` are the
+named volumes `ko-ci-like-koa-node-modules` and
+`ko-ci-like-openapi-node-modules`, so the container's `npm ci` installs
 Linux packages and the ts stage runs there. The container
 (`ko-ci-like-<pid>`; its busy siblings `ko-ci-like-busy-<pid>-N`)
 gets `KO_STATE_DIR=/tmp/ko-state`, and the host's other `KO_*`

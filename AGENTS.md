@@ -291,7 +291,7 @@ Conventions:
   returned: it owns the child, is not `Copy`, and its reap consumes
   it, so no group signal follows the reap. `ESRCH` is not an error,
   and neither is `EPERM` on a group signal. `bench/client.py` signals
-  only through `signal_child`. `share/pi/ko-pi.ts` signals only the
+  only through `signal_child`. `share/koa/koa-agent.ts` signals only the
   groups of the jobs it spawned, through `signalJob`, which takes a
   record of its registry; koa only the children it spawned, through
   `signalChild` in `share/koa/koa-child.ts`; lint refuses
@@ -361,16 +361,17 @@ Conventions:
 
 **koa is the one harness.** koa (`share/koa/`) is Kido's one pi
 harness, and no other program loads its agent extension: there is no
-terminal harness and no `ko-pi` command. A plain `pi` is not Kido's
-harness. The agent extension, `share/pi/ko-pi.ts`, runs in koa's pi
+terminal harness. A plain `pi` is not Kido's
+harness. The agent extension, `share/koa/koa-agent.ts`, runs in koa's pi
 child beside `koa-sessions.ts` and holds every agent tool. Nothing
 in it exists only for pi's terminal UI: no widgets, renderers,
 terminal input or autocomplete providers. It learns browser mode from
 the boolean flag `--koa-browser` that koa passes, never from pi's
 mode or the environment. It calls only `ko api` (docs/design.md,
-"The harness extension", lists the routes) and imports only `text.ts`,
-`agents.ts`, `token.ts`, `records.ts`, `completion-context.ts` and
-`runtime-exec.ts` beside itself, which koa shares. Its background
+"The harness extension", lists the routes). Of `share/koa/` it
+imports only the modules that koa also uses: `text.ts`, `agents.ts`,
+`records.ts`, `completion-context.ts` and `runtime-exec.ts`, never
+koa's program modules. Its background
 commands are jobs, child processes of pi. It never opens ko's socket,
 never reads ko's state directory or another agent's files, and has no
 state directory of its own: its registry and reports are custom
@@ -480,7 +481,7 @@ docs/verification.md describes every check. The targets agents run:
     make e2e E2E=name  the e2e suite against build/ko/bin/ko
     make cargo ARGS='test -p ko_server'  one cargo command, for iterating on one package
     make lint    cargo fmt --check, clippy and scripts/lint.sh
-    make schemas regenerate the schemas and share/pi/ko-api.d.ts
+    make schemas regenerate the schemas and share/koa/ko-api.d.ts
     make prompts regenerate the prompt fixture
     make fuzz TARGET=ring TIME=600  one time-boxed fuzz run, only when the user asks
     make ci-like ARGS=...  a CPU/memory-capped Linux container
@@ -526,7 +527,7 @@ PASS/FAIL line. A change that makes a stage slower needs a reason.
   cases that need the same setup in one test, on one server.
 - Test pure logic in a unit test, not through a server.
 - In the TypeScript suite, the fake `ko` is the Rust binary
-  `share/pi/testdata/fake_ko`. A Node process start costs about
+  `share/koa/testdata/fake_ko`. A Node process start costs about
   70 ms. A fake delay is a `KO_FAKE_*` gate that the test releases,
   not a delay that the test waits out. A test that reads only the
   registered tools needs no fixture.

@@ -1,0 +1,9 @@
+{
+  "private": true,
+  "type": "module",
+  "devDependencies": {
+    "@redocly/cli": "2.72.1",
+    "openapi-typescript": "7.13.0",
+    "typescript": "^5.9.3"
+  }
+}

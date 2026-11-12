@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { appendFileSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 
-import { makeFixture, agentPane, selfPane, startSession, text, entriesOf, withEnv, asSubagent, savedSession, pollUntil } from "./ko-pi-fixture.ts";
+import { makeFixture, agentPane, selfPane, startSession, text, entriesOf, withEnv, asSubagent, savedSession, pollUntil } from "./koa-agent-fixture.ts";
 
 const INSTANCE = "a".repeat(32);
 
@@ -41,13 +41,13 @@ for (const mode of ["koa", "koa-browser"]) test(`spawn_agent creates one pane wi
     assert.equal(env(body!, "KO_AGENT_SESSION"), session);
     assert.equal(env(body!, "KO_AGENT_PARENT_SESSION"), "self-session");
     assert.equal(env(body!, "KO_AGENT_TRUSTED_CWD"), undefined, "a session that does not trust its project passes no trust");
-    assert.deepEqual(body!.vars, { "ko-pi.task": { text: "build it", from: { session: "self-session", name: "Self", pane: "pane_1" } } });
+    assert.deepEqual(body!.vars, { "koa.task": { text: "build it", from: { session: "self-session", name: "Self", pane: "pane_1" } } });
 
     assert.match(reply, new RegExp(`^spawned worker \\(session ${session}, window window_10, pane pane_10\\); session id is what resume_from takes later; its result arrives as a notice`));
     assert.match(reply, /list_agents lists this agent and stop_agent stops it/);
-    const [child] = entriesOf(s, "ko-pi.agent");
+    const [child] = entriesOf(s, "koa.agent");
     assert.deepEqual(child, { role: "subagent", owner: "self-session", at: child!.at, name: "worker", session, model: "acme/caller:high", fork: false, cwd: process.cwd(), pane: { instance: INSTANCE, pane: "pane_10" } });
-    assert.deepEqual(entriesOf(s, "ko-pi.work").map((work) => [work.owner, work.child]), [["self-session", session]]);
+    assert.deepEqual(entriesOf(s, "koa.work").map((work) => [work.owner, work.child]), [["self-session", session]]);
     assert.equal(fx.row("pane_10")?.parent, "pane_1");
   } finally {
     await fx.restore();
@@ -66,10 +66,10 @@ test("a toplevel spawn is one POST with the session and neither parent nor close
     assert.equal(env(body!, "KO_AGENT_PARENT_SESSION"), undefined);
     assert.ok(!body!.command.argv.includes("--session-dir"));
     assert.ok(env(body!, "KO_AGENT_SESSION"));
-    assert.equal(body!.vars["ko-pi.task"].text, "go");
+    assert.equal(body!.vars["koa.task"].text, "go");
     assert.match(reply, /independent peer; no report or ending notice$/);
-    assert.deepEqual(entriesOf(s, "ko-pi.agent").map((entry) => entry.role), ["peer"]);
-    assert.deepEqual(entriesOf(s, "ko-pi.work"), []);
+    assert.deepEqual(entriesOf(s, "koa.agent").map((entry) => entry.role), ["peer"]);
+    assert.deepEqual(entriesOf(s, "koa.work"), []);
   } finally {
     await fx.restore();
   }
@@ -92,7 +92,7 @@ test("spawn_agent refuses what it must, before it posts", async () => {
     assert.equal(await refused({ name: "kid", task: "" }), "could not spawn agent: task is required unless resuming without fork");
     assert.equal(await refused({ name: "kid", task: "y".repeat(1_100_000) }), "could not spawn agent: the task does not fit the 1044480 byte limit of a pane variable");
     assert.equal(await refused({ name: "elder", task: "x", toplevel: true }), 'could not spawn agent: the name "elder" is already taken by a live agent in this session');
-    assert.equal(await refused({ name: "kid", task: "x", cwd: "/nonexistent-dir-for-ko-pi" }), "could not spawn agent: cwd is not a directory: /nonexistent-dir-for-ko-pi");
+    assert.equal(await refused({ name: "kid", task: "x", cwd: "/nonexistent-dir-for-koa" }), "could not spawn agent: cwd is not a directory: /nonexistent-dir-for-koa");
     fx.setPi("#!/bin/sh\nprintf 'provider model\\nacme caller\\n'\n");
     assert.match(await refused({ name: "kid", task: "x", model: "acme/none" }), /^could not spawn agent: model "acme\/none" is not a model of a configured provider; configured: acme\/\{caller\}$/);
     assert.deepEqual(fx.posts("/panes"), []);
@@ -110,7 +110,7 @@ test("a name taken by an own child is refused, and a failed POST leaves no regis
     await withEnv({ KO_FAKE_SPAWN_FAIL: "no room" }, async () => {
       assert.equal(text(await spawn.execute("c", { name: "worker", task: "x" })), "could not spawn agent: no room");
     });
-    assert.deepEqual(entriesOf(s, "ko-pi.agent"), []);
+    assert.deepEqual(entriesOf(s, "koa.agent"), []);
     await spawn.execute("c", { name: "worker", task: "x" });
     assert.match(text(await spawn.execute("c", { name: "Worker", task: "x" })), /^could not spawn agent: the name "Worker" is already taken by one of this session's agents; message it instead$/);
     const concurrent = await Promise.all([spawn.execute("c", { name: "twin", task: "x" }), spawn.execute("c", { name: "twin", task: "x" })]);
@@ -139,7 +139,7 @@ test(`resume_from continues a saved session; fork copies it under a new id`, asy
     assert.equal(body!.command.argv[body!.command.argv.indexOf("--model") + 1], "acme/saved:medium");
     assert.equal(body!.cwd, cwd, "the recorded directory");
     assert.equal(body!.vars, undefined, "an empty task is no variable");
-    assert.deepEqual(entriesOf(s, "ko-pi.work"), [], "and owes no report");
+    assert.deepEqual(entriesOf(s, "koa.work"), [], "and owes no report");
 
     fx.setPanes([selfPane(), agentPane({ pane: "pane_30", session: "0123456789abcdef0123456789abcdef", name: "again", parent: "pane_1" })]);
     assert.equal(text(await withEnv({ PI_CODING_AGENT_DIR: fx.dir }, () => spawn.execute("c", { name: "again", task: "", resume_from: "0123456789abcdef0123456789abcdef" }))), "could not spawn agent: session 0123456789abcdef0123456789abcdef is live in a pane");
@@ -202,7 +202,7 @@ test("invalid session headers and unreadable files return tool errors for resume
     const s = await startSession(fx);
     const id = "0123456789abcdef0123456789abcdef";
     const file = savedSession(join(fx.dir, "sessions", "caller"), fx.dir, id);
-    s.entries.push({ type: "custom", customType: "ko-pi.agent", data: { role: "subagent", owner: "self-session", name: "kid", session: id, model: "acme/m:low", fork: false, cwd: fx.dir, pane: { instance: INSTANCE, pane: "pane_77" } } });
+    s.entries.push({ type: "custom", customType: "koa.agent", data: { role: "subagent", owner: "self-session", name: "kid", session: id, model: "acme/m:low", fork: false, cwd: fx.dir, pane: { instance: INSTANCE, pane: "pane_77" } } });
     writeFileSync(file, "{}");
     await withEnv({ PI_CODING_AGENT_DIR: fx.dir }, async () => {
       assert.equal(text(await s.tools.get("spawn_agent").execute("c", { name: "again", task: "", resume_from: id })), `could not spawn agent: invalid session header: ${file}`);
@@ -226,7 +226,7 @@ test("a message to an ended subagent restarts it by --session-id in its recorded
   try {
     fx.setPanes([selfPane()]);
     const s = await startSession(fx);
-    s.entries.push({ type: "custom", customType: "ko-pi.agent", data: { role: "subagent", owner: "self-session", name: "kid", session: "kid-session", model: "acme/m:low", fork: false, cwd: "/work/kid", pane: { instance: INSTANCE, pane: "pane_77" } } });
+    s.entries.push({ type: "custom", customType: "koa.agent", data: { role: "subagent", owner: "self-session", name: "kid", session: "kid-session", model: "acme/m:low", fork: false, cwd: "/work/kid", pane: { instance: INSTANCE, pane: "pane_77" } } });
     const message = s.tools.get("message_agent");
     const results = await Promise.all([message.execute("c", { to: "kid", message: "carry on" }), message.execute("c", { to: "kid", message: "also this" })]);
     const texts = results.map(text);
@@ -240,15 +240,15 @@ test("a message to an ended subagent restarts it by --session-id in its recorded
     assert.deepEqual(argv.slice(3), ["koa", "--session-id", "kid-session", "--name", "kid", "--model", "acme/m:low", "--session-dir", join(getAgentDir(), "ko-subagents", "--work-kid--")]);
     assert.equal(posts[0]!.cwd, "/work/kid");
     assert.equal(posts[0]!.parent, "pane_1");
-    assert.equal(posts[0]!.vars["ko-pi.task"].text, winning);
+    assert.equal(posts[0]!.vars["koa.task"].text, winning);
     assert.ok(texts[1 - winner]!.startsWith("queued for kid:"), "the other message goes to the pane that the first started");
-    const children = entriesOf(s, "ko-pi.agent");
+    const children = entriesOf(s, "koa.agent");
     assert.deepEqual(children.map((child) => child.pane.pane), ["pane_77", "pane_10"]);
-    assert.equal(entriesOf(s, "ko-pi.work").length, 2, "the restart and the second message are each work");
+    assert.equal(entriesOf(s, "koa.work").length, 2, "the restart and the second message are each work");
     assert.deepEqual(fx.posts("/panes/pane_10/messages").map((post) => post.text), [losing]);
 
     const steered = text(await (async () => {
-      s.entries.push({ type: "custom", customType: "ko-pi.agent", data: { role: "subagent", ...children[0], owner: "self-session", pane: { instance: INSTANCE, pane: "pane_78" } } });
+      s.entries.push({ type: "custom", customType: "koa.agent", data: { role: "subagent", ...children[0], owner: "self-session", pane: { instance: INSTANCE, pane: "pane_78" } } });
       return message.execute("c", { to: "kid", message: "now", mode: "steer" });
     })());
     assert.equal(steered, "could not message kid: kid is no longer running", "only a message restarts");
@@ -265,7 +265,7 @@ test("message_agent continues an ended child's session file in the normal tree",
     const id = "0123456789abcdef0123456789abcdef";
     const file = savedSession(join(fx.dir, "sessions", "caller"), fx.dir, id);
     recordModelChanges(file);
-    s.entries.push({ type: "custom", customType: "ko-pi.agent", data: { role: "subagent", owner: "self-session", name: "kid", session: id, model: "acme/m:low", fork: false, cwd: fx.dir, pane: { instance: INSTANCE, pane: "pane_77" } } });
+    s.entries.push({ type: "custom", customType: "koa.agent", data: { role: "subagent", owner: "self-session", name: "kid", session: id, model: "acme/m:low", fork: false, cwd: fx.dir, pane: { instance: INSTANCE, pane: "pane_77" } } });
     const result = await withEnv({ PI_CODING_AGENT_DIR: fx.dir }, async () => text(await s.tools.get("message_agent").execute("c", { to: "kid", message: "continue" })));
     assert.match(result, /^restarted kid in pane pane_10;/);
     assert.deepEqual(fx.posts("/panes")[0]!.command.argv.slice(3, 7), ["koa", "--session", file, "--name"]);
@@ -280,19 +280,19 @@ test("a child delivers its task after session_start returns, exactly once across
   const fx = makeFixture();
   try {
     const task = { text: "the work", from: { session: "boss-session", name: "boss", pane: "pane_2" } };
-    fx.setPanes([selfPane({ parent: "pane_2", vars: { "ko-pi.task": task } }), agentPane({ pane: "pane_2", session: "boss-session", name: "boss" })]);
+    fx.setPanes([selfPane({ parent: "pane_2", vars: { "koa.task": task } }), agentPane({ pane: "pane_2", session: "boss-session", name: "boss" })]);
     await asSubagent("self-session", async () => {
       const cancelled = await startSession(fx, { startup: false });
       await cancelled.emit("session_shutdown", { reason: "reload" });
-      assert.deepEqual(fx.row("pane_1")?.vars?.["ko-pi.task"], task);
+      assert.deepEqual(fx.row("pane_1")?.vars?.["koa.task"], task);
       const s = await startSession(fx, { startup: false });
       assert.deepEqual(s.delivered, [], "the host can subscribe after session_start returns");
-      await pollUntil(() => fx.row("pane_1")?.vars?.["ko-pi.task"] === undefined);
+      await pollUntil(() => fx.row("pane_1")?.vars?.["koa.task"] === undefined);
       assert.deepEqual(cancelled.delivered, [], "the cancelled instance never starts the task");
       assert.deepEqual(s.delivered, [{ text: "the work", opts: { deliverAs: "followUp" } }]);
-      assert.deepEqual(entriesOf(s, "ko-pi.work").map((work) => work.owner), ["self-session"]);
-      assert.equal(fx.apiCalls().filter((call) => call.method === "DELETE" && call.path === "/panes/pane_1/vars/ko-pi.task").length, 1);
-      assert.equal(fx.row("pane_1")?.vars?.["ko-pi.task"], undefined);
+      assert.deepEqual(entriesOf(s, "koa.work").map((work) => work.owner), ["self-session"]);
+      assert.equal(fx.apiCalls().filter((call) => call.method === "DELETE" && call.path === "/panes/pane_1/vars/koa.task").length, 1);
+      assert.equal(fx.row("pane_1")?.vars?.["koa.task"], undefined);
       await s.emit("session_shutdown", { reason: "reload" });
       const again = await startSession(fx, { entries: s.entries });
       assert.deepEqual(again.delivered, [], "the variable is gone, so a reload delivers nothing");
@@ -306,7 +306,7 @@ test("shutdown during the startup layout read leaves the task for the next sessi
   const fx = makeFixture();
   try {
     const task = { text: "the work", from: { session: "boss-session", name: "boss", pane: "pane_2" } };
-    fx.setPanes([selfPane({ parent: "pane_2", vars: { "ko-pi.task": task } }), agentPane({ pane: "pane_2", session: "boss-session", name: "boss" })]);
+    fx.setPanes([selfPane({ parent: "pane_2", vars: { "koa.task": task } }), agentPane({ pane: "pane_2", session: "boss-session", name: "boss" })]);
     await asSubagent("self-session", async () => {
       const gate = join(fx.dir, "layout-ready");
       await withEnv({ KO_FAKE_LAYOUT_GATE: gate }, async () => {
@@ -316,11 +316,11 @@ test("shutdown during the startup layout read leaves the task for the next sessi
         writeFileSync(gate, "");
         await shutdown;
         assert.deepEqual(s.delivered, []);
-        assert.deepEqual(fx.row("pane_1")?.vars?.["ko-pi.task"], task);
+        assert.deepEqual(fx.row("pane_1")?.vars?.["koa.task"], task);
       });
       const again = await startSession(fx);
       assert.deepEqual(again.delivered, [{ text: "the work", opts: { deliverAs: "followUp" } }]);
-      assert.equal(fx.apiCalls().filter((call) => call.method === "DELETE" && call.path === "/panes/pane_1/vars/ko-pi.task").length, 1);
+      assert.equal(fx.apiCalls().filter((call) => call.method === "DELETE" && call.path === "/panes/pane_1/vars/koa.task").length, 1);
     });
   } finally {
     await fx.restore();
@@ -331,18 +331,18 @@ test("a task from another session arrives as a message with its sender header, a
   const fx = makeFixture();
   try {
     const task = { text: "please look", from: { session: "stranger-session", name: "stranger", pane: "pane_8" } };
-    fx.setPanes([selfPane({ vars: { "ko-pi.task": task } })]);
+    fx.setPanes([selfPane({ vars: { "koa.task": task } })]);
     const s = await startSession(fx);
     const [message] = s.messages.filter((m) => m.message.customType === "ko-message");
     assert.equal(message!.message.content, "message from @stranger (another agent in this session, not the user):\nplease look");
-    assert.deepEqual(entriesOf(s, "ko-pi.work"), [], "work comes only from the parent");
+    assert.deepEqual(entriesOf(s, "koa.work"), [], "work comes only from the parent");
 
-    fx.setPanes([selfPane({ vars: { "ko-pi.task": task } })]);
+    fx.setPanes([selfPane({ vars: { "koa.task": task } })]);
     await withEnv({ KO_FAKE_LAYOUT_FAIL: "1" }, async () => {
       const failing = await startSession(fx);
       assert.deepEqual(failing.messages, []);
     });
-    assert.deepEqual(fx.row("pane_1")?.vars?.["ko-pi.task"], task, "a read that failed leaves the variable for the next attempt");
+    assert.deepEqual(fx.row("pane_1")?.vars?.["koa.task"], task, "a read that failed leaves the variable for the next attempt");
   } finally {
     await fx.restore();
   }

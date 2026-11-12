@@ -2,7 +2,7 @@ import { test } from "node:test";
 
 import assert from "node:assert/strict";
 
-import { makeFixture, agentPane, selfPane, startSession, entriesOf, notices, customMessages, pollUntil, exited, text, type Fixture, type Started } from "./ko-pi-fixture.ts";
+import { makeFixture, agentPane, selfPane, startSession, entriesOf, notices, customMessages, pollUntil, exited, text, type Fixture, type Started } from "./koa-agent-fixture.ts";
 
 const INSTANCE = "a".repeat(32);
 const kid = { role: "subagent", owner: "self-session", name: "kid", session: "kid-session", model: "acme/m:low", fork: false, cwd: "/work/kid", pane: { instance: INSTANCE, pane: "pane_5" } };
@@ -10,9 +10,9 @@ const kid = { role: "subagent", owner: "self-session", name: "kid", session: "ki
 async function withKid(fx: Fixture, state: { reported: boolean; dead?: unknown }): Promise<Started> {
   fx.setPanes([selfPane(), agentPane({ pane: "pane_5", session: "kid-session", name: "kid", parent: "pane_1", close: "on_exit", dead: state.dead })]);
   const s = await startSession(fx);
-  s.entries.push({ type: "custom", customType: "ko-pi.agent", data: kid });
-  s.entries.push({ type: "custom", customType: "ko-pi.work", data: { owner: "self-session", child: "kid-session", at: 1 } });
-  if (state.reported) s.entries.push({ type: "custom", customType: "ko-pi.report", data: { owner: "self-session", child: "kid-session", name: "kid", text: "done", at: 2, id: "r" } });
+  s.entries.push({ type: "custom", customType: "koa.agent", data: kid });
+  s.entries.push({ type: "custom", customType: "koa.work", data: { owner: "self-session", child: "kid-session", at: 1 } });
+  if (state.reported) s.entries.push({ type: "custom", customType: "koa.report", data: { owner: "self-session", child: "kid-session", name: "kid", text: "done", at: 2, id: "r" } });
   return s;
 }
 
@@ -31,7 +31,7 @@ test("the ended message of a child that reported is a one-line notice", async ()
     assert.deepEqual(details.inbound, { form: 'ended', reported: true, relation: 'child' });
     assert.deepEqual(details.agent, { name: 'kid', session: 'kid-session', pane: 'pane_5' });
     assert.equal(details.body, 'subagent "kid" ended: exit 0; it had reported');
-    assert.deepEqual(entriesOf(s, "ko-pi.ended").map((e) => [e.child, e.pane]), [["kid-session", "pane_5"]]);
+    assert.deepEqual(entriesOf(s, "koa.ended").map((e) => [e.child, e.pane]), [["kid-session", "pane_5"]]);
   } finally {
     await fx.restore();
   }
@@ -67,7 +67,7 @@ test("a signal, a failed start and a removed pane each have their words, and a r
       [{ type: "gone" }, 'subagent "kid" ended: its pane was removed; it had not reported on its last work'],
     ];
     for (const [i, [ending, first]] of cases.entries()) {
-      s.entries.push({ type: "custom", customType: "ko-pi.agent", data: kid });
+      s.entries.push({ type: "custom", customType: "koa.agent", data: kid });
       fx.feed({ id: `ended-pane_5-${i}`, kind: "ended", from: { type: "pane", pane: "pane_5" }, end: ending });
       await pollUntil(() => notices(s).length === i + 1, 2000, `notice ${i}`);
       assert.equal(notices(s)[i]!.split("\n")[1], first);
@@ -83,7 +83,7 @@ test("an ended message for no current child, or for one that was stopped or alre
   try {
     const s = await withKid(fx, { reported: false, dead: exited(0) });
     fx.feed({ id: "ended-stranger", kind: "ended", from: { type: "pane", pane: "pane_66" }, end: end(exited(0).cause) });
-    s.entries.push({ type: "custom", customType: "ko-pi.ended", data: { owner: "self-session", child: "kid-session", pane: "pane_5", at: 4 } });
+    s.entries.push({ type: "custom", customType: "koa.ended", data: { owner: "self-session", child: "kid-session", pane: "pane_5", at: 4 } });
     fx.feed({ id: "ended-pane_5", kind: "ended", from: { type: "pane", pane: "pane_5" }, end: end(exited(0).cause) });
     await pollUntil(() => fx.acks().length === 2, 2000, "both acked");
     assert.deepEqual(notices(s), []);
@@ -101,10 +101,10 @@ test("a parent that returns finds the endings it missed once: a gone pane, a dea
       agentPane({ pane: "pane_6", session: "well-session", name: "well", parent: "pane_1" }),
     ]);
     const entries = [
-      { type: "custom" as const, customType: "ko-pi.agent", data: kid },
-      { type: "custom" as const, customType: "ko-pi.work", data: { owner: "self-session", child: "kid-session", at: 1 } },
-      { type: "custom" as const, customType: "ko-pi.agent", data: { ...kid, name: "lost", session: "lost-session", pane: { instance: "b".repeat(32), pane: "pane_8" } } },
-      { type: "custom" as const, customType: "ko-pi.agent", data: { ...kid, name: "well", session: "well-session", pane: { instance: INSTANCE, pane: "pane_6" } } },
+      { type: "custom" as const, customType: "koa.agent", data: kid },
+      { type: "custom" as const, customType: "koa.work", data: { owner: "self-session", child: "kid-session", at: 1 } },
+      { type: "custom" as const, customType: "koa.agent", data: { ...kid, name: "lost", session: "lost-session", pane: { instance: "b".repeat(32), pane: "pane_8" } } },
+      { type: "custom" as const, customType: "koa.agent", data: { ...kid, name: "well", session: "well-session", pane: { instance: INSTANCE, pane: "pane_6" } } },
     ];
     fx.setScreen("pane_5", "it crashed");
     const s = await startSession(fx, { entries: [...entries] });
@@ -117,9 +117,9 @@ test("a parent that returns finds the endings it missed once: a gone pane, a dea
     await s.emit("session_shutdown", { reason: "reload" });
     const again = await startSession(fx, { entries: s.entries });
     assert.deepEqual(notices(again), [], "an announced ending is recorded and not announced twice");
-    assert.equal(entriesOf(again, "ko-pi.ended").length, 2);
+    assert.equal(entriesOf(again, "koa.ended").length, 2);
 
-    s.entries.push({ type: "custom", customType: "ko-pi.agent", data: { ...kid, pane: { instance: INSTANCE, pane: "pane_7" } } });
+    s.entries.push({ type: "custom", customType: "koa.agent", data: { ...kid, pane: { instance: INSTANCE, pane: "pane_7" } } });
     await again.emit("session_shutdown", { reason: "reload" });
     fx.setPanes([selfPane()]);
     const third = await startSession(fx, { entries: s.entries });
@@ -192,7 +192,7 @@ test("stop_agent refuses only the caller, reports an ended child, and names a fa
   try {
     fx.setPanes([selfPane(), agentPane({ pane: "pane_3", session: "peer-session", name: "peer" }), agentPane({ pane: "pane_5", session: "kid-session", name: "kid", parent: "pane_1", dead: exited(1) })]);
     const s = await startSession(fx, { name: "Self" });
-    s.entries.push({ type: "custom", customType: "ko-pi.agent", data: kid });
+    s.entries.push({ type: "custom", customType: "koa.agent", data: kid });
     const stop = s.tools.get("stop_agent");
     const self = await stop.execute("c", { agent: "Self" });
     assert.equal(text(self), "refusing to stop Self: it is this agent");

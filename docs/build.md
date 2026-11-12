@@ -57,7 +57,7 @@ directory, with the underscore.
   runs it.
 - `ko_e2e/` is the e2e suite, a workspace member outside
   `default-members` (verification.md, "The e2e suite").
-- `share/pi/testdata/fake_ko/` is the crate `fake_ko`, the fake `ko`
+- `share/koa/testdata/fake_ko/` is the crate `fake_ko`, the fake `ko`
   of the TypeScript suite, a workspace member outside
   `default-members` that `make build-fake-ko` builds for
   `scripts/test-ts.sh`. It reads and writes ko's wire only through
@@ -166,12 +166,9 @@ install PREFIX=<prefix>` copies that layout under `<prefix>/bin` and
 `<prefix>/share/ko` (default `~/.local`), Homebrew's `pkgshare` layout.
 
 `make build` installs `share/ko/bin` (the `ko`, `ssh` and `koa`
-shims), `share/ko/shim.sh`, `share/pi/ko-pi.ts`,
-`share/pi/text.ts`, `share/pi/ko-api.d.ts`, `share/pi/agents.ts`,
-`share/pi/token.ts`, `share/pi/records.ts`,
-`share/pi/completion-context.ts`, `share/pi/runtime-exec.ts` and
-`share/pi/skills` (in `share/ko/pi/`), koa's program and its bundled
-page (in `share/ko/koa/`), and the SDK `share/webview/` (in
+shims), `share/ko/shim.sh`, koa's program, the agent extension, the
+shared modules, `ko-api.d.ts`, the skills and the bundled page (in
+`share/ko/koa/`, the files of `KOA_SRC` in the Makefile), and the SDK `share/webview/` (in
 `share/ko/webview/`) beside `bin/ko` in `build/ko/`, the layout that
 `ko_shell/src/bin_dir.rs` finds as installed.
 
@@ -300,21 +297,12 @@ What the setup does, and why:
       shim.sh           their shared helper
       bash/, zsh/       the OSC 133 integrations every primed shell sources
       openapi.json, client-model.json, config-schema.json   the generated schemas (make schemas)
-    share/pi/           ko-pi.ts, the agent extension, which koa loads
-                        into its pi with --extension; its suite ko-pi-*.test.ts on
-                        the fake ko of testdata/fake_ko/; ko-api.d.ts,
-                        generated from openapi.json; testdata/ko-prompts.txt,
-                        the prompt snapshot; skills/ko/SKILL.md, the ko
-                        skill that the extension offers to pi; the modules that
-                        the extension and koa share at run time and nothing
-                        else: text.ts; agents.ts, the agent rows;
-                        token.ts, the token grammar; records.ts, the facts of
-                        the extension's message details and their guards;
-                        completion-context.ts, where the extension hands koa's
-                        extension the place where a command runs; runtime-exec.ts,
-                        the client of a runtime's exec route
     share/koa/          koa, the pi harness that renders through a
-                        webview (design-koa.md, "Where koa lives",
+                        webview, and koa-agent.ts, the agent extension that
+                        koa loads into its pi; their suites, the fake ko of
+                        testdata/fake_ko/, the prompt snapshot, the ko skill,
+                        ko-api.d.ts (generated from openapi.json) and the
+                        shared modules (design-koa.md, "Where koa lives",
                         names each file)
     share/webview/      @kido/webview, the Node SDK for webview pages
                         (index.ts, README.md), installed as share/ko/webview
@@ -322,7 +310,11 @@ What the setup does, and why:
                         release.md, /release: Kido.app first, then ko
     .pi/extensions/     no-git-writes, the spawned agent's bash-tool guard
     .pi/tests/          no-git-writes.test.ts, the guard's suite, which
-                        scripts/test-ts.sh runs with the ko-pi suite
+                        scripts/test-ts.sh runs with koa's suite
+    scripts/openapi/    package.json and its lockfile: openapi-typescript and
+                        redocly, the generators of ko-api.d.ts and of make
+                        api-docs, with the TypeScript 5 that they need, apart
+                        from share/koa's TypeScript 7
     scripts/            verify.sh, scrubbed verification; checks.sh, the
                         checks of a unit's changed paths; release.sh, the
                         Homebrew tap release; lint.sh, code hygiene, signal

@@ -3,7 +3,7 @@ import type { components } from "./ko-api.d.ts";
 export type Relation = components["schemas"]["Relation"];
 const relations = new Set<string>(["parent", "child", "sibling", "descendant", "sibling_descendant"] satisfies Relation[]);
 export const isRelation = (value: unknown): value is Relation => typeof value === "string" && relations.has(value);
-export const RESTART_STATE_CHANNEL = 'ko-pi:restart-state';
+export const RESTART_STATE_CHANNEL = 'koa:restart-state';
 export type RestartState = { type: 'ready' } | { type: 'blocked'; jobs: number; children: number };
 export type AgentRef = { name: string; session?: string; pane?: string };
 export type AgentOutcome = { ok: true } | { ok: false; failure: 'refused' | 'not_found' | 'ambiguous' | 'not_running' | 'gone' | 'error'; message: string };

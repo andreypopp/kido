@@ -2,9 +2,9 @@ import { test } from "node:test";
 
 import assert from "node:assert/strict";
 
-import { makeFixture, selfPane, startSession, pollUntil, customMessages, entriesOf, asSubagent, idleTurn, notices } from "./ko-pi-fixture.ts";
+import { makeFixture, selfPane, startSession, pollUntil, customMessages, entriesOf, asSubagent, idleTurn, notices } from "./koa-agent-fixture.ts";
 
-import { PARENT_GUIDANCE } from "./ko-pi.ts";
+import { PARENT_GUIDANCE } from "./koa-agent.ts";
 
 const parent = { type: "pane", pane: "pane_2", session: "boss-session", name: "boss" };
 const peer = { type: "pane", pane: "pane_3", session: "peer-session", name: "peer" };
@@ -74,10 +74,10 @@ test("work marks follow the parent's messages: at message_start in the child, no
     fx.setPanes([selfPane()]);
     await asSubagent("self-session", async () => {
       const s = await startSession(fx);
-      assert.equal(entriesOf(s, "ko-pi.work").length, 0);
+      assert.equal(entriesOf(s, "koa.work").length, 0);
       await s.emit("message_start", { message: { role: "custom", customType: "ko-message", details: { work: true } } });
       await s.emit("message_start", { message: { role: "custom", customType: "ko-message", details: { work: false } } });
-      assert.deepEqual(entriesOf(s, "ko-pi.work").map((work) => work.owner), ["self-session"]);
+      assert.deepEqual(entriesOf(s, "koa.work").map((work) => work.owner), ["self-session"]);
     });
   } finally {
     await fx.restore();
@@ -132,8 +132,8 @@ test("a notice that cannot be recorded is refused, and one that can is acked and
     fx.setPanes([selfPane()]);
     const s = await startSession(fx);
     const report = { type: "pane", pane: "pane_5", session: "kid-session", name: "kid" };
-    s.entries.push({ type: "custom", customType: "ko-pi.agent", data: { role: "subagent", owner: "self-session", name: "kid", session: "kid-session", model: "m", fork: false, cwd: "/tmp", pane: { instance: "a".repeat(32), pane: "pane_5" } } });
-    s.failAppends.add("ko-pi.report");
+    s.entries.push({ type: "custom", customType: "koa.agent", data: { role: "subagent", owner: "self-session", name: "kid", session: "kid-session", model: "m", fork: false, cwd: "/tmp", pane: { instance: "a".repeat(32), pane: "pane_5" } } });
+    s.failAppends.add("koa.report");
     fx.feed({ id: "rep-fail-001", kind: "notice", text: "done", data: { report: true }, relation: "child", from: report });
     await pollUntil(() => fx.acks().some((ack) => ack.id === "rep-fail-001"), 2000, "the verdict");
     assert.deepEqual(fx.acks(), [{ type: "refuse", id: "rep-fail-001" }], "the child retries a report that was not recorded");
@@ -144,7 +144,7 @@ test("a notice that cannot be recorded is refused, and one that can is acked and
     fx.dropStream();
     await pollUntil(() => fx.acks().length === 1, 2000, "the report to arrive again");
     assert.deepEqual(fx.acks(), [{ type: "ack", id: "rep-fail-001" }]);
-    assert.deepEqual(entriesOf(s, "ko-pi.report").map((entry) => [entry.child, entry.text]), [["kid-session", "done"]]);
+    assert.deepEqual(entriesOf(s, "koa.report").map((entry) => [entry.child, entry.text]), [["kid-session", "done"]]);
     assert.equal(notices(s).length, 1);
     assert.ok(notices(s)[0]!.endsWith(PARENT_GUIDANCE));
   } finally {

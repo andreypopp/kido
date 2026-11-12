@@ -7,7 +7,7 @@ import { join, resolve } from "node:path";
 import { once } from "node:events";
 import { createServer } from "node:net";
 import { Readable } from "node:stream";
-import { sse, selfPane, agentPane, pollUntil } from "../pi/ko-pi-fixture.ts";
+import { sse, selfPane, agentPane, pollUntil } from "./koa-agent-fixture.ts";
 import { linkFakeKo, fixture, assistantMessage } from "./koa-program-fixture.ts";
 test('completion limits active searches and kills expired children', { timeout: 10000 }, async t => {
   const dir = await mkdtemp('/tmp/koa-search-limit-'); t.after(() => rm(dir, { recursive: true, force: true }));
@@ -455,5 +455,5 @@ test("restart keeps the saved picker selection, harness and runtime", { timeout:
   assert.equal(restarted.thinking, "high");
   const argv = (await app.log()).filter(record => record.type === "argv").map(record => record.args);
   assert.equal(argv.length, 2);
-  assert.deepEqual(argv[1], ["--mode", "rpc", "--extension", resolve("../../build/ko/share/ko/pi/ko-pi.ts"), '--extension', resolve('../../build/ko/share/ko/koa/koa-sessions.ts'), "--koa-browser", "--runtime", "remote", "--resume", "-r", "--system-prompt", "--resume", "--session", session, "--", "--session", "literal", "--resume"]);
+  assert.deepEqual(argv[1], ["--mode", "rpc", "--extension", resolve("../../build/ko/share/ko/koa/koa-agent.ts"), '--extension', resolve('../../build/ko/share/ko/koa/koa-sessions.ts'), "--koa-browser", "--runtime", "remote", "--resume", "-r", "--system-prompt", "--resume", "--session", session, "--", "--session", "literal", "--resume"]);
 });

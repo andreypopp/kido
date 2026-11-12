@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { atToken, fileToken, slashToken } from "../pi/token.ts";
+import { atToken, fileToken, slashToken } from "./token.ts";
 
 test("agent and file mentions share boundaries, wrappers and quoted paths", () => {
   const cases: [string, string | undefined, string | undefined][] = [

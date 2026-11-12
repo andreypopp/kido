@@ -3,8 +3,8 @@ import { spawnSync } from "node:child_process";
 import assert from "node:assert/strict";
 import { readFileSync, writeFileSync, statSync, existsSync, realpathSync, symlinkSync, mkdirSync } from "node:fs";
 import { join } from "node:path";
-import { makeFixture, selfPane, startSession, customMessages, notices, pollUntil, text, gatedCommand, jobRegistry as registry, logHas, processGone, withEnv } from "./ko-pi-fixture.ts";
-import { splitLines, newSplit, streamBatch } from "./ko-pi.ts";
+import { makeFixture, selfPane, startSession, customMessages, notices, pollUntil, text, gatedCommand, jobRegistry as registry, logHas, processGone, withEnv } from "./koa-agent-fixture.ts";
+import { splitLines, newSplit, streamBatch } from "./koa-agent.ts";
 
 const list = async (s: Awaited<ReturnType<typeof startSession>>) => JSON.parse(text(await s.tools.get("list_async_bash").execute("l", {})));
 
@@ -73,7 +73,7 @@ test("running jobs and children reserve names, endings release them, and stop pr
     const twins = await Promise.all([tool.execute("a", { command, name: "twin" }), tool.execute("b", { command, name: "TWIN" })]);
     assert.equal(twins.filter((r) => text(r).startsWith("started job")).length, 1);
     assert.match(text(twins.find((r) => !text(r).startsWith("started job"))), /already taken/);
-    s.entries.push({ type: "custom", customType: "ko-pi.agent", data: { role: "subagent", owner: "self-session", name: "kid", session: "kid-session", model: "m", fork: false, cwd: "/tmp", pane: { instance: "a".repeat(32), pane: "pane_5" } } });
+    s.entries.push({ type: "custom", customType: "koa.agent", data: { role: "subagent", owner: "self-session", name: "kid", session: "kid-session", model: "m", fork: false, cwd: "/tmp", pane: { instance: "a".repeat(32), pane: "pane_5" } } });
     assert.match(text(await tool.execute("c", { command, name: "KID" })), /already taken/);
     assert.match(text(await tool.execute("c", { command, name: "" })), /name is required/);
     writeFileSync(join(fx.dir, "gate"), "");
@@ -97,6 +97,7 @@ test("stream batches strip escapes and flush the partial line before the notice"
     await s.emit("agent_start");
     const gate = join(fx.dir, "gate");
     const result = await s.tools.get("async_bash").execute("c", { command: gatedCommand(gate, "\x1b[32mgreen\x1b[0m\n", "partial"), name: "stream", stream: true });
+    assert.match(result.details.job.log, /\/koa\/[^\/]+\.log$/);
     await pollUntil(() => logHas(result.details.job.log, "green"));
     await s.emit("turn_end", { toolResults: [{}] });
     assert.ok(customMessages(s, "ko-stream")[0]!.message.content.endsWith("\ngreen"));
@@ -218,7 +219,7 @@ test("stop by name and id stops owned groups, sends no notice, and handles ended
     fx.setPanes([selfPane()]);
     const s = await startSession(fx);
     for (const address of ["name", "id"]) {
-      const marker = `ko-pi-job-${fx.dir.split("/").at(-1)}-${address}`;
+      const marker = `koa-job-${fx.dir.split("/").at(-1)}-${address}`;
       const ready = join(fx.dir, `ready-${address}`);
       const sleeper = join(fx.dir, marker);
       symlinkSync("/bin/sleep", sleeper);

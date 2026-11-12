@@ -56,11 +56,11 @@ const reconnectBackoff = (previous: number): number => Math.min(previous ? previ
 const VAR_KO_RUNTIME = "ko.runtime";
 const VAR_KEYS = [VAR_SESSION, VAR_NAME, VAR_ACTIVITY];
 
-const ENTRY_AGENT = "ko-pi.agent";
-const ENTRY_WORK = "ko-pi.work";
-const ENTRY_REPORT = "ko-pi.report";
-const ENTRY_ENDED = "ko-pi.ended";
-const ENTRY_SENT = "ko-pi.sent";
+const ENTRY_AGENT = "koa.agent";
+const ENTRY_WORK = "koa.work";
+const ENTRY_REPORT = "koa.report";
+const ENTRY_ENDED = "koa.ended";
+const ENTRY_SENT = "koa.sent";
 
 type SendKind = Api["SendKind"];
 type Dead = Api["Dead"];
@@ -223,7 +223,7 @@ function isMessageQueue(queue: unknown): queue is { messages: AgentSession["mess
 }
 
 // pi's core/agent-session.js clearQueue() discards custom messages alongside editor text.
-const clearQueue = (globalThis.__koPiExtensionClearQueue ??= AgentSession.prototype.clearQueue);
+const clearQueue = (globalThis.__koaAgentExtensionClearQueue ??= AgentSession.prototype.clearQueue);
 AgentSession.prototype.clearQueue = function () {
   const agent: object = this.agent;
   if (!("steeringQueue" in agent) || !("followUpQueue" in agent)
@@ -315,7 +315,7 @@ type JobRegistry = {
   owner: { onStart(job: BackgroundJob): void; onLines(job: BackgroundJob): void; onEnd(job: BackgroundJob): void; clearRecords(): void } | null;
   exit: () => void;
 };
-const JOBS = Symbol.for("ko-pi.jobs");
+const JOBS = Symbol.for("koa.jobs");
 const JOB_SHAPE = 3;
 function isJobRegistry(value: unknown): value is JobRegistry {
   return isRecord(value) && typeof value.shape === "number" && typeof value.session === "string"
@@ -546,7 +546,7 @@ function observeJob(registry: JobRegistry, where: Job["where"], command: string,
 
 function promoteJob(registry: JobRegistry, job: Job, origin: JobOutput["origin"], name = job.id): BackgroundJob {
   if (isBackgroundJob(job)) return job;
-  const dir = join(os.tmpdir(), "ko-pi");
+  const dir = join(os.tmpdir(), "koa");
   mkdirSync(dir, { recursive: true, mode: 0o700 });
   const log = join(dir, `${registry.session}-${job.id}.log`);
   const output = createWriteStream(log, { flags: "wx", mode: 0o600 });
@@ -612,11 +612,11 @@ async function routedJob(registry: JobRegistry, r: Routed, command: string, cwd:
 }
 
 declare global {
-  var __koPiExtensionReceiver: ReceiverHold | undefined;
-  var __koPiExtensionReceived: string[] | undefined;
-  var __koPiExtensionCopy: string | undefined;
-  var __koPiExtensionClearQueue: AgentSession["clearQueue"] | undefined;
-  var __koPiExtensionExit: (() => void) | undefined;
+  var __koaAgentExtensionReceiver: ReceiverHold | undefined;
+  var __koaAgentExtensionReceived: string[] | undefined;
+  var __koaAgentExtensionCopy: string | undefined;
+  var __koaAgentExtensionClearQueue: AgentSession["clearQueue"] | undefined;
+  var __koaAgentExtensionExit: (() => void) | undefined;
 }
 
 const extensionPath = fileURLToPath(import.meta.url);
@@ -626,7 +626,7 @@ const KO_SKILL_RULE = "The user runs the ko terminal multiplexer, and this pi ru
 // copy at another path must register nothing. A /reload runs the same file again
 // and finds it already its own.
 function isFirstCopy(): boolean {
-  return (globalThis.__koPiExtensionCopy ??= extensionPath) === extensionPath;
+  return (globalThis.__koaAgentExtensionCopy ??= extensionPath) === extensionPath;
 }
 
 function normalizeAddress(to: string): { wanted: string; mention: boolean } {
@@ -1167,7 +1167,7 @@ export default function (pi: ExtensionAPI) {
     const out: Entry[] = [];
     const branch: unknown[] = session?.sessionManager.getBranch() ?? [];
     branch.forEach((entry, index) => {
-      if (!isRecord(entry) || entry.type !== "custom" || typeof entry.customType !== "string" || !entry.customType.startsWith("ko-pi.")) return;
+      if (!isRecord(entry) || entry.type !== "custom" || typeof entry.customType !== "string" || !entry.customType.startsWith("koa.")) return;
       if (isRecord(entry.data) && entry.data.owner === ownSessionId) out.push({ index, customType: entry.customType, data: entry.data });
     });
     return out;
@@ -1698,7 +1698,7 @@ export default function (pi: ExtensionAPI) {
 
   // ---- the message stream: ko api --stream /panes/$KO_PANE/messages ----
 
-  const received = (): string[] => (globalThis.__koPiExtensionReceived ??= []);
+  const received = (): string[] => (globalThis.__koaAgentExtensionReceived ??= []);
 
   let queue: Promise<void> = Promise.resolve();
 
@@ -1775,8 +1775,8 @@ export default function (pi: ExtensionAPI) {
   const receiver = {
     start(): void {
       receiverActive = true;
-      const held = globalThis.__koPiExtensionReceiver;
-      globalThis.__koPiExtensionReceiver = undefined;
+      const held = globalThis.__koaAgentExtensionReceiver;
+      globalThis.__koaAgentExtensionReceiver = undefined;
       if (held && held.child.exitCode === null && held.child.signalCode === null) receiverAttach(held);
       else receiverOpen();
     },
@@ -1788,7 +1788,7 @@ export default function (pi: ExtensionAPI) {
       receiverDetach();
       receiverHold = null;
       if (!held) return;
-      if (park) globalThis.__koPiExtensionReceiver = held;
+      if (park) globalThis.__koaAgentExtensionReceiver = held;
       else held.child.kill();
     },
     write(line: string): void { receiverHold?.child.stdin?.write(line); },
@@ -1946,8 +1946,8 @@ export default function (pi: ExtensionAPI) {
       } else if (job.state.type !== "ended" && streams(job)) scheduleFlush(job);
     }
     if (stopped) {
-      const text = `${stopped.length} async_bash jobs of the previous ko-pi version were stopped at /reload: ${stopped.join(", ")}`;
-      try { deliverNotice(text, { inbound: { form: "notice" }, agent: { name: "ko-pi" }, body: text }); } catch {}
+      const text = `${stopped.length} async_bash jobs of the previous koa version were stopped at /reload: ${stopped.join(", ")}`;
+      try { deliverNotice(text, { inbound: { form: "notice" }, agent: { name: "koa" }, body: text }); } catch {}
     }
   };
   type BashCall = { type: "bash"; cancel(reason?: ShutdownReason): void; move(reason: "timeout" | "reload"): boolean };
@@ -2917,9 +2917,9 @@ export default function (pi: ExtensionAPI) {
     const parent = process.env.KO_AGENT_PARENT_SESSION;
     edge = ownSessionId && parent && process.env.KO_AGENT_SESSION === ownSessionId ? { parent } : null;
     recordsPeers = !edge && !process.env.KO_RUNTIME;
-    const previousExit = globalThis.__koPiExtensionExit;
+    const previousExit = globalThis.__koaAgentExtensionExit;
     if (previousExit) process.removeListener("exit", previousExit);
-    globalThis.__koPiExtensionExit = unsetVarsSync;
+    globalThis.__koaAgentExtensionExit = unsetVarsSync;
     process.on("exit", unsetVarsSync);
     written.clear();
     ending = { kind: "ended", text: "" };
@@ -3057,9 +3057,9 @@ export default function (pi: ExtensionAPI) {
       }
       receiver.stop(false);
       if (active) await unsetVars();
-      if (globalThis.__koPiExtensionExit === unsetVarsSync) {
+      if (globalThis.__koaAgentExtensionExit === unsetVarsSync) {
         process.removeListener("exit", unsetVarsSync);
-        globalThis.__koPiExtensionExit = undefined;
+        globalThis.__koaAgentExtensionExit = undefined;
       }
     }
     await jobRecordQueue;

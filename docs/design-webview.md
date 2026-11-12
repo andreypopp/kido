@@ -146,7 +146,7 @@ dependencies, in TypeScript that Node 24 runs as is (erasable syntax
 only). It is not published yet; `make build` installs it as
 `share/ko/webview/`. Its README gives the interface. It takes the
 shape of the `supported` line from the generated `ko-api.d.ts`, which
-`make build` installs as `share/ko/pi/ko-api.d.ts`, through a type-only
+`make build` installs as `share/ko/koa/ko-api.d.ts`, through a type-only
 import of `../pi/ko-api.d.ts`; Node's type stripping removes the
 import, so the SDK runs without the file.
 

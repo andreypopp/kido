@@ -3,9 +3,9 @@ import { createInterface } from 'node:readline';
 import { parseArgs, SessionManager, type ExtensionAPI } from '@earendil-works/pi-coding-agent';
 import type { KoaQuery, KoaReply } from './koa-channel.ts';
 import { sessionDir } from './koa-session-dir.ts';
-import { errorText } from '../pi/text.ts';
-import { resolveCompletionContext } from '../pi/completion-context.ts';
-import { RESTART_STATE_CHANNEL, type RestartState } from '../pi/records.ts';
+import { errorText } from './text.ts';
+import { resolveCompletionContext } from './completion-context.ts';
+import { RESTART_STATE_CHANNEL, type RestartState } from './records.ts';
 import { RELOAD_COMMAND } from './koa-records.ts';
 
 const RESTART_STATE_MS = 1000;

@@ -7,7 +7,7 @@ import { markdown, markdownLine, sliceEnd } from "./page/markdown.ts";
 import { bashCommand } from "./prompt.ts";
 import { promptHistory } from './page/history.ts';
 import { ATTACHMENT_LIMITS, isAttachment, pathArg } from "./koa-records.ts";
-import { jobEndText } from "../pi/records.ts";
+import { jobEndText } from "./records.ts";
 import type { PromptMode } from "./koa-records.ts";
 
 async function page() {

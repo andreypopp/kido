@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { appendFile, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { selfPane, pollUntil } from "../pi/ko-pi-fixture.ts";
+import { selfPane, pollUntil } from "./koa-agent-fixture.ts";
 import { fixture, linkFakeKo } from "./koa-program-fixture.ts";
 
 const f_notified = (app: Awaited<ReturnType<typeof fixture>>, text: string) => app.until(record => record.type === "item" && record.item.kind === "notify" && record.item.text.text === text);

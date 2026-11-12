@@ -19,7 +19,7 @@ harness, not a pane.
 The **harness** is everything that only an agent has: the pi session,
 the tools, the task, the report and the names. It is koa
 (design-koa.md), which runs pi in RPC mode with one pi extension, the
-agent extension `share/pi/ko-pi.ts`, and renders the session through
+agent extension `share/koa/koa-agent.ts`, and renders the session through
 a webview page. The two
 parts talk only through `ko api` on ko's routes and streams, and
 the `@kido/webview` SDK (`ko webview serve`, `enter` and `leave`) for
@@ -66,7 +66,7 @@ ko trusts them only while the pane has an OSC 7501 root with `app=pi`,
 as it trusts `ssh.dest` only while the foreground is `ssh`. The
 server drops the records on pane death, a shell prompt (non-final
 records) and RIS, so a crashed pi's variables are stale but not
-believed. A spawner also sets `ko-pi.task` on a new pane; the child
+believed. A spawner also sets `koa.task` on a new pane; the child
 deletes it after it delivers the task, and ko never reads it.
 
 **The pi session, for what a harness knows.** A harness keeps its
@@ -86,7 +86,7 @@ There is no locking, because every writer is the server's loop thread.
 
 koa is Kido's one pi harness: no other program loads the agent
 extension. koa starts its pi as `pi --mode rpc --extension
-<share>/pi/ko-pi.ts` (design-koa.md, "The spawn"), so the extension
+<share>/koa/koa-agent.ts` (design-koa.md, "The spawn"), so the extension
 is koa's, as `koa-sessions.ts` is. koa writes the pane's OSC 7501
 root with `app=pi` and its OSC 0 title for its pi, because pi reports
 neither in RPC mode (design-koa.md, "Status and title").
@@ -168,8 +168,8 @@ directory that it trusts. It never saves the answer
 
 **The ko skill.** Inside ko, the extension answers pi's
 `resources_discover` with the `skills` directory beside its own file,
-which holds the skill `ko` (`share/pi/skills/ko/SKILL.md`, installed
-as `share/ko/pi/skills/ko/SKILL.md`). pi puts only the skill's name,
+which holds the skill `ko` (`share/koa/skills/ko/SKILL.md`, installed
+as `share/ko/koa/skills/ko/SKILL.md`). pi puts only the skill's name,
 description and path in the system prompt, and the model reads the
 file when a task needs it. Inside ko, `before_agent_start`
 also adds one guideline: the user runs ko, and the model reads the
@@ -178,10 +178,10 @@ splits, floats or the sidebar. A routed pi gets neither: its `read`
 and `bash` run in the runtime, where the skill's host path does not
 exist and `ko` does not reach the user's server. The skill is text
 only: it adds no tool and no route. `make preview-pi` previews the
-skill directory with `ko-pi.ts`.
+skill directory with `koa-agent.ts`.
 
 **One copy.** On its first factory call, the extension claims
-`globalThis.__koPiExtensionCopy` with its path. A copy at another path
+`globalThis.__koaAgentExtensionCopy` with its path. A copy at another path
 registers nothing, because pi dedupes extensions by real path only.
 
 **Subprocesses.** The extension starts every ko process with
@@ -263,7 +263,7 @@ repeat safe.
 
 **A `/reload` does not take the stream down.** A reload keeps the
 process and the session id. For reason `"reload"`, `session_shutdown`
-parks the stream process on `globalThis.__koPiExtensionReceiver`,
+parks the stream process on `globalThis.__koaAgentExtensionReceiver`,
 detached from the old module; messages wait in its pipe. The
 reloaded module's `session_start` adopts it. The ring of received ids
 is on `globalThis` too. Every other reason kills the process, and the
@@ -402,7 +402,7 @@ environment, not the caller's.
 
 The task is never a command-line argument. A model writes text of any
 form, and pi's parser reads an argument that starts with `@` as a
-file, even after `--`. The task is the pane variable `ko-pi.task`,
+file, even after `--`. The task is the pane variable `koa.task`,
 which the child reads at `session_start` and then deletes; a
 restart's message goes there too.
 
@@ -891,8 +891,8 @@ order.
 
 **Install layout.** `make build` lays out `build/ko/` as installed:
 `bin/ko`, `bin/ko-pane` and `share/ko` with `bin/`, `shim.sh`,
-`pi/` (the agent extension, the modules that it shares with koa,
-`ko-api.d.ts` and the skills), `koa/`, `webview/` (the SDK) and the terminfo. `make
+`koa/` (koa, its page, the agent extension, the shared modules,
+`ko-api.d.ts` and the skills), `webview/` (the SDK) and the terminfo. `make
 install` copies it under
 `PREFIX`, default `~/.local`. This is Homebrew's `pkgshare` layout.
 
@@ -951,6 +951,30 @@ file.
 ## Decisions
 
 Each decision names its date. The code states the rest.
+
+2026-11-12, koa is the one harness:
+
+- koa is Kido's one pi harness, and the agent extension is koa's
+  (`share/koa/koa-agent.ts`), loaded only into koa's RPC pi. The
+  `ko-pi` command, pi's terminal UI with the harness and every code
+  path that exists only for that UI go. A plain `pi` is a
+  `SomeAgent`.
+- No terminal harness: `ko_tui` and a terminal view of a remote
+  server show a koa pane as a webview placeholder; the page needs
+  Kido.app or `koa --browser`. A terminal rendering of koa would be
+  the UI that this decision abandons.
+- Browser mode reaches the extension as the boolean pi flag
+  `--koa-browser`, not an environment variable, which would leak
+  into every job.
+- The inside runtime mode stays, as `ko shell -- koa`, so its image
+  needs Node 24 and pi.
+- `share/pi/` is dissolved into `share/koa/`: one package, one
+  lockfile, one tsconfig, one suite, one installed directory.
+- The names in session files and variables are `koa.*`, with no
+  migration: a session written before the rename loses its recorded
+  children, peers and reports, and a live child still lists through
+  its row.
+- `PI_IMAGE_PROTOCOL=kitty` goes with the shim.
 
 2026-11-05, jobs in place of async runs:
 

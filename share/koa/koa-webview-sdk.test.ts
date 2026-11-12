@@ -9,7 +9,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { createHash } from "node:crypto";
 import { webview, type Webview } from "../webview/index.ts";
-import { makeFixture, pollUntil } from "./ko-pi-fixture.ts";
+import { makeFixture, pollUntil } from "./koa-agent-fixture.ts";
 
 test("bridge readiness expires and removes its directory", { timeout: 5000 }, async () => {
   const dir = mkdtempSync(join(tmpdir(), "webview-ready-"));

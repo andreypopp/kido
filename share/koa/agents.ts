@@ -6,7 +6,7 @@ type Dead = Api["Dead"];
 export const VAR_SESSION = "pi.session";
 export const VAR_NAME = "pi.name";
 export const VAR_ACTIVITY = "pi.activity";
-export const VAR_TASK = "ko-pi.task";
+export const VAR_TASK = "koa.task";
 export const VAR_RUNTIME = "pi.runtime";
 
 export const MIN_ID_PREFIX = 8;

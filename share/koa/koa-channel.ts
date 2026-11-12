@@ -1,8 +1,8 @@
 import { createInterface } from 'node:readline';
 import { Duplex, type Stream } from 'node:stream';
 import type { SessionRow, SessionScope } from './koa-records.ts';
-import type { CompletionContext } from '../pi/completion-context.ts';
-import type { RestartState } from '../pi/records.ts';
+import type { CompletionContext } from './completion-context.ts';
+import type { RestartState } from './records.ts';
 import { later } from './koa-timer.ts';
 
 export type KoaQuery = { type: 'list'; id: string; scope: SessionScope } | { type: 'completion_context'; id: string } | { type: 'restart_state'; id: string } | { type: 'cancel'; id: string };

@@ -4,7 +4,7 @@ import { readFile, realpath } from 'node:fs/promises';
 import { delimiter, dirname, join, resolve } from 'node:path';
 import { Readable } from 'node:stream';
 import timers from 'node:timers/promises';
-import { errorText, isRecord } from '../pi/text.ts';
+import { errorText, isRecord } from './text.ts';
 
 export function which(name: string, path: string): string | undefined {
   const candidates = name.includes('/') ? [name] : path.split(delimiter).map(dir => join(dir, name));

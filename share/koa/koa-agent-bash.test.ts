@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { makeFixture, selfPane, startSession, notices, pollUntil, text, gatedCommand, movedId, logHas, captureStatusRecords } from "./ko-pi-fixture.ts";
+import { makeFixture, selfPane, startSession, notices, pollUntil, text, gatedCommand, movedId, logHas, captureStatusRecords } from "./koa-agent-fixture.ts";
 
 const listed = async (s: Awaited<ReturnType<typeof startSession>>) => JSON.parse(text(await s.tools.get("list_async_bash").execute("l", {})));
 const capture = (updates: string[]) => (result: any) => updates.push(result.content.map((part: any) => part.text ?? "").join(""));

@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["fuzz", "share/pi/testdata/fake_ko", "ko", "ko_bench", "ko_client", "ko_config", "ko_e2e", "ko_pane", "ko_pane_wire", "ko_server", "ko_shell", "ko_sys", "ko_tui", "ko_vt", "ko_vt_sys", "ko_wire"]
+members = ["fuzz", "share/koa/testdata/fake_ko", "ko", "ko_bench", "ko_client", "ko_config", "ko_e2e", "ko_pane", "ko_pane_wire", "ko_server", "ko_shell", "ko_sys", "ko_tui", "ko_vt", "ko_vt_sys", "ko_wire"]
 default-members = ["ko", "ko_bench", "ko_client", "ko_config", "ko_pane", "ko_pane_wire", "ko_server", "ko_shell", "ko_sys", "ko_tui", "ko_vt", "ko_vt_sys", "ko_wire"]
 
 [workspace.package]

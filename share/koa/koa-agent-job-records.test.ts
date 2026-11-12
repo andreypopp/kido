@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { makeFixture, selfPane, startSession, freshExtension, pollUntil, gatedCommand, jobRegistry, captureStatusRecords } from "./ko-pi-fixture.ts";
+import { makeFixture, selfPane, startSession, freshExtension, pollUntil, gatedCommand, jobRegistry, captureStatusRecords } from "./koa-agent-fixture.ts";
 
 for (const mode of ["interactive", "rpc"]) test(`job reports use the status route in ${mode} mode`, async (t) => {
   const stdout = captureStatusRecords(t);

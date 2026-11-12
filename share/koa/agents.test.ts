@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { setImmediate } from "node:timers/promises";
-import { agentCache, agentCompletionItems, relationships, type AgentCompletionRow, type PaneInfo } from "./agents.ts";
+import { agentCache, agentCompletionItems, parsePanes, relationships, type AgentCompletionRow, type PaneInfo } from "./agents.ts";
 
 test("completion ranks names before words and inserts unique session prefixes", () => {
   const row = (id: string, name: string, relationship: AgentCompletionRow["relationship"] = "peer"): AgentCompletionRow => ({ id, pane: id, name, named: true, self: false, status: "working", activity: "reading", parent: "", state: "running", relationship });
@@ -42,4 +42,12 @@ test("layout relationships follow parent chains and the session boundary", () =>
     pane: pane!, parent: parent!, session: pane === "pane_other" ? "session_else" : "session_1", window: "window_1", sessionVar: pane!, kind: null, name: pane!, activity: "", cwd: "/tmp", runtime: "", dead: null, root: null, title: "", inbox: false, task: undefined,
   }));
   assert.deepEqual([...relationships(panes, panes[0])], [["pane_parent", "parent"], ["pane_peer", "peer"], ["pane_child", "own"]]);
+});
+
+test("a pane's task comes from its koa.task variable", () => {
+  const task = { text: "build it", from: { session: "boss-session" } };
+  const row = (vars: Record<string, unknown>) => ({ id: "pane_1", vars, cwd: "/tmp", title: "", dead: null });
+  const [withTask, withOld] = parsePanes({ layout: { sessions: [] }, panes: [row({ "koa.task": task }), row({ "ko-pi.task": task })] } as never);
+  assert.deepEqual(withTask!.task, task);
+  assert.equal(withOld!.task, undefined);
 });

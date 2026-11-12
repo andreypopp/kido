@@ -6,7 +6,7 @@ import { join, resolve } from "node:path";
 import { once } from "node:events";
 import { createServer } from "node:net";
 import { Readable } from "node:stream";
-import { pollUntil, sse } from "../pi/ko-pi-fixture.ts";
+import { pollUntil, sse } from "./koa-agent-fixture.ts";
 import { fixture, stopChild } from "./koa-program-fixture.ts";
 test('bang completion asks the child for its cwd and returns shell replacements', { timeout: 7000 }, async t => {
   const cwd = await mkdtemp('/tmp/koa-tab-context-');
@@ -40,7 +40,7 @@ test("--help prints usage without starting pi or a webview", { timeout: 5000 }, 
 });
 
 test('resume requires a terminal before starting a webview', { timeout: 5000 }, async t => {
-  const child = spawn(process.execPath, [resolve('../../build/ko/share/ko/koa/koa.ts'), '--browser', '--resume', '--pi', resolve('../koa/koa-fake-pi.ts')], { stdio: 'pipe' });
+  const child = spawn(process.execPath, [resolve('../../build/ko/share/ko/koa/koa.ts'), '--browser', '--resume', '--pi', resolve('./koa-fake-pi.ts')], { stdio: 'pipe' });
   t.after(() => { if (child.exitCode === null) child.kill('SIGTERM'); });
   let stderr = ''; child.stderr.on('data', bytes => { stderr += bytes; });
   const [code] = await once(child, 'close');
@@ -78,7 +78,7 @@ test('resume selects before the browser, cancels, and reports a broken picker', 
     await writeFile(script, (item.gate.startsWith('{"type":"selected"') ? '{"type":"wait","command":"prompt"}\n' : '') + '{"type":"wait","command":"prompt"}\n{"type":"exit","code":0}\n');
     const connected = once(server, 'connection');
     const pass = item.gate === 'skip' ? ['--resume', '--session', 'existing.jsonl'] : ['--resume', '-r', '--session-dir', dir, '--', 'prompt'];
-    const child = spawn(process.execPath, ['--import', resolve('../koa/koa-fake-tty.ts'), resolve('../../build/ko/share/ko/koa/koa.ts'), '--browser', '--pi', resolve('../koa/koa-fake-pi.ts'), ...pass], { stdio: 'pipe', env: { ...process.env, KO_PANE: '', KOA_FAKE_LOG: log, KOA_FAKE_SCRIPT: script, KOA_FAKE_PICKER_GATE: join(dir, 'gate'), KOA_RESUME_READY_MS: '1000', OPEN_LOG: urls, PATH: `${dir}:${process.env.PATH}` } });
+    const child = spawn(process.execPath, ['--import', resolve('./koa-fake-tty.ts'), resolve('../../build/ko/share/ko/koa/koa.ts'), '--browser', '--pi', resolve('./koa-fake-pi.ts'), ...pass], { stdio: 'pipe', env: { ...process.env, KO_PANE: '', KOA_FAKE_LOG: log, KOA_FAKE_SCRIPT: script, KOA_FAKE_PICKER_GATE: join(dir, 'gate'), KOA_RESUME_READY_MS: '1000', OPEN_LOG: urls, PATH: `${dir}:${process.env.PATH}` } });
     const closed = once(child, 'close');
     const events = new AbortController();
     c.after(async () => { events.abort(); for (const socket of sockets) socket.destroy(); await stopChild(child, closed); });
@@ -127,7 +127,7 @@ test('resume selects before the browser, cancels, and reports a broken picker', 
 });
 test('startup refuses incompatible flags before opening a webview', { timeout: 70000 }, async t => {
   for (const args of [['--mode','text'], ['-p'], ['--export','out.html'], ['--list-models'], ['-v'], ['--tui-mode','fullscreen'], ['--theme','dark'], ['--use-theme','dark'], ['--no-themes'], ['@notes.txt']]) await t.test(args.join(' '), { timeout: 10000 }, async c => {
-    const child = spawn(process.execPath, [resolve('../../build/ko/share/ko/koa/koa.ts'), '--browser', '--pi', resolve('../koa/koa-fake-pi.ts'), ...args]);
+    const child = spawn(process.execPath, [resolve('../../build/ko/share/ko/koa/koa.ts'), '--browser', '--pi', resolve('./koa-fake-pi.ts'), ...args]);
     const closed = once(child, 'close');
     c.after(() => stopChild(child, closed));
     let output = ''; child.stderr.on('data', bytes => { output += bytes; });

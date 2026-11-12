@@ -8,9 +8,9 @@ import { join, dirname } from "node:path";
 
 import { fileURLToPath, pathToFileURL } from "node:url";
 
-import koPi from "./ko-pi.ts";
+import koaAgent from "./koa-agent.ts";
 
-import { makeFixture, createFakePi, startSession, freshExtension, withEnv, pollUntil, selfPane } from "./ko-pi-fixture.ts";
+import { makeFixture, createFakePi, startSession, freshExtension, withEnv, pollUntil, selfPane } from "./koa-agent-fixture.ts";
 
 const MESSAGES = "/panes/pane_1/messages";
 
@@ -18,7 +18,7 @@ test("the ko skill and its guideline are available only inside ko", async () => 
   const fx = makeFixture();
   try {
     const { pi, emit } = createFakePi();
-    koPi(pi as never);
+    koaAgent(pi as never);
     const skills = join(dirname(fileURLToPath(import.meta.url)), "skills");
     assert.deepEqual(await emit("resources_discover"), [{ skillPaths: [skills] }]);
     assert.ok(existsSync(join(skills, "ko/SKILL.md")));
@@ -40,16 +40,15 @@ test("the ko skill and its guideline are available only inside ko", async () => 
 
 test("a second copy of the extension at another path registers nothing, and a reload of the first still does", async () => {
   const first = createFakePi();
-  koPi(first.pi as never);
+  koaAgent(first.pi as never);
   assert.ok(first.tools.size > 0 && first.handlers.size > 0, "the extension registered nothing at all");
   assert.deepEqual([...first.tools.keys()], ["list_agents", "read_report", "list_async_bash", "message_agent", "spawn_agent", "stop_agent", "async_bash", "stop_async_bash"]);
 
   const here = dirname(fileURLToPath(import.meta.url));
   const dir = mkdtempSync(join(here, ".copy-"));
   try {
-    mkdirSync(join(dir, "pi"));
-    for (const file of ["ko-pi.ts", "text.ts", "agents.ts", "token.ts", "records.ts", "completion-context.ts", "runtime-exec.ts"]) copyFileSync(join(here, file), join(dir, "pi", file));
-    const copy = await import(pathToFileURL(join(dir, "pi", "ko-pi.ts")).href);
+    for (const file of ["koa-agent.ts", "text.ts", "agents.ts", "token.ts", "records.ts", "completion-context.ts", "runtime-exec.ts"]) copyFileSync(join(here, file), join(dir, file));
+    const copy = await import(pathToFileURL(join(dir, "koa-agent.ts")).href);
     const registered = createFakePi();
     copy.default(registered.pi);
     assert.deepEqual([...registered.tools.keys()], [], "the copy registered tools");
@@ -59,7 +58,7 @@ test("a second copy of the extension at another path registers nothing, and a re
   }
 
   const reloaded = createFakePi();
-  koPi(reloaded.pi as never);
+  koaAgent(reloaded.pi as never);
   assert.deepEqual([...reloaded.tools.keys()].sort(), [...first.tools.keys()].sort());
 });
 
@@ -156,7 +155,7 @@ test("project trust answers yes only for the real path of KO_AGENT_TRUSTED_CWD",
     mkdirSync(trusted);
     mkdirSync(other);
     const s = createFakePi();
-    koPi(s.pi as never);
+    koaAgent(s.pi as never);
     await withEnv({ KO_AGENT_TRUSTED_CWD: trusted }, async () => {
       assert.deepEqual(await s.emit("project_trust", { cwd: trusted }), [{ trusted: "yes" }]);
       assert.deepEqual(await s.emit("project_trust", { cwd: other }), [{ trusted: "undecided" }]);

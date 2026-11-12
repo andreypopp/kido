@@ -6,7 +6,7 @@ import { resolve } from 'node:path';
 import { signalChild, piPackage, which } from './koa-child.ts';
 
 test('pi package resolution follows an executable found through PATH', async () => {
-  const root = resolve('../pi/node_modules/@earendil-works/pi-coding-agent');
+  const root = resolve('./node_modules/@earendil-works/pi-coding-agent');
   assert.equal(which('cli.js', root + '/dist'), root + '/dist/cli.js');
   assert.equal(await piPackage('cli.js', root + '/dist'), root);
 });

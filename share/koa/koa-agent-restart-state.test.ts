@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { join } from "node:path";
-import { makeFixture, selfPane, startSession, gatedCommand } from "./ko-pi-fixture.ts";
+import { makeFixture, selfPane, startSession, gatedCommand } from "./koa-agent-fixture.ts";
 import { RESTART_STATE_CHANNEL, type RestartState } from "./records.ts";
 
 test("the restart state counts running jobs, services included, and unreported subagents, and stops answering at shutdown", async () => {

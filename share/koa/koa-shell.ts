@@ -1,6 +1,6 @@
 import { readFile } from 'node:fs/promises';
-import { runtimeExec } from '../pi/runtime-exec.ts';
-import type { CompletionContext } from '../pi/completion-context.ts';
+import { runtimeExec } from './runtime-exec.ts';
+import type { CompletionContext } from './completion-context.ts';
 import type { ShellCompletion } from './koa-records.ts';
 import type { bashCommand } from './prompt.ts';
 import { output } from './koa-complete.ts';

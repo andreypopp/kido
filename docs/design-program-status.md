@@ -184,7 +184,7 @@ it unchanged for `SomeAgent`, and for `PiAgent` without a name. A
 startup, then a session summary.
 
 A local pi that runs ko's harness (koa) owns the `pi.*` variables,
-through its agent extension (`share/pi/ko-pi.ts`). The server reads only `pi.session`,
+through its agent extension (`share/koa/koa-agent.ts`). The server reads only `pi.session`,
 `pi.name` and `pi.activity`, and trusts them only while the pane has
 an OSC 7501 root with `app=pi`. ko stores nothing for a pi session.
 

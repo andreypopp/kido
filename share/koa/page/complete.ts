@@ -3,7 +3,7 @@ import { bashCommand } from '../prompt.ts';
 import { autocompletion, acceptCompletion, closeCompletion, completionStatus, moveCompletionSelection, pickedCompletion, selectedCompletion, startCompletion, type Completion, type CompletionContext } from '@codemirror/autocomplete';
 import { tooltips, ViewPlugin, EditorView, type Command } from '@codemirror/view';
 import { syntaxTree } from '@codemirror/language';
-import { fileToken, slashToken } from '../../pi/token.ts';
+import { fileToken, slashToken } from '../token.ts';
 import type { CompletionOption, CompletionResult, ShellCompletion, CompletionQuery } from '../koa-records.ts';
 
 export function completion(host: HTMLElement, send: () => void, mode: StateField<ReturnType<typeof bashCommand>>, changed: () => void) {

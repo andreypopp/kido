@@ -2,7 +2,7 @@ import { test } from "node:test";
 
 import assert from "node:assert/strict";
 
-import { makeFixture, agentPane, selfPane, startSession, text, exited, type Fixture } from "./ko-pi-fixture.ts";
+import { makeFixture, agentPane, selfPane, startSession, text, exited, type Fixture } from "./koa-agent-fixture.ts";
 
 const INSTANCE = "a".repeat(32);
 
@@ -29,9 +29,9 @@ test("list_agents lists the scope with each relationship, depth and the own suba
   try {
     tree(fx);
     const s = await startSession(fx, { name: "Self" });
-    s.entries.push({ type: "custom", customType: "ko-pi.agent", data: { owner: "self-session", ...kid } });
-    s.entries.push({ type: "custom", customType: "ko-pi.work", data: { owner: "self-session", child: "kid-session", at: 1 } });
-    s.entries.push({ type: "custom", customType: "ko-pi.report", data: { owner: "self-session", child: "kid-session", name: "kid", text: "x".repeat(1500), at: 2, id: "r" } });
+    s.entries.push({ type: "custom", customType: "koa.agent", data: { owner: "self-session", ...kid } });
+    s.entries.push({ type: "custom", customType: "koa.work", data: { owner: "self-session", child: "kid-session", at: 1 } });
+    s.entries.push({ type: "custom", customType: "koa.report", data: { owner: "self-session", child: "kid-session", name: "kid", text: "x".repeat(1500), at: 2, id: "r" } });
     const list = s.tools.get("list_agents");
     const rows = JSON.parse(text(await list.execute("c", {}))) as Array<Record<string, unknown>>;
     const byName = new Map(rows.map((row) => [row.name, row]));
@@ -99,10 +99,10 @@ test("an ended subagent lists from the registry, with the cause of its lingering
   try {
     fx.setPanes([selfPane(), agentPane({ pane: "pane_5", session: "kid-session", name: "kid", parent: "pane_1", dead: exited(1) })]);
     const s = await startSession(fx);
-    s.entries.push({ type: "custom", customType: "ko-pi.agent", data: { owner: "self-session", ...kid } });
-    s.entries.push({ type: "custom", customType: "ko-pi.agent", data: { owner: "self-session", ...kid, name: "old", session: "old-session", pane: { instance: INSTANCE, pane: "pane_77" } } });
-    s.entries.push({ type: "custom", customType: "ko-pi.agent", data: { owner: "other-session", ...kid, name: "foreign", session: "foreign-session" } });
-    s.entries.push({ type: "custom", customType: "ko-pi.agent", data: { owner: "self-session", ...kid, name: "stale", session: "stale-session", pane: { instance: "b".repeat(32), pane: "pane_1" } } });
+    s.entries.push({ type: "custom", customType: "koa.agent", data: { owner: "self-session", ...kid } });
+    s.entries.push({ type: "custom", customType: "koa.agent", data: { owner: "self-session", ...kid, name: "old", session: "old-session", pane: { instance: INSTANCE, pane: "pane_77" } } });
+    s.entries.push({ type: "custom", customType: "koa.agent", data: { owner: "other-session", ...kid, name: "foreign", session: "foreign-session" } });
+    s.entries.push({ type: "custom", customType: "koa.agent", data: { owner: "self-session", ...kid, name: "stale", session: "stale-session", pane: { instance: "b".repeat(32), pane: "pane_1" } } });
     const rows = JSON.parse(text(await s.tools.get("list_agents").execute("c", {}))) as Array<Record<string, unknown>>;
     assert.deepEqual(
       rows.map((row) => [row.name, row.state, row.ended, row.canMessage]).sort(),
@@ -225,11 +225,11 @@ test("read_report returns the whole last report or all of them, only for an own 
     tree(fx);
     const s = await startSession(fx);
     const data = (extra: Record<string, unknown>) => ({ owner: "self-session", child: "kid-session", name: "kid", id: "r", ...extra });
-    s.entries.push({ type: "custom", customType: "ko-pi.agent", data: { owner: "self-session", ...kid } });
+    s.entries.push({ type: "custom", customType: "koa.agent", data: { owner: "self-session", ...kid } });
     const read = s.tools.get("read_report");
     assert.equal(text(await read.execute("c", { agent: "kid" })), "kid has not reported");
-    s.entries.push({ type: "custom", customType: "ko-pi.report", data: data({ text: "first", at: 1 }) });
-    s.entries.push({ type: "custom", customType: "ko-pi.report", data: data({ text: "y".repeat(6000), at: 2 }) });
+    s.entries.push({ type: "custom", customType: "koa.report", data: data({ text: "first", at: 1 }) });
+    s.entries.push({ type: "custom", customType: "koa.report", data: data({ text: "y".repeat(6000), at: 2 }) });
     assert.equal(text(await read.execute("c", { agent: "kid" })), "y".repeat(6000), "the whole text, past every cap");
     const all = text(await read.execute("c", { agent: "@kid", which: "all" }));
     assert.match(all, /^--- report 1 of 2, .*---\nfirst\n\n--- report 2 of 2/);

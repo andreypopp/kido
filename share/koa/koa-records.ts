@@ -1,4 +1,4 @@
-import type { AgentRef, AgentOutcome, JobRef, JobEnd, Inbound } from "../pi/records.ts";
+import type { AgentRef, AgentOutcome, JobRef, JobEnd, Inbound } from "./records.ts";
 
 export const ATTACHMENT_LIMITS = { files: 16, fileBytes: 64 * 1024 * 1024, chunkBytes: 768 * 1024, pendingBytes: 256 * 1024 * 1024 };
 

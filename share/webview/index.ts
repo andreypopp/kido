@@ -6,7 +6,7 @@ import { join } from "node:path";
 import { createInterface } from "node:readline";
 import { createServer, request, STATUS_CODES, type IncomingMessage, type ServerResponse } from "node:http";
 import type { Socket } from "node:net";
-import type { components } from "../pi/ko-api.d.ts";
+import type { components } from "../koa/ko-api.d.ts";
 
 type SupportedLine = Extract<components["schemas"]["ServeOut"], { type: "supported" }>;
 type Options = { ko?: string; target?: "pane" | "browser"; timeoutMs?: number };

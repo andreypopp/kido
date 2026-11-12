@@ -991,7 +991,7 @@ no master outlives a down.
 ## Agents in a runtime
 
 An agent works in a runtime in one of two modes, by the runtime's
-`pi`. The harness side is `share/pi/ko-pi.ts`; ko's part of either
+`pi`. The harness side is `share/koa/koa-agent.ts`; ko's part of either
 mode is the configuration's `pi`, the `cwd` and `pi` of `GET
 /runtimes/NAME`, the exec session and the `runtime` body field. The
 harness sends a runtime's name with its pane identity, so the name

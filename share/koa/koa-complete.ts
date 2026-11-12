@@ -2,11 +2,11 @@ import { spawn } from "node:child_process";
 import { statSync } from 'node:fs';
 import { basename, join, resolve } from "node:path";
 import { homedir } from "node:os";
-import { parsePanes, piAgent, runningRows, agentCache } from "../pi/agents.ts";
-import type { components } from "../pi/ko-api.d.ts";
+import { parsePanes, piAgent, runningRows, agentCache } from "./agents.ts";
+import type { components } from "./ko-api.d.ts";
 import type { CompletionCommand, CompletionOption, PromptCompletion } from "./koa-records.ts";
 import { signalChild, which } from "./koa-child.ts";
-import { fileToken, slashToken, pathSeparator } from "../pi/token.ts";
+import { fileToken, slashToken, pathSeparator } from "./token.ts";
 
 function scorePositions(textLower: string, positions: number[]) {
   let score = 0;

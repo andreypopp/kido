@@ -6,7 +6,7 @@ import { preview, previewKey } from './preview.ts';
 import { fetchJSON } from './http.ts';
 import { ATTACHMENT_LIMITS, pathArg } from '../koa-records.ts';
 import type { State, WireItem, WireAssistant, Block, Patch, PageRecord, PromptMode, ImageRef, AgentCall, Bash, SessionRow, SessionScope } from '../koa-records.ts';
-import type { Relation } from '../../pi/records.ts';
+import type { Relation } from '../records.ts';
 
 type Step = { block: Exclude<Block, { type: 'text' }>;  item: WireAssistant; index: number; key: string; slots: Map<string, Slot> };
 type AgentCard = AgentCall | Extract<WireItem, { kind: 'agent' }>;

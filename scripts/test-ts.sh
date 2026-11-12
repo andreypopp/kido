@@ -33,9 +33,9 @@ process.exit(maj >= 24 ? 0 : 1);
 	fail_or_skip "node $(node --version) is too old to run this suite (need >=24)"
 fi
 
-cd "$(dirname "$0")/../share/pi"
+cd "$(dirname "$0")/../share/koa"
 repo=$(cd ../.. && pwd)
-make --no-print-directory -C "$repo" share/pi/node_modules/.package-lock.json share/koa/node_modules/.package-lock.json
+make --no-print-directory -C "$repo" share/koa/node_modules/.package-lock.json
 if [ "${1:-}" = lint ]; then
 	exec ../../scripts/lint.sh
 fi
@@ -43,12 +43,12 @@ make --no-print-directory -C "$repo" build-fake-ko
 KO_FAKE_KO="$repo/target/debug/fake_ko"
 export KO_FAKE_KO
 make -C ../.. koa-page
-../koa/node_modules/.bin/tsc -p ../koa/page
-../koa/node_modules/.bin/tsc -p .
-../koa/node_modules/.bin/tsc --ignoreConfig --strict --noEmit --module NodeNext --moduleResolution NodeNext \
+./node_modules/.bin/tsc -p page
+./node_modules/.bin/tsc -p .
+./node_modules/.bin/tsc --ignoreConfig --strict --noEmit --module NodeNext --moduleResolution NodeNext \
 	--target ES2024 --allowImportingTsExtensions --erasableSyntaxOnly --skipLibCheck \
 	--typeRoots ./node_modules/@types --types node ../../.pi/tests/no-git-writes.test.ts
 if [ "$#" -gt 0 ]; then
 	exec ../../scripts/quiet-limit 180 -- node --test --test-timeout=60000 --test-concurrency=4 --test-reporter=spec "$@"
 fi
-exec ../../scripts/quiet-limit 180 -- node --test --test-timeout=60000 --test-concurrency=4 --test-reporter=spec ko-pi-*.test.ts agents.test.ts ../koa/koa-*.test.ts ../../.pi/tests/no-git-writes.test.ts
+exec ../../scripts/quiet-limit 180 -- node --test --test-timeout=60000 --test-concurrency=4 --test-reporter=spec koa-*.test.ts agents.test.ts ../../.pi/tests/no-git-writes.test.ts

@@ -64,8 +64,12 @@ Non-goals:
 `share/koa/` holds the program (`koa.ts` and its `koa-*.ts` modules),
 the page's sources (`page/`), the scripted pi of the tests
 (`koa-fake-pi.ts`), the suite (`koa-*.test.ts`) and the stress runner
-(`stress/`). `share/pi/` holds the agent extension (`ko-pi.ts`) and
-the modules that it and koa share at run time: `records.ts` (the
+(`stress/`). It also holds the agent extension (`koa-agent.ts`), its
+suite (`koa-agent-*.test.ts` over `koa-agent-fixture.ts`, on the fake
+ko of `testdata/fake_ko/`), the prompt snapshot
+`testdata/ko-prompts.txt`, the ko skill (`skills/ko/SKILL.md`),
+`ko-api.d.ts`, and the modules that the extension, koa and the page
+share: `records.ts` (the
 facts that the extension writes into its messages' details, with
 their guards), `agents.ts`, `token.ts` (the token grammar: the
 extension's `@` agent token runs through the file token rules),
@@ -80,8 +84,9 @@ TypeScript sources of its page (`page.ts`, `markdown.ts`, the
 streaming markdown over marked and remend, `page.html`, `page.css`),
 which `make koa-page` bundles with esbuild into one unminified
 `page.js`; `package.json` and its lockfile pin esbuild, TypeScript 7
-(the one type checker of every TypeScript in the repository) and the
-page's npm packages; `koa-assemble.ts`, the one HTML response;
+(the one type checker of every TypeScript in the repository), the
+page's npm packages and the development packages of the extension and
+the suites; `koa-assemble.ts`, the one HTML response;
 `koa-transcript.ts`, the transcript model, its delivery and the image
 store; `koa-image.ts`, the image sniffer; `koa-timer.ts`, the timer
 that reports a throw; `koa-http.ts`, the HTTP helpers and the one
@@ -104,10 +109,11 @@ page share; `koa-fake-pi.ts`, the scripted pi of its suite
 `koa-*.test.ts`, and `koa-fake-tty.ts`, its terminal preload;
 `stress/`, the stress workloads and runner (not installed).
 
-`make build` installs the program and the built page in
-`share/ko/koa/` and the shim `share/ko/bin/koa`. The installed layout
-keeps `share/koa/` and `share/pi/` as siblings (`koa/` and `pi/`),
-so koa's relative imports of `../pi/` and of `../webview/` resolve
+`make build` installs the program, the extension, the shared
+modules, `ko-api.d.ts`, the skill and the built page in
+`share/ko/koa/`, and the shim `share/ko/bin/koa`. The installed
+layout keeps `share/koa/` and `share/webview/` as siblings (`koa/`
+and `webview/`), so koa's relative imports of `../webview/` resolve
 the same way in the checkout and in every installed layout: `make
 install` and the Homebrew formula, Kido.app's bundle and the static
 Linux layout that runtimes and containers use.
@@ -162,8 +168,8 @@ because a reconnect gets the same record and throws again, over state
 that is partly applied. Only a transport error reconnects.
 
 **Type checks.** TypeScript 7 from `share/koa/package.json` is the one
-type checker of the repository. `share/pi/tsconfig.json` checks the
-Node side, koa included; `share/koa/page/tsconfig.json` checks the
+type checker of the repository. `share/koa/tsconfig.json` checks the
+Node side, koa and the agent extension included; `share/koa/page/tsconfig.json` checks the
 page against the DOM alone. The record modules import nothing from
 pi, because pi's declarations pull Node's globals into the page's
 check. Where `koa-records.ts` names a closed set that pi also defines
@@ -180,7 +186,7 @@ is the pane's tty, so the SDK's `show` and `hide` and koa's own OSC
 group, with its three streams piped; pi's stdout is the RPC stream.
 
 **The spawn.** koa runs `pi --mode rpc --extension
-<share>/pi/ko-pi.ts`, the agent extension, with the boolean flag
+<share>/koa/koa-agent.ts`, the agent extension, with the boolean flag
 `--koa-browser` under `--browser`, and passes every argument that it
 does not own to pi unchanged, so pi's session and model flags and the
 extension's `--runtime` work. koa adds nothing to pi's environment:
@@ -390,9 +396,8 @@ two layers (the user's decision):
 2. **koa when it was updated.** A page of a new koa must not run
    against an old koa: one once crash-looped on a record's shape.
    koa hashes its installed files at start (`installedIdentity` in
-   `koa-identity.ts`: `koa/` with the page, `webview/` and the
-   `share/pi/` modules that koa imports, not the agent extension, which layer
-   1 reloads) and again after layer 1. A content hash, not a build
+   `koa-identity.ts`: `koa/` with the page and `webview/`, but not
+   the agent extension, which layer 1 reloads) and again after layer 1. A content hash, not a build
    stamp: ko's build id changes with every commit, and only koa's
    own files matter. A read that fails counts as no change. When the
    hash differs, koa asks the extension, over the session channel and pi's
@@ -829,7 +834,7 @@ modules. So koa copies pi's rules (`koa-complete.ts`), behind its own
   no plain-path completion in a prompt (the user's decision).
 - In `!` mode, `/` and `@` offer nothing, and nothing completes as
   the user types: only Tab completes, from bash ("Shell completion").
-- The token rules are one copy in `share/pi/token.ts`, which koa
+- The token rules are one copy in `share/koa/token.ts`, which koa
   and the page import, so the page asks only in a context and the
   two sides agree on where a token starts. koa computes the prefix,
   the options, their insert text and the matched letters; the page
@@ -838,7 +843,7 @@ modules. So koa copies pi's rules (`koa-complete.ts`), behind its own
   `@"--help` is a pattern, never an option. Each search has a
   deadline and caps. A request that the page aborts ends its `fd`.
 - `@name` agents are koa's own computation from `ko api GET /layout`
-  with the shared rules in `share/pi/agents.ts`. koa has no
+  with the shared rules in `share/koa/agents.ts`. koa has no
   registry, so it lacks ended children and peers; a completed
   `@name (session <prefix>)` reaches the model as typed, and the
   extension's tools resolve it.
@@ -863,7 +868,7 @@ completion source for each mode.
   the session channel (`completion_context`, with the channel's
   request ids), and `koa-sessions.ts` answers through the resolver
   that the extension installs for its current session
-  (`share/pi/completion-context.ts`): the host with the session's
+  (`share/koa/completion-context.ts`): the host with the session's
   cwd, a runtime with the cwd that `user_bash` would give the routed
   command, or `unavailable`. A refused or unready runtime, or no
   resolver, is `unavailable`, never the host. The channel's reset at
@@ -872,7 +877,7 @@ completion source for each mode.
 - **How.** One exec of `koa-shell.sh` for each Tab, never pi's RPC
   `bash` (it would enter the transcript) and no persistent shell. On
   the host it runs in koa's environment; in a runtime it runs through
-  the runtime's exec route (`share/pi/runtime-exec.ts`, the
+  the runtime's exec route (`share/koa/runtime-exec.ts`, the
   extension's client) with no environment from the host, in the login
   shell that the extension's routed commands use (`bash -lc`, else `sh -lc`), and then
   changes to the resolved cwd, because a profile can change it. The
@@ -1193,7 +1198,7 @@ notices, and it ships with koa, so it writes the facts that the page
 needs
 into each message's `details` (and into the `details` of the
 `spawn_agent`, `message_agent` and `async_bash` results), typed by
-`share/pi/records.ts`. The transcript reads `details` only, never the
+`share/koa/records.ts`. The transcript reads `details` only, never the
 header lines, which stay in the text for the model.
 `details` is also in the session file, so a rebuild shows the same
 lines. A custom message without these details (another extension's,

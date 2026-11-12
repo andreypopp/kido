@@ -10,9 +10,9 @@ import type { RpcCommand } from "@earendil-works/pi-coding-agent";
 
 if (process.argv.some(arg => arg.endsWith('/koa-startup.ts'))) {
   const { startupResult } = await import('./koa-args.ts');
-  const { parseArgs } = await import('../pi/node_modules/@earendil-works/pi-coding-agent/dist/cli/args.js');
+  const { parseArgs } = await import('./node_modules/@earendil-works/pi-coding-agent/dist/cli/args.js');
   const result = startupResult(parseArgs(JSON.parse(process.env.KOA_STARTUP_ARGS ?? '[]')));
-  writeSync(3, JSON.stringify({ ...result, packageRoot: fileURLToPath(new URL('../pi/node_modules/@earendil-works/pi-coding-agent', import.meta.url)) }) + '\n');
+  writeSync(3, JSON.stringify({ ...result, packageRoot: fileURLToPath(new URL('./node_modules/@earendil-works/pi-coding-agent', import.meta.url)) }) + '\n');
   process.exit('error' in result ? 1 : 0);
 }
 

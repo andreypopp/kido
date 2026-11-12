@@ -1,4 +1,4 @@
-import { errorText } from "../pi/text.ts";
+import { errorText } from "./text.ts";
 
 export function later(fn: () => void, ms: number): NodeJS.Timeout {
   return setTimeout(() => {

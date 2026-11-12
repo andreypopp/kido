@@ -27,13 +27,13 @@ connects to another agent's socket. Every exchange between two agents
 
 ## The tools, and what they call
 
-The eight tools are in `share/pi/ko-pi.ts`. No tool has a ko
+The eight tools are in `share/koa/koa-agent.ts`. No tool has a ko
 subcommand of its own.
 
 | tool | what it uses |
 |---|---|
 | `list_agents(which?)` | `ko api /layout`, `/version`, the registry in the own session, which a top-level pi keeps with `ko api --stream /client` |
-| `read_report(agent, which?)` | the own session's `ko-pi.report` entries |
+| `read_report(agent, which?)` | the own session's `koa.report` entries |
 | `list_async_bash()` | the process's job registry |
 | `message_agent(to, message, mode?)` | `POST /panes/{t}/messages`; `POST /panes` to restart an ended child or peer |
 | `spawn_agent(task, name, model?, cwd?, resume_from?, fork?, toplevel?, runtime?)` | pi's session directories, `pi --list-models`, `GET /runtimes/NAME`, `POST /panes` |
@@ -57,7 +57,7 @@ orphan rule.
 
 **list_agents** lists the scope, without the caller. `which` selects
 `all` (the default), `peers` or `subagents` (the caller's own). A
-row is an `AgentRow` of `ko-pi.ts`. Its `id` is the pi session. Its
+row is an `AgentRow` of `koa-agent.ts`. Its `id` is the pi session. Its
 `status` is the root's OSC 7501 state, `starting` before the pane
 has one, or `ended`. Its `runtime` is the row's field, else the `pi.runtime` of a host
 pi agent; a routed agent's `cwd` is that variable's. Its
@@ -114,22 +114,22 @@ In the parent:
 
 | entry | when | data |
 |---|---|---|
-| `ko-pi.agent`, role `subagent` | at each spawn and restart | `name`, `session`, `model`, `fork`, `cwd`, the `runtime`, and `pane: { instance, pane }`; the last entry of a name is current |
-| `ko-pi.agent`, role `peer` | when the `/client` stream shows a peer whose facts differ from its last entry, and at a top-level spawn or a peer restart (a top-level host pi only) | `name`, `session`, `cwd`; the last entry of a session is current |
-| `ko-pi.work` | before it sends an own child work, in any mode, and at a spawn or restart with a task | `child` |
-| `ko-pi.report` | when a child's report arrives, before the ack | `child`, `name`, `text`, `id` |
-| `ko-pi.ended` | when it announces a child's ending, and when it stops the child | `child`, `pane` |
+| `koa.agent`, role `subagent` | at each spawn and restart | `name`, `session`, `model`, `fork`, `cwd`, the `runtime`, and `pane: { instance, pane }`; the last entry of a name is current |
+| `koa.agent`, role `peer` | when the `/client` stream shows a peer whose facts differ from its last entry, and at a top-level spawn or a peer restart (a top-level host pi only) | `name`, `session`, `cwd`; the last entry of a session is current |
+| `koa.work` | before it sends an own child work, in any mode, and at a spawn or restart with a task | `child` |
+| `koa.report` | when a child's report arrives, before the ack | `child`, `name`, `text`, `id` |
+| `koa.ended` | when it announces a child's ending, and when it stops the child | `child`, `pane` |
 
 In the child:
 
 | entry | when | data |
 |---|---|---|
-| `ko-pi.work` | when it delivers its task, and at `message_start` of a message or steer with `details.work` | none |
-| `ko-pi.report` | before it sends a report | `text`, `id` |
-| `ko-pi.sent` | when the parent acks or refuses a report | `id`, `refused` when refused |
+| `koa.work` | when it delivers its task, and at `message_start` of a message or steer with `details.work` | none |
+| `koa.report` | before it sends a report | `text`, `id` |
+| `koa.sent` | when the parent acks or refuses a report | `id`, `refused` when refused |
 
-**Has a child reported?** The parent's rule: its last `ko-pi.report`
-for the child comes after its last `ko-pi.work` for it on the branch,
+**Has a child reported?** The parent's rule: its last `koa.report`
+for the child comes after its last `koa.work` for it on the branch,
 or it gave the child no work. The child's rule about itself is the
 same over its own entries. The order is the position on the branch,
 not a time, so there is no tie and no clock. Both are own facts:
@@ -161,7 +161,7 @@ directory. Without it, the child starts in the caller's directory, or
 in a resumed session's own directory. Then the harness reads
 `/layout` and checks the depth: the child's depth, the length of the
 caller's `parent` chain over the rows plus one, is at most 2. Then
-`createPane` in `ko-pi.ts` sends one `POST /panes` (protocol.md,
+`createPane` in `koa-agent.ts` sends one `POST /panes` (protocol.md,
 section 7). The pane's command is `ko shell -- koa`, with
 `--browser` when the caller's pi has `--koa-browser`, so a child
 takes its parent's mode (design-koa.md), with the
@@ -174,11 +174,11 @@ has the environment of an interactive pane (design.md, "The login
 environment"). The pane has the caller's pane as `parent` and `close:
 on_exit`, and the three variables below in its environment. The
 harness mints the child's session id, 32 hex characters. The task
-never enters a command line: it is the pane variable `ko-pi.task`,
+never enters a command line: it is the pane variable `koa.task`,
 with the text and the sender's session, name and pane, and its JSON
 must fit the variable limit of 1,044,480 bytes. After the request
-returns, the harness appends `ko-pi.agent` and, with a task,
-`ko-pi.work`.
+returns, the harness appends `koa.agent` and, with a task,
+`koa.work`.
 
 | variable | what it carries |
 |---|---|
@@ -296,7 +296,7 @@ its default. A file that records no model gets the caller's model.
 An explicit `model` wins.
 
 **An empty task** is allowed only to continue a session. The session
-comes back and starts no turn. No `ko-pi.task` and no `ko-pi.work`
+comes back and starts no turn. No `koa.task` and no `koa.work`
 are written, so the child owes no report until its parent sends it
 work.
 
@@ -306,7 +306,7 @@ work.
 /panes` with the caller's ko session as `session` and no `parent`,
 `close` or `KO_AGENT_PARENT_SESSION`. The server places the window
 after the caller's window and names it in the same change, so no
-unnamed window flashes. The task goes as `ko-pi.task` like a child's;
+unnamed window flashes. The task goes as `koa.task` like a child's;
 the new agent delivers it as a message from the caller, because its
 edge does not name the caller. It is a peer ("Peers", below): there
 is no subagent entry, no notice and no orphan rule. The pane has the default `close: exit`: when pi
@@ -358,8 +358,8 @@ peer. A recorded peer does not reserve its name for `spawn_agent`.
 **Restart and stop.** `message_agent` in `message` mode to an ended
 peer restarts it ("Restarting through a message"), and
 `spawn_agent(name, resume_from)` of a recorded peer continues it as
-a peer. A peer never gets `ko-pi.work`, a report, a notice or
-`ko-pi.ended`. `stop_agent` stops a live peer as any agent of the
+a peer. A peer never gets `koa.work`, a report, a notice or
+`koa.ended`. `stop_agent` stops a live peer as any agent of the
 scope; to an ended peer it answers `NAME had already ended`, sends
 nothing and keeps the entry.
 
@@ -371,8 +371,8 @@ nothing and keeps the entry.
    `KO_AGENT_PARENT_SESSION` is set.
 2. Opens its message stream, then writes `pi.session` and `pi.name`.
    Thus, it can receive questions during its first turn.
-3. Reads its own row. With `ko-pi.task`, a child whose edge parent is
-   the task's `from.session` appends `ko-pi.work` and delivers the
+3. Reads its own row. With `koa.task`, a child whose edge parent is
+   the task's `from.session` appends `koa.work` and delivers the
    text as its first user message; otherwise it delivers the text as
    a message with the sender header. Then it deletes the variable,
    which is the delivered marker. A failed read leaves the variable
@@ -443,10 +443,10 @@ The reads of 5 and 6 wait on the server, so after them the child
 checks again: an accepted interrupt or stop, new work, or a new own
 report since the read cancels the report.
 
-The child mints one message id for the report, appends `ko-pi.report
+The child mints one message id for the report, appends `koa.report
 { text, id }`, and sends `kind: notice` with `data: { report: true }`
 to its parent pane. The text is the whole last message, up to about
-1 MB. An `acked` or `refused` reply appends `ko-pi.sent { id }`. The
+1 MB. An `acked` or `refused` reply appends `koa.sent { id }`. The
 mark is its own entry, so a late ack after new work does not count as
 a report on that work. A `delivered`, `queued` or `io` reply leaves
 the report pending, and every tick of the parent watch resends each
@@ -458,7 +458,7 @@ after a `/reload`. An empty last message sends `subagent "<name>"
 ended its turn with no message`.
 
 The parent, on a notice with `data.report` from a current registry
-child, appends `ko-pi.report` with the whole text before it acks; if
+child, appends `koa.report` with the whole text before it acks; if
 the append throws, it answers `refuse`, and the child retries. A
 report id that the parent has already stored is acked and not
 delivered again. The parent's model gets a notice of at most 4000
@@ -507,7 +507,7 @@ queued, so a reload gap loses nothing. A parent that restarts under
 its own session id in a new pane has a new queue: its `session_start`
 reads the rows of its registry children, and one whose pane is gone,
 dead or of another instance gets the notice once, with `its pane is
-gone` or the dead pane's cause. `ko-pi.ended` records each
+gone` or the dead pane's cause. `koa.ended` records each
 announcement, so each ending of a child's current pane is announced
 once.
 
@@ -558,7 +558,7 @@ scope:
 
 A message and a steer from the parent carry `details.work`, so the
 child's `message_start` marks new work. The parent marks
-`ko-pi.work` before it sends its own child work in any mode; the mark
+`koa.work` before it sends its own child work in any mode; the mark
 stays after a failed send, because the message can have arrived.
 There is no interrupt without text.
 
@@ -586,7 +586,7 @@ reported on its last work`, `stopped NAME` for a peer or ancestor,
 `NAME had already ended: <cause>`.
 
 **The result is the only signal.** Before it stops an own child,
-`stop_agent` appends `ko-pi.ended` for it, so the server's `ended`
+`stop_agent` appends `koa.ended` for it, so the server's `ended`
 message for that pane sends no notice. A child that ends any other way
 notifies through that message ("Endings").
 
@@ -604,8 +604,8 @@ recorded peer restarts it. A child restarts as follows:
 `--session-id <id>` when it has no file yet, in the recorded cwd, on
 the file's last model as for a resume (the registry's `model` when the
 file records none), the
-message as `ko-pi.task`, the parent's `ko-pi.work` and a new
-`ko-pi.agent` with the new pane. The message is never in pi's argv:
+message as `koa.task`, the parent's `koa.work` and a new
+`koa.agent` with the new pane. The message is never in pi's argv:
 pi's parser reads an argument that starts with `@` as a file, even
 after `--`. The rules:
 
@@ -622,12 +622,12 @@ after `--`. The rules:
 A peer restarts as a top-level agent ("A top-level agent"): `POST
 /panes` with the sender's ko session, no `parent`, `close` or
 `KO_AGENT_PARENT_SESSION`, `--session <file>` in the directory of
-the file's header, on the file's last model, and the message as `ko-pi.task`. It is
+the file's header, on the file's last model, and the message as `koa.task`. It is
 refused without a session file: a peer never restarts as an empty
 session. The restart lock and the live-first rule above apply. A
 peer entry has no pane, so the harness keeps the new pane in memory
 as the peer's starting pane until it publishes `pi.session` or ends;
-a second message in that time goes to it. No `ko-pi.work` is
+a second message in that time goes to it. No `koa.work` is
 written, and the reply asks for no report.
 
 ## A job
@@ -642,8 +642,8 @@ own pane ("A job's row"). Two tools make one:
   becomes a job ("The bash tool's move").
 
 **The registry.** Every job is a `Job` record of one registry for
-each process, `globalThis[Symbol.for("ko-pi.jobs")]`. Its envelope
-(`JobRegistry` in `ko-pi.ts`) never changes shape; `JOB_SHAPE` is
+each process, `globalThis[Symbol.for("koa.jobs")]`. Its envelope
+(`JobRegistry` in `koa-agent.ts`) never changes shape; `JOB_SHAPE` is
 raised with each change of the `Job` layout. The pipe listeners of a
 job write its log and its buffers and never call pi; only the hooks
 of the current extension instance call pi. Thus, a job and its
@@ -670,7 +670,7 @@ runs the command in its runtime: the job's process is the `ko api
 "Agents in a runtime"). The depth ceiling does not apply.
 
 **The log.** Both pipes write one file in arrival order, raw, with
-no size cap: `<tmpdir>/ko-pi/<session id>-<job id>.log`, the
+no size cap: `<tmpdir>/koa/<session id>-<job id>.log`, the
 directory mode 0700 and the file 0600. It is never deleted, as pi's
 own `bash` output files are not: the user or the model reads it after
 the end. Only the in-memory tail (64 KiB) is bounded. The result of
@@ -682,7 +682,7 @@ the end. Only the in-memory tail (64 KiB) is bounded. The result of
     job "build" (j4k2m9qp) exit 3
     --- last 4000 bytes of its output ---
     ...
-    log: /tmp/ko-pi/<session>-j4k2m9qp.log
+    log: /tmp/koa/<session>-j4k2m9qp.log
 
 The first line names the end: `exit N`, `signal NAME`, `failed:
 <message>`, or `timed out after N s`. The tail is the last 4000 bytes
@@ -792,7 +792,7 @@ when the job still runs. The registry's one `process.on("exit")`
 handler sends `SIGKILL` through `signalJob` to every local group that
 still runs at pi's exit; a registry that was replaced keeps its
 handler until its jobs have closed. `scripts/lint.sh` refuses
-`process.kill(` in `share/pi/` outside `signalJob`.
+`process.kill(` in `share/koa/` outside `signalJob`.
 
 **Known limit: an orphan after `SIGKILL`.** A pane's hangup sends
 `SIGHUP` to pi's group and `SIGKILL` 250 ms later. pi's `SIGHUP`
@@ -893,7 +893,7 @@ after the pane variables and before the task, the new instance:
   next adopt.
 - otherwise stops the old jobs through the old registry's `stopAll`,
   replaces the registry and sends one notice: `N async_bash jobs of
-  the previous ko-pi version were stopped at /reload: a, b`.
+  the previous koa version were stopped at /reload: a, b`.
 
 The other reasons (`quit`, `new`, `resume`, `fork`) stop every job,
 wait up to `KO_JOB_KILL_MS` for the ends and clear the registry.

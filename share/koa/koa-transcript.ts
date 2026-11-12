@@ -6,11 +6,11 @@ import { mkdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { imageInfo, imageExtensions } from "./koa-image.ts";
 import { pathArg, type Annotation } from "./koa-records.ts";
-import { isRelation, isAgentFailure } from "../pi/records.ts";
+import { isRelation, isAgentFailure } from "./records.ts";
 import { promptText } from "./prompt.ts";
 import type { Text, Block, Item, Assistant, WireItem, State, PageRecord, ImageRef, Attachment, AgentCall, NotifyLevel, CommandResult, BashResult } from "./koa-records.ts";
-import type { AgentRef, AgentOutcome, JobRef, JobEnd, Inbound, AgentDetails, NoticeDetails, StreamDetails } from "../pi/records.ts";
-import { mintId, contentText, utf8Prefix, isRecord, errorText, type Content } from "../pi/text.ts";
+import type { AgentRef, AgentOutcome, JobRef, JobEnd, Inbound, AgentDetails, NoticeDetails, StreamDetails } from "./records.ts";
+import { mintId, contentText, utf8Prefix, isRecord, errorText, type Content } from "./text.ts";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { SessionEntry } from "@earendil-works/pi-coding-agent";
 

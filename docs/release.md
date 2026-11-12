@@ -22,7 +22,7 @@ After the change is on `main`, `scripts/release.sh VERSION` (or
 actions. It requires HEAD equal to origin/main and green CI for it.
 It compares the command and tool lists with the tap's current
 revision: the old names come from `$(brew --prefix ko)/bin/ko --help`
-and `share/pi/testdata/ko-prompts.txt` at the old revision, the new
+and `share/koa/testdata/ko-prompts.txt` at the old revision, the new
 from the checkout, with no worktrees; it checks that the installed
 `ko version` build is a prefix of the formula's revision. Removals or
 renames require a minor bump. Panes must restart, not /reload. The

@@ -79,7 +79,7 @@ ko_client/* share/ko/*.json|build lint unit e2e app ko-test
 ko_sys/* ko_vt_sys/*|build build-linux lint unit e2e
 ko/* ko_*/* fuzz/* share/ko/*|build lint unit e2e
 share/koa/page/*|page
-share/pi/* share/koa/* share/webview/* .pi/* scripts/test-ts.sh|build lint ts
+share/koa/* share/webview/* .pi/* scripts/test-ts.sh|build lint ts
 app/VisualTests/__Snapshots__/*/*|snapshot
 app/VisualTests/*.swift|swift
 app/VisualTests/*|visual

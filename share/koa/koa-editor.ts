@@ -3,9 +3,9 @@ import { readFileSync } from "node:fs";
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
-import type { components } from "../pi/ko-api.d.ts";
-import { apiCall, KO_TIMEOUT_MS, lineReader, openStream } from "../pi/runtime-exec.ts";
-import { errorText, isRecord } from "../pi/text.ts";
+import type { components } from "./ko-api.d.ts";
+import { apiCall, KO_TIMEOUT_MS, lineReader, openStream } from "./runtime-exec.ts";
+import { errorText, isRecord } from "./text.ts";
 import { later } from "./koa-timer.ts";
 
 type Api = components["schemas"];

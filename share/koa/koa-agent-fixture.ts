@@ -1,4 +1,4 @@
-// The fixture for the ko-pi.ts suite. A real pi host loads one extension and
+// The fixture for the koa-agent.ts suite. A real pi host loads one extension and
 // drives it only through registered tools, registered lifecycle events and the
 // processes the extension runs. A fake stands in for the program the extension
 // runs: `ko api` for the pane table, posts and vars, and `ko api --stream`
@@ -19,7 +19,7 @@ import { join, delimiter } from "node:path";
 
 import { SessionManager, initTheme } from "@earendil-works/pi-coding-agent";
 
-import koPi from "./ko-pi.ts";
+import koaAgent from "./koa-agent.ts";
 import type { components } from "./ko-api.d.ts";
 
 initTheme("dark");
@@ -187,7 +187,7 @@ export function makeFixture(): Fixture {
   if (!cachedFakeKo || !existsSync(cachedFakeKo)) {
     throw new Error("KO_FAKE_KO is not set or not built; run scripts/test-ts.sh");
   }
-  const dir = mkdtempSync(join("/tmp", "ko-pi-test-"));
+  const dir = mkdtempSync(join("/tmp", "koa-agent-test-"));
   const binDir = join(dir, "bin");
   mkdirSync(binDir);
   const command = join(binDir, "ko");
@@ -219,7 +219,7 @@ export function makeFixture(): Fixture {
   process.env.TMPDIR = dir;
   mkdirSync(file("home"));
   process.env.HOME = file("home");
-  process.env.KO_SOCKET = "/tmp/ko-pi-test/socket";
+  process.env.KO_SOCKET = "/tmp/koa-agent-test/socket";
   process.env.KO_PANE = "pane_1";
   process.env.KO_FAKE_KO = cachedFakeKo;
   process.env.KO_FAKE_API_LOG = apiLog;
@@ -244,8 +244,8 @@ export function makeFixture(): Fixture {
   process.env.KO_RECEIVER_BACKOFF_MS = "5";
   process.env.KO_JOB_KILL_MS = "50";
   process.env.KO_STREAM_INTERVAL_MS = "5";
-  globalThis.__koPiExtensionReceiver = undefined;
-  globalThis.__koPiExtensionReceived = undefined;
+  globalThis.__koaAgentExtensionReceiver = undefined;
+  globalThis.__koaAgentExtensionReceived = undefined;
 
   let seq = 0;
   const calls = (): ApiCall[] => jsonLines(apiLog);
@@ -333,8 +333,8 @@ export function makeFixture(): Fixture {
         } catch (error) { first ??= error; } finally { clearTimeout(timer); }
       }
       try {
-        globalThis.__koPiExtensionReceiver?.child.kill();
-        globalThis.__koPiExtensionReceiver = undefined;
+        globalThis.__koaAgentExtensionReceiver?.child.kill();
+        globalThis.__koaAgentExtensionReceiver = undefined;
         globalThis.__koCompletionContext?.stop.abort();
         globalThis.__koCompletionContext = undefined;
         await pollUntil(() => work.size === 0, 15000, "all fake commands to close");
@@ -357,7 +357,7 @@ export function makeFixture(): Fixture {
 
 type Entry = { type: "custom"; customType: string; data: Record<string, any> };
 
-export function createFakePi(sessionDir = "/tmp/ko-pi-no-sessions/caller", entries: Entry[] = []) {
+export function createFakePi(sessionDir = "/tmp/koa-agent-no-sessions/caller", entries: Entry[] = []) {
   const tools = new Map<string, any>();
   const toolSources = [{ name: "bash", sourceInfo: { path: "builtin:bash" } }];
   const handlers = new Map<string, Array<(...args: any[]) => unknown>>();
@@ -493,7 +493,7 @@ function fakeCtx(
   sessionId: string | undefined = "self-session",
   ui?: unknown,
   idle: () => boolean = () => true,
-  sessionDir = "/tmp/ko-pi-no-sessions/caller",
+  sessionDir = "/tmp/koa-agent-no-sessions/caller",
   branch: () => Entry[] = () => [],
 ) {
   return {
@@ -524,7 +524,7 @@ export async function startSession(
   fx: Fixture,
   opts: { mode?: "tui" | "print" | "rpc" | "json"; factory?: (pi: never) => void; sessionId?: string; name?: string; idle?: () => boolean; entries?: Entry[]; ctx?: Record<string, unknown>; record?: boolean; startup?: boolean; flags?: Record<string, string | boolean>; bashSource?: string } = {},
 ): Promise<Started> {
-  const { factory = koPi, sessionId = "self-session", name, idle, entries = [], ctx, record = true, flags = {} } = opts;
+  const { factory = koaAgent, sessionId = "self-session", name, idle, entries = [], ctx, record = true, flags = {} } = opts;
   const created = createFakePi(join(fx.dir, "sessions", "caller"), entries);
   if (opts.bashSource) created.toolSources[0]!.sourceInfo.path = opts.bashSource;
   for (const [flag, value] of Object.entries(flags)) created.flags.set(flag, value);
@@ -558,7 +558,7 @@ let freshImportCounter = 0;
 
 export async function freshExtension(): Promise<(pi: never) => void> {
   const fresh = `?fresh=${process.pid}-${freshImportCounter++}`;
-  const mod = await import(`./ko-pi.ts${fresh}`);
+  const mod = await import(`./koa-agent.ts${fresh}`);
   return mod.default as (pi: never) => void;
 }
 
@@ -600,7 +600,7 @@ export function gatedCommand(gate: string, before = "", after = "", code = 0): s
   return `exec /bin/sh -c ${quote(body)}`;
 }
 
-export const jobRegistry = () => Reflect.get(globalThis, Symbol.for("ko-pi.jobs"));
+export const jobRegistry = () => Reflect.get(globalThis, Symbol.for("koa.jobs"));
 export const processGone = (marker: string): Promise<boolean> => new Promise((resolve) => {
   childProcess.execFile("/usr/bin/pgrep", ["-f", marker], (error) => resolve(error !== null));
 });

@@ -10,8 +10,8 @@ import { request } from "node:http";
 import { EventEmitter } from 'node:events';
 import { stripTypeScriptTypes } from 'node:module';
 import { runInNewContext } from 'node:vm';
-import { assistant } from "../pi/ko-pi-fixture.ts";
-import { pollUntil } from "../pi/ko-pi-fixture.ts";
+import { assistant } from "./koa-agent-fixture.ts";
+import { pollUntil } from "./koa-agent-fixture.ts";
 import { fixture } from "./koa-program-fixture.ts";
 test('history comes from the whole transcript and omits consecutive duplicates', { timeout: 10000 }, async t => {
   const messages = Array.from({ length: 110 }, (_, i) => ({ role: 'user', content: 'prompt ' + i, timestamp: i + 1 }));
@@ -222,7 +222,7 @@ test('startup failures release the view before exiting', { timeout: 5000 }, asyn
   const dir = await mkdtemp(join(tmpdir(), 'koa-startup-failure-'));
   t.after(() => rm(dir, { recursive: true, force: true }));
   await symlink(process.execPath, join(dir, 'node'));
-  for (const args of [[], ['--pi', resolve('../koa/koa-fake-pi.ts'), '--metrics', '/does-not-exist/metrics']]) {
+  for (const args of [[], ['--pi', resolve('./koa-fake-pi.ts'), '--metrics', '/does-not-exist/metrics']]) {
     const child = spawn(process.execPath, [resolve('../../build/ko/share/ko/koa/koa.ts'), '--browser', ...args], { env: { ...process.env, PATH: dir, ...(args.length ? {} : { KOA_UPLOAD_IDLE_MS: 'bad' }) }, stdio: 'pipe' });
     const close = once(child, 'close'); t.after(() => { if (child.exitCode === null) child.kill('SIGTERM'); });
     let stderr = ''; child.stderr.on('data', bytes => { stderr += bytes; });
@@ -234,7 +234,6 @@ test('page assets stay with the running program', { timeout: 10000 }, async t =>
   const dir = await mkdtemp('/tmp/koa-page-install-');
   t.after(() => rm(dir, { recursive: true, force: true }));
   await cp(resolve('../koa'), join(dir, 'koa'), { recursive: true, filter: path => !path.includes('node_modules') });
-  await symlink(resolve('../pi'), join(dir, 'pi'));
   await symlink(resolve('../webview'), join(dir, 'webview'));
   await writeFile(join(dir, 'koa/page.html'), '<head><!-- style --></head><body>original<!-- script --></body>');
   await writeFile(join(dir, 'koa/page.css'), 'original-style');
@@ -250,11 +249,10 @@ test('page assets stay with the running program', { timeout: 10000 }, async t =>
 test('a listen failure closes the acquired view and pi', { timeout: 5000 }, async t => {
   const dir = await mkdtemp('/tmp/koa-listen-failure-'); t.after(() => rm(dir, { recursive: true, force: true }));
   await cp(resolve('../../build/ko/share/ko/koa'), join(dir, 'koa'), { recursive: true });
-  await symlink(resolve('../../build/ko/share/ko/pi'), join(dir, 'pi'));
   await mkdir(join(dir, 'webview'));
   const marker = join(dir, 'socket');
   await writeFile(join(dir, 'webview/index.ts'), `import {webview as real} from ${JSON.stringify(new URL('../webview/index.ts', import.meta.url).href)};import {writeFileSync} from 'node:fs';export async function webview(options){const view=await real(options);writeFileSync(${JSON.stringify(marker)},view.socketPath);writeFileSync(view.socketPath,'occupied');return view;}`);
-  const child = spawn(process.execPath, [join(dir, 'koa/koa.ts'), '--browser', '--pi', resolve('../koa/koa-fake-pi.ts')], { env: { ...process.env, KOA_PI_EXIT_MS: '30', KOA_FAKE_STUBBORN: '1' }, stdio: 'pipe' });
+  const child = spawn(process.execPath, [join(dir, 'koa/koa.ts'), '--browser', '--pi', resolve('./koa-fake-pi.ts')], { env: { ...process.env, KOA_PI_EXIT_MS: '30', KOA_FAKE_STUBBORN: '1' }, stdio: 'pipe' });
   t.after(() => { if (child.exitCode === null) child.kill('SIGTERM'); });
   let stderr = ''; child.stderr.on('data', bytes => { stderr += bytes; });
   const [code] = await once(child, 'close'); assert.equal(code, 1); assert.match(stderr, /EADDRINUSE/);

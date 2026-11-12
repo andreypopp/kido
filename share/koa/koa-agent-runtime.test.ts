@@ -12,10 +12,10 @@ import { fileURLToPath } from "node:url";
 
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 
-import { makeFixture, agentPane, selfPane, startSession, text, entriesOf, customMessages, notices, gatedCommand, pollUntil, withEnv, freshExtension, movedId, logHas, captureStatusRecords, type Fixture, type Started } from "./ko-pi-fixture.ts";
+import { makeFixture, agentPane, selfPane, startSession, text, entriesOf, customMessages, notices, gatedCommand, pollUntil, withEnv, freshExtension, movedId, logHas, captureStatusRecords, type Fixture, type Started } from "./koa-agent-fixture.ts";
 
 import { resolveCompletionContext } from './completion-context.ts';
-import { mapHostPath, senderHeader } from "./ko-pi.ts";
+import { mapHostPath, senderHeader } from "./koa-agent.ts";
 
 type Body = Record<string, any>;
 
@@ -652,7 +652,7 @@ test("spawn_agent with a runtime starts a routed child, or an inside child by th
     assert.equal(first!.cwd, repo);
     assert.equal(env(first!, "KO_AGENT_TRUSTED_CWD"), repo, "the host cwd, unmapped");
     assert.match(routedChild, /^spawned viahost \(session [0-9a-f]{32}, window window_10, pane pane_10, in runtime dev\);/);
-    const [entry] = entriesOf(s, "ko-pi.agent");
+    const [entry] = entriesOf(s, "koa.agent");
     assert.deepEqual(entry!.runtime, { name: "dev", mode: "routed" });
 
     const insideChild = text(await spawnAgent({ name: "inside", runtime: "inner" }));
@@ -767,7 +767,7 @@ test("the exec client drives a real ko server with a command-kind runtime the wa
   }
   const fx = makeFixture();
   const t = tree(fx);
-  const state = realpathSync(mkdtempSync("/tmp/ko-pi-real-"));
+  const state = realpathSync(mkdtempSync("/tmp/koa-agent-real-"));
   writeFileSync(join(state, "config.yaml"), `runtimes:
   dev:
     command: {}
