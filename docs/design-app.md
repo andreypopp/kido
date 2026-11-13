@@ -1356,13 +1356,17 @@ the pointer after 4pt of movement. Its size is the pane's size, limited to
 keeps its position relative to the grip. Option over a target or over the
 source shows the ghost instead of the bar. The drop sends a `float` edit
 with the ghost's cell geometry (PaneLayout's inverse), and the float becomes
-the active pane. The last tiled pane shows no ghost. A float's move gesture
-uses the edge targets of the tiled drag: over a pane's outer quarters or the
-window-edge band, it shows the bar and sends no move edit; its drop sends
-`dock` or `dock_window` with the float as the source and holds the release
-frame until the layout shows the dock. A pane's centre is no target for a
-float, so a float still moves over tiled panes.
-Floating grips, the move band and padding share one move gesture, starting
+the active pane. The last tiled pane shows no ghost. Only a float's grip
+docks it: its drag uses the edge targets of the tiled drag, and over a
+pane's outer quarters or the window-edge band it shows the bar and sends no
+move edit; its drop sends `dock` or `dock_window` with the float as the
+source and holds the release frame until the layout shows the dock. A
+pane's centre is no target for a float, so a float still moves over tiled
+panes. A drag by the move band or the padding only moves the float: it has
+no targets, so a float moved near a tiled edge does not dock by accident.
+`PaneDrag` names the float's gesture (move, dock or resize), and only the
+dock gesture asks for a drop target.
+A float's grip, the move band and padding move the float, starting
 after 4pt of movement; resize edges follow the pointer immediately. A press
 without movement makes the float the active pane, which raises it ([Float
 windows](#float-windows)). A float's top padding is `PaneLayout.floatTop` of

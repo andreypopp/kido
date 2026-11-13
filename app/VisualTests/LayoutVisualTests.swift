@@ -158,7 +158,7 @@ import XCTest
         XCTAssertGreaterThan(slot.x, 0)
         XCTAssertEqual(frame.minX, CGFloat(slot.x + float.x) * cell.width, accuracy: cell.width + 6, "the float lies over the slot, offset by it")
         let start = NSPoint(x: frame.midX, y: frame.minY + 4)
-        terminal.visualBeginDrag(float.pane, try mouse(.leftMouseDown, start))
+        terminal.visualBeginDrag(float.pane, try mouse(.leftMouseDown, start), from: .frame)
         let end = NSPoint(x: start.x + 2 * cell.width, y: start.y + 8 * cell.height)
         terminal.mouseDragged(with: try mouse(.leftMouseDragged, end))
         terminal.mouseUp(with: try mouse(.leftMouseUp, end))
@@ -238,7 +238,7 @@ import XCTest
         let start = NSPoint(x: frame.midX, y: frame.minY + 4)
         let terminal = try XCTUnwrap(terminal)
         let cell = try cell()
-        terminal.visualBeginDrag(float, try mouse(.leftMouseDown, start))
+        terminal.visualBeginDrag(float, try mouse(.leftMouseDown, start), from: .frame)
         XCTAssertTrue(terminal.visualPaneDragging)
         let end = NSPoint(x: start.x + 5 * cell.width, y: start.y + 8 * cell.height)
         terminal.mouseDragged(with: try mouse(.leftMouseDragged, NSPoint(x: start.x + 2 * cell.width, y: start.y + cell.height)))
@@ -264,7 +264,7 @@ import XCTest
         let target = try rect(PaneID(number: 1)), grip = try rect(float)
         let start = NSPoint(x: grip.midX, y: grip.minY + 4)
         let end = NSPoint(x: target.minX + 2, y: target.midY)
-        terminal.visualBeginDrag(float, try mouse(.leftMouseDown, start))
+        terminal.visualBeginDrag(float, try mouse(.leftMouseDown, start), from: .grip)
         terminal.mouseDragged(with: try mouse(.leftMouseDragged, end))
         XCTAssertNil(terminal.visualGhost, "a float's drag never shows the ghost")
         let bar = try XCTUnwrap(terminal.visualPreview.rect, "the insertion bar shows over the target")
@@ -277,6 +277,28 @@ import XCTest
         XCTAssertNotEqual(try rect(float), dragged, "the docked pane takes its tile")
     }
 
+    func testAFloatDraggedByItsFrameOnlyMoves() async throws {
+        try await put(floatWindow())
+        try await placed("the float") { $0.floats.count == 1 }
+        let terminal = try XCTUnwrap(terminal), float = PaneID(number: 3)
+        let first = try rect(PaneID(number: 1)), second = try rect(PaneID(number: 2))
+        for end in [NSPoint(x: first.minX + 2, y: first.midY), NSPoint(x: second.maxX - 2, y: second.midY)] {
+            let home = try rect(float), before = try XCTUnwrap(window?.floats.first)
+            let start = NSPoint(x: home.midX, y: home.minY + 4)
+            terminal.visualBeginDrag(float, try mouse(.leftMouseDown, start), from: .frame)
+            terminal.mouseDragged(with: try mouse(.leftMouseDragged, end))
+            XCTAssertNil(terminal.visualPreview.rect, "a frame drag shows no insertion bar")
+            XCTAssertNotEqual(try rect(float).origin, home.origin, "the float follows the drag")
+            terminal.mouseUp(with: try mouse(.leftMouseUp, end))
+            try await placed("the float moved, not docked") {
+                $0.floats.count == 1 && Layout($0).root.panes.filter { $0.layer == .tiled }.map(\.id.number) == [1, 2]
+                    && $0.floats.first.map { [$0.x, $0.y] } != [before.x, before.y]
+            }
+            try await wait("the edits settled", within: 5) { self.owner.testSession?.editing() == false }
+            XCTAssertNotEqual(window?.floats.first.map { [$0.x, $0.y] }, [before.x, before.y], "the move stays after settling")
+        }
+    }
+
     func testATiledPaneDroppedOverNoTargetPopsOutAtTheGhost() async throws {
         try await put(floatWindow())
         try await placed("the float") { $0.floats.count == 1 }
@@ -285,7 +307,7 @@ import XCTest
         let grip = try chrome(source).toolbarFrame.minX + 16
         let start = NSPoint(x: frame.minX + grip, y: frame.minY + 14)
         let inside = NSPoint(x: start.x - 2 * cell.width, y: start.y + 3 * cell.height)
-        terminal.visualBeginDrag(source, try mouse(.leftMouseDown, start))
+        terminal.visualBeginDrag(source, try mouse(.leftMouseDown, start), from: .grip)
         terminal.mouseDragged(with: try mouse(.leftMouseDragged, inside))
         XCTAssertNil(terminal.visualGhost, "the source pane is a cancel zone")
         XCTAssertNil(terminal.visualPreview.rect)
@@ -296,7 +318,7 @@ import XCTest
 
         let over = try rect(PaneID(number: 3))
         let end = NSPoint(x: over.midX, y: over.midY)
-        terminal.visualBeginDrag(source, try mouse(.leftMouseDown, start))
+        terminal.visualBeginDrag(source, try mouse(.leftMouseDown, start), from: .grip)
         terminal.mouseDragged(with: try mouse(.leftMouseDragged, end))
         let ghost = try XCTUnwrap(terminal.visualGhost, "over a float the ghost shows")
         XCTAssertNil(terminal.visualPreview.rect)
@@ -326,7 +348,7 @@ import XCTest
         let terminal = try XCTUnwrap(terminal), float = PaneID(number: 3)
         let target = try rect(PaneID(number: 1)), home = try rect(float)
         let start = NSPoint(x: home.midX, y: home.minY + 4)
-        terminal.visualBeginDrag(float, try mouse(.leftMouseDown, start))
+        terminal.visualBeginDrag(float, try mouse(.leftMouseDown, start), from: .grip)
         terminal.mouseDragged(with: try mouse(.leftMouseDragged, NSPoint(x: target.minX + 2, y: target.midY)))
         XCTAssertNotNil(terminal.visualPreview.rect)
         let revision = try XCTUnwrap(owner.testModel?.layout.revision)
@@ -344,7 +366,7 @@ import XCTest
         let terminal = try XCTUnwrap(terminal), source = PaneID(number: 2)
         let from = try rect(source), over = try rect(PaneID(number: 1))
         let start = NSPoint(x: from.midX, y: from.midY), end = NSPoint(x: over.midX, y: over.midY)
-        terminal.visualBeginDrag(source, try mouse(.leftMouseDown, start))
+        terminal.visualBeginDrag(source, try mouse(.leftMouseDown, start), from: .grip)
         terminal.mouseDragged(with: try mouse(.leftMouseDragged, end))
         XCTAssertNotNil(terminal.visualPreview.rect, "without Option the pane under the pointer is a target")
         XCTAssertNil(terminal.visualGhost)
@@ -361,7 +383,7 @@ import XCTest
         let terminal = try XCTUnwrap(terminal), source = PaneID(number: 1)
         let frame = try rect(source)
         let start = NSPoint(x: frame.midX, y: frame.midY), end = NSPoint(x: frame.midX + 40, y: frame.midY + 40)
-        terminal.visualBeginDrag(source, try mouse(.leftMouseDown, start))
+        terminal.visualBeginDrag(source, try mouse(.leftMouseDown, start), from: .grip)
         terminal.mouseDragged(with: try mouse(.leftMouseDragged, end, .option))
         XCTAssertNil(terminal.visualGhost)
         XCTAssertNil(terminal.visualPreview.rect)
@@ -374,7 +396,7 @@ import XCTest
         try await placed("two panes") { Layout($0).root.panes.count == 2 }
         let terminal = try XCTUnwrap(terminal)
         let from = try rect(PaneID(number: 1)), to = try rect(PaneID(number: 2))
-        terminal.visualBeginDrag(PaneID(number: 1), try mouse(.leftMouseDown, NSPoint(x: from.midX, y: from.midY)))
+        terminal.visualBeginDrag(PaneID(number: 1), try mouse(.leftMouseDown, NSPoint(x: from.midX, y: from.midY)), from: .grip)
         terminal.mouseDragged(with: try mouse(.leftMouseDragged, NSPoint(x: to.midX, y: to.midY)))
         terminal.mouseUp(with: try mouse(.leftMouseUp, NSPoint(x: to.midX, y: to.midY)))
         try await placed("swapped") { Layout($0).root.panes.map(\.id.number) == [2, 1] }

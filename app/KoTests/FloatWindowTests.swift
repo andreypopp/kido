@@ -66,13 +66,13 @@ import XCTest
         let view = try XCTUnwrap(session.pane(id)), host = try XCTUnwrap(view.window)
         let start = CGPoint(x: try screen(view).midX, y: try screen(view).midY)
         let terminal = try XCTUnwrap(session.windows.values.first { !$0.isHidden })
-        terminal.visualBeginDrag(id, try mouse(.leftMouseDown, start, in: host))
+        terminal.visualBeginDrag(id, try mouse(.leftMouseDown, start, in: host), from: .frame)
         for step in 1...4 {
             let host = try XCTUnwrap(view.window)
-            terminal.visualBeginDrag(id, try mouse(.leftMouseDragged, CGPoint(x: start.x + dx * CGFloat(step) / 4, y: start.y + dy * CGFloat(step) / 4), in: host))
+            terminal.visualBeginDrag(id, try mouse(.leftMouseDragged, CGPoint(x: start.x + dx * CGFloat(step) / 4, y: start.y + dy * CGFloat(step) / 4), in: host), from: .frame)
         }
         let end = CGPoint(x: start.x + dx, y: start.y + dy)
-        terminal.visualBeginDrag(id, try mouse(.leftMouseUp, end, in: try XCTUnwrap(view.window)))
+        terminal.visualBeginDrag(id, try mouse(.leftMouseUp, end, in: try XCTUnwrap(view.window)), from: .frame)
     }
 
     func testAFloatIsABorderlessChildWindowOfTheMainWindow() throws {
@@ -213,16 +213,16 @@ import XCTest
         let terminal = try XCTUnwrap(session.windows.values.first { !$0.isHidden })
         let host = try XCTUnwrap(view.window)
         let start = CGPoint(x: try screen(view).midX, y: try screen(view).midY)
-        terminal.visualBeginDrag(id, try mouse(.leftMouseDown, start, in: host))
-        terminal.visualBeginDrag(id, try mouse(.leftMouseDragged, CGPoint(x: start.x + 120, y: start.y - 120), in: try XCTUnwrap(view.window)))
+        terminal.visualBeginDrag(id, try mouse(.leftMouseDown, start, in: host), from: .frame)
+        terminal.visualBeginDrag(id, try mouse(.leftMouseDragged, CGPoint(x: start.x + 120, y: start.y - 120), in: try XCTUnwrap(view.window)), from: .frame)
         wait("the first edit's echo is shown") { owner.testModel?.layout.layout.windows.first?.floats.first { $0.pane == id }?.x != 2 }
         let older = try XCTUnwrap(owner.testModel?.layout.layout.windows)
         let end = CGPoint(x: start.x + 240, y: start.y - 240)
-        terminal.visualBeginDrag(id, try mouse(.leftMouseDragged, end, in: try XCTUnwrap(view.window)))
+        terminal.visualBeginDrag(id, try mouse(.leftMouseDragged, end, in: try XCTUnwrap(view.window)), from: .frame)
         let newer = try screen(view)
         session.update(older, alive: Set(older.map(\.id)), selected: nil, marks: [:])
         XCTAssertEqual(try screen(view), newer, "an echo of the earlier edit does not move the float under the pointer")
-        terminal.visualBeginDrag(id, try mouse(.leftMouseUp, end, in: try XCTUnwrap(view.window)))
+        terminal.visualBeginDrag(id, try mouse(.leftMouseUp, end, in: try XCTUnwrap(view.window)), from: .frame)
         session.update(older, alive: Set(older.map(\.id)), selected: nil, marks: [:])
         XCTAssertEqual(try screen(view), newer, "the released float holds its frame until the edits settle")
         wait("the edit settles") { !session.editing() }
@@ -254,8 +254,8 @@ import XCTest
         let terminal = try XCTUnwrap(session.windows.values.first { !$0.isHidden })
         let host = try XCTUnwrap(view.window)
         let start = CGPoint(x: try screen(view).midX, y: try screen(view).midY)
-        terminal.visualBeginDrag(id, try mouse(.leftMouseDown, start, in: host))
-        terminal.visualBeginDrag(id, try mouse(.leftMouseDragged, CGPoint(x: start.x + 40, y: start.y), in: host))
+        terminal.visualBeginDrag(id, try mouse(.leftMouseDown, start, in: host), from: .frame)
+        terminal.visualBeginDrag(id, try mouse(.leftMouseDragged, CGPoint(x: start.x + 40, y: start.y), in: host), from: .frame)
         XCTAssertTrue(terminal.visualPaneDragging)
         try client.delete(KO_DELETE_PANE, id)
         wait("the float's window closed") { owner.window.floatChildren.count == 1 && !terminal.visualPaneDragging }

@@ -117,10 +117,10 @@ import XCTest
         let down = try XCTUnwrap(NSEvent.mouseEvent(with: .leftMouseDown, location: .zero, modifierFlags: [], timestamp: 0,
             windowNumber: window.windowNumber, context: nil, eventNumber: 1, clickCount: 1, pressure: 1))
         XCTAssertTrue(session.reorder.claim(.tab))
-        view.visualBeginDrag(pane, down)
+        view.visualBeginDrag(pane, down, from: .grip)
         XCTAssertFalse(view.visualPaneDragging, "a tab drag holds the gesture")
         session.reorder.release(.tab)
-        view.visualBeginDrag(pane, down)
+        view.visualBeginDrag(pane, down, from: .grip)
         XCTAssertTrue(view.visualPaneDragging)
         XCTAssertFalse(session.reorder.claim(.tab))
         XCTAssertFalse(session.reorder.claim(.sidebar))

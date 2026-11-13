@@ -165,7 +165,7 @@ final class WindowView: NSView {
     var visualChromes: [PaneChrome] { retainedPaneViews.values.map(\.chrome) }
     var visualGhost: CGRect? { ghostRect }
     var visualGhostWindow: NSWindow? { ghostWindow }
-    func visualBeginDrag(_ pane: PaneID, _ event: NSEvent) { beginDrag(pane, event) }
+    func visualBeginDrag(_ pane: PaneID, _ event: NSEvent, from handle: DragHandle) { beginDrag(pane, event, from: handle) }
     #endif
 
     var hot: Bool { !retainedPaneViews.isEmpty }
@@ -516,7 +516,7 @@ final class WindowView: NSView {
         if view.frame != content { view.frame = content }
         chrome.content = content.offsetBy(dx: -frame.minX, dy: -frame.minY)
         if floating { host?.content.grid = grid }
-        chrome.drag = floating && !zoomed ? { [weak self, pane = chrome.pane] in self?.beginDrag(pane, $0) } : nil
+        chrome.drag = floating && !zoomed ? { [weak self, pane = chrome.pane] in self?.beginDrag(pane, $0, from: .frame) } : nil
         if floating || content.minY < placement.topLine.maxY {
             let mask = view.layer?.mask as? CAShapeLayer ?? CAShapeLayer()
             let rect = floating
@@ -549,7 +549,7 @@ final class WindowView: NSView {
                 chrome.addSubview(toolbar, positioned: find == nil ? .above : .below, relativeTo: find)
             }
             toolbar.frame = chrome.toolbarFrame
-            toolbar.update(command: { view.onSelect(); view.onCommand($0) }, zoomed: zoomed, drag: { [weak self, pane = chrome.pane] in self?.beginDrag(pane, $0) })
+            toolbar.update(command: { view.onSelect(); view.onCommand($0) }, zoomed: zoomed, drag: { [weak self, pane = chrome.pane] in self?.beginDrag(pane, $0, from: .grip) })
         }
         guard let toolbar, toolbar.superview === chrome else { return }
         NSAnimationContext.runAnimationGroup { context in
@@ -614,9 +614,14 @@ final class WindowView: NSView {
         case pane(PaneID, Edge)
         case window(PaneID, Edge)
     }
+    enum DragHandle { case grip, frame }
+    private enum FloatGesture {
+        case move, dock
+        case resize(NSCursor.FrameResizePosition)
+    }
     private enum PaneDrag {
         case tiled(PaneID, NSPoint, grip: CGFloat)
-        case floating(Pane, NSPoint, CGRect, NSCursor.FrameResizePosition?, resting: FloatWindow.Position)
+        case floating(Pane, NSPoint, CGRect, FloatGesture, resting: FloatWindow.Position)
     }
     private struct DragInput {
         var point: NSPoint
@@ -787,7 +792,7 @@ final class WindowView: NSView {
         session?.edit(edit, .float(pane))
     }
 
-    func beginDrag(_ pane: PaneID, _ event: NSEvent) {
+    func beginDrag(_ pane: PaneID, _ event: NSEvent, from handle: DragHandle) {
         if event.type == .keyDown {
             cancelDrag(); return
         }
@@ -811,7 +816,7 @@ final class WindowView: NSView {
         case .floating:
             guard let placement, let host = floatWindows[pane.id] else { return endDrag() }
             let frame = floatFrame(pane.id, pane.geometry, placement, host)
-            paneDrag = .floating(pane, screenPoint(event), frame, nil, resting: host.position)
+            paneDrag = .floating(pane, screenPoint(event), frame, handle == .grip ? .dock : .move, resting: host.position)
             host.position = .dragging(frame: frame, sent: nil)
         }
     }
@@ -822,7 +827,7 @@ final class WindowView: NSView {
               claimPaneDrag() else { return }
         dragSource = event.window ?? window
         let frame = floatFrame(id, pane.geometry, placement, host)
-        paneDrag = .floating(pane, screenPoint(event), frame, edge, resting: host.position)
+        paneDrag = .floating(pane, screenPoint(event), frame, .resize(edge), resting: host.position)
         host.position = .dragging(frame: frame, sent: nil)
         displayed(id)?.view.beginResizeIntent()
         #if KIDO_STRESS
@@ -918,7 +923,8 @@ final class WindowView: NSView {
 
     private func updateDrag(_ input: DragInput) {
         guard let paneDrag else { return }
-        if case .floating(let pane, let origin, let initial, let cursorEdge, _) = paneDrag {
+        if case .floating(let pane, let origin, let initial, let gesture, _) = paneDrag {
+            let cursorEdge: NSCursor.FrameResizePosition? = if case .resize(let position) = gesture { position } else { nil }
             let edge = cursorEdge?.layoutEdge
             guard let cell = session?.cell, let placement, let host = floatWindows[pane.id] else { return }
             let dx = input.point.x - origin.x
@@ -950,7 +956,7 @@ final class WindowView: NSView {
             let geometry = wire(frame, pane.id, placement)
             host.position = .dragging(frame: frame, sent: sent)
             placeFloat(pane.id, placement)
-            var target = edge == nil && windowID != nil && session?.floatTitle(pane.id) != nil ? dropTarget(at: viewPoint(input.point), source: pane.id) : nil
+            var target: (zone: DropZone, rect: CGRect)? = if case .dock = gesture, windowID != nil, session?.floatTitle(pane.id) != nil { dropTarget(at: viewPoint(input.point), source: pane.id) } else { nil }
             if case .centre? = target?.zone { target = nil }
             preview.rect = target?.rect
             if let target, let windowID, input.up {
@@ -1138,7 +1144,8 @@ final class WindowView: NSView {
     func floatCursorRects(_ id: PaneID) -> [(CGRect, NSCursor)] {
         guard !zoomed, let entry = displayed(id), let host = floatWindows[id] else { return [] }
         let chrome = entry.chrome, content = host.content
-        if case .dragging(_, _) = host.position, case .floating(let moving, _, _, nil, _)? = paneDrag, moving.id == id { return [(chrome.frame, .closedHand)] }
+        let moved: PaneID? = if case .floating(let pane, _, _, let gesture, _)? = paneDrag { if case .resize = gesture { nil } else { pane.id } } else { nil }
+        if case .dragging(_, _) = host.position, moved == id { return [(chrome.frame, .closedHand)] }
         var result: [(CGRect, NSCursor)] = []
         let zones = FloatContent.zones(chrome.frame)
         let toolbar = floatToolbar(id)

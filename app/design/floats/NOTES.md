@@ -31,7 +31,10 @@ insertion bar, Escape and a click cancel, a drop on the source cancels.
 - **A float's grip over a tiled target** docks it there: the bar
   shows as for a tiled source; the drop sends `dock {pane, target,
   edge}` with the float as the source. Over no target the gesture is
-  today's move. A float's drag never shows the pop-out ghost.
+  today's move. A float's drag never shows the pop-out ghost. Only
+  the grip button docks (user, 2026-11-13): a drag by the move band
+  or the padding (section C) only moves the float, with no targets,
+  no bar and no dock on the drop.
 - **A tiled grip over no target** pops the pane out at that spot.
   The source pane is a cancel zone: over it, no ghost and no bar, and
   a drop cancels (Option over the source forces the ghost). Feedback,
@@ -130,8 +133,9 @@ The 5pt edges were too thin.
   straddling the top edge, 10pt inside (that padding) and 6pt outside
   in the drawn shadow's margin, the full width; the hover toolbar
   sits on it and keeps precedence. Cursor: open hand, closed while
-  dragging. The toolbar's grip button stays; the draggable padding
-  elsewhere stays. Visible on hover of the band: a 36×4pt pill
+  dragging. The toolbar's grip button stays, and it is the only
+  handle that docks (section A); the band and the draggable padding
+  elsewhere only move the float. Visible on hover of the band: a 36×4pt pill
   centred in it, 2pt radius, the foreground at 25% in both themes,
   120ms fade; nothing otherwise.
 - **Resize: the bottom-right corner first.** A 20×20pt square

@@ -157,7 +157,7 @@ final class FloatContent: NSView {
         guard let pane, let zone = zone(convert(event.locationInWindow, from: nil)) else { return }
         switch zone {
         case .resize(let edge): logical?.beginEdgeResize(pane, edge, event)
-        case .move: logical?.beginDrag(pane, event)
+        case .move: logical?.beginDrag(pane, event, from: .frame)
         }
     }
     override func mouseDragged(with event: NSEvent) { logical?.continueDrag(event) }
