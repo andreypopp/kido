@@ -268,20 +268,39 @@ import XCTest
         }
     }
 
+    var paintRetry: ((String) async throws -> Void)?
+
     private func webviewPage(_ pane: PaneView) async throws -> NSImage {
         let webview = try XCTUnwrap(pane.webviewView)
-        window.contentView?.layoutSubtreeIfNeeded()
-        webview.layoutSubtreeIfNeeded()
-        let done = expectation(description: "WebKit snapshot")
-        var image: NSImage?
-        webview.browser.takeSnapshot(with: nil) { result, error in
-            XCTAssertNil(error)
-            image = result
-            done.fulfill()
+        let deadline = Date().addingTimeInterval(5)
+        while true {
+            window.contentView?.layoutSubtreeIfNeeded()
+            webview.layoutSubtreeIfNeeded()
+            let shown = try await webviewJS(webview.browser, "Array.from(document.images).filter(i=>i.complete&&i.naturalWidth>0).map(i=>{let r=i.getBoundingClientRect(),box={l:r.left,t:r.top,r:r.right,b:r.bottom};for(let n=i.parentElement;n;n=n.parentElement){if(getComputedStyle(n).overflow==='visible')continue;const c=n.getBoundingClientRect();box={l:Math.max(box.l,c.left),t:Math.max(box.t,c.top),r:Math.min(box.r,c.right),b:Math.min(box.b,c.bottom)}}box={l:Math.max(box.l,0),t:Math.max(box.t,0),r:Math.min(box.r,innerWidth),b:Math.min(box.b,innerHeight)};const w=box.r-box.l,h=box.b-box.t;return{src:i.src,x:box.l+w/4,y:box.t+h/4,w:w/2,h:h/2,ok:w>=16&&h>=16&&document.elementFromPoint(box.l+w/2,box.t+h/2)===i}}).filter(r=>r.ok)")
+            let rects = try JSONDecoder().decode([ImageRect].self, from: Data(shown.utf8))
+            let done = expectation(description: "WebKit snapshot")
+            var image: NSImage?
+            webview.browser.takeSnapshot(with: nil) { result, error in
+                XCTAssertNil(error)
+                image = result
+                done.fulfill()
+            }
+            await fulfillment(of: [done], timeout: 10)
+            let page = try XCTUnwrap(image)
+            let bitmap = try XCTUnwrap(NSBitmapImageRep(data: try XCTUnwrap(page.tiffRepresentation)))
+            let scale = CGFloat(bitmap.pixelsWide) / webview.browser.bounds.width
+            guard let empty = rects.first(where: { rect in
+                let colors = stride(from: Int(rect.y * scale), to: Int((rect.y + rect.h) * scale), by: 3).flatMap { y in
+                    stride(from: Int(rect.x * scale), to: Int((rect.x + rect.w) * scale), by: 3).map { bitmap.colorAt(x: $0, y: y) }
+                }
+                return colors.allSatisfy { $0 == colors.first }
+            }) else { return page }
+            _ = try XCTUnwrap(Date() < deadline ? true : nil, "Image not painted in the snapshot: \(empty.src)")
+            try await paintRetry?(empty.src)
         }
-        await fulfillment(of: [done], timeout: 10)
-        return try XCTUnwrap(image)
     }
+
+    private struct ImageRect: Decodable { let src: String; let x, y, w, h: CGFloat }
 
     func webviewPageSnapshot(_ pane: PaneView, _ name: String, file: StaticString = #filePath, testName: String = #function) async throws {
         let image = try await webviewPage(pane)

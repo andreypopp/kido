@@ -1703,7 +1703,15 @@ import SidebarFeed
             try await advance()
             try await webviewUntil(web, "document.querySelector('.user .t p')?.textContent==='Make the sidebar look like this'")
             try await loaded(2)
+            _ = try await webviewJS(web, "(()=>{document.querySelectorAll('.user img').forEach(image=>image.style.opacity='0');return true})()")
+            var retries = 0
+            paintRetry = { _ in
+                retries += 1
+                if retries == 1 { _ = try await self.webviewJS(web, "(()=>{document.querySelectorAll('.user img').forEach(image=>image.style.opacity='');return true})()") }
+            }
             try await capture(prefix + "user-images")
+            paintRetry = nil
+            XCTAssertGreaterThanOrEqual(retries, 1, "The capture retried when the first snapshot showed an empty image card")
             try await advance()
             try await webviewUntil(web, "document.querySelector('.user .t')?.textContent.includes('Compare with the earlier screenshot')")
             _ = try await webviewJS(web, "(()=>{document.querySelector('.thumb img').src='/images/gone';return true})()")
