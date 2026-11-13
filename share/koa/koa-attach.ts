@@ -8,7 +8,6 @@ import { ATTACHMENT_LIMITS, type Attachment, type UploadProgress } from './koa-r
 import type { PromptOptions } from '@earendil-works/pi-coding-agent';
 
 export const UPLOAD_IDLE_MS = 30000;
-export const isChunkRoute = (path: string) => /^\/attachments\/[^/]+\/\d+$/.test(path);
 type Entry = { type: 'uploading'; path: string; name: string; size: number; received: number; timer: ReturnType<typeof setTimeout>; request?: IncomingMessage } | { type: 'ready' | 'queued' | 'used'; info: Attachment };
 
 export async function stepFile(request: IncomingMessage, response: ServerResponse, pathAt: (seq: number, index: number) => string | undefined, cwd: string, home: string, access: () => void): Promise<boolean> {

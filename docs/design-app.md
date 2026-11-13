@@ -3279,15 +3279,20 @@ view. Geolocation answers only in an ordered window, so that check
 orders the window far off screen. The Command-key check drives
 `OwnerWindow.performKeyEquivalent` with the web view as first responder.
 
-`KoaWebviewTests` runs the checkout's koa with the pinned pi against
-the fake model provider (`share/koa/koa-fake-provider.ts`), so no model
-call happens, and snapshots each state of koa's mockups in light and
-dark (design-koa.md, "Tests"). `KoaFixture.swift` starts the provider
-and seeds the sessions (`share/koa/testdata/visual-seed.ts`); a test
-extension (`share/koa/testdata/visual-ext.ts`) gives the states that a
-model cannot make: dialogs, statuses, test tools and tree branches that
-`/vstep` reaches through `ctx.navigateTree`, so a state loads without a
-session switch. A page check in the visual
+`KoaWebviewTests` snapshots each state of koa's mockups in light and
+dark against the replay server of koa's page
+(`share/koa/testdata/replay.ts`), which pushes the recorded records
+of one scenario and answers the page's requests from its script
+(design-koa.md, "Tests"). The replay page is a real webview pane, so
+the scheme handler, `window.ko`, the theme properties,
+`visualInitialScript`, the native drop and Quick Look run the same
+code as with koa. A test advances its script through `/replay/next`
+and `/replay/release`, and its teardown asserts `/replay/status`.
+`KoaHostTests` runs the checkout's koa with the pinned pi against the
+fake model provider (`share/koa/koa-fake-provider.ts`), so no model
+call happens. `KoaFixture.swift` starts the provider, and a test
+extension (`share/koa/testdata/visual-ext.ts`) registers its models.
+A page check in the visual
 suite waits with a `MutationObserver`, never with `requestAnimationFrame`:
 WebKit pauses animation frames for a page in the off-screen window.
 

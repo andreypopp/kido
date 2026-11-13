@@ -108,7 +108,12 @@ commands; `koa-identity.ts`, the hash of koa's installed files;
 `koa-fake-provider.ts`, the scripted model provider of its suite
 `koa-*.test.ts`, `koa-fake-picker.ts`, the scripted picker, and
 `koa-fake-tty.ts`, the terminal preload;
-`stress/`, the stress workloads and runner (not installed).
+`stress/`, the stress workloads and runner (not installed);
+`testdata/replay.ts`, the replay server of the page tests, with its
+scenario types (`testdata/scenario.ts`), their shared records
+(`testdata/scenario-parts.ts`, the records that two or more
+scenarios share) and the scenarios
+(`testdata/scenarios/`), none of them installed ("Tests").
 
 `make build` installs the program, the extension, the shared
 modules, `ko-api.d.ts`, the skill and the built page in
@@ -1545,9 +1550,45 @@ its reveal tests drive the frame loop and the clock by hand over a
 height model. The
 Markdown memo is a pure module, tested under Node against a full
 render of every prefix, its annotation marks over each kind of block
-and the reveal's cut at whole units (`koa-page.test.ts`). Kido.app's `KoaWebviewTests` snapshot each
-state of the mockups in light and dark, windowed and narrow, and
-check the composer's keys, focus and popup, and the question
-controls' placement and clicks, in a real WebKit. The `reveal`
-scenario injects its own clock and pauses the grow at a fixed
-point, so a mid-reveal frame is deterministic.
+and the reveal's cut at whole units (`koa-page.test.ts`).
+
+Kido.app's `KoaWebviewTests` snapshot each state of the mockups in
+light and dark, windowed and narrow, and check the composer's keys,
+focus and popup, and the question controls' placement and clicks, in
+a real WebKit. They test the page, not the host: the page runs
+against `testdata/replay.ts`, not koa, so a host change moves no
+page snapshot. A snapshot moves only when the page's code or the
+page-record format changes. The replay server is a test program, not
+a mode of koa, so the product has no test path. It serves the page
+that `assemblePage` builds from the built `share/ko/koa/` (the one
+source of the page and its `koa-instance` meta for koa and the
+replay), runs in a pane through the webview SDK as koa does, and
+loads no pi.
+
+A scenario is a typed script: the `PageRecord`s that the feed opens
+with, then a list of steps. A step either pushes records when the
+test posts `/replay/next`, or answers one page request with a canned
+reply of the page's own route type (`Routes` in `page/http.ts`) and
+pushes the records around it. A reply can be held until the test
+posts `/replay/release` with its name, so the page shows its waiting
+state. So a change of the record format or of a route's shape
+fails `tsc` in the scenarios, never silently. A request that is not
+the next step gets 409 and counts as a mismatch; every page test
+asserts at its end, through `/replay/status`, that the script ran to
+its end with no mismatch and no held reply. The attachments, the
+step files and the images do not fit a script, so the replay serves
+them with koa's own modules (`attachments()`, `stepFile`,
+`serveFile`) and koa's POST content-type rule. The scenarios were
+recorded once from the real chain; the recorder is gone, and a new
+state gets a step written by hand from the types, as
+`koa-dom.test.ts` writes its records. A frame that shows a path of
+the test's directory needs a fixed directory name, which the Swift
+test sets. The `reveal` scenario injects its own clock and pauses the
+grow at a fixed point, so a mid-reveal frame is deterministic.
+
+`KoaHostTests` keeps four tests on the real chain (koa, the pinned
+pi, the fake provider): the startup and the interrupt, the editor
+float, the feed's held tail, and one lifecycle from a prompt through
+the real feed to `/quit` and the pane back at the terminal. Every
+other host fact that the page tests checked on the way has its test
+in the TypeScript suite.
