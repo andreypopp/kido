@@ -126,7 +126,7 @@ final class SessionView: NSView {
     }
 
     // The windows of the current session, the ids of every window of the server, and the client's selected pane.
-    func update(_ listing: [KoSchema.Window], alive: Set<WindowID>, selected: PaneID?, marks: [PaneID: RuntimeMark], shown: [PaneID: ShownPane] = [:], children: [ChildFloats] = []) {
+    func update(_ listing: [KoSchema.Window], alive: Set<WindowID>, selected: PaneID?, marks: [PaneID: RuntimeMark]) {
         updating = true
         defer { updating = false }
         let marked = self.marks
@@ -145,9 +145,8 @@ final class SessionView: NSView {
                 addSubview(view)
             }
             windows[id] = view
-            let here = children.filter { w.panes.contains($0.slot) }
-            let active = selected.flatMap { selected in w.panes.contains(selected) || here.contains { $0.floats.contains { $0.pane == selected } } ? selected : nil }
-            view.update(Layout(w, active: active, children: here), Layout(w, visible: true, active: active, children: here), shown: shown)
+            let active = selected.flatMap { w.panes.contains($0) ? $0 : nil }
+            view.update(Layout(w, active: active), Layout(w, visible: true, active: active))
         }
         others = old.filter { windows[$0.key] == nil && $0.value.hot && alive.contains($0.key) }
         for (id, gone) in old where windows[id] == nil && others[id] == nil { gone.close() }

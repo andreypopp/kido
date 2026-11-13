@@ -148,7 +148,6 @@ private class AlertEscape: NSView {
     func jumpWhenPlaced(_ pane: PaneID) {
         pendingJump = (pane, Date().addingTimeInterval(2))
     }
-    private var paneSlots = PaneSlots()
     private var history = NavigationHistory() { didSet { sidebar.refreshHistory() } }
     private var editor: LayoutEditor?
     private var welcomed = false
@@ -184,13 +183,12 @@ private class AlertEscape: NSView {
         var directions: [WindowDirection] = []
     }
     private enum NavigationPhase {
-        case idle, selecting(PaneID, SelectionWait), session(SelectionWait), resuming(SelectionWait)
-        case switching(WindowDirection, SelectionWait), restoring(PaneID, SelectionWait)
+        case idle, selecting(PaneID, SelectionWait), waiting(SelectionWait)
         var wait: SelectionWait? {
             get {
                 switch self {
                 case .idle: nil
-                case .selecting(_, let wait), .session(let wait), .resuming(let wait), .switching(_, let wait), .restoring(_, let wait): wait
+                case .selecting(_, let wait), .waiting(let wait): wait
                 }
             }
             set {
@@ -198,17 +196,13 @@ private class AlertEscape: NSView {
                 switch self {
                 case .idle: break
                 case .selecting(let pane, _): self = .selecting(pane, newValue)
-                case .session: self = .session(newValue)
-                case .resuming: self = .resuming(newValue)
-                case .switching(let direction, _): self = .switching(direction, newValue)
-                case .restoring(let pane, _): self = .restoring(pane, newValue)
+                case .waiting: self = .waiting(newValue)
                 }
             }
         }
         var request: UInt64? { wait?.request }
         mutating func sent(_ request: UInt64) { wait?.request = request }
         var isIdle: Bool { if case .idle = self { true } else { false } }
-        var isTravelling: Bool { switch self { case .switching, .restoring, .resuming: true; default: false } }
         mutating func enqueue(_ direction: WindowDirection, focus: SelectionFocus, cause: VisitCause) -> Bool {
             guard !isIdle else { return false }
             wait?.focus = focus
@@ -1079,7 +1073,7 @@ private class AlertEscape: NSView {
         guard case .connected = link else { return }
         switch event {
         case .welcome(let id, let fresh):
-            navigationPhase = fresh || snapshot == nil ? .idle : .resuming(SelectionWait(focus: sidebar.list.containsFocus ? .sidebar : .pane))
+            navigationPhase = .idle
             session?.resetSizeReport()
             stoppingRuntimes = []
             updateRuntimeSection()
@@ -1088,7 +1082,6 @@ private class AlertEscape: NSView {
             initial = nil
             layoutSeen = .none
             if fresh {
-                paneSlots = PaneSlots()
                 history = NavigationHistory()
                 sidebar.list.resetCaptions()
                 feedFresh = true
@@ -1118,31 +1111,13 @@ private class AlertEscape: NSView {
             guard navigationPhase.request == request else { return }
             let wait: SelectionWait
             switch navigationPhase {
-            case .idle, .resuming: return
+            case .idle: return
             case .selecting(let expected, let pending):
                 guard pane == expected else { return }
                 wait = pending
-            case .session(let pending): wait = pending
-            case .switching(_, let pending):
-                guard let window, let pane, case .connected(let client) = link else { navigationPhase = .idle; return }
-                let target = paneSlots.selected(in: window, fallback: pane)
-                if target != pane {
-                    navigationPhase = .restoring(target, pending)
-                    #if KIDO_VISUAL
-                    testRestoringChild?(target)
-                    #endif
-                    guard case .restoring(let expected, _) = navigationPhase, expected == target else { return }
-                    do { navigationPhase.sent(try client.select(KO_SELECT_PANE, target)) }
-                    catch { navigationPhase = .idle; notice("Could not select the pane", String(describing: error)) }
-                    return
-                }
-                wait = pending
-            case .restoring(let expected, let pending):
-                guard pane == expected else { return }
-                wait = pending
+            case .waiting(let pending): wait = pending
             }
             navigationPhase = .idle
-            if let pane { paneSlots.observe(pane, in: projection) }
             if let direction = wait.directions.first, case .connected(let client) = link {
                 var following = wait
                 following.directions.removeFirst()
@@ -1229,41 +1204,15 @@ private class AlertEscape: NSView {
         let marks = ko.runtimeMarks
         let snapshot = Snapshot(model: ko, marks: marks)
         let previous = self.snapshot
-        let previousProjection = projection
         let projection = PaneProjection(snapshot)
-        let model = SessionModel(ko).navigation(snapshot, panes: projection).model
+        let model = SessionModel(ko).navigation(snapshot).model
         let previousMoved = previous.map { projection.placements[$0.client.pane]?.position != $0.client } ?? false
         let interrupted = switch navigationPhase {
-        case .idle, .resuming: false
+        case .idle: false
         case .selecting(let pane, _): projection.placements[pane] == nil
-        case .switching, .session: previousMoved
-        case .restoring(let pane, _): previousMoved || projection.placements[pane] == nil
+        case .waiting: previousMoved
         }
         if interrupted { navigationPhase = .idle }
-        let repairs = paneSlots.reconcile(projection, selected: navigationPhase.isIdle ? ko.selection.pane : nil)
-        if case .resuming(let wait) = navigationPhase {
-            if let pane = ko.selection.pane, let placement = projection.placements[pane] {
-                let target = paneSlots.selected(in: placement.slot.window, fallback: placement.slot.pane)
-                if target != pane {
-                    navigationPhase = .restoring(target, wait)
-                    do { navigationPhase.sent(try client.select(KO_SELECT_PANE, target)) }
-                    catch { navigationPhase = .resuming(wait) }
-                } else {
-                    navigationPhase = .idle
-                    paneSlots.observe(pane, in: projection)
-                    if let direction = wait.directions.first {
-                        var following = wait
-                        following.directions.removeFirst()
-                        do { try beginWindowSwitch(direction, waiting: following, client: client) }
-                        catch { navigationPhase = .idle }
-                    }
-                }
-            } else { navigationPhase = .idle }
-        } else if navigationPhase.isIdle, let pane = ko.selection.pane,
-           previous?.client != snapshot?.client || previous?.serverInstance != snapshot?.serverInstance
-             || previousProjection.placements[pane]?.slot != projection.placements[pane]?.slot {
-            paneSlots.observe(pane, in: projection)
-        }
         lastTiled = Dictionary(uniqueKeysWithValues: ko.layout.layout.windows.compactMap { window in
             let tiled = Layout(window).root.panes.filter { $0.layer == .tiled }.map(\.id)
             return (tiled.contains(window.focus) ? window.focus : lastTiled[window.id].flatMap { tiled.contains($0) ? $0 : nil }).map { (window.id, $0) }
@@ -1271,12 +1220,6 @@ private class AlertEscape: NSView {
         received = Received(ko: ko, model: model, snapshot: snapshot, projection: projection)
         history.prune { projection.placements[$0]?.position }
         defer { editor?.layoutChanged(revision: ko.layout.revision) }
-        for position in repairs {
-            focusTarget = .pane(position)
-            navigationPhase = .selecting(position.pane, SelectionWait(focus: .pane))
-            do { navigationPhase.sent(try client.select(KO_SELECT_PANE, position.pane)) }
-            catch { navigationPhase = .idle }
-        }
         if let wanted = pendingJump {
             if wanted.deadline < Date() { pendingJump = nil }
             else if let position = projection.placements[wanted.pane]?.position {
@@ -1302,23 +1245,8 @@ private class AlertEscape: NSView {
             }
         }
         session?.updateWebview()
-        let roots = (model.session.flatMap { ko.layout.layout.session($0) }?.windows ?? []).filter { projection.rootWindows[$0.id] == $0.id }
-        let shown = Dictionary(uniqueKeysWithValues: projection.placements.values.filter { $0.position.pane == $0.slot.pane }.compactMap { root in
-            projection.shown(root.position.pane, slots: paneSlots).map { (root.position.pane, $0) }
-        })
-        let selected = ko.selection.pane.flatMap { pane -> PaneID? in
-            guard let placement = projection.placements[pane] else { return nil }
-            let actual = navigationPhase.isTravelling ? paneSlots.selected(in: placement.slot.window, fallback: placement.slot.pane) : pane
-            guard let placement = projection.placements[actual] else { return nil }
-            if case .floating = placement.presentation { return actual }
-            return placement.slot.pane
-        }
-        let children = shown.compactMap { root, entry -> ChildFloats? in
-            guard entry.shown.position.window != projection.placements[root]?.position.window,
-                  let floats = ko.layout.layout.windows.first(where: { $0.id == entry.shown.position.window })?.floats, !floats.isEmpty else { return nil }
-            return ChildFloats(slot: root, floats: floats)
-        }
-        session?.update(roots, alive: Set(ko.layout.layout.windows.map(\.id)), selected: selected, marks: marks, shown: shown, children: children)
+        let windows = model.session.flatMap { ko.layout.layout.session($0) }?.windows ?? []
+        session?.update(windows, alive: Set(ko.layout.layout.windows.map(\.id)), selected: ko.selection.pane, marks: marks)
         guard let snapshot else {
             if let session { present(session) } else { updateTabs() }
             menuChanged()
@@ -1359,7 +1287,7 @@ private class AlertEscape: NSView {
     #endif
 
     private func updateTabs(_ projected: Snapshot?? = nil) {
-        let next = model.navigation(projected ?? snapshot.map(reorder.state.project), panes: projection, activePanes: session?.windows.compactMapValues(\.activeSlot) ?? [:])
+        let next = model.navigation(projected ?? snapshot.map(reorder.state.project), activePanes: session?.windows.compactMapValues(\.active) ?? [:])
         if sidebar.tabs.entries != next.tabs { sidebar.tabs.entries = next.tabs }
         sidebar.tabs.scope = next.model.session.map { .init(session: $0, generation: generation, instance: snapshot?.serverInstance) }
         if navigationModel != next.model {
@@ -1394,8 +1322,7 @@ private class AlertEscape: NSView {
     }
 
     func windowName(_ id: WindowID) -> String {
-        let display = projection.rootWindows[id] ?? id
-        return session?.windowName(display) ?? display.description
+        session?.windowName(id) ?? id.description
     }
 
     func promptDelivered(pane: PaneID) { session?.pane(pane)?.promptDelivered() }
@@ -1477,7 +1404,7 @@ private class AlertEscape: NSView {
                     }
                     if let request, visit == .user {
                         seedHistory()
-                        navigationPhase = .session(SelectionWait(focus: .sidebar, cause: visit))
+                        navigationPhase = .waiting(SelectionWait(focus: .sidebar, cause: visit))
                         navigationPhase.sent(request)
                     }
                 }
@@ -1506,8 +1433,8 @@ private class AlertEscape: NSView {
 
     func newWindow(in target: SessionID? = nil, _ runtime: NewPaneRuntime = .inherit, from pane: PaneID? = nil) {
         let placement = pane.flatMap { projection.placements[$0] }
-        guard let id = target ?? placement?.slot.session ?? model.session,
-              let edit = koModel?.newWindow(in: id, after: placement?.slot.window ?? model.window, runtime, from: pane ?? koModel?.selection.pane) else { return }
+        guard let id = target ?? placement?.position.session ?? model.session,
+              let edit = koModel?.newWindow(in: id, after: placement?.position.window ?? model.window, runtime, from: pane ?? koModel?.selection.pane) else { return }
         create(edit)
     }
 
@@ -1561,14 +1488,13 @@ private class AlertEscape: NSView {
     func submitSelecting(_ edit: KoSchema.Edit) {
         editor?.submit(edit) { [weak self] result in
             guard case .success(let edited) = result, let pane = selectedPane(by: edit, edited), let self else { return }
-            session?.selectPane(paneSlots.shown(pane))
+            session?.selectPane(pane)
         }
     }
 
     func floatTitle(_ pane: PaneID) -> String? {
-        let root = projection.addressed(pane)
-        guard let window = koModel?.layout.layout.locate(root)?.window, let edit = window.floatEdit(root) else { return nil }
-        if case .unfloat = edit { return projection.canDock(pane) ? "Dock Pane" : nil }
+        guard let window = koModel?.layout.layout.locate(pane)?.window, let edit = window.floatEdit(pane) else { return nil }
+        if case .unfloat = edit { return "Dock Pane" }
         return "Float Pane"
     }
 
@@ -1579,20 +1505,14 @@ private class AlertEscape: NSView {
             return confirmClose(.pane(pane), name: name)
         case .window(let step): return selectWindow(step)
         case .newWindow: return newWindow(in: nil, runtime, from: pane)
-        case .parent, .child:
-            let direction: PaneDirection = if case .child = command { .child } else { .parent }
-            guard let pane = paneSlots.step(from: pane, direction: direction, in: projection), let placement = projection.placements[pane] else { return }
-            return perform(.jump(placement.position))
         default: break
         }
-        let root = projection.addressed(pane)
-        guard let koModel, let window = koModel.layout.layout.locate(root)?.window,
-              let action = command.action(root, in: window, new: koModel.newPane(from: pane, runtime), cell: session?.cell ?? .zero, lastTiled: lastTiled[window.id]) else { return }
+        guard let koModel, let window = koModel.layout.layout.locate(pane)?.window,
+              let action = command.action(pane, in: window, new: koModel.newPane(from: pane, runtime), cell: session?.cell ?? .zero, lastTiled: lastTiled[window.id]) else { return }
         switch action {
-        case .edit(.unfloat) where !projection.canDock(pane): return
         case .edit(let edit):
             submitSelecting(edit)
-        case .select(let target): session?.selectPane(paneSlots.shown(target))
+        case .select(let target): session?.selectPane(target)
         }
     }
 
@@ -1602,7 +1522,6 @@ private class AlertEscape: NSView {
 
     func supersedeIntent() {
         navigationPhase = .idle
-        paneSlots.cancelRepair()
         intent += 1
         focusTarget = nil
     }
@@ -1722,7 +1641,7 @@ private class AlertEscape: NSView {
     }
 
     private func beginWindowSwitch(_ direction: WindowDirection, waiting: SelectionWait, client: KoClient) throws {
-        navigationPhase = .switching(direction, waiting)
+        navigationPhase = .waiting(waiting)
         navigationPhase.sent(try client.switchOver(KO_OVER_WINDOW, direction.raw))
     }
 
@@ -1766,38 +1685,33 @@ private class AlertEscape: NSView {
         guard case .connected(let client) = link else { return }
         if cause == .user { seedHistory() }
         let wait = SelectionWait(focus: focus, cause: cause)
-        let previousSlots = paneSlots
         func selectTab(_ id: WindowID) throws {
             guard let window = koModel?.layout.layout.window(id) else { return }
-            let target = paneSlots.selected(in: id, fallback: window.focus)
-            navigationPhase = .selecting(target, wait)
-            navigationPhase.sent(try client.select(KO_SELECT_PANE, target))
+            navigationPhase = .selecting(window.focus, wait)
+            navigationPhase.sent(try client.select(KO_SELECT_PANE, window.focus))
         }
         do {
             switch navigation {
             case .jump(let target):
                 navigationPhase = .selecting(target.pane, wait)
-                paneSlots.show(target.pane, in: projection)
-                let slot = projection.placements[target.pane]?.slot ?? target
-                if let window = koModel?.layout.layout.window(slot.window),
-                   let zoom = window.zoom, zoom != slot.pane {
+                if let window = koModel?.layout.layout.window(target.window),
+                   let zoom = window.zoom, zoom != target.pane {
                     editor?.submit(.zoom(KoSchema.EditZoom(pane: nil, window: window.id)))
                 }
                 navigationPhase.sent(try client.select(KO_SELECT_PANE, target.pane))
             case .selectWindow(_, let window):
                 try selectTab(window)
             case .selectSession(let session):
-                navigationPhase = .session(wait)
+                navigationPhase = .waiting(wait)
                 navigationPhase.sent(try client.select(KO_SELECT_SESSION, session))
             case .switchSession(let next):
-                navigationPhase = .session(wait)
+                navigationPhase = .waiting(wait)
                 navigationPhase.sent(try client.switchOver(KO_OVER_SESSION, next ? KO_DIRECTION_NEXT : KO_DIRECTION_PREVIOUS))
             case .switchWindow(let next):
                 try beginWindowSwitch(WindowDirection(next: next), waiting: wait, client: client)
             case .releaseSideFocus: break
             }
         } catch {
-            paneSlots = previousSlots
             navigationPhase = .idle
             let title: String = switch navigation {
             case .jump: "Could not select the pane"
@@ -1840,8 +1754,8 @@ private class AlertEscape: NSView {
             switch target {
             case .pane(let position):
                 guard let placement = projection.placements[position.pane],
-                      model.session == placement.slot.session, model.window == placement.slot.window,
-                      session?.windows[placement.slot.window]?.active == position.pane else { return }
+                      model.session == placement.position.session, model.window == placement.position.window,
+                      session?.windows[placement.position.window]?.active == position.pane else { return }
             case .window(let s, let w):
                 guard model.session == s, model.window == w, session?.windows[w]?.active != nil else { return }
             }
@@ -1950,7 +1864,6 @@ private class AlertEscape: NSView {
     var testClient: KoClient? { if case .connected(let client) = link { client } else { nil } }
     var testNavigationIdle: Bool { navigationPhase.isIdle }
     var testNavigationRequest: UInt64? { navigationPhase.request }
-    var testRestoringChild: ((PaneID) -> Void)?
     func testReceive(_ event: KoEvent) { handle(event) }
     var testAttended: Bool? { didSet { attend() } }
     func testReceive(_ snapshot: Snapshot) {

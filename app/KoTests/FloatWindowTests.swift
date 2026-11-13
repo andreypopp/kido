@@ -136,7 +136,7 @@ import XCTest
         (owner.window as? OwnerWindow)?.testInput(false)
         host.becameKey()
         wait("its pane is the active pane") { (try? client.model())?.selection.pane == id }
-        wait("the owner's window shows its pane as active") { terminal.activeSlot == id }
+        wait("the owner's window shows its pane as active") { terminal.active == id }
         terminal.updateFocusTreatment()
         XCTAssertEqual(terminal.visualChromes.first { $0.pane == id }?.treatment, .focus)
         XCTAssertEqual(terminal.visualChromes.first { $0.pane == PaneID(number: 2) }?.treatment, .overlay)

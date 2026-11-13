@@ -183,11 +183,11 @@ private func fixture(client: Int = 0, sessions: [Int] = [0], grouped: Bool = fal
                     item(4, 4, lifecycle: terminal(running()))]
     let nodes: [Node] = grouped
         ? [group(0, descendants
-            ? [item(0, 0, children: [item(1, 1, tail: "child", children: [item(2, 2)])]),
-               item(5, 0, tail: "parent", children: [item(3, 3)]), item(6, 0)]
+            ? [item(0, 0, children: [item(1, 0, tail: "child", children: [item(2, 0)])]),
+               item(5, 0, tail: "parent", children: [item(3, 0)]), item(6, 0)]
             : [item(0, 0), item(5, 0)])]
         : [item(0, 0), item(5, 5, children: children)]
-    return makeSnapshot(nodes, client: client, sessions: sessions)
+    return makeSnapshot(nodes, client: client, window: grouped ? 0 : nil, sessions: sessions)
 }
 
 @Test func visibleWindowBlockSlices() {
@@ -223,20 +223,6 @@ private func fixture(client: Int = 0, sessions: [Int] = [0], grouped: Bool = fal
         #expect(divided[divider - 1].root != nil)
         #expect(divided[divider + 1].root != nil)
     }
-}
-
-@Test func shownPaneUsesCurrentProjectionTitles() {
-    let snapshot = makeSnapshot([pane(0, title: "Root", lifecycle: agent(working()), children: [pane(1, title: "Child", lifecycle: agent(working()), children: [pane(2, title: "Shown", lifecycle: agent(working()))])])])
-    let projection = PaneProjection(snapshot)
-    var slots = PaneSlots()
-    slots.show(PaneID(number: 2), in: projection)
-    let shown = projection.shown(PaneID(number: 0), slots: slots)
-    #expect(shown?.shown.title == "Shown")
-    #expect(shown?.ancestors.map(\.title) == ["Root", "Child"])
-    #expect(shown?.ancestors.map { $0.position.pane.number } == [0, 1])
-    slots.show(PaneID(number: 0), in: projection)
-    #expect(projection.shown(PaneID(number: 0), slots: slots)?.ancestors.isEmpty == true)
-    #expect(projection.shown(PaneID(number: 99), slots: slots) == nil)
 }
 
 @Test func dividersSeparateOnlyTopLevelWindows() {

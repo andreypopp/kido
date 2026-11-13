@@ -9,7 +9,6 @@ enum PaneCommand {
     case select(Side)
     case resize(Side, points: Double)
     case window(WindowStep)
-    case parent, child
     case next, previous, zoom, float, equalize, close, newWindow
 
     @MainActor static var menu: NSMenuItem {
@@ -35,8 +34,6 @@ enum PaneCommand {
         add("Select Pane Below", .select(.down), "j")
         add("Select Pane Above", .select(.up), "k")
         add("Select Pane Right", .select(.right), "l")
-        add("Show Parent Pane", .parent, arrow(NSUpArrowFunctionKey))
-        add("Show Child Pane", .child, arrow(NSDownArrowFunctionKey))
         add("Next Pane", .next, "]")
         add("Previous Pane", .previous, "[")
         for (title, action, key) in [("Back", #selector(WindowOwner.navigateHistoryBack(_:)), "["), ("Forward", #selector(WindowOwner.navigateHistoryForward(_:)), "]")] {

@@ -447,9 +447,9 @@ breaks most easily:
   the pane). Every removal takes the pane's descendants in the same
   change; the server owns that cascade. A helper pane that a program
   creates over itself, such as koa's editor float, gets `close:
-  on_exit` and the program's pane as `parent`. A child pane may float
-  or be tiled only in its parent's window; in any other window it is
-  the only tiled pane, with only its own child floats.
+  on_exit` and the program's pane as `parent`. A floating child pane
+  lives only in its parent's window; a tiled child may be in any
+  window, which is then an ordinary window of its session.
 - A message (`/panes/{id}/messages`) is enqueued once for each
   `(pane, id)`; a repeat answers from the original. The queue drops
   with its pane, and nothing tells its senders. The server never

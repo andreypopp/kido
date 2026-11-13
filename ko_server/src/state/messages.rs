@@ -5,8 +5,8 @@ use crate::panes::{Edge, relation};
 use ko_wire::api::routes;
 use ko_wire::ids::MessageId;
 use ko_wire::protocol::{
-    Content, End, Error, ErrorKind, MessageState, Payload, Posted, Relation, SendMessage, Sender,
-    Sent, StreamRequest,
+    Content, Error, ErrorKind, MessageState, Payload, Posted, SendMessage, Sender, Sent,
+    StreamRequest,
 };
 
 #[derive(Debug, Clone, Copy)]
@@ -143,38 +143,6 @@ impl State {
                 pane: id,
                 inbox: false,
             });
-        }
-    }
-
-    pub(super) fn tell_parent_gone(&mut self, id: PaneId) {
-        if self.live(id).is_ok() {
-            self.tell_parent(id, End::Gone);
-        }
-    }
-
-    pub(super) fn tell_parent(&mut self, id: PaneId, end: End) {
-        let Some(child) = self.panes.find(id) else {
-            return;
-        };
-        let from = stamp(id, Some(child));
-        let Some(parent) = child.parent() else {
-            return;
-        };
-        let Some(found) = self
-            .panes
-            .find_mut(parent)
-            .filter(|found| found.proc().dead().is_none())
-        else {
-            return;
-        };
-        let admitted = found.inbox_mut().admit(
-            MessageId::ended(id),
-            from,
-            Some(Relation::Child),
-            Content::Ended { end },
-        );
-        if matches!(admitted, Admit::New(_)) {
-            self.flush_messages(parent);
         }
     }
 

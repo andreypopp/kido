@@ -189,12 +189,10 @@ the active app, has no sheet and a pane of the shown window is first
 responder. `SessionView.requestSize` sends the size report with
 `ko_client_size`, at most once per main-queue turn and only when it
 changed; `present` sends it at once. The report is the viewport (the
-shown window's area) and one entry for each window on screen: the
-tab's window at the viewport's size and, for each slot that shows a
-child pane ([Children in the slot](#children-in-the-slot)), the
-child's window at the cells of that slot. It is complete: a child that
-leaves its slot leaves the report, and the server stops sizing its
-window for this client (docs/protocol.md, section 3). After every
+shown window's area) and one entry, the tab's window at the
+viewport's size. It is complete: a window that the tab no longer
+shows leaves the report, and the server stops sizing it for this
+client (docs/protocol.md, section 3). After every
 `Welcome` the owner forgets the last report and sends it again once
 the new model is applied, never earlier, because window ids belong to
 one server instance. A size carries the cell size in pixels from a shown pane, so
@@ -534,7 +532,7 @@ exempt; the theme derivations in `GhosttyRuntime` use this marker.
 import the app, so the prompt view passes it its three ink roles.
 
 The pane capsules (`PaneCapsule` in `app/App/PaneChrome.swift`: the
-breadcrumb, the COPY and history pills, the runtime pill, the hover
+COPY and history pills, the runtime pill, the hover
 toolbar and find) have one surface: an opaque fill, an edge outside the
 fill, no inner highlight, and a contact shadow, not a lift shadow
 (`Chrome.capsuleSurface` and `Chrome.capsuleShadow`;
@@ -1269,9 +1267,8 @@ rules still apply. Text and web links without files or promises are refused.
 
 Surfaces are kept per window, for the most recently shown windows of
 any session while their retained panes total at most 32; the rest have
-none. A window's retained panes are every pane view that it keeps, the
-views that its slots show and the views that left their slot ("Hidden
-pages"), because each has a surface. A
+none. A window's retained panes are every pane view that it keeps,
+shown or hidden ("Hidden pages"), because each has a surface. A
 window gains its surfaces when shown. Showing another window evicts the
 least recent past the budget, never the shown one, off the switch path.
 A surface is freed in `PaneView.deinit`, after the utility-queue
@@ -1466,13 +1463,11 @@ float would end the client. WindowView owns one float window for each
 float of the layout, keyed by the layout pane, and moves the float's
 backing, pane view and chrome into it. A zoom that shows a float tiled
 keeps its float window hidden; a float whose pane goes closes its window.
-The child-slot floats of [Children in the slot](#children-in-the-slot)
-are children of the main window too.
 
 The float windows follow the visible layout, in the layout pass that
 moves the tiled panes: the floats of the shown ko window show and all
 others hide (`orderOut`), also at a tab or session switch and at a zoom,
-which hides the top-level floats as before. The children's order is the
+which hides the floats. The children's order is the
 floats' z order. The active float is the top float: when the layout pass
 that applies the shown focus (`WindowView.update`) shows a new active
 pane that is a float under another, it sends a `float` edit of the z
@@ -1737,11 +1732,9 @@ user scripts and runs one `evaluateJavaScript` that sets the properties
 again and dispatches `ko-theme` on `window`. `--ko-font-family` is a CSS
 font list: the quoted family name, then `monospace`.
 
-**Hidden pages.** A pane that hides keeps its web view. A pane that
-leaves its slot to another pane, as a parent agent's pane does to its
-child's, also hides: `WindowView` keeps one view for each pane of its
-window, and a slot only names the pane whose view shows. The view
-and its chrome are stored once, by pane. `SessionView` keeps
+**Hidden pages.** A pane that hides keeps its web view: `WindowView`
+keeps one view for each pane of its window, and its chrome, stored
+once, by pane. `SessionView` keeps
 the order in which pages hid, for the whole native window, and releases
 the oldest beyond `app.webview.keep_hidden`; 0 releases a page when its
 pane hides. A pane that comes back with its page at the same size
@@ -1759,10 +1752,9 @@ first. WebKit does not run animation frames for an offscreen page, so
 the timer bounds that wait. A page that never matches shows after
 0.5 s. A new size while covered starts the cover again. A first load
 and a resize of a visible page are not covered. A
-released page loads again when its pane shows; the pane that takes a
-slot gets its page in the same layout pass that adds it, so no frame
-shows its terminal, and until WebKit paints, the page shows the pane's
-paper.
+released page loads again when its pane shows, in the same layout
+pass that adds it, so no frame shows its terminal, and until WebKit
+paints, the page shows the pane's paper.
 
 ## Threads
 
@@ -1870,9 +1862,9 @@ the renderer stay.
 The sidebar tree is a projection of the core's model:
 `Snapshot(model:)` in `SidebarFeed/Projection.swift`. Sessions are
 source-list sections. A window with one pane is a pane item, a window with
-more panes is a group, and a child window, always one tiled pane (docs/protocol.md,
-section 7), is nested under the pane that its pane's `parent` names, at any
-depth. The order and the parent edges
+more panes is a group. A pane nests under its `parent` only when both
+are in the same window, as koa's editor float does; a child in another
+window is an ordinary window. The order and the parent edges
 are the core's `outline` (each item carries its window; design.md, "The
 sidebar tree"); the app only groups it by window. A pane item holds the
 core's pane record as decoded and adds only what the app derives: its
@@ -1954,19 +1946,17 @@ WindowTabs paints no background of its own.
 
 Next Window and Previous Window (Command-} and Command-{, the menu, the
 palette and Ghostty's tab actions) step through the tabs with
-`ko_client_switch`, the server's window switch, which visits only
-top-level windows ([design.md](design.md#the-sidebar-tree)) and steps
-from a child's top-level window. ⌘↑ and ⌘↓ move along the children
-instead ([Children in the slot](#children-in-the-slot)).
+`ko_client_switch`, the server's window switch, which visits every
+window in document order, across sessions.
 
-Tabs project the current session's top-level windows from the
-snapshot; a child shown in a slot keeps its top-level tab active. Each title is
+Tabs project the current session's windows from the snapshot, and the
+client's current window is the active tab. Each title is
 the composed label of that window's focus pane, or of the client's active
 pane in the shown window. Every tab label is regular, the active tab
 included: its fill and its primary text colour mark it. A tab shows the display-only
 @ prefix when its active pane's sidebar row has one. WindowView's active
 pane, from the layout and the client's selection, is shared with terminal
-focus. Each tab combines its window and descendants into one status mark,
+focus. Each tab combines the panes of its window into one status mark,
 ranked error (including unseen failed outcomes, command exits
 too) > waiting > running > done (unseen) > quiet. With the sidebar collapsed
 or floating, tabs use the pane row marks: red dot, orange dot, green running
@@ -1985,14 +1975,14 @@ Command-T.
 `SidebarFeed/Rows.swift`. Sessions have noninteractive 26pt headers with
 11pt semibold secondary labels and an always-visible, separately accessible
 new-window plus; hovering brightens only its icon. Sessions do not fold.
-Each pane's child-window trees immediately follow that pane, before its
-next sibling; drawn order and navigation share the row-model traversal.
+Each pane's children in its window immediately follow that pane, before
+its next sibling; drawn order and navigation share the row-model traversal.
 The rows under a pane show only while the pane or one of its descendants is focused ([Folded children](#folded-children)).
-OSC 7501 non-root records follow their pane before its child windows, ordered
+OSC 7501 non-root records follow their pane before its child panes, ordered
 by slash components in UTF-8 byte order. A record row is indented one level
 under its pane, plus one level for each ancestor id (a slash prefix) that is
 present among the pane's non-root records. Thus
-The agent extension's `job/<id>` rows, which have no `job` record, align with child-window
+koa's `jobs/<id>` rows, which have no `jobs` record, align with child-pane
 rows. Each record is mapped to an agent
 row (title or full id, message as the activity line, state mapped
 working→running, blocked→waiting, error→failed, done→done, idle after the
@@ -2109,13 +2099,12 @@ steps 15pt at every depth; the trailing column
 does not move. Nesting alone shows the hierarchy: there are no tree guides
 and no brackets.
 
-The top-level windows of a session are groups. Between two consecutive
-top-level windows of one session is a 9pt divider row (`.divider` in
+The windows of a session are groups. Between two consecutive
+windows of one session is a 9pt divider row (`.divider` in
 `SidebarRow.Kind`, its id names the window below it) with a 1pt line at
 its centre, labelColor at 10%, inset 5pt on both sides; there is none
 after the header, after the last window, or inside a window. The visible
-window of the client's current session (the top-level window of the
-client's window, also when a child shows in its slot) is one block: a
+window of the client's current session (the client's window) is one block: a
 `quaternarySystemFill` rounded rectangle (labelColor at about 2.7% in
 both appearances), 7pt corners, behind every row of that window, its
 descendants and records included. The row model gives each of those
@@ -2250,13 +2239,12 @@ as well as window topology. Pending requests fail once on disconnect and
 are never replayed.
 
 Pane indicators come from the typed lifecycle and the core's mark, never
-re-derived from raw program records. A tab's mark summarizes its window and
-descendants' row statuses in error > waiting > running > unseen done > quiet
+re-derived from raw program records. A tab's mark summarizes its window's
+row statuses in error > waiting > running > unseen done > quiet
 order; docked tabs show only error and waiting marks.
 
 The core owns seen. When the union of the panes that the attended
-windows of the host show on screen (a child in a slot, not the top-level
-pane that it replaces), or `attending`, changes, the owner calls
+windows of the host show on screen, or `attending`, changes, the owner calls
 `ko_client_observe` with it. A window is attended while the app is active
 and the window is key, not minimized and visible. `Notifier.seen(host:)`
 computes the union. The core acknowledges on every change and posts a
@@ -2359,98 +2347,10 @@ are disabled. The model's events coalesce, so the row cannot wait for a
 `Down` that it may never see: another client can start the runtime
 again before the next model read. The section is disabled while the window
 has no connection.
-### Children in the slot
-
-A child window has no tab and no layout in the app. The window layout
-of a tab holds its top-level panes, and each of them is a slot: the
-slot shows the top-level pane or one pane of its subtree. A click on a
-child row, or Return on it, shows the child in the slot of its
-top-level ancestor and focuses it; a click on the parent row shows the
-parent again. A grandchild shows in the same slot. The other slots and
-the tab strip do not change.
-
-A slot that shows a descendant draws a breadcrumb pill
-(`PaneBreadcrumb` in `App/PaneBreadcrumb.swift`, a `PaneCapsule` like
-the COPY pill) at its top left, 8pt from the top and left edges, above
-the content: no inset and no grid change. It holds the path from the
-top-level pane to the shown one, with each pane's row title, separated
-by `›` (`PaneProjection.shown(_:slots:)` gives the shown pane and its
-ancestors as a `ShownPane`). Each ancestor is a button
-in the secondary label colour that shows that ancestor in the slot and
-focuses it, through the same `selectPane` as a click in a pane; the shown pane's
-name ends the path in the label colour and is not a button. A slot that
-shows its own top-level pane has none. The pill shares the COPY pill's
-line: in copy mode it starts 6pt after COPY, and its width ends 6pt
-before find or the hover toolbar when they show on that line; it moves
-down to y 48 only when the room left there is under 72pt. Its width is
-what its text needs, at most the room on its line.
-Over that it shortens in this order: the middle ancestors (all but the
-first and the last) collapse into one `…` that is not a button, then
-each remaining ancestor name ellipsizes down to about 60pt, then the
-shown pane's name ellipsizes; when even that leaves the name under
-about 40pt, the pill hides. It never clips inside its capsule. The
-breadcrumb wins against the runtime
-pill: the runtime pill hides when the breadcrumb at its shortest leaves
-less than the runtime pill's width plus 6pt, and otherwise the
-breadcrumb shortens to leave it that room. The runtime stripe and the
-sidebar suffix still name the runtime.
-
-`PaneSlots` in `SidebarFeed/PaneSlots.swift` holds the choices, in
-memory, for each top-level pane: the pane that its slot shows and, for
-each pane of the chain, its last child. `PaneProjection` derives from
-the snapshot each pane's top-level slot and its parent. `PaneSlots` also keeps the
-last focused slot of each tab, so a return to the tab focuses the pane
-that its slot shows. Switching tabs
-and back, or focusing another slot, keeps a child in place. When the
-shown pane goes, the slot shows its top-level pane again; when the
-top-level pane goes, its choice goes. A reconnect to the same server
-keeps the choices, and a new server instance clears them. ⌘↑ shows the
-parent of the focused pane in its slot; ⌘↓ shows the child that the
-slot last showed at that level, else the first child; both do nothing
-at the end of the chain.
-
-The app selects the real pane on the server, so the server, the other
-clients and `ko prompt` see the child and its window as the current
-ones; the app maps that selection to the child's top-level tab and
-slot for display. `WindowView` keeps the top-level layout's geometry
-for each slot and puts the shown pane's `PaneView` into it, with the
-same frame, insets, scroller and runtime mark as the top-level pane,
-so a child has exactly its parent's cell grid. Geometry, the toolbar's
-drag and every layout edit address the top-level pane: a split adds
-the new pane beside the slot in the top-level window and leaves the
-child in its slot; zoom zooms the slot; resize and float edits move
-the slot. The app sends a layout edit to a child window only for a
-float of that window that it draws over the slot (below). Input,
-the clipboard, find, the cwd and runtime of a new pane, and Close Pane
-act on the shown pane.
-
-A child pane in its parent's own window, such as koa's editor
-(protocol.md, section 7), is not a replacement. `PaneProjection`
-reads its layer (`Item.layer`, from the window's floats): a floating
-one gets a floating placement with its parent as owner, so it is
-never the pane that a slot shows; a tiled one gets a tiled placement
-and is a slot of its own, with no breadcrumb. A layout edit addresses
-the slot only for a replacement and the pane itself otherwise
-(`PaneProjection.addressed`), so Float Pane and Dock Pane, and a
-drag to dock, float such a child and dock it again. A child that floats over a
-child window's pane cannot dock, because that pane is the only tiled
-pane of its window: Dock Pane is disabled and a drag does not dock
-it. A float focus ends when its pane docks. A float of the
-top-level window draws as any float. The floats of a child window
-that a slot shows draw over that slot, offset by the slot's origin,
-above the slot in the child window's z order. Their layout geometry is
-clamped to the slot (`PaneLayout.clamp(clip:)`); their float windows are
-not clipped; a drag subtracts the offset before the edit
-goes to the child window. Selecting such a float focuses the float
-and keeps its owner shown in the slot; when it goes, the owner keeps
-the slot and the focus. Close Window and the tab's × close the
-top-level window. The focused row is the pane on screen in the focused
-slot; a child on screen in another slot has no mark.
-
 ### Folded children
 
-Focus alone decides which children (child windows and OSC 7501 child
-records alike) show. A pane row is open when it is the focused pane or
+Focus alone decides which children (child panes of the window and OSC
+7501 child records alike) show. A pane row is open when it is the focused pane or
 an ancestor of the focused pane, so a focused child keeps its path open;
 an open row shows every child, and its records show their whole record
 tree. Every other row is folded. Records never take focus: they follow
@@ -2496,7 +2396,7 @@ A wait also opens a path: a folded row whose descendant waits for input
 rows on the path to it, and its circles list only the children that do
 not show as rows. When the wait clears, the rows fold back unless focus
 keeps them open. A failure or a completion opens nothing: its circle
-shows it. A focused child in another slot keeps its path open. A change
+shows it. A change
 of focus moves the keyboard selection to the focused row; when a wait
 clears and the selected row folds away, the selection goes to the
 nearest visible ancestor.
@@ -2507,7 +2407,7 @@ Each window has a history of the panes that the user went to, for Back
 and Forward (`SidebarFeed/NavigationHistory.swift`). It is client state:
 ko knows nothing of it, and a fresh welcome (a new server instance)
 clears it; a reconnect to the same instance keeps it. An entry is the
-position of the pane that the window shows, not its top-level slot.
+position of the pane that the window shows.
 
 The history records only a selection that the user asked for and that
 landed. Every user navigation goes through `WindowOwner.perform`, which
@@ -2589,7 +2489,7 @@ The root list is built from live state, in this order:
   never jumps to another owner: not from Local to a remote host, not between
   hosts, and not to another window of the same host. With no anchor, there are
   no pane rows. A top-level pane is a sidebar pane row at indent 0
-  (`SidebarRow.topLevel`, which the sidebar's drag source also uses): a child window that the snapshot nests under a pane (a subagent) is
+  (`SidebarRow.topLevel`, which the sidebar's drag source also uses): a child pane that the snapshot nests under a pane of its window is
   not in the list, and neither is an OSC 7501 program record row.
   There are no session rows; the session commands below stay. A pane row has
   its status mark and jumps through one `ko_client_select`, as a sidebar row does. The
@@ -3099,7 +2999,7 @@ instance and contains the pane, preferring a client already in the
 target session, then the key window; else any window of the host, key
 first. It activates the app, deminiaturizes and orders the window front
 (not in background builds), and performs the jump, a `ko_client_select`
-that moves that window's client; a child shows in its top-level slot
+that moves that window's client; the pane's window shows
 and its path in the sidebar opens, the pane becomes active in an
 attended window, is seen, and the notification withdraws on its own. With no
 window for the host, the click opens it through `WindowRoutes.connect`
@@ -3203,7 +3103,7 @@ each subclass. Its Ghostty configuration file lives until the process exits,
 because the one process runtime reads it again on each appearance change.
 
 A snapshot shows the component under its test, so that a change elsewhere does
-not re-record it. The breadcrumb, notice and child-slot states crop to the pane
+not re-record it. The notice states crop to the pane
 area or the notice host in backing pixels; a few full-window anchors in each
 appearance and window mode keep the composition with the sidebar and the
 header. The koa states compare the WebKit page image; only the focus-border

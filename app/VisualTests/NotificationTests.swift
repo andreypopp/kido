@@ -136,9 +136,9 @@ import XCTest
         let childTarget = try JSONDecoder().decode(NoticeTarget.self, from: childData)
         try await wait("folded child in the full semantic tree") { PaneProjection(second.snapshot).placements[placement.pane] != nil }
         app.route(childTarget)
-        try await wait("child notification uses its ancestor slot and focuses the right owner") { second.snapshot?.client.pane == placement.pane && (second.window.firstResponder as? PaneView)?.pane == placement.pane }
+        try await wait("child notification opens the child's own window and focuses the right owner") { second.snapshot?.client.pane == placement.pane && (second.window.firstResponder as? PaneView)?.pane == placement.pane }
         XCTAssertEqual(first.snapshot?.client.session, SessionID(number: 1))
-        XCTAssertEqual(second.navigation.window, target.position.window)
+        XCTAssertEqual(second.navigation.window, placement.window)
         XCTAssertTrue(second.sidebar.list.visualRows.contains { $0.target?.pane == placement.pane })
 
         for (mode, cold) in zip(["matching", "mismatched", "expired"], coldApps) {

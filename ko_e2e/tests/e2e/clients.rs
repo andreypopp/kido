@@ -823,7 +823,7 @@ fn a_new_pane_reports_its_size_to_a_program_that_asks_at_startup() {
 }
 
 #[test]
-fn window_switching_skips_only_real_child_windows_not_windows_with_child_floats() {
+fn window_switching_visits_every_window_including_a_child_window_and_windows_with_child_floats() {
     let s = start(&[]);
     let cat = json!({"command": {"type": "shell", "command": "exec cat"}});
     let root = crate::panes::new_pane(&s, &cat);
@@ -850,6 +850,7 @@ fn window_switching_skips_only_real_child_windows_not_windows_with_child_floats(
         c.send(&json!({"type": "switch", "request": 1, "over": "window", "direction": direction}));
         c.event("selected")["pane"].clone()
     };
+    assert_eq!(shown(&mut c, "next"), json!(child));
     assert_eq!(shown(&mut c, "next"), json!(plain));
     assert_eq!(shown(&mut c, "next"), json!(root));
     assert_eq!(shown(&mut c, "previous"), json!(plain));

@@ -292,7 +292,7 @@ import XCTest
         }
     }
 
-    func testAFloatOverASplitPanesKoaNeverReplacesItsSlot() async throws {
+    func testAFloatOverASplitPanesKoaIsShownWithBothPanes() async throws {
         try await put(#"[{"name":"w","tree":{"split":"h","children":[\#(sleep),\#(sleep)]}}]"#)
         try await placed("two panes") { Layout($0).root.panes.count == 2 }
         try await addFloat(window: try XCTUnwrap(window).id.description, parent: "pane_2")
@@ -306,7 +306,7 @@ import XCTest
         XCTAssertEqual(owner.testModel?.layout.layout.windows.count, 1)
     }
 
-    func testADragOfAChildWindowFloatWritesItsPositionToTheChildWindow() async throws {
+    func testADragOfAChildWindowFloatWritesItsPosition() async throws {
         try await put(#"[{"name":"w","tree":{"split":"h","children":[\#(sleep),\#(sleep)]}}]"#)
         try await placed("two panes") { Layout($0).root.panes.count == 2 }
         let body = dir + "/child.json"
@@ -318,15 +318,13 @@ import XCTest
         try await wait("the child's float", within: 5) { source() != nil }
         let float = try XCTUnwrap(source())
         owner.perform(.jump(child))
-        try await wait("the child is shown in the slot", within: 5) {
+        try await wait("the child is shown in its own window", within: 5) {
             let displayed = self.terminal?.displayedPanes.map(\.pane) ?? []
             return self.owner.testModel?.selection.pane == child.pane && displayed.contains(float.pane)
         }
         let terminal = try XCTUnwrap(terminal), cell = try cell()
         let frame = try rect(float.pane)
-        let slot = try XCTUnwrap(geometry(PaneID(number: 2)))
-        XCTAssertGreaterThan(slot.x, 0)
-        XCTAssertEqual(frame.minX, CGFloat(slot.x + float.x) * cell.width, accuracy: cell.width + 6, "the float lies over the slot, offset by it")
+        XCTAssertEqual(frame.minX, CGFloat(float.x) * cell.width, accuracy: cell.width + 6, "the float lies at its own window's position")
         let start = NSPoint(x: frame.midX, y: frame.minY + 4)
         terminal.visualBeginDrag(float.pane, try mouse(.leftMouseDown, start), from: .frame)
         let end = NSPoint(x: start.x + 2 * cell.width, y: start.y + 8 * cell.height)

@@ -58,7 +58,7 @@ func fixtureItem(_ id: UInt32, window: UInt32? = nil, parent: UInt32? = nil, cwd
     return Item(pane: .init(close: close, command: [], cwd: cwd, dead: dead, id: PaneID(number: id), inbox: pi,
                            label: title, mark: mark, parent: parent.map(PaneID.init(number:)), recordsSeen: false, started: 0,
                            status: live.map { .init(kind: $0, programStatus: .init(records: records, serial: serial), since: 0, title: title) },
-                           title: title, vars: [:]), window: WindowID(number: window ?? id), layer: .tiled, children: children)
+                           title: title, vars: [:]), window: WindowID(number: window ?? id), children: children)
 }
 
 func fixtureNode(_ pane: UInt32, window: UInt32? = nil, _ title: String, _ lifecycle: Lifecycle,
@@ -81,7 +81,7 @@ func sidebarFixture(_ edit: (inout Snapshot) -> Void = { _ in }) -> Snapshot {
     }
     var snapshot = Snapshot(
         clock: .init(now: 0, local: 0),
-        client: .init(session: SessionID(number: 0), window: WindowID(number: 824), pane: PaneID(number: 936)),
+        client: .init(session: SessionID(number: 0), window: WindowID(number: 458), pane: PaneID(number: 936)),
         serverInstance: ServerInstance("4242/1791000000"),
         sessions: [
             session(0, "main", [
@@ -112,6 +112,16 @@ func sidebarFixture(_ edit: (inout Snapshot) -> Void = { _ in }) -> Snapshot {
             ]),
             session(4, "umbrella", [fixtureNode(193, window: 166, "household", piLifecycle(session: "session-193"))]),
         ])
+    snapshot.sessions = snapshot.sessions.map { session in
+        var session = session
+        session.nodes = session.nodes.map { node in
+            switch node {
+            case .item(let item): .item(inheritingWindow(item))
+            case .window(var group): { group.children = group.children.map(inheritingWindow); return .window(group) }()
+            }
+        }
+        return session
+    }
     edit(&snapshot)
     snapshot.fillCwds()
     snapshot.mapItems { item in
@@ -174,6 +184,16 @@ extension Snapshot {
 
 let sidebarChildrenNow = 2_951_768_000_000_000
 
+private func inheritingWindow(_ item: Item) -> Item {
+    var item = item
+    item.children = item.children.map { node in
+        guard case .item(var child) = node else { return node }
+        child.window = item.window
+        return .item(inheritingWindow(child))
+    }
+    return item
+}
+
 func sidebarChildrenFixture(records: Bool = false) -> Snapshot {
     var snapshot = sidebarFixture()
     snapshot.client = .init(session: .init(number: 0), window: .init(number: 458), pane: .init(number: 937))
@@ -194,7 +214,7 @@ func sidebarChildrenFixture(records: Bool = false) -> Snapshot {
     ])
     tests.pane.started = 41_000_000_000
     parent.children += [.item(tests), .item(fixtureItem(945, parent: 502, "make test", .ended(.exited(.init(code: 0))), mark: .done))]
-    snapshot.sessions[0].nodes[1].group.children[0] = parent
+    snapshot.sessions[0].nodes[1].group.children[0] = inheritingWindow(parent)
     snapshot.sessions[0].nodes[1].group.children[1].pane.mark = .done
     snapshot.sessions[0].nodes[2].item.children[0].item.fixtureLifecycle = piLifecycle(.idle(.init(outcome: .init(result: .failure, serial: 1))), msg: "Profiling long sidebar updates")
     snapshot.sessions[0].nodes[2].item.children[0].item.pane.mark = .failed
@@ -210,6 +230,7 @@ func sidebarChildrenFixture(records: Bool = false) -> Snapshot {
     snapshot.mapItems { $0.pane.started += sidebarChildrenNow - 368_000_000_000 }
     snapshot.sessions[0].nodes[2].item.children[0].item.pane.parent = PaneID(number: 905)
     snapshot.sessions[0].nodes[2].item.children[0].item.pane.started = 368_000_000_000
+    snapshot.sessions[0].nodes[2].item = inheritingWindow(snapshot.sessions[0].nodes[2].item)
     snapshot.sessions[1].nodes[2].item.pane.parent = PaneID(number: 502)
     snapshot.sessions[1].nodes[2].item.pane.started = sidebarChildrenNow - 143_000_000_000
     if records {

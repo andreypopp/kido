@@ -35,23 +35,24 @@ import XCTest
             "command": ["type": "argv", "argv": ["/bin/sh", "-c", "printf '\\033]7501;state=blocked:app=agent\\007'; exec tail -f " + SSH.quote(feed)]]
         ]).write(to: childRequest)
         try await ko(["api", "-X", "POST", "--input", childRequest.path, "/panes"], dir: directory.path)
-        try await wait("the child pane nests under the editor") { owner.testModel.map(\.layout.layout.windows)?.count == 4 && owner.sidebar.tabs.entries.count == 3 }
+        try await wait("the child pane has its own window and tab") { owner.testModel.map(\.layout.layout.windows)?.count == 4 && owner.sidebar.tabs.entries.count == 4 }
         let child = try XCTUnwrap(owner.testModel.map(\.layout.layout.windows)?.map(\.id).first { ![shell, middle, last].contains($0) })
         let sidebar = owner.sidebar
         let root = try XCTUnwrap(owner.window.contentView?.superview)
         owner.window.display()
         root.layoutSubtreeIfNeeded()
         sidebar.splitView.setPosition(256, ofDividerAt: 0)
-        try await wait("tab titles are the focus panes' labels") { sidebar.tabs.entries.map(\.name) == ["Shell prompt", "Agent caption", "Build output"] }
-        try await wait("the nested agent waits in its window's tab") { sidebar.tabs.entries.map(\.status) == [.quiet, .waiting, .quiet] }
-        XCTAssertEqual((sidebar.tabs.accessibilityChildren()?[1] as? NSAccessibilityElement)?.accessibilityLabel(), "Window: Agent caption — waiting")
+        try await wait("tab titles are the focus panes' labels") { let names = sidebar.tabs.entries.map(\.name); return names.count == 4 && [names[0], names[1], names[3]] == ["Shell prompt", "Agent caption", "Build output"] }
+        try await wait("the child agent waits in its own tab and not in its parent's") { sidebar.tabs.entries.map(\.status) == [.quiet, .quiet, .waiting, .quiet] }
+        let childLabel = try XCTUnwrap((sidebar.tabs.accessibilityChildren()?[2] as? NSAccessibilityElement)?.accessibilityLabel())
+        XCTAssertTrue(childLabel.hasPrefix("Window: ") && childLabel.hasSuffix(" — waiting"), childLabel)
         try status.write(contentsOf: Data("\u{1b}]7501;state=error:app=agent\u{7}".utf8))
-        try await wait("a failed child") { sidebar.tabs.entries[1].status == .error }
+        try await wait("a failed child") { sidebar.tabs.entries[2].status == .error }
         try status.write(contentsOf: Data("\u{1b}]7501;state=blocked:app=agent\u{7}".utf8))
-        try await wait("waiting again") { sidebar.tabs.entries[1].status == .waiting }
+        try await wait("waiting again") { sidebar.tabs.entries[2].status == .waiting }
         try owner.testClient?.select(KO_SELECT_WINDOW, child)
-        try await wait("descendant active") { owner.navigation.window == middle && owner.testModel?.selection.window == child }
-        XCTAssertEqual(sidebar.tabs.entries.first { $0.active }?.id, middle, "a child window's tab is its parent's")
+        try await wait("child window active") { owner.navigation.window == child && owner.testModel?.selection.window == child }
+        XCTAssertEqual(sidebar.tabs.entries.first { $0.active }?.id, child, "a child window has a tab of its own, after its parent's")
         root.layoutSubtreeIfNeeded()
         sidebar.viewDidLayout()
         try await wait("native tabs layout") { sidebar.tabs.frame.width > 300 && sidebar.tabs.frame.height == 36 }
@@ -514,7 +515,7 @@ import XCTest
         window.setContentSize(NSSize(width: 236, height: 680))
         sidebarSnapshot(list, "narrow-light")
         window.setContentSize(NSSize(width: 292, height: 680))
-        list.show(sidebarFixture { $0.client = .init(session: SessionID(number: 0), window: WindowID(number: 786), pane: PaneID(number: 892)) })
+        list.show(sidebarFixture { $0.client = .init(session: SessionID(number: 0), window: WindowID(number: 0), pane: PaneID(number: 892)) })
         sidebarSnapshot(list, "child-active-light")
         let subtree = sidebarFixture { snapshot in
             let zsh = fixtureNode(1991, "zsh", shellLifecycle(shellExit(0)), mark: .done)

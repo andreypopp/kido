@@ -184,44 +184,13 @@ impl Client {
         })
     }
 
-    pub(crate) fn switch(
-        &self,
-        layout: &Layout,
-        switch: Switch,
-        parent_of: &dyn Fn(PaneId) -> Option<PaneId>,
-    ) -> Option<Current> {
+    pub(crate) fn switch(&self, layout: &Layout, switch: Switch) -> Option<Current> {
         let current = self.current();
         let selection = match switch.over {
             Over::Window => {
-                let roots: Vec<(WindowId, WindowId)> = layout
-                    .windows()
-                    .map(|(session, window)| {
-                        let mut root = window;
-                        for _ in 0..session.windows.len() {
-                            let mut tiled = Vec::new();
-                            root.tree.leaves(&mut tiled);
-                            let Some(parent) = tiled.iter().find_map(|leaf| parent_of(leaf.pane))
-                            else {
-                                break;
-                            };
-                            let Some((owner, ancestor)) = layout.locate(parent) else {
-                                break;
-                            };
-                            if owner.id != session.id || ancestor.id == root.id {
-                                break;
-                            }
-                            root = ancestor;
-                        }
-                        (window.id, root.id)
-                    })
-                    .collect();
-                let windows: Vec<WindowId> = roots
-                    .iter()
-                    .filter_map(|(id, root)| (id == root).then_some(*id))
-                    .collect();
-                let from = current
-                    .and_then(|c| roots.iter().find(|(id, _)| *id == c.window))
-                    .and_then(|(_, root)| windows.iter().position(|w| w == root));
+                let windows: Vec<WindowId> =
+                    layout.windows().map(|(_, window)| window.id).collect();
+                let from = current.and_then(|c| windows.iter().position(|w| *w == c.window));
                 if windows.is_empty() {
                     return None;
                 }
@@ -401,59 +370,6 @@ mod tests {
     }
 
     #[test]
-    fn window_switches_skip_descendants_but_keep_cross_session_children() {
-        let source = document(json!([
-            {"name":"a","windows":[
-                {"tree":leaf()}, {"tree":leaf()}, {"tree":leaf()}, {"tree":leaf()}]},
-            {"name":"b","windows":[{"tree":leaf()}]}
-        ]));
-        let parent = |pane: PaneId| {
-            [(2, 1), (3, 2), (5, 2)]
-                .into_iter()
-                .find(|(id, _)| PaneId::new(*id) == pane)
-                .map(|(_, parent)| PaneId::new(parent))
-        };
-        let client = at(current(1, 3, 3));
-        assert_eq!(
-            client.switch(
-                source.layout(),
-                Switch {
-                    over: Over::Window,
-                    direction: Direction::Next
-                },
-                &parent
-            ),
-            Some(current(1, 4, 4))
-        );
-        assert_eq!(
-            client.switch(
-                source.layout(),
-                Switch {
-                    over: Over::Window,
-                    direction: Direction::Previous
-                },
-                &parent
-            ),
-            Some(current(2, 5, 5))
-        );
-        assert_eq!(
-            at(current(2, 5, 5)).switch(
-                source.layout(),
-                Switch {
-                    over: Over::Window,
-                    direction: Direction::Next
-                },
-                &parent
-            ),
-            Some(current(1, 1, 1))
-        );
-        assert_eq!(
-            client.select(source.layout(), selection(None, None, Some(2))),
-            Some(current(1, 2, 2))
-        );
-    }
-
-    #[test]
     fn a_pane_implies_its_window_a_window_its_last_focused_pane_a_session_its_last_window() {
         let mut source = three_documents();
         let client = Client::new(ClientId::new(1));
@@ -507,7 +423,7 @@ mod tests {
             client.active = at(current(1, 1, 1)).active;
             client.set_current(from);
             client
-                .switch(&layout, switch(Over::Window, direction), &|_| None)
+                .switch(&layout, switch(Over::Window, direction))
                 .map(|c| c.window.to_string())
         };
         assert_eq!(
@@ -529,20 +445,17 @@ mod tests {
         );
         let client = at(current(1, 2, 3));
         assert_eq!(
-            client.switch(&layout, switch(Over::Session, Direction::Next), &|_| None),
+            client.switch(&layout, switch(Over::Session, Direction::Next)),
             Some(current(2, 3, 4))
         );
         assert_eq!(
-            client.switch(&layout, switch(Over::Session, Direction::Previous), &|_| {
-                None
-            }),
+            client.switch(&layout, switch(Over::Session, Direction::Previous)),
             Some(current(2, 3, 4))
         );
         assert_eq!(
             at(current(1, 1, 1)).switch(
                 &Layout { sessions: vec![] },
-                switch(Over::Window, Direction::Next),
-                &|_| None
+                switch(Over::Window, Direction::Next)
             ),
             None
         );

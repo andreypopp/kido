@@ -851,21 +851,20 @@ import PaneGeometry
         XCTAssertTrue(root.hitTest(root.convert(tabs.convert(NSPoint(x: label.midX, y: 18), to: nil), from: nil)) === tabs)
     }
 
-    func testNavigationHidesUnknownNonCurrentWindows() throws {
+    func testNavigationKeepsEveryWindowAndTheActualCurrentOne() throws {
         let snapshot = fixture()
         var model = SessionModel(session: SessionID(number: 0),
                                  windows: [0, 786, 5].map { .init(id: WindowID(number: $0), name: "w\($0)") }, window: WindowID(number: 0))
-        XCTAssertEqual(model.navigation(snapshot, panes: PaneProjection(snapshot)).tabs.map(\.id.number), [0])
+        XCTAssertEqual(model.navigation(snapshot).tabs.map(\.id.number), [0, 786, 5])
         model.window = WindowID(number: 786)
-        XCTAssertEqual(model.navigation(snapshot, panes: PaneProjection(snapshot)).model.window, WindowID(number: 0))
-        XCTAssertEqual(model.navigation(snapshot, panes: PaneProjection(snapshot)).model.title, "Kido — w0")
+        XCTAssertEqual(model.navigation(snapshot).model.window, WindowID(number: 786))
+        XCTAssertEqual(model.navigation(snapshot).model.title, "Kido — w786")
         model.window = WindowID(number: 5)
-        let navigation = model.navigation(snapshot, panes: PaneProjection(snapshot))
-        XCTAssertEqual(navigation.tabs.map(\.id.number), [0, 5])
+        let navigation = model.navigation(snapshot)
         XCTAssertEqual(navigation.tabs.filter(\.active).map(\.id.number), [5])
         XCTAssertEqual(navigation.model.title, "Kido — w5")
-        XCTAssertEqual(navigation.model.select(.number(2)), .selectWindow(SessionID(number: 0), WindowID(number: 5)))
-        XCTAssertEqual(model.navigation(nil, panes: PaneProjection(nil)).tabs.map(\.id.number), [0, 786, 5])
+        XCTAssertEqual(navigation.model.select(.number(2)), .selectWindow(SessionID(number: 0), WindowID(number: 786)))
+        XCTAssertEqual(model.navigation(nil).tabs.map(\.id.number), [0, 786, 5])
     }
 
     func testNavigationFollowsProjectedRootOrder() throws {
@@ -875,22 +874,22 @@ import PaneGeometry
                                             SessionModel.Session(id: main, name: "main", window: WindowID(number: 0))],
                                  session: main,
                                  windows: [797, 0, 5, 458].map { .init(id: WindowID(number: $0), name: "w\($0)") }, window: WindowID(number: 0))
-        let navigation = model.navigation(snapshot, panes: PaneProjection(snapshot)).model
-        XCTAssertEqual(navigation.windows.map(\.id.number), [0, 458, 797], "snapshot roots order the tabs; an unreported non-current window is hidden")
+        let navigation = model.navigation(snapshot).model
+        XCTAssertEqual(navigation.windows.map(\.id.number), [0, 458, 5, 797], "the snapshot orders the tabs it reports; an unreported window keeps its inventory slot")
         XCTAssertEqual(navigation.sessions.map(\.id), [main, SessionID(number: 1)])
-        XCTAssertEqual(model.navigation(snapshot, panes: PaneProjection(snapshot)).tabs.map(\.id.number), [0, 458, 797])
+        XCTAssertEqual(model.navigation(snapshot).tabs.map(\.id.number), [0, 458, 5, 797])
         XCTAssertEqual(navigation.select(.number(1)), .selectWindow(main, WindowID(number: 0)))
-        XCTAssertEqual(model.navigation(nil, panes: PaneProjection(nil)).model.windows.map(\.id.number), [797, 0, 5, 458], "inventory order before the first snapshot")
+        XCTAssertEqual(model.navigation(nil).model.windows.map(\.id.number), [797, 0, 5, 458], "inventory order before the first snapshot")
 
         var state = ReorderState()
         XCTAssertNotNil(state.submit(.window(main, WindowID(number: 797), relativeTo: WindowID(number: 0), .before), to: snapshot))
-        let projected = model.navigation(state.project(snapshot), panes: PaneProjection(state.project(snapshot))).model
-        XCTAssertEqual(projected.windows.map(\.id.number), [797, 0, 458])
+        let projected = model.navigation(state.project(snapshot)).model
+        XCTAssertEqual(projected.windows.map(\.id.number), [797, 0, 5, 458])
         let menus = SessionMenus()
         var sent: [Navigation] = []
         menus.send = { sent.append($0) }
         menus.update(projected)
-        XCTAssertEqual(menus.window.items.dropFirst(3).map(\.title), ["w797", "w0", "w458"])
+        XCTAssertEqual(menus.window.items.dropFirst(3).map(\.title), ["w797", "w0", "w5", "w458"])
         let key = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: .command, timestamp: 0,
             windowNumber: 0, context: nil, characters: "1", charactersIgnoringModifiers: "1", isARepeat: false, keyCode: 18))
         XCTAssertTrue(menus.window.performKeyEquivalent(with: key))

@@ -37,7 +37,7 @@ use ko_wire::api::routes;
 use ko_wire::http::lossy;
 use ko_wire::ids::{ClientId, Instance, Name, PaneId, SessionId, VarName, WindowId};
 use ko_wire::protocol::{
-    self, CellPixels, ClientEvent, ClientRequest, CreatePane, DeleteVars, End, Input, Layout,
+    self, CellPixels, ClientEvent, ClientRequest, CreatePane, DeleteVars, Input, Layout,
     LayoutPanes, Limits, Listing, PaneDead, PasteResult, PutLayout, Pwd, Row, Selection, Snapshot,
     StatusChange, Title, VarCondition, ViewEvent, ViewRequest, Welcome,
 };
@@ -626,7 +626,6 @@ impl State {
             .collect();
         for pane in panes {
             self.close_views(pane);
-            self.tell_parent_gone(pane);
             self.stop_pane(poll, pane);
         }
         self.sweep_soon(poll);
@@ -1035,7 +1034,6 @@ impl State {
                 self.end_visit(poll, id, Some("pane ended".to_owned()));
                 self.webview_pane_ended(poll, id);
                 self.pump_views(poll, id);
-                self.tell_parent(id, End::Dead((&death).into()));
                 self.pane_ended(poll, id);
                 if let Some(pane) = self.panes.find_mut(id) {
                     pane.telemetry_mut().records.clear();
@@ -1674,10 +1672,7 @@ impl State {
                 Some(current) => (Some(current), Some(request)),
                 None => return wire.ws.reject(wire.out, crate::ws::Rejection::Invalid),
             },
-            Change::Switch(request, switch) => (
-                client.switch(layout, switch, &|pane| self.panes.parent(pane)),
-                Some(request),
-            ),
+            Change::Switch(request, switch) => (client.switch(layout, switch), Some(request)),
             Change::Claim => {
                 self.claim_sizes(poll, index, &protocol::Sizing::Disabled);
                 self.arrive(poll, index);
@@ -1918,8 +1913,7 @@ mod tests {
     use crate::fuzz::Rig;
     use crate::server::tests::scratch;
     use ko_sys::event::Mode;
-    use ko_wire::ids::{MessageId, PaneId};
-    use ko_wire::protocol::{Command, CreatePane, NewWindow};
+    use ko_wire::protocol::{Command, CreatePane};
     use std::path::PathBuf;
     use std::time::{Duration, Instant};
 
@@ -1951,76 +1945,5 @@ mod tests {
             assert!(Instant::now() < deadline, "the pane never became ready");
             rig.step(Mode::Wait);
         }
-    }
-
-    #[test]
-    fn a_removed_pane_tells_its_parent_it_is_gone_only_when_it_was_alive() {
-        let exe = PathBuf::from(
-            std::env::var_os("KO_PANE_EXE")
-                .expect("KO_PANE_EXE names ko-pane; make test builds it and sets it"),
-        );
-        let mut rig = Rig::new(scratch("state-gone"), exe, "exec cat");
-        let request = |command: &str, parent: Option<PaneId>| CreatePane {
-            cwd: None,
-            command: Some(Command::Argv {
-                argv: ["/bin/sh", "-c", command].map(str::to_owned).to_vec(),
-            }),
-            env: Vec::new(),
-            vars: Default::default(),
-            parent,
-            close: Default::default(),
-            fixed_title: None,
-            close_confirm: Default::default(),
-            runtime: None,
-        };
-        let parent = rig
-            .state
-            .new_session(&mut rig.poll, &request("exec cat", None))
-            .unwrap();
-        let mut child = |command: &str| {
-            let window = NewWindow {
-                session: None,
-                name: None,
-                pane: request(command, Some(parent)),
-            };
-            rig.state
-                .new_pane(&mut rig.poll, None, &crate::server::Origin::Host, window)
-                .unwrap()
-                .pane
-        };
-        let died = child("exit 0");
-        let lives = child("exec cat");
-
-        let deadline = Instant::now() + Duration::from_secs(5);
-        while rig.state.pane_listing(died).unwrap().row.dead.is_none() {
-            assert!(Instant::now() < deadline, "the child never died");
-            rig.step(Mode::Wait);
-        }
-        let told = |rig: &Rig, child| {
-            rig.state
-                .panes
-                .find(parent)
-                .unwrap()
-                .inbox()
-                .seen(&MessageId::ended(child))
-                .is_some()
-        };
-        assert!(told(&rig, died), "the death was told");
-        rig.state
-            .panes
-            .find_mut(parent)
-            .unwrap()
-            .inbox_mut()
-            .clear();
-        assert!(!told(&rig, died), "the id left the ring");
-        rig.state
-            .delete(&mut rig.poll, crate::layout::Remove::Pane(died));
-        assert!(
-            !told(&rig, died),
-            "a pane that died is not told again as gone"
-        );
-        rig.state
-            .delete(&mut rig.poll, crate::layout::Remove::Pane(lives));
-        assert!(told(&rig, lives), "a pane removed alive is told as gone");
     }
 }

@@ -209,7 +209,7 @@ import XCTest
                        alive: Set(windows.map(\.id)), selected: next.selection.pane, marks: next.runtimeMarks)
         session.show(model.window)
         let snapshot = Snapshot(model: next)
-        (window.contentViewController as? Sidebar)?.tabs.entries = model.navigation(snapshot, panes: PaneProjection(snapshot), activePanes: session.windows.compactMapValues(\.active)).tabs
+        (window.contentViewController as? Sidebar)?.tabs.entries = model.navigation(snapshot, activePanes: session.windows.compactMapValues(\.active)).tabs
     }
 
     func hover(_ pane: PaneView, _ inside: Bool) async throws {

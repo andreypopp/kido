@@ -186,7 +186,7 @@ import XCTest
         }
     }
 
-    func testDockPaneIsOffForAFloatOverAPaneOfAChildWindow() throws {
+    func testDockPaneIsOfferedForAFloatOverAPaneOfAChildWindow() throws {
         let dir = try server()
         try put(#"{"revision":0,"layout":{"sessions":[{"name":"s","windows":[{"name":"w","tree":\#(sleep)}]}]}}"#, dir: dir)
         _ = try createPane(#"{"parent":"pane_1","close":"on_exit","command":{"type":"argv","argv":["/bin/sleep","60"]}}"#, dir: dir)
@@ -195,7 +195,7 @@ import XCTest
         try put(#"{"revision":\#(revision),"layout":{"sessions":[{"name":"s","windows":[{"name":"a","tree":{"pane":"pane_1"}},{"name":"b","tree":{"pane":"pane_2"},"floats":[{"pane":"pane_3","x":2,"y":2,"cols":20,"rows":6}]}]}]}}"#, dir: dir)
         let owner = try owner(dir)
         wait("the owner shows both windows") { owner.testModel?.layout.layout.locate(PaneID(number: 3))?.window.floats.count == 1 }
-        XCTAssertNil(owner.floatTitle(PaneID(number: 3)), "the server keeps a child window's pane alone, so the float cannot dock")
+        XCTAssertEqual(owner.floatTitle(PaneID(number: 3)), "Dock Pane", "a child window's float docks beside its pane like any other float")
     }
 
     func testDockPaneDocksNextToTheLastFocusedTiledPaneElseTheFirst() throws {

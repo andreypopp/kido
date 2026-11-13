@@ -32,7 +32,7 @@ func remote(_ pane: KoSchema.Remote, user: String = "alice", host: String = "dev
 }
 
 func pane(_ id: Int, window: Int? = nil, parent: Int? = nil, title: String = "", cwd: String = "", lifecycle: Lifecycle = terminal(),
-          records: [KoSchema.ProgramRecord] = [], serial: Int = 0, recordsSeen: Bool = false, mark: KoSchema.Mark = .none_, layer: Item.Layer = .tiled, children: [Node] = []) -> Node {
+          records: [KoSchema.ProgramRecord] = [], serial: Int = 0, recordsSeen: Bool = false, mark: KoSchema.Mark = .none_, children: [Node] = []) -> Node {
     let live: KoSchema.Live?
     let dead: KoSchema.Dead?
     let close: KoSchema.Close?
@@ -45,7 +45,7 @@ func pane(_ id: Int, window: Int? = nil, parent: Int? = nil, title: String = "",
     return .item(Item(pane: .init(close: close, command: [], cwd: cwd, dead: dead, id: PaneID(number: UInt32(id)), inbox: pi,
                                  label: title, mark: mark, parent: parent.map { PaneID(number: UInt32($0)) }, recordsSeen: recordsSeen, started: 0,
                                  status: live.map { .init(kind: $0, programStatus: .init(records: records, serial: serial), since: 0, title: title) },
-                                 title: title, vars: [:]), window: WindowID(number: UInt32(window ?? id)), layer: layer, children: children))
+                                 title: title, vars: [:]), window: WindowID(number: UInt32(window ?? id)), children: children))
 }
 
 func renderedRows(_ snapshot: Snapshot?) -> [SidebarRow] {

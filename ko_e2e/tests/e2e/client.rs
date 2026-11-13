@@ -10,7 +10,7 @@ use crate::layout::{put_edit, window_size, windows};
 use crate::outer::{DOWN_PRESS_RELEASE, FOCUS_IN, FOCUS_OUT, Keys, Outer, UP};
 
 #[test]
-fn the_client_lists_a_child_pane_under_its_parent_indented_one_column() {
+fn the_client_lists_a_child_pane_in_the_order_of_its_window() {
     let s = start(&[]);
     let title = |name: &str| {
         serde_json::json!({
@@ -27,11 +27,11 @@ fn the_client_lists_a_child_pane_under_its_parent_indented_one_column() {
     let child = s.new_pane(request);
     let o = Outer::new(&s.dir, Keys::Extended);
     o.attach("");
-    o.wait("the nested rows", || {
+    o.wait("the rows in window order", || {
         let lines = o.lines();
         lines.iter().any(|line| line.starts_with("1  parent"))
-            && lines.iter().any(|line| line.starts_with("2   child"))
-            && lines.iter().any(|line| line.starts_with("3  other"))
+            && lines.iter().any(|line| line.starts_with("2  other"))
+            && lines.iter().any(|line| line.starts_with("3  child"))
     });
     let lines = o.lines();
     let at = |prefix: &str| {
@@ -41,31 +41,23 @@ fn the_client_lists_a_child_pane_under_its_parent_indented_one_column() {
             .unwrap()
     };
     assert!(
-        at("1  parent") < at("2   child") && at("2   child") < at("3  other"),
+        at("1  parent") < at("2  other") && at("2  other") < at("3  child"),
         "{lines:?}"
     );
     assert!(s.has_pane(&child));
-    o.click(5, at("2   child") + 1);
+    o.click(5, at("3  child") + 1);
     o.line("CHILD-SELECTED");
     s.screen_has(&child, "CHILD-SELECTED");
-    let before = s.doc();
-    o.prefix("%");
-    o.line("CHILD-STILL-USABLE");
-    s.screen_has(&child, "CHILD-STILL-USABLE");
-    assert_eq!(s.doc()["layout"], before["layout"]);
-    assert_eq!(s.doc()["revision"], before["revision"]);
     o.prefix("p");
     o.contains(&format!("TOKEN<{}>", s.token(&other).unwrap()));
-    o.line("PREVIOUS-SKIPS-CHILD");
-    s.screen_has(&other, "PREVIOUS-SKIPS-CHILD");
+    o.line("PREVIOUS-IS-OTHER");
+    s.screen_has(&other, "PREVIOUS-IS-OTHER");
+    o.prefix("n");
+    o.contains(&format!("TOKEN<{}>", s.token(&child).unwrap()));
     o.prefix("n");
     o.contains(&format!("TOKEN<{}>", s.token(&parent).unwrap()));
-    o.line("NEXT-WRAPS-TO-ROOT");
-    s.screen_has(&parent, "NEXT-WRAPS-TO-ROOT");
-    o.prefix("n");
-    o.contains(&format!("TOKEN<{}>", s.token(&other).unwrap()));
-    o.line("NEXT-SKIPS-CHILD");
-    s.screen_has(&other, "NEXT-SKIPS-CHILD");
+    o.line("NEXT-WRAPS-TO-FIRST");
+    s.screen_has(&parent, "NEXT-WRAPS-TO-FIRST");
     o.detach();
 }
 

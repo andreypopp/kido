@@ -433,8 +433,6 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSM
         guard editing == nil else { return true }
         let mods = event.modifierFlags.intersection([.command, .control, .option])
         switch (Int(event.keyCode), event.charactersIgnoringModifiers ?? "", mods) {
-        case (125, _, .command), (126, _, .command):
-            if let pane = entry(table.selectedRow)?.target?.pane { paneCommand(event.keyCode == 125 ? .child : .parent, pane) }
         case (125, _, []), (_, "j", []), (_, "n", .control): move(1)
         case (126, _, []), (_, "k", []), (_, "p", .control): move(-1)
         case (36, _, []), (76, _, []): activate(table.selectedRow, focus: .pane)

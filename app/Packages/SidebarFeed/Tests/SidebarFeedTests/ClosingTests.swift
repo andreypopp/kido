@@ -108,7 +108,7 @@ private func fixed(_ node: Node, title: String? = nil, confirm: KoSchema.CloseCo
 }
 
 @Test func aFixedTitleNamesTheRowTheTabAndTheCloseAlertAndTheForegroundIsTheActivity() throws {
-    let editor = fixed(pane(1, title: "from-osc", lifecycle: terminal(running("nvim", fullscreen: true)), layer: .floating), title: "Draft for @ko", foreground: "nvim")
+    let editor = fixed(pane(1, title: "from-osc", lifecycle: terminal(running("nvim", fullscreen: true))), title: "Draft for @ko", foreground: "nvim")
     let quiet = fixed(pane(2, title: "from-osc"), title: "Draft for @ko")
     let snapshot = makeSnapshot([pane(0), editor, quiet])
     let projection = PaneProjection(snapshot)
@@ -125,9 +125,9 @@ private func fixed(_ node: Node, title: String? = nil, confirm: KoSchema.CloseCo
 
 @Test func closeConfirmNeverClosesWithoutAskingButARunningDescendantAndAnOrdinaryFloatStillAsk() throws {
     let running = terminal(running("nvim", fullscreen: true))
-    let never = fixed(pane(1, lifecycle: running, layer: .floating), confirm: .never)
-    let ordinary = pane(2, lifecycle: running, layer: .floating)
-    let parent = fixed(pane(3, lifecycle: running, layer: .floating, children: [pane(4, parent: 3, lifecycle: agent(working()), mark: .running)]), confirm: .never)
+    let never = fixed(pane(1, lifecycle: running), confirm: .never)
+    let ordinary = pane(2, lifecycle: running)
+    let parent = fixed(pane(3, lifecycle: running, children: [pane(4, parent: 3, lifecycle: agent(working()), mark: .running)]), confirm: .never)
     let projection = PaneProjection(makeSnapshot([pane(0), never, ordinary, parent]))
     #expect(!closeScope(projection, target: .pane(PaneID(number: 1))).ask)
     #expect(closeScope(projection, target: .pane(PaneID(number: 2))).ask)

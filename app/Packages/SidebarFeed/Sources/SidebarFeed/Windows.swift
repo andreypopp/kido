@@ -59,8 +59,8 @@ public func sidebarWindows(_ snapshot: Snapshot?, projection: PaneProjection, se
         if activePanes[item.window] == id {
             result.labels[item.window] = .init(title: item.label, messageable: item.isMessageable)
         }
-        guard let root = projection.rootWindows[item.window], surviving.contains(root) else { continue }
-        result.statuses[root] = (result.statuses[root] ?? .quiet).mergingTabStatus(item.indicator.status)
+        guard surviving.contains(item.window) else { continue }
+        result.statuses[item.window] = (result.statuses[item.window] ?? .quiet).mergingTabStatus(item.indicator.status)
     }
     return result
 }

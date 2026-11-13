@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::values::{Payload, ranged};
 
-const MENU_OWNED: [&str; 55] = [
+const MENU_OWNED: [&str; 53] = [
     "super+1",
     "super+2",
     "super+3",
@@ -45,8 +45,6 @@ const MENU_OWNED: [&str; 55] = [
     "super+alt+up",
     "super+alt+right",
     "super+alt+down",
-    "super+up",
-    "super+down",
     "super+h",
     "super+j",
     "super+k",
@@ -339,8 +337,6 @@ mod tests {
             "super+bracket_left",
             "super+alt+arrow_left",
             "opt+cmd+left",
-            "cmd+arrow_up",
-            "command+down",
             "super+shift+enter",
             "super+q",
             "super+r",
@@ -353,7 +349,16 @@ mod tests {
                 "{text}: {error}"
             );
         }
-        for text in ["super+e", "ctrl+d", "super+alt+d", "super+m", "alt+left"] {
+        for text in [
+            "super+e",
+            "ctrl+d",
+            "super+alt+d",
+            "super+m",
+            "alt+left",
+            "super+up",
+            "cmd+arrow_up",
+            "command+down",
+        ] {
             assert!(trigger(text).is_ok(), "{text}");
         }
         for digit in 1..=9 {

@@ -46,14 +46,12 @@ struct SessionModel: Equatable {
         return "\(session) — \(window.name)"
     }
 
-    func navigation(_ snapshot: Snapshot?, panes: PaneProjection, activePanes: [WindowID: PaneID] = [:]) -> (model: SessionModel, tabs: [Tab]) {
-        let projection = sidebarWindows(snapshot, projection: panes, session: session, surviving: Set(windows.map(\.id)), activePanes: activePanes)
+    func navigation(_ snapshot: Snapshot?, activePanes: [WindowID: PaneID] = [:]) -> (model: SessionModel, tabs: [Tab]) {
+        let projection = sidebarWindows(snapshot, projection: PaneProjection(snapshot), session: session, surviving: Set(windows.map(\.id)), activePanes: activePanes)
         var model = self
         model.sessions = arranged(sessions, by: snapshot?.sessions.map(\.id) ?? [], \.id)
-        model.windows = arranged(windows.filter { panes.rootWindows[$0.id] == $0.id || (panes.rootWindows[$0.id] == nil && (snapshot == nil || $0.id == window)) }, by: projection.order, \.id)
-        let active = window.flatMap { panes.rootWindows[$0] ?? $0 }
-        model.window = active
-        return (model, model.windows.map { Tab(id: $0.id, name: projection.labels[$0.id]?.title ?? $0.name, active: $0.id == active,
+        model.windows = arranged(windows, by: projection.order, \.id)
+        return (model, model.windows.map { Tab(id: $0.id, name: projection.labels[$0.id]?.title ?? $0.name, active: $0.id == window,
                                               status: projection.statuses[$0.id] ?? .quiet,
                                               messageable: projection.labels[$0.id]?.messageable ?? false) })
     }
