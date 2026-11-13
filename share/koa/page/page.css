@@ -203,3 +203,8 @@ body .cm-tooltip.cm-tooltip-autocomplete.koa-complete::after{flex-shrink:0;conte
 .qmsg .kind{font:.8em/1.5 var(--prose);color:color-mix(in srgb,var(--ko-color-4) 55%,var(--muted));white-space:nowrap;flex-shrink:0}
 .qmsg .attach-remove{align-self:flex-start;margin:2px -2px 0 -6px;color:inherit;opacity:.55}
 .qmsg .attach-remove:hover{color:inherit;opacity:1;background:color-mix(in srgb,currentColor 14%,transparent)}
+
+.field.editing,.dock .field.editing{border-color:color-mix(in srgb,var(--hair2) 45%,transparent)}
+.field.editing #prompt,.field.editing .foot>:not(.st),.composer:has(.field.editing) .chips,.composer:has(.field.editing) .queue{opacity:.45}
+.field.editing,.field.editing *,.composer:has(.field.editing) .chips *,.composer:has(.field.editing) .queue *{pointer-events:none}
+.composer:has(.field.editing){cursor:pointer}

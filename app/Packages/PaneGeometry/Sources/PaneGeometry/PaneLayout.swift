@@ -20,6 +20,7 @@ public struct PaneLayout: Equatable {
         public let chrome: CGRect
         public let insets: RenderInsets
     }
+    public static let floatTop: CGFloat = 10
     public static let minimumMargin = CGSize(width: 4, height: 12)
     public let client: CGSize
     public let before: CGSize
@@ -61,6 +62,12 @@ public struct PaneLayout: Equatable {
                       width: grid.width + before.width + after.width, height: grid.height + before.height + after.height)
     }
 
+    public func floatFrame(_ g: Geometry) -> CGRect {
+        let grid = grid(g)
+        return CGRect(x: grid.minX - before.width, y: grid.minY - Self.floatTop,
+                      width: grid.width + before.width + after.width, height: grid.height + Self.floatTop + after.height)
+    }
+
     // `band` is the height at the chrome top that a runtime pane's stripe covers. The grid moves down
     // only as far as its gap above the chrome top lacks, by shifting the render insets: the content
     // frame, the chrome and the cell lattice stay as they are.
@@ -90,15 +97,11 @@ public struct PaneLayout: Equatable {
         return TiledPlacement(grid: grid, content: content, chrome: chrome, insets: insets)
     }
 
-    public func geometry(_ frame: CGRect) -> Geometry {
+    public func floatGeometry(_ frame: CGRect) -> Geometry {
         Geometry(x: Int(((frame.minX + before.width - origin.x) / cell.width).rounded()),
-                 y: Int(((frame.minY + before.height - origin.y) / cell.height).rounded()),
+                 y: Int(((frame.minY + Self.floatTop - origin.y) / cell.height).rounded()),
                  width: max(2, Int(((frame.width - before.width - after.width) / cell.width).rounded())),
-                 height: max(2, Int(((frame.height - before.height - after.height) / cell.height).rounded())))
-    }
-
-    public func frame(x: Int, y: Int, width: Int, height: Int) -> CGRect {
-        frame(Geometry(x: x, y: y, width: width, height: height))
+                 height: max(2, Int(((frame.height - Self.floatTop - after.height) / cell.height).rounded())))
     }
 
     public var floatingBounds: CGRect {

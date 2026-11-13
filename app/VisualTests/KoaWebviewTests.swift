@@ -221,6 +221,12 @@ import SidebarFeed
     func testKoaWebviewComposerFootWaitingNarrow() async throws {
         try await koaWebview(width: 470, height: 300, scenario: .composer, captures: ["narrow-foot-waiting"])
     }
+    func testKoaWebviewComposerFootEditingWide() async throws {
+        try await koaWebview(width: 980, height: 300, scenario: .composer, captures: ["foot-editing"])
+    }
+    func testKoaWebviewComposerFootEditingNarrow() async throws {
+        try await koaWebview(width: 470, height: 300, scenario: .composer, captures: ["narrow-foot-editing"])
+    }
     func testKoaWebviewComposerFootExitedWide() async throws {
         try await koaWebview(width: 980, height: 300, scenario: .composer, captures: ["foot-exited"])
     }
@@ -497,7 +503,7 @@ import SidebarFeed
             // The off-screen WKWebView reports no document focus.
             WebviewPaneView.visualInitialScript = "document.hasFocus=()=>true;" + (WebviewPaneView.visualInitialScript ?? "")
         }
-        if captures.contains("foot-responsive") {
+        if captures.contains("foot-responsive") || captures.contains("foot-editing") || captures.contains("narrow-foot-editing") {
             WebviewPaneView.visualInitialScript = (WebviewPaneView.visualInitialScript ?? "") + "const FootSource=EventSource;window.EventSource=class extends FootSource{constructor(...args){super(...args);window.footSource=this;this.addEventListener('message',event=>{const record=JSON.parse(event.data);if(record.type==='state')window.footState=record})}};"
         }
         defer { WebviewPaneView.visualInitialScript = nil }
@@ -1434,6 +1440,10 @@ import SidebarFeed
                 try await webviewUntil(web, "document.querySelector('#status').textContent==='working \(clock)'")
             }
             if name == "toast" || name == "toast-err" { try await webviewUntil(web, "document.querySelector('.nrow')!==null") }
+            if name == "editing" {
+                _ = try await webviewJS(web, "(()=>{window.composer.setText('Make the sweep keep a start failure');footSource.dispatchEvent(new MessageEvent('message',{data:JSON.stringify({...footState,edit:{pane:'pane_2',editor:'nvim'}})}));return true})()")
+                try await webviewUntil(web, "document.querySelector('#status').textContent==='Editing in nvim…'&&document.querySelector('#field').classList.contains('editing')&&document.querySelector('#field').inert")
+            }
             if name == "extras" { try await webviewUntil(web, "document.querySelectorAll('.foot .ext').length===2") }
             if name == "picker" {
                 _ = try await webviewJS(web, "(()=>{document.querySelector('#model').click();return true})()")

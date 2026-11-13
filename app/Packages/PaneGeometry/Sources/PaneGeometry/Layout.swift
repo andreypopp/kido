@@ -79,6 +79,8 @@ extension Layout {
 
 public struct Geometry: Equatable, Sendable {
     public let x: Int, y: Int, width: Int, height: Int
+
+    public init(x: Int, y: Int, width: Int, height: Int) { (self.x, self.y, self.width, self.height) = (x, y, width, height) }
 }
 
 public enum Direction: Sendable {

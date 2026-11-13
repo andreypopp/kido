@@ -11,37 +11,37 @@ func floatingGeometry(pixel: CGFloat) {
     let root = Node.pane(Pane(id: PaneID(number: 0), index: 0,
         geometry: Geometry(x: 0, y: 0, width: 100, height: 40), active: true, layer: .tiled))
     let layout = PaneLayout(root: root, bounds: CGRect(x: 0, y: 0, width: 824, height: 750), cell: cell, pixel: pixel)
-    let initial = layout.frame(g)
+    let initial = layout.floatFrame(g)
     let moved = initial.offsetBy(dx: 13.3, dy: 3.1)
     #expect(layout.clamp(moved) == moved)
     #expect(abs(moved.minX - initial.minX - 13.3) < 0.0001)
-    #expect(layout.geometry(initial) == g)
+    #expect(layout.floatGeometry(initial) == g)
     let bordered = Geometry(x: g.x + 1, y: g.y + 1, width: g.width - 2, height: g.height - 2)
-    let borderFrame = layout.frame(bordered)
-    #expect(layout.geometry(borderFrame) == bordered)
+    let borderFrame = layout.floatFrame(bordered)
+    #expect(layout.floatGeometry(borderFrame) == bordered)
     #expect(borderFrame.minX == initial.minX + cell.width)
     #expect(borderFrame.minY == initial.minY + cell.height)
     #expect(borderFrame.width == initial.width - 2 * cell.width)
     #expect(borderFrame.height == initial.height - 2 * cell.height)
     for delta in [CGFloat(3.99), 4, 4.01] {
         let moved = initial.offsetBy(dx: delta, dy: 0)
-        #expect(layout.geometry(moved).x == g.x + (delta < 4 ? 0 : 1))
+        #expect(layout.floatGeometry(moved).x == g.x + (delta < 4 ? 0 : 1))
         var sized = initial
         sized.size.width += delta
-        #expect(layout.geometry(sized).width == g.width + (delta < 4 ? 0 : 1))
+        #expect(layout.floatGeometry(sized).width == g.width + (delta < 4 ? 0 : 1))
     }
     for delta in [CGFloat(8.49), 8.5, 8.51] {
-        #expect(layout.geometry(initial.offsetBy(dx: 0, dy: delta)).y == g.y + (delta < 8.5 ? 0 : 1))
+        #expect(layout.floatGeometry(initial.offsetBy(dx: 0, dy: delta)).y == g.y + (delta < 8.5 ? 0 : 1))
         var sized = initial
         sized.size.height += delta
-        #expect(layout.geometry(sized).height == g.height + (delta < 8.5 ? 0 : 1))
+        #expect(layout.floatGeometry(sized).height == g.height + (delta < 8.5 ? 0 : 1))
     }
-    let minimum = layout.frame(Geometry(x: 0, y: 0, width: 2, height: 2))
-    #expect(layout.geometry(minimum).width == 2 && layout.geometry(minimum).height == 2)
+    let minimum = layout.floatFrame(Geometry(x: 0, y: 0, width: 2, height: 2))
+    #expect(layout.floatGeometry(minimum).width == 2 && layout.floatGeometry(minimum).height == 2)
     #expect(minimum.width == 2 * cell.width + layout.before.width + layout.after.width)
-    #expect(minimum.height == 2 * cell.height + layout.before.height + layout.after.height)
-    #expect(layout.geometry(CGRect(x: initial.minX, y: initial.minY, width: 1, height: 1)).width == 2)
-    #expect(layout.geometry(CGRect(x: initial.minX, y: initial.minY, width: 1, height: 1)).height == 2)
+    #expect(minimum.height == 2 * cell.height + PaneLayout.floatTop + layout.after.height)
+    #expect(layout.floatGeometry(CGRect(x: initial.minX, y: initial.minY, width: 1, height: 1)).width == 2)
+    #expect(layout.floatGeometry(CGRect(x: initial.minX, y: initial.minY, width: 1, height: 1)).height == 2)
     var right = initial
     right.size.width = 2000
     let clampedRight = layout.clamp(right, resizing: .right)
@@ -60,7 +60,7 @@ func floatingGeometry(pixel: CGFloat) {
     #expect(layout.clamp(top, resizing: .top).minY == layout.floatingBounds.minY)
     #expect(layout.floatingBounds.contains(layout.clamp(initial.offsetBy(dx: 2000, dy: 2000))))
     #expect(initial.minX == layout.origin.x + 10 * cell.width - layout.before.width)
-    #expect(initial.minY == layout.origin.y + 8 * cell.height - layout.before.height)
+    #expect(initial.minY == layout.origin.y + 8 * cell.height - PaneLayout.floatTop)
 }
 
 @Test(arguments: [CGSize(width: 563, height: 500), CGSize(width: 664, height: 560), CGSize(width: 664, height: 558), CGSize(width: 1281, height: 803)], [CGFloat(1), CGFloat(0.5)])

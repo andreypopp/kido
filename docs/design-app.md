@@ -1361,13 +1361,23 @@ window-edge band, it shows the bar and sends no move edit; its drop sends
 `dock` or `dock_window` with the float as the source and holds the release
 frame until the layout shows the dock. A pane's centre is no target for a
 float, so a float still moves over tiled panes.
-Floating grips and padding share one move gesture, starting after 4pt of
-movement; resize edges follow the pointer immediately. A press without movement
-raises a covered float with a `float` edit of its stacking order. Draggable padding is inside the
-drawn frame but outside the Ghostty grid, including the fractional right/bottom
-remainder. The 5pt resize edges and corners, toolbar and scroller strip take
-precedence; terminal clicks remain Ghostty's. Padding cursor rects show an open
-hand. A moving or resizing float holds its gesture cursor, with the window's
+Floating grips, the move band and padding share one move gesture, starting
+after 4pt of movement; resize edges follow the pointer immediately. A press
+without movement makes the float the active pane, which raises it ([Float
+windows](#float-windows)). A float's top padding is `PaneLayout.floatTop` of
+chrome above the grid (`floatFrame` and `floatGeometry` are the float's frame
+and its inverse); the move band straddles the frame's top edge. Draggable
+padding is inside the drawn frame but outside the Ghostty grid, including the
+fractional right/bottom remainder. `FloatContent.zones` gives the handles' hit
+rects (design: `app/design/floats/NOTES.md`, section C): their outside halves
+lie in the float window's shadow margin, so they work past the main window's
+edge. Precedence is outside-in: the resize corners, the resize edges, the
+toolbar, the move band, the padding, then the terminal. The zones exclude
+the grid, so a click on a cell stays Ghostty's also where the padding is
+thinner than a zone's inside part. The cursor rects follow the same zones. Padding and the
+move band show an open hand. `FloatHandles`, an overlay that takes no hit,
+fades in the band's pill while the pointer is in the band and the corner mark
+while it is over the float. A moving or resizing float holds its gesture cursor, with the window's
 cursor rects disabled until release or cancellation. Disconnect, removal from the
 window, window resignation or closing, and app deactivation cancel the gesture.
 Placement requests no cursor invalidation during that gesture; release enables
@@ -1458,8 +1468,18 @@ The float windows follow the visible layout, in the layout pass that
 moves the tiled panes: the floats of the shown ko window show and all
 others hide (`orderOut`), also at a tab or session switch and at a zoom,
 which hides the top-level floats as before. The children's order is the
-floats' z order; a press raises a float with its `float` edit and orders
-its window to the front. When the main window miniaturizes, its floats
+floats' z order. The active float is the top float: when the layout pass
+that applies the shown focus (`WindowView.update`) shows a new active
+pane that is a float under another, it sends a `float` edit of the z
+order, so every way to focus a float raises it (a press, keyboard
+navigation, the sidebar, Back/Forward, the palette, a link, ⌘1…9 and a
+focus that the server moves). Only a change of the focus raises, and a
+press on the active float: a layout that only changes the order, such
+as another client's raise, sends nothing, so two clients with different
+active floats do not raise in turn. A focus on a tiled pane leaves the
+float order. `orderFront` does not
+reorder the children of a window, so `FloatWindow.raise` removes the
+child window and adds it again above its siblings. When the main window miniaturizes, its floats
 hide, so the Dock tile is the main window alone; they return at
 deminiaturize. While the owner is down and the banner veils the panes,
 the float windows hide too, because the veil cannot cover a child window.

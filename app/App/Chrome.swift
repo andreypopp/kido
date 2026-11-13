@@ -59,6 +59,8 @@ enum Chrome {
     static func capsuleEdge(_ foreground: NSColor, alpha: CGFloat) -> NSColor { foreground.withAlphaComponent(alpha) }
     static func bannerVeil(_ background: NSColor) -> NSColor { background.withAlphaComponent(0.85) }
     static func floatingOverlay(_ background: NSColor) -> NSColor { background.withAlphaComponent(0.45) }
+    static func floatPill(_ foreground: NSColor) -> NSColor { foreground.withAlphaComponent(0.25) }
+    static func floatCornerMark(_ foreground: NSColor) -> NSColor { foreground.withAlphaComponent(0.30) }
     static func matchHighlight(_ foreground: NSColor) -> NSColor { foreground.withAlphaComponent(0.14) }
     // A runtime's colour: the configured one as given, else the hue of its name at the saturation and
     // brightness of the terminal's light or dark theme.

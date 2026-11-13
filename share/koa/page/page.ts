@@ -50,7 +50,8 @@ let escaped = false, dialogId: string | undefined;
 let submitting = false, editorId: string | undefined, dialogTimer: number | undefined, shownExit: number | undefined, pickerButton: HTMLElement | undefined, shownQueue: string | undefined, shownStatuses: string | undefined;
 let historyRequest: { patches: Patch[] } | undefined;
 let attachmentRefusalTimer: number | undefined, editorOpening = false;
-const draft = attach(element('attachments'), () => refreshComposer(), displayPath, () => !!editor.bash(), () => {
+const draft = attach(element('attachments'), () => refreshComposer(), displayPath, () => !!editor.bash() || !!state.edit, () => {
+  if (state.edit) return;
   clearTimeout(attachmentRefusalTimer);
   element('error').textContent = 'a command takes no attachments';
   attachmentRefusalTimer = setTimeout(() => { if (element('error').textContent === 'a command takes no attachments') element('error').textContent = ''; }, 4000);
@@ -72,7 +73,7 @@ function restartingLine() {
   if (restarting || restartShown) element('error').textContent = restarting ? 'Restarting pi…' : '';
   restartShown = restarting;
 }
-const composerBlocked = () => reloading || state.pi.type !== 'ready' || state.dialogs.length > 0 || sessionPicker !== 'closed';
+const composerBlocked = () => reloading || !!state.edit || state.pi.type !== 'ready' || state.dialogs.length > 0 || sessionPicker !== 'closed';
 
 if (!window.ko) {
   const scheme = matchMedia('(prefers-color-scheme: dark)');
@@ -670,14 +671,15 @@ function refreshComposer() {
   const blocked = composerBlocked(), working = state.working && !blocked;
   const available = element('field').inert && !blocked;
   element('field').inert = blocked;
+  element('field').classList.toggle('editing', !!state.edit);
   composerFocus();
   if (available) focusComposer();
-  element('field').classList.toggle('drop', draft.hover);
+  element('field').classList.toggle('drop', draft.hover && !state.edit);
   const running = state.bash.some(item => item.phase !== 'completed') && !working && editor.empty();
   editor.running(running);
   editor.readonly(editing());
   if (!editor.bash() && element('error').textContent === 'a command takes no attachments') { clearTimeout(attachmentRefusalTimer); element('error').textContent = ''; }
-  editor.placeholder(state.pi.type === 'switching' ? 'loading…' : running ? 'running… ⎋ cancels' : draft.hover ? 'Drop to attach' : hasExited() ? 'pi has exited' : working && state.compaction !== 'running' ? 'Steer koa…' : 'Message koa…');
+  editor.placeholder(state.pi.type === 'switching' ? 'loading…' : running ? 'running… ⎋ cancels' : draft.hover && !state.edit ? 'Drop to attach' : hasExited() ? 'pi has exited' : working && state.compaction !== 'running' ? 'Steer koa…' : 'Message koa…');
   status();
 }
 function status() {
@@ -1208,7 +1210,10 @@ function composerFocus() { element('field').classList.toggle('focus', composerRe
 function focusComposer() { composerFocus(); if (composerReceivesKeys() && !pickerButton && sessionPicker === 'closed' && (!isControl(document.activeElement) || editor.hasFocus())) editor.focus(); }
 window.addEventListener('focus', focusComposer);
 window.addEventListener('load', focusComposer);
+const onEditingComposer = (event: Event) => !!state.edit && event.target instanceof Element && element('composer').contains(event.target);
+document.addEventListener('mousedown', event => { if (onEditingComposer(event)) event.preventDefault(); });
 document.addEventListener('click', event => {
+  if (state.edit && onEditingComposer(event)) { event.preventDefault(); window.ko?.focus?.(state.edit.pane); return; }
   const link = event.target instanceof Element ? event.target.closest('a') : null;
   if (!link?.classList.contains('who')) return;
   event.preventDefault();

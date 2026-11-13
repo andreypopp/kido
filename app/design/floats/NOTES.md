@@ -87,9 +87,14 @@ What changes visibly:
   window appear, every other float hides, without animation, in the
   same layout pass that moves the tiled panes; zoom hides every float
   as today. A float whose pane goes closes its window.
-- **Ordering**: a press on a float raises it (the `float` edit of its
-  stacking order, today's rule) and `orderFront`s its window among the
-  children; the children's order is the floats' z order.
+- **Ordering** (user, 2026-11-13): the active float is the top
+  float. Every focus change to a float raises it: a press, keyboard
+  navigation, the sidebar row, Back/Forward, the palette, an @name
+  link, Cmd-1…9 to a window whose active pane is a float, a focus the
+  server moves. It sends the `float` edit of the z order as the press
+  does and `orderFront`s the window in the same layout pass that
+  shows the focus; the children's order is the floats' z order. A
+  focus change to a tiled pane leaves the float order as it is.
 - **Focus.** The main window stays the main window (its title bar and
   traffic lights active) while a float window is key: the float is
   a non-activating child that can become key. When the float is key:
@@ -115,3 +120,32 @@ What changes visibly:
   connection banner keeps hiding the floats.
 - **Mission Control, Exposé, Stage Manager**: the floats are grouped
   with the main window (child windows are); nothing to add.
+
+## C · Handles that can be hit (user, 2026-11-13)
+
+The 5pt edges were too thin.
+
+- **Move: the top band.** The float's top padding is 10pt of chrome
+  above the grid (no cells under it); the move handle is a 16pt band
+  straddling the top edge, 10pt inside (that padding) and 6pt outside
+  in the drawn shadow's margin, the full width; the hover toolbar
+  sits on it and keeps precedence. Cursor: open hand, closed while
+  dragging. The toolbar's grip button stays; the draggable padding
+  elsewhere stays. Visible on hover of the band: a 36×4pt pill
+  centred in it, 2pt radius, the foreground at 25% in both themes,
+  120ms fade; nothing otherwise.
+- **Resize: the bottom-right corner first.** A 20×20pt square
+  straddling that corner (12 in, 8 out), the system's diagonal
+  resize cursor. The other corners keep 12×12 (6 in, 6 out) and the
+  four edges an 8pt band (4 in, 4 out); the top edge's band wins over
+  the move band in its 4pt. Visible on hover of the float: a corner
+  mark in the bottom-right padding, two diagonal 1pt lines 4pt apart,
+  8 and 4pt long, the foreground at 30%, 3pt inside the corner;
+  nothing otherwise.
+- **Precedence**, outside-in: resize corners, resize edges, the
+  toolbar, the move band, the padding, Ghostty's grid; a click inside
+  the grid is always the terminal's.
+- **Child windows**: the float window's frame carries an 8pt margin on
+  every side for the shadow, so the outside halves of the hit areas
+  are inside the float window and work past the main window's edge.
+  No separate light/dark values. ko_tui unchanged.

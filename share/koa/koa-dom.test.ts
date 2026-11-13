@@ -1536,3 +1536,46 @@ test('the end of an edit returns focus to the composer', async () => {
   end();
   assert.equal(app.context.document.activeElement, app.prompt());
 });
+
+test('while an editor is open the composer is dimmed, a click focuses the editor pane and Enter does nothing', async () => {
+  const app = await page(), requests: string[] = [], focused: string[] = [];
+  app.context.fetch = async (path?: string) => { requests.push(path ?? ''); return { ok: true, json: async () => ({}) }; };
+  app.context.window.ko = { focus: (pane: string) => { focused.push(pane); } };
+  const field = app.elements.get('field') ?? app.context.document.getElementById('field');
+  const end = app.run(`
+    state={...state,pi:{type:'ready'},sessionId:'s1',edit:{pane:'pane_10',editor:'nano'}};
+    editor.setText('draft');refreshComposer();
+    () => { apply({type:'state',...state,edit:undefined}); };
+  `);
+  assert.equal(field.inert, true);
+  assert.equal(field.classList.contains('editing'), true);
+  const target = app.context.document.getElementById('model');
+  app.context.document.getElementById('composer').append(target);
+  let down = false, click = false;
+  app.listeners.get('mousedown')?.({ target, preventDefault() { down = true; } });
+  app.listeners.get('click')?.({ target, preventDefault() { click = true; } });
+  assert.deepEqual([down, click, focused], [true, true, ['pane_10']]);
+  app.listeners.get('keydown')?.({ key: 'Enter', target: app.prompt(), preventDefault() {} });
+  assert.deepEqual(requests, []);
+  assert.equal(app.text(), 'draft');
+  end();
+  assert.equal(field.classList.contains('editing'), false);
+  app.listeners.get('click')?.({ target, preventDefault() {} });
+  assert.deepEqual(focused, ['pane_10']);
+});
+
+test('while an editor is open a drop and a native drop attach nothing and show no drop target', async () => {
+  const app = await page(), requests: string[] = [];
+  app.context.fetch = async (path?: string) => { requests.push(path ?? ''); return { ok: true, json: async () => ({}) }; };
+  app.context.window.ko = { local: true };
+  app.run("state={...state,pi:{type:'ready'},sessionId:'s1',edit:{pane:'pane_10',editor:'nano'}};refreshComposer()");
+  let prevented = false;
+  app.listeners.get('dragenter')?.({ dataTransfer: { types: ['Files'] } });
+  assert.equal(app.elements.get('field')?.classList.contains('drop'), false);
+  app.listeners.get('drop')?.({ dataTransfer: { files: [new File(['x'], 'a.txt')], items: [] }, preventDefault() { prevented = true; } });
+  app.windowListeners.get('ko-drop')?.(new app.context.CustomEvent('ko-drop', { detail: { files: [{ id: 'one', path: '/tmp/one.txt', origin: 'path', name: 'one.txt', kind: 'file', size: 4 }], refused: false } }));
+  await new Promise<void>(resolve => setImmediate(resolve));
+  assert.equal(prevented, true);
+  assert.deepEqual(requests, ['/attachments/one/delete']);
+  assert.equal(app.run('draft.count'), 0);
+});

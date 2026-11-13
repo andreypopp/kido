@@ -131,6 +131,32 @@ import XCTest
         try await runtimeSnapshot(dark, "float")
     }
 
+    // The hover marks of a float: over the move band the pill and the corner mark, over the grid the corner mark alone.
+    func floatHandlesState(dark: Bool) async throws {
+        let float = runtimePane(nil, "$ make checks\\r\\n")
+        let tree = splitTree("h", [runtimePane(nil, "left\\r\\n"), runtimePane(nil, "right\\r\\n")])
+        let floats = #"[{"pane":\#(String(float.dropFirst(8).dropLast())),"x":10,"y":4,"cols":34,"rows":8}]"#
+        try await startThemed(dark, windows: #"[{"name":"w","tree":\#(tree),"floats":\#(floats)}]"#)
+        let pane = PaneID(number: 3)
+        try client?.select(KO_SELECT_PANE, pane)
+        try await wait("the float is active") { self.terminal?.active == pane }
+        let host = try XCTUnwrap(terminal?.displayedPanes.first { $0.pane == pane }?.window as? FloatWindow)
+        func hover(_ point: CGPoint) throws {
+            let event = try XCTUnwrap(NSEvent.mouseEvent(with: .mouseMoved, location: host.content.convert(point, to: nil), modifierFlags: [], timestamp: 0,
+                                                         windowNumber: host.windowNumber, context: nil, eventNumber: 0, clickCount: 0, pressure: 0))
+            host.content.mouseMoved(with: event)
+        }
+        let chrome = host.content.chrome
+        try hover(CGPoint(x: chrome.midX, y: chrome.minY + 2))
+        try await wait("the pill and the mark show") { host.content.handles.visibleMarks == (true, true) }
+        try await settle()
+        try await runtimeSnapshot(dark, "float-handles-band")
+        try hover(CGPoint(x: chrome.midX, y: chrome.midY))
+        try await wait("the mark alone shows") { host.content.handles.visibleMarks == (false, true) }
+        try await settle()
+        try await runtimeSnapshot(dark, "float-handles-mark")
+    }
+
     // colour-hash and colour-config: four runtimes in four panes; gpu-1 takes its configured colour.
     func runtimeColourState(dark: Bool, configured: Bool) async throws {
         var gpu: [String: Any] = ["command": [String: Any]()]
@@ -158,6 +184,8 @@ import XCTest
     func testRuntimeFailedDark() async throws { try await runtimeFailedState(dark: true) }
     func testRuntimeFloatLight() async throws { try await runtimeFloatState(dark: false) }
     func testRuntimeFloatDark() async throws { try await runtimeFloatState(dark: true) }
+    func testFloatHandlesLight() async throws { try await floatHandlesState(dark: false) }
+    func testFloatHandlesDark() async throws { try await floatHandlesState(dark: true) }
     func testRuntimeColourHashLight() async throws { try await runtimeColourState(dark: false, configured: false) }
     func testRuntimeColourHashDark() async throws { try await runtimeColourState(dark: true, configured: false) }
     func testRuntimeColourConfigLight() async throws { try await runtimeColourState(dark: false, configured: true) }

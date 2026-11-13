@@ -324,6 +324,128 @@ import XCTest
         dismissed.forEach(owner.notices.dismiss)
         XCTAssertFalse(overlay.shown, "without cards there is no window")
     }
+
+    private func stackOrder(_ owner: WindowOwner) -> [PaneID] {
+        owner.window.floatChildren.compactMap { ($0 as? FloatWindow)?.content.pane }
+    }
+
+    private final class Recorded { var raises: [PaneID] = [] }
+
+    private func record(_ session: SessionView) -> Recorded {
+        let recorded = Recorded(), original = session.edit
+        session.edit = { edit, key in
+            if case .float(let float) = edit, float.z != nil { recorded.raises.append(float.pane) }
+            original(edit, key)
+        }
+        return recorded
+    }
+
+    private func floatOrder(_ owner: WindowOwner) -> [PaneID] {
+        owner.testSession?.windows.values.first { !$0.isHidden }?.visualFloatHosts.compactMap(\.content.pane) ?? []
+    }
+
+    func testAPressOnTheLowerFloatRaisesItOnce() throws {
+        let (owner, _) = try shown(twoFloats)
+        let session = try XCTUnwrap(owner.testSession)
+        wait("the windows follow the z order") { self.stackOrder(owner) == self.floatOrder(owner) && self.floatOrder(owner).count == 2 }
+        let initial = floatOrder(owner), lower = initial[0], upper = initial[1]
+        let recorded = record(session)
+        try XCTUnwrap(session.pane(lower)).onSelect()
+        wait("the server orders the pressed float on top") { self.floatOrder(owner) == [upper, lower] }
+        wait("its window is ordered over the other") { self.stackOrder(owner) == [upper, lower] }
+        XCTAssertEqual(recorded.raises, [lower])
+        try XCTUnwrap(session.pane(lower)).onSelect()
+        session.edit(.float(KoSchema.EditFloat(pane: upper, x: 12, y: 5)), nil)
+        wait("an unrelated layout update shows") { owner.testModel?.layout.layout.windows.first?.floats.first { $0.pane == upper }?.x == 12 && !session.editing() }
+        XCTAssertEqual(recorded.raises, [lower], "a press on the top float and an unrelated update send no new raise")
+    }
+
+    func testKeyboardNavigationToTheLowerFloatRaisesIt() throws {
+        let (owner, _) = try shown(twoFloats)
+        let session = try XCTUnwrap(owner.testSession)
+        wait("the windows follow the z order") { self.stackOrder(owner) == self.floatOrder(owner) && self.floatOrder(owner).count == 2 }
+        let initial = floatOrder(owner), lower = initial[0], upper = initial[1]
+        let recorded = record(session)
+        session.selectPane(lower)
+        wait("the server orders the focused float on top") { self.floatOrder(owner) == [upper, lower] }
+        wait("its window is ordered over the other") { self.stackOrder(owner) == [upper, lower] }
+        XCTAssertEqual(recorded.raises, [lower])
+    }
+
+    func testFocusingATiledPaneLeavesTheFloatOrder() throws {
+        let (owner, client) = try shown(floatLayout(border: false, tree: split))
+        let session = try XCTUnwrap(owner.testSession)
+        let tiled = PaneID(number: 1)
+        let lower = floatOrder(owner)[0]
+        session.selectPane(lower)
+        wait("the lower float is active and on top") { self.floatOrder(owner).last == lower && self.stackOrder(owner).last == lower }
+        let order = stackOrder(owner)
+        session.selectPane(tiled)
+        wait("the tiled pane is active") { (try? client.model())?.selection.pane == tiled }
+        XCTAssertEqual(stackOrder(owner), order)
+        XCTAssertEqual(floatOrder(owner), order)
+    }
+
+    func testTheHandlesHitInPrecedenceOutsideIn() {
+        let r = CGRect(x: 27, y: 27, width: 300, height: 200)
+        let grid = CGRect(x: r.minX + 4, y: r.minY + 10, width: r.width - 8, height: r.height - 14)
+        let toolbar = CGRect(x: r.maxX - 150, y: r.minY + 8, width: 145, height: 32)
+        func zone(_ x: CGFloat, _ y: CGFloat, toolbar: CGRect? = nil) -> FloatContent.Zone? { FloatContent.zone(at: CGPoint(x: x, y: y), in: r, grid: grid, toolbar: toolbar) }
+        XCTAssertEqual(zone(r.maxX + 7, r.maxY + 7), .resize(.bottomRight), "the bottom-right corner reaches 8pt out")
+        XCTAssertEqual(zone(r.maxX - 3, r.maxY - 3), .resize(.bottomRight), "and 12pt in, outside the grid")
+        XCTAssertNil(zone(r.maxX - 11, r.maxY - 11), "no zone covers a grid cell")
+        XCTAssertEqual(zone(r.minX + 2, r.minY + 5), .resize(.topLeft), "the other corners are 12pt squares")
+        XCTAssertEqual(zone(r.minX + 2, r.maxY - 11), .resize(.left), "the corner square ends 6pt in, where the edge band continues")
+        XCTAssertEqual(zone(r.midX, r.minY + 3), .resize(.top), "the top edge band wins over the move band in its 4pt")
+        XCTAssertEqual(zone(r.midX, r.minY - 5), .move, "the move band reaches 6pt out")
+        XCTAssertEqual(zone(r.midX, r.minY + 9), .move, "and 10pt in")
+        XCTAssertNil(zone(r.midX, r.minY + 11), "below the band is the padding and the grid")
+        XCTAssertNil(zone(r.maxX - 50, r.minY + 9, toolbar: toolbar), "the toolbar wins over the move band")
+        XCTAssertEqual(zone(r.maxX - 50, r.minY - 5, toolbar: toolbar), .move)
+        XCTAssertEqual(zone(r.maxX - 2, r.minY + 9, toolbar: toolbar), .resize(.right), "the edges win over the toolbar")
+    }
+
+    func testAPressInAGridCornerCellGoesToTheTerminal() throws {
+        let (owner, _) = try shown(twoFloats)
+        let session = try XCTUnwrap(owner.testSession)
+        let host = try XCTUnwrap(session.pane(PaneID(number: 2))?.window as? FloatWindow)
+        let content = host.content, grid = content.grid
+        XCTAssertFalse(grid.isEmpty)
+        for point in [CGPoint(x: grid.minX + 1, y: grid.minY + 1), CGPoint(x: grid.maxX - 1, y: grid.minY + 1),
+                      CGPoint(x: grid.minX + 1, y: grid.maxY - 1), CGPoint(x: grid.maxX - 1, y: grid.maxY - 1)] {
+            XCTAssertFalse(content.hitTest(content.convert(point, to: content.superview)) === content, "\(point) is a terminal cell")
+        }
+    }
+
+    private func local(_ host: FloatWindow, _ point: CGPoint) -> CGPoint { host.convertPoint(toScreen: host.content.convert(point, to: nil)) }
+
+    func testADragFromTheMoveBandMovesTheFloat() throws {
+        let (owner, client) = try shown(twoFloats)
+        let session = try XCTUnwrap(owner.testSession)
+        let id = PaneID(number: 2)
+        let host = try XCTUnwrap(session.pane(id)?.window as? FloatWindow)
+        let chrome = host.content.chrome, before = try XCTUnwrap(floats(client).first { $0.pane == id })
+        let start = local(host, CGPoint(x: chrome.midX, y: chrome.minY - 5))
+        XCTAssertTrue(host.content.hitTest(host.content.convert(CGPoint(x: chrome.midX, y: chrome.minY - 5), to: host.content.superview)) === host.content, "the band outside the float is the float window's")
+        host.content.mouseDown(with: try mouse(.leftMouseDown, start, in: host))
+        XCTAssertTrue(try XCTUnwrap(session.windows.values.first { !$0.isHidden }).visualPaneDragging, "the band starts the move")
+        for step in 1...4 { host.content.mouseDragged(with: try mouse(.leftMouseDragged, CGPoint(x: start.x, y: start.y - 20 * CGFloat(step)), in: host)) }
+        host.content.mouseUp(with: try mouse(.leftMouseUp, CGPoint(x: start.x, y: start.y - 80), in: host))
+        wait("the float moved down") { (self.floats(client).first { $0.pane == id }?.y ?? 0) > before.y }
+    }
+
+    func testADragFromTheBottomRightCornerResizesTheFloat() throws {
+        let (owner, client) = try shown(twoFloats)
+        let session = try XCTUnwrap(owner.testSession)
+        let id = PaneID(number: 2)
+        let host = try XCTUnwrap(session.pane(id)?.window as? FloatWindow)
+        let chrome = host.content.chrome, before = try XCTUnwrap(floats(client).first { $0.pane == id })
+        let start = local(host, CGPoint(x: chrome.maxX + 6, y: chrome.maxY + 6))
+        host.content.mouseDown(with: try mouse(.leftMouseDown, start, in: host))
+        for step in 1...4 { host.content.mouseDragged(with: try mouse(.leftMouseDragged, CGPoint(x: start.x + 20 * CGFloat(step), y: start.y - 20 * CGFloat(step)), in: host)) }
+        host.content.mouseUp(with: try mouse(.leftMouseUp, CGPoint(x: start.x + 80, y: start.y - 80), in: host))
+        wait("the float grew") { (self.floats(client).first { $0.pane == id }.map { $0.cols > before.cols && $0.rows > before.rows }) == true }
+    }
 }
 
 private extension NSWindow {
