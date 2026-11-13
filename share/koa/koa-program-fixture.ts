@@ -38,9 +38,11 @@ export async function fixture(t: TestContext, steps: object[], env: NodeJS.Proce
   let stderr = "";
   child.stdout.on("data", bytes => { stdout += bytes; });
   let ready: (url: string) => void = () => {};
-  const url = new Promise<string>(resolve => { ready = resolve; });
+  let failed: (error: Error) => void = () => {};
+  const url = new Promise<string>((resolve, reject) => { ready = resolve; failed = reject; });
   child.stderr.on("data", bytes => { stderr += bytes; const match = stderr.match(/koa: (http:\/\/127\.0\.0\.1:\d+\/)/); if (match?.[1]) ready(match[1]); });
   const close = once(child, "close");
+  child.once("exit", (code, signal) => failed(new Error(`koa exited (${code ?? signal}) before it was ready: ${stderr}`)));
   t.after(async () => { await stopChild(child, close); await rm(dir, { recursive: true, force: true }); });
   const base = await url;
   const controller = new AbortController();

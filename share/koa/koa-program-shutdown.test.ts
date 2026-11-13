@@ -154,17 +154,21 @@ test("pi exit does not wait for a descendant that holds its pipes", { timeout: 1
   const server = createServer();
   await new Promise<void>(resolve => server.listen(gate, resolve));
   const connected = once(server, "connection");
+  const peers: Array<{ destroy(): unknown }> = [];
+  server.on("connection", peer => { peers.push(peer); });
+  t.after(async () => {
+    for (const peer of peers) peer.destroy();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const closed = await Promise.race([new Promise<boolean>(resolve => server.close(() => resolve(true))), new Promise<boolean>(resolve => { timer = setTimeout(resolve, 3000, false); timer.unref(); })]);
+    clearTimeout(timer);
+    await rm(dir, { recursive: true, force: true });
+    assert.ok(closed, `gate server ${gate} stayed open: a connection to it was not closed`);
+  });
   const app = await fixture(t, [{ type: "wait", command: "prompt" }, { type: "exit", code: 7 }], { KOA_FAKE_KEEP_PIPES: gate });
   await app.post("prompt", { text: "exit", mode: "prompt", attachments: [] });
-  const [peer] = await connected;
-  try {
-    await app.post("quit");
-    assert.equal(await Promise.race([app.close.then(() => true), timers.setTimeout(500, false)]), true);
-  } finally {
-    peer.end("release");
-    await new Promise<void>(resolve => server.close(() => resolve()));
-    await rm(dir, { recursive: true, force: true });
-  }
+  await connected;
+  await app.post("quit");
+  assert.equal(await Promise.race([app.close.then(() => true), timers.setTimeout(500, false)]), true);
 });
 
 test("quit exits at its deadline when the reply stalls and the client never reads", { timeout: 6000 }, async t => {
