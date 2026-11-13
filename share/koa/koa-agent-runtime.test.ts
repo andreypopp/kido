@@ -12,7 +12,7 @@ import { fileURLToPath } from "node:url";
 
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
 
-import { makeFixture, agentPane, selfPane, startSession, text, customMessages, notices, gatedCommand, pollUntil, withEnv, freshExtension, movedId, logHas, captureStatusRecords, type Fixture, type Started, at, jobId, jobLog, jsonRows, type ToolResult, getStr, getList, get, createChannel } from "./koa-agent-fixture.ts";
+import { makeFixture, agentPane, selfPane, startSession, text, entriesOf, customMessages, notices, gatedCommand, pollUntil, withEnv, freshExtension, movedId, logHas, captureStatusRecords, type Fixture, type Started, at, jobId, jobLog, jsonRows, type ToolResult, argvOf, envOf, getStr, getList, get, createChannel } from "./koa-agent-fixture.ts";
 
 import { isRecord } from "./text.ts";
 import { mapHostPath, senderHeader } from "./koa-agent.ts";
@@ -389,7 +389,7 @@ test("find and grep use fd and rg when the runtime has them, and read rg's JSON 
     assert.equal(text(await run(s, "find", { pattern: "*.ts" })), "found.ts");
     const seen = readFileSync(record, "utf8");
     assert.match(seen, /--no-config --json --hidden --color=never --ignore-case --glob \*\.ts --context 1 -- a /);
-    assert.match(seen, /--glob --color=never --hidden --no-require-git --exclude \.git --exclude node_modules --max-results 1001 -- \*\.ts /);
+    assert.match(seen, /--glob --color=never --hidden --no-require-git --exclude \.git --exclude node_modules --max-results 1000 -- \*\.ts /);
   } finally {
     await fx.restore();
   }
@@ -644,6 +644,105 @@ for (const reason of ["quit", "new", "resume", "fork", "reload"]) {
     }
   });
 }
+
+test("spawn_agent with a runtime starts a routed child, or an inside child by the runtime's pi", async () => {
+  const fx = makeFixture();
+  try {
+    const t = tree(fx);
+    const repo = process.cwd();
+    fx.setRuntimes({
+      dev: dev(t),
+      inner: { pi: "runtime", source: { type: "session", id: "session_3" }, paths: [{ host: repo, runtime: "/work" }] },
+      lost: { pi: "runtime" },
+      fall: { pi: "runtime", cwd: "/fallback" },
+    });
+    fx.setPanes([selfPane()]);
+    const s = await startSession(fx, { name: "Self", ctx: { isProjectTrusted: () => true } });
+    const spawnAgent = (params: Record<string, unknown>) => s.tool("spawn_agent").execute("c", { task: "go", ...params });
+    
+    const routedChild = text(await spawnAgent({ name: "viahost", runtime: "dev" }));
+    const [first] = fx.posts("/panes");
+    assert.equal(first.runtime, undefined, "a routed child is a host pane");
+    assert.ok(argvOf(first).includes("--session-dir"));
+    assert.deepEqual(argvOf(first).slice(1, 6), ["shell", "--", "koa", "--runtime", "dev"]);
+    assert.equal(first.cwd, repo);
+    assert.equal(envOf(first, "KO_AGENT_TRUSTED_CWD"), repo, "the host cwd, unmapped");
+    assert.match(routedChild, /^spawned viahost \(session [0-9a-f]{32}, window window_10, pane pane_10, in runtime dev\);/);
+    const [entry] = entriesOf(s, "koa.agent");
+    assert.deepEqual(entry.runtime, { name: "dev", mode: "routed" });
+
+    const insideChild = text(await spawnAgent({ name: "inside", runtime: "inner" }));
+    const [, second] = fx.posts("/panes");
+    assert.equal(second.runtime, "inner");
+    assert.deepEqual(argvOf(second).slice(0, 4), ["ko", "shell", "--", "koa"]);
+    assert.ok(!argvOf(second).includes("--runtime"));
+    assert.ok(!argvOf(second).includes("--session-dir"));
+    assert.equal(second.cwd, repo, "the host path, which the server maps");
+    assert.equal(envOf(second, "KO_AGENT_TRUSTED_CWD"), "/work", "the path the child sees");
+    assert.match(insideChild, /pane pane_11, in runtime inner\);/);
+
+    await spawnAgent({ name: "unmapped", runtime: "lost" });
+    const [, , third] = fx.posts("/panes");
+    assert.equal(envOf(third, "KO_AGENT_TRUSTED_CWD"), undefined, "an unmapped cwd gives no trust");
+
+    await spawnAgent({ name: "fallen", runtime: "fall" });
+    const [, , , fifth] = fx.posts("/panes");
+    assert.equal(envOf(fifth, "KO_AGENT_TRUSTED_CWD"), "/fallback", "an unmapped cwd falls back to the runtime's cwd, as the server maps it");
+
+    for (const extra of [{ resume_from: "x".repeat(8) }, { fork: true }]) {
+      assert.equal(text(await spawnAgent({ name: "nope", runtime: "inner", ...extra })), "could not spawn agent: a saved session is a file of this filesystem: resume_from and fork need a runtime whose pi runs on the host");
+    }
+    assert.equal(text(await spawnAgent({ name: "ghost", runtime: "ghost" })), "could not spawn agent: no runtime ghost in the fake");
+    assert.equal(fx.posts("/panes").length, 4);
+
+    fx.setPanes([selfPane()]);
+    const restarted = text(await s.tool("message_agent").execute("c", { to: "viahost", message: "again" }));
+    assert.match(restarted, /^restarted viahost in pane/);
+    const [, , , , fourth] = fx.posts("/panes");
+    assert.deepEqual(argvOf(fourth).slice(4, 6), ["--runtime", "dev"], "a restart starts the child as it was started");
+  } finally {
+    await fx.restore();
+  }
+});
+
+test("a routed spawner's child is routed in the same runtime; an inside spawner's child is in its runtime by the server", async () => {
+  const fx = makeFixture();
+  try {
+    const t = tree(fx);
+    fx.setPanes([selfPane()]);
+    const s = await routed(fx, t);
+    const reply = text(await s.tool("spawn_agent").execute("c", { name: "kid", task: "go" }));
+    const [body] = fx.posts("/panes");
+    assert.deepEqual(argvOf(body).slice(4, 6), ["--runtime", "dev"]);
+    assert.equal(body.cwd, process.cwd(), "the child starts in the caller's host cwd and maps it itself");
+    assert.match(reply, /in runtime dev\);/);
+    await s.tool("spawn_agent").execute("c2", { name: "kid2", task: "go", runtime: "dev" });
+    const [, second] = fx.posts("/panes");
+    assert.deepEqual(argvOf(second).slice(4, 6), ["--runtime", "dev"]);
+    assert.ok(fx.apiCalls().some((call) => call.path === "/runtimes/dev"));
+  } finally {
+    await fx.restore();
+  }
+  const inside = makeFixture();
+  try {
+    inside.setPanes([selfPane()]);
+    await withEnv({ KO_RUNTIME: "box" }, async () => {
+      const s = await startSession(inside, { flags: { runtime: "ignored" } });
+      const spawnAgent = (params: Record<string, unknown>) => s.tool("spawn_agent").execute("c", { task: "go", ...params });
+      const reply = text(await spawnAgent({ name: "kid" }));
+      const [body] = inside.posts("/panes");
+      assert.equal(body.runtime, undefined);
+      assert.ok(!argvOf(body).includes("--runtime"));
+      assert.match(reply, /pane pane_10, in runtime box\);/);
+      assert.match(text(await spawnAgent({ name: "other", runtime: "else" })), /runs inside runtime box; its children run there too/);
+      assert.equal(inside.apiCalls().some((call) => call.path.startsWith("/runtimes")), false, "an inside agent reads no /runtimes route");
+      assert.deepEqual(await s.emit("user_bash", {}), [undefined], "the inside mode routes nothing");
+      assert.equal(inside.row("pane_1")?.vars?.["pi.runtime"], undefined);
+    });
+  } finally {
+    await inside.restore();
+  }
+});
 
 test("list_agents shows the runtime of a row or of a routed agent's pi.runtime, and its runtime cwd; messages name the sender's runtime", async () => {
   const fx = makeFixture();

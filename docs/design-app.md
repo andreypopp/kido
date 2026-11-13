@@ -3279,15 +3279,9 @@ view. Geolocation answers only in an ordered window, so that check
 orders the window far off screen. The Command-key check drives
 `OwnerWindow.performKeyEquivalent` with the web view as first responder.
 
-`KoaWebviewTests` runs the checkout's koa with the pinned pi against
-the fake model provider (`share/koa/koa-fake-provider.ts`), so no model
-call happens, and snapshots each state of koa's mockups in light and
-dark (design-koa.md, "Tests"). `KoaFixture.swift` starts the provider
-and seeds the sessions (`share/koa/testdata/visual-seed.ts`); a test
-extension (`share/koa/testdata/visual-ext.ts`) gives the states that a
-model cannot make: dialogs, statuses, test tools and tree branches that
-`/vstep` reaches through `ctx.navigateTree`, so a state loads without a
-session switch. A page check in the visual
+`KoaWebviewTests` runs the checkout's koa over its fake pi
+(`share/koa/koa-fake-pi.ts`), so no model call happens, and snapshots
+each state of koa's mockups in light and dark (design-koa.md). A page check in the visual
 suite waits with a `MutationObserver`, never with `requestAnimationFrame`:
 WebKit pauses animation frames for a page in the off-screen window.
 

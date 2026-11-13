@@ -1,5 +1,7 @@
 import {
+  AgentSession,
   SessionManager,
+  parseArgs,
   parseSessionEntries,
   type BashOperations,
   DEFAULT_MAX_BYTES,
@@ -36,10 +38,15 @@ import {
 import { type ChildProcess, spawn, spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { type WriteStream, createWriteStream, mkdirSync, readFileSync, readdirSync, realpathSync, statSync } from "node:fs";
+import { Socket } from "node:net";
 import os from "node:os";
+import { createInterface } from "node:readline";
+import type { EventEmitter } from "node:events";
 import type { CompletionContext } from "./completion-context.ts";
-import type { AgentHost } from "./koa-agents.ts";
-import { runtimeExec, lineReader, openStream, runCommand, apiCall, apiArgs, KO_TIMEOUT_MS, type Reply, type ExecOptions, type ExecResult } from "./runtime-exec.ts";
+import type { KoaQuery, KoaReply } from "./koa-channel.ts";
+import { RELOAD_COMMAND } from "./koa-records.ts";
+import { sessionDir } from "./koa-session-dir.ts";
+import { runtimeExec, findKo, lineReader, openStream, runCommand, apiCall, apiArgs, KO_TIMEOUT_MS, type Reply, type ExecOptions, type ExecResult } from "./runtime-exec.ts";
 import { contentText, mintId, utf8Prefix, utf8Suffix, errorText, replaceControlCharacters, isRecord, isString, str } from "./text.ts";
 import { dirname, delimiter, extname, join, posix, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -204,6 +211,24 @@ type ChildData = {
   pane: { instance: string; pane: string };
 };
 
+function isMessageQueue(queue: unknown): queue is { messages: AgentSession["messages"] } {
+  return typeof queue === "object" && queue !== null && "messages" in queue && Array.isArray(queue.messages);
+}
+
+// pi's core/agent-session.js clearQueue() discards custom messages alongside editor text.
+const clearQueue = (globalThis.__koaAgentExtensionClearQueue ??= AgentSession.prototype.clearQueue);
+AgentSession.prototype.clearQueue = function () {
+  const agent: object = this.agent;
+  if (!("steeringQueue" in agent) || !("followUpQueue" in agent)
+    || !isMessageQueue(agent.steeringQueue) || !isMessageQueue(agent.followUpQueue)) return clearQueue.call(this);
+  const steering = agent.steeringQueue.messages.filter((m) => m.role === "custom");
+  const followUp = agent.followUpQueue.messages.filter((m) => m.role === "custom");
+  const cleared = clearQueue.call(this);
+  for (const message of steering) this.agent.steer(message);
+  for (const message of followUp) this.agent.followUp(message);
+  return cleared;
+};
+
 const NEVER_SLEEP_RULE =
   "Never run `sleep` in bash to wait for anything - an async job, a subagent, a message, or another agent's work settling. What you are waiting for arrives as a notice or message that wakes you after you end your turn; if a build breaks because of another agent's half-done work, report that rather than sleeping until it clears. Ending your turn while you wait is always safe: a running async job or subagent of yours keeps you alive, and its notice starts your next turn.";
 
@@ -276,12 +301,19 @@ class MovedToJob extends Error {
   }
 }
 export type JobRegistry = {
+  shape: number;
   session: string;
   stopAll(): string[];
   jobs: Map<string, Job>;
   owner: { onStart(job: BackgroundJob): void; onLines(job: BackgroundJob): void; onEnd(job: BackgroundJob): void; clearRecords(): void } | null;
   exit: () => void;
 };
+const JOBS = Symbol.for("koa.jobs");
+const JOB_SHAPE = 3;
+export function isJobRegistry(value: unknown): value is JobRegistry {
+  return isRecord(value) && typeof value.shape === "number" && typeof value.session === "string"
+    && value.jobs instanceof Map && typeof value.stopAll === "function" && typeof value.exit === "function";
+}
 
 function jobRunning(job: Job): boolean {
   return job.state.type !== "ended" && job.where.child.exitCode === null && job.where.child.signalCode === null;
@@ -353,7 +385,7 @@ function pruneJobs(registry: JobRegistry): void {
 function createJobRegistry(session: string): JobRegistry {
   const jobs = new Map<string, Job>();
   const registry: JobRegistry = {
-    session, jobs, owner: null,
+    shape: JOB_SHAPE, session, jobs, owner: null,
     stopAll() {
       registry.owner = null;
       const live = [...jobs.values()].filter((job) => job.state.type !== "ended");
@@ -572,11 +604,34 @@ async function routedJob(registry: JobRegistry, r: Routed, command: string, cwd:
   return observed.result;
 }
 
-export type Slots = { receiver?: ReceiverHold; received?: string[]; jobs?: JobRegistry; exit?: () => void };
-export type Extension = { completionContext(signal: AbortSignal): Promise<CompletionContext>; restartState(): RestartState };
+declare global {
+  var __koaAgentExtensionReceiver: ReceiverHold | undefined;
+  var __koaAgentExtensionReceived: string[] | undefined;
+  var __koaAgentExtensionCopy: string | undefined;
+  var __koaAgentExtensionClearQueue: AgentSession["clearQueue"] | undefined;
+  var __koaAgentExtensionExit: (() => void) | undefined;
+  var koaSessionsConnection: { channel: { write(data: string): unknown }; lines: EventEmitter; generation: number } | undefined;
+}
+
+// Pi reloads this module on a cross-folder switch (dist/core/extensions/loader.js:94-104,481),
+// so the connection to koa lives on the global.
+function openChannel(): NonNullable<typeof globalThis.koaSessionsConnection> {
+  const channel = new Socket({ fd: 3, readable: true, writable: true });
+  const lines = createInterface({ input: channel });
+  channel.on("error", () => lines.close());
+  process.once("exit", () => channel.destroy());
+  return { channel, lines, generation: 0 };
+}
 
 const extensionPath = fileURLToPath(import.meta.url);
 const KO_SKILL_RULE = "The user runs the ko terminal multiplexer, and this pi runs in one of its panes. When the user talks about windows, tabs, panes, sessions, splits, floats or the sidebar, read the ko skill first.";
+
+// One copy per process: pi dedupes extensions by real path only, so a second
+// copy at another path must register nothing. A /reload runs the same file again
+// and finds it already its own.
+function isFirstCopy(): boolean {
+  return (globalThis.__koaAgentExtensionCopy ??= extensionPath) === extensionPath;
+}
 
 function normalizeAddress(to: string): { wanted: string; mention: boolean } {
   const raw = to.replace(/^@/, "");
@@ -1049,10 +1104,14 @@ async function routedGrep(r: Routed, params: GrepToolInput, signal: AbortSignal 
   return { content: [{ type: "text", text: truncation.content + (notices.length ? `\n\n[${notices.join(". ")}]` : "") }], details: Object.keys(details).length ? details : undefined };
 }
 
-export const agentExtension = (host: AgentHost) => (pi: ExtensionAPI): void => {
+export default function (pi: ExtensionAPI) {
+  if (!isFirstCopy()) return;
+  globalThis.koaSessionsConnection ??= openChannel();
+  const connection = globalThis.koaSessionsConnection;
+  pi.registerFlag("koa-browser", { description: "Child agents start koa in browser mode", type: "boolean" });
   pi.registerFlag("runtime", { description: "Run the built-in tools and ! commands in a configured runtime or an ad-hoc runtime of this session by name", type: "string" });
   pi.on("project_trust", async (event) => {
-    const trusted = host.facts.trustedCwd;
+    const trusted = process.env.KO_AGENT_TRUSTED_CWD;
     const want = trusted ? realpathOf(trusted) : undefined;
     if (want !== undefined && realpathOf(event.cwd) === want) return { trusted: "yes" };
     return { trusted: "undecided" };
@@ -1071,7 +1130,7 @@ export const agentExtension = (host: AgentHost) => (pi: ExtensionAPI): void => {
   const written = new Map<string, string>();
 
 
-  const insideKo = (): boolean => host.facts.insideKo;
+  const insideKo = (): boolean => !!process.env.KO_SOCKET && findKo() !== null;
   const offersSkill = (): boolean => insideKo() && !routed;
 
   const varsPath = (): string => `/panes/${pane}/vars`;
@@ -1647,7 +1706,7 @@ export const agentExtension = (host: AgentHost) => (pi: ExtensionAPI): void => {
 
   // ---- the message stream: ko api --stream /panes/$KO_PANE/messages ----
 
-  const received = (): string[] => (host.slots.received ??= []);
+  const received = (): string[] => (globalThis.__koaAgentExtensionReceived ??= []);
 
   let queue: Promise<void> = Promise.resolve();
 
@@ -1724,8 +1783,8 @@ export const agentExtension = (host: AgentHost) => (pi: ExtensionAPI): void => {
   const receiver = {
     start(): void {
       receiverActive = true;
-      const held = host.slots.receiver;
-      host.slots.receiver = undefined;
+      const held = globalThis.__koaAgentExtensionReceiver;
+      globalThis.__koaAgentExtensionReceiver = undefined;
       if (held && held.child.exitCode === null && held.child.signalCode === null) receiverAttach(held);
       else receiverOpen();
     },
@@ -1737,7 +1796,7 @@ export const agentExtension = (host: AgentHost) => (pi: ExtensionAPI): void => {
       receiverDetach();
       receiverHold = null;
       if (!held) return;
-      if (park) host.slots.receiver = held;
+      if (park) globalThis.__koaAgentExtensionReceiver = held;
       else held.child.kill();
     },
     write(line: string): void { receiverHold?.child.stdin?.write(line); },
@@ -1794,11 +1853,12 @@ export const agentExtension = (host: AgentHost) => (pi: ExtensionAPI): void => {
       jobRecords.set(id, { type: "finished", timer });
     }
   };
-  let registry = host.slots.jobs;
+  const savedJobs: unknown = Reflect.get(globalThis, JOBS);
+  let registry = isJobRegistry(savedJobs) ? savedJobs : undefined;
   const jobRegistry = (): JobRegistry => {
     if (!registry) {
       registry = createJobRegistry(ownSessionId ?? "");
-      host.slots.jobs = registry;
+      Reflect.set(globalThis, JOBS, registry);
     }
     return registry;
   };
@@ -1859,6 +1919,12 @@ export const agentExtension = (host: AgentHost) => (pi: ExtensionAPI): void => {
     exec: (command, cwd, options) => routedJob(jobRegistry(), r, command, cwd, options),
   });
   const adoptJobs = (): void => {
+    let stopped: string[] | undefined;
+    if (registry && (registry.shape !== JOB_SHAPE || registry.session !== (ownSessionId ?? ""))) {
+      stopped = registry.stopAll();
+      registry = undefined;
+      Reflect.deleteProperty(globalThis, JOBS);
+    }
     const owner = jobRegistry();
     clearJobRecords();
     owner.owner = {
@@ -1886,6 +1952,10 @@ export const agentExtension = (host: AgentHost) => (pi: ExtensionAPI): void => {
       if (job.state.type === "ended" && !job.state.announced) {
         try { owner.owner?.onEnd(job); } catch {}
       } else if (job.state.type !== "ended" && streams(job)) scheduleFlush(job);
+    }
+    if (stopped) {
+      const text = `${stopped.length} async_bash jobs of the previous koa version were stopped at /reload: ${stopped.join(", ")}`;
+      try { deliverNotice(text, { inbound: { form: "notice" }, agent: { name: "koa" }, body: text }); } catch {}
     }
   };
   type BashCall = { type: "bash"; cancel(reason?: ShutdownReason): void; move(reason: "timeout" | "reload"): boolean };
@@ -2207,7 +2277,6 @@ export const agentExtension = (host: AgentHost) => (pi: ExtensionAPI): void => {
 
   const createPane = async (plan: Plan): Promise<{ placement: Api["Placement"] } | { error: string }> => {
     const inside = plan.runtime?.mode === "inside";
-    if (!plan.toplevel) return { error: "in-process subagents are not yet available; use toplevel: true" };
     if (!ko) return { error: "ko is not on PATH" };
     let trusted = await trustedCwd(plan.cwd);
     if (trusted && inside && plan.runtime) {
@@ -2216,7 +2285,7 @@ export const agentExtension = (host: AgentHost) => (pi: ExtensionAPI): void => {
     }
     const argv = [
       inside ? "ko" : ko, "shell", "--", "koa",
-      ...(host.browser ? ["--browser"] : []),
+      ...(pi.getFlag("koa-browser") ? ["--browser"] : []),
       ...(plan.runtime?.mode === "routed" ? ["--runtime", plan.runtime.name] : []),
       ...(plan.mode.kind === "continue" ? ["--session", plan.mode.file] : ["--session-id", plan.session]),
       "--name", plan.name,
@@ -2453,7 +2522,7 @@ export const agentExtension = (host: AgentHost) => (pi: ExtensionAPI): void => {
     name: "spawn_agent",
     label: "Spawn Agent",
     description:
-      "Start an agent in a new window. Only toplevel: true works now: an ordinary child is refused until in-process subagents exist. Resume a saved session or fork a copy of it; fork alone copies this session. Returns the pi session id for later resume_from. Children report by notice and stay alive. A toplevel agent is an independent peer: no report, notice, depth limit or descendant controls; fork is allowed, but an existing child cannot become a peer.",
+      "Start an agent in a new window. Resume a saved session or fork a copy of it; fork alone copies this session. Returns the pi session id for later resume_from. Children report by notice and stay alive. A toplevel agent is an independent peer: no report, notice, depth limit or descendant controls; fork is allowed, but an existing child cannot become a peer.",
     promptSnippet:
       "spawn_agent(task, name, model?, cwd?, resume_from?, fork?, toplevel?, runtime?) - start, resume or copy an agent in a new window; returns its pi session id; toplevel starts an independent peer, not a child; runtime works in a configured runtime or an ad-hoc runtime of this session",
     promptGuidelines: [
@@ -2506,8 +2575,8 @@ export const agentExtension = (host: AgentHost) => (pi: ExtensionAPI): void => {
       if (!task && (!params.resume_from || params.fork)) return refuse("task is required unless resuming without fork");
       let childRuntime: ChildRuntime | undefined;
       let runtimeInfo: Api["RuntimeInfo"] | undefined;
-      if (params.runtime && host.facts.runtime) {
-        if (params.runtime !== host.facts.runtime) return refuse(`this agent runs inside runtime ${host.facts.runtime}; its children run there too`);
+      if (params.runtime && process.env.KO_RUNTIME) {
+        if (params.runtime !== process.env.KO_RUNTIME) return refuse(`this agent runs inside runtime ${process.env.KO_RUNTIME}; its children run there too`);
       } else if (params.runtime) {
         const info = await fetchRuntime(params.runtime);
         if ("error" in info) return refuse(info.error);
@@ -2545,7 +2614,6 @@ export const agentExtension = (host: AgentHost) => (pi: ExtensionAPI): void => {
       const mode: Plan["mode"] = forkFile ? { kind: "copy", file: forkFile } : source ? { kind: "continue", file: source.path } : { kind: "fresh" };
       const recordedPeer = mode.kind === "continue" && source ? peers().find((p) => p.session === source.id) : undefined;
       const toplevel = !!params.toplevel || !!recordedPeer;
-      if (!toplevel) return refuse("in-process subagents are not yet available; use toplevel: true");
       const cwd = resolve(ctx.cwd, params.cwd ?? source?.cwd ?? ctx.cwd);
       if (mode.kind === "continue" && source && cwd !== resolve(source.cwd)) return refuse(`a continued session runs in its recorded directory ${source.cwd}; fork copies it into another`);
       let directoryExists = false;
@@ -2584,7 +2652,7 @@ export const agentExtension = (host: AgentHost) => (pi: ExtensionAPI): void => {
           if ("error" in made) return refuse(made.error);
           recordAgent(plan, made.placement);
           const { window, pane: childPane } = made.placement;
-          const inRuntime = childRuntime?.name ?? host.facts.runtime;
+          const inRuntime = childRuntime?.name ?? process.env.KO_RUNTIME;
           return reply(
             `spawned ${name} (session ${childSession}, window ${window}, pane ${childPane}${inRuntime ? `, in runtime ${inRuntime}` : ""})${mode.kind === "copy" ? `, forked from session ${source?.id ?? ownSessionId}` : ""}; session id is what resume_from takes later; ${toplevel ? PEER_RESULT_RULE : task ? liveRunRule(SPAWN_RESULT_RULE) : SPAWN_RESULT_RULE}`,
             { session: childSession, name, window, pane: childPane, fork: mode.kind === "copy", outcome: { ok: true } satisfies AgentOutcome },
@@ -2755,7 +2823,8 @@ export const agentExtension = (host: AgentHost) => (pi: ExtensionAPI): void => {
       },
     });
 
-  const registerRouted = (cwd: string): void => {
+  const registerRouted = (): void => {
+    const cwd = process.cwd();
     route(createBashToolDefinition(cwd), (r, id, params, signal, onUpdate, context) => executeBash(createBashToolDefinition(r.cwd, { operations: handoff(bashOperations(r)), exposeSessionEnvironment: false }), id, params, signal, onUpdate, { ...context, cwd: r.cwd }));
     route(createReadToolDefinition(cwd), async (r, id, params, signal, onUpdate) => createReadTool(r.cwd, { operations: readOperations(r) }).execute(id, { ...params, path: await homed(r, params.path, signal) }, signal, onUpdate));
     route(createWriteToolDefinition(cwd), async (r, id, params, signal, onUpdate) => createWriteTool(r.cwd, { operations: writeOperations(r) }).execute(id, { ...params, path: await homed(r, params.path, signal) }, signal, onUpdate));
@@ -2804,9 +2873,9 @@ export const agentExtension = (host: AgentHost) => (pi: ExtensionAPI): void => {
   const startRouted = async (ctx: ExtensionContext): Promise<void> => {
     routed = null;
     const flag = pi.getFlag("runtime");
-    const name = !host.facts.runtime && typeof flag === "string" ? flag : "";
+    const name = !process.env.KO_RUNTIME && typeof flag === "string" ? flag : "";
     if (!name) return;
-    registerRouted(ctx.cwd);
+    registerRouted();
     const refuse = (message: string): void => {
       routed = { refusal: message };
       ctx.ui?.notify(message, "error");
@@ -2863,15 +2932,16 @@ export const agentExtension = (host: AgentHost) => (pi: ExtensionAPI): void => {
       if (signal.aborted || session !== current) return { type: "unavailable" };
       return r ? { type: "runtime", name: r.name, cwd: toRuntime(r, r.cwd) } : { type: "host", cwd: current.cwd };
     });
-    ko = host.facts.insideKo ? host.facts.ko : null;
+    ko = insideKo() ? findKo() : null;
     session = ctx;
     ownSessionId = ctx.sessionManager.getSessionId() || null;
-    pane = host.facts.pane;
-    const parent = host.facts.parent;
-    edge = ownSessionId && parent && host.facts.session === ownSessionId ? { parent } : null;
-    recordsPeers = !edge && !host.facts.runtime;
-    if (host.slots.exit) process.removeListener("exit", host.slots.exit);
-    host.slots.exit = unsetVarsSync;
+    pane = process.env.KO_PANE || null;
+    const parent = process.env.KO_AGENT_PARENT_SESSION;
+    edge = ownSessionId && parent && process.env.KO_AGENT_SESSION === ownSessionId ? { parent } : null;
+    recordsPeers = !edge && !process.env.KO_RUNTIME;
+    const previousExit = globalThis.__koaAgentExtensionExit;
+    if (previousExit) process.removeListener("exit", previousExit);
+    globalThis.__koaAgentExtensionExit = unsetVarsSync;
     process.on("exit", unsetVarsSync);
     written.clear();
     ending = { kind: "ended", text: "" };
@@ -3003,21 +3073,52 @@ export const agentExtension = (host: AgentHost) => (pi: ExtensionAPI): void => {
       if (registry) {
         registry.stopAll();
         await waitJobs([...registry.jobs.values()]);
-        host.slots.jobs = undefined;
+        Reflect.deleteProperty(globalThis, JOBS);
         registry = undefined;
       }
       receiver.stop(false);
       if (active) await unsetVars();
-      if (host.slots.exit === unsetVarsSync) {
+      if (globalThis.__koaAgentExtensionExit === unsetVarsSync) {
         process.removeListener("exit", unsetVarsSync);
-        host.slots.exit = undefined;
+        globalThis.__koaAgentExtensionExit = undefined;
       }
     }
     await jobRecordQueue;
-    host.extension = undefined;
     active = false;
     session = null;
   });
 
-  host.extension = { completionContext, restartState };
-};
+  const scans = new Map<string, AbortController>();
+  const args = parseArgs(process.argv.slice(2));
+  let cwd = process.cwd();
+  pi.registerCommand(RELOAD_COMMAND, { description: "Reload pi", handler: async (_args, ctx) => { await ctx.reload(); } });
+  const send = (reply: KoaReply) => connection.channel.write(JSON.stringify(reply) + "\n");
+  pi.on("session_shutdown", () => { for (const scan of scans.values()) scan.abort(); scans.clear(); send({ type: "reset" }); connection.lines.off("line", receive); });
+  pi.on("session_start", (_event, ctx) => {
+    cwd = ctx.sessionManager.getCwd();
+    send({ type: "session", id: ctx.sessionManager.getSessionId(), generation: ++connection.generation, cwd });
+  });
+  function receive(line: string) {
+    let query: KoaQuery;
+    try { query = JSON.parse(line); } catch { return; }
+    if (query.type === "cancel") { scans.get(query.id)?.abort(); scans.delete(query.id); return; }
+    const controller = new AbortController();
+    scans.set(query.id, controller);
+    if (query.type === "completion_context") {
+      void completionContext(controller.signal).then((context) => {
+        if (!controller.signal.aborted) send({ type: "completion_context", id: query.id, context });
+      }).finally(() => scans.delete(query.id));
+      return;
+    }
+    if (query.type === "restart_state") {
+      send({ type: "restart_state", id: query.id, state: restartState() });
+      scans.delete(query.id);
+      return;
+    }
+    const dir = sessionDir(args, cwd);
+    void (query.scope === "current" ? SessionManager.list(cwd, dir, undefined, controller.signal) : SessionManager.listAll(dir, undefined, controller.signal)).then((rows) => {
+      if (!controller.signal.aborted) send({ type: "list", id: query.id, rows: rows.map((row) => ({ path: row.path, id: row.id, cwd: row.cwd, name: row.name, firstMessage: (row.firstMessage.split(/\r?\n/, 1)[0] ?? "").slice(0, 200), modified: row.modified.getTime(), messageCount: row.messageCount })) });
+    }, (error) => { if (!controller.signal.aborted) send({ type: "error", id: query.id, error: errorText(error) }); }).finally(() => scans.delete(query.id));
+  }
+  connection.lines.on("line", receive);
+}

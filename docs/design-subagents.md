@@ -20,15 +20,6 @@ tool call that creates it to the sweep that removes its pane.
 This document refers to those sections by name instead of repeating them.
 `AGENTS.md` describes what ko cannot change.
 
-**Now: no new child panes.** koa runs its root session in its own
-process (design-koa.md, "The process"), and plans/koa-subagents.md
-moves every subagent into that process too. Until then, `spawn_agent`
-without `toplevel: true` refuses with "in-process subagents are not
-yet available; use toplevel: true", and a message to a recorded child
-that has ended does not start it again as a pane (`createPane` refuses
-the same way). The child-pane mechanisms below stay only for the
-children that already run, and go with that plan.
-
 **The principle.** ko is the mediator. The harness uses only ko's API
 through `ko` commands. It never reads another agent's files and never
 connects to another agent's socket. Every exchange between two agents
@@ -172,7 +163,7 @@ in a resumed session's own directory. Then the harness reads
 caller's `parent` chain over the rows plus one, is at most 2. Then
 `createPane` in `koa-agent.ts` sends one `POST /panes` (protocol.md,
 section 7). The pane's command is `ko shell -- koa`, with
-`--browser` when the caller's host is in browser mode, so a child
+`--browser` when the caller's pi has `--koa-browser`, so a child
 takes its parent's mode (design-koa.md), with the
 session (`--session-id` for a fresh or copied session, `--session`
 for a continued one), the name, the model, for a copy `--fork`, for a
@@ -650,14 +641,16 @@ own pane ("A job's row"). Two tools make one:
 - A `bash` call that still runs after `KO_JOB_MOVE_MS` (60 000)
   becomes a job ("The bash tool's move").
 
-**The registry.** Every job is a `Job` record of one registry
-(`JobRegistry` in `koa-agent.ts`), which the host keeps in its
-`Slots`, so it outlives one run of the extension's factory. The pipe
-listeners of a
+**The registry.** Every job is a `Job` record of one registry for
+each process, `globalThis[Symbol.for("koa.jobs")]`. Its envelope
+(`JobRegistry` in `koa-agent.ts`) never changes shape; `JOB_SHAPE` is
+raised with each change of the `Job` layout. The pipe listeners of a
 job write its log and its buffers and never call pi; only the hooks
 of the current extension instance call pi. Thus, a job and its
 output survive `/reload`, whose old instance can no longer send a
-message ("Jobs across /reload"). The registry keeps every running
+message ("Jobs across /reload"). It is a `Symbol.for` key with a
+fixed envelope, not a typed global, because an extension of another
+version must still read and stop it. The registry keeps every running
 job, every ended job whose notice is still owed, and the newest 20
 announced ones, so a list can show more than 20 ended jobs while
 notices are owed. Nothing reads ko for the list. A
@@ -739,8 +732,8 @@ one when it moves. A routed job has one as a local job does.
   (design-program-status.md, "Reduction").
 
 **The writer.** The extension writes each record as one `ko api POST
-/panes/$KO_PANE/status`, never on its stdout, which is koa's pane
-screen, so a record reaches the server from koa, a routed pi in a
+/panes/$KO_PANE/status`, never on its stdout, which is koa's RPC
+stream, so a record reaches the server from koa's pi, a routed pi in a
 runtime and a pi on a remote server. A record needs no OSC 7501
 support of the outer terminal. The extension writes only while it is active in
 the pane, as for its message stream: a headless pi that a tool starts
@@ -874,10 +867,9 @@ of the log says that the earlier output is cut.
 
 ## Jobs across /reload
 
-`session.reload()` runs the extension's factory again in the same
-process, so the children and their listeners live on. These facts of
-pi decide the design; a probe extension observed them through one
-`/reload`:
+pi reloads an extension in the same Node process, so the children
+and their listeners live on. These facts of pi 1.4.0 decide the
+design; a probe extension observed them through one `/reload`:
 
 - A child and the `data` and `close` listeners of the old instance
   keep firing after the reload, beside the new instance's own.
@@ -890,26 +882,27 @@ pi decide the design; a probe extension observed them through one
 Thus the registry keeps a job's output and ending as plain data, and
 only the current instance calls pi. At `session_shutdown` with reason
 `reload`, the extension moves its running `bash` calls, clears each
-job's hooks and flush timers, and leaves the registry in the host. At
-the next `session_start`, after the pane variables and before the
-task, the new instance adopts it: it sets the hooks, sends the notice
-of each job that ended in the gap, and schedules the flush of a
-streaming job, whose held lines and UTF-8 carry crossed the reload. A
-deadline's timer calls the stop, not pi, so it keeps running. A
-notice that fails stays owed for the next adopt. The new instance
-runs the same module, because Node does not load koa's modules again,
-so the registry's layout is always its own; a new koa comes only
-through an `execve` restart, which ends the jobs.
+job's hooks and flush timers, and leaves the registry on `globalThis`. At the next `session_start`,
+after the pane variables and before the task, the new instance:
+
+- adopts the registry when its shape and session are its own: it
+  sets the hooks, sends the notice of each job that ended in the gap,
+  and schedules the flush of a streaming job, whose held lines and
+  UTF-8 carry crossed the reload. A deadline's timer calls the stop,
+  not pi, so it keeps running. A notice that fails stays owed for the
+  next adopt.
+- otherwise stops the old jobs through the old registry's `stopAll`,
+  replaces the registry and sends one notice: `N async_bash jobs of
+  the previous koa version were stopped at /reload: a, b`.
 
 The other reasons (`quit`, `new`, `resume`, `fork`) stop every job,
 wait up to `KO_JOB_KILL_MS` for the ends and clear the registry.
 
-koa's `/reload` restarts koa only when nothing would be lost this
-way: the extension's `restartState()`, which koa calls through its
-host, answers with its running jobs, services included, and its
-children that have not reported on their last work (design-koa.md,
-"`/reload` reloads pi"). `/restart` does not ask: it is the escape
-hatch, and the jobs end with the process.
+koa's `/reload` restarts pi only when nothing would be lost this way:
+the extension answers a `restart_state` query on koa's session channel
+(`koa-channel.ts`) with its running jobs, services included, and its
+children that have not reported on their last work
+(design-koa.md, "`/reload` reloads pi").
 
 ## A human at a shell
 

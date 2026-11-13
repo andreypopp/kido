@@ -1,27 +1,29 @@
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import type { AgentSession } from '@earendil-works/pi-coding-agent';
-import type { CompletionCommand, CommandAction, CommandResult } from './koa-records.ts';
+import type { RpcCommand, RpcResponse } from '@earendil-works/pi-coding-agent';
+import type { CompletionCommand, CommandAction, CommandResult, SessionStats } from './koa-records.ts';
 
 const SUPPORTED = ['model', 'thinking', 'compact', 'session', 'copy', 'export', 'name', 'resume', 'new', 'quit', 'reload', 'restart'] as const;
 type Action = typeof SUPPORTED[number] | 'refuse';
 type Builtin = CompletionCommand & { action: Action };
-type Model = ReturnType<AgentSession['modelRuntime']['getAvailableSnapshot']>[number];
+type Model = Extract<RpcResponse, { command: 'get_available_models'; success: true }>['data']['models'][number];
 export async function commandCatalog(root: string) {
   const { BUILTIN_SLASH_COMMANDS }: { BUILTIN_SLASH_COMMANDS: { name: string; description: string }[] } = await import(pathToFileURL(join(root, 'dist/core/slash-commands.js')).href);
   const entries = [...BUILTIN_SLASH_COMMANDS, ...['debug', 'arminsayshi', 'dementedelves'].map(name => ({ name, description: 'Not available in koa' }))];
-  const catalog: Builtin[] = [...SUPPORTED.flatMap(name => name === 'restart' ? [{ name, description: 'Restart koa on this session' }] : entries.filter(value => value.name === name)), ...entries.filter(value => !SUPPORTED.some(name => name === value.name))].map(value => ({ ...value, description: value.name === 'export' ? 'Export session as HTML' : value.name === 'reload' ? 'Reload extensions, settings and koa' : value.description, source: 'builtin', action: SUPPORTED.find(name => name === value.name) ?? 'refuse' }));
+  const catalog: Builtin[] = [...SUPPORTED.flatMap(name => name === 'restart' ? [{ name, description: 'Start pi again on this session' }] : entries.filter(value => value.name === name)), ...entries.filter(value => !SUPPORTED.some(name => name === value.name))].map(value => ({ ...value, description: value.name === 'export' ? 'Export session as HTML' : value.name === 'reload' ? 'Reload extensions, settings and koa' : value.description, source: 'builtin', action: SUPPORTED.find(name => name === value.name) ?? 'refuse' }));
   return { catalog, completion: catalog.filter(value => value.action !== 'refuse') };
 }
 
-export type Deferral = { type: 'jobs'; count: number } | { type: 'children'; count: number } | { type: 'no_session' };
+export type Deferral = { type: 'jobs'; count: number } | { type: 'children'; count: number } | { type: 'no_session' } | { type: 'no_answer' };
 const plural = (count: number, noun: string) => `${count} ${noun}${count === 1 ? '' : 's'}`;
-export function deferralText(deferral: Deferral): string {
-  const subject = 'reloaded · a newer koa';
+export const RESTART_BUSY = 'restart: not while a turn, a command, a queue, a dialog or an editor is open';
+export function deferralText(deferral: Deferral, command: 'reload' | 'restart'): string {
+  const subject = command === 'reload' ? 'reloaded · a newer koa' : 'restart';
   switch (deferral.type) {
     case 'jobs': return `${subject} waits for ${plural(deferral.count, 'job')}`;
     case 'children': return `${subject} waits for ${plural(deferral.count, 'subagent')} to report`;
     case 'no_session': return `${subject} needs a saved session`;
+    case 'no_answer': return `${subject} waits; the extension did not answer, try /${command} again`;
   }
 }
 
@@ -33,24 +35,27 @@ export function parseCommand(text: string, catalog: readonly Builtin[]): { comma
 
 export async function dispatchCommand(input: NonNullable<ReturnType<typeof parseCommand>>, host: {
   packageRoot: string;
-  session: AgentSession;
+  command(value: RpcCommand): Promise<RpcResponse>;
   notify(text: string, level: 'info' | 'warning' | 'error'): void;
-  stats(): void;
+  stats(value: SessionStats): void;
   outcome(result: CommandResult): void;
   compact(instructions?: string): void;
   thinking(level: string): Promise<void>;
-  setModel(model: Model): Promise<void>;
   reloadBusy(): boolean;
+  name: string;
 }): Promise<CommandAction | { type: 'restart' }> {
   const { command, args } = input;
-  const { session } = host;
+  const run = async (value: RpcCommand) => { const result = await host.command(value); if (!result.success) throw Error(result.error); return result; };
   switch (command.action) {
     case 'refuse': host.notify(`/${command.name} is not available in koa`, 'warning'); break;
     case 'model': {
       if (args) {
-        const { findExactModelReferenceMatch }: { findExactModelReferenceMatch(reference: string, models: readonly Model[]): Model | undefined } = await import(pathToFileURL(join(host.packageRoot, 'dist/core/model-resolver.js')).href);
-        const model = findExactModelReferenceMatch(args, session.modelRuntime.getAvailableSnapshot());
-        if (model) { await host.setModel(model); break; }
+        const result = await run({ type: 'get_available_models' });
+        if (result.command === 'get_available_models') {
+          const { findExactModelReferenceMatch }: { findExactModelReferenceMatch(reference: string, models: readonly Model[]): Model | undefined } = await import(pathToFileURL(join(host.packageRoot, 'dist/core/model-resolver.js')).href);
+          const model = findExactModelReferenceMatch(args, result.data.models);
+          if (model) { await run({ type: 'set_model', provider: model.provider, modelId: model.id }); break; }
+        }
       }
       return { type: 'picker', kind: 'model', search: args };
     }
@@ -58,23 +63,24 @@ export async function dispatchCommand(input: NonNullable<ReturnType<typeof parse
       if (!args) return { type: 'picker', kind: 'thinking', search: '' };
       await host.thinking(args); break;
     case 'compact': host.compact(args || undefined); break;
-    case 'session': host.stats(); break;
+    case 'session': { const result = await run({ type: 'get_session_stats' }); if (result.command === 'get_session_stats') host.stats(result.data); break; }
     case 'copy': {
-      const text = session.getLastAssistantText();
-      if (text) {
-        process.stdout.write(`\x1b]52;c;${Buffer.from(text).toString('base64')}\x1b\\`);
-        host.outcome({ type: 'copy', characters: text.length });
+      const result = await run({ type: 'get_last_assistant_text' });
+      if (result.command === 'get_last_assistant_text' && result.data.text) {
+        process.stdout.write(`\x1b]52;c;${Buffer.from(result.data.text).toString('base64')}\x1b\\`);
+        host.outcome({ type: 'copy', characters: result.data.text.length });
       } else host.notify('No assistant response to copy.', 'warning');
       break;
     }
     case 'export': {
       if (/\.jsonl$/i.test(args)) { host.notify('/export supports HTML only in koa.', 'warning'); break; }
-      host.outcome({ type: 'export', path: await session.exportToHtml(args || undefined) });
+      const result = await run({ type: 'export_html', ...(args ? { outputPath: args } : {}) });
+      if (result.command === 'export_html') host.outcome({ type: 'export', path: result.data.path });
       break;
     }
     case 'name': {
-      if (args) { session.setSessionName(args); host.notify('Session name set: ' + session.sessionName, 'info'); }
-      else host.notify(session.sessionName ? 'Session name: ' + session.sessionName : 'Usage: /name <name>', session.sessionName ? 'info' : 'warning');
+      if (args) { await run({ type: 'set_session_name', name: args }); host.notify('Session name set: ' + host.name, 'info'); }
+      else { const result = await run({ type: 'get_state' }); if (result.command === 'get_state') host.notify(result.data.sessionName ? 'Session name: ' + result.data.sessionName : 'Usage: /name <name>', result.data.sessionName ? 'info' : 'warning'); }
       break;
     }
     case 'resume': case 'new': return { type: 'session', kind: command.action };
@@ -84,7 +90,9 @@ export async function dispatchCommand(input: NonNullable<ReturnType<typeof parse
       host.notify('reload: not while a turn, a command, a queue, a dialog or an editor is open', 'warning');
       break;
     case 'restart':
-      return { type: 'restart' };
+      if (!host.reloadBusy()) return { type: 'restart' };
+      host.notify(RESTART_BUSY, 'warning');
+      break;
   }
   return { type: 'none' };
 }

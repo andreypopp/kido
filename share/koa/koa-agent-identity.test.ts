@@ -2,13 +2,13 @@ import { test } from "node:test";
 
 import assert from "node:assert/strict";
 
-import { mkdirSync, existsSync } from "node:fs";
+import { mkdirSync, writeFileSync, copyFileSync, mkdtempSync, rmSync, existsSync } from "node:fs";
 
 import { join, dirname } from "node:path";
 
-import { fileURLToPath } from "node:url";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
-import { makeFixture, createFakePi, startSession, freshExtension, withEnv, pollUntil, selfPane, at, koaExtension } from "./koa-agent-fixture.ts";
+import { makeFixture, createFakePi, startSession, freshExtension, withEnv, pollUntil, selfPane, at, getRows, koaExtension } from "./koa-agent-fixture.ts";
 
 const MESSAGES = "/panes/pane_1/messages";
 
@@ -34,6 +34,30 @@ test("the ko skill and its guideline are available only inside ko", async () => 
   } finally {
     await fx.restore();
   }
+});
+
+test("a second copy of the extension at another path registers nothing, and a reload of the first still does", async () => {
+  const first = createFakePi();
+  koaExtension(first.pi);
+  assert.ok(first.tools.size > 0 && first.handlers.size > 0, "the extension registered nothing at all");
+  assert.deepEqual([...first.tools.keys()], ["list_agents", "read_report", "list_async_bash", "message_agent", "spawn_agent", "stop_agent", "async_bash", "stop_async_bash"]);
+
+  const here = dirname(fileURLToPath(import.meta.url));
+  const dir = mkdtempSync(join(here, ".copy-"));
+  try {
+    for (const file of ["koa-agent.ts", "text.ts", "agents.ts", "token.ts", "records.ts", "koa-records.ts", "koa-session-dir.ts", "completion-context.ts", "runtime-exec.ts"]) copyFileSync(join(here, file), join(dir, file));
+    const copy = await import(pathToFileURL(join(dir, "koa-agent.ts")).href);
+    const registered = createFakePi();
+    copy.default(registered.pi);
+    assert.deepEqual([...registered.tools.keys()], [], "the copy registered tools");
+    assert.deepEqual([...registered.handlers.keys()], [], "the copy registered handlers");
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+
+  const reloaded = createFakePi();
+  koaExtension(reloaded.pi);
+  assert.deepEqual([...reloaded.tools.keys()].sort(), [...first.tools.keys()].sort());
 });
 
 test("a session writes its pane variables and opens its message stream; quitting deletes the variables and closes the stream", async () => {
@@ -115,6 +139,12 @@ test("a /reload parks the stream and keeps the variables; the next module takes 
   }
 });
 
+function makeRepo(repo: string): void {
+  mkdirSync(join(repo, ".git", "objects"), { recursive: true });
+  mkdirSync(join(repo, ".git", "refs"));
+  writeFileSync(join(repo, ".git", "HEAD"), "ref: refs/heads/main\n");
+}
+
 test("project trust answers yes only for the real path of KO_AGENT_TRUSTED_CWD", async () => {
   const fx = makeFixture();
   try {
@@ -138,3 +168,29 @@ test("project trust answers yes only for the real path of KO_AGENT_TRUSTED_CWD",
   }
 });
 
+test("spawn_agent passes the trusted cwd only while its parent trusts a repository that holds the cwd", async () => {
+  const fx = makeFixture();
+  try {
+    fx.setPanes([selfPane()]);
+    const repo = join(fx.dir, "repo");
+    makeRepo(repo);
+    const inside = join(repo, "sub");
+    mkdirSync(inside);
+    const outside = join(fx.dir, "elsewhere");
+    mkdirSync(outside);
+    let trusted = true;
+    const s = await startSession(fx, { ctx: { cwd: repo, isProjectTrusted: () => trusted } });
+    const spawn = s.tool("spawn_agent");
+    await spawn.execute("c", { name: "trusted", task: "x", cwd: inside });
+    const env = (n: number) => getRows(at(fx.posts("/panes"), n), "env");
+    assert.deepEqual(env(0).find((v) => v.name === "KO_AGENT_TRUSTED_CWD"), { name: "KO_AGENT_TRUSTED_CWD", value: inside });
+    trusted = false;
+    await spawn.execute("c", { name: "untrusted", task: "x", cwd: inside });
+    assert.equal(env(1).some((v) => v.name === "KO_AGENT_TRUSTED_CWD"), false);
+    trusted = true;
+    await spawn.execute("c", { name: "foreign", task: "x", cwd: outside });
+    assert.equal(env(2).some((v) => v.name === "KO_AGENT_TRUSTED_CWD"), false, "a cwd outside the spawner's repository is not trusted");
+  } finally {
+    await fx.restore();
+  }
+});

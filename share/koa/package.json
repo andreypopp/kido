@@ -11,8 +11,8 @@
     "remend": "1.4.0"
   },
   "devDependencies": {
-    "@earendil-works/pi-coding-agent": "1.5.2",
-    "@earendil-works/pi-tui": "1.5.2",
+    "@earendil-works/pi-coding-agent": "1.5.0",
+    "@earendil-works/pi-tui": "1.5.0",
     "@types/node": "^24.0.0",
     "esbuild": "0.28.2",
     "typebox": "^1.3.34",

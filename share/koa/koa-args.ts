@@ -5,7 +5,7 @@ export function restartArgs(pass: readonly string[], sessionFile: string | undef
   for (let i = 0; i < pass.length; i++) {
     const arg = pass[i];
     if (arg === '--') { args.push(...pass.slice(i)); break; }
-    if (sessionFile && ['--session', '--session-id', '--fork', '--provider', '--model', '--thinking'].includes(arg ?? '')) { i++; continue; }
+    if (sessionFile && ['--session', '--session-id', '--fork', '--model', '--thinking'].includes(arg ?? '')) { i++; continue; }
     if (sessionFile && ['--continue', '-c', '--no-session'].includes(arg ?? '')) continue;
     if (arg !== undefined) args.push(arg);
   }

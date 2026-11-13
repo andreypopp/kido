@@ -5,7 +5,7 @@ import { mintId, errorText } from './text.ts';
 import { readBody, respond, openFile, FileError, serveFile } from './koa-http.ts';
 import { later } from './koa-timer.ts';
 import { ATTACHMENT_LIMITS, type Attachment, type UploadProgress } from './koa-records.ts';
-import type { PromptOptions } from '@earendil-works/pi-coding-agent';
+import type { RpcCommand } from '@earendil-works/pi-coding-agent';
 
 export const UPLOAD_IDLE_MS = 30000;
 export const isChunkRoute = (path: string) => /^\/attachments\/[^/]+\/\d+$/.test(path);
@@ -121,7 +121,7 @@ export function attachments(dir: string, idleMs = UPLOAD_IDLE_MS) {
     },
     async prepare(ids: readonly string[]) {
       if (ids.length > ATTACHMENT_LIMITS.files || new Set(ids).size !== ids.length) throw Error('too many or duplicate attachments');
-      const images: NonNullable<PromptOptions['images']> = [], paths: string[] = [], files: Attachment[] = [];
+      const images: NonNullable<Extract<RpcCommand, { type: 'prompt' }>['images']> = [], paths: string[] = [], files: Attachment[] = [];
       for (const id of ids) {
         const entry = entries.get(id);
         if (!entry || entry.type === 'uploading') throw Error('Attachment is not ready');

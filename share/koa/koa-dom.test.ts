@@ -571,7 +571,7 @@ test('composer focus border follows key routing, not the active element', async 
     clear(){state.dialogs=[];document.body.focus();refreshComposer();dialogs()},
     preview(){preview('/images/0',element('model'),'image',composerFocus)},
     closePreview(){previewKey({key:'Escape',preventDefault(){},stopPropagation(){}})},
-    exit(){state.pi={type:'failed',at:1,message:''};refreshComposer();exited()}
+    exit(){state.pi={type:'exited',at:1,exited:0,stderr:''};refreshComposer();exited()}
   })`);
   const field = app.elements.get('field'); assert.ok(field);
   const border = () => field.classList.contains('focus');
@@ -1018,10 +1018,10 @@ test("editor dialogs leave native keys alone and submit with Control Enter", asy
   assert.deepEqual(requests, [{ id: "edit", value: "keep this" }]);
 });
 
-test("the failure card names a fresh start only without a saved session", async () => {
+test("the exit card names a fresh start only without a saved session", async () => {
   const app = await page();
-  assert.equal(app.run("state={...state,pi:{type:'failed',at:0,message:'x'}};exited();element('exited').children[0].children.some(child=>child.className==='fresh'&&child.textContent.includes('fresh session'))"), true);
-  assert.equal(app.run("state={...state,sessionFile:'saved.jsonl',pi:{type:'failed',at:1,message:'x'}};exited();element('exited').children[0].children.some(child=>child.className==='fresh')"), false);
+  assert.equal(app.run("state={...state,pi:{type:'exited',exited:7,at:0,stderr:''}};exited();element('exited').children[0].children.some(child=>child.className==='fresh'&&child.textContent.includes('fresh session'))"), true);
+  assert.equal(app.run("state={...state,sessionFile:'saved.jsonl',pi:{type:'exited',exited:7,at:1,stderr:''}};exited();element('exited').children[0].children.some(child=>child.className==='fresh')"), false);
 });
 
 test("thinking and aborted steps use live times without inventing replay times", async () => {

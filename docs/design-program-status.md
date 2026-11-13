@@ -27,7 +27,7 @@ no whole-second tie and no polling: a report is an event.
 
 Two programs identify agent panes through OSC 7501 root records:
 `pi` (design.md, "The harness extension") and `claude-code`. The
-`pi` root comes from koa, which writes it for its session, or from a
+`pi` root comes from koa, which writes it for its RPC pi, or from a
 plain pi's own interactive mode. Claude
 Code 2.1.295 queries OSC 7501. Then it emits a root `app=claude-code`
 record: idle, working, done, or blocked with permission/question kind

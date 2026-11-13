@@ -23,10 +23,10 @@ import XCTest
         guard let configured = ProcessInfo.processInfo.environment["KOA_STRESS_OUTPUT"], !configured.isEmpty else { throw NSError(domain: "KoaStress", code: 1, userInfo: [NSLocalizedDescriptionKey: "KOA_STRESS_OUTPUT must not be empty"]) }
         output = URL(fileURLWithPath: configured)
         try FileManager.default.createDirectory(at: output, withIntermediateDirectories: true)
-        if !FileManager.default.fileExists(atPath: output.appendingPathComponent("scripts/12.json").path) {
+        if !FileManager.default.fileExists(atPath: output.appendingPathComponent("scripts/12.jsonl").path) {
             var env = ProcessInfo.processInfo.environment
             env["PATH"] = path
-            let generated = try await Child.run("/usr/bin/env", ["node", checkoutRoot.appendingPathComponent("share/koa/stress/workloads.ts").path, output.appendingPathComponent("scripts").path, output.appendingPathComponent("work").path], env: env)
+            let generated = try await Child.run("/usr/bin/env", ["node", checkoutRoot.appendingPathComponent("share/koa/stress/workloads.ts").path, output.appendingPathComponent("scripts").path], env: env)
             XCTAssertEqual(generated.status, 0, generated.err)
         }
         let manifest = output.appendingPathComponent("kido-manifest.json")
@@ -60,7 +60,7 @@ import XCTest
 
     private func prompt(_ web: WKWebView) async throws {
         try await webviewUntil(web, "document.querySelector('#status').textContent==='idle'")
-        let status = try await webviewJS(web, "fetch('/prompt',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sessionId:document.body.dataset.sessionId,text:'go',mode:'prompt',attachments:[]})}).then(r=>r.status)")
+        let status = try await webviewJS(web, "fetch('/prompt',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text:'go',mode:'prompt',attachments:[]})}).then(r=>r.status)")
         XCTAssertEqual(status, "200")
     }
 
@@ -70,8 +70,8 @@ import XCTest
             let loaded = try await webviewJS(web, "document.querySelector('#items').textContent.includes('Paragraph 1998')")
             XCTAssertEqual(loaded, "true")
         } else {
-            _ = try await webviewJS(web, "(()=>{if(document.querySelectorAll('#items .assistant p').length<20000&&!document.querySelector('#older').hidden)document.querySelector('#older').click();return true})()")
-            try await webviewUntil(web, "document.querySelectorAll('#items .assistant p').length===20000&&Array.from(document.querySelectorAll('#items .assistant p')).every(p=>p.textContent==='abcdefghijklmnopqr')", within: max(0.001, deadline.timeIntervalSinceNow))
+            _ = try await webviewJS(web, "(()=>{if(document.querySelectorAll('#items .msg.assistant p').length<20000&&!document.querySelector('#older').hidden)document.querySelector('#older').click();return true})()")
+            try await webviewUntil(web, "document.querySelectorAll('#items .msg.assistant p').length===20000&&Array.from(document.querySelectorAll('#items .msg.assistant p')).every(p=>p.textContent==='abcdefghijklmnopqr')", within: max(0.001, deadline.timeIntervalSinceNow))
         }
     }
 
@@ -125,18 +125,12 @@ import XCTest
             started = Date()
             let completionSeconds: TimeInterval = id == 6 && !visible ? 180 : 90
             let deadline = started.addingTimeInterval(completionSeconds)
-            let workload = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: output.appendingPathComponent("scripts/\(id).json"))) as? [String: Any])
-            var commands: [String] = []
-            try FileManager.default.createDirectory(at: output.appendingPathComponent("home"), withIntermediateDirectories: true)
-            for index in 0..<(id == 12 ? 7 : count) {
+            func command(_ index: Int) -> String {
                 let file = output.appendingPathComponent("kido-\(id)-\(index).jsonl").path
                 metrics.append(file)
-                let koaDirectory = output.appendingPathComponent("koa-\(id)-\(index)")
-                try FileManager.default.createDirectory(at: koaDirectory, withIntermediateDirectories: true)
-                _ = try await KoaProvider.start(self, directory: koaDirectory, script: try XCTUnwrap(workload["replies"] as? [[String: Any]]), models: [["provider": "fake", "id": "fake-model", "contextWindow": 1_000_000_000]], settings: ["compaction": ["enabled": false]])
-                commands.append(koaShell(self, directory: koaDirectory, home: output.appendingPathComponent("home"), session: workload["session"] as? String, visual: nil, extensionFile: "stress-ext.ts", cwd: output.appendingPathComponent("work"), env: ["PATH": path, "KOA_STRESS_ID": String(id)], args: ["--metrics", file, "--metrics-mode", timing], stderr: output.appendingPathComponent("kido-\(id)-\(index).stderr")))
+                let script = output.appendingPathComponent("scripts/\(id).jsonl").path
+                return "export PATH=\(SSH.quote(path)) KOA_FAKE_SCRIPT=\(SSH.quote(script)) KOA_FAKE_LOG=\(SSH.quote(output.appendingPathComponent("kido-\(id)-\(index)-rpc.jsonl").path)); exec \(SSH.quote(tools.prefix + "/share/ko/bin/koa")) --pi \(SSH.quote(checkoutRoot.appendingPathComponent("share/koa/koa-fake-pi.ts").path)) --metrics \(SSH.quote(file)) --metrics-mode \(timing) 2>\(SSH.quote(output.appendingPathComponent("kido-\(id)-\(index).stderr").path))"
             }
-            func command(_ index: Int) -> String { commands[index] }
             let trees = (0..<count).map { koPane(command($0)) }
             let tree: String
             if visible && count == 8 {

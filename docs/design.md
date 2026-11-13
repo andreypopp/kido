@@ -18,10 +18,9 @@ harness, not a pane.
 
 The **harness** is everything that only an agent has: the pi session,
 the tools, the task, the report and the names. It is koa
-(design-koa.md), which runs pi's session in its own process through
-pi's SDK with one inline pi extension, the agent extension
-`share/koa/koa-agent.ts`, and renders the session through a webview
-page. The two
+(design-koa.md), which runs pi in RPC mode with one pi extension, the
+agent extension `share/koa/koa-agent.ts`, and renders the session through
+a webview page. The two
 parts talk only through `ko api` on ko's routes and streams, and
 the `@kido/webview` SDK (`ko webview serve`, `enter` and `leave`) for
 the harness's page. ko never
@@ -86,13 +85,11 @@ There is no locking, because every writer is the server's loop thread.
 ## The harness extension
 
 koa is Kido's one pi harness: no other program loads the agent
-extension. koa gives each session it makes the factory
-`agentExtension(host)` as an inline extension (design-koa.md, "The
-host"), so the extension is koa's and takes its pane, its ko
-executable, browser mode and the state that outlives a reload from
-its host. koa writes the pane's OSC 7501 root with `app=pi` and its
-OSC 0 title, because pi reports neither outside its TUI
-(design-koa.md, "Status and title").
+extension. koa starts its pi as `pi --mode rpc --extension
+<share>/koa/koa-agent.ts` (design-koa.md, "The spawn"), so the extension
+is koa's: it also answers koa's session channel on fd 3. koa writes the pane's OSC 7501
+root with `app=pi` and its OSC 0 title for its pi, because pi reports
+neither in RPC mode (design-koa.md, "Status and title").
 
 A bare `pi` in a pane is plain pi, not Kido's harness. Its
 interactive mode natively emits OSC 7501 root records with `app=pi`
@@ -183,11 +180,14 @@ exist and `ko` does not reach the user's server. The skill is text
 only: it adds no tool and no route. `make preview-pi` previews the
 skill directory with `koa-agent.ts`.
 
-**One instance for each load.** pi runs the factory once for each
-session and again at `/reload` and on a switch. The state that must
-outlive one run (the message receiver and its id ring, the jobs and
-their exit cleanup) lives in the host (`Slots` in `koa-agent.ts`), not
-on `globalThis`, and each run takes it over.
+**One copy.** On its first factory call, the extension claims
+`globalThis.__koaAgentExtensionCopy` with its path. A copy at another path
+registers nothing, because pi dedupes extensions by real path only.
+A load at the claimed path registers again: pi loads the module again
+at `/reload` and on a switch to another folder. Only the claimed copy
+opens koa's session channel on fd 3, once for each process
+(design-koa.md, "Sessions inside the page"), and every load at that
+path answers it.
 
 **Subprocesses.** The extension starts every ko process with
 asynchronous `spawn`, never `execFileSync`, except the synchronous
@@ -268,15 +268,15 @@ repeat safe.
 
 **A `/reload` does not take the stream down.** A reload keeps the
 process and the session id. For reason `"reload"`, `session_shutdown`
-parks the stream process in its host's `Slots`, detached from the old
-instance; messages wait in its pipe. The next instance's
-`session_start` adopts it. The ring of received ids is in the host
-too. Every other reason kills the process, and the
+parks the stream process on `globalThis.__koaAgentExtensionReceiver`,
+detached from the old module; messages wait in its pipe. The
+reloaded module's `session_start` adopts it. The ring of received ids
+is on `globalThis` too. Every other reason kills the process, and the
 server's queue keeps what arrives until the next stream.
 
 A reload also keeps the pane variables, because the session
 continues: deleting them would make the parent look gone during the
-gap. The jobs survive in their registry in the host
+gap. The jobs survive in their registry on `globalThis`
 (design-subagents.md, "Jobs across /reload").
 
 **The sender header.** A `message` from another agent reaches the
@@ -309,9 +309,9 @@ work. The rule, one line:
 
 Escape and the dequeue key restore only queued user text to the
 editor. Custom messages remain in their steering and follow-up queues,
-in order. koa wraps `AgentSession.clearQueue` once in its process to
-preserve them while pi clears editor queues (design-koa.md, "The
-queue patch").
+in order. The extension wraps `AgentSession.clearQueue` to preserve
+them while pi clears editor queues. `globalThis` holds the original
+method, so `/reload` replaces the wrapper instead of adding another.
 
 ### Waking an idle session
 
@@ -425,7 +425,7 @@ runs under `ko shell`, which read the user's dotfiles: EDITOR, PATH
 additions, API keys, LANG. So that every agent gets the same
 environment, the extension starts each pi, child or top-level, new or
 restarted, as `<its ko path> shell -- koa ...` (with `--browser`
-when its host is in browser mode, design-koa.md). A job runs its
+under `--koa-browser`, design-koa.md). A job runs its
 command through pi's shell configuration, as pi's `bash` does,
 because its command is not an agent.
 
@@ -961,7 +961,7 @@ Each decision names its date. The code states the rest.
 2026-11-12, koa is the one harness:
 
 - koa is Kido's one pi harness, and the agent extension is koa's
-  (`share/koa/koa-agent.ts`), loaded only into koa's own sessions. The
+  (`share/koa/koa-agent.ts`), loaded only into koa's RPC pi. The
   `ko-pi` command, pi's terminal UI with the harness and every code
   path that exists only for that UI go. A plain `pi` is a
   `SomeAgent`.
@@ -969,8 +969,9 @@ Each decision names its date. The code states the rest.
   server show a koa pane as a webview placeholder; the page needs
   Kido.app or `koa --browser`. A terminal rendering of koa would be
   the UI that this decision abandons.
-- Browser mode reaches the extension as a field of its host, not an
-  environment variable, which would leak into every job.
+- Browser mode reaches the extension as the boolean pi flag
+  `--koa-browser`, not an environment variable, which would leak
+  into every job.
 - The inside runtime mode stays, as `ko shell -- koa`, so its image
   needs Node 24 and pi.
 - `share/pi/` is dissolved into `share/koa/`: one package, one

@@ -8,10 +8,8 @@ import childProcess from "node:child_process";
 
 import { EventEmitter, once } from "node:events";
 import type { TestContext } from "node:test";
-import { hostFacts, type AgentHost } from "./koa-agents.ts";
-import type { CompletionContext } from "./completion-context.ts";
-import type { RestartState } from "./records.ts";
-import type { PageRecord } from "./koa-records.ts";
+import type { KoaQuery, KoaReply } from "./koa-channel.ts";
+import type { PageRecord, SessionScope } from "./koa-records.ts";
 
 import assert from "node:assert/strict";
 
@@ -23,7 +21,7 @@ import { join, delimiter } from "node:path";
 
 import { SessionManager, initTheme } from "@earendil-works/pi-coding-agent";
 
-import { agentExtension, isBackgroundJob, type BackgroundJob, type Job, type JobRegistry } from "./koa-agent.ts";
+import koaAgent, { isBackgroundJob, isJobRegistry, type BackgroundJob, type Job, type JobRegistry } from "./koa-agent.ts";
 import type { components } from "./ko-api.d.ts";
 import { isRecord } from "./text.ts";
 
@@ -94,12 +92,9 @@ type FakeMessage = { customType: string; content: string; details?: unknown };
 // parameter type, which is pi's own, cannot take it. A method signature is
 // bivariant in its parameter, which lets the extension stand in for a loader
 // of any host.
-type Extension = (pi: object) => void;
+type Extension = { load(pi: unknown): void }["load"];
 
-const hosts = new Map<object, AgentHost>();
-const liveHosts: AgentHost[] = [];
-let shared: ReturnType<typeof createChannel> | undefined;
-export const koaExtension: Extension = pi => { Reflect.apply(agentExtension(hosts.get(pi) ?? (() => { throw new Error("no host for this pi"); })()), undefined, [pi]); };
+export const koaExtension: Extension = koaAgent;
 
 export const jobId = (result: ToolResult): string => getStr(result.details, "job", "id");
 export const jobLog = (result: ToolResult): string => getStr(result.details, "job", "log");
@@ -262,7 +257,6 @@ syncBuiltinESMExports();
 let cachedFakeKo: string | null = null;
 
 export function makeFixture(): Fixture {
-  shared = undefined;
   statusRecords.length = 0;
   cachedFakeKo ??= process.env.KO_FAKE_KO ?? null;
   if (!cachedFakeKo || !existsSync(cachedFakeKo)) {
@@ -325,6 +319,8 @@ export function makeFixture(): Fixture {
   process.env.KO_RECEIVER_BACKOFF_MS = "5";
   process.env.KO_JOB_KILL_MS = "50";
   process.env.KO_STREAM_INTERVAL_MS = "5";
+  globalThis.__koaAgentExtensionReceiver = undefined;
+  globalThis.__koaAgentExtensionReceived = undefined;
 
   let seq = 0;
   const calls = (): ApiCall[] => jsonLines(apiLog, (v) => ({ method: getStr(v, "method"), path: getStr(v, "path"), body: getStr(v, "body") }));
@@ -412,8 +408,9 @@ export function makeFixture(): Fixture {
         } catch (error) { first ??= error; } finally { clearTimeout(timer); }
       }
       try {
-        for (const host of liveHosts.splice(0)) host.slots.receiver?.child.kill();
-        shared = undefined;
+        globalThis.__koaAgentExtensionReceiver?.child.kill();
+        globalThis.__koaAgentExtensionReceiver = undefined;
+        globalThis.koaSessionsConnection = undefined;
         await pollUntil(() => work.size === 0, 15000, "all fake commands to close");
       } catch (error) { first ??= error; } finally {
         commandWork.delete(command);
@@ -435,25 +432,32 @@ export function makeFixture(): Fixture {
 type Entry = { type: "custom"; customType: string; data: Record<string, unknown> };
 
 export function createChannel() {
-  const unused = (): never => { throw new Error("this fixture has no session runtime"); };
-  const host: AgentHost = {
-    get facts() { return hostFacts(process.env); },
-    get runtime() { return unused(); }, get session() { return unused(); },
-    slots: {}, browser: false, extension: undefined,
-    notify() {}, list: unused, start: unused, newSession: unused, switchSession: unused, usable: unused, dispose: unused,
-  };
-  liveHosts.push(host);
-  return {
-    host,
-    ask: async (query: { type: "completion_context" | "restart_state" }): Promise<{ type: "completion_context"; context: CompletionContext } | { type: "restart_state"; state: RestartState }> => {
-      if (!host.extension) throw new Error("the extension is not registered");
-      return query.type === "completion_context" ? { type: "completion_context", context: await host.extension.completionContext(new AbortController().signal) } : { type: "restart_state", state: host.extension.restartState() };
+  const lines = new EventEmitter();
+  const waiting = new Map<string, (reply: KoaReply) => void>();
+  let serial = 0;
+  const connection = {
+    generation: 0,
+    lines,
+    channel: {
+      write(data: string) {
+        const reply: KoaReply = JSON.parse(data);
+        if ("id" in reply) waiting.get(reply.id)?.(reply);
+      },
     },
-    receivers: () => host.extension ? 1 : 0,
+  };
+  return {
+    connection,
+    ask: (query: { type: "completion_context" | "restart_state" } | { type: "list"; scope: SessionScope }): Promise<KoaReply> => new Promise((resolve) => {
+      const id = `q${++serial}`;
+      waiting.set(id, (reply) => { waiting.delete(id); resolve(reply); });
+      const line: KoaQuery = { ...query, id };
+      lines.emit("line", JSON.stringify(line));
+    }),
+    receivers: () => lines.listenerCount("line"),
   };
 }
 
-export function createFakePi(sessionDir = "/tmp/koa-agent-no-sessions/caller", entries: Entry[] = [], channel = shared ??= createChannel()) {
+export function createFakePi(sessionDir = "/tmp/koa-agent-no-sessions/caller", entries: Entry[] = [], channel = createChannel()) {
   const tools = new Map<string, Tool & { sourceInfo: { path: string } }>();
   const toolSources = [{ name: "bash", sourceInfo: { path: "builtin:bash" } }];
   const handlers = new Map<string, Handler[]>();
@@ -462,6 +466,7 @@ export function createFakePi(sessionDir = "/tmp/koa-agent-no-sessions/caller", e
   const failAppends = new Set<string>();
   const flags = new Map<string, boolean | string>();
   const host: { sessionName?: string; settings: { shellPath?: string; shellCommandPrefix?: string } } = { settings: {} };
+  globalThis.koaSessionsConnection = channel.connection;
   const pi = {
     ...host,
     registerFlag(_name: string, _options: unknown) {},
@@ -519,7 +524,6 @@ export function createFakePi(sessionDir = "/tmp/koa-agent-no-sessions/caller", e
     if (!found) throw new Error(`no tool ${name}`);
     return found;
   };
-  hosts.set(pi, channel.host);
   return {
     pi,
     channel,
@@ -646,7 +650,6 @@ export async function startSession(
   const created = createFakePi(join(fx.dir, "sessions", "caller"), entries, opts.channel);
   if (opts.bashSource) at(created.toolSources, 0).sourceInfo.path = opts.bashSource;
   for (const [flag, value] of Object.entries(flags)) created.flags.set(flag, value);
-  Object.assign(created.channel.host, { browser: !!flags["koa-browser"] });
   if (name) created.pi.sessionName = name;
   factory(created.pi);
   let aborts = 0;
@@ -677,8 +680,8 @@ let freshImportCounter = 0;
 
 export async function freshExtension(): Promise<Extension> {
   const fresh = `?fresh=${process.pid}-${freshImportCounter++}`;
-  void fresh;
-  return koaExtension;
+  const mod = await import(`./koa-agent.ts${fresh}`);
+  return mod.default;
 }
 
 export async function withEnv<T>(vars: Record<string, string | undefined>, fn: () => Promise<T>): Promise<T> {
@@ -720,7 +723,8 @@ export function gatedCommand(gate: string, before = "", after = "", code = 0): s
 }
 
 export function jobRegistry(): JobRegistry | undefined {
-  return liveHosts.at(-1)?.slots.jobs;
+  const held: unknown = Reflect.get(globalThis, Symbol.for("koa.jobs"));
+  return isJobRegistry(held) ? held : undefined;
 }
 
 export function liveRegistry(): JobRegistry {

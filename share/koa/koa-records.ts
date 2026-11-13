@@ -2,6 +2,7 @@ import type { AgentRef, AgentOutcome, JobRef, JobEnd, Inbound } from "./records.
 
 export const ATTACHMENT_LIMITS = { files: 16, fileBytes: 64 * 1024 * 1024, chunkBytes: 768 * 1024, pendingBytes: 256 * 1024 * 1024 };
 
+export const RELOAD_COMMAND = 'koa-reload';
 export type CompletionCommand = { name: string; description?: string; source: "extension" | "prompt" | "skill" | "builtin" };
 export type CompletionOption = { label: string; detail?: string; insert: string; cursor?: number } & ({ kind: "command"; source: CompletionCommand["source"]; matched: number[] } | { kind: "agent"; matched: number[] } | { kind: "file" | "directory" });
 export type CompletionQuery = { text: string; pos: number };
@@ -16,6 +17,7 @@ export type SessionScope = "current" | "all";
 export type SessionRow = { path: string; id: string; cwd: string; name?: string; firstMessage: string; modified: number; messageCount: number };
 export type PromptMode = "prompt" | "follow_up";
 export type ThinkingLevel = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
+export type DialogMethod = Dialog["method"];
 export type Text = { text: string; cut: number };
 export type NotifyLevel = "info" | "warning" | "error";
 export function isAttachment(value: unknown): value is Attachment {
@@ -47,8 +49,9 @@ export type Item = { seq: number; revision: number; at: number; final: boolean }
 export type Assistant = Extract<Item, { kind: "assistant" }>;
 export type WireAssistant = Omit<Assistant, "lifecycle">;
 export type WireItem = Exclude<Item, Assistant> | WireAssistant;
-export type Pi = { type: "starting" } | { type: "switching" } | { type: "reloading" } | { type: "ready" } | { type: "failed"; at: number; message: string };
-export type Dialog = { id: string; title: string; expires?: number } & (
+export type Exit = { exited: number } | { signal: string } | { failed: string };
+export type Pi = { type: "starting" } | { type: "switching" } | { type: "reloading" } | { type: "restarting" } | { type: "ready" } | ({ type: "exited"; at: number; stderr: string } & Exit);
+export type Dialog = { type: "extension_ui_request"; id: string; title: string; expires?: number } & (
   { method: "select"; options: string[]; timeout?: number } |
   { method: "confirm"; message: string; timeout?: number } |
   { method: "input"; placeholder?: string; timeout?: number } |
