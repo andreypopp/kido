@@ -630,6 +630,11 @@ delegates as its brief says and does not write code.
   Linux is reproduced with `scripts/ci-like.sh` ("Reproducing a
   CI-only failure"). The session reads CI's result for each head that
   it pushes.
+- **`main` stays installable at any time.** Work that breaks something
+  that works on `main`, even for a time between two units of one plan,
+  lives on a branch until it is whole; the top-level session pushes
+  the branch, so CI runs on it, and merges it into `main` when an
+  install of it breaks nothing.
 - **Models.** Name a model by its fully qualified name in every
   `spawn_agent` call without `resume_from`: without `model`, the
   agent takes the caller's model. A `resume_from`, also with `fork`,
