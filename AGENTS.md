@@ -834,6 +834,14 @@ delegates as its brief says and does not write code.
   learn whether it was a flake, or to verify a fix: a second run of
   unchanged code shows nothing that the first did not. A fix is
   verified by a test that fails before it and passes after it.
+- **Updating tests has a time box of 15 minutes.** A unit spends at
+  most 15 minutes on updates to existing tests (fixtures, waits,
+  expected strings, snapshot recordings) after its change works. When
+  the time is used, stop and report what is left and why. The manager
+  sends the report to the top-level session, which decides: re-record
+  with a list of reasons, defer, or change the test design. A test
+  that costs more to update than the change is a test-design problem
+  for the user, not for the unit.
 - **A flake has a time box of 5 minutes, and no loops.** When a test
   fails only sometimes, find the cause from the failure itself: its
   output, the logs and the test's waits (see "No repeated test
