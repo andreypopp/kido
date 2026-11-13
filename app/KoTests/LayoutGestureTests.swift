@@ -224,16 +224,19 @@ import XCTest
         let (owner, client) = try shown(#"[{"name":"s","windows":[{"name":"w","tree":\#(sleep)}]}]"#)
         let session = try XCTUnwrap(owner.testSession)
         let item = try floatItem()
+        wait("the owner installed the first pane") { session.pane(PaneID(number: 1)) != nil }
         let view = try XCTUnwrap(session.pane(PaneID(number: 1)))
         XCTAssertFalse(view.canPerformMenuItem(item), "a window needs a tiled pane")
         XCTAssertNil(try XCTUnwrap(windows(client).first).floatEdit(PaneID(number: 1)))
 
         session.paneCommand(.split(.right), PaneID(number: 1))
         wait("two panes") { self.panes(client).count == 2 }
+        wait("the owner installed the second pane") { session.pane(PaneID(number: 2)) != nil }
         let second = try XCTUnwrap(session.pane(PaneID(number: 2)))
         wait("the second pane can float") { second.canPerformMenuItem(item) }
         session.paneCommand(.zoom, PaneID(number: 2))
         wait("the zoom") { self.windows(client).first?.zoom == PaneID(number: 2) }
+        wait("the owner's layout shows the zoom") { owner.testModel?.layout.layout.windows.first?.zoom == PaneID(number: 2) }
         XCTAssertFalse(second.canPerformMenuItem(item), "disabled while zoomed")
         XCTAssertNil(try XCTUnwrap(windows(client).first).floatEdit(PaneID(number: 2)))
     }
