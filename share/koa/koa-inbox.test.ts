@@ -31,7 +31,7 @@ test("data.to picks the agent, data.from names the sender with its return addres
   assert.deepEqual(r.log[1]?.message, { kind: "message", text: "hello", agent: { name: "reviewer", session: "0123456789abcdef", pane: "pane_2" }, relation: "sibling", runtime: "dev", returnTo: { session: "0123456789abcdef", pane: "pane_2" } });
 });
 
-test("a user text is plain, a select acts only for the user, a stop with a target is refused and an ended message is unsupported", async () => {
+test("a user text is plain, a select acts only for the user, and a stop with a target is refused", async () => {
   const r = recorder();
   const user = { type: "user" } as const;
   assert.equal(await handleMessage(api({ seq: 1, id: "user-id-0001", kind: "user", text: "typed", from: user }), r.dispatch), "ack");
@@ -43,7 +43,6 @@ test("a user text is plain, a select acts only for the user, a stop with a targe
   assert.equal(r.stops(), 0);
   assert.equal(await handleMessage(api({ seq: 5, id: "stop-id-0002", kind: "stop", text: "", from: user }), r.dispatch), "ack");
   assert.equal(r.stops(), 1);
-  assert.equal(await handleMessage(api({ seq: 6, id: "ended-id-001", kind: "ended", end: { type: "gone" }, from: pane, relation: "child" }), r.dispatch), "refuse");
 });
 
 test("the stream acks what it delivered once, acks a repeat without delivering it, and survives a dropped stream", async () => {

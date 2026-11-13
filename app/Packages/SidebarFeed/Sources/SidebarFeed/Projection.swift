@@ -15,12 +15,10 @@ private struct Projection {
     let model: KoModel
     let panes: [PaneID: KoSchema.PaneJson]
     let marks: [PaneID: RuntimeMark]
-    let floating: Set<PaneID>
 
     init(_ model: KoModel, marks: [PaneID: RuntimeMark]) {
         self.model = model
         self.marks = marks
-        floating = Set(model.layout.layout.windows.flatMap { $0.floats.map(\.pane) })
         panes = Dictionary(model.panes.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
     }
 
@@ -55,7 +53,7 @@ private struct Projection {
             start += 1
             let children = self.nodes(outline, from: &start, depth: entry.depth + 1)
             guard let pane = panes[entry.id] else { continue }
-            let item = Item(pane: pane, window: entry.window, layer: floating.contains(entry.id) ? .floating : .tiled, children: children, runtime: marks[entry.id])
+            let item = Item(pane: pane, window: entry.window, children: children, runtime: marks[entry.id])
             switch nodes.last {
             case .item(let previous) where previous.window == item.window:
                 nodes[nodes.count - 1] = .window(.init(id: item.window, children: [previous, item]))

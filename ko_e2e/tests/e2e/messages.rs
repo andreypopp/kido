@@ -329,7 +329,7 @@ fn the_server_stamps_the_sender_and_what_it_is_to_the_receiver_and_keeps_the_sco
 }
 
 #[test]
-fn a_pane_that_dies_or_leaves_drops_its_queue_and_tells_its_parent() {
+fn a_pane_that_dies_drops_its_queue() {
     let s = start(&[]);
     let user = s.headers();
     let dies_on_input = "read x; exit 3";
@@ -353,58 +353,6 @@ fn a_pane_that_dies_or_leaves_drops_its_queue_and_tells_its_parent() {
     assert_eq!(send(&s, &user, &d, &body("dead-0002", "x")).0, 410);
     assert_eq!(s.row(&d).get("inbox"), None);
     s.dial_ws(&path(&d), None, 410);
-
-    let parent = s.token_pane("exec cat");
-    let new = |command: &str| {
-        let made = post(
-            &s,
-            Some(&parent),
-            "/panes",
-            &json!({"parent": parent, "close": "keep", "command": {"type": "shell", "command": command}}),
-        );
-        made["pane"].as_str().unwrap().to_owned()
-    };
-    let died = new(dies_on_input);
-    let died_then_removed = new(dies_on_input);
-    let removed_live = new("exec cat");
-    s.text(&died, "go\n");
-    s.wait_row(&died, "its death", |row| row["dead"].is_object());
-    s.text(&died_then_removed, "go\n");
-    s.wait_row(&died_then_removed, "its death", |row| {
-        row["dead"].is_object()
-    });
-    s.delete(&format!("/panes/{died_then_removed}")).ok();
-    s.delete(&format!("/panes/{removed_live}")).ok();
-
-    let mut stream = open(&s, &parent);
-    for (pane, end) in [
-        (&died, "dead"),
-        (&died_then_removed, "dead"),
-        (&removed_live, "gone"),
-    ] {
-        let message = received(&mut stream);
-        assert_eq!(message["id"], format!("ended-{pane}"));
-        assert_eq!(message["from"], json!({"type": "pane", "pane": pane}));
-        assert_eq!(message["relation"], "child");
-        assert_eq!(message["kind"], "ended");
-        assert_eq!(message.get("text"), None);
-        assert_eq!(message["end"]["type"], end);
-        if end == "dead" {
-            assert_eq!(
-                message["end"]["cause"],
-                json!({"type": "exited", "code": 3})
-            );
-            assert!(message["end"]["at"].is_u64(), "{message}");
-        }
-    }
-    let next = send_later(&s, &user, &parent, &body("after-0001", "x"));
-    let message = received(&mut stream);
-    assert_eq!(
-        message["seq"], 4,
-        "a pane that died and was removed sent one ending, not two"
-    );
-    ack(&mut stream, "after-0001");
-    assert_eq!(answer(&s, next), (200, json!({"state": "acked", "seq": 4})));
 }
 
 #[test]

@@ -5,9 +5,11 @@
 Two changes the user asked for, previewed in the mockup ("Working
 session + states" and "Claude Code · child records"; the **Split
 Right** control above the window shows the layout rule). It is
-implemented; docs/design-app.md ("Children in the slot", "Folded
-children") is the reference for the code. The user answered every open
-question ("Decisions" below).
+implemented; docs/design-app.md ("Folded children") is the reference
+for the code. The user answered every open question ("Decisions"
+below). Change 1 went on 2026-11-13 with the child panes of subagents
+(plans/koa-subagents.md): a child in another window is an ordinary
+window with a tab, and the slots, the breadcrumb and ⌘↑/⌘↓ are gone.
 
 **1. A child shows in its parent's place.** The window layout holds
 top-level panes only. A child window (a subagent, a run, a Claude Code
@@ -141,7 +143,7 @@ the folded-child circles (user, 2026-11-08).
 The hover × replaces it there. The geometry (5pt padding, the leading
 chevron slot, text at 23pt, the indicator centre 11pt from the right
 edge) is below; it is implemented, and docs/design-app.md ("Sidebar",
-"Folded children", "Children in the slot") is the reference for the
+"Folded children") is the reference for the
 code.
 
 The folded circles line is on the row's second line, the activity
@@ -452,7 +454,7 @@ The close confirmation, the tab and row close buttons and the new-window control
 
 - **Inline session rename.** Double-clicking a session heading's name edits it in place, Finder-style. The field replaces the label exactly in place: same 11pt semibold font and 18pt line, text starting at the label's x, primary text color on the sidebar background with a hairline edge and the accent focus ring, the whole name selected; the session + does not move and the body below does not shift. Enter or clicking elsewhere commits; Escape cancels. An empty or unchanged name reverts silently. A duplicate of another session's name keeps the field open and shows the reason under it in 10pt red ("A session named “x” already exists."), the heading growing to fit; editing again clears the error. A single click still does what it does today (nothing on the label). Native: an NSTextField swapped into the header cell on double-click, committed through rename-session, with tmux's refusal shown as the inline error rather than an alert. The preview changes only its own data.
 
-- **Tab status marks by sidebar mode.** A top-level tab carries one mark, combined from all its panes and nested child windows in the order error > waiting > running > done > quiet, where a done pane counts only while its outcome is unseen. The mark is the sidebar row's own indicator (6pt dot, or the green check) in the tab's 16pt leading slot, which the hover × still replaces; quiet shows nothing and the 26pt label inset never changes. Docked sidebar: red and orange only, as today, because the sidebar rows already show the rest. Collapsed or floating sidebar: running (green dot) and unseen done (green check) appear as well. Accessibility labels take the suffix of the shown mark only: " — error", " — waiting", " — running", " — done". Tabs cover only the current session; other sessions have no indicator. The "Tab status marks" panel under the window renders the same tab strip docked and collapsed/floating, light and dark, from the current fixture. The preview has no seen state for done rows, so every done row counts as unseen there.
+- **Tab status marks by sidebar mode.** A tab carries one mark, combined from the panes of its window (since 2026-11-13; before, also from nested child windows) in the order error > waiting > running > done > quiet, where a done pane counts only while its outcome is unseen. The mark is the sidebar row's own indicator (6pt dot, or the green check) in the tab's 16pt leading slot, which the hover × still replaces; quiet shows nothing and the 26pt label inset never changes. Docked sidebar: red and orange only, as today, because the sidebar rows already show the rest. Collapsed or floating sidebar: running (green dot) and unseen done (green check) appear as well. Accessibility labels take the suffix of the shown mark only: " — error", " — waiting", " — running", " — done". Tabs cover only the current session; other sessions have no indicator. The "Tab status marks" panel under the window renders the same tab strip docked and collapsed/floating, light and dark, from the current fixture. The preview has no seen state for done rows, so every done row counts as unseen there.
 
 - **New window button.** A 28pt-wide, icon-only + at the trailing end of the tab strip, outside the scrolling tabs, hover brightening only like the session plus. It opens a new shell window in the current session and focuses it.
 - **Connect to Remote Host (redesigned).** A 440pt window-modal sheet: bold title, one-line lead ("Opens a new window attached to the host's kido server over SSH."), a **Host:** field (user@hostname or SSH alias, 11pt help line "Uses your SSH configuration, keys and known hosts."), then a bordered **Recent** list (132pt tall, 24pt rows, host plus a relative time, alternating row fill, blue selection). Clicking a recent host fills the field; double-clicking connects. Buttons: **Clear Recent** on the left (disabled when the list is empty, which shows "No recent hosts"), **Cancel** and the default **Connect** on the right; Enter connects, Escape cancels. Connecting records or refreshes the host in the recent list. The preview stores the list in browser localStorage and opens the sheet from the **Connect to Remote Host…** control above the window; natively it is the Spotlight/Shortcuts action's window or a menu command, and the recent list lives in app preferences. SSH's own checks still apply; the dialog never bypasses them.

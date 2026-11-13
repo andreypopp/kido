@@ -8,6 +8,17 @@ private func recorded() throws -> KoModel {
     return try JSONDecoder().decode(KoModel.self, from: Data(contentsOf: url))
 }
 
+private func recordedNested() throws -> KoModel {
+    var model = try recorded()
+    model.outline = model.outline.map { entry in
+        guard case .pane(var pane) = entry, [7, 8].contains(pane.id.number) else { return entry }
+        pane.window = .init(number: 4)
+        pane.depth = Int(pane.id.number) - 6
+        return .pane(pane)
+    }
+    return model
+}
+
 private func shape(_ nodes: [SidebarFeed.Node]) -> [String] {
     nodes.map { node in
         switch node {
@@ -35,7 +46,7 @@ private func items(_ snapshot: Snapshot) -> [PaneID: Item] {
     let snapshot = try #require(Snapshot(model: recorded()))
     #expect(snapshot.sessions.map(\.name) == ["main", "other"])
     #expect(snapshot.client == .init(session: .init(number: 1), window: .init(number: 1), pane: .init(number: 1)))
-    #expect(shape(snapshot.sessions[0].nodes) == ["1[1,2]", "3", "4", "5>7>8", "9"])
+    #expect(shape(snapshot.sessions[0].nodes) == ["1[1,2]", "3", "4", "5", "7", "8", "9"], "a pane whose parent is in another window is a root")
     #expect(shape(snapshot.sessions[1].nodes) == ["6"])
 }
 
@@ -123,21 +134,8 @@ private func items(_ snapshot: Snapshot) -> [PaneID: Item] {
     #expect(item.lifecycle == .live(.runtime(.init(pane: .piAgent(.init(session: "s1", status: try #require(item.agent)))))))
 }
 
-@Test func distinctChildWindowsAndAGrandchildKeepTheirPaneAncestry() throws {
-    var model = try recorded()
-    model.outline.removeAll { if case .pane(let pane) = $0 { [3, 4, 8].contains(pane.id.number) } else { false } }
-    let parent = try #require(model.outline.firstIndex { if case .pane(let pane) = $0 { pane.id.number == 5 } else { false } })
-    model.outline.insert(contentsOf: [
-        .pane(.init(depth: 1, id: .init(number: 3), window: .init(number: 2))),
-        .pane(.init(depth: 2, id: .init(number: 8), window: .init(number: 8))),
-        .pane(.init(depth: 1, id: .init(number: 4), window: .init(number: 4))),
-    ], at: parent + 1)
-    let snapshot = try #require(Snapshot(model: model))
-    #expect(shape(snapshot.sessions[0].nodes) == ["1[1,2]", "5>3>8,4,7", "9"])
-}
-
 @Test func statusesAndEndedPanesKeepTheirMeaning() throws {
-    let found = items(try #require(Snapshot(model: recorded())))
+    let found = items(try #require(Snapshot(model: recordedNested())))
     func item(_ number: UInt32) throws -> Item { try #require(found[.init(number: number)]) }
     let working = try item(1)
     #expect(working.agent?.state == .running(.init()))
@@ -178,9 +176,9 @@ private func edited(_ number: UInt32, _ edit: (inout KoSchema.PaneJson) -> Void)
     model.panes[at].parent = .init(number: 5)
     model.outline.removeAll { if case .pane(let pane) = $0 { pane.id.number == 4 } else { false } }
     let parent = try #require(model.outline.firstIndex { if case .pane(let pane) = $0 { pane.id.number == 5 } else { false } })
-    model.outline.insert(.pane(.init(depth: 1, id: .init(number: 4), window: .init(number: 3))), at: parent + 1)
+    model.outline.insert(.pane(.init(depth: 1, id: .init(number: 4), window: .init(number: 4))), at: parent + 1)
     let snapshot = try #require(Snapshot(model: model))
-    #expect(shape(snapshot.sessions[0].nodes) == ["1[1,2]", "3", "5>4,7>8", "9"])
+    #expect(shape(snapshot.sessions[0].nodes) == ["1[1,2]", "3", "5>4", "7", "8", "9"])
 }
 
 @Test func theInboxDotReadsTheRow() throws {
@@ -205,7 +203,7 @@ private func edited(_ number: UInt32, _ edit: (inout KoSchema.PaneJson) -> Void)
 }
 
 @Test func theFocusedPathOpensAndTheRestFolds() throws {
-    let snapshot = try #require(Snapshot(model: recorded()))
+    let snapshot = try #require(Snapshot(model: recordedNested()))
     let rows = renderedRows(snapshot)
     #expect(rows.filter { $0.target != nil }.count == 7)
     #expect(renderedRows(focusing(8, in: snapshot)).filter { $0.target != nil }.count == 9)

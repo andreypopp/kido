@@ -594,11 +594,15 @@ impl Model {
                 .iter()
                 .flat_map(|window| window.panes().into_iter().map(|pane| (pane, window.id)))
                 .collect();
+            let windows: BTreeMap<PaneId, WindowId> = panes.iter().copied().collect();
             items.extend(
                 tree::order(
                     panes,
                     |(pane, _)| *pane,
-                    |(pane, _)| parents.get(pane).copied(),
+                    |(pane, window)| {
+                        let parent = *parents.get(pane)?;
+                        (windows.get(&parent) == Some(window)).then_some(parent)
+                    },
                 )
                 .into_iter()
                 .map(|((id, window), depth)| Item::Pane { id, window, depth }),
@@ -945,7 +949,7 @@ mod tests {
     }
 
     #[test]
-    fn a_pane_with_a_parent_follows_it_one_level_deeper_and_the_step_order_follows_the_rows() {
+    fn a_pane_whose_parent_is_in_another_window_stays_a_root_in_document_order() {
         let windows = vec![
             (Shape::Leaf, 0),
             (Shape::Leaf, 0),
@@ -954,20 +958,15 @@ mod tests {
         ];
         let mut model = model(layout_of(&[windows, vec![(Shape::Leaf, 0)]]));
         model.panes = rows_of(&model.layout.layout);
-        assert_eq!(
-            outline_of(&model),
-            ["0pane_1", "0pane_2", "0pane_3", "0pane_4", "0pane_5"]
-        );
         set_parent(&mut model, 3, Some(1));
         set_parent(&mut model, 4, Some(3));
         set_parent(&mut model, 2, Some(5));
         assert_eq!(
             outline_of(&model),
-            ["0pane_1", "1pane_3", "2pane_4", "0pane_2", "0pane_5"],
-            "a parent in another session leaves the child a root of its own"
+            ["0pane_1", "0pane_2", "0pane_3", "0pane_4", "0pane_5"]
         );
-        assert_eq!(model.step(Some(pane(1)), 1), Some(pane(3)));
-        assert_eq!(model.step(Some(pane(4)), 1), Some(pane(2)));
+        assert_eq!(model.step(Some(pane(1)), 1), Some(pane(2)));
+        assert_eq!(model.step(Some(pane(4)), 1), Some(pane(5)));
     }
 
     #[test]
@@ -981,7 +980,7 @@ mod tests {
     }
 
     #[test]
-    fn a_layout_event_that_adds_a_pane_with_a_parent_nests_it() {
+    fn a_layout_event_that_adds_a_pane_in_a_window_of_its_own_makes_it_a_root() {
         let first = layout_of(&[vec![(Shape::Leaf, 0)]]);
         let mut model = model(first);
         model.panes = rows_of(&model.layout.layout);
@@ -993,7 +992,7 @@ mod tests {
             layout: grown,
         };
         assert_eq!(model.apply(announced(snapshot, listings)), Applied::Layout);
-        assert_eq!(outline_of(&model), ["0pane_1", "1pane_2"]);
+        assert_eq!(outline_of(&model), ["0pane_1", "0pane_2"]);
     }
 
     #[test]

@@ -514,8 +514,8 @@ parent after a removal. What goes:
   `super+down` of `ko_config/src/keys.rs`, the tab rule "a
   child shown in a slot keeps its top-level tab active", the
   `navigation(_:panes:)` projection argument of `SessionModel`, the
-  slot reset on a new server instance. `Item.layer` stays for the
-  floating child. The sidebar's folded children, the wait-opens-a-path
+  slot reset on a new server instance. `Item.layer` goes too: only
+  the slot projection read it. The sidebar's folded children, the wait-opens-a-path
   rule and the record tree stay and now carry the subagents.
 - `ko_tui`: nothing but the outline change it inherits.
 - koa: `createPane` for children, the depth read of `/layout`, the

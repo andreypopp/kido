@@ -234,7 +234,6 @@ kinds are the harness's vocabulary:
 | `stop` | `shutdown()` through the one teardown, after the ack |
 | `notice` | a `ko-notice` custom message, `steer` |
 | `select` | the user's click on a record: koa switches its page's view (design-koa.md, "Views") |
-| `ended` | server-made for a child pane; koa refuses it |
 
 The extension takes the message's shape from `ko-api.d.ts`; a line
 without that shape is refused, not delivered.
@@ -472,10 +471,8 @@ focused panes, and the end of a linger grace (protocol.md, section
    default; design-ko.md, "The configuration file"). The sweep
    removes it.
 3. A pane's `parent` is gone or dead. The sweep removes the pane at
-   once, live or dead, also while a focused client shows it: a child
-   shows in its parent's slot, so when the dead parent lingers, the
-   removal shows its last screen in its place. The rule reads no
-   process and no pi evidence, by design.
+   once, live or dead, also while a focused client shows it. The rule
+   reads no process and no pi evidence, by design.
 
 Rule 3 forces a stop instead of requesting a graceful shutdown. It is
 the only available action outside the child, and it ends a `tail -f`
@@ -617,24 +614,15 @@ record of koa's pane, and Kido.app draws it as a record row under the
 pane row (design-subagents.md, "In the sidebar"). A child pane
 follows the pane that created it, one level deeper, not after the
 whole parent window. The edge is the row's immutable `parent`, which
-the server sets at create. A child pane
-floats or is tiled in its parent's window, or is the only tiled pane
-of another window, which the server enforces for every client
-(protocol.md, section 7). So a child window is one tiled pane and
-nests under the pane that its `parent` names. A child in its parent's
+the server sets at create. The tree nests a pane under its parent
+only when both are in the same window: a child in its parent's
 window, such as koa's editor, floating or docked beside it, nests
-under its parent in the same window. A parent that is absent or in
-another session leaves the window a root of its session's tree, but
-its pane is still a child: it stays alone in its window, and a
-removal of its parent still takes it.
-
-A **top-level window** is one whose tiled panes have no parent pane
-in another window of the same session; every other window is a child
-window of the pane that its one tiled pane's `parent` names. The server's window switch (protocol.md,
-section 3) steps over top-level windows only: from a child window it
-steps from the child's top-level ancestor, so Next and Previous Window
-never enter child windows, in the terminal client and in Kido.app
-alike. The tree and the chooser reach the children.
+under its parent. A child in another window, or under a parent in
+another session, is a root of its window, and its window is an
+ordinary window of its session, with its own tab, which the
+server's window switch (protocol.md, section 3) visits like any
+other. The edge still decides the lifetime: a removal of the parent
+takes the child, in any window.
 
 The terminal client draws the list as session headers and pane rows,
 indented by depth (`ko_tui/src/sidebar.rs`); its chooser (`C-a s`)
@@ -653,8 +641,9 @@ when the whole tree fits above them; a longer tree takes the column,
 and the chooser never selects a row that the footer hides.
 
 The walk uses parent-first ordering and emits every item exactly once,
-with or without a tree. Parent edges across windows can create a
-cycle; the walk emits missed items afterward as roots, so an invalid
+with or without a tree. A parent edge can form a cycle in a
+document that a client did not get from the server; the walk emits
+missed items afterward as roots, so an invalid
 edge loses only the item's tree position. A self-edge means "no
 parent". Siblings retain arrival order.
 
@@ -958,6 +947,12 @@ Each decision names its date. The code states the rest.
   as ended and resume on a message. The no-git-writes guard reads the
   child's `koa.edge`, not the environment. An inside subagent of a
   host koa goes.
+- The child-pane machinery goes with the child panes: the server's
+  `ended` message, the rule that a tiled child in another window is
+  alone there, the window switch that stepped over child windows,
+  and Kido.app's slots, breadcrumb and ⌘↑/⌘↓. A pane's `parent`
+  stays for the lifetime and the scope of the programs that make
+  helper panes; the tree nests only within a window.
 
 2026-11-12, koa is the one harness:
 
@@ -1023,12 +1018,8 @@ Each decision names its date. The code states the rest.
 - No new CLI command for agents: `ko api --stream` is the harness's
   bridge to the message stream. `stop_agent`
   and `stop_async_bash` take one target.
-- The `ended` message on the parent's stream is the only ending
-  signal. There is no `GET /panes/{id}/wait`, because nothing else
-  needs one: a human reads the row's `dead`.
-- `ended` carries no count of the messages that died with the child's
-  queue: the parent knows what it sent, and a count would not say
-  which.
+- There is no `GET /panes/{id}/wait`: a human reads the row's
+  `dead`.
 - Message ids are the sender's and idempotent: a sender resends after
   a timeout, an `io` error or a dropped connection and learns the
   truth, and no receiver reads a message twice. The server keeps its

@@ -901,14 +901,6 @@ export interface components {
             zoom?: components["schemas"]["PaneId"];
         };
         Empty: Record<string, never>;
-        /** @description How a pane that has a parent ended. */
-        End: ({
-            /** @constant */
-            type: "dead";
-        } & components["schemas"]["Dead"]) | {
-            /** @constant */
-            type: "gone";
-        };
         /** @description Environment variables: names without = or NUL, values without NUL. */
         Env: {
             [key: string]: string;
@@ -1220,11 +1212,7 @@ export interface components {
         } & components["schemas"]["Payload"]) | ({
             /** @constant */
             kind: "user";
-        } & components["schemas"]["Payload"]) | {
-            end: components["schemas"]["End"];
-            /** @constant */
-            kind: "ended";
-        });
+        } & components["schemas"]["Payload"]));
         /** @description The sender's id of a message: 8 to 64 characters of A-Z, a-z, 0-9, _ and -. */
         MessageId: string;
         /**

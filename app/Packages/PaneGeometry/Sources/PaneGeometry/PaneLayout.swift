@@ -110,9 +110,8 @@ public struct PaneLayout: Equatable {
                height: max(0, bottom - topLine.maxY))
     }
 
-    // A float of a child window stays inside `clip`, the slot that shows the child; every other float inside the window.
-    public func clamp(_ frame: CGRect, resizing edge: ResizeEdge? = nil, clip: Geometry? = nil) -> CGRect {
-        let area = clip.map { self.frame($0) } ?? floatingBounds
+    public func clamp(_ frame: CGRect, resizing edge: ResizeEdge? = nil) -> CGRect {
+        let area = floatingBounds
         var r = frame
         if let edge {
             if edge.left { let x = max(area.minX, r.minX); r.size.width = r.maxX - x; r.origin.x = x }

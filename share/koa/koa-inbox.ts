@@ -54,7 +54,7 @@ function senderOf(m: Api["Message"], data: Data): { agent: AgentRef; returnTo?: 
 }
 
 export async function handleMessage(m: Api["Message"], dispatch: Dispatch): Promise<"ack" | "refuse"> {
-  const data = decodeData(m.kind === "ended" ? undefined : m.data);
+  const data = decodeData(m.data);
   if (!data) return "refuse";
   switch (m.kind) {
     case "user": return m.text ? dispatch.message(data.to, { kind: "user", text: m.text }) : "ack";

@@ -205,7 +205,6 @@ fn size(content: &Content) -> usize {
             .text
             .len()
             .saturating_add(payload.data.as_ref().map_or(0, Data::byte_len)),
-        Content::Ended { .. } => 0,
     }
 }
 

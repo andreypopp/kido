@@ -1409,40 +1409,6 @@
       "Empty": {
         "type": "object"
       },
-      "End": {
-        "description": "How a pane that has a parent ended.",
-        "oneOf": [
-          {
-            "allOf": [
-              {
-                "$ref": "#/components/schemas/Dead"
-              }
-            ],
-            "properties": {
-              "type": {
-                "const": "dead",
-                "type": "string"
-              }
-            },
-            "required": [
-              "type"
-            ],
-            "type": "object"
-          },
-          {
-            "properties": {
-              "type": {
-                "const": "gone",
-                "type": "string"
-              }
-            },
-            "required": [
-              "type"
-            ],
-            "type": "object"
-          }
-        ]
-      },
       "Env": {
         "additionalProperties": {
           "type": "string"
@@ -2668,22 +2634,6 @@
             },
             "required": [
               "kind"
-            ],
-            "type": "object"
-          },
-          {
-            "properties": {
-              "end": {
-                "$ref": "#/components/schemas/End"
-              },
-              "kind": {
-                "const": "ended",
-                "type": "string"
-              }
-            },
-            "required": [
-              "kind",
-              "end"
             ],
             "type": "object"
           }

@@ -2396,16 +2396,7 @@ pub struct Payload {
     pub data: Option<Data>,
 }
 
-/// How a pane that has a parent ended.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
-#[serde(tag = "type", rename_all = "snake_case")]
-pub enum End {
-    Dead(Dead),
-    Gone,
-}
-
-/// The kinds of a received message: those of the senders, user for a prompt of `ko prompt`, and
-/// ended, which the server makes when a pane with a parent dies or leaves the layout.
+/// The kinds of a received message: those of the senders, and user for a prompt of `ko prompt`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum Content {
@@ -2416,7 +2407,6 @@ pub enum Content {
     Notice(Payload),
     Select(Payload),
     User(Payload),
-    Ended { end: End },
 }
 
 impl Content {
@@ -2644,12 +2634,6 @@ mod tests {
         same::<Message>(
             r#"{"seq":2,"id":"abcdefgh","from":{"type":"user"},"kind":"user","text":"x"}"#,
         );
-        same::<Message>(
-            r#"{"seq":3,"id":"ended-pane_3","from":{"type":"pane","pane":"pane_3"},"relation":"child","kind":"ended","end":{"type":"dead","at":5,"cause":{"type":"exited","code":0}}}"#,
-        );
-        same::<Message>(
-            r#"{"seq":4,"id":"ended-pane_3","from":{"type":"pane","pane":"pane_3"},"kind":"ended","end":{"type":"gone"}}"#,
-        );
         same::<StreamRequest>(r#"{"type":"ack","id":"abcdefgh"}"#);
         same::<StreamRequest>(r#"{"type":"refuse","id":"abcdefgh"}"#);
         same::<ClientEvent>(r#"{"type":"inbox","pane":"pane_3","inbox":true}"#);
@@ -2665,7 +2649,6 @@ mod tests {
         for bad in [
             r#"{"id":"abcdefg","kind":"message","text":"x"}"#,
             r#"{"id":"abcdefgh","kind":"user","text":"x"}"#,
-            r#"{"id":"abcdefgh","kind":"ended","text":"x"}"#,
             r#"{"id":"abcdefgh","kind":"message"}"#,
         ] {
             assert!(decode::<SendMessage>(bad.as_bytes()).is_err(), "{bad}");

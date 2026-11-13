@@ -349,8 +349,6 @@ for every message and reads no `data`.
 - `select` from the user switches the page's view to the agent of the
   record id in its text (the empty id is the root); one from a pane,
   or for an unknown id, is acked and ignored (design-koa.md, "Views").
-- `ended`, which the server still sends until the child-pane code
-  goes, is refused.
 
 Messages wait until the root has started and while a `/reload` runs,
 so none reaches an extension that is being replaced.

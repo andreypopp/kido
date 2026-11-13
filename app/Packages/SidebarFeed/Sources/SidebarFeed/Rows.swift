@@ -303,8 +303,8 @@ public func sidebarRows(_ snapshot: Snapshot?) -> [SidebarRow] {
         }
         rows.append(gap)
     }
-    let root = PaneProjection(snapshot).rootWindows[snapshot.client.window]
-    let block = rows.indices.filter { rows[$0].id.session == snapshot.client.session && root != nil && rows[$0].root == root }
+    let root = snapshot.client.window
+    let block = rows.indices.filter { rows[$0].id.session == snapshot.client.session && rows[$0].root == root }
     let rootNode = snapshot.sessions.first { $0.id == snapshot.client.session }?.nodes.first { $0.window == root }
     if case .window(let window) = rootNode, window.children.count > 1 {
         for (offset, index) in block.enumerated() {

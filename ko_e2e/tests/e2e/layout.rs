@@ -5,7 +5,7 @@ use std::time::Duration;
 use crate::harness::{Message, Server, Ws, poll, sh, start, tagged, wait_gone};
 
 #[test]
-fn a_child_is_tiled_only_in_its_parents_window_or_alone() {
+fn a_child_tiles_and_floats_in_its_own_window_or_in_its_parents() {
     let s = start(&[]);
     let parent = crate::panes::post(
         &s,
@@ -19,66 +19,32 @@ fn a_child_is_tiled_only_in_its_parents_window_or_alone() {
         "/panes",
         &json!({"parent": parent["pane"], "command": {"type": "shell", "command": "exec cat"}}),
     );
-    let other = crate::panes::post(
-        &s,
-        None,
-        "/panes",
-        &json!({"session": "session_1", "command": {"type": "shell", "command": "exec cat"}}),
-    );
-    let before = s.doc();
-    let edit = json!({"type": "split", "pane": child["pane"], "axis": "h", "new": shell()});
-    assert!(
-        s.ko(&["layout", "edit", &edit.to_string()], "")
-            .error(1)
-            .contains("must be the only pane")
-    );
-    for case in 0..3 {
-        let mut draft = before.clone();
-        let windows = draft["layout"]["sessions"][0]["windows"]
-            .as_array_mut()
-            .unwrap();
-        let child_at = windows
+    let split_child = json!({"type": "split", "pane": child["pane"], "axis": "h", "new": shell()});
+    let snapshot = put_edit(&s, &split_child);
+    let child_window = windows(&snapshot)
+        .into_iter()
+        .find(|window| window["id"] == child["window"])
+        .unwrap()
+        .clone();
+    assert_eq!(shape(&child_window["tree"]).matches(':').count(), 2);
+    let float_in_child = s.edit(|layout| {
+        let windows = layout["sessions"][0]["windows"].as_array_mut().unwrap();
+        let at = windows
             .iter()
             .position(|window| window["id"] == child["window"])
             .unwrap();
-        match case {
-            0 => {
-                windows[child_at]["tree"] =
-                    split("h", vec![old(child["pane"].as_str().unwrap()), new()])
-            }
-            1 => windows[child_at]["floats"] = json!([{"pane": {"new": shell()}}]),
-            2 => {
-                let other_at = windows
-                    .iter()
-                    .position(|window| window["id"] == other["window"])
-                    .unwrap();
-                windows[other_at]["tree"] = split(
-                    "h",
-                    vec![
-                        old(other["pane"].as_str().unwrap()),
-                        old(child["pane"].as_str().unwrap()),
-                    ],
-                );
-                windows.remove(child_at);
-            }
-            _ => unreachable!(),
+        windows[at]["floats"] = json!([{"pane": {"new": shell()}}]);
+    });
+    let child_window = windows(&float_in_child)
+        .into_iter()
+        .find(|window| window["id"] == child["window"])
+        .unwrap()
+        .clone();
+    assert_eq!(child_window["floats"].as_array().unwrap().len(), 1);
+    for row in s.rows() {
+        if row["id"] != parent["pane"] && row["id"] != child["pane"] {
+            s.delete(&format!("/panes/{}", row["id"].as_str().unwrap()));
         }
-        let response = crate::panes::api(&s, None, "PUT", "/layout", &draft);
-        crate::panes::refused(response, 400, "invalid", "must be the only pane");
-        let after = s.doc();
-        assert_eq!(after["layout"], before["layout"]);
-        assert_eq!(after["revision"], before["revision"]);
-        assert_eq!(
-            s.rows()
-                .iter()
-                .map(|row| row["id"].clone())
-                .collect::<Vec<_>>(),
-            vec![
-                parent["pane"].clone(),
-                child["pane"].clone(),
-                other["pane"].clone()
-            ]
-        );
     }
 
     let (parent_pane, child_pane) = (

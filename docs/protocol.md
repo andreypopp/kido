@@ -251,9 +251,8 @@ a window that the report no longer names is withdrawn. The viewport
 is the size of the client's area for a window; the server uses it
 only for a new window (below). Each window entry is the size of the
 area where the client displays that window: Kido.app names the
-window of its tab at the viewport's size and, for each slot that shows
-a child pane, the child's window at the slot's size; the terminal
-client names its one current window. A report is independent of the
+window of its tab at the viewport's size, and the terminal client
+names its one current window. A report is independent of the
 selection: a client can size a window that it does not select, and a
 selection does not add a window to the report. An entry for a window
 that no longer exists is ignored, so a report that crosses a removal
@@ -345,11 +344,8 @@ A client's selection names a session, a window or a pane; a pane
 implies its window and session, a window implies its session, and a
 session implies the client's last current window in it, else its
 first window. A relative switch moves over windows or sessions in
-document order, next or previous, and wraps. A window switch visits
-only top-level windows (design.md, "The sidebar tree") and, from a
-child window, starts at the child's top-level window. Only a tiled
-pane whose parent is in another window makes a window a child
-window; a child in its parent's window, floating or tiled, does not. A client selects only
+document order, next or previous, and wraps; a window that holds a
+child pane is a window like any other. A client selects only
 over its own connection: there is no route that moves another client
 (decided 2026-11-03).
 
@@ -698,16 +694,11 @@ invariants.
   parent floats or is tiled there: a pane that opens a helper over
   itself, such as koa's editor (design-koa.md), makes it a floating
   child, and a client can dock it beside its parent and float it
-  again. In any other window a tiled child is the only tiled pane,
-  and the window's floats are only child panes whose parent is in
-  that window. A floating child is valid only in the window of its
-  parent. Any other document is `invalid`, with the document
-  unchanged and no pane started, so a split, a float, a move or a
-  swap that puts an unrelated pane beside a child outside its
-  parent's window, or a child into a window without its parent
-  beside another pane, is refused for every client. A window is a
-  child window because of its tiled pane, not its id: a child that moves alone to a new or
-  empty window, or a swap of two single-pane windows, is valid.
+  again. A tiled child in any other window is an ordinary pane of
+  that window, which can hold other panes and floats. A floating
+  child is valid only in the window of its parent; any other
+  document is `invalid`, with the document unchanged and no pane
+  started, for every client.
   `runtime` names the runtime that the pane is born in, for its
   life; absent is the host. The row's `runtime` is the runtime that
   runs the pane's program now, which a visit changes without a
@@ -892,14 +883,10 @@ stamps the sender, enforces the scope and carries the bytes.
   message that is not written at once (no stream, or 16 unanswered
   ahead) answers `queued` at once. A reply connection that closes
   leaves the message where it is.
-- **`ended`.** When a pane with a `parent` dies, or leaves the
-  document alive, the server enqueues on the parent a message with
-  the id `ended-pane_N`, kind `ended`, the child as `from`, relation
-  `child` and `end`: the death's time and cause, or `gone` for a
-  child removed alive. A dead child's removal sends nothing more. A
-  parent that is
-  dead or gone gets none, and a full queue drops it. A parent whose
-  stream is down reads it when its stream returns.
+
+The server sends no message of its own: a pane's death or removal
+tells its parent nothing, and a program that needs to know watches
+its children itself.
 
 Session and window variables are the `vars` objects inside the
 document. Pane variables are part of the pane's row (section 6), and
@@ -1045,14 +1032,13 @@ removed pane. The sweep never collects an `on_exit` pane for its
 linger grace while it is focused: shown by a client whose terminal
 has focus (section 3); it tries again when the focus changes. The
 `exit` rule ignores the focus, because the user ended the program in
-that pane, and so does the orphan rule: a child that a client shows
-in its dead parent's slot goes at once. The client then moves as
-section 3 says: to the parent while it lingers, so its last screen
-stays readable.
+that pane, and so does the orphan rule. The client then moves as
+section 3 says: when the child's window goes with it, to the parent
+while it lingers, so its last screen stays readable.
 
 The removal of an `exit` pane follows its death in this order: the
 server forwards the output that the ring holds to the views, sends
-the parent's `ended`, sends the `dead` event to every client, and
+the `dead` event to every client, and
 then, when the sweep runs, removes the pane in a `layout`
 event and closes its views. Thus, a client always sees `dead` before
 the removal. The view and client connections are separate, so a view
@@ -1119,7 +1105,7 @@ error, 4 no agent in scope, 5 several); its `--window` sends
    parallel.
 3. Send input events as text messages on the focused pane's view.
 4. On a window switch, close the old views and open the new ones, and
-   send the selection on `/client`. When a resize or a slot change
+   send the selection on `/client`. When a resize or a switch
    changes what the app window displays or a size, send the complete
    size report.
 5. On a split, close, drag, zoom or rename, edit the last layout

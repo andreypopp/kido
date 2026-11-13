@@ -48,23 +48,21 @@ final class WindowView: NSView {
         let chrome: PaneChrome
         var host = PaneHost.tiled
     }
-    private var displayedPaneIDs: [PaneID: PaneID] = [:]
+    private var displayedPaneIDs: Set<PaneID> = []
     private var retainedPaneViews: [PaneID: RetainedPane] = [:]
-    private var shownPanes: [PaneID: ShownPane] = [:]
-    private var displayedSlots: [PaneID: RetainedPane] { displayedPaneIDs.compactMapValues { retainedPaneViews[$0] } }
-    private func displayed(_ id: PaneID) -> RetainedPane? { displayedPaneIDs[id].flatMap { retainedPaneViews[$0] } }
+    private var displayedEntries: [RetainedPane] { displayedPaneIDs.compactMap { retainedPaneViews[$0] } }
+    private func displayed(_ id: PaneID) -> RetainedPane? { displayedPaneIDs.contains(id) ? retainedPaneViews[id] : nil }
     var retainedCount: Int { retainedPaneViews.count }
     var retainedPanes: [PaneView] { retainedPaneViews.values.map(\.view) }
     func contains(_ pane: PaneView) -> Bool { retainedPaneViews[pane.pane]?.view === pane }
     var hostWindows: [FloatWindow] { retainedPaneViews.values.compactMap(\.host.window) }
-    private var floatWindows: [PaneID: FloatWindow] { displayedPaneIDs.compactMapValues { retainedPaneViews[$0]?.host.window } }
+    private var floatWindows: [PaneID: FloatWindow] { Dictionary(uniqueKeysWithValues: displayedPaneIDs.compactMap { id in retainedPaneViews[id]?.host.window.map { (id, $0) } }) }
     var floatsInteractive: Bool { !zoomed }
     var cancelsDrag: Bool { paneDrag != nil }
     var inputWindow: NSWindow? { hostWindows.first { $0.isInputWindow } ?? window }
 
     func releaseUnusedPanes() {
-        let shown = Set(displayedPaneIDs.values)
-        for (id, slot) in retainedPaneViews where !shown.contains(id) && slot.view.webviewView == nil {
+        for (id, slot) in retainedPaneViews where !displayedPaneIDs.contains(id) && slot.view.webviewView == nil {
             slot.host.window?.detach()
             slot.view.chromeViews.forEach { $0.removeFromSuperview() }
             slot.chrome.removeFromSuperview()
@@ -73,9 +71,6 @@ final class WindowView: NSView {
             slot.view.removeFromSuperview()
             retainedPaneViews.removeValue(forKey: id)
         }
-    }
-    var activeSlot: PaneID? {
-        shown?.layout.root.panes.first { $0.id == active || shownPanes[$0.id]?.shown.position.pane == active }?.id
     }
     var paneIDs: [PaneID] {
         guard let shown else { return [] }
@@ -114,7 +109,7 @@ final class WindowView: NSView {
 
     override var isFlipped: Bool { true }
 
-    var displayedPanes: [PaneView] { displayedSlots.values.map(\.view) }
+    var displayedPanes: [PaneView] { displayedEntries.map(\.view) }
 
     #if KIDO_VISUAL
     var visualGeometryReady: Bool {
@@ -158,7 +153,7 @@ final class WindowView: NSView {
     var visualGhostView: PaneDropPreview { ghostView }
     var visualFloatHosts: [FloatWindow] {
         (shown?.visible.root.panes ?? []).compactMap { pane -> (Int, FloatWindow)? in
-            guard case .floating(let z, _) = pane.layer, let host = floatWindows[pane.id], !host.content.isHidden else { return nil }
+            guard case .floating(let z) = pane.layer, let host = floatWindows[pane.id], !host.content.isHidden else { return nil }
             return (z, host)
         }.sorted { $0.0 < $1.0 }.map(\.1)
     }
@@ -178,7 +173,7 @@ final class WindowView: NSView {
         layer?.backgroundColor = runtime.background.cgColor
         hostWindows.forEach { $0.content.handles.foreground = runtime.foreground }
         updateFocusTreatment(forcePaper: true)
-        for chrome in displayedSlots.values.map(\.chrome) {
+        for chrome in displayedEntries.map(\.chrome) {
             chrome.needsDisplay = true
             for overlay in chrome.subviews { overlay.needsDisplay = true }
         }
@@ -187,10 +182,8 @@ final class WindowView: NSView {
 
     private var session: SessionView? { superview as? SessionView }
 
-    func update(_ layout: Layout, _ visible: Layout, shown selected: [PaneID: ShownPane] = [:]) {
-        shownPanes = selected
-        let replacements = layout.root.panes.contains { displayedPaneIDs[$0.id] != (shownPanes[$0.id]?.shown.position.pane ?? $0.id) }
-        let changed = replacements || (shown.map { $0.layout != layout || $0.visible != visible } ?? true)
+    func update(_ layout: Layout, _ visible: Layout) {
+        let changed = shown.map { $0.layout != layout || $0.visible != visible } ?? true
         func sameTopology(_ a: PaneGeometry.Node, _ b: PaneGeometry.Node) -> Bool {
             switch (a, b) {
             case (.pane(let a), .pane(let b)): a.id == b.id && a.layer == b.layer
@@ -199,7 +192,7 @@ final class WindowView: NSView {
             default: false
             }
         }
-        needsReconcile = needsReconcile || replacements || (shown.map { !sameTopology($0.layout.root, layout.root) || !sameTopology($0.visible.root, visible.root) } ?? true)
+        needsReconcile = needsReconcile || (shown.map { !sameTopology($0.layout.root, layout.root) || !sameTopology($0.visible.root, visible.root) } ?? true)
         shown = (layout, visible)
         if let paneDrag {
             let valid: Bool = switch paneDrag {
@@ -217,10 +210,10 @@ final class WindowView: NSView {
         // Hiding the focused pane gives the focus to the next key view, so read it before the relayout.
         let paneFocused = PaneView.owner(inputWindow?.firstResponder).map { focused in displayedPanes.contains { $0 === focused } } == true
         let previous = active
-        active = visible.root.panes.first { $0.active }.map { shownPanes[$0.id]?.shown.position.pane ?? $0.id } ?? active
+        active = visible.root.panes.first { $0.active }?.id ?? active
         guard hot else { return }
         let known = displayedPanes.contains { $0.pane == active }
-        if changed, !isHidden { relayout() } else { updateBreadcrumbs() }
+        if changed, !isHidden { relayout() }
         raiseActiveFloat()
         if paneFocused && active != previous { focusActive(force: true) }
         else if !known { focusActive(force: false) }
@@ -232,16 +225,8 @@ final class WindowView: NSView {
         guard active != raisedFor else { return }
         raisedFor = active
         let floats = shown?.visible.root.panes.filter { $0.layer != .tiled } ?? []
-        guard let slot = activeSlot, let float = floats.first(where: { $0.id == slot }) else { return }
-        let top: Int
-        switch float.layer {
-        case .floating(_, .child(_, let z, let count)): top = z < count - 1 ? count : 0
-        case .floating(let z, .window):
-            let count = floats.filter { if case .floating(_, .window) = $0.layer { true } else { false } }.count
-            top = z < count - 1 ? count : 0
-        default: top = 0
-        }
-        if top > 0 { session?.edit(.float(KoSchema.EditFloat(pane: slot, z: top)), nil) }
+        guard let active, let float = floats.first(where: { $0.id == active }), case .floating(let z) = float.layer, z < floats.count - 1 else { return }
+        session?.edit(.float(KoSchema.EditFloat(pane: active, z: floats.count)), nil)
     }
 
     func present() -> Int {
@@ -263,7 +248,7 @@ final class WindowView: NSView {
         backings = [:]
         needsReconcile = true
         subviews = []
-        displayedPaneIDs = [:]
+        displayedPaneIDs = []
     }
 
     func focus(_ pane: PaneID) {
@@ -296,10 +281,7 @@ final class WindowView: NSView {
         let layoutPanes = shown.layout.root.panes
         let existing = retainedPaneViews.mapValues(\.view)
         var views: [PaneID: PaneView] = [:]
-        for pane in layoutPanes {
-            let actual = shownPanes[pane.id]?.shown.position.pane ?? pane.id
-            views[pane.id] = existing[actual] ?? makePane(actual)
-        }
+        for pane in layoutPanes { views[pane.id] = existing[pane.id] ?? makePane(pane.id) }
         let actual = Set(views.values.lazy.map(\.pane))
         let removed = existing.values.filter { !actual.contains($0.pane) }
         if !removed.isEmpty { toolbar?.removeFromSuperview(); toolbar = nil }
@@ -319,7 +301,7 @@ final class WindowView: NSView {
         }
         var tiled: [NSView] = [], floating: [PaneID: [NSView]] = [:]
         backings = [:]
-        var nextDisplayedPaneIDs: [PaneID: PaneID] = [:]
+        var nextDisplayedPaneIDs: Set<PaneID> = []
         for pane in layoutPanes {
             guard let view = views[pane.id] else { continue }
             let g = (seen[pane.id] ?? pane).geometry
@@ -336,7 +318,7 @@ final class WindowView: NSView {
                 host = .tiled
             }
             retainedPaneViews[view.pane] = RetainedPane(view: view, chrome: chrome, host: host)
-            nextDisplayedPaneIDs[pane.id] = view.pane
+            nextDisplayedPaneIDs.insert(pane.id)
             chrome.select = view.onSelect
             chrome.hover = { [weak self] chrome, point in self?.hover(chrome, point) }
             chrome.wantsLayer = true
@@ -382,7 +364,6 @@ final class WindowView: NSView {
         for view in views.values where existing[view.pane] == nil {
             view.updateWebview(session?.webview(view.pane))
         }
-        updateBreadcrumbs()
         updateFocusTreatment()
         session?.updateWebview()
         invalidateCursorRects()
@@ -393,13 +374,6 @@ final class WindowView: NSView {
         #endif
     }
 
-    private func updateBreadcrumbs() {
-        for (root, slot) in displayedSlots {
-            let shown = shownPanes[root]
-            slot.view.breadcrumbPath = shown.flatMap { $0.ancestors.isEmpty ? nil : $0.ancestors + [$0.shown] } ?? []
-        }
-    }
-
     private func place() {
         guard !isHidden, let shown, let placement else { return }
         #if KIDO_STRESS
@@ -407,7 +381,8 @@ final class WindowView: NSView {
         #endif
         let seen = Dictionary(uniqueKeysWithValues: shown.visible.root.panes.map { ($0.id, $0) })
         var changed = false
-        for (id, entry) in displayedSlots where !entry.chrome.isHidden {
+        for entry in displayedEntries where !entry.chrome.isHidden {
+            let id = entry.view.pane
             guard let pane = seen[id] else { continue }
             let view = entry.view, chrome = entry.chrome
             let host = pane.layer != .tiled ? entry.host.window : nil
@@ -426,7 +401,7 @@ final class WindowView: NSView {
     private func placeFloat(_ id: PaneID, _ placement: PaneLayout) {
         guard let pane = shown?.visible.root.panes.first(where: { $0.id == id && $0.layer != .tiled }),
               let entry = displayed(id), let host = floatWindows[id],
-              host.rect != floatFrame(id, pane.geometry, placement, host) else { return }
+              host.rect != floatFrame(pane.geometry, placement, host) else { return }
         place(entry.chrome, entry.view, pane.geometry, placement, host: host)
         host.invalidateCursorRects(for: host.content)
         #if KIDO_STRESS
@@ -452,8 +427,7 @@ final class WindowView: NSView {
     }
 
     func updateFocusTreatment(forcePaper: Bool = false) {
-        let active = activeSlot
-        let entries = displayedSlots.values
+        let entries = displayedEntries
         let multiple = entries.filter { !$0.chrome.isHidden && $0.view.transparentPaper }.count > 1
         let mainKey = (window as? OwnerWindow)?.isInputWindow != false
         let floatKey = floatWindows.values.contains { ($0.isInputWindow || !mainKey && $0.hostedSheet != nil) && !$0.content.isHidden }
@@ -481,7 +455,7 @@ final class WindowView: NSView {
     // change of colour, state or name only redraws the pane's stripe and pill.
     func marksChanged(_ changed: Set<PaneID>, banded: Bool) {
         if banded { return isHidden ? () : place() }
-        for slot in displayedSlots.values where changed.contains(slot.view.pane) {
+        for slot in displayedEntries where changed.contains(slot.view.pane) {
             let mark = session?.marks[slot.view.pane]
             slot.chrome.runtimeMark = mark
             slot.view.runtimeMark = mark
@@ -496,7 +470,7 @@ final class WindowView: NSView {
         chrome.stripeTop = host != nil ? PaneLayout.floatTop : 0
         let frame: CGRect, grid: CGRect, content: CGRect, insets: PaneLayout.RenderInsets
         if floating {
-            let rect = floatFrame(chrome.pane, g, placement, host)
+            let rect = floatFrame(g, placement, host)
             if let host { positionHost(host, rect) }
             frame = CGRect(x: FloatWindow.margin, y: FloatWindow.margin, width: rect.width, height: rect.height)
             grid = CGRect(origin: CGPoint(x: frame.minX + placement.before.width, y: frame.minY + PaneLayout.floatTop),
@@ -589,7 +563,6 @@ final class WindowView: NSView {
         view.cursorHost = self
         view.onCommand = { [weak self] command in self?.session?.paneCommand(command, id) }
         view.floatTitle = { [weak self] in self?.session?.floatTitle(id) }
-        view.onShowAncestor = { [weak self] in self?.session?.selectPane($0.pane) }
         view.onAlternateChange = { [weak self] in self?.place() }
         view.onFindChange = { [weak self] in self?.place(); self?.invalidateCursorRects() }
         view.onCellChange = { [weak self] in self?.session?.cellChanged() }
@@ -642,7 +615,7 @@ final class WindowView: NSView {
     var stressFloats: [(pane: Pane, frame: CGRect, free: Bool)] {
         guard let placement else { return [] }
         return (shown?.visible.root.panes ?? []).filter { $0.layer != .tiled }.map {
-            ($0, floatFrame($0.id, $0.geometry, placement, floatWindows[$0.id]), floatWindows[$0.id]?.position != .layout)
+            ($0, floatFrame($0.geometry, placement, floatWindows[$0.id]), floatWindows[$0.id]?.position != .layout)
         }
     }
     #endif
@@ -686,7 +659,7 @@ final class WindowView: NSView {
 
     func syncHosts() {
         let floats = (shown?.visible.root.panes ?? []).compactMap { pane -> (z: Int, id: PaneID)? in
-            if case .floating(let z, _) = pane.layer { (z, pane.id) } else { nil }
+            if case .floating(let z) = pane.layer { (z, pane.id) } else { nil }
         }.sorted { $0.z < $1.z }
         let wanted = Set(floats.map(\.id))
         let open = !isHidden && window?.isMiniaturized == false && session?.floatsAllowed() != false
@@ -709,8 +682,8 @@ final class WindowView: NSView {
         if host.frame != frame { host.setFrame(frame, display: false) }
     }
 
-    private func floatFrame(_ id: PaneID, _ geometry: Geometry, _ placement: PaneLayout, _ host: FloatWindow?) -> CGRect {
-        let canonical = placement.clamp(placement.floatFrame(geometry), clip: clip(id))
+    private func floatFrame(_ geometry: Geometry, _ placement: PaneLayout, _ host: FloatWindow?) -> CGRect {
+        let canonical = placement.clamp(placement.floatFrame(geometry))
         switch host?.position ?? .layout {
         case .layout: return canonical
         case .dragging(let frame, _), .awaitingMove(let frame, _), .awaitingDock(let frame): return frame
@@ -718,16 +691,12 @@ final class WindowView: NSView {
         }
     }
 
-    private func clip(_ id: PaneID) -> Geometry? {
-        shown?.visible.root.panes.first { $0.id == id }?.layer.clip
-    }
-
     private func layoutPane(_ id: PaneID) -> Pane? { shown?.layout.root.panes.first { $0.id == id } }
 
     private func wire(_ frame: CGRect, _ id: PaneID, _ placement: PaneLayout) -> (width: Int, height: Int, point: CellPoint) {
         let g = placement.floatGeometry(frame)
         let pane = layoutPane(id)
-        guard let extent = pane?.layer.clip ?? shown?.layout.root.geometry else { return (g.width, g.height, CellPoint(x: max(0, g.x), y: max(0, g.y))) }
+        guard let extent = shown?.layout.root.geometry else { return (g.width, g.height, CellPoint(x: max(0, g.x), y: max(0, g.y))) }
         let pad = pane?.border == true ? 1 : 0
         let width = min(g.width, max(1, extent.width - 2 * pad)), height = min(g.height, max(1, extent.height - 2 * pad))
         return (width, height, CellPoint(x: min(max(g.x - extent.x, pad), max(pad, extent.width - width - pad)),
@@ -735,7 +704,7 @@ final class WindowView: NSView {
     }
 
     private func layoutPoint(_ id: PaneID) -> CellPoint? {
-        layoutPane(id).flatMap { $0.layer == .tiled ? nil : CellPoint(x: $0.geometry.x - ($0.layer.clip?.x ?? 0), y: $0.geometry.y - ($0.layer.clip?.y ?? 0)) }
+        layoutPane(id).flatMap { $0.layer == .tiled ? nil : CellPoint(x: $0.geometry.x, y: $0.geometry.y) }
     }
 
     private func releaseMovedFloats() {
@@ -744,7 +713,7 @@ final class WindowView: NSView {
         }
     }
 
-    private func limit(_ frame: CGRect, _ edge: PaneLayout.ResizeEdge?, _ pane: Pane, _ placement: PaneLayout) -> CGRect {
+    private func limit(_ frame: CGRect, _ edge: PaneLayout.ResizeEdge?, _ placement: PaneLayout) -> CGRect {
         if let window, window.styleMask.contains(.fullScreen), let screen = window.screen {
             let area = convert(window.convertFromScreen(screen.frame), from: nil)
             var r = frame
@@ -761,7 +730,7 @@ final class WindowView: NSView {
             }
             return r
         }
-        let area = pane.layer.clip.map { placement.frame($0) } ?? placement.floatingBounds
+        let area = placement.floatingBounds
         var r = frame
         if r.width > area.width { if edge?.left == true { r.origin.x = r.maxX - area.width }; r.size.width = area.width }
         if r.height > area.height { if edge?.top == true { r.origin.y = r.maxY - area.height }; r.size.height = area.height }
@@ -815,7 +784,7 @@ final class WindowView: NSView {
             }
         case .floating:
             guard let placement, let host = floatWindows[pane.id] else { return endDrag() }
-            let frame = floatFrame(pane.id, pane.geometry, placement, host)
+            let frame = floatFrame(pane.geometry, placement, host)
             paneDrag = .floating(pane, screenPoint(event), frame, handle == .grip ? .dock : .move, resting: host.position)
             host.position = .dragging(frame: frame, sent: nil)
         }
@@ -826,7 +795,7 @@ final class WindowView: NSView {
         guard let placement, let host = floatWindows[id], let pane = shown?.visible.root.panes.first(where: { $0.id == id }),
               claimPaneDrag() else { return }
         dragSource = event.window ?? window
-        let frame = floatFrame(id, pane.geometry, placement, host)
+        let frame = floatFrame(pane.geometry, placement, host)
         paneDrag = .floating(pane, screenPoint(event), frame, .resize(edge), resting: host.position)
         host.position = .dragging(frame: frame, sent: nil)
         displayed(id)?.view.beginResizeIntent()
@@ -896,7 +865,7 @@ final class WindowView: NSView {
         }
         if case .floating(let pane, _, _, _, let resting)? = paneDrag, let host = floatWindows[pane.id], case .dragging(let frame, let sent) = host.position {
             var held = frame, point = sent
-            if window?.styleMask.contains(.fullScreen) == true, let placement, sent != nil, let origin = layoutPane(pane.id)?.layer.clip ?? shown?.layout.root.geometry {
+            if window?.styleMask.contains(.fullScreen) == true, let placement, sent != nil, let origin = shown?.layout.root.geometry {
                 let canonical = wire(frame, pane.id, placement)
                 point = canonical.point
                 held = placement.floatFrame(Geometry(x: canonical.point.x + origin.x, y: canonical.point.y + origin.y, width: canonical.width, height: canonical.height))
@@ -950,7 +919,7 @@ final class WindowView: NSView {
                 if edge?.left == true { frame.size.width = max(minimum.width, initial.width - dx); frame.origin.x = initial.maxX - frame.width }
                 if edge?.top == true { frame.size.height = max(minimum.height, initial.height - dy); frame.origin.y = initial.maxY - frame.height }
             }
-            frame = limit(frame, edge, pane, placement)
+            frame = limit(frame, edge, placement)
             var sent: CellPoint?
             if case .dragging(_, let before) = host.position { sent = before }
             let geometry = wire(frame, pane.id, placement)
@@ -1010,7 +979,7 @@ final class WindowView: NSView {
         guard let windowID else { return }
         if let ghost, let placement {
             let geometry = wire(ghost, source, placement)
-            if let key = displayedPaneIDs[source] { retainedPaneViews[key]?.host = .popping(frame: ghost, sent: geometry.point) }
+            if displayedPaneIDs.contains(source) { retainedPaneViews[source]?.host = .popping(frame: ghost, sent: geometry.point) }
             let edit = KoSchema.Edit.float(KoSchema.EditFloat(cols: geometry.width, pane: source, rows: geometry.height, x: geometry.point.x, y: geometry.point.y))
             #if KIDO_STRESS
             stressEvent("drag-completed", "\(edit)")
@@ -1050,7 +1019,7 @@ final class WindowView: NSView {
             return floatWindows[pane.id].flatMap { $0.content.isHidden ? nil : $0.rect }
         }
         let hit = (shown?.visible.root.panes ?? []).filter { $0.id != source }.sorted {
-            switch ($0.layer, $1.layer) { case (.floating(let a, _), .floating(let b, _)): a > b; case (.floating, .tiled): true; default: false }
+            switch ($0.layer, $1.layer) { case (.floating(let a), .floating(let b)): a > b; case (.floating, .tiled): true; default: false }
         }.lazy.compactMap { pane in blocker(pane).map { (pane, $0) } }.first { $0.1.contains(point) }
         guard tiled.contains(where: { $0.id != source }), let placement,
               hit == nil || hit?.0.layer == .tiled else { return nil }
@@ -1223,13 +1192,8 @@ final class WindowView: NSView {
     }
 
     func sizeReport(viewport: KoSize) -> [KoWindowSize] {
-        guard let windowID, let shown else { return [] }
-        var result = [KoWindowSize(window: windowID, size: viewport)]
-        for pane in shown.visible.root.panes {
-            guard let position = shownPanes[pane.id]?.shown.position, position.pane != pane.id, position.window != windowID else { continue }
-            result.append(KoWindowSize(window: position.window, size: KoSize(cols: pane.geometry.width, rows: pane.geometry.height, cell: viewport.cell)))
-        }
-        return result.sorted { $0.window.number < $1.window.number }
+        guard let windowID else { return [] }
+        return [KoWindowSize(window: windowID, size: viewport)]
     }
 
     override func setFrameSize(_ newSize: NSSize) {

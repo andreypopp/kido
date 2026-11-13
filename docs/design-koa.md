@@ -1101,9 +1101,7 @@ composer's text; koa never sends it.
   pane's draft and must not hide a terminal beside it: centred on
   koa's pane, 80% of it, at least 60 columns by 16 rows, moved to stay
   inside the window; only a pane below that minimum gets the float
-  centred on the window, clipped to it. A nested koa is the only
-  tiled pane of its child window, so there its pane is the window,
-  and its editor cannot dock there.
+  centred on the window, clipped to it.
   koa writes the float through `PUT /layout` with the
   revision it read, and reads the layout again on a `409`, three
   times at most. The float is a child pane: `parent` is koa's pane
@@ -1118,9 +1116,7 @@ composer's text; koa never sends it.
   koa inside a runtime refuses Control-G.
 - **The end.** A `/client` connection that does not size or focus
   anything, opened before the float, gives the float's `dead` event
-  with its cause; the parent's `ended` message is not used, because a
-  full queue drops it, and the extension acknowledges it without a notice,
-  because the editor is not in its registry. Exit 0 with a text that
+  with its cause. Exit 0 with a text that
   differs from the draft (without a leading BOM and the final newline,
   as pi compares) replaces the composer's text through the same
   `editor` record as `set_editor_text`, only while the session is

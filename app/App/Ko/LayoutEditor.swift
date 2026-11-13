@@ -175,7 +175,7 @@ extension PaneCommand {
         case .zoom: return .edit(.toggleZoom(KoSchema.EditToggleZoom(pane: pane)))
         case .equalize: return .edit(.equalize(KoSchema.EditEqualize(pane: pane)))
         case .float: return window.floatEdit(pane, last: lastTiled).map { .edit($0) }
-        case .window, .newWindow, .close, .parent, .child: return nil
+        case .window, .newWindow, .close: return nil
         }
     }
 }

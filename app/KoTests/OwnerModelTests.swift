@@ -89,12 +89,6 @@ import XCTest
         let row = { sidebarRows(owner.snapshot).first { $0.pick != nil } }
         wait("the offered record, clickable once the message stream is open") { row() != nil }
         let pick = try XCTUnwrap(row()?.pick)
-        let child = try XCTUnwrap(PaneID(ko: createPane(#"{"parent":"\#(pick.pane.pane)","command":{"type":"argv","argv":["/bin/sleep","60"]}}"#, dir: dir)))
-        wait("the child row") { sidebarRows(owner.snapshot).contains { $0.target?.pane == child } }
-        let target = try XCTUnwrap(sidebarRows(owner.snapshot).first { $0.target?.pane == child }?.target)
-        owner.perform(.jump(target))
-        wait("the child is focused") { owner.testModel?.selection.pane == child }
-        wait("the record stays listed") { row() != nil }
         owner.sidebar.list.press(try XCTUnwrap(row()).id)
         wait("the record's pane is focused") { owner.testModel?.selection.pane == pick.pane.pane }
         wait("the select message reaches the program") {
@@ -180,28 +174,26 @@ import XCTest
         XCTAssertEqual(first.testModel?.layout.layout.sessions.first?.id, second.testModel?.layout.layout.sessions.first?.id)
     }
 
-    func testSwitchingWindowsSkipsANestedChildWindow() throws {
+    func testSwitchingWindowsVisitsAChildWindowOfItsOwn() throws {
         let pi = shell("printf '\\033]7501;state=idle:app=pi\\007'; " + cat, vars: #"{"pi.session":"s1","pi.name":"Parent"}"#)
         let (dir, owner) = try shown(#"[{"name":"parent","tree":\#(pi)},{"name":"last","tree":\#(shell(cat))}]"#)
         let before = Set(try XCTUnwrap(owner.testModel.map(\.layout.layout.windows)).map(\.id))
         _ = try createPane(#"{"session":"session_1","name":"kid","parent":"pane_1","close":"on_exit","command":{"type":"argv","argv":["/bin/sleep","60"]}}"#, dir: dir)
-        wait("the child window nested under its parent pane") {
-            owner.snapshot?.sessions.first?.nodes.count == 2 && owner.snapshot?.sessions.first?.nodes.first?.children.isEmpty == false
+        wait("the child window beside its parent window") {
+            owner.snapshot?.sessions.first?.nodes.count == 3 && owner.navigation.windows.count == 3
         }
         let windows = try XCTUnwrap(owner.testModel.map(\.layout.layout.windows)).map(\.id)
-        let nested = try XCTUnwrap(windows.first { !before.contains($0) })
-        let top = windows.filter { $0 != nested }
-        XCTAssertEqual(owner.navigation.window, top[0])
+        let child = try XCTUnwrap(windows.first { !before.contains($0) })
+        let others = windows.filter { $0 != child }
+        XCTAssertEqual(owner.navigation.window, others[0])
         owner.perform(.switchWindow(next: true))
-        wait("the last top-level window") { owner.navigation.window == top[1] }
+        wait("the last parent-level window") { owner.navigation.window == windows[1] }
         owner.perform(.switchWindow(next: true))
-        wait("the first window again") { owner.navigation.window == top[0] }
+        wait("the child's own window") { owner.navigation.window == windows[2] }
         let session = try XCTUnwrap(owner.navigation.session)
-        let child = try XCTUnwrap(owner.testModel?.layout.layout.window(nested)?.panes.first)
-        owner.perform(.jump(.init(session: session, window: nested, pane: child)))
-        wait("the child shown in its root slot") { owner.navigation.window == top[0] && owner.testModel?.selection.window == nested }
-        XCTAssertNil(owner.testSession?.windows[nested])
-        owner.perform(.switchWindow(next: false))
-        wait("previous root tab from a child") { owner.navigation.window == top[1] }
+        let pane = try XCTUnwrap(owner.testModel?.layout.layout.window(child)?.panes.first)
+        owner.perform(.jump(.init(session: session, window: child, pane: pane)))
+        wait("the child shown in its own window") { owner.navigation.window == child && owner.testModel?.selection.window == child }
+        XCTAssertNotNil(owner.testSession?.windows[child])
     }
 }

@@ -664,7 +664,7 @@ struct Claims<'a> {
     shell: &'a dyn Fn() -> Option<Name>,
     parent_of: &'a dyn Fn(PaneId) -> Option<PaneId>,
     shell_name: OnceCell<Option<Name>>,
-    tiled: Vec<(PaneId, Option<PaneId>)>,
+    tiled: Vec<PaneId>,
     live: &'a BTreeSet<PaneId>,
     seen: BTreeSet<PaneId>,
     ids: Ids,
@@ -713,7 +713,7 @@ impl Claims<'_> {
             Node::Leaf(leaf) => Ok(Node::Leaf(Raw {
                 pane: {
                     let placed = self.pane(leaf.pane)?;
-                    self.tiled.push(placed);
+                    self.tiled.push(placed.0);
                     placed.0
                 },
                 cols: leaf.cols.map(|cells| usize::from(cells.get())),
@@ -782,20 +782,9 @@ fn window(
     let here: BTreeSet<PaneId> = claims
         .tiled
         .iter()
-        .chain(&floated)
-        .map(|(pane, _)| *pane)
+        .copied()
+        .chain(floated.iter().map(|(pane, _)| *pane))
         .collect();
-    let away = |parent: &Option<PaneId>| parent.is_some_and(|parent| !here.contains(&parent));
-    if let Some((pane, _)) = claims
-        .tiled
-        .iter()
-        .find(|(_, parent)| away(parent))
-        .filter(|_| claims.tiled.len() > 1 || floated.iter().any(|(_, parent)| parent.is_none()))
-    {
-        return Err(format!(
-            "child pane {pane} must be the only pane in its window"
-        ));
-    }
     if let Some((pane, _)) = floated
         .iter()
         .find(|(_, parent)| parent.is_some_and(|parent| !here.contains(&parent)))

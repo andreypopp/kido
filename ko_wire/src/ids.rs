@@ -180,10 +180,6 @@ impl MessageId {
                 .replace('/', "_"),
         ))
     }
-
-    pub fn ended(pane: PaneId) -> MessageId {
-        MessageId(format!("ended-{pane}"))
-    }
 }
 
 impl JsonSchema for MessageId {
@@ -487,11 +483,6 @@ mod tests {
         let minted = MessageId::mint().unwrap();
         assert_eq!(String::from(minted.clone()).len(), 22);
         assert_eq!(parse(&String::from(minted.clone())), Ok(minted));
-        assert_eq!(
-            String::from(MessageId::ended(PaneId::new(3))),
-            "ended-pane_3"
-        );
-        assert!(parse(&String::from(MessageId::ended(PaneId::new(0)))).is_ok());
     }
 
     #[test]
