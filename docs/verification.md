@@ -53,7 +53,9 @@ the installed layout check (`make install PREFIX=$HOME/ko-install`,
 `make test` and `make ko-test` (design-app.md, "Testing"), not `make
 visual` (known-issues-app.md, "Visual tests do not run in CI"). Visual
 snapshots are recorded and checked only in the guest, never on the host:
-the host's macOS build is not the reference.
+the host's macOS build is not the reference. `make visual` prints one
+`visual: PHASE XmYs` line to stderr for the build, the VM wait, the
+tests, the quit check and the total.
 `scripts/main-watch.sh` watches main and reports each observed head's
 CI. `/gh-watch` starts it through streamed `async_bash`.
 

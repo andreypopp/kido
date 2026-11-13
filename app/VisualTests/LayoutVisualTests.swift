@@ -247,7 +247,7 @@ import XCTest
             if dragged {
                 let terminal = try XCTUnwrap(terminal), frame = try rect(float)
                 let start = NSPoint(x: frame.midX, y: frame.minY + 4), end = NSPoint(x: start.x + 500, y: start.y)
-                terminal.visualBeginDrag(float, try mouse(.leftMouseDown, start))
+                terminal.visualBeginDrag(float, try mouse(.leftMouseDown, start), from: .frame)
                 terminal.mouseDragged(with: try mouse(.leftMouseDragged, end))
                 terminal.mouseUp(with: try mouse(.leftMouseUp, end))
                 try await wait("the float is past the main window's edge", within: 5) { host.frame.maxX > self.owner.window.frame.maxX + 100 && !session.editing() }

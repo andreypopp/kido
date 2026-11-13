@@ -90,9 +90,16 @@ visual visual-fast visual-slow: project vm
 	fi; \
 	settings="KIDO_VISUAL_SERVER=/tmp/ka-visual-vm KO_CHECKOUT=$(KO_ABS) KIDO_VISUAL_CONDITION=KIDO_VISUAL KIDO_VISUAL_RECORD=$(RECORD) KOA_STRESS=$(KOA_STRESS) KOA_STRESS_VISIBLE=$(KOA_STRESS_VISIBLE) KOA_STRESS_OUTPUT=$(KOA_STRESS_OUTPUT)"; \
 	only='$(foreach test,$(ONLY),-only-testing:VisualTests/$(test)) '"$$select"; \
+	fmt() { echo "visual: $$1 $$(($$2 / 60))m$$(($$2 % 60))s" >&2; }; \
+	t0=$$(date +%s); \
 	xcodebuild -project Kido.xcodeproj -scheme Visual -configuration Debug -destination platform=macOS -derivedDataPath $(DERIVED) \
 		$$settings KOA_STRESS_TESTS="$(ONLY)" $$only build-for-testing 2>&1 | $(XCODE_PROGRESS); \
-	$(VM_BIN) exec --dir $(CURDIR) $(if $(filter 1,$(KOA_STRESS)),--link $(KOA_STRESS_OUTPUT)) -- scripts/visual-guest.sh "$$settings" "$(ONLY)" $$only
+	t1=$$(date +%s); fmt build $$((t1 - t0)); \
+	$(VM_BIN) exec --dir $(CURDIR) $(if $(filter 1,$(KOA_STRESS)),--link $(KOA_STRESS_OUTPUT)) -- scripts/visual-guest.sh "$$settings" "$(ONLY)" $$only | \
+		while IFS= read -r line; do \
+			if test "$$line" = visual-guest-start; then fmt 'vm wait' $$(($$(date +%s) - t1)); else printf '%s\n' "$$line"; fi; \
+		done; \
+	fmt total $$(($$(date +%s) - t0))
 
 .PHONY: koa-stress koa-stress-root
 koa-stress-root:
