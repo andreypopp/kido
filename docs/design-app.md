@@ -1524,7 +1524,15 @@ menu commands, the palette, the attendance and the focus report use
 them, so the Pane menu acts on the float's pane while the float is key.
 Attendance reads the occlusion of the key one, so a key float past the
 edge of a covered main window is attended.
-A sheet of the main window is modal for its float windows too. Focus
+A sheet of the main window is modal for its float windows too. A
+close alert for a float's pane is a sheet of that float's own window,
+so it stays on the float wherever the float is, and it is modal to the
+float only: the main window keeps its look and takes clicks. AppKit
+places the sheet: on macOS 27 it centres a sheet on a window taller
+than the sheet, so the app does not position it. While the float hosts the sheet and the main window
+is not key, it counts as the key float, so only the float shows the
+inactive treatment; the focus report goes false only while the input
+window has a sheet. Hiding or detaching a float aborts its alert. Focus
 Sidebar makes the main window key first.
 
 ### Webview panes
@@ -2024,11 +2032,16 @@ an idle one, a running command, a full-screen program such as nvim or less, a
 shell with no integration, whose phase is unknown, and an ssh session without
 a remote prompt. A dead or lingering pane has no process and does not ask. The
 known limit: the decision is exact only for the OSC reports that reached the
-server. The question is a stock `.warning`
-NSAlert sheet `Close “name”?` with "A program is still running in this pane.
+server. A pane created with `close_confirm: never` closes at once
+whatever runs in it (protocol.md, section 7), but its running
+descendants still ask. The question is a stock `.warning`
+NSAlert sheet `Close “name”?`, on one line with the name cut in the
+middle to 40 characters (`closeTitle`), with "A program is still running in this pane.
 Closing the pane will end it." or "Programs are still running in this window.
 Closing the window will end them."; its Close (Return) and Cancel (Escape)
 buttons sit side by side. Only one alert is prepared at a time.
+`app.log` records `close asked <target>` when a close alert opens and
+`close sent <target>` before the delete.
 
 File → Close Window and Session → Close Session have no shortcut. They
 use the same confirmation. Close Window deletes the key window's current
@@ -2058,7 +2071,9 @@ is 11pt on a 14pt line, 24pt from the row's top, and holds the row's
 second line and the circles of folded children ([Folded
 children](#folded-children)). The second line of a pane with a live
 agent and a caption is that caption, and of an Ended pane of a failure
-its cause, in the secondary ink; every other pane (a Terminal, an app,
+its cause, in the secondary ink; a live pane with a `fixed_title`
+shows its foreground program's name (design-program-status.md, "The
+pane title"); every other pane (a Terminal, an app,
 an ssh pane, a job, an agent without a caption, a completed or lingering
 pane) has an empty second line. A record row shows its `msg`, else its
 state word: working, needs your input, error, done or idle. The weight marks selection, not

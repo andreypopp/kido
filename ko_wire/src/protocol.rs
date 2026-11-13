@@ -731,6 +731,11 @@ pub struct Row {
     pub parent: Option<PaneId>,
     #[serde(default, skip_serializing_if = "Close::is_exit")]
     pub close: Close,
+    /// The title that the pane's creator fixed. The program's title updates `title` only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fixed_title: Option<Name>,
+    #[serde(default, skip_serializing_if = "CloseConfirm::is_busy")]
+    pub close_confirm: CloseConfirm,
     /// True while the pane has its message stream open.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub inbox: bool,
@@ -941,6 +946,22 @@ impl Close {
     }
 }
 
+/// What a client does when the user closes the pane. The server does not enforce it: busy asks
+/// first while a program runs in the pane, never closes at once.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum CloseConfirm {
+    #[default]
+    Busy,
+    Never,
+}
+
+impl CloseConfirm {
+    fn is_busy(&self) -> bool {
+        *self == CloseConfirm::Busy
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct PanePatch {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -974,6 +995,11 @@ pub struct CreatePane {
     pub parent: Option<PaneId>,
     #[serde(default, skip_serializing_if = "Close::is_exit")]
     pub close: Close,
+    /// A title that the creator fixes for the pane's life. The program's title does not replace it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fixed_title: Option<Name>,
+    #[serde(default, skip_serializing_if = "CloseConfirm::is_busy")]
+    pub close_confirm: CloseConfirm,
     /// The runtime that runs the pane's program, for the pane's life. A caller on a runtime's
     /// socket creates panes in its own runtime only. Otherwise the host runs the pane.
     #[serde(default, skip_serializing_if = "Option::is_none")]

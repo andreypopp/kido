@@ -636,6 +636,9 @@
           "close": {
             "$ref": "#/components/schemas/Close"
           },
+          "close_confirm": {
+            "$ref": "#/components/schemas/CloseConfirm"
+          },
           "command": {
             "items": {
               "type": "string"
@@ -654,6 +657,9 @@
                 "type": "null"
               }
             ]
+          },
+          "fixed_title": {
+            "$ref": "#/components/schemas/Name"
           },
           "foreground": {
             "$ref": "#/components/schemas/Foreground"

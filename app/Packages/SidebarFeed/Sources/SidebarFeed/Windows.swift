@@ -10,6 +10,13 @@ public struct CloseScope: Equatable, Sendable {
     public var ask: Bool { running > 0 }
 }
 
+// One line, with the middle of a long name cut so that the title stays at 40 characters.
+public func closeTitle(_ name: String) -> String {
+    let line = name.split(whereSeparator: \.isNewline).joined(separator: " ")
+    let shown = line.count > 40 ? line.prefix(19) + "…" + line.suffix(20) : Substring(line)
+    return "Close “\(shown)”?"
+}
+
 public func closeScope(_ projection: PaneProjection, target: CloseTarget) -> CloseScope {
     let items = projection.items
     var children: [PaneID: [PaneID]] = [:]

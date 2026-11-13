@@ -218,7 +218,8 @@ private class AlertEscape: NSView {
         }
     }
     private var navigationPhase = NavigationPhase.idle
-    private(set) var preparedAlert: (alert: NSAlert, respond: (NSApplication.ModalResponse) -> Void)?
+    private(set) var preparedAlert: (alert: NSAlert, host: NSWindow, respond: (NSApplication.ModalResponse) -> Void)?
+    var sheet: NSWindow? { window.attachedSheet ?? session?.hostWindows.lazy.compactMap(\.hostedSheet).first }
 
     private static let localServerRestarted = Notification.Name("KidoLocalServerRestarted")
 
@@ -248,7 +249,7 @@ private class AlertEscape: NSView {
     private func reportFocus() {
         guard case .connected(let client) = link else { return }
         let pane = inputResponder.flatMap(PaneView.owner)
-        let focused = NSApp.isActive && isKeyHost && window.attachedSheet == nil
+        let focused = NSApp.isActive && isKeyHost && inputWindow.attachedSheet == nil && (inputWindow as? FloatWindow)?.hostedSheet == nil
             && pane.map { view in session?.windows.values.contains { !$0.isHidden && $0.contains(view) } == true } == true
         guard focused != reportedFocus else { return }
         reportedFocus = focused
@@ -729,7 +730,7 @@ private class AlertEscape: NSView {
         if clipboardPermission[scope] == .deny { return pane.finishClipboard(false) }
         if clipboardPermission[scope] == .allow || Self.clipboardConsent.allows(host, scope) { return pane.finishClipboard(true) }
         guard !pane.isHiddenOrHasHiddenAncestor, window.isVisible,
-              preparedAlert == nil, window.attachedSheet == nil,
+              preparedAlert == nil, sheet == nil,
               Self.clipboardConsent.askingHosts.insert("read " + host.clipboardKey).inserted else { return pane.finishClipboard(false) }
         let alert = NSAlert()
         alert.messageText = scope == .rich
@@ -844,7 +845,7 @@ private class AlertEscape: NSView {
     }
 
     private func askUpload(_ plan: Upload, to label: String, _ detail: String, _ buttons: [String], then answered: @escaping (NSApplication.ModalResponse) -> Void) {
-        guard window.isVisible, preparedAlert == nil, window.attachedSheet == nil,
+        guard window.isVisible, preparedAlert == nil, sheet == nil,
               Self.clipboardConsent.askingHosts.insert("upload " + host.clipboardKey).inserted else {
             return note("\(host.label): upload refused while another prompt is open")
         }
@@ -944,31 +945,37 @@ private class AlertEscape: NSView {
     }
 
     func cancelClipboardAlert(_ alert: NSAlert) {
-        guard preparedAlert?.alert === alert else { return }
+        guard let pending = preparedAlert, pending.alert === alert else { return }
         preparedAlert = nil
-        if window.attachedSheet === alert.window { window.endSheet(alert.window, returnCode: .abort) }
+        if pending.host.attachedSheet === alert.window { pending.host.endSheet(alert.window, returnCode: .abort) }
     }
 
-    func prepareAlert(_ alert: NSAlert, respond: @escaping (NSApplication.ModalResponse) -> Void) {
-        preparedAlert = (alert, respond)
+    func prepareAlert(_ alert: NSAlert, on host: FloatWindow? = nil, respond: @escaping (NSApplication.ModalResponse) -> Void) {
+        preparedAlert = (alert, host ?? window as NSWindow, respond)
         banner.isHidden = true
         presentAlert()
     }
 
+    func floatClosing(_ host: FloatWindow) {
+        if preparedAlert?.host === host { respondToAlert(.abort) }
+    }
+
     private func presentAlert() {
-        guard alive, window.isVisible, window.attachedSheet == nil, let preparedAlert else { return }
-        let alert = preparedAlert.alert
-        alert.beginSheetModal(for: window) { [weak self, weak alert] response in
+        guard alive, let preparedAlert, preparedAlert.host.isVisible, self.sheet == nil else { return }
+        let alert = preparedAlert.alert, host = preparedAlert.host
+        alert.beginSheetModal(for: host) { [weak self, weak alert] response in
             guard let self, self.preparedAlert?.alert === alert else { return }
             respondToAlert(response)
         }
+        (host as? OwnerWindow)?.focusChanged(nil, nil)
     }
 
     func respondToAlert(_ response: NSApplication.ModalResponse) {
-        let pending = preparedAlert
+        guard let pending = preparedAlert else { return }
         preparedAlert = nil
-        if let alert = pending?.alert, window.attachedSheet === alert.window { window.endSheet(alert.window, returnCode: response) }
-        pending?.respond(response)
+        if pending.host.attachedSheet === pending.alert.window { pending.host.endSheet(pending.alert.window, returnCode: response) }
+        (pending.host as? OwnerWindow)?.focusChanged(nil, nil)
+        pending.respond(response)
     }
 
     func bundleChanged(_ error: Failure) {
@@ -1670,7 +1677,9 @@ private class AlertEscape: NSView {
         let warning = scope.panes == 1
             ? "A program is still running in this \(noun). Closing the \(noun) will end it."
             : "Closing will end \(scope.panes) panes, including all child panes. Programs are still running in \(scope.running) of these panes."
-        confirmCommand("Close", title: "Close “\(name)”?", warning: scope.ask ? warning : nil, failure: "Pane command failed") { client in
+        if scope.ask { note("close asked \(target)") }
+        let host: FloatWindow? = if case .pane(let id) = target { session?.pane(id)?.window as? FloatWindow } else { nil }
+        confirmCommand("Close", title: closeTitle(name), host: host, warning: scope.ask ? warning : nil, failure: "Pane command failed", sending: { note("close sent \(target)") }) { client in
             switch target {
             case .pane(let id): try client.delete(KO_DELETE_PANE, id)
             case .window(let id): try client.delete(KO_DELETE_WINDOW, id)
@@ -1679,8 +1688,8 @@ private class AlertEscape: NSView {
         }
     }
 
-    private func confirmCommand(_ verb: String, title: String, warning: String?, failure: String, sending: @escaping () -> Void = {}, completed: @escaping () -> Void = {}, send: @escaping @Sendable (KoClient) throws -> Void) {
-        guard preparedAlert == nil, window.attachedSheet == nil, let instance = snapshot?.serverInstance else { return }
+    private func confirmCommand(_ verb: String, title: String, host: FloatWindow? = nil, warning: String?, failure: String, sending: @escaping () -> Void = {}, completed: @escaping () -> Void = {}, send: @escaping @Sendable (KoClient) throws -> Void) {
+        guard preparedAlert == nil, sheet == nil, let instance = snapshot?.serverInstance else { return }
         supersedeIntent()
         let generation = generation
         let perform = { [weak self] in
@@ -1702,7 +1711,7 @@ private class AlertEscape: NSView {
         alert.informativeText = warning
         alert.addButton(withTitle: verb).keyEquivalent = "\r"
         alert.addButton(withTitle: "Cancel").keyEquivalent = "\u{1b}"
-        prepareAlert(alert) { response in if response == .alertFirstButtonReturn { perform() } }
+        prepareAlert(alert, on: host) { response in if response == .alertFirstButtonReturn { perform() } }
     }
 
     func reveal() {
@@ -1866,8 +1875,9 @@ private class AlertEscape: NSView {
         Upload.cancelPromises(Array(uploads.keys))
         uploads = [:]
         releaseUploadPrompt()
+        let alertHost: NSWindow = preparedAlert?.host ?? window
         preparedAlert = nil
-        if let sheet = window.attachedSheet { window.endSheet(sheet, returnCode: .abort) }
+        if let sheet { alertHost.endSheet(sheet, returnCode: .abort) }
         task?.cancel()
         task = nil
         recovering?.cancel()

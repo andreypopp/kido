@@ -962,6 +962,14 @@
           }
         ]
       },
+      "CloseConfirm": {
+        "description": "What a client does when the user closes the pane. The server does not enforce it: busy asks\nfirst while a program runs in the pane, never closes at once.",
+        "enum": [
+          "busy",
+          "never"
+        ],
+        "type": "string"
+      },
       "CloseReason": {
         "maxLength": 123,
         "type": "string"
@@ -1127,6 +1135,9 @@
           "close": {
             "$ref": "#/components/schemas/Close"
           },
+          "close_confirm": {
+            "$ref": "#/components/schemas/CloseConfirm"
+          },
           "command": {
             "$ref": "#/components/schemas/Command"
           },
@@ -1139,6 +1150,9 @@
               "$ref": "#/components/schemas/Variable"
             },
             "type": "array"
+          },
+          "fixed_title": {
+            "$ref": "#/components/schemas/Name"
           },
           "parent": {
             "$ref": "#/components/schemas/PaneId"
@@ -2278,6 +2292,9 @@
           "close": {
             "$ref": "#/components/schemas/Close"
           },
+          "close_confirm": {
+            "$ref": "#/components/schemas/CloseConfirm"
+          },
           "command": {
             "items": {
               "type": "string"
@@ -2296,6 +2313,9 @@
                 "type": "null"
               }
             ]
+          },
+          "fixed_title": {
+            "$ref": "#/components/schemas/Name"
           },
           "foreground": {
             "$ref": "#/components/schemas/Foreground"
@@ -2800,6 +2820,9 @@
           "close": {
             "$ref": "#/components/schemas/Close"
           },
+          "close_confirm": {
+            "$ref": "#/components/schemas/CloseConfirm"
+          },
           "command": {
             "$ref": "#/components/schemas/Command"
           },
@@ -2812,6 +2835,9 @@
               "$ref": "#/components/schemas/Variable"
             },
             "type": "array"
+          },
+          "fixed_title": {
+            "$ref": "#/components/schemas/Name"
           },
           "name": {
             "$ref": "#/components/schemas/Name"

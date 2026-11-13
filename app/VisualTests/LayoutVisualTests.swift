@@ -103,8 +103,19 @@ import XCTest
         return run.out
     }
 
+    // The snapshot tests after these assert an inactive app and hidden windows, so teardown puts both back.
+    private func activate() {
+        let policy = NSApp.activationPolicy(), owner = owner
+        NSApp.setActivationPolicy(.regular)
+        NSApp.activate(ignoringOtherApps: true)
+        addTeardownBlock { @MainActor in
+            owner?.window?.orderOut(nil)
+            NSApp.setActivationPolicy(policy)
+        }
+    }
+
     // A new float over `parent`, in the window `window`, added to the layout that the server holds.
-    private func addFloat(window: String, parent: String) async throws {
+    private func addFloat(window: String, parent: String, cols: Int = 20, x: Int = 3, rows: Int = 6, printing: String? = nil) async throws {
         let text = try await api(["/layout"])
         var document = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: Any])
         document["panes"] = nil
@@ -112,7 +123,9 @@ import XCTest
         var sessions = try XCTUnwrap(layout["sessions"] as? [[String: Any]])
         var windows = try XCTUnwrap(sessions[0]["windows"] as? [[String: Any]])
         let at = try XCTUnwrap(windows.firstIndex { ($0["id"] as? String) == window })
-        let float: [String: Any] = ["pane": ["new": ["parent": parent, "close": "on_exit", "command": ["type": "argv", "argv": ["/bin/sleep", "600"]]]], "border": true, "cols": 20, "rows": 6, "x": 3, "y": 2]
+        var command: [String: Any] = ["type": "argv", "argv": ["/bin/sleep", "600"]]
+        if let printing { command = ["type": "shell", "command": "printf '\\033]0;\(printing)\\007\(printing)\\n'; exec sleep 600"] }
+        let float: [String: Any] = ["pane": ["new": ["parent": parent, "close": "on_exit", "command": command]], "border": true, "cols": cols, "rows": rows, "x": x, "y": 2]
         windows[at]["floats"] = [float]
         sessions[0]["windows"] = windows
         layout["sessions"] = sessions
@@ -120,6 +133,163 @@ import XCTest
         let draft = dir + "/float.json"
         try JSONSerialization.data(withJSONObject: document).write(to: URL(fileURLWithPath: draft))
         _ = try await api(["-X", "PUT", "--input", draft, "/layout"])
+    }
+
+    // koa's editor float: a running child of a running parent. Cmd-W on the key float closes the float and nothing else,
+    // although the parent's view holds the main window's first responder.
+    func testCmdWOnAKeyFloatClosesTheFloatAndKeepsItsParent() async throws {
+        let parent = #"{"pane":{"new":{"command":{"type":"shell","command":"printf '\\033]0;PARENT\\007'; sleep 600"}}}}"#
+        try await closeFloat(parent: parent, viaPage: false)
+    }
+
+    // The same with koa's page as the parent, and the float focused as window.ko.focus does it.
+    func testCmdWOnAFloatFocusedByAWebviewParentClosesTheFloatAndKeepsItsParent() async throws {
+        let toy = try WebviewToy(path: dir + "/toy.sock")
+        try await toy.start()
+        defer { toy.stop() }
+        let script = "'\(tools.ko)' webview enter --path '/'; exec '\(tools.ko)' webview serve --socket '\(toy.path)'"
+        let command = try String(decoding: JSONSerialization.data(withJSONObject: ["type": "shell", "command": script]), as: UTF8.self)
+        try await closeFloat(parent: #"{"pane":{"new":{"command":\#(command)}}}"#, viaPage: true)
+        XCTAssertNotNil(owner.testSession?.pane(PaneID(number: 1))?.webviewView, "the parent is a webview pane")
+    }
+
+    private func closeFloat(parent: String, viaPage: Bool) async throws {
+        try await put(#"[{"name":"one","tree":\#(parent)},{"name":"two","tree":\#(sleep)}]"#)
+        try await placed("two tabs") { _ in self.owner.testModel?.layout.layout.windows.count == 2 }
+        try await addFloat(window: try XCTUnwrap(window).id.description, parent: "pane_1")
+        try await placed("the float") { $0.floats.count == 1 }
+        let float = try XCTUnwrap(window?.floats.first?.pane)
+        let session = try XCTUnwrap(owner.testSession)
+        let host = try XCTUnwrap(session.pane(float)?.window as? FloatWindow)
+        let first = try XCTUnwrap(session.pane(PaneID(number: 1)))
+        if viaPage { try await wait("the page", within: 15) { first.webviewView?.browser.isLoading == false && first.webviewView?.browser.url != nil } }
+        activate()
+        owner.window.makeKeyAndOrderFront(nil)
+        owner.window.makeFirstResponder(first.webviewView?.browser ?? first)
+        if viaPage, let position = owner.projection.placements[float]?.position {
+            owner.perform(.jump(position))
+        } else {
+            host.makeKeyAndOrderFront(nil)
+            host.makeFirstResponder(session.pane(float))
+        }
+        try await wait("the float is key", within: 5) { NSApp.keyWindow === host }
+        let main = owner.window.firstResponder
+        XCTAssertTrue(main === (first.webviewView?.browser ?? first), "the parent's view holds the main window's responder: \(String(describing: main))")
+        let bar = NSMenu()
+        bar.addItem(PaneCommand.menu)
+        let saved = NSApp.mainMenu
+        NSApp.mainMenu = bar
+        addTeardownBlock { @MainActor in NSApp.mainMenu = saved }
+        let event = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: .command, timestamp: ProcessInfo.processInfo.systemUptime, windowNumber: host.windowNumber, context: nil, characters: "w", charactersIgnoringModifiers: "w", isARepeat: false, keyCode: 13))
+        NSApp.postEvent(event, atStart: true)
+        NSApp.sendEvent(try XCTUnwrap(NSApp.nextEvent(matching: .keyDown, until: Date().addingTimeInterval(1), inMode: .default, dequeue: true)))
+        try await wait("the close sheet", within: 5) { self.owner.preparedAlert != nil }
+        XCTAssertEqual(owner.preparedAlert?.alert.messageText, "Close “sleep”?")
+        owner.respondToAlert(.alertFirstButtonReturn)
+        try await wait("the float is gone", within: 5) { self.owner.testModel?.pane(float) == nil }
+        XCTAssertNotNil(owner.testModel?.pane(PaneID(number: 1)), "the parent stays")
+        XCTAssertEqual(owner.testModel?.layout.layout.windows.count, 2)
+    }
+
+    // The close sheet of a float that is much bigger than it: the float's frame and corners show around the sheet, its text is dimmed and the tiled panes' text is not.
+    func testTheCloseSheetOverADimmedFloatLight() async throws { try await closeSheet(dark: false, dragged: false) }
+
+    func testTheCloseSheetOverADimmedFloatDark() async throws { try await closeSheet(dark: true, dragged: false) }
+
+    // The float is dragged past the main window's edge; its sheet goes with it.
+    func testTheCloseSheetOfAFloatDraggedPastTheMainWindowsEdge() async throws { try await closeSheet(dark: false, dragged: true) }
+
+    // Switching tabs hides the float and ends its sheet; a later prompt is not blocked.
+    func testSwitchingTabsEndsTheSheetOfAFloat() async throws {
+        try await put(#"[{"name":"one","tree":\#(sleep)},{"name":"two","tree":\#(sleep)}]"#)
+        try await placed("two tabs") { _ in self.owner.testModel?.layout.layout.windows.count == 2 }
+        try await addFloat(window: try XCTUnwrap(window).id.description, parent: "pane_1")
+        try await placed("the float") { $0.floats.count == 1 }
+        let float = try XCTUnwrap(window?.floats.first?.pane)
+        let session = try XCTUnwrap(owner.testSession)
+        let host = try XCTUnwrap(session.pane(float)?.window as? FloatWindow)
+        activate()
+        owner.window.makeKeyAndOrderFront(nil)
+        host.makeKeyAndOrderFront(nil)
+        try await wait("the float is key", within: 5) { NSApp.keyWindow === host }
+        session.paneCommand(.close, float)
+        try await wait("the sheet", within: 5) { host.hostedSheet != nil }
+        let other = try XCTUnwrap(owner.testModel?.layout.layout.windows.first { $0.id != self.window?.id })
+        owner.perform(.jump(Snapshot.Position(session: try XCTUnwrap(owner.testModel?.layout.layout.sessions.first?.id), window: other.id, pane: other.focus)))
+        try await wait("the prompt is gone", within: 5) { self.owner.preparedAlert == nil && self.owner.sheet == nil }
+        XCTAssertNotNil(owner.testModel?.pane(float), "the float stays")
+    }
+
+    private func closeSheet(dark: Bool, dragged: Bool, testName: String = #function) async throws {
+        do {
+            func tiled(_ text: String) -> String { #"{"pane":{"new":{"command":{"type":"shell","command":"printf '\#(text)\\n'; exec sleep 600"}}}}"# }
+            try await put(#"[{"name":"w","tree":{"split":"h","children":[\#(tiled("MAIN PANE ONE")),\#(tiled("MAIN PANE TWO"))]}}]"#)
+            try await placed("two panes") { Layout($0).root.panes.count == 2 }
+            if dark {
+                let changed = expectation(description: "appearance config changed")
+                changed.assertForOverFulfill = false
+                owner.runtime.onConfigChange = { [weak owner] in owner?.testSession?.updateColorScheme(); owner?.testSession?.updateBackground(); changed.fulfill() }
+                owner.window.appearance = NSAppearance(named: .darkAqua)
+                NSApp.appearance = NSAppearance(named: .darkAqua)
+                await fulfillment(of: [changed], timeout: 20)
+                addTeardownBlock { @MainActor [runtime = owner.runtime] in runtime.onConfigChange = {} }
+            }
+            try await addFloat(window: try XCTUnwrap(window).id.description, parent: "pane_2", cols: 90, x: 3, rows: 24, printing: "FLOAT TEXT")
+            try await placed("the float") { $0.floats.count == 1 }
+            let float = try XCTUnwrap(window?.floats.first?.pane)
+            let session = try XCTUnwrap(owner.testSession)
+            let host = try XCTUnwrap(session.pane(float)?.window as? FloatWindow)
+            activate()
+            owner.window.makeKeyAndOrderFront(nil)
+            host.makeKeyAndOrderFront(nil)
+            try await wait("the float is key", within: 5) { NSApp.keyWindow === host }
+            try await wait("the float's title", within: 5) { self.owner.projection.items[float]?.item.rowTitle == "FLOAT TEXT" }
+            if dragged {
+                let terminal = try XCTUnwrap(terminal), frame = try rect(float)
+                let start = NSPoint(x: frame.midX, y: frame.minY + 4), end = NSPoint(x: start.x + 500, y: start.y)
+                terminal.visualBeginDrag(float, try mouse(.leftMouseDown, start))
+                terminal.mouseDragged(with: try mouse(.leftMouseDragged, end))
+                terminal.mouseUp(with: try mouse(.leftMouseUp, end))
+                try await wait("the float is past the main window's edge", within: 5) { host.frame.maxX > self.owner.window.frame.maxX + 100 && !session.editing() }
+            }
+            session.paneCommand(.close, float)
+            try await wait("the sheet", within: 5) { host.hostedSheet != nil }
+            let sheet = try XCTUnwrap(host.hostedSheet)
+            XCTAssertNil(owner.window.attachedSheet, "the main window has no sheet")
+            XCTAssertEqual(owner.preparedAlert?.alert.messageText, "Close “FLOAT TEXT”?")
+            let drawn = host.frame.insetBy(dx: FloatWindow.margin, dy: FloatWindow.margin)
+            XCTAssertEqual(sheet.frame.midX, drawn.midX, accuracy: 1, "centred on the float's frame")
+            XCTAssertTrue(sheet.frame.maxY <= drawn.maxY && sheet.frame.maxY > drawn.minY, "the sheet's top is inside the float's frame: \(sheet.frame) in \(drawn)")
+            let displayed = try XCTUnwrap(terminal).displayedPanes.filter { $0.pane != float }
+            // The sheet is key; the harness's late activation can leave the main window's key flag stale, so it is set as AppKit leaves it.
+            (owner.window as? OwnerWindow)?.testInput(false)
+            terminal?.updateFocusTreatment()
+            XCTAssertTrue(displayed.allSatisfy { !$0.shiftedBackground }, "the main window keeps its look with the sheet focused")
+            let record = ProcessInfo.processInfo.environment["KIDO_VISUAL_RECORD"] == "1"
+            let terminal = try XCTUnwrap(terminal)
+            let main = owner.window.convertToScreen(terminal.convert(terminal.bounds, to: nil)), union = main.union(host.frame)
+            let base = familyImage(of: terminal, hosts: [host], extend: true)
+            let frameView = try XCTUnwrap(sheet.contentView?.superview)
+            let rep = try XCTUnwrap(frameView.bitmapImageRepForCachingDisplay(in: frameView.bounds))
+            frameView.cacheDisplay(in: frameView.bounds, to: rep)
+            let image = NSImage(size: base.size)
+            image.lockFocus()
+            base.draw(in: CGRect(origin: .zero, size: base.size))
+            NSImage(size: rep.size, flipped: false) { _ in rep.draw(); return true }.draw(in: CGRect(x: sheet.frame.minX - union.minX, y: sheet.frame.minY - union.minY, width: sheet.frame.width, height: sheet.frame.height))
+            image.unlockFocus()
+            if let failure = verifySnapshot(of: image, as: .pixels, named: "sheet", record: record, testName: testName),
+               !record || !failure.hasPrefix("Record mode is on.") { XCTFail(failure) }
+            XCTAssertEqual(try chrome(float).treatment, .overlay, "the float is dimmed")
+            owner.window.makeKeyAndOrderFront(nil)
+            try await wait("the main window is key", within: 5) { NSApp.keyWindow === self.owner.window }
+            terminal.focus(PaneID(number: 2))
+            terminal.updateFocusTreatment()
+            XCTAssertTrue(displayed.filter { $0.pane == PaneID(number: 2) }.allSatisfy { !$0.shiftedBackground }, "the clicked pane of the main window looks focused after a click on it, the sheet still open")
+            XCTAssertNotNil(host.hostedSheet, "the float's sheet stays open")
+            owner.respondToAlert(.alertSecondButtonReturn)
+            try await wait("the sheet is gone", within: 5) { host.hostedSheet == nil }
+            XCTAssertNotNil(owner.testModel?.pane(float))
+        }
     }
 
     func testAFloatOverASplitPanesKoaNeverReplacesItsSlot() async throws {

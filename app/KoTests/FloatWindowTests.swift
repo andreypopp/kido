@@ -447,8 +447,10 @@ import XCTest
         host.content.mouseUp(with: try mouse(.leftMouseUp, CGPoint(x: start.x + 80, y: start.y - 80), in: host))
         wait("the float grew") { (self.floats(client).first { $0.pane == id }.map { $0.cols > before.cols && $0.rows > before.rows }) == true }
     }
+
 }
 
 private extension NSWindow {
     var floatChildren: [NSWindow] { (childWindows ?? []).filter { $0 is FloatWindow } }
+
 }

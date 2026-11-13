@@ -814,6 +814,8 @@ mod tests {
             vars: Default::default(),
             parent: None,
             close: Default::default(),
+            fixed_title: None,
+            close_confirm: Default::default(),
             runtime: None,
         };
         let argv = |argv: &[&str]| {
@@ -853,6 +855,8 @@ mod tests {
                 vars: Default::default(),
                 parent: None,
                 close: Default::default(),
+                fixed_title: None,
+                close_confirm: Default::default(),
                 runtime: None,
                 program,
             };
@@ -885,6 +889,8 @@ mod tests {
             vars: Default::default(),
             parent: None,
             close: Default::default(),
+            fixed_title: None,
+            close_confirm: Default::default(),
             runtime: None,
         };
         let wrap = |inner: Option<&[Vec<u8>]>| {

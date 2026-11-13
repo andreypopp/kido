@@ -181,6 +181,8 @@ fn pane_listing(pane: &Pane) -> Listing {
             progress: telemetry.progress,
             parent: pane.parent(),
             close: pane.close(),
+            fixed_title: pane.fixed_title().cloned(),
+            close_confirm: pane.close_confirm(),
             inbox: pane.inbox().stream().is_some(),
             runtime: pane.runtime().map(|key| key.name.clone()),
         },
@@ -1937,6 +1939,8 @@ mod tests {
             vars: Default::default(),
             parent: None,
             close: Default::default(),
+            fixed_title: None,
+            close_confirm: Default::default(),
             runtime: None,
         };
         let pane = rig.state.new_session(&mut rig.poll, &request).unwrap();
@@ -1965,6 +1969,8 @@ mod tests {
             vars: Default::default(),
             parent,
             close: Default::default(),
+            fixed_title: None,
+            close_confirm: Default::default(),
             runtime: None,
         };
         let parent = rig

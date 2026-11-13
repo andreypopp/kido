@@ -715,7 +715,14 @@ invariants.
   absolute host path or `{pane}`, the directory of that pane
   (section 15, "The cwd of a new pane").
   `close` is `exit` (the default), `keep` or `on_exit`; all three,
-  and the orphan rule on `parent`, act through the sweep (section 10). Every pane gets
+  and the orphan rule on `parent`, act through the sweep (section 10).
+  `fixed_title` is a title that the creator fixes for the pane's
+  life; the program's OSC title updates only `title`, and a client
+  shows the fixed one. `close_confirm` (`CloseConfirm` in
+  `ko_wire/src/protocol.rs`) says whether a client asks before it
+  closes the pane for the user. It is advisory: the server
+  deletes a pane on request whatever it holds. Both are creation
+  properties that the row reports and no request changes. Every pane gets
   `SSH_AUTH_SOCK=<dir>/agent.sock` unless its `env` names that
   variable; a client publishes an agent by an atomic replacement of
   that path with a symlink, and the server links it to its own

@@ -97,3 +97,51 @@ import KoModel
     #expect(recent.isEmpty)
     #expect(recent.entries.isEmpty)
 }
+
+private func fixed(_ node: Node, title: String? = nil, confirm: KoSchema.CloseConfirm? = nil, foreground: String? = nil) -> Node {
+    guard case .item(var item) = node else { return node }
+    item.pane.fixedTitle = title
+    if let title { item.pane.label = title }
+    item.pane.closeConfirm = confirm
+    item.pane.foreground = foreground.map { .init(name: $0, pid: 7) }
+    return .item(item)
+}
+
+@Test func aFixedTitleNamesTheRowTheTabAndTheCloseAlertAndTheForegroundIsTheActivity() throws {
+    let editor = fixed(pane(1, title: "from-osc", lifecycle: terminal(running("nvim", fullscreen: true)), layer: .floating), title: "Draft for @ko", foreground: "nvim")
+    let quiet = fixed(pane(2, title: "from-osc"), title: "Draft for @ko")
+    let snapshot = makeSnapshot([pane(0), editor, quiet])
+    let projection = PaneProjection(snapshot)
+    for id in [1, 2] {
+        #expect(projection.items[PaneID(number: UInt32(id))]?.item.rowTitle == "Draft for @ko")
+    }
+    #expect(projection.items[PaneID(number: 0)]?.item.rowTitle == "Terminal")
+    let rows = sidebarRows(snapshot)
+    #expect(rows.contains { $0.title == "Draft for @ko" })
+    #expect(rows.contains { if case .activity("nvim") = $0.second { true } else { false } })
+    let windows = sidebarWindows(snapshot, projection: projection, session: SessionID(number: 0), surviving: [WindowID(number: 1)], activePanes: [WindowID(number: 1): PaneID(number: 1)])
+    #expect(windows.labels[WindowID(number: 1)]?.title == "Draft for @ko")
+}
+
+@Test func closeConfirmNeverClosesWithoutAskingButARunningDescendantAndAnOrdinaryFloatStillAsk() throws {
+    let running = terminal(running("nvim", fullscreen: true))
+    let never = fixed(pane(1, lifecycle: running, layer: .floating), confirm: .never)
+    let ordinary = pane(2, lifecycle: running, layer: .floating)
+    let parent = fixed(pane(3, lifecycle: running, layer: .floating, children: [pane(4, parent: 3, lifecycle: agent(working()), mark: .running)]), confirm: .never)
+    let projection = PaneProjection(makeSnapshot([pane(0), never, ordinary, parent]))
+    #expect(!closeScope(projection, target: .pane(PaneID(number: 1))).ask)
+    #expect(closeScope(projection, target: .pane(PaneID(number: 2))).ask)
+    #expect(closeScope(projection, target: .pane(PaneID(number: 3))).ask)
+    #expect(closeScope(projection, target: .pane(PaneID(number: 3))).running == 1)
+}
+
+@Test func theCloseTitleIsOneLineAndCutInTheMiddleAtFortyCharacters() {
+    #expect(closeTitle("Draft for @ko") == "Close “Draft for @ko”?")
+    let forty = String(repeating: "a", count: 40)
+    #expect(closeTitle(forty) == "Close “\(forty)”?")
+    let long = "/var/folders/xx/koa-editor-123456/koa-draft-pane_18.md"
+    let cut = closeTitle(long)
+    #expect(cut == "Close “/var/folders/xx/koa…koa-draft-pane_18.md”?")
+    #expect(cut.dropFirst(7).dropLast(2).count == 40)
+    #expect(closeTitle("one\ntwo\nthree") == "Close “one two three”?")
+}

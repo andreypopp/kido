@@ -219,6 +219,8 @@ impl Rig {
             vars: Default::default(),
             parent: None,
             close: protocol::Close::Keep,
+            fixed_title: None,
+            close_confirm: Default::default(),
             runtime: None,
         };
         let pane = state

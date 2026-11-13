@@ -301,6 +301,8 @@ mod tests {
             vars: Default::default(),
             parent: None,
             close: Default::default(),
+            fixed_title: None,
+            close_confirm: Default::default(),
             runtime: None,
         };
         let edge = Edge::Right;
@@ -460,6 +462,8 @@ mod tests {
             vars: Default::default(),
             parent: None,
             close: Default::default(),
+            fixed_title: None,
+            close_confirm: Default::default(),
             runtime: None,
         };
         assert_eq!(

@@ -183,6 +183,8 @@ impl State {
             vars,
             parent: request.parent,
             close: request.close,
+            fixed_title: request.fixed_title.clone(),
+            close_confirm: request.close_confirm,
             runtime: key.cloned(),
             program,
         })

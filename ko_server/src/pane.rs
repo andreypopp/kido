@@ -12,8 +12,9 @@ use crate::model::PaneModel;
 use crate::pane_proc::{Input, Io, Launch, PaneProc};
 use crate::runtime::RuntimeKey;
 use crate::telemetry::Telemetry;
+use ko_wire::ids::Name;
 use ko_wire::ids::{PaneId, PaneToken};
-use ko_wire::protocol::{Close, Variable};
+use ko_wire::protocol::{Close, CloseConfirm, Variable};
 use ko_wire::vars::Vars;
 
 #[derive(Debug)]
@@ -30,6 +31,8 @@ pub(crate) struct Birth {
     pub(crate) vars: Vars,
     pub(crate) parent: Option<PaneId>,
     pub(crate) close: Close,
+    pub(crate) fixed_title: Option<Name>,
+    pub(crate) close_confirm: CloseConfirm,
     pub(crate) runtime: Option<RuntimeKey>,
     pub(crate) program: Program,
 }
@@ -58,6 +61,8 @@ pub(crate) struct Pane {
     vars: Vars,
     parent: Option<PaneId>,
     close: Close,
+    fixed_title: Option<Name>,
+    close_confirm: CloseConfirm,
     membership: Option<Membership>,
     token: PaneToken,
     model: PaneModel,
@@ -85,6 +90,8 @@ impl Pane {
             vars: birth.vars,
             parent: birth.parent,
             close: birth.close,
+            fixed_title: birth.fixed_title,
+            close_confirm: birth.close_confirm,
             membership: birth.runtime.map(|key| Membership::Born { key }),
             token,
             model: PaneModel::default(),
@@ -131,6 +138,14 @@ impl Pane {
 
     pub(crate) fn close(&self) -> Close {
         self.close
+    }
+
+    pub(crate) fn fixed_title(&self) -> Option<&Name> {
+        self.fixed_title.as_ref()
+    }
+
+    pub(crate) fn close_confirm(&self) -> CloseConfirm {
+        self.close_confirm
     }
 
     pub(crate) fn runtime(&self) -> Option<&RuntimeKey> {

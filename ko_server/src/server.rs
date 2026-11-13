@@ -504,6 +504,8 @@ pub(crate) mod tests {
             vars: Default::default(),
             parent: None,
             close: Default::default(),
+            fixed_title: None,
+            close_confirm: Default::default(),
             runtime: None,
         };
         let id = server

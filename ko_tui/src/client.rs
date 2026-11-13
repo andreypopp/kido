@@ -2140,6 +2140,8 @@ fn new_pane(cwd: Option<Cwd>, runtime: Option<RuntimeName>) -> CreatePane {
         vars: Default::default(),
         parent: None,
         close: Default::default(),
+        fixed_title: None,
+        close_confirm: Default::default(),
         runtime,
     }
 }

@@ -184,6 +184,8 @@ fn listing(row: &Value) -> Listing {
             progress: row.get("progress").map(fixture).unwrap_or(None),
             parent: row.get("parent").map(fixture).unwrap_or(None),
             close: row.get("close").map(fixture).unwrap_or_default(),
+            fixed_title: row.get("fixed_title").map(fixture).unwrap_or(None),
+            close_confirm: row.get("close_confirm").map(fixture).unwrap_or_default(),
             inbox: row["inbox"] == true,
             runtime: row.get("runtime").map(fixture).unwrap_or(None),
         },
@@ -316,6 +318,8 @@ fn pane_row(table: &[Value], pane: &CreatePane, session: &str, window: &str) -> 
         "command": match &pane.command { Some(Command::Argv { argv }) => Some(argv), _ => None },
         "vars": pane.vars,
         "close": pane.close,
+        "fixed_title": pane.fixed_title,
+        "close_confirm": pane.close_confirm,
         "parent": pane.parent,
     });
     if let Some(fields) = row.as_object_mut() {
@@ -461,6 +465,8 @@ fn new_pane(body: &str) -> ExitCode {
             "command": match &request.pane.command { Some(Command::Argv { argv }) => Some(argv), _ => None },
             "vars": request.pane.vars,
             "close": request.pane.close,
+            "fixed_title": request.pane.fixed_title,
+            "close_confirm": request.pane.close_confirm,
             "parent": request.pane.parent,
         });
         if !env("KO_FAKE_PEER_IDENTITY_GATE").is_empty() {

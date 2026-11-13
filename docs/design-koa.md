@@ -981,7 +981,11 @@ composer's text; koa never sends it.
   times at most. The float is a child pane: `parent` is koa's pane
   and `close` is `on_exit`, so the sweep removes it with koa, and a
   child float may share only its parent's window (protocol.md,
-  section 7). The editor runs on the host also when pi's tools are
+  section 7). Its `fixed_title` is "Draft for @<koa's name>", so the
+  sidebar, the tab and a close alert name the draft and not the
+  editor's temporary file, and its `close_confirm` is `never`: the
+  draft is safe in the composer, so the user closes the float
+  without a question. The editor runs on the host also when pi's tools are
   routed to a runtime, because koa and the draft are on the host; a
   koa inside a runtime refuses Control-G.
 - **The end.** A `/client` connection that does not size or focus
@@ -994,8 +998,12 @@ composer's text; koa never sends it.
   `editor` record as `set_editor_text`, only while the session is
   the one that opened it. Any other end keeps the draft with a
   notice, such as "Editor exited 1; draft kept": a non-zero exit, a
-  signal, a failed start, a float that leaves the layout alive (the
-  user closed it), and the loss of the `/client` connection. A
+  signal, a failed start and the loss of the `/client` connection.
+  A float that leaves the layout alive (the user closed it) is a
+  cancelled edit: the composer keeps the draft that it held, with
+  the one info notice "editor closed · the draft is as before". The
+  end claims the edit before it reads the result file, so a removal
+  during the read cannot cancel and then replace the draft. A
   session change or koa's exit during the opening or the edit cancels
   it and removes a float that the opening already made. koa then removes the
   float itself and the server gives the window's focus back to koa's

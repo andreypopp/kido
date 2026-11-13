@@ -456,7 +456,7 @@ final class WindowView: NSView {
         let entries = displayedSlots.values
         let multiple = entries.filter { !$0.chrome.isHidden && $0.view.transparentPaper }.count > 1
         let mainKey = (window as? OwnerWindow)?.isInputWindow != false
-        let floatKey = floatWindows.values.contains { $0.isInputWindow && !$0.content.isHidden }
+        let floatKey = floatWindows.values.contains { ($0.isInputWindow || !mainKey && $0.hostedSheet != nil) && !$0.content.isHidden }
         let unfocused = !mainKey || (session?.sidebarFocused() ?? false)
         for entry in entries {
             let pane = entry.view, chrome = entry.chrome

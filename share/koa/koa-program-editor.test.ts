@@ -17,7 +17,7 @@ async function editing(t: TestContext, env: NodeJS.ProcessEnv = {}, steps: objec
   await writeFile(feed, "");
   const app = await fixture(t, steps, { KO_PANE: "pane_1", KO_SOCKET: "", KO_PANE_TOKEN: "", KO_RUNTIME: "", KO_FAKE_PANES: panes, KO_FAKE_CLIENT_FEED: feed, KO_FAKE_API_LOG: apiLog, KO_FAKE_INSTANCE: "a".repeat(32), KO_FAKE_CLIENT_DROP: join(dir, "client-drop"), KO_FAKE_PUT_STALE: join(dir, "stale"), ...(env.KO_FAKE_PUT_GATE === "gate" ? { KO_FAKE_PUT_GATE: join(dir, "put-gate") } : {}), VISUAL: "", EDITOR: "myeditor --flag", PI_CODING_AGENT_DIR: join(dir, "agent"), PATH: `${dir}:${process.env.PATH}`, ...env, ...(env.KO_FAKE_PUT_GATE === "gate" ? { KO_FAKE_PUT_GATE: join(dir, "put-gate") } : {}) });
   const api = async () => (await readFile(apiLog, "utf8").catch(() => "")).trim().split("\n").filter(Boolean).map(line => { const call: { method: string; path: string; body: string } = JSON.parse(line); return call; });
-  const rows = async (): Promise<{ id: string; command?: string[]; parent?: string; close?: string; float?: { cols: number; rows: number; x: number; y: number; border: boolean } }[]> => JSON.parse(await readFile(panes, "utf8"));
+  const rows = async (): Promise<{ id: string; command?: string[]; parent?: string; close?: string; fixed_title?: string; close_confirm?: string; float?: { cols: number; rows: number; x: number; y: number; border: boolean } }[]> => JSON.parse(await readFile(panes, "utf8"));
   const float = async () => {
     const row = (await rows()).find(row => row.float);
     assert.ok(row?.command);
@@ -42,6 +42,8 @@ test("an edit with exit 0 replaces the draft, does not send it and leaves nothin
   assert.deepEqual(pane.command, [join(f.dir, "ko"), "shell", "--", "myeditor", "--flag", file]);
   assert.equal(pane.parent, "pane_1");
   assert.equal(pane.close, "on_exit");
+  assert.equal(pane.fixed_title, "Draft for @Fake pi");
+  assert.equal(pane.close_confirm, "never");
   assert.deepEqual({ ...pane.float }, { x: 8, y: 2, cols: 64, rows: 19, z: 0, border: true, title: "" });
   assert.match(file, /koa-draft-pane_1\.md$/);
   assert.equal((await stat(file)).mode & 0o777, 0o600);
@@ -126,14 +128,17 @@ test("a dead event that precedes the open ends the edit at once", { timeout: 150
   await f.closed("pane_10");
 });
 
-test("a float closed alive ends the edit with the draft kept", { timeout: 15000 }, async t => {
+test("a float removed without an exit is a cancelled edit: the draft is as before, one info notice", { timeout: 15000 }, async t => {
   const f = await editing(t);
   await f.open("kept");
   const pane = await f.float();
+  await writeFile(pane.file, "typed in the editor\n");
   await writeFile(f.panes, JSON.stringify((await f.rows()).filter(row => row.id !== pane.id)));
-  await f.notified("Editor pane closed; draft kept");
+  await f.notified("editor closed · the draft is as before");
   await f.closed(pane.id); await f.gone(dirname(pane.file));
-  assert.equal(f.app.records().some(record => record.type === "item" && record.item.kind === "notify" && record.item.text.text.startsWith("Editor pane not closed")), false, "an absent pane is a closed pane");
+  const notices = f.app.records().flatMap(record => record.type === "item" && record.item.kind === "notify" ? [[record.item.level, record.item.text.text]] : []);
+  assert.deepEqual(notices, [["info", "editor closed · the draft is as before"]]);
+  assert.equal(f.app.records().some(record => record.type === "state" && record.editor), false, "no replacement text");
 });
 
 test("a refused delete of the float gives a notice", { timeout: 15000 }, async t => {

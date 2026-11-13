@@ -4,6 +4,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import type { components } from "./ko-api.d.ts";
+import type { NotifyLevel } from "./koa-records.ts";
 import { apiCall, findKo, KO_TIMEOUT_MS, lineReader, openStream } from "./runtime-exec.ts";
 import { errorText, isRecord } from "./text.ts";
 import { later } from "./koa-timer.ts";
@@ -14,6 +15,10 @@ type Run = { cancelled: boolean; lost: boolean; done: Promise<unknown> };
 type Stage = { type: "idle" } | { type: "opening"; run: Run } | ({ type: "open" } & Open) | { type: "closing" };
 
 const STALE_RETRIES = 3;
+
+type Notice = { text: string; level: NotifyLevel };
+const warning = (text: string): Notice => ({ text, level: "warning" });
+const REMOVED: Notice = { text: "editor closed · the draft is as before", level: "info" };
 
 const leaves = (node: Api["LeafNode"]): string[] => "children" in node ? node.children.flatMap(leaves) : [node.pane];
 const draftNode = (node: Api["LeafNode"]): Api["DraftLeafNode"] => "children" in node ? { split: node.split, children: node.children.map(draftNode) } : { pane: node.pane, cols: node.cols, rows: node.rows };
@@ -78,7 +83,7 @@ export function editorCommand(agentDir: string, cwd: string, env: NodeJS.Process
 
 const clean = (text: string) => text.replace(/^\uFEFF/, "").replace(/\n$/, "");
 
-export function koaEditor(options: { agentDir: string; cwd: () => string; session: () => string | undefined; replace(text: string): void; notify(text: string): void; changed(): void }) {
+export function koaEditor(options: { agentDir: string; cwd: () => string; session: () => string | undefined; name: () => string; replace(text: string): void; notify(text: string, level: NotifyLevel): void; changed(): void }) {
   let stage: Stage = { type: "idle" };
   const observe = (run: Run): Promise<{ child: ChildProcess; deaths: Map<string, Api["Cause"]>; seen: Set<string>; latest: Set<string> }> => new Promise((resolve, reject) => {
     const watch = { child: openStream("ko", "/client", "pipe"), deaths: new Map<string, Api["Cause"]>(), seen: new Set<string>(), latest: new Set<string>() };
@@ -95,14 +100,14 @@ export function koaEditor(options: { agentDir: string; cwd: () => string; sessio
       } else if (event.type === "layout") {
         watch.latest = new Set(event.layout.sessions.flatMap(session => session.windows).flatMap(window => [...leaves(window.tree), ...window.floats.map(float => float.pane)]));
         watch.latest.forEach(pane => watch.seen.add(pane));
-        if (stage.type === "open" && stage.observer === watch.child && !watch.latest.has(stage.pane)) void cancel("Editor pane closed; draft kept");
+        if (stage.type === "open" && stage.observer === watch.child && !watch.latest.has(stage.pane)) void cancel(REMOVED);
       }
     }));
     watch.child.on("error", error => { clearTimeout(timer); reject(error); });
     watch.child.on("close", () => {
       clearTimeout(timer);
       if (!welcomed) reject(new Error("the observer ended before it started"));
-      else if (stage.type === "open" && stage.observer === watch.child) void cancel("Editor link lost; draft kept");
+      else if (stage.type === "open" && stage.observer === watch.child) void cancel(warning("Editor link lost; draft kept"));
       else if (stage.type === "opening" && stage.run === run) run.lost = true;
     });
   });
@@ -110,33 +115,34 @@ export function koaEditor(options: { agentDir: string; cwd: () => string; sessio
     held.observer?.stdin?.end(); held.observer?.kill();
     if (held.pane) {
       const reply = await apiCall("DELETE", `/panes/${held.pane}`);
-      if ("error" in reply) options.notify(`Editor pane not closed: ${reply.error}`);
+      if ("error" in reply) options.notify(`Editor pane not closed: ${reply.error}`, "warning");
       else if (![200, 404, 410].includes(reply.status)) {
         let message = `HTTP ${reply.status}`;
         try { const body: Api["Error"] = JSON.parse(reply.body); message = body.message; } catch {}
-        options.notify(`Editor pane not closed: ${message}`);
+        options.notify(`Editor pane not closed: ${message}`, "warning");
       }
     }
     if (held.dir) await rm(held.dir, { recursive: true, force: true });
   };
-  const close = async (open: Open, notice?: string, text?: string) => {
+  const close = async (open: Open, notice?: Notice, text?: string) => {
     stage = { type: "closing" };
     if (text !== undefined && open.session === options.session()) options.replace(text);
-    if (notice) options.notify(notice);
-    try { await release(open); } catch (error) { options.notify(`Editor cleanup failed: ${errorText(error)}`); }
+    if (notice) options.notify(notice.text, notice.level);
+    try { await release(open); } catch (error) { options.notify(`Editor cleanup failed: ${errorText(error)}`, "warning"); }
     stage = { type: "idle" }; options.changed();
   };
-  const cancel = async (notice?: string) => {
+  const cancel = async (notice?: Notice) => {
     if (stage.type === "opening") { stage.run.cancelled = true; await stage.run.done; }
     else if (stage.type === "open") await close(stage, notice);
   };
   const finish = async (open: Open, cause: Api["Cause"]) => {
+    stage = { type: "closing" };
     if (cause.type === "exited" && cause.code === 0) {
       let edited: string;
-      try { edited = clean(await readFile(open.file, "utf8")); } catch (error) { return close(open, `Editor result unreadable: ${errorText(error)}; draft kept`); }
+      try { edited = clean(await readFile(open.file, "utf8")); } catch (error) { return close(open, warning(`Editor result unreadable: ${errorText(error)}; draft kept`)); }
       return close(open, undefined, edited !== clean(open.text) ? edited : undefined);
     }
-    return close(open, cause.type === "exited" ? `Editor exited ${cause.code}; draft kept` : cause.type === "signaled" ? `Editor ended by signal ${cause.signal}; draft kept` : `Editor failed to start: ${cause.message}; draft kept`);
+    return close(open, warning(cause.type === "exited" ? `Editor exited ${cause.code}; draft kept` : cause.type === "signaled" ? `Editor ended by signal ${cause.signal}; draft kept` : `Editor failed to start: ${cause.message}; draft kept`));
   };
   const place = async (pane: Api["CreatePane"], self: string): Promise<{ pane: string } | { error: string }> => {
     for (let attempt = 0; ; attempt++) {
@@ -170,16 +176,16 @@ export function koaEditor(options: { agentDir: string; cwd: () => string; sessio
       const watch = await observe(run);
       observer = watch.child;
       proceed();
-      const placed = await place({ command: { type: "argv", argv: [ko, "shell", "--", ...argv, file] }, cwd: options.cwd(), parent: self, close: "on_exit" }, self);
+      const placed = await place({ command: { type: "argv", argv: [ko, "shell", "--", ...argv, file] }, cwd: options.cwd(), parent: self, close: "on_exit", fixed_title: `Draft for @${options.name()}`, close_confirm: "never" }, self);
       if ("error" in placed) throw new Error(placed.error);
       pane = placed.pane;
       proceed();
-      if (watch.seen.has(pane) && !watch.latest.has(pane)) throw new Error("Editor pane closed");
       const open: Open = { pane, dir, file, text, session, editor: basename(argv[0] ?? "nano"), observer };
       stage = { type: "open", ...open };
       options.changed();
       const cause = watch.deaths.get(pane);
       if (cause) void finish(open, cause);
+      else if (watch.seen.has(pane) && !watch.latest.has(pane)) void cancel(REMOVED);
       return { pane };
     } catch (error) {
       stage = { type: "closing" };

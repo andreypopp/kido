@@ -179,6 +179,9 @@ fn explicit_title(live: &Live) -> bool {
 }
 
 pub fn title(pane: &Pane) -> String {
+    if let Some(fixed) = &pane.row.fixed_title {
+        return fixed.as_str().to_owned();
+    }
     let from_status = pane
         .row
         .status
@@ -203,6 +206,7 @@ pub fn title(pane: &Pane) -> String {
 
 #[cfg(test)]
 mod tests {
+    use ko_wire::ids::Name;
     use ko_wire::protocol::{Agent, Cause, Dead, Origin, ProgramStatus, Shell};
 
     use super::*;
@@ -234,6 +238,8 @@ mod tests {
                 progress: None,
                 parent: None,
                 close: Default::default(),
+                fixed_title: None,
+                close_confirm: Default::default(),
                 inbox: false,
                 runtime: None,
             },
@@ -486,5 +492,13 @@ mod tests {
             title(&pane(1, None)),
         ];
         assert_eq!(titles, ["osc2", "zsh", "zsh", "zsh", "sh"]);
+    }
+
+    #[test]
+    fn a_fixed_title_wins_over_the_osc_title_and_the_command() {
+        let mut found = pane(1, Some(running(false)));
+        found.row.title = "osc2".to_owned();
+        found.row.fixed_title = Some(Name::try_from("Draft for @ko".to_owned()).unwrap());
+        assert_eq!(title(&found), "Draft for @ko");
     }
 }

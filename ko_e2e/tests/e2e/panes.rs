@@ -864,3 +864,34 @@ fn panes_are_made_stopped_swept_and_acted_for_by_their_token() {
     closing(&s);
     identity(&s);
 }
+
+#[test]
+fn creation_keeps_a_fixed_title_and_the_close_confirmation() {
+    let s = crate::harness::start(&[]);
+    let osc = json!({
+        "command": {"type": "shell", "command": "printf '\\033]0;from-osc\\007'; exec cat"},
+        "fixed_title": "Draft for @ko", "close_confirm": "never",
+    });
+    let posted = post(&s, None, "/panes", &osc)["pane"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let put = s.new_pane(osc);
+    let plain = s.new_pane(json!({"command": {"type": "shell", "command": "exec cat"}}));
+    for pane in [&posted, &put] {
+        let row = s.wait_row(pane, "the program's title", |row| {
+            row["title"] == "from-osc"
+        });
+        assert_eq!(row["fixed_title"], "Draft for @ko");
+        assert_eq!(row["close_confirm"], "never");
+    }
+    let row = s.row(&plain);
+    assert_eq!(row.get("fixed_title"), None);
+    assert_eq!(row.get("close_confirm"), None);
+    refused(
+        api(&s, None, "POST", "/panes", &json!({"close_confirm": "bad"})),
+        400,
+        "invalid",
+        "",
+    );
+}

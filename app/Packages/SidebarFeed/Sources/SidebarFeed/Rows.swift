@@ -123,7 +123,7 @@ extension Item {
     }
 
     var label: String {
-        guard case .live(let kind) = lifecycle else { return pane.label }
+        guard pane.fixedTitle == nil, case .live(let kind) = lifecycle else { return pane.label }
         if case .ssh(let ssh) = kind, case .terminal(let terminal) = ssh.pane {
             if terminal.interactive, let command = terminal.status.commandTitle {
                 return "ssh \(ssh.destination): \(command)"
@@ -150,7 +150,8 @@ extension Item {
 
     var second: SidebarRow.SecondLine {
         let shown: String = switch lifecycle {
-        case .live: agent == nil ? "" : caption
+        case .live:
+            if agent != nil { caption } else if pane.fixedTitle != nil { pane.foreground?.name ?? "" } else { "" }
         case .ended: caption
         case .lingering: ""
         }
@@ -187,6 +188,7 @@ extension Item {
     }
 
     var closesQuietly: Bool {
+        if pane.closeConfirm == .never { return true }
         guard case .live(let kind) = lifecycle, case .idle = shell?.phase,
               [.quiet, .done, .error].contains(indicator.status) else { return false }
         if case .terminal = kind.local { return true }
@@ -195,7 +197,7 @@ extension Item {
     }
 
     public var rowTitle: String {
-        quietShell ? "Terminal" : sidebarTitle(label, messageable: isMessageable)
+        quietShell && pane.fixedTitle == nil ? "Terminal" : sidebarTitle(label, messageable: isMessageable)
     }
 
     var indicator: (status: SidebarRow.Status, description: String) {

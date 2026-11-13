@@ -257,9 +257,9 @@ async function main(): Promise<void> {
     let stopping = false;
     teardown.push(() => { stopping = true; });
     const edits = koaEditor({
-      agentDir: agentDir.replace(/^~(?=\/|$)/, homedir()), cwd: () => state.cwd, session: () => state.sessionId,
+      agentDir: agentDir.replace(/^~(?=\/|$)/, homedir()), cwd: () => state.cwd, session: () => state.sessionId, name: () => state.name,
       replace: text => { state.editor = { id: randomUUID(), text }; publish(); },
-      notify: text => feed.notify(text, "warning"), changed: () => publish(),
+      notify: (text, level) => feed.notify(text, level), changed: () => publish(),
     });
     teardown.push(() => edits.cancel());
     let pi: Pi = { type: "starting" };

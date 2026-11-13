@@ -188,6 +188,11 @@ it unchanged for `SomeAgent`, and for `PiAgent` without a name. A
 `Terminal` row does not use it. Claude Code sets `Claude Code` at
 startup, then a session summary.
 
+A pane's `fixed_title`, which its creator sets (protocol.md, section
+7), wins over every other title: the row, the tab and a close alert
+show it, and the row's second line names the foreground program
+instead, as koa's editor float shows "nvim" under "Draft for @ko".
+
 A local pi that runs ko's harness (koa) owns the `pi.*` variables,
 through its agent extension (`share/koa/koa-agent.ts`). The server reads only `pi.session`,
 `pi.name` and `pi.activity`, and trusts them only while the pane has

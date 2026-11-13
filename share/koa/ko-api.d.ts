@@ -744,6 +744,12 @@ export interface components {
          */
         Close: "exit" | "keep" | "on_exit";
         CloseCode: (1000 | 1001 | 1002 | 1003 | 1007 | 1008 | 1009 | 1010 | 1011 | 1012 | 1013) | number;
+        /**
+         * @description What a client does when the user closes the pane. The server does not enforce it: busy asks
+         *     first while a program runs in the pane, never closes at once.
+         * @enum {string}
+         */
+        CloseConfirm: "busy" | "never";
         CloseReason: string;
         Command: {
             argv: string[];
@@ -803,10 +809,12 @@ export interface components {
         };
         CreatePane: {
             close?: components["schemas"]["Close"];
+            close_confirm?: components["schemas"]["CloseConfirm"];
             command?: components["schemas"]["Command"];
             cwd?: components["schemas"]["Cwd"];
             /** @default [] */
             env?: components["schemas"]["Variable"][];
+            fixed_title?: components["schemas"]["Name"];
             parent?: components["schemas"]["PaneId"];
             runtime?: components["schemas"]["RuntimeName"];
             vars?: {
@@ -1117,9 +1125,11 @@ export interface components {
         };
         Listing: {
             close?: components["schemas"]["Close"];
+            close_confirm?: components["schemas"]["CloseConfirm"];
             command: string[];
             cwd: string;
             dead: components["schemas"]["Dead"] | null;
+            fixed_title?: components["schemas"]["Name"];
             foreground?: components["schemas"]["Foreground"];
             id: components["schemas"]["PaneId"];
             /** @description True while the pane has its message stream open. */
@@ -1247,10 +1257,12 @@ export interface components {
         /** @description A window of one pane. */
         NewWindow: {
             close?: components["schemas"]["Close"];
+            close_confirm?: components["schemas"]["CloseConfirm"];
             command?: components["schemas"]["Command"];
             cwd?: components["schemas"]["Cwd"];
             /** @default [] */
             env?: components["schemas"]["Variable"][];
+            fixed_title?: components["schemas"]["Name"];
             name?: components["schemas"]["Name"];
             parent?: components["schemas"]["PaneId"];
             runtime?: components["schemas"]["RuntimeName"];

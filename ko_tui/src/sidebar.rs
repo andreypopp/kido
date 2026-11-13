@@ -190,6 +190,8 @@ mod tests {
                 progress: None,
                 parent: None,
                 close: Default::default(),
+                fixed_title: None,
+                close_confirm: Default::default(),
                 inbox: false,
                 runtime: None,
             },

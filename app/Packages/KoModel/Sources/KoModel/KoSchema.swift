@@ -304,6 +304,11 @@ public enum KoSchema {
         case onExit = "on_exit"
     }
 
+    public enum CloseConfirm: String, Codable, Equatable, Sendable {
+        case busy
+        case never
+    }
+
     public enum Command: Codable, Equatable, Sendable {
         case argv(CommandArgv)
         case shell(CommandShell)
@@ -396,20 +401,35 @@ public enum KoSchema {
 
     public struct CreatePane: Codable, Equatable, Sendable {
         public var close: Close?
+        public var closeConfirm: CloseConfirm?
         public var command: Command?
         public var cwd: Cwd?
         public var env: [Variable]?
+        public var fixedTitle: Name?
         public var parent: PaneId?
         public var runtime: RuntimeName?
         public var vars: [String: JSONValue]?
-        public init(close: Close? = nil, command: Command? = nil, cwd: Cwd? = nil, env: [Variable]? = nil, parent: PaneId? = nil, runtime: RuntimeName? = nil, vars: [String: JSONValue]? = nil) {
+        public init(close: Close? = nil, closeConfirm: CloseConfirm? = nil, command: Command? = nil, cwd: Cwd? = nil, env: [Variable]? = nil, fixedTitle: Name? = nil, parent: PaneId? = nil, runtime: RuntimeName? = nil, vars: [String: JSONValue]? = nil) {
             self.close = close
+            self.closeConfirm = closeConfirm
             self.command = command
             self.cwd = cwd
             self.env = env
+            self.fixedTitle = fixedTitle
             self.parent = parent
             self.runtime = runtime
             self.vars = vars
+        }
+        private enum CodingKeys: String, CodingKey {
+            case close
+            case closeConfirm = "close_confirm"
+            case command
+            case cwd
+            case env
+            case fixedTitle = "fixed_title"
+            case parent
+            case runtime
+            case vars
         }
     }
 
@@ -1393,9 +1413,11 @@ public enum KoSchema {
 
     public struct PaneJson: Codable, Equatable, Sendable {
         public var close: Close?
+        public var closeConfirm: CloseConfirm?
         public var command: [String]
         public var cwd: String
         public var dead: Dead?
+        public var fixedTitle: Name?
         public var foreground: Foreground?
         public var id: PaneId
         public var inbox: Bool?
@@ -1412,11 +1434,13 @@ public enum KoSchema {
         public var title: String
         public var vars: [String: JSONValue]
         public var webview: Webview?
-        public init(close: Close? = nil, command: [String], cwd: String, dead: Dead? = nil, foreground: Foreground? = nil, id: PaneId, inbox: Bool? = nil, label: String, mark: Mark, parent: PaneId? = nil, pid: Int? = nil, place: Place? = nil, progress: Progress? = nil, recordsSeen: Bool, runtime: RuntimeName? = nil, started: Int, status: PaneStatus? = nil, title: String, vars: [String: JSONValue], webview: Webview? = nil) {
+        public init(close: Close? = nil, closeConfirm: CloseConfirm? = nil, command: [String], cwd: String, dead: Dead? = nil, fixedTitle: Name? = nil, foreground: Foreground? = nil, id: PaneId, inbox: Bool? = nil, label: String, mark: Mark, parent: PaneId? = nil, pid: Int? = nil, place: Place? = nil, progress: Progress? = nil, recordsSeen: Bool, runtime: RuntimeName? = nil, started: Int, status: PaneStatus? = nil, title: String, vars: [String: JSONValue], webview: Webview? = nil) {
             self.close = close
+            self.closeConfirm = closeConfirm
             self.command = command
             self.cwd = cwd
             self.dead = dead
+            self.fixedTitle = fixedTitle
             self.foreground = foreground
             self.id = id
             self.inbox = inbox
@@ -1437,9 +1461,11 @@ public enum KoSchema {
         public init(from decoder: Decoder) throws {
             let container = try decoder.container(keyedBy: CodingKeys.self)
             self.close = try container.decodeIfPresent(Close.self, forKey: .close)
+            self.closeConfirm = try container.decodeIfPresent(CloseConfirm.self, forKey: .closeConfirm)
             self.command = try container.decode([String].self, forKey: .command)
             self.cwd = try container.decode(String.self, forKey: .cwd)
             self.dead = try container.decodeIfPresent(Dead.self, forKey: .dead)
+            self.fixedTitle = try container.decodeIfPresent(Name.self, forKey: .fixedTitle)
             self.foreground = try container.decodeIfPresent(Foreground.self, forKey: .foreground)
             self.id = try container.decode(PaneId.self, forKey: .id)
             self.inbox = try container.decodeIfPresent(Bool.self, forKey: .inbox)
@@ -1460,9 +1486,11 @@ public enum KoSchema {
         }
         private enum CodingKeys: String, CodingKey {
             case close
+            case closeConfirm = "close_confirm"
             case command
             case cwd
             case dead
+            case fixedTitle = "fixed_title"
             case foreground
             case id
             case inbox

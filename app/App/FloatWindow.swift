@@ -24,7 +24,8 @@ final class FloatWindow: OwnerWindow {
     var becameKey: () -> Void = {}
     override var canBecomeKey: Bool { true }
     override var canBecomeMain: Bool { false }
-    override var attachedSheet: NSWindow? { (delegate as? WindowOwner)?.window.attachedSheet }
+    var hostedSheet: NSWindow? { super.attachedSheet }
+    override var attachedSheet: NSWindow? { super.attachedSheet ?? (delegate as? WindowOwner)?.window.attachedSheet }
 
     init(owner: NSWindowDelegate?) {
         super.init(contentRect: .zero, styleMask: .borderless, backing: .buffered, defer: false, input: false)
@@ -47,6 +48,7 @@ final class FloatWindow: OwnerWindow {
         let target = shown ? parent : nil
         guard content.isHidden == shown || self.parent !== target else { return false }
         content.isHidden = !shown
+        if !shown { (delegate as? WindowOwner)?.floatClosing(self) }
         if let target {
             if self.parent !== target {
                 self.parent?.removeChildWindow(self)
@@ -69,6 +71,7 @@ final class FloatWindow: OwnerWindow {
     }
 
     func detach() {
+        (delegate as? WindowOwner)?.floatClosing(self)
         parent?.removeChildWindow(self)
         orderOut(nil)
         delegate = nil

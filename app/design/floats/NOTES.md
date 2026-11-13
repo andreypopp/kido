@@ -153,3 +153,38 @@ The 5pt edges were too thin.
   every side for the shadow, so the outside halves of the hit areas
   are inside the float window and work past the main window's edge.
   No separate light/dark values. ko_tui unchanged.
+
+## D · Closing a float: the confirmation (user, 2026-11-13)
+
+Cmd-W on a float dragged past the main window's edge showed the
+main window dimmed, a flat grey rectangle around the float (the
+float window's shadow margin veiled), the sheet on the main window
+far from the float, and a five-line title (the editor's temp path).
+
+- **Attach**: the alert is a sheet of the float's own child window,
+  hanging from the float's top edge, centred on it, wherever the
+  float is. A float narrower than the alert (under about 440pt) gets
+  the alert centred over its frame instead. (Built: AppKit places
+  the sheet; on macOS 27 it centres it on a float taller than the
+  sheet, and a forced top hang did not hold, so the app does not
+  position it.) Modal to the float only:
+  the main window keeps its look and takes clicks.
+- **Dim**: only the float, with its inactive treatment (the 45%
+  theme-background overlay), a layer of the float's content view
+  clipped by its corner path; nothing outside the drawn frame, no
+  veil on the main window. Light/dark: the theme's, as today.
+- **Title**: "Close “<name>”?", the name as the sidebar shows it,
+  truncated in the middle to 40 characters on one line. The text
+  stays "A program is still running in this pane. Closing the pane
+  will end it."
+- **The editor float's name**: koa sets the pane's title "Draft for
+  @ko" (its own name) when it opens the editor pane, and that title
+  wins over the program's OSC title in the sidebar, the tab and the
+  alert (the pane's `fixed_title`, preferred over the OSC title). The
+  sidebar row's activity is the program ("nvim").
+- **No confirmation for the editor float**: koa creates its pane
+  with `close_confirm: never`; the app closes it without asking; koa treats
+  the close as a cancelled edit: the composer keeps the draft it held
+  while editing, and one info row says "editor closed · the draft is
+  as before". A normal editor exit returns the text as today. Every
+  other float with a running program asks, as above.
