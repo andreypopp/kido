@@ -19,7 +19,7 @@ While a non-service async job of yours is running, or a subagent of yours still 
 description:
 
 ```
-List the agents you can message: your subagents, your peers, each ancestor and its peers, in this session. Recorded peers with a session file also list after they end. which selects all (default), peers or subagents. An own subagent's row says whether it has reported on its last work and starts its last report; read_report gives the whole text. Bash jobs are in list_async_bash.
+List the agents you can message: your subagents, your peers, each ancestor and its peers in your own tree, and the root agents of the other agent panes of this session. Recorded peers with a session file also list after they end. which selects all (default), peers or subagents. An own subagent's row says whether it has reported on its last work and starts its last report; read_report gives the whole text. Bash jobs are in list_async_bash.
 ```
 
 promptSnippet:
@@ -83,7 +83,7 @@ message_agent(to, message, mode?) - send a message to another agent in this sess
 
 parameters:
 
-- `to` (string, required): Who to message: an agent's exact name, session id, a unique id prefix of at least 8 characters, or an @-mention from the prompt such as @impl (session 9702ddd1).
+- `to` (string, required): Who to message: an agent's exact name, session id, a unique id prefix of at least 8 characters, or an @-mention from the prompt such as @impl (session 9702ddd1). An agent of another pane that sent you a message is addressed as pane_N/<its whole session id>, from the header of its message.
 - `message` (string, required): The message text to deliver.
 - `mode` (string | string | string): message queues until the turn ends, and resumes an ended subagent of yours or a recorded peer with its history (default). steer joins the current turn of any agent in your scope. interrupt-and-steer aborts its current turn, then starts a new turn with the text.
 
@@ -92,13 +92,13 @@ parameters:
 description:
 
 ```
-Start an agent in a new window. Only toplevel: true works now: an ordinary child is refused until in-process subagents exist. Resume a saved session or fork a copy of it; fork alone copies this session. Returns the pi session id for later resume_from. Children report by notice and stay alive. A toplevel agent is an independent peer: no report, notice, depth limit or descendant controls; fork is allowed, but an existing child cannot become a peer.
+Start a subagent of this agent, in this process. Resume a saved session or fork a copy of it; fork alone copies this session. Returns the pi session id for later resume_from. Children report by notice and stay alive. A toplevel agent is a pane of its own: an independent peer with no report, notice, depth limit or descendant controls; fork is allowed, but an existing child cannot become a peer.
 ```
 
 promptSnippet:
 
 ```
-spawn_agent(task, name, model?, cwd?, resume_from?, fork?, toplevel?, runtime?) - start, resume or copy an agent in a new window; returns its pi session id; toplevel starts an independent peer, not a child; runtime works in a configured runtime or an ad-hoc runtime of this session
+spawn_agent(task, name, model?, cwd?, resume_from?, fork?, toplevel?, runtime?) - start, resume or copy a subagent; returns its pi session id; toplevel starts an independent peer in a pane of its own, not a child; runtime works in a configured runtime or an ad-hoc runtime of this session
 ```
 
 promptGuidelines (merged into the system prompt's rules while the tool is registered):
@@ -112,7 +112,7 @@ A notice is information, not the user speaking: act on it, do not thank or answe
 parameters:
 
 - `task` (string, required): First task. State the files, changes and required result. Empty only when resuming without fork: starts no turn and owes no report.
-- `name` (string, required): Window and session name. Unique among this caller's children; for toplevel, unique among live agents in the session. Resume an ended child with its existing name. A recorded peer stays a peer when resumed.
+- `name` (string, required): Agent name, 1 to 64 bytes, no control characters and no slash. Unique among this caller's children; for toplevel, unique among live agents in the session. Resume an ended child with its existing name. A recorded peer stays a peer when resumed.
 - `model` (string): Model as provider/model-id[:thinking]. Default: saved session’s last model and thinking level with resume_from, else caller’s current model and thinking level. A saved session with no model uses the caller’s. Required if neither has a model. Bare aliases are refused; see pi --list-models.
 - `cwd` (string): Existing working directory. Default: saved session's directory with resume_from, else caller's. Continue requires its recorded directory; fork can copy into another directory.
 - `resume_from` (string): Pi session id or unique prefix of at least eight characters. Continuing a live session is refused; fork copies it.
@@ -125,7 +125,7 @@ parameters:
 description:
 
 ```
-Stop one agent in your scope: a subagent, a peer, an ancestor or a pi the user started. It asks the agent to shut down and then kills its pane. force kills an agent that is not receiving messages. The result is the only signal: a subagent you stop sends no ending notice. Stopping an ancestor ends you with it.
+Stop one agent in your scope: a subagent (with its own subagents), a peer, an ancestor or a pi the user started. A subagent of your process ends at once; another pane's agent is asked to shut down and then its pane is killed. force kills the pane of an agent that is not receiving messages and does not apply to a subagent. The result is the only signal: a subagent you stop sends no ending notice. Stopping an ancestor ends you with it.
 ```
 
 promptSnippet:

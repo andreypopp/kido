@@ -15,11 +15,11 @@ test("a prompt reaches real pi through the fake provider and the reply shows", {
   assert.deepEqual(app.provider.violations, []);
 });
 
-test("an ordinary spawn is refused and creates no pane", { timeout: 20000 }, async t => {
-  const app = await realFixture(t, { panes: [selfPane()], replies: [{ tools: [{ name: "spawn_agent", args: { name: "worker", task: "build it" } }] }, { text: "done" }] });
+test("an ordinary spawn succeeds in koa's own process and creates no pane", { timeout: 20000 }, async t => {
+  const app = await realFixture(t, { panes: [selfPane()], replies: [{ tools: [{ name: "spawn_agent", args: { name: "worker", task: "build it" } }], when: "spawn" }, { when: "spawn", text: "done" }, { when: "build it", text: "built" }, { when: "notice from worker", text: "ok" }] });
   await prompt(app, "spawn one");
-  await pollUntil(() => app.provider.requests.length === 2, 5000, "the tool result request");
-  assert.match(lastUser(app, 1), /in-process subagents are not yet available; use toplevel: true/);
+  await pollUntil(() => app.provider.requests.length >= 2, 5000, "the tool result request");
+  assert.match(JSON.stringify(app.provider.requests.find(request => request.body.messages.at(-1)?.role === "tool")?.body.messages.at(-1)), /spawned worker \(session [0-9a-f]{32}\)/);
   assert.deepEqual((await app.apiCalls()).filter(call => call.method === "POST" && call.path === "/panes"), []);
 });
 
@@ -44,10 +44,10 @@ test("/restart replaces koa by execve during a turn, on the same session", { tim
 
 test("a pi that cannot start offers Start again", { timeout: 20000 }, async t => {
   const app = await realFixture(t, { replies: [], args: ["--provider", "nope", "--model", "nope"], start: false });
-  const state = await app.until(ofType("state", record => record.pi?.type === "failed"));
+  const state = await app.until(ofType("state", record => record.life?.type === "failed"));
   
-  assert.ok(state.pi.type === "failed");
-  assert.equal(typeof state.pi.message, "string");
+  assert.ok(state.life.type === "failed");
+  assert.equal(typeof state.life.message, "string");
   assert.equal((await app.post("agent/start")).status, 200);
 });
 

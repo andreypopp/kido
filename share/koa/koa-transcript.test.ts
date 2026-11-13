@@ -169,14 +169,15 @@ test('agent forms and every job ending use typed details, capped bodies and stri
     { customType: 'ko-steer', details: { agent, body: 'redirect', inbound: { form: 'steer' } }, inbound: { form: 'steer' } },
     { customType: 'ko-notice', details: { agent, inbound: { form: 'report' }, body: 'x'.repeat(20000) }, inbound: { form: 'report' } },
     { customType: 'ko-notice', details: { agent, inbound: { form: 'notice' }, body: 'notice' }, inbound: { form: 'notice' } },
-    { customType: 'ko-notice', details: { agent, inbound: { form: 'ended', reported: false }, body: 'ended' }, inbound: { form: 'ended', reported: false } },
+    { customType: 'ko-notice', details: { agent, inbound: { form: 'ended', reported: false }, body: 'an ended form is not a notice' }, inbound: undefined },
   ];
   for (const [index, value] of forms.entries()) view.message({ role: 'custom', display: true, timestamp: index, customType: value.customType, content: 'Do not read me', details: value.details }, 'end');
   const ends = [{ type: 'exit', code: 0 }, { type: 'exit', code: 1 }, { type: 'signal', signal: 'SIGKILL' }, { type: 'failed', message: 'could not start' }, { type: 'timeout', seconds: 600 }, { type: 'stopped' }];
   for (const end of ends) view.message({ role: 'custom', display: true, timestamp: 5, customType: 'ko-notice', content: 'wrong', details: { kind: 'job', job: { ...job, end }, tail: 'tail' } }, 'end');
   view.message({ role: 'custom', display: true, timestamp: 6, customType: 'ko-notice', content: 'unknown', details: { agent, inbound: { form: 'ended' }, body: 'not a typed ending' } }, 'end');
   const items = JSON.parse(request(view, '/items?before=100').join('')).items;
-  assert.deepEqual(items.slice(0, forms.length).map((item: { inbound: unknown }) => item.inbound), forms.map(value => value.inbound));
+  assert.deepEqual(items.slice(0, forms.length - 1).map((item: { inbound: unknown }) => item.inbound), forms.slice(0, -1).map(value => value.inbound));
+  assert.equal(items[forms.length - 1].kind, 'notice');
   assert.deepEqual(items[1].text, { text: 'x'.repeat(16384), cut: 3616 });
   assert.deepEqual(items.slice(forms.length, forms.length + ends.length).map((item: { event: { end: unknown } }) => item.event.end), ends);
   assert.equal(items.at(-1).kind, 'notice'); view.close();
@@ -360,7 +361,7 @@ test("identical image partials emit no patch and changed bytes advance the wire 
 
 test("rebuild sends reset then exactly one caller-supplied state and keeps the epoch format", t => {
   const view = transcript({ dir: directory(t), flushMs: 1000 });
-  const state = { agents: [], bash: [], compaction: 'idle' as const, working: false, name: "before", model: { provider: "test", id: "test" }, aborted: false, levels: [], cwd: "/tmp", home: "/tmp", dialogs: [], statuses: {}, queue: { steering: [], followUp: [] }, pi: { type: "ready" as const } };
+  const state = { agents: [], bash: [], compaction: 'idle' as const, working: false, name: "before", model: { provider: "test", id: "test" }, aborted: false, levels: [], cwd: "/tmp", home: "/tmp", dialogs: [], statuses: {}, queue: { steering: [], followUp: [] }, view: { id: "root", path: [{ id: "root", name: "pi" }] }, life: { type: "ready" as const } };
   view.state(state);
   const lines = request(view, "/events");
   const firstEpoch = record(lines[0]).epoch;
@@ -443,4 +444,52 @@ test("image references keep disk bytes beyond the feed window and serve missing 
     assert.equal(response.headers.get("content-security-policy"), "sandbox; default-src 'none'");
     assert.equal(await response.text(), data);
   }
+});
+
+test("an aborted turn shows no provider error text and a real error still shows", t => {
+  const view = transcript({ dir: directory(t), flushMs: 1 });
+  view.message({ ...assistant("partial"), stopReason: "aborted", errorMessage: "Request was aborted" }, "end");
+  view.message({ ...assistant("failed", "error"), errorMessage: "provider said no" }, "end");
+  const items = JSON.parse(request(view, "/items?before=100").join("")).items;
+  assert.deepEqual(items.map((item: { stop: string; error: string }) => [item.stop, item.error]), [["aborted", ""], ["error", "provider said no"]]);
+  view.close();
+});
+
+test("show moves the open pages to this feed, sends its state before the reset under a fresh epoch", t => {
+  const before = transcript({ dir: directory(t), flushMs: 1000 }), after = transcript({ dir: directory(t), flushMs: 1000 });
+  const state = { agents: [], bash: [], compaction: 'idle' as const, working: false, name: "a", aborted: false, levels: [], cwd: "/tmp", home: "/tmp", dialogs: [], statuses: {}, queue: { steering: [], followUp: [] }, view: { id: "a", path: [{ id: "a", name: "a" }] }, life: { type: "ready" as const } };
+  before.state(state);
+  after.state({ ...state, name: "b", view: { id: "b", path: [{ id: "a", name: "a" }, { id: "b", name: "b" }] } });
+  after.message(assistant("from b"), "end");
+  const lines = request(before, "/events");
+  const firstEpoch = record(lines[0]).epoch;
+  lines.length = 0;
+  after.show(before);
+  const records = lines.map(record);
+  assert.deepEqual(records.map(entry => entry.type), ["state", "reset"]);
+  assert.notEqual(records[1].epoch, firstEpoch);
+  assert.deepEqual(records[1].items.map((item: { kind: string }) => item.kind), ["assistant"]);
+  assert.equal(records[0].view.id, "b");
+  lines.length = 0;
+  before.state({ ...state, name: "stale" });
+  after.state({ ...state, name: "later" });
+  assert.deepEqual(lines.map(record).map(entry => entry.name), ["later"]);
+  before.close(); after.close();
+});
+
+test("a page that moved to another feed and then disconnects is held by neither feed", t => {
+  const before = transcript({ dir: directory(t), flushMs: 1000, metrics: true }), after = transcript({ dir: directory(t), flushMs: 1000, metrics: true });
+  const incoming = new IncomingMessage(new Socket());
+  incoming.method = "GET";
+  incoming.url = "/events";
+  const response = new ServerResponse(incoming);
+  response.write = () => true;
+  response.end = () => response;
+  assert.equal(before.handle(incoming, response), true);
+  assert.equal(before.metrics?.subscribers, 1);
+  after.show(before);
+  assert.deepEqual([before.metrics?.subscribers, after.metrics?.subscribers], [0, 1]);
+  response.emit("close");
+  assert.deepEqual([before.metrics?.subscribers, after.metrics?.subscribers], [0, 0]);
+  before.close(); after.close();
 });

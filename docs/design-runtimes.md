@@ -997,19 +997,21 @@ mode is the configuration's `pi`, the `cwd` and `pi` of `GET
 harness sends a runtime's name with its pane identity, so the name
 resolves in the pane's session ("The model"), and an ad-hoc runtime
 works in both modes as a configured one, with no branch in the
-harness; a child's pane lands in its spawner's session and resolves
-the same name. An ad-hoc runtime that is down starts at the first
+harness; a subagent shares its spawner's pane and resolves the same
+name. An ad-hoc runtime that is down starts at the first
 exec from its stored definition.
 
 **Routed** (`pi: "host"`, the default). pi runs on the host in a host
-pane, as `koa --runtime NAME`: its session file, extensions,
+pane, as `koa --runtime NAME` or as a routed subagent of a host koa:
+its session file, extensions,
 skills, prompt templates and credentials are the host's. Its seven
 built-in tools (`bash`, `read`, `write`, `edit`, `ls`, `find`,
 `grep`), its `!` commands and its `async_bash` run in the runtime.
 The pane is a host pane in every row field.
 
 - **The tools** keep pi's names and schemas. The harness registers
-  them only with `--runtime`, at `session_start`, so a host pi runs
+  them only for a routed agent (koa's `--runtime`, or a subagent's
+  `--runtime` flag value), at `session_start`, so a host pi runs
   pi's own tools with the user's settings. `bash`, `read`, `write`, `edit`, `ls` and `find` are
   pi's tools over operations of the harness; `grep` is the
   harness's own tool with pi's schema and output form, because pi's
@@ -1066,21 +1068,22 @@ The pane is a host pane in every row field.
 - **Jobs.** `async_bash` and a moved `bash` call are jobs of the
   harness (design-subagents.md, "A job") over the same operations:
   the job's process is the `ko api --stream /runtimes/NAME/exec`
-  child of pi, in the registry beside the local jobs. A stop kills
+  child of koa, in the agent's registry beside its local jobs. A stop kills
   that child, so ko closes the session and the ko inside ends the
   command's group ("Cancel"); the harness sends no `signal` frame.
   The child's connection survives `/reload` as any child does. The
   log is written on the host, so the routed `read`, which runs in the
   runtime, reads it only where the runtime maps it. A job counts
   against the 32 exec sessions and keeps the runtime from going idle.
-- **The variables.** The harness writes `pi.runtime` (`{ name, cwd }`,
-  the runtime cwd) beside `pi.session`, believed under the same trust
+- **The variables.** The root of a routed koa writes `pi.runtime`
+  (`{ name, cwd }`, the runtime cwd) beside `pi.session`, believed under the same trust
   rule, and `ko.runtime` (the name), and deletes both with the others
   at shutdown. `ko.runtime` is a generic marker: any program that
   sends its work into a runtime from a host pane may set it; no
   client reads it, because nothing makes it trusted ("Clients"), and
   ko itself reads neither.
-- **Messages.** A message from a routed pi carries `data.runtime`,
+- **Messages.** A message from a routed agent carries `data.runtime`
+  (the host's tree passes the same fact to an agent of its process),
   and the receiver's header adds `in runtime NAME`; the server never
   reads a message's data.
 
@@ -1092,21 +1095,24 @@ pane's webview serve stream (design-webview.md, "Remote servers and
 runtimes"). Its session is a file of the runtime, so a spawner
 refuses `resume_from` and `fork` into such a runtime.
 
-**Spawning.** `spawn_agent`'s `runtime` reads `GET /runtimes/NAME`
-and starts a routed child (a host pane whose command gains `--runtime
-NAME`) or an inside child (`POST /panes` with `runtime`; the server
-maps its host cwd). An inside spawner sends its runtime cwd as a
-string, which passes unchanged because the caller is in the target
-runtime; it does not name its own pane, because pi reports no OSC 7.
-Without `runtime`, a routed spawner's child is routed in the same runtime, and an inside spawner's child is in its
-runtime by the server's inheritance; an inside spawner refuses another
-runtime. `KO_AGENT_TRUSTED_CWD` is the host cwd for a routed child
-and the mapped runtime path for an inside child, which is the
-directory that child's pi sees. The registry entry of a child
-records its runtime and mode, so a restart through a message starts
-it the same way. `list_agents` shows `runtime` from the row's field,
-else from a trusted `pi.runtime`, and a routed agent's `cwd` from
-that variable.
+**Spawning.** A subagent is a session of its spawner's koa
+(design-subagents.md, "The tree"), so a runtime decides only where its
+tools run. `spawn_agent`'s `runtime` reads `GET /runtimes/NAME`; a
+host koa starts a routed child in its own process, with `--runtime
+NAME` as the child's flag value, and refuses a runtime whose `pi` is
+`"runtime"`: an inside subagent of a host koa would be a pane, and a
+subagent is not one. Without `runtime`, a routed spawner's child is
+routed in the same runtime. A koa inside a runtime runs its children
+in its own process, so they are inside that runtime by construction,
+and it refuses another runtime. `toplevel: true` is a pane and keeps
+both modes: a routed top-level koa (a host pane whose command gains
+`--runtime NAME`) or an inside one (`POST /panes` with `runtime`; the
+server maps its host cwd). An inside spawner sends its runtime cwd as
+a string, which passes unchanged because the caller is in the target
+runtime. The registry entry of a child records its runtime's name, so
+a resume through a message routes it the same way. `list_agents`
+shows `runtime` for an own child from its registry entry, and for a
+pane peer from the row's field, else from a trusted `pi.runtime`.
 
 **Cancel.** A tool's abort or timeout kills its `ko api --stream`
 process, which closes the session. On every kind, the inside ko then

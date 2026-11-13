@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { join } from "node:path";
 import { appendFileSync, unlinkSync, writeFileSync } from "node:fs";
-import { makeFixture, selfPane, agentPane, startSession, savedSession, entriesOf, pollUntil, text, asSubagent, withEnv, at, jsonRows, get, getList } from "./koa-agent-fixture.ts";
+import { makeFixture, selfPane, agentPane, startSession, savedSession, entriesOf, pollUntil, text, createChannel, withEnv, at, jsonRows, get, getList } from "./koa-agent-fixture.ts";
 
 test("peers observed only on /client can end and resume as independent peers", async () => {
   const fx = makeFixture();
@@ -34,7 +34,7 @@ test("peers observed only on /client can end and resume as independent peers", a
     assert.equal(body.cwd, process.cwd(), "resume uses the session header cwd, not the observed peer cwd");
     assert.equal(body.parent, undefined);
     assert.equal(body.close, undefined);
-    assert.ok(!getList(body, "env").some((e) => get(e, "name") === "KO_AGENT_PARENT_SESSION"));
+    assert.equal(body.env, undefined, "no agent environment");
     assert.ok(!getList(body, "command", "argv").includes("--session-dir"));
     assert.ok(getList(body, "command", "argv").includes(file));
     assert.ok(getList(body, "command", "argv").includes("acme/saved"));
@@ -125,11 +125,13 @@ test("concurrent peer messages reuse a pane before pi publishes its identity", a
   } finally { await fx.restore(); }
 });
 
-test("children and pi inside a runtime open no peer observer", async () => {
+test("a subagent and a pi inside a runtime open no peer observer", async () => {
   const fx = makeFixture();
   try {
     fx.setPanes([selfPane()]);
-    await asSubagent("self-session", () => startSession(fx));
+    const channel = createChannel();
+    Object.assign(channel.host.self, { parent: { id: "boss-session", children: [] } });
+    await startSession(fx, { channel });
     assert.equal(fx.streamOpens("/client"), 0);
     await withEnv({ KO_RUNTIME: "dev" }, () => startSession(fx));
     assert.equal(fx.streamOpens("/client"), 0);

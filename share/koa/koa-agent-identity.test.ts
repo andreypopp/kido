@@ -8,9 +8,7 @@ import { join, dirname } from "node:path";
 
 import { fileURLToPath } from "node:url";
 
-import { makeFixture, createFakePi, startSession, freshExtension, withEnv, pollUntil, selfPane, at, koaExtension } from "./koa-agent-fixture.ts";
-
-const MESSAGES = "/panes/pane_1/messages";
+import { makeFixture, createFakePi, createChannel, startSession, withEnv, selfPane, koaExtension } from "./koa-agent-fixture.ts";
 
 test("the ko skill and its guideline are available only inside ko", async () => {
   const fx = makeFixture();
@@ -36,18 +34,16 @@ test("the ko skill and its guideline are available only inside ko", async () => 
   }
 });
 
-test("a session writes its pane variables and opens its message stream; quitting deletes the variables and closes the stream", async () => {
+test("a root session writes its pane variables; quitting deletes them", async () => {
   const fx = makeFixture();
   try {
     fx.setPanes([selfPane()]);
     const s = await startSession(fx, { name: "Self" });
-    await pollUntil(() => fx.streamOpens(MESSAGES) === 1, 2000, "the message stream");
     const puts = fx.apiCalls().filter((call) => call.method === "PUT");
     assert.deepEqual(
       puts.map((call) => [call.path, JSON.parse(call.body)]),
       [["/panes/pane_1/vars/pi.session", "self-session"], ["/panes/pane_1/vars/pi.name", "Self"]],
     );
-    await pollUntil(() => fx.row("pane_1")?.inbox === true, 2000, "the row to show its inbox");
 
     await s.emit("session_shutdown", { reason: "quit" });
     const deletes = fx.apiCalls().filter((call) => call.method === "DELETE");
@@ -60,7 +56,7 @@ test("a session writes its pane variables and opens its message stream; quitting
   }
 });
 
-test("a headless session writes no variable and opens no stream", async () => {
+test("a headless session writes no variable", async () => {
   const fx = makeFixture();
   try {
     fx.setPanes([selfPane()]);
@@ -71,70 +67,40 @@ test("a headless session writes no variable and opens no stream", async () => {
   }
 });
 
-test("a stream that closes is opened again, and a message the receiver has seen is acked and not delivered twice", async () => {
-  const fx = makeFixture();
-  try {
-    fx.setPanes([selfPane()]);
-    const s = await startSession(fx);
-    await pollUntil(() => fx.streamOpens(MESSAGES) === 1, 2000, "the stream");
-    fx.feed({ id: "once-0001", kind: "user", text: "hello" });
-    await pollUntil(() => fx.acks().length === 1, 2000, "the ack");
-    assert.deepEqual(fx.acks(), [{ type: "ack", id: "once-0001" }]);
-    assert.deepEqual(s.delivered.map((d) => d.text), ["hello"]);
-
-    fx.forgetAcks();
-    fx.dropStream();
-    await pollUntil(() => fx.streamOpens(MESSAGES) === 2, 2000, "the stream to open again");
-    await pollUntil(() => fx.acks().length === 1, 2000, "the repeat to be acked");
-    assert.deepEqual(s.delivered.map((d) => d.text), ["hello"], "a repeat is acked and not handed to pi again");
-  } finally {
-    await fx.restore();
-  }
-});
-
-test("a /reload parks the stream and keeps the variables; the next module takes the same stream over", async () => {
-  const fx = makeFixture();
-  try {
-    fx.setPanes([selfPane()]);
-    const s1 = await startSession(fx, { factory: await freshExtension() });
-    await pollUntil(() => fx.streamOpens(MESSAGES) === 1, 2000, "the stream");
-    const before = fx.apiCalls().length;
-
-    await s1.emit("session_shutdown", { reason: "reload" });
-    assert.equal(fx.apiCalls().slice(before).some((call) => call.method === "DELETE"), false, "a reload keeps the variables");
-    fx.feed({ id: "gap-0001", kind: "user", text: "in the gap" });
-    const s2 = await startSession(fx, { factory: await freshExtension() });
-    await pollUntil(() => s2.delivered.length === 1, 2000, "the message of the gap");
-    assert.equal(at(s2.delivered, 0).text, "in the gap");
-    assert.equal(s1.delivered.length, 0, "the module that shut down delivers nothing");
-    assert.equal(fx.streamOpens(MESSAGES), 1, "the reload kept the one stream");
-    fx.feed({ id: "after-0001", kind: "user", text: "after" });
-    await pollUntil(() => s2.delivered.length === 2, 2000, "a message after the reload");
-  } finally {
-    await fx.restore();
-  }
-});
-
-test("project trust answers yes only for the real path of KO_AGENT_TRUSTED_CWD", async () => {
+test("project trust answers yes only for the real path of the directory the host grants", async () => {
   const fx = makeFixture();
   try {
     const trusted = join(fx.dir, "trusted");
     const other = join(fx.dir, "other");
     mkdirSync(trusted);
     mkdirSync(other);
-    const s = createFakePi();
+    const granted = createChannel();
+    Object.assign(granted.host, { trusted });
+    const s = createFakePi(undefined, [], granted);
     koaExtension(s.pi);
-    await withEnv({ KO_AGENT_TRUSTED_CWD: trusted }, async () => {
-      assert.deepEqual(await s.emit("project_trust", { cwd: trusted }), [{ trusted: "yes" }]);
-      assert.deepEqual(await s.emit("project_trust", { cwd: other }), [{ trusted: "undecided" }]);
-      assert.deepEqual(await s.emit("project_trust", { cwd: join(fx.dir, "missing") }), [{ trusted: "undecided" }]);
-      assert.deepEqual(await s.emit("project_trust", { cwd: join(trusted, "..", "trusted") }), [{ trusted: "yes" }], "paths compare by their real path");
-    });
-    await withEnv({ KO_AGENT_TRUSTED_CWD: undefined }, async () => {
-      assert.deepEqual(await s.emit("project_trust", { cwd: trusted }), [{ trusted: "undecided" }]);
-    });
+    assert.deepEqual(await s.emit("project_trust", { cwd: trusted }), [{ trusted: "yes" }]);
+    assert.deepEqual(await s.emit("project_trust", { cwd: other }), [{ trusted: "undecided" }]);
+    assert.deepEqual(await s.emit("project_trust", { cwd: join(fx.dir, "missing") }), [{ trusted: "undecided" }]);
+    assert.deepEqual(await s.emit("project_trust", { cwd: join(trusted, "..", "trusted") }), [{ trusted: "yes" }], "paths compare by their real path");
+    const none = createFakePi();
+    koaExtension(none.pi);
+    assert.deepEqual(await none.emit("project_trust", { cwd: trusted }), [{ trusted: "undecided" }], "no grant, no trust");
   } finally {
     await fx.restore();
   }
 });
 
+test("a subagent writes no pane variable and unsets none: only the pane's root names the pane", async () => {
+  const fx = makeFixture();
+  try {
+    fx.setPanes([selfPane()]);
+    const channel = createChannel();
+    Object.assign(channel.host.self, { parent: { id: "boss-session", children: [] } });
+    const s = await startSession(fx, { channel });
+    await s.emit("session_info_changed", {});
+    await s.emit("session_shutdown", { reason: "quit" });
+    assert.deepEqual(fx.apiCalls().filter((call) => call.method === "PUT" || call.method === "DELETE"), []);
+  } finally {
+    await fx.restore();
+  }
+});

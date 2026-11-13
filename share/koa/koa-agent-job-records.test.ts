@@ -2,13 +2,13 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { makeFixture, selfPane, startSession, freshExtension, pollUntil, gatedCommand, captureStatusRecords, at, jobId, liveRegistry, backgroundJob } from "./koa-agent-fixture.ts";
+import { makeFixture, selfPane, startSession, freshExtension, pollUntil, gatedCommand, processGone, captureStatusRecords, at, jobId, liveRegistry, backgroundJob } from "./koa-agent-fixture.ts";
 
 for (const mode of ["interactive", "rpc"]) test(`job reports use the status route in ${mode} mode`, async (t) => {
   const stdout = captureStatusRecords(t);
   const fx = makeFixture();
   const reports = () => fx.posts(`/panes/${process.env.KO_PANE}/status`);
-  const reported = (id: string, state: string) => reports().filter(r => r.id === `job/${id}` && (state === "clear" ? r.type === "clear" : r.type === "set" && r.state === state));
+  const reported = (id: string, state: string) => reports().filter(r => r.id === `jobs/${id}` && (state === "clear" ? r.type === "clear" : r.type === "set" && r.state === state));
   try {
     process.env.KO_JOB_RECORD_LINGER_MS = "10";
     fx.setPanes([selfPane()]);
@@ -21,7 +21,7 @@ for (const mode of ["interactive", "rpc"]) test(`job reports use the status rout
     assert.equal(at(reported(id, "working"), 0).msg, gatedCommand(gate));
     writeFileSync(gate, "");
     await pollUntil(() => reported(id, "clear").length === 1);
-    assert.deepEqual(reports().filter(r => r.id === `job/${id}`).map(r => r.type === "clear" ? "clear" : r.state), ["working", "done", "clear"]);
+    assert.deepEqual(reports().filter(r => r.id === `jobs/${id}`).map(r => r.type === "clear" ? "clear" : r.state), ["working", "done", "clear"]);
     assert.equal(at(reported(id, "done"), 0).title, "build");
     assert.equal(at(reported(id, "done"), 0).msg, "exit 0");
     process.env.KO_JOB_RECORD_LINGER_MS = "10000";
@@ -34,14 +34,14 @@ for (const mode of ["interactive", "rpc"]) test(`job reports use the status rout
     await first.emit("session_shutdown", { reason: "reload" });
     const before = reports().length;
     const second = await startSession(fx, { factory: await freshExtension(), ctx: { hasUI: true, mode } });
-    await pollUntil(() => reported(liveId, "working").length === 2);
-    assert.deepEqual(reports()[before], { type: "clear", id: "job" });
+    assert.equal(reports().length, before, "a reload neither clears nor rewrites the records");
+    assert.equal(reported(liveId, "working").length, 1);
     for (const record of reported(liveId, "working")) {
       assert.equal(record.title, "live");
       assert.equal(record.msg, gatedCommand(join(fx.dir, "live")));
     }
     await second.emit("session_shutdown", { reason: "quit" });
-    assert.deepEqual(reports().at(-1), { type: "clear", id: "job" });
+    assert.deepEqual(reports().at(-1), { type: "clear", id: "jobs" });
     assert.deepEqual(stdout, []);
   } finally { await fx.restore(); }
 });
@@ -50,12 +50,12 @@ test("the process exit handler clears job records synchronously", async () => {
   const fx = makeFixture();
   try {
     fx.setPanes([selfPane()]);
-    await startSession(fx);
-    const reports = () => fx.posts(`/panes/${process.env.KO_PANE}/status`);
-    await pollUntil(() => reports().length === 1);
+    const s = await startSession(fx);
+    const gate = join(fx.dir, "gate");
+    await s.tool("async_bash").execute("a", { command: gatedCommand(gate), name: "live" });
+    await pollUntil(async () => !(await processGone(gate)));
     liveRegistry().exit();
-    assert.equal(reports().length, 2);
-    assert.deepEqual(reports().at(-1), { type: "clear", id: "job" });
+    await pollUntil(() => processGone(gate));
   } finally { await fx.restore(); }
 });
 
@@ -63,7 +63,7 @@ test("service reports stay idle and job text and capacity are bounded", async (t
   const stdout = captureStatusRecords(t);
   const fx = makeFixture();
   const reports = () => fx.posts(`/panes/${process.env.KO_PANE}/status`);
-  const reported = (id: string, state?: string) => reports().filter(r => r.id === `job/${id}` && (state === undefined || r.state === state));
+  const reported = (id: string, state?: string) => reports().filter(r => r.id === `jobs/${id}` && (state === undefined || r.state === state));
   try {
     process.env.KO_JOB_RECORD_LINGER_MS = "10000";
     fx.setPanes([selfPane()]);
@@ -91,7 +91,7 @@ test("service reports stay idle and job text and capacity are bounded", async (t
     assert.ok(reported(job.id).some(r => r.type === "clear"));
     await s.emit("session_shutdown", { reason: "reload" });
     await startSession(fx, { factory: await freshExtension() });
-    await pollUntil(() => reported(jobId(service), "idle").length === 2);
+    assert.equal(reported(jobId(service), "idle").length, 1, "the record of a live job survives the reload as it is");
     assert.equal(reported(jobId(service), "working").length, 0);
     assert.deepEqual(stdout, []);
   } finally { await fx.restore(); }

@@ -470,12 +470,27 @@ fn new_pane(body: &str) -> ExitCode {
             "parent": request.pane.parent,
         });
         if !env("KO_FAKE_PEER_IDENTITY_GATE").is_empty() {
-            row["fake_session"] = request
-                .pane
-                .env
+            let argv = match &request.pane.command {
+                Some(Command::Argv { argv }) => argv.as_slice(),
+                _ => &[],
+            };
+            let saved = argv
                 .iter()
-                .find(|var| var.name == "KO_AGENT_SESSION")
-                .map(|var| json!(var.value))
+                .position(|arg| arg == "--session")
+                .and_then(|at| argv.get(at + 1))
+                .and_then(|file| {
+                    std::path::Path::new(file)
+                        .file_stem()
+                        .and_then(|stem| stem.to_str())
+                        .and_then(|stem| stem.rsplit('_').next())
+                        .map(str::to_owned)
+                });
+            row["fake_session"] = argv
+                .iter()
+                .position(|arg| arg == "--session-id")
+                .and_then(|at| argv.get(at + 1).cloned())
+                .or(saved)
+                .map(|id| json!(id))
                 .unwrap_or(Value::Null);
         }
         if let Some(fields) = row.as_object_mut() {

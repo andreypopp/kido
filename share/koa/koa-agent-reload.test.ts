@@ -7,7 +7,6 @@ import { makeFixture, selfPane, startSession, freshExtension, notices, customMes
 
 test("a live job is adopted by the second instance, which alone announces its end", async () => {
   const fx = makeFixture();
-  const exits = process.listenerCount("exit");
   try {
     fx.setPanes([selfPane()]);
     const first = await startSession(fx);
@@ -17,11 +16,8 @@ test("a live job is adopted by the second instance, which alone announces its en
     const job = jobOf(jobId(result));
     await pollUntil(() => logHas(jobLog(result), "before"));
     await first.emit("session_shutdown", { reason: "reload" });
-    assert.equal(owner.owner, null);
     const second = await startSession(fx, { factory: await freshExtension() });
     assert.equal(jobRegistry(), owner);
-    assert.equal(process.listeners("exit").filter((listener) => listener === owner.exit).length, 1);
-    assert.equal(process.listenerCount("exit"), exits + 2);
     assert.equal(typeof jobRegistry()?.owner?.onEnd, "function");
     writeFileSync(gate, "");
     await pollUntil(() => notices(second).length === 1);
@@ -32,9 +28,7 @@ test("a live job is adopted by the second instance, which alone announces its en
     await second.emit("session_shutdown", { reason: "reload" });
     const third = await startSession(fx, { factory: await freshExtension() });
     assert.deepEqual(notices(third), [], "an announced end is not repeated");
-    assert.equal(process.listenerCount("exit"), exits + 2);
   } finally { await fx.restore(); }
-  assert.equal(process.listenerCount("exit"), exits);
 });
 
 test("a job that ends between instances is announced at adopt, before the startup task", async () => {
@@ -69,32 +63,6 @@ test("a job that ends between instances is announced at adopt, before the startu
     assert.deepEqual(order, ["ko-notice", "ko-message"]);
     assert.equal(fx.row("pane_1")?.vars?.["pi.session"], "self-session");
   } finally { await fx.restore(); }
-});
-
-test("a shutdown wait timeout keeps exit coverage until the retained pipes close", async () => {
-  const fx = makeFixture();
-  const gate = join(fx.dir, "gate");
-  let oldExit: (() => void) | undefined;
-  try {
-    process.env.KO_JOB_KILL_MS = "20";
-    fx.setPanes([selfPane()]);
-    const first = await startSession(fx);
-    const result = await first.tool("async_bash").execute("a", { command: `${gatedCommand(gate)} & exit 0`, name: "pipes" });
-    const old = liveRegistry();
-    oldExit = old.exit;
-    const job = jobOf(jobId(result));
-    await pollUntil(() => job.where.child.exitCode === 0);
-    await first.emit("session_shutdown", { reason: "new" });
-    assert.equal(jobRegistry(), undefined);
-    assert.equal(job.state.type, "running");
-    assert.ok(process.listeners("exit").includes(old.exit));
-    writeFileSync(gate, "");
-    await pollUntil(() => job.state.type === "ended" && !process.listeners("exit").includes(old.exit));
-  } finally {
-    writeFileSync(gate, "");
-    await fx.restore();
-    await pollUntil(() => !oldExit || !process.listeners("exit").includes(oldExit));
-  }
 });
 
 test("held stream lines and a UTF-8 carry cross the reload and flush once from the new instance", async () => {

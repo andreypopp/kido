@@ -11,9 +11,10 @@ export const UPLOAD_IDLE_MS = 30000;
 type Entry = { type: 'uploading'; path: string; name: string; size: number; received: number; timer: ReturnType<typeof setTimeout>; request?: IncomingMessage } | { type: 'ready' | 'queued' | 'used'; info: Attachment };
 
 export async function stepFile(request: IncomingMessage, response: ServerResponse, pathAt: (seq: number, index: number) => string | undefined, cwd: string, home: string, access: () => void): Promise<boolean> {
-  if (request.method !== 'GET' || !request.url?.startsWith('/steps/')) return false;
+  const pathname = new URL(request.url ?? '/', 'http://koa').pathname;
+  if (request.method !== 'GET' || !pathname.startsWith('/steps/')) return false;
   access();
-  const match = /^\/steps\/(\d+)\/(\d+)\/file$/.exec(request.url);
+  const match = /^\/steps\/(\d+)\/(\d+)\/file$/.exec(pathname);
   const path = match ? pathAt(Number(match[1]), Number(match[2])) : undefined;
   if (!path) { respond(response, 404, '{}'); return true; }
   const plain = path.replace(/^@/, ''), expanded = plain === '~' ? home : plain.startsWith('~/') ? join(home, plain.slice(2)) : plain;

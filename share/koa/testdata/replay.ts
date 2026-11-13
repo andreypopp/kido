@@ -116,6 +116,7 @@ const handle = async (request: IncomingMessage, response: ServerResponse) => {
   if (await attached.handle(request, response, () => {})) return;
   if (await stepFile(request, response, pathAt, dir, dir, () => {})) return;
   if (request.method === "GET" && url.pathname.startsWith("/images/")) {
+    url.searchParams.delete("sessionId");
     const file = files[url.pathname + url.search];
     if (file) await serveFile(response, file, basename(file), 410); else respond(response, 410, "{}");
     return;

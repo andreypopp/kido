@@ -7,7 +7,8 @@ type Chip = { view: HTMLDivElement; icon: HTMLSpanElement; name: HTMLSpanElement
 const sizeLabel = (size: number) => size >= 1048576 ? (size / 1048576).toFixed(size >= 10 * 1048576 ? 0 : 1) + ' MB' : size >= 1024 ? Math.ceil(size / 1024) + ' KB' : size + ' B';
 
 export function attach(host: HTMLElement, changed: () => void, displayPath: (value: string) => string, blocked: () => boolean, onRefused: () => void) {
-  const chips: Chip[] = [];
+  const chips: Chip[] = [], saved = new Map<string, Chip[]>();
+  let current: string | undefined;
   const notice = document.createElement('div'); notice.className = 'attach-notice'; notice.hidden = true; host.append(notice);
   let timer: ReturnType<typeof setTimeout> | undefined, hover = false, depth = 0;
   const refresh = () => { host.hidden = chips.length === 0 && notice.hidden; changed(); };
@@ -113,11 +114,26 @@ export function attach(host: HTMLElement, changed: () => void, displayPath: (val
   });
   return {
     drop, paste,
+    view(id: string) {
+      if (id === current) return;
+      const previous = current; current = id;
+      if (previous === undefined) return;
+      for (const chip of [...chips]) if (chip.state.type !== 'ready') remove(chip);
+      const hidden = chips.splice(0);
+      for (const chip of hidden) chip.view.remove();
+      saved.set(previous, hidden);
+      for (const chip of saved.get(id) ?? []) { chips.push(chip); host.insertBefore(chip.view, notice); }
+      saved.delete(id); beginDrop();
+    },
     get hover() { return hover; },
     get busy() { return chips.some(chip => chip.state.type === 'pending'); },
     get count() { return chips.filter(chip => chip.state.type === 'ready').length; },
     get files() { return chips.flatMap(chip => chip.state.type === 'ready' ? [chip.state.file] : []); },
-    sent(files: readonly Attachment[]) { const ids = new Set(files.map(file => file.id)); for (const chip of [...chips]) if (chip.state.type === 'ready' && ids.has(chip.state.file.id)) remove(chip, false); },
+    sent(files: readonly Attachment[]) {
+      const ids = new Set(files.map(file => file.id));
+      for (const chip of [...chips]) if (chip.state.type === 'ready' && ids.has(chip.state.file.id)) remove(chip, false);
+      for (const [id, list] of saved) saved.set(id, list.filter(chip => chip.state.type !== 'ready' || !ids.has(chip.state.file.id)));
+    },
     restore(files: readonly Attachment[]) { for (const file of files) if (!chips.some(chip => chip.state.type === 'ready' && chip.state.file.id === file.id)) create({ type: 'ready', file }); },
   };
 }

@@ -1,24 +1,39 @@
 import { test } from "node:test";
-
 import assert from "node:assert/strict";
 import { writeFileSync } from "node:fs";
+import { gatedCommand, makeFixture, selfPane, startSession, entriesOf, createChannel, stubAgent, pollUntil, idleTurn, assistant, notices, type Fixture, type Started, at, jobId, jsonRows } from "./koa-agent-fixture.ts";
 
-import { gatedCommand, makeFixture, agentPane, selfPane, startSession, entriesOf, asSubagent, withEnv, pollUntil, idleTurn, assistant, exited, notices, type Fixture, type Started, at, jobId, jsonRows, getStr } from "./koa-agent-fixture.ts";
-
-const TASK = { text: "the work", from: { session: "boss-session", name: "boss", pane: "pane_2" } };
-const NOTICES = "/panes/pane_2/messages";
-
-function asChild(fx: Fixture, extra: Parameters<typeof selfPane>[0] = {}): void {
-  fx.setPanes([selfPane({ parent: "pane_2", vars: { "koa.task": TASK }, ...extra }), agentPane({ pane: "pane_2", session: "boss-session", name: "boss" })]);
+// The parent's branch as the host reads it: a mark for the last work and one for the last report.
+function parentLedger() {
+  let counter = 0, work = -1, report = -1, text: string | undefined;
+  const reports: string[] = [];
+  const notes: string[] = [];
+  const extension = {
+    markWork: () => { work = ++counter; },
+    receiveReport: (_child: unknown, body: string) => { report = ++counter; text = body; reports.push(body); },
+    childState: () => {
+      const reported = work === -1 || report > work;
+      return { reported, ...(work !== -1 && reported && text !== undefined ? { text } : {}) };
+    },
+    receive: async (message: { text: string }) => { notes.push(message.text); },
+  };
+  return { extension, reports, notes, agent: stubAgent({ id: "boss-session", children: [], extension }) };
 }
 
-const child = (fn: (s: Started) => Promise<void>, fx: Fixture, name = "worker") => asSubagent("self-session", async () => fn(await startSession(fx, { name })));
+async function child(fx: Fixture, run: (s: Started, ledger: ReturnType<typeof parentLedger>, channel: ReturnType<typeof createChannel>) => Promise<void>) {
+  fx.setPanes([selfPane()]);
+  const ledger = parentLedger();
+  const channel = createChannel();
+  Object.assign(channel.host.self, { parent: ledger.agent, name: "worker" });
+  const s = await startSession(fx, { channel, name: "worker" });
+  await s.emit("message_start", { message: { role: "user", content: "the task" } });
+  await run(s, ledger, channel);
+}
 
-test("a child reports its last message once the turn settles: an entry before the send, the same id on every send, a mark after the ack", async () => {
+test("a child reports its last message to its parent once the turn settles, and new work owes a new report", async () => {
   const fx = makeFixture();
   try {
-    asChild(fx);
-    await child(async (s) => {
+    await child(fx, async (s, ledger) => {
       await s.emit("agent_start");
       await s.emit("agent_end", {
         messages: [
@@ -27,289 +42,84 @@ test("a child reports its last message once the turn settles: an entry before th
         ],
       });
       await s.emit("agent_settled", {}, { isIdle: () => true });
-      const post = at(fx.posts(NOTICES), 0);
-      assert.equal(fx.posts(NOTICES).length, 1);
-      assert.deepEqual({ kind: post.kind, text: post.text, data: post.data }, { kind: "notice", text: "the merge is done; two conflicts", data: { report: true } });
-      assert.match(getStr(post, "id"), /^[A-Za-z0-9_-]{22}$/);
-      assert.deepEqual(entriesOf(s, "koa.report").map((r) => [r.id, r.text]), [[post.id, "the merge is done; two conflicts"]]);
-      assert.deepEqual(entriesOf(s, "koa.sent").map((r) => r.id), [post.id], "the ack is a mark of its own, not a report");
-
+      assert.deepEqual(ledger.reports, ["the merge is done; two conflicts"]);
+      assert.deepEqual(entriesOf(s, "koa.report"), [], "the child keeps no report entry: the parent's branch holds it");
       await idleTurn(s, "the merge is done; two conflicts");
-      assert.equal(fx.posts(NOTICES).length, 1, "a second turn on the same work with the same text reports nothing");
+      assert.equal(ledger.reports.length, 1, "a second turn on the same work with the same text reports nothing");
       await s.emit("message_start", { message: { role: "custom", customType: "ko-message", details: { work: true } } });
-      await idleTurn(s, "second work done");
-      assert.equal(fx.posts(NOTICES).length, 2, "new work owes a new report");
-      assert.notEqual(at(fx.posts(NOTICES), 1).id, post.id);
-    }, fx);
-  } finally {
-    await fx.restore();
-  }
+      await idleTurn(s, "the merge is done; two conflicts");
+      assert.equal(ledger.reports.length, 2, "new work makes identical text a new report");
+    });
+  } finally { await fx.restore(); }
 });
 
 test("an empty last message is still a report", async () => {
   const fx = makeFixture();
   try {
-    asChild(fx);
-    await child(async (s) => {
+    await child(fx, async (s, ledger) => {
       await idleTurn(s);
-      assert.equal(at(fx.posts(NOTICES), 0).text, 'subagent "worker" ended its turn with no message');
-    }, fx);
-  } finally {
-    await fx.restore();
-  }
+      assert.deepEqual(ledger.reports, ['subagent "worker" ended its turn with no message']);
+    });
+  } finally { await fx.restore(); }
 });
 
-test("a report whose ack is lost is sent again with its id, by the parent watch, until the parent acks it", async () => {
+test("a service does not hold the report; a non-service job does until it ends", async () => {
   const fx = makeFixture();
   try {
-    asChild(fx);
-    await withEnv({ KO_PARENT_POLL_MS: "20" }, () => child(async (s) => {
-      fx.scriptSends([
-        { status: 200, body: { state: "delivered", seq: 1 } },
-        { status: 500, body: { kind: "io", message: "x" } },
-        { status: 200, body: { state: "delivered", seq: 1 } },
-        { status: 200, body: { state: "acked", seq: 1 } },
-      ]);
-      await idleTurn(s, "done");
-      await pollUntil(() => entriesOf(s, "koa.sent").length === 1, 2000, "the tick to resend until the ack");
-      const posts = fx.posts(NOTICES);
-      assert.ok(posts.length >= 4, `${posts.length} sends: three at the settle, then the tick`);
-      assert.equal(new Set(posts.map((p) => p.id)).size, 1, "one id for the one report");
-      const settled = fx.posts(NOTICES).length;
-      const layouts = fx.apiCalls().filter((c) => c.path === "/layout").length;
-      await pollUntil(() => fx.apiCalls().filter((c) => c.path === "/layout").length > layouts + 1, 500, "a completed tick");
-      assert.equal(entriesOf(s, "koa.sent").length, 1, "concurrent sends record the ack once");
-      assert.equal(fx.posts(NOTICES).length, settled, "an acked report is not sent again");
-    }, fx));
-  } finally {
-    await fx.restore();
-  }
-});
-
-test("the parent watch skips a report while its settle send is active", async () => {
-  const fx = makeFixture();
-  try {
-    asChild(fx);
-    await withEnv({ KO_PARENT_POLL_MS: "20" }, () => child(async (s) => {
-      fx.scriptSends([{ status: 200, body: { state: "acked", seq: 1 } }]);
-      await withEnv({ KO_FAKE_SEND_GATE: `${fx.dir}/send-gate` }, async () => {
-        const turn = idleTurn(s, "done");
-        try {
-          await pollUntil(() => fx.posts(NOTICES).length === 1, 2000, "the settle send to reach the gate");
-          const layouts = fx.apiCalls().filter((c) => c.path === "/layout").length;
-          await pollUntil(() => fx.posts(NOTICES).length > 1 || fx.apiCalls().filter((c) => c.path === "/layout").length > layouts + 2, 2000, "parent-watch ticks during the send");
-          assert.equal(fx.posts(NOTICES).length, 1, "the active report is not sent again");
-        } finally {
-          writeFileSync(`${fx.dir}/send-gate`, "");
-          await turn;
-        }
-        const layouts = fx.apiCalls().filter((c) => c.path === "/layout").length;
-        await pollUntil(() => fx.apiCalls().filter((c) => c.path === "/layout").length > layouts + 1, 2000, "a completed tick");
-        assert.equal(entriesOf(s, "koa.sent").length, 1);
-        assert.equal(fx.posts(NOTICES).length, 1, "the acked report is not sent again");
-        assert.equal(new Set(fx.posts(NOTICES).map((post) => post.id)).size, 1);
-      });
-    }, fx));
-  } finally {
-    await fx.restore();
-  }
-});
-
-test("the late ack of an old report does not count as a report of the new work", async () => {
-  const fx = makeFixture();
-  try {
-    fx.setPanes([selfPane({ parent: "pane_2", vars: { "koa.task": TASK } }), agentPane({ pane: "pane_2", session: "boss-session", name: "boss", inbox: false })]);
-    await withEnv({ KO_PARENT_POLL_MS: "20" }, () => child(async (s) => {
-      await idleTurn(s, "work A done");
-      assert.equal(entriesOf(s, "koa.sent").length, 0, "the parent has not acked it: it only queued it");
-      await s.emit("message_start", { message: { role: "custom", customType: "ko-message", details: { work: true } } });
-      fx.scriptSends([{ status: 200, body: { state: "acked", seq: 1 } }]);
-      await pollUntil(() => entriesOf(s, "koa.sent").length === 1, 2000, "the late ack of report A");
-      await idleTurn(s, "work B done");
-      const texts = fx.posts(NOTICES).map((post) => post.text);
-      assert.ok(texts.includes("work B done"), `report B was sent: ${texts.join("|")}`);
-      assert.equal(entriesOf(s, "koa.report").length, 2);
-    }, fx));
-  } finally {
-    await fx.restore();
-  }
-});
-
-test("a refused report ends the retries", async () => {
-  const fx = makeFixture();
-  try {
-    asChild(fx);
-    await withEnv({ KO_PARENT_POLL_MS: "20" }, () => child(async (s) => {
-      fx.scriptSends([{ status: 409, body: { kind: "refused", message: "no" } }]);
-      await idleTurn(s, "done");
-      assert.deepEqual(entriesOf(s, "koa.sent").map((r) => r.refused), [true]);
-      await pollUntil(() => fx.apiCalls().filter((c) => c.path === "/layout").length > 2, 1000, "ticks");
-      assert.equal(fx.posts(NOTICES).length, 1);
-    }, fx));
-  } finally {
-    await fx.restore();
-  }
-});
-
-test("a child reports with a live service, lists it, and receives its ending notice", async () => {
-  const fx = makeFixture();
-  try {
-    asChild(fx);
-    await child(async (s) => {
+    await child(fx, async (s, ledger) => {
       const gate = `${fx.dir}/service-gate`;
       const job = await s.tool("async_bash").execute("c", { command: gatedCommand(gate), name: "server", service: true });
-      const rows = jsonRows(await s.tool("list_async_bash").execute("l", {}));
-      assert.equal(rows[0].service, true);
+      assert.equal(jsonRows(await s.tool("list_async_bash").execute("l", {}))[0]?.service, true);
       await idleTurn(s, "server ready");
-      assert.equal(fx.posts(NOTICES)[0]?.text, "server ready");
+      assert.deepEqual(ledger.reports, ["server ready"]);
       assert.deepEqual(notices(s), []);
       writeFileSync(gate, "");
       await pollUntil(() => notices(s).length === 1);
       assert.ok(at(notices(s), 0).includes(jobId(job)));
-      assert.match(at(notices(s), 0), /exit 0/);
-      await idleTurn(s, "server ready");
-      assert.equal(fx.posts(NOTICES).length, 1);
-    }, fx);
-  } finally { await fx.restore(); }
-});
-
-test("a later turn of the same work reports again only with a new last message and no live work", async () => {
-  const fx = makeFixture();
-  try {
-    asChild(fx);
-    await child(async (s) => {
-      const gate = `${fx.dir}/service-gate`;
-      await s.tool("async_bash").execute("c", { command: gatedCommand(gate), name: "server", service: true });
-      await idleTurn(s, "Waiting for the server.");
-      assert.deepEqual(fx.posts(NOTICES).map((p) => p.text), ["Waiting for the server."]);
-      await idleTurn(s, "Waiting for the server.");
-      await idleTurn(s);
-      assert.equal(fx.posts(NOTICES).length, 1, "the same text, or no message, after a report sends nothing");
+      await s.emit("message_start", { message: { role: "user", content: "more" } });
       const build = await s.tool("async_bash").execute("c", { command: gatedCommand(`${fx.dir}/build-gate`), name: "build" });
       await idleTurn(s, "Building.");
-      assert.equal(fx.posts(NOTICES).length, 1, "a live run holds a later report");
+      assert.deepEqual(ledger.reports, ["server ready"], "a live run holds the report");
       await s.tool("stop_async_bash").execute("c", { job: jobId(build) });
       await pollUntil(async () => !jsonRows(await s.tool("list_async_bash").execute("l", {})).some((row) => row.job === jobId(build) && row.state !== "ended"));
       await idleTurn(s, "The real result.");
-      assert.deepEqual(fx.posts(NOTICES).map((p) => p.text), ["Waiting for the server.", "The real result."]);
-      assert.deepEqual(entriesOf(s, "koa.report").map((r) => r.text), ["Waiting for the server.", "The real result."]);
-    }, fx);
+      assert.deepEqual(ledger.reports, ["server ready", "The real result."]);
+    });
   } finally { await fx.restore(); }
 });
 
-test("a child reports nothing while a bash run of its own lives or a subagent of its own owes a report", async () => {
+test("a child that owes its own parent a report holds the report until it has reported", async () => {
   const fx = makeFixture();
   try {
-    asChild(fx);
-    await child(async (s) => {
-      const job = await s.tool("async_bash").execute("c", { command: gatedCommand(`${fx.dir}/gate`), name: "build" });
-      await idleTurn(s, "waiting");
-      assert.deepEqual(fx.posts(NOTICES), [], "a live run");
-      await s.tool("stop_async_bash").execute("c", { job: jobId(job) });
-      await pollUntil(async () => !jsonRows(await s.tool("list_async_bash").execute("l", {})).some((row) => row.job === jobId(job) && row.state !== "ended"));
-      s.entries.push({ type: "custom", customType: "koa.agent", data: { role: "subagent", owner: "self-session", name: "kid", session: "kid-session", model: "m", fork: false, cwd: "/tmp", pane: { instance: "a".repeat(32), pane: "pane_5" } } });
+    await child(fx, async (s, ledger, channel) => {
+      s.entries.push({ type: "custom", customType: "koa.agent", data: { role: "subagent", owner: "self-session", name: "kid", session: "kid-session", model: "m", fork: false, cwd: "/tmp" } });
       s.entries.push({ type: "custom", customType: "koa.work", data: { owner: "self-session", child: "kid-session", at: 1 } });
-      fx.setPanes([...fx.panes(), agentPane({ pane: "pane_5", session: "kid-session", name: "kid", parent: "pane_1" })]);
+      Object.assign(channel.host, { find: (id: string) => id === "kid-session" ? stubAgent({ id }) : undefined });
       await idleTurn(s, "waiting");
-      assert.deepEqual(fx.posts(NOTICES), [], "a child that owes its report");
-      s.entries.push({ type: "custom", customType: "koa.report", data: { owner: "self-session", child: "kid-session", text: "ok", at: 2, id: "k" } });
+      assert.deepEqual(ledger.reports, []);
+      s.entries.push({ type: "custom", customType: "koa.report", data: { owner: "self-session", child: "kid-session", text: "ok", at: 2 } });
       await idleTurn(s, "all done");
-      assert.equal(fx.posts(NOTICES).length, 1);
-      assert.equal(at(fx.posts(NOTICES), 0).text, "all done");
-    }, fx);
-  } finally {
-    await fx.restore();
-  }
+      assert.deepEqual(ledger.reports, ["all done"]);
+    });
+  } finally { await fx.restore(); }
 });
 
-test("a turn that ends on an error is told once to the parent as a status notice, and an abort says nothing", async () => {
+test("an error is told once to the parent as a notice; an abort, a control turn and a stop say nothing", async () => {
   const fx = makeFixture();
   try {
-    asChild(fx);
-    await child(async (s) => {
+    await child(fx, async (s, ledger, channel) => {
       await s.emit("agent_start");
       await s.emit("agent_end", { messages: [assistant("error", undefined, "provider down")] });
       await s.emit("agent_settled", {}, { isIdle: () => true });
       await s.emit("agent_settled", {}, { isIdle: () => true });
-      const posts = fx.posts(NOTICES);
-      assert.equal(posts.length, 1);
-      assert.deepEqual({ kind: at(posts, 0).kind, text: at(posts, 0).text, data: at(posts, 0).data }, { kind: "notice", text: "subagent stopped on an error: provider down\nmessage it to retry, or stop_agent to end it", data: undefined });
+      assert.deepEqual(ledger.notes, ["subagent stopped on an error: provider down\nmessage it to retry, or stop_agent to end it"]);
       await s.emit("agent_start");
       await s.emit("agent_end", { messages: [assistant("aborted")] });
       await s.emit("agent_settled", { aborted: true }, { isIdle: () => true });
-      assert.equal(fx.posts(NOTICES).length, 1);
-      assert.deepEqual(entriesOf(s, "koa.report"), []);
-    }, fx);
-  } finally {
-    await fx.restore();
-  }
-});
-
-test("quitting owes the parent an exit notice only without a report and without a stop from outside", async () => {
-  const fx = makeFixture();
-  try {
-    asChild(fx);
-    await child(async (s) => {
-      await s.emit("session_shutdown", { reason: "quit" });
-      assert.deepEqual(fx.posts(NOTICES).map((p) => p.text), ['subagent "worker" is exiting before its first turn ran']);
-    }, fx);
-
-    asChild(fx);
-    await child(async (s) => {
-      await s.emit("agent_start");
-      await s.emit("agent_end", { messages: [assistant("error", undefined, "boom")] });
-      await s.emit("session_shutdown", { reason: "quit" });
-      assert.equal(at(fx.posts(NOTICES), -1).text, 'subagent "worker" is exiting without a report on its last work: its last turn failed: boom');
-    }, fx);
-
-    const before = fx.posts(NOTICES).length;
-    asChild(fx);
-    await child(async (s) => {
-      await s.emit("session_shutdown", { reason: "reload" });
-    }, fx);
-    asChild(fx);
-    await child(async (s) => {
-      await idleTurn(s, "done");
-      await s.emit("session_shutdown", { reason: "quit" });
-    }, fx);
-    asChild(fx);
-    await child(async (s) => {
-      fx.feed({ id: "stop-from-boss", kind: "stop" });
-      await pollUntil(() => s.shutdowns() === 1, 2000, "the stop");
-      await s.emit("session_shutdown", { reason: "quit" });
-    }, fx);
-    assert.equal(fx.posts(NOTICES).length, before + 1, "only the report of the one that reported");
-  } finally {
-    await fx.restore();
-  }
-});
-
-test("a child ends itself when its parent pane is gone, dead or held by another session; an unreadable layout is no evidence", async () => {
-  const fx = makeFixture();
-  try {
-    asChild(fx);
-    await withEnv({ KO_PARENT_POLL_MS: "10" }, () => child(async (s) => {
-      const layouts = () => fx.apiCalls().filter((call) => call.path === "/layout").length;
-      await withEnv({ KO_FAKE_LAYOUT_FAIL: "1" }, async () => {
-        const before = layouts();
-        await pollUntil(() => layouts() >= before + 3, 1000, "failing ticks");
-      });
-      assert.equal(s.shutdowns(), 0);
-      fx.setPanes([selfPane({ parent: "pane_2" }), agentPane({ pane: "pane_2", session: "boss-session", name: "boss" })]);
-      const live = layouts();
-      await pollUntil(() => layouts() >= live + 3, 1000, "ticks with a living parent");
-      assert.equal(s.shutdowns(), 0, "a living parent keeps the child");
-      fx.setPanes([selfPane({ parent: "pane_2" }), agentPane({ pane: "pane_2", session: "boss-session", name: "boss", dead: exited(0) })]);
-      await pollUntil(() => s.shutdowns() === 1, 2000, "a dead parent");
-      await new Promise((resolve) => setTimeout(resolve, 60));
-      assert.equal(s.shutdowns(), 1, "once");
-    }, fx));
-
-    fx.setPanes([selfPane({ parent: "pane_2" }), agentPane({ pane: "pane_2", session: "someone-else", name: "boss" })]);
-    await withEnv({ KO_PARENT_POLL_MS: "10" }, () => child(async (s) => {
-      await pollUntil(() => s.shutdowns() === 1, 2000, "a parent pane that another session holds");
-    }, fx));
-  } finally {
-    await fx.restore();
-  }
+      assert.equal(ledger.notes.length, 1);
+      Object.assign(channel.host.self, { stopping: true });
+      await idleTurn(s, "late words");
+      assert.deepEqual(ledger.reports, []);
+    });
+  } finally { await fx.restore(); }
 });

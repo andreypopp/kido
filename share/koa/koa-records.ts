@@ -1,4 +1,4 @@
-import type { AgentRef, AgentOutcome, JobRef, JobEnd, Inbound } from "./records.ts";
+import type { AgentRef, AgentOutcome, AgentEnd, JobRef, JobEnd, Inbound } from "./records.ts";
 
 export const ATTACHMENT_LIMITS = { files: 16, fileBytes: 64 * 1024 * 1024, chunkBytes: 768 * 1024, pendingBytes: 256 * 1024 * 1024 };
 
@@ -47,7 +47,7 @@ export type Item = { seq: number; revision: number; at: number; final: boolean }
 export type Assistant = Extract<Item, { kind: "assistant" }>;
 export type WireAssistant = Omit<Assistant, "lifecycle">;
 export type WireItem = Exclude<Item, Assistant> | WireAssistant;
-export type Pi = { type: "starting" } | { type: "switching" } | { type: "reloading" } | { type: "ready" } | { type: "failed"; at: number; message: string };
+export type Life = { type: "starting" } | { type: "ready" } | { type: "switching" } | { type: "reloading" } | { type: "failed"; at: number; message: string } | { type: "ended"; cause: AgentEnd };
 export type Dialog = { id: string; title: string; expires?: number } & (
   { method: "select"; options: string[]; timeout?: number } |
   { method: "confirm"; message: string; timeout?: number } |
@@ -56,7 +56,7 @@ export type Dialog = { id: string; title: string; expires?: number } & (
 );
 export type BashResult = { output: Text; exit?: number; cancelled: boolean; truncated: boolean; fullOutputPath?: string };
 export type Bash = { id: string; command: string; excludeFromContext: boolean; started: number } & ({ phase: 'running' | 'cancelling'; output: Text } | { phase: 'completed'; ended: number; result: BashResult });
-export type State = { compaction: 'idle' | 'running'; agents: { name: string; pane: string }[]; bash: Bash[]; working: boolean; since?: number; aborted: boolean; name: string; model?: { provider: string; id: string }; thinking?: ThinkingLevel; levels: ThinkingLevel[]; context?: { tokens: number | null; window: number; percent: number | null }; cwd: string; home: string; sessionId?: string; sessionFile?: string; queue: { steering: readonly QueuedPrompt[]; followUp: readonly QueuedPrompt[] }; dialogs: Dialog[]; statuses: Record<string, string>; editor?: { id: string; text: string }; edit?: { pane: string; editor: string }; pi: Pi };
+export type State = { compaction: 'idle' | 'running'; view: { id: string; path: { id: string; name: string }[] }; agents: { name: string; target: { type: "view"; id: string } | { type: "pane"; pane: string } }[]; bash: Bash[]; working: boolean; since?: number; aborted: boolean; name: string; model?: { provider: string; id: string }; thinking?: ThinkingLevel; levels: ThinkingLevel[]; context?: { tokens: number | null; window: number; percent: number | null }; cwd: string; home: string; sessionId?: string; sessionFile?: string; queue: { steering: readonly QueuedPrompt[]; followUp: readonly QueuedPrompt[] }; dialogs: Dialog[]; statuses: Record<string, string>; editor?: { id: string; text: string }; edit?: { pane: string; editor: string }; life: Life };
 export function pathArg(block: Block | undefined): string | undefined {
   if (block?.type !== "tool" || !["read", "edit", "write"].includes(block.name)) return;
   try { const value = JSON.parse(block.args.text); return value && typeof value.path === "string" && value.path && !/[\p{Cc}]/u.test(value.path) ? value.path : undefined; } catch { return; }

@@ -3,7 +3,7 @@ declare global {
 }
 
 let lightbox: { view: HTMLDivElement; target: HTMLElement; onChange: () => void } | undefined;
-function closeLightbox(): boolean {
+export function closeLightbox(): boolean {
   if (!lightbox) return false;
   const { view, target, onChange } = lightbox; lightbox = undefined; view.remove(); if (target.isConnected) target.focus(); else window.composer.focus(); onChange(); return true;
 }

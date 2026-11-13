@@ -313,10 +313,9 @@ for (const reason of ["quit", "new", "resume", "fork", "reload"]) {
       if (reason === "reload") {
         assert.equal(jobRegistry(), owner);
         assert.equal(rowWhere(await list(s), "job", jobId(result)).state, "running");
-        assert.equal(owner.owner, null);
       } else {
-        assert.equal(jobRegistry(), undefined);
-        assert.deepEqual(await list(s), []);
+        assert.equal(jobRegistry(), owner);
+        assert.deepEqual((await list(s)).map((row) => row.state), ["ended"]);
         await pollUntil(() => processGone(gate));
       }
       assert.deepEqual(notices(s), []);

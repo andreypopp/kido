@@ -10,6 +10,7 @@ export const modelId = "fake-model";
 export const apiKey = "koa-test-key";
 
 export type Reply = {
+  when?: string;
   reasoning?: string;
   text?: string;
   tools?: { name: string; args: object; pieces?: number }[];
@@ -41,6 +42,11 @@ export async function startProvider(script: Reply[], deadlineMs = 10000, accepte
     g.waiters.push(() => { clearTimeout(timer); resolve(); });
   });
   let next = 0;
+  const used = new Set<number>();
+  const lastUser = (body: Request["body"]): string => {
+    const content = body.messages.filter(message => message.role === "user").at(-1)?.content;
+    return typeof content === "string" ? content : Array.isArray(content) ? content.filter(isPart).map(part => part.text ?? "").join("") : "";
+  };
   const sockets = new Set<import("node:net").Socket>();
   const reject = (response: ServerResponse, status: number, message: string) => {
     violations.push(message);
@@ -55,8 +61,12 @@ export async function startProvider(script: Reply[], deadlineMs = 10000, accepte
     if (request.headers.authorization !== `Bearer ${apiKey}`) return reject(response, 401, `unexpected authorization ${request.headers.authorization}`);
     const entry: Request = { body: JSON.parse(await read(request)), aborted: false };
     if (!accepted.includes(entry.body.model)) return reject(response, 400, `unexpected model ${entry.body.model}`);
-    const step = script[next++];
-    if (!step) return reject(response, 500, `unexpected request ${next}: the script has ${script.length} replies`);
+    const wanted = lastUser(entry.body);
+    const index = script.findIndex((reply, at) => !used.has(at) && (reply.when === undefined || wanted.includes(reply.when)));
+    const step = script[index];
+    if (!step) return reject(response, 500, `unexpected request ${next + 1} (${wanted.slice(0, 60)}): no unused reply of the script of ${script.length} matches`);
+    used.add(index);
+    next++;
     requests.push(entry);
     response.on("close", () => { if (!response.writableEnded) entry.aborted = true; });
     try {

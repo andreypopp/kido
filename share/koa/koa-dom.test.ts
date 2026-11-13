@@ -89,15 +89,15 @@ async function page() {
   const attachSource = stripTypeScriptTypes(await readFile(new URL('page/attach.ts', import.meta.url), 'utf8')).replace(/^import .*;\n/gm, '').replace(/^export /gm, '');
   const httpSource = stripTypeScriptTypes(await readFile(new URL('page/http.ts', import.meta.url), 'utf8')).replace(/^import .*;\n/gm, '').replace(/^export /gm, '');
   const previewSource = stripTypeScriptTypes(await readFile(new URL('page/preview.ts', import.meta.url), 'utf8')).replace(/^export /gm, '');
-  Object.assign(context, runInNewContext(previewSource + '\n({preview,previewKey})', context));
-  Object.assign(context, { fetchJSON: runInNewContext(httpSource + '\nfetchJSON', context), attach: runInNewContext(attachSource + '\nattach', context) });
+  Object.assign(context, runInNewContext(previewSource + '\n({preview,previewKey,closeLightbox})', context));
+  Object.assign(context, { ...runInNewContext(httpSource + '\n({fetchJSON,scoped})', context), attach: runInNewContext(attachSource + '\nattach', context) });
   const body = source.replace(/^import .*;\n/gm, "").replace(/^setInterval\([\s\S]*$/m, "");
   return { repl: (): ((code: string) => unknown) => runInNewContext("(() => {\n" + body + "\nreturn code => eval(code);\n})()", context), context, elements, listeners, windowListeners, completionResets: () => completionResets, handlers: () => handlers, prompt: () => prompt, text: () => text(), run: (code: string) => runInNewContext("{\n" + body + "\n" + code + "\n}", context) };
 }
 
 test('Tab outside the composer returns focus without changing dialog keys', async () => {
   const app = await page();
-  app.run("state={...state,pi:{type:'ready'}};document.body.focus()");
+  app.run("state={...state,life:{type:'ready'}};document.body.focus()");
   for (const shiftKey of [false, true]) {
     let prevented = false;
     app.listeners.get('keydown')?.({ key: 'Tab', shiftKey, target: app.context.document.body, preventDefault() { prevented = true; } });
@@ -155,7 +155,7 @@ test('bang composer mode and live command render without blocking agent controls
   let clock = 4000;
   Object.assign(fixture.context, { Date: class extends Date { constructor(value: string | number = clock) { super(value); } static now() { return clock; } } });
   const tick = fixture.run(`
-    state={...state,pi:{type:'ready'}};
+    state={...state,life:{type:'ready'}};
     editor.setText('!!echo hi');
     if (!element('field').classList.contains('bash-mode')) throw Error('missing bang font');
     if (element('status').textContent !== 'run, quiet') throw Error('missing quiet mode');
@@ -181,7 +181,7 @@ test('bang attachments stay in the draft and new file drops are refused', async 
   t.mock.timers.enable({ apis: ['setTimeout'] });
   const app = await page();
   const leave = app.run(`
-    state={...state,pi:{type:'ready'}};
+    state={...state,life:{type:'ready'}};
     draft.restore([{id:'keep',name:'notes.md',path:'/tmp/notes.md',origin:'path',kind:'file',mimeType:'text/markdown',size:1}]);
     editor.setText('!echo hi');
     if (canSend(editor.text()) || draft.count!==1) throw Error('attachment was sent or removed');
@@ -202,7 +202,7 @@ test('bang attachments stay in the draft and new file drops are refused', async 
 test('Escape cancels a command before taking back and aborting a concurrent turn', async () => {
   const app = await page(), requests: string[] = [];
   app.context.fetch = async (path?: string) => { requests.push(path ?? ''); return { ok: true, json: async () => ({ steering: [], followUp: [] }) }; };
-  const cancelling = app.run(`state={...state,pi:{type:'ready'},working:true,bash:[{id:'run',phase:'running',command:'echo',excludeFromContext:false,started:1,output:{text:'',cut:0}}]};(()=>{state.bash[0].phase='cancelling'})`);
+  const cancelling = app.run(`state={...state,life:{type:'ready'},working:true,bash:[{id:'run',phase:'running',command:'echo',excludeFromContext:false,started:1,output:{text:'',cut:0}}]};(()=>{state.bash[0].phase='cancelling'})`);
   const escape = () => app.listeners.get('keydown')?.({ key: 'Escape', target: app.prompt(), preventDefault() {} });
   escape(); await new Promise<void>(resolve => setImmediate(resolve));
   assert.deepEqual(requests, ['/abort']);
@@ -226,7 +226,7 @@ test('prompt history restores the draft selection and exits after an edit', asyn
 test('built-in results keep attachments and open the requested picker', async () => {
   const f = await page();
   const result = await f.run(`
-    state={...state,pi:{type:'ready'},levels:['low','high']};
+    state={...state,life:{type:'ready'},levels:['low','high']};
     draft.restore([{id:'file',name:'notes',path:'/tmp/notes',size:2,kind:'file',origin:'path'}]);
     editor.setText('/thinking');
     fetchJSON=async()=>({disposition:'handled',action:{type:'picker',kind:'thinking',search:''}});
@@ -238,7 +238,7 @@ test('built-in results keep attachments and open the requested picker', async ()
 test('a reload action blocks the composer and keeps its text through a lost stream', async () => {
   const f = await page();
   const result = await f.run(`
-    state={...state,pi:{type:'ready'}};
+    state={...state,life:{type:'ready'}};
     editor.setText('/reload');fetchJSON=async()=>({disposition:'handled',action:{type:'reload'}});
     send().then(()=>[element('error').textContent,element('field').inert]);
   `);
@@ -263,7 +263,7 @@ test('a reload record reloads the page', async () => {
 test('take-back shortcut shares one in-flight request and never aborts', async () => {
   const f = await page();
   const result = await f.run(`
-    state={...state,pi:{type:'ready'}}; editor.setText('draft');
+    state={...state,life:{type:'ready'}}; editor.setText('draft');
     const paths=[];let release;
     fetchJSON=path=>{paths.push(path);return new Promise(resolve=>{release=resolve})};
     const requestOne=takeBack(),requestTwo=takeBack();
@@ -276,7 +276,7 @@ test('take-back shortcut shares one in-flight request and never aborts', async (
 test('an extension-handled prompt retains its attachments with a none action', async () => {
   const f = await page();
   const result = await f.run(`
-    state={...state,pi:{type:'ready'}};
+    state={...state,life:{type:'ready'}};
     draft.restore([{id:'file',name:'notes',path:'/tmp/notes',size:2,kind:'file',origin:'path'}]);
     editor.setText('/custom');fetchJSON=async()=>({disposition:'handled',action:{type:'none'}});
     send().then(()=>[draft.count,editor.text(),element('error').textContent]);
@@ -287,7 +287,7 @@ test('an extension-handled prompt retains its attachments with a none action', a
 test('Return during compaction keeps the draft and attachments without a request', async () => {
   const f = await page();
   const result = await f.run(`
-    state={...state,pi:{type:'ready'},working:true,compaction:'running'};
+    state={...state,life:{type:'ready'},working:true,compaction:'running'};
     draft.restore([{id:'file',name:'notes',path:'/tmp/notes',size:2,kind:'file',origin:'path'}]);
     editor.setText('keep this draft'); let calls=0;fetchJSON=async()=>{calls++;return {}};
     refreshComposer();send().then(()=>[calls,editor.text(),draft.count]);
@@ -299,7 +299,7 @@ test('Return during compaction keeps the draft and attachments without a request
 test('Escape aborts compaction after the slash command has returned', async () => {
   const f = await page();
   const result = await f.run(`
-    state={...state,pi:{type:'ready'}};editor.setText('/compact');const requests=[];
+    state={...state,life:{type:'ready'}};editor.setText('/compact');const requests=[];
     fetchJSON=async path=>{requests.push(path);return path==='/prompt'?{disposition:'handled',action:{type:'none'}}:path==='/queue/clear'?{steering:[],followUp:[]}:{}};
     send().then(async()=>{state={...state,working:true,compaction:'running'};await stop();return requests.join(',')});
   `);
@@ -330,7 +330,7 @@ test('command results use notice lines and expandable session information', asyn
 test('session picker filters locally and keeps the draft on a switch', async () => {
   const fixture = await page();
   const result = await fixture.run(`(async()=>{
-    state={...state,pi:{type:'ready'},sessionId:'old'};
+    state={...state,life:{type:'ready'},sessionId:'old'};
     editor.setText('keep my draft');
     const calls=[];
     fetchJSON=async(path,body)=>{calls.push([path,body]);return path==='/sessions/list'?{rows:[{id:'one',path:'/tmp/one',cwd:'/work/a',name:'First',firstMessage:'hello',modified:1,messageCount:2},{id:'two',path:'/tmp/two',cwd:'/work/b',firstMessage:'other',modified:2,messageCount:1}]}:{};};
@@ -351,7 +351,7 @@ test('resume consumes only command text and confirms before aborting a turn', as
   const app = await page();
   const requests: string[] = [];
   app.context.fetch = async (path?: string) => { requests.push(path ?? ''); return { ok: true, json: async () => path === '/prompt' ? { disposition: 'handled', action: { type: 'session', kind: 'resume' } } : path === '/sessions/list' ? { rows: [] } : {} }; };
-  const saved = app.run("state={...state,pi:{type:'ready'},working:true};draft.restore([{id:'draft',name:'note',path:'/tmp/note',size:1,origin:'upload',kind:'file'}]);editor.setText('/resume');void send();({files:()=>draft.files})");
+  const saved = app.run("state={...state,life:{type:'ready'},working:true};draft.restore([{id:'draft',name:'note',path:'/tmp/note',size:1,origin:'upload',kind:'file'}]);editor.setText('/resume');void send();({files:()=>draft.files})");
   await new Promise<void>(resolve => setImmediate(resolve));
   assert.equal(app.text(), '');
   assert.deepEqual(requests, ['/prompt']);
@@ -367,7 +367,7 @@ test('session confirmation cancels commands and concurrent turns before opening 
   for (const working of [false, true]) {
     const app = await page(), requests: string[] = [];
     app.context.fetch = async (path?: string) => { requests.push(path ?? ''); return { ok: true, json: async () => ({ rows: [] }) }; };
-    app.run(`state={...state,pi:{type:'ready'},working:${working},bash:[{id:'run',phase:'running',command:'echo hi',excludeFromContext:false,started:1,output:{text:'',cut:0}}]};void sessionCommand('resume')`);
+    app.run(`state={...state,life:{type:'ready'},working:${working},bash:[{id:'run',phase:'running',command:'echo hi',excludeFromContext:false,started:1,output:{text:'',cut:0}}]};void sessionCommand('resume')`);
     const card = app.elements.get('session-picker')?.children[0];
     assert.equal(card?.children[1].textContent, working ? 'koa is working on a turn; it will be aborted.' : 'a command is running; it will be cancelled.');
     assert.deepEqual(requests, []);
@@ -380,7 +380,7 @@ test('session confirmation cancels commands and concurrent turns before opening 
 test('session scope loading has no stale choices and cached scopes do not rescan', async () => {
   const app = await page();
   const result = await app.run(`(async()=>{
-    state={...state,pi:{type:'ready'},sessionId:'old'};
+    state={...state,life:{type:'ready'},sessionId:'old'};
     const calls=[];let release;
     fetchJSON=async(path,body)=>{calls.push(path);if(calls.length===1)return {rows:[{id:'one',path:'/tmp/one',cwd:'/work',firstMessage:'keep one',modified:2,messageCount:1},{id:'two',path:'/tmp/two',cwd:'/work',firstMessage:'keep two',modified:1,messageCount:1}]};return new Promise(resolve=>{release=resolve})};
     await openSessions();
@@ -406,7 +406,7 @@ test('busy confirmation submits once and cancelling a held abort prevents the se
     calls.push(path ?? '');
     return new Promise<{ ok: boolean; json(): Promise<object> }>(resolve => { release = () => resolve({ ok: true, json: async () => ({}) }); });
   };
-  const saved = app.run("state={...state,pi:{type:'ready'},working:true,sessionId:'old'};void sessionCommand('new');({press:key=>sessionHost.onkeydown({key,preventDefault(){},stopPropagation(){}}),closed:()=>sessionPicker==='closed'})");
+  const saved = app.run("state={...state,life:{type:'ready'},working:true,sessionId:'old'};void sessionCommand('new');({press:key=>sessionHost.onkeydown({key,preventDefault(){},stopPropagation(){}}),closed:()=>sessionPicker==='closed'})");
   saved.press('Enter'); saved.press('Enter'); saved.press('Escape'); release();
   await new Promise<void>(resolve => setImmediate(resolve));
   assert.deepEqual(calls, ['/abort']); assert.equal(saved.closed(), true);
@@ -430,7 +430,7 @@ test('annotation map attaches a late reply, hides items and re-renders final tex
 test('/name keeps draft attachments for the next prompt', async () => {
   const app = await page(), requests: { text: string; attachments: string[] }[] = [];
   app.context.fetch = async (path?: string, options?: { body?: string }) => { assert.equal(path, '/prompt'); requests.push(JSON.parse(options?.body ?? '{}')); return { ok: true, json: async () => requests.length === 1 ? ({ disposition: 'handled', action: { type: 'none' } }) : ({ disposition: 'started' }) }; };
-  app.run("state={...state,pi:{type:'ready'}};draft.restore([{id:'file',name:'note.txt',path:'/tmp/note.txt',origin:'path',kind:'file',size:4}]);editor.setText('/name saved')");
+  app.run("state={...state,life:{type:'ready'}};draft.restore([{id:'file',name:'note.txt',path:'/tmp/note.txt',origin:'path',kind:'file',size:4}]);editor.setText('/name saved')");
   app.handlers()?.send('prompt'); await new Promise<void>(resolve => setImmediate(resolve));
   assert.equal(app.elements.get('attachments')?.children.length, 2); assert.equal(app.text(), '');
   const prompt = app.prompt(); assert.ok(prompt); prompt.value = 'Review';
@@ -461,7 +461,7 @@ test("native drops install ready records without path requests", async () => {
     requests.push(path ?? '');
     assert.equal(path, '/attachments/one/delete'); return { ok: true, json: async () => ({}) };
   };
-  app.run("state={...state,pi:{type:'ready'}};refreshComposer();editor.setText('draft')");
+  app.run("state={...state,life:{type:'ready'}};refreshComposer();editor.setText('draft')");
   const drop = (detail: unknown) => app.windowListeners.get('ko-drop')?.(new app.context.CustomEvent('ko-drop', { detail }));
   for (const files of [['relative'], ['/tmp/bad\nname'], Array(17).fill('/tmp/one.txt')]) drop({ files, refused: false });
   assert.equal(requests.length, 0);
@@ -486,7 +486,7 @@ test("native drops install ready records without path requests", async () => {
 
 test("file drops attach bytes without inserting text and send their ids", async () => {
   const app = await page();
-  app.run("state={...state,pi:{type:'ready'}};refreshComposer();editor.setText('draft')");
+  app.run("state={...state,life:{type:'ready'}};refreshComposer();editor.setText('draft')");
   assert.equal(typeof app.listeners.get('drop'), 'function');
   const requests: { path: string; body: unknown }[] = [];
   let uploaded: () => void = () => {};
@@ -511,7 +511,7 @@ test("composer handlers send the selected mode and quit", async () => {
   const app = await page();
   const requests: { path: string; body: object }[] = [];
   app.context.fetch = async (path?: string, options?: { body?: string }) => { requests.push({ path: path ?? '', body: JSON.parse(options?.body ?? '{}') }); return { ok: true, json: async () => ({}) }; };
-  app.run("state={...state,pi:{type:'ready'}};refreshComposer();editor.setText('draft')");
+  app.run("state={...state,life:{type:'ready'}};refreshComposer();editor.setText('draft')");
   app.handlers()?.send('follow_up');
   await new Promise<void>(resolve => setImmediate(resolve));
   assert.deepEqual(requests, [{ path: '/prompt', body: { text: 'draft', mode: 'follow_up', attachments: [] } }]);
@@ -527,7 +527,7 @@ async function connectSource(name: string) {
 
 test("working time moves into the state cell and formats minutes", async () => {
   const app = await page();
-  assert.equal(app.run("Date.now=()=>9000;state={...state,pi:{type:'ready'},working:true,since:0};refreshComposer();const short=element('status').textContent==='working'&&element('status').children[0].textContent===' 9s'&&element('dot').className==='dot on';Date.now=()=>754000;status();short&&element('status').children.length===1&&element('status').children[0].textContent===' 12m 34s'"), true);
+  assert.equal(app.run("Date.now=()=>9000;state={...state,life:{type:'ready'},working:true,since:0};refreshComposer();const short=element('status').textContent==='working'&&element('status').children[0].textContent===' 9s'&&element('dot').className==='dot on';Date.now=()=>754000;status();short&&element('status').children.length===1&&element('status').children[0].textContent===' 12m 34s'"), true);
 });
 
 test("printable transcript keys cannot change the draft during startup", async () => {
@@ -539,10 +539,10 @@ test("printable transcript keys cannot change the draft during startup", async (
 
 test("composer gains focus when delayed pi readiness removes inert", async () => {
   const app = await page();
-  app.run("state={...state,pi:{type:'starting'}};refreshComposer();focusComposer()");
+  app.run("state={...state,life:{type:'starting'}};refreshComposer();focusComposer()");
   app.windowListeners.get('load')?.();
   assert.equal(app.context.document.activeElement, undefined);
-  app.run("state.pi={type:'ready'};refreshComposer()");
+  app.run("state.life={type:'ready'};refreshComposer()");
   assert.equal(app.context.document.activeElement, app.prompt());
 });
 
@@ -552,7 +552,7 @@ test("async send and dialog completion preserve focus while the document lacks f
     app.context.document.hasFocus = () => false;
     let release: () => void = () => {};
     app.context.fetch = async () => { await new Promise<void>(resolve => { release = resolve; }); return { ok: true, json: async () => ({}) }; };
-    const pending = action === 'send' ? app.run("state={...state,pi:{type:'ready'}};editor.setText('draft');send()") : undefined;
+    const pending = action === 'send' ? app.run("state={...state,life:{type:'ready'}};editor.setText('draft');send()") : undefined;
     if (action === 'send') { release(); await pending; }
     else if (action === 'dialog') app.run("dialogId='done';state.dialogs=[];dialogs()");
     else app.run("pickerButton=element('model');closePicker()");
@@ -564,14 +564,14 @@ test('composer focus border follows key routing, not the active element', async 
   const app = await page();
   let focused = true;
   app.context.document.hasFocus = () => focused;
-  const controls = app.run(`state={...state,pi:{type:'ready'}};refreshComposer();focusComposer();({
+  const controls = app.run(`state={...state,life:{type:'ready'}};refreshComposer();focusComposer();({
     picker(){state.levels=['off','low'];return picker('thinking')},
     working(){closePicker();state.working=true;refreshComposer()},
     dialog(method){state.dialogs=[{id:method,method,title:'Question',options:['One'],message:'Proceed?'}];refreshComposer();dialogs()},
     clear(){state.dialogs=[];document.body.focus();refreshComposer();dialogs()},
     preview(){preview('/images/0',element('model'),'image',composerFocus)},
     closePreview(){previewKey({key:'Escape',preventDefault(){},stopPropagation(){}})},
-    exit(){state.pi={type:'failed',at:1,message:''};refreshComposer();exited()}
+    exit(){state.life={type:'failed',at:1,message:''};refreshComposer();exited()}
   })`);
   const field = app.elements.get('field'); assert.ok(field);
   const border = () => field.classList.contains('focus');
@@ -614,7 +614,7 @@ test("composer waits for document focus at startup and load", async () => {
   const app = await page();
   let focused = false;
   app.context.document.hasFocus = () => focused;
-  app.run("state={...state,pi:{type:'ready'}};refreshComposer();focusComposer()");
+  app.run("state={...state,life:{type:'ready'}};refreshComposer();focusComposer()");
   assert.equal(app.context.document.activeElement, undefined);
   app.windowListeners.get('load')?.();
   assert.equal(app.context.document.activeElement, undefined);
@@ -625,7 +625,7 @@ test("composer waits for document focus at startup and load", async () => {
 
 test("pane focus selects the composer without taking page controls or dialog fields", async () => {
   const app = await page();
-  app.run("state={...state,pi:{type:'ready'},dialogs:[]};element('model').tagName='BUTTON';editor.focus()");
+  app.run("state={...state,life:{type:'ready'},dialogs:[]};element('model').tagName='BUTTON';editor.focus()");
   app.context.document.activeElement = undefined;
   app.windowListeners.get('focus')?.();
   assert.equal(app.context.document.activeElement, app.prompt());
@@ -649,7 +649,7 @@ test("pane focus selects the composer without taking page controls or dialog fie
 
 test("printable transcript keys reach the composer but native shortcuts and fields keep their keys", async () => {
   const app = await page();
-  app.run("state={...state,pi:{type:'ready'},dialogs:[]}");
+  app.run("state={...state,life:{type:'ready'},dialogs:[]}");
   const target = app.context.document.createElement('div');
   let prevented = 0;
   const key = (extra = {}) => app.listeners.get('keydown')?.({ key: 'z', target, preventDefault() { prevented++; }, ...extra });
@@ -677,7 +677,7 @@ test("printable transcript keys reach the composer but native shortcuts and fiel
 
 test("Space on a fold control toggles once without typing or losing focus", async () => {
   const app = await page();
-  const { view, line } = app.run("state={...state,pi:{type:'ready'},dialogs:[]};const view=node('div'),line=node('div');fold(view,'fold',line,node('div'));line.focus();({view,line})");
+  const { view, line } = app.run("state={...state,life:{type:'ready'},dialogs:[]};const view=node('div'),line=node('div');fold(view,'fold',line,node('div'));line.focus();({view,line})");
   const event = { key: ' ', target: line, defaultPrevented: false, preventDefault() { this.defaultPrevented = true; } };
   line.onkeydown(event);
   app.listeners.get('keydown')?.(event);
@@ -694,7 +694,7 @@ test("an open picker keeps letters and window focus and still handles Enter and 
     const app = await page();
     const requests: string[] = [];
     app.context.fetch = async (path?: string) => { requests.push(path ?? ''); return { ok: true, json: async () => ({}) }; };
-    await app.run("state={...state,pi:{type:'ready'},dialogs:[],levels:['off','low'],thinking:'off'};picker('thinking')");
+    await app.run("state={...state,life:{type:'ready'},dialogs:[],levels:['off','low'],thinking:'off'};picker('thinking')");
     const host = app.elements.get('picker');
     assert.ok(host);
     app.listeners.get('keydown')?.({ key: 'z', target: host, preventDefault() {} });
@@ -894,7 +894,7 @@ test("model picker matches provider and id", async () => {
   const app = await page();
   const selected: object[] = [];
   app.context.fetch = async (_path?: string, options?: {body?: string}) => { if (options?.body) selected.push(JSON.parse(options.body)); return {ok:true,json:async()=>({models:[{id:'same',provider:'one'},{id:'same',provider:'two'}]})}; };
-  const result = await app.run("state={...state,pi:{type:'ready'},model:{id:'same',provider:'two'}};picker('model').then(()=>{const host=element('picker');const ticks=host.children.filter(child=>child.classList.contains('row')).map(row=>row.children[0].textContent).join(',');host.onkeydown({key:'Enter',preventDefault(){},stopPropagation(){}});return ticks})");
+  const result = await app.run("state={...state,life:{type:'ready'},model:{id:'same',provider:'two'}};picker('model').then(()=>{const host=element('picker');const ticks=host.children.filter(child=>child.classList.contains('row')).map(row=>row.children[0].textContent).join(',');host.onkeydown({key:'Enter',preventDefault(){},stopPropagation(){}});return ticks})");
   assert.equal(result, ',✓');
   assert.deepEqual(selected, [{provider:'two',modelId:'same'}]);
 });
@@ -912,7 +912,7 @@ test("Escape takes back queued work before aborting", { timeout: 1000 }, async (
     else throw Error("Unexpected request: " + path);
     return { ok: true, json: async () => data };
   };
-  app.run("state={...state,pi:{type:'ready'},working:true,dialogs:[],queue:{steering:[{text:'first queued',attachments:[]}],followUp:[{text:'second queued',attachments:[]}]}}");
+  app.run("state={...state,life:{type:'ready'},working:true,dialogs:[],queue:{steering:[{text:'first queued',attachments:[]}],followUp:[{text:'second queued',attachments:[]}]}}");
   app.listeners.get("keydown")?.({ key: "Escape", preventDefault() {} });
   await done;
   assert.deepEqual(commands, ["clear_queue", "abort"]);
@@ -922,7 +922,7 @@ test("Escape takes back queued work before aborting", { timeout: 1000 }, async (
 
 test("editor acknowledgment keeps the second Escape clear action", async () => {
   const app = await page();
-  const control = app.run("state={...state,pi:{type:'ready'}};refreshComposer();editor.setText('draft');({ack:()=>apply({...state,type:'state',editor:{id:'one',text:'replacement'}}),escaped:()=>escaped})");
+  const control = app.run("state={...state,life:{type:'ready'}};refreshComposer();editor.setText('draft');({ack:()=>apply({...state,type:'state',editor:{id:'one',text:'replacement'}}),escaped:()=>escaped})");
   const escape = () => app.listeners.get('keydown')?.({ key: 'Escape', target: app.prompt(), preventDefault() {} });
   escape();
   control.ack();
@@ -948,7 +948,7 @@ test("a held prompt response prevents duplicate draft submissions", async () => 
 
 test("a startup dialog is visible with an inert composer", async () => {
   const app = await page();
-  assert.equal(app.run("status=()=>{};apply({type:'state',bash:[],pi:{type:'starting'},dialogs:[{id:'trust',method:'select',title:'Trust project?',options:['Yes','No']}],queue:{steering:[],followUp:[]}});!element('composer').hidden&&element('field').inert&&element('dialogs').children[0].className==='dialog'"), true);
+  assert.equal(app.run("status=()=>{};apply({type:'state',view:{id:'v',path:[]},bash:[],life:{type:'starting'},dialogs:[{id:'trust',method:'select',title:'Trust project?',options:['Yes','No']}],queue:{steering:[],followUp:[]}});!element('composer').hidden&&element('field').inert&&element('dialogs').children[0].className==='dialog'"), true);
 });
 
 test("a state record preserves a typed dialog answer", async () => {
@@ -960,7 +960,7 @@ test("a queued block's × removes that entry only and leaves the draft alone", a
   const app = await page();
   const requests: { path: string; body: unknown }[] = [];
   app.context.fetch = async (path?: string, options?: { body?: string }) => { requests.push({ path: path ?? '', body: JSON.parse(options?.body ?? '{}') }); return { ok: true, json: async () => ({}) }; };
-  app.run("status=()=>{};dialogs=()=>{};exited=()=>{};editor.setText('draft');apply({...state,type:'state',sessionId:'s1',pi:{type:'ready'},queue:{steering:[{text:'a',attachments:[]},{text:'b',attachments:[]}],followUp:[{text:'c',attachments:[]}]}})");
+  app.run("status=()=>{};dialogs=()=>{};exited=()=>{};editor.setText('draft');apply({...state,type:'state',sessionId:'s1',life:{type:'ready'},queue:{steering:[{text:'a',attachments:[]},{text:'b',attachments:[]}],followUp:[{text:'c',attachments:[]}]}})");
   assert.deepEqual(app.run("element('queue').children.map(row=>row.dataset.kind+':'+row.children[1].textContent)"), ['steer:steer', 'steer:steer', 'follow-up:follow-up']);
   assert.deepEqual(JSON.parse(String(app.run("apply({...state,type:'state',queue:{steering:[{text:'**bold** first\\nsecond',attachments:[{id:'a',kind:'file'},{id:'b',kind:'file'}]}],followUp:[]}});const row=element('queue').children[0];JSON.stringify([row.children.map(c=>c.className),row.children[0].textContent,row.children[1].children.at(-1).textContent])"))), [['t', 'att', 'kind', 'attach-remove'], 'bold first', '2']);
   app.run("apply({...state,type:'state',sessionId:'s1',queue:{steering:[{text:'a',attachments:[]},{text:'b',attachments:[]}],followUp:[{text:'c',attachments:[]}]}})");
@@ -988,7 +988,7 @@ test('a dock that grows or shrinks keeps a bottom view at the bottom and a scrol
 test('a remove that leaves unsent entries puts them into the draft and reports the error', async () => {
   const app = await page();
   app.context.fetch = async () => ({ ok: false, json: async () => ({ error: 'refused', unsent: { steering: [{ text: 'first', attachments: [] }], followUp: [{ text: 'later', attachments: [] }] } }) });
-  app.run("status=()=>{};dialogs=()=>{};exited=()=>{};editor.setText('draft');apply({...state,type:'state',sessionId:'s1',pi:{type:'ready'},queue:{steering:[{text:'x',attachments:[]}],followUp:[]}});element('queue').children[0].children.at(-1).onclick()");
+  app.run("status=()=>{};dialogs=()=>{};exited=()=>{};editor.setText('draft');apply({...state,type:'state',sessionId:'s1',life:{type:'ready'},queue:{steering:[{text:'x',attachments:[]}],followUp:[]}});element('queue').children[0].children.at(-1).onclick()");
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(app.text(), 'draft\n\nfirst\n\nlater');
   assert.equal(app.run("element('error').textContent"), 'refused');
@@ -998,7 +998,7 @@ test("unchanged state keeps queue controls and status nodes and acknowledges edi
   const app = await page();
   const requests: string[] = [];
   app.context.fetch = async (path?: string) => { requests.push(path ?? ''); return {ok:true,json:async()=>({})}; };
-  assert.equal(app.run("status=()=>{};dialogs=()=>{};exited=()=>{};const record={...state,type:'state',pi:{type:'starting'},queue:{steering:[{text:'queued',attachments:[]}],followUp:[]},statuses:{tests:'ok'},editor:{id:'one',text:'draft'}};apply(record);const deferred=editorId===undefined;record.pi={type:'ready'};apply(record);const back=element('queue').children[0].children.at(-1);apply({...record});deferred&&back===element('queue').children[0].children.at(-1)&&back.title==='Remove from the queue'&&element('queue').children[0].dataset.kind==='steer'&&element('queue').children[0].className==='qmsg user'&&element('status-extras').children.length===1"), true);
+  assert.equal(app.run("status=()=>{};dialogs=()=>{};exited=()=>{};const record={...state,type:'state',life:{type:'starting'},queue:{steering:[{text:'queued',attachments:[]}],followUp:[]},statuses:{tests:'ok'},editor:{id:'one',text:'draft'}};apply(record);const deferred=editorId===undefined;record.life={type:'ready'};apply(record);const back=element('queue').children[0].children.at(-1);apply({...record});deferred&&back===element('queue').children[0].children.at(-1)&&back.title==='Remove from the queue'&&element('queue').children[0].dataset.kind==='steer'&&element('queue').children[0].className==='qmsg user'&&element('status-extras').children.length===1"), true);
   assert.deepEqual(requests, ['/editor/ack']);
 });
 
@@ -1020,8 +1020,8 @@ test("editor dialogs leave native keys alone and submit with Control Enter", asy
 
 test("the failure card names a fresh start only without a saved session", async () => {
   const app = await page();
-  assert.equal(app.run("state={...state,pi:{type:'failed',at:0,message:'x'}};exited();element('exited').children[0].children.some(child=>child.className==='fresh'&&child.textContent.includes('fresh session'))"), true);
-  assert.equal(app.run("state={...state,sessionFile:'saved.jsonl',pi:{type:'failed',at:1,message:'x'}};exited();element('exited').children[0].children.some(child=>child.className==='fresh')"), false);
+  assert.equal(app.run("state={...state,life:{type:'failed',at:0,message:'x'}};exited();element('exited').children[0].children.some(child=>child.className==='fresh'&&child.textContent.includes('fresh session'))"), true);
+  assert.equal(app.run("state={...state,sessionFile:'saved.jsonl',life:{type:'failed',at:1,message:'x'}};exited();element('exited').children[0].children.some(child=>child.className==='fresh')"), false);
 });
 
 test("thinking and aborted steps use live times without inventing replay times", async () => {
@@ -1255,7 +1255,7 @@ test("failed and aborted runs keep their outcomes", async () => {
 
 test('a pointer on the active picker trigger child keeps it open until the click toggles it', async () => {
   const app = await page();
-  app.run("state.pi={type:'ready'};const trigger=element('model'),child=node('span','model');trigger.append(child);pickerButton=trigger;element('picker').hidden=false");
+  app.run("state.life={type:'ready'};const trigger=element('model'),child=node('span','model');trigger.append(child);pickerButton=trigger;element('picker').hidden=false");
   app.listeners.get('pointerdown')?.({ target: app.elements.get('model')?.children[0] });
   assert.equal(app.elements.get('picker')?.hidden, false);
   app.elements.get('model')?.onclick?.();
@@ -1342,7 +1342,7 @@ test('agent cards split runs and toggle their one-line body without success meta
 test('agent names link to live agents, a gone name is plain, a click focuses the pane and keeps the line closed', async () => {
   const app = await page();
   const names = Array.from(app.run(`(()=>{
-    state={...state,agents:[{name:'worker',pane:'p7'}]};
+    state={...state,agents:[{name:'worker',target:{type:'pane',pane:'p7'}}]};
     const card=name=>({direction:'out',to:{name},text:{text:'Hello',cut:0},call:{tool:'message',mode:'message'}});
     const live=agentCard(card('worker'),0,'a',new Map()), gone=agentCard(card('ghost'),0,'b',new Map());
     const link=live.children[0].children[0].children[1], ended=gone.children[0].children[0].children[1];
@@ -1354,7 +1354,7 @@ test('agent names link to live agents, a gone name is plain, a click focuses the
   const ko: { focus?: (pane: string) => void } = { focus: pane => { focused.push(pane); } }; app.context.window.ko = ko;
   let prevented = false;
   const target = app.run(`window.testLink`);
-  app.run(`state={...state,agents:[{name:'worker',pane:'p7'}]}`);
+  app.run(`state={...state,agents:[{name:'worker',target:{type:'pane',pane:'p7'}}]}`);
   app.listeners.get('click')?.({ target, preventDefault() { prevented = true; } });
   assert.deepEqual(focused, ['p7']);
   assert.equal(prevented, true);
@@ -1368,11 +1368,11 @@ test('prose links only live agent names outside code and links, and a membership
   const app = await page(), html: string[] = [];
   const create = app.context.document.createElement;
   app.context.document.createElement = tag => { const node = create(tag); if (tag === 'template') Object.defineProperty(node, 'innerHTML', { set(value: string) { html.push(value); } }); return node; };
-  app.run(`state={...state,agents:[{name:'sidebar',pane:'p1'},{name:'sidebar-right',pane:'p2'}]};prose(undefined,'Ask @sidebar-right and @sidebar, not @nobody or me@sidebar; \`@sidebar\` and [@sidebar](https://x.test)',true)`);
-  const who = (name: string) => `<a class="who" href="#pane:${name}" title="Focus the pane of @${name}">@${name}</a>`;
-  assert.equal(html.join(''), `<p>Ask ${who('sidebar-right')} and ${who('sidebar')}, not @nobody or me@sidebar; <code>@sidebar</code> and <a href="https://x.test">@sidebar</a></p>\n`);
+  app.run(`state={...state,agents:[{name:'sidebar',target:{type:'pane',pane:'p1'}},{name:'sidebar-right',target:{type:'pane',pane:'p2'}}]};prose(undefined,'Ask @sidebar-right and @sidebar, not @nobody or me@sidebar; \`@sidebar\` and [@sidebar](https://x.test)',true)`);
+  const who = (name: string, pane: string) => `<a class="who" href="#pane:${name}" data-pane="${pane}" title="Focus the pane of @${name}">@${name}</a>`;
+  assert.equal(html.join(''), `<p>Ask ${who('sidebar-right', 'p2')} and ${who('sidebar', 'p1')}, not @nobody or me@sidebar; <code>@sidebar</code> and <a href="https://x.test">@sidebar</a></p>\n`);
   assert.deepEqual(Array.from(app.run(`(()=>{
-    state={...state,agents:[{name:'sidebar',pane:'p1'}]};
+    state={...state,agents:[{name:'sidebar',target:{type:'pane',pane:'p1'}}]};
     const slots=new Map(),view=agentCard({direction:'out',to:{name:'sidebar'},text:{text:'x',cut:0},call:{tool:'message',mode:'message'}},0,'k',slots);
     const before=view.children[0].children[0].children[1].className;
     views.set(0,{view,item:{},slots});
@@ -1393,7 +1393,6 @@ test('agent card header phrases preserve kinds, directions, relations and failur
     [outgoing({ tool: 'message', mode: 'interrupt-and-steer' }), 'interrupt to @worker', false],
     [incoming({ form: 'steer' }), 'steer from @worker', false],
     [incoming({ form: 'report' }), 'report from @worker', false],
-    [incoming({ form: 'ended', reported: true }), 'ended from @worker', false],
     [incoming({ form: 'notice' }), 'notice from @worker', false],
     [incoming({ form: 'message', relation: 'child' }), 'message from @worker subagent', false],
     [incoming({ form: 'message', relation: 'descendant' }), 'message from @worker subagent', false],
@@ -1402,7 +1401,6 @@ test('agent card header phrases preserve kinds, directions, relations and failur
     [incoming({ form: 'message', relation: 'sibling_descendant' }), 'message from @worker peer', false],
     [incoming({ form: 'steer', relation: 'parent' }), 'steer from @worker parent', false],
     [incoming({ form: 'report', relation: 'child' }), 'report from @worker subagent', false],
-    [incoming({ form: 'ended', reported: false, relation: 'child' }), 'not reported from @worker subagent', true],
     [outgoing({ tool: 'spawn', fork: false }, { ok: false, failure: 'error', message: 'Cannot start' }), 'refused to @worker', true],
     [outgoing({ tool: 'message', mode: 'message' }, { ok: false, failure: 'refused', message: 'Refused' }), 'refused to @worker', true],
     [outgoing({ tool: 'message', mode: 'message' }, { ok: false, failure: 'gone', message: 'Gone' }), 'gone to @worker', true],
@@ -1428,7 +1426,7 @@ test('step previews require exactly Shift-Command and a stationary press', async
 test('browser lightbox Escape closes before abort and keeps the draft', async () => {
   const app = await page();
   const requests: string[] = []; app.context.fetch = async (path?: string) => { requests.push(path ?? ''); return { ok: true, json: async () => ({}) }; };
-  assert.equal(app.run(`(()=>{state.pi={type:'ready'};state.working=true;editor.setText('draft');const target=node('button');preview('/images/0',target,'image',composerFocus);return document.body.children[0].className==='lightbox'})()`), true);
+  assert.equal(app.run(`(()=>{state.life={type:'ready'};state.working=true;editor.setText('draft');const target=node('button');preview('/images/0',target,'image',composerFocus);return document.body.children[0].className==='lightbox'})()`), true);
   let prevented = false;
   app.listeners.get('keydown')?.({ key: 'Escape', preventDefault() { prevented = true; }, stopPropagation() {} });
   assert.equal(prevented, true); assert.equal(app.context.document.body.children.length, 0); assert.equal(app.text(), 'draft');
@@ -1478,7 +1476,7 @@ test('C-g sends the draft to the editor route and focuses the float, and a refus
   app.run("window.ko.focus = pane => { focused.push(pane); }");
   let refuse = false;
   app.context.fetch = async (path?: string, init?: { body: string }) => { requests.push({ path: path ?? '', body: JSON.parse(init?.body ?? '') }); return refuse ? { ok: false, json: async () => ({ error: 'C-g needs a ko pane' }) } : { ok: true, json: async () => ({ pane: 'pane_10' }) }; };
-  app.run("state={...state,pi:{type:'ready'},sessionId:'s1'};editor.setText('draft')");
+  app.run("state={...state,life:{type:'ready'},sessionId:'s1'};editor.setText('draft')");
   app.handlers()?.edit();
   await new Promise<void>(resolve => setImmediate(resolve));
   assert.deepEqual(requests, [{ path: '/editor/open', body: { sessionId: 's1', text: 'draft' } }]);
@@ -1493,7 +1491,7 @@ test('while an editor is open the draft is read-only, sending and Escape do noth
   const app = await page(), requests: string[] = [];
   app.context.fetch = async (path?: string) => { requests.push(path ?? ''); return { ok: true, json: async () => ({}) }; };
   const result = app.run(`
-    state={...state,pi:{type:'ready'},working:true,sessionId:'s1',edit:{pane:'pane_10',editor:'nano'}};
+    state={...state,life:{type:'ready'},working:true,sessionId:'s1',edit:{pane:'pane_10',editor:'nano'}};
     editor.setText('draft');refreshComposer();
     const open={status:element('status').textContent,send:canSend('draft')};
     [open,()=>{apply({type:'state',...state,edit:undefined})}];
@@ -1514,7 +1512,7 @@ test('the draft is locked from the first C-g until the editor request answers', 
   let answer: (value: object) => void = () => {};
   app.context.fetch = async () => new Promise(resolve => { answer = value => resolve({ ok: true, json: async () => value }); });
   const result = app.run(`
-    state={...state,pi:{type:'ready'},sessionId:'s1'};editor.setText('draft');
+    state={...state,life:{type:'ready'},sessionId:'s1'};editor.setText('draft');
     openEditor();
     const locked={send:canSend('draft')};
     [locked,()=>state];
@@ -1529,7 +1527,7 @@ test('the draft is locked from the first C-g until the editor request answers', 
 test('the end of an edit returns focus to the composer', async () => {
   const app = await page();
   const end = app.run(`
-    state={...state,pi:{type:'ready'},sessionId:'s1',edit:{pane:'pane_10',editor:'nano'}};
+    state={...state,life:{type:'ready'},sessionId:'s1',edit:{pane:'pane_10',editor:'nano'}};
     refreshComposer();document.activeElement=undefined;
     () => { apply({type:'state',...state,edit:undefined}); };
   `);
@@ -1544,7 +1542,7 @@ test('while an editor is open the composer is dimmed, a click focuses the editor
   app.context.window.ko = { focus: (pane: string) => { focused.push(pane); } };
   const field = app.elements.get('field') ?? app.context.document.getElementById('field');
   const end = app.run(`
-    state={...state,pi:{type:'ready'},sessionId:'s1',edit:{pane:'pane_10',editor:'nano'}};
+    state={...state,life:{type:'ready'},sessionId:'s1',edit:{pane:'pane_10',editor:'nano'}};
     editor.setText('draft');refreshComposer();
     () => { apply({type:'state',...state,edit:undefined}); };
   `);
@@ -1569,7 +1567,7 @@ test('while an editor is open a drop and a native drop attach nothing and show n
   const app = await page(), requests: string[] = [];
   app.context.fetch = async (path?: string) => { requests.push(path ?? ''); return { ok: true, json: async () => ({}) }; };
   app.context.window.ko = { local: true };
-  app.run("state={...state,pi:{type:'ready'},sessionId:'s1',edit:{pane:'pane_10',editor:'nano'}};refreshComposer()");
+  app.run("state={...state,life:{type:'ready'},sessionId:'s1',edit:{pane:'pane_10',editor:'nano'}};refreshComposer()");
   let prevented = false;
   app.listeners.get('dragenter')?.({ dataTransfer: { types: ['Files'] } });
   assert.equal(app.elements.get('field')?.classList.contains('drop'), false);
@@ -1627,7 +1625,7 @@ test('the own message never makes a divider, and a send removes the divider', as
   assert.equal(page.dividers(), '0,1');
   page.add(page.text(2));
   assert.equal(page.dividers(), '0,1,divider,2');
-  page.evaluate("fetchJSON = async () => ({ disposition: 'started' }); editor.setText('go'); state = {...state, pi: {type: 'ready'}}");
+  page.evaluate("fetchJSON = async () => ({ disposition: 'started' }); editor.setText('go'); state = {...state, life:{type: 'ready'}}");
   void page.evaluate("send()");
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(page.dividers(), '0,1,2');
@@ -1748,4 +1746,117 @@ test('a focus event on a pane that never lost the focus keeps following while an
   page.app.windowListeners.get('focus')?.();
   page.step(16);
   assert.equal(page.evaluate("element('scroll').scrollTop"), 1100);
+});
+
+const views = `const root={id:'r',name:'ko'},a={id:'a',name:'reviewer'},b={id:'b',name:'checker'};
+  element('transcript').getBoundingClientRect=()=>({left:130,width:720});
+  const calls=[];fetchJSON=async(path,body)=>{calls.push([path,body]);return {};};
+  const show=(...path)=>apply({...state,type:'state',sessionId:path.at(-1).id,view:{id:path.at(-1).id,path},life:{type:'ready'}});
+  const bar=element('bar'),texts=()=>bar.children.map(child=>child.textContent),placeholder=()=>element('prompt').children[0].placeholder;`;
+
+test('the view bar names the path, goes to an ancestor through /view and is gone in the root view', async () => {
+  const app = await page();
+  const result = JSON.parse(await app.run(`(async()=>{${views}
+    show(root);
+    const rootView=[bar.hidden,document.body.classList.contains('viewing'),placeholder()];
+    show(root,a);
+    const child=[bar.hidden,document.body.classList.contains('viewing'),texts(),placeholder()];
+    state.working=true;refreshComposer();const steer=placeholder();
+    show(root,a,b);
+    const grandchild=texts();
+    bar.children[0].onclick();bar.children[1].onclick();bar.children[3].onclick();
+    const sent=calls.splice(0);
+    fetchJSON=async()=>{throw Object.assign(Error('stale'),{status:409})};
+    bar.children[0].onclick();await Promise.resolve();await Promise.resolve();await Promise.resolve();
+    const stale=element('error').textContent;
+    show(root);
+    return JSON.stringify({rootView,child,steer,grandchild,sent,stale,after:[bar.hidden,document.body.classList.contains('viewing')]});
+  })()`));
+  assert.deepEqual(result.rootView, [true, false, 'Message koa…']);
+  assert.deepEqual(result.child, [false, true, ['‹', '@ko', '›', '@reviewer'], 'Message @reviewer…']);
+  assert.equal(result.steer, 'Steer @reviewer…');
+  assert.deepEqual(result.grandchild, ['‹', '@ko', '›', '@reviewer', '›', '@checker']);
+  assert.deepEqual(result.sent, [['/view', { sessionId: 'b', id: 'a' }], ['/view', { sessionId: 'b', id: 'r' }], ['/view', { sessionId: 'b', id: 'a' }]]);
+  assert.equal(result.stale, '');
+  assert.deepEqual(result.after, [true, false]);
+});
+
+test('a path with middle ancestors that does not fit shrinks to a menu of the hidden ones', async () => {
+  const app = await page();
+  const result = JSON.parse(await app.run(`(async()=>{${views}
+    const path=['r','a','b','c','d'].map((id,index)=>({id,name:index?'agent-'+id:'ko'}));
+    bar.scrollWidth=400;bar.clientWidth=300;
+    show(...path);
+    const collapsed=texts();
+    const more=bar.children.find(child=>child.className==='ellipsis');
+    more.onclick();
+    const menu=element('bar-menu'),rows=[menu.hidden,menu.children.map(row=>row.textContent)];
+    menu.children[1].onclick();
+    return JSON.stringify({collapsed,rows,menuHidden:menu.hidden,calls,capped:bar.className});
+  })()`));
+  assert.deepEqual(result.collapsed, ['‹', '@ko', '›', '…', '›', '@agent-c', '›', '@agent-d']);
+  assert.deepEqual(result.rows, [false, ['@agent-a', '@agent-b']]);
+  assert.equal(result.menuHidden, true);
+  assert.deepEqual(result.calls, [['/view', { sessionId: 'd', id: 'b' }]]);
+  assert.match(result.capped, /\bcap\b/);
+});
+
+test('a view change keeps each view its own draft and closes what belongs to the old one', async () => {
+  const app = await page();
+  const result = JSON.parse(await app.run(`(async()=>{${views}
+    const file={id:'f',name:'note',path:'/tmp/note',size:1,origin:'upload',kind:'file'};
+    show(root);
+    editor.setText('root draft');draft.restore([file]);follow=false;
+    element('picker').hidden=false;element('error').textContent='old error';
+    show(root,a);
+    const child=[editor.text(),draft.count,element('picker').hidden,element('error').textContent,follow];
+    editor.setText('child draft');
+    show(root,a);
+    const same=editor.text();
+    show(root);
+    return JSON.stringify({child,same,back:[editor.text(),draft.count],again:(show(root,a),[editor.text(),draft.count])});
+  })()`));
+  assert.deepEqual(result.child, ['', 0, true, '', true]);
+  assert.equal(result.same, 'child draft');
+  assert.deepEqual(result.back, ['root draft', 1]);
+  assert.deepEqual(result.again, ['child draft', 0]);
+});
+
+test('a name link opens the view of its agent, and a pane link still focuses the pane', async () => {
+  const app = await page();
+  const link = app.run(`(()=>{${views}
+    state={...state,sessionId:'r',agents:[{name:'worker',target:{type:'view',id:'v1'}},{name:'peer',target:{type:'pane',pane:'p3'}}]};
+    const card=ref=>agentCard({direction:'out',to:ref,text:{text:'Hello',cut:0},call:{tool:'message',mode:'message'}},0,ref.name,new Map()).children[0].children[0].children[1];
+    window.calls=calls;
+    return {view:card({name:'worker',session:'v1'}),twin:card({name:'worker',session:'other'}),pane:card({name:'peer'})};
+  })()`);
+  const focused: string[] = [];
+  app.context.window.ko = { focus: (pane: string) => { focused.push(pane); } };
+  for (const target of [link.view, link.pane]) app.listeners.get('click')?.({ target, preventDefault() {} });
+  assert.deepEqual(JSON.parse(app.run('JSON.stringify(window.calls)')), [['/view', { sessionId: 'r', id: 'v1' }]]);
+  assert.deepEqual(focused, ['p3']);
+  assert.equal(link.twin.className, 'who');
+  assert.equal(link.twin.getAttribute('data-view'), 'v1');
+});
+
+test('reads of a view carry the session that they were made for', async () => {
+  const app = await page();
+  const urls: string[] = [];
+  app.context.fetch = async (url?: string) => { urls.push(url ?? ""); return { ok: true, json: async () => ({}) }; };
+  await app.run("state={...state,life:{type:'ready'},sessionId:'s9'};picker('model')");
+  assert.deepEqual(urls, ['/models?sessionId=s9']);
+});
+
+test('a stop whose take-back ends after a view change aborts nothing in the new view', async () => {
+  const app = await page();
+  const result = JSON.parse(await app.run(`(async()=>{${views}
+    show(root,a);
+    let release;const held=new Promise(resolve=>{release=resolve});
+    fetchJSON=async(path,body)=>{calls.push([path,body]);if(path==='/queue/clear')await held;return {steering:[],followUp:[]};};
+    const stopping=stop();
+    show(root);
+    release();await stopping;
+    return JSON.stringify(calls.map(call=>call[0]));
+  })()`));
+  assert.deepEqual(result, ['/queue/clear']);
 });
