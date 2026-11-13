@@ -220,7 +220,7 @@ import XCTest
                     (async()=>{
                       let before=Number.MAX_SAFE_INTEGER;const expected=[];
                       for(;;){
-                        const page=await (await fetch('/items?before='+before)).json();
+                        const page=await (await fetch('/items?before='+before+'&sessionId='+encodeURIComponent(document.body.dataset.sessionId))).json();
                         expected.unshift(...page.items);
                         if(!page.more)break;
                         before=page.items[0].seq;

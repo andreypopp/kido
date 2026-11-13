@@ -59,9 +59,9 @@ test("resume selects before the browser, cancels, and reports a broken picker", 
       const base = output.match(/koa: (http:\/\/127\.0\.0\.1:\d+\/)/)?.[1]; assert.ok(base, output);
       const stream = await fetch(base + "events", { signal: events.signal });
       assert.ok(stream.body);
-      const ready = await sse(Readable.from(stream.body)).until(ofType("state", record => record.pi?.type === "ready"));
+      const ready = await sse(Readable.from(stream.body)).until(ofType("state", record => record.life?.type === "ready"));
       assert.equal(ready.sessionFile, chosen);
-      assert.equal((await fetch(base + "quit", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" })).status, 200);
+      assert.equal((await fetch(base + "quit", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ sessionId: ready.sessionId }) })).status, 200);
     }
     assert.equal((await closed)[0], item.code, output);
     assert.match(output, item.output);

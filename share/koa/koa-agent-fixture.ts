@@ -8,7 +8,7 @@ import childProcess from "node:child_process";
 
 import { EventEmitter, once } from "node:events";
 import type { TestContext } from "node:test";
-import { hostFacts, type AgentHost } from "./koa-agents.ts";
+import { hostFacts, createRecords, type Agent, type AgentHost } from "./koa-agents.ts";
 import type { CompletionContext } from "./completion-context.ts";
 import type { RestartState } from "./records.ts";
 import type { PageRecord } from "./koa-records.ts";
@@ -23,7 +23,7 @@ import { join, delimiter } from "node:path";
 
 import { SessionManager, initTheme } from "@earendil-works/pi-coding-agent";
 
-import { agentExtension, isBackgroundJob, type BackgroundJob, type Job, type JobRegistry } from "./koa-agent.ts";
+import { agentExtension, createJobs, isBackgroundJob, type BackgroundJob, type Job, type JobRegistry } from "./koa-agent.ts";
 import type { components } from "./ko-api.d.ts";
 import { isRecord } from "./text.ts";
 
@@ -412,7 +412,7 @@ export function makeFixture(): Fixture {
         } catch (error) { first ??= error; } finally { clearTimeout(timer); }
       }
       try {
-        for (const host of liveHosts.splice(0)) host.slots.receiver?.child.kill();
+        liveHosts.splice(0);
         shared = undefined;
         await pollUntil(() => work.size === 0, 15000, "all fake commands to close");
       } catch (error) { first ??= error; } finally {
@@ -434,13 +434,17 @@ export function makeFixture(): Fixture {
 
 type Entry = { type: "custom"; customType: string; data: Record<string, unknown> };
 
+// A tree member that has only the fields a test names; the extension reads no others.
+export const stubAgent = (fields: object): Agent => Object.assign(Object.create(null), fields);
+
 export function createChannel() {
-  const unused = (): never => { throw new Error("this fixture has no session runtime"); };
+  const unused = (): never => { throw new Error("this fixture has no agent tree"); };
+  const facts = hostFacts(process.env);
+  const records = createRecords(facts);
+  const self = stubAgent({ id: "self-session", parent: undefined, children: [], name: "", runtime: undefined, extension: undefined, stopping: false, view: { state: { name: "Self", cwd: process.cwd(), dialogs: [] }, root: { value: "idle" } } });
   const host: AgentHost = {
-    get facts() { return hostFacts(process.env); },
-    get runtime() { return unused(); }, get session() { return unused(); },
-    slots: {}, browser: false, extension: undefined,
-    notify() {}, list: unused, start: unused, newSession: unused, switchSession: unused, usable: unused, dispose: unused,
+    self, get facts() { return hostFacts(process.env); }, browser: false, trusted: undefined, records, jobs: createJobs({ records, path: () => "jobs", sink: () => host.extension }), extension: undefined,
+    notify() {}, scope: () => [], find: () => undefined, spawn: unused, stop: unused, stopDescendants: async () => {}, recordPath: () => "jobs",
   };
   liveHosts.push(host);
   return {
@@ -612,7 +616,7 @@ function fakeCtx(
   return {
     hasUI: true,
     mode: "print",
-    modelRegistry: { hasConfiguredAuth: () => true, find: () => undefined },
+    modelRegistry: { hasConfiguredAuth: () => true, find: () => undefined, getAvailable: () => [{ provider: "acme", id: "caller" }, { provider: "acme", id: "m" }] },
     sessionManager: {
       getSessionId: () => sessionId,
       getSessionName: () => undefined,
@@ -698,12 +702,6 @@ export async function withEnv<T>(vars: Record<string, string | undefined>, fn: (
   }
 }
 
-// A real child: its environment names its own session and its parent's, which
-// is what makes the parent edge trustworthy.
-export async function asSubagent<T>(sessionId: string, fn: () => Promise<T>, parent = "boss-session"): Promise<T> {
-  return withEnv({ KO_AGENT_SESSION: sessionId, KO_AGENT_PARENT_SESSION: parent }, fn);
-}
-
 export async function pollUntil(cond: () => boolean | Promise<boolean>, ms = 2000, what = "a condition"): Promise<void> {
   const deadline = Date.now() + ms;
   for (;;) {
@@ -720,7 +718,7 @@ export function gatedCommand(gate: string, before = "", after = "", code = 0): s
 }
 
 export function jobRegistry(): JobRegistry | undefined {
-  return liveHosts.at(-1)?.slots.jobs;
+  return liveHosts.at(-1)?.jobs.registry;
 }
 
 export function liveRegistry(): JobRegistry {

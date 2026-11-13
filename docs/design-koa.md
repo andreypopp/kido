@@ -188,16 +188,17 @@ of `records.ts` derive from ko's schema (`ko-api.d.ts`).
 
 **One process in the pane.** koa is the pane's program: its stdout
 is the pane's tty, so the SDK's `show` and `hide` and koa's own OSC
-7501 and OSC 0 reach the pane. pi runs inside koa, as one
-`AgentSession` of pi's SDK, wrapped in an `AgentSessionRuntime`, so
+7501 and OSC 0 reach the pane. Every agent of the pane runs inside
+koa as an `AgentSession` of pi's SDK, each wrapped in an
+`AgentSessionRuntime`: the root, which koa starts from its command
+line, and its subagents (design-subagents.md, "The tree"). The root's
 `/new`, `/resume` and an extension's `newSession`, `fork` and
 `switchSession` use pi's own switch. There is no pi child, no RPC
 stream and no session channel. One process has one set of bugs and
-one event path; the subagents of plans/koa-subagents.md become more
-sessions of the same host. The cost: koa supplies what pi's RPC mode
-supplied (the extension UI context, the command handlers, the session
-switch), and a fault of pi or of an extension can end koa ("A crash
-keeps the pane" below).
+one event path. The cost: koa supplies what pi's RPC mode supplied
+(the extension UI context, the command handlers, the session switch),
+and a fault of pi or of an extension ends every agent of the pane ("A
+crash keeps the pane" below).
 
 **pi's package.** koa loads the SDK of the pi that the user runs, not
 a copy of its own. It finds pi's package directory (`piPackage` in
@@ -222,8 +223,8 @@ RPC context, the path helpers and the theme. `koa.ts` imports
 exists. One SDK instance serves the process, so the queue patch below
 reaches the class that every session uses.
 
-**The host.** `koa-agents.ts` makes the root session
-(`createRootHost`) from pi's parsed arguments, as pi's `main.js` does
+**The host.** `koa-agents.ts` holds the tree of agents (`createTree`)
+and makes the root session from pi's parsed arguments, as pi's `main.js` does
 for its own modes; `main.js` exports no function that does it without
 printing, prompting or exiting. The session manager comes first, from
 `--session`, `--fork`, `--continue`, `--session-id` and
@@ -241,7 +242,10 @@ the credentials and the models of the agent directory, which koa
 resolves once with pi's `getAgentDir` and gives to the editor and
 completion too. Unknown flags, such as the extension's `--runtime`, go
 to the services as `extensionFlagValues`, which pi checks after the
-factories register their flags.
+factories register their flags. A subagent's services have its own
+cwd, the built-in extensions and the agent extension, and only its
+`--runtime` as a flag value: the root's command line options are not
+the child's.
 
 **Project trust** follows `main.js` in RPC mode: a trust cache for
 each directory, the stored decision, the command line override and
@@ -284,8 +288,8 @@ converts them at its flush ("The transcript").
 
 **Readiness.** koa refuses the session's routes until the session is
 loaded and rebuilt, because a prompt sent before that snapshot was
-lost when the snapshot arrived. Each route names its access (`ready`,
-`session`, `alive`, `dialog`, `failed`, `any` in `koa.ts`):
+lost when the snapshot arrived. Each route names its access in
+`koa.ts`:
 completion, the attachment routes and the dialog answer work while
 the session starts, because a `session_start` handler can wait for a
 dialog's answer.
@@ -340,21 +344,18 @@ browser mode as a field of its host, never from pi's mode, and the
 extension adds `--browser` to the new `koa` under it.
 
 **The agent extension inside the session.** The extension takes its
-host from a closure (`agentExtension(host)` in `koa-agent.ts`). The
-host's `facts` are the pane, the ko executable and the runtime, which
-koa reads once from its environment at its edge (`hostFacts`); the
-extension reads no environment for them. The host also keeps what
-must outlive one load of the extension: the message receiver and its
-id ring, the jobs and their exit cleanup (`Slots`), because
-`session.reload()` runs the factory again. Its `session_start` sees a
-UI, so it opens the message stream, writes the `pi.*` variables,
-registers the agent tools and starts the peer client. Its job rows go
-through the status route. A message on the stream goes through
-`pi.sendUserMessage` and reaches koa as the session's message events.
-Until the in-process subagents exist, `spawn_agent` without
-`toplevel: true` is refused ("in-process subagents are not yet
-available; use toplevel: true"), and a message to a recorded child
-does not start it again as a pane.
+host from a closure (`agentExtension(host)` in `koa-agent.ts`); the
+host names the agent that the instance serves. The host's `facts` are
+the pane, the ko executable and the runtime, which koa reads once from
+its environment at its edge (`hostFacts`); the extension reads no
+environment for them. The tree keeps what must outlive one load of an
+extension: the pane's message stream and its id ring, each agent's
+jobs and records, the exit cleanup, because `session.reload()` runs
+the factory again. The root's `session_start` writes the `pi.*`
+variables and starts the peer client; a subagent's writes neither. A
+message on the pane's stream goes to the agent that its `data.to`
+names (design-subagents.md, "The pane's queue") and reaches koa as
+that session's message events.
 
 **The queue patch.** pi's `clearQueue` drops queued custom messages
 with the user's text, and koa's queue take-back must keep the
@@ -363,20 +364,21 @@ once in the process, so that it puts the custom messages back. The
 patch goes when pi has a `clearQueue` that keeps them.
 
 **Status and title.** koa writes the pane's root record `app=pi`
-itself: working from `agent_start` (and during a compaction), at
+itself, always for the root agent, whatever the page shows: working from `agent_start` (and during a compaction), at
 `agent_settled` idle when aborted, else error or done from the last
 assistant message, blocked with kind question while a dialog is open,
 and `clear` when the session fails. With the extension's
 `pi.session`, the row is a `PiAgent` (design-program-status.md). koa
-sets the pane title with OSC 0 from the session name and the
-session's directory.
+sets the pane title with OSC 0 from the root session's name and
+directory. Each subagent's status is a record of the pane
+(design-subagents.md, "In the sidebar"), by the same rule.
 
 **The session's directory** is the runtime's `cwd`, which pi sets
 from the session that it opened: a session of another directory runs
 in that directory, and `/new` after a switch to another folder starts
 in that folder. koa's own working directory does not change.
 
-**A session that fails to start.** When the session cannot be made
+**A session that fails to start.** When the root's session cannot be made
 (an unknown model, a broken settings file, a switch whose new session
 fails after pi tore the old one down), koa goes to `failed`: the
 transcript stays, the foot says that the agent failed, and the
@@ -386,7 +388,9 @@ restart (`restartArgs` in `koa-args.ts`: `--session` of the last
 session file, without the session, provider, model and thinking
 flags, because the session file holds the pickers' changes). A torn
 down session is never used again, also when the next one has the
-same id.
+same id. A subagent whose extensions fail to bind shows the same card
+in its view; "Start again" there makes only that child again, from
+its spawn's inputs.
 
 **A crash keeps the pane.** pi and every extension run in koa's
 process, so an uncaught exception ends koa and every agent in it.
@@ -397,14 +401,16 @@ deadline), and exits 1, so the user can read the error. A normal exit
 keeps `close: exit`. A fault that pi reports (an extension error, a
 provider error) is a notice, not a crash.
 
-**Shutdown.** koa ends on `SIGTERM`, `SIGHUP`, `SIGINT`, a quit from
-the page (Control-D in an empty composer) and an extension's
-`ctx.shutdown()`. Every part that koa makes registers its own
-teardown as it is made, and one shutdown, which exists from the
-moment the SDK's view exists, cancels the open dialogs, disposes the
-runtime first (pi aborts the turn, emits `session_shutdown` with
-reason `quit` to the extensions and settles its credential writes),
-bounded by `HOST_STOP_MS`, then starts every other teardown in
+**Shutdown.** koa ends on `SIGTERM`, `SIGHUP`, `SIGINT`, a `stop`
+message, a quit from the root's view (Control-D in an empty composer)
+and the root's extension's `ctx.shutdown()`; a subagent's
+`ctx.shutdown()` stops only that subagent. Every part that koa makes
+registers its own teardown as it is made, and one shutdown, which
+exists from the moment the SDK's view exists, cancels the open
+dialogs, disposes every agent's runtime first, deepest first (pi
+aborts the turn, emits `session_shutdown` with reason `quit` to the
+extensions and settles its credential writes), bounded by
+`HOST_STOP_MS`, then starts every other teardown in
 reverse order and waits for all of them. A stuck extension thus never
 keeps koa alive. The reply to the page's own quit request is sent
 before the shutdown starts, with a deadline (`QUIT_REPLY_MS`). Every
@@ -437,13 +443,14 @@ an uncaught exception stop it. The edges:
 **`/reload` reloads pi, and replaces koa when koa was updated.** It
 has two layers (the user's decision):
 
-1. **pi in place.** koa calls `session.reload()`. pi emits
+1. **pi in place.** koa calls `session.reload()` on every live
+   agent, root first, while the pane's queue holds its messages. pi emits
    `session_shutdown` with reason `reload`, loads its settings,
    extensions, skills and prompts again, runs the inline factory
    again, binds the saved UI and emits `session_start`; the session,
    its history, koa's subscription, the page and the transcript stay.
-   The host keeps the receiver, the id ring and the jobs, so the new
-   extension instance takes them over. koa holds the session in
+   The tree keeps the message stream, the id ring, the jobs and the
+   records, so the new extension instance uses them. koa holds the session in
    `reloading`, which blocks the composer as a session switch does
    but keeps the events, because a `session_start` handler can start
    a turn and the restart must see it. koa buffers the UI records,
@@ -458,10 +465,10 @@ has two layers (the user's decision):
    and `webview/`) and again after layer 1. A content hash, not a
    build stamp: ko's build id changes with every commit, and only
    koa's own files matter. A read that fails counts as no change.
-   When the hash differs, koa asks the extension
-   (`host.extension.restartState()`) for its running jobs, services
-   included, and its children that have not reported on their last
-   work, because a restart ends them. koa restarts only when nothing
+   When the hash differs, koa asks the tree (`restartState`) for the
+   running jobs of every agent, services included, and the children
+   that have not reported on their last work, because a restart ends
+   them. koa restarts only when nothing
    is running, a session file exists (a restart without one loses
    the conversation) and the session is still idle; else it shows one
    info note with the first reason, in the order jobs, subagents, no
@@ -485,10 +492,11 @@ program is not serving", and the new serve stream loads the new page
 in the composer and the scroll position go with the page. In browser
 mode, the new koa listens on a new port and opens a new tab.
 
-`/reload` runs only when the session is ready and idle: no turn, no
+`/reload` runs only when every agent is ready and idle: no turn, no
 compaction, no `!` command that has not completed, no queued prompt,
 no dialog and no external editor, opening and closing included,
-because each is state that a reload or a restart cannot carry.
+because each is state that a reload or a restart cannot carry, and
+pi's `reload()` refuses a streaming session.
 Otherwise it is refused with a warning line.
 
 **`/restart` restarts koa.** It is the second layer of `/reload`
@@ -496,11 +504,16 @@ without its checks: no identity check, no idle rule and no deferral,
 on the session file of the root. It is the escape hatch for a koa or
 a pi in a bad state, so it must work in that state; a running turn
 ends, and the jobs end with the process. Without a session file the
-new koa starts by the original arguments.
+new koa starts by the original arguments. The new koa starts only the
+root: each subagent lists as ended with `koa restarted` and resumes
+on a message (design-subagents.md, "Restarting through a message").
+`/new`, `/resume`, `/reload`, `/restart` and `/quit` act on the root,
+so they run only in the root's view ("Views").
 
 **The private directory.** koa makes one directory `koa-<pid>-*` under
-the temporary directory at start (0700) for the image store and the
-uploads, and removes it at exit. A koa that dies by a signal leaves
+the temporary directory at start (0700) for the image stores and the
+uploads, and removes it at exit; a stopped agent's image store goes
+with its view. A koa that dies by a signal leaves
 it; the host's cleaning of the temporary directory removes it.
 
 ## The page and koa
@@ -615,11 +628,15 @@ extension's `ctx.navigateTree` stays in the same session: koa
 rebuilds the transcript and puts pi's returned editor text into the
 composer.
 
-Every request that acts on a session carries the page's `sessionId`,
-and koa refuses a request of another session with 409. A request
-that waits in koa's queue checks again, before it acts, that its
-session is still the current one, so a prompt whose body arrived, or
-that waited, across a switch never reaches the new session.
+Every request that acts on a session carries the page's `sessionId`:
+a JSON command in its body, a read (`/items`, `/history`, `/models`,
+`/images`, `/steps`) in its query. koa refuses a request of another
+session than the viewed agent's with 409, and checks again after the
+body has arrived and before it acts, so a request that a session
+switch or a view switch overtook never reaches the new session. The
+attachment routes are the host's, like `/events`: the store is one
+for the pane, because Kido.app's native drop posts a file without a
+session, and the send of the prompt is the gate.
 
 **pi's busy rule.** pi aborts a running turn or command on a switch
 and does not ask. The page asks first: while pi works or a `!` command
@@ -634,6 +651,46 @@ in the page. pi's TUI also searches the message text, through a
 function that pi does not export, so the page's search is narrower.
 The rows of each scope stay while the picker is open, so ⇥ does not
 scan again.
+
+## Views
+
+koa keeps one transcript feed for each agent and shows one at a time,
+the view. The page's `State` (`koa-records.ts`) is the viewed agent's:
+its `view` gives the path from the root to the viewed agent, and its
+`agents` the targets of `@name` links, a view of this process or a
+pane. The look of a subagent's view and of the bar is the spec of
+app/design/koa/NOTES.md, "The view bar".
+
+**One switch.** `switchView` in `koa.ts` is the only code that changes
+the view: a `select` message of the user from the sidebar
+(design-subagents.md, "The pane's queue"), an `@name` link and the
+bar's buttons (`POST /view` from the page), and the stop of a viewed
+subagent, which switches to its nearest surviving ancestor. A switch
+is instant. It cancels the external editor and moves the page's
+event stream to the new agent's feed: it publishes the new agent's
+`state` first, then a `reset` of its feed under a new epoch, because
+the page renders `@name` links from the state and scopes its image
+reads by its `sessionId`. The feed is not rebuilt, so a streaming
+reply and a running tool continue where they were. Then the tree
+writes the `selection` of the two records that change. No key
+switches the view; keys for the hierarchy are a later item.
+
+**What follows the view.** The composer targets the viewed agent as
+the user's own text, without a header: the person is the user of
+every view. Escape, the queue, the pickers, the dialogs, the
+attachments, `!` commands, `/model`, `/thinking`, `/compact`, `/copy`,
+`/session`, `/export` and `/name` act on the viewed agent, and the
+foot shows its state. `/new`, `/resume`, `/reload`, `/restart` and
+`/quit` are refused outside the root's view with the warning line
+`<command>: only in @<root's name>'s view`, also as routes. The page
+keeps one draft for each view (the text and the ready attachments),
+cancels pending uploads, completion and history reads at a switch,
+closes its pickers, menus and the lightbox, and opens the new view at
+its end.
+
+**Links.** An `@name` link of an agent of this process switches the
+view; one of another pane focuses that pane with `window.ko.focus`,
+and that pane keeps its own view.
 
 ## The transcript
 
@@ -954,11 +1011,11 @@ modules. So koa copies pi's rules (`koa-complete.ts`), behind its own
 - The user's pattern follows `--` in `fd`'s argv, so a query such as
   `@"--help` is a pattern, never an option. Each search has a
   deadline and caps. A request that the page aborts ends its `fd`.
-- `@name` agents are koa's own computation from `ko api GET /layout`
-  with the shared rules in `share/koa/agents.ts`. koa has no
-  registry, so it lacks ended children and peers; a completed
-  `@name (session <prefix>)` reaches the model as typed, and the
-  extension's tools resolve it.
+- `@name` agents are the viewed agent's scope from the tree
+  (design-subagents.md, "The tools, and what they call"), with the
+  shared rules in `share/koa/agents.ts`; only the pane peers come from
+  `ko api GET /layout`. A completed `@name (session <prefix>)` reaches
+  the model as typed, and the extension's tools resolve it.
 - No completion inside a code span or a fence: the source checks the
   Markdown tree.
 - The popup is CodeMirror's tooltip, mounted in a layer at the page's
@@ -1388,14 +1445,15 @@ The user decided the look with the mockups `agents.html` and
   an opened body, a run's steps or an agent's text, indents from that
   point. Consecutive run, agent, job and notice rows sit 2pt apart;
   the last of a group and an opened row keep 14pt.
-- **`@name` focuses the agent's pane.** An agent's name in an agent
-  line, and an `@name` in the prose of a reply or a user message, is a
-  link while the name is in koa's list of live agents; a click calls
-  `window.ko.focus(pane)` (design-app.md, "Focus from a page"), as a
-  click on the agent's sidebar row does. The list is the state's
-  `agents` (`koa-records.ts`): the named running pi agents of koa's ko
-  session, except koa's own, from the same `/layout` read as `@`
-  completion (`agentDiscovery`). koa reads it at start and after each
+- **`@name` goes to the agent.** An agent's name in an agent line,
+  and an `@name` in the prose of a reply or a user message, is a link
+  while the name is in koa's list of live agents. A click on an agent
+  of this process switches the view ("Views"); one of another pane
+  calls `window.ko.focus(pane)` (design-app.md, "Focus from a page"),
+  as a click on the agent's sidebar row does. The list is the state's
+  `agents` (`koa-records.ts`): the live agents of the viewed agent's
+  scope, the same set as `@` completion. koa reads it at start, at
+  each change of the tree and after each
   `spawn_agent`, `message_agent`, `stop_agent` and `list_agents`
   result and each displayed custom message, not on a timer, and
   publishes the state only when the list changed. A change elsewhere

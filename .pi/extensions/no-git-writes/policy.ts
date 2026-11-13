@@ -134,15 +134,21 @@ export function blocksSignal(command: string, home = homedir()): boolean {
   return runs(command, home, (executable) => ["pkill", "killall", "kill"].includes(executable));
 }
 
-export const parentSession = (env: NodeJS.ProcessEnv): string | undefined =>
-  env.KO_AGENT_PARENT_SESSION || undefined;
+export function parentSession(branch: readonly unknown[], current: string): string | undefined {
+  for (const entry of branch.toReversed()) {
+    if (typeof entry !== "object" || entry === null || !("type" in entry) || entry.type !== "custom" || !("customType" in entry) || entry.customType !== "koa.edge" || !("data" in entry)) continue;
+    const data = entry.data;
+    if (typeof data === "object" && data !== null && "owner" in data && data.owner === current && "parent" in data && typeof data.parent === "string" && data.parent) return data.parent;
+  }
+  return undefined;
+}
 
 const shellTools = new Set(["bash", "async_bash"]);
 
-export function refusal(toolName: string, input: Record<string, unknown>, env: NodeJS.ProcessEnv): string | undefined {
+export function refusal(toolName: string, input: Record<string, unknown>, parent: string | undefined): string | undefined {
   const command = input.command;
   if (!shellTools.has(toolName) || typeof command !== "string") return undefined;
-  if (blocksGitWrite(command, parentSession(env))) {
+  if (blocksGitWrite(command, parent)) {
     return "No git writes in this repo; the top-level session commits. Leave your changes uncommitted.";
   }
   if (blocksSleep(command)) {

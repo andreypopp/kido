@@ -28,7 +28,7 @@ const seeded = (turns: number, extra?: (manager: SessionManager) => void, pad = 
 
 test("history comes from the whole transcript and omits consecutive duplicates", { timeout: 20000 }, async t => {
   const app = await realFixture(t, { replies: [], setup: seeded(110, manager => { manager.appendMessage({ role: "user", content: " prompt 109 ", timestamp: 500 }); manager.appendMessage(assistantEntry("x", 501)); }) });
-  const result: { entries: string[] } = await (await fetch(app.base + "history")).json();
+  const result: { entries: string[] } = await (await fetch(app.url("history"))).json();
   assert.equal(result.entries.length, 100);
   assert.equal(result.entries[0], "prompt 109");
   assert.equal(result.entries.at(-1), "prompt 10");
@@ -42,7 +42,7 @@ test("built-in commands never become prompts", { timeout: 20000 }, async t => {
     if (text === "/resume" || text === "/new") assert.deepEqual(await response.json(), { disposition: "handled", action: { type: "session", kind: text.slice(1) } });
   }
   assert.deepEqual(app.provider.requests, []);
-  assert.deepEqual((await (await fetch(app.base + "history")).json()).entries, []);
+  assert.deepEqual((await (await fetch(app.url("history"))).json()).entries, []);
 });
 
 test("model, thinking, statistics, copy and export use real pi", { timeout: 20000 }, async t => {
@@ -58,7 +58,7 @@ test("model, thinking, statistics, copy and export use real pi", { timeout: 2000
   await pollUntil(() => app.stdout().includes("\x1b]52;c;" + Buffer.from("answer 0").toString("base64") + "\x1b\\"), 5000, "OSC 52 copy");
   await send(app, "/export");
   const exported = await app.until(ofType("item", record => record.item.kind === "command" && record.item.result.type === "export"));
-  assert.match(await (await fetch(app.base + "steps/" + exported.item.seq + "/0/file")).text(), /<html/i);
+  assert.match(await (await fetch(app.url("steps/" + exported.item.seq + "/0/file"))).text(), /<html/i);
   assert.equal((await send(app, "/quit")).status, 200);
   assert.equal((await app.close)[0], 0);
 });
@@ -148,7 +148,7 @@ test("restart keeps the session, the model and the thinking level", { timeout: 3
   const events = new AbortController();
   t.after(() => events.abort());
   const fresh = sse(Readable.from((await fetch(urls()[1] + "events", { signal: events.signal })).body ?? []));
-  const after = await fresh.until(ofType("state", record => record.pi?.type === "ready"));
+  const after = await fresh.until(ofType("state", record => record.life?.type === "ready"));
   assert.equal(after.sessionId, before?.sessionId);
   assert.equal(after.thinking, "high");
   assert.equal(after.model?.id, before?.model?.id);
@@ -194,6 +194,9 @@ test("a turn aborted while the model streams ends as aborted, not as an error", 
   const last = replay.items.filter(item => item.kind === "assistant").at(-1);
   assert.ok(last && last.kind === "assistant");
   assert.equal(last.stop, "aborted");
+  assert.equal(last.error, "");
+  const live = app.records().flatMap(record => record.type === "patch" && record.stop === "aborted" ? [record.error] : record.type === "item" && record.item.kind === "assistant" && record.item.stop === "aborted" ? [record.item.error] : []);
+  assert.ok(live.length > 0 && live.every(error => error === ""));
   assert.deepEqual(replay.items.flatMap(item => item.kind === "notify" && item.level === "error" ? [item.text.text] : []), []);
   assert.deepEqual(app.records().flatMap(record => record.type === "item" && record.item.kind === "notify" && record.item.level === "error" ? [record.item.text.text] : []), []);
 });

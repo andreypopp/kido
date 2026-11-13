@@ -1,7 +1,7 @@
 import type { Attachment, Block, PageRecord, State, WireItem } from '../../koa-records.ts';
 import { expect, same, type Scenarios, type Scenario } from '../scenario.ts';
 
-const state: State = { compaction: 'idle', agents: [], bash: [], working: false, aborted: false, name: 'pi', levels: ['off'], cwd: '/work', home: '/home', sessionId: 's1', sessionFile: '/work/s1.jsonl', queue: { steering: [], followUp: [] }, dialogs: [], statuses: {}, pi: { type: 'ready' } };
+const state: State = { compaction: 'idle', view: { id: "s1", path: [{ id: "s1", name: "ko" }] }, agents: [], bash: [], working: false, aborted: false, name: 'pi', levels: ['off'], cwd: '/work', home: '/home', sessionId: 's1', sessionFile: '/work/s1.jsonl', queue: { steering: [], followUp: [] }, dialogs: [], statuses: {}, life: { type: 'ready' } };
 const user = (seq: number, text: string, attachments: Attachment[] = []): WireItem => ({ seq, revision: 0, at: 1, final: true, kind: 'user', text, images: [], attachments });
 const open: PageRecord[] = [{ type: 'reset', epoch: 'e1', more: false, items: [user(0, 'hello')] }, { type: 'state', ...state }];
 const queued = (attachments: Attachment[]): PageRecord => ({ type: 'state', ...state, working: true, queue: { steering: [{ text: 'later', attachments }], followUp: [] } });

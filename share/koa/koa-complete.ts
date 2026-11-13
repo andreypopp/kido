@@ -2,8 +2,7 @@ import { spawn } from "node:child_process";
 import { statSync } from 'node:fs';
 import { basename, join, resolve } from "node:path";
 import { homedir } from "node:os";
-import { parsePanes, piAgent, runningRows, agentCache } from "./agents.ts";
-import type { components } from "./ko-api.d.ts";
+import type { agentCompletionItems } from "./agents.ts";
 import type { CompletionCommand, CompletionOption, PromptCompletion } from "./koa-records.ts";
 import { signalChild, which } from "./koa-child.ts";
 import { fileToken, slashToken, pathSeparator } from "./token.ts";
@@ -120,17 +119,6 @@ export function output(command: string, args: string[], signal: AbortSignal, cwd
   });
 }
 
-export function agentDiscovery(pane: string, ttl: string | undefined, signal: AbortSignal) {
-  return agentCache(async () => {
-    const body = pane ? await output("ko", ["api", "/layout"], AbortSignal.any([signal, AbortSignal.timeout(5000)])) : undefined;
-    if (body === undefined) return { rows: [], all: [] };
-    const layout: components["schemas"]["LayoutPanes"] = JSON.parse(body.toString('utf8'));
-    const panes = parsePanes(layout), me = panes.find(p => p.pane === pane);
-    const rows = runningRows(panes, me).filter(({ pane: p }) => me && p.session === me.session && piAgent(p.kind)).map(({ row }) => row);
-    return { rows, all: rows };
-  }, ttl);
-}
-
 let fdProcesses = 0;
 async function walk(fd: string, base: string, query: string, signal: AbortSignal, depth?: number): Promise<{ path: string; directory: boolean }[]> {
   const escape = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -165,7 +153,7 @@ async function files(query: string, cwd: string, fd: string | undefined, signal:
   });
 }
 
-export async function complete(text: string, pos: number, options: { cwd: string; commands(): Promise<readonly CompletionCommand[]>; fd: string | undefined; signal: AbortSignal; agents?: ReturnType<typeof agentDiscovery> }): Promise<PromptCompletion> {
+export async function complete(text: string, pos: number, options: { cwd: string; commands(): Promise<readonly CompletionCommand[]>; fd: string | undefined; signal: AbortSignal; agents?: (token: string) => ReturnType<typeof agentCompletionItems> }): Promise<PromptCompletion> {
   const result: PromptCompletion = { type: 'prompt', from: pos, to: pos, options: [] };
   if (options.signal.aborted) return result;
   const lineStart = text.lastIndexOf("\n", pos - 1) + 1, before = text.slice(lineStart, pos);

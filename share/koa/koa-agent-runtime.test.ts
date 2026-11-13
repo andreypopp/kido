@@ -480,7 +480,7 @@ test("a routed async_bash is an exec session with a host log, a notice, and canc
     const gate = join(t.rt, "gate");
     const command = `env; printf 'before\\n'; ${gatedCommand(gate, "", "after\n", 3)}`;
     const result = await withEnv({ HOST_SECRET: "host-only" }, () => run(s, "async_bash", { command, name: "build", stream: true }));
-    const records = () => fx.posts(`/panes/${process.env.KO_PANE}/status`).filter(record => record.id === `job/${jobId(result)}`);
+    const records = () => fx.posts(`/panes/${process.env.KO_PANE}/status`).filter(record => record.id === `jobs/${jobId(result)}`);
     await pollUntil(() => records()[0]?.state === "working");
     await pollUntil(() => fx.running() === baseline + 1);
     await pollUntil(() => getList(at(fx.execLog(), -1).request, "argv")[2] === command);
@@ -665,8 +665,7 @@ test("list_agents shows the runtime of a row or of a routed agent's pi.runtime, 
     await s.tool("message_agent").execute("c", { to: "Host", message: "hello" });
     assert.deepEqual(at(fx.posts("/panes/pane_4/messages"), 0).data, { runtime: "dev" });
 
-    fx.feed({ id: "from-routed-1", kind: "message", text: "hi", relation: "sibling", data: { runtime: "dev" }, from: { type: "pane", pane: "pane_2", session: "s-routed", name: "Routed" } });
-    await pollUntil(() => customMessages(s, "ko-message").length === 1, 3000, "the message");
+    await s.channel.host.extension?.receive({ kind: "message", text: "hi", relation: "sibling", agent: { name: "Routed", session: "s-routed", pane: "pane_2" }, runtime: "dev" });
     assert.equal(at(customMessages(s, "ko-message"), 0).message.content, `${senderHeader("Routed", "sibling", "dev")}\nhi`);
     assert.equal(senderHeader("Routed", "sibling", "dev"), "message from @Routed (another agent in this session, not the user, in runtime dev):");
   } finally {

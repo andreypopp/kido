@@ -13,7 +13,7 @@
 
 import { fileURLToPath } from "node:url";
 
-const { createFakePi, withEnv, koaExtension } = await import("../share/koa/koa-agent-fixture.ts");
+const { createFakePi, createChannel, stubAgent, withEnv, koaExtension } = await import("../share/koa/koa-agent-fixture.ts");
 
 type Schema = { type?: string; items?: Schema; anyOf?: Schema[]; description?: string };
 const typeName = (schema: Schema): string =>
@@ -27,14 +27,14 @@ type Tool = {
   parameters?: { properties?: Record<string, Schema>; required?: string[] };
 };
 
-const { pi, tools: registered, handlers, emit } = createFakePi();
+// A subagent is an agent with a parent in the tree; the dump gives its host one.
+const channel = createChannel();
+Object.assign(channel.host.self, { parent: stubAgent({ id: "dump-parent", children: [] }) });
+const { pi, tools: registered, handlers, emit } = createFakePi(undefined, [], channel);
 const tools: Tool[] = [];
 
-// A subagent's edge is its environment: its own session id and its parent's.
 // A headless ctx (hasUI: false) makes session_start write nothing and open no
 // stream, so this dump touches no server and no socket.
-process.env.KO_AGENT_SESSION = "dump-session";
-process.env.KO_AGENT_PARENT_SESSION = "dump-parent";
 delete process.env.KO_PANE;
 
 const { RELATION_TEXT, senderHeader, noticeHeader, PARENT_GUIDANCE, SPAWN_RESULT_RULE, SUBAGENT_RESULT_RULE } = await import("../share/koa/koa-agent.ts");

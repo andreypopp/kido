@@ -38,15 +38,15 @@ import { randomBytes } from "node:crypto";
 import { type WriteStream, createWriteStream, mkdirSync, readFileSync, readdirSync, realpathSync, statSync } from "node:fs";
 import os from "node:os";
 import type { CompletionContext } from "./completion-context.ts";
-import type { AgentHost } from "./koa-agents.ts";
+import type { AgentHost, Agent, Extension, Records, SpawnPlan } from "./koa-agents.ts";
 import { runtimeExec, lineReader, openStream, runCommand, apiCall, apiArgs, KO_TIMEOUT_MS, type Reply, type ExecOptions, type ExecResult } from "./runtime-exec.ts";
 import { contentText, mintId, utf8Prefix, utf8Suffix, errorText, replaceControlCharacters, isRecord, isString, str } from "./text.ts";
 import { dirname, delimiter, extname, join, posix, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Type } from "typebox";
 import type { components } from "./ko-api.d.ts";
-import { isRelation, isAgentFailure, jobEndText, type RestartState, type Relation, type AgentRef, type AgentOutcome, type MessageDetails, type SteerDetails, type NoticeDetails, type StreamDetails, type JobRef, type JobEnd } from "./records.ts";
-import { parsePanes, placesOf, piAgent, peerPanes, ancestorsOf, runningRows, MIN_ID_PREFIX, VAR_SESSION, VAR_NAME, VAR_ACTIVITY, VAR_TASK, VAR_RUNTIME, type PaneInfo, type AgentCompletionRow } from "./agents.ts";
+import { isAgentFailure, jobEndText, type RestartState, type InProcessMessage, type AgentEnd, type Relation, type AgentRef, type AgentOutcome, type MessageDetails, type SteerDetails, type NoticeDetails, type StreamDetails, type JobRef, type JobEnd } from "./records.ts";
+import { parsePanes, placesOf, piAgent, peerPanes, runningRows, MIN_ID_PREFIX, VAR_SESSION, VAR_NAME, VAR_ACTIVITY, VAR_TASK, VAR_RUNTIME, type PaneInfo, type AgentRow, type Where } from "./agents.ts";
 
 type Api = components["schemas"];
 
@@ -60,10 +60,8 @@ const ENTRY_AGENT = "koa.agent";
 const ENTRY_WORK = "koa.work";
 const ENTRY_REPORT = "koa.report";
 const ENTRY_ENDED = "koa.ended";
-const ENTRY_SENT = "koa.sent";
 
 type SendKind = Api["SendKind"];
-type Dead = Api["Dead"];
 
 
 const apiCallSync = (method: string, path: string, body: unknown): void => {
@@ -119,15 +117,6 @@ async function listPanesResult(timeoutMs = KO_TIMEOUT_MS): Promise<{ ok: boolean
   }
 }
 
-const SIGNALS: Record<number, string> = { 1: "HUP", 2: "INT", 3: "QUIT", 6: "ABRT", 9: "KILL", 11: "SEGV", 13: "PIPE", 14: "ALRM", 15: "TERM" };
-
-const causeText = (dead: Dead): string => {
-  const cause = dead.cause;
-  if (cause.type === "exited") return `exit ${cause.code}`;
-  if (cause.type === "signaled") return `signal ${SIGNALS[cause.signal] ?? cause.signal}`;
-  return `failed: ${cause.message}`;
-};
-
 const NOTICE_CUSTOM_TYPE = "ko-notice";
 
 export const noticeHeader = (from: string): string => `notice from ${from} (a subagent or background job's report, not the user):`;
@@ -144,10 +133,11 @@ export const RELATION_TEXT: Record<Relation, string> = {
   sibling_descendant: "a subagent of another agent in this session",
 };
 
-export const senderHeader = (from: string, relation: Relation, runtime?: string): string =>
-  `message from @${from} (${RELATION_TEXT[relation]}${runtime ? `, in runtime ${runtime}` : ""}):`;
+export const senderHeader = (from: string, relation: Relation, runtime?: string, returnTo?: { session: string; pane: string }): string =>
+  `message from @${from} (${returnTo ? `session ${returnTo.session} in ${returnTo.pane}; ` : ""}${RELATION_TEXT[relation]}${runtime ? `, in runtime ${runtime}` : ""}):`;
 
-const steerHeader = (from: string): string => `${from} is redirecting this work: `;
+const steerHeader = (from: string, returnTo?: { session: string; pane: string }, runtime?: string): string =>
+  `${from}${returnTo ? ` (session ${returnTo.session} in ${returnTo.pane})` : ""}${runtime ? ` (in runtime ${runtime})` : ""} is redirecting this work: `;
 
 const MAX_NOTICE_BYTES = 4000;
 const MAX_JOB_TITLE_BYTES = 192;
@@ -155,19 +145,17 @@ const MAX_JOB_MESSAGE_BYTES = 2048;
 
 const MAX_REPORT_BYTES = 1000;
 
+const MAX_NAME_BYTES = 64;
+
 const MAX_TASK_BYTES = 1044480;
 
 const MAX_MESSAGE_BYTES = 1000000;
-
-const MAX_DEPTH = 2;
 
 // How long a stop waits for the pane to end by itself, and the cap of the whole call: that wait, the
 // server's escalation and a margin.
 const STOP_WAIT_MS = 5000;
 
 const STOP_CALL_MS = STOP_WAIT_MS + 5000 + 1500;
-
-const RECEIVED_RING = 4096;
 
 const RESEND_TRIES = 3;
 
@@ -182,10 +170,6 @@ const reply = (text: string, details: unknown = {}) => ({ content: [{ type: "tex
 
 const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, ms));
 
-type AgentRow = AgentCompletionRow & {
-  window: string; depth: number; cwd: string; runtime?: string; canMessage: boolean;
-  kind: "agent" | "subagent"; ended?: string; model?: string; reported?: boolean; report?: string;
-};
 
 type ChildRuntime = { name: string; mode: "routed" | "inside" };
 
@@ -200,8 +184,7 @@ type ChildData = {
   model: string;
   fork: boolean;
   cwd: string;
-  runtime?: ChildRuntime;
-  pane: { instance: string; pane: string };
+  runtime?: { name: string };
 };
 
 const NEVER_SLEEP_RULE =
@@ -222,9 +205,6 @@ const SUBAGENT_INSTRUCTION =
   "Reporting does not end this session: it stays alive until your parent ends it with stop_agent, and the parent can continue it with message_agent.";
 
 type ShutdownReason = "quit" | "reload" | "new" | "resume" | "fork";
-
-// pi /reload keeps the process, its message stream and its received-id ring.
-type ReceiverHold = { child: ChildProcess; partial: Buffer };
 
 type JobCall = {
   forward(bytes: Buffer): void;
@@ -279,7 +259,7 @@ export type JobRegistry = {
   session: string;
   stopAll(): string[];
   jobs: Map<string, Job>;
-  owner: { onStart(job: BackgroundJob): void; onLines(job: BackgroundJob): void; onEnd(job: BackgroundJob): void; clearRecords(): void } | null;
+  owner: { onStart(job: BackgroundJob): void; onLines(job: BackgroundJob): void; onEnd(job: BackgroundJob): void } | null;
   exit: () => void;
 };
 
@@ -350,30 +330,143 @@ function pruneJobs(registry: JobRegistry): void {
   }
 }
 
-function createJobRegistry(session: string): JobRegistry {
+export function createJobRegistry(session: string): JobRegistry {
   const jobs = new Map<string, Job>();
   const registry: JobRegistry = {
     session, jobs, owner: null,
     stopAll() {
-      registry.owner = null;
       const live = [...jobs.values()].filter((job) => job.state.type !== "ended");
       for (const job of live) {
         if (isBackgroundJob(job)) detachJob(job);
         stopJob(job);
       }
-      void Promise.all([...jobs.values()].map((job) => job.closed)).then(() => process.removeListener("exit", registry.exit));
       return live.filter(isBackgroundJob).map((job) => job.mode.name);
     },
     exit() {
-      registry.owner?.clearRecords();
       for (const job of jobs.values()) {
         if (job.where.type === "local") try { signalJob(job, "SIGKILL"); } catch {}
       }
     },
   };
-  process.on("exit", registry.exit);
   return registry;
 }
+
+export type JobSink = {
+  jobNotice(text: string, details: NoticeDetails): void;
+  jobStream(job: BackgroundJob, body: ReturnType<typeof streamBatch>): void;
+};
+
+// The jobs of one agent live as long as the agent: a reload replaces the extension that delivers their notices, not them.
+export function createJobs(options: { records: Records; path: () => string; sink: () => JobSink | undefined }) {
+  const registry = createJobRegistry("");
+  const jobRecords = new Map<string, { type: "running" } | { type: "finished"; timer: NodeJS.Timeout }>();
+  let working = false;
+  const write = (id: string | undefined, state: "idle" | "working" | "done" | "error" | "clear", title?: string, message?: string): boolean => {
+    const clean = (text: string, bytes: number): string => utf8Prefix(replaceControlCharacters(text).replace(/\s+/g, " ").trim(), bytes);
+    const recordId = id === undefined ? options.path() : `${options.path()}/${id}`;
+    const cleanedTitle = title === undefined ? undefined : clean(title, MAX_JOB_TITLE_BYTES);
+    const cleanedMessage = message === undefined ? undefined : clean(message, MAX_JOB_MESSAGE_BYTES);
+    const report: Api["StatusReport"] = state === "clear" ? { type: "clear", id: recordId } : {
+      type: "set", id: recordId, state,
+      ...(cleanedTitle ? { title: cleanedTitle } : {}),
+      ...(cleanedMessage ? { msg: cleanedMessage } : {}),
+    };
+    return options.records.write(report);
+  };
+  const clearOne = (id: string): void => {
+    const record = jobRecords.get(id);
+    if (record?.type === "finished") clearTimeout(record.timer);
+    jobRecords.delete(id);
+    write(id, "clear");
+  };
+  const report = (job: BackgroundJob): void => {
+    const id = job.id;
+    if (!jobRecords.has(id) && jobRecords.size >= 32) {
+      const oldestFinished = [...jobRecords].find(([, record]) => record.type === "finished");
+      if (!oldestFinished) return;
+      clearOne(oldestFinished[0]);
+    }
+    if (job.state.type === "running") {
+      if (write(id, jobRecordState(job), job.mode.name, job.command)) jobRecords.set(id, { type: "running" });
+    } else {
+      if (!write(id, job.state.end.type === "exit" && job.state.end.code === 0 ? "done" : "error", job.mode.name, jobEndText(job.state.end))) return;
+      const timer = setTimeout(() => clearOne(id), envMs("KO_JOB_RECORD_LINGER_MS", 5000));
+      timer.unref();
+      jobRecords.delete(id);
+      jobRecords.set(id, { type: "finished", timer });
+    }
+  };
+  const interval = (): number => envMs("KO_STREAM_INTERVAL_MS", 5000);
+  const untilDue = (stream: BackgroundJob["mode"]["stream"]): number => stream.lastBatch + interval() - performance.now();
+  const background = (): BackgroundJob[] => [...registry.jobs.values()].filter(isBackgroundJob);
+  const flush = (job: BackgroundJob): void => {
+    const stream = job.mode.stream;
+    const sink = options.sink();
+    if (!sink || !stream.lines.length) return;
+    const batch = streamBatch(stream.lines, job.mode.log, stream.dropped, stream.cut);
+    stream.lastBatch = performance.now();
+    sink.jobStream(job, batch);
+    stream.lines = [];
+    stream.dropped = 0;
+    stream.cut = false;
+    stream.held = Buffer.byteLength(stream.split.line) + stream.carry.length;
+  };
+  const schedule = (job: BackgroundJob): void => {
+    const stream = job.mode.stream;
+    if (working || !stream.lines.length || stream.timer || !options.sink()) return;
+    stream.timer = setTimeout(() => {
+      stream.timer = null;
+      if (working) return;
+      try { flush(job); } catch { schedule(job); }
+    }, Math.max(0, untilDue(stream)));
+    stream.timer.unref();
+  };
+  const ended = (job: BackgroundJob): void => {
+    if (jobRecords.has(job.id)) report(job);
+    detachJob(job);
+    const sink = options.sink();
+    if (!sink || job.state.type !== "ended" || job.state.announced) return;
+    if (job.state.end.type !== "stopped") {
+      if (streams(job)) flush(job);
+      const tail = jobTail(job);
+      sink.jobNotice(`job ${quote(job.mode.name)} (${job.id}) ${jobEndText(job.state.end)}\n--- last ${TAIL_BYTES} bytes of its output ---\n${tail}\nlog: ${job.mode.log}`, { kind: "job", job: { ...jobReference(job), end: job.state.end }, tail });
+    }
+    job.state.announced = true;
+    job.tail = Buffer.alloc(0);
+    pruneJobs(registry);
+  };
+  registry.owner = { onStart: report, onLines(job) { if (streams(job)) schedule(job); }, onEnd: ended };
+  return {
+    registry,
+    set working(value: boolean) { working = value; },
+    finishWorking(): void {
+      working = false;
+      for (const job of background()) if (streams(job)) schedule(job);
+    },
+    flushStreams(): void {
+      for (const job of background()) {
+        if (!streams(job)) continue;
+        detachJob(job);
+        if (untilDue(job.mode.stream) <= 0) flush(job);
+      }
+    },
+    detach(): void { for (const job of background()) detachJob(job); },
+    // What ended or streamed while no extension was bound is delivered once by the one that binds next.
+    drain(): void {
+      for (const job of background()) {
+        if (job.state.type === "ended" && !job.state.announced) { try { ended(job); } catch {} }
+        else if (job.state.type !== "ended" && streams(job)) schedule(job);
+      }
+    },
+    clearRecords(): void {
+      for (const record of jobRecords.values()) if (record.type === "finished") clearTimeout(record.timer);
+      jobRecords.clear();
+      write(undefined, "clear");
+    },
+  };
+}
+
+export type Jobs = ReturnType<typeof createJobs>;
 
 function writeJobOutput(job: BackgroundJob, bytes: Buffer): void {
   const output = job.mode.output;
@@ -572,8 +665,6 @@ async function routedJob(registry: JobRegistry, r: Routed, command: string, cwd:
   return observed.result;
 }
 
-export type Slots = { receiver?: ReceiverHold; received?: string[]; jobs?: JobRegistry; exit?: () => void };
-export type Extension = { completionContext(signal: AbortSignal): Promise<CompletionContext>; restartState(): RestartState };
 
 const extensionPath = fileURLToPath(import.meta.url);
 const KO_SKILL_RULE = "The user runs the ko terminal multiplexer, and this pi runs in one of its panes. When the user talks about windows, tabs, panes, sessions, splits, floats or the sidebar, read the ko skill first.";
@@ -584,36 +675,7 @@ function normalizeAddress(to: string): { wanted: string; mention: boolean } {
   return { wanted: id ?? raw, mention: id !== undefined };
 }
 
-type Held = { from: Api["Sender"]; relation?: Relation; text: string; runtime?: string };
 
-const runtimeOf = (data: unknown): string | undefined => (isRecord(data) && typeof data.runtime === "string" ? data.runtime : undefined);
-
-
-
-function isCause(value: unknown): value is Dead["cause"] {
-  if (!isRecord(value)) return false;
-  return (value.type === "exited" && typeof value.code === "number")
-    || (value.type === "signaled" && typeof value.signal === "number")
-    || (value.type === "failed" && isString(value.message));
-}
-
-function isEnd(value: unknown): value is Api["End"] {
-  return isRecord(value) && (value.type === "gone" || (value.type === "dead" && typeof value.at === "number" && isCause(value.cause)));
-}
-
-function isSender(value: unknown): value is Api["Sender"] {
-  return isRecord(value) && (value.type === "user" || (value.type === "pane" && isString(value.pane)));
-}
-
-const MESSAGE_KINDS = ["message", "steer", "interrupt", "stop", "notice", "select", "user"];
-
-// A message has its shape or it is refused: a pane sender always comes with its relation.
-function isMessage(value: unknown): value is Api["Message"] {
-  if (!isRecord(value) || typeof value.seq !== "number" || !isString(value.id) || !isSender(value.from)) return false;
-  if (value.from.type === "pane" && !isRelation(value.relation)) return false;
-  if (value.kind === "ended") return isEnd(value.end);
-  return isString(value.kind) && MESSAGE_KINDS.includes(value.kind) && isString(value.text);
-}
 
 function isPlacement(value: unknown): value is Api["Placement"] {
   return isRecord(value) && isString(value.pane) && isString(value.session) && isString(value.window);
@@ -633,14 +695,16 @@ function utf8Complete(carry: Buffer, bytes: Buffer): { text: string; carry: Buff
   return { text: all.subarray(0, end).toString("utf8"), carry: Buffer.from(all.subarray(end)) };
 }
 
-type Addressable = { id: string; pane: string; name: string; named: boolean; state: "running" | "ended" };
+type Addressable = { id: string; where: Where; name: string; named: boolean; state: "running" | "ended" };
+
+const paneOf = (row: { where: Where }): string => (row.where.type === "pane" ? row.where.pane : "");
 
 function isPosted(value: unknown): value is Api["Posted"] {
   return isRecord(value) && typeof value.seq === "number" && (value.state === "queued" || value.state === "delivered" || value.state === "acked");
 }
 
-function matchesId(row: { id: string; pane: string }, wanted: string, prefix = false): boolean {
-  return prefix ? wanted.length >= MIN_ID_PREFIX && row.id.startsWith(wanted) : row.id === wanted || (row.pane !== "" && row.pane === wanted);
+function matchesId(row: { id: string; where: Where }, wanted: string, prefix = false): boolean {
+  return prefix ? wanted.length >= MIN_ID_PREFIX && row.id.startsWith(wanted) : row.id === wanted || (paneOf(row) !== "" && paneOf(row) === wanted);
 }
 
 // Go-style %q: escapes quotes, backslashes and control characters but keeps
@@ -727,23 +791,14 @@ export function streamBatch(lines: string[], log: string, alreadyDropped = 0, cu
 }
 
 function checkName(name: string): string | null {
-  if (name === "" || name === "." || name === ".." || name.includes("/")) {
-    return `refusing window name ${quote(name)}: it must be one path-safe name, not an empty, dot or slashed path`;
+  if (name === "" || name === "." || name === ".." || name.includes("/") || /\p{Cc}/u.test(name)) {
+    return `refusing agent name ${quote(name)}: it must be one path-safe name without control characters, not an empty, dot or slashed path`;
   }
+  if (Buffer.byteLength(name, "utf8") > MAX_NAME_BYTES) return `refusing agent name ${quote(name.slice(0, 20))}…: it is over ${MAX_NAME_BYTES} bytes`;
   return null;
 }
 
-// pi --list-models prints a header, then one row per model: provider, model id.
 type ModelRow = { provider: string; model: string };
-
-function modelRows(out: string): ModelRow[] {
-  const rows: ModelRow[] = [];
-  for (const line of out.split("\n").slice(1)) {
-    const fields = line.trim().split(/\s+/);
-    if (fields.length >= 2 && fields[0] && fields[1]) rows.push({ provider: fields[0], model: fields[1] });
-  }
-  return rows;
-}
 
 function validateModelRows(argument: string, rows: ModelRow[]): string | null {
   const configured = (id: string): boolean => rows.some((r) => `${r.provider}/${r.model}` === id);
@@ -1052,7 +1107,7 @@ async function routedGrep(r: Routed, params: GrepToolInput, signal: AbortSignal 
 export const agentExtension = (host: AgentHost) => (pi: ExtensionAPI): void => {
   pi.registerFlag("runtime", { description: "Run the built-in tools and ! commands in a configured runtime or an ad-hoc runtime of this session by name", type: "string" });
   pi.on("project_trust", async (event) => {
-    const trusted = host.facts.trustedCwd;
+    const trusted = host.trusted;
     const want = trusted ? realpathOf(trusted) : undefined;
     if (want !== undefined && realpathOf(event.cwd) === want) return { trusted: "yes" };
     return { trusted: "undecided" };
@@ -1060,13 +1115,10 @@ export const agentExtension = (host: AgentHost) => (pi: ExtensionAPI): void => {
   let ko: string | null = null;
   let session: ExtensionContext | null = null;
   let ownSessionId: string | null = null;
-  let edge: { parent: string } | null = null;
   let pane: string | null = null;
   let active = false;
-  let instance = "";
-  let leaving: "control" | null = null;
   let routed: Routed | { refusal: string } | null = null;
-  const liveRunRule = (rule: string): string => rule + (edge ? SUBAGENT_RESULT_RULE : "");
+  const liveRunRule = (rule: string): string => rule + (host.self.parent ? SUBAGENT_RESULT_RULE : "");
 
   const written = new Map<string, string>();
 
@@ -1079,7 +1131,7 @@ export const agentExtension = (host: AgentHost) => (pi: ExtensionAPI): void => {
   const varPath = (key: string): string => `${varsPath()}/${key}`;
 
   const writeVars = async (entries: Array<[string, unknown]>): Promise<void> => {
-    if (!pane) return;
+    if (!pane || host.self.parent) return;
     const fresh = entries.filter(([key, value]) => written.get(key) !== JSON.stringify(value));
     for (const [key, value] of fresh) {
       written.set(key, JSON.stringify(value));
@@ -1133,10 +1185,10 @@ export const agentExtension = (host: AgentHost) => (pi: ExtensionAPI): void => {
     switch (data.role) {
       case "peer": return { role: "peer", name, session: id, cwd };
       case "subagent": {
-        const { model, pane: where, runtime: recorded } = data;
-        if (typeof model !== "string" || !isRecord(where)) return undefined;
-        const runtime = isRecord(recorded) && typeof recorded.name === "string" && (recorded.mode === "routed" || recorded.mode === "inside") ? { runtime: { name: recorded.name, mode: recorded.mode === "routed" ? ("routed" as const) : ("inside" as const) } } : {};
-        return { role: "subagent", owner: ownSessionId ?? "", name, session: id, model, fork: data.fork === true, cwd, ...runtime, pane: { instance: str(where.instance), pane: str(where.pane) } };
+        const { model, runtime: recorded } = data;
+        if (typeof model !== "string") return undefined;
+        const runtime = isRecord(recorded) && typeof recorded.name === "string" ? { runtime: { name: recorded.name } } : {};
+        return { role: "subagent", owner: ownSessionId ?? "", name, session: id, model, fork: data.fork === true, cwd, ...runtime };
       }
       default: return undefined;
     }
@@ -1266,51 +1318,41 @@ export const agentExtension = (host: AgentHost) => (pi: ExtensionAPI): void => {
 
   const markChildWork = (child: ChildData): void => append(ENTRY_WORK, { child: child.session });
 
-  // The child's rule, about itself.
-  const ownReported = (): boolean => {
-    const all = entries();
-    const work = lastIndex(all, ENTRY_WORK, (data) => data.child === undefined);
-    return work === -1 || lastIndex(all, ENTRY_REPORT, (data) => data.child === undefined) > work;
+  // The child's rule, about itself, read from this parent's branch: the text is the report after its last work.
+  const childState = (child: string): { reported: boolean; text?: string } => {
+    const mark = childMarks().get(child);
+    const reported = !mark || mark.work === -1 || mark.report > mark.work;
+    return { reported, ...(mark && mark.work !== -1 && reported && mark.text !== undefined ? { text: mark.text } : {}) };
   };
 
-  const lastOwnReport = (): Entry | undefined => {
-    const all = entries();
-    const work = lastIndex(all, ENTRY_WORK, (data) => data.child === undefined);
-    return work === -1 ? undefined : all.findLast((entry) => entry.customType === ENTRY_REPORT && entry.data.child === undefined && entry.index > work);
-  };
+  // ---- the panes and the tree ----
 
-  const markOwnWork = (): void => append(ENTRY_WORK, {});
+  type Snapshot = { rows: AgentRow[]; all: AgentRow[]; elsewhere: AgentRow[]; panes: PaneInfo[]; ok: boolean; me: PaneInfo | undefined };
 
-  const endedAfter = (child: ChildData): boolean => {
-    const all = entries();
+  const nameOfAgent = (a: Agent): string => (a.parent ? a.name : a.view.state.name);
+  const depthOf = (a: Agent): number => (a.parent ? depthOf(a.parent) + 1 : 0);
+  const isRoot = (): boolean => !host.self.parent;
+
+  const endCause = (child: ChildData, all: Entry[]): AgentEnd => {
     const spawned = lastIndex(all, ENTRY_AGENT, (data) => data.role === "subagent" && data.name === child.name);
-    return lastIndex(all, ENTRY_ENDED, (data) => data.child === child.session) > spawned;
+    const ended = all.findLast((entry) => entry.customType === ENTRY_ENDED && entry.data.child === child.session && entry.index > spawned);
+    const cause = ended?.data.cause;
+    return cause === "stopped" || cause === "its session ended on an error" ? cause : "koa restarted";
   };
 
-  // True for the one caller that gets to announce this ending.
-  const claimEnding = (child: ChildData): boolean => {
-    if (endedAfter(child)) return false;
-    append(ENTRY_ENDED, { child: child.session, pane: child.pane.pane });
-    return true;
+  let layoutRead: { at: number; value: { ok: boolean; panes: PaneInfo[] } } | undefined;
+  const layout = async (maxAgeMs: number): Promise<{ ok: boolean; panes: PaneInfo[] }> => {
+    if (!host.facts.insideKo) return { ok: true, panes: [] };
+    if (layoutRead && Date.now() - layoutRead.at < maxAgeMs) return layoutRead.value;
+    const value = await listPanesResult();
+    layoutRead = { at: Date.now(), value };
+    return value;
   };
 
-  // ---- the panes ----
-
-  const readInstance = async (): Promise<string> => {
-    if (!instance) {
-      const version = apiJson(await apiCall("GET", "/version"));
-      if (isRecord(version)) instance = str(version.instance);
-    }
-    return instance;
-  };
-
-  type Snapshot = { rows: AgentRow[]; all: AgentRow[]; elsewhere: AgentRow[]; panes: PaneInfo[]; ok: boolean; me: PaneInfo | undefined; depth: number; ancestors: string[] };
-
-  const discovery = async (): Promise<Snapshot> => {
-    const [{ ok, panes }] = await Promise.all([listPanesResult(), readInstance()]);
+  const discovery = async (maxAgeMs = 0): Promise<Snapshot> => {
+    const { ok, panes } = await layout(maxAgeMs);
     const byPane = new Map(panes.map((p) => [p.pane, p]));
     const me = panes.find((p) => p.pane === pane);
-    const mySession = me?.session ?? "";
     const branch = entries();
     const marks = childMarks(branch);
     const registry = children(branch);
@@ -1324,75 +1366,72 @@ export const agentExtension = (host: AgentHost) => (pi: ExtensionAPI): void => {
         if (peer) pending.set(paneId, peer);
       }
     }
-    const alive = new Map(registry.filter((c) => c.pane.instance === instance).map((c) => [c.pane.pane, c]));
     const reportOf = (child: ChildData): string | undefined => marks.get(child.session)?.text;
     const all: AgentRow[] = [];
     const elsewhere: AgentRow[] = [];
-    for (const { pane: p, row: running } of runningRows(panes, me)) {
-      const child = alive.get(p.pane);
-      const peer = pending.get(p.pane);
-      const agent = piAgent(p.kind);
-      if (!(agent || peer || (child && p.parent === pane))) continue;
-      const parentPane = byPane.get(p.parent);
+    const live = new Set<string>();
+    const self = host.self;
+    all.push({
+      id: self.id, name: nameOfAgent(self), named: true, where: { type: "process" }, status: "running", activity: "", parent: self.parent?.id ?? "",
+      depth: depthOf(self), self: true, cwd: self.view.state.cwd, canMessage: false, kind: self.parent ? "subagent" : "agent", relationship: "own", state: "running",
+    });
+    live.add(self.id);
+    for (const { agent, relationship } of host.scope()) {
+      const child = relationship === "own" ? registry.find((c) => c.session === agent.id) : undefined;
       const row: AgentRow = {
-        ...running,
-        id: agent?.session || child?.session || peer?.session || p.pane,
-        name: p.name || child?.name || peer?.name || p.title,
-        named: p.name !== "" || !!child || !!peer,
-        pane: p.pane,
-        window: p.window,
-        parent: parentPane ? running.parent : (p.parent === pane ? ownSessionId ?? "" : ""),
-        depth: ancestorsOf(byPane, p).length,
-        cwd: p.cwd,
-        ...(p.runtime ? { runtime: p.runtime } : {}),
-        canMessage: p.inbox,
-        kind: parentPane && (piAgent(parentPane.kind) || parentPane.pane === pane) ? "subagent" : "agent",
+        id: agent.id, name: nameOfAgent(agent), named: true, where: { type: "process" },
+        status: agent.view.state.dialogs.length ? "blocked" : agent.view.root.value, activity: "", parent: agent.parent?.id ?? "",
+        depth: depthOf(agent), self: false, cwd: agent.view.state.cwd, canMessage: true, kind: agent.parent ? "subagent" : "agent",
+        relationship, state: "running",
       };
       if (child) {
         row.model = child.model;
         row.reported = childReported(child, marks);
         const report = reportOf(child);
         if (report !== undefined) row.report = utf8Prefix(report, MAX_REPORT_BYTES);
+        if (child.runtime) row.runtime = child.runtime.name;
       }
-      (p.session === mySession ? all : elsewhere).push(row);
+      live.add(agent.id);
+      all.push(row);
     }
     for (const child of registry) {
-      const lingering = child.pane.instance === instance ? byPane.get(child.pane.pane) : undefined;
-      if (lingering && !lingering.dead) continue;
+      if (live.has(child.session)) continue;
       const report = reportOf(child);
       all.push({
-        id: child.session,
-        name: child.name,
-        named: true,
-        pane: lingering?.pane ?? "",
-        window: lingering?.window ?? "",
-        status: "ended",
-        activity: "",
-        parent: ownSessionId ?? "",
-        depth: (me ? ancestorsOf(byPane, me).length : 0) + 1,
-        self: false,
-        cwd: child.cwd,
+        id: child.session, name: child.name, named: true, where: { type: "process" }, status: "ended", activity: "",
+        parent: ownSessionId ?? "", depth: depthOf(host.self) + 1, self: false, cwd: child.cwd,
         ...(child.runtime ? { runtime: child.runtime.name } : {}),
-        canMessage: false,
-        kind: "subagent",
-        relationship: "own",
-        state: "ended",
-        ended: lingering?.dead ? causeText(lingering.dead) : "its pane is gone",
-        model: child.model,
-        reported: childReported(child, marks),
+        canMessage: false, kind: "subagent", relationship: "own", state: "ended", ended: endCause(child, branch),
+        model: child.model, reported: childReported(child, marks),
         ...(report === undefined ? {} : { report: utf8Prefix(report, MAX_REPORT_BYTES) }),
       });
+    }
+    for (const { pane: p, row: running } of runningRows(panes, me)) {
+      if (p.pane === pane) continue;
+      const peer = pending.get(p.pane);
+      const agent = piAgent(p.kind);
+      if (!(agent || peer) || p.parent) continue;
+      const row: AgentRow = {
+        ...running,
+        id: agent?.session || peer?.session || p.pane,
+        name: p.name || peer?.name || p.title,
+        named: p.name !== "" || !!peer,
+        where: { type: "pane", pane: p.pane, window: p.window }, parent: "", depth: 0, cwd: p.cwd,
+        ...(p.runtime ? { runtime: p.runtime } : {}),
+        canMessage: p.inbox, kind: "agent",
+        relationship: running.relationship === "peer" ? (isRoot() ? "peer" : "relative") : running.relationship,
+      };
+      (me && p.session === me.session ? all : elsewhere).push(row);
     }
     const liveSessions = new Set(all.concat(elsewhere).filter((row) => row.state === "running").map((row) => row.id));
     const savedSessions = new Set(registryPeers.length ? sessionFiles(session?.sessionManager.getSessionDir()).map((file) => file.id) : []);
     for (const peer of registryPeers) {
       if (liveSessions.has(peer.session)) continue;
       if (!savedSessions.has(peer.session)) continue;
-      all.push({ id: peer.session, name: peer.name, named: true, pane: "", window: "", status: "ended", activity: "", parent: "", depth: 0, self: false, cwd: peer.cwd, canMessage: false, kind: "agent", relationship: "peer", state: "ended", ended: "its pane is gone" });
+      all.push({ id: peer.session, name: peer.name, named: true, where: { type: "pane", pane: "", window: "" }, status: "ended", activity: "", parent: "", depth: 0, self: false, cwd: peer.cwd, canMessage: false, kind: "agent", relationship: "peer", state: "ended", ended: "its pane is gone" });
     }
     const rows = all.filter((a) => !a.self && a.relationship !== "other");
-    const ancestors = me ? ancestorsOf(byPane, me) : [];
-    return { rows, all, elsewhere, panes, ok, me, depth: ancestors.length, ancestors: ancestors.map((a) => piAgent(a.kind)?.session).filter((session): session is string => !!session) };
+    return { rows, all, elsewhere, panes, ok, me };
   };
 
   const toolRow = (a: AgentRow) => {
@@ -1468,6 +1507,22 @@ export const agentExtension = (host: AgentHost) => (pi: ExtensionAPI): void => {
     return last;
   };
 
+  const relationOf = (sender: Agent, recipient: Agent): Relation => {
+    const chain = (a: Agent): Agent[] => (a.parent ? [a, ...chain(a.parent)] : [a]);
+    if (recipient.parent === sender) return "parent";
+    if (sender.parent === recipient) return "child";
+    if (sender.parent === recipient.parent) return "sibling";
+    return chain(sender).includes(recipient) ? "descendant" : "sibling_descendant";
+  };
+
+  // The data of a message to a pane: a sender that is not its pane's root names itself; a routed sender names its runtime.
+  const sendData = (extra: { to?: string }): Api["Data"] | undefined => {
+    const data: Record<string, unknown> = { ...extra };
+    if (!isRoot() && ownSessionId) data.from = { session: ownSessionId, name: nameOfAgent(host.self) };
+    if (routed && !("refusal" in routed)) data.runtime = routed.name;
+    return Object.keys(data).length ? data : undefined;
+  };
+
   const deliveryText = (name: string, kind: string, result: SendOutcome, working = false, steerable = false): { ok: boolean; text: string } => {
     switch (result.state) {
       case "queued":
@@ -1518,294 +1573,7 @@ export const agentExtension = (host: AgentHost) => (pi: ExtensionAPI): void => {
     pi.sendUserMessage(text, { deliverAs: "followUp" });
   };
 
-  const deliverNotice = (text: string, details: NoticeDetails): void => {
-    const from = 'job' in details ? details.job.name : details.agent.name;
-    pi.sendMessage({ customType: NOTICE_CUSTOM_TYPE, content: `${noticeHeader(from)}\n${text}`, display: true, details: { from, ...details } satisfies NoticeDetails }, { deliverAs: "steer", triggerTurn: true });
-  };
-
-  const labelOf = (from: Api["Sender"]): string => (from.type === "pane" ? from.name || from.session || from.pane : "the user");
-
-  const childRef = (child: ChildData): AgentRef => ({ name: child.name, session: child.session, pane: child.pane.pane });
-
-  const refOf = (from: Api['Sender']): AgentRef => ({ name: labelOf(from), ...(from.type === 'pane' ? { session: from.session, pane: from.pane } : {}) });
-
-  const deliverAgentMessage = (agent: AgentRef, relation: Relation, text: string, work: boolean, runtime?: string): void => {
-    const from = agent.name, header = senderHeader(from, relation, runtime);
-    pi.sendMessage(
-      { customType: MESSAGE_CUSTOM_TYPE, content: `${header}\n${text}`, display: true, details: { from, work, agent, body: text, inbound: { form: 'message', relation, ...(runtime ? { runtime } : {}) } } satisfies MessageDetails },
-      { deliverAs: "followUp", triggerTurn: true },
-    );
-  };
-
-  // A message from a pane that has a pi identity gets the sender header; any other is plain text.
-  const deliverMessage = (held: Held): void => {
-    if (!held.text) return;
-    const { from, relation } = held;
-    if (from.type !== "pane" || !relation || !(from.name || from.session)) {
-      deliver(held.text);
-      return;
-    }
-    deliverAgentMessage(refOf(from), relation, held.text, relation === "parent", held.runtime);
-  };
-
-  const interrupted: Held[] = [];
-
-  const reportNotice = (child: ChildData, text: string): string => {
-    const budget = MAX_NOTICE_BYTES - Buffer.byteLength(PARENT_GUIDANCE, "utf8");
-    if (Buffer.byteLength(text, "utf8") <= budget) return text + PARENT_GUIDANCE;
-    const suffix = `\n\nfull report: read_report(${JSON.stringify(child.name)})`;
-    return utf8Prefix(text, budget - Buffer.byteLength(suffix, "utf8")) + suffix + PARENT_GUIDANCE;
-  };
-
-  const currentChild = (sessionId: string, paneId: string): ChildData | undefined =>
-    children().find((c) => (sessionId !== "" && c.session === sessionId) || (paneId !== "" && c.pane.pane === paneId));
-
-  const handleNotice = (id: string, from: Api["Sender"], text: string, data: unknown): void => {
-    const report = isRecord(data) && data.report === true;
-    const child = from.type === "pane" ? currentChild(from.session ?? "", from.pane) : undefined;
-    if (!report || !child) {
-      if (text) deliverNotice(text, { inbound: { form: 'notice' }, agent: refOf(from), body: text });
-      return;
-    }
-    if (entries().some((entry) => entry.customType === ENTRY_REPORT && entry.data.id === id)) return;
-    append(ENTRY_REPORT, { child: child.session, name: child.name, text, id });
-    deliverNotice(reportNotice(child, text), { inbound: { form: 'report', relation: 'child' }, agent: childRef(child), body: text });
-  };
-
-  const screenTail = async (route: string): Promise<string | undefined> => {
-    const body = apiBody(await apiCall("GET", route));
-    return body === undefined ? undefined : utf8Suffix(body, TAIL_BYTES);
-  };
-
-  const announceEnding = async (child: ChildData, end: Api["End"] | { type: "missing" }): Promise<void> => {
-    if (!claimEnding(child)) return;
-    const reported = childReported(child);
-    const how = end.type === "dead" ? causeText(end) : end.type === "gone" ? "its pane was removed" : "its pane is gone";
-    let body = `subagent ${quote(child.name)} ended: ${how}; it had ${reported ? "reported" : "not reported on its last work"}`;
-    if (!reported) {
-      const tail = end.type === "dead" ? await screenTail(`/panes/${child.pane.pane}/screen?history=all`) : undefined;
-      if (tail !== undefined) body += `\n--- last ${TAIL_BYTES} bytes of its screen ---\n${tail}`;
-      body += "\nmessage it to continue it, or stop_agent to end it";
-    }
-    deliverNotice(body, { inbound: { form: 'ended', relation: 'child', reported }, agent: childRef(child), body });
-  };
-
-  const handleEnded = async (source: string, end: Api["End"]): Promise<void> => {
-    await readInstance();
-    const target = children().find((c) => c.pane.pane === source && c.pane.instance === instance);
-    if (target) await announceEnding(target, end);
-  };
-
-  const handleIncoming = async (m: Api["Message"]): Promise<"ack" | "refuse"> => {
-    switch (m.kind) {
-      case "user":
-        if (m.text) deliver(m.text);
-        return "ack";
-      case "message":
-        deliverMessage({ from: m.from, relation: m.relation, text: m.text, runtime: runtimeOf(m.data) });
-        return "ack";
-      case "steer": {
-        if (!m.text) return "ack";
-        const from = labelOf(m.from);
-        workStarted();
-        // pi drains followUp only once the agent has decided to stop; steer joins the run under way.
-        pi.sendMessage(
-          { customType: STEER_CUSTOM_TYPE, content: steerHeader(from) + m.text, display: true, details: { from, work: m.relation === "parent", agent: refOf(m.from), body: m.text, inbound: { form: 'steer', ...(m.relation ? { relation: m.relation } : {}) } } satisfies SteerDetails },
-          { deliverAs: "steer", triggerTurn: true },
-        );
-        return "ack";
-      }
-      case "interrupt": {
-        turnEndedByControl = true;
-        const busy = !settled;
-        // pi's extension abort returns void before the active tool and run end.
-        session?.abort();
-        const held = { from: m.from, relation: m.relation, text: m.text, runtime: runtimeOf(m.data) };
-        if (busy) interrupted.push(held);
-        else deliverMessage(held);
-        return "ack";
-      }
-      case "stop":
-        interrupted.length = 0;
-        turnEndedByControl = true;
-        leaving = "control";
-        return "ack";
-      case "select":
-        return "ack";
-      case "notice":
-        try {
-          handleNotice(m.id, m.from, m.text, m.data);
-        } catch {
-          return "refuse";
-        }
-        return "ack";
-      case "ended":
-        if (m.from.type === "pane") await handleEnded(m.from.pane, m.end);
-        return "ack";
-    }
-  };
-
-  // ---- the message stream: ko api --stream /panes/$KO_PANE/messages ----
-
-  const received = (): string[] => (host.slots.received ??= []);
-
-  let queue: Promise<void> = Promise.resolve();
-
-  const answerStream = (id: string, type: "ack" | "refuse"): void => {
-    receiver.write(JSON.stringify({ type, id } satisfies Api["StreamRequest"]) + "\n");
-  };
-
-  const onStreamLine = (line: string): void => {
-    let decoded: unknown;
-    try {
-      decoded = JSON.parse(line);
-    } catch {
-      return;
-    }
-    if (!isMessage(decoded)) {
-      if (isRecord(decoded) && typeof decoded.id === "string") answerStream(decoded.id, "refuse");
-      return;
-    }
-    const message = decoded;
-    queue = queue.then(async () => {
-      if (received().includes(message.id)) {
-        answerStream(message.id, "ack");
-        return;
-      }
-      let verdict: "ack" | "refuse";
-      try {
-        verdict = await handleIncoming(message);
-      } catch {
-        verdict = "refuse";
-      }
-      if (verdict === "ack") {
-        const ring = received();
-        ring.push(message.id);
-        if (ring.length > RECEIVED_RING) ring.splice(0, ring.length - RECEIVED_RING);
-      }
-      answerStream(message.id, verdict);
-      if (verdict === "ack" && message.kind === "stop") session?.shutdown();
-    });
-  };
-
-  let receiverHold: ReceiverHold | null = null;
-  let receiverData: ((chunk: Buffer) => void) | null = null;
-  let receiverTimer: NodeJS.Timeout | null = null;
-  let receiverBackoff = 0;
-  let receiverActive = false;
-  const receiverExit = (): void => {
-    receiverDetach();
-    receiverHold = null;
-    if (!receiverActive) return;
-    receiverBackoff = reconnectBackoff(receiverBackoff);
-    receiverTimer = setTimeout(receiverOpen, receiverBackoff);
-    receiverTimer.unref();
-  };
-  const receiverDetach = (): void => {
-    if (!receiverHold) return;
-    if (receiverData) receiverHold.child.stdout?.removeListener("data", receiverData);
-    receiverHold.child.stdout?.pause();
-    receiverHold.child.removeListener("exit", receiverExit);
-    receiverHold.child.removeListener("error", receiverExit);
-  };
-  const receiverAttach = (next: ReceiverHold): void => {
-    receiverHold = next;
-    receiverData = lineReader(next, (line) => { receiverBackoff = 0; onStreamLine(line); });
-    next.child.stdout?.on("data", receiverData);
-    next.child.stdout?.resume();
-    next.child.once("exit", receiverExit);
-    next.child.once("error", receiverExit);
-  };
-  function receiverOpen(): void {
-    receiverTimer = null;
-    const target = pane ? `/panes/${pane}/messages` : null;
-    if (receiverActive && ko && target) receiverAttach({ child: openStream(ko, target), partial: Buffer.alloc(0) });
-  }
-  const receiver = {
-    start(): void {
-      receiverActive = true;
-      const held = host.slots.receiver;
-      host.slots.receiver = undefined;
-      if (held && held.child.exitCode === null && held.child.signalCode === null) receiverAttach(held);
-      else receiverOpen();
-    },
-    stop(park: boolean): void {
-      receiverActive = false;
-      if (receiverTimer) clearTimeout(receiverTimer);
-      receiverTimer = null;
-      const held = receiverHold;
-      receiverDetach();
-      receiverHold = null;
-      if (!held) return;
-      if (park) host.slots.receiver = held;
-      else held.child.kill();
-    },
-    write(line: string): void { receiverHold?.child.stdin?.write(line); },
-  };
-
-  const jobRecords = new Map<string, { type: "running" } | { type: "finished"; timer: NodeJS.Timeout }>();
-  let jobRecordQueue = Promise.resolve();
-  const writeJobRecord = (id: string | undefined, state: "idle" | "working" | "done" | "error" | "clear", title?: string, message?: string): boolean => {
-    if (!active) return false;
-    const clean = (text: string, bytes: number): string => utf8Prefix(replaceControlCharacters(text).replace(/\s+/g, " ").trim(), bytes);
-    const recordId = id === undefined ? "job" : `job/${id}`;
-    const cleanedTitle = title === undefined ? undefined : clean(title, MAX_JOB_TITLE_BYTES);
-    const cleanedMessage = message === undefined ? undefined : clean(message, MAX_JOB_MESSAGE_BYTES);
-    const report: Api["StatusReport"] = state === "clear" ? { type: "clear", id: recordId } : {
-      type: "set", id: recordId, state,
-      ...(cleanedTitle ? { title: cleanedTitle } : {}),
-      ...(cleanedMessage ? { msg: cleanedMessage } : {}),
-    };
-    const path = `/panes/${pane}/status`;
-    jobRecordQueue = jobRecordQueue.then(async () => { await apiCall("POST", path, report); }).catch(() => {});
-    return true;
-  };
-  const clearJobRecord = (id: string): void => {
-    const record = jobRecords.get(id);
-    if (record?.type === "finished") clearTimeout(record.timer);
-    jobRecords.delete(id);
-    writeJobRecord(id, "clear");
-  };
-  const detachJobRecords = (): void => {
-    for (const record of jobRecords.values()) if (record.type === "finished") clearTimeout(record.timer);
-    jobRecords.clear();
-  };
-  const clearJobRecords = (): void => {
-    detachJobRecords();
-    writeJobRecord(undefined, "clear");
-  };
-  const reportJob = (job: BackgroundJob): void => {
-    const id = job.id;
-    if (!jobRecords.has(id)) {
-      if (jobRecords.size >= 32) {
-        const oldestFinished = [...jobRecords].find(([, record]) => record.type === "finished");
-        if (!oldestFinished) return;
-        clearJobRecord(oldestFinished[0]);
-      }
-    }
-    if (job.state.type === "running") {
-      if (writeJobRecord(id, jobRecordState(job), job.mode.name, job.command)) jobRecords.set(id, { type: "running" });
-    }
-    else {
-      if (!writeJobRecord(id, job.state.end.type === "exit" && job.state.end.code === 0 ? "done" : "error", job.mode.name, jobEndText(job.state.end))) return;
-      const timer = setTimeout(() => clearJobRecord(id), envMs("KO_JOB_RECORD_LINGER_MS", 5000));
-      timer.unref();
-      jobRecords.delete(id);
-      jobRecords.set(id, { type: "finished", timer });
-    }
-  };
-  let registry = host.slots.jobs;
-  const jobRegistry = (): JobRegistry => {
-    if (!registry) {
-      registry = createJobRegistry(ownSessionId ?? "");
-      host.slots.jobs = registry;
-    }
-    return registry;
-  };
-  const streamInterval = (): number => envMs("KO_STREAM_INTERVAL_MS", 5000);
-  const untilDue = (stream: BackgroundJob["mode"]["stream"]): number => stream.lastBatch + streamInterval() - performance.now();
-  let agentWorking = false;
-  const sendStream = (job: BackgroundJob, body: ReturnType<typeof streamBatch>): void => {
+  const jobStream = (job: BackgroundJob, body: ReturnType<typeof streamBatch>): void => {
     pi.sendMessage({
       customType: STREAM_CUSTOM_TYPE,
       content: `job ${JSON.stringify(job.mode.name)} output (job ${job.id})\n${body.content}`,
@@ -1813,42 +1581,83 @@ export const agentExtension = (host: AgentHost) => (pi: ExtensionAPI): void => {
       details: { from: job.mode.name, job: jobReference(job), batch: body.batch, omitted: body.omitted, cut: body.cut } satisfies StreamDetails,
     }, { deliverAs: "steer", triggerTurn: true });
   };
-  const flushJob = (job: BackgroundJob): void => {
-    const stream = job.mode.stream;
-    if (!stream.lines.length) return;
-    const batch = streamBatch(stream.lines, job.mode.log, stream.dropped, stream.cut);
-    stream.lastBatch = performance.now();
-    sendStream(job, batch);
-    stream.lines = [];
-    stream.dropped = 0;
-    stream.cut = false;
-    stream.held = Buffer.byteLength(stream.split.line) + stream.carry.length;
+
+  const deliverNotice = (text: string, details: NoticeDetails): void => {
+    const from = 'job' in details ? details.job.name : details.agent.name;
+    pi.sendMessage({ customType: NOTICE_CUSTOM_TYPE, content: `${noticeHeader(from)}\n${text}`, display: true, details: { from, ...details } satisfies NoticeDetails }, { deliverAs: "steer", triggerTurn: true });
   };
-  const scheduleFlush = (job: BackgroundJob): void => {
-    const stream = job.mode.stream;
-    if (agentWorking || !stream.lines.length || stream.timer || !registry?.owner) return;
-    stream.timer = setTimeout(() => {
-      stream.timer = null;
-      if (agentWorking) return;
-      try { flushJob(job); } catch { scheduleFlush(job); }
-    }, Math.max(0, untilDue(stream)));
-    stream.timer.unref();
+
+  const childRef = (child: { name: string; session: string }): AgentRef => ({ name: child.name, session: child.session });
+
+  const deliverAgentMessage = (agent: AgentRef, relation: Relation, text: string, work: boolean, runtime?: string, returnTo?: { session: string; pane: string }): void => {
+    const from = agent.name, header = senderHeader(from, relation, runtime, returnTo);
+    pi.sendMessage(
+      { customType: MESSAGE_CUSTOM_TYPE, content: `${header}\n${text}`, display: true, details: { from, work, agent, body: text, inbound: { form: 'message', relation, ...(runtime ? { runtime } : {}) } } satisfies MessageDetails },
+      { deliverAs: "followUp", triggerTurn: true },
+    );
   };
-  const backgroundJobs = (): BackgroundJob[] => [...registry?.jobs.values() ?? []].filter(isBackgroundJob);
+
+  type Held = { agent: AgentRef; relation: Relation | undefined; text: string; runtime?: string; returnTo?: { session: string; pane: string } };
+
+  // A message from an agent that has a relation gets the sender header; any other is plain text.
+  const deliverMessage = (held: Held): void => {
+    if (!held.text) return;
+    if (!held.relation) {
+      deliver(held.text);
+      return;
+    }
+    deliverAgentMessage(held.agent, held.relation, held.text, held.relation === "parent", held.runtime, held.returnTo);
+  };
+
+  const interrupted: Held[] = [];
+
+  const reportNotice = (child: Pick<ChildData, "name">, text: string): string => {
+    const budget = MAX_NOTICE_BYTES - Buffer.byteLength(PARENT_GUIDANCE, "utf8");
+    if (Buffer.byteLength(text, "utf8") <= budget) return text + PARENT_GUIDANCE;
+    const suffix = `\n\nfull report: read_report(${JSON.stringify(child.name)})`;
+    return utf8Prefix(text, budget - Buffer.byteLength(suffix, "utf8")) + suffix + PARENT_GUIDANCE;
+  };
+
+  const receive = async (m: InProcessMessage): Promise<void> => {
+    switch (m.kind) {
+      case "user":
+        if (m.text) deliver(m.text);
+        return;
+      case "message":
+        deliverMessage({ agent: m.agent, relation: m.relation, text: m.text, runtime: m.runtime, returnTo: m.returnTo });
+        return;
+      case "steer": {
+        if (!m.text) return;
+        const from = m.agent.name;
+        workStarted();
+        // pi drains followUp only once the agent has decided to stop; steer joins the run under way.
+        pi.sendMessage(
+          { customType: STEER_CUSTOM_TYPE, content: steerHeader(from, m.returnTo, m.runtime) + m.text, display: true, details: { from, work: m.relation === "parent", agent: m.agent, body: m.text, inbound: { form: 'steer', ...(m.relation ? { relation: m.relation } : {}) } } satisfies SteerDetails },
+          { deliverAs: "steer", triggerTurn: true },
+        );
+        return;
+      }
+      case "interrupt": {
+        turnEndedByControl = true;
+        const busy = !settled;
+        // pi's extension abort returns void before the active tool and run end.
+        session?.abort();
+        const held: Held = { agent: m.agent, relation: m.relation, text: m.text, runtime: m.runtime, returnTo: m.returnTo };
+        if (busy) interrupted.push(held);
+        else deliverMessage(held);
+        return;
+      }
+      case "notice":
+        if (m.text) deliverNotice(m.text, { inbound: { form: 'notice' }, agent: m.agent, body: m.text });
+        return;
+    }
+  };
+
+  const jobRegistry = (): JobRegistry => host.jobs.registry;
+  const backgroundJobs = (): BackgroundJob[] => [...host.jobs.registry.jobs.values()].filter(isBackgroundJob);
   const jobNamed = (wanted: string): BackgroundJob | undefined => {
     const matches = backgroundJobs().reverse().filter((job) => job.mode.name.toLowerCase() === wanted.toLowerCase());
     return matches.find((job) => job.state.type === "running") ?? matches[0];
-  };
-  const finishWorking = (): void => {
-    agentWorking = false;
-    for (const job of backgroundJobs()) if (streams(job)) scheduleFlush(job);
-  };
-  const flushStreams = (): void => {
-    for (const job of backgroundJobs()) {
-      if (!streams(job)) continue;
-      detachJob(job);
-      if (untilDue(job.mode.stream) <= 0) flushJob(job);
-    }
   };
   const localExec: JobOperations = {
     async exec(command, cwd, options) {
@@ -1858,36 +1667,6 @@ export const agentExtension = (host: AgentHost) => (pi: ExtensionAPI): void => {
   const bashOperations = (r: Routed): JobOperations => ({
     exec: (command, cwd, options) => routedJob(jobRegistry(), r, command, cwd, options),
   });
-  const adoptJobs = (): void => {
-    const owner = jobRegistry();
-    clearJobRecords();
-    owner.owner = {
-      onStart: reportJob,
-      clearRecords: () => {
-        if (active) apiCallSync("POST", `/panes/${pane}/status`, { type: "clear", id: "job" } satisfies Api["StatusReport"]);
-      },
-      onLines(job) { if (streams(job)) scheduleFlush(job); },
-      onEnd(job) {
-        if (jobRecords.has(job.id)) reportJob(job);
-        detachJob(job);
-        if (job.state.type !== "ended" || job.state.announced) return;
-        if (job.state.end.type !== "stopped") {
-          if (streams(job)) flushJob(job);
-          const tail = jobTail(job);
-          deliverNotice(`job ${quote(job.mode.name)} (${job.id}) ${jobEndText(job.state.end)}\n--- last ${TAIL_BYTES} bytes of its output ---\n${tail}\nlog: ${job.mode.log}`, { kind: "job", job: { ...jobReference(job), end: job.state.end }, tail });
-        }
-        job.state.announced = true;
-        job.tail = Buffer.alloc(0);
-        pruneJobs(owner);
-      },
-    };
-    for (const job of backgroundJobs()) {
-      if (job.state.type === "running") reportJob(job);
-      if (job.state.type === "ended" && !job.state.announced) {
-        try { owner.owner?.onEnd(job); } catch {}
-      } else if (job.state.type !== "ended" && streams(job)) scheduleFlush(job);
-    }
-  };
   type BashCall = { type: "bash"; cancel(reason?: ShutdownReason): void; move(reason: "timeout" | "reload"): boolean };
   type PendingCall = BashCall | { type: "async_bash"; cancel(reason?: ShutdownReason): void };
   const calls = new Set<PendingCall>();
@@ -1967,105 +1746,20 @@ export const agentExtension = (host: AgentHost) => (pi: ExtensionAPI): void => {
     });
   };
 
-  // ---- the parent: reports, the watch, the exit notice ----
+  // ---- the tree: what this agent still owes ----
 
-  let parentPane = "";
-  let tick: NodeJS.Timeout | null = null;
-  let ticking = false;
+  const liveChildren = (): ChildData[] => children().filter((child) => host.find(child.session));
 
-  const leave = (): void => {
-    leaving = "control";
-    turnEndedByControl = true;
-    session?.shutdown();
-  };
-
-  // One id for one notice: every attempt at it carries the same id.
-  const statusNotice = async (text: string, id: string): Promise<boolean> => {
-    if (!parentPane) return false;
-    const result = await sendIntent(parentPane, "notice", utf8Prefix(text, MAX_NOTICE_BYTES), { id });
-    return result.state === "acked" || result.state === "queued";
-  };
-
-  let exitNoticeId = "";
-
-  type OwnReport = { id: string; text: string };
-
-  // Every report that has no sent mark yet, oldest first.
-  const pendingReports = (): OwnReport[] => {
-    const all = entries();
-    const sent = new Set(all.filter((entry) => entry.customType === ENTRY_SENT).map((entry) => entry.data.id));
-    return all
-      .filter((entry) => entry.customType === ENTRY_REPORT && entry.data.child === undefined && !sent.has(entry.data.id))
-      .map((entry) => ({ id: str(entry.data.id), text: str(entry.data.text) }));
-  };
-
-  const sendingReports = new Set<string>();
-
-  const sendReport = async (report: OwnReport, once: boolean): Promise<void> => {
-    if (!parentPane || sendingReports.has(report.id)) return;
-    if (entries().some((entry) => entry.customType === ENTRY_SENT && entry.data.id === report.id)) return;
-    sendingReports.add(report.id);
-    try {
-      const result = await sendIntent(parentPane, "notice", report.text, { id: report.id, data: { report: true }, once });
-      if (result.state === "acked") append(ENTRY_SENT, { id: report.id });
-      else if (result.state === "refused") append(ENTRY_SENT, { id: report.id, refused: true });
-    } finally {
-      sendingReports.delete(report.id);
-    }
-  };
-
-  const watchParent = async (): Promise<void> => {
-    if (!edge) return;
-    const { ok, panes } = await listPanesResult(2000);
-    if (!ok) return;
-    const me = panes.find((p) => p.pane === pane);
-    if (!me?.parent) return;
-    parentPane = me.parent;
-    const parent = panes.find((p) => p.pane === me.parent);
-    if (parent && !parent.dead && parent.sessionVar === edge.parent) return;
-    stopTick();
-    leave();
-  };
-
-  const stopTick = (): void => {
-    if (tick) clearInterval(tick);
-    tick = null;
-  };
-
-  const startTick = (): void => {
-    if (!edge) return;
-    stopTick();
-    tick = setInterval(() => {
-      if (ticking) return;
-      ticking = true;
-      void (async () => {
-        try {
-          await watchParent();
-          for (const report of pendingReports()) await sendReport(report, true);
-        } finally {
-          ticking = false;
-        }
-      })();
-    }, envMs("KO_PARENT_POLL_MS", 5000));
-    tick.unref();
-  };
-
-  const ownLiveWork = async (): Promise<boolean | undefined> => {
+  const ownLiveWork = (): boolean => {
     if (backgroundJobs().some((job) => !serviceJob(job) && job.state.type !== "ended")) return true;
-    const snapshot = await listPanesResult();
-    if (!snapshot.ok) return undefined;
-    await readInstance();
     const marks = childMarks();
-    return children().some((child) => {
-      const row = child.pane.instance === instance ? snapshot.panes.find((p) => p.pane === child.pane.pane) : undefined;
-      return !!row && !row.dead && !childReported(child, marks);
-    });
+    return liveChildren().some((child) => !childReported(child, marks));
   };
 
   const restartState = (): RestartState => {
     const jobs = backgroundJobs().filter((job) => job.state.type !== "ended").length;
     const marks = childMarks();
-    const waiting = children().filter((child) => !childReported(child, marks)).length;
+    const waiting = liveChildren().filter((child) => !childReported(child, marks)).length;
     return jobs || waiting ? { type: "blocked", jobs, children: waiting } : { type: "ready" };
   };
 
@@ -2085,24 +1779,10 @@ export const agentExtension = (host: AgentHost) => (pi: ExtensionAPI): void => {
     } catch { return { type: "unavailable" }; }
   };
 
-  const exitNoticeText = (): string | undefined => {
-    const name = quote(pi.getSessionName() ?? "");
-    if (ownReported()) return undefined;
-    if (ending.kind === "awaiting-first-turn") return `subagent ${name} is exiting before its first turn ran`;
-    if (ending.kind === "error" && !ending.notified) {
-      return `subagent ${name} is exiting without a report on its last work: its last turn failed: ${trimErrorMessage(ending.text)}`;
-    }
-    return `subagent ${name} is exiting without a report on its last work`;
-  };
-
   // ---- spawning ----
 
-  const validateModel = async (model: string | undefined): Promise<string | null> => {
-    if (!model) return null;
-    const res = await runCommand("pi", ["--list-models"], { timeoutMs: 10000 });
-    if (!res.ok) return `could not validate model ${quote(model)}: pi --list-models: ${res.error}`;
-    return validateModelRows(model, modelRows(res.out));
-  };
+  const validateModel = (model: string | undefined, registry: ExtensionContext["modelRegistry"]): string | null =>
+    model ? validateModelRows(model, registry.getAvailable().map((m) => ({ provider: m.provider, model: m.id }))) : null;
 
   const nameClaims = new Set<string>();
   const claimName = (name: string): boolean => {
@@ -2145,7 +1825,6 @@ export const agentExtension = (host: AgentHost) => (pi: ExtensionAPI): void => {
     runtimeInfo?: Api["RuntimeInfo"];
     task: string;
     mode: { kind: "fresh" } | { kind: "continue"; file: string } | { kind: "copy"; file: string };
-    toplevel: boolean;
     koSession: string;
   };
 
@@ -2207,13 +1886,7 @@ export const agentExtension = (host: AgentHost) => (pi: ExtensionAPI): void => {
 
   const createPane = async (plan: Plan): Promise<{ placement: Api["Placement"] } | { error: string }> => {
     const inside = plan.runtime?.mode === "inside";
-    if (!plan.toplevel) return { error: "in-process subagents are not yet available; use toplevel: true" };
     if (!ko) return { error: "ko is not on PATH" };
-    let trusted = await trustedCwd(plan.cwd);
-    if (trusted && inside && plan.runtime) {
-      const info = plan.runtimeInfo ?? (await fetchRuntime(plan.runtime.name));
-      trusted = "error" in info ? undefined : mapHostPath(info.paths, trusted) ?? info.cwd;
-    }
     const argv = [
       inside ? "ko" : ko, "shell", "--", "koa",
       ...(host.browser ? ["--browser"] : []),
@@ -2221,22 +1894,14 @@ export const agentExtension = (host: AgentHost) => (pi: ExtensionAPI): void => {
       ...(plan.mode.kind === "continue" ? ["--session", plan.mode.file] : ["--session-id", plan.session]),
       "--name", plan.name,
       "--model", plan.model,
-      // Copies pi's unexported getDefaultSessionDirPath in core/session-manager.js.
-      ...(plan.toplevel || inside ? [] : ["--session-dir", join(getAgentDir(), "ko-subagents", `--${resolve(plan.cwd).replace(/^[/\\]/, "").replace(/[/\\:]/g, "-")}--`)]),
       ...(plan.mode.kind === "copy" ? ["--fork", plan.mode.file] : []),
-    ];
-    const env: Api["Variable"][] = [
-      { name: "KO_AGENT_SESSION", value: plan.session },
-      ...(plan.toplevel ? [] : [{ name: "KO_AGENT_PARENT_SESSION", value: ownSessionId ?? "" }]),
-      ...(trusted ? [{ name: "KO_AGENT_TRUSTED_CWD", value: trusted }] : []),
     ];
     const body: Api["NewWindow"] = {
       name: plan.name,
       cwd: plan.cwd,
       ...(inside && plan.runtime ? { runtime: plan.runtime.name } : {}),
       command: { type: "argv", argv },
-      env,
-      ...(plan.toplevel ? { session: plan.koSession } : { parent: pane ?? undefined, close: "on_exit" as const }),
+      session: plan.koSession,
       ...(plan.task ? { vars: { [VAR_TASK]: taskVar(plan.task) } } : {}),
     };
     const answer = await apiCall("POST", "/panes", body, envMs("KO_SPAWN_TIMEOUT_MS", 5000));
@@ -2244,94 +1909,81 @@ export const agentExtension = (host: AgentHost) => (pi: ExtensionAPI): void => {
     return isPlacement(placement) ? { placement } : { error: apiError(answer).message };
   };
 
-  const recordAgent = (plan: Plan, placement: Api["Placement"]): void => {
-    if (plan.toplevel) {
-      if (recordsPeers) {
-        append(ENTRY_AGENT, { role: "peer", name: plan.name, session: plan.session, cwd: plan.cwd });
-        pendingPeers.set(plan.session, placement.pane);
-      }
-      return;
-    }
-    append(ENTRY_AGENT, {
-      role: "subagent",
-      name: plan.name,
-      session: plan.session,
-      model: plan.model,
-      fork: plan.mode.kind === "copy",
-      cwd: plan.cwd,
-      ...(plan.runtime ? { runtime: plan.runtime } : {}),
-      pane: { instance, pane: placement.pane },
-    });
-    if (plan.task) append(ENTRY_WORK, { child: plan.session });
+  const recordPeer = (plan: Plan, placement: Api["Placement"]): void => {
+    if (!recordsPeers) return;
+    append(ENTRY_AGENT, { role: "peer", name: plan.name, session: plan.session, cwd: plan.cwd });
+    pendingPeers.set(plan.session, placement.pane);
   };
 
-  const restartAgent = (child: AgentData, task: string): Promise<{ placement: Api["Placement"] } | { running: AgentRow } | { error: string }> =>
-    withRestartLock(child.session, async () => {
+  const recordChild = (plan: { name: string; session: string; model: string; cwd: string; runtime?: string; fork: boolean }): void => {
+    append(ENTRY_AGENT, { role: "subagent", name: plan.name, session: plan.session, model: plan.model, fork: plan.fork, cwd: plan.cwd, ...(plan.runtime ? { runtime: { name: plan.runtime } } : {}) });
+  };
+
+  // The in-process child of this agent: its registry entry follows the child's creation, its task follows both.
+  const startChild = async (plan: SpawnPlan & { fork: boolean }, task: string): Promise<Agent | { error: string }> => {
+    const made = await host.spawn(plan);
+    if ("error" in made) return made;
+    if (!ownSessionId) return { error: "this session has no id" };
+    recordChild({ name: plan.name, session: plan.id, model: plan.model, cwd: plan.cwd, runtime: plan.runtime, fork: plan.fork });
+    if (task) await made.extension?.receive({ kind: "user", text: task });
+    return made;
+  };
+
+  const restartPeer = (peer: PeerData, task: string): Promise<{ placement: Api["Placement"] } | { running: AgentRow } | { error: string }> =>
+    withRestartLock(peer.session, async () => {
       const snapshot = await discovery();
       if (!snapshot.ok) return { error: "could not read the layout" };
-      const row = snapshot.all.find((a) => a.id === child.session);
+      const row = snapshot.all.find((a) => a.id === peer.session);
       if (row && row.state === "running") return { running: row };
-      const files = sessionFiles(session?.sessionManager.getSessionDir()).filter((file) => file.id === child.session);
-      if (files.length > 1) return { error: `several session files have id ${child.session}` };
+      const files = sessionFiles(session?.sessionManager.getSessionDir()).filter((file) => file.id === peer.session);
+      if (files.length > 1) return { error: `several session files have id ${peer.session}` };
       const file = files[0];
       if (!session) return { error: "no active session" };
-      const saved = file ? readSavedSession(file, session.modelRegistry) : undefined;
-      if (saved && "error" in saved) return saved;
-      if (child.role === "peer" && !file) return { error: `session file is missing for ${child.session}` };
-      let role: Pick<Plan, "toplevel" | "cwd" | "runtime"> & { model: string | undefined };
-      switch (child.role) {
-        case "peer": role = { toplevel: true, cwd: saved?.cwd ?? child.cwd, model: saved?.model ?? callerModel(session) }; break;
-        case "subagent": role = { toplevel: false, cwd: child.cwd, runtime: child.runtime, model: saved?.model ?? child.model }; break;
-      }
-      if (!role.model) return { error: "caller has no model; specify model" };
-      const plan: Plan = { name: child.name, session: child.session, ...role, model: role.model, task, mode: file ? { kind: "continue", file: file.path } : { kind: "fresh" }, koSession: snapshot.me?.session ?? "" };
+      if (!file) return { error: `session file is missing for ${peer.session}` };
+      const saved = readSavedSession(file, session.modelRegistry);
+      if ("error" in saved) return saved;
+      const model = saved.model ?? callerModel(session);
+      if (!model) return { error: "caller has no model; specify model" };
+      const plan: Plan = { name: peer.name, session: peer.session, cwd: saved.cwd, model, task, mode: { kind: "continue", file: file.path }, koSession: snapshot.me?.session ?? "" };
       const made = await createPane(plan);
       if ("error" in made) return made;
-      recordAgent(plan, made.placement);
+      recordPeer(plan, made.placement);
       return made;
+    });
+
+  const resumeChild = (child: ChildData, task: string): Promise<Agent | { error: string }> =>
+    withRestartLock(child.session, async () => {
+      const live = host.find(child.session);
+      if (live) return live;
+      if (!session) return { error: "no active session" };
+      const files = sessionFiles(session.sessionManager.getSessionDir()).filter((file) => file.id === child.session);
+      if (files.length > 1) return { error: `several session files have id ${child.session}` };
+      const file = files[0];
+      const saved = file ? readSavedSession(file, session.modelRegistry) : undefined;
+      if (saved && "error" in saved) return saved;
+      const model = saved?.model ?? child.model;
+      return startChild({ id: child.session, name: child.name, cwd: child.cwd, model, runtime: child.runtime?.name, trusted: await trustedCwd(child.cwd), mode: file ? { kind: "continue", file: file.path } : { kind: "fresh" }, fork: false }, task);
     });
 
   // ---- the task and the endings that happened while this agent was away ----
 
   const deliverTask = async (): Promise<void> => {
-    if (!pane) return;
+    if (!pane || !isRoot()) return;
     const { ok, panes } = await listPanesResult();
     if (startupCancelled || !ok) return;
-    const me = panes.find((p) => p.pane === pane);
-    if (me?.parent) parentPane = me.parent;
-    const task = me?.task;
+    const task = panes.find((p) => p.pane === pane)?.task;
     if (!isRecord(task)) return;
     const text = str(task.text);
     const from = isRecord(task.from) ? task.from : {};
-    if (text.trim()) {
-      if (edge && from.session === edge.parent) {
-        markOwnWork();
-        deliver(text);
-        ending = { kind: "awaiting-first-turn" };
-      } else {
-        deliverAgentMessage({ name: str(from.name) || str(from.session) || "another agent", ...(typeof from.session === "string" ? { session: from.session } : {}), ...(typeof from.pane === "string" ? { pane: from.pane } : {}) }, "sibling", text, false);
-      }
-    }
+    if (text.trim()) deliverAgentMessage({ name: str(from.name) || str(from.session) || "another agent", ...(typeof from.session === "string" ? { session: from.session } : {}), ...(typeof from.pane === "string" ? { pane: from.pane } : {}) }, "sibling", text, false);
     if (!startupCancelled) await apiCall("DELETE", varPath(VAR_TASK));
-  };
-
-  const reconcileChildren = async (): Promise<void> => {
-    const { ok, panes } = await listPanesResult();
-    if (startupCancelled || !ok) return;
-    await readInstance();
-    for (const child of children()) {
-      if (startupCancelled) return;
-      if (endedAfter(child)) continue;
-      const row = child.pane.instance === instance ? panes.find((p) => p.pane === child.pane.pane) : undefined;
-      if (row && !row.dead) continue;
-      await announceEnding(child, row?.dead ? { type: "dead", ...row.dead } : { type: "missing" });
-    }
   };
 
   pi.on("message_start", (event) => {
     const m = event?.message;
+    if (!ownSessionId) return;
     const details = isRecord(m) && isRecord(m.details) ? m.details : undefined;
-    if (edge && details?.work === true) markOwnWork();
+    if (m?.role === "user" || details?.work === true) host.self.parent?.extension?.markWork(ownSessionId);
   });
 
   // ---- tools ----
@@ -2343,7 +1995,7 @@ export const agentExtension = (host: AgentHost) => (pi: ExtensionAPI): void => {
     name: "list_agents",
     label: "List Agents",
     description:
-      "List the agents you can message: your subagents, your peers, each ancestor and its peers, in this session. Recorded peers with a session file also list after they end. which selects all (default), peers or subagents. An own subagent's row says whether it has reported on its last work and starts its last report; read_report gives the whole text. Bash jobs are in list_async_bash.",
+      "List the agents you can message: your subagents, your peers, each ancestor and its peers in your own tree, and the root agents of the other agent panes of this session. Recorded peers with a session file also list after they end. which selects all (default), peers or subagents. An own subagent's row says whether it has reported on its last work and starts its last report; read_report gives the whole text. Bash jobs are in list_async_bash.",
     promptSnippet: "list_agents(which?) - discover the agents you can message, and your own subagents to stop with stop_agent",
     parameters: Type.Object(
       {
@@ -2410,7 +2062,7 @@ export const agentExtension = (host: AgentHost) => (pi: ExtensionAPI): void => {
     parameters: Type.Object(
       {
         to: Type.String({
-          description: `Who to message: an agent's exact name, session id, a unique id prefix of at least ${MIN_ID_PREFIX} characters, or an @-mention from the prompt such as @impl (session 9702ddd1).`,
+          description: `Who to message: an agent's exact name, session id, a unique id prefix of at least ${MIN_ID_PREFIX} characters, or an @-mention from the prompt such as @impl (session 9702ddd1). An agent of another pane that sent you a message is addressed as pane_N/<its whole session id>, from the header of its message.`,
         }),
         message: Type.String({ description: "The message text to deliver." }),
         mode: Type.Optional(Type.Union([Type.Literal("message"), Type.Literal("steer"), Type.Literal("interrupt-and-steer")], {
@@ -2425,24 +2077,46 @@ export const agentExtension = (host: AgentHost) => (pi: ExtensionAPI): void => {
       if (!params.message.isWellFormed()) return refuse('the message is not valid UTF-8');
       if (Buffer.byteLength(params.message, "utf8") > MAX_MESSAGE_BYTES) return refuse(`the message is over ${MAX_MESSAGE_BYTES} bytes`);
       const mode = params.mode ?? "message";
+      const delivery = mode === "interrupt-and-steer" ? "interrupt" as const : mode;
+      const kind: SendKind = delivery;
+      const sender: AgentRef = { name: nameOfAgent(host.self), ...(ownSessionId ? { session: ownSessionId } : {}), ...(pane ? { pane } : {}) };
+      const explicit = /^(pane_\d+)\/([0-9A-Za-z_-]{8,64})$/.exec(params.to.replace(/^@/, ""));
+      if (explicit?.[1] && explicit[2]) {
+        const result = await sendIntent(explicit[1], kind, params.message, { data: sendData({ to: explicit[2] }) });
+        const sent = deliveryText(params.to, mode, result);
+        const outcome: AgentOutcome = sent.ok ? { ok: true } : { ok: false, failure: isAgentFailure(result.state) ? result.state : 'error', message: 'message' in result ? result.message : sent.text };
+        return reply(sent.ok ? sent.text : `could not message ${params.to}: ${sent.text}`, { to: params.to, outcome });
+      }
       const snapshot = await discovery();
-      if (!snapshot.ok) return refuse('could not read the layout');
       const resolved = resolveIn(snapshot, normalizeAddress(params.to));
-      if ("error" in resolved) return refuse(resolved.error, resolved.failure);
+      if ("error" in resolved) return refuse(snapshot.ok || resolved.failure !== "not_found" ? resolved.error : "could not read the layout", resolved.failure);
       let target = resolved.agent;
       const name = agentName(target);
       if (target.self) return reply(`${name} is this agent`, { to: name, outcome: { ok: false, failure: 'error', message: `${name} is this agent` } satisfies AgentOutcome });
-      const child = agents().find((c) => c.session === target.id);
+      const known = agents().find((c) => c.session === target.id);
       if (target.state === "ended") {
-        if (!child || mode !== "message") return refuse(`${name} is no longer running`, 'not_running', name);
-        const restarted = await restartAgent(child, params.message);
-        if ("error" in restarted) return refuse(restarted.error, 'error', name);
-        if ("placement" in restarted) return reply(`restarted ${name} in pane ${restarted.placement.pane}; ${child.role === "peer" ? PEER_RESULT_RULE : liveRunRule(SPAWN_RESULT_RULE)}`, { to: name, outcome: { ok: true } satisfies AgentOutcome });
-        target = restarted.running;
+        if (!known || mode !== "message") return refuse(`${name} is no longer running`, 'not_running', name);
+        if (known.role === "peer") {
+          const restarted = await restartPeer(known, params.message);
+          if ("error" in restarted) return refuse(restarted.error, 'error', name);
+          if ("placement" in restarted) return reply(`restarted ${name} in pane ${restarted.placement.pane}; ${PEER_RESULT_RULE}`, { to: name, outcome: { ok: true } satisfies AgentOutcome });
+          target = restarted.running;
+        } else {
+          markChildWork(known);
+          const resumed = await resumeChild(known, params.message);
+          if ("error" in resumed) return refuse(resumed.error, 'error', name);
+          return reply(`restarted ${name} (session ${known.session}); ${liveRunRule(SPAWN_RESULT_RULE)}`, { to: name, outcome: { ok: true } satisfies AgentOutcome });
+        }
       }
-      if (child?.role === "subagent") markChildWork(child);
-      const kind: SendKind = mode === "interrupt-and-steer" ? "interrupt" : mode;
-      const result = await sendIntent(target.pane, kind, params.message, routed && !("refusal" in routed) ? { data: { runtime: routed.name } } : {});
+      if (target.where.type === "process") {
+        const recipient = host.find(target.id);
+        if (!recipient?.extension) return refuse(`${name} is no longer running`, 'not_running', name);
+        if (known?.role === "subagent") markChildWork(known);
+        await recipient.extension.receive({ kind: delivery, text: params.message, agent: sender, relation: relationOf(host.self, recipient), ...(routed && !("refusal" in routed) ? { runtime: routed.name } : {}) });
+        return reply(`delivered to ${name}`, { to: name, outcome: { ok: true } satisfies AgentOutcome });
+      }
+      const data = sendData({});
+      const result = await sendIntent(paneOf(target), kind, params.message, data === undefined ? {} : { data });
       const sent = deliveryText(name, mode, result, target.status === "working", true);
       const outcome: AgentOutcome = sent.ok ? { ok: true } : { ok: false, failure: isAgentFailure(result.state) ? result.state : 'error', message: 'message' in result ? result.message : sent.text };
       return reply(sent.ok ? sent.text : `could not message ${params.to}: ${sent.text}`, { to: name, outcome });
@@ -2453,9 +2127,9 @@ export const agentExtension = (host: AgentHost) => (pi: ExtensionAPI): void => {
     name: "spawn_agent",
     label: "Spawn Agent",
     description:
-      "Start an agent in a new window. Only toplevel: true works now: an ordinary child is refused until in-process subagents exist. Resume a saved session or fork a copy of it; fork alone copies this session. Returns the pi session id for later resume_from. Children report by notice and stay alive. A toplevel agent is an independent peer: no report, notice, depth limit or descendant controls; fork is allowed, but an existing child cannot become a peer.",
+      "Start a subagent of this agent, in this process. Resume a saved session or fork a copy of it; fork alone copies this session. Returns the pi session id for later resume_from. Children report by notice and stay alive. A toplevel agent is a pane of its own: an independent peer with no report, notice, depth limit or descendant controls; fork is allowed, but an existing child cannot become a peer.",
     promptSnippet:
-      "spawn_agent(task, name, model?, cwd?, resume_from?, fork?, toplevel?, runtime?) - start, resume or copy an agent in a new window; returns its pi session id; toplevel starts an independent peer, not a child; runtime works in a configured runtime or an ad-hoc runtime of this session",
+      "spawn_agent(task, name, model?, cwd?, resume_from?, fork?, toplevel?, runtime?) - start, resume or copy a subagent; returns its pi session id; toplevel starts an independent peer in a pane of its own, not a child; runtime works in a configured runtime or an ad-hoc runtime of this session",
     promptGuidelines: [
       "A subagent's result arrives on its own as a notice when it finishes; never poll list_agents for it; list_agents lists the agent and stop_agent stops it.",
       "Trust but verify: a child's report says what it intended to do, not what it did - check the diff before relaying success.",
@@ -2467,7 +2141,7 @@ export const agentExtension = (host: AgentHost) => (pi: ExtensionAPI): void => {
           description:
             "First task. State the files, changes and required result. Empty only when resuming without fork: starts no turn and owes no report.",
         }),
-        name: Type.String({ description: "Window and session name. Unique among this caller's children; for toplevel, unique among live agents in the session. Resume an ended child with its existing name. A recorded peer stays a peer when resumed." }),
+        name: Type.String({ description: "Agent name, 1 to 64 bytes, no control characters and no slash. Unique among this caller's children; for toplevel, unique among live agents in the session. Resume an ended child with its existing name. A recorded peer stays a peer when resumed." }),
         model: Type.Optional(
           Type.String({
             description:
@@ -2494,34 +2168,31 @@ export const agentExtension = (host: AgentHost) => (pi: ExtensionAPI): void => {
     ),
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       const refuse = (text: string) => reply(`could not spawn agent: ${text}`, { outcome: { ok: false, failure: "error", message: text } satisfies AgentOutcome });
-      if (!ko) return refuse("ko is not on PATH");
       if (!ownSessionId) return refuse("this session has no id");
-      if (!pane) return refuse("this session has no pane");
       const name = params.name;
       if (!name) return refuse("name is required");
       const nameError = checkName(name);
       if (nameError) return refuse(nameError);
       const task = params.task.trim().length > 0 ? params.task : "";
-      if (taskTooLarge(task)) return refuse(`the task does not fit the ${MAX_TASK_BYTES} byte limit of a pane variable`);
       if (!task && (!params.resume_from || params.fork)) return refuse("task is required unless resuming without fork");
       let childRuntime: ChildRuntime | undefined;
       let runtimeInfo: Api["RuntimeInfo"] | undefined;
       if (params.runtime && host.facts.runtime) {
         if (params.runtime !== host.facts.runtime) return refuse(`this agent runs inside runtime ${host.facts.runtime}; its children run there too`);
       } else if (params.runtime) {
+        if (!ko) return refuse("ko is not on PATH");
         const info = await fetchRuntime(params.runtime);
         if ("error" in info) return refuse(info.error);
         runtimeInfo = info;
         childRuntime = { name: info.name, mode: info.pi === "runtime" ? "inside" : "routed" };
+        if (childRuntime.mode === "inside" && !params.toplevel) return refuse(`runtime ${info.name} runs pi inside it: a subagent of this agent cannot go there; use toplevel: true`);
       } else if (routed) {
         if ("refusal" in routed) return refuse(routed.refusal);
         childRuntime = { name: routed.name, mode: "routed" };
       }
       if (childRuntime?.mode === "inside" && (params.resume_from || params.fork)) return refuse("a saved session is a file of this filesystem: resume_from and fork need a runtime whose pi runs on the host");
-      if (params.model) {
-        const error = await validateModel(params.model);
-        if (error) return refuse(error);
-      }
+      const modelError = validateModel(params.model, ctx.modelRegistry);
+      if (modelError) return refuse(modelError);
       let source: { id: string; path: string; cwd: string; model: string | undefined } | undefined;
       if (params.resume_from) {
         const wanted = params.resume_from;
@@ -2545,7 +2216,6 @@ export const agentExtension = (host: AgentHost) => (pi: ExtensionAPI): void => {
       const mode: Plan["mode"] = forkFile ? { kind: "copy", file: forkFile } : source ? { kind: "continue", file: source.path } : { kind: "fresh" };
       const recordedPeer = mode.kind === "continue" && source ? peers().find((p) => p.session === source.id) : undefined;
       const toplevel = !!params.toplevel || !!recordedPeer;
-      if (!toplevel) return refuse("in-process subagents are not yet available; use toplevel: true");
       const cwd = resolve(ctx.cwd, params.cwd ?? source?.cwd ?? ctx.cwd);
       if (mode.kind === "continue" && source && cwd !== resolve(source.cwd)) return refuse(`a continued session runs in its recorded directory ${source.cwd}; fork copies it into another`);
       let directoryExists = false;
@@ -2555,39 +2225,40 @@ export const agentExtension = (host: AgentHost) => (pi: ExtensionAPI): void => {
       const taken = () => refuse(`the name ${quote(name)} is already taken by ${toplevel ? "a live agent in this session" : "one of this session's agents; message it instead"}`);
       return withRestartLock(childSession, async () => {
         const snapshot = await discovery();
-        if (!snapshot.ok || !snapshot.me) return refuse("could not read the layout");
-        if (mode.kind === "continue" && !toplevel && snapshot.ancestors.includes(childSession)) return refuse(`session ${childSession} is an ancestor of this session`);
-        if (mode.kind === "continue" && (snapshot.panes.some((p) => p.sessionVar === childSession && !p.dead) || snapshot.all.some((a) => a.id === childSession && a.state === "running"))) return refuse(`session ${childSession} is live in a pane`);
+        const live = snapshot.all.some((a) => a.id === childSession && a.state === "running") || snapshot.panes.some((p) => p.sessionVar === childSession && !p.dead);
+        if (mode.kind === "continue" && live) return refuse(`session ${childSession} is live in this process or in a pane`);
+        if (mode.kind === "continue" && !toplevel && host.scope().some(({ agent, relationship }) => agent.id === childSession && relationship !== "own")) return refuse(`session ${childSession} is an ancestor or a relative of this session`);
         const existing = mode.kind === "continue" ? children().find((c) => c.session === childSession) : undefined;
         if (existing && (toplevel || existing.name !== name)) return refuse("resume this child with its existing name and without toplevel");
         if (!claimName(name)) return taken();
         try {
           const wanted = name.toLowerCase();
           const holds = toplevel
-            ? [...snapshot.all].some((a) => a.state === "running" && a.name.toLowerCase() === wanted)
-            : !existing && ([...children()].some((c) => c.name.toLowerCase() === wanted) || snapshot.all.some((a) => a.relationship === "own" && a.name.toLowerCase() === wanted));
+            ? snapshot.all.some((a) => a.state === "running" && a.name.toLowerCase() === wanted)
+            : !existing && (children().some((c) => c.name.toLowerCase() === wanted) || snapshot.all.some((a) => a.relationship === "own" && a.name.toLowerCase() === wanted));
           if (holds || jobNamed(wanted)?.state.type === "running") return taken();
-          if (!toplevel && snapshot.depth + 1 > MAX_DEPTH) return refuse(`refusing to spawn at depth ${snapshot.depth + 1}: maximum nesting is ${MAX_DEPTH} (root 0, subagent 1, subagent 2)`);
-          const plan: Plan = {
-            name,
-            session: childSession,
-            model,
-            cwd,
-            runtime: childRuntime,
-            runtimeInfo,
-            task,
-            mode,
-            toplevel,
-            koSession: snapshot.me.session,
-          };
-          const made = await createPane(plan);
+          if (toplevel) {
+            if (!ko) return refuse("ko is not on PATH");
+            if (!pane) return refuse("this session has no pane");
+            if (!snapshot.me) return refuse("could not read the layout");
+            const plan: Plan = { name, session: childSession, model, cwd, runtime: childRuntime, runtimeInfo, task, mode, koSession: snapshot.me.session };
+            if (taskTooLarge(task)) return refuse(`the task does not fit the ${MAX_TASK_BYTES} byte limit of a pane variable`);
+            const made = await createPane(plan);
+            if ("error" in made) return refuse(made.error);
+            recordPeer(plan, made.placement);
+            const { window, pane: childPane } = made.placement;
+            const inRuntime = childRuntime?.name ?? host.facts.runtime;
+            return reply(
+              `spawned ${name} (session ${childSession}, window ${window}, pane ${childPane}${inRuntime ? `, in runtime ${inRuntime}` : ""})${mode.kind === "copy" ? `, forked from session ${source?.id ?? ownSessionId}` : ""}; session id is what resume_from takes later; ${PEER_RESULT_RULE}`,
+              { session: childSession, name, window, pane: childPane, fork: mode.kind === "copy", outcome: { ok: true } satisfies AgentOutcome },
+            );
+          }
+          const made = await startChild({ id: childSession, name, cwd, model, runtime: childRuntime?.name, trusted: await trustedCwd(cwd), mode, fork: mode.kind === "copy" }, task);
           if ("error" in made) return refuse(made.error);
-          recordAgent(plan, made.placement);
-          const { window, pane: childPane } = made.placement;
           const inRuntime = childRuntime?.name ?? host.facts.runtime;
           return reply(
-            `spawned ${name} (session ${childSession}, window ${window}, pane ${childPane}${inRuntime ? `, in runtime ${inRuntime}` : ""})${mode.kind === "copy" ? `, forked from session ${source?.id ?? ownSessionId}` : ""}; session id is what resume_from takes later; ${toplevel ? PEER_RESULT_RULE : task ? liveRunRule(SPAWN_RESULT_RULE) : SPAWN_RESULT_RULE}`,
-            { session: childSession, name, window, pane: childPane, fork: mode.kind === "copy", outcome: { ok: true } satisfies AgentOutcome },
+            `spawned ${name} (session ${childSession}${inRuntime ? `, in runtime ${inRuntime}` : ""})${mode.kind === "copy" ? `, forked from session ${source?.id ?? ownSessionId}` : ""}; session id is what resume_from takes later; ${task ? liveRunRule(SPAWN_RESULT_RULE) : SPAWN_RESULT_RULE}`,
+            { session: childSession, name, fork: mode.kind === "copy", outcome: { ok: true } satisfies AgentOutcome },
           );
         } finally { releaseName(name); }
       });
@@ -2598,7 +2269,7 @@ export const agentExtension = (host: AgentHost) => (pi: ExtensionAPI): void => {
     name: "stop_agent",
     label: "Stop Agent",
     description:
-      "Stop one agent in your scope: a subagent, a peer, an ancestor or a pi the user started. It asks the agent to shut down and then kills its pane. force kills an agent that is not receiving messages. The result is the only signal: a subagent you stop sends no ending notice. Stopping an ancestor ends you with it.",
+      "Stop one agent in your scope: a subagent (with its own subagents), a peer, an ancestor or a pi the user started. A subagent of your process ends at once; another pane's agent is asked to shut down and then its pane is killed. force kills the pane of an agent that is not receiving messages and does not apply to a subagent. The result is the only signal: a subagent you stop sends no ending notice. Stopping an ancestor ends you with it.",
     promptSnippet: "stop_agent(agent, force?) - end one agent in your scope",
     parameters: Type.Object(
       {
@@ -2615,7 +2286,6 @@ export const agentExtension = (host: AgentHost) => (pi: ExtensionAPI): void => {
     ),
     async execute(_toolCallId, params) {
       const snapshot = await discovery();
-      if (!snapshot.ok) return reply("could not stop: could not read the layout");
       const resolved = resolveIn(snapshot, normalizeAddress(params.agent));
       if ("error" in resolved) return { ...reply(`${quote(params.agent)}: error: ${resolved.error}`), isError: true };
       const target = resolved.agent;
@@ -2623,20 +2293,29 @@ export const agentExtension = (host: AgentHost) => (pi: ExtensionAPI): void => {
       if (target.self) return { ...reply(`refusing to stop ${name}: it is this agent`), isError: true };
       const child = target.relationship === "own" ? children().find((c) => c.session === target.id) : undefined;
       const reportedText = child ? (childReported(child) ? "; it had reported" : "; it had not reported on its last work") : "";
-      if (target.state === "ended") {
-        if (child) claimEnding(child);
-        return reply(`${name} had already ended: ${target.ended ?? "its pane is gone"}`);
+      if (target.state === "ended") return reply(`${name} had already ended: ${target.ended ?? "its pane is gone"}`);
+      if (target.where.type === "process") {
+        if (params.force) return { ...reply(`${name} runs in this process: force applies to a pane`), isError: true };
+        const victim = host.find(target.id);
+        if (!victim) return reply(`${name} had already ended`);
+        const endsThis = (a: Agent | undefined): boolean => a !== undefined && (a === victim || endsThis(a.parent));
+        if (endsThis(host.self)) {
+          // Stopping an ancestor ends this agent: its own tool call cannot wait for that.
+          setImmediate(() => { void host.stop(victim); });
+          return reply(`stopping ${name}; this agent ends with it`);
+        }
+        await host.stop(victim);
+        return reply(`stopped ${name}${reportedText}`);
       }
       if (!params.force && !target.canMessage) {
         return { ...reply(`${name} is not receiving messages; pass force to kill its pane`), isError: true };
       }
-      if (child) claimEnding(child);
       let requestFailure = "";
       if (!params.force) {
-        const request = await sendIntent(target.pane, "stop", "");
+        const request = await sendIntent(paneOf(target), "stop", "");
         if (request.state !== "acked" && request.state !== "refused") requestFailure = "message" in request ? request.message : request.state;
       }
-      const stopped = await apiCall("POST", `/panes/${target.pane}/stop`, { wait_ms: params.force ? 0 : STOP_WAIT_MS } satisfies Api["StopPane"], STOP_CALL_MS);
+      const stopped = await apiCall("POST", `/panes/${paneOf(target)}/stop`, { wait_ms: params.force ? 0 : STOP_WAIT_MS } satisfies Api["StopPane"], STOP_CALL_MS);
       if ("error" in stopped || stopped.status !== 200) {
         const failure = apiError(stopped);
         if (failure.kind === "not_found") return reply(`${name} had already ended: its pane was removed`);
@@ -2786,7 +2465,7 @@ export const agentExtension = (host: AgentHost) => (pi: ExtensionAPI): void => {
   pi.on("before_agent_start", async (event) => {
     event.systemPromptOptions.promptGuidelines.push(NEVER_SLEEP_RULE);
     if (offersSkill()) event.systemPromptOptions.promptGuidelines.push(KO_SKILL_RULE);
-    if (edge) event.systemPromptOptions.promptGuidelines.push(SUBAGENT_INSTRUCTION);
+    if (host.self.parent) event.systemPromptOptions.promptGuidelines.push(SUBAGENT_INSTRUCTION);
     if (!routed || "refusal" in routed) return;
     const r = routed;
     try {
@@ -2867,44 +2546,33 @@ export const agentExtension = (host: AgentHost) => (pi: ExtensionAPI): void => {
     session = ctx;
     ownSessionId = ctx.sessionManager.getSessionId() || null;
     pane = host.facts.pane;
-    const parent = host.facts.parent;
-    edge = ownSessionId && parent && host.facts.session === ownSessionId ? { parent } : null;
-    recordsPeers = !edge && !host.facts.runtime;
-    if (host.slots.exit) process.removeListener("exit", host.slots.exit);
-    host.slots.exit = unsetVarsSync;
-    process.on("exit", unsetVarsSync);
+    recordsPeers = !host.self.parent && !host.facts.runtime;
+    if (isRoot()) process.on("exit", unsetVarsSync);
     written.clear();
     ending = { kind: "ended", text: "" };
     settled = true;
     turnEndedByControl = false;
-    leaving = null;
-    parentPane = "";
 
     await startRouted(ctx);
     completionReady = true;
     active = !!(ctx.hasUI && ownSessionId && ko && pane);
     if (active) {
-      receiver.start();
       await writeVars([
         [VAR_SESSION, ownSessionId ?? ""],
         [VAR_NAME, pi.getSessionName() ?? ""],
       ]);
       await markRouted();
-      await readInstance();
       startPeerClient();
     }
-    adoptJobs();
+    host.jobs.registry.session = ownSessionId ?? "";
+    host.jobs.finishWorking();
+    host.jobs.drain();
     registerLocalBash(ctx);
     if (!active) return;
     // Pi 1.5.0 subscribes interactive status after session_start returns.
     startup = setImmediate(() => {
       startup = undefined;
-      starting = (async () => {
-        await deliverTask();
-        if (startupCancelled) return;
-        await reconcileChildren();
-        if (!startupCancelled) startTick();
-      })().catch((error: unknown) => ctx.ui.notify(errorText(error), "error"));
+      starting = deliverTask().catch((error: unknown) => ctx.ui.notify(errorText(error), "error"));
     });
   });
 
@@ -2913,7 +2581,7 @@ export const agentExtension = (host: AgentHost) => (pi: ExtensionAPI): void => {
   });
 
   const running = (): void => {
-    agentWorking = true;
+    host.jobs.working = true;
     beginWork();
   };
   pi.on("agent_start", () => {
@@ -2924,11 +2592,11 @@ export const agentExtension = (host: AgentHost) => (pi: ExtensionAPI): void => {
   pi.on("tool_execution_start", running);
   pi.on("tool_call", running);
   pi.on("turn_end", (event: { toolResults?: unknown[] }) => {
-    if (event?.toolResults?.length) flushStreams();
+    if (event?.toolResults?.length) host.jobs.flushStreams();
   });
 
   pi.on("agent_end", (event) => {
-    finishWorking();
+    host.jobs.finishWorking();
     const assistants = (event?.messages ?? []).filter((m) => m?.role === "assistant");
     const last = assistants[assistants.length - 1];
     if (!last) {
@@ -2946,32 +2614,30 @@ export const agentExtension = (host: AgentHost) => (pi: ExtensionAPI): void => {
 
   pi.on("agent_settled", async (event: { aborted?: boolean }, ctx: { isIdle(): boolean }) => {
     if (!ctx.isIdle()) return;
-    finishWorking();
+    host.jobs.finishWorking();
     settled = true;
     for (const held of interrupted.splice(0)) deliverMessage(held);
-    if (!edge) return;
+    const parent = host.self.parent?.extension;
+    if (!parent || !ownSessionId || host.self.stopping) return;
     if (event?.aborted) return;
     if (turnEndedByControl) return;
     if (ending.kind === "aborted") return;
+    const self: AgentRef = { name: nameOfAgent(host.self), session: ownSessionId };
     if (ending.kind === "error") {
       if (ending.notified) return;
       ending.notified = true;
-      const sent = await statusNotice(`subagent stopped on an error: ${trimErrorMessage(ending.text)}\nmessage it to retry, or stop_agent to end it`, ending.id);
-      if (!sent && ending.kind === "error") ending.notified = false;
+      await parent.receive({ kind: "notice", text: `subagent stopped on an error: ${trimErrorMessage(ending.text)}\nmessage it to retry, or stop_agent to end it`, agent: self });
       return;
     }
-    const prior = lastOwnReport();
-    if (!prior && ownReported()) return;
-    const name = quote(pi.getSessionName() ?? "");
+    const prior = parent.childState(ownSessionId);
+    if (prior.text === undefined && prior.reported) return;
     const last = ending.kind === "ended" ? ending.text : "";
-    const text = utf8Prefix(last || `subagent ${name} ended its turn with no message`, MAX_MESSAGE_BYTES);
-    if (prior && (!last || text === str(prior.data.text))) return;
+    const text = utf8Prefix(last || `subagent ${quote(self.name)} ended its turn with no message`, MAX_MESSAGE_BYTES);
+    if (prior.text !== undefined && (!last || text === prior.text)) return;
     const generation = workGeneration;
-    if ((await ownLiveWork()) !== false) return;
-    if (turnEndedByControl || generation !== workGeneration || lastOwnReport()?.index !== prior?.index) return;
-    const report = { id: mintId(), text };
-    append(ENTRY_REPORT, { text, id: report.id, sent: false });
-    await sendReport(report, false);
+    if (ownLiveWork()) return;
+    if (turnEndedByControl || generation !== workGeneration || parent.childState(ownSessionId).text !== prior.text) return;
+    parent.receiveReport({ session: ownSessionId, name: self.name }, text);
   });
 
   pi.on("session_shutdown", async (event?: { reason?: ShutdownReason }) => {
@@ -2986,38 +2652,29 @@ export const agentExtension = (host: AgentHost) => (pi: ExtensionAPI): void => {
       if (call.type === "bash") call.move("reload");
       else call.cancel(reason);
     }
-    stopTick();
-    if (reason === "reload") {
-      receiver.stop(true);
-      if (registry) registry.owner = null;
-      detachJobRecords();
-      for (const job of backgroundJobs()) detachJob(job);
-    } else {
-      clearJobRecords();
+    if (reason === "reload") host.jobs.detach();
+    else {
       for (const call of calls) call.cancel(reason);
-      if (reason === "quit" && edge && leaving === null && active) {
-        const text = exitNoticeText();
-        exitNoticeId ||= mintId();
-        if (text) await statusNotice(text, exitNoticeId);
-      }
-      if (registry) {
-        registry.stopAll();
-        await waitJobs([...registry.jobs.values()]);
-        host.slots.jobs = undefined;
-        registry = undefined;
-      }
-      receiver.stop(false);
-      if (active) await unsetVars();
-      if (host.slots.exit === unsetVarsSync) {
-        process.removeListener("exit", unsetVarsSync);
-        host.slots.exit = undefined;
-      }
+      if (reason === "new" || reason === "resume" || reason === "fork") await host.stopDescendants();
+      host.jobs.registry.stopAll();
+      await waitJobs([...host.jobs.registry.jobs.values()]);
+      host.jobs.clearRecords();
+      if (active && isRoot()) await unsetVars();
     }
-    await jobRecordQueue;
+    process.removeListener("exit", unsetVarsSync);
+    await host.records.drain();
     host.extension = undefined;
     active = false;
     session = null;
   });
 
-  host.extension = { completionContext, restartState };
+  host.extension = {
+    completionContext, restartState, receive, childState, scope: async (maxAgeMs) => (await discovery(maxAgeMs)).rows, jobNotice: deliverNotice, jobStream,
+    markWork: (child) => { const known = children().find((c) => c.session === child); if (known) markChildWork(known); },
+    receiveReport: (child, text) => {
+      append(ENTRY_REPORT, { child: child.session, name: child.name, text });
+      deliverNotice(reportNotice(child, text), { inbound: { form: 'report', relation: 'child' }, agent: childRef(child), body: text });
+    },
+    markEnded: (child, cause) => append(ENTRY_ENDED, { child, cause }),
+  } satisfies Extension;
 };

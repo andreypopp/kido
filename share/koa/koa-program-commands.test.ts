@@ -57,7 +57,7 @@ test('mutations refuse simple content types and browser path grants', { timeout:
   }
   const grants: Record<string, string>[] = [{ 'Content-Type': 'application/json' }, { 'Content-Type': 'application/json', 'Kido-Native-Drop': '1' }];
   for (const headers of grants) {
-    assert.equal((await fetch(app.base + 'attachments', { method: 'POST', headers, body: JSON.stringify({ path: '/etc/passwd' }) })).status, 403);
+    assert.equal((await fetch(app.url('attachments'), { method: 'POST', headers, body: JSON.stringify({ path: '/etc/passwd' }) })).status, 403);
   }
   assert.equal(app.provider.requests.length, before);
 });
@@ -73,19 +73,19 @@ test("attachments stream chunks into prompts", { timeout: 10000 }, async t => {
   assert.equal(created.status, 200);
   const uploaded = await created.json();
   const { id } = uploaded;
-  const chunk = (offset: number, body: Uint8Array<ArrayBuffer>) => fetch(app.base + `attachments/${id}/${offset}`, { method: "POST", headers: { 'Content-Type': 'application/octet-stream' }, body });
+  const chunk = (offset: number, body: Uint8Array<ArrayBuffer>) => fetch(app.url(`attachments/${id}/${offset}`), { method: "POST", headers: { 'Content-Type': 'application/octet-stream' }, body });
   assert.equal((await chunk(1, image.subarray(0, 10))).status, 409);
   assert.deepEqual(await (await chunk(0, image.subarray(0, 10))).json(), { received: 10 });
   const done = await (await chunk(10, image.subarray(10))).json();
   assert.deepEqual(done, { received: image.length, attachment: { id, path: uploaded.path, origin: "upload", name: "pixel.png", size: image.length, kind: "image", mimeType: "image/png", width: 1, height: 1 } });
-  const downloaded = await fetch(app.base + `attachments/${id}`);
+  const downloaded = await fetch(app.url(`attachments/${id}`));
   assert.equal(downloaded.headers.get("content-type"), "image/png");
   assert.match(downloaded.headers.get("content-disposition") ?? "", /pixel.png/);
   assert.deepEqual(Buffer.from(await downloaded.arrayBuffer()), image);
   assert.equal((await app.post("attachments", { path: file })).status, 403);
   assert.equal((await app.post("attachments", { name: "large", size: 64 * 1024 * 1024 + 1, type: "" })).status, 413);
   const copy = await (await app.post("attachments", { name: "copied.txt", type: "text/plain", size: 4 })).json();
-  await fetch(app.base + `attachments/${copy.id}/0`, { method: "POST", headers: { 'Content-Type': 'application/octet-stream' }, body: new Uint8Array(Buffer.from("copy")) });
+  await fetch(app.url(`attachments/${copy.id}/0`), { method: "POST", headers: { 'Content-Type': 'application/octet-stream' }, body: new Uint8Array(Buffer.from("copy")) });
   assert.equal((await app.post("prompt", { text: "Compare", mode: "prompt", attachments: [id, copy.id] })).status, 200);
   await pollUntil(() => app.provider.requests.length === 1, 5000, "first prompt");
   const content = (n: number) => userParts(app.provider.requests[n]);
@@ -98,7 +98,7 @@ test("attachments stream chunks into prompts", { timeout: 10000 }, async t => {
   assert.deepEqual(content(1).filter(part => part.type === "image_url"), content(0).filter(part => part.type === "image_url"));
   const extra = await (await app.post("attachments", { name: 'extra', type: '', size: 0 })).json();
   assert.equal((await app.post(`attachments/${extra.id}/delete`)).status, 200);
-  assert.equal((await fetch(app.base + `attachments/${extra.id}`)).status, 404);
+  assert.equal((await fetch(app.url(`attachments/${extra.id}`))).status, 404);
   assert.equal(await readFile(file, 'utf8'), 'original');
   const link = join(dir, 'link'); await symlink(file, link);
   assert.equal((await app.post('attachments', { path: link })).status, 403);
@@ -107,8 +107,8 @@ test("attachments stream chunks into prompts", { timeout: 10000 }, async t => {
   assert.equal((await app.post('attachments', { name: 'seventeenth', type: '', size: 0 })).status, 409);
   for (const id of unfinished) await app.post(`attachments/${id}/delete`);
   const boundary = await (await app.post('attachments', { name: 'boundary', type: '', size: 768 * 1024 + 1 })).json();
-  assert.equal((await fetch(app.base + `attachments/${boundary.id}/0`, { method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: new Uint8Array(768 * 1024 + 1) })).status, 413);
-  assert.equal((await fetch(app.base + `attachments/${boundary.id}/0`, { method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: new Uint8Array(0) })).status, 400);
+  assert.equal((await fetch(app.url(`attachments/${boundary.id}/0`), { method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: new Uint8Array(768 * 1024 + 1) })).status, 413);
+  assert.equal((await fetch(app.url(`attachments/${boundary.id}/0`), { method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: new Uint8Array(0) })).status, 400);
   await app.post(`attachments/${boundary.id}/delete`);
   const reserved: string[] = [];
   for (let i = 0; i < 4; i++) { const response = await app.post('attachments', { name: 'reserved', type: '', size: 64 * 1024 * 1024 }); assert.equal(response.status, 200); reserved.push((await response.json()).id); }
@@ -116,11 +116,20 @@ test("attachments stream chunks into prompts", { timeout: 10000 }, async t => {
   for (const id of reserved) await app.post(`attachments/${id}/delete`);
   const html = new TextEncoder().encode('<svg xmlns="http://www.w3.org/2000/svg"><script>globalThis.pwned=true</script></svg>');
   const unsafe = await (await app.post('attachments', { name: 'evil.svg', type: 'image/svg+xml', size: html.length })).json();
-  assert.equal((await (await fetch(app.base + `attachments/${unsafe.id}/0`, { method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: html })).json()).attachment.kind, 'file');
-  const download = await fetch(app.base + `attachments/${unsafe.id}`);
+  assert.equal((await (await fetch(app.url(`attachments/${unsafe.id}/0`), { method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: html })).json()).attachment.kind, 'file');
+  const download = await fetch(app.url(`attachments/${unsafe.id}`));
   assert.equal(download.headers.get('content-type'), 'application/octet-stream');
   assert.equal(download.headers.get('x-content-type-options'), 'nosniff');
   assert.equal(download.headers.get('content-security-policy'), "sandbox; default-src 'none'");
   await app.post('quit'); await app.close;
   await assert.rejects(readFile(lines.at(-1) ?? ""), { code: 'ENOENT' });
+});
+
+test("the attachment store is the host's: an upload without a session is taken", { timeout: 10000 }, async t => {
+  const app = await realFixture(t, { replies: [] });
+  const created = await fetch(app.base + "attachments", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name: "drop.txt", type: "text/plain", size: 4 }) });
+  assert.equal(created.status, 200);
+  const { id } = await created.json();
+  const chunk = await fetch(app.base + `attachments/${id}/0`, { method: "POST", headers: { "Content-Type": "application/octet-stream" }, body: new Uint8Array(Buffer.from("drop")) });
+  assert.equal(chunk.status, 200);
 });

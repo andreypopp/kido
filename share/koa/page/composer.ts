@@ -9,6 +9,7 @@ import { parser, GFM, Subscript, Superscript, Emoji } from '@lezer/markdown';
 import { bashCommand } from '../prompt.ts';
 import { completion } from './complete.ts';
 import { promptHistory } from './history.ts';
+import { scoped } from './http.ts';
 import type { PromptMode } from '../koa-records.ts';
 
 export const composerLanguage = new Language(markdownLanguage.data, parser.configure([GFM, Subscript, Superscript, Emoji, {
@@ -32,7 +33,7 @@ export function composer(host: HTMLElement, handlers: { input(user: boolean): vo
   const refreshMode = () => host.parentElement?.classList.toggle('bash-mode', !!view.state.field(mode) || running && empty());
   const empty = () => view.state.doc.length === 0;
   const prompts = promptHistory(async () => {
-    const response = await fetch('/history');
+    const response = await fetch(scoped('/history', document.body.dataset.sessionId || undefined));
     if (!response.ok) throw Error('Could not load prompt history');
     const value: unknown = await response.json();
     if (typeof value !== 'object' || value === null || !('entries' in value) || !Array.isArray(value.entries) || !value.entries.every(entry => typeof entry === 'string')) throw Error('Invalid prompt history');

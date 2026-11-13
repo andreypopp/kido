@@ -85,7 +85,8 @@ test("quit exits at its deadline when the reply stalls and the client never read
     };`);
   const app = await realFixture(t, { replies: [], env: { NODE_OPTIONS: `--import=${hook}` } });
   const url = new URL(app.base);
-  const socket = connect(Number(url.port), "127.0.0.1", () => socket.write(`POST /quit HTTP/1.1\r\nHost: ${url.host}\r\nContent-Type: application/json\r\nContent-Length: 2\r\n\r\n{}`));
+  const body = JSON.stringify({ sessionId: app.records().filter(record => record.type === "state").at(-1)?.sessionId });
+  const socket = connect(Number(url.port), "127.0.0.1", () => socket.write(`POST /quit HTTP/1.1\r\nHost: ${url.host}\r\nContent-Type: application/json\r\nContent-Length: ${Buffer.byteLength(body)}\r\n\r\n${body}`));
   socket.pause();
   socket.on("error", () => {});
   t.after(() => socket.destroy());

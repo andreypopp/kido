@@ -2,11 +2,11 @@ import { annotations, update } from './annotations.ts';
 import { markdown, markdownLine, sliceEnd, type Tail } from './markdown.ts';
 import { composer } from './composer.ts';
 import { attach } from './attach.ts';
-import { preview, previewKey } from './preview.ts';
-import { fetchJSON } from './http.ts';
+import { closeLightbox, preview, previewKey } from './preview.ts';
+import { fetchJSON, scoped } from './http.ts';
 import { ATTACHMENT_LIMITS, pathArg } from '../koa-records.ts';
 import type { State, WireItem, QueuedPrompt, WireAssistant, Block, Patch, PageRecord, PromptMode, ImageRef, AgentCall, Bash, SessionRow, SessionScope, ThinkingLevel } from '../koa-records.ts';
-import type { Relation } from '../records.ts';
+import type { AgentRef, Relation } from '../records.ts';
 
 type Step = { block: Exclude<Block, { type: 'text' }>;  item: WireAssistant; index: number; key: string; slots: Map<string, Slot> };
 type AgentCard = AgentCall | Extract<WireItem, { kind: 'agent' }>;
@@ -45,7 +45,7 @@ const texts = new Map<string, TextMemo>();
 const revealing = new Set<TextMemo>();
 let measurer: HTMLElement | undefined, frame: number | undefined, frameAt = 0, capTimer: number | undefined, scrollMode: 'snap' | 'glide' | 'dash' | 'load' | undefined, glideUntil = 0, dirty = false;
 const growing: HTMLElement[] = [];
-let state: State = { agents: [], bash: [], compaction: 'idle', pi: { type: 'starting' }, working: false, aborted: false, name: '', levels: [], cwd: '', home: '', statuses: {}, queue: { steering: [], followUp: [] }, dialogs: [] };
+let state: State = { view: { id: '', path: [] }, agents: [], bash: [], compaction: 'idle', life: { type: 'starting' }, working: false, aborted: false, name: '', levels: [], cwd: '', home: '', statuses: {}, queue: { steering: [], followUp: [] }, dialogs: [] };
 let divider: HTMLElement | undefined, wasFocused = paneFocused();
 const fresh = new Map<string, HTMLElement>(), counted = new Set<string>(), liveBash = new Map<string, string>();
 let epoch = '', after = -1, first: number | undefined, more = false, follow = true, lastScrollTop = 0, delay = 200;
@@ -64,13 +64,13 @@ const editor = composer(element('prompt'), {
   drop: draft.drop, paste: draft.paste,
   input(user) { if (user) escaped = false; refreshComposer(); },
   send(mode) { void send(mode); },
-  quit() { if (!draft.count && !draft.busy) void fetchJSON('/quit'); },
+  quit() { if (!draft.count && !draft.busy) void fetchJSON('/quit', { sessionId: state.sessionId }); },
   edit() { void openEditor(); },
-  takeBack() { if (state.pi.type === 'ready' && !editing() && !state.dialogs.length && !submitting) void takeBack().catch(reportError); },
+  takeBack() { if (state.life.type === 'ready' && !editing() && !state.dialogs.length && !submitting) void takeBack().catch(reportError); },
 });
 window.composer = editor;
 let reloading = false;
-const composerBlocked = () => reloading || !!state.edit || state.pi.type !== 'ready' || state.dialogs.length > 0 || sessionPicker !== 'closed';
+const composerBlocked = () => reloading || !!state.edit || state.life.type !== 'ready' || state.dialogs.length > 0 || sessionPicker !== 'closed';
 
 if (!window.ko) {
   const scheme = matchMedia('(prefers-color-scheme: dark)');
@@ -81,19 +81,28 @@ if (!window.ko) {
 
 const relationWords: Record<Relation, string> = { parent: 'parent', child: 'subagent', sibling: 'peer', descendant: 'subagent', sibling_descendant: 'peer' };
 const htmlEscape = (text: string) => text.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;');
-function who(name: string) {
-  if (!state.agents.some(agent => agent.name === name)) { const gone = node('span', '@' + name, 'who gone'); gone.title = 'ended'; return gone; }
-  const link = node('a', '@' + name, 'who'); link.href = '#pane:' + name; link.title = 'Focus the pane of @' + name;
+const mentionOf = (agent: State['agents'][number]) => agent.target.type === 'view' ? { kind: 'view', id: agent.target.id, title: 'Open @' + agent.name } : { kind: 'pane', id: agent.target.pane, title: 'Focus the pane of @' + agent.name };
+function who(ref: AgentRef) {
+  const agent = (ref.session ? state.agents.find(agent => agent.target.type === 'view' && agent.target.id === ref.session) : undefined) ?? state.agents.find(agent => agent.name === ref.name);
+  if (!agent) { const gone = node('span', '@' + ref.name, 'who gone'); gone.title = 'ended'; return gone; }
+  const { kind, id, title } = mentionOf(agent), link = node('a', '@' + ref.name, 'who');
+  link.href = '#' + kind + ':' + agent.name; link.title = title; link.setAttribute('data-' + kind, id);
   return link;
 }
 function linkNames(html: string) {
   if (!state.agents.length) return html;
-  const names = state.agents.map(agent => htmlEscape(agent.name).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).sort((a, b) => b.length - a.length);
+  const agents = new Map(state.agents.map(agent => [htmlEscape(agent.name), agent]));
+  const names = [...agents.keys()].map(name => name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).sort((a, b) => b.length - a.length);
   const mention = new RegExp('(^|[^\\w@])@(' + names.join('|') + ')(?![\\w-])', 'g');
   let hidden = 0;
   return html.split(/(<[^>]*>)/).map(part => {
     if (part.startsWith('<')) { const tag = /^<(\/?)(a|code|pre)\b/.exec(part); if (tag) hidden += tag[1] ? -1 : 1; return part; }
-    return hidden > 0 ? part : part.replace(mention, (_, before, name) => before + '<a class="who" href="#pane:' + name + '" title="Focus the pane of @' + name + '">@' + name + '</a>');
+    return hidden > 0 ? part : part.replace(mention, (match, before, name) => {
+      const agent = agents.get(name);
+      if (!agent) return match;
+      const { kind, id, title } = mentionOf(agent);
+      return before + '<a class="who" href="#' + kind + ':' + name + '" data-' + kind + '="' + htmlEscape(id) + '" title="' + htmlEscape(title) + '">@' + name + '</a>';
+    });
   }).join('');
 }
 function agentCard(card: AgentCard, at: number, key: string, slots: Map<string, Slot>) {
@@ -105,10 +114,9 @@ function agentCard(card: AgentCard, at: number, key: string, slots: Map<string, 
   let kind = inbound ? card.inbound.form : card.call.tool === 'spawn' ? 'task' : card.call.mode === 'interrupt-and-steer' ? 'interrupt' : card.call.mode;
   let failed = false;
   if (card.direction === 'out' && card.outcome?.ok === false) { failed = true; kind = card.call.tool === 'spawn' ? 'refused' : card.outcome.failure === 'refused' || card.outcome.failure === 'gone' ? card.outcome.failure : card.outcome.message; }
-  if (card.direction === 'in' && card.inbound.form === 'ended' && !card.inbound.reported) { failed = true; kind = 'not reported'; }
   const view = slot.view; view.className = failed ? 'aline err' : 'aline';
   const header = node('div', undefined, 'hd'), lead = node('span', undefined, 'lead');
-  lead.append(kind + ' ' + (inbound ? 'from' : 'to') + ' ', who(ref.name));
+  lead.append(kind + ' ' + (inbound ? 'from' : 'to') + ' ', who(ref));
   if (card.direction === 'in' && 'relation' in card.inbound && card.inbound.relation) lead.append(' ', node('span', relationWords[card.inbound.relation], 'rel'));
   const body = card.text.text || (card.direction === 'out' && card.outcome?.ok === false ? card.outcome.message : '');
   header.append(lead, node('span', markdownLine(body), 'tx'), node('time', timestamp(at)));
@@ -167,7 +175,7 @@ function previewFile(label: HTMLElement, url: string) {
   label.classList.add('preview-file');
   let press: { x: number; y: number } | undefined;
   label.onmousedown = event => { press = undefined; if (event.button === 0 && previewModifiers(event)) { event.preventDefault(); press = { x: event.clientX, y: event.clientY }; } };
-  label.onclick = event => { const start = press; press = undefined; if (start && Math.hypot(event.clientX - start.x, event.clientY - start.y) < 3) { event.preventDefault(); event.stopPropagation(); preview(url, label, 'file', composerFocus); } };
+  label.onclick = event => { const start = press; press = undefined; if (start && Math.hypot(event.clientX - start.x, event.clientY - start.y) < 3) { event.preventDefault(); event.stopPropagation(); preview(scoped(url, state.sessionId), label, 'file', composerFocus); } };
 }
 const quantity = (value: number) => value >= 1000000 ? Number((value / 1000000).toFixed(1)) + 'M' : value >= 1000 ? Number((value / 1000).toFixed(1)) + 'k' : String(value);
 function timestamp(at: number, today = new Date(), kind: 'message' | 'session' = 'message') {
@@ -345,7 +353,8 @@ function thumbnails(refs: ImageRef[], slots: Map<string, Slot>, name?: string) {
       if (!saved || saved.type !== 'image') { thumb.type = 'button'; thumb.append(node('img'), node('span', undefined, 'sz')); slots.set(key, { type: 'image', view: thumb }); }
       const image = thumb.firstElementChild, label = thumb.children[1];
       if (!(image instanceof HTMLImageElement) || !(label instanceof HTMLElement)) throw Error('Invalid image slot');
-      const src = '/images/' + encodeURIComponent(ref.id) + '?e=' + encodeURIComponent(epoch) + '&r=' + ref.revision;
+      const base = '/images/' + encodeURIComponent(ref.id) + '?e=' + encodeURIComponent(epoch) + '&r=' + ref.revision, src = scoped(base, state.sessionId);
+      thumb.setAttribute('data-base', base);
       if (image.getAttribute('src') !== src) {
         thumb.classList.remove('gone'); thumb.removeAttribute('role'); thumb.disabled = false;
         while (thumb.children.length > 2) thumb.lastElementChild?.remove();
@@ -364,7 +373,7 @@ function thumbnails(refs: ImageRef[], slots: Map<string, Slot>, name?: string) {
         image.setAttribute('src', src);
       }
       const target = thumb;
-      target.onclick = () => { if (!target.disabled) preview(src, target, 'image', composerFocus, name); };
+      target.onclick = () => { if (!target.disabled) preview(scoped(base, state.sessionId), target, 'image', composerFocus, name); };
       view.append(thumb);
     }
   } };
@@ -706,23 +715,23 @@ function refreshComposer() {
   editor.running(running);
   editor.readonly(editing());
   if (!editor.bash() && element('error').textContent === 'a command takes no attachments') { clearTimeout(attachmentRefusalTimer); element('error').textContent = ''; }
-  editor.placeholder(state.pi.type === 'switching' ? 'loading…' : running ? 'running… ⎋ cancels' : draft.hover && !state.edit ? 'Drop to attach' : hasFailed() ? 'koa could not start the agent' : working && state.compaction !== 'running' ? 'Steer koa…' : 'Message koa…');
+  editor.placeholder(state.life.type === 'switching' ? 'loading…' : running ? 'running… ⎋ cancels' : draft.hover && !state.edit ? 'Drop to attach' : hasFailed() ? 'koa could not start the agent' : working && state.compaction !== 'running' ? 'Steer ' + viewedName() + '…' : 'Message ' + viewedName() + '…');
   status();
 }
 function status() {
   const waiting = state.dialogs.length > 0, label = element('status');
   const bang = editor.bash(), running = state.bash.find(item => item.phase !== 'completed');
   label.classList.toggle('err', !!bang && draft.count > 0);
-  const word = hasFailed() ? 'failed' : waiting ? 'waiting' : state.edit ? 'Editing…' : state.pi.type === 'starting' ? 'starting' : state.pi.type === 'switching' ? 'loading' : state.working ? state.compaction === 'running' ? 'compacting' : 'working' : running ? 'running' : bang ? bang.excludeFromContext ? 'run, quiet' : 'run' : state.aborted ? 'aborted' : 'idle';
+  const word = hasFailed() ? 'failed' : state.life.type === 'ended' ? 'ended' : waiting ? 'waiting' : state.edit ? 'Editing…' : state.life.type === 'starting' ? 'starting' : state.life.type === 'switching' ? 'loading' : state.working ? state.compaction === 'running' ? 'compacting' : 'working' : running ? 'running' : bang ? bang.excludeFromContext ? 'run, quiet' : 'run' : state.aborted ? 'aborted' : 'idle';
   const completing = editor.completionStatus();
   label.title = word === 'Editing…' && state.edit ? `Editing in ${state.edit.editor}` : bang && draft.count ? 'remove the attachments' : '';
   label.textContent = bang && completing === 'pending' ? 'completing…' : bang && completing === 'none' ? 'no completions' : word;
   label.classList.toggle('completion-hint', !!bang && completing !== 'idle');
-  if (state.pi.type === 'ready' && (state.working || running) && !waiting) {
+  if (state.life.type === 'ready' && (state.working || running) && !waiting) {
     const ms = Math.max(0, Math.floor((Date.now() - (state.working ? state.since ?? Date.now() : running?.started ?? Date.now())) / 1000)) * 1000;
     label.append(node('span', ' ' + duration(ms, ' '), 'k'));
   }
-  element('dot').className = 'dot' + (hasFailed() ? ' off' : waiting ? ' wait' : state.pi.type === 'ready' && (state.working || running) ? ' on' : '');
+  element('dot').className = 'dot' + (hasFailed() ? ' off' : waiting ? ' wait' : state.life.type === 'ready' && (state.working || running) ? ' on' : '');
   if (bang && completing === 'pending') element('dot').className = 'spin completion-spin';
   element('model-name').textContent = state.model?.id ?? '';
   element('thinking').textContent = state.thinking ? '· ' + state.thinking : '';
@@ -816,9 +825,10 @@ function queue() {
     close.innerHTML = '<svg viewBox="0 0 10 10"><path d="m2 2 6 6m0-6-6 6"/></svg>';
     close.onclick = () => {
       close.disabled = true;
-      fetchJSON('/queue/remove', { sessionId: state.sessionId, kind, index, text: entry.text }).catch(error => {
+      const origin = state.sessionId;
+      fetchJSON('/queue/remove', { sessionId: origin, kind, index, text: entry.text }).catch(error => {
         const unsent = error?.body?.unsent;
-        if (unsent) restoreQueued([...unsent.steering, ...unsent.followUp]);
+        if (unsent && state.sessionId === origin) restoreQueued([...unsent.steering, ...unsent.followUp]);
         reportError(error); close.disabled = false;
       });
     };
@@ -832,8 +842,9 @@ function restoreQueued(entries: QueuedPrompt[]) {
   refreshComposer(); editor.focus();
 }
 let takingBack: Promise<void> | undefined;
+const drafts = new Map<string, string>();
 function takeBack(): Promise<void> {
-  if (state.pi.type !== 'ready' || state.dialogs.length) return Promise.resolve();
+  if (state.life.type !== 'ready' || state.dialogs.length) return Promise.resolve();
   return takingBack ??= (async () => {
     const session = state.sessionId;
     const result = await fetchJSON('/queue/clear', { sessionId: session });
@@ -842,27 +853,28 @@ function takeBack(): Promise<void> {
   })().finally(() => { takingBack = undefined; });
 }
 async function stop() {
-  if (submitting || state.pi.type !== 'ready' || state.dialogs.length) return;
+  if (submitting || state.life.type !== 'ready' || state.dialogs.length) return;
   submitting = true;
-  try { if (!state.bash.some(item => item.phase === 'running')) await takeBack(); await fetchJSON('/abort', { sessionId: state.sessionId }); }
+  const origin = state.view.id, session = state.sessionId;
+  try { if (!state.bash.some(item => item.phase === 'running')) await takeBack(); if (state.view.id !== origin) return; await fetchJSON('/abort', { sessionId: session }); }
   catch (error) { reportError(error); }
   finally { submitting = false; }
 }
-function hasFailed() { return state.pi.type === 'failed'; }
+function hasFailed() { return state.life.type === 'failed'; }
 function exited() {
   composerFocus();
   const host = element('exited'); host.hidden = !hasFailed();
-  const pi = state.pi;
-  const at = pi.type === 'failed' ? pi.at : undefined;
+  const life = state.life;
+  const at = life.type === 'failed' ? life.at : undefined;
   if (shownExit === at) return;
   shownExit = at; host.replaceChildren();
-  if (pi.type !== 'failed') return;
+  if (life.type !== 'failed') return;
   closePicker();
   const card = node('div', undefined, 'card'), head = node('div', undefined, 'head');
-  const title = node('span', 'koa could not start the agent', 'title'); head.append(title, node('span', timestamp(pi.at), 'count'));
+  const title = node('span', 'koa could not start the agent', 'title'); head.append(title, node('span', timestamp(life.at), 'count'));
   const actions = node('div', 'Start again creates the session again', 'acts'), start = button('Start again', '↩', true);
-  start.onclick = async () => { start.disabled = true; try { await fetchJSON('/agent/start'); } catch (error) { reportError(error); start.disabled = false; } };
-  actions.append(node('span', undefined, 'sp'), start); card.append(head, node('pre', pi.message));
+  start.onclick = async () => { start.disabled = true; try { await fetchJSON('/agent/start', { sessionId: state.sessionId }); } catch (error) { reportError(error); start.disabled = false; } };
+  actions.append(node('span', undefined, 'sp'), start); card.append(head, node('pre', life.message));
   if (!state.sessionFile) card.append(node('div', 'No session file was saved. Start again starts a fresh session.', 'fresh'));
   card.append(actions); host.append(card); start.focus();
 }
@@ -876,14 +888,16 @@ function positionPicker() {
 }
 async function picker(kind: 'model' | 'thinking', search = '') {
   if (editing()) return;
-  if (state.pi.type !== 'ready') return;
+  if (state.life.type !== 'ready') return;
   const trigger = element(kind), host = element('picker');
   if (pickerButton === trigger) { closePicker(); return; }
   closePicker();
   let choices: ({ kind: 'model'; id: string; provider: string } | { kind: 'thinking'; id: ThinkingLevel })[] = [];
   try {
     if (kind === 'model') {
-      choices.push(...(await fetchJSON('/models', undefined, 'GET')).models.map(model => ({ kind: 'model' as const, id: model.id, provider: model.provider })));
+      const origin = state.view.id, models = (await fetchJSON('/models', undefined, 'GET', undefined, state.sessionId)).models;
+      if (state.view.id !== origin) return;
+      choices.push(...models.map(model => ({ kind: 'model' as const, id: model.id, provider: model.provider })));
       if (element('thinking').offsetParent === null) choices.push(...state.levels.map(id => ({ kind: 'thinking' as const, id })));
     } else choices.push(...state.levels.map(id => ({ kind: 'thinking' as const, id })));
   } catch (error) { reportError(error); return; }
@@ -959,12 +973,15 @@ function apply(record: PageRecord) {
   } else if (record.type === 'patch') applyPatch(record, true);
   else if (record.type === 'reload') location.reload();
   else if (record.type === 'state') {
-    if (state.sessionId !== record.sessionId || state.pi.type !== record.pi.type) editor.resetCompletion();
+    if (state.sessionId !== record.sessionId || state.life.type !== record.life.type) editor.resetCompletion();
     if (state.sessionId && state.sessionId !== record.sessionId) { closeSessions(); closePicker(); editorId = undefined; }
     const agentsChanged = JSON.stringify(state.agents) !== JSON.stringify(record.agents);
-    const wasEditing = !!state.edit;
-    state = record; if (agentsChanged) refreshAgentCards(); document.body.dataset.sessionId = state.sessionId ?? ''; element('items').hidden = state.pi.type === 'switching'; refreshBash(); refreshComposer(); dialogs(); queue(); exited();
-    if (state.pi.type === 'ready' && state.editor && editorId !== state.editor.id) {
+    const wasEditing = !!state.edit, viewChanged = state.view.id !== record.view.id;
+    if (viewChanged) leaveView(record.view.id);
+    state = record; if (agentsChanged || viewChanged) refreshAgentCards(); document.body.dataset.sessionId = state.sessionId ?? ''; element('items').hidden = state.life.type === 'switching';
+    if (viewChanged) { rescopeImages(); follow = true; scrollMode = 'load'; schedule(true); }
+    renderBar(); refreshBash(); refreshComposer(); dialogs(); queue(); exited();
+    if (state.life.type === 'ready' && state.editor && editorId !== state.editor.id) {
       editor.setText(state.editor.text); editorId = state.editor.id;
       void fetchJSON('/editor/ack', { sessionId: state.sessionId, id: state.editor.id }).catch(reportError);
     }
@@ -973,6 +990,86 @@ function apply(record: PageRecord) {
   }
 }
 
+function leaveView(next: string) {
+  const previous = state.view.id;
+  closeSessions(); closePicker(); closeLightbox(); closeBarMenu();
+  editor.resetCompletion(); historyRequest = undefined; editorId = undefined; escaped = false; takingBack = undefined;
+  element('error').textContent = '';
+  draft.view(next);
+  if (!previous) return;
+  drafts.set(previous, editor.text());
+  editor.setText(drafts.get(next) ?? ''); drafts.delete(next);
+}
+function rescopeImages() {
+  for (const thumb of element('items').querySelectorAll<HTMLButtonElement>('[data-base]')) {
+    const image = thumb.firstElementChild, src = scoped(thumb.getAttribute('data-base') ?? '', state.sessionId);
+    if (!(image instanceof HTMLImageElement) || image.getAttribute('src') === src) continue;
+    thumb.classList.remove('gone'); thumb.removeAttribute('role'); thumb.disabled = false;
+    while (thumb.children.length > 2) thumb.lastElementChild?.remove();
+    image.hidden = false; image.setAttribute('src', src);
+  }
+}
+const bar = element('bar'), barMenu = element('bar-menu');
+let shownBar: string | undefined;
+const viewedName = () => state.view.path.length > 1 ? '@' + (state.view.path.at(-1)?.name ?? '') : 'koa';
+function closeBarMenu() { barMenu.hidden = true; barMenu.replaceChildren(); }
+function viewTo(id: string) {
+  closeBarMenu();
+  fetchJSON('/view', { sessionId: state.sessionId, id }).catch(error => { if (error?.status !== 409) reportError(error); });
+}
+function drawBar(collapse: boolean) {
+  const path = state.view.path, last = path.length - 1, ancestors = path.slice(0, last), hidden = collapse ? ancestors.slice(1, -1) : [];
+  const part = (label: string, className: string, id?: string, title = label) => {
+    const result = node(id === undefined ? 'span' : 'button', label, className);
+    result.title = title;
+    if (id !== undefined) result.onclick = () => viewTo(id);
+    return result;
+  };
+  const separator = () => { const result = node('span', '›', 'sep'); result.setAttribute('aria-hidden', 'true'); return result; };
+  const back = part('‹', 'back', path[last - 1].id, 'Back to @' + path[last - 1].name);
+  back.setAttribute('aria-label', back.title);
+  bar.replaceChildren(back);
+  ancestors.forEach(ancestor => {
+    if (hidden.includes(ancestor)) {
+      if (ancestor !== hidden[0]) return;
+      const menu = node('button', '…', 'ellipsis'); menu.title = hidden.map(entry => '@' + entry.name).join(' › ');
+      menu.setAttribute('aria-haspopup', 'menu'); menu.onclick = () => openBarMenu(menu, hidden);
+      bar.append(menu, separator());
+      return;
+    }
+    bar.append(part('@' + ancestor.name, 'anc', ancestor.id), separator());
+  });
+  bar.append(part('@' + path[last].name, 'cur'));
+}
+function openBarMenu(anchor: HTMLElement, hidden: { id: string; name: string }[]) {
+  if (!barMenu.hidden) { closeBarMenu(); return; }
+  barMenu.replaceChildren(...hidden.map(entry => { const row = node('button', '@' + entry.name); row.setAttribute('role', 'menuitem'); row.onclick = () => viewTo(entry.id); return row; }));
+  const rect = anchor.getBoundingClientRect(), bounds = bar.getBoundingClientRect();
+  barMenu.style.left = Math.max(8, Math.min(rect.left - 6, innerWidth - 8 - 140)) + 'px'; barMenu.style.top = bounds.bottom + 4 + 'px';
+  barMenu.hidden = false;
+}
+function layoutBar() {
+  if (bar.hidden) return;
+  const column = element('transcript').getBoundingClientRect();
+  bar.style.left = column.left + 8 + 'px'; bar.style.maxWidth = Math.max(0, column.width - 16) + 'px';
+  bar.classList.remove('cap', 'shrink', 'noback');
+  const overflows = () => bar.scrollWidth > bar.clientWidth + 1.5;
+  drawBar(false);
+  if (!overflows()) return;
+  if (state.view.path.length > 3) { drawBar(true); if (!overflows()) return; }
+  bar.classList.add('cap');
+  if (!overflows()) return;
+  bar.classList.add('shrink');
+  if ((bar.querySelector('.cur')?.getBoundingClientRect().width ?? 40) < 40) bar.classList.add('noback');
+}
+function renderBar() {
+  const signature = JSON.stringify(state.view.path), shown = state.view.path.length > 1;
+  document.body.classList.toggle('viewing', shown);
+  bar.hidden = !shown;
+  if (signature === shownBar) return;
+  shownBar = signature; closeBarMenu();
+  if (shown) layoutBar(); else bar.replaceChildren();
+}
 function followBottom() {
   scrollMode ??= 'snap';
   schedule(true);
@@ -1065,7 +1162,7 @@ async function older() {
   const scroll = element('scroll'), anchor = views.get(first)?.view;
   const top = anchor?.getBoundingClientRect().top;
   try {
-    const response = await fetch('/items?before=' + first); if (!response.ok) throw Error('Could not load earlier messages');
+    const response = await fetch(scoped('/items?before=' + first, state.sessionId)); if (!response.ok) throw Error('Could not load earlier messages');
     const result: Extract<PageRecord, { type: 'reset' }> = await response.json();
     if (historyRequest === mine && result.epoch === epoch) {
       more = result.more;
@@ -1142,7 +1239,7 @@ async function openSessions(scope: SessionScope = 'current') {
   const scan = new AbortController(); sessionScan = scan;
   sessionResults.replaceChildren(node('div', 'loading sessions…', 'empty'));
   try {
-    const result = await fetchJSON('/sessions/list', { scope }, 'POST', scan.signal);
+    const result = await fetchJSON('/sessions/list', { sessionId: state.sessionId, scope }, 'POST', scan.signal);
     if (scan.signal.aborted || sessionScan !== scan) return;
     sessionRows[scope] = result.rows.map(row => ({ ...row, search: [row.name ?? '', row.firstMessage].map(text => text.toLocaleLowerCase()) }));
     renderSessions();
@@ -1195,9 +1292,10 @@ function notice(text: string) {
 }
 function editing() { return !!state.edit || editorOpening; }
 async function openEditor() {
-  if (state.pi.type !== 'ready' || state.dialogs.length || submitting || editorOpening) return;
+  if (state.life.type !== 'ready' || state.dialogs.length || submitting || editorOpening) return;
   editorOpening = true; refreshComposer();
-  try { const { pane } = await fetchJSON('/editor/open', { sessionId: state.sessionId, text: editor.text() }); window.ko?.focus?.(pane); }
+  const origin = state.view.id;
+  try { const { pane } = await fetchJSON('/editor/open', { sessionId: state.sessionId, text: editor.text() }); if (state.view.id === origin) window.ko?.focus?.(pane); }
   catch (error) { notice(error instanceof Error ? error.message : String(error)); }
   finally { editorOpening = false; refreshComposer(); }
 }
@@ -1205,15 +1303,13 @@ function reportError(error: unknown) { element('error').textContent = error inst
 async function send(mode: PromptMode = 'prompt') {
   const text = editor.text(), files = draft.files;
   if (!canSend(text) || submitting) return;
-  const sendingSession = state.sessionId;
+  const sendingSession = state.sessionId, origin = state.view.id;
   submitting = true;
   try {
     const result = await fetchJSON('/prompt', { sessionId: sendingSession, text, mode, attachments: files.map(file => file.id) });
+    if (result.disposition !== 'handled') draft.sent(files);
+    if (state.view.id !== origin) { if (drafts.get(origin) === text) drafts.delete(origin); return; }
     if (state.sessionId !== sendingSession) return;
-    switch (result.disposition) {
-      case 'started': case 'queued': draft.sent(files); break;
-      case 'handled': break;
-    }
     clearDivider(); sync();
     if (editor.text() === text) editor.setText('');
     refreshComposer(); focusComposer(); element('error').textContent = '';
@@ -1244,8 +1340,9 @@ document.addEventListener('click', event => {
   const link = event.target instanceof Element ? event.target.closest('a') : null;
   if (!link?.classList.contains('who')) return;
   event.preventDefault();
-  const pane = state.agents.find(agent => '@' + agent.name === link.textContent)?.pane;
-  if (pane) window.ko?.focus?.(pane);
+  const view = link.getAttribute('data-view'), pane = link.getAttribute('data-pane');
+  if (view) viewTo(view);
+  else if (pane) window.ko?.focus?.(pane);
 });
 window.addEventListener('pagehide', stopFrames);
 document.addEventListener('visibilitychange', () => { refocus(); if (document.hidden) stopFrames(); else { dirty ||= revealing.size > 0; schedule(); armCap(); } });
@@ -1255,14 +1352,14 @@ const previewModifiers = (event: MouseEvent | KeyboardEvent) => event.shiftKey &
 const previewHover = (event: KeyboardEvent) => document.documentElement.classList.toggle('preview-modifiers', previewModifiers(event));
 document.addEventListener('keyup', previewHover);
 window.addEventListener('blur', () => { document.documentElement.classList.remove('preview-modifiers'); composerFocus(); sync(); });
-document.addEventListener('keydown', event => { previewHover(event); if (previewKey(event)) return; if (event.defaultPrevented || event.metaKey || event.ctrlKey || event.isComposing || state.dialogs.length || pickerButton || sessionPicker !== 'closed') return; if (event.key === 'Tab') { event.preventDefault(); if (!element('field').inert) editor.focus(); return; } if (composerReceivesKeys() && !event.altKey && event.key.length === 1 && !(event.key === ' ' && isControl(event.target)) && !isTextInput(event.target)) { event.preventDefault(); editor.focus(); editor.insert(event.key); return; } if (event.key === 'Enter' && hasFailed() && event.target === document.body) element('exited').querySelector('button')?.click(); if (event.key === 'Escape') { event.preventDefault(); if (editing()) return; if (state.bash.some(item => item.phase === 'running')) { escaped = false; void stop(); } else if (state.working) { escaped = true; void stop(); } else if (escaped) { editor.setText(''); } else { escaped = true; } } });
+document.addEventListener('keydown', event => { previewHover(event); if (previewKey(event)) return; if (!barMenu.hidden && event.key === 'Escape') { event.preventDefault(); closeBarMenu(); return; } if (event.defaultPrevented || event.metaKey || event.ctrlKey || event.isComposing || state.dialogs.length || pickerButton || sessionPicker !== 'closed') return; if (event.key === 'Tab') { event.preventDefault(); if (!element('field').inert) editor.focus(); return; } if (composerReceivesKeys() && !event.altKey && event.key.length === 1 && !(event.key === ' ' && isControl(event.target)) && !isTextInput(event.target)) { event.preventDefault(); editor.focus(); editor.insert(event.key); return; } if (event.key === 'Enter' && hasFailed() && event.target === document.body) element('exited').querySelector('button')?.click(); if (event.key === 'Escape') { event.preventDefault(); if (editing()) return; if (state.bash.some(item => item.phase === 'running')) { escaped = false; void stop(); } else if (state.working) { escaped = true; void stop(); } else if (escaped) { editor.setText(''); } else { escaped = true; } } });
 element('model').onclick = () => picker('model'); element('thinking').onclick = () => picker('thinking');
-document.addEventListener('pointerdown', event => { if (!element('picker').contains(event.target instanceof Node ? event.target : null) && !pickerButton?.contains(event.target instanceof Node ? event.target : null)) closePicker(); });
+document.addEventListener('pointerdown', event => { if (!barMenu.hidden && !barMenu.contains(event.target instanceof Node ? event.target : null) && !(event.target instanceof Element && event.target.closest('.ellipsis'))) closeBarMenu(); if (!element('picker').contains(event.target instanceof Node ? event.target : null) && !pickerButton?.contains(event.target instanceof Node ? event.target : null)) closePicker(); });
 element('scroll').onscroll = () => { const scroll = element('scroll'); if (Math.abs(scroll.scrollTop - lastScrollTop) >= 1) { follow = scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight < 60; lastScrollTop = scroll.scrollTop; } sync(); if (scroll.scrollTop < 80) void older(); };
 element('latest').onmousedown = event => event.preventDefault();
 element('latest').onclick = toLatest;
 setInterval(() => { status(); for (const item of state.bash) pendingBash.get(item.id)?.update(item); }, 1000);
 window.addEventListener('resize', positionPicker);
-new ResizeObserver(followResize).observe(element('scroll'));
+new ResizeObserver(() => { followResize(); layoutBar(); }).observe(element('scroll'));
 new ResizeObserver(([entry]) => dockResized(entry.borderBoxSize[0].blockSize)).observe(element('dock'));
 refreshComposer(); focusComposer(); void connect();

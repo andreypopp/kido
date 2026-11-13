@@ -8,7 +8,7 @@ import SidebarFeed
 @testable import Kido
 
 @MainActor final class KoaWebviewTests: AppWindowCase {
-    private enum KoaScenario: String { case transcript, dialogs, controls, exit, failed, completion, markdown, media, attachments, userMarkdown, thinkingMarkdown, reveal, preview, lightbox, agents, composer, questions, bang, commands, notices, latest, sessions }
+    private enum KoaScenario: String { case transcript, dialogs, controls, exit, failed, completion, markdown, media, attachments, userMarkdown, thinkingMarkdown, reveal, preview, lightbox, agents, composer, questions, bang, commands, notices, latest, sessions, views }
     // The off-screen WKWebView reports no document focus. The page's pane-focus hook gives the pane focus; the composer ring keeps its real state.
     private static let paneFocus = "window.koaFocused=true;"
     private static let hideLatest = "document.addEventListener('DOMContentLoaded',()=>{const style=document.createElement('style');style.textContent='#latest{display:none!important}';document.head.append(style)});"
@@ -257,6 +257,18 @@ import SidebarFeed
         try await koaWebview(width: 470, height: 560, scenario: .agents, captures: Set(["out", "failed", "in", "jobs", "fold-a", "fold-b", "tools"].map { "narrow-agents-" + $0 }))
     }
 
+    func testKoaWebviewSubagentViewWide() async throws {
+        try await koaWebview(width: 980, height: 560, scenario: .views, captures: Set(["child", "working", "warning", "grandchild", "root"].map { "subagent-" + $0 }))
+    }
+    func testKoaWebviewSubagentViewNarrow() async throws {
+        try await koaWebview(width: 470, height: 560, scenario: .views, captures: Set(["child", "working", "warning", "grandchild", "root"].map { "narrow-subagent-" + $0 }))
+    }
+    func testKoaWebviewViewBarWide() async throws {
+        try await koaWebview(width: 980, height: 560, scenario: .views, captures: Set(["overflow", "menu", "return"].map { "viewbar-" + $0 }))
+    }
+    func testKoaWebviewViewBarNarrow() async throws {
+        try await koaWebview(width: 470, height: 560, scenario: .views, captures: Set(["overflow", "menu", "return"].map { "narrow-viewbar-" + $0 }))
+    }
     func testKoaWebviewLightbox() async throws {
         try await koaWebview(width: 980, height: 560, scenario: .lightbox, captures: ["media-lightbox"])
     }
@@ -383,7 +395,7 @@ import SidebarFeed
         let completionCaptures = captures.contains { $0.contains("bang-tab") }
         let mediaClock: Bool
         switch scenario {
-        case .commands, .sessions, .media, .attachments, .preview, .lightbox, .agents, .composer: mediaClock = true
+        case .commands, .sessions, .media, .attachments, .preview, .lightbox, .agents, .composer, .views: mediaClock = true
         default: mediaClock = completionCaptures
         }
         let stamp = Int(try XCTUnwrap(Calendar.current.date(from: DateComponents(year: 2026, month: 11, day: mediaClock ? 10 : 8, hour: mediaClock ? 9 : 14, minute: mediaClock ? 12 : 32))).timeIntervalSince1970 * 1000)
@@ -491,7 +503,7 @@ import SidebarFeed
             guard captures.contains(name) || captures.contains("foot-responsive") else { return }
             if scenario == .dialogs { try await webviewUntil(web, "document.querySelector('#tokens').textContent==='88k / 200k'&&document.querySelector('#percent').textContent==='44%'") }
             let ordered = name == "questions-ordered" || name == "narrow-questions-ordered"
-            let top = scenario == .questions || scenario == .media || scenario == .lightbox || scenario == .agents || scenario == .composer
+            let top = scenario == .questions || scenario == .media || scenario == .lightbox || scenario == .agents || scenario == .composer || scenario == .views
             window.contentView?.layoutSubtreeIfNeeded()
             pane.webviewView?.layoutSubtreeIfNeeded()
             let viewportHeight = try await webviewJS(web, "innerHeight")
@@ -860,6 +872,110 @@ import SidebarFeed
             }
             return
         }
+        if scenario == .views {
+            let narrow = width < 750, bar = testMethod.contains("ViewBar")
+            let prefix = (narrow ? "narrow-" : "") + (bar ? "viewbar-" : "subagent-")
+            struct Shape: Decodable { let hidden, more, cap, shrink, noback, clipped, inset, fits: Bool; let cur: Double; let anc: [Double] }
+            func shape() async throws -> Shape {
+                let json = try await webviewJS(web, "(()=>{const bar=document.querySelector('#bar'),column=document.querySelector('#transcript').getBoundingClientRect(),box=bar.getBoundingClientRect(),near=(a,b)=>Math.abs(a-b)<=.5,has=name=>bar.classList.contains(name);return JSON.stringify({hidden:bar.hidden,more:!!bar.querySelector('.ellipsis'),cap:has('cap'),shrink:has('shrink'),noback:has('noback'),cur:bar.querySelector('.cur')?.getBoundingClientRect().width??0,anc:Array.from(bar.querySelectorAll('.anc')).map(node=>node.getBoundingClientRect().width),clipped:bar.scrollWidth>bar.clientWidth+1.5,inset:near(box.left,column.left+8)&&near(box.top,document.querySelector('#scroll').getBoundingClientRect().top+8)&&near(box.height,22),fits:box.width<=column.width-16+.5})})()")
+                let text = try JSONDecoder().decode(String.self, from: Data(json.utf8))
+                return try JSONDecoder().decode(Shape.self, from: Data(text.utf8))
+            }
+            func text(_ script: String) async throws -> String { try JSONDecoder().decode(String.self, from: Data(try await webviewJS(web, script).utf8)) }
+            func dock() async throws -> String {
+                try await text("(()=>{const box=document.querySelector('#dock').getBoundingClientRect();return [box.top,box.bottom,box.height,innerHeight].join()})()")
+            }
+            func followed() async throws {
+                try await webviewUntil(web, "(()=>{const scroll=document.querySelector('#scroll');return scroll.scrollHeight-scroll.scrollTop-scroll.clientHeight<=1})()")
+            }
+            func click(_ selector: String) async throws {
+                _ = try await webviewJS(web, "(()=>{document.querySelector(\(String(reflecting: selector)))?.click();return true})()")
+            }
+            if bar {
+                try await webviewUntil(web, "document.querySelectorAll('#bar .anc,#bar .ellipsis').length>0&&document.querySelector('#bar .cur').textContent==='@final-verification-pass'")
+                let roomy = try await shape()
+                XCTAssertTrue(roomy.more && !roomy.hidden, "Middle ancestors shorten to one … button first")
+                var lastSize = width
+                for size in [width, 420, 300, 230, width] {
+                    let previous = try await webviewJS(web, "document.querySelector('#scroll').clientWidth")
+                    koaContentSize(window: window, width: size, height: 560)
+                    if size != lastSize { try await webviewUntil(web, "document.querySelector('#scroll').clientWidth!==\(previous)") }
+                    lastSize = size
+                    try await webviewUntil(web, "(()=>{const column=document.querySelector('#transcript').getBoundingClientRect(),bar=document.querySelector('#bar');return Math.abs(Number.parseFloat(bar.style.maxWidth)-(column.width-16))<=.5&&column.width<=\(Int(size))})()")
+                    let now = try await shape()
+                    XCTAssertTrue(now.inset && now.fits, "The bar sits 8pt inside the content column and never outgrows it at \(Int(size))pt")
+                    XCTAssertTrue(!now.cap || now.more, "Ancestor names shorten only after the middle ones collapsed at \(Int(size))pt")
+                    XCTAssertTrue(!now.shrink || now.cap, "The viewed name shortens only after the ancestor names at \(Int(size))pt")
+                    XCTAssertTrue(!now.noback || now.shrink, "The back control goes last at \(Int(size))pt")
+                    if now.cap { XCTAssertTrue(now.anc.allSatisfy { $0 <= 60.5 }, "A shortened ancestor is at most 60pt at \(Int(size))pt: \(now.anc)") }
+                    if now.shrink && !now.noback { XCTAssertGreaterThanOrEqual(now.cur, 39.5, "The viewed name keeps 40pt before the back control goes at \(Int(size))pt") }
+                    if !now.noback { XCTAssertFalse(now.clipped, "Nothing is clipped at \(Int(size))pt") }
+                }
+                let wide = try await shape()
+                XCTAssertFalse(wide.cap, "The full width needs no shortened ancestor names")
+                try await webviewUntil(web, "document.querySelector('#status').textContent==='idle'")
+                try await capture(prefix + "overflow")
+                let before = try await dock()
+                try await click("#bar .ellipsis")
+                try await webviewUntil(web, "(()=>{const menu=document.querySelector('#bar-menu'),box=document.querySelector('#bar').getBoundingClientRect(),rows=menu.querySelectorAll('button');return !menu.hidden&&rows.length===5&&Math.abs(menu.getBoundingClientRect().top-(box.bottom+4))<=.5&&Array.from(rows).every(row=>row.getBoundingClientRect().width<=menu.getBoundingClientRect().width)})()")
+                let after = try await dock()
+                XCTAssertEqual(after, before, "The open menu does not move the dock")
+                try await capture(prefix + "menu")
+                _ = try await webviewJS(web, "(()=>{document.querySelectorAll('#bar-menu button')[1].click();return true})()")
+                try await webviewUntil(web, "document.querySelectorAll('#bar .cur').length===1&&document.querySelector('#bar .cur').textContent==='@layout-geometry-checker'&&document.querySelector('#bar-menu').hidden")
+                try await capture(prefix + "return")
+                return
+            }
+            func assertBar(_ viewed: String, _ placeholder: String) async throws {
+                try await webviewUntil(web, "!document.querySelector('#bar').hidden&&document.querySelector('#bar .cur').textContent===\(String(reflecting: viewed))&&document.querySelector('#status').textContent!=='loading'")
+                try await followed()
+                let now = try await shape()
+                XCTAssertTrue(now.inset && now.fits && !now.clipped, "The bar sits 8pt inside the content column, 22pt high")
+                let clear = try await webviewJS(web, "(()=>{const first=document.querySelector('#items').firstElementChild;return !first||first.getBoundingClientRect().top>=document.querySelector('#bar').getBoundingClientRect().bottom})()")
+                XCTAssertEqual(clear, "true", "The first item starts below the bar on a fresh view")
+                let padding = try await text("getComputedStyle(document.querySelector('#transcript')).paddingTop")
+                XCTAssertEqual(padding, narrow ? "40px" : "44px", "The transcript grows 30pt at the top while the bar shows")
+                let hint = try await text("document.querySelector('#prompt .cm-placeholder')?.textContent??''")
+                XCTAssertEqual(hint, placeholder, "The composer names the viewed agent")
+            }
+            let rootDock = try await dock()
+            let rootPadding = try await text("getComputedStyle(document.querySelector('#transcript')).paddingTop")
+            XCTAssertEqual(rootPadding, narrow ? "10px" : "14px", "The root view has no bar and no extra padding")
+            let rootBar = try await webviewJS(web, "document.querySelector('#bar').hidden&&!document.body.classList.contains('viewing')&&document.querySelector('#prompt .cm-placeholder')?.textContent==='Message koa…'")
+            XCTAssertEqual(rootBar, "true", "The root view shows no bar and the composer keeps koa")
+            try await click(".assistant a.who")
+            try await assertBar("@reviewer", "Message @reviewer…")
+            let childDock = try await dock()
+            XCTAssertEqual(childDock, rootDock, "The dock does not move when the bar appears")
+            try await capture(prefix + "child")
+            try await advance()
+            try await webviewUntil(web, "document.querySelector('#status').textContent.startsWith('working')")
+            let steer = try await text("document.querySelector('#prompt .cm-placeholder')?.textContent")
+            XCTAssertEqual(steer, "Steer @reviewer…", "A working agent is steered")
+            try await capture(prefix + "working")
+            try await advance()
+            try await webviewUntil(web, "document.querySelector('#status').textContent==='idle'")
+            let submitValue = String(decoding: try JSONSerialization.data(withJSONObject: "/new", options: .fragmentsAllowed), as: UTF8.self)
+            _ = try await webviewJS(web, "fetch('/prompt',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sessionId:document.body.dataset.sessionId,text:\(submitValue),mode:'prompt',attachments:[]})}).then(r=>r.status)")
+            try await webviewUntil(web, "document.querySelector('.nrow.warning')?.textContent.includes(\"/new: only in @ko's view\")")
+            try await capture(prefix + "warning")
+            try await click(".assistant a.who")
+            try await assertBar("@checker", "Message @checker…")
+            let path = try await text("Array.from(document.querySelectorAll('#bar > *')).map(node=>node.textContent).join(' ')")
+            XCTAssertEqual(path, "‹ @ko › @reviewer › @checker", "The path runs from the root to the viewed agent")
+            try await capture(prefix + "grandchild")
+            try await click("#bar .back")
+            try await assertBar("@reviewer", "Message @reviewer…")
+            try await click("#bar .anc")
+            try await webviewUntil(web, "document.querySelector('#bar').hidden&&!document.body.classList.contains('viewing')&&document.querySelector('#prompt .cm-placeholder')?.textContent==='Message koa…'")
+            try await followed()
+            let backPadding = try await text("getComputedStyle(document.querySelector('#transcript')).paddingTop")
+            XCTAssertEqual(backPadding, narrow ? "10px" : "14px", "The root view takes the padding back")
+            let backDock = try await dock()
+            XCTAssertEqual(backDock, rootDock, "The dock stays where it was")
+            try await capture(prefix + "root")
+            return
+        }
         if scenario == .agents {
             let prefix = width < 750 ? "narrow-agents-" : "agents-"
             func size(_ height: CGFloat) { koaContentSize(window: window, width: width, height: height) }
@@ -878,7 +994,7 @@ import SidebarFeed
             try await capture(prefix + "out")
             try await advance(); try await webviewUntil(web, "document.querySelectorAll('.aline').length===2&&document.querySelectorAll('.aline.err').length===2")
             size(330); try await aligned(); try await capture(prefix + "failed")
-            try await advance(); try await webviewUntil(web, "document.querySelectorAll('.aline').length===7")
+            try await advance(); try await webviewUntil(web, "document.querySelectorAll('.aline').length===5")
             size(560)
             _ = try await webviewJS(web, "(()=>{document.querySelectorAll('.aline .hd')[1].click();return true})()")
             let rendered = try await webviewJS(web, "(()=>{const body=document.querySelectorAll('.aline')[1].querySelector('.bd');return !!body.querySelector('ul li')&&!!body.querySelector('code')&&!!body.querySelector('strong')&&body.querySelector('a')?.getAttribute('href')==='https://example.com/sidebar'&&!body.querySelector('.caret')})()")
@@ -1315,7 +1431,7 @@ import SidebarFeed
             try await capture("times")
         }
         switch scenario {
-        case .transcript, .completion, .markdown, .media, .attachments, .userMarkdown, .thinkingMarkdown, .reveal, .preview, .lightbox, .agents, .composer, .questions, .bang, .commands, .notices, .latest, .sessions: break
+        case .transcript, .completion, .markdown, .media, .attachments, .userMarkdown, .thinkingMarkdown, .reveal, .preview, .lightbox, .agents, .composer, .questions, .bang, .commands, .notices, .latest, .sessions, .views: break
         case .dialogs: try await dialogScenario()
         case .controls: try await controlsScenario()
         case .exit: try await exitScenario()

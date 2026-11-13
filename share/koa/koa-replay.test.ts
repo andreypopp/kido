@@ -83,7 +83,7 @@ test("a held reply waits for its release, then pushes its after records; a disco
   const feed = await app.events();
   await feed.until(ofType("state"));
   const held = new AbortController();
-  const pending = fetch(app.base + "sessions/list", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ scope: "all" }), signal: held.signal });
+  const pending = fetch(app.base + "sessions/list", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ sessionId: "s1", scope: "all" }), signal: held.signal });
   await pollUntil(async () => (await app.status()).body.pending.length === 1, 5000, "the held reply");
   assert.equal((await app.json("replay/release", { name: "other" })).status, 409);
   assert.deepEqual((await app.status()).body, { step: 1, total: 2, mismatches: 1, last: "no held reply named other", pending: ["rows"] });

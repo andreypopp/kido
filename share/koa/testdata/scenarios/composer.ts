@@ -6,7 +6,7 @@ const stateIdleSixth = (dir: string): Extract<PageRecord, { type: "state" }> => 
 
 const stateIdleSeventh = (dir: string): Extract<PageRecord, { type: "state" }> => ({ ...stateIdle(dir), context: { tokens: 84003, window: 200000, percent: 42.0015 } });
 
-const stateFailed = (dir: string): Extract<PageRecord, { type: "state" }> => ({ agents: [], bash: [], compaction: "idle", working: false, aborted: false, name: "pi", levels: [], cwd: `/private${dir}/home/Workspace/kido`, home: `${dir}/home`, dialogs: [], statuses: {}, queue: { steering: [], followUp: [] }, pi: { type: "failed", at: 1794330720000, message: "Unknown provider \"nope\". Use --list-models to see available providers/models." }, type: "state" });
+const stateFailed = (dir: string): Extract<PageRecord, { type: "state" }> => ({ view: { id: "00000000-0000-7000-8000-000000000001", path: [{ id: "00000000-0000-7000-8000-000000000001", name: "ko" }] }, agents: [], bash: [], compaction: "idle", working: false, aborted: false, name: "pi", levels: [], cwd: `/private${dir}/home/Workspace/kido`, home: `${dir}/home`, dialogs: [], statuses: {}, queue: { steering: [], followUp: [] }, life: { type: "failed", at: 1794330720000, message: "Unknown provider \"nope\". Use --list-models to see available providers/models." }, type: "state" });
 
 const stateIdleEighth = (dir: string): Extract<PageRecord, { type: "state" }> => ({ ...stateIdle(dir), context: { tokens: 84008, window: 200000, percent: 42.004000000000005 } });
 

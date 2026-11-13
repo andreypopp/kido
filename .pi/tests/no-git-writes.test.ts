@@ -40,10 +40,15 @@ test("top-level: every blocked command is allowed with no parent session", () =>
 });
 test("empty parent session is top-level", () => assert.equal(blocksGitWrite("git stash", ""), false));
 
-test("KO_AGENT_PARENT_SESSION makes a spawned agent: git writes are blocked", () => {
-  const session = parentSession({ KO_AGENT_PARENT_SESSION: "parent" });
+const edge = (owner: string, parent: string) => ({ type: "custom", customType: "koa.edge", data: { owner, parent } });
+test("a koa.edge entry of the own session makes a spawned agent: git writes are blocked", () => {
+  const session = parentSession([edge("child", "parent")], "child");
   assert.equal(blocksGitWrite("git add .", session), true);
   assert.equal(blocksGitWrite("git status", session), false);
+});
+test("an edge copied from another session by a fork is not this session's edge", () => {
+  assert.equal(parentSession([edge("source", "parent")], "fork"), undefined);
+  assert.equal(parentSession([edge("source", "parent"), edge("fork", "other")], "fork"), "other");
 });
 const root = realpathSync(mkdtempSync("/var/tmp/no-git-writes-"));
 const tmpRoot = mkdtempSync("/tmp/no-git-writes-");
@@ -102,9 +107,10 @@ test("worktree add: only value-less options are allowed", () => {
   ]) assert.equal(blocksGitWrite(command, "parent", home), true, command);
 });
 
-test("neither variable set is a top-level session", () => {
-  assert.equal(blocksGitWrite("git add .", parentSession({})), false);
-  assert.equal(blocksGitWrite("git add .", parentSession({ KO_AGENT_PARENT_SESSION: "" })), false);
+test("a branch without an edge is a top-level session", () => {
+  assert.equal(parentSession([], "me"), undefined);
+  assert.equal(parentSession([edge("me", "")], "me"), undefined);
+  assert.equal(blocksGitWrite("git add .", parentSession([], "me")), false);
 });
 
 test("sleep is blocked, also inside a script, and other commands are not", () => {
@@ -122,12 +128,12 @@ test("pkill, killall and kill are blocked, a mention of kill is not", () => {
 });
 
 test("async_bash gets the same policy as bash", () => {
-  const env = { KO_AGENT_PARENT_SESSION: "parent" };
+  const parent = "parent";
   for (const tool of ["bash", "async_bash"]) {
     for (const command of ["sleep 240", "pkill x", "git commit"]) {
-      assert.notEqual(refusal(tool, { command }, env), undefined, `${tool}: ${command}`);
+      assert.notEqual(refusal(tool, { command }, parent), undefined, `${tool}: ${command}`);
     }
-    assert.equal(refusal(tool, { command: "scripts/quiet-limit 600 -- make test" }, env), undefined);
+    assert.equal(refusal(tool, { command: "scripts/quiet-limit 600 -- make test" }, parent), undefined);
   }
-  assert.equal(refusal("read", { command: "sleep 240" }, env), undefined);
+  assert.equal(refusal("read", { command: "sleep 240" }, parent), undefined);
 });

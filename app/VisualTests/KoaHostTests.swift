@@ -77,7 +77,7 @@ import KoModel
         let result = try await webviewJS(web, #"""
         (async()=>{
           const requests=[], original=window.fetch;
-          window.fetch=(path,options)=>path==='/history'?Promise.resolve({ok:true,json:async()=>({entries:['recent prompt','earlier prompt','!!echo quiet','!echo normal']})}):path==='/queue/clear'?(requests.push({path}),Promise.resolve({ok:true,json:async()=>({steering:[{text:'queued steer',attachments:[]}],followUp:[]})})):['/prompt','/quit'].includes(path)?(requests.push({path,...JSON.parse(options.body)}),Promise.resolve({ok:true,json:async()=>({})})):original(path,options);
+          window.fetch=(raw,options,path=String(raw).split('?')[0])=>path==='/history'?Promise.resolve({ok:true,json:async()=>({entries:['recent prompt','earlier prompt','!!echo quiet','!echo normal']})}):path==='/queue/clear'?(requests.push({path}),Promise.resolve({ok:true,json:async()=>({steering:[{text:'queued steer',attachments:[]}],followUp:[]})})):['/prompt','/quit'].includes(path)?(requests.push({path,...JSON.parse(options.body)}),Promise.resolve({ok:true,json:async()=>({})})):original(raw,options);
           const input=document.querySelector('#prompt .cm-content'), editor=window.composer;
           const key=(key,options={})=>{const event=new KeyboardEvent('keydown',{key,keyCode:key.length===1?key.toUpperCase().charCodeAt(0):({Enter:13,Tab:9,Escape:27}[key]||0),bubbles:true,cancelable:true,...options});input.dispatchEvent(event);return event.defaultPrevented};
           const sent=async(text,options,mode)=>{editor.setText(text);const handled=key('Enter',options);await Promise.resolve();await Promise.resolve();await Promise.resolve();return handled&&requests.at(-1)?.text===text&&requests.at(-1)?.mode===mode};
@@ -192,7 +192,7 @@ import KoModel
         let response = try await webviewJS(web, "fetch('/prompt',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sessionId:document.body.dataset.sessionId,text:'Make the sweep keep a start failure',mode:'prompt',attachments:[]})}).then(async r=>({status:r.status,body:await r.json()}))")
         XCTAssertTrue(response.contains("\"status\":200"), response)
         try await webviewUntil(web, "document.querySelector('#status').textContent==='idle'&&document.querySelector('.user')!==null&&document.querySelector('.assistant p')?.textContent==='The sweep keeps a start failure for the linger grace.'", within: 20)
-        _ = try await webviewJS(web, "fetch('/quit',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'}).then(r=>r.status)")
+        _ = try await webviewJS(web, "fetch('/quit',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sessionId:document.body.dataset.sessionId})}).then(r=>r.status)")
         try await wait("koa left its page") { pane.webviewView == nil }
         window.makeFirstResponder(pane)
         let event = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0,

@@ -79,7 +79,6 @@ function inbound(value: unknown): Inbound | undefined {
     case 'steer': return { form: 'steer', ...related };
     case 'report': return { form: 'report', ...related };
     case 'notice': return { form: 'notice' };
-    case 'ended': return typeof value.reported === 'boolean' ? { form: 'ended', reported: value.reported, ...related } : undefined;
     default: return;
   }
 }
@@ -130,6 +129,9 @@ function notRun(item: Assistant): void {
   for (const block of item.blocks) if (block.type === "tool" && block.state.type === "pending") block.state = { type: "not_run" };
 }
 
+// The feed that holds a page now: the close of a page that moved between feeds reads it here.
+const owners = new WeakMap<ServerResponse, Set<ServerResponse>>();
+
 export function transcript({ dir, flushMs, metrics = false }: { dir: string; flushMs: number; metrics?: boolean }) {
   const imageDir = join(dir, "images");
   mkdirSync(imageDir, { recursive: true, mode: 0o700 });
@@ -156,7 +158,8 @@ export function transcript({ dir, flushMs, metrics = false }: { dir: string; flu
   let items: Item[] = [];
   let session: { type: 'unbound' } | { type: 'bound'; id: string | undefined } = { type: 'unbound' };
   let assistant: number | undefined;
-  const subscribers = new Set<ServerResponse>();
+  let subscribers = new Set<ServerResponse>();
+  const subscribe = (req: ServerResponse): void => { subscribers.add(req); owners.set(req, subscribers); };
   const tools = new Map<string, { item: Assistant; block: Extract<Block, { type: "tool" }> }>();
   const dirty = new Set<number>();
   const sent = new Map<number, Assistant>();
@@ -174,7 +177,7 @@ export function transcript({ dir, flushMs, metrics = false }: { dir: string; flu
     if (!more || req.writableLength > MAX_WEBVIEW_OUTPUT_BYTES) {
       if (counters && req.writableLength > MAX_WEBVIEW_OUTPUT_BYTES) counters.caps++;
       req.end();
-      subscribers.delete(req);
+      owners.get(req)?.delete(req);
     }
   };
   const broadcast = (record: PageRecord): void => {
@@ -218,7 +221,7 @@ export function transcript({ dir, flushMs, metrics = false }: { dir: string; flu
       return [next];
     });
     item.stop = message.stopReason;
-    item.error = message.errorMessage ?? "";
+    item.error = message.stopReason === "aborted" ? "" : message.errorMessage ?? "";
     item.lifecycle = ended ? "ended" : "streaming";
     if (ended && (message.stopReason === "error" || message.stopReason === "aborted")) {
       notRun(item);
@@ -424,9 +427,17 @@ export function transcript({ dir, flushMs, metrics = false }: { dir: string; flu
     for (const item of items) if (item.kind === "assistant") notRun(item);
     sent.clear();
     const record = reset();
-    for (const req of responses) { subscribers.add(req); body(req, record, true); }
+    for (const req of responses) { subscribe(req); body(req, record, true); }
   };
 
+  const release = (): Set<ServerResponse> => { const held = subscribers; subscribers = new Set(); return held; };
+  const show = (previous: { release(): Set<ServerResponse> }): void => {
+    const responses = previous.release();
+    flush(false); sent.clear();
+    epoch = mintId();
+    const record = reset(), state = currentState && frame(JSON.stringify(currentState));
+    for (const req of responses) { subscribe(req); if (state) body(req, state, true); body(req, record, true); }
+  };
   const message: (message: AgentMessage, phase: "start" | "update" | "end", ended?: number, attachments?: Attachment[]) => void = applyMessage;
   const thinking = (index: number, edge: "started" | "ended", at: number): void => {
     flush();
@@ -479,7 +490,7 @@ export function transcript({ dir, flushMs, metrics = false }: { dir: string; flu
       else respond(req, 200, '{"epoch":' + JSON.stringify(epoch) + ',' + window(before) + '}');
     } else if (request.method === "GET" && url.pathname === "/events") {
       if (counters) counters.opens++;
-      req.once("close", () => subscribers.delete(req));
+      req.once("close", () => owners.get(req)?.delete(req));
       flush();
       req.writeHead(200, { "Content-Type": "text/event-stream" });
       if (url.searchParams.get("epoch") === epoch) {
@@ -492,7 +503,7 @@ export function transcript({ dir, flushMs, metrics = false }: { dir: string; flu
         }
       } else { if (counters) counters.resets++; body(req, reset(), true); }
       if (req.writableEnded || req.destroyed) return true;
-      subscribers.add(req);
+      subscribe(req);
       if (counters) body(req, frame(JSON.stringify(flushRecord(counters.bytes))), true);
       if (currentState) broadcast(currentState);
     } else return false;
@@ -509,5 +520,5 @@ export function transcript({ dir, flushMs, metrics = false }: { dir: string; flu
     if (current?.kind === 'command') { current.result = result; current.final = result.type !== 'compaction' || result.state.type !== 'running'; publish(current); flush(); }
     else append({ kind: 'command', result });
   };
-  return { command, itemFile, message, thinking, annotation, rebuild, toolRunning, toolPartial, toolDone, state, notify, handle, close, get metrics() { return counters && { ...counters, subscribers: subscribers.size }; } };
+  return { command, itemFile, release, show, message, thinking, annotation, rebuild, toolRunning, toolPartial, toolDone, state, notify, handle, close, get metrics() { return counters && { ...counters, subscribers: subscribers.size }; } };
 }

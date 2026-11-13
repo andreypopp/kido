@@ -33,7 +33,7 @@ test("a cancelled switch leaves the old session; a switch and a new session refr
   assert.equal(rows.rows.length, 1);
   assert.deepEqual(await (await app.post("sessions/switch", { path: rows.rows[0].path })).json(), { cancelled: true });
   assert.equal(state(app).sessionId, before.sessionId);
-  assert.equal(state(app).pi.type, "ready");
+  assert.equal(state(app).life.type, "ready");
   const stale = before.sessionId;
   assert.equal((await app.post("sessions/new")).status, 200);
   await app.until(note("new session"));
@@ -48,12 +48,12 @@ test("a switch that fails after teardown ends in the failed state and Start agai
   await writeFile(models, JSON.stringify({ providers: {} }));
   const switched = await app.post("sessions/switch", { path: rows[0].path });
   assert.equal(switched.status, 409, await switched.text());
-  const failed = await app.until(ofType("state", record => record.pi.type === "failed")).catch(error => { throw new Error("no failed state: " + String(error) + app.stderr()); });
-  assert.match(JSON.stringify(failed.pi), /model/i);
+  const failed = await app.until(ofType("state", record => record.life.type === "failed")).catch(error => { throw new Error("no failed state: " + String(error) + app.stderr()); });
+  assert.match(JSON.stringify(failed.life), /model/i);
   await writeFile(models, good);
   const start = await app.post("agent/start");
   assert.equal(start.status, 200, await start.text() + app.stderr());
-  await pollUntil(() => state(app).pi.type === "ready", 5000, "ready after Start again: " + JSON.stringify(state(app).pi) + app.stderr());
+  await pollUntil(() => state(app).life.type === "ready", 5000, "ready after Start again: " + JSON.stringify(state(app).life) + app.stderr());
 });
 
 test("startup UI of an extension survives /new", { timeout: 30000 }, async t => {
@@ -181,7 +181,7 @@ test("a turn that an extension starts at session_start survives /new", { timeout
   });
   const cursor = app.count();
   await app.post("sessions/new");
-  await app.until(ofType("state", record => record.working === true && record.pi.type === "ready"), cursor);
+  await app.until(ofType("state", record => record.working === true && record.life.type === "ready"), cursor);
   await pollUntil(() => app.provider.requests.length === 1, 10000, "the startup turn request");
   app.provider.release("turn");
   await app.until(ofType("item", record => record.item.kind === "assistant" && JSON.stringify(record.item.blocks).includes("started reply")), cursor);
@@ -214,7 +214,7 @@ test("an extension's ctx.newSession() resets and refreshes the page like /new", 
   const before = state(app);
   assert.ok(before.sessionFile);
   await send(app, "/newsess");
-  await pollUntil(() => state(app).sessionId !== before.sessionId && state(app).pi.type === "ready", 10000, "the new session");
+  await pollUntil(() => state(app).sessionId !== before.sessionId && state(app).life.type === "ready", 10000, "the new session");
   assert.notEqual(state(app).sessionFile, before.sessionFile);
   const replay = await (await fresh(app, t)).until(ofType("reset"));
   assert.equal(replay.items.filter(item => item.kind === "user" || item.kind === "assistant").length, 0);
@@ -244,11 +244,11 @@ test("a held switch shows the switching phase, then the old session answers read
   const before = state(app).sessionId;
   const rows = (await (await app.post("sessions/list", { scope: "current" })).json()).rows;
   const switched = app.post("sessions/switch", { path: rows[0].path });
-  await app.until(ofType("state", record => record.pi.type === "switching"));
+  await app.until(ofType("state", record => record.life.type === "switching"));
   assert.equal(state(app).sessionId, before);
   await writeFile(gate, "");
   assert.equal((await switched).status, 200);
-  await pollUntil(() => state(app).pi.type === "ready" && state(app).sessionId !== before, 5000, "the switched session ready");
+  await pollUntil(() => state(app).life.type === "ready" && state(app).sessionId !== before, 5000, "the switched session ready");
 });
 
 test("an extension dialog expires at its timeout, and only a valid answer closes one", { timeout: 30000 }, async t => {

@@ -372,8 +372,12 @@ pane and its ko executable from its host (`AgentHost` in
 or the environment. It calls only `ko api` (docs/design.md,
 "The harness extension", lists the routes). Of `share/koa/` it
 imports only the modules that koa also uses: `text.ts`, `agents.ts`,
-`records.ts`, `completion-context.ts` and `runtime-exec.ts`, and the
-type of its host from `koa-agents.ts`, never koa's program modules.
+`records.ts`, `completion-context.ts` and `runtime-exec.ts`, and,
+with `import type`, its host (`AgentHost` and the types it names) from
+`koa-agents.ts`, never koa's program modules. Every agent of a koa
+pane, its subagents included, is a session of that one process, and a
+subagent is no pane: it reaches the tree only through its host
+(docs/design-subagents.md, "The tree").
 Its background commands are jobs, child processes of koa. It never opens ko's socket,
 never reads ko's state directory or another agent's files, and has no
 state directory of its own: its registry and reports are custom
@@ -441,8 +445,9 @@ breaks most easily:
   the linger grace; and a pane whose immutable `parent` pane is gone
   or dead (the linger collection waits while a focused client shows
   the pane). Every removal takes the pane's descendants in the same
-  change; the server owns that cascade. A child's pane gets `close:
-  on_exit` and its spawner's pane as `parent`. A child pane may float
+  change; the server owns that cascade. A helper pane that a program
+  creates over itself, such as koa's editor float, gets `close:
+  on_exit` and the program's pane as `parent`. A child pane may float
   or be tiled only in its parent's window; in any other window it is
   the only tiled pane, with only its own child floats.
 - A message (`/panes/{id}/messages`) is enqueued once for each
@@ -743,9 +748,9 @@ delegates as its brief says and does not write code.
   `~/Library/Logs/Kido/app.log` (docs/design-app.md, "The log").
   Report a crash. Start a demo again only when asked.
 - **No git writes.** Do not commit, push, reset, add, checkout or
-  stash. Leave work uncommitted. Never use `git stash`. If
-  `KO_AGENT_PARENT_SESSION` is set, `.pi/extensions/no-git-writes`
-  guards bash tool calls.
+  stash. Leave work uncommitted. Never use `git stash`. In a
+  subagent (its session has its own `koa.edge` entry),
+  `.pi/extensions/no-git-writes` guards bash tool calls.
 - **Other agents' uncommitted changes are expected.** Work runs in
   parallel. The brief identifies your files. Do not revert, clean or
   fix anything outside those files. Report it instead.

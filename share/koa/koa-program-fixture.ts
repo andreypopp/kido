@@ -2,7 +2,7 @@ import type { TestContext } from "node:test";
 import assert from "node:assert/strict";
 import { spawn, type ChildProcess } from "node:child_process";
 import { realpathSync } from "node:fs";
-import { mkdtemp, mkdir, readFile, writeFile, rm, stat, symlink } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, writeFile, appendFile, rm, stat, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { once } from "node:events";
@@ -52,8 +52,10 @@ async function launch(t: TestContext, dir: string, cwd: string, env: NodeJS.Proc
   const response = await fetch(base + "events", { signal: controller.signal });
   assert.ok(response.body);
   const { state: stream, until } = sse(Readable.from(response.body));
-  const post = (path: string, body: object = {}) => fetch(base + path, { method: "POST", headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(Array.isArray(body) ? body : { sessionId: stream.records.filter(record => record.type === 'state').at(-1)?.sessionId, ...body }) });
-  return { pid: child.pid, post, until, records: () => stream.records, count: () => stream.records.length, close, stdout, stderr, base };
+  const sessionId = () => stream.records.filter(record => record.type === 'state').at(-1)?.sessionId;
+  const url = (path: string) => base + path + (path.includes('?') ? '&' : '?') + 'sessionId=' + encodeURIComponent(sessionId() ?? '');
+  const post = (path: string, body: object = {}) => fetch(path.startsWith('attachments') ? url(path) : base + path, { method: "POST", headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(Array.isArray(body) ? body : { sessionId: stream.records.filter(record => record.type === 'state').at(-1)?.sessionId, ...body }) });
+  return { pid: child.pid, post, url, until, records: () => stream.records, count: () => stream.records.length, close, stdout, stderr, base };
 }
 export const assistantMessage = { ...assistant("stop"), api: "test", provider: "test", model: "test", usage: {}, timestamp: 42 };
 
@@ -74,12 +76,20 @@ export async function realFixture(t: TestContext, options: Real) {
   if (options.panes) {
     await linkFakeKo(dir);
     await writeFile(join(dir, "panes.json"), JSON.stringify(options.panes));
+    await writeFile(join(dir, "feed.jsonl"), "");
+    await writeFile(join(dir, "acks.jsonl"), "");
   }
-  const ko = options.panes ? { KO_PANE: "pane_1", KO_SOCKET: "/tmp/koa-agent-test/socket", KO_PANE_TOKEN: "", KO_FAKE_PANES: join(dir, "panes.json"), KO_FAKE_API_LOG: join(dir, "api-log") } : {};
+  const ko = options.panes ? { KO_PANE: "pane_1", KO_SOCKET: "/tmp/koa-agent-test/socket", KO_PANE_TOKEN: "", KO_FAKE_PANES: join(dir, "panes.json"), KO_FAKE_API_LOG: join(dir, "api-log"), KO_FAKE_FEED: join(dir, "feed.jsonl"), KO_FAKE_ACKS: join(dir, "acks.jsonl") } : {};
   const app = await launch(t, dir, cwd, { PI_CODING_AGENT_DIR: agentDir, PI_OFFLINE: "1", PI_SKIP_VERSION_CHECK: "1", ...ko, ...options.env }, realPi, [...(options.discover ? [] : ["--no-extensions"]), ...(options.resources ? [] : ["--no-skills", "--no-prompt-templates"]), "--no-context-files", "--session-dir", sessions, ...extensions.flat(), ...extra, ...options.args ?? []], options.program ?? resolve("../../build/ko/share/ko/koa/koa.ts"));
   t.after(async () => { await provider.close(); });
-  if (options.start !== false) await app.until(ofType("state", record => record.pi?.type === "ready"));
-  return { ...app, provider, dir, cwd, sessions, agentDir, apiCalls: async () => (await readFile(join(dir, "api-log"), "utf8").catch(() => "")).trim().split("\n").filter(Boolean).flatMap(line => { const call: unknown = JSON.parse(line); return isApiCall(call) ? [call] : []; }) };
+  if (options.start !== false) await app.until(ofType("state", record => record.life?.type === "ready"));
+  let seq = 0;
+  const feed = (message: { id: string; kind: string; text?: string; data?: unknown; from?: object; relation?: string }) => {
+    const from = message.from ?? { type: "user" };
+    return appendFile(join(dir, "feed.jsonl"), JSON.stringify({ seq: ++seq, text: "", ...("pane" in from ? { relation: message.relation ?? "sibling" } : {}), ...message, from }) + "\n");
+  };
+  const acks = async () => (await readFile(join(dir, "acks.jsonl"), "utf8").catch(() => "")).trim().split("\n").filter(Boolean).map((line): { type: string; id: string } => JSON.parse(line));
+  return { ...app, provider, dir, cwd, sessions, agentDir, feed, acks, apiCalls: async () => (await readFile(join(dir, "api-log"), "utf8").catch(() => "")).trim().split("\n").filter(Boolean).flatMap(line => { const call: unknown = JSON.parse(line); return isApiCall(call) ? [call] : []; }) };
 }
 
 export async function writeSession(cwd: string, sessions: string, turns: number, name: string) {

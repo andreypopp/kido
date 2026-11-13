@@ -13,8 +13,8 @@ document does not repeat them.
 
 Kido has two parts. The `ko` server and CLI manage windows, the panes
 in them, their status, and the messages between panes. A subagent is
-a pane with a `parent`; an agent's background command is a job of its
-harness, not a pane.
+a pi session inside koa's process, a status record of koa's pane; an
+agent's background command is a job of its harness, not a pane.
 
 The **harness** is everything that only an agent has: the pi session,
 the tools, the task, the report and the names. It is koa
@@ -27,9 +27,11 @@ the `@kido/webview` SDK (`ko webview serve`, `enter` and `leave`) for
 the harness's page. ko never
 reads the
 harness's files, and the harness reads no ko file. **ko is the
-mediator**: every exchange between two agents goes through ko, so the
-harness never reads another agent's files and never connects to
-another agent's socket.
+mediator between panes**: every exchange between agents of two panes
+goes through ko, and koa's host mediates between the agents of its
+own process (design-subagents.md, "The tree"). The harness never
+reads another agent's files and never connects to another agent's
+socket.
 
 ## Who is authoritative for what
 
@@ -67,8 +69,9 @@ ko trusts them only while the pane has an OSC 7501 root with `app=pi`,
 as it trusts `ssh.dest` only while the foreground is `ssh`. The
 server drops the records on pane death, a shell prompt (non-final
 records) and RIS, so a crashed pi's variables are stale but not
-believed. A spawner also sets `koa.task` on a new pane; the child
-deletes it after it delivers the task, and ko never reads it.
+believed. Only the root agent of a koa pane writes them; a subagent
+has none. A `toplevel` spawn also sets `koa.task` on its new pane; the
+new koa deletes it after it delivers the task, and ko never reads it.
 
 **The pi session, for what a harness knows.** A harness keeps its
 registry of children, their work marks and their reports as custom
@@ -105,21 +108,20 @@ and `ko prompt` reaches it by paste.
 
 The extension uses only these interfaces of ko:
 
-- `ko api`: `GET /layout` and `GET /version`; `POST /panes` for a
-  child and a top-level agent; `POST /panes/pane_N/messages` and
-  `POST /panes/pane_N/stop`; `GET /panes/pane_N/screen?history=all`;
-  `PUT` and `DELETE` on `/panes/$KO_PANE/vars`; `POST
-  /panes/$KO_PANE/status` for its job rows (design-subagents.md, "A
-  job's row").
-- `ko api --stream` for its own message stream,
-  `/panes/$KO_PANE/messages` (protocol.md, section 7), and, in a
-  top-level host pi, `/client` for its peers (design-subagents.md,
-  "Peers").
+- `ko api`: `GET /layout`; `POST /panes` for a top-level agent;
+  `POST /panes/pane_N/messages` and `POST /panes/pane_N/stop`; `PUT`
+  and `DELETE` on `/panes/$KO_PANE/vars`; `POST
+  /panes/$KO_PANE/status` for the rows of its jobs and subagents
+  (design-subagents.md, "In the sidebar").
+- `ko api --stream`, in a root of a host koa, for `/client` and its
+  peers (design-subagents.md, "Peers"). The pane's message stream,
+  `/panes/$KO_PANE/messages` (protocol.md, section 7), is the host's,
+  not the extension's (design-subagents.md, "The pane's queue").
 - In a routed pi, `GET /runtimes/NAME` and `ko api --stream
   /runtimes/NAME/exec` for its tools and its jobs
   (design-runtimes.md, "Agents in a runtime").
 
-`async_bash` and a moved `bash` call are jobs, child processes of pi (design-subagents.md, "A
+`async_bash` and a moved `bash` call are jobs, child processes of koa (design-subagents.md, "A
 job").
 
 It never opens ko's socket itself and never reads ko's state
@@ -132,9 +134,9 @@ session id writes no variable and opens no message stream. A headless
 `pi --print` has its own session id, so it cannot act as the agent of
 the pane that it runs in.
 
-**The variables.** The extension writes `pi.session` and `pi.name` at
-`session_start`, after it opens its message stream, and `pi.name`
-again on `session_info_changed`. It writes no `pi.activity` value,
+**The variables.** The root's extension writes `pi.session` and
+`pi.name` at `session_start`, and `pi.name` again on
+`session_info_changed`. It writes no `pi.activity` value,
 but ko reads that variable and the extension deletes it with the
 others. Without `$KO_PANE`, nothing is written. A routed pi writes
 `pi.runtime` and `ko.runtime` too. At shutdown it
@@ -154,20 +156,15 @@ kind's `session`. Discovery and addressing apply it. `pi.runtime`
 places only a host pi agent; a runtime pane's row `runtime` and `cwd`
 win. A stale variable on a
 shell pane is no agent. Liveness of a known session is the exception,
-because the root can be absent while the agent's pane lives: koa
-writes `clear` when its pi exits. The parent watch finds a parent
-alive while its pane is not dead and holds the parent's `pi.session`,
-with or without a pi root, and a resume refuses a session that a
-live pane holds in `pi.session` for the same reason. Thus, an agent
-without a root is not listed and cannot be addressed by name, but
-its children stay.
+because the root can be absent while the agent's pane lives: a resume
+refuses a session that a live pane holds in `pi.session`, with or
+without a pi root. Thus, an agent without a root is not listed and
+cannot be addressed by name.
 
-**Project trust.** The extension handles pi's `project_trust` event,
-which pi sends to `--extension` extensions before it reads its trust
-store. It answers `yes` when the real path of pi's directory is the
-real path of `KO_AGENT_TRUSTED_CWD`, which a spawner passes only for a
-directory that it trusts. It never saves the answer
-(design-subagents.md, "What a child is given").
+**Project trust.** A subagent's host gives it as trusted the one
+directory that its spawner trusts and shares the spawner's git common
+directory; any other directory gets pi's own answer. Nothing saves
+the grant (design-subagents.md, "Spawning").
 
 **The ko skill.** Inside ko, the extension answers pi's
 `resources_discover` with the `skills` directory beside its own file,
@@ -185,9 +182,9 @@ skill directory with `koa-agent.ts`.
 
 **One instance for each load.** pi runs the factory once for each
 session and again at `/reload` and on a switch. The state that must
-outlive one run (the message receiver and its id ring, the jobs and
-their exit cleanup) lives in the host (`Slots` in `koa-agent.ts`), not
-on `globalThis`, and each run takes it over.
+outlive one run (the pane's message stream and its id ring, each
+agent's jobs and records, the exit cleanup) belongs to koa's host
+(`koa-agents.ts`), never to an instance and never to `globalThis`.
 
 **Subprocesses.** The extension starts every ko process with
 asynchronous `spawn`, never `execFileSync`, except the synchronous
@@ -198,38 +195,26 @@ timeout, because ko can already have completed its work.
 
 ## Identity
 
-**An agent is its pane.** Every pane gets `KO_PANE_TOKEN`, and every
-process inside a pane inherits it, so the server knows the pane that
-a request acts as (protocol.md, section 1). The pane's `parent` edges
-give every relation, and the server stamps each message with its
-sender and the relation.
-
-**The pi session id names the agent.** `pi.session` publishes it, and
-the registry names children by it. A pid is not an identity, because
-the OS reuses pids. The parent mints the child's pi session id and
-passes it with `--session-id`; a restart is the same id in a new
-pane, and the registry entry records the pane of each start with the
-server's `instance`, because pane ids restart at `pane_1` in a new
-server.
-
-**The parent edge.** The child trusts its edge only when
-`KO_AGENT_SESSION` equals its own pi session id. Every process that an
-agent starts inherits its environment: a human's `pi` in that pane, or
-a tool calling `pi --print`. A nested pi mints its own session id, so
-it has no edge. `KO_AGENT_PARENT_SESSION` names the parent's session;
-the parent's pane is the own row's `parent`. The repo's
-`no-git-writes` guard also reads `KO_AGENT_PARENT_SESSION`.
+**An agent is (pane, session).** Every pane gets `KO_PANE_TOKEN`, and
+every process inside a pane inherits it, so the server knows the pane
+that a request acts as (protocol.md, section 1); it stamps each
+message with its sender pane and the relation from the panes'
+`parent` edges. Every agent of a koa pane shares that pane, so the
+pane names the place and the pi session id names the agent. A pid is
+not an identity, because the OS reuses pids. Inside the process, the
+host's tree gives every relation; between panes, a message's `data`
+names the in-process sender and target (design-subagents.md, "The
+pane's queue").
 
 **Children belong to the session that spawned them.** A parent that
 restarts under its own session id finds its children again in its
-own session's registry. `/new`, `/resume` and `/fork` move a pi
-process to a new session id. A child still names the old id, and its
-parent watch ends it. Transferring the parent edge would send a
-child's report to a session that nobody reads.
+own session's registry and resumes each on a message. `/new`,
+`/resume` and `/fork` of the root stop its children first: a report
+to a session that nobody reads would be lost.
 
-**Two pis in one pane** cannot both receive: a pane has at most one
+**Two koas in one pane** cannot both receive: a pane has at most one
 message stream, and the server refuses a second upgrade (protocol.md,
-section 7). The second pi's receiver retries with its backoff and
+section 7). The second one's stream retries with its backoff and
 receives nothing while the first lives.
 
 ## Messages
@@ -247,36 +232,31 @@ kinds are the harness's vocabulary:
 | `steer` | a `ko-steer` custom message, `steer`; `details.work` when from the parent |
 | `interrupt` | holds the text, marks the turn ended by a control, calls `abort()`; delivers the text at the settle as a `message` |
 | `stop` | `shutdown()` through the one teardown, after the ack |
-| `notice` | a `ko-notice` custom message, `steer`; a child's report when `data.report` is set |
-| `ended` | server-made: the ending of a child (design-subagents.md, "Endings") |
+| `notice` | a `ko-notice` custom message, `steer` |
+| `select` | the user's click on a record: koa switches its page's view (design-koa.md, "Views") |
+| `ended` | server-made for a child pane; koa refuses it |
 
 The extension takes the message's shape from `ko-api.d.ts`; a line
 without that shape is refused, not delivered.
 
-**The receiver.** The extension runs `ko api --stream
+**The receiver.** koa's host runs `ko api --stream
 /panes/$KO_PANE/messages`: the command prints each message as one
 line and sends each line of its stdin as one text message. For each
-message, the extension answers `{ type: "ack", id }` after it has
-handed the message to pi, or `{ type: "refuse", id }` when that
-throws. The stream process restarts with a backoff (from
+message, the host answers `{ type: "ack", id }` after it has handed
+the message to the target agent's extension, or `{ type: "refuse", id
+}` when that throws or the target is not live (design-subagents.md,
+"The pane's queue"). The stream process restarts with a backoff (from
 `KO_RECEIVER_BACKOFF_MS`, 200 ms, doubling up to 5 s) when it exits.
-The extension keeps the ids of the last 4096 messages that it acked
+The host keeps the ids of the last 4096 messages that it acked
 in a ring; a repeat of one is acked and not delivered. The server
 delivers each id once, but a stream that closes with unanswered
 messages gives them again to the next stream, so the ring makes that
 repeat safe.
 
-**A `/reload` does not take the stream down.** A reload keeps the
-process and the session id. For reason `"reload"`, `session_shutdown`
-parks the stream process in its host's `Slots`, detached from the old
-instance; messages wait in its pipe. The next instance's
-`session_start` adopts it. The ring of received ids is in the host
-too. Every other reason kills the process, and the
-server's queue keeps what arrives until the next stream.
-
-A reload also keeps the pane variables, because the session
-continues: deleting them would make the parent look gone during the
-gap. The jobs survive in their registry in the host
+**A `/reload` does not take the stream down.** The stream is the
+host's, so a reload of any agent leaves it open; messages wait until
+the reload ends. A reload also keeps the pane variables, because the
+session continues. The jobs survive in their registry in the host
 (design-subagents.md, "Jobs across /reload").
 
 **The sender header.** A `message` from another agent reaches the
@@ -285,7 +265,9 @@ and the relation that the server stamped:
 `message from @<name> (your parent, who spawned you):`,
 `(your subagent):`, `(another agent in this session, not the user):`
 for a sibling, and a description for a descendant or a sibling's
-descendant. A child's only user is its parent, so a parent's
+descendant. A message from a subagent of another pane also names its
+return address, `session <id> in pane_N`. A child's only user is its
+parent, so a parent's
 instruction has that authority. Only kind `user` is the user's own
 text, without a header.
 
@@ -357,10 +339,13 @@ text that is not valid UTF-8 and text over `MAX_MESSAGE_BYTES`
 
 The tools that take an agent (`message_agent`, `stop_agent`,
 `read_report`) resolve it over the caller's scope, the set that
-`list_agents` and the `@` completion show (design-subagents.md, "The
+`list_agents` and the `@` completion show: its own tree in its
+process and the pane peers of its root (design-subagents.md, "The
 tools, and what they call"); `read_report` over the caller's own
-children only. The server enforces the same scope on every send and
-stop.
+children only. The server enforces the pane scope on every send and
+stop between panes. `message_agent` also takes `pane_N/<session id>`,
+which is not resolved: it reaches a subagent of another pane
+(design-subagents.md, "Addressing an agent of another pane").
 
 The tools show names, not ids, and still accept a session id or a
 unique id prefix: two top-level pis may share a name. Within scope, a
@@ -397,25 +382,25 @@ last list without waiting for discovery. If the list is older than
 
 ## Spawning
 
-`spawn_agent` starts a child or a top-level agent with one `POST
-/panes` (design-subagents.md, "What a child is given" and "A
-top-level agent"). The window goes after the parent pane's window,
-else after the caller's window; no client switches to it. The pi in it runs under `ko shell --` ("The
-login environment", below). The request carries the cwd and each
-environment variable, because a new pane gets the server's
-environment, not the caller's.
+`spawn_agent` starts a subagent inside koa's process
+(design-subagents.md, "Spawning"), or with `toplevel: true` a
+top-level agent with one `POST /panes` (design-subagents.md, "A
+top-level agent"). The top-level window goes after the caller's
+window; no client switches to it. Its koa runs under `ko shell --`
+("The login environment", below). The request carries the cwd,
+because a new pane gets the server's environment, not the caller's.
 
 The task is never a command-line argument. A model writes text of any
 form, and pi's parser reads an argument that starts with `@` as a
-file, even after `--`. The task is the pane variable `koa.task`,
-which the child reads at `session_start` and then deletes; a
-restart's message goes there too.
+file, even after `--`. A subagent gets its task as its first user
+message; a top-level agent as the pane variable `koa.task`, which it
+reads at `session_start` and then deletes.
 
-The model also writes the window name. The server refuses a name over
-64 bytes or with a control character, instead of silently changing
-it. The name never reaches a shell: the server starts the argv
-directly. The extension also refuses an empty name, `.`, `..` and a
-name with `/`.
+The model also writes the name. The extension refuses an empty name,
+one over 64 bytes, one with a control character or `/`, and `.` and
+`..`. For a top-level agent the server also refuses a window name
+over 64 bytes or with a control character. The name never reaches a
+shell.
 
 ### The login environment
 
@@ -423,9 +408,10 @@ The server starts a pane's argv directly, with only the server's
 environment and the request's. A pi that the user starts in a pane
 runs under `ko shell`, which read the user's dotfiles: EDITOR, PATH
 additions, API keys, LANG. So that every agent gets the same
-environment, the extension starts each pi, child or top-level, new or
+environment, the extension starts each top-level koa, new or
 restarted, as `<its ko path> shell -- koa ...` (with `--browser`
-when its host is in browser mode, design-koa.md). A job runs its
+when its host is in browser mode, design-koa.md). A subagent shares
+its koa's environment. A job runs its
 command through pi's shell configuration, as pi's `bash` does,
 because its command is not an agent.
 
@@ -450,10 +436,10 @@ answers `io`.
 
 ## Window lifecycle
 
-A child's window is a pane that `POST /panes` creates with the
-spawner's pane as `parent` and `close: on_exit`. ko has no other
-lifecycle object: a pane's row is the whole record, and ko keeps
-nothing after the pane goes.
+A pane with a `parent` and `close: on_exit` is a child pane, such as
+koa's editor float. ko has no other lifecycle object: a pane's row is
+the whole record, and ko keeps nothing after the pane goes. A
+subagent is no pane, so none of this applies to it.
 
 **The pane stop.** `POST /panes/pane_N/stop` (protocol.md, section 7)
 waits up to its `wait` for the pane to die and removes it. The
@@ -461,9 +447,7 @@ removal hangs up the program: `ko-pane` sends `SIGHUP`, then
 `SIGKILL` 250 ms later; if the removed pane still lives after
 `KO_STOP_ESCALATION_MS`, the coordinator kills it.
 
-A dead pane keeps its last screen until the sweep removes it. Thus,
-an immediately failing child keeps its pane and its last screen for
-the parent's ending notice.
+A dead pane keeps its last screen until the sweep removes it.
 
 **The sweep** (`ko_server/src/state/sweep.rs`). The server sweeps
 when one of its inputs changes: a pane's death or removal, the
@@ -490,13 +474,12 @@ focused panes, and the end of a linger grace (protocol.md, section
 3. A pane's `parent` is gone or dead. The sweep removes the pane at
    once, live or dead, also while a focused client shows it: a child
    shows in its parent's slot, so when the dead parent lingers, the
-   removal shows its last screen in its place. The rule reads no process and no pi evidence,
-   by design: a child of a pi that quits inside a living shell pane
-   ends through its own parent watch, not the sweep.
+   removal shows its last screen in its place. The rule reads no
+   process and no pi evidence, by design.
 
-Rule 3 forces a stop instead of requesting graceful shutdown like the
-child's poll. It is the only available action outside the child, and
-it ends a `tail -f` that an exited parent started. A pane without a
+Rule 3 forces a stop instead of requesting a graceful shutdown. It is
+the only available action outside the child, and it ends a `tail -f`
+that an exited parent started. A pane without a
 parent is a root that the sweep must not cancel.
 
 The sweep never collects an `on_exit` pane for its linger grace while
@@ -527,34 +510,28 @@ of an `exit` pane moves its clients by the same repair rules.
 No other guard applies: no debounce. Without grace under rule 3, a
 child already shutting down can lose its pane during exit.
 
-**Parent death.** The child's pi belongs to the server, not the
-parent's pi process. Thus, no OS parent-death signal reaches it. Its
-extension watches the parent's pane (design-subagents.md, "A child's
-life", "Watching the parent"). A failed read supplies no evidence and never causes shutdown.
-If the parent is gone, the child calls pi's `shutdown`. The sweep's
-rule 3 covers a child whose parent pane is gone or dead, pi or not.
-
 ## Ending a child, and restarting it
 
 A child has no idle timer. After it reports, or after a turn settles
-with nothing to do, it keeps its window, pi process and model context.
-Only these end it: its parent or another agent of its scope, with
-`stop_agent`; the user, who quits or kills the window; the orphan
-rule, after its parent ends.
+with nothing to do, it keeps its session and model context. Only
+these end it: its parent or another agent of its scope, with
+`stop_agent`; a stop of an ancestor; koa's end. A stop takes the
+child's subtree (design-subagents.md, "A child's life").
 
 The parent decides, because only the parent knows whether it needs
 more work. The child's report is not an ending. The report notice that
 a parent receives says so: end the child with `stop_agent` when
 nothing more is needed, or continue it with `message_agent`.
 
-**An ended child restarts on a message.** `message_agent` to an ended
-own child starts it again in a new pane under the same pi session,
-with `koa --session-id <id>` and the message as its task. A reused
-name means "message it". design-subagents.md, "Restarting through a
-message", gives the rules. An ended peer that a top-level pi
-recorded restarts the same way, as a top-level agent
-(design-subagents.md, "Peers"). `spawn_agent` with `resume_from` continues
-any saved session that no pane holds.
+**An ended child resumes on a message.** `message_agent` to an ended
+own child opens its session again in koa's process under its
+registered name, with the message as its next turn; after an `execve`
+restart of koa this is how every child comes back. A reused name
+means "message it". design-subagents.md, "Restarting through a
+message", gives the rules. An ended peer that a root recorded
+restarts as a top-level agent in a pane (design-subagents.md,
+"Peers"). `spawn_agent` with `resume_from` continues any saved
+session that no live agent holds.
 
 ## Steer, interrupt and stop
 
@@ -568,14 +545,13 @@ cannot receive it cannot abort a turn, and no destructive fallback fits
 "redirect this, do not kill it". `stop` ends the session through the
 normal exit's shutdown path.
 
-**Scope.** All three reach every agent of the caller's scope: its
-children, its siblings, and each ancestor with that ancestor's
-siblings (protocol.md, section 7). The server checks the scope on
-every send and stop, from the `parent` edges of the rows; the
-receiver does not check again. A child that stops an ancestor ends
-with it through the orphan rule.
+**Scope.** All three reach every agent of the caller's scope. Inside
+koa's process the host delivers and stops directly; a stop of an
+ancestor ends the caller with it. Between panes the server checks the
+pane scope on every send and stop, from the `parent` edges of the
+rows (protocol.md, section 7); the receiver does not check again.
 
-**Escalation.** `stop_agent` sends the `stop` message to a target
+**Escalation** applies to an agent of another pane. `stop_agent` sends the `stop` message to a target
 whose message stream is open, then sends `POST /panes/pane_N/stop`
 with `wait_ms: 5000` whatever the message returned: a healthy agent
 ends itself within the wait, and the stop removes the pane of one that
@@ -591,7 +567,7 @@ agent; a window removal would also kill unrelated panes. Stop does not
 refuse a focused pane. This differs from the sweep, which acts
 automatically and must protect a screen that the user can be reading.
 
-**No stream means no quiet stop.** A target without an open message
+**No stream means no quiet stop.** A pane without an open message
 stream cannot receive a request. The server would queue the `stop` for
 a stream that may never return, so `stop_agent` refuses unless
 `force`, which removes the pane at once. This is destructive and
@@ -600,34 +576,33 @@ irreversible.
 ## Notifying the parent
 
 Notification is automatic. When a subagent's turn settles idle after
-work from its parent, and it waits on nothing of its own, the harness
-sends the last assistant message of that run to the parent as a
-`notice` with `data.report` (design-subagents.md, "A child's life",
-Reporting). An explicit tool would make each report depend on the
-model calling it at the right moment.
+work from its parent, and it waits on nothing of its own, the host
+appends the last assistant message of that run to the parent's
+session as its report and gives the parent's model a notice
+(design-subagents.md, "A child's life", Reporting). An explicit tool
+would make each report depend on the model calling it at the right
+moment.
 
 The parent's model receives at most 4000 bytes, the guidance
 included, because the whole notice enters its context; the parent
 keeps the whole report in its session for `read_report`.
 
-**What this costs, and what covers it.** A crashed subagent that never
-settles a turn supplies no work report. ko does not invent one.
-Instead, the server's `ended` message tells the parent how the pane
-ended. A child that the parent stops itself with `stop_agent` sends
-no ending notice: the tool result is the only signal.
+**What this costs, and what covers it.** A child that never settles a
+turn supplies no report, and ko does not invent one. A child ends
+only through a stop or koa's end, so the one who ended it knows; the
+tool result is the only signal. A turn that stops on a provider error
+sends the error notice.
 
 **Telling a child this is its job.** `before_agent_start` appends a
-standing instruction to the subagent's system prompt on every turn, if
-it has a parent edge, because a `/reload`, a restart or a later parent
-message can start work without the task's one-time first message.
+standing instruction to the subagent's system prompt on every turn,
+because a `/reload`, a resume or a later parent message can start
+work without the task's one-time first message.
 
 **The rendered side.** An inbound `notice` uses a custom message that
 can collapse to "@X notifies: <first line>...". The model receives the
 full text with one header: `notice from <from> (a subagent or
-background run's report, not the user):`. As soon as the message
-arrives, a dimmed widget line shows it; when the message reaches the
-transcript, the permanent collapsed row appears and the widget entry
-goes. The text goes to `sendMessage` exactly once.
+background run's report, not the user):`. The text goes to
+`sendMessage` exactly once.
 
 Notices use `"steer"`, not `"followUp"`: a long parent turn would
 otherwise delay the report until that turn ends. The extension sends a
@@ -637,11 +612,12 @@ steer, not an abort. The model decides whether to act now or continue.
 
 Both clients build the tree from the layout document and the pane
 rows (`ko_client/src/model.rs`, with the walk of
-`ko_client/src/tree.rs`). A subagent's panes follow the pane that
-spawned it, one level deeper, not after the whole parent window: the
-subagents belong to the coordinating agent, not a shell sharing its
-window. The edge is the row's immutable `parent`, which the server
-sets at create: a child's pane gets its spawner's pane. A child pane
+`ko_client/src/tree.rs`). A subagent of koa is no pane: it is a status
+record of koa's pane, and Kido.app draws it as a record row under the
+pane row (design-subagents.md, "In the sidebar"). A child pane
+follows the pane that created it, one level deeper, not after the
+whole parent window. The edge is the row's immutable `parent`, which
+the server sets at create. A child pane
 floats or is tiled in its parent's window, or is the only tiled pane
 of another window, which the server enforces for every client
 (protocol.md, section 7). So a child window is one tiled pane and
@@ -916,7 +892,7 @@ that the process under test reads when it uses it:
   `KO_LOG_BYTES`, the cap of `DIR/log` before its rotation, and
   `KO_DEBUG_INPUT=1`, which adds a line for each input to the log
   (design-ko.md, "Lifecycle and the command line");
-- `KO_PARENT_POLL_MS`, `KO_SPAWN_TIMEOUT_MS`, `KO_RESEND_MS` (the
+- `KO_SPAWN_TIMEOUT_MS`, `KO_RESEND_MS` (the
   delay between the resends of one message), `KO_RECEIVER_BACKOFF_MS`
   (the first restart delay of the message stream),
   `KO_AGENT_LIST_TTL_MS`, `KO_STREAM_INTERVAL_MS` (the least time
@@ -934,14 +910,17 @@ file.
 
 ## Known limits
 
-- A job of a pi that ends with `SIGKILL`, as a pane's hangup does
+- A job of a koa that ends with `SIGKILL`, as a pane's hangup does
   250 ms after its `SIGHUP`, is an orphan in its own process group:
-  pi's exit handlers do not run (design-subagents.md, "Stopping a
-  job"). The user accepted this limit on 2026-11-05. A pi child ends
-  through its own parent watch when the parent's session id goes
-  (design-subagents.md, "Watching the parent").
-- A subagent whose window moved to another session is outside its
-  parent's scope and cannot be messaged.
+  koa's exit handlers do not run (design-subagents.md, "Stopping a
+  job"). The user accepted this limit on 2026-11-05.
+- Every agent of a pane shares koa's process: a crash of koa ends
+  them all (design-koa.md, "The process").
+- A subagent cannot be stopped with `force`, and a host koa cannot
+  have a subagent whose pi runs inside a runtime
+  (design-runtimes.md, "Agents in a runtime").
+- After koa's `execve` restart its subagents are ended; each resumes
+  on a message.
 - pi asks its startup project trust question before it reports OSC
   7501 status. A pi that ko did not spawn into a trusted repository
   shows no blocked status while it waits for the answer.
@@ -957,6 +936,28 @@ file.
 ## Decisions
 
 Each decision names its date. The code states the rest.
+
+2026-11-13, in-process subagents:
+
+- Every agent of a koa pane, the root included, is an
+  `AgentSession` of koa's process through pi's SDK, not a pi in a
+  child pane. The shared crash domain is accepted: one model, one
+  event path and one extension loading path are smaller than an RPC
+  root with SDK children.
+- A subagent is a status record of koa's pane with a `selection`; a
+  click is a `select` message from the user, and koa switches its
+  page's view. The sidebar item API knows nothing of agents or jobs.
+- The way back to the root is the view bar of koa's page; keys for
+  the hierarchy come later as their own item.
+- Messaging reaches what it reached: an agent of another pane reaches
+  a subagent by its explicit address `pane_N/<session>`, which koa
+  demultiplexes from the pane's one queue by `data.to`. Listing and
+  `@name` show only the caller's tree and the pane peers' roots;
+  nothing publishes a pane's subagents.
+- `/restart` is an unconditional `execve` restart; the children list
+  as ended and resume on a message. The no-git-writes guard reads the
+  child's `koa.edge`, not the environment. An inside subagent of a
+  host koa goes.
 
 2026-11-12, koa is the one harness:
 
