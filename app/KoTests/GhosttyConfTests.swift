@@ -248,7 +248,7 @@ import XCTest
         owner.window.layoutIfNeeded()
         XCTAssertEqual(owner.sidebar.content.frame, frame)
         XCTAssertNotNil(owner.notices.testConfigCard)
-        XCTAssertTrue(owner.sidebar.content.subviews.last === owner.notices)
+        XCTAssertTrue(owner.notices.window?.parent === owner.window, "the notices stay a child of the main window, over the banner")
         runtime.dismissConfigError()
         XCTAssertNil(owner.notices.testConfigCard)
         XCTAssertNil(other.notices.testConfigCard)

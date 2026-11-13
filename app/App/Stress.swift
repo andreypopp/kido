@@ -84,6 +84,17 @@ typealias AppWindow = StressWindow
                           pressure: type == .leftMouseUp ? 0 : 1)!
     }
 
+    private func screenPoint(_ view: NSView, _ point: NSPoint) -> NSPoint {
+        (view.window ?? window).convertPoint(toScreen: view.convert(point, to: nil))
+    }
+
+    private func event(_ type: NSEvent.EventType, screen: NSPoint, in host: NSWindow?) -> NSEvent {
+        let host = host ?? window
+        return NSEvent.mouseEvent(with: type, location: host.convertPoint(fromScreen: screen), modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
+                                  windowNumber: host.windowNumber, context: nil, eventNumber: step, clickCount: 1,
+                                  pressure: type == .leftMouseUp ? 0 : 1)!
+    }
+
     private func tick() {
         step += 1
         if DispatchTime.now() > finish {
@@ -105,7 +116,9 @@ typealias AppWindow = StressWindow
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) { self.tick() }
             return
         }
-        let all = window.contentView.map(views) ?? []
+        let hosts = owner.testSession?.hostWindows.filter { !$0.contentView!.isHidden } ?? []
+        counts["float-host-visible", default: 0] += hosts.count
+        let all = (window.contentView.map(views) ?? []) + hosts.flatMap { $0.contentView.map(views) ?? [] }
         let panes = visible(all, PaneView.self)
         var action = Self.actions[random(Self.actions.count)]
         if env["STRESS_NO_FIND"] == "1", [.find, .findNext].contains(action) { action = .scrollRequest }
@@ -202,15 +215,19 @@ typealias AppWindow = StressWindow
         case .edgeResize:
             let chromes = visible(all, PaneChrome.self)
             let floats = floatChromes(chromes, all)
-            if let chrome = (random(3) > 0 && !floats.isEmpty ? floats : chromes).first, let view = chrome.superview as? WindowView {
-                let p = chrome.convert(NSPoint(x: chrome.bounds.maxX - 2, y: chrome.bounds.midY), to: nil)
-                view.mouseDown(with: event(.leftMouseDown, p))
-                let end = NSPoint(x: p.x + fraction(250) - 50, y: p.y - fraction(120) + 30)
+            if let chrome = (random(3) > 0 && !floats.isEmpty ? floats : chromes).first, let view = chrome.superview {
+                let host = chrome.window ?? window
+                let p = screenPoint(chrome, NSPoint(x: chrome.bounds.maxX - 2, y: chrome.bounds.midY))
+                let end = NSPoint(x: p.x + fraction(250) - 50, y: p.y + fraction(120) - 30)
+                view.mouseDown(with: event(.leftMouseDown, screen: p, in: host))
                 for i in 1...8 {
-                    view.mouseDragged(with: event(.leftMouseDragged, NSPoint(x: p.x + (end.x - p.x) * CGFloat(i) / 8,
-                                                                          y: p.y + (end.y - p.y) * CGFloat(i) / 8)))
+                    view.mouseDragged(with: event(.leftMouseDragged, screen: NSPoint(x: p.x + (end.x - p.x) * CGFloat(i) / 8, y: p.y + (end.y - p.y) * CGFloat(i) / 8), in: host))
                 }
-                view.mouseUp(with: event(.leftMouseUp, end))
+                view.mouseUp(with: event(.leftMouseUp, screen: end, in: host))
+                if view is FloatContent {
+                    counts["float-edge-resize-in-host", default: 0] += 1
+                    if !window.frame.contains(end) { counts["float-out-of-main", default: 0] += 1 }
+                }
             }
         case .layoutEdit:
             layoutEdit(pane)
@@ -224,7 +241,8 @@ typealias AppWindow = StressWindow
     // One random edit of the shown window, through the owner's editor as a gesture sends it.
     private func layoutEdit(_ pane: PaneView) {
         guard let window = owner.stressModel?.layout.layout.locate(pane.pane)?.window else { return }
-        let other = window.displayedPanes[random(window.displayedPanes.count)]
+        let tiled = Layout(window).root.panes
+        let other = tiled[random(tiled.count)].id
         let edges: [KoSchema.Edge] = [.left, .right, .top, .bottom]
         let edit: KoSchema.Edit = switch random(6) {
         case 0: .split(KoSchema.EditSplit(axis: random(2) == 0 ? .h : .v, new: KoSchema.CreatePane(), pane: pane.pane))
@@ -422,29 +440,32 @@ typealias AppWindow = StressWindow
         let floats = floatChromes(chromes, all)
         let pool = random(2) == 0 && !floats.isEmpty ? floats : chromes
         let chrome = pool[random(pool.count)]
-        let hot = chrome.convert(NSPoint(x: chrome.toolbarFrame.minX + 16, y: chrome.toolbarFrame.midY), to: nil)
-        chrome.mouseMoved(with: event(.mouseMoved, hot))
+        let host = chrome.window ?? window
+        let hot = screenPoint(chrome, NSPoint(x: chrome.toolbarFrame.minX + 16, y: chrome.toolbarFrame.midY))
+        chrome.mouseMoved(with: event(.mouseMoved, screen: hot, in: host))
         guard let button = visible(views(chrome), IconButton.self).first(where: {
             $0.toolTip == "Drag pane" && $0.isEnabled
         }), let press = button.press else { counts["drag-skipped", default: 0] += 1; return }
-        press(event(.leftMouseDown, button.convert(NSPoint(x: 13, y: 13), to: nil)))
+        press(event(.leftMouseDown, screen: screenPoint(button, NSPoint(x: 13, y: 13)), in: host))
         let other = chromes.first { $0 !== chrome }
         var target = other.map {
-            $0.convert(NSPoint(x: edge ? $0.bounds.width * 0.15 : $0.bounds.midX, y: $0.bounds.midY), to: nil)
+            screenPoint($0, NSPoint(x: edge ? $0.bounds.width * 0.15 : $0.bounds.midX, y: $0.bounds.midY))
         } ?? NSPoint(x: -100, y: -100)
-        if edge, random(2) == 0, let view = chrome.superview {
-            let area = chromes.reduce(CGRect.null) { $0.union($1.frame) }
+        let tiled = chromes.filter { $0.superview is WindowView }
+        if edge, random(2) == 0, let view = tiled.first?.superview {
+            let area = tiled.reduce(CGRect.null) { $0.union($1.frame) }
             let point: NSPoint = switch random(4) {
             case 0: NSPoint(x: area.minX + 10, y: area.midY)
             case 1: NSPoint(x: area.maxX - 10, y: area.midY)
             case 2: NSPoint(x: area.midX, y: area.minY + 10)
             default: NSPoint(x: area.midX, y: area.maxY - 10)
             }
-            target = view.convert(point, to: nil)
+            target = screenPoint(view, point)
         }
         target.x += fraction(40) - 20
         target.y += fraction(40) - 20
-        press(event(.leftMouseDragged, target))
+        press(event(.leftMouseDragged, screen: target, in: chrome.window ?? window))
+        if !window.frame.contains(target), chrome.superview is FloatContent { counts["float-out-of-main", default: 0] += 1 }
         if kill {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
                 self.counts["drag-killed", default: 0] += 1
@@ -459,7 +480,7 @@ typealias AppWindow = StressWindow
                                                 charactersIgnoringModifiers: "\u{1b}", isARepeat: false, keyCode: 53) {
                 press(e)
             }
-            press(self.event(.leftMouseUp, target))
+            press(self.event(.leftMouseUp, screen: target, in: chrome.window ?? self.window))
             self.log(["tick": self.step, "event": "drag-released", "source": chrome.pane.description, "killed": kill])
         }
     }

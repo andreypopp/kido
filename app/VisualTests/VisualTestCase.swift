@@ -26,6 +26,87 @@ extension Snapshotting where Value == NSImage, Format == NSImage {
     static var pixels: Snapshotting { .init(pathExtension: "png", diffing: pixelsDiffing()) }
 }
 
+// A view as every snapshot captures it, with the native windows of the floats that lie over it drawn on top by their screen
+// frames, each captured the same way. The picture is the view's own bitmap unless `extend` lets the union of the frames
+// grow it, so a float past the edge and its shadow are in it.
+@MainActor func familyImage(of view: NSView, in area: CGRect? = nil, hosts: [NSWindow], extend: Bool = false) -> NSImage {
+    func capture(_ view: NSView, _ rect: CGRect) -> NSBitmapImageRep? {
+        guard let rep = view.bitmapImageRepForCachingDisplay(in: rect) else { return nil }
+        view.cacheDisplay(in: rect, to: rep)
+        return rep
+    }
+    let rect = area ?? view.bounds
+    guard let window = view.window, let base = capture(view, rect) else { return NSImage() }
+    let main = window.convertToScreen(view.convert(rect, to: nil))
+    let parts = hosts.compactMap { host in host.contentView.flatMap { content in capture(content, content.bounds).map { ($0, host.frame) } } }
+    let union = extend ? parts.reduce(main) { $0.union($1.1) } : main
+    var canvas = base
+    var origin = CGPoint.zero
+    if union != main {
+        let scale = CGFloat(base.pixelsWide) / base.size.width
+        canvas = NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: Int((union.width * scale).rounded()), pixelsHigh: Int((union.height * scale).rounded()),
+                                  bitsPerSample: base.bitsPerSample, samplesPerPixel: base.samplesPerPixel, hasAlpha: base.hasAlpha, isPlanar: false,
+                                  colorSpaceName: base.colorSpaceName, bitmapFormat: base.bitmapFormat, bytesPerRow: 0, bitsPerPixel: base.bitsPerPixel) ?? base
+        canvas.size = union.size
+        origin = CGPoint(x: main.minX - union.minX, y: main.minY - union.minY)
+    }
+    NSGraphicsContext.saveGraphicsState()
+    NSGraphicsContext.current = NSGraphicsContext(bitmapImageRep: canvas)
+    func draw(_ rep: NSBitmapImageRep, in rect: CGRect) {
+        let image = NSImage(size: rep.size)
+        image.addRepresentation(rep)
+        image.draw(in: rect, from: .zero, operation: .sourceOver, fraction: 1)
+    }
+    if canvas !== base { draw(base, in: CGRect(origin: origin, size: main.size)) }
+    // Both bitmaps hold premultiplied 8-bit RGBA at the same scale, so a float's pixels go over the picture by integer arithmetic;
+    // drawing them through a context would blend in another colour space and change the shadow's pixels.
+    let scale = CGFloat(canvas.pixelsWide) / canvas.size.width
+    for (rep, frame) in parts {
+        guard canvas.bitsPerPixel == 32, rep.bitsPerPixel == 32, let target = canvas.bitmapData, let source = rep.bitmapData else {
+            draw(rep, in: CGRect(x: frame.minX - union.minX, y: frame.minY - union.minY, width: frame.width, height: frame.height))
+            continue
+        }
+        let x0 = Int(((frame.minX - union.minX) * scale).rounded()), y0 = Int(((union.maxY - frame.maxY) * scale).rounded())
+        for row in 0..<rep.pixelsHigh where (0..<canvas.pixelsHigh).contains(y0 + row) {
+            for column in 0..<rep.pixelsWide where (0..<canvas.pixelsWide).contains(x0 + column) {
+                let s = source + row * rep.bytesPerRow + column * 4, t = target + (y0 + row) * canvas.bytesPerRow + (x0 + column) * 4
+                let inverse = 255 - Int(s[3])
+                if inverse == 255 { continue }
+                for channel in 0..<4 { t[channel] = UInt8(min(255, Int(s[channel]) + (Int(t[channel]) * inverse + 127) / 255)) }
+            }
+        }
+    }
+    NSGraphicsContext.restoreGraphicsState()
+    let image = NSImage(size: canvas.size)
+    image.addRepresentation(canvas)
+    return image
+}
+
+// The notices window over `view`'s window, when it shows cards.
+@MainActor func noticesOverlay(over view: NSView) -> NoticesWindow? {
+    (view.window?.childWindows ?? []).compactMap { $0 as? NoticesWindow }.first { $0.shown }
+}
+
+// The visible float windows over `view`'s window, lowest first.
+@MainActor func floatHosts(over view: NSView) -> [FloatWindow] {
+    let children = (view.window?.childWindows ?? []).compactMap { $0 as? FloatWindow }.filter { !$0.content.isHidden }
+    var logicals: [WindowView] = []
+    for child in children { if let logical = child.content.logical, !logicals.contains(where: { $0 === logical }) { logicals.append(logical) } }
+    return logicals.flatMap { $0.visualFloatHosts }.filter { host in children.contains { $0 === host } }
+}
+
+extension WindowView {
+    func visualFamilyImage() -> NSImage {
+        familyImage(of: self, hosts: visualFloatHosts + [visualGhostWindow].compactMap { visualGhost == nil ? nil : $0 }, extend: true)
+    }
+}
+
+extension Snapshotting where Value == WindowView, Format == NSImage {
+    static var family: Snapshotting {
+        .init(pathExtension: "png", diffing: pixelsDiffing(), asyncSnapshot: { view in Async { $0(view.visualFamilyImage()) } })
+    }
+}
+
 extension Snapshotting where Value == NSView, Format == NSImage {
     static var pixels: Snapshotting { .init(pathExtension: "png", diffing: pixelsDiffing(), asyncSnapshot: Snapshotting<NSView, NSImage>.image.snapshot) }
 }
@@ -180,12 +261,29 @@ let rawScript = "stty raw -echo; printf '\\033]2;raw-ready\\007'; exec /bin/cat"
         }
     }
 
+    // With floats over the window, the notices window goes over them in the picture; without, the cards are drawn in
+    // the pane area's view, as a snapshot of a window has always had them.
     func croppedImage(_ root: NSView, to rect: NSRect) throws -> NSImage {
-        let bitmap = try XCTUnwrap(root.bitmapImageRepForCachingDisplay(in: rect))
-        root.cacheDisplay(in: rect, to: bitmap)
-        let image = NSImage(size: rect.size)
-        image.addRepresentation(bitmap)
-        return image
+        let hosts = floatHosts(over: root)
+        if !hosts.isEmpty { return familyImage(of: root, in: rect, hosts: (hosts as [NSWindow]) + [noticesOverlay(over: root)].compactMap { $0 }) }
+        return try inlineNotices(over: root) {
+            let bitmap = try XCTUnwrap(root.bitmapImageRepForCachingDisplay(in: rect))
+            root.cacheDisplay(in: rect, to: bitmap)
+            let image = NSImage(size: rect.size)
+            image.addRepresentation(bitmap)
+            return image
+        }
+    }
+
+    func inlineNotices<T>(over view: NSView, _ body: () throws -> T) rethrows -> T {
+        guard let notices = noticesOverlay(over: view)?.contentView?.subviews.first as? Notices else { return try body() }
+        return try notices.visualInline(body)
+    }
+
+    func verifyWindowView(_ view: NSView, named name: String, record: Bool, file: StaticString = #filePath, testName: String = #function) -> String? {
+        let hosts = floatHosts(over: view)
+        if hosts.isEmpty { return inlineNotices(over: view) { verifySnapshot(of: view, as: .pixels, named: name, record: record, file: file, testName: testName) } }
+        return verifySnapshot(of: familyImage(of: view, hosts: (hosts as [NSWindow]) + [noticesOverlay(over: view)].compactMap { $0 }), as: .pixels, named: name, record: record, file: file, testName: testName)
     }
 
     func headerImage(_ tabs: WindowTabs) throws -> NSImage {
@@ -193,7 +291,21 @@ let rawScript = "stty raw -echo; printf '\\033]2;raw-ready\\007'; exec /bin/cat"
         return try croppedImage(root, to: tabs.convert(tabs.bounds, to: root))
     }
 
+    // A float's window or a drag's ghost that outlives its test sits over the windows of the tests after it.
+    func assertNoLeakedFloatWindows(_ when: String, file: StaticString = #filePath, line: UInt = #line) {
+        let leaked = NSApp.windows.compactMap { window -> String? in
+            if let host = window as? FloatWindow { return host.contentView !== host.content ? nil : "float of \(host.content.pane.map(String.init(describing:)) ?? "?") visible=\(host.isVisible) parent=\(host.parent != nil)" }
+            return window is GhostWindow && window.contentView != nil ? "ghost visible=\(window.isVisible)" : nil
+        }
+        XCTAssertTrue(leaked.isEmpty, "\(when): leaked windows: \(leaked)", file: file, line: line)
+    }
+
+    override func tearDown() async throws {
+        assertNoLeakedFloatWindows("after \(name)")
+    }
+
     override func setUp() async throws {
+        assertNoLeakedFloatWindows("before \(name)")
         let sources = TISCreateInputSourceList([kTISPropertyInputSourceID: "com.apple.keylayout.US"] as CFDictionary, true).takeRetainedValue() as! [TISInputSource]
         let source = try XCTUnwrap(sources.first)
         let property = try XCTUnwrap(TISGetInputSourceProperty(source, kTISPropertyUnicodeKeyLayoutData))

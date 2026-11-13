@@ -66,6 +66,7 @@ private func pane(_ number: UInt32) -> PaneID { PaneID(number: number) }
     let layout = Layout(try window(), active: pane(9), children: [ChildFloats(slot: pane(1), floats: child)])
     let floats = layout.root.panes.filter { $0.layer != .tiled }
     #expect(floats.map(\.id) == [pane(9), pane(8)])
+    #expect(floats.allSatisfy { $0.border }, "a float carries its border for the position that the owner allows")
     #expect(floats[0].geometry == Geometry(x: 41, y: 3, width: 40, height: 10), "offset by the slot and cut to it")
     #expect(floats[1].geometry == Geometry(x: 76, y: 0, width: 5, height: 4), "an x beyond the slot is pulled inside")
     #expect(floats.map(\.active) == [true, false])

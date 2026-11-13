@@ -98,18 +98,16 @@ import XCTest
                 if let anchored = owner.notices.testConfigCard ?? owner.notices.testCards.last { XCTAssertEqual(anchored.frame.minY, 16) }
                 if state == "float" {
                     let float = try XCTUnwrap(owner.testSession?.windows.values.first(where: { !$0.isHidden })?.displayedPanes.first { $0.pane == leaves[2] })
-                    XCTAssertFalse(float.convert(float.bounds, to: owner.sidebar.content).intersection(try XCTUnwrap(cards.first).frame).isEmpty)
+                    let card = try XCTUnwrap(cards.first)
+                    let floatScreen = try XCTUnwrap(float.window).convertToScreen(float.convert(float.bounds, to: nil))
+                    let cardScreen = try XCTUnwrap(card.window).convertToScreen(card.convert(card.bounds, to: nil))
+                    XCTAssertFalse(floatScreen.intersection(cardScreen).isEmpty)
                 }
                 try await ready(owner)
                 let root = try XCTUnwrap(owner.window.contentView?.superview)
-                XCTAssertEqual(owner.sidebar.content.subviews.filter { $0 is Notices }.count, 1)
-                var views = [root]
-                var columns = 0
-                while let view = views.popLast() {
-                    if view is Notices { columns += 1 }
-                    views.append(contentsOf: view.subviews)
-                }
-                XCTAssertEqual(columns, 1)
+                XCTAssertFalse(owner.sidebar.content.subviews.contains { $0 is Notices }, "the column is in its own window")
+                XCTAssertEqual(owner.notices.window is NoticesWindow, true)
+                if !cards.isEmpty { XCTAssertTrue(owner.notices.window?.parent === owner.window) }
                 XCTAssertEqual(Set(owner.notices.subviews.map(ObjectIdentifier.init)), Set(cards.map(ObjectIdentifier.init)))
                 for card in cards {
                     XCTAssertEqual(card.accessibilityChildren()?.compactMap { $0 as? NSAccessibilityElement }.filter { $0.accessibilityRole() == .staticText }.count, 2)
@@ -123,7 +121,7 @@ import XCTest
                     let image = try croppedImage(root, to: crop)
                     checkSnapshot { verifySnapshot(of: image, as: .pixels, named: name, record: $0) }
                 } else {
-                    checkSnapshot { verifySnapshot(of: root, as: .pixels, named: name, record: $0) }
+                    checkSnapshot { verifyWindowView(root, named: name, record: $0) }
                 }
             }
             owner.close()
@@ -154,7 +152,7 @@ import XCTest
         XCTAssertTrue(owner.window.firstResponder === pane)
         owner.down("Disconnected", "Retrying", button: nil)
         XCTAssertNotNil(owner.notices.testConfigCard)
-        XCTAssertTrue(owner.sidebar.content.subviews.last === owner.notices)
+        XCTAssertTrue(owner.notices.window?.parent === owner.window, "the notices are a child of the main window, over the banner")
     }
 
     func testCardClicksKeepPaneFocusIncludingFloatingSidebarOutside() async throws {
@@ -204,17 +202,18 @@ import XCTest
 
     private func click(_ card: NSView, in owner: WindowOwner, at point: NSPoint? = nil) throws {
         let point = card.convert(point ?? NSPoint(x: card.bounds.midX, y: card.bounds.midY), to: nil)
-        let root = try XCTUnwrap(owner.window.contentView?.superview)
+        let overlay = try XCTUnwrap(card.window)
+        let root = try XCTUnwrap(overlay.contentView?.superview)
         let hit = try XCTUnwrap(root.hitTest(root.convert(point, from: nil)))
         XCTAssertTrue(hit === card)
         let down = try XCTUnwrap(NSEvent.mouseEvent(with: .leftMouseDown, location: point, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
-            windowNumber: owner.window.windowNumber, context: nil, eventNumber: 1, clickCount: 1, pressure: 1))
+            windowNumber: overlay.windowNumber, context: nil, eventNumber: 1, clickCount: 1, pressure: 1))
         let up = try XCTUnwrap(NSEvent.mouseEvent(with: .leftMouseUp, location: point, modifierFlags: [], timestamp: ProcessInfo.processInfo.systemUptime,
-            windowNumber: owner.window.windowNumber, context: nil, eventNumber: 2, clickCount: 1, pressure: 0))
+            windowNumber: overlay.windowNumber, context: nil, eventNumber: 2, clickCount: 1, pressure: 0))
         NSApp.postEvent(up, atStart: true)
         NSApp.postEvent(down, atStart: true)
         let event = try XCTUnwrap(NSApp.nextEvent(matching: .leftMouseDown, until: Date(timeIntervalSinceNow: 1), inMode: .default, dequeue: true))
-        owner.window.sendEvent(event)
-        if let event = NSApp.nextEvent(matching: .leftMouseUp, until: Date(), inMode: .default, dequeue: true) { owner.window.sendEvent(event) }
+        overlay.sendEvent(event)
+        if let event = NSApp.nextEvent(matching: .leftMouseUp, until: Date(), inMode: .default, dequeue: true) { overlay.sendEvent(event) }
     }
 }

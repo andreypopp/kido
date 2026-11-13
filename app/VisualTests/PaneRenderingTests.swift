@@ -351,10 +351,13 @@ import XCTest
         try await edit(.float(KoSchema.EditFloat(cols: 35, pane: PaneID(number: 2), rows: 10, x: 5, y: 2)))
         try await wait("float for cursor priority") { terminal.visualLayout.contains("float pane_") }
         try await settle()
-        XCTAssertTrue(terminal.paneCursorRects.contains { $0.1 === NSCursor.openHand })
-        let linkRects = terminal.paneCursorRects.filter { $0.1 === NSCursor.pointingHand }.map { $0.0 }
-        for (rect, cursor) in terminal.paneCursorRects where cursor !== NSCursor.pointingHand {
-            XCTAssertFalse(linkRects.contains { $0.intersects(rect) }, "chrome cursor must win")
+        let floatRects = terminal.floatCursorRects(PaneID(number: 2))
+        XCTAssertTrue(floatRects.contains { $0.1 === NSCursor.openHand })
+        for rects in [terminal.paneCursorRects, floatRects] {
+            let linkRects = rects.filter { $0.1 === NSCursor.pointingHand }.map { $0.0 }
+            for (rect, cursor) in rects where cursor !== NSCursor.pointingHand {
+                XCTAssertFalse(linkRects.contains { $0.intersects(rect) }, "chrome cursor must win")
+            }
         }
     }
 
@@ -454,7 +457,7 @@ import XCTest
                 sidebar.dismissFloating()
                 root.layoutSubtreeIfNeeded()
                 try await settle()
-                let chromes = terminal.subviews.compactMap { $0 as? PaneChrome }.filter { !$0.isHidden }
+                let chromes = terminal.visualChromes.filter { !$0.isHidden }
                 let chrome = try XCTUnwrap(chromes.sorted {
                     let a = $0.convert($0.bounds, to: nil), b = $1.convert($1.bounds, to: nil)
                     if abs(a.minY - b.minY) > 1 { return a.minY < b.minY }
@@ -490,7 +493,7 @@ import XCTest
             terminal.focus(active.pane)
             terminal.updateFocusTreatment()
             func expectLook(_ looksFocused: Bool, _ message: String, edge: Bool = true) async throws {
-                let chromes = terminal.subviews.compactMap { $0 as? PaneChrome }.filter { !$0.isHidden }
+                let chromes = terminal.visualChromes.filter { !$0.isHidden }
                 for chrome in chromes {
                     let frame = expectation(description: "presented \(chrome.pane)")
                     try XCTUnwrap(terminal.displayedPanes.first { $0.pane == chrome.pane }).visualFrame { _ in frame.fulfill() }
@@ -628,7 +631,7 @@ import XCTest
             }
             active.transparentPaper = true
             try await settle()
-            for chrome in terminal.subviews.compactMap({ $0 as? PaneChrome }).filter({ !$0.isHidden }) {
+            for chrome in terminal.visualChromes.filter({ !$0.isHidden }) {
                 let pane = try XCTUnwrap(terminal.displayedPanes.first { $0.pane == chrome.pane })
                 let fill = chrome.pane == active.pane ? pure : shifted
                 check(try color(image, pane, CGPoint(x: pane.bounds.midX, y: 35)), fill, "pane paper \(name) \(chrome.pane)")
@@ -664,7 +667,7 @@ import XCTest
                 }
             }
             check(try color(image, sidebar.visualFocusEdge, CGPoint(x: sidebar.visualFocusEdge.bounds.maxX + 0.25, y: sidebar.visualFocusEdge.bounds.midY)), dark ? [55, 55, 55] : [202, 198, 188], "full-height sidebar divider")
-            let left = try XCTUnwrap(terminal.subviews.compactMap { $0 as? PaneChrome }.filter { !$0.isHidden }.min { $0.frame.minX < $1.frame.minX })
+            let left = try XCTUnwrap(terminal.visualChromes.filter { !$0.isHidden }.min { $0.frame.minX < $1.frame.minX })
             let near = try color(image, left, CGPoint(x: 4, y: left.bounds.midY))
             XCTAssertEqual(near.redComponent * 255, dark ? 25 : 229, accuracy: dark ? 0.75 : 2, "docked shadow strength 4pt from pane edge")
             check(try color(image, sidebar.visualFocusEdge, CGPoint(x: sidebar.visualFocusEdge.bounds.maxX - 4, y: sidebar.visualFocusEdge.bounds.midY)), sidebarShifted, "shadow must not cover sidebar paper")
@@ -672,7 +675,7 @@ import XCTest
             let toolbarNear = try color(image, sidebar.visualFocusEdge, CGPoint(x: sidebar.visualFocusEdge.bounds.maxX + 4, y: sidebar.visualFocusEdge.bounds.maxY - 20))
             XCTAssertLessThan(toolbarNear.redComponent * 255, Double(pure[0]) - 1, "sidebar shadow covers the toolbar band")
             check(try color(image, left, CGPoint(x: 50, y: left.bounds.midY)), shifted, "sidebar shadow ends before distant paper")
-            for chrome in terminal.subviews.compactMap({ $0 as? PaneChrome }).filter({ !$0.isHidden }) {
+            for chrome in terminal.visualChromes.filter({ !$0.isHidden }) {
                 let pane = try XCTUnwrap(terminal.displayedPanes.first { $0.pane == chrome.pane })
                 check(try color(image, pane, CGPoint(x: pane.bounds.midX, y: 35)), shifted, "sidebar focus shifts all panes")
                 check(try color(image, chrome, CGPoint(x: chrome.bounds.maxX - 0.75, y: chrome.bounds.midY)), shifted, "sidebar focus removes pane edges")
@@ -713,7 +716,7 @@ import XCTest
                 XCTAssertEqual(near.redComponent * 255, dark ? (paper[0] == 23 ? 21 : 28) : (paper[0] == 255 ? 246 : 238), accuracy: dark ? 0.75 : 1.1, "floating shadow strength 4pt from card edge")
                 check(try color(floating, card, CGPoint(x: card.bounds.maxX + 50, y: card.bounds.midY)), paper, "floating shadow ends before distant paper")
                 check(try color(floating, card, CGPoint(x: card.bounds.maxX - 4, y: card.bounds.midY)), sidebarShifted, "floating shadow must not fill the card")
-                for chrome in terminal.subviews.compactMap({ $0 as? PaneChrome }).filter({ !$0.isHidden }) {
+                for chrome in terminal.visualChromes.filter({ !$0.isHidden }) {
                     XCTAssertEqual(chrome.treatment, !sidebarFocused && chrome.pane == active.pane ? .edge : .plain)
                 }
             }
@@ -728,7 +731,7 @@ import XCTest
                 sidebar.toggleSidebar(nil)
                 try await snapshot("pane-dark", view: root)
                 let expanded = try capture()
-                for chrome in terminal.subviews.compactMap({ $0 as? PaneChrome }).filter({ chrome in !chrome.isHidden && terminal.displayedPanes.first(where: { $0.pane == chrome.pane })?.shiftedBackground == true }) {
+                for chrome in terminal.visualChromes.filter({ chrome in !chrome.isHidden && terminal.displayedPanes.first(where: { $0.pane == chrome.pane })?.shiftedBackground == true }) {
                     for x in [2.0, 4, 6] {
                         for y in [2.0, chrome.bounds.midY, chrome.bounds.maxY - 2] {
                             check(try color(expanded, chrome, CGPoint(x: x, y: y)), [30, 30, 30], "expanded inactive left padding is shifted")
@@ -740,7 +743,7 @@ import XCTest
             try await wait("single visible focus pane") { terminal.displayedPanes.filter { !$0.isHidden }.count == 1 }
             try await paint(content: content)
             try await snapshot("single-\(name)", view: root)
-            let chrome = try XCTUnwrap(terminal.subviews.compactMap { $0 as? PaneChrome }.first { !$0.isHidden })
+            let chrome = try XCTUnwrap(terminal.visualChromes.first { !$0.isHidden })
             let pane = try XCTUnwrap(terminal.displayedPanes.first { !$0.isHidden })
             window.makeFirstResponder(pane)
             try await expectLook(true, "single pane key", edge: false)

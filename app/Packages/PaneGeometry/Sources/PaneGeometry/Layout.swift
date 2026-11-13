@@ -19,9 +19,9 @@ extension Layout {
     public init(_ window: KoSchema.Window, visible: Bool = false, active: PaneID? = nil, children: [ChildFloats] = []) {
         let active = (visible ? window.zoom : nil) ?? active ?? window.focus
         var index = 0
-        func pane(_ id: PaneID, _ geometry: Geometry, _ layer: Layer) -> Node {
+        func pane(_ id: PaneID, _ geometry: Geometry, _ layer: Layer, border: Bool = false) -> Node {
             defer { index += 1 }
-            return .pane(Pane(id: id, index: index, geometry: geometry, active: id == active, layer: layer))
+            return .pane(Pane(id: id, index: index, geometry: geometry, active: id == active, layer: layer, border: border))
         }
         let whole = Geometry(x: 0, y: 0, width: window.cols, height: window.rows)
         var stacked = window.floats.count
@@ -35,7 +35,7 @@ extension Layout {
                         x: slot.x + min(max(0, float.x), slot.width - width), y: slot.y + min(max(0, float.y), slot.height - height),
                         width: width, height: height)
                     defer { stacked += 1 }
-                    return pane(float.pane, geometry, .floating(z: stacked, source: .child(clip: slot, z: float.z, count: child.floats.count)))
+                    return pane(float.pane, geometry, .floating(z: stacked, source: .child(clip: slot, z: float.z, count: child.floats.count)), border: float.border)
                 }
             }
         }
@@ -66,7 +66,7 @@ extension Layout {
         }
         let tiled = walk(window.tree, 0, 0)
         let floats = window.floats.sorted { $0.z < $1.z }.map {
-            pane($0.pane, Geometry(x: $0.x, y: $0.y, width: $0.cols, height: $0.rows), .floating(z: $0.z, source: .window))
+            pane($0.pane, Geometry(x: $0.x, y: $0.y, width: $0.cols, height: $0.rows), .floating(z: $0.z, source: .window), border: $0.border)
         }
         let slots = Dictionary(tiled.panes.map { ($0.id, $0.geometry) }) { first, _ in first }
         let drawn = floats + overlays(slots)
@@ -118,6 +118,7 @@ public struct Pane: Equatable, Sendable {
     public let geometry: Geometry
     public let active: Bool
     public let layer: Layer
+    public var border = false
 }
 
 public indirect enum Node: Equatable, Sendable {

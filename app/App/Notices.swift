@@ -42,8 +42,28 @@ struct TransientNotices {
     }
 }
 
+final class NoticesWindow: NSWindow {
+    override var canBecomeKey: Bool { false }
+    override var canBecomeMain: Bool { false }
+    var shown = false
+
+    init() {
+        super.init(contentRect: .zero, styleMask: .borderless, backing: .buffered, defer: false)
+        isOpaque = false
+        backgroundColor = .clear
+        hasShadow = false
+        isReleasedWhenClosed = false
+        collectionBehavior = [.fullScreenAuxiliary]
+        contentView = NSView()
+    }
+}
+
 @MainActor final class Notices: NSView {
     private let runtime: GhosttyRuntime
+    private var column: NSView?
+    private var overlay: NoticesWindow?
+    private var observers: [NSObjectProtocol] = []
+    private var placing = false
     private var transients = TransientNotices()
     private var cards: [UUID: Card] = [:]
     private var config: Card?
@@ -80,6 +100,85 @@ struct TransientNotices {
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
     override var acceptsFirstResponder: Bool { false }
+
+    // The cards live in a child window of the main window, above its other children, sized to the cards alone so that a
+    // click anywhere else reaches the window below. `column` is the pane area that the cards are anchored in.
+    func attach(column: NSView) {
+        self.column = column
+        let overlay = NoticesWindow()
+        self.overlay = overlay
+        autoresizingMask = []
+        overlay.contentView?.addSubview(self)
+        let center = NotificationCenter.default
+        column.postsFrameChangedNotifications = true
+        for name in [NSView.frameDidChangeNotification, NSView.boundsDidChangeNotification] {
+            observers.append(center.addObserver(forName: name, object: column, queue: .main) { [weak self] _ in MainActor.assumeIsolated { self?.place() } })
+        }
+        if let window = column.window {
+            observers.append(center.addObserver(forName: NSWindow.didResizeNotification, object: window, queue: .main) { [weak self] _ in MainActor.assumeIsolated { self?.place() } })
+        }
+        place()
+    }
+
+    func close() {
+        observers.forEach(NotificationCenter.default.removeObserver)
+        observers = []
+        overlay?.parent?.removeChildWindow(overlay!)
+        overlay?.orderOut(nil)
+        overlay?.contentView = nil
+        overlay?.close()
+        overlay = nil
+        column = nil
+    }
+
+    func place() {
+        guard !placing, let column, let overlay, let main = column.window else { return }
+        placing = true
+        defer { placing = false }
+        let area = main.convertToScreen(column.convert(column.bounds, to: nil))
+        if frame.size != area.size { setFrameSize(area.size) }
+        layoutSubtreeIfNeeded()
+        let cards = subviews.reduce(CGRect.null) { $0.union($1.frame) }
+        let open = !cards.isNull && !main.isMiniaturized
+        overlay.shown = open
+        guard open else {
+            overlay.parent?.removeChildWindow(overlay)
+            return overlay.orderOut(nil)
+        }
+        let margin = ceil(2 * Chrome.floatShadow.blur + PaneCapsule.floatShadowOffset)
+        overlay.setFrame(cards.offsetBy(dx: area.minX, dy: area.minY).insetBy(dx: -margin, dy: -margin), display: false)
+        setFrameOrigin(NSPoint(x: margin - cards.minX, y: margin - cards.minY))
+        if overlay.parent !== main { main.addChildWindow(overlay, ordered: .above) }
+        if main.isVisible { overlay.orderFront(nil) }
+    }
+
+    func raise() {
+        #if KIDO_VISUAL
+        testRaises += 1
+        #endif
+        guard let overlay, overlay.shown, overlay.parent?.isVisible == true else { return }
+        overlay.orderFront(nil)
+    }
+
+    func updateWindowAppearance(_ appearance: NSAppearance?) { overlay?.appearance = appearance }
+
+    #if KIDO_VISUAL
+    var testWindow: NoticesWindow? { overlay }
+    var testRaises = 0
+    // The cards back in the pane area's own view while `body` runs, as snapshots of a window without floats have them.
+    func visualInline<T>(_ body: () throws -> T) rethrows -> T {
+        guard let column, let overlay, overlay.shown else { return try body() }
+        let frame = self.frame
+        column.addSubview(self)
+        setFrameOrigin(.zero)
+        defer {
+            overlay.contentView?.addSubview(self)
+            self.frame = frame
+        }
+        return try body()
+    }
+    #endif
+
     override func hitTest(_ point: NSPoint) -> NSView? {
         guard !isHidden else { return nil }
         for card in subviews.reversed() {
@@ -201,6 +300,7 @@ struct TransientNotices {
             }
         }
         arm()
+        place()
     }
     private final class Card: PaneCapsule {
         enum Kind { case transient, config(ConfigError) }

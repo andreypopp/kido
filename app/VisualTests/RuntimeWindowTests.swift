@@ -36,7 +36,7 @@ import XCTest
     }
 
     private func hover(_ pane: PaneID, entering: Bool = true) async throws {
-        let chrome = try XCTUnwrap(terminal?.subviews.compactMap { $0 as? PaneChrome }.first { $0.pane == pane })
+        let chrome = try XCTUnwrap(terminal?.visualChromes.first { $0.pane == pane })
         let point = chrome.convert(NSPoint(x: chrome.toolbarFrame.midX, y: chrome.toolbarFrame.midY), to: nil)
         let event = try XCTUnwrap(NSEvent.mouseEvent(with: .mouseMoved, location: entering ? point : .zero, modifierFlags: [], timestamp: 0,
                                                      windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 0, pressure: 0))

@@ -47,7 +47,7 @@ enum Chrome {
     static func capsuleShadow(dark: Bool) -> (color: NSColor, offset: CGFloat, blur: CGFloat) {
         (.black.withAlphaComponent(dark ? 0.30 : 0.08), -1, dark ? 3 : 2)
     }
-    static var floatShadow: (color: NSColor, blur: CGFloat) { (.black.withAlphaComponent(0.22), 12) }
+    static var floatShadow: (color: NSColor, blur: CGFloat, offset: CGFloat) { (.black.withAlphaComponent(0.22), 12, -3) }
     static func sidebarShadow(dark: Bool) -> (color: NSColor, blur: CGFloat) { (.black.withAlphaComponent(dark ? 0.4 : 0.18), 14) }
     static var shadowMask: NSColor { .black }
     static var disconnectedHostAlpha: CGFloat { 0.45 }

@@ -91,13 +91,7 @@ final class Sidebar: NSSplitViewController, NSToolbarDelegate {
         }
         return nil
     }
-    weak var notices: NSView?
     private final class Outside: NSView {
-        override func hitTest(_ point: NSPoint) -> NSView? {
-            if let notices = (window?.contentViewController as? Sidebar)?.notices, let parent = notices.superview,
-               notices.hitTest(parent.convert(point, from: superview)) != nil { return nil }
-            return super.hitTest(point)
-        }
         var dismiss: () -> Void = {}
         override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
         override func mouseDown(with event: NSEvent) { dismiss() }
@@ -386,6 +380,7 @@ final class Sidebar: NSSplitViewController, NSToolbarDelegate {
     }
 
     @objc func focusSidebar(_ sender: Any?) {
+        if let window = view.window, !window.isKeyWindow, !background { window.makeKey() }
         if isFloating { list.leave(); return }
         if isCollapsed, let root = view.window?.contentView?.superview {
             viewDidLayout()

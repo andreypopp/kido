@@ -129,7 +129,7 @@ import UserNotifications
 
     private func deliverFailure(in window: NSWindow?) {
         guard let message = pendingFailure,
-              let owner = owners.allObjects.first(where: { $0.alive && $0.window === window }) else { return }
+              let owner = owners.allObjects.first(where: { $0.alive && $0.owns(window) }) else { return }
         pendingFailure = nil
         owner.notices.show("Kido could not post a notification", message)
     }

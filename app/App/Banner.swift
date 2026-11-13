@@ -5,6 +5,9 @@ final class Banner: NSView {
     private let detail = NSTextField(wrappingLabelWithString: "")
     private let button: NSButton
 
+    var changed: () -> Void = {}
+    override var isHidden: Bool { didSet { if isHidden != oldValue { changed() } } }
+
     var background: NSColor { didSet { layer?.backgroundColor = Chrome.bannerVeil(background).cgColor } }
 
     init(background: NSColor, target: AnyObject, action: Selector) {

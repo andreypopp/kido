@@ -33,6 +33,11 @@ final class SessionView: NSView {
             for view in Array(windows.values) + Array(others.values) { view.releaseUnusedPanes() }
         }
     }
+    var floatsAllowed: () -> Bool = { true }
+    var hostsOrdered: () -> Void = {}
+    var hostFocusChanged: (NSResponder?, NSResponder?) -> Void = { _, _ in }
+    func contains(_ pane: PaneView) -> Bool { (Array(windows.values) + Array(others.values)).contains { $0.contains(pane) } }
+    var hostWindows: [FloatWindow] { (Array(windows.values) + Array(others.values)).flatMap(\.hostWindows) }
     var edit: (KoSchema.Edit, LayoutEditor.Key?) -> Void = { _, _ in }
     var editSelecting: (KoSchema.Edit) -> Void = { _ in }
     var floatTitle: (PaneID) -> String? = { _ in nil }
@@ -151,6 +156,8 @@ final class SessionView: NSView {
         if sentSize == nil { self.shown?.sizeClient() }
     }
 
+    func syncHosts() { windows.values.forEach { $0.syncHosts() } }
+
     func editsSettled() {
         windows.values.forEach { $0.editsSettled() }
     }
@@ -163,7 +170,7 @@ final class SessionView: NSView {
         updating = true
         defer { updating = previousUpdate }
         let start = DispatchTime.now(), before = shown, last = recent.first
-        let focused = PaneView.owner(self.window?.firstResponder)?.isDescendant(of: self) == true
+        let focused = PaneView.owner(shown?.inputWindow?.firstResponder).map(contains) == true
         defer { updateWebview(); DispatchQueue.main.async { [weak self] in self?.evict() } }
         for (id, view) in windows { view.isHidden = id != window }
         others.values.forEach { $0.isHidden = true }

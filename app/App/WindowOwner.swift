@@ -32,12 +32,19 @@ class OwnerWindow: NSWindow {
     }
 
     var focusChanged: (NSResponder?, NSResponder?) -> Void = { _, _ in }
-    private(set) var isInputWindow = true
-    override init(contentRect: NSRect, styleMask: NSWindow.StyleMask, backing: NSWindow.BackingStoreType, defer flag: Bool) {
+    private(set) var isInputWindow: Bool
+    override convenience init(contentRect: NSRect, styleMask: NSWindow.StyleMask, backing: NSWindow.BackingStoreType, defer flag: Bool) {
+        self.init(contentRect: contentRect, styleMask: styleMask, backing: backing, defer: flag, input: true)
+    }
+    init(contentRect: NSRect, styleMask: NSWindow.StyleMask, backing: NSWindow.BackingStoreType, defer flag: Bool, input: Bool) {
+        isInputWindow = input
         super.init(contentRect: contentRect, styleMask: styleMask, backing: backing, defer: flag)
         NotificationCenter.default.addObserver(self, selector: #selector(keyChanged), name: NSWindow.didBecomeKeyNotification, object: self)
         NotificationCenter.default.addObserver(self, selector: #selector(keyChanged), name: NSWindow.didResignKeyNotification, object: self)
     }
+    #if KIDO_VISUAL || KIDO_STRESS
+    func testInput(_ input: Bool) { isInputWindow = input }
+    #endif
     @objc private func keyChanged(_ note: Notification) {
         isInputWindow = note.name == NSWindow.didBecomeKeyNotification
         focusChanged(firstResponder, firstResponder)
@@ -79,6 +86,7 @@ private class AlertEscape: NSView {
     private let preferences: UserDefaults?
     private var frames: WindowFrames { WindowFrames(preferences: preferences, serverDir: serverDir) }
     private var frameSave: DispatchWorkItem?
+    private var hostFocusChanged: (NSResponder?, NSResponder?) -> Void = { _, _ in }
     private var changingFullScreen = false
     let ownerID = String(UUID().uuidString.prefix(8))
     let notificationID = UUID().uuidString
@@ -215,12 +223,17 @@ private class AlertEscape: NSView {
     private static let localServerRestarted = Notification.Name("KidoLocalServerRestarted")
 
     var attended: Bool {
-        var attended = NSApp.isActive && window.isKeyWindow && !window.isMiniaturized && window.occlusionState.contains(.visible)
+        var attended = NSApp.isActive && isKeyHost && !window.isMiniaturized && inputWindow.occlusionState.contains(.visible)
         #if KIDO_VISUAL || KIDO_STRESS
         attended = testAttended ?? attended
         #endif
         return attended
     }
+
+    func owns(_ other: NSWindow?) -> Bool { other != nil && (other === window || session?.hostWindows.contains { $0 === other } == true) }
+    var isKeyHost: Bool { window.isKeyWindow || session?.hostWindows.contains { $0.isKeyWindow } == true }
+    var inputWindow: NSWindow { session?.hostWindows.first { $0.isInputWindow } ?? window }
+    var inputResponder: NSResponder? { inputWindow.firstResponder }
 
     var shownPanes: [PaneID] {
         (session?.windows.values.first { !$0.isHidden }?.displayedPanes ?? []).filter { !$0.isHidden }.map(\.pane)
@@ -234,9 +247,9 @@ private class AlertEscape: NSView {
     private var reportedFocus: Bool?
     private func reportFocus() {
         guard case .connected(let client) = link else { return }
-        let pane = window.firstResponder.flatMap(PaneView.owner)
-        let focused = NSApp.isActive && window.isKeyWindow && window.attachedSheet == nil
-            && pane.map { view in session?.windows.values.contains { !$0.isHidden && view.isDescendant(of: $0) } == true } == true
+        let pane = inputResponder.flatMap(PaneView.owner)
+        let focused = NSApp.isActive && isKeyHost && window.attachedSheet == nil
+            && pane.map { view in session?.windows.values.contains { !$0.isHidden && $0.contains(view) } == true } == true
         guard focused != reportedFocus else { return }
         reportedFocus = focused
         try? client.focus(focused)
@@ -363,7 +376,7 @@ private class AlertEscape: NSView {
             self?.confirmClose(.pane(pane), name: row.title)
         }
         sidebar.focusTerminal = { [weak self] in self?.focusSelected() }
-        (window as? OwnerWindow)?.focusChanged = { [weak self] old, next in
+        let focusChanged: (NSResponder?, NSResponder?) -> Void = { [weak self] old, next in
             guard let self else { return }
             sidebar.updateFocusEdge()
             session?.windows.values.filter { !$0.isHidden }.forEach { $0.updateFocusTreatment() }
@@ -373,12 +386,13 @@ private class AlertEscape: NSView {
                old == nil || old is PaneView || old === window { return }
             supersedeIntent()
         }
+        (window as? OwnerWindow)?.focusChanged = focusChanged
+        hostFocusChanged = focusChanged
         banner = Banner(background: runtime.background, target: self, action: #selector(WindowOwner.start))
         banner.frame = sidebar.content.bounds
         sidebar.content.addSubview(banner)
-        notices.frame = sidebar.content.bounds
-        sidebar.content.addSubview(notices)
-        sidebar.notices = notices
+        banner.changed = { [weak self] in self?.session?.syncHosts() }
+        notices.attach(column: sidebar.content)
         NotificationCenter.default.addObserver(self, selector: #selector(showConfigError), name: GhosttyRuntime.configErrorChanged, object: runtime)
         showConfigError()
         window.center()
@@ -412,6 +426,8 @@ private class AlertEscape: NSView {
         let dark = background.isDark
         let theme = (background: background, appearance: NSAppearance(named: dark ? .darkAqua : .aqua))
         window.appearance = theme.appearance
+        session?.hostWindows.forEach { $0.appearance = theme.appearance }
+        notices.updateWindowAppearance(theme.appearance)
         sidebar.updateAppearance(runtime: runtime)
         session?.updateBackground()
         session?.updateWebview()
@@ -426,13 +442,14 @@ private class AlertEscape: NSView {
     }
 
     func windowWillEnterFullScreen(_ notification: Notification) {
+        guard notification.object as? NSWindow === window else { return }
         saveFrame()
         changingFullScreen = true
     }
     func windowWillExitFullScreen(_ notification: Notification) { changingFullScreen = true }
     func windowDidFailToEnterFullScreen(_ window: NSWindow) { changingFullScreen = false }
     func windowDidFailToExitFullScreen(_ window: NSWindow) { changingFullScreen = false }
-    func windowWillMiniaturize(_ notification: Notification) { saveFrame() }
+    func windowWillMiniaturize(_ notification: Notification) { if notification.object as? NSWindow === window { saveFrame() } }
     func windowDidEnterFullScreen(_ notification: Notification) { changingFullScreen = false; updateAppearance() }
     func windowDidExitFullScreen(_ notification: Notification) { changingFullScreen = false; updateAppearance() }
 
@@ -443,8 +460,8 @@ private class AlertEscape: NSView {
         frames.save(window.frame, for: host)
     }
 
-    func windowDidMove(_ notification: Notification) { scheduleFrameSave() }
-    func windowDidResize(_ notification: Notification) { scheduleFrameSave() }
+    func windowDidMove(_ notification: Notification) { if notification.object as? NSWindow === window { scheduleFrameSave() } }
+    func windowDidResize(_ notification: Notification) { if notification.object as? NSWindow === window { scheduleFrameSave() } }
 
     private func scheduleFrameSave() {
         frameSave?.cancel()
@@ -998,6 +1015,9 @@ private class AlertEscape: NSView {
     private func makeSessionView() -> SessionView {
         let generation = generation
         let view = SessionView(runtime: runtime)
+        view.hostFocusChanged = hostFocusChanged
+        view.hostsOrdered = { [weak self] in self?.notices.raise() }
+        view.floatsAllowed = { [weak self] in self?.banner.isHidden != false }
         view.host = host
         view.onURL = { [weak self] in self?.openLink($0) }
         view.webview = { [weak self] in self?.koModel?.pane($0)?.webview }
@@ -1861,10 +1881,11 @@ private class AlertEscape: NSView {
     }
 
     func windowWillClose(_ notification: Notification) {
-        guard alive else { return }
+        guard alive, notification.object as? NSWindow === window else { return }
         saveFrame()
         alive = false
         notices.stop()
+        notices.close()
         Notifier.shared.forget(self)
         invalidate()
         link = .down
@@ -1872,10 +1893,11 @@ private class AlertEscape: NSView {
         window.delegate = nil
         onClose()
     }
+    @objc func focusSidebar(_ sender: Any?) { sidebar.focusSidebar(sender) }
     func windowDidBecomeKey(_ notification: Notification) { becameKey(); supersedeIntent(); menuChanged(); attend() }
     func windowDidResignKey(_ notification: Notification) { supersedeIntent(); attend() }
-    func windowDidMiniaturize(_ notification: Notification) { attend() }
-    func windowDidDeminiaturize(_ notification: Notification) { attend() }
+    func windowDidMiniaturize(_ notification: Notification) { session?.syncHosts(); notices.place(); attend() }
+    func windowDidDeminiaturize(_ notification: Notification) { session?.syncHosts(); notices.place(); attend() }
     func windowDidChangeOcclusionState(_ notification: Notification) { presentAlert(); attend() }
     func reloadConfig(font: Float?) { session?.reloadConfig(font: font) }
     func updateColorScheme() { session?.updateColorScheme() }

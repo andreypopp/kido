@@ -11,7 +11,7 @@ import SidebarFeed
     var reopenOwner: WindowOwner? {
         if let lastKeyOwner, lastKeyOwner.alive { return lastKeyOwner }
         return NSApp.orderedWindows.lazy.compactMap { window in
-            self.owners.first { $0.alive && $0.window === window }
+            self.owners.first { $0.alive && $0.owns(window) }
         }.first ?? owners.first(where: \.alive)
     }
     #if KIDO_VISUAL || KIDO_STRESS
@@ -95,7 +95,7 @@ import SidebarFeed
         }
     }
 
-    var current: WindowOwner? { owners.first { $0.alive && $0.window === NSApp.keyWindow } ?? (background && palettePanel == nil ? owners.first(where: \.alive) : nil) }
+    var current: WindowOwner? { owners.first { $0.alive && $0.owns(NSApp.keyWindow) } ?? (background && palettePanel == nil ? owners.first(where: \.alive) : nil) }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         let isDefaultLaunch = notification.userInfo?[NSApplication.launchIsDefaultUserInfoKey] as? Bool
@@ -151,7 +151,7 @@ import SidebarFeed
         let owner = WindowOwner(host: host, runtime: runtime, start: start, cause: cause)
         owners.append(owner)
         owner.becameKey = { [weak self, weak owner] in self?.lastKeyOwner = owner }
-        if owner.window.isKeyWindow { lastKeyOwner = owner }
+        if owner.isKeyHost { lastKeyOwner = owner }
         owner.snapshotReceived = { [weak self, weak owner] in
             guard let self else { return }
             defer { paletteStateChanged() }
@@ -190,9 +190,9 @@ import SidebarFeed
             $0.snapshot?.serverInstance == target.instance && $0.projection.placements[target.position.pane] != nil
         }
         let inSession = containing.filter { $0.snapshot?.client.session == target.position.session }
-        let owner = inSession.first { $0.window.isKeyWindow } ?? inSession.first
-            ?? containing.first { $0.window.isKeyWindow } ?? containing.first
-            ?? candidates.first { $0.window.isKeyWindow } ?? candidates.first
+        let owner = inSession.first { $0.isKeyHost } ?? inSession.first
+            ?? containing.first { $0.isKeyHost } ?? containing.first
+            ?? candidates.first { $0.isKeyHost } ?? candidates.first
         if let owner {
             owner.reveal()
             owner.perform(.jump(target.position))
@@ -362,7 +362,7 @@ import SidebarFeed
 
     func menuNeedsUpdate(_ menu: NSMenu) {
         if menu === runtimesMenu { updateRuntimesMenu(menu, owner: current) }
-        updatePromptMenu(menu, responder: (current?.window ?? NSApp.keyWindow)?.firstResponder)
+        updatePromptMenu(menu, responder: current?.inputResponder ?? NSApp.keyWindow?.firstResponder)
     }
 
     func menuDidClose(_ menu: NSMenu) {
@@ -466,10 +466,10 @@ import SidebarFeed
     }
 
     private func showPalette(_ prepared: PalettePrompt? = nil) {
-        updateMenu(current, responder: current?.window.firstResponder)
-        let entries = paletteEntries(owner: current, responder: current?.window.firstResponder)
+        updateMenu(current, responder: current?.inputResponder)
+        let entries = paletteEntries(owner: current, responder: current?.inputResponder)
         guard let runtime = current?.runtime ?? runtime else { return }
-        paletteFocus = (prepared?.source.owner ?? current).map { ($0, $0.window.firstResponder) }
+        paletteFocus = (prepared?.source.owner ?? current).map { ($0, $0.inputResponder) }
         let panel = PalettePanel(palette: PaletteView(runtime: runtime, entries: entries)) { [weak self] in
             guard let self, !paletteBusy else { return }
             closePalette(.moved)
@@ -638,8 +638,9 @@ import SidebarFeed
     private func restorePaletteFocus(_ saved: (owner: WindowOwner, responder: NSResponder?)? = nil) {
         guard let focus = saved ?? paletteFocus, focus.owner.alive else { return }
         if !background { focus.owner.window.makeKeyAndOrderFront(nil) }
-        if let view = focus.responder as? NSView, view.window === focus.owner.window, !view.isHiddenOrHasHiddenAncestor {
-            Sidebar.grantFocus(in: focus.owner.window) { focus.owner.window.makeFirstResponder(view) }
+        if let view = focus.responder as? NSView, let host = view.window, focus.owner.owns(host), !view.isHiddenOrHasHiddenAncestor {
+            if !background { host.makeKey() }
+            Sidebar.grantFocus(in: focus.owner.window) { host.makeFirstResponder(view) }
         } else { focus.owner.focusSelected() }
     }
     @objc private func quitItem() { quit("the Quit menu item") }

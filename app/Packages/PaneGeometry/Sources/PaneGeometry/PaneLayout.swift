@@ -97,6 +97,10 @@ public struct PaneLayout: Equatable {
                  height: max(2, Int(((frame.height - before.height - after.height) / cell.height).rounded())))
     }
 
+    public func frame(x: Int, y: Int, width: Int, height: Int) -> CGRect {
+        frame(Geometry(x: x, y: y, width: width, height: height))
+    }
+
     public var floatingBounds: CGRect {
         CGRect(x: origin.x - before.width, y: topLine.maxY,
                width: client.width * cell.width + before.width + after.width,

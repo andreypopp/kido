@@ -163,6 +163,7 @@ import XCTest
         session.paneCommand(.float, one)
         wait("the float docks right of the pane that was active before it") { self.panes(client).map(\.id) == [two, three, one] }
         wait("the docked pane is active") { (try? client.model())?.selection.pane == one }
+        wait("the owner shows the dock") { owner.testModel?.layout.layout.windows.first?.floats.isEmpty == true }
 
         session.paneCommand(.float, one)
         wait("the pane that was active floats, so it is gone from the tiled panes") { self.windows(client).first?.floats.map(\.pane) == [one] }

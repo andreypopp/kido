@@ -232,7 +232,7 @@ private extension PaneView {
                 CATransaction.flush()
                 let content = try XCTUnwrap(owner.window.contentView?.superview)
                 let name = "\(split ? "split-adds-top-level-pane" : "stress-child-in-place")-\(dark ? "dark" : "light")"
-                checkSnapshot { verifySnapshot(of: content, as: .pixels, named: name, record: $0) }
+                checkSnapshot { verifyWindowView(content, named: name, record: $0) }
                 let fullscreen = try fullscreenHostImage(owner, root: content)
                 checkSnapshot { verifySnapshot(of: fullscreen, as: .pixels, named: name + "-fullscreen", record: $0) }
             }
@@ -359,7 +359,7 @@ private extension PaneView {
                 let image = try croppedImage(content, to: crop)
                 checkSnapshot { verifySnapshot(of: image, as: .pixels, named: name, record: $0, testName: "testBreadcrumbHierarchyAndOverlays") }
             } else {
-                checkSnapshot { verifySnapshot(of: content, as: .pixels, named: name, record: $0, testName: "testBreadcrumbHierarchyAndOverlays") }
+                checkSnapshot { verifyWindowView(content, named: name, record: $0, testName: "testBreadcrumbHierarchyAndOverlays") }
             }
             let fullscreen = try fullscreenHostImage(owner, root: content, crop: crop)
             checkSnapshot { verifySnapshot(of: fullscreen, as: .pixels, named: name + "-fullscreen", record: $0, testName: "testBreadcrumbHierarchyAndOverlays") }
@@ -447,10 +447,11 @@ private extension PaneView {
         XCTAssertNil(crumb.hitTest(NSPoint(x: crumb.frame.minX + 2, y: crumb.frame.minY + 2)))
         let button = try XCTUnwrap(crumb.subviews.compactMap { $0 as? NSButton }.last { !$0.isHidden })
         let location = button.convert(NSPoint(x: button.bounds.midX, y: button.bounds.midY), to: nil)
-        let host = try XCTUnwrap(owner.window.contentView?.superview)
+        let hostWindow = try XCTUnwrap(pane.window)
+        let host = try XCTUnwrap(hostWindow.contentView?.superview)
         XCTAssertTrue(host.hitTest(host.convert(location, from: nil)) === button)
-        let down = try XCTUnwrap(NSEvent.mouseEvent(with: .leftMouseDown, location: location, modifierFlags: [], timestamp: 0, windowNumber: owner.window.windowNumber, context: nil, eventNumber: 1, clickCount: 1, pressure: 1))
-        NSApp.postEvent(try XCTUnwrap(NSEvent.mouseEvent(with: .leftMouseUp, location: location, modifierFlags: [], timestamp: 0, windowNumber: owner.window.windowNumber, context: nil, eventNumber: 2, clickCount: 1, pressure: 0)), atStart: true)
+        let down = try XCTUnwrap(NSEvent.mouseEvent(with: .leftMouseDown, location: location, modifierFlags: [], timestamp: 0, windowNumber: hostWindow.windowNumber, context: nil, eventNumber: 1, clickCount: 1, pressure: 1))
+        NSApp.postEvent(try XCTUnwrap(NSEvent.mouseEvent(with: .leftMouseUp, location: location, modifierFlags: [], timestamp: 0, windowNumber: hostWindow.windowNumber, context: nil, eventNumber: 2, clickCount: 1, pressure: 0)), atStart: true)
         button.mouseDown(with: down)
         try await wait("ancestor click shows parent in same slot") { owner.testModel?.selection.pane == child.pane }
         XCTAssertTrue(owner.testSession?.pane(fixture.children[1].pane) === sibling)

@@ -49,7 +49,7 @@ final class PaneChrome: NSView {
     var padding: [CGRect] { bounds.insetBy(dx: 5, dy: 5).subtracting([content] + overlays) }
     var hover: (PaneChrome, NSPoint?) -> Void = { _, _ in }
     var content = CGRect.zero
-    enum Treatment { case plain, edge, overlay }
+    enum Treatment { case plain, edge, focus, overlay }
     var treatment = Treatment.plain { didSet { if treatment != oldValue { needsDisplay = true } } }
     // Where the pane runs: its stripe is the top band of the chrome, over the top side of the focus edge.
     static let stripeBand: CGFloat = 3
@@ -106,6 +106,11 @@ final class PaneChrome: NSView {
                     else { path.line(to: corner) }
                 }
                 path.close()
+                path.stroke()
+            case .focus:
+                Chrome.focusStroke.setStroke()
+                let path = NSBezierPath(roundedRect: bounds.insetBy(dx: 0.5, dy: 0.5), xRadius: 10, yRadius: 10)
+                path.lineWidth = 1
                 path.stroke()
             case .overlay:
                 Chrome.floatingOverlay(runtime.background).setFill()
@@ -191,6 +196,7 @@ class PaneCapsule: NSView {
     enum ShadowStyle { case contact, float, none }
     // A label draws its text 2pt inside its frame on each side.
     static let labelInset: CGFloat = 2
+    static let floatShadowOffset: CGFloat = 10
     weak var pane: PaneView?
     let runtime: GhosttyRuntime
     private let radius: CGFloat
@@ -242,7 +248,7 @@ class PaneCapsule: NSView {
             shadowDark = dark
             let style: (color: NSColor, offset: CGFloat, blur: CGFloat)? = switch shadowStyle {
             case .contact: Chrome.capsuleShadow(dark: dark)
-            case .float: (Chrome.floatShadow.color, -10, Chrome.floatShadow.blur)
+            case .float: (Chrome.floatShadow.color, -Self.floatShadowOffset, Chrome.floatShadow.blur)
             case .none: nil
             }
             shadow = style.map {

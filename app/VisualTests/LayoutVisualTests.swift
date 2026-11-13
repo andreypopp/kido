@@ -45,6 +45,7 @@ import XCTest
     override func tearDown() async throws {
         owner = nil
         PaneView.renderOffscreen = false
+        try await super.tearDown()
     }
 
     private func put(_ windows: String) async throws {
@@ -76,7 +77,12 @@ import XCTest
     }
 
     private func chrome(_ pane: PaneID) throws -> PaneChrome {
-        try XCTUnwrap(terminal?.subviews.compactMap { $0 as? PaneChrome }.first { $0.pane == pane })
+        try XCTUnwrap(terminal?.visualChromes.first { $0.pane == pane })
+    }
+
+    // The chrome rectangle in the terminal's coordinates, also for a float that lives in its own window.
+    private func rect(_ pane: PaneID) throws -> CGRect {
+        try XCTUnwrap(terminal?.visualFloatRect(pane) ?? chrome(pane).frame)
     }
 
     private func mouse(_ type: NSEvent.EventType, _ point: NSPoint, _ flags: NSEvent.ModifierFlags = []) throws -> NSEvent {
@@ -147,7 +153,7 @@ import XCTest
             return self.owner.testModel?.selection.pane == child.pane && displayed.contains(float.pane)
         }
         let terminal = try XCTUnwrap(terminal), cell = try cell()
-        let frame = try chrome(float.pane).frame
+        let frame = try rect(float.pane)
         let slot = try XCTUnwrap(geometry(PaneID(number: 2)))
         XCTAssertGreaterThan(slot.x, 0)
         XCTAssertEqual(frame.minX, CGFloat(slot.x + float.x) * cell.width, accuracy: cell.width + 6, "the float lies over the slot, offset by it")
@@ -179,7 +185,7 @@ import XCTest
         session.edit(.float(KoSchema.EditFloat(cols: 35, pane: PaneID(number: 4), rows: 10, x: 5, y: 0)), nil)
         try await placed("floating layout") { $0.floats.map(\.pane) == [PaneID(number: 4)] }
         XCTAssertTrue(terminal?.visualLayout.contains("float pane_4") == true)
-        let top = try chrome(PaneID(number: 4)).frame.minY
+        let top = try rect(PaneID(number: 4)).minY
         XCTAssertGreaterThanOrEqual(top, 0.5, "a float in the first row stays below the separator")
         try snapshot("float-top")
 
@@ -188,14 +194,18 @@ import XCTest
         (owner.window as? OwnerWindow)?.focusChanged = { [weak terminal] _, _ in terminal?.updateFocusTreatment() }
         session.selectPane(float)
         try await wait("float is active", within: 5) { self.window?.focus == PaneID(number: 4) || terminal.active == float }
-        owner.window.makeFirstResponder(try XCTUnwrap(session.pane(float)))
         terminal.focus(float)
-        XCTAssertEqual(try chrome(float).treatment, .plain)
+        XCTAssertEqual(try chrome(float).treatment, .overlay, "with the main window key, the last-active float keeps the overlay")
         NotificationCenter.default.post(name: NSWindow.didResignKeyNotification, object: owner.window)
-        XCTAssertEqual(try chrome(float).treatment, .overlay, "the active float takes the inactive overlay while the window is not key")
+        XCTAssertEqual(try chrome(float).treatment, .overlay)
         try snapshot("float-window-not-key")
         NotificationCenter.default.post(name: NSWindow.didBecomeKeyNotification, object: owner.window)
-        XCTAssertEqual(try chrome(float).treatment, .plain)
+        XCTAssertEqual(try chrome(float).treatment, .overlay)
+        let host = try XCTUnwrap(session.pane(float)?.window as? FloatWindow)
+        host.testInput(true)
+        (owner.window as? OwnerWindow)?.testInput(false)
+        terminal.updateFocusTreatment()
+        XCTAssertEqual(try chrome(float).treatment, .focus, "the float that has the keyboard has the accent stroke")
     }
 
     func testADividerDragIsOneResizeOfTheTwoNeighbours() async throws {
@@ -203,7 +213,7 @@ import XCTest
         try await placed("three panes") { Layout($0).root.panes.count == 3 }
         try snapshot("before")
         let first = try XCTUnwrap(geometry(PaneID(number: 1))), third = try XCTUnwrap(geometry(PaneID(number: 3)))
-        let left = try chrome(PaneID(number: 1)).frame, right = try chrome(PaneID(number: 2)).frame
+        let left = try rect(PaneID(number: 1)), right = try rect(PaneID(number: 2))
         let terminal = try XCTUnwrap(terminal)
         let start = NSPoint(x: (left.maxX + right.minX) / 2, y: left.midY)
         XCTAssertTrue(terminal.hitTest(terminal.convert(start, to: terminal.superview)) === terminal, "the divider takes the press")
@@ -224,7 +234,7 @@ import XCTest
         try await placed("the float") { $0.floats.count == 1 }
         try snapshot("before")
         let float = PaneID(number: 2)
-        let frame = try chrome(float).frame
+        let frame = try rect(float)
         let start = NSPoint(x: frame.midX, y: frame.minY + 4)
         let terminal = try XCTUnwrap(terminal)
         let cell = try cell()
@@ -234,11 +244,11 @@ import XCTest
         terminal.mouseDragged(with: try mouse(.leftMouseDragged, NSPoint(x: start.x + 2 * cell.width, y: start.y + cell.height)))
         terminal.mouseDragged(with: try mouse(.leftMouseDragged, end))
         terminal.mouseUp(with: try mouse(.leftMouseUp, end))
-        let moved = try chrome(float).frame
+        let moved = try rect(float)
         XCTAssertEqual(moved.minX, frame.minX + 5 * cell.width, accuracy: 0.5, "the released float keeps the drag's frame")
         try await placed("the server moved the float") { $0.floats.first.map { [$0.x, $0.y] } == [9, 11] }
         try await wait("the edits settled", within: 5) { self.owner.testSession?.editing() == false }
-        XCTAssertEqual(try chrome(float).frame, moved, "the frame of the settled layout is the drag's frame")
+        XCTAssertEqual(try rect(float), moved, "the frame of the settled layout is the drag's frame")
         try snapshot("after")
     }
 
@@ -251,51 +261,51 @@ import XCTest
         try await put(floatWindow())
         try await placed("the float") { $0.floats.count == 1 }
         let terminal = try XCTUnwrap(terminal), float = PaneID(number: 3)
-        let target = try chrome(PaneID(number: 1)).frame, grip = try chrome(float).frame
+        let target = try rect(PaneID(number: 1)), grip = try rect(float)
         let start = NSPoint(x: grip.midX, y: grip.minY + 4)
         let end = NSPoint(x: target.minX + 2, y: target.midY)
         terminal.visualBeginDrag(float, try mouse(.leftMouseDown, start))
         terminal.mouseDragged(with: try mouse(.leftMouseDragged, end))
-        XCTAssertNil(terminal.visualPreview.ghost, "a float's drag never shows the ghost")
+        XCTAssertNil(terminal.visualGhost, "a float's drag never shows the ghost")
         let bar = try XCTUnwrap(terminal.visualPreview.rect, "the insertion bar shows over the target")
         XCTAssertEqual(bar.minX, target.minX, accuracy: 0.5)
-        let dragged = try chrome(float).frame
+        let dragged = try rect(float)
         terminal.mouseUp(with: try mouse(.leftMouseUp, end))
         XCTAssertEqual(owner.testSession?.editing(), true, "the dock edit is in flight")
-        XCTAssertEqual(try chrome(float).frame, dragged, "the released float holds its frame while the dock is in flight")
+        XCTAssertEqual(try rect(float), dragged, "the released float holds its frame while the dock is in flight")
         try await placed("the float docked left of the first pane") { $0.floats.isEmpty && Layout($0).root.panes.map(\.id.number) == [3, 1, 2] }
-        XCTAssertNotEqual(try chrome(float).frame, dragged, "the docked pane takes its tile")
+        XCTAssertNotEqual(try rect(float), dragged, "the docked pane takes its tile")
     }
 
     func testATiledPaneDroppedOverNoTargetPopsOutAtTheGhost() async throws {
         try await put(floatWindow())
         try await placed("the float") { $0.floats.count == 1 }
         let terminal = try XCTUnwrap(terminal), cell = try cell(), source = PaneID(number: 2)
-        let frame = try chrome(source).frame
+        let frame = try rect(source)
         let grip = try chrome(source).toolbarFrame.minX + 16
         let start = NSPoint(x: frame.minX + grip, y: frame.minY + 14)
         let inside = NSPoint(x: start.x - 2 * cell.width, y: start.y + 3 * cell.height)
         terminal.visualBeginDrag(source, try mouse(.leftMouseDown, start))
         terminal.mouseDragged(with: try mouse(.leftMouseDragged, inside))
-        XCTAssertNil(terminal.visualPreview.ghost, "the source pane is a cancel zone")
+        XCTAssertNil(terminal.visualGhost, "the source pane is a cancel zone")
         XCTAssertNil(terminal.visualPreview.rect)
         let revision = try XCTUnwrap(owner.testModel?.layout.revision)
         terminal.mouseUp(with: try mouse(.leftMouseUp, inside))
         XCTAssertEqual(owner.testSession?.editing(), false, "a drop on the source sends no edit")
         XCTAssertEqual(owner.testModel?.layout.revision, revision)
 
-        let over = try chrome(PaneID(number: 3)).frame
+        let over = try rect(PaneID(number: 3))
         let end = NSPoint(x: over.midX, y: over.midY)
         terminal.visualBeginDrag(source, try mouse(.leftMouseDown, start))
         terminal.mouseDragged(with: try mouse(.leftMouseDragged, end))
-        let ghost = try XCTUnwrap(terminal.visualPreview.ghost, "over a float the ghost shows")
+        let ghost = try XCTUnwrap(terminal.visualGhost, "over a float the ghost shows")
         XCTAssertNil(terminal.visualPreview.rect)
-        XCTAssertEqual(ghost.minX, min(max(0, end.x - grip), terminal.bounds.width - ghost.width), accuracy: 8, "the pointer keeps the grip's place in the ghost")
+        XCTAssertEqual(ghost.minX, end.x - grip, accuracy: 8, "the pointer keeps the grip's place in the ghost")
         XCTAssertEqual(ghost.minY, end.y - 14, accuracy: 0.5)
         for (name, appearance) in [("light", NSAppearance.Name.aqua), ("dark", .darkAqua)] {
-            terminal.visualPreview.appearance = NSAppearance(named: appearance)
+            terminal.visualGhostView.appearance = NSAppearance(named: appearance)
             let record = ProcessInfo.processInfo.environment["KIDO_VISUAL_RECORD"] == "1"
-            if let failure = verifySnapshot(of: terminal.visualPreview, as: .pixels, named: "ghost-\(name)", record: record),
+            if let failure = verifySnapshot(of: terminal.visualGhostView, as: .pixels, named: "ghost-\(name)", record: record),
                !record || !failure.hasPrefix("Record mode is on.") { XCTFail(failure) }
         }
         terminal.mouseUp(with: try mouse(.leftMouseUp, end))
@@ -303,7 +313,7 @@ import XCTest
         let float = try XCTUnwrap(window?.floats.first { $0.pane == source })
         XCTAssertGreaterThanOrEqual(float.cols, 20)
         XCTAssertGreaterThanOrEqual(float.rows, 6)
-        let after = try chrome(source).frame
+        let after = try rect(source)
         XCTAssertEqual(after.minX, ghost.minX, accuracy: cell.width, "the float appears where the ghost was")
         XCTAssertEqual(after.minY, ghost.minY, accuracy: cell.height)
         try await wait("the float is the active pane", within: 5) { self.owner.testModel?.selection.pane == source }
@@ -314,7 +324,7 @@ import XCTest
         try await put(#"[{"name":"w","tree":{"split":"h","children":[\#(sleep),\#(sleep)]},"floats":[{"pane":\#(new),"x":20,"y":12,"cols":20,"rows":6}]}]"#)
         try await placed("the float") { $0.floats.count == 1 }
         let terminal = try XCTUnwrap(terminal), float = PaneID(number: 3)
-        let target = try chrome(PaneID(number: 1)).frame, home = try chrome(float).frame
+        let target = try rect(PaneID(number: 1)), home = try rect(float)
         let start = NSPoint(x: home.midX, y: home.minY + 4)
         terminal.visualBeginDrag(float, try mouse(.leftMouseDown, start))
         terminal.mouseDragged(with: try mouse(.leftMouseDragged, NSPoint(x: target.minX + 2, y: target.midY)))
@@ -325,22 +335,22 @@ import XCTest
         terminal.mouseUp(with: try mouse(.leftMouseUp, start))
         XCTAssertEqual(owner.testSession?.editing(), false)
         XCTAssertEqual(owner.testModel?.layout.revision, revision)
-        XCTAssertEqual(try chrome(float).frame.minX, home.minX, accuracy: 0.5)
+        XCTAssertEqual(try rect(float).minX, home.minX, accuracy: 0.5)
     }
 
     func testOptionOverATargetForcesThePopOut() async throws {
         try await put(#"[{"name":"w","tree":{"split":"h","children":[\#(sleep),\#(sleep)]}}]"#)
         try await placed("two panes") { Layout($0).root.panes.count == 2 }
         let terminal = try XCTUnwrap(terminal), source = PaneID(number: 2)
-        let from = try chrome(source).frame, over = try chrome(PaneID(number: 1)).frame
+        let from = try rect(source), over = try rect(PaneID(number: 1))
         let start = NSPoint(x: from.midX, y: from.midY), end = NSPoint(x: over.midX, y: over.midY)
         terminal.visualBeginDrag(source, try mouse(.leftMouseDown, start))
         terminal.mouseDragged(with: try mouse(.leftMouseDragged, end))
         XCTAssertNotNil(terminal.visualPreview.rect, "without Option the pane under the pointer is a target")
-        XCTAssertNil(terminal.visualPreview.ghost)
+        XCTAssertNil(terminal.visualGhost)
         terminal.mouseDragged(with: try mouse(.leftMouseDragged, end, .option))
         XCTAssertNil(terminal.visualPreview.rect, "Option shows the ghost instead of the bar")
-        XCTAssertNotNil(terminal.visualPreview.ghost)
+        XCTAssertNotNil(terminal.visualGhost)
         terminal.mouseUp(with: try mouse(.leftMouseUp, end, .option))
         try await placed("the pane floats, no swap") { $0.floats.map(\.pane) == [source] && Layout($0).root.panes.filter { $0.layer == .tiled }.map(\.id.number) == [1] }
     }
@@ -349,11 +359,11 @@ import XCTest
         try await put(#"[{"name":"w","tree":\#(sleep)}]"#)
         try await placed("one pane") { Layout($0).root.panes.count == 1 }
         let terminal = try XCTUnwrap(terminal), source = PaneID(number: 1)
-        let frame = try chrome(source).frame
+        let frame = try rect(source)
         let start = NSPoint(x: frame.midX, y: frame.midY), end = NSPoint(x: frame.midX + 40, y: frame.midY + 40)
         terminal.visualBeginDrag(source, try mouse(.leftMouseDown, start))
         terminal.mouseDragged(with: try mouse(.leftMouseDragged, end, .option))
-        XCTAssertNil(terminal.visualPreview.ghost)
+        XCTAssertNil(terminal.visualGhost)
         XCTAssertNil(terminal.visualPreview.rect)
         terminal.mouseUp(with: try mouse(.leftMouseUp, end, .option))
         XCTAssertTrue(window?.floats.isEmpty == true)
@@ -363,7 +373,7 @@ import XCTest
         try await put(#"[{"name":"w","tree":{"split":"h","children":[\#(sleep),\#(sleep)]}}]"#)
         try await placed("two panes") { Layout($0).root.panes.count == 2 }
         let terminal = try XCTUnwrap(terminal)
-        let from = try chrome(PaneID(number: 1)).frame, to = try chrome(PaneID(number: 2)).frame
+        let from = try rect(PaneID(number: 1)), to = try rect(PaneID(number: 2))
         terminal.visualBeginDrag(PaneID(number: 1), try mouse(.leftMouseDown, NSPoint(x: from.midX, y: from.midY)))
         terminal.mouseDragged(with: try mouse(.leftMouseDragged, NSPoint(x: to.midX, y: to.midY)))
         terminal.mouseUp(with: try mouse(.leftMouseUp, NSPoint(x: to.midX, y: to.midY)))

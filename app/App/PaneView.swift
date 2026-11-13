@@ -204,10 +204,12 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
         }
     }
 
+    weak var cursorHost: WindowView?
+
     func setMouseShape(_ shape: ghostty_action_mouse_shape_e) {
         guard mouseShape != shape else { return }
         mouseShape = shape
-        (superview as? WindowView)?.invalidateCursorRects()
+        cursorHost?.invalidateCursorRects(for: self)
     }
 
     var terminalCursorRects: [CGRect] {
@@ -1760,7 +1762,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
     private func setContentHover(_ hover: Bool) {
         guard hover != contentHover else { return }
         contentHover = hover
-        (superview as? WindowView)?.invalidateCursorRects()
+        cursorHost?.invalidateCursorRects(for: self)
         mouseCursor.set()
     }
 

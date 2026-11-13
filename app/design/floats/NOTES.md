@@ -107,5 +107,11 @@ What changes visibly:
 - **Dragging** the main window moves the floats with it (child
   windows), with no edit: the cell geometry is unchanged. A resize of
   the main window re-lays the floats by their cell geometry, as today.
+- **Notices** stay above floats: the pane-area notices column (the
+  transient card, the config notice) becomes its own borderless child
+  window ordered above every float child, re-asserted when a float is
+  raised; non-activating, never key, hit-testing as today (the card
+  takes its dismissing click, the rest passes through). The
+  connection banner keeps hiding the floats.
 - **Mission Control, Exposé, Stage Manager**: the floats are grouped
   with the main window (child windows are); nothing to add.

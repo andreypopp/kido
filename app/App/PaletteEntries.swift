@@ -73,7 +73,7 @@ struct PaletteEntry {
         if let pane = livePane(owner, responder) {
             for (index, (title, detail, side)) in [("Split Right", "beside the focused pane", Side.right), ("Split Down", "below the focused pane", Side.down)].enumerated() {
                 rows.append(PaletteEntry(id: .runtimeOpen(index + 1), title: title, detail: detail,
-                                         check: { [weak owner, weak pane] in owner?.canNavigate == true && pane?.window === owner?.window ? nil : "Not available now" },
+                                         check: { [weak owner, weak pane] in owner?.canNavigate == true && owner?.owns(pane?.window) == true ? nil : "Not available now" },
                                          operation: .run { [weak owner, weak pane] in
                     guard let owner, let pane else { return }
                     owner.paneCommand(.split(side), pane.pane, target)
@@ -115,15 +115,15 @@ struct PaletteEntry {
             return [PaletteEntry(id: .command(order), order: order, title: title, detail: path.joined(separator: " › "), shortcut: shortcut(item),
                                  check: { [weak owner] in
                 if action == #selector(AppDelegate.newSession), let owner, owner.snapshot == nil { return "Not available now" }
-                if scope == .pane, livePane(owner, owner?.window.firstResponder) == nil { return "Not available now" }
-                return enabled(item, owner: owner, responder: owner?.window.firstResponder) ? nil : "Not available now"
+                if scope == .pane, livePane(owner, owner?.inputResponder) == nil { return "Not available now" }
+                return enabled(item, owner: owner, responder: owner?.inputResponder) ? nil : "Not available now"
             }, operation: operation)]
         }.sorted { $0.order < $1.order }
     }
 
     @MainActor private static func livePane(_ owner: WindowOwner?, _ responder: NSResponder?) -> PaneView? {
         guard let owner, owner.canNavigate, let pane = PaneView.owner(responder),
-              pane.window === owner.window, !pane.isHiddenOrHasHiddenAncestor else { return nil }
+              owner.owns(pane.window), !pane.isHiddenOrHasHiddenAncestor else { return nil }
         return pane
     }
 

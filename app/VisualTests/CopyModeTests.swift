@@ -766,7 +766,7 @@ import XCTest
                               "App/owner.swift:96: sidebar.tabs", "App/tabs.swift:37: labelFont(tab)", "App/feed.swift:39: sidebar.title",
                               "App/sidebar_list.swift: sidebar", "App/view.swift:65: sidebar.recent", "App/main.swift: sidebar, sidebar",
                               "App/keys.swift: let sidebar = 1", "App/done.swift:9: sidebar()", "$ "].joined(separator: "\r\n"), until: "sidebar()")
-        let chrome = try XCTUnwrap(terminal?.subviews.compactMap { $0 as? PaneChrome }.first { $0.pane == pane.pane })
+        let chrome = try XCTUnwrap(terminal?.visualChromes.first { $0.pane == pane.pane })
         for theme in ["light", "dark"] {
             try await hover(pane, true)
             XCTAssertEqual(chrome.toolbarFrame, NSRect(x: 547, y: 8, width: 145, height: 32))
@@ -849,9 +849,9 @@ import XCTest
     private func drag(_ pane: PaneView, from: (Int, Int), to: (Int, Int), mods: NSEvent.ModifierFlags = [],
                       clickCount: Int = 1, delivered: Bool = false) {
         if delivered {
-            window.sendEvent(mouse(pane, .leftMouseDown, x: from.0, y: from.1, clickCount: clickCount, mods: mods))
-            window.sendEvent(mouse(pane, .leftMouseDragged, x: to.0, y: to.1, clickCount: clickCount, mods: mods))
-            window.sendEvent(mouse(pane, .leftMouseUp, x: to.0, y: to.1, clickCount: clickCount, mods: mods))
+            (pane.window ?? window).sendEvent(mouse(pane, .leftMouseDown, x: from.0, y: from.1, clickCount: clickCount, mods: mods))
+            (pane.window ?? window).sendEvent(mouse(pane, .leftMouseDragged, x: to.0, y: to.1, clickCount: clickCount, mods: mods))
+            (pane.window ?? window).sendEvent(mouse(pane, .leftMouseUp, x: to.0, y: to.1, clickCount: clickCount, mods: mods))
         } else {
             pane.mouseDown(with: mouse(pane, .leftMouseDown, x: from.0, y: from.1, clickCount: clickCount, mods: mods))
             pane.mouseDragged(with: mouse(pane, .leftMouseDragged, x: to.0, y: to.1, clickCount: clickCount, mods: mods))
@@ -1056,14 +1056,14 @@ import XCTest
         XCTAssertNil(pane.copyMode, "a plain drag does not enter copy mode")
 
         let since = pane.visualSent.count
-        window.sendEvent(mouse(pane, .leftMouseDown, x: 0, y: row, mods: [.shift]))
+        (pane.window ?? window).sendEvent(mouse(pane, .leftMouseDown, x: 0, y: row, mods: [.shift]))
         try await entered(pane)
         XCTAssertEqual(pane.readSelection(), "a", "the press starts the selection at its cell")
         for (x, expected) in [(4, "alpha"), (6, "alpha b"), (9, "alpha beta")] {
-            window.sendEvent(mouse(pane, .leftMouseDragged, x: x, y: row, mods: [.shift]))
+            (pane.window ?? window).sendEvent(mouse(pane, .leftMouseDragged, x: x, y: row, mods: [.shift]))
             XCTAssertEqual(pane.readSelection(), expected, "the drag grows the selection to column \(x)")
         }
-        window.sendEvent(mouse(pane, .leftMouseUp, x: 9, y: row, mods: [.shift]))
+        (pane.window ?? window).sendEvent(mouse(pane, .leftMouseUp, x: 9, y: row, mods: [.shift]))
         XCTAssertEqual(pane.readSelection(), "alpha beta", "the release keeps the selection")
         XCTAssertNotNil(pane.copyMode, "the release keeps copy mode")
         XCTAssertTrue(sends(pane, since: since).isEmpty, "the shift gesture sends nothing to the program")
@@ -1081,13 +1081,13 @@ import XCTest
         XCTAssertNil(pane.copyMode, "the gesture after copy mode is not swallowed")
 
         let release = pane.visualSent.count
-        window.sendEvent(mouse(pane, .leftMouseDown, x: 0, y: row, mods: [.shift]))
+        (pane.window ?? window).sendEvent(mouse(pane, .leftMouseDown, x: 0, y: row, mods: [.shift]))
         try await entered(pane)
-        window.sendEvent(mouse(pane, .leftMouseDragged, x: 4, y: row, mods: [.shift]))
-        window.sendEvent(mouse(pane, .leftMouseDragged, x: 6, y: row, mods: []))
+        (pane.window ?? window).sendEvent(mouse(pane, .leftMouseDragged, x: 4, y: row, mods: [.shift]))
+        (pane.window ?? window).sendEvent(mouse(pane, .leftMouseDragged, x: 6, y: row, mods: []))
         XCTAssertEqual(pane.readSelection(), "alpha b", "a drag without shift keeps extending")
-        window.sendEvent(mouse(pane, .leftMouseDragged, x: 9, y: row, mods: []))
-        window.sendEvent(mouse(pane, .leftMouseUp, x: 9, y: row, mods: []))
+        (pane.window ?? window).sendEvent(mouse(pane, .leftMouseDragged, x: 9, y: row, mods: []))
+        (pane.window ?? window).sendEvent(mouse(pane, .leftMouseUp, x: 9, y: row, mods: []))
         XCTAssertEqual(pane.readSelection(), "alpha beta", "a release without shift ends the gesture")
         XCTAssertNotNil(pane.copyMode)
         XCTAssertTrue(sends(pane, since: release).isEmpty, "the shifted gesture never reports")
@@ -1096,36 +1096,36 @@ import XCTest
         try await restored(pane)
 
         let chord = pane.visualSent.count
-        window.sendEvent(mouse(pane, .leftMouseDown, x: 9, y: row, mods: [.shift, .command]))
+        (pane.window ?? window).sendEvent(mouse(pane, .leftMouseDown, x: 9, y: row, mods: [.shift, .command]))
         XCTAssertEqual(pane.visualPressed, 1, "shift-command reaches Ghostty")
-        window.sendEvent(mouse(pane, .leftMouseDragged, x: 9, y: row, mods: [.shift, .command]))
-        window.sendEvent(mouse(pane, .leftMouseUp, x: 9, y: row, mods: [.shift, .command]))
+        (pane.window ?? window).sendEvent(mouse(pane, .leftMouseDragged, x: 9, y: row, mods: [.shift, .command]))
+        (pane.window ?? window).sendEvent(mouse(pane, .leftMouseUp, x: 9, y: row, mods: [.shift, .command]))
         try await wait("shift capture reports through the same path", within: 2) { !self.sends(pane, since: chord).isEmpty }
         XCTAssertNil(pane.copyMode, "shift-command is not captured")
 
-        window.sendEvent(mouse(pane, .leftMouseDown, x: 9, y: row, mods: [.shift, .option]))
+        (pane.window ?? window).sendEvent(mouse(pane, .leftMouseDown, x: 9, y: row, mods: [.shift, .option]))
         XCTAssertEqual(pane.visualPressed, 1, "shift-option reaches Ghostty")
         XCTAssertNil(pane.copyMode, "shift-option is not captured")
-        window.sendEvent(mouse(pane, .leftMouseUp, x: 9, y: row, mods: [.shift, .option]))
+        (pane.window ?? window).sendEvent(mouse(pane, .leftMouseUp, x: 9, y: row, mods: [.shift, .option]))
         XCTAssertEqual(pane.visualPressed, 0)
         try await drain(runtime)
 
         for (clickCount, expected) in [(2, "beta"), (3, "alpha beta")] {
             _ = ghostty_surface_set_selection(pane.surface, nil)
             let start = pane.visualSent.count
-            window.sendEvent(mouse(pane, .leftMouseDown, x: 6, y: row, clickCount: clickCount, mods: [.shift]))
+            (pane.window ?? window).sendEvent(mouse(pane, .leftMouseDown, x: 6, y: row, clickCount: clickCount, mods: [.shift]))
             try await entered(pane)
             XCTAssertEqual(pane.readSelection().trimmingCharacters(in: .newlines), expected, "shift click count \(clickCount)")
-            window.sendEvent(mouse(pane, .leftMouseUp, x: 6, y: row, clickCount: clickCount, mods: [.shift]))
+            (pane.window ?? window).sendEvent(mouse(pane, .leftMouseUp, x: 6, y: row, clickCount: clickCount, mods: [.shift]))
             XCTAssertTrue(sends(pane, since: start).isEmpty)
             keys(pane, "q")
             try await wait("copy mode exits", within: 2) { pane.copyMode == nil }
             try await restored(pane)
         }
 
-        window.sendEvent(mouse(pane, .leftMouseDown, x: 9, y: row, mods: [.shift, .control]))
+        (pane.window ?? window).sendEvent(mouse(pane, .leftMouseDown, x: 9, y: row, mods: [.shift, .control]))
         XCTAssertNil(pane.copyMode, "shift-control is not captured")
-        window.sendEvent(mouse(pane, .leftMouseUp, x: 9, y: row, mods: [.shift, .control]))
+        (pane.window ?? window).sendEvent(mouse(pane, .leftMouseUp, x: 9, y: row, mods: [.shift, .control]))
         XCTAssertEqual(pane.visualPressed, 0)
     }
 
@@ -1135,10 +1135,10 @@ import XCTest
         try await mouseWindow()
         drag(pane, from: (0, row), to: (5, row), delivered: true)
         XCTAssertEqual(pane.readSelection(), "alpha", "a plain drag makes a Ghostty selection")
-        window.sendEvent(mouse(pane, .leftMouseDown, x: 9, y: row, mods: [.shift]))
+        (pane.window ?? window).sendEvent(mouse(pane, .leftMouseDown, x: 9, y: row, mods: [.shift]))
         try await entered(pane)
         XCTAssertEqual(pane.readSelection(), "alpha beta", "the shift click extends the Ghostty selection")
-        window.sendEvent(mouse(pane, .leftMouseUp, x: 9, y: row, mods: [.shift]))
+        (pane.window ?? window).sendEvent(mouse(pane, .leftMouseUp, x: 9, y: row, mods: [.shift]))
         XCTAssertNotNil(pane.copyMode)
         XCTAssertEqual(pane.readSelection(), "alpha beta")
         keys(pane, "q")
@@ -1151,12 +1151,12 @@ import XCTest
         pane.visualHoldCopyEntry = true
         let since = pane.visualSent.count
 
-        window.sendEvent(mouse(pane, .leftMouseDown, x: 0, y: row, mods: [.shift]))
-        window.sendEvent(mouse(pane, .leftMouseDragged, x: 4, y: row, mods: [.shift]))
-        window.sendEvent(mouse(pane, .leftMouseDragged, x: 9, y: row, mods: [.shift]))
-        window.sendEvent(mouse(pane, .leftMouseUp, x: 9, y: row, mods: [.shift]))
-        window.sendEvent(mouse(pane, .leftMouseDown, x: 2, y: row, mods: []))
-        window.sendEvent(mouse(pane, .leftMouseUp, x: 2, y: row, mods: []))
+        (pane.window ?? window).sendEvent(mouse(pane, .leftMouseDown, x: 0, y: row, mods: [.shift]))
+        (pane.window ?? window).sendEvent(mouse(pane, .leftMouseDragged, x: 4, y: row, mods: [.shift]))
+        (pane.window ?? window).sendEvent(mouse(pane, .leftMouseDragged, x: 9, y: row, mods: [.shift]))
+        (pane.window ?? window).sendEvent(mouse(pane, .leftMouseUp, x: 9, y: row, mods: [.shift]))
+        (pane.window ?? window).sendEvent(mouse(pane, .leftMouseDown, x: 2, y: row, mods: []))
+        (pane.window ?? window).sendEvent(mouse(pane, .leftMouseUp, x: 2, y: row, mods: []))
         XCTAssertTrue(entering(pane), "the gesture arrives before entry completes")
         XCTAssertTrue(sends(pane, since: since).isEmpty, "the held gesture sends nothing to the program")
         pane.visualReleaseCopyEntry()
@@ -1171,15 +1171,15 @@ import XCTest
         pane.visualHoldCopyEntry = true
         defer { pane.visualHoldCopyEntry = false }
         let second = pane.visualSent.count
-        window.sendEvent(mouse(pane, .leftMouseDown, x: 0, y: row, mods: [.shift]))
-        window.sendEvent(mouse(pane, .leftMouseUp, x: 0, y: row, mods: [.shift]))
-        window.sendEvent(mouse(pane, .leftMouseDown, x: 0, y: row, mods: [.shift]))
+        (pane.window ?? window).sendEvent(mouse(pane, .leftMouseDown, x: 0, y: row, mods: [.shift]))
+        (pane.window ?? window).sendEvent(mouse(pane, .leftMouseUp, x: 0, y: row, mods: [.shift]))
+        (pane.window ?? window).sendEvent(mouse(pane, .leftMouseDown, x: 0, y: row, mods: [.shift]))
         XCTAssertTrue(entering(pane), "the second press holds entry")
         let swallowed = pane.visualSwallowedDrags
         pane.endCopy()
-        window.sendEvent(mouse(pane, .leftMouseDragged, x: 4, y: row, mods: [.shift]))
-        window.sendEvent(mouse(pane, .leftMouseDragged, x: 9, y: row, mods: [.shift]))
-        window.sendEvent(mouse(pane, .leftMouseUp, x: 9, y: row, mods: [.shift]))
+        (pane.window ?? window).sendEvent(mouse(pane, .leftMouseDragged, x: 4, y: row, mods: [.shift]))
+        (pane.window ?? window).sendEvent(mouse(pane, .leftMouseDragged, x: 9, y: row, mods: [.shift]))
+        (pane.window ?? window).sendEvent(mouse(pane, .leftMouseUp, x: 9, y: row, mods: [.shift]))
         XCTAssertEqual(pane.visualSwallowedDrags, swallowed + 2, "a cancelled entry swallows the re-armed gesture")
         XCTAssertTrue(sends(pane, since: second).isEmpty, "a cancelled entry reports nothing")
         XCTAssertNil(pane.copyMode)
@@ -1196,10 +1196,10 @@ import XCTest
         try XCTUnwrap(client).select(KO_SELECT_PANE, other.pane)
         try await wait("the other pane is active", within: 2) { self.terminal?.active == other.pane }
         try await mouseWindow()
-        window.sendEvent(mouse(pane, .leftMouseDown, x: 0, y: row, mods: [.shift]))
+        (pane.window ?? window).sendEvent(mouse(pane, .leftMouseDown, x: 0, y: row, mods: [.shift]))
         try await entered(pane)
         try await wait("the shift press activates its pane", within: 2) { self.terminal?.active == pane.pane }
-        window.sendEvent(mouse(pane, .leftMouseUp, x: 0, y: row, mods: [.shift]))
+        (pane.window ?? window).sendEvent(mouse(pane, .leftMouseUp, x: 0, y: row, mods: [.shift]))
         keys(pane, "q")
         try await wait("copy mode exits", within: 2) { pane.copyMode == nil }
         try await restored(pane)
@@ -1219,10 +1219,10 @@ import XCTest
         try XCTUnwrap(client).select(KO_SELECT_PANE, pane.pane)
         try await waitForZ(lower, 0)
         let lowerPane = try XCTUnwrap(terminal?.displayedPanes.first { $0.pane == lower })
-        window.sendEvent(mouse(lowerPane, .leftMouseDown, x: 2, y: 2, mods: [.shift]))
+        (lowerPane.window ?? window).sendEvent(mouse(lowerPane, .leftMouseDown, x: 2, y: 2, mods: [.shift]))
         try await entered(lowerPane)
         try await waitForZ(lower, 1)
-        window.sendEvent(mouse(lowerPane, .leftMouseUp, x: 2, y: 2, mods: [.shift]))
+        (lowerPane.window ?? window).sendEvent(mouse(lowerPane, .leftMouseUp, x: 2, y: 2, mods: [.shift]))
         keys(lowerPane, "q")
     }
 }

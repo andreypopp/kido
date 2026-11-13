@@ -45,6 +45,7 @@ import XCTest
         runtime = nil
         PaneView.renderOffscreen = false
         NSApp.appearance = nil
+        try await super.tearDown()
     }
 
     // The pane that the harness starts with runs `cat` in raw mode, so what a test writes to it comes back as output.
@@ -212,7 +213,7 @@ import XCTest
     }
 
     func hover(_ pane: PaneView, _ inside: Bool) async throws {
-        let chrome = try XCTUnwrap(terminal?.subviews.compactMap { $0 as? PaneChrome }.first { $0.pane == pane.pane })
+        let chrome = try XCTUnwrap(terminal?.visualChromes.first { $0.pane == pane.pane })
         let ended = chrome.subviews.compactMap { $0 as? PaneToolbar }.first?.visualAnimationsEnded ?? 0
         let point = inside ? NSPoint(x: chrome.toolbarFrame.midX, y: chrome.toolbarFrame.maxY + 4) : NSPoint(x: 20, y: chrome.bounds.maxY - 20)
         chrome.mouseMoved(with: try XCTUnwrap(NSEvent.mouseEvent(with: .mouseMoved, location: chrome.convert(point, to: nil), modifierFlags: [], timestamp: 0,
@@ -319,7 +320,11 @@ import XCTest
         CATransaction.flush()
         terminal.displayedPanes.forEach { $0.scroller.isHidden = true }
         CATransaction.flush()
-        checkSnapshot { verifySnapshot(of: view ?? terminal, as: .pixels, named: name, record: $0, file: file, testName: testName) }
+        XCTAssertTrue(terminal.hostWindows.allSatisfy { !$0.isVisible }, "the float windows stay off screen")
+        if let view { checkSnapshot { verifyWindowView(view, named: name, record: $0, file: file, testName: testName) } }
+        else if terminal.visualFloatHosts.isEmpty && terminal.visualGhost == nil {
+            checkSnapshot { verifySnapshot(of: terminal, as: .pixels, named: name, record: $0, file: file, testName: testName) }
+        } else { checkSnapshot { verifySnapshot(of: terminal, as: .family, named: name, record: $0, file: file, testName: testName) } }
         checkSnapshot { verifySnapshot(of: terminal.visualLayout, as: .lines, named: name, record: $0, file: file, testName: testName) }
     }
 }

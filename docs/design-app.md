@@ -984,6 +984,13 @@ square, because no measured radius exists for that release. A single-pane window
 its window is key, also under sidebar focus. Floating panes keep a 45%
 theme-background overlay when they are not active.
 
+Focus treatment follows the physical key window ([Float
+windows](#float-windows)). While a float window is key, its pane has the
+1pt accent stroke and a solid cursor, the tiled panes follow the not-key
+rule without the shift (hollow cursor, no stroke), and the other floats
+keep the overlay. While the main window is key, its active tiled pane has
+the stroke and every float has the overlay, the last active float too.
+
 A pane has Ghostty surface focus, and a solid cursor, only while it is its
 window's first responder and that window is key (see the not-key rule
 below). Thus, a key panel over the window, such as the
@@ -1311,7 +1318,7 @@ content bottom through the bottom render inset, showing following rows when
 scrolled up, clipped only at the window edge. At the live bottom there are no
 following rows, so the band is plain background below the fully visible last
 row. Empty history shows background. Alternate-screen panes keep their
-unexpanded grid view and zero insets, leaving background in both bands. Zoom uses the same rule. Each top band runs from the grid top to the separator or split divider, possibly spanning several history rows. The full-width one-device-pixel separator sits at the supplied terminal-bounds top, rounded upward to a device pixel; outer-top vertical dividers meet its bottom edge. Dividers stay behind tiled panes and floats. During a stale-root shrink, terminal content is clipped below the separator without changing its grid. Committed and free floating chrome frames are bounded below the separator too.
+unexpanded grid view and zero insets, leaving background in both bands. Zoom uses the same rule. Each top band runs from the grid top to the separator or split divider, possibly spanning several history rows. The full-width one-device-pixel separator sits at the supplied terminal-bounds top, rounded upward to a device pixel; outer-top vertical dividers meet its bottom edge. Dividers stay behind tiled panes and floats. During a stale-root shrink, terminal content is clipped below the separator without changing its grid. Committed floating chrome frames are bounded below the separator too; a float's local frame is not ([Float windows](#float-windows)).
 
 PaneLayout returns the grid, expanded content, clipped chrome and paired render insets
 for each tiled pane. Chrome uses the content rect for hit testing;
@@ -1322,8 +1329,8 @@ scroll primary history without sending application mouse reports.
 Mouse and IME coordinates use the grid origin below the strip. Render insets
 never enter set_size or set_grid_size, scroll distances, snaps, output pinning
 or resize anchors; the live bottom remains distance zero. Floats stay inset-free
-in the same shifted grid coordinate space, with the point-to-cell inverse and
-pixel-exact free frames unchanged. Floating bounds end at the same pixel-aligned 12pt bottom margin,
+in the same shifted grid coordinate space, with the point-to-cell inverse
+unchanged. Floating bounds end at the same pixel-aligned 12pt bottom margin,
 so a float's existing bottom padding remains above that margin. Dividers have
 six-point hit areas; [Focus treatment](#focus-treatment) marks the focused pane; a
 pane shows the window’s shared glass toolbar only in its top-right hot
@@ -1366,22 +1373,19 @@ window, window resignation or closing, and app deactivation cancel the gesture.
 Placement requests no cursor invalidation during that gesture; release enables
 and invalidates the acquired window's rects once, so overlapping floats use their
 current frames immediately. Tiled padding
-still only selects. WindowView keeps a view-only free frame
-per float after release, and sends its rounded cell geometry as a `float`
-edit. PaneLayout owns the point-to-cell inverse and floating bounds.
-Layout installs and placement validate free frames against that same conversion;
-presentation validates hidden windows too. A changed placement cancels an active
-gesture. Zoom, removal, layer changes and reconnect also clear free frames.
-Nothing is persisted. Ghostty remains exactly the server's whole-cell grid,
-with the fractional size remainder in the right and bottom padding. Chrome,
-mask, shadow and hit areas use the drawn frame; pixel clamping keeps it inside
-the window grid. Resizing clamps only the dragged edges, preserving their
-opposite edges; a right or bottom resize never moves the origin. Each pointer
-update places only that float, its backing and toolbar, and unchanged clamped
-frames do no placement or cursor invalidation. Full placement assigns each
-pane's final frame once. Placement skips unchanged backing, toolbar and scroller
-frames and retains an installed mask rather than assigning it again. A float keeps its pixel frame after release until the layout shows its
-last edit. Escape stops further edits, not edits that the server already
+still only selects. A gesture sends the float's rounded cell geometry as a
+`float` edit; [Float windows](#float-windows) gives the frame that the
+float keeps. PaneLayout owns the point-to-cell inverse and floating bounds.
+A changed placement cancels an active gesture. Nothing is persisted.
+Ghostty remains exactly the server's whole-cell grid, with the fractional
+size remainder in the right and bottom padding. Chrome, mask, shadow and
+hit areas use the drawn frame. Resizing limits only the dragged edges,
+preserving their opposite edges; a right or bottom resize never moves the
+origin. Each pointer update places only that float, its backing and
+toolbar, and unchanged frames do no placement or cursor invalidation. Full
+placement assigns each pane's final frame once. Placement skips unchanged
+backing, toolbar and scroller frames and retains an installed mask rather
+than assigning it again. Escape stops further edits, not edits that the server already
 applied. A refused edit shows a transient card. Sidebar drops are not
 supported.
 
@@ -1431,6 +1435,72 @@ The standard window buttons are AppKit's: the toolbar re-lays them out
 at will, so nothing moves them. The fixed top clears them and the
 sidebar toggle, which AppKit keeps in the collapsed titlebar,
 so the terminal never moves vertically when the sidebar collapses.
+
+### Float windows
+
+Each float is a `FloatWindow` (`App/FloatWindow.swift`), a borderless,
+transparent child window of the main window (design:
+`app/design/floats/NOTES.md`, section B). The app draws its chrome,
+border and shadow inside a margin of the window, and `hasShadow` is off,
+so a float looks the same inside the main window and past its edge:
+nothing clips there. The float window has the main window's `WindowOwner`
+as its delegate, so the owner's callbacks that belong to the main window
+(frame save, close, miniaturize, full screen) check that the
+notification's object is the main window; otherwise the close of one
+float would end the client. WindowView owns one float window for each
+float of the layout, keyed by the layout pane, and moves the float's
+backing, pane view and chrome into it. A zoom that shows a float tiled
+keeps its float window hidden; a float whose pane goes closes its window.
+The child-slot floats of [Children in the slot](#children-in-the-slot)
+are children of the main window too.
+
+The float windows follow the visible layout, in the layout pass that
+moves the tiled panes: the floats of the shown ko window show and all
+others hide (`orderOut`), also at a tab or session switch and at a zoom,
+which hides the top-level floats as before. The children's order is the
+floats' z order; a press raises a float with its `float` edit and orders
+its window to the front. When the main window miniaturizes, its floats
+hide, so the Dock tile is the main window alone; they return at
+deminiaturize. While the owner is down and the banner veils the panes,
+the float windows hide too, because the veil cannot cover a child window.
+A drag of the main window moves the floats and sends no edit.
+
+**Position.** The server keeps a float's cell geometry inside its ko
+window; the native frame is not limited by the main window. Each float
+window has one position (`FloatWindow.Position`): the layout's, a frame
+during a gesture, a frame that waits for a move or dock edit to settle,
+or a local frame. A move sends x and y clamped into the cell grid and the
+size limited to the window's room, so other clients see the float at the
+edge. When the edits settle, the float keeps its frame as a local one if
+the layout's x and y equal what it sent, else it takes the layout's. A
+later layout releases a local frame only when its x and y differ, that
+is, when another client moved the float; a size change or an unrelated
+layout does not. A resize of the main window releases every local frame,
+and the floats follow their cell geometry on the new grid. In full screen
+the screen is the limit: a move is clamped as in the grid, so the local
+frame equals the sent one. A pop out holds the ghost's frame until the
+float appears, and a dock holds the release frame until the layout shows
+the dock.
+
+**One drag engine.** The gesture state stays in WindowView. A float
+window's content forwards its press, drag and resize edges to it, and
+every gesture point is a screen point, because the dragged float's
+window moves under the pointer. Insertion bars draw in the main view;
+the pop-out ghost is a transient, mouse-transparent child window, so it
+can pass the main window's edge.
+
+**Focus.** A float window can become key but never main: the main window
+stays main, with its title bar active, while a float has the keyboard
+([Focus treatment](#focus-treatment)). A float that becomes key makes
+its pane the active pane. `WindowOwner.owns` maps a window to its owner
+(the main window or one of its float windows); `inputWindow` and
+`inputResponder` give the key one of them and its first responder. The
+menu commands, the palette, the attendance and the focus report use
+them, so the Pane menu acts on the float's pane while the float is key.
+Attendance reads the occlusion of the key one, so a key float past the
+edge of a covered main window is attended.
+A sheet of the main window is modal for its float windows too. Focus
+Sidebar makes the main window key first.
 
 ### Webview panes
 
@@ -2308,9 +2378,10 @@ editor (protocol.md, section 7), is not a replacement:
 `PaneProjection` gives it a floating placement with its parent as
 owner, so it is never the pane that a slot shows. A float of the
 top-level window draws as any float. The floats of a child window
-that a slot shows draw over that slot, offset by the slot's origin
-and clipped to it (`PaneLayout.clamp(clip:)`), above the slot in the
-child window's z order; a drag subtracts the offset before the edit
+that a slot shows draw over that slot, offset by the slot's origin,
+above the slot in the child window's z order. Their layout geometry is
+clamped to the slot (`PaneLayout.clamp(clip:)`); their float windows are
+not clipped; a drag subtracts the offset before the edit
 goes to the child window. Selecting such a float focuses the float
 and keeps its owner shown in the slot; when it goes, the owner keeps
 the slot and the focus. Close Window and the tab's × close the
@@ -2422,7 +2493,9 @@ has no filter; the fuzzy scorer belongs to the palette.
 
 `AppDelegate` owns the one palette: a `PalettePanel`, a borderless, floating
 `NSPanel` the size of its card, and the focus to restore (the anchor owner and
-its window's first responder). `WindowOwner` has no palette state. The palette
+the first responder of its key window, the main window or a float window).
+The dismissal makes that window key again when the responder is still
+shown. `WindowOwner` has no palette state. The palette
 acts on windows only through the owner's own methods (`perform`,
 `confirmClose`, `renameSession`, `newSession`, `reveal`). The anchor is the
 key Kido window's owner when the palette opens.
@@ -2845,9 +2918,17 @@ system notification is for what happens while the user is away
 ([Notifications](#notifications)), never for a failure in the app, which
 Kido suppresses while frontmost and the user can deny.
 
-**The column.** Each `WindowOwner` owns one `Notices` view, a subview of
-the sidebar's content above the banner, so a card draws above the panes,
-the floats and the banner's veil. It belongs to the area, not to a pane:
+**The column.** Each `WindowOwner` owns one `Notices` view in its own
+`NoticesWindow`, a borderless, transparent child window of the main
+window that can become neither key nor main. It is ordered above every
+float window ([Float windows](#float-windows)) and raised again whenever
+the float windows are reordered, so a card draws above the panes, the
+floats and the banner's veil. The window covers only the cards and their
+shadow, and follows the column's frame; a click anywhere else reaches
+the window below. It hides with its main window at miniaturize. A
+snapshot without floats draws the cards inline in the column
+(`Notices.visualInline`), so those images keep their pixels. The
+column belongs to the area, not to a pane:
 it crosses dividers, takes no part in the layout and stays at the same
 anchor in every sidebar mode and in full screen. Bottom-right was chosen
 because the other corners hold the hover toolbar, find, the COPY pill and
@@ -2857,8 +2938,8 @@ the edge, so nothing below moves when a card above leaves.
 **Never the keyboard.** No view of the column accepts the first
 responder, and the config card's buttons refuse it. A click on a card is
 consumed by it and changes neither the first responder nor the focused
-pane. A floating sidebar's outside-click catcher lets a click over a card
-through to the card, so it does not dismiss the sidebar first. A new card
+pane. A click on a card reaches its window before the floating sidebar's
+outside-click catcher, so it does not dismiss the sidebar first. A new card
 posts an accessibility announcement with its title and detail; the card is
 a group with the two texts and its buttons. The card draws its text
 itself, as the sidebar's rows do: an `NSTextField` in it renders the
@@ -3029,7 +3110,11 @@ of the notices mockup in light and dark, windowed and in full screen
 (a native header composed over the live content, not a Space
 transition), with the sidebar docked, floating and collapsed; `testClientRefusalBanner` records the refusal banner of a
 local owner (with Restart Server) and a remote one (with Reconnect), in light
-and dark. A test-only
+and dark. A snapshot of a view composes its pixel image with the visible float
+windows of its window in z order, by screen frame and blended source-over
+(`familyImage` in `VisualTests/VisualTestCase.swift`), so a float past
+the main window's edge is in the image. A view with no visible float
+window keeps the plain capture. A test-only
 `KIDO_VISUAL` build condition exposes an occlusion bypass through
 `@testable`; normal builds retain their occlusion policy. Each image waits
 for a tokened Ghostty presented-frame callback, not a timed delay. The fence
@@ -3360,6 +3445,9 @@ view through `sendEvent` off screen, so the wheel action calls
 `PaneView.scrollWheel` with an NSEvent made from a scroll CGEvent. Grip actions
 expose the chosen chrome's toolbar through `mouseMoved`, then invoke that
 enabled grip's existing `press` closure for down, drag, up and Escape.
+Stress enumerates the float windows with the main window, sends each
+event to the window under its screen point, and keeps the float windows
+off screen as well.
 Scroller drags and floating edge resizes call their own mouse entry points:
 off-screen `sendEvent` does not reliably reach them. This covers the drag
 logic, not AppKit event delivery or hover.
