@@ -136,3 +136,20 @@ export function blocksSignal(command: string, home = homedir()): boolean {
 
 export const parentSession = (env: NodeJS.ProcessEnv): string | undefined =>
   env.KO_AGENT_PARENT_SESSION || undefined;
+
+const shellTools = new Set(["bash", "async_bash"]);
+
+export function refusal(toolName: string, input: Record<string, unknown>, env: NodeJS.ProcessEnv): string | undefined {
+  const command = input.command;
+  if (!shellTools.has(toolName) || typeof command !== "string") return undefined;
+  if (blocksGitWrite(command, parentSession(env))) {
+    return "No git writes in this repo; the top-level session commits. Leave your changes uncommitted.";
+  }
+  if (blocksSleep(command)) {
+    return "No sleep: wait for the event. Run long commands with async_bash under scripts/quiet-limit; its notice wakes you.";
+  }
+  if (blocksSignal(command)) {
+    return "No signal commands (see policy.ts): an agent's broad process kill once killed every koa process on the machine, including the user's agent. Stop a background job with stop_async_bash, an agent with stop_agent; a test's processes end through their own deadline (scripts/quiet-limit).";
+  }
+  return undefined;
+}

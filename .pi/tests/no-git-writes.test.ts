@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync } from "node:fs";
 import { after, test } from "node:test";
-import { blocksGitWrite, blocksSignal, blocksSleep, parentSession } from "../extensions/no-git-writes/policy.ts";
+import { blocksGitWrite, blocksSignal, blocksSleep, parentSession, refusal } from "../extensions/no-git-writes/policy.ts";
 
 const allowed = [
   "git status", "git diff --cached", "git log -3", "git show HEAD", "git grep TODO",
@@ -119,4 +119,15 @@ test("pkill, killall and kill are blocked, a mention of kill is not", () => {
     assert.equal(blocksSignal(command), true, command);
   for (const command of ["grep kill file", "echo kill", "make killall-docs"])
     assert.equal(blocksSignal(command), false, command);
+});
+
+test("async_bash gets the same policy as bash", () => {
+  const env = { KO_AGENT_PARENT_SESSION: "parent" };
+  for (const tool of ["bash", "async_bash"]) {
+    for (const command of ["sleep 240", "pkill x", "git commit"]) {
+      assert.notEqual(refusal(tool, { command }, env), undefined, `${tool}: ${command}`);
+    }
+    assert.equal(refusal(tool, { command: "scripts/quiet-limit 600 -- make test" }, env), undefined);
+  }
+  assert.equal(refusal("read", { command: "sleep 240" }, env), undefined);
 });
