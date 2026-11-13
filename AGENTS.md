@@ -816,6 +816,18 @@ delegates as its brief says and does not write code.
   `make verify`. Report PASS/FAIL/SKIP as printed. An unrelated
   failure gets one run of that test alone, not a suite rerun. If a
   failure is in a file you do not own, report it. Do not fix it.
+
+  The visual tests run in one shared VM, which serialises runs, so
+  every visual run of one unit delays the others. While you iterate,
+  run only the named tests that your change affects (`make -C app
+  visual ONLY="<Class>/<test> ..."`), never a whole class. Record
+  only those (`RECORD=1` with `ONLY`). A whole class runs at most
+  once, at the end. The full visual stage runs only through the final
+  `scripts/checks.sh`. A manager states in its report how many visual
+  runs the unit made, and the reason for each run of a whole class or
+  stage beyond the one at the end. Revert a
+  snapshot that a run rewrote without an intended change (identical,
+  or not the unit's change) before the report.
 - **No repeated test runs.** A test runs again only after a change
   that can change its result. Do not run the same test or suite on
   the same code again, alone or in a loop, to reproduce a failure, to
