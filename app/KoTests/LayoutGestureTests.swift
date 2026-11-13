@@ -165,6 +165,7 @@ import XCTest
         wait("the docked pane is active") { (try? client.model())?.selection.pane == one }
         wait("the owner shows the dock") { owner.testModel?.layout.layout.windows.first?.floats.isEmpty == true }
 
+        wait("the owner's layout focuses the first pane, so lastTiled is one") { owner.testModel?.layout.layout.windows.first?.focus == one }
         session.paneCommand(.float, one)
         wait("the pane that was active floats, so it is gone from the tiled panes") { self.windows(client).first?.floats.map(\.pane) == [one] }
         session.paneCommand(.float, one)
