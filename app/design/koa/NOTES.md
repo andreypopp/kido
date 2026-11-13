@@ -1175,3 +1175,56 @@ asks the host to focus that pane, as a sidebar click does. koa links
 a `@name` in prose only when the name is in the agent extension's agent list at
 render time; otherwise it stays text. An ended agent keeps 600 in
 the muted tone and is no link.
+
+## The view bar: a subagent's transcript in koa's page (2026-11-13, spec)
+
+plans/koa-subagents.md moves subagents into koa's process: a click on
+a subagent's sidebar record switches the page to that agent's view.
+The breadcrumb pill Kido.app draws for descendant panes moves into
+the page, with its geometry (app/design/sidebar/NOTES.md, the
+breadcrumb; app/design/pane/NOTES.md, the capsule family).
+
+- **Placement.** A capsule pinned at the top left of the pane, over
+  the transcript, outside the scroll: inset 8pt from the top and the
+  left, 22pt high, 8pt radius, at most the content column's width
+  minus 16pt. The transcript scrolls under it; while the bar shows,
+  the transcript's top padding grows by 30pt so the first item is not
+  under it on a fresh view. The composer, the dock and the queue do
+  not move. Root view: no bar.
+- **Look.** The capsule family: fill the page's background mixed 8%
+  toward the foreground, a 0.5pt edge at 16% of the foreground
+  (14% in dark), the contact shadow (black 8%, y 1pt, blur 2pt;
+  dark 30%, 1pt, 3pt); the theme's `--ko-*` only, no light/dark
+  branches beyond those two numbers. Text .85em prose (≈11pt), 8pt
+  side padding, 5pt between items. Content, left to right: the back
+  control "‹" (a button, the foreground at 55%, 16pt wide, hover to
+  the foreground; it goes to the parent), then the path from the root:
+  each ancestor a button in the muted colour (hover: the foreground,
+  no underline, the pointer a hand), "›" separators at 35%, the
+  viewed agent's name last in the foreground at 600. The root's name
+  is koa's name as the sidebar shows it ("@ko"); the agents' names
+  carry the "@" of the sidebar row.
+- **Overflow**, never clipping: shorten the middle ancestors first to
+  one "…" button (a click opens a plain list of the hidden ancestors
+  under the bar, in the completion popup's style, one row each, a
+  click switches); then ellipsize the remaining ancestors' names to
+  60pt each; then the viewed name; if the viewed name would have
+  under 40pt, drop the back control's label last. Depth is at most 8.
+- **The switch**: instant, no animation; the new view's transcript
+  replaces the old at its end (follow-bottom); the bar appears or
+  goes with it. The sidebar's click, an `@name` link and the bar's
+  buttons all go through the same switch.
+- **The composer** targets the viewed agent (the plan): its
+  placeholder names it, "Message @reviewer…" / "Steer @reviewer…";
+  the root keeps "Message koa…"; the foot shows the viewed agent's
+  status, model, context and cwd (the plan's per-agent state). A
+  command refused outside the root (`/new`, `/resume`, `/reload`,
+  `/restart`, `/quit`) says "<command>: only in @ko's view" as the
+  warning line.
+- **The sidebar** marks the shown record: the viewed subagent's
+  record row takes the focused-row fill (systemFill, 10%) and the
+  semibold title, and koa's pane row drops its fill while a subagent
+  view is shown (the pane stays the active pane; the window tab and
+  the pane title stay koa's); the root view puts the fill back on the
+  pane row. Nothing else in the sidebar changes: the records' status,
+  clocks and folds are as today.
