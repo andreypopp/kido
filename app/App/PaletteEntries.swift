@@ -46,7 +46,7 @@ struct PaletteEntry {
         return sidebarRows(owner.snapshot).compactMap { row in
             if case .header = row.id { session = row.title }
             guard let target = row.topLevel else { return nil }
-            return PaletteEntry(id: .pane(target), title: row.title, detail: (host + [session]).joined(separator: " › "), status: row.status, agent: row.agent, promptable: reachable.contains(target.pane), check: { resolve(row) == nil ? "That pane is gone" : nil }, operation: .run { let owner = resolve(row); owner?.reveal(); owner?.perform(.jump(target)) })
+            return PaletteEntry(id: .pane(target), title: row.title, detail: (host + [session]).joined(separator: " › "), status: row.status, agent: reachable.contains(target.pane), promptable: reachable.contains(target.pane), check: { resolve(row) == nil ? "That pane is gone" : nil }, operation: .run { let owner = resolve(row); owner?.reveal(); owner?.perform(.jump(target)) })
         }
     }
 

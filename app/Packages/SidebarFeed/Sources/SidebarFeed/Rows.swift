@@ -29,8 +29,12 @@ public struct SidebarRow: Equatable, Sendable {
         case activity(String)
         case record(msg: String?)
     }
+    public struct Pick: Equatable, Sendable {
+        public let pane: Snapshot.Position
+        public let record: String
+    }
     public enum Kind: Equatable, Sendable {
-        case header, pane(Snapshot.Position, [HiddenChild]), program([HiddenChild]), divider, gap
+        case header, pane(Snapshot.Position, [HiddenChild]), program(Pick?, [HiddenChild]), divider, gap
     }
     public let id: ID
     public internal(set) var kind: Kind
@@ -46,19 +50,21 @@ public struct SidebarRow: Equatable, Sendable {
     public enum Block: Equatable, Sendable { case first, middle, last }
     public var block: Block?
     public var quietShell = false
-    public var agent = false
+    public var showsTitleWhenFolded = false
     public var root: WindowID?
     public var started: Int?
     public var padding: Double { 5 }
     public var leading: Double { 5 + Double(indent) * 15 }
     public var tailY: Double { 24 }
     public var hidden: [HiddenChild] {
-        switch kind { case .pane(_, let hidden), .program(let hidden): hidden; default: [] }
+        switch kind { case .pane(_, let hidden), .program(_, let hidden): hidden; default: [] }
     }
     public var topLevel: Snapshot.Position? { indent == 0 ? target : nil }
     public var target: Snapshot.Position? {
         if case .pane(let target, _) = kind { return target }; return nil
     }
+    public var pick: Pick? { if case .program(let pick, _) = kind { pick } else { nil } }
+    public var clickTarget: Snapshot.Position? { target ?? pick?.pane }
 }
 
 public func sidebarTitle(_ title: String, messageable: Bool) -> String {
@@ -81,6 +87,15 @@ extension KoSchema.ProgramRecord {
         case .done(let r): r.id
         case .blocked(let r): r.id
         case .error(let r): r.id
+        }
+    }
+    fileprivate var selection: KoSchema.RecordSelection? {
+        switch self {
+        case .idle(let r): r.selection
+        case .working(let r): r.selection
+        case .done(let r): r.selection
+        case .blocked(let r): r.selection
+        case .error(let r): r.selection
         }
     }
 }
@@ -208,10 +223,10 @@ public func sidebarRows(_ snapshot: Snapshot?) -> [SidebarRow] {
         var row = raw
         let hidden: [SidebarRow.HiddenChild] = open ? [] : children.filter { !$0.waiting }.enumerated().sorted {
             ($0.element.summary, $0.offset) < ($1.element.summary, $1.offset)
-        }.map { .init(title: $0.element.row.agent ? $0.element.row.title : nil, status: $0.element.summary) }
+        }.map { .init(title: $0.element.row.showsTitleWhenFolded ? $0.element.row.title : nil, status: $0.element.summary) }
         switch row.kind {
         case .pane(let position, _): row.kind = .pane(position, hidden)
-        case .program: row.kind = .program(hidden)
+        case .program(let pick, _): row.kind = .program(pick, hidden)
         default: break
         }
         let following = children.filter { open || $0.waiting }.flatMap { [$0.row] + $0.following }
@@ -226,12 +241,7 @@ public func sidebarRows(_ snapshot: Snapshot?) -> [SidebarRow] {
             return panes.map { item -> Branch in
                 let (status, description) = item.indicator
                 let target = Snapshot.Position(session: session, window: item.window, pane: item.id)
-                let row = SidebarRow(id: .pane(session, item.id), kind: .pane(target, []), indent: depth,
-                                     title: item.rowTitle, second: item.second,
-                                     runtime: item.runtime.flatMap { $0.name == above ? nil : $0 },
-                                     status: status, indicatorDescription: description, focused: target == snapshot.client,
-                                     quietShell: item.quietShell, agent: item.isAgent, root: root,
-                                     started: { if case .live = item.lifecycle, item.pane.parent != nil { item.pane.started } else { nil } }())
+                let isClient = target == snapshot.client
                 let records = (item.pane.status?.programStatus.records ?? []).filter { !$0.id.isEmpty }.sorted { a, b in
                     let left = a.id.split(separator: "/", omittingEmptySubsequences: false)
                     let right = b.id.split(separator: "/", omittingEmptySubsequences: false)
@@ -240,6 +250,13 @@ public func sidebarRows(_ snapshot: Snapshot?) -> [SidebarRow] {
                     }
                     return left.count < right.count
                 }
+                let markedRecord = isClient ? records.first { $0.selection == .selected }?.id : nil
+                let row = SidebarRow(id: .pane(session, item.id), kind: .pane(target, []), indent: depth,
+                                     title: item.rowTitle, second: item.second,
+                                     runtime: item.runtime.flatMap { $0.name == above ? nil : $0 },
+                                     status: status, indicatorDescription: description, focused: isClient && markedRecord == nil,
+                                     quietShell: item.quietShell, showsTitleWhenFolded: item.isAgent, root: root,
+                                     started: { if case .live = item.lifecycle, item.pane.parent != nil { item.pane.started } else { nil } }())
                 let recordIDs = Set(records.map { Data($0.id.utf8) })
                 var byParent: [Data?: [KoSchema.ProgramRecord]] = [:]
                 for record in records {
@@ -261,15 +278,15 @@ public func sidebarRows(_ snapshot: Snapshot?) -> [SidebarRow] {
                         case .idle(let r): (.quiet, "idle", r.title, r.msg, nil)
                         }
                         let id = Data(record.id.utf8)
-                        let row = SidebarRow(id: .program(session, item.id, id), kind: .program([]), indent: depth,
+                        let row = SidebarRow(id: .program(session, item.id, id), kind: .program(record.selection != nil && item.pane.inbox == true ? .init(pane: target, record: record.id) : nil, []), indent: depth,
                                              title: title.flatMap { $0.isEmpty ? nil : $0 } ?? record.id,
                                              second: .record(msg: msg), status: [.done, .error].contains(status) && item.pane.recordsSeen ? .quiet : status,
-                                             indicatorDescription: description, focused: false, agent: true, root: root, started: started)
+                                             indicatorDescription: description, focused: record.id == markedRecord, showsTitleWhenFolded: true, root: root, started: started)
                         return finish(row, children: recordRows(id, depth: depth + 1, open: open), open: open)
                     }
                 }
                 let panes = windows(item.children, session: session, depth: depth + 1, root: root, above: item.runtime?.name)
-                let open = row.focused || panes.contains { $0.containsFocus }
+                let open = isClient || panes.contains { $0.containsFocus }
                 return finish(row, children: recordRows(nil, depth: depth + 1, open: open) + panes, open: open)
             }
         }

@@ -30,8 +30,8 @@ import XCTest
 
     private let cat = "stty raw -echo; exec cat"
 
-    private func shown(_ windows: String) throws -> (dir: String, owner: WindowOwner) {
-        let dir = try server()
+    private func shown(_ windows: String, at path: String? = nil) throws -> (dir: String, owner: WindowOwner) {
+        let dir = try server(at: path)
         try put(#"{"revision":0,"layout":{"sessions":[{"name":"s","windows":\#(windows)}]}}"#, dir: dir)
         let owner = try owner(dir)
         wait("the owner shows the layout") { owner.testBanner.isHidden && owner.snapshot != nil }
@@ -76,6 +76,31 @@ import XCTest
         }
         XCTAssertEqual(sidebarRows(second.snapshot).first { $0.target != nil }?.status, .quiet,
                        "the other window of the host agrees without a shared record")
+    }
+
+    func testPressingARecordRowFocusesItsPaneAndSendsASelectMessage() throws {
+        let checkout = try XCTUnwrap(ProcessInfo.processInfo.environment["KO_CHECKOUT"].flatMap { $0.isEmpty ? nil : $0 }, "KO_CHECKOUT")
+        let ko = "\(checkout)/build/ko/bin/ko"
+        let dir = try stateDir()
+        let log = dir + "-messages"
+        let script = "printf '\\033]7501;state=idle:app=pi\\007'; \(ko) api --stream \"/panes/$KO_PANE/messages\" </dev/null >\(log) & "
+            + "echo '{\"type\":\"set\",\"id\":\"agents/a-b\",\"state\":\"idle\",\"selection\":\"offered\"}' | \(ko) api --input - \"/panes/$KO_PANE/status\" >/dev/null; " + cat
+        let (_, owner) = try shown("[{\"name\":\"w\",\"tree\":\(shell(script, vars: #"{"pi.session":"s1","pi.name":"Worker"}"#))}]", at: dir)
+        let row = { sidebarRows(owner.snapshot).first { $0.pick != nil } }
+        wait("the offered record, clickable once the message stream is open") { row() != nil }
+        let pick = try XCTUnwrap(row()?.pick)
+        let child = try XCTUnwrap(PaneID(ko: createPane(#"{"parent":"\#(pick.pane.pane)","command":{"type":"argv","argv":["/bin/sleep","60"]}}"#, dir: dir)))
+        wait("the child row") { sidebarRows(owner.snapshot).contains { $0.target?.pane == child } }
+        let target = try XCTUnwrap(sidebarRows(owner.snapshot).first { $0.target?.pane == child }?.target)
+        owner.perform(.jump(target))
+        wait("the child is focused") { owner.testModel?.selection.pane == child }
+        wait("the record stays listed") { row() != nil }
+        owner.sidebar.list.press(try XCTUnwrap(row()).id)
+        wait("the record's pane is focused") { owner.testModel?.selection.pane == pick.pane.pane }
+        wait("the select message reaches the program") {
+            let text = (try? String(contentsOfFile: log, encoding: .utf8)) ?? ""
+            return text.contains("\"select\"") && text.contains("agents/a-b")
+        }
     }
 
     func testAPromptResolvesItsCandidatesAndSendsThroughTheCore() throws {

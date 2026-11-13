@@ -48,6 +48,7 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSM
     private let insertion = Insertion()
     private let dragOwner = UUID().uuidString
     var navigate: (Navigation, SelectionFocus) -> Void = { _, _ in }
+    var selectRecord: (PaneID, String) -> Void = { _, _ in }
     var paneCommand: (PaneCommand, PaneID) -> Void = { _, _ in }
     var onIntent: () -> Void = {}
     var commandTarget: () -> PaneView? = { nil }
@@ -213,7 +214,7 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSM
         runtimeSection.previous = { [weak self] in
             guard let self else { return }
             focus()
-            if let last = items.lastIndex(where: { $0.target != nil }) {
+            if let last = items.lastIndex(where: { $0.clickTarget != nil }) {
                 table.selectRowIndexes([last], byExtendingSelection: false)
                 table.scrollRowToVisible(last)
             }
@@ -396,7 +397,7 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSM
 
     private func move(_ delta: Int) {
         var i = table.selectedRow
-        repeat { i += delta } while i >= 0 && i < table.numberOfRows && entry(i)?.target == nil
+        repeat { i += delta } while i >= 0 && i < table.numberOfRows && entry(i)?.clickTarget == nil
         if i >= table.numberOfRows, runtimeSection.height > 0 {
             table.deselectAll(nil)
             runtimeSection.selection = .header
@@ -408,9 +409,14 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSM
         table.scrollRowToVisible(i)
     }
 
+    func press(_ id: SidebarRow.ID) {
+        if let index = items.firstIndex(where: { $0.id == id }) { activate(index, focus: .pane) }
+    }
+
     fileprivate func activate(_ index: Int, focus: SelectionFocus) {
-        guard let target = entry(index)?.target else { return }
+        guard let row = entry(index), let target = row.clickTarget else { return }
         navigate(.jump(target), focus)
+        if let pick = row.pick { selectRecord(pick.pane.pane, pick.record) }
     }
 
     func select(_ target: Snapshot.Position) {
@@ -585,7 +591,7 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSM
     func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat {
         items[row].height + (items[row].id == editing?.id ? editing!.cell.errorHeight : 0)
     }
-    func tableView(_ tableView: NSTableView, shouldSelectRow row: Int) -> Bool { items[row].target != nil }
+    func tableView(_ tableView: NSTableView, shouldSelectRow row: Int) -> Bool { items[row].clickTarget != nil }
     func tableView(_ tableView: NSTableView, rowViewForRow row: Int) -> NSTableRowView? {
         let id = NSUserInterfaceItemIdentifier("row")
         let view = tableView.makeView(withIdentifier: id, owner: nil) as? SidebarSelectionRow ?? SidebarSelectionRow()
@@ -601,6 +607,7 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSM
             guard let self, let cell, let current = items.first(where: { $0.id == item.id }) else { return }
             beginRename(current, cell: cell)
         }
+        cell.press = { [weak self] in self?.press(item.id) }
         cell.finishRename = { [weak self] in self?.finishRename($0) }
         cell.renameChanged = { [weak self, weak cell] in
             guard let self, let cell, editing?.cell === cell else { return }

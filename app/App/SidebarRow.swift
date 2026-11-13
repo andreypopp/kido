@@ -100,6 +100,13 @@ final class SidebarCell: NSTableCellView, NSTextFieldDelegate {
     var beginRename: () -> Void = {}
     var finishRename: (Bool) -> Void = { _ in }
     var renameChanged: () -> Void = {}
+    var press: () -> Void = {}
+
+    override func accessibilityPerformPress() -> Bool {
+        guard row?.pick != nil else { return false }
+        press()
+        return true
+    }
 
     override func mouseDown(with event: NSEvent) {
         if case .header = row?.kind, event.clickCount == 2,
@@ -191,7 +198,7 @@ final class SidebarCell: NSTableCellView, NSTextFieldDelegate {
         addWindow.toolTip = nil
         addWindow.setAccessibilityLabel("New window in " + row.title)
         setAccessibilityElement(row.kind != .divider && row.kind != .gap)
-        setAccessibilityRole(.staticText)
+        setAccessibilityRole(row.pick == nil ? .staticText : .button)
         toolTip = row.runtime?.failure
         runtimeText = row.runtime.map(Self.suffixText)
         setAccessibilityLabel([row.title, row.runtime.map { "runtime " + $0.name }, second, folded, row.indicatorDescription].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: ", "))
@@ -251,7 +258,7 @@ final class SidebarCell: NSTableCellView, NSTextFieldDelegate {
             NSGraphicsContext.saveGraphicsState()
             defer { NSGraphicsContext.restoreGraphicsState() }
             NSBezierPath(rect: bounds).addClip()
-            let selected = row.target != nil && (superview as? NSTableRowView)?.isSelected == true
+            let selected = row.clickTarget != nil && (superview as? NSTableRowView)?.isSelected == true
                 && (enclosingScrollView?.documentView as? Table)?.keyboardSelection == true
                 && window?.firstResponder === enclosingScrollView?.documentView
             let rowFill = NSBezierPath(roundedRect: NSRect(x: CGFloat(row.indent) * 15, y: 0,

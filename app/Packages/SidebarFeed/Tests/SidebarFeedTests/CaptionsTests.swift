@@ -14,7 +14,7 @@ import Testing
 @Test func captionTransitions() {
     var captions = SidebarCaptions()
     func rows(_ text: String) -> [SidebarRow] {
-        [SidebarRow(id: .pane(.init(number: 0), .init(number: 0)), kind: .program([]), indent: 0,
+        [SidebarRow(id: .pane(.init(number: 0), .init(number: 0)), kind: .program(nil, []), indent: 0,
                     title: "Title", second: .activity(text),
                     status: .running, focused: false)]
     }

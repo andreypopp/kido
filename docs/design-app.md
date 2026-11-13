@@ -1990,9 +1990,20 @@ row (title or full id, message as the activity line, state mapped
 working→running, blocked→waiting, error→failed, done→done, idle after the
 parent's seen suppression for done/error) and drawn through the same row
 path as every other row; there is no separate record view. A record differs
-from a child-window agent row only in having no @ prefix, and
-in being display-only: its body is never a navigation, click, hover or
-selection target, and arrow navigation skips it.
+from a child-window agent row in having no @ prefix. A record without a
+`selection` is display-only: its body is never a navigation, click, hover
+or selection target, and arrow navigation skips it. A record with a
+`selection` (docs/protocol.md, section 6), on a pane whose `inbox` is
+open, is a click and Return target in the arrow navigation, with the
+accessibility role of a button. Its activation selects the pane as a
+click on the pane row does, then sends `ko_client_select_record` off
+the main queue; every reply but an error is done, and the app changes
+no row from it. The program owns the mark: while the pane is the
+focused pane and one of its records is `selected` (the first in row
+order when a program writes two), that record row is the focused row
+and the pane row is not; with no selected record the pane row is, as
+for every pane. The pane stays the focused pane: the tab, the title and
+the fold of its rows do not change.
 
 Hovering a pane row's status-indicator slot, the 12pt square of the
 trailing column, replaces the indicator with a 12pt × close button; the rest of the row has no hover
@@ -2051,7 +2062,7 @@ its cause, in the secondary ink; every other pane (a Terminal, an app,
 an ssh pane, a job, an agent without a caption, a completed or lingering
 pane) has an empty second line. A record row shows its `msg`, else its
 state word: working, needs your input, error, done or idle. The weight marks selection, not
-kind: only the focused pane's row and the keyboard-selected row have a semibold
+kind: only the focused row and the keyboard-selected row have a semibold
 title, and every other title is regular, whatever the pane runs. The status
 indicator, the @ and the dimmed `Terminal` title carry the agent/shell
 distinction. Rows and session headers have 5pt of horizontal padding.
@@ -2101,7 +2112,7 @@ with two or more panes of its own gets the block. A one-pane window gets
 none, also with its children or records shown, so a change of focus never
 adds or removes the block: its row fill is the window. The divider rows come
 from one pass over the finished rows, after the captions and after a
-window drag removes the dragged rows. The focused pane row has a
+window drag removes the dragged rows. The focused row has a
 `systemFill` fill (labelColor at 10%) with 7pt corners, from its
 indentation to the row's right edge. Inside a block it is flat over the
 sidebar colour, not over the block, so a focused pane reads the same in

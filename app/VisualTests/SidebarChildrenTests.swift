@@ -61,7 +61,7 @@ private extension PaneView {
         SidebarView.visualNow = sidebarChildrenNow
         defer { SidebarView.visualNow = previousNow }
         enum Scenario: CaseIterable {
-            case collapsed, expanded, narrow, recordsCollapsed, recordsExpanded, waitCleared, sixPlus, singleIdle, ellipsis, directories, directoryNarrow, singleLong, narrowNine, paneWaitFolded, paneWaitExpanded, recordWaitFolded, recordWaitExpanded, closeHover, countOnly, summaryAbsent
+            case collapsed, expanded, narrow, recordsCollapsed, recordsExpanded, waitCleared, sixPlus, singleIdle, ellipsis, directories, directoryNarrow, singleLong, narrowNine, paneWaitFolded, paneWaitExpanded, recordWaitFolded, recordWaitExpanded, recordOffered, recordSelected, closeHover, countOnly, summaryAbsent
             var configuration: (name: String, records: Bool, width: Int) {
                 switch self {
                 case .collapsed: ("stress-collapsed", false, 292)
@@ -83,6 +83,8 @@ private extension PaneView {
                 case .paneWaitExpanded: ("pane-wait-expanded", false, 292)
                 case .recordWaitFolded: ("record-wait-folded", true, 292)
                 case .recordWaitExpanded: ("record-wait-expanded", true, 292)
+                case .recordOffered: ("record-offered", false, 292)
+                case .recordSelected: ("record-selected", false, 292)
                 case .closeHover: ("trailing-close-hover", false, 292)
                 }
             }
@@ -141,6 +143,13 @@ private extension PaneView {
                     snapshot = fixtureSnapshot(window: 0, pane: scenario == .recordWaitExpanded ? 0 : 99, [("main", [.item(fixtureItem(0, "Claude Code", agentLifecycle(.running(.init())), records: [
                         .working(.init(id: "a", msg: "Working", title: "Record parent")),
                         .blocked(.init(id: "a/b", msg: "Approve command", title: "Waiting record"))
+                    ]))])])
+                case .recordOffered, .recordSelected:
+                    let second: KoSchema.RecordSelection = scenario == .recordSelected ? .selected : .offered
+                    snapshot = fixtureSnapshot(window: 0, pane: 0, [("main", [.item(fixtureItem(0, "Claude Code", agentLifecycle(.running(.init())), records: [
+                        .working(.init(id: "agents/a", msg: "Reading the plan", selection: scenario == .recordSelected ? .offered : .selected, title: "Planner")),
+                        .idle(.init(id: "agents/b", msg: "Ready", selection: second, title: "Reviewer")),
+                        .done(.init(id: "job/build", msg: "Built", title: "Build"))
                     ]))])])
                 case .recordsCollapsed:
                     snapshot.client = .init(session: .init(number: 0), window: .init(number: 458), pane: .init(number: 937))

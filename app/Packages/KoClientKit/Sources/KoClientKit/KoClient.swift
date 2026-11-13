@@ -440,6 +440,12 @@ private final class ClientHandle: @unchecked Sendable {
         _ = try handle.call { try take(ko_client_prompt($0, from.description, target.description, bytes, bytes.count, &buffer), &buffer) }
     }
 
+    // Blocks until the server answered: run it off the main queue. Every answer but an error is done.
+    nonisolated public func selectRecord(pane: PaneID, id: String) throws {
+        var buffer = ko_buffer()
+        _ = try handle.call { try take(ko_client_select_record($0, pane.description, id, &buffer), &buffer) }
+    }
+
     public func answerClipboard(id: UInt64, contents: [KoClipboardContent]?, available: [String] = []) {
         withClipboard(contents ?? [], available: available, item: { ko_clipboard_content(mime: $0, data: $1.assumingMemoryBound(to: UInt8.self), len: $2) }) { items, types in
             // An answer with no contents still needs an array: NULL refuses.

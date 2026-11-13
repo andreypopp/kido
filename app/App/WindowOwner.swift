@@ -347,6 +347,7 @@ private class AlertEscape: NSView {
         if !background { sidebar.isCollapsed = UserDefaults.standard.bool(forKey: "sidebarCollapsed") }
         sidebar.changed = { [weak self] in self?.menuChanged() }
         sidebar.canGo = { [weak self] in self?.canGo($0) == true }
+        sidebar.list.selectRecord = { [weak self] pane, id in self?.selectRecord(pane, id) }
         sidebar.list.navigate = { [weak self] navigation, focus in self?.perform(navigation, focus: focus) }
         sidebar.list.paneCommand = { [weak self] command, pane in self?.paneCommand(command, pane) }
         sidebar.list.onIntent = { [weak self] in self?.supersedeIntent() }
@@ -1501,6 +1502,21 @@ private class AlertEscape: NSView {
         guard let id = target ?? placement?.slot.session ?? model.session,
               let edit = koModel?.newWindow(in: id, after: placement?.slot.window ?? model.window, runtime, from: pane ?? koModel?.selection.pane) else { return }
         create(edit)
+    }
+
+    nonisolated private let recordSelections = DispatchQueue(label: "kido.record-selections")
+
+    func selectRecord(_ pane: PaneID, _ id: String) {
+        guard case .connected(let client) = link else { return }
+        let generation = generation
+        recordSelections.async { [weak self] in
+            do { try client.selectRecord(pane: pane, id: id) } catch {
+                Task { @MainActor in
+                    guard let self, self.accepts(generation) else { return }
+                    self.notice("Could not select \(id)", failureText(error))
+                }
+            }
+        }
     }
 
     enum PromptRequest: Equatable {

@@ -325,7 +325,7 @@ func heightAndPaddingMatrix(_ nested: Bool, _ multi: Bool) throws {
         let snapshot = makeSnapshot([pane(0, title: title, lifecycle: lifecycle)])
         let row = try #require(renderedRows(snapshot).first { $0.target != nil })
         #expect(row.title == expected)
-        #expect(row.agent == agent)
+        #expect(row.showsTitleWhenFolded == agent)
         #expect(sidebarWindows(snapshot, projection: PaneProjection(snapshot), session: SessionID(number: 0), surviving: [WindowID(number: 0)],
                                activePanes: [WindowID(number: 0): PaneID(number: 0)]).labels[WindowID(number: 0)]?.title == tab)
     }
@@ -405,7 +405,7 @@ func heightAndPaddingMatrix(_ nested: Bool, _ multi: Bool) throws {
     let programs = rows.filter { if case .program = $0.id { true } else { false } }
     #expect(programs.map(\.title) == ["Record-only title", "a/child", "a/missing/leaf", "a-", "é", "z", "é"])
     #expect(programs.map(\.leading) == [20, 35, 35, 20, 20, 20, 20])
-    #expect(programs.allSatisfy { $0.target == nil && $0.agent })
+    #expect(programs.allSatisfy { $0.target == nil && $0.showsTitleWhenFolded })
     #expect(programs.allSatisfy { $0.height == 43 })
     #expect(programs.allSatisfy { $0.padding == 5 && $0.tailY == 24 && !$0.focused && $0.target == nil })
     #expect(programs.map(\.status) == [.running, .done, .waiting, .error, .quiet, .quiet, .quiet])
@@ -483,4 +483,33 @@ func heightAndPaddingMatrix(_ nested: Bool, _ multi: Bool) throws {
     #expect(rows.map { $0.target?.pane.number } == Array(0...7))
     #expect(rows.map { $0.runtime?.name } == ["buildbox", nil, "py311", nil, nil, "buildbox", nil, "buildbox"])
     #expect(rows.last?.runtime?.state == .starting)
+}
+
+private func recordRows(_ records: [KoSchema.ProgramRecord], client: Int, lifecycle: Lifecycle = piAgent()) -> [SidebarRow] {
+    sidebarRows(makeSnapshot([pane(0, lifecycle: lifecycle, records: records)], client: client)).filter { $0.target != nil || programs([$0]) != [] }
+}
+
+@Test func recordsWithASelectionOnAnOpenInboxAreClickTargets() {
+    let records: [KoSchema.ProgramRecord] = [.working(.init(id: "a", selection: .selected)), .idle(.init(id: "b", selection: .offered)), .done(.init(id: "c"))]
+    let rows = recordRows(records, client: 0)
+    #expect(rows.map { $0.clickTarget != nil } == [true, true, true, false])
+    #expect(rows.map(\.pick) == [nil, .init(pane: rows[0].target!, record: "a"), .init(pane: rows[0].target!, record: "b"), nil])
+}
+
+@Test func aSelectionOnAClosedInboxMarksButIsNoClickTarget() {
+    let rows = recordRows([.working(.init(id: "a", selection: .selected)), .idle(.init(id: "b", selection: .offered))], client: 0, lifecycle: agent())
+    #expect(rows.map { $0.clickTarget != nil } == [true, false, false])
+    #expect(rows.map(\.focused) == [false, true, false])
+}
+
+@Test func theMarkMovesToTheSelectedRecordOnlyWhileThePaneIsFocused() {
+    let selected: [KoSchema.ProgramRecord] = [.working(.init(id: "a")), .idle(.init(id: "b", selection: .selected))]
+    #expect(recordRows(selected, client: 0).map(\.focused) == [false, false, true])
+    #expect(recordRows(selected, client: away).map(\.focused) == [false])
+    #expect(recordRows([.working(.init(id: "a")), .idle(.init(id: "b", selection: .offered))], client: 0).map(\.focused) == [true, false, false])
+}
+
+@Test func theFirstSelectedRecordByIdIsMarked() {
+    let rows = recordRows([.idle(.init(id: "b", selection: .selected)), .idle(.init(id: "a", selection: .selected))], client: 0)
+    #expect(rows.filter(\.focused).map(\.title) == ["a"])
 }
