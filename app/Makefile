@@ -152,6 +152,7 @@ demo-stop:
 	$(DEMO) scripts/demo.sh stop $(DERIVED)/Build/Products/Release/KidoDev.app/Contents/MacOS/KidoDev
 
 test:
+	$(if $(ONLY),$(error test: ONLY selects nothing here; use ko-test ONLY=<Class>[/<test>] for KoTests, visual ONLY=... for VisualTests, or swift test --filter in app/Packages/<package>))
 	scripts/lint.sh
 	$(MAKE) all
 	@set -eo pipefail; for package in KoModel KoClientKit PaneGeometry SidebarFeed PromptMarkdown; do \
