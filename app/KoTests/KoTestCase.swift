@@ -50,6 +50,13 @@ final class Recorder {
         }
     }
 
+    func ownerCaughtUp(_ owner: WindowOwner, _ client: KoClient) {
+        wait("the owner has installed the client's layout and selection") {
+            guard let model = owner.testModel, let theirs = try? client.model() else { return false }
+            return model.layout.revision == theirs.layout.revision && model.selection == theirs.selection
+        }
+    }
+
     func createPane(_ request: String, dir: String) throws -> String {
         let input = dir + "/pane-request.json"
         try request.write(toFile: input, atomically: true, encoding: .utf8)

@@ -67,8 +67,10 @@ import XCTest
         wait("two presses inside one round trip zoom and unzoom") { (try? client.model())?.layout.revision == revision + 2 }
         XCTAssertNil(windows(client).first?.zoom)
 
+        ownerCaughtUp(owner, client)
         session.selectPane(first)
         wait("the first pane") { (try? client.model())?.selection.pane == PaneID(number: 1) }
+        ownerCaughtUp(owner, client)
         session.paneCommand(.select(.right), first)
         wait("the pane on the right") { (try? client.model())?.selection.pane == PaneID(number: 2) }
         session.paneCommand(.next, second)
@@ -202,20 +204,19 @@ import XCTest
         let one = PaneID(number: 1), two = PaneID(number: 2), three = PaneID(number: 3)
         session.selectPane(three)
         wait("the third pane is active") { (try? client.model())?.selection.pane == three }
-        wait("the toggle reads the owner's layout: the first pane is tiled") { owner.testModel?.layout.layout.windows.first?.floats.map(\.pane) == [] }
+        ownerCaughtUp(owner, client)
         session.paneCommand(.float, one)
         wait("the first pane floats and takes the focus") { self.windows(client).first?.floats.map(\.pane) == [one] && (try? client.model())?.selection.pane == one }
-        wait("the toggle reads the owner's layout: the first pane is floating") { owner.testModel?.layout.layout.windows.first?.floats.map(\.pane) == [one] }
+        ownerCaughtUp(owner, client)
         session.paneCommand(.float, one)
         wait("the float docks right of the pane that was active before it") { self.panes(client).map(\.id) == [two, three, one] }
         wait("the docked pane is active") { (try? client.model())?.selection.pane == one }
-        wait("the owner shows the dock") { owner.testModel?.layout.layout.windows.first?.floats.isEmpty == true }
-
+        ownerCaughtUp(owner, client)
         wait("the owner's layout focuses the first pane, so lastTiled is one") { owner.testModel?.layout.layout.windows.first?.focus == one }
         wait("the toggle reads the owner's layout: the first pane is tiled") { owner.testModel?.layout.layout.windows.first?.floats.map(\.pane) == [] }
         session.paneCommand(.float, one)
         wait("the pane that was active floats, so it is gone from the tiled panes") { self.windows(client).first?.floats.map(\.pane) == [one] }
-        wait("the toggle reads the owner's layout: the first pane is floating") { owner.testModel?.layout.layout.windows.first?.floats.map(\.pane) == [one] }
+        ownerCaughtUp(owner, client)
         session.paneCommand(.float, one)
         wait("with its record gone the float docks right of the first tiled pane") { self.panes(client).map(\.id) == [two, one, three] }
     }
