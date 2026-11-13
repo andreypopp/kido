@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync } from "node:fs";
 import { after, test } from "node:test";
-import { blocksGitWrite, blocksSleep, parentSession } from "../extensions/no-git-writes/policy.ts";
+import { blocksGitWrite, blocksSignal, blocksSleep, parentSession } from "../extensions/no-git-writes/policy.ts";
 
 const allowed = [
   "git status", "git diff --cached", "git log -3", "git show HEAD", "git grep TODO",
@@ -112,4 +112,11 @@ test("sleep is blocked, also inside a script, and other commands are not", () =>
     assert.equal(blocksSleep(command), true, command);
   for (const command of ["tail -f log", "echo sleep", "grep sleep file", "make sleepy"])
     assert.equal(blocksSleep(command), false, command);
+});
+
+test("pkill, killall and kill are blocked, a mention of kill is not", () => {
+  for (const command of ["pkill -f x", "killall node", "kill -9 123", "kill %1", "/bin/kill 5", "sh -c 'pkill x'"])
+    assert.equal(blocksSignal(command), true, command);
+  for (const command of ["grep kill file", "echo kill", "make killall-docs"])
+    assert.equal(blocksSignal(command), false, command);
 });

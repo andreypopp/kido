@@ -130,5 +130,9 @@ export function blocksSleep(command: string, home = homedir()): boolean {
   return runs(command, home, (executable) => executable === "sleep");
 }
 
+export function blocksSignal(command: string, home = homedir()): boolean {
+  return runs(command, home, (executable) => ["pkill", "killall", "kill"].includes(executable));
+}
+
 export const parentSession = (env: NodeJS.ProcessEnv): string | undefined =>
   env.KO_AGENT_PARENT_SESSION || undefined;
