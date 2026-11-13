@@ -579,7 +579,7 @@ test('a clear waits for a remove that is re-queueing, then takes back the surviv
   await queued(app);
   const connected = once(gate, 'connection');
   const removed = app.post('queue/remove', { kind: 'steer', index: 1, text: 'second' });
-  const [socket] = await connected;
+  const [socket] = await connected; t.after(() => socket.destroy());
   const cleared = app.post('queue/clear');
   await fetch(app.base + 'history');
   socket.write('go');
