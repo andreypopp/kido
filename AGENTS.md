@@ -362,19 +362,19 @@ Conventions:
 **koa is the one harness.** koa (`share/koa/`) is Kido's one pi
 harness, and no other program loads its agent extension: there is no
 terminal harness. A plain `pi` is not Kido's
-harness. The agent extension, `share/koa/koa-agent.ts`, runs in koa's pi
-child, answers koa's session channel on fd 3 and holds every agent
-tool. Nothing
+harness. The agent extension, `share/koa/koa-agent.ts`, runs as an
+inline extension of the pi sessions that koa runs in its own process
+through pi's SDK, and holds every agent tool. Nothing
 in it exists only for pi's terminal UI: no widgets, renderers,
-terminal input or autocomplete providers. It learns browser mode from
-the boolean flag `--koa-browser` that koa passes, never from pi's
-mode or the environment. It calls only `ko api` (docs/design.md,
+terminal input or autocomplete providers. It takes browser mode, its
+pane and its ko executable from its host (`AgentHost` in
+`koa-agents.ts`), which koa fills at its edge, never from pi's mode
+or the environment. It calls only `ko api` (docs/design.md,
 "The harness extension", lists the routes). Of `share/koa/` it
 imports only the modules that koa also uses: `text.ts`, `agents.ts`,
-`records.ts`, `completion-context.ts`, `runtime-exec.ts`,
-`koa-channel.ts`, `koa-session-dir.ts` and `koa-records.ts`, never
-koa's program modules. Its background
-commands are jobs, child processes of pi. It never opens ko's socket,
+`records.ts`, `completion-context.ts` and `runtime-exec.ts`, and the
+type of its host from `koa-agents.ts`, never koa's program modules.
+Its background commands are jobs, child processes of koa. It never opens ko's socket,
 never reads ko's state directory or another agent's files, and has no
 state directory of its own: its registry and reports are custom
 entries in its own pi session. ko never reads the extension's files.
@@ -421,7 +421,7 @@ most easily:
 "Sources"). Three pane variables supply local pi identity, never
 detection: `pi.session`, `pi.name` and `pi.activity`. ko trusts them
 only while the pane has an OSC 7501 root with `app=pi`, which koa
-writes for its RPC pi. ssh panes use
+writes for its session. ssh panes use
 `ssh.dest` and `ssh.args`, trusted only while the foreground is `ssh`.
 A routed pi's `pi.runtime` follows the same rule in the harness and
 in the clients, where only `ko_client`'s `Model::place` reads it; the

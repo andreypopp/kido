@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { makeFixture, selfPane, startSession, freshExtension, notices, customMessages, pollUntil, gatedCommand, jobRegistry, logHas, movedId, at, jobId, jobLog, jsonRows, liveRegistry, backgroundJob, endedState, jobOf } from "./koa-agent-fixture.ts";
 
@@ -69,65 +69,6 @@ test("a job that ends between instances is announced at adopt, before the startu
     assert.deepEqual(order, ["ko-notice", "ko-message"]);
     assert.equal(fx.row("pane_1")?.vars?.["pi.session"], "self-session");
   } finally { await fx.restore(); }
-});
-
-for (const changed of ["shape", "session"]) {
-  test(`another registry ${changed} is stopped through its old closures and replaced`, async () => {
-    const fx = makeFixture();
-    const exits = process.listenerCount("exit");
-    try {
-      fx.setPanes([selfPane()]);
-      const first = await startSession(fx);
-      const result = await first.tool("async_bash").execute("a", { command: gatedCommand(join(fx.dir, "gate")), name: "old-build" });
-      const old = liveRegistry();
-      const job = jobOf(jobId(result));
-      await first.emit("session_shutdown", { reason: "reload" });
-      if (changed === "shape") old.shape++;
-      else old.session = "another-session";
-      let stops = 0;
-      const stopAll = old.stopAll;
-      old.stopAll = () => { stops++; return stopAll(); };
-      const second = await startSession(fx, { factory: await freshExtension() });
-      const owner = liveRegistry();
-      assert.notEqual(owner, old);
-      assert.equal(stops, 1);
-      assert.equal(owner.shape, 3);
-      assert.equal(owner.session, "self-session");
-      assert.equal(owner.jobs.size, 0);
-      await pollUntil(() => job.state.type === "ended" && !process.listeners("exit").includes(old.exit));
-      assert.equal(process.listeners("exit").filter((listener) => listener === owner.exit).length, 1);
-      assert.equal(notices(second).length, 1);
-      assert.ok(at(notices(second), 0).endsWith("1 async_bash jobs of the previous koa version were stopped at /reload: old-build"));
-      await pollUntil(() => job.state.type === "ended");
-      assert.equal(endedState(job).end.type, "stopped");
-      assert.deepEqual(notices(first), []);
-    } finally { await fx.restore(); }
-    assert.equal(process.listenerCount("exit"), exits);
-  });
-}
-
-test("a replaced registry keeps its exit handler until a stopped job closes", async () => {
-  const fx = makeFixture();
-  const gate = join(fx.dir, "gate");
-  try {
-    process.env.KO_JOB_KILL_MS = "1000";
-    fx.setPanes([selfPane()]);
-    const first = await startSession(fx);
-    const ready = join(fx.dir, "ready");
-    const command = `trap '' TERM; printf ready > '${ready}'; ${gatedCommand(gate)}`;
-    const result = await first.tool("async_bash").execute("a", { command, name: "slow-stop" });
-    const old = liveRegistry();
-    const job = jobOf(jobId(result));
-    await pollUntil(() => existsSync(ready));
-    await first.emit("session_shutdown", { reason: "reload" });
-    old.shape++;
-    await startSession(fx, { factory: await freshExtension() });
-    assert.equal(job.state.type, "running");
-    assert.ok(process.listeners("exit").includes(old.exit));
-    old.exit();
-    await pollUntil(() => job.state.type === "ended" && !process.listeners("exit").includes(old.exit));
-    assert.equal(job.where.child.signalCode, "SIGKILL");
-  } finally { writeFileSync(gate, ""); await fx.restore(); }
 });
 
 test("a shutdown wait timeout keeps exit coverage until the retained pipes close", async () => {

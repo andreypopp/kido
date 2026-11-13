@@ -20,9 +20,9 @@ A producer appends one custom session entry with `pi.appendEntry`:
 
 A custom entry never enters the model's context, and pi's TUI renders
 it only when an extension registers a renderer for it, so an
-annotation costs the model nothing. In RPC mode pi emits the entry as
-an `entry_appended` event, and `get_entries` returns it on a replay
-(pi's `json.md` and `rpc-commands.md`).
+annotation costs the model nothing. pi's session emits the entry as
+an `entry_appended` event, and its session manager's entries return
+it on a replay.
 
 The contract has no version field. A consumer ignores a field that it
 does not know, and drops an annotation that lacks a field that it

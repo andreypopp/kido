@@ -1,228 +1,18 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { mkdtemp, readFile, writeFile, rm, mkdir, cp, symlink, truncate } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile, rm, mkdir, cp, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join, resolve, relative } from "node:path";
+import { join, resolve } from "node:path";
 import { once } from "node:events";
-import { createServer } from "node:net";
-import { request } from "node:http";
-import { EventEmitter } from 'node:events';
-import { stripTypeScriptTypes } from 'node:module';
-import { runInNewContext } from 'node:vm';
-import { assistant, ofType, lastOf, getList, get } from "./koa-agent-fixture.ts";
 import { pollUntil } from "./koa-agent-fixture.ts";
-import { fixture } from "./koa-program-fixture.ts";
-test('history comes from the whole transcript and omits consecutive duplicates', { timeout: 10000 }, async t => {
-  const messages = Array.from({ length: 110 }, (_, i) => ({ role: 'user', content: 'prompt ' + i, timestamp: i + 1 }));
-  messages.push({ role: 'user', content: ' prompt 109 ', timestamp: 112 });
-  const f = await fixture(t, [{ type: 'respond', command: 'get_messages', data: { messages: [...messages,
-    { role: 'bashExecution', command: 'pwd', excludeFromContext: false, output: '', exitCode: 0, cancelled: false, truncated: false, timestamp: 113 },
-    { role: 'bashExecution', command: 'pwd', excludeFromContext: true, output: '', exitCode: 0, cancelled: false, truncated: false, timestamp: 114 },
-  ] } }], {}, undefined, true, [], resolve('../../build/ko/share/ko/koa/koa.ts'));
-  const result: { entries: string[] } = await (await fetch(f.base + 'history')).json();
-  assert.equal(result.entries.length, 100);
-  assert.deepEqual(result.entries.slice(0, 3), ['!!pwd', '!pwd', 'prompt 109']);
-  assert.equal(result.entries.at(-1), 'prompt 12');
-});
-
-test('model selection, completion collisions, session statistics and export defaults use pi', { timeout: 10000 }, async t => {
-  const dir = await mkdtemp('/tmp/koa-export-'); t.after(() => rm(dir, { recursive: true, force: true }));
-  const exported = join(dir, 'default.html'); await writeFile(exported, '<html>exported session</html>');
-  const stats = { sessionId: 'test-session', userMessages: 2, assistantMessages: 1, toolCalls: 0, toolResults: 0, totalMessages: 3, tokens: { input: 12, output: 34, cacheRead: 56, cacheWrite: 78, total: 180 }, cost: 0.01 };
-  const f = await fixture(t, [
-    { type: 'respond', command: 'get_commands', data: { commands: [{ name: 'model', source: 'extension' }, { name: 'custom', source: 'extension' }] } },
-    { type: 'respond', command: 'get_session_stats', data: stats },
-    { type: 'wait', command: 'get_available_models', data: { models: [{ provider: 'test', id: 'exact' }] } },
-    { type: 'wait', command: 'set_model', data: { provider: 'test', id: 'exact' } },
-    { type: 'wait', command: 'set_thinking_level', events: [{ type: 'thinking_level_changed', level: 'high' }] },
-    { type: 'wait', command: 'export_html', data: { path: exported } },
-  ], {}, undefined, true, [], resolve('../../build/ko/share/ko/koa/koa.ts'));
-  const completion: { options: { label: string; source: string }[] } = await (await f.post('complete', { text: '/', pos: 1 })).json();
-  assert.deepEqual(completion.options.map(value => value.label), ['/model', '/thinking', '/compact', '/session', '/copy', '/export', '/name', '/resume', '/new', '/quit', '/reload', '/restart', '/custom']);
-  assert.equal(completion.options[0]?.source, 'builtin');
-  for (const text of ['/model TEST/EXACT', '/thinking HIGH', '/session', '/export']) assert.equal((await f.post('prompt', { text, mode: 'prompt', attachments: [] })).status, 200);
-  await f.until(ofType('item', record => record.item.kind === 'command' && record.item.result.type === 'session'));
-  assert.deepEqual(get(f.records().find(ofType('item', record => record.item.kind === 'command' && record.item.result.type === 'session')), 'item', 'result', 'stats'), stats);
-  assert.ok((await f.log()).some(value => value.type === 'set_thinking_level' && value.level === 'high'));
-  assert.ok((await f.log()).some(value => value.type === 'export_html' && !('outputPath' in value)));
-  const notice = await f.until(ofType('item', record => record.item.kind === 'command' && record.item.result.type === 'export'));
-  assert.equal(await (await fetch(f.base + 'steps/' + notice.item.seq + '/0/file')).text(), '<html>exported session</html>');
-  assert.equal((await f.post('prompt', { text: '/quit', mode: 'prompt', attachments: [] })).status, 200);
-  assert.equal((await f.close)[0], 0);
-});
-
-test('manual compaction has one result per attempt and restores the working state', { timeout: 10000 }, async t => {
-  const result = { summary: 'Preserved decisions', firstKeptEntryId: 'entry', tokensBefore: 10000, estimatedTokensAfter: 2000 };
-  const f = await fixture(t, [
-    { type: 'wait', command: 'compact', events: [{ type: 'compaction_start', reason: 'manual' }], after: [{ type: 'compaction_end', reason: 'manual', result, willRetry: false }] },
-    { type: 'wait', command: 'compact', error: 'request failed', events: [{ type: 'compaction_start', reason: 'manual' }], after: [{ type: 'compaction_end', reason: 'manual', errorMessage: 'request failed', willRetry: false }] },
-  ], {}, undefined, true, [], resolve('../../build/ko/share/ko/koa/koa.ts'));
-  for (const state of ['done', 'failed']) {
-    const cursor = f.count();
-    assert.equal((await f.post('prompt', { text: '/compact', mode: 'prompt', attachments: [] })).status, 200);
-    await f.until(ofType('item', record => record.item.kind === 'command' && record.item.result.type === 'compaction' && record.item.result.state.type === state), cursor);
-    await f.until(ofType('state', record => record.compaction === 'idle' && !record.working), cursor);
-  }
-  assert.equal(f.records().filter(record => record.type === 'item' && record.item.kind === 'command' && record.item.result.type === 'compaction' && record.item.result.state.type === 'failed').length, 1);
-  assert.ok(f.records().some(record => record.type === 'item' && record.item.kind === 'command' && record.item.result.type === 'compaction' && record.item.result.state.type === 'done' && record.item.result.state.before === 10000 && record.item.result.state.after === 2000));
-});
-
-test('a held compaction can be aborted and finishes as cancelled', { timeout: 10000 }, async t => {
-  const f = await fixture(t, [
-    { type: 'wait', command: 'compact', defer: true, events: [{ type: 'compaction_start', reason: 'manual' }] },
-    { type: 'wait', command: 'clear_queue', data: { steering: [], followUp: [] } },
-    { type: 'wait', command: 'abort', events: [{ type: 'compaction_end', reason: 'manual', aborted: true, willRetry: false }] },
-  ], {}, undefined, true, [], resolve('../../build/ko/share/ko/koa/koa.ts'));
-  assert.equal((await f.post('prompt', { text: '/compact', mode: 'prompt', attachments: [] })).status, 200);
-  await f.until(ofType('state', record => record.compaction === 'running'));
-  assert.equal((await f.post('queue/clear')).status, 200);
-  assert.equal((await f.post('abort')).status, 200);
-  await f.until(ofType('item', record => record.item.kind === 'command' && record.item.result.type === 'compaction' && record.item.result.state.type === 'cancelled'));
-  await f.until(ofType('state', record => record.compaction === 'idle' && !record.working));
-});
-
-test('a compaction crash clears its state and restart accepts a prompt', { timeout: 10000 }, async t => {
-  const f = await fixture(t, [
-    { type: 'wait', command: 'compact', defer: true, events: [{ type: 'compaction_start', reason: 'manual' }] },
-    { type: 'wait', command: 'abort' }, { type: 'exit', code: 7 },
-  ], {}, undefined, true, [], resolve('../../build/ko/share/ko/koa/koa.ts'));
-  assert.equal((await f.post('prompt', { text: '/compact', mode: 'prompt', attachments: [] })).status, 200);
-  await f.until(ofType('state', record => record.compaction === 'running'));
-  await f.post('abort');
-  await f.until(ofType('state', record => record.pi.type === 'exited' && record.compaction === 'idle' && !record.working));
-  assert.ok(f.records().some(record => record.type === 'item' && record.item.kind === 'command' && record.item.result.type === 'compaction' && record.item.result.state.type === 'failed' && /code 7/.test(record.item.result.state.message)));
-  await writeFile(f.script, JSON.stringify({ type: 'wait', command: 'prompt', echo: true }));
-  assert.equal((await f.post('pi/start')).status, 200);
-  assert.equal((await f.post('prompt', { text: 'after restart', mode: 'prompt', attachments: [] })).status, 200);
-  await f.until(ofType('item', record => record.item.kind === 'user' && record.item.text === 'after restart'));
-});
-
-test('built-in commands use RPC and never become prompts', { timeout: 10000 }, async t => {
-  const f = await fixture(t, [
-    { type: 'wait', command: 'get_last_assistant_text', data: { text: 'copied reply' } },
-    { type: 'wait', command: 'export_html', data: { path: '/tmp/export.html' } },
-    { type: 'wait', command: 'compact', data: {} },
-  ], {}, undefined, true, [], resolve('../../build/ko/share/ko/koa/koa.ts'));
-  for (const text of ['/tree args', '/resume', '/new', '/copy', '/export /tmp/export.html', '/compact keep decisions', '/model', '/thinking', '/export test.jsonl']) {
-    const response = await f.post('prompt', { text, mode: 'prompt', attachments: [] });
-    assert.equal(response.status, 200);
-    if (text === '/resume' || text === '/new') assert.deepEqual(await response.json(), { disposition: 'handled', action: { type: 'session', kind: text.slice(1) } });
-  }
-  const history = await (await fetch(f.base + 'history')).json();
-  assert.deepEqual(history.entries, []);
-  const log = await f.log();
-  assert.equal(log.filter(value => value.type === 'prompt').length, 0);
-  assert.ok(log.some(value => value.type === 'export_html' && value.outputPath === '/tmp/export.html'));
-  assert.ok(log.some(value => value.type === 'compact' && value.customInstructions === 'keep decisions'));
-  assert.ok(f.stdout().includes('\x1b]52;c;' + Buffer.from('copied reply').toString('base64') + '\x1b\\'));
-});
-
-test('in-page session switches refresh only on success', { timeout: 10000 }, async t => {
-  const app = await fixture(t, [
-    { type: 'respond', command: 'get_messages', data: { messages: [{ role: 'user', timestamp: 1, content: [{ type: 'image', mimeType: 'image/png', data: 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aWQAAAABJRU5ErkJggg==' }] }] } },
-    { type: 'emit', event: { type: 'queue_update', steering: ['keep queued'], followUp: [] } },
-    { type: 'wait', command: 'switch_session', data: { cancelled: true } },
-    { type: 'wait', command: 'switch_session', data: { cancelled: false } },
-    { type: 'respond', command: 'get_state', data: { sessionId: 'chosen', sessionName: 'Chosen', thinkingLevel: 'low' } },
-    { type: 'respond', command: 'get_messages', data: { messages: [{ role: 'user', timestamp: 1, content: [{ type: 'text', text: 'Chosen history' }] }] } },
-    { type: 'wait', command: 'new_session', error: 'Cannot create session' },
-  ], { KOA_FAKE_SESSIONS: JSON.stringify([{ path: '/tmp/chosen.jsonl' }]) }, undefined, true, [], resolve('../../build/ko/share/ko/koa/koa.ts'));
-  const before = app.records().filter(record => record.type === 'reset').length;
-  assert.equal((await app.post('sessions/switch', { path: '/tmp/chosen.jsonl' })).status, 200);
-  assert.equal(app.records().filter(record => record.type === 'reset').length, before);
-  const cancelled = lastOf(app.records(), 'state');
-  assert.equal(cancelled.queue.steering[0].text, 'keep queued');
-  assert.equal(getList(lastOf(app.records(), 'reset').items[0], 'images').length, 1);
-  assert.equal((await app.post('sessions/switch', { path: '/tmp/chosen.jsonl' })).status, 200);
-  await app.until(ofType('state', record => record.sessionId === 'chosen' && record.pi.type === 'ready'));
-  assert.ok(app.records().some(record => record.type === 'reset' && record.items.some(item => 'text' in item && item.text === 'Chosen history')));
-  const ready = lastOf(app.records(), 'state');
-  assert.equal(ready.name, 'Chosen'); assert.equal(ready.cwd, process.cwd());
-  assert.deepEqual(ready.queue, { steering: [], followUp: [] });
-  assert.equal((await app.post('sessions/new')).status, 409);
-});
-
-test('session startup UI records survive switching and refresh', { timeout: 10000 }, async t => {
-  const app = await fixture(t, [
-    { type: 'wait', command: 'switch_session', data: { cancelled: false }, events: [{ type: 'extension_ui_request', id: 'before', method: 'setStatus', statusKey: 'startup', statusText: 'before response' }] },
-    { type: 'respond', command: 'get_state', data: { sessionId: 'chosen', sessionName: 'Chosen' } },
-    { type: 'respond', command: 'get_messages', data: { messages: [] }, after: [{ type: 'extension_ui_request', id: 'during', method: 'setStatus', statusKey: 'refresh', statusText: 'during refresh' }] },
-  ], { KOA_FAKE_SESSIONS: JSON.stringify([{ path: '/tmp/chosen.jsonl' }]) }, undefined, true, [], resolve('../../build/ko/share/ko/koa/koa.ts'));
-  assert.equal((await app.post('sessions/switch', { path: '/tmp/chosen.jsonl' })).status, 200);
-  const ready = await app.until(ofType('state', record => record.pi.type === 'ready' && record.statuses.refresh === 'during refresh'));
-  assert.equal(ready.statuses.startup, 'before response');
-});
-
-test('session switching blocks racing prompts and preserves draft attachments', { timeout: 10000 }, async t => {
-  const dir = await mkdtemp('/tmp/koa-switch-gate-'); t.after(() => rm(dir, { recursive: true, force: true }));
-  const gate = createServer(); gate.listen(join(dir, 'gate')); await once(gate, 'listening');
-  t.after(() => gate.close());
-  const rows = [{ id: 'chosen', path: '/tmp/chosen.jsonl', cwd: '/tmp', firstMessage: 'Chosen', modified: 1, messageCount: 1 }];
-  const app = await fixture(t, [
-    { type: 'wait', command: 'switch_session', data: { cancelled: false }, after: [{ type: 'message_end', message: assistant('stale old reply') }] },
-    { type: 'respond', command: 'get_state', data: { sessionId: 'chosen', sessionName: 'Chosen' } },
-    { type: 'wait', command: 'prompt', echo: true },
-  ], { KOA_FAKE_SESSION_GATE: join(dir, 'gate'), KOA_FAKE_SESSIONS: JSON.stringify(rows) }, undefined, true, [], resolve('../../build/ko/share/ko/koa/koa.ts'));
-  assert.deepEqual(await (await app.post('sessions/list', { scope: 'all' })).json(), { rows });
-  const bytes = new Uint8Array([104, 105]);
-  const pending = await (await app.post('attachments', { name: 'draft.txt', type: 'text/plain', size: bytes.length })).json();
-  await fetch(app.base + `attachments/${pending.id}/0`, { method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: bytes });
-  const before = app.count();
-  const connected = once(gate, 'connection');
-  const chosen = rows[0]; assert.ok(chosen);
-  const switched = app.post('sessions/switch', { path: chosen.path });
-  const [socket] = await connected; t.after(() => socket.destroy());
-  assert.equal((await app.post('prompt', { text: 'racing', mode: 'prompt', attachments: [] })).status, 409);
-  assert.equal((await app.post('sessions/new')).status, 409);
-  socket.end('go'); assert.equal((await switched).status, 200);
-  assert.equal((await app.post('prompt', { text: 'draft', mode: 'prompt', attachments: [pending.id] })).status, 200);
-  assert.ok(!JSON.stringify(app.records().slice(before)).includes('stale old reply'));
-  assert.ok(!(await app.log()).some(record => record.type === 'prompt' && record.message === 'racing'));
-});
-
-test('a prompt body held across a completed switch cannot enter the new session', { timeout: 10000 }, async t => {
-  const path = '/tmp/chosen.jsonl';
-  const app = await fixture(t, [
-    { type: 'wait', command: 'switch_session', data: { cancelled: false } },
-    { type: 'respond', command: 'get_state', data: { sessionId: 'chosen' } },
-  ], { KOA_FAKE_SESSIONS: JSON.stringify([{ path }]) }, undefined, true, [], resolve('../../build/ko/share/ko/koa/koa.ts'));
-  const body = JSON.stringify({ sessionId: 'fake', text: 'stale body', mode: 'prompt', attachments: [] });
-  const held = request(app.base + 'prompt', { method: 'POST', headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) } });
-  const response = new Promise<number | undefined>(resolve => {
-    held.once('response', response => { response.resume(); response.once('end', () => resolve(response.statusCode)); });
-  });
-  held.write(body.slice(0, 20));
-  t.after(() => held.destroy());
-  assert.equal((await app.post('sessions/switch', { path })).status, 200);
-  held.end(body.slice(20));
-  assert.equal(await response, 409);
-  assert.ok(!(await app.log()).some(record => record.type === 'prompt'));
-});
-
-test('a failed switch refresh clears old history and returns to a usable session', { timeout: 10000 }, async t => {
-  const path = '/tmp/chosen.jsonl';
-  const app = await fixture(t, [
-    { type: 'respond', command: 'get_messages', data: { messages: [{ role: 'user', timestamp: 1, content: [{ type: 'text', text: 'old session history' }] }] } },
-    { type: 'wait', command: 'switch_session', data: { cancelled: false } },
-    { type: 'respond', command: 'get_state', data: { sessionId: 'chosen', sessionName: 'Chosen' } },
-    { type: 'wait', command: 'get_messages', error: 'History unavailable' },
-    { type: 'wait', command: 'prompt', echo: true },
-  ], { KOA_FAKE_SESSIONS: JSON.stringify([{ path }]) }, undefined, true, [], resolve('../../build/ko/share/ko/koa/koa.ts'));
-  assert.equal((await app.post('sessions/switch', { path: '/tmp/not-a-fixture-session' })).status, 409);
-  assert.equal((await app.post('sessions/switch', { path })).status, 200);
-  await app.until(record => JSON.stringify(record).includes('History unavailable'));
-  const state = lastOf(app.records(), 'state');
-  assert.equal(state.pi.type, 'ready'); assert.equal(state.sessionId, 'chosen');
-  assert.deepEqual(lastOf(app.records(), 'reset').items, []);
-  assert.equal((await app.post('prompt', { text: 'fresh prompt', mode: 'prompt', attachments: [] })).status, 200);
-});
-
+import { realFixture, realPi } from "./koa-program-fixture.ts";
+import { userParts } from "./koa-fake-provider.ts";
 test('startup failures release the view before exiting', { timeout: 5000 }, async t => {
   const dir = await mkdtemp(join(tmpdir(), 'koa-startup-failure-'));
   t.after(() => rm(dir, { recursive: true, force: true }));
   await symlink(process.execPath, join(dir, 'node'));
-  for (const args of [[], ['--pi', resolve('./koa-fake-pi.ts'), '--metrics', '/does-not-exist/metrics']]) {
+  for (const args of [[], ['--pi', realPi, '--metrics', '/does-not-exist/metrics']]) {
     const child = spawn(process.execPath, [resolve('../../build/ko/share/ko/koa/koa.ts'), '--browser', ...args], { env: { ...process.env, PATH: dir, ...(args.length ? {} : { KOA_UPLOAD_IDLE_MS: 'bad' }) }, stdio: 'pipe' });
     const close = once(child, 'close'); t.after(() => { if (child.exitCode === null) child.kill('SIGTERM'); });
     let stderr = ''; child.stderr.on('data', bytes => { stderr += bytes; });
@@ -238,7 +28,7 @@ test('page assets stay with the running program', { timeout: 10000 }, async t =>
   await writeFile(join(dir, 'koa/page.html'), '<head><!-- style --></head><body>original<!-- script --></body>');
   await writeFile(join(dir, 'koa/page.css'), 'original-style');
   await writeFile(join(dir, 'koa/page.js'), 'original-script');
-  const app = await fixture(t, [], { KOA_PAGE_RELOAD: '0' }, undefined, true, [], join(dir, 'koa/koa.ts'));
+  const app = await realFixture(t, {replies: [], env: { KOA_PAGE_RELOAD: '0' }, program: join(dir, 'koa/koa.ts') });
   const original = await (await fetch(app.base)).text();
   assert.match(original, /original-script/);
   await writeFile(join(dir, 'koa/page.html'), '<head><!-- style --></head><body>replacement<!-- script --></body>');
@@ -252,7 +42,7 @@ test('a listen failure closes the acquired view and pi', { timeout: 5000 }, asyn
   await mkdir(join(dir, 'webview'));
   const marker = join(dir, 'socket');
   await writeFile(join(dir, 'webview/index.ts'), `import {webview as real} from ${JSON.stringify(new URL('../webview/index.ts', import.meta.url).href)};import {writeFileSync} from 'node:fs';export async function webview(options){const view=await real(options);writeFileSync(${JSON.stringify(marker)},view.socketPath);writeFileSync(view.socketPath,'occupied');return view;}`);
-  const child = spawn(process.execPath, [join(dir, 'koa/koa.ts'), '--browser', '--pi', resolve('./koa-fake-pi.ts')], { env: { ...process.env, KOA_PI_EXIT_MS: '30', KOA_FAKE_STUBBORN: '1' }, stdio: 'pipe' });
+  const child = spawn(process.execPath, [join(dir, 'koa/koa.ts'), '--browser', '--pi', realPi], { env: { ...process.env }, stdio: 'pipe' });
   t.after(() => { if (child.exitCode === null) child.kill('SIGTERM'); });
   let stderr = ''; child.stderr.on('data', bytes => { stderr += bytes; });
   const [code] = await once(child, 'close'); assert.equal(code, 1); assert.match(stderr, /EADDRINUSE/);
@@ -260,8 +50,8 @@ test('a listen failure closes the acquired view and pi', { timeout: 5000 }, asyn
 });
 
 test('mutations refuse simple content types and browser path grants', { timeout: 10000 }, async t => {
-  const app = await fixture(t, [], {}, undefined, true, [], resolve('../../build/ko/share/ko/koa/koa.ts'));
-  const before = (await app.log()).length;
+  const app = await realFixture(t, { replies: [] });
+  const before = app.provider.requests.length;
   for (const path of ['abort', 'complete', 'attachments', 'attachments/absent/delete']) {
     assert.equal((await fetch(app.base + path, { method: 'POST', headers: { 'Content-Type': 'text/plain' }, body: '{}' })).status, 415);
   }
@@ -269,343 +59,7 @@ test('mutations refuse simple content types and browser path grants', { timeout:
   for (const headers of grants) {
     assert.equal((await fetch(app.base + 'attachments', { method: 'POST', headers, body: JSON.stringify({ path: '/etc/passwd' }) })).status, 403);
   }
-  assert.equal((await app.log()).length, before);
-});
-
-test('step previews resolve only transcript-owned regular files', { timeout: 10000 }, async t => {
-  const dir = await mkdtemp(join(tmpdir(), 'koa-preview-')); t.after(() => rm(dir, { recursive: true, force: true }));
-  await writeFile(join(dir, 'notes.md'), '# Preview'); await mkdir(join(dir, 'folder')); await symlink(join(dir, 'notes.md'), join(dir, 'link'));
-  await writeFile(join(dir, 'huge'), ''); await truncate(join(dir, 'huge'), 65 * 1048576);
-  const message = { ...assistant(''), content: ['notes.md', 'folder', 'missing', 'link', 'huge', 'notes.md', '~/notes.md', '@' + join(dir, 'notes.md')].map((path, i) => ({ type: 'toolCall', id: 'r' + i, name: i === 5 ? 'bash' : 'read', arguments: { path: i === 0 ? relative(process.cwd(), join(dir, path)) : i >= 6 ? path : join(dir, path) } })) };
-  const app = await fixture(t, [{ type: 'wait', command: 'get_messages', data: { messages: [message] } }], { HOME: dir });
-  const good = await fetch(app.base + 'steps/0/0/file'); assert.equal(good.status, 200); assert.equal(await good.text(), '# Preview'); assert.match(good.headers.get('content-disposition') ?? '', /notes.md/);
-  for (const [path, status] of [['steps/0/1/file',403],['steps/0/2/file',404],['steps/0/3/file',403],['steps/0/4/file',413],['steps/0/5/file',404],['steps/0/6/file',200],['steps/0/7/file',200],['steps/0/8/file',404],['steps/0/0/file?path=/etc/passwd',404]]) assert.equal((await fetch(app.base + path)).status, status);
-});
-
-test('bash response waits for its release gate, not the RPC deadline', async t => {
-  const source = await readFile(new URL('./koa.ts', import.meta.url), 'utf8');
-  const body = stripTypeScriptTypes(source.slice(source.indexOf('class RpcTimeout'), source.indexOf('const RPC_RESPONSE_MS')) + source.slice(source.indexOf('function rpc('), source.indexOf('async function main(')));
-  t.mock.timers.enable({ apis: ['setTimeout'] });
-  const child = Object.assign(new EventEmitter(), { exitCode: null, signalCode: null, stdin: Object.assign(new EventEmitter(), { destroyed: false, write: () => true, destroy() {} }), stdout: new EventEmitter() });
-  const { link, RpcTimeout } = runInNewContext(body + '\n({link:rpc(child),RpcTimeout})', { child, Buffer, process, once, errorText: String, clearTimeout, later: (callback: () => void, delay: number) => setTimeout(callback, delay), RPC_RESPONSE_MS: 10000 });
-  t.after(() => link.close());
-  let ended = false;
-  const bash = link.command({ type: 'bash', command: 'gated' }, { deadline: 'none' }).finally(() => { ended = true; });
-  const ordinary = assert.rejects(link.command({ type: 'get_state' }), (error: unknown) => error instanceof RpcTimeout);
-  await Promise.resolve();
-  t.mock.timers.tick(10001);
-  await ordinary;
-  assert.equal(ended, false);
-  child.stdout.emit('data', Buffer.from(JSON.stringify({ type: 'response', command: 'bash', id: '1', success: true, data: { output: 'released', cancelled: false, truncated: false } }) + '\n'));
-  assert.equal((await bash).data.output, 'released');
-});
-
-test('bash output is bounded live, replaced by the result, and replayed once', { timeout: 10000 }, async t => {
-  const dir = await mkdtemp('/tmp/koa-bash-gate-'); t.after(() => rm(dir, { recursive: true, force: true }));
-  const server = createServer(); server.listen(join(dir, 'gate')); await once(server, 'listening'); t.after(() => server.close());
-  const connected = once(server, 'connection');
-  const app = await fixture(t, [
-    { type: 'wait', command: 'bash', gate: join(dir, 'gate'), events: [{ type: 'bash_execution_update', delta: 'a'.repeat(32768) }, { type: 'bash_execution_update', delta: 'b'.repeat(32768) }], data: { output: 'authoritative final', exitCode: 3, cancelled: false, truncated: true, fullOutputPath: '/tmp/full' } },
-    { type: 'wait', command: 'prompt', events: [{ type: 'compaction_end' }] },
-  ], {}, undefined, true, [], resolve('../../build/ko/share/ko/koa/koa.ts'));
-  assert.equal((await app.post('prompt', { text: '!gated', mode: 'prompt', attachments: [] })).status, 200);
-  const [gate] = await connected; t.after(() => gate.destroy());
-  const live = await app.until(ofType('state', record => record.bash?.[0]?.phase === 'running' && record.bash[0].output.cut > 0));
-  assert.equal(get(live.bash[0], 'output', 'text'), 'b'.repeat(16384)); assert.equal(get(live.bash[0], 'output', 'cut'), 49152);
-  gate.end('release');
-  const completed = await app.until(ofType('state', record => record.bash?.[0]?.phase === 'completed'));
-  assert.deepEqual(get(completed.bash[0], 'result'), { output: { text: 'authoritative final', cut: 0 }, exit: 3, cancelled: false, truncated: true, fullOutputPath: '/tmp/full' });
-  await app.until(ofType('state', record => record.bash?.length === 0));
-  await app.until(ofType('reset', record => JSON.stringify(record).includes('authoritative final')));
-  const records = app.records(), completedIndex = records.indexOf(completed);
-  const clearedIndex = records.findIndex((record, index) => index > completedIndex && record.type === 'state' && record.bash?.length === 0);
-  const resetIndex = records.findIndex((record, index) => index > completedIndex && record.type === 'reset');
-  assert.ok(clearedIndex > completedIndex && resetIndex > clearedIndex);
-  const before = app.count(); await app.post('prompt', { text: 'rebuild', mode: 'prompt', attachments: [] });
-  await app.until(ofType('reset'), before);
-  const stored = await (await fetch(app.base + 'items?before=99')).json();
-  assert.equal(stored.items.length, 1); assert.equal(stored.items[0].result.output.text, 'authoritative final');
-});
-
-test('a late bash result cannot enter the switched session', { timeout: 10000 }, async t => {
-  const dir = await mkdtemp('/tmp/koa-session-bash-'); t.after(() => rm(dir, { recursive: true, force: true }));
-  const server = createServer(); server.listen(join(dir, 'gate')); await once(server, 'listening'); t.after(() => server.close());
-  const connected = once(server, 'connection');
-  const app = await fixture(t, [
-    { type: 'wait', command: 'bash', gate: join(dir, 'gate'), data: { output: 'late old command output', exitCode: 0, cancelled: false, truncated: false }, after: [{ type: 'extension_ui_request', id: 'delivered', method: 'notify', message: 'late result delivered' }] },
-    { type: 'wait', command: 'switch_session', data: { cancelled: false } },
-    { type: 'respond', command: 'get_state', data: { sessionId: 'chosen', sessionName: 'Chosen' } },
-    { type: 'respond', command: 'get_messages', data: { messages: [] } },
-  ], { KOA_FAKE_SESSIONS: JSON.stringify([{ path: '/tmp/chosen.jsonl' }]) }, undefined, true, [], resolve('../../build/ko/share/ko/koa/koa.ts'));
-  await app.post('prompt', { text: '!old command', mode: 'prompt', attachments: [] });
-  const [gate] = await connected; t.after(() => gate.destroy());
-  await app.until(ofType('state', record => record.bash?.[0]?.phase === 'running'));
-  assert.equal((await app.post('sessions/switch', { path: '/tmp/chosen.jsonl' })).status, 200);
-  const ready = await app.until(ofType('state', record => record.sessionId === 'chosen' && record.pi.type === 'ready'));
-  assert.deepEqual(ready.bash, []);
-  const before = app.count(); gate.end('release');
-  await app.until(ofType('item', record => record.item.kind === 'notify' && record.item.text.text === 'late result delivered'), before);
-  assert.equal(JSON.stringify(app.records().slice(before)).includes('late old command output'), false);
-  assert.deepEqual(lastOf(app.records(), 'state')?.bash, []);
-  assert.equal(JSON.stringify(await (await fetch(app.base + 'items?before=99')).json()).includes('late old command output'), false);
-});
-
-test('a resumed bash message has one stored item and no running state', { timeout: 5000 }, async t => {
-  const message = { role: 'bashExecution', command: 'saved', output: 'saved output', exitCode: 0, cancelled: false, truncated: true, fullOutputPath: '/tmp/saved-output', excludeFromContext: true, timestamp: 42 };
-  const app = await fixture(t, [{ type: 'respond', command: 'get_messages', data: { messages: [message] } }], {}, undefined, true, ['--session', '/tmp/saved-session'], resolve('../../build/ko/share/ko/koa/koa.ts'));
-  const page = await (await fetch(app.base + 'items?before=99')).json();
-  assert.equal(page.items.length, 1);
-  assert.deepEqual(page.items[0], { seq: 0, revision: 0, at: 42, final: true, kind: 'bash', command: 'saved', result: { output: { text: 'saved output', cut: 0 }, exit: 0, cancelled: false, truncated: true, fullOutputPath: '/tmp/saved-output' }, excludeFromContext: true });
-  const ready = lastOf(app.records(), 'state');
-  assert.deepEqual(ready?.bash, []);
-});
-
-test('a second abort reaches the turn while bash cancellation is still pending', { timeout: 10000 }, async t => {
-  const dir = await mkdtemp('/tmp/koa-bash-cancel-'); t.after(() => rm(dir, { recursive: true, force: true }));
-  const server = createServer(); server.listen(join(dir, 'gate')); await once(server, 'listening'); t.after(() => server.close());
-  const connected = once(server, 'connection');
-  const app = await fixture(t, [
-    { type: 'wait', command: 'prompt', events: [{ type: 'agent_start' }] },
-    { type: 'wait', command: 'bash', gate: join(dir, 'gate'), data: { output: 'kept output', cancelled: false, truncated: false } },
-    { type: 'wait', command: 'abort', events: [{ type: 'agent_settled', aborted: true }] },
-  ], {}, undefined, true, [], resolve('../../build/ko/share/ko/koa/koa.ts'));
-  await app.post('prompt', { text: 'turn', mode: 'prompt', attachments: [] });
-  await app.post('prompt', { text: '!slow cleanup', mode: 'prompt', attachments: [] });
-  const [gate] = await connected; t.after(() => gate.destroy());
-  await app.post('abort');
-  await app.until(ofType('state', record => record.bash?.[0]?.phase === 'cancelling'));
-  await app.post('abort');
-  const settled = await app.until(ofType('state', record => !record.working && record.bash?.[0]?.phase === 'cancelling'));
-  assert.equal(settled.bash.length, 1);
-  assert.deepEqual((await app.log()).filter(record => ['abort', 'abort_bash'].includes(record.type)).map(record => record.type), ['abort_bash', 'abort']);
-  assert.equal((await app.log()).filter(record => record.type === 'get_messages').length, 1);
-  const before = app.count(); gate.end('finished');
-  await app.until(ofType('state', record => record.bash?.length === 0), before);
-  await app.until(ofType('reset'), before);
-  const page = await (await fetch(app.base + 'items?before=99')).json();
-  assert.equal(page.items[0].result.cancelled, true); assert.equal(page.items[0].result.output.text, 'kept output');
-});
-
-test('an idle compaction rebuild clears its completed command before stored replay', { timeout: 7000 }, async t => {
-  const app = await fixture(t, [
-    { type: 'wait', command: 'prompt', events: [{ type: 'compaction_start' }] },
-    { type: 'wait', command: 'bash', data: { output: 'saved during compaction', exitCode: 0, cancelled: false, truncated: false } },
-    { type: 'wait', command: 'prompt', events: [{ type: 'compaction_end' }] },
-  ], {}, undefined, true, [], resolve('../../build/ko/share/ko/koa/koa.ts'));
-  await app.post('prompt', { text: 'compact', mode: 'prompt', attachments: [] });
-  await app.post('prompt', { text: '!echo saved', mode: 'prompt', attachments: [] });
-  await app.until(ofType('state', record => record.bash?.[0]?.phase === 'completed'));
-  const before = app.count(); await app.post('prompt', { text: 'finish compaction', mode: 'prompt', attachments: [] });
-  await app.until(ofType('reset'), before);
-  const records = app.records().slice(before);
-  const cleared = records.findIndex(record => record.type === 'state' && !record.working && record.bash?.length === 0);
-  assert.ok(cleared >= 0 && cleared < records.findIndex(record => record.type === 'reset'), 'completed command must clear before reset');
-  const page = await (await fetch(app.base + 'items?before=99')).json();
-  const commands = page.items.filter((item: { kind: string }) => item.kind === 'bash');
-  assert.equal(commands.length, 1); assert.equal(commands[0].command, 'echo saved');
-});
-
-test('sequential commands during a turn keep acceptance order and enforce the pending budget', { timeout: 10000 }, async t => {
-  const app = await fixture(t, [
-    { type: 'wait', command: 'prompt', events: [{ type: 'agent_start' }] },
-    ...Array.from({ length: 16 }, (_, index) => ({ type: 'wait', command: 'bash', data: { output: String(index), exitCode: 0, cancelled: false, truncated: false }, after: [{ type: 'session_info_changed', name: 'command ' + index }] })),
-    { type: 'wait', command: 'abort', events: [{ type: 'agent_settled', aborted: true }] },
-  ], {}, undefined, true, [], resolve('../../build/ko/share/ko/koa/koa.ts'));
-  await app.post('prompt', { text: 'turn', mode: 'prompt', attachments: [] });
-  for (let index = 0; index < 16; index++) {
-    assert.equal((await app.post('prompt', { text: '!echo ' + index, mode: 'prompt', attachments: [] })).status, 200);
-    await app.until(ofType('state', record => record.bash?.length === index + 1 && record.bash[index].phase === 'completed'));
-  }
-  const pending = lastOf(app.records(), 'state');
-  assert.deepEqual(pending?.bash.map((item: { command: string }) => item.command), Array.from({ length: 16 }, (_, index) => 'echo ' + index));
-  const refused = await app.post('prompt', { text: '!echo 17', mode: 'prompt', attachments: [] });
-  assert.equal(refused.status, 409); assert.deepEqual(await refused.json(), { error: 'too many commands wait for the turn to end' });
-  await app.until(ofType('state', record => record.name === 'command 15'));
-  const before = app.count(); await app.post('abort');
-  await app.until(ofType('state', record => record.bash?.length === 0), before);
-  await app.until(ofType('reset'), before);
-  const page = await (await fetch(app.base + 'items?before=99')).json();
-  assert.equal(page.items.length, 16); assert.deepEqual(page.items.map((item: { command: string }) => item.command), pending?.bash.map((item: { command: string }) => item.command));
-});
-
-test('bang commands run outside the prompt queue and stream until cancelled', { timeout: 10000 }, async t => {
-  const app = await fixture(t, [
-    { type: 'wait', command: 'prompt', events: [{ type: 'agent_start' }] },
-    { type: 'wait', command: 'bash', events: [{ type: 'bash_execution_update', delta: 'live output' }], data: { output: 'final output', exitCode: 0, cancelled: false, truncated: true, fullOutputPath: '/tmp/full' }, gate: true },
-    { type: 'wait', command: 'abort', events: [{ type: 'agent_settled', aborted: true }] },
-    { type: 'wait', command: 'bash', data: { output: 'quiet', exitCode: 0, cancelled: false, truncated: false } },
-  ], {}, undefined, true, [], resolve('../../build/ko/share/ko/koa/koa.ts'));
-  await app.post('prompt', { text: 'go', mode: 'prompt', attachments: [] });
-  assert.equal((await app.post('prompt', { text: '! echo hi', mode: 'prompt', attachments: ['missing'] })).status, 409);
-  assert.equal((await app.post('prompt', { text: '! echo hi', mode: 'follow_up', attachments: [] })).status, 200);
-  await app.until(ofType('state', record => record.bash?.[0]?.phase === 'running' && record.bash[0].output.text === 'live output'));
-  assert.equal((await app.post('prompt', { text: '! other', mode: 'prompt', attachments: [] })).status, 409);
-  await app.post('abort');
-  await app.until(ofType('state', record => record.bash?.[0]?.phase === 'completed' && record.bash[0].result.cancelled === true));
-  await app.post('abort');
-  await app.until(ofType('state', record => record.working === false && record.bash?.length === 0));
-  const quiet = app.count();
-  assert.equal((await app.post('prompt', { text: '!! quiet', mode: 'prompt', attachments: [] })).status, 200);
-  await app.until(ofType('state', record => record.bash?.[0]?.phase === 'completed' && record.bash[0].result.output.text === 'quiet'), quiet);
-  await app.until(ofType('state', record => record.bash?.length === 0 && record.working === false), quiet);
-  let stored: { items: { kind: string; command: string }[] } = { items: [] };
-  await pollUntil(async () => { stored = await (await fetch(app.base + 'items?before=99')).json(); return stored.items.some(item => item.kind === 'bash' && item.command === 'quiet'); });
-  assert.deepEqual(stored.items.filter((item: { kind: string }) => item.kind === 'bash').map((item: { command: string }) => item.command), ['echo hi', 'quiet']);
-  const log = await app.log();
-  assert.deepEqual(log.filter(record => record.type === 'bash').map(({ command, excludeFromContext }) => ({ command, excludeFromContext })), [{ command: 'echo hi', excludeFromContext: false }, { command: 'quiet', excludeFromContext: true }]);
-  assert.equal(log.filter(record => record.type === 'prompt').length, 1);
-  assert.equal(log.some(record => record.type === 'abort_bash'), true);
-});
-
-test('/name is a session command, with pi query and empty-name rules', { timeout: 10000 }, async t => {
-  const app = await fixture(t, [
-    { type: 'wait', command: 'set_session_name', events: [{ type: 'session_info_changed', name: 'test-koa' }] },
-    { type: 'respond', command: 'get_state', data: { sessionName: 'test-koa' } },
-    { type: 'wait', command: 'set_session_name', events: [{ type: 'session_info_changed', name: 'second' }] },
-    { type: 'respond', command: 'get_state', data: {} },
-  ]);
-  await app.post('prompt', { text: '/name   test-koa  ', mode: 'prompt', attachments: [] });
-  const commands = (await app.log()).filter(record => ['prompt', 'set_session_name'].includes(record.type));
-  assert.deepEqual(commands.map(record => [record.type, record.name]), [['set_session_name', 'test-koa']]);
-  await app.until(ofType('state', record => record.name === 'test-koa'));
-  await app.until(ofType('item', record => record.item.kind === 'notify' && record.item.text.text === 'Session name set: test-koa'));
-  assert.equal((await app.post('prompt', { text: '/name', mode: 'prompt', attachments: [] })).status, 200);
-  await app.until(ofType('item', record => record.item.kind === 'notify' && record.item.text.text === 'Session name: test-koa'));
-  await app.post('prompt', { text: ' /name second ', mode: 'prompt', attachments: ['unsent'] });
-  await app.post('prompt', { text: '/name   ', mode: 'prompt', attachments: [] });
-  await app.until(ofType('item', record => record.item.kind === 'notify' && record.item.level === 'warning' && record.item.text.text === 'Usage: /name <name>'));
-  assert.equal(app.records().some(record => record.type === 'item' && record.item.kind !== 'notify'), false);
-  await app.post('prompt', { text: '/names other', mode: 'prompt', attachments: [] });
-  assert.deepEqual((await app.log()).filter(record => record.type === 'prompt').map(record => record.message), ['/names other']);
-});
-
-test("a sent copy survives a later queue take-back and removal", { timeout: 10000 }, async t => {
-  const app = await fixture(t, [
-    { type: 'wait', command: 'prompt', echo: true, events: [{ type: 'agent_start' }] },
-    { type: 'wait', command: 'prompt', events: [{ type: 'queue_update', steering: ['again'], followUp: [] }] },
-    { type: 'wait', command: 'clear_queue', events: [{ type: 'queue_update', steering: [], followUp: [] }], data: { steering: ['again'], followUp: [] } },
-  ]);
-  const bytes = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aWQAAAABJRU5ErkJggg==', 'base64');
-  const file = await (await app.post('attachments', { name: 'keep.png', type: 'image/png', size: bytes.length })).json();
-  await fetch(app.base + `attachments/${file.id}/0`, { method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: new Uint8Array(bytes) });
-  await app.post('prompt', { text: 'first', mode: 'prompt', attachments: [file.id] });
-  await app.post('prompt', { text: 'again', mode: 'prompt', attachments: [file.id] });
-  await app.post('queue/clear');
-  assert.equal((await app.post(`attachments/${file.id}/delete`)).status, 409);
-  assert.deepEqual(await readFile(file.path), bytes);
-});
-
-test('a queued image survives compaction and take-back', { timeout: 10000 }, async t => {
-  const dir = await mkdtemp(join(tmpdir(), 'koa-compaction-image-'));
-  t.after(() => rm(dir, { recursive: true, force: true }));
-  const path = join(dir, 'image.png');
-  await writeFile(path, Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aWQAAAABJRU5ErkJggg==', 'base64'));
-  const app = await fixture(t, [
-    { type: 'wait', command: 'prompt', events: [{ type: 'agent_start' }] },
-    { type: 'wait', command: 'prompt', events: [{ type: 'queue_update', steering: [''], followUp: [] }, { type: 'compaction_end' }] },
-    { type: 'wait', command: 'clear_queue', data: { steering: [''], followUp: [] } },
-  ]);
-  await app.post('prompt', { text: 'go', mode: 'prompt', attachments: [] });
-  const bytes = await readFile(path);
-  const created = await (await app.post('attachments', { name: 'image.png', type: 'image/png', size: bytes.length })).json();
-  const file = (await (await fetch(app.base + `attachments/${created.id}/0`, { method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: new Uint8Array(bytes) })).json()).attachment;
-  const before = app.count();
-  await app.post('prompt', { text: '', mode: 'prompt', attachments: [file.id] });
-  await app.until(ofType('reset'), before);
-  assert.deepEqual(await (await app.post('queue/clear')).json(), { steering: [{ text: '', attachments: [file] }], followUp: [] });
-});
-
-test("queue take-back returns attachment chips with their typed text", { timeout: 10000 }, async t => {
-  const bytes = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aWQAAAABJRU5ErkJggg==', 'base64');
-  const app = await fixture(t, [
-    { type: "wait", command: "prompt", events: [{ type: "agent_start" }] },
-    { type: "wait", command: "prompt", events: [{ type: "queue_update", steering: ["Compare"], followUp: [] }] },
-    { type: "wait", command: "clear_queue", events: [{ type: "queue_update", steering: [], followUp: [] }], data: { steering: ["Compare"], followUp: [] } },
-  ]);
-  await app.post("prompt", { text: "go", mode: "prompt", attachments: [] });
-  const created = await (await app.post('attachments', { name: 'image.png', type: 'image/png', size: bytes.length })).json();
-  const file = (await (await fetch(app.base + `attachments/${created.id}/0`, { method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: new Uint8Array(bytes) })).json()).attachment;
-  await app.post("prompt", { text: "Compare", mode: "prompt", attachments: [file.id] });
-  const restored = await (await app.post("queue/clear")).json();
-  assert.deepEqual(restored, { steering: [{ text: "Compare", attachments: [file] }], followUp: [] });
-});
-
-const queueImage = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aWQAAAABJRU5ErkJggg==', 'base64');
-const queueScript = (cleared: { steering: string[]; followUp: string[] }, resent: [string[], string[]][], first: object = {}, after: object[] = []): object[] => [
-  { type: 'wait', command: 'prompt', events: [{ type: 'agent_start' }] },
-  { type: 'wait', command: 'prompt', events: [{ type: 'queue_update', steering: ['first'], followUp: [] }] },
-  { type: 'wait', command: 'prompt', events: [{ type: 'queue_update', steering: ['first', 'second'], followUp: [] }] },
-  { type: 'wait', command: 'prompt', events: [{ type: 'queue_update', steering: ['first', 'second'], followUp: ['later'] }] },
-  { type: 'wait', command: 'clear_queue', events: [{ type: 'queue_update', steering: [], followUp: [] }], data: cleared },
-  ...resent.map(([steering, followUp], index) => ({ type: 'wait', command: 'prompt', events: [{ type: 'queue_update', steering, followUp }], ...(index === 0 ? first : {}) })),
-  ...after,
-];
-async function queued(app: Awaited<ReturnType<typeof fixture>>) {
-  const created = await (await app.post('attachments', { name: 'image.png', type: 'image/png', size: queueImage.length })).json();
-  const file = (await (await fetch(app.base + `attachments/${created.id}/0`, { method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: new Uint8Array(queueImage) })).json()).attachment;
-  await app.post('prompt', { text: 'go', mode: 'prompt', attachments: [] });
-  await app.post('prompt', { text: 'first', mode: 'steer', attachments: [] });
-  await app.post('prompt', { text: 'second', mode: 'steer', attachments: [file.id] });
-  await app.post('prompt', { text: 'later', mode: 'follow_up', attachments: [] });
-  return file;
-}
-const state = (app: Awaited<ReturnType<typeof fixture>>) => lastOf(app.records(), 'state');
-
-test('removing one queued entry clears pi and re-queues the others in order with their kinds and images', { timeout: 10000 }, async t => {
-  const app = await fixture(t, queueScript({ steering: ['first', 'second'], followUp: ['later'] }, [[['first'], []], [['first'], ['later']]]));
-  const file = await queued(app);
-  assert.equal((await app.post('queue/remove', { kind: 'steer', index: 1, text: 'first' })).status, 409);
-  assert.equal((await app.log()).some(value => value.type === 'clear_queue'), false);
-  assert.equal((await app.post('queue/remove', { kind: 'steer', index: 1, text: 'second' })).status, 200);
-  const sent = (await app.log()).filter(value => value.type === 'clear_queue' || value.type === 'prompt').slice(4);
-  assert.deepEqual(sent.map(value => [value.type, value.message, value.streamingBehavior, value.images]), [['clear_queue', undefined, undefined, undefined], ['prompt', 'first', 'steer', undefined], ['prompt', 'later', 'followUp', undefined]]);
-  assert.deepEqual(state(app)?.queue, { steering: [{ text: 'first', attachments: [] }], followUp: [{ text: 'later', attachments: [] }] });
-  assert.equal((await app.post(`attachments/${file.id}/delete`)).status, 200);
-});
-
-test('removing a queued entry keeps the images of the others', { timeout: 10000 }, async t => {
-  const app = await fixture(t, queueScript({ steering: ['first', 'second'], followUp: ['later'] }, [[['second'], []], [['second'], ['later']]]));
-  const file = await queued(app);
-  assert.equal((await app.post('queue/remove', { kind: 'steer', index: 0, text: 'first' })).status, 200);
-  const sent = (await app.log()).filter(value => value.type === 'prompt').slice(4);
-  assert.deepEqual(sent.map(value => [value.message, value.streamingBehavior, value.images]), [['second', 'steer', [{ type: 'image', mimeType: 'image/png', data: queueImage.toString('base64') }]], ['later', 'followUp', undefined]]);
-  assert.deepEqual(state(app)?.queue, { steering: [{ text: 'second', attachments: [file] }], followUp: [{ text: 'later', attachments: [] }] });
-});
-
-test('a clear waits for a remove that is re-queueing, then takes back the survivors, and an abort still follows', { timeout: 10000 }, async t => {
-  const dir = await mkdtemp('/tmp/koa-queue-gate-'); t.after(() => rm(dir, { recursive: true, force: true }));
-  const gate = createServer(); gate.listen(join(dir, 'gate')); await once(gate, 'listening'); t.after(() => gate.close());
-  const app = await fixture(t, queueScript({ steering: ['first', 'second'], followUp: ['later'] }, [[['first'], []], [['first'], ['later']]], { gate: join(dir, 'gate') }, [{ type: 'wait', command: 'clear_queue', events: [{ type: 'queue_update', steering: [], followUp: [] }], data: { steering: ['first'], followUp: ['later'] } }]));
-  await queued(app);
-  const connected = once(gate, 'connection');
-  const removed = app.post('queue/remove', { kind: 'steer', index: 1, text: 'second' });
-  const [socket] = await connected;
-  const cleared = app.post('queue/clear');
-  await fetch(app.base + 'history');
-  socket.write('go');
-  assert.equal((await removed).status, 200);
-  const taken = await cleared;
-  assert.equal(taken.status, 200);
-  assert.deepEqual(await taken.json(), { steering: [{ text: 'first', attachments: [] }], followUp: [{ text: 'later', attachments: [] }] });
-  assert.equal((await app.post('abort')).status, 200);
-  assert.deepEqual((await app.log()).filter(value => ['clear_queue', 'prompt', 'abort'].includes(value.type)).slice(4).map(value => value.type), ['clear_queue', 'prompt', 'prompt', 'clear_queue', 'abort']);
-});
-
-test('a survivor that pi refuses is answered with the unsent entries', { timeout: 10000 }, async t => {
-  const app = await fixture(t, queueScript({ steering: ['first', 'second'], followUp: ['later'] }, [[['first'], []]], { error: 'refused' }));
-  await queued(app);
-  const response = await app.post('queue/remove', { kind: 'steer', index: 1, text: 'second' });
-  assert.equal(response.status, 409);
-  assert.deepEqual(await response.json(), { error: 'refused', unsent: { steering: [{ text: 'first', attachments: [] }], followUp: [{ text: 'later', attachments: [] }] } });
-  assert.deepEqual((await app.log()).filter(value => value.type === 'prompt').slice(4).map(value => value.message), ['first']);
-});
-
-test('a queue that changed under the click is re-queued whole and refused', { timeout: 10000 }, async t => {
-  const app = await fixture(t, queueScript({ steering: ['other', 'first'], followUp: ['later'] }, [[['other'], []], [['other', 'first'], []], [['other', 'first'], ['later']]]));
-  await queued(app);
-  assert.equal((await app.post('queue/remove', { kind: 'steer', index: 0, text: 'first' })).status, 409);
-  const sent = (await app.log()).filter(value => value.type === 'prompt').slice(4);
-  assert.deepEqual(sent.map(value => [value.message, value.streamingBehavior]), [['other', 'steer'], ['first', 'steer'], ['later', 'followUp']]);
+  assert.equal(app.provider.requests.length, before);
 });
 
 test("attachments stream chunks into prompts", { timeout: 10000 }, async t => {
@@ -614,7 +68,7 @@ test("attachments stream chunks into prompts", { timeout: 10000 }, async t => {
   const image = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aWQAAAABJRU5ErkJggg==", "base64");
   const file = join(dir, "original.txt");
   await writeFile(file, "original");
-  const app = await fixture(t, []);
+  const app = await realFixture(t, { replies: [{ text: "ok" }, { text: "ok" }] });
   const created = await app.post("attachments", { name: "pixel.png", type: "text/html", size: image.length });
   assert.equal(created.status, 200);
   const uploaded = await created.json();
@@ -633,14 +87,15 @@ test("attachments stream chunks into prompts", { timeout: 10000 }, async t => {
   const copy = await (await app.post("attachments", { name: "copied.txt", type: "text/plain", size: 4 })).json();
   await fetch(app.base + `attachments/${copy.id}/0`, { method: "POST", headers: { 'Content-Type': 'application/octet-stream' }, body: new Uint8Array(Buffer.from("copy")) });
   assert.equal((await app.post("prompt", { text: "Compare", mode: "prompt", attachments: [id, copy.id] })).status, 200);
-  const sent = (await app.log()).find(record => record.type === "prompt");
-  assert.deepEqual(sent.images, [{ type: "image", data: image.toString("base64"), mimeType: "image/png" }]);
-  const lines = sent.message.split("\n");
+  await pollUntil(() => app.provider.requests.length === 1, 5000, "first prompt");
+  const content = (n: number) => userParts(app.provider.requests[n]);
+  assert.deepEqual(content(0).filter(part => part.type === "image_url").map(part => part.image_url?.url), [`data:image/png;base64,${image.toString("base64")}`]);
+  const lines = (content(0).find(part => part.type === "text")?.text ?? "").split("\n");
   assert.equal(lines[0], "Compare");
-  assert.equal(await readFile(lines.at(-1), "utf8"), "copy");
+  assert.equal(await readFile(lines.at(-1) ?? "", "utf8"), "copy");
   assert.equal((await app.post("prompt", { text: "", mode: "prompt", attachments: [id] })).status, 200);
-  const last = (await app.log()).filter(record => record.type === "prompt").at(-1);
-  assert.equal(last.message, ""); assert.deepEqual(last.images, sent.images);
+  await pollUntil(() => app.provider.requests.length === 2, 5000, "second prompt");
+  assert.deepEqual(content(1).filter(part => part.type === "image_url"), content(0).filter(part => part.type === "image_url"));
   const extra = await (await app.post("attachments", { name: 'extra', type: '', size: 0 })).json();
   assert.equal((await app.post(`attachments/${extra.id}/delete`)).status, 200);
   assert.equal((await fetch(app.base + `attachments/${extra.id}`)).status, 404);
@@ -667,5 +122,5 @@ test("attachments stream chunks into prompts", { timeout: 10000 }, async t => {
   assert.equal(download.headers.get('x-content-type-options'), 'nosniff');
   assert.equal(download.headers.get('content-security-policy'), "sandbox; default-src 'none'");
   await app.post('quit'); await app.close;
-  await assert.rejects(readFile(lines.at(-1)), { code: 'ENOENT' });
+  await assert.rejects(readFile(lines.at(-1) ?? ""), { code: 'ENOENT' });
 });

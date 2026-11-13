@@ -127,7 +127,7 @@ let rawScript = "stty raw -echo; printf '\\033]2;raw-ready\\007'; exec /bin/cat"
     }
 
     func webviewUntil(_ web: WKWebView, _ condition: String, within seconds: Double = 10) async throws {
-        _ = try await webviewJS(web, "new Promise((resolve,reject)=>{const observer=new MutationObserver(check);const timer=setTimeout(()=>{clean();reject(Error('Webview condition deadline: '+\(String(reflecting: condition))))},\(seconds * 1000));function clean(){observer.disconnect();clearTimeout(timer);removeEventListener('resize',check)}function check(){if(\(condition)){clean();resolve(true)}}observer.observe(document.documentElement,{attributes:true,childList:true,characterData:true,subtree:true});addEventListener('resize',check);check()})", within: seconds)
+        _ = try await webviewJS(web, "new Promise((resolve,reject)=>{const observer=new MutationObserver(check);const timer=setTimeout(()=>{clean();reject(Error('Webview condition deadline: '+\(String(reflecting: condition))+' | status='+document.querySelector('#status')?.textContent+' | items='+(document.querySelector('#items')?.textContent||'').slice(-400)+' | dialogs='+document.querySelectorAll('.dialog').length+' | runs='+document.querySelectorAll('.run').length+' | spin='+document.querySelectorAll('.spin').length))},\(seconds * 1000));function clean(){observer.disconnect();clearTimeout(timer);removeEventListener('resize',check)}function check(){if(\(condition)){clean();resolve(true)}}observer.observe(document.documentElement,{attributes:true,childList:true,characterData:true,subtree:true});addEventListener('resize',check);check()})", within: seconds)
     }
 
     func presentedFrame(_ pane: PaneView, attempts: Int = 3, file: StaticString = #filePath, line: UInt = #line) async {

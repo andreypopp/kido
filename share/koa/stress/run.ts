@@ -5,7 +5,7 @@ import { mkdtemp, readFile, writeFile, rm } from 'node:fs/promises';
 import { resolve, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import http from 'node:http';
-import { scripts, workloads, pageWorkloads } from './workloads.ts';
+import { scripts, workloads, pageWorkloads, stressModels, stressSettings } from './workloads.ts';
 
 const configured = process.env.KOA_STRESS_OUTPUT;
 if (!configured) throw Error('KOA_STRESS_OUTPUT is required; use stress/run.sh');
@@ -14,8 +14,10 @@ const selected = process.argv.slice(2).map(Number);
 const ids = selected.length ? selected : pageWorkloads;
 assert.ok(ids.every(id => pageWorkloads.includes(id)), 'Unknown page workload');
 await writeFile(join(output, 'page-manifest.json'), JSON.stringify({ target: 'page', ids }), { flag: 'wx' });
-await scripts(join(output, 'scripts'));
+const work = join(output, 'work');
+await scripts(join(output, 'scripts'), work);
 const root = resolve(new URL('../../..', import.meta.url).pathname);
+const koaRoot = join(root, 'share/koa');
 type Reply = { id?: number; method?: string; params?: { chunk?: string }; error?: unknown; result?: { result?: { value?: unknown }; exceptionDetails?: unknown; usedSize?: number } };
 for (const id of ids) {
   let directory: string | undefined;
@@ -27,8 +29,8 @@ for (const id of ids) {
   let fail: (error: Error) => void = () => {};
   const failed = new Promise<never>((_, reject) => { fail = reject; });
   void failed.catch(() => {});
-  const startChild = (command: string, args: string[], env = process.env) => {
-    const child = spawn(command, args, { env, stdio: ['pipe', 'ignore', 'pipe'] });
+  const startChild = (command: string, args: string[], env = process.env, stdout: 'ignore' | 'pipe' = 'ignore') => {
+    const child = spawn(command, args, { env, cwd: work, stdio: ['pipe', stdout, 'pipe'] });
     const closed = new Promise<void>(resolve => child.once('close', code => { resolve(); if (!stopping) fail(Error(command + ' exited: ' + code)); }));
     child.once('error', fail);
     resources.push({ child, closed });
@@ -46,7 +48,11 @@ for (const id of ids) {
     directory = await mkdtemp(join(tmpdir(), 'koa-stress-'));
     for (const opener of ['open', 'xdg-open']) await writeFile(join(directory, opener), '#!/bin/sh\nexit 0\n', { mode: 0o700 });
     const file = join(output, `page-${id}.jsonl`);
-    const koa = startChild(process.execPath, [join(root, 'build/ko/share/ko/koa/koa.ts'), '--browser', '--pi', join(root, 'share/koa/koa-fake-pi.ts'), '--metrics', file, '--metrics-mode', 'frame'], { ...process.env, KO_SOCKET: '', KO_PANE: '', KO_PANE_TOKEN: '', PATH: `${directory}:${process.env.PATH}`, KOA_FAKE_SCRIPT: join(output, `scripts/${id}.jsonl`) });
+    const workload: { replies: object[]; session?: string } = JSON.parse(await readFile(join(output, `scripts/${id}.json`), 'utf8'));
+    const agent = join(directory, 'agent');
+    const provider = startChild(process.execPath, [join(koaRoot, 'koa-fake-provider.ts'), '@' + join(output, `scripts/${id}.json`), agent, JSON.stringify(stressSettings), JSON.stringify(stressModels)], process.env, 'pipe');
+    await Promise.race([failed, new Promise<void>((resolve, reject) => { provider.stdout?.once('data', () => resolve()); provider.once('close', () => reject(Error('Provider exited before it was ready'))); })]);
+    const koa = startChild(process.execPath, [join(root, 'build/ko/share/ko/koa/koa.ts'), '--browser', '--no-extensions', '--extension', join(koaRoot, 'testdata/stress-ext.ts'), '--no-skills', '--no-prompt-templates', '--no-context-files', '--session-dir', join(directory, 'sessions'), ...(workload.session ? ['--session', workload.session] : []), '--metrics', file, '--metrics-mode', 'frame'], { ...process.env, KO_SOCKET: '', KO_PANE: '', KO_PANE_TOKEN: '', PATH: `${directory}:${process.env.PATH}`, PI_CODING_AGENT_DIR: agent, PI_OFFLINE: '1', PI_SKIP_VERSION_CHECK: '1', KOA_STRESS_ID: String(id) });
     const url = await address(koa, /http:\/\/127\.0\.0\.1:\d+\//, 'koa');
     koa.stderr?.resume();
     const chrome = startChild(process.env.KOA_CHROME ?? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', ['--headless=new', '--no-first-run', '--no-default-browser-check', '--disable-background-timer-throttling', '--disable-renderer-backgrounding', '--remote-debugging-port=0', `--user-data-dir=${directory}/chrome`, 'about:blank']);
@@ -102,7 +108,7 @@ for (const id of ids) {
     await snapshot('before');
     const started = performance.now();
     const observations: Record<string, unknown> = {};
-    const prompt = (size: number) => evaluate(`fetch('/prompt',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({text:'p'.repeat(${size}),mode:'prompt',attachments:[]})}).then(r=>r.status)`);
+    const prompt = (size: number) => evaluate(`fetch('/prompt',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sessionId:document.body.dataset.sessionId,text:'p'.repeat(${size}),mode:'prompt',attachments:[]})}).then(r=>r.status)`);
     if (id === 10) {
       stalled = await new Promise<http.IncomingMessage>((resolve, reject) => {
         const request = http.get(new URL('events', url), { agent: false }, response => { request.setTimeout(0); response.pause(); resolve(response); });
@@ -142,10 +148,10 @@ for (const id of ids) {
     await until(`document.querySelector('#status').textContent==='idle'&&document.querySelector('#items').textContent.includes('STRESS DONE ${id}')`, 120000);
     if ([2, 5, 8, 9].includes(id)) {
       await evaluate(`(()=>{if(document.querySelector('#items').textContent.length<400000&&!document.querySelector('#older').hidden)document.querySelector('#older').click();return true})()`);
-      await until(`document.querySelectorAll('#items .msg.assistant p').length===20000&&Array.from(document.querySelectorAll('#items .msg.assistant p')).every(p=>p.textContent==='abcdefghijklmnopqr')`);
+      await until(`document.querySelectorAll('#items .assistant p').length===20000&&Array.from(document.querySelectorAll('#items .assistant p')).every(p=>p.textContent==='abcdefghijklmnopqr')`);
     }
     if (id === 1) assert.equal(await evaluate(`document.querySelector('#items').textContent.includes('Paragraph 1998')`), true);
-    if (id === 3) assert.equal(await evaluate(`document.querySelector('#items').textContent.includes('bash')`), true);
+    if (id === 3) assert.equal(await evaluate(`document.querySelector('#items').textContent.includes('big')`), true);
     if (id === 10) {
       assert.equal(await evaluate('window.koaMetrics.after'), 1024, 'Incomplete cursor recovery');
       assert.ok(stalled);

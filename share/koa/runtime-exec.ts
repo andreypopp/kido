@@ -168,8 +168,7 @@ export async function apiCall(method: string, path: string, body?: unknown, time
   return status ? { status: Number(status), body: res.out.trim() } : { error: res.error };
 }
 
-export function findKo(): string | null {
-  const path = process.env.PATH;
+export function findKo(path = process.env.PATH): string | null {
   if (!path) return null;
   for (const dir of path.split(delimiter)) {
     if (!dir) continue;

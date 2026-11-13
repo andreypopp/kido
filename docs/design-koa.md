@@ -1,8 +1,8 @@
 # koa, the webview harness for pi
 
-koa is a program for a Kido pane. It starts pi in RPC mode as its
-child, owns pi's stdin and stdout, and shows the session as an HTML
-page in the pane through the webview feature. In development the same
+koa is a program for a Kido pane. It runs pi's session in its own
+process through pi's SDK and shows the session as an HTML page in the
+pane through the webview feature. In development the same
 page shows in a browser (`koa --browser`). koa is also the stress test
 of the webview feature: its workloads load and measure the webview
 path.
@@ -20,7 +20,7 @@ give what koa builds on and do not repeat it here:
   and drops on a page.
 - [design.md](design.md), "The harness extension", and
   [design-subagents.md](design-subagents.md): the agent extension,
-  koa's extension inside its pi, which holds the agent tools.
+  koa's extension inside its session, which holds the agent tools.
 - [design-program-status.md](design-program-status.md): the OSC 7501
   record that koa writes.
 
@@ -62,8 +62,8 @@ Non-goals:
 ## Where koa lives
 
 `share/koa/` holds the program (`koa.ts` and its `koa-*.ts` modules),
-the page's sources (`page/`), the scripted pi of the tests
-(`koa-fake-pi.ts`), the suite (`koa-*.test.ts`) and the stress runner
+the page's sources (`page/`), the fake model provider of the tests
+(`koa-fake-provider.ts`), the suite (`koa-*.test.ts`) and the stress runner
 (`stress/`). It also holds the agent extension (`koa-agent.ts`), its
 suite (`koa-agent-*.test.ts` over `koa-agent-fixture.ts`, on the fake
 ko of `testdata/fake_ko/`), the prompt snapshot
@@ -74,7 +74,7 @@ facts that the extension writes into its messages' details, with
 their guards), `agents.ts`, `token.ts` (the token grammar: the
 extension's `@` agent token runs through the file token rules),
 `text.ts`, `completion-context.ts` (the place where a command runs,
-which the extension answers on the session channel; "Shell
+which the extension answers through its host; "Shell
 completion") and
 `runtime-exec.ts` (the client of a runtime's exec route, the
 extension's routed commands and koa's shell completion). The records of koa and its page are
@@ -96,18 +96,18 @@ records that koa and its page share; `koa-complete.ts`, completion;
 `koa-shell.ts` and `koa-shell.sh`, Tab completion in `!` mode from
 bash; `koa-attach.ts`, attachments; `koa-queue.ts`, the queue's
 attachments; `koa-child.ts`, the signals of koa's own children, pi's
-package lookup and the runs of the startup helper and the session
-picker; `koa-startup.ts`, the startup helper's extension;
-`koa-args.ts`, its rules for pi's arguments at startup and at a restart; `koa-resume.ts`,
-the picker extension of `koa --resume`; `koa-commands.ts`, the
-built-in slash commands; `koa-channel.ts`, the records of the
-session channel, on which the agent extension lists sessions for the
-page's `/resume`, runs the pi reload of `/reload` and answers its
-restart state; `koa-identity.ts`, the hash of koa's installed
-files; `koa-session-dir.ts`, the session directory rule of
-both pickers; `prompt.ts`, the prompt text rules that koa and its
-page share; `koa-fake-pi.ts`, the scripted pi of its suite
-`koa-*.test.ts`, and `koa-fake-tty.ts`, its terminal preload;
+package lookup and the run of the session picker; `koa-sdk.ts`, the
+SDK's import boundary; `koa-agents.ts`, the host of the session: the session's
+creation from pi's arguments, the UI context, the binding and the
+helpers that call the session; `koa-args.ts`, the rules for pi's
+arguments at startup and at a restart; `koa-resume.ts`, the picker
+extension of `koa --resume`; `koa-commands.ts`, the built-in slash
+commands; `koa-identity.ts`, the hash of koa's installed files;
+`koa-session-dir.ts`, the session directory rule of both pickers;
+`prompt.ts`, the prompt text rules that koa and its page share;
+`koa-fake-provider.ts`, the scripted model provider of its suite
+`koa-*.test.ts`, `koa-fake-picker.ts`, the scripted picker, and
+`koa-fake-tty.ts`, the terminal preload;
 `stress/`, the stress workloads and runner (not installed).
 
 `make build` installs the program, the extension, the shared
@@ -136,7 +136,7 @@ every page commit that no reviewer reads. The cost is that `make
 build` needs Node and npm. The bundle is not minified, so it is
 readable in WebKit's inspector; the bridge does not compress, so the
 plain size is the wire size. The program itself is not bundled: Node
-runs `koa.ts` as is, as pi loads the agent extension.
+runs `koa.ts` and the agent extension as they are.
 
 **One response for the page.** A remote server costs one round trip
 for each asset, so koa inlines `page.html`, `page.css` and `page.js`
@@ -149,7 +149,7 @@ it does not send. A page file that is missing at startup stops koa.
 For development, `KOA_PAGE_RELOAD=1` assembles the page again for each
 load, so `make koa-watch` and ⌘R show a change. A new page reaches a
 running pane only through `/reload`, which replaces koa itself
-when its files changed ("`/reload` reloads pi" below).
+when its files changed ("`/reload` reloads pi" below), or `/restart`.
 
 **A page talks only to the koa that served it.** koa mints an
 instance id at start and puts it in the document's `koa-instance`
@@ -181,81 +181,141 @@ of `records.ts` derive from ko's schema (`ko-api.d.ts`).
 
 ## The process
 
-**Two processes in the pane.** koa is the pane's program: its stdout
+**One process in the pane.** koa is the pane's program: its stdout
 is the pane's tty, so the SDK's `show` and `hide` and koa's own OSC
-7501 and OSC 0 reach the pane. pi is koa's child in its own process
-group, with its three streams piped; pi's stdout is the RPC stream.
+7501 and OSC 0 reach the pane. pi runs inside koa, as one
+`AgentSession` of pi's SDK, wrapped in an `AgentSessionRuntime`, so
+`/new`, `/resume` and an extension's `newSession`, `fork` and
+`switchSession` use pi's own switch. There is no pi child, no RPC
+stream and no session channel. One process has one set of bugs and
+one event path; the subagents of plans/koa-subagents.md become more
+sessions of the same host. The cost: koa supplies what pi's RPC mode
+supplied (the extension UI context, the command handlers, the session
+switch), and a fault of pi or of an extension can end koa ("A crash
+keeps the pane" below).
 
-**The spawn.** koa runs `pi --mode rpc --extension
-<share>/koa/koa-agent.ts`, the agent extension, with the boolean flag
-`--koa-browser` under `--browser`, and passes every argument that it
-does not own to pi unchanged, so pi's session and model flags and the
-extension's `--runtime` work. koa adds nothing to pi's environment:
-the pane identity reaches the extension through the pane's own
-environment, and a flag, unlike a variable, does not leak into every
-job. `koa --help` and `koa -h` list koa's
-own flags. koa's own flags stop at `--`.
-
-**pi's package.** koa imports two modules of the pi that it runs:
-the table of pi's built-in slash commands and pi's exact model match
-("Built-in commands are koa's" below). pi's package exports do not
-reach them, so koa finds pi's package directory (`piPackage` in
+**pi's package.** koa loads the SDK of the pi that the user runs, not
+a copy of its own. It finds pi's package directory (`piPackage` in
 `koa-child.ts`): the executable on PATH (or `--pi`), its real path,
 the first parent directory whose `package.json` names
 `@earendil-works/pi-coding-agent`, else Homebrew's
 `../libexec/lib/node_modules/@earendil-works/pi-coding-agent` beside
-the real path, because Homebrew's `pi` is a shell wrapper. When both
-fail (a shim of a version manager, a custom wrapper), the startup
-helper below reports pi's `getPackageDir()`. The user decided that a
-launch without pi arguments starts no extra pi when the path walk
-finds the package.
+the real path, because Homebrew's `pi` is a shell wrapper. A pi
+whose package koa cannot find stops koa with one line.
 
-**The command line is checked before the webview.** When koa gets pi
-arguments, it runs a startup helper first: `pi --mode rpc
---no-session --no-extensions --extension koa-startup.ts`, with the
-arguments in `KOA_STARTUP_ARGS` and its answer on fd 3 (`startup` in
-`koa-child.ts`, which shares the spawn, the signals and the deadline
-with the picker's run). The helper parses with pi's exported
-`parseArgs`, so koa has no copy of pi's flag table, and
-`koa-args.ts` decides from the parsed value. koa refuses, with
-`koa: <flag>: <reason>` and exit code 1, the flags that end or
-bypass the RPC session: `--mode` other than `rpc`, `--print`,
+**The import boundary.** The installed koa has no `node_modules`, and
+pi's package exports only its index. `loadSdk`
+(`koa-sdk.ts`) registers one `node:module` resolve hook that maps the specifiers
+`@earendil-works/pi-coding-agent` and `typebox` to the files of the
+selected package, only for importers inside koa's own directory (its
+real path, because Node reports `/tmp` as `/private/tmp`), so a user's
+extension resolves its own imports unchanged. Then koa imports pi's
+index and, by absolute file URL, the modules that the index does not
+export: the built-in extensions, the project trust resolution and its
+RPC context, the path helpers and the theme. `koa.ts` imports
+`koa-agents.ts`, and with it the agent extension, only after the hook
+exists. One SDK instance serves the process, so the queue patch below
+reaches the class that every session uses.
+
+**The host.** `koa-agents.ts` makes the root session
+(`createRootHost`) from pi's parsed arguments, as pi's `main.js` does
+for its own modes; `main.js` exports no function that does it without
+printing, prompting or exiting. The session manager comes first, from
+`--session`, `--fork`, `--continue`, `--session-id` and
+`--no-session`, with the session directory rule of
+`koa-session-dir.ts`; then the services: the settings, the resource
+loader with the extension, skill and prompt paths of the command line
+(resolved from the launch directory), the model and its thinking
+level, the scoped models and the tool flags. The resource loader gets
+pi's own built-in extensions (`builtInExtensions` of
+`dist/extensions/index.js`), which pi's `main.js` adds and the SDK
+does not, then the agent extension as an inline factory named `koa`
+and hidden. Without the first list, the built-in tools of pi would
+vanish in koa. One `ModelRuntime` serves every session of the host:
+the credentials and the models of the agent directory, which koa
+resolves once with pi's `getAgentDir` and gives to the editor and
+completion too. Unknown flags, such as the extension's `--runtime`, go
+to the services as `extensionFlagValues`, which pi checks after the
+factories register their flags.
+
+**Project trust** follows `main.js` in RPC mode: a trust cache for
+each directory, the stored decision, the command line override and
+pi's default, and an extension's `project_trust` handler asked with
+pi's RPC context (`mode: "rpc"`, `hasUI: false`), not with koa's
+page. A page is not a reason to trust a project: the root keeps the
+trust that a pi in RPC mode had. The session's own UI context, bound
+after it, has `hasUI` true.
+
+**The UI context.** `uiContext` in `koa-agents.ts` is the
+`ExtensionUIContext` of every extension: `select`, `confirm`,
+`input` and `editor` are the page's dialog cards, with the signal and
+the timeout of pi's options; `notify` is a notice item; `setStatus`
+the foot's statuses; `setEditorText` and `pasteToEditor` the
+composer. The members that only pi's TUI can show (widgets, the
+footer, the header, the title, the working indicator, custom
+components, themes) do nothing, as they did over RPC. The session
+binds it with `mode: "rpc"`, so the extensions' mode checks keep
+their meaning, and with the command context actions of RPC mode
+(`waitForIdle`, `newSession`, `fork`, `navigateTree`,
+`switchSession`, `reload`). `onError` and the loader's diagnostics
+are notice items: a fault of one extension handler does not stop the
+session.
+
+**The binding order.** koa listens before it binds: the HTTP server
+exists, then the session's subscription, then `bindExtensions`,
+because a `session_start` handler can ask a dialog or start a turn,
+and both must reach the page. `setRebindSession` runs the same
+binding for each new session of a switch, and it is the only binding;
+koa does not bind again after a switch, because a binding emits
+`session_start`.
+
+**Events.** koa subscribes to the session's events. They are not
+pi's RPC records: RPC strips the growing message from
+`message_update` and sends deltas. koa gives the transcript the
+session's own message at each `message_update` and takes only the
+thinking start and end times from the delta; pi parses the tool
+arguments. The transcript treats pi's objects as read-only and
+converts them at its flush ("The transcript").
+
+**Readiness.** koa refuses the session's routes until the session is
+loaded and rebuilt, because a prompt sent before that snapshot was
+lost when the snapshot arrived. Each route names its access (`ready`,
+`session`, `alive`, `dialog`, `failed`, `any` in `koa.ts`):
+completion, the attachment routes and the dialog answer work while
+the session starts, because a `session_start` handler can wait for a
+dialog's answer.
+
+**The command line is checked before the webview.** koa parses pi's
+arguments with pi's exported `parseArgs`, so koa has no copy of pi's
+flag table, and `koa-args.ts` decides from the parsed value. koa
+refuses, with `koa: <flag>: <reason>` and exit code 1, the flags that
+end or bypass the session: `--mode` other than `rpc`, `--print`,
 `--export`, `--list-models`, `--version`, `--tui-mode`, `--theme`,
 `--use-theme` and `--no-themes` (the page has its own theme), and
-every error of pi's parser. An `@file` argument is refused too: pi
-refuses it in RPC mode, and an attachment is not pi's inline file
-expansion, so the page's attachments are the way. The helper also
-returns pi's positional messages and whether `--resume` was given.
-koa sends the messages to pi as pi's interactive mode does: one by
-one, each after the previous run's `agent_settled` (at once when pi
-answers `handled`, an extension command), once after pi is ready,
-not when a page connects. A restart of pi does not send them again;
-they stay in pi's arguments, where RPC mode ignores them.
+every error of pi's parser. An `@file` argument is refused too: an
+attachment is not pi's inline file expansion, so the page's
+attachments are the way. koa sends pi's positional messages as pi's
+interactive mode does: one by one, each after the previous run
+settles, once after the session is ready, not when a page connects.
 
-koa also gives pi a fourth pipe on fd 3, the session channel, which
-the agent extension answers ("Sessions inside the page" below).
-
-**`--resume` picks before the webview.** pi runs its session picker
-for `--resume` (`-r`) in every mode, also in RPC, where it would wait
-for keys on the RPC pipe. Thus, when an argument is `--resume` or
-`-r`, koa first runs a picker child on the terminal, before the SDK's
-view exists: `pi --mode rpc --no-session --no-extensions --extension
-koa-resume.ts`, with the terminal as its streams, koa's pi arguments
-in `KOA_RESUME_ARGS` and a pipe on fd 3 (`pickSession` in
-`koa-child.ts`). The extension decides with pi's exported `parseArgs`,
-so koa has no copy of pi's grammar: when pi would not run its picker
+**`--resume` picks before the webview.** When an argument is
+`--resume` or `-r`, koa first runs a picker child on the terminal,
+before the SDK's view exists: `pi --mode rpc --no-session
+--no-extensions --extension koa-resume.ts`, with the terminal as its
+streams, koa's pi arguments in `KOA_RESUME_ARGS` and a pipe on fd 3
+(`pickSession` in `koa-child.ts`). The picker stays a child because
+it owns the terminal before the webview does. The extension decides
+with pi's exported `parseArgs`: when pi would not run its picker
 (`--session`, `--fork`, `--no-session` and the other flags that
 precede the picker in pi's `main.js`), it answers `skip`. Else it
 shows pi's exported `SessionSelectorComponent` with pi's two session
 loaders and the session directory that pi resolves
-(`koa-session-dir.ts`, which the page's picker also uses), answers `ready`
-when the screen takes input, then `selected` with the file or
+(`koa-session-dir.ts`, which the page's picker also uses), answers
+`ready` when the screen takes input, then `selected` with the file or
 `cancel`, restores the terminal and exits. On `selected`, koa adds
-`--session <file>` before `--` and keeps `--resume`, because pi's
-`--session` wins over it, so the restart's rules stay as they are.
-On `cancel`, koa prints "No session selected" and exits 0 with no
-webview. Subagent sessions do not show, because the agent extension
-keeps them out of pi's session tree.
+`--session <file>` before `--`. On `cancel`, koa prints "No session
+selected" and exits 0 with no webview. Subagent sessions do not
+show, because they live outside pi's session tree.
 
 The picker relies on one pi detail: pi awaits an extension's factory
 before it starts its RPC loop, so the factory owns the terminal and
@@ -269,103 +329,97 @@ every exit. pi exports its keybindings manager only as a type, so the
 picker's list uses pi's app bindings, but its search field has
 pi-tui's default editing keys.
 
-**A child takes its parent's mode** (the user's decision). Every
-child and top-level agent is `ko shell -- koa`. The extension learns
-browser mode from the explicit `--koa-browser` flag, never from pi's
-mode, and adds `--browser` to the child's `koa` under it. A koa child
-in `ko_tui` is a webview pane in a client that shows no webviews; it
-works and reports as any child.
+**A top-level agent takes its spawner's mode** (the user's decision).
+A top-level agent is `ko shell -- koa`. koa gives the agent extension
+browser mode as a field of its host, never from pi's mode, and the
+extension adds `--browser` to the new `koa` under it.
 
-**The RPC link.** koa splits pi's stdout on LF only, with a byte
-decoder, never `readline`, which also splits on U+2028 and U+2029
-(pi's `rpc.md`). It reads continuously, because pi honours
-back-pressure. It writes a command only after the previous write
-drained, correlates each response by its id, and gives each command
-a deadline (`RPC_RESPONSE_MS` in `koa.ts`). A line that is not JSON
-goes to koa's stderr: it is a bug.
+**The agent extension inside the session.** The extension takes its
+host from a closure (`agentExtension(host)` in `koa-agent.ts`). The
+host's `facts` are the pane, the ko executable and the runtime, which
+koa reads once from its environment at its edge (`hostFacts`); the
+extension reads no environment for them. The host also keeps what
+must outlive one load of the extension: the message receiver and its
+id ring, the jobs and their exit cleanup (`Slots`), because
+`session.reload()` runs the factory again. Its `session_start` sees a
+UI, so it opens the message stream, writes the `pi.*` variables,
+registers the agent tools and starts the peer client. Its job rows go
+through the status route. A message on the stream goes through
+`pi.sendUserMessage` and reaches koa as the session's message events.
+Until the in-process subagents exist, `spawn_agent` without
+`toplevel: true` is refused ("in-process subagents are not yet
+available; use toplevel: true"), and a message to a recorded child
+does not start it again as a pane.
 
-**Readiness.** koa refuses pi's commands from the page until pi's
-session is loaded (`get_state`, then the rebuild, the levels and the
-stats), because a prompt sent before that snapshot was lost when the
-snapshot arrived. Each route names its access (`ready`, `alive`,
-`exited`, `any` in `koa.ts`): completion, the attachment routes and
-the dialog answer work while pi starts, because pi can wait for a
-dialog's answer before it answers anything else.
+**The queue patch.** pi's `clearQueue` drops queued custom messages
+with the user's text, and koa's queue take-back must keep the
+agents' messages. `koa-agents.ts` wraps `AgentSession.prototype.clearQueue`
+once in the process, so that it puts the custom messages back. The
+patch goes when pi has a `clearQueue` that keeps them.
 
-**The agent extension inside the RPC pi.** The extension's
-`session_start` sees a UI in RPC mode, so it opens the message
-stream, writes the `pi.*` variables, registers the agent tools and
-starts the peer client. Its job rows go through the status route, so a koa pane has
-them with no work in koa. A message on the stream goes through
-`pi.sendUserMessage` and reaches koa as pi's message events.
+**Status and title.** koa writes the pane's root record `app=pi`
+itself: working from `agent_start` (and during a compaction), at
+`agent_settled` idle when aborted, else error or done from the last
+assistant message, blocked with kind question while a dialog is open,
+and `clear` when the session fails. With the extension's
+`pi.session`, the row is a `PiAgent` (design-program-status.md). koa
+sets the pane title with OSC 0 from the session name and the
+session's directory.
 
-**Status and title.** pi reports OSC 7501 only in its TUI, so koa
-writes the pane's root record `app=pi` itself: working from
-`agent_start` (and during a compaction), at `agent_settled` idle when
-aborted, else error or done from the last assistant message, blocked
-with kind question while a dialog is open, and `clear` when pi exits.
-With the extension's `pi.session`, the row is a `PiAgent`
-(design-program-status.md). koa sets the pane title with OSC 0 from
-the session name and the session's directory.
+**The session's directory** is the runtime's `cwd`, which pi sets
+from the session that it opened: a session of another directory runs
+in that directory, and `/new` after a switch to another folder starts
+in that folder. koa's own working directory does not change.
 
-**The session's directory.** For a session of another directory, pi
-runs in that directory, so koa takes `cwd` from the session channel's
-`session` record, which the agent extension sends at each
-`session_start` from pi's own session manager, never from its own
-working directory or from the session file: pi writes a new session's
-file only at its first message, and `/new` after a switch to another
-folder starts in that folder.
+**A session that fails to start.** When the session cannot be made
+(an unknown model, a broken settings file, a switch whose new session
+fails after pi tore the old one down), koa goes to `failed`: the
+transcript stays, the foot says that the agent failed, and the
+failed card shows pi's error and "Start again". "Start again"
+(`/agent/start`) makes the session again from the arguments of a
+restart (`restartArgs` in `koa-args.ts`: `--session` of the last
+session file, without the session, provider, model and thinking
+flags, because the session file holds the pickers' changes). A torn
+down session is never used again, also when the next one has the
+same id.
 
-**pi exits by itself.** When pi exits with code 0, koa shuts down as
-on a quit, as a TUI pi leaves the user in the shell: a subagent's pi
-leaves when its parent goes, and its pane must go with it. When pi
-fails (a code other than 0, a signal or a spawn failure), koa keeps
-the pane, because a pane with the default `close: exit` would vanish
-and the user must see the failure. The transcript stays, the foot's
-state says how pi ended, and the exit card shows the last lines of
-pi's stderr and "Start pi again". The restart drops the session,
-model and thinking flags and adds `--session <file>` of the last
-`get_state`, because the session file holds the model and thinking
-changes of the pickers; without a known session file, the original
-arguments run again.
+**A crash keeps the pane.** pi and every extension run in koa's
+process, so an uncaught exception ends koa and every agent in it.
+koa installs one `uncaughtException` handler: it writes the error to
+stderr, which is the pane's screen, sets its own pane's `close` to
+`keep` with a synchronous `ko api PATCH /panes/$KO_PANE` (2 s
+deadline), and exits 1, so the user can read the error. A normal exit
+keeps `close: exit`. A fault that pi reports (an extension error, a
+provider error) is a notice, not a crash.
 
 **Shutdown.** koa ends on `SIGTERM`, `SIGHUP`, `SIGINT`, a quit from
-the page (Control-D in an empty composer) and pi's clean exit. Every
-part that koa makes registers its own teardown as it is made, and one
-shutdown, which exists from the moment the SDK's view exists, starts
-every teardown in reverse order and waits for all of them, so an
-early failure also cleans up. The HTTP server and the feed's streams
-close; pi's stdin closes, koa waits for pi's exit
-(`KOA_PI_EXIT_MS`), then sends `SIGTERM` and later `SIGKILL` to pi's
-group; koa's directory goes; the SDK's view closes, and its waits have
-their own deadlines. A stuck bridge or pi thus never keeps koa
-alive. The reply to the page's own quit request is sent before the
-shutdown starts, with a deadline (`QUIT_REPLY_MS`). Every group
-signal of koa goes through one function, `signalChild` in
-`koa-child.ts`, which takes a child that koa spawned (pi or `fd`) and
-ignores `ESRCH` and `EPERM`, as `signalJob` does (design-subagents.md,
-"Stopping a job"); `scripts/lint.sh` permits `process.kill` only
-there. The session picker shares koa's group, so it gets its signals
-through its own `ChildProcess.kill`.
+the page (Control-D in an empty composer) and an extension's
+`ctx.shutdown()`. Every part that koa makes registers its own
+teardown as it is made, and one shutdown, which exists from the
+moment the SDK's view exists, cancels the open dialogs, disposes the
+runtime first (pi aborts the turn, emits `session_shutdown` with
+reason `quit` to the extensions and settles its credential writes),
+bounded by `HOST_STOP_MS`, then starts every other teardown in
+reverse order and waits for all of them. A stuck extension thus never
+keeps koa alive. The reply to the page's own quit request is sent
+before the shutdown starts, with a deadline (`QUIT_REPLY_MS`). Every
+group signal of koa goes through one function, `signalChild` in
+`koa-child.ts`, which takes a child that koa spawned (`fd`) and
+ignores `ESRCH` and `EPERM`, as `signalJob` does
+(design-subagents.md, "Stopping a job"); `scripts/lint.sh` permits
+`process.kill` only there. The session picker shares koa's group, so
+it gets its signals through its own `ChildProcess.kill`.
 
-**Errors do not stop koa.** An error of a child, a stream, a pi record
-or a timer callback is reported as one `koa:` line on stderr, and koa
-goes on; only the loss of the terminal stops it. The edges:
+**Errors do not stop koa.** An error of a child, a stream, an event
+handler or a timer callback is reported as one `koa:` line on stderr
+or as a notice, and koa goes on; only the loss of the terminal and
+an uncaught exception stop it. The edges:
 
-- A record from pi whose handling throws is a protocol error of pi.
-  koa drops the record with one line that names its type and handles
-  the next records. It does not validate each record's shape: pi's
-  types are the contract, and one catch at the dispatch in `rpc`
-  covers every field. A bad record does not end pi, because pi can
-  still work and the user keeps the session. A handler that throws
-  midway keeps what it changed before the throw.
 - The transcript's flush takes each held message or tool result out
   of its queue before it applies it, and reports a throw, so one bad
   entry does not block the later ones.
 - Every timer callback runs through `later` (`koa-timer.ts`), which
   reports a throw.
-- An error on pi's stdout or stderr is reported; pi's exit path
-  owns the rest of its lifecycle.
 - A signal error other than `ESRCH` and `EPERM` is reported by
   `signalChild`, which never throws, so the shutdown continues.
 - An error on the `fd` child's stdout ends the completion read with
@@ -375,57 +429,50 @@ goes on; only the loss of the terminal stops it. The edges:
   the error is ignored. An error on koa's own stderr is ignored,
   because there is no other place to report it.
 
-**`/reload` reloads pi, and replaces koa when koa was updated.**
-pi's `/reload` is a built-in of its TUI that RPC mode lacks. It has
-two layers (the user's decision):
+**`/reload` reloads pi, and replaces koa when koa was updated.** It
+has two layers (the user's decision):
 
-1. **pi in place.** koa sends the prompt `/koa-reload`, an extension
-   command of the agent extension whose handler only calls pi's
-   `ctx.reload()`; the new instance of the extension registers it
-   again, and completion hides it. pi answers the prompt only after
-   the reload, so the answer is its end. koa holds pi in `reloading`,
-   which blocks the composer as a session switch does but keeps pi's
-   events: the extension's `session_start` can deliver a message and start a
-   turn during the reload, and the restart must see it. koa buffers
-   the UI records, drops the extensions' statuses (an extension that
-   is gone leaves none) and refreshes from the new session record. pi's settings, extensions,
-   skills and prompts load again; pi's process, the session, the
-   page and the transcript stay, and the extension adopts its jobs
-   (design-subagents.md, "Jobs across /reload"). A failure shows
-   pi's error and goes no further.
+1. **pi in place.** koa calls `session.reload()`. pi emits
+   `session_shutdown` with reason `reload`, loads its settings,
+   extensions, skills and prompts again, runs the inline factory
+   again, binds the saved UI and emits `session_start`; the session,
+   its history, koa's subscription, the page and the transcript stay.
+   The host keeps the receiver, the id ring and the jobs, so the new
+   extension instance takes them over. koa holds the session in
+   `reloading`, which blocks the composer as a session switch does
+   but keeps the events, because a `session_start` handler can start
+   a turn and the restart must see it. koa buffers the UI records,
+   drops the extensions' statuses and refreshes. The factory's own
+   code (koa's modules) does not load again: Node keeps the module,
+   so a change of it needs the second layer. A failure shows pi's
+   error and goes no further.
 2. **koa when it was updated.** A page of a new koa must not run
    against an old koa: one once crash-looped on a record's shape.
    koa hashes its installed files at start (`installedIdentity` in
    `koa-identity.ts`: `koa/` with the page and the agent extension,
-   and `webview/`) and again after layer 1. The agent extension
-   counts although layer 1 reloads it, because it holds pi's side of
-   the session channel: a new extension must not run against an old
-   koa. A content hash, not a build
-   stamp: ko's build id changes with every commit, and only koa's
-   own files matter. A read that fails counts as no change. When the
-   hash differs, koa asks the extension, over the session channel, for its
-   running jobs, services included, and its children that have not
-   reported on their last work, because a restart of pi is a quit of
-   pi, which ends them or sends their parent an exit notice. koa
-   does not read the extension's registry. Then koa restarts only
-   when the extension answers ready, a session file exists (a restart without one loses
-   the conversation) and pi is still idle; else it keeps both
-   processes and shows one info note with the first reason, in the
-   order jobs, subagents, no session file, no answer within 1 s
-   (`deferralText` in `koa-commands.ts`). The next `/reload` tries
-   again.
+   and `webview/`) and again after layer 1. A content hash, not a
+   build stamp: ko's build id changes with every commit, and only
+   koa's own files matter. A read that fails counts as no change.
+   When the hash differs, koa asks the extension
+   (`host.extension.restartState()`) for its running jobs, services
+   included, and its children that have not reported on their last
+   work, because a restart ends them. koa restarts only when nothing
+   is running, a session file exists (a restart without one loses
+   the conversation) and the session is still idle; else it shows one
+   info note with the first reason, in the order jobs, subagents, no
+   session file (`deferralText` in `koa-commands.ts`). The next
+   `/reload` tries again.
 
 The restart answers the page, runs koa's one shutdown, except that
 the SDK's `close(false)` keeps the pane in webview mode, waits for
 its own stdout and stderr to drain, and calls `process.execve` with
 Node, its script path as the shim gave it, its own flags and pi's
-arguments by the rule of "Start pi again" ("pi exits by itself"
-above; `restartArgs` in `koa-args.ts`): the same pid in the same
-pane, so the pane's row and children stay, and the script path
-resolves to the files that a Kido.app update installed.
-`KOA_RELOAD=1` in the new process, which koa reads and removes at
-start before it spawns anything, skips the `--resume` picker and the
-positional messages and adds the note "reloaded" once pi is ready.
+arguments by the rule of "Start again" (`restartArgs`): the same pid
+in the same pane, so the pane's row and children stay, and the script
+path resolves to the files that a Kido.app update installed, pi's SDK
+included. `KOA_RELOAD=1` in the new process, which koa reads and
+removes at start, skips the `--resume` picker and the positional
+messages and adds the note "reloaded" once the session is ready.
 While the restart runs, the page shows "Reloading…" in its error line
 and blocks the composer; during the gap the app shows its "The
 program is not serving", and the new serve stream loads the new page
@@ -433,28 +480,18 @@ program is not serving", and the new serve stream loads the new page
 in the composer and the scroll position go with the page. In browser
 mode, the new koa listens on a new port and opens a new tab.
 
-`/reload` runs only when pi is ready and idle: no turn, no
+`/reload` runs only when the session is ready and idle: no turn, no
 compaction, no `!` command that has not completed, no queued prompt,
 no dialog and no external editor, opening and closing included,
 because each is state that a reload or a restart cannot carry.
 Otherwise it is refused with a warning line.
 
-**`/restart` starts pi again.** It replaces only pi: koa's process,
-the page and the transcript stay, and the new pi's events append.
-It has the safety of `/reload`'s second layer, because a quit of pi
-ends the same state: the same idle rule refuses it with a warning
-line, then koa asks the extension for its running jobs and its
-unreported children, and defers with one info note, in the same
-order of reasons and with the same 1 s limit (`deferralText`). When
-nothing defers it and pi is still idle, pi goes `restarting`: koa
-drops the old pi's events and channel answers, stops the old pi as
-the shutdown does, and starts the new one by the path of "Start pi
-again" ("pi exits by itself" above), so it gets `--session` of the
-last `get_state`. The old pi's exit is the restart's own, so it
-shows no exit card and a code 0 does not end koa. While pi is
-`restarting`, the page shows "Restarting pi…" in its error line and
-blocks the composer; then pi is `starting` and `ready` as at start.
-A failed start shows pi's error and the exit card.
+**`/restart` restarts koa.** It is the second layer of `/reload`
+without its checks: no identity check, no idle rule and no deferral,
+on the session file of the root. It is the escape hatch for a koa or
+a pi in a bad state, so it must work in that state; a running turn
+ends, and the jobs end with the process. Without a session file the
+new koa starts by the original arguments.
 
 **The private directory.** koa makes one directory `koa-<pid>-*` under
 the temporary directory at start (0700) for the image store and the
@@ -470,9 +507,8 @@ and short `fetch` requests. No WebSocket. Every body is a string or a
 are in `koa.ts` (the commands), `koa-transcript.ts` (`/events`,
 `/items`, `/images/`) and `koa-attach.ts` (`/attachments`, `/steps/`);
 each route's body validator is beside its handler, in `koa.ts` for
-the commands. A failed RPC
-answers 409 with pi's error text, and the page keeps the composer's
-text.
+the commands. A call of the session that fails answers 409 with
+pi's error text, and the page keeps the composer's text.
 
 **Commands need a typed body.** A `POST` must have the content type
 `application/json` (an upload chunk `application/octet-stream`), else
@@ -480,16 +516,16 @@ koa answers 415. A browser sends a form post with a simple content
 type to any origin without asking; this rule makes such a post do
 nothing ("Browser mode" below).
 
-**Built-in commands are koa's.** pi's RPC mode does not run the
+**Built-in commands are koa's.** pi's session does not run the
 built-in slash commands of its TUI, so a built-in sent as a prompt
-reached the model as text. koa intercepts every built-in before pi's
+reaches the model as text. koa intercepts every built-in before pi's
 `prompt` (`koa-commands.ts`): its catalog is pi's own
 `BUILTIN_SLASH_COMMANDS` with pi's descriptions, plus the names that
 pi dispatches but does not list (`debug` and two easter eggs). A
 built-in wins over an extension command or a template of the same
 name, as in pi's TUI, which dispatches its built-ins before
 `session.prompt`; completion drops the shadowed entry. The user chose
-the supported set; each runs over pi's RPC:
+the supported set; each calls the session:
 
 - `/model` and `/thinking` without an argument open the foot's
   picker. `/model <text>` sets the model when pi's
@@ -497,15 +533,15 @@ the supported set; each runs over pi's RPC:
   models, else it opens the picker with the text as its search.
   `/thinking <level>` sets an available level. Both report
   "model: … · thinking …" as a notification.
-- `/compact [instructions]` sends pi's `compact` and answers the
+- `/compact [instructions]` calls pi's `compact` and answers the
   page at once; pi's compaction events own the outcome ("The
   transcript" below), and Escape aborts it as it aborts a run. While
   a compaction runs, Return sends and queues nothing.
-- `/session` shows `get_session_stats`; `/export [path]` writes pi's
+- `/session` shows `getSessionStats`; `/export [path]` writes pi's
   HTML export, with pi's default name when no path is given (a
-  `.jsonl` path is refused: RPC has no JSONL export); `/name` sets or
-  shows the session name, in pi's words.
-- `/copy` puts `get_last_assistant_text` on the clipboard with OSC 52
+  `.jsonl` path is refused: the page exports HTML only); `/name` sets
+  or shows the session name, in pi's words.
+- `/copy` puts `getLastAssistantText` on the clipboard with OSC 52
   on koa's own stdout, the pane's tty, where koa also writes OSC 7501
   and OSC 0. The user's `clipboard.write` policy decides, and it
   works for a remote koa and in a browser. A page's
@@ -516,8 +552,8 @@ the supported set; each runs over pi's RPC:
 - `/quit` shuts koa down as Control-D does.
 - `/reload` reloads pi in place, and replaces koa on the same
   session when koa was updated ("`/reload` reloads pi" above).
-- `/restart` starts pi again on its session ("`/restart` starts pi
-  again" above).
+- `/restart` restarts koa on its session ("`/restart` restarts koa"
+  above).
 
 Every other built-in is refused with a warning line, "/settings is
 not available in koa", and its text stays out of pi; completion does
@@ -534,47 +570,51 @@ their text in the composer; the rest of the draft (its attachments)
 stays across the switch. The picker's look is the mockup's
 (app/design/koa, "Sessions inside the page").
 
-**In place, through pi's RPC.** koa sends pi's `switch_session` or
-`new_session` and does not restart pi: pi's runtime already asks the
+**In place, through pi's runtime.** koa calls the runtime's
+`switchSession` or `newSession`: pi's runtime asks the
 extensions (`session_before_switch`, which can cancel), aborts the
 turn and a running bash command, shuts the old session down and starts
-the new one. The agent extension follows through its own `session_shutdown` and
+a new `AgentSession`, which koa binds ("The binding order"). The
+agent extension follows through its own `session_shutdown` and
 `session_start` (its pane variables, registry and peers), so koa does
-nothing for it. A cancelled switch changes nothing in koa.
+nothing for it. A cancelled switch changes nothing in koa. A switch
+that fails after pi tore the old session down leaves koa `failed`
+("A session that fails to start").
 
-**The session channel.** pi has no RPC that lists sessions, and a
-list reads pi's session files with the settings of the session that
-runs, which only the pi child has. Thus the agent extension, in the
-pi child, answers on fd 3 (`koa-channel.ts` holds its
-records): a `list` query with an id, for this folder or all, which it
-answers with pi's `SessionManager.list` or `listAll` over the session
-directory that pi resolves, a `completion_context` query ("Shell
-completion"), and a `cancel` of a running request. It also
-sends a `session` record at each `session_start` with the session's
-id, cwd and a generation that increases, so a switch to the same file
-waits for the new record. The first message of a row is cut to its
-first line on the wire. Subagent sessions do not show, because the
-agent extension keeps them out of pi's session tree. pi loads the extension module
-again on a switch to another folder and at `/reload`, so the channel
-lives on `globalThis`, once for each process, and each load registers
-its handlers on it (design.md, "One copy").
+**The list.** The host lists the sessions (`list` in
+`koa-agents.ts`) with pi's `SessionManager.list` or `listAll` over the
+session directory that pi resolves, for this folder or all, with the
+page's abort as the signal. The first message of a row is cut to its
+first line on the wire. Subagent sessions do not show, because they
+live outside pi's session tree.
 
-**The switch.** koa's state has a `switching` phase. While it lasts,
-koa drops pi's events and RPC replies of the old session, and refuses
-the routes of the session (prompts, abort, the queue, model, thinking,
-completion, attachments and step files); dialog answers and quit still
-work, because an extension can ask before it allows the switch. pi
-runs the new session's `session_start` before it answers, so koa keeps
-the extensions' fire-and-forget UI records of that time and replays
-them in order after the switch. On success koa resets the session's
-state in one place (`resetSession`: the queue, the attachments, the
-partial message, dialogs, statuses), refreshes as at start and adds one
-notice: "session: <name> · N messages" or "new session". A refresh
-that fails ends with an empty transcript, the error as a notice and pi
-ready. Every request that acts on a session carries the page's
-`sessionId`, and koa refuses a request of another session with 409,
-so a prompt whose body arrived after a switch never reaches the new
-session.
+**The switch.** Every replacement of the session goes through one
+path in the host (`replace` in `koa-agents.ts`): koa's `/new` and
+`/resume`, and an extension's `ctx.newSession`, `ctx.switchSession`
+and `ctx.fork`, so each gets the same reset and refresh. koa's state
+has a `switching` phase. While it lasts, koa refuses the routes of
+the session (prompts, abort, the queue, model, thinking, completion,
+attachments and step files); dialog answers and quit still work,
+because an extension can ask before it allows the switch. When pi
+has made the new session, the rebind resets koa's state of the
+session once (`resetSession`: the queue, the attachments, the
+partial message, dialogs, statuses, the `!` commands) and makes the
+new session the owner of the events, before pi binds the extensions
+and runs `session_start`. So a turn that a `session_start` handler
+starts reaches the page. koa keeps the extensions' fire-and-forget UI
+records of the switch and replays them in order after it. On success
+koa refreshes as at start and adds one notice: "session: <name> · N
+messages" or "new session". A refresh that fails ends with an empty
+transcript, the error as a notice and the session ready. An
+extension's `ctx.navigateTree` stays in the same session: koa
+rebuilds the transcript and puts pi's returned editor text into the
+composer.
+
+Every request that acts on a session carries the page's `sessionId`,
+and koa refuses a request of another session with 409. A request
+that waits in koa's queue checks again, before it acts, that its
+session is still the current one, so a prompt whose body arrived, or
+that waited, across a switch never reaches the new session.
 
 **pi's busy rule.** pi aborts a running turn or command on a switch
 and does not ask. The page asks first: while pi works or a `!` command
@@ -596,16 +636,16 @@ scan again.
 messages, assistant messages with their text, thinking and tool
 blocks, the custom messages that pi displays, user `!` commands,
 summaries, and koa's notifications. It takes whole pi messages, so a
-replay from `get_messages` and the live stream use one conversion.
+replay from the session's `messages` and the live stream use one
+conversion.
 `koa-records.ts` defines the items and the records.
 
-- **Live messages.** pi's `message_update` records carry deltas only
-  (pi's `json.md`). koa keeps the partial assistant message itself,
-  applies each delta to the block at its index, and gives the module
-  the whole message; the `*_end` events and `message_end` replace
-  the partial with pi's authoritative content. A tool call's argument
-  bytes parse once for each flush, so a step line names its tool
-  while the arguments still stream.
+- **Live messages.** Each `message_update` of the session carries
+  pi's whole partial message, with the tool arguments that pi parsed
+  so far, so a step line names its tool while the arguments still
+  stream. The module keeps only the newest message and converts it at
+  its flush; it never changes pi's object. `message_end` gives pi's
+  authoritative content.
 - **A tool's result** goes into the block of its call, so the page
   never needs the call's item to place a result. koa stamps the times
   of tool blocks and, with its own clock, of thinking blocks; a
@@ -633,7 +673,7 @@ replay from `get_messages` and the live stream use one conversion.
   are body size, and the step's own 260px scroller is the one
   vertical scroll.
 - **Notifications** (pi's `notify`) are items, one line where they
-  arrived, and they stay. `get_messages` has no notifications, so a
+  arrived, and they stay. pi's messages have no notifications, so a
   rebuild keeps the module's own notification items and merges them
   by time when the rebuild is of the same session (a compaction, a
   restart), and drops them for another session (a switch, a new
@@ -643,11 +683,11 @@ replay from `get_messages` and the live stream use one conversion.
   the session's stats, or a compaction. A compaction's item is
   running from `compaction_start` and ends as done (tokens before and
   after, pi's summary), failed (pi's error, a refusal of `compact`,
-  or pi's exit or restart during it), or cancelled (an aborted
+  or the session's failure during it), or cancelled (an aborted
   `compaction_end`). A rebuild of the same session keeps these items
   as it keeps notifications.
 - **One text edge.** The user decided with `refine.html` that the
-  transcript, the user block, the composer, the dialogs and the exit
+  transcript, the user block, the composer, the dialogs and the failed
   card share edges: the user block and the composer's field extend
   `--pad` past the transcript's text edge, so the field's text starts
   where the assistant's text starts, and every item's time ends on the
@@ -886,15 +926,16 @@ the command first ("`!` commands" below).
   together, on a send and on a reset of the transcript, which a
   session switch, `/new`, `/reload` and `/restart` all cause.
 
-**Completion.** pi's RPC mode offers only its command list
-(`get_commands`: extension commands, prompt templates and skills, no
-argument completions) and has no file search. koa cannot import pi's provider: `pi-tui` is not
+**Completion.** pi's session offers only its command list
+(`commandList` in `koa-agents.ts`: extension commands, prompt
+templates and skills, no argument completions) and has no file
+search. koa cannot import pi's provider: `pi-tui` is not
 reachable from pi's package exports, and pi's bun binary has no
 modules. So koa copies pi's rules (`koa-complete.ts`), behind its own
 `POST /complete`:
 
 - `/` at the start of the first line: koa's supported built-ins,
-  then `get_commands`, asked at each request so that an extension's
+  then the session's commands, read at each request so that an extension's
   new command shows at once, with pi's fuzzy filter over both. `@token`: the agents of the session first, then files from
   `fd` with pi's arguments and scoring. No forced Tab completion and
   no plain-path completion in a prompt (the user's decision).
@@ -930,18 +971,17 @@ completion source for each mode.
 - **Where.** koa cannot know the extension's resolved runtime: the
   extension starts
   and checks a routed runtime itself, and a pane variable cannot say
-  that a runtime is still starting or was refused. So koa asks on
-  the session channel (`completion_context`, with the channel's
-  request ids), and the extension answers through the resolver of
-  its current session (`share/koa/completion-context.ts` holds the
+  that a runtime is still starting or was refused. So koa asks the
+  extension (`host.extension.completionContext`), which answers
+  through the resolver of its current session (`share/koa/completion-context.ts` holds the
   type): the host with the session's
   cwd, a runtime with the cwd that `user_bash` would give the routed
   command, or `unavailable`. A refused or unready runtime, or no
-  resolver, is `unavailable`, never the host. The channel's reset at
-  each session end, a new pi child or a switch ends the requests in
-  flight, and a reply for another session is a 409.
-- **How.** One exec of `koa-shell.sh` for each Tab, never pi's RPC
-  `bash` (it would enter the transcript) and no persistent shell. On
+  resolver, is `unavailable`, never the host. A session end or a
+  switch aborts the requests in flight, and a reply for a session
+  that is no longer current is a 409.
+- **How.** One exec of `koa-shell.sh` for each Tab, never pi's
+  `executeBash` (it would enter the transcript) and no persistent shell. On
   the host it runs in koa's environment; in a runtime it runs through
   the runtime's exec route (`share/koa/runtime-exec.ts`, the
   extension's client) with no environment from the host, in the login
@@ -1115,25 +1155,29 @@ has no send or stop button and says nothing about Return and Escape.
   aborts. When a resend fails, koa stops and returns the entries that
   it did not send, and the page puts them into the composer as a
   take-back does, so no queued work is lost.
-- **Context and model facts** come from `get_state`, the pickers'
-  responses, `thinking_level_changed`, and `get_session_stats` after
-  each turn, settle and compaction. koa runs no git: the user removed
+- **Context and model facts** come from the session (its model,
+  thinking level, name and file), the pickers' results,
+  `thinking_level_changed`, and `getSessionStats` after each turn,
+  settle and compaction. koa runs no git: the user removed
   the branch and dirty mark.
-- `set_editor_text` replaces the composer's text; `setWidget`,
+- `setEditorText` replaces the composer's text; `setWidget`,
   `setTitle` and the other fire-and-forget methods are ignored.
 
 ## `!` commands
 
 A message that starts with `!` runs a shell command as pi's TUI does:
 `!cmd` puts the command and its output into the model's context,
-`!!cmd` keeps them out. koa sends pi's RPC `bash`, never a prompt and
-never the queue. pi fires `user_bash` for it, so the extension runs a routed
-pi's command in its runtime (design-runtimes.md, "Agents in a
+`!!cmd` keeps them out. koa runs it as pi's RPC mode does (`runBash`
+in `koa-agents.ts`), never as a prompt and never through the queue:
+it emits `user_bash` to the extensions first and records their
+result, else calls the session's `executeBash` with the operations
+that they returned. So the extension runs a routed pi's command in
+its runtime (design-runtimes.md, "Agents in a
 runtime") with no work in koa. The mockup is `app/design/koa/`,
 NOTES.md "`!` runs a command".
 
 - **One running command.** koa refuses a second command while one
-  runs: pi's `abort_bash` cancels every running command, so with one
+  runs: pi's `abortBash` cancels every running command, so with one
   a cancel reaches only the command that the user sees. A completed
   command does not block the next. koa also refuses `!` with
   attachments, because their paths would become shell text, and `!`
@@ -1141,13 +1185,12 @@ NOTES.md "`!` runs a command".
 - **While pi works** the command runs at once, beside the turn, as in
   pi. pi stores its `bashExecution` message only after the turn
   settles.
-- **No deadline.** The `bash` caller asks the RPC link for no
-  `RPC_RESPONSE_MS`: a command runs as long as it runs, and ends by
-  its exit, a cancel or pi's exit. koa answers the page's `/prompt`
-  at once and waits for pi's answer in the background.
+- **No deadline.** A command runs as long as it runs, and ends by
+  its exit, a cancel or the session's end. koa answers the page's
+  `/prompt` at once and waits for the result in the background.
 - **A live command is state, not an item.** `State.bash` holds the
   running command, with the output of pi's `bash_execution_update`
-  deltas for the id of its RPC command, published once for each
+  deltas for the id that koa gave the command, published once for each
   flush, and the completed commands that pi has not stored yet. The
   live output keeps its tail under the cap of a tool result
   (`koa-transcript.ts`), with the count of the bytes that it dropped,
@@ -1172,7 +1215,7 @@ NOTES.md "`!` runs a command".
   shows only while koa measured it: during the run and until the
   rebuild.
 - **Cancel.** While a command runs, Escape and the abort route send
-  `abort_bash` once; pi answers before the command ends, so the next
+  `abortBash` once; pi returns before the command ends, so the next
   Escape aborts the turn. pi keeps the output that the command wrote
   before the cancel.
 
@@ -1383,12 +1426,11 @@ which finds the questions of a reply, and the page renders the
   an annotation enters the window and the `/items?before` page as a
   job notice does.
 - **The transcript checks the entry at its edge.** Live, koa gives it
-  each `entry_appended`; on a rebuild, the entries of `get_entries`
-  (one call beside `get_messages`; a custom entry is not a message)
-  that are on the parent chain of pi's leaf, placed by time among the
-  messages, which keep their branch order. koa applies the rebuild in
-  the callback of the `get_messages` response, which it sends after
-  `get_entries`, so no event that pi wrote after that response is lost.
+  each `entry_appended`; on a rebuild, the session manager's entries
+  (a custom entry is not a message) that are on the parent chain of
+  pi's leaf, placed by time among the messages, which keep their
+  branch order. koa reads the messages, the entries and the leaf in
+  one synchronous step, so no event falls between them.
   The transcript resolves the reply key to the assistant item and its
   block, and applies the contract's drop rules. The page never sees
   an unknown type, a stale entry or a bad span. A second entry for the
@@ -1478,12 +1520,26 @@ keep up.
 
 ## Tests
 
-The TypeScript suite drives koa over the scripted pi
-(`koa-fake-pi.ts`) and the fake ko: the feed, the delivery, the
-routes, the attachments, the restart, the session switch and the
-status bytes (`koa-program.test.ts`), the session channel over the
-pinned real pi in a private directory (`koa-sessions.test.ts`), the transcript module, completion, the
-queue's matching, the image sniffer, and the page's DOM rules over a
+The TypeScript suite runs koa with the pinned real pi of
+`share/koa/package.json` and the fake ko. pi's session runs in koa's
+process, so no pi can be scripted; the suite scripts the model
+instead. `koa-fake-provider.ts` is a local HTTP server that speaks
+the OpenAI chat completions stream: each test gives its replies
+(text, thinking, tool calls with arguments in pieces, HTTP errors)
+and its gates, which the test releases and which end with the
+provider. It refuses an unexpected method, path, key, model or a
+request after the script ends, and records it, so a test cannot pass
+on a request that it did not expect. A private agent directory names
+it in `models.json` with a literal key, so pi asks for no
+credentials. `realFixture` in `koa-program-fixture.ts` starts koa
+with a private `HOME` and agent directory; facts that a model cannot
+make come from real pieces: a session file written with pi's
+`SessionManager` for history, a small test extension for dialogs,
+statuses, startup UI and extension errors, and pi's own tools for
+tool results. The suite covers the feed, the delivery, the routes,
+the attachments, the reload and the restart, the session switch, the
+project trust, the crash handler, the status bytes, the transcript
+module, completion, the queue's matching, the image sniffer, and the page's DOM rules over a
 fake document with the page's types stripped (`koa-dom.test.ts`);
 its reveal tests drive the frame loop and the clock by hand over a
 height model. The

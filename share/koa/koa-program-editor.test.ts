@@ -4,18 +4,18 @@ import { appendFile, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/prom
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { selfPane, pollUntil, ofType } from "./koa-agent-fixture.ts";
-import { fixture, linkFakeKo } from "./koa-program-fixture.ts";
+import { realFixture, linkFakeKo } from "./koa-program-fixture.ts";
 
-const f_notified = (app: Awaited<ReturnType<typeof fixture>>, text: string) => app.until(ofType("item", record => record.item.kind === "notify" && record.item.text.text === text));
+const f_notified = (app: Awaited<ReturnType<typeof realFixture>>, text: string) => app.until(ofType("item", record => record.item.kind === "notify" && record.item.text.text === text));
 
-async function editing(t: TestContext, env: NodeJS.ProcessEnv = {}, steps: object[] = []) {
+async function editing(t: TestContext, env: NodeJS.ProcessEnv = {}) {
   const dir = await mkdtemp(join(tmpdir(), "koa-editor-test-"));
   t.after(() => rm(dir, { recursive: true, force: true }));
   const panes = join(dir, "panes.json"), feed = join(dir, "feed"), apiLog = join(dir, "api");
   await linkFakeKo(dir);
   await writeFile(panes, JSON.stringify([selfPane()]));
   await writeFile(feed, "");
-  const app = await fixture(t, steps, { KO_PANE: "pane_1", KO_SOCKET: "", KO_PANE_TOKEN: "", KO_RUNTIME: "", KO_FAKE_PANES: panes, KO_FAKE_CLIENT_FEED: feed, KO_FAKE_API_LOG: apiLog, KO_FAKE_INSTANCE: "a".repeat(32), KO_FAKE_CLIENT_DROP: join(dir, "client-drop"), KO_FAKE_PUT_STALE: join(dir, "stale"), ...(env.KO_FAKE_PUT_GATE === "gate" ? { KO_FAKE_PUT_GATE: join(dir, "put-gate") } : {}), VISUAL: "", EDITOR: "myeditor --flag", PI_CODING_AGENT_DIR: join(dir, "agent"), PATH: `${dir}:${process.env.PATH}`, ...env, ...(env.KO_FAKE_PUT_GATE === "gate" ? { KO_FAKE_PUT_GATE: join(dir, "put-gate") } : {}) });
+  const app = await realFixture(t, { replies: [], env: { KO_PANE: "pane_1", KO_SOCKET: "", KO_PANE_TOKEN: "", KO_RUNTIME: "", KO_FAKE_PANES: panes, KO_FAKE_CLIENT_FEED: feed, KO_FAKE_API_LOG: apiLog, KO_FAKE_INSTANCE: "a".repeat(32), KO_FAKE_CLIENT_DROP: join(dir, "client-drop"), KO_FAKE_PUT_STALE: join(dir, "stale"), ...(env.KO_FAKE_PUT_GATE === "gate" ? { KO_FAKE_PUT_GATE: join(dir, "put-gate") } : {}), VISUAL: "", EDITOR: "myeditor --flag", PATH: `${dir}:${process.env.PATH}`, ...env, ...(env.KO_FAKE_PUT_GATE === "gate" ? { KO_FAKE_PUT_GATE: join(dir, "put-gate") } : {}) } });
   const api = async () => (await readFile(apiLog, "utf8").catch(() => "")).trim().split("\n").filter(Boolean).map(line => { const call: { method: string; path: string; body: string } = JSON.parse(line); return call; });
   const rows = async (): Promise<{ id: string; command?: string[]; parent?: string; close?: string; fixed_title?: string; close_confirm?: string; float?: { cols: number; rows: number; x: number; y: number; border: boolean } }[]> => JSON.parse(await readFile(panes, "utf8"));
   const float = async () => {
@@ -42,7 +42,7 @@ test("an edit with exit 0 replaces the draft, does not send it and leaves nothin
   assert.deepEqual(pane.command, [join(f.dir, "ko"), "shell", "--", "myeditor", "--flag", file]);
   assert.equal(pane.parent, "pane_1");
   assert.equal(pane.close, "on_exit");
-  assert.equal(pane.fixed_title, "Draft for @Fake pi");
+  assert.equal(pane.fixed_title, "Draft for @pi");
   assert.equal(pane.close_confirm, "never");
   assert.deepEqual({ ...pane.float }, { x: 8, y: 2, cols: 64, rows: 19, z: 0, border: true, title: "" });
   assert.match(file, /koa-draft-pane_1\.md$/);
@@ -57,7 +57,7 @@ test("an edit with exit 0 replaces the draft, does not send it and leaves nothin
   assert.equal(replaced.edit, undefined);
   await f.closed(pane.id);
   await f.gone(dirname(file));
-  assert.equal((await f.app.log()).some(record => record.type === "prompt"), false);
+  assert.equal(f.app.provider.requests.length, 0);
 });
 
 test("a failed or unchanged edit keeps the draft", { timeout: 15000 }, async t => {
@@ -166,14 +166,10 @@ test("koa shutdown while the float is being placed deletes the float that the pl
 });
 
 test("a session change while the float is being placed cancels the edit", { timeout: 15000 }, async t => {
-  const f = await editing(t, { KO_FAKE_PUT_GATE: "gate", KOA_FAKE_SESSIONS: JSON.stringify([{ path: "/tmp/chosen.jsonl" }]) }, [
-    { type: "wait", command: "switch_session", data: { cancelled: false } },
-    { type: "respond", command: "get_state", data: { sessionId: "chosen", sessionName: "Chosen" } },
-    { type: "respond", command: "get_messages", data: { messages: [] } },
-  ]);
+  const f = await editing(t, { KO_FAKE_PUT_GATE: "gate" });
   const opening = f.open("racing");
   await f.sent("PUT");
-  assert.equal((await f.app.post("sessions/switch", { path: "/tmp/chosen.jsonl" })).status, 200);
+  assert.equal((await f.app.post("sessions/new")).status, 200);
   await writeFile(f.gate, "");
   assert.equal((await opening).status, 409);
   await f.closed("pane_10");
