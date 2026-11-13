@@ -1803,6 +1803,7 @@ import SidebarFeed
                 windowNumber: window.windowNumber, context: nil, characters: "z", charactersIgnoringModifiers: "z", isARepeat: false, keyCode: 6))
             window.sendEvent(key)
             try await webviewUntil(web, "window.composer.text()==='z'&&document.activeElement===document.querySelector('#prompt .cm-content')")
+            try await webviewUntil(web, "(()=>{const scroll=document.querySelector('#scroll');scroll.scrollTop=scroll.scrollHeight;return scroll.scrollHeight-scroll.scrollTop-scroll.clientHeight<1})()")
             try await settle()
             try await webviewPageSnapshot(pane, "composer-focus", testName: "testKoaWebviewComposerFocus()")
             return
