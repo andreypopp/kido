@@ -111,6 +111,10 @@ the same exec client against a real `ko server` with a `command`
 runtime. A fake delay is a `KO_FAKE_*` gate that a test releases.
 `share/koa/testdata/ko-prompts.txt` is the snapshot of every prompt
 text that the extension registers (`make prompts` regenerates it).
+`koa-replay.test.ts` runs the replay server of the page tests
+(design-koa.md, "Tests") in browser mode on the scenarios of
+`testdata/scenarios/selftest.ts`; the stage's `tsc` checks every
+scenario against the record and route types.
 
 ## The e2e suite
 

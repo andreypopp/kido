@@ -14,7 +14,7 @@ export function attach(host: HTMLElement, changed: () => void, displayPath: (val
   const hovering = (value: boolean) => { if (hover !== value) { hover = value; changed(); } };
   const beginDrop = () => { clearTimeout(timer); notice.hidden = true; depth = 0; hovering(false); refresh(); };
   const refuse = (message: string) => { notice.textContent = message; notice.hidden = false; clearTimeout(timer); timer = setTimeout(() => { notice.hidden = true; refresh(); }, 4000); refresh(); };
-  const deleteFile = (id: string) => { void fetchJSON('/attachments/' + id + '/delete').catch(() => {}); };
+  const deleteFile = (id: string) => { void fetchJSON(`/attachments/${id}/delete`).catch(() => {}); };
   const remove = (chip: Chip, erase = true) => {
     const index = chips.indexOf(chip); if (index < 0) return;
     chips.splice(index, 1); chip.view.remove(); chip.controller.abort();

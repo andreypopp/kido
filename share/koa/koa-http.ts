@@ -15,6 +15,9 @@ export async function readBody(request: IncomingMessage, limit: number): Promise
   return size <= limit ? Buffer.concat(chunks) : undefined;
 }
 
+const isChunkRoute = (path: string) => /^\/attachments\/[^/]+\/\d+$/.test(path);
+export const wrongPostType = (request: IncomingMessage) => request.method === "POST" && request.headers["content-type"]?.split(";")[0]?.trim().toLowerCase() !== (isChunkRoute(new URL(request.url ?? "/", "http://koa").pathname) ? "application/octet-stream" : "application/json");
+
 export function respond(response: ServerResponse, status: number, text: string, contentType = "application/json"): void {
   response.writeHead(status, { "Content-Type": contentType });
   response.end(text);

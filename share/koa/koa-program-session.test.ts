@@ -1,10 +1,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdir, writeFile, readFile } from "node:fs/promises";
-import { join } from "node:path";
+import { mkdir, mkdtemp, rm, writeFile, readFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
+import { tmpdir } from "node:os";
 import { Readable } from "node:stream";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
-import { pollUntil, ofType, sse } from "./koa-agent-fixture.ts";
+import { pollUntil, ofType, sse, selfPane, agentPane, exited } from "./koa-agent-fixture.ts";
 import { realFixture, writeSession } from "./koa-program-fixture.ts";
 
 type App = Awaited<ReturnType<typeof realFixture>>;
@@ -231,3 +232,72 @@ test("an extension's ctx.navigateTree() rebuilds the transcript and puts the ent
   assert.equal(replay.items.filter(item => item.kind === "assistant").length, 0);
 });
 
+
+test("a held switch shows the switching phase, then the old session answers ready again", { timeout: 30000 }, async t => {
+  const gate = join(await mkdtemp(join(tmpdir(), "koa-switch-gate-")), "gate");
+  t.after(() => rm(dirname(gate), { recursive: true, force: true }));
+  const app = await realFixture(t, {
+    replies: [], env: { KOA_GATE: gate },
+    extensions: { "hold.ts": `import { existsSync } from "node:fs";\nexport default function (pi) { pi.on("session_before_switch", async () => { while (!existsSync(process.env.KOA_GATE)) await new Promise(resolve => setTimeout(resolve, 5)); }); }\n` },
+    setup: async ({ cwd, sessions }) => { await writeSession(cwd, sessions, 1, "other"); },
+  });
+  const before = state(app).sessionId;
+  const rows = (await (await app.post("sessions/list", { scope: "current" })).json()).rows;
+  const switched = app.post("sessions/switch", { path: rows[0].path });
+  await app.until(ofType("state", record => record.pi.type === "switching"));
+  assert.equal(state(app).sessionId, before);
+  await writeFile(gate, "");
+  assert.equal((await switched).status, 200);
+  await pollUntil(() => state(app).pi.type === "ready" && state(app).sessionId !== before, 5000, "the switched session ready");
+});
+
+test("an extension dialog expires at its timeout, and only a valid answer closes one", { timeout: 30000 }, async t => {
+  const app = await realFixture(t, {
+    replies: [],
+    extensions: { "ask.ts": `export default function (pi) {
+  pi.registerCommand("ask", { description: "ask", handler: async (_args, ctx) => { ctx.ui.notify("answer:" + await ctx.ui.select("Pick", ["a", "b"], { timeout: 300 }), "info"); } });
+  pi.registerCommand("pick", { description: "pick", handler: async (_args, ctx) => { ctx.ui.notify("picked:" + await ctx.ui.select("Pick", ["a", "b"]), "info"); ctx.ui.notify("confirmed:" + await ctx.ui.confirm("Sure", "really?"), "info"); } });
+}\n` },
+  });
+  void send(app, "/ask");
+  const shown = await app.until(ofType("state", record => record.dialogs.length === 1));
+  assert.equal(shown.dialogs[0]?.method === "select" && shown.dialogs[0].timeout, 300);
+  assert.equal(typeof shown.dialogs[0]?.expires, "number");
+  await app.until(note("answer:undefined"));
+  assert.deepEqual(state(app).dialogs, []);
+  const cursor = app.count();
+  void send(app, "/pick");
+  const select = (await app.until(ofType("state", record => record.dialogs.length === 1), cursor)).dialogs[0];
+  assert.ok(select);
+  const answer = async (body: object) => app.post("dialog", { id: select.id, ...body });
+  assert.equal((await app.post("dialog", { id: "missing", value: "a" })).status, 409);
+  assert.equal((await answer({ value: "zzz" })).status, 409);
+  assert.equal((await answer({ confirmed: true })).status, 409);
+  assert.deepEqual(state(app).dialogs.map(dialog => dialog.id), [select.id]);
+  assert.equal((await answer({ value: "b" })).status, 200);
+  await app.until(note("picked:b"));
+  const confirm = (await app.until(ofType("state", record => record.dialogs.some(dialog => dialog.method === "confirm")), cursor)).dialogs[0];
+  assert.ok(confirm);
+  assert.equal((await app.post("dialog", { id: confirm.id, value: "yes" })).status, 409);
+  assert.equal((await app.post("dialog", { id: confirm.id, confirmed: false })).status, 200);
+  await app.until(note("confirmed:false"));
+});
+
+test("@ completion lists the named running agents of this ko session, not koa's own pane", { timeout: 30000 }, async t => {
+  const app = await realFixture(t, {
+    replies: [],
+    panes: [
+      selfPane(),
+      agentPane({ pane: "pane_2", session: "alpha-session", name: "alpha" }),
+      agentPane({ pane: "pane_3", session: "unnamed-session" }),
+      agentPane({ pane: "pane_4", session: "beta-session", name: "beta", koSession: "session_2" }),
+      agentPane({ pane: "pane_5", session: "gone-session", name: "gone", dead: exited(0) }),
+    ],
+  });
+  const labels = async () => {
+    const body: { options: { kind: string; label: string }[] } = await (await app.post("complete", { text: "@", pos: 1 })).json();
+    return body.options.filter(option => option.kind === "agent").map(option => option.label);
+  };
+  await pollUntil(async () => (await labels()).length > 0, 5000, "agent discovery");
+  assert.deepEqual(await labels(), ["@alpha"]);
+});

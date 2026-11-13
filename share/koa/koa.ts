@@ -9,7 +9,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import type { AgentSession, AgentSessionEvent, SlashCommandSource } from "@earendil-works/pi-coding-agent";
 import { transcript, bashResult, appendBashOutput } from "./koa-transcript.ts";
 import { later } from "./koa-timer.ts";
-import { respond, readBody } from "./koa-http.ts";
+import { respond, readBody, wrongPostType } from "./koa-http.ts";
 import { isRecord, errorText, replaceControlCharacters, utf8Prefix, contentText } from "./text.ts";
 import { webview } from "../webview/index.ts";
 import { assemblePage } from "./koa-assemble.ts";
@@ -18,7 +18,7 @@ import { pickSession, piPackage } from "./koa-child.ts";
 import { loadSdk } from "./koa-sdk.ts";
 import { restartArgs, startupResult } from "./koa-args.ts";
 import { shellComplete } from "./koa-shell.ts";
-import { attachments, stepFile, UPLOAD_IDLE_MS, isChunkRoute } from "./koa-attach.ts";
+import { attachments, stepFile, UPLOAD_IDLE_MS } from "./koa-attach.ts";
 import { commandCatalog, parseCommand, dispatchCommand, deferralText, type Deferral } from './koa-commands.ts';
 import { installedIdentity } from './koa-identity.ts';
 import { bashCommand } from "./prompt.ts";
@@ -132,7 +132,9 @@ async function main(): Promise<void> {
   }
   if (metricsMode && !metricsFile) throw new Error("--metrics-mode requires --metrics");
   const reloadPage = process.env.KOA_PAGE_RELOAD === '1';
-  const page = reloadPage ? undefined : await assemblePage(location);
+  const instance = randomUUID();
+  const metrics = metricsFile ? metricsMode ?? "frame" : undefined;
+  const page = reloadPage ? undefined : await assemblePage(location, instance, metrics);
   const identity = await installedIdentity(location).catch(() => undefined);
   const uploadIdleMs = Number(process.env.KOA_UPLOAD_IDLE_MS ?? UPLOAD_IDLE_MS);
   if (!Number.isFinite(uploadIdleMs) || uploadIdleMs <= 0) throw Error("KOA_UPLOAD_IDLE_MS must be positive");
@@ -409,7 +411,6 @@ async function main(): Promise<void> {
         default: { const unexpected: never = mode; throw new Error(unexpected); }
       }
     };
-    const instance = randomUUID();
     const restartKoa = (response: ServerResponse) => {
       response.setHeader("Connection", "close");
       const restart = () => {
@@ -666,7 +667,7 @@ async function main(): Promise<void> {
     };
     const handle = async (request: IncomingMessage, response: ServerResponse) => {
       try {
-        if (request.method === "POST" && request.headers["content-type"]?.split(";")[0]?.trim().toLowerCase() !== (isChunkRoute(new URL(request.url ?? "/", "http://koa").pathname) ? "application/octet-stream" : "application/json")) { respond(response, 415, "{}"); return; }
+        if (wrongPostType(request)) { respond(response, 415, "{}"); return; }
         if (metricsFile && request.method === "POST" && request.url === "/metrics") {
           const bytes = await readBody(request, 1 << 20);
           if (!bytes) { respond(response, 413, "{}"); return; }
@@ -690,8 +691,7 @@ async function main(): Promise<void> {
         if (feed.handle(request, response)) return;
         if (request.method === "GET" && request.url === "/") {
           try {
-            const document = page ?? await assemblePage(location);
-            const html = document.replace("<head>", `<head><meta name="koa-instance" content="${instance}">${metricsFile ? `<meta name="koa-metrics" content="${metricsMode ?? "frame"}">` : ""}`);
+            const html = page ?? await assemblePage(location, instance, metrics);
             respond(response, 200, html, "text/html; charset=utf-8");
           } catch (error) { respond(response, 500, errorText(error), "text/plain; charset=utf-8"); }
           return;

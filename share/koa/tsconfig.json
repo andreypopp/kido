@@ -15,5 +15,5 @@
       "@earendil-works/pi-agent-core": ["./node_modules/@earendil-works/pi-agent-core/dist/index.d.ts"]
     }
   },
-  "include": ["*.ts", "../webview/*.ts", "stress/*.ts"]
+  "include": ["*.ts", "../webview/*.ts", "stress/*.ts", "testdata/*.ts", "testdata/scenarios/*.ts"]
 }

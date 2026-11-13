@@ -5,7 +5,7 @@ import { attach } from './attach.ts';
 import { preview, previewKey } from './preview.ts';
 import { fetchJSON } from './http.ts';
 import { ATTACHMENT_LIMITS, pathArg } from '../koa-records.ts';
-import type { State, WireItem, QueuedPrompt, WireAssistant, Block, Patch, PageRecord, PromptMode, ImageRef, AgentCall, Bash, SessionRow, SessionScope } from '../koa-records.ts';
+import type { State, WireItem, QueuedPrompt, WireAssistant, Block, Patch, PageRecord, PromptMode, ImageRef, AgentCall, Bash, SessionRow, SessionScope, ThinkingLevel } from '../koa-records.ts';
 import type { Relation } from '../records.ts';
 
 type Step = { block: Exclude<Block, { type: 'text' }>;  item: WireAssistant; index: number; key: string; slots: Map<string, Slot> };
@@ -880,7 +880,7 @@ async function picker(kind: 'model' | 'thinking', search = '') {
   const trigger = element(kind), host = element('picker');
   if (pickerButton === trigger) { closePicker(); return; }
   closePicker();
-  let choices: ({ kind: 'model'; id: string; provider: string } | { kind: 'thinking'; id: string })[] = [];
+  let choices: ({ kind: 'model'; id: string; provider: string } | { kind: 'thinking'; id: ThinkingLevel })[] = [];
   try {
     if (kind === 'model') {
       choices.push(...(await fetchJSON('/models', undefined, 'GET')).models.map(model => ({ kind: 'model' as const, id: model.id, provider: model.provider })));
@@ -903,7 +903,7 @@ async function picker(kind: 'model' | 'thinking', search = '') {
     row.onmouseenter = () => selection.mark(index); row.onclick = () => choose(index); host.append(row); return row;
   });
   const selection = cursor(rows, () => {});
-  const choose = async (index: number) => { const choice = choices[index]; if (!choice) return; try { await fetchJSON('/' + choice.kind, { sessionId: state.sessionId, ...(choice.kind === 'model' ? { provider: choice.provider, modelId: choice.id } : { level: choice.id }) }); closePicker(); } catch (error) { reportError(error); } };
+  const choose = async (index: number) => { const choice = choices[index]; if (!choice) return; try { if (choice.kind === 'model') await fetchJSON('/model', { sessionId: state.sessionId, provider: choice.provider, modelId: choice.id }); else await fetchJSON('/thinking', { sessionId: state.sessionId, level: choice.id }); closePicker(); } catch (error) { reportError(error); } };
   host.append(node('div', '↑↓ move · ↩ choose · ⎋ close', 'hints')); selection.mark(Math.max(0, choices.findIndex(current))); host.focus(); composerFocus();
   host.onkeydown = event => { if (event.metaKey || event.ctrlKey || event.isComposing) return; if (['ArrowUp', 'ArrowDown', 'Enter', 'Escape'].includes(event.key)) { event.preventDefault(); event.stopPropagation(); if (event.key === 'Escape') { closePicker(); } else if (event.key === 'Enter') void choose(selection.index); else selection.mark(selection.index + (event.key === 'ArrowDown' ? 1 : -1)); } };
 }

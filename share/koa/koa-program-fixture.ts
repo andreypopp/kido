@@ -29,25 +29,30 @@ export async function stopChild(child: ChildProcess, closed: Promise<unknown>, m
   }
   throw new Error(`child ${child.pid} did not close after SIGKILL: ${child.spawnargs.join(" ")}`);
 }
-async function launch(t: TestContext, dir: string, cwd: string, env: NodeJS.ProcessEnv, pi: string, args: string[], program: string) {
+export async function serveChild(t: TestContext, dir: string, args: string[], options: { env: NodeJS.ProcessEnv; cwd?: string; label: string }) {
   await writeFile(join(dir, process.platform === "darwin" ? "open" : "xdg-open"), '#!/bin/sh\nprintf "%s\\n" "$1" >> "$OPEN_LOG"\n', { mode: 0o700 });
-  const child = spawn(process.execPath, [program, "--browser", "--pi", pi, ...args], { env: { ...hostEnv, HOME: join(dir, "home"), OPEN_LOG: join(dir, "urls"), KO_PANE: "", ...env, PATH: `${dir}:${env.PATH ?? process.env.PATH}` }, stdio: "pipe", cwd });
+  const child = spawn(process.execPath, args, { env: { ...options.env, PATH: `${dir}:${options.env.PATH ?? process.env.PATH}` }, stdio: "pipe", cwd: options.cwd });
   let stdout = "";
   let stderr = "";
   child.stdout.on("data", bytes => { stdout += bytes; });
   let ready: (url: string) => void = () => {};
   const url = new Promise<string>(resolve => { ready = resolve; });
-  child.stderr.on("data", bytes => { stderr += bytes; const match = stderr.match(/koa: (http:\/\/127\.0\.0\.1:\d+\/)/); if (match?.[1]) ready(match[1]); });
+  const pattern = new RegExp(`${options.label}: (http://127\\.0\\.0\\.1:\\d+/)`);
+  child.stderr.on("data", bytes => { stderr += bytes; const match = stderr.match(pattern); if (match?.[1]) ready(match[1]); });
   const close = once(child, "close");
   t.after(async () => { await stopChild(child, close); await rm(dir, { recursive: true, force: true }); });
-  const base = await Promise.race([url, close.then(() => { throw new Error(`koa exited before serving: ${stderr}`); }), new Promise<never>((_, reject) => { setTimeout(reject, 8000, new Error(`koa did not serve within 8 s: ${stderr}`)).unref(); })]);
+  const base = await Promise.race([url, close.then(() => { throw new Error(`${options.label} exited before serving: ${stderr}`); }), new Promise<never>((_, reject) => { setTimeout(reject, 8000, new Error(`${options.label} did not serve within 8 s: ${stderr}`)).unref(); })]);
+  return { child, base, close, stdout: () => stdout, stderr: () => stderr };
+}
+async function launch(t: TestContext, dir: string, cwd: string, env: NodeJS.ProcessEnv, pi: string, args: string[], program: string) {
+  const { child, base, close, stdout, stderr } = await serveChild(t, dir, [program, "--browser", "--pi", pi, ...args], { env: { ...hostEnv, HOME: join(dir, "home"), OPEN_LOG: join(dir, "urls"), KO_PANE: "", ...env }, cwd, label: "koa" });
   const controller = new AbortController();
   t.after(() => controller.abort());
   const response = await fetch(base + "events", { signal: controller.signal });
   assert.ok(response.body);
   const { state: stream, until } = sse(Readable.from(response.body));
   const post = (path: string, body: object = {}) => fetch(base + path, { method: "POST", headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(Array.isArray(body) ? body : { sessionId: stream.records.filter(record => record.type === 'state').at(-1)?.sessionId, ...body }) });
-  return { pid: child.pid, post, until, records: () => stream.records, count: () => stream.records.length, close, stdout: () => stdout, stderr: () => stderr, base };
+  return { pid: child.pid, post, until, records: () => stream.records, count: () => stream.records.length, close, stdout, stderr, base };
 }
 export const assistantMessage = { ...assistant("stop"), api: "test", provider: "test", model: "test", usage: {}, timestamp: 42 };
 
