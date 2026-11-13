@@ -1009,7 +1009,7 @@ composer's text; koa never sends it.
 - **While the editor is open**, from the Control-G on, the draft is
   locked; once the float exists, the state record's `edit` names the
   float and the editor. The draft stays visible and read-only, the
-  state cell says "Editing in <editor>…", sending, the take-back and
+  state cell says "Editing…" with the tooltip "Editing in <editor>", sending, the take-back and
   the pickers are off, and Escape and Return do nothing; the queue and
   the transcript stay live. While `edit` is set, the field is `inert`
   and has the class `editing` (design: `app/design/floats/NOTES.md`):

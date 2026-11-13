@@ -90,7 +90,10 @@ band never crosses a divider.
 across the full area (state `zoomed`). The hidden panes draw nothing.
 
 **Float.** The float's chrome is the rounded card; the stripe is its
-top 3pt, clipped by the card's corner radius (state `float`). The
+top 3pt, but it sits at the top of the grid's padding: 10pt
+(`PaneLayout.floatTop`) below the card's top edge, directly above the
+first row; the card's top band, with the move handle, stays above it
+(state `float`). Tiled panes keep the stripe at the chrome's top. The
 pill sits at the float's own top-right. The pane under the float is
 unchanged.
 

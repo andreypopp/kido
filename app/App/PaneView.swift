@@ -520,7 +520,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
         if let webviewView, let paneChrome = parent as? PaneChrome {
             var interior = chrome.insetBy(dx: 1, dy: 1)
             if paneChrome.runtimeMark != nil {
-                interior.origin.y = max(interior.minY, PaneChrome.stripeBand)
+                interior.origin.y = max(interior.minY, paneChrome.stripeTop + PaneChrome.stripeBand)
                 interior.size.height = max(0, chrome.maxY - 1 - interior.minY)
             }
             webviewView.frame = parent.convert(bounds, from: self).intersection(interior)

@@ -493,6 +493,7 @@ final class WindowView: NSView {
         let mark = session?.marks[view.pane]
         view.runtimeMark = mark
         chrome.runtimeMark = mark
+        chrome.stripeTop = host != nil ? PaneLayout.floatTop : 0
         let frame: CGRect, grid: CGRect, content: CGRect, insets: PaneLayout.RenderInsets
         if floating {
             let rect = floatFrame(chrome.pane, g, placement, host)

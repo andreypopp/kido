@@ -85,7 +85,7 @@ import SidebarFeed
         try await wait("the editor float", within: 15) { !floats().isEmpty }
         let float = try XCTUnwrap(floats().first)
         try await wait("the float has the focus", within: 10) { owner.testModel?.selection.pane == float }
-        try await webviewUntil(web, "document.querySelector('#status').textContent.startsWith('Editing in editor.sh')")
+        try await webviewUntil(web, "document.querySelector('#status').textContent.startsWith('Editing…')")
         try "".write(to: gate, atomically: true, encoding: .utf8)
         try await wait("the float is gone", within: 15) { floats().isEmpty }
         try await webviewUntil(web, "composer.text()==='edited by editor'", within: 15)
@@ -1442,7 +1442,7 @@ import SidebarFeed
             if name == "toast" || name == "toast-err" { try await webviewUntil(web, "document.querySelector('.nrow')!==null") }
             if name == "editing" {
                 _ = try await webviewJS(web, "(()=>{window.composer.setText('Make the sweep keep a start failure');footSource.dispatchEvent(new MessageEvent('message',{data:JSON.stringify({...footState,edit:{pane:'pane_2',editor:'nvim'}})}));return true})()")
-                try await webviewUntil(web, "document.querySelector('#status').textContent==='Editing in nvim…'&&document.querySelector('#field').classList.contains('editing')&&document.querySelector('#field').inert")
+                try await webviewUntil(web, "document.querySelector('#status').textContent==='Editing…'&&document.querySelector('#field').classList.contains('editing')&&document.querySelector('#field').inert")
             }
             if name == "extras" { try await webviewUntil(web, "document.querySelectorAll('.foot .ext').length===2") }
             if name == "picker" {

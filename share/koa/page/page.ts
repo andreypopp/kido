@@ -688,8 +688,9 @@ function status() {
   const bang = editor.bash(), running = state.bash.find(item => item.phase !== 'completed');
   label.classList.toggle('err', !!bang && draft.count > 0);
   label.title = bang && draft.count ? 'remove the attachments' : '';
-  const word = cause ? (cause.kind === 'code' ? 'exited' : cause.kind) + ' ' + cause.value : waiting ? 'waiting' : state.edit ? `Editing in ${state.edit.editor}…` : state.pi.type === 'starting' ? 'starting' : state.pi.type === 'switching' ? 'loading' : state.working ? state.compaction === 'running' ? 'compacting' : 'working' : running ? 'running' : bang ? bang.excludeFromContext ? 'run, quiet' : 'run' : state.aborted ? 'aborted' : 'idle';
+  const word = cause ? (cause.kind === 'code' ? 'exited' : cause.kind) + ' ' + cause.value : waiting ? 'waiting' : state.edit ? 'Editing…' : state.pi.type === 'starting' ? 'starting' : state.pi.type === 'switching' ? 'loading' : state.working ? state.compaction === 'running' ? 'compacting' : 'working' : running ? 'running' : bang ? bang.excludeFromContext ? 'run, quiet' : 'run' : state.aborted ? 'aborted' : 'idle';
   const completing = editor.completionStatus();
+  if (word === 'Editing…') label.title = `Editing in ${state.edit.editor}`;
   label.textContent = bang && completing === 'pending' ? 'completing…' : bang && completing === 'none' ? 'no completions' : word;
   label.classList.toggle('completion-hint', !!bang && completing !== 'idle');
   if (state.pi.type === 'ready' && (state.working || running) && !waiting) {

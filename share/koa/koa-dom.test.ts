@@ -1498,7 +1498,7 @@ test('while an editor is open the draft is read-only, sending and Escape do noth
     [open,()=>{apply({type:'state',...state,edit:undefined})}];
   `);
   assert.equal(app.prompt()?.readOnly, true);
-  assert.deepEqual(JSON.parse(JSON.stringify(result[0])), { status: 'Editing in nano…', send: false });
+  assert.deepEqual(JSON.parse(JSON.stringify(result[0])), { status: 'Editing…', send: false });
   app.listeners.get('keydown')?.({ key: 'Escape', target: app.prompt(), preventDefault() {} });
   app.listeners.get('keydown')?.({ key: 'Escape', target: app.prompt(), preventDefault() {} });
   await new Promise<void>(resolve => setImmediate(resolve));

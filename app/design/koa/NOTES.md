@@ -142,6 +142,9 @@ An agent card splits a run as a text does.
 - **While the agent works** the field stays editable and its border
   rests; the foot's state dot breathes. Escape anywhere on the page
   aborts; a second Escape clears the field.
+- **While the C-g editor is open** the foot's state cell (15ch) reads
+  "Editing…"; the editor's name goes to the cell's tooltip, "Editing in
+  nvim". The cell has no wider form, so the name is never cut.
 - **Markdown in the field** (user, 2026-11-09, without a mockup): the
   markup characters muted, strong bold, emphasis italic, code in the
   terminal font at the transcript's code size with no background,

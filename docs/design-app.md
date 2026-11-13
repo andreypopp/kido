@@ -1111,8 +1111,9 @@ name and the hashed colour and shows no state.
   colour across the top of the chrome, over the top side of the focus
   edge. It is at 55% in an unfocused pane, dashed (8pt on, 6pt at 35%
   of it, still) while the runtime starts, and at full colour when it
-  failed: the pane's screen shows the message. A float's band is its
-  card's top, clipped by the card's corners; a zoomed pane keeps its
+  failed: the pane's screen shows the message. A float's band sits
+  `PaneLayout.floatTop` (10pt) below the card's top edge, directly above
+  the first row, under the move band's handle; a zoomed pane keeps its
   band.
 - **The label pill.** `RuntimePill`, in the COPY pill's family, at the
   chrome's top-right (8pt in, 22pt high): a 6pt swatch, the name, then
