@@ -47,7 +47,7 @@ extern "C" {
  * bytes of an older snapshot never follow a newer restore. The surface may
  * be fed from that thread only; the caller's queue plays no part in it. The
  * calls that return a ko_buffer (ko_client_put_layout, ko_client_prompt,
- * ko_client_prompt_resolve, ko_client_delete, ko_client_runtime_up, ko_client_runtime_down,
+ * ko_client_select_record, ko_client_prompt_resolve, ko_client_delete, ko_client_runtime_up, ko_client_runtime_down,
  * ko_client_edit, ko_client_image),
  * ko_client_launch, ko_client_stop_server and ko_client_probe block until the
  * server answered: call them off the main queue.
@@ -789,6 +789,19 @@ ko_code ko_client_prompt(const ko_client *client,
                          const uint8_t *text,
                          size_t len,
                          ko_buffer *out);
+
+/*
+ * Sends a `select` message for the record `record_id` to the program of the pane `pane`, as the
+ * user. `record_id` is a status id; the empty string names the root record. The receiver decides
+ * what a select means. The core mints the id of the message. On KO_OK `out` holds the JSON of
+ * `Posted`; on a request failure it holds the error text. KO_ERR_ARGUMENT: `pane` or `record_id`
+ * does not parse, and no request was sent. It blocks until the server answered: call it off the
+ * main queue.
+ */
+ko_code ko_client_select_record(const ko_client *client,
+                                const char *pane,
+                                const char *record_id,
+                                ko_buffer *out);
 
 enum {
     KO_DELETE_PANE = 1,

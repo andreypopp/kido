@@ -75,8 +75,8 @@ removes a record that the route set.
   supply the stamp: it is a fact of the set, not of the program.
 - The serial starts at 0 and increases by one on every change.
 - The published records are sorted by id, bytewise. A working record
-  with progress 0 and no app, title or message is dropped from the
-  published set, not from the stored one.
+  with progress 0 and no app, title, message or selection is dropped
+  from the published set, not from the stored one.
 
 The records supply:
 
@@ -89,6 +89,11 @@ The records supply:
   error produce outcomes (below).
 - `msg` and `progress`: the message and the progress.
 - `title`: a terminal's title.
+- `selection`: only from the route. Whether the program acts on a
+  `select` message of the record, and whether the record is the one
+  that it shows now (protocol.md, section 6). The set stores it as
+  any other field: a change of it alone is a change of the record.
+  The reduction and the outcomes do not read it.
 
 Kido.app draws non-root records as child rows under the pane row,
 nested by id, in id order: a record nests under each ancestor id that

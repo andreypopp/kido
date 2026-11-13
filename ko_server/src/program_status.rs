@@ -49,6 +49,7 @@ impl Set {
             title: report.title.map(String::from),
             msg: report.msg.map(String::from),
             started,
+            selection: report.selection,
         };
         if let Some(index) = stored {
             if self.records.get(index) == Some(&record) {
@@ -83,6 +84,7 @@ impl Set {
                         app: None,
                         title: None,
                         msg: None,
+                        selection: None,
                         ..
                     } if u8::from(*progress) == 0
                 )
@@ -130,6 +132,7 @@ mod tests {
                 app: (!app.is_empty()).then(|| app.to_owned().try_into().unwrap()),
                 title: None,
                 msg: None,
+                selection: None,
             },
         }
     }
@@ -254,9 +257,21 @@ mod tests {
             ),
             Mono::from_nanos(1),
         );
+        found.apply(
+            StatusReport::Set {
+                record: ko_wire::protocol::StatusRecord {
+                    selection: Some(ko_wire::protocol::RecordSelection::Offered),
+                    ..match working("sel", 0) {
+                        StatusReport::Set { record } => record,
+                        StatusReport::Clear { .. } => unreachable!(),
+                    }
+                },
+            },
+            Mono::from_nanos(1),
+        );
         found.apply(working("one", 1), Mono::from_nanos(1));
         found.apply(set("idle", ProgramState::Idle, ""), Mono::from_nanos(1));
-        assert_eq!(ids(&found), ["app", "idle", "msg", "one"]);
+        assert_eq!(ids(&found), ["app", "idle", "msg", "one", "sel"]);
     }
 
     #[test]

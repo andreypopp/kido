@@ -1206,6 +1206,9 @@ export interface components {
             kind: "notice";
         } & components["schemas"]["Payload"]) | ({
             /** @constant */
+            kind: "select";
+        } & components["schemas"]["Payload"]) | ({
+            /** @constant */
             kind: "user";
         } & components["schemas"]["Payload"]) | {
             end: components["schemas"]["End"];
@@ -1387,6 +1390,7 @@ export interface components {
             app?: string;
             id: components["schemas"]["StatusId"];
             msg?: string;
+            selection?: components["schemas"]["RecordSelection"];
             /** @description The server's monotonic start time in nanoseconds for a child record; absent on the root. */
             started?: number;
             title?: string;
@@ -1427,6 +1431,11 @@ export interface components {
             pane: components["schemas"]["PaneId"];
             pwd: string;
         };
+        /**
+         * @description Whether selecting a record means something to the program that reports it.
+         * @enum {string}
+         */
+        RecordSelection: "offered" | "selected";
         /**
          * @description What the sender of a message is to its receiver, from the `parent` edges of the panes.
          * @enum {string}
@@ -1541,7 +1550,7 @@ export interface components {
          * @description The kinds that a sender may give. The server reads none of them.
          * @enum {string}
          */
-        SendKind: "message" | "steer" | "interrupt" | "stop" | "notice";
+        SendKind: "message" | "steer" | "interrupt" | "stop" | "notice" | "select";
         /** @description A message to the pane in the path. The server stamps the sender. */
         SendMessage: {
             data?: components["schemas"]["Data"];
@@ -1717,6 +1726,7 @@ export interface components {
             app?: components["schemas"]["StatusApp"];
             id: components["schemas"]["StatusId"];
             msg?: components["schemas"]["StatusText2048"];
+            selection?: components["schemas"]["RecordSelection"];
             title?: components["schemas"]["StatusText192"];
             /** @constant */
             type: "set";

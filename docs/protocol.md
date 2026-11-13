@@ -596,6 +596,18 @@ follows as a `status` event. A pane writes only its own records (409
 `refused` for another pane), and the user writes any pane's. On a
 runtime connection only the visit's own pane writes.
 
+A record of the route can carry `selection` (`RecordSelection` in
+`ko_wire/src/protocol.rs`); Ghostty's OSC 7501 parser has no such
+option, so an OSC record never has one. It is the program's own fact,
+and the program is its only writer: absent, a selection of the record
+means nothing to the program; `offered`, the program acts on a
+`select` message that names the record (section 7, "Messages");
+`selected`, it is the record that the program shows now. A client
+never sets or clears it from its own click or from the reply of a
+`select`, because another client or the program itself can change
+the selection: it follows the `status` events. Clients ignore it on
+the root record, which is the pane itself.
+
 The first message after the welcome is the full layout with every
 pane's row, and the second is the client's `selected`. There is no event replay; a client that reconnects gets
 the state again from its new welcome's layout event and reopens its
@@ -809,6 +821,16 @@ bodies (`SendMessage`, `Message`, `StreamRequest`, `Posted`);
 `ko_server/src/inbox.rs` owns the queue and `state/messages.rs` the
 routes. The server does not read a message's `kind` or `text`: it
 stamps the sender, enforces the scope and carries the bytes.
+
+- **`select`.** A client that shows a pane's records offers the
+  selection of a record while its `selection` is set and the pane's
+  `inbox` is open. It sends kind `select` with the record id as
+  `text` (the empty id names the root record) and no `data`. The
+  server treats it as every kind; the receiver decides what a
+  `select` is and from which senders it accepts one. The record id
+  is opaque to ko and its clients: they read only its `/` nesting.
+  `ko_client_select_record` (`ko_client/include/ko_client.h`) sends
+  it as the user, and refuses an id that is not a status id.
 
 - Only the pane itself (or the user) opens the stream, and a pane has
   at most one: a second upgrade is `refused`, "the pane already has a

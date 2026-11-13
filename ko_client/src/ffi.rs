@@ -3828,6 +3828,7 @@ mod tests {
                     r#"{"kind":"invalid","message":"pane_3 is not a candidate"}"#.to_owned(),
                 )),
                 "/prompt" => Some((200, r#"{"via":"paste"}"#.to_owned())),
+                "/panes/pane_3/messages" => Some((200, r#"{"state":"queued","seq":1}"#.to_owned())),
                 target if target.starts_with("/prompt/resolve") => {
                     Some((200, format!(r#"[{{"asked":"{target}"}}]"#)))
                 }
@@ -3954,6 +3955,91 @@ mod tests {
         }
         assert_eq!(prompt(c"pane_3", &[0xff, 0xfe]).0, Code::Argument);
         assert_eq!(prompt(c"nonsense", b"x").0, Code::Argument);
+        let mut out = empty_buffer();
+        // SAFETY: the client is live, the strings are valid and out is writable.
+        let code = unsafe {
+            ko_client_select_record(
+                client,
+                c"pane_3".as_ptr(),
+                c"agents/a/agents/b".as_ptr(),
+                &mut out,
+            )
+        };
+        assert_eq!(
+            (
+                code,
+                // SAFETY: this core buffer remains allocated through this read.
+                unsafe { contents(&out) }.as_str()
+            ),
+            (Code::Ok, r#"{"state":"queued","seq":1}"#)
+        );
+        // SAFETY: out owns a core allocation that is not freed yet.
+        unsafe { freed_once(&mut out) };
+        let mut out = empty_buffer();
+        // SAFETY: the client is live, the strings are valid and out is writable.
+        let code =
+            unsafe { ko_client_select_record(client, c"pane_3".as_ptr(), c"".as_ptr(), &mut out) };
+        assert_eq!(code, Code::Ok);
+        // SAFETY: out owns a core allocation that is not freed yet.
+        unsafe { freed_once(&mut out) };
+        let mut out = empty_buffer();
+        // SAFETY: the client is live, the strings are valid and out is writable.
+        let code = unsafe {
+            ko_client_select_record(client, c"pane_3".as_ptr(), c"a b".as_ptr(), &mut out)
+        };
+        assert_eq!(code, Code::Argument);
+        let sent: Vec<serde_json::Value> = server
+            .bodies("POST", "/panes/pane_3/messages")
+            .iter()
+            .map(|body| serde_json::from_str(body).unwrap())
+            .collect();
+        assert_eq!(
+            sent.iter()
+                .map(|body| (body["kind"].as_str(), body["text"].as_str()))
+                .collect::<Vec<_>>(),
+            [
+                (Some("select"), Some("agents/a/agents/b")),
+                (Some("select"), Some(""))
+            ]
+        );
+        // SAFETY: the null arguments are the point of this call.
+        let nulls = unsafe {
+            (
+                ko_client_select_record(
+                    std::ptr::null(),
+                    c"pane_3".as_ptr(),
+                    c"".as_ptr(),
+                    &mut empty_buffer(),
+                ),
+                ko_client_select_record(
+                    client,
+                    c"pane_3".as_ptr(),
+                    c"".as_ptr(),
+                    std::ptr::null_mut(),
+                ),
+                ko_client_select_record(
+                    client,
+                    c"window_1".as_ptr(),
+                    c"".as_ptr(),
+                    &mut empty_buffer(),
+                ),
+                ko_client_select_record(
+                    client,
+                    c"pane_3".as_ptr(),
+                    std::ptr::null(),
+                    &mut empty_buffer(),
+                ),
+            )
+        };
+        assert_eq!(
+            nulls,
+            (
+                Code::Argument,
+                Code::Argument,
+                Code::Argument,
+                Code::Argument
+            )
+        );
         for (kind, id, expected) in [
             (1, c"pane_4", Code::Ok),
             (2, c"window_2", Code::Ok),

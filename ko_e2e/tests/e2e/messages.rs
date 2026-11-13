@@ -86,6 +86,23 @@ fn child(s: &Server, parent: &str) -> String {
 }
 
 #[test]
+fn a_select_message_is_delivered_with_its_record_id_untouched() {
+    let s = start(&[]);
+    let a = s.token_pane("exec cat");
+    let id = "agents/a b/agents/\u{fc}";
+    let select = json!({"id": "msg-0001", "kind": "select", "text": id});
+    assert_eq!(
+        send(&s, &s.headers(), &a, &select),
+        (200, json!({"state": "queued", "seq": 1}))
+    );
+    let mut stream = open(&s, &a);
+    assert_eq!(
+        received(&mut stream),
+        json!({"seq": 1, "id": "msg-0001", "from": {"type": "user"}, "kind": "select", "text": id})
+    );
+}
+
+#[test]
 fn a_message_is_queued_written_acked_and_remembered_by_its_id() {
     let s = start_with(Path::new("/bin/sh"), &[("KO_MESSAGE_ACK_MS", "500")], &[]);
     let user = s.headers();

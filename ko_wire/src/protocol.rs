@@ -463,6 +463,14 @@ pub enum StatusReport {
     },
 }
 
+/// Whether selecting a record means something to the program that reports it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum RecordSelection {
+    Offered,
+    Selected,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct StatusRecord {
     pub id: StatusId,
@@ -474,6 +482,10 @@ pub struct StatusRecord {
     pub title: Option<StatusText<MAX_STATUS_TITLE>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub msg: Option<StatusText<MAX_STATUS_MESSAGE>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Absent: selecting the record means nothing to the program. Offered: the program acts on a
+    /// `select` message of this record. Selected: the record that the program shows now.
+    pub selection: Option<RecordSelection>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -490,6 +502,10 @@ pub struct ProgramRecord {
     pub title: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub msg: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    /// Absent: selecting the record means nothing to the program. Offered: the program acts on a
+    /// `select` message of this record. Selected: the record that the program shows now.
+    pub selection: Option<RecordSelection>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -2319,6 +2335,7 @@ pub enum SendKind {
     Interrupt,
     Stop,
     Notice,
+    Select,
 }
 
 /// A message to the pane in the path. The server stamps the sender.
@@ -2371,6 +2388,7 @@ pub enum Content {
     Interrupt(Payload),
     Stop(Payload),
     Notice(Payload),
+    Select(Payload),
     User(Payload),
     Ended { end: End },
 }
@@ -2383,6 +2401,7 @@ impl Content {
             SendKind::Interrupt => Content::Interrupt(payload),
             SendKind::Stop => Content::Stop(payload),
             SendKind::Notice => Content::Notice(payload),
+            SendKind::Select => Content::Select(payload),
         }
     }
 }

@@ -501,6 +501,7 @@ mod tests {
             app: app.map(str::to_owned),
             title: None,
             msg: msg.map(str::to_owned),
+            selection: None,
         }
     }
 

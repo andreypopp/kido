@@ -660,7 +660,7 @@ function isSender(value: unknown): value is Api["Sender"] {
   return isRecord(value) && (value.type === "user" || (value.type === "pane" && isString(value.pane)));
 }
 
-const MESSAGE_KINDS = ["message", "steer", "interrupt", "stop", "notice", "user"];
+const MESSAGE_KINDS = ["message", "steer", "interrupt", "stop", "notice", "select", "user"];
 
 // A message has its shape or it is refused: a pane sender always comes with its relation.
 function isMessage(value: unknown): value is Api["Message"] {
@@ -1688,6 +1688,8 @@ export default function (pi: ExtensionAPI) {
         interrupted.length = 0;
         turnEndedByControl = true;
         leaving = "control";
+        return "ack";
+      case "select":
         return "ack";
       case "notice":
         try {

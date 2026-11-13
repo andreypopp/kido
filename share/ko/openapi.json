@@ -2625,6 +2625,23 @@
             ],
             "properties": {
               "kind": {
+                "const": "select",
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind"
+            ],
+            "type": "object"
+          },
+          {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/Payload"
+              }
+            ],
+            "properties": {
+              "kind": {
                 "const": "user",
                 "type": "string"
               }
@@ -3325,6 +3342,9 @@
           "msg": {
             "type": "string"
           },
+          "selection": {
+            "$ref": "#/components/schemas/RecordSelection"
+          },
           "started": {
             "description": "The server's monotonic start time in nanoseconds for a child record; absent on the root.",
             "minimum": 0,
@@ -3413,6 +3433,14 @@
           "pwd"
         ],
         "type": "object"
+      },
+      "RecordSelection": {
+        "description": "Whether selecting a record means something to the program that reports it.",
+        "enum": [
+          "offered",
+          "selected"
+        ],
+        "type": "string"
       },
       "Relation": {
         "description": "What the sender of a message is to its receiver, from the `parent` edges of the panes.",
@@ -3814,7 +3842,8 @@
           "steer",
           "interrupt",
           "stop",
-          "notice"
+          "notice",
+          "select"
         ],
         "type": "string"
       },
@@ -4580,6 +4609,9 @@
               },
               "msg": {
                 "$ref": "#/components/schemas/StatusText2048"
+              },
+              "selection": {
+                "$ref": "#/components/schemas/RecordSelection"
               },
               "title": {
                 "$ref": "#/components/schemas/StatusText192"

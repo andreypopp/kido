@@ -1673,14 +1673,16 @@ public enum KoSchema {
         public var kind: ProgramKind?
         public var msg: String?
         public var progress: StatusProgress?
+        public var selection: RecordSelection?
         public var started: Int?
         public var title: String?
-        public init(app: String? = nil, id: StatusId, kind: ProgramKind? = nil, msg: String? = nil, progress: StatusProgress? = nil, started: Int? = nil, title: String? = nil) {
+        public init(app: String? = nil, id: StatusId, kind: ProgramKind? = nil, msg: String? = nil, progress: StatusProgress? = nil, selection: RecordSelection? = nil, started: Int? = nil, title: String? = nil) {
             self.app = app
             self.id = id
             self.kind = kind
             self.msg = msg
             self.progress = progress
+            self.selection = selection
             self.started = started
             self.title = title
         }
@@ -1691,6 +1693,7 @@ public enum KoSchema {
             self.kind = try container.decodeIfPresent(ProgramKind.self, forKey: .kind)
             self.msg = try container.decodeIfPresent(String.self, forKey: .msg)
             self.progress = try container.decodeIfPresent(StatusProgress.self, forKey: .progress)
+            self.selection = try container.decodeIfPresent(RecordSelection.self, forKey: .selection)
             self.started = try container.decodeIfPresent(Int.self, forKey: .started)
             self.title = try container.decodeIfPresent(String.self, forKey: .title)
             if let value = self.progress {
@@ -1706,6 +1709,7 @@ public enum KoSchema {
             case kind
             case msg
             case progress
+            case selection
             case started
             case title
         }
@@ -1715,12 +1719,14 @@ public enum KoSchema {
         public var app: String?
         public var id: StatusId
         public var msg: String?
+        public var selection: RecordSelection?
         public var started: Int?
         public var title: String?
-        public init(app: String? = nil, id: StatusId, msg: String? = nil, started: Int? = nil, title: String? = nil) {
+        public init(app: String? = nil, id: StatusId, msg: String? = nil, selection: RecordSelection? = nil, started: Int? = nil, title: String? = nil) {
             self.app = app
             self.id = id
             self.msg = msg
+            self.selection = selection
             self.started = started
             self.title = title
         }
@@ -1729,6 +1735,7 @@ public enum KoSchema {
             self.app = try container.decodeIfPresent(String.self, forKey: .app)
             self.id = try container.decode(StatusId.self, forKey: .id)
             self.msg = try container.decodeIfPresent(String.self, forKey: .msg)
+            self.selection = try container.decodeIfPresent(RecordSelection.self, forKey: .selection)
             self.started = try container.decodeIfPresent(Int.self, forKey: .started)
             self.title = try container.decodeIfPresent(String.self, forKey: .title)
             if let value = self.started {
@@ -1739,6 +1746,7 @@ public enum KoSchema {
             case app
             case id
             case msg
+            case selection
             case started
             case title
         }
@@ -1748,12 +1756,14 @@ public enum KoSchema {
         public var app: String?
         public var id: StatusId
         public var msg: String?
+        public var selection: RecordSelection?
         public var started: Int?
         public var title: String?
-        public init(app: String? = nil, id: StatusId, msg: String? = nil, started: Int? = nil, title: String? = nil) {
+        public init(app: String? = nil, id: StatusId, msg: String? = nil, selection: RecordSelection? = nil, started: Int? = nil, title: String? = nil) {
             self.app = app
             self.id = id
             self.msg = msg
+            self.selection = selection
             self.started = started
             self.title = title
         }
@@ -1762,6 +1772,7 @@ public enum KoSchema {
             self.app = try container.decodeIfPresent(String.self, forKey: .app)
             self.id = try container.decode(StatusId.self, forKey: .id)
             self.msg = try container.decodeIfPresent(String.self, forKey: .msg)
+            self.selection = try container.decodeIfPresent(RecordSelection.self, forKey: .selection)
             self.started = try container.decodeIfPresent(Int.self, forKey: .started)
             self.title = try container.decodeIfPresent(String.self, forKey: .title)
             if let value = self.started {
@@ -1772,6 +1783,7 @@ public enum KoSchema {
             case app
             case id
             case msg
+            case selection
             case started
             case title
         }
@@ -1781,12 +1793,14 @@ public enum KoSchema {
         public var app: String?
         public var id: StatusId
         public var msg: String?
+        public var selection: RecordSelection?
         public var started: Int?
         public var title: String?
-        public init(app: String? = nil, id: StatusId, msg: String? = nil, started: Int? = nil, title: String? = nil) {
+        public init(app: String? = nil, id: StatusId, msg: String? = nil, selection: RecordSelection? = nil, started: Int? = nil, title: String? = nil) {
             self.app = app
             self.id = id
             self.msg = msg
+            self.selection = selection
             self.started = started
             self.title = title
         }
@@ -1795,6 +1809,7 @@ public enum KoSchema {
             self.app = try container.decodeIfPresent(String.self, forKey: .app)
             self.id = try container.decode(StatusId.self, forKey: .id)
             self.msg = try container.decodeIfPresent(String.self, forKey: .msg)
+            self.selection = try container.decodeIfPresent(RecordSelection.self, forKey: .selection)
             self.started = try container.decodeIfPresent(Int.self, forKey: .started)
             self.title = try container.decodeIfPresent(String.self, forKey: .title)
             if let value = self.started {
@@ -1805,6 +1820,7 @@ public enum KoSchema {
             case app
             case id
             case msg
+            case selection
             case started
             case title
         }
@@ -1815,13 +1831,15 @@ public enum KoSchema {
         public var id: StatusId
         public var msg: String?
         public var progress: StatusProgress?
+        public var selection: RecordSelection?
         public var started: Int?
         public var title: String?
-        public init(app: String? = nil, id: StatusId, msg: String? = nil, progress: StatusProgress? = nil, started: Int? = nil, title: String? = nil) {
+        public init(app: String? = nil, id: StatusId, msg: String? = nil, progress: StatusProgress? = nil, selection: RecordSelection? = nil, started: Int? = nil, title: String? = nil) {
             self.app = app
             self.id = id
             self.msg = msg
             self.progress = progress
+            self.selection = selection
             self.started = started
             self.title = title
         }
@@ -1831,6 +1849,7 @@ public enum KoSchema {
             self.id = try container.decode(StatusId.self, forKey: .id)
             self.msg = try container.decodeIfPresent(String.self, forKey: .msg)
             self.progress = try container.decodeIfPresent(StatusProgress.self, forKey: .progress)
+            self.selection = try container.decodeIfPresent(RecordSelection.self, forKey: .selection)
             self.started = try container.decodeIfPresent(Int.self, forKey: .started)
             self.title = try container.decodeIfPresent(String.self, forKey: .title)
             if let value = self.progress {
@@ -1845,6 +1864,7 @@ public enum KoSchema {
             case id
             case msg
             case progress
+            case selection
             case started
             case title
         }
@@ -1895,6 +1915,11 @@ public enum KoSchema {
         case error
         case indeterminate
         case pause
+    }
+
+    public enum RecordSelection: String, Codable, Equatable, Sendable {
+        case offered
+        case selected
     }
 
     public enum Remote: Codable, Equatable, Sendable {

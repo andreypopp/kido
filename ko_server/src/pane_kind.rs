@@ -194,6 +194,7 @@ mod tests {
             app: Some(name.to_owned()),
             title: None,
             msg: None,
+            selection: None,
         }]
     }
 

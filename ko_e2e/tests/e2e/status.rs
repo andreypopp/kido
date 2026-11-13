@@ -197,6 +197,40 @@ fn status_route_shares_records_and_restricts_the_caller() {
         s.row(&pane)["status"]["program_status"],
         status["program_status"]
     );
+    crate::panes::post(
+        &s,
+        None,
+        &path,
+        &json!({"type":"set", "id":"agents/a-b", "state":"idle", "selection":"offered"}),
+    );
+    let offered = probe.next();
+    assert_eq!(record(&offered, "agents/a-b")["selection"], "offered");
+    assert_eq!(record(&offered, "job/build").get("selection"), None);
+    assert_eq!(
+        s.row(&pane)["status"]["program_status"],
+        offered["program_status"]
+    );
+    crate::panes::post(
+        &s,
+        None,
+        &path,
+        &json!({"type":"set", "id":"agents/a-b", "state":"idle", "selection":"selected"}),
+    );
+    assert_eq!(record(&probe.next(), "agents/a-b")["selection"], "selected");
+    crate::panes::post(&s, None, &path, &json!({"type":"clear", "id":"agents"}));
+    let status = probe.next();
+    crate::panes::refused(
+        crate::panes::api(
+            &s,
+            None,
+            "POST",
+            &path,
+            &json!({"type":"set", "id":"", "state":"idle", "selection":"both"}),
+        ),
+        400,
+        "invalid",
+        "",
+    );
     crate::panes::refused(
         crate::panes::api(
             &s,
@@ -217,6 +251,8 @@ fn status_route_shares_records_and_restricts_the_caller() {
     assert!(records(&probe.next()).is_empty());
     crate::panes::post(&s, None, &path, &body);
     probe.next();
+    let osc = probe.osc("id=o1:state=idle");
+    assert_eq!(record(&osc, "o1").get("selection"), None);
     assert!(records(&probe.osc("state=clear")).is_empty());
     for invalid in [
         json!({"type":"set", "id":"bad//id", "state":"idle"}),

@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use ko_sys::event::Wake;
 use ko_wire::api::{Route, WindowOnly};
-use ko_wire::ids::{ClientId, MessageId, PaneId};
+use ko_wire::ids::{ClientId, MessageId, PaneId, StatusId};
 use ko_wire::protocol::{self, Revision, SendPrompt};
 
 use super::engine::failure;
@@ -147,6 +147,52 @@ pub unsafe extern "C" fn ko_client_prompt(
             Some(cancel),
         )
         .map_err(prompt_rejected)
+    });
+    // SAFETY: out is null or writable for one ko_buffer (ko_client.h).
+    unsafe { put(out, bytes) };
+    code
+}
+
+/// # Safety
+///
+/// `client` is a live handle. `pane` and `record_id` are NUL-terminated strings. `out` is
+/// writable for one `ko_buffer`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ko_client_select_record(
+    client_: *const Client,
+    pane: *const c_char,
+    record_id: *const c_char,
+    out: *mut Buffer,
+) -> Code {
+    let scope = ();
+    // SAFETY: ko_client.h requires these inputs to remain readable for this call.
+    let (pane_text, record_text) = unsafe { (text_of(pane, &scope), text_of(record_id, &scope)) };
+
+    let (Some(client), Some(pane), Some(record)) = (
+        client(client_).filter(|_| !out.is_null()),
+        pane_text.and_then(|pane| pane.parse::<PaneId>().ok()),
+        record_text.and_then(|record| StatusId::try_from(record.to_owned()).ok()),
+    ) else {
+        return Code::Argument;
+    };
+    let Ok(message) = MessageId::mint() else {
+        return Code::Io;
+    };
+    let body = protocol::json(&protocol::SendMessage {
+        id: message,
+        kind: protocol::SendKind::Select,
+        text: String::from(record),
+        data: None,
+    });
+    let (code, bytes) = call(&client, |socket, id, cancel| {
+        wire::request(
+            socket,
+            (id, None),
+            &Route::PostMessage { id: pane },
+            body.as_bytes(),
+            Some(cancel),
+        )
+        .map_err(rejected)
     });
     // SAFETY: out is null or writable for one ko_buffer (ko_client.h).
     unsafe { put(out, bytes) };
