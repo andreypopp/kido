@@ -8,9 +8,13 @@ import SidebarFeed
 @testable import Kido
 
 @MainActor final class KoaWebviewTests: AppWindowCase {
-    private enum KoaScenario { case transcript, dialogs, controls, exit, feed, completion, markdown, media, attachments, userMarkdown, thinkingMarkdown, reveal, preview, lightbox, agents, composer, questions, bang, commands, notices, sessions }
+    private enum KoaScenario { case transcript, dialogs, controls, exit, feed, completion, markdown, media, attachments, userMarkdown, thinkingMarkdown, reveal, preview, lightbox, agents, composer, questions, bang, commands, notices, latest, sessions }
+    // The off-screen WKWebView reports no document focus. The page's pane-focus hook gives the pane focus; the composer ring keeps its real state.
+    private static let paneFocus = "window.koaFocused=true;"
+    private static let hideLatest = "document.addEventListener('DOMContentLoaded',()=>{const style=document.createElement('style');style.textContent='#latest{display:none!important}';document.head.append(style)});"
     func testKoaWebviewSubmitFollowsClampedBottom() async throws {
-        WebviewPaneView.visualInitialScript = "const ClockDate=Date;window.Date=class extends ClockDate{constructor(...args){super(...(args.length?args:[1700000012000]))}static now(){return 1700000012000}};window.requestAnimationFrame=callback=>setTimeout(()=>callback(performance.now()),16);window.cancelAnimationFrame=clearTimeout;const Source=EventSource;window.EventSource=class extends Source{constructor(...args){super(...args);window.scrollSource=this}};"
+        WebviewPaneView.visualInitialScript = Self.paneFocus
+        WebviewPaneView.visualInitialScript?.append("const ClockDate=Date;window.Date=class extends ClockDate{constructor(...args){super(...(args.length?args:[1700000012000]))}static now(){return 1700000012000}};window.requestAnimationFrame=callback=>setTimeout(()=>callback(performance.now()),16);window.cancelAnimationFrame=clearTimeout;const Source=EventSource;window.EventSource=class extends Source{constructor(...args){super(...args);window.scrollSource=this}};")
         defer { WebviewPaneView.visualInitialScript = nil }
         let stamp = 1700000000000, question = Array(repeating: "Keep the cache?", count: 12).joined(separator: "\n\n")
         let usage: [String: Any] = ["input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0, "totalTokens": 0, "cost": ["input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0, "total": 0]]
@@ -300,6 +304,14 @@ import SidebarFeed
         try await koaWebview(width: 980, height: 560, scenario: .notices, captures: Set(["closed", "open"].map { "notices-" + $0 }))
     }
 
+    func testKoaWebviewLatestWide() async throws {
+        try await koaWebview(width: 980, height: 560, scenario: .latest, captures: Set(["divider", "new"].map { "latest-" + $0 }))
+    }
+
+    func testKoaWebviewLatestNarrow() async throws {
+        try await koaWebview(width: 470, height: 560, scenario: .latest, captures: Set(["divider", "new"].map { "narrow-latest-" + $0 }))
+    }
+
     func testKoaWebviewNoticesNarrow() async throws {
         try await koaWebview(width: 470, height: 560, scenario: .notices, captures: Set(["closed", "open"].map { "narrow-notices-" + $0 }))
     }
@@ -506,6 +518,9 @@ import SidebarFeed
         if captures.contains("foot-responsive") || captures.contains("foot-editing") || captures.contains("narrow-foot-editing") {
             WebviewPaneView.visualInitialScript = (WebviewPaneView.visualInitialScript ?? "") + "const FootSource=EventSource;window.EventSource=class extends FootSource{constructor(...args){super(...args);window.footSource=this;this.addEventListener('message',event=>{const record=JSON.parse(event.data);if(record.type==='state')window.footState=record})}};"
         }
+        var initial = WebviewPaneView.visualInitialScript ?? ""
+        initial.insert(contentsOf: Self.paneFocus + (scenario == .latest ? "" : Self.hideLatest), at: initial.startIndex)
+        WebviewPaneView.visualInitialScript = initial
         defer { WebviewPaneView.visualInitialScript = nil }
         let usage: [String: Any] = ["input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0, "totalTokens": 0, "cost": ["input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0, "total": 0]]
         func assistant(_ content: [[String: Any]], stop: String = "stop") -> [String: Any] {
@@ -1024,6 +1039,20 @@ import SidebarFeed
                 ["role": "custom", "customType": "release-check", "display": true, "timestamp": stamp + 180000, "content": "Release check passed\nThe tap is clean.\nThe revision is 20857320.", "details": ["from": "release"]],
             ]]
         }
+        if scenario == .latest {
+            steps = Array(steps.prefix(3))
+            steps[0]["data"] = ["sessionName": "sidebar-right", "thinkingLevel": "high", "model": ["id": "claude-opus-5-5", "provider": "anthropic"], "sessionFile": sessionFile.path]
+            steps[1]["data"] = ["messages": (1...6).flatMap { index -> [[String: Any]] in
+                var person = user; person["timestamp"] = stamp + index * 1000
+                var reply = assistant([["type": "text", "text": "Step \(index) is done. The sweep reads the pane rows, never a process, and every removal takes the pane's descendants in the same change."]]); reply["timestamp"] = stamp + index * 1000 + 500
+                return [person, reply]
+            }]
+            let arrivals = (1...3).flatMap { index -> [[String: Any]] in
+                var reply = assistant([["type": "text", "text": "Arrival \(index). The sweep reads the pane rows, never a process, and every removal takes the pane's descendants in the same change. The cascade is the server's, so a child pane never outlives its parent.\n\nThe linger collection waits while a focused client shows the pane, and a start failure stays readable until the grace ends."]]); reply["timestamp"] = stamp + 20000 + index * 1000
+                return [["type": "message_start", "message": reply], ["type": "message_end", "message": reply]]
+            }
+            steps.append(["type": "wait", "command": "abort", "events": [["type": "agent_start"]] + arrivals + [["type": "agent_settled", "aborted": false]]])
+        }
         if scenario == .commands {
             steps = Array(steps.prefix(4))
             steps[0]["data"] = ["sessionName": "sidebar-right", "thinkingLevel": "high", "model": ["id": "claude-opus-5-5", "provider": "anthropic"], "sessionFile": sessionFile.path]
@@ -1131,6 +1160,7 @@ import SidebarFeed
                 try await webviewPageSnapshot(pane, baseline + appearance, testName: "testKoaWebviewMockupStates()")
             }
         }
+        var latestText = ""
         func capture(_ name: String) async throws {
             guard captures.contains(name) || captures.contains("foot-responsive") else { return }
             let ordered = name == "questions-ordered" || name == "narrow-questions-ordered"
@@ -1139,11 +1169,11 @@ import SidebarFeed
             pane.webviewView?.layoutSubtreeIfNeeded()
             let viewportHeight = try await webviewJS(web, "innerHeight")
             XCTAssertEqual(viewportHeight, String(Int(web.bounds.height)), "The page fills the native webview at capture \(name)")
-            _ = try await webviewJS(web, "(()=>{if(\(name != "focus-border-transcript")&&!document.querySelector('.lightbox')&&!document.querySelector('.dialog')&&!document.querySelector('#exited:not([hidden])')&&document.querySelector('#picker').hidden)window.composer.focus();const scroll=document.querySelector('#scroll');scroll.scrollTop=\(top ? "0" : "scroll.scrollHeight");if(\(ordered))document.querySelectorAll('.assistant')[1].scrollIntoView({block:'start'});return true})()")
+            _ = try await webviewJS(web, "(()=>{if(\(name != "focus-border-transcript")&&!document.querySelector('.lightbox')&&!document.querySelector('.dialog')&&!document.querySelector('#exited:not([hidden])')&&document.querySelector('#picker').hidden)window.composer.focus();const scroll=document.querySelector('#scroll');scroll.scrollTop=\(top ? "0" : scenario == .latest ? "scroll.scrollTop" : "scroll.scrollHeight");if(\(ordered))document.querySelectorAll('.assistant')[1].scrollIntoView({block:'start'});return true})()")
             try await webviewUntil(web, "(()=>{const dock=document.querySelector('#dock');return Number.parseFloat(getComputedStyle(document.body).getPropertyValue('--dock-h'))===dock.getBoundingClientRect().height})()")
-            try await webviewUntil(web, "(()=>{const scroll=document.querySelector('#scroll');if(\(ordered)){document.querySelectorAll('.assistant')[1].scrollIntoView({block:'start'});return true}scroll.scrollTop=\(top ? "0" : "scroll.scrollHeight");return \(top ? "scroll.scrollTop===0" : "scroll.scrollHeight-scroll.scrollTop-scroll.clientHeight<1")})()")
+            try await webviewUntil(web, "(()=>{const scroll=document.querySelector('#scroll');if(\(ordered)){document.querySelectorAll('.assistant')[1].scrollIntoView({block:'start'});return true}scroll.scrollTop=\(top || scenario == .latest && name.hasSuffix("new") ? "0" : scenario == .latest ? "document.querySelector('.newmsgs').offsetTop-300" : "scroll.scrollHeight");\(scenario == .latest ? "scroll.dispatchEvent(new Event('scroll'));" : "")return \(top || scenario == .latest && name.hasSuffix("new") ? "scroll.scrollTop===0" : scenario == .latest ? "true" : "scroll.scrollHeight-scroll.scrollTop-scroll.clientHeight<1")})()&&\(scenario == .latest ? "document.querySelector('#latest').textContent==='\(latestText)'" : "true")")
             let lastAboveDock = try await webviewJS(web, "(()=>{const last=document.querySelector('#items').lastElementChild;return !last||last.getBoundingClientRect().bottom<=document.querySelector('#dock').getBoundingClientRect().top})()")
-            if !top { XCTAssertEqual(lastAboveDock, "true", "dock space keeps the last message above the composer") }
+            if !top && scenario != .latest { XCTAssertEqual(lastAboveDock, "true", "dock space keeps the last message above the composer") }
             if name.hasSuffix("queue") {
                 let order = try await webviewJS(web, "(()=>{const composer=document.querySelector('#composer'),queue=document.querySelector('#queue'),attachments=document.querySelector('#attachments'),field=document.querySelector('#field');return composer.firstElementChild===queue&&queue.nextElementSibling===attachments&&Math.abs(queue.getBoundingClientRect().bottom+8-(attachments.hidden?field:attachments).getBoundingClientRect().top)<.5})()")
                 XCTAssertEqual(order, "true", "Queued steers and follow-ups stay above the attachment chips and composer field")
@@ -1163,7 +1193,7 @@ import SidebarFeed
             _ = try await webviewJS(web, "fetch('/prompt',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sessionId:document.body.dataset.sessionId,text:'next',mode:'prompt',attachments:[]})}).then(async r=>{const result=await r.json();if(!r.ok)throw Error(result.error||'Prompt failed');return result})")
         }
         try await webviewUntil(web, "document.querySelector('#status').textContent==='idle'&&document.querySelector('#model-name').textContent==='claude-opus-5-5'")
-        _ = try await webviewJS(web, "(()=>{const NativeDate=Date;window.Date=class extends NativeDate{constructor(...args){super(...(args.length?args:[\(stamp + 12000)]))}static now(){return \(stamp + 12000)}};const style=document.createElement('style');style.textContent='.caret,.spin,.spin::before,.dot.on,.cm-cursorLayer,.typing i\(scenario == .reveal ? "" : ",.grow"){animation:none!important}\(scenario == .reveal ? ".grow{animation-play-state:paused!important;animation-delay:-110ms!important}" : "").info .chev{transition:none!important}';document.head.append(style);return true})()")
+        _ = try await webviewJS(web, "(()=>{const NativeDate=Date;window.Date=class extends NativeDate{constructor(...args){super(...(args.length?args:[\(stamp + 12000)]))}static now(){return \(stamp + 12000)}};const style=document.createElement('style');style.textContent='.caret,.spin,.spin::before,.dot.on,.cm-cursorLayer,.typing i\(scenario == .reveal ? "" : ",.grow"){animation:none!important}\(scenario == .reveal ? ".grow{animation-play-state:paused!important;animation-delay:-110ms!important}" : "").info .chev,#latest{transition:none!important}';document.head.append(style);return true})()")
         if scenario == .reveal {
             try await webviewUntil(web, "document.querySelector('.more')?.textContent==='Show 5 more lines'")
             let history = try await webviewJS(web, "document.querySelector('.assistant pre').classList.contains('folded')&&!document.querySelector('.grow,.typing')")
@@ -1265,6 +1295,23 @@ import SidebarFeed
             try await webviewUntil(web, "document.querySelectorAll('.nrow.more').length>=3")
             _ = try await webviewJS(web, "(()=>{document.querySelectorAll('.nrow.more>.hd').forEach(header=>header.click());return true})()")
             try await capture(prefix + "open")
+            return
+        }
+        if scenario == .latest {
+            let prefix = width < 600 ? "narrow-latest-" : "latest-"
+            try await webviewUntil(web, "document.querySelectorAll('.assistant').length===6")
+            _ = try await webviewJS(web, "(()=>{const scroll=document.querySelector('#scroll');scroll.scrollTop=scroll.scrollHeight;scroll.dispatchEvent(new Event('scroll'));scroll.scrollTop=0;scroll.dispatchEvent(new Event('scroll'));return true})()")
+            try await webviewUntil(web, "document.querySelector('#latest').classList.contains('show')")
+            _ = try await webviewJS(web, "fetch('/abort',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sessionId:document.body.dataset.sessionId})}).then(r=>r.json())")
+            try await webviewUntil(web, "document.querySelectorAll('.assistant').length===9")
+            try await webviewUntil(web, "document.querySelector('.newmsgs')!==null")
+            try await webviewUntil(web, "document.querySelector('#latest').textContent==='↓ 3 new'")
+            latestText = "↓ 3 new"
+            try await capture(prefix + "new")
+            _ = try await webviewJS(web, "(()=>{const scroll=document.querySelector('#scroll');scroll.scrollTop=document.querySelector('.newmsgs').offsetTop-300;scroll.dispatchEvent(new Event('scroll'));return true})()")
+            try await webviewUntil(web, "document.querySelector('#latest').textContent!=='↓ 3 new'")
+            latestText = "↓ 1 new"
+            try await capture(prefix + "divider")
             return
         }
         if scenario == .commands {
@@ -1932,7 +1979,7 @@ import SidebarFeed
             try await capture("narrow-exited")
         }
         switch scenario {
-        case .transcript, .feed, .completion, .markdown, .media, .attachments, .userMarkdown, .thinkingMarkdown, .reveal, .preview, .lightbox, .agents, .composer, .questions, .bang, .commands, .notices, .sessions: break
+        case .transcript, .feed, .completion, .markdown, .media, .attachments, .userMarkdown, .thinkingMarkdown, .reveal, .preview, .lightbox, .agents, .composer, .questions, .bang, .commands, .notices, .latest, .sessions: break
         case .dialogs: try await dialogScenario()
         case .controls: try await controlsScenario()
         case .exit: try await exitScenario()

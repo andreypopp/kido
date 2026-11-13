@@ -13,7 +13,7 @@ import type { PromptMode } from "./koa-records.ts";
 async function page() {
   const source = stripTypeScriptTypes(await readFile(new URL("page/page.ts", import.meta.url), "utf8"));
   class Node {
-    value = ""; private text = ""; style: Record<string, unknown> = { setProperty() {} }; innerHTML = ''; clientWidth = 320; scrollWidth = 0; clientHeight = 100; disabled = false; placeholder = ""; scrollHeight = 20; children: Node[] = []; dataset = {};
+    value = ""; private text = ""; style: Record<string, unknown> = { setProperty() {} }; innerHTML = ''; clientWidth = 320; scrollTop = 0; scrollWidth = 0; clientHeight = 100; disabled = false; placeholder = ""; scrollHeight = 20; children: Node[] = []; dataset = {};
     get textContent() { return this.text; }
     set textContent(value: unknown) { this.text = String(value); this.children = []; }
     private classes = new Set<string>();
@@ -43,6 +43,7 @@ async function page() {
     get isConnected(): boolean { return this === document.body || this === document.documentElement || this.parent?.isConnected === true; }
     get childNodes() { return this.children; }
     insertBefore(child: Node, next: Node | null) { if (child === next) return; child.remove(); const index = next ? this.children.indexOf(next) : this.children.length; this.children.splice(index < 0 ? this.children.length : index, 0, child); child.parent = this; }
+    get offsetTop() { return (this.parent?.children.indexOf(this) ?? 0) * 100; }
     get firstElementChild() { return this.children[0]; }
     get lastElementChild() { return this.children.at(-1); }
     get lastChild() { return this.children.at(-1); }
@@ -51,7 +52,7 @@ async function page() {
   const listeners = new Map<string, (event: unknown) => void>();
   const windowListeners = new Map<string, (event?: unknown) => void>();
   let activeElement: Node | undefined;
-  const document = { hidden: false, documentElement: new Node(), body: new Node(), hasFocus: () => true, get activeElement() { return activeElement; }, set activeElement(node: Node | undefined) { if (activeElement === node) return; const previous = activeElement; activeElement = node; if (previous) listeners.get('focusout')?.({ target: previous }); if (node) listeners.get('focusin')?.({ target: node }); }, querySelector: (selector?: string): Node | null => selector === '.cm-content' ? document.getElementById('prompt').children[0] ?? null : selector === '.lightbox' ? document.body.children.find(node => node.classList.contains('lightbox')) ?? null : null, getElementById(id: string) { let node = elements.get(id); if (!node) { node = new Node(); elements.set(id, node); if (id === 'prompt') document.getElementById('field').append(node); if (id === 'composer') node.hidden = false; } return node; }, createElement: (tag: string) => { const node = new Node(); node.tagName = tag.toUpperCase(); return node; }, createElementNS: () => new Node(), createTextNode: (text: string) => { const node = new Node(); node.tagName = '#text'; node.textContent = text; return node; }, addEventListener(type: string, handler: (event: unknown) => void) { listeners.set(type, handler); }, querySelectorAll: () => [] };
+  const document = { hidden: false, visibilityState: 'visible', documentElement: new Node(), body: new Node(), hasFocus: () => true, get activeElement() { return activeElement; }, set activeElement(node: Node | undefined) { if (activeElement === node) return; const previous = activeElement; activeElement = node; if (previous) listeners.get('focusout')?.({ target: previous }); if (node) listeners.get('focusin')?.({ target: node }); }, querySelector: (selector?: string): Node | null => selector === '.cm-content' ? document.getElementById('prompt').children[0] ?? null : selector === '.lightbox' ? document.body.children.find(node => node.classList.contains('lightbox')) ?? null : null, getElementById(id: string) { let node = elements.get(id); if (!node) { node = new Node(); elements.set(id, node); if (id === 'prompt') document.getElementById('field').append(node); if (id === 'composer') node.hidden = false; } return node; }, createElement: (tag: string) => { const node = new Node(); node.tagName = tag.toUpperCase(); return node; }, createElementNS: () => new Node(), createTextNode: (text: string) => { const node = new Node(); node.tagName = '#text'; node.textContent = text; return node; }, addEventListener(type: string, handler: (event: unknown) => void) { listeners.set(type, handler); }, querySelectorAll: () => [] };
   type Handlers = { input(user: boolean): void; send(mode: PromptMode): void; quit(): void; edit(): void };
   let handlers: Handlers | undefined;
   let text = () => '';
@@ -1051,7 +1052,7 @@ async function revealPage(clientHeight = 100) {
   }, 0);
   app.context.document.createElement = (tag: string) => {
     const node = create(tag);
-    node.getBoundingClientRect = () => ({ left: 0, height: node.className.includes('measure') ? lines(node.innerHTML) : 0 });
+    node.getBoundingClientRect = () => ({ left: 0, top: node.offsetTop - Number(app.elements.get('scroll')?.scrollTop ?? 0), height: node.className.includes('measure') ? lines(node.innerHTML) : 0 });
     if (tag === 'template') Object.defineProperty(node, 'innerHTML', { set(value: string) {
       html.push(value);
       const child = create(value.startsWith('<pre') ? 'pre' : 'p');
@@ -1578,4 +1579,173 @@ test('while an editor is open a drop and a native drop attach nothing and show n
   assert.equal(prevented, true);
   assert.deepEqual(requests, ['/attachments/one/delete']);
   assert.equal(app.run('draft.count'), 0);
+});
+
+async function latestPage() {
+  const fixture = await revealPage();
+  const { app, evaluate } = fixture, doc = app.context.document;
+  Object.assign(app.context, { matchMedia: () => ({ matches: false }) });
+  const text = (seq: number) => ({ seq, revision: 0, kind: 'assistant', final: true, blocks: [{ type: 'text', text: 'reply ' + seq }] });
+  const own = (seq: number) => ({ seq, revision: 0, at: 1, kind: 'user', text: 'mine', images: [], attachments: [] });
+  const add = (item: object) => evaluate(`apply({type:'item',item:${JSON.stringify(item)}})`);
+  const scroll = (top: number, height = 1000) => evaluate(`Object.assign(element('scroll'),{scrollHeight:${height},clientHeight:100,scrollTop:${top === 900 ? 899 : 900}});element('scroll').onscroll();element('scroll').scrollTop=${top};element('scroll').onscroll()`);
+  const dividers = () => String(evaluate("element('items').children.map(node => node.className === 'newmsgs' ? 'divider' : node.dataset.seq).join()"));
+  const latest = () => String(evaluate("[element('latest').textContent, element('latest').classList.contains('show')].join()"));
+  const focus = (value: boolean) => { doc.hasFocus = () => value; app.windowListeners.get(value ? 'focus' : 'blur')?.(); };
+  evaluate("apply({type:'reset',epoch:'a',more:false,items:[]});element('dock').getBoundingClientRect=()=>({top:100})");
+  return { ...fixture, text, own, add, scroll, dividers, latest, focus, doc };
+}
+
+test('a reader who scrolled up gets one divider above the first new item and a count of the new items below the view', async () => {
+  const page = await latestPage();
+  page.add(page.text(0)); page.add(page.own(1));
+  page.scroll(0);
+  assert.equal(page.dividers(), '0,1');
+  page.add(page.text(2)); page.add(page.text(3)); page.add(page.text(4));
+  assert.equal(page.dividers(), '0,1,divider,2,3,4');
+  assert.equal(page.latest(), '↓ 3 new,true');
+  page.add({ ...page.text(3), revision: 1 });
+  assert.equal(page.latest(), '↓ 3 new,true');
+  page.evaluate("element('scroll').scrollTop=400;element('scroll').onscroll()");
+  assert.equal(page.latest(), '↓ 1 new,true');
+});
+
+test('the capsule reads Latest while nothing is new and hides at the bottom', async () => {
+  const page = await latestPage();
+  page.add(page.text(0));
+  page.scroll(0);
+  assert.equal(page.latest(), '↓ Latest,true');
+  page.scroll(900);
+  assert.equal(page.latest(), '↓ Latest,false');
+});
+
+test('the own message never makes a divider, and a send removes the divider', async () => {
+  const page = await latestPage();
+  page.add(page.text(0));
+  page.scroll(0);
+  page.add(page.own(1));
+  assert.equal(page.dividers(), '0,1');
+  page.add(page.text(2));
+  assert.equal(page.dividers(), '0,1,divider,2');
+  page.evaluate("fetchJSON = async () => ({ disposition: 'started' }); editor.setText('go'); state = {...state, pi: {type: 'ready'}}");
+  void page.evaluate("send()");
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(page.dividers(), '0,1,2');
+});
+
+test('while the pane is unfocused nothing scrolls, also at the bottom, and the divider waits for the reader', async () => {
+  const page = await latestPage();
+  page.add(page.text(0));
+  page.scroll(900);
+  page.focus(false);
+  page.add(page.text(1));
+  page.step(16); page.step(16);
+  assert.equal(page.evaluate("element('scroll').scrollTop"), 900);
+  assert.equal(page.dividers(), '0,divider,1');
+  page.evaluate("element('scroll').scrollHeight=1100");
+  page.focus(true);
+  assert.equal(page.dividers(), '0,divider,1');
+  page.add(page.text(2));
+  page.step(16); page.step(16);
+  assert.equal(page.evaluate("element('scroll').scrollTop"), 900);
+  page.evaluate("element('scroll').scrollTop=1000;element('scroll').onscroll()");
+  assert.equal(page.dividers(), '0,1,2');
+});
+
+test('a view that is focused and at the bottom follows and gets no divider', async () => {
+  const page = await latestPage();
+  page.add(page.text(0)); page.add(page.text(1));
+  assert.equal(page.dividers(), '0,1');
+});
+
+test('a session switch removes the divider', async () => {
+  const page = await latestPage();
+  page.add(page.text(0));
+  page.scroll(0);
+  page.add(page.text(1));
+  assert.equal(page.dividers(), '0,divider,1');
+  page.evaluate(`apply({type:'reset',epoch:'b',more:false,items:[${JSON.stringify(page.text(0))}]})`);
+  assert.equal(page.dividers(), '0');
+  assert.equal(page.latest().split(',')[0], '↓ Latest');
+});
+
+test('the capsule scrolls to the bottom through the scheduler, resumes following and removes the divider', async () => {
+  const page = await latestPage();
+  page.add(page.text(0));
+  page.scroll(0);
+  page.add(page.text(1));
+  page.evaluate("element('scroll').scrollTop=0");
+  page.evaluate("element('latest').onclick()");
+  for (let frame = 0; frame < 40; frame++) page.step(16);
+  assert.ok(Number(page.evaluate("element('scroll').scrollTop")) > 899);
+  page.evaluate("element('scroll').onscroll()");
+  assert.equal(page.dividers(), '0,1');
+  assert.equal(page.evaluate("follow"), true);
+  assert.equal(page.latest().split(',')[1], 'false');
+});
+
+test('a short arrival while unfocused resumes following on the return of the focus, and the next arrival follows', async () => {
+  const page = await latestPage();
+  page.add(page.text(0));
+  page.scroll(900);
+  page.focus(false);
+  page.add(page.text(1));
+  page.evaluate("element('scroll').scrollHeight=930");
+  page.focus(true);
+  assert.equal(page.dividers(), '0,1');
+  assert.equal(page.evaluate("follow"), true);
+  page.add(page.text(2));
+  page.step(16);
+  assert.equal(page.evaluate("element('scroll').scrollTop"), page.evaluate("element('scroll').scrollHeight"));
+});
+
+test('blur stops every automatic scroll, also a patch to a streaming reply and a dock resize', async () => {
+  const page = await latestPage();
+  page.put('Intro.\n\nwaiting tail');
+  page.scroll(900);
+  page.focus(false);
+  page.patch(1, '\n\nsecond block\n\nthird');
+  page.evaluate("element('scroll').scrollHeight=1100;dockResized(200)");
+  for (let frame = 0; frame < 5; frame++) page.step(16);
+  assert.equal(page.evaluate("element('scroll').scrollTop"), 900);
+  assert.equal(page.latest().split(',')[0], '↓ Latest');
+});
+
+test('the output of a ! command is new once, from its live row or its record, and its row is the one the divider marks', async () => {
+  const page = await latestPage();
+  page.add(page.text(0));
+  page.scroll(0);
+  page.evaluate("state={...state,bash:[{id:'r',phase:'running',command:'ls',excludeFromContext:false,started:1,output:{text:'',cut:0}}]};refreshBash()");
+  assert.equal(page.dividers(), '0,');
+  page.evaluate("state.bash[0].output={text:'a',cut:0};refreshBash()");
+  assert.equal(page.evaluate("element('items').children.indexOf(divider)"), 1);
+  assert.equal(page.latest().split(',')[0], '↓ 1 new');
+  page.evaluate("state.bash[0].output={text:'ab',cut:0};refreshBash()");
+  page.add({ seq: 1, revision: 0, at: 1, final: true, kind: 'bash', command: 'ls', excludeFromContext: false, result: { output: { text: 'ab', cut: 0 }, exit: 0, cancelled: false, truncated: false } });
+  assert.equal(page.latest().split(',')[0], '↓ 1 new');
+  page.evaluate("state={...state,bash:[{id:'s',phase:'running',command:'ls',excludeFromContext:false,started:2,output:{text:'x',cut:0}}]};refreshBash()");
+  assert.equal(page.latest().split(',')[0], '↓ 2 new');
+  page.add({ seq: 2, revision: 0, at: 1, final: true, kind: 'bash', command: 'true', excludeFromContext: false, result: { output: { text: '', cut: 0 }, exit: 0, cancelled: false, truncated: false } });
+  assert.equal(page.latest().split(',')[0], '↓ 2 new');
+});
+
+test('the capsule snaps at once under reduced motion', async () => {
+  const page = await latestPage();
+  page.add(page.text(0));
+  page.scroll(0);
+  Object.assign(page.app.context, { matchMedia: () => ({ matches: true }) });
+  page.evaluate("element('latest').onclick()");
+  page.step(16);
+  assert.equal(page.evaluate("element('scroll').scrollTop"), 1000);
+});
+
+test('a focus event on a pane that never lost the focus keeps following while an item grows', async () => {
+  const page = await latestPage();
+  page.add(page.text(0));
+  page.scroll(900);
+  page.add(page.text(1));
+  page.evaluate("element('scroll').scrollHeight=1100;followBottom()");
+  page.app.windowListeners.get('focus')?.();
+  page.step(16);
+  assert.equal(page.evaluate("element('scroll').scrollTop"), 1100);
 });

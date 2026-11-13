@@ -16,6 +16,7 @@ type Slot = { type: 'image'; view: HTMLButtonElement } | { type: 'run'; view: HT
 declare global {
   interface Window {
     composer: Pick<ReturnType<typeof composer>, 'text' | 'setText' | 'focus'>;
+    koaFocused?: boolean;
     koaMetrics?: { flush(): Promise<void>; readonly after: number; readonly items: WireItem[] };
   }
 }
@@ -37,14 +38,16 @@ const items = new Map<number, WireItem>();
 const views = new Map<number, { view: HTMLElement; item: WireItem; slots: Map<string, Slot> }>();
 const template = document.createElement('template');
 const folds = new Map<string, boolean>();
-const REVEAL = { cap: .4, wait: 1500, fold: 15, grow: 220, glide: 150 };
+const REVEAL = { cap: .4, wait: 1500, fold: 15, grow: 220, glide: 150, dash: 45, dashFor: 250 };
 type Reveal = { at: number; tail?: Tail; measured?: { tail: Tail; width: number; full: number; waiting: number; end?: number } };
 type TextMemo = { render: ReturnType<typeof markdown>; view: HTMLElement; blocks: { block: ReturnType<ReturnType<typeof markdown>>[number]; nodes: ChildNode[] }[]; final?: boolean; source?: string; annotationItem?: Extract<WireItem, { kind: 'annotations' }>; assistant: boolean; reveal?: Reveal; grown: number; open: Set<string> };
 const texts = new Map<string, TextMemo>();
 const revealing = new Set<TextMemo>();
-let measurer: HTMLElement | undefined, frame: number | undefined, frameAt = 0, capTimer: number | undefined, scrollMode: 'snap' | 'glide' | undefined, glideUntil = 0, dirty = false;
+let measurer: HTMLElement | undefined, frame: number | undefined, frameAt = 0, capTimer: number | undefined, scrollMode: 'snap' | 'glide' | 'dash' | 'load' | undefined, glideUntil = 0, dirty = false;
 const growing: HTMLElement[] = [];
 let state: State = { agents: [], bash: [], compaction: 'idle', pi: { type: 'starting' }, working: false, aborted: false, name: '', levels: [], cwd: '', home: '', statuses: {}, queue: { steering: [], followUp: [] }, dialogs: [] };
+let divider: HTMLElement | undefined, wasFocused = paneFocused();
+const fresh = new Map<string, HTMLElement>(), counted = new Set<string>(), liveBash = new Map<string, string>();
 let epoch = '', after = -1, first: number | undefined, more = false, follow = true, lastScrollTop = 0, delay = 200;
 let escaped = false, dialogId: string | undefined;
 let submitting = false, editorId: string | undefined, dialogTimer: number | undefined, shownExit: number | undefined, pickerButton: HTMLElement | undefined, shownQueue: string | undefined, shownStatuses: string | undefined;
@@ -282,13 +285,42 @@ function tick() {
     target.addEventListener('animationend', () => target.classList.remove('grow'), { once: true });
   });
   const scroll = element('scroll'), gap = scroll.scrollHeight - scroll.clientHeight - scroll.scrollTop;
-  if (scrollMode && follow) {
-    scroll.scrollTop = scrollMode === 'snap' ? scroll.scrollHeight : scroll.scrollTop + gap * (1 - Math.exp(-dt / REVEAL.glide));
+  if (scrollMode && follow && (scrollMode === 'dash' || scrollMode === 'load' || paneFocused())) {
+    scroll.scrollTop = scrollMode === 'snap' || scrollMode === 'load' ? scroll.scrollHeight : scroll.scrollTop + gap * (1 - Math.exp(-dt / (scrollMode === 'dash' ? REVEAL.dash : REVEAL.glide)));
     lastScrollTop = scroll.scrollTop;
-    if (scrollMode === 'snap' || gap < .5 && now >= glideUntil) scrollMode = undefined;
+    if (scrollMode === 'snap' || scrollMode === 'load' || gap < .5 && now >= glideUntil) scrollMode = undefined;
   } else scrollMode = undefined;
+  sync();
   schedule();
   armCap();
+}
+function paneFocused() { return window.koaFocused ?? (document.hasFocus() && document.visibilityState === 'visible'); }
+function clearDivider() { divider?.remove(); divider = undefined; fresh.clear(); }
+function sync() {
+  const scroll = element('scroll'), latest = element('latest'), gap = scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight;
+  if (gap < 60 && paneFocused()) { clearDivider(); follow = true; }
+  const dockTop = fresh.size ? element('dock').getBoundingClientRect().top : 0, below = [...fresh.values()].filter(view => view.getBoundingClientRect().top >= dockTop).length, label = below ? '↓ ' + below + ' new' : '↓ Latest';
+  if (latest.textContent !== label) latest.textContent = label;
+  latest.classList.toggle('show', gap >= 60);
+  wasFocused = paneFocused();
+}
+function refocus() {
+  const scroll = element('scroll');
+  if (!wasFocused && scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight >= 60) follow = false;
+  sync();
+}
+function arrive(key: string, view: HTMLElement | undefined) {
+  if (!view) return;
+  if (counted.has(key)) { if (fresh.has(key)) fresh.set(key, view); return; }
+  counted.add(key);
+  if (follow && paneFocused()) return;
+  if (!divider) { divider = node('div', undefined, 'newmsgs'); divider.append(node('span', 'new messages')); element('items').insertBefore(divider, view); }
+  fresh.set(key, view); follow = false; sync();
+}
+function toLatest() {
+  follow = true; glideUntil = performance.now() + REVEAL.dashFor;
+  scrollMode = matchMedia('(prefers-reduced-motion: reduce)').matches ? 'snap' : 'dash';
+  schedule(true);
 }
 function revealStep(memo: TextMemo, now: number) {
   const { reveal, view, source } = memo, tail = reveal?.tail, width = view.clientWidth;
@@ -664,6 +696,7 @@ function refreshBash() {
     if (!card) { card = commandRun(item, 'live-bash:' + item.id); pendingBash.set(item.id, card); }
     else card.update(item);
     if (!card.view.isConnected) element('items').append(card.view);
+    if ((item.phase === 'completed' ? item.result.output : item.output).text) { liveBash.set(item.command, 'bash:' + item.id); arrive('bash:' + item.id, card.view); }
   }
 }
 function refreshComposer() {
@@ -923,13 +956,15 @@ function apply(record: PageRecord) {
   if (record.type === 'reset') {
     editor.resetCompletion();
     epoch = record.epoch; after = -1; first = undefined; items.clear(); views.clear(); texts.clear(); revealing.clear(); growing.length = 0; scrollMode = undefined; dirty = false; stopFrames(); annotationItems.clear(); folds.clear(); jobOwners.clear(); historyRequest = undefined; more = record.more;
-    element('items').replaceChildren();
+    element('items').replaceChildren(); divider = undefined; fresh.clear(); counted.clear(); liveBash.clear();
     element('older').hidden = !more;
     for (const item of record.items) put(item);
+    if (follow) { scrollMode = 'load'; schedule(true); }
+    sync();
     refreshBash(); refreshComposer();
   } else if (record.type === 'item') {
     const current = items.get(record.item.seq);
-    if (!current || record.item.revision >= current.revision) put(record.item);
+    if (!current || record.item.revision >= current.revision) { put(record.item); if (!current && record.item.kind !== 'user' && record.item.kind !== 'annotations' && (record.item.kind !== 'bash' || record.item.result.output.text)) arrive(liveBash.get(record.item.kind === 'bash' ? record.item.command : '') ?? String(record.item.seq), views.get(record.item.seq)?.view); if (record.item.kind === 'bash') liveBash.delete(record.item.command); }
   } else if (record.type === 'patch') applyPatch(record, true);
   else if (record.type === 'reload') location.reload();
   else if (record.type === 'state') {
@@ -954,7 +989,7 @@ function followBottom() {
 function dockResized(height: number) {
   const scroll = element('scroll');
   document.body.style.setProperty('--dock-h', height + 'px');
-  if (follow) { scroll.scrollTop = scroll.scrollHeight; lastScrollTop = scroll.scrollTop; }
+  if (follow && paneFocused()) { scroll.scrollTop = scroll.scrollHeight; lastScrollTop = scroll.scrollTop; }
   followResize();
 }
 function followResize() {
@@ -1188,6 +1223,7 @@ async function send(mode: PromptMode = 'prompt') {
       case 'started': case 'queued': draft.sent(files); break;
       case 'handled': break;
     }
+    clearDivider(); sync();
     if (editor.text() === text) editor.setText('');
     refreshComposer(); focusComposer(); element('error').textContent = '';
     if (result.disposition === 'handled') {
@@ -1208,7 +1244,7 @@ const isControl = (target: EventTarget | null) => isTextInput(target) || target 
 function composerReceivesKeys() { return document.hasFocus() && !element('field').inert && !state.dialogs.length && !document.querySelector('.lightbox') && (editor.hasFocus() || !isTextInput(document.activeElement)); }
 function composerFocus() { element('field').classList.toggle('focus', composerReceivesKeys()); }
 function focusComposer() { composerFocus(); if (composerReceivesKeys() && !pickerButton && sessionPicker === 'closed' && (!isControl(document.activeElement) || editor.hasFocus())) editor.focus(); }
-window.addEventListener('focus', focusComposer);
+window.addEventListener('focus', () => { focusComposer(); refocus(); });
 window.addEventListener('load', focusComposer);
 const onEditingComposer = (event: Event) => !!state.edit && event.target instanceof Element && element('composer').contains(event.target);
 document.addEventListener('mousedown', event => { if (onEditingComposer(event)) event.preventDefault(); });
@@ -1221,17 +1257,19 @@ document.addEventListener('click', event => {
   if (pane) window.ko?.focus?.(pane);
 });
 window.addEventListener('pagehide', stopFrames);
-document.addEventListener('visibilitychange', () => { if (document.hidden) stopFrames(); else { dirty ||= revealing.size > 0; schedule(); armCap(); } });
+document.addEventListener('visibilitychange', () => { refocus(); if (document.hidden) stopFrames(); else { dirty ||= revealing.size > 0; schedule(); armCap(); } });
 document.addEventListener('focusin', composerFocus);
 document.addEventListener('focusout', composerFocus);
 const previewModifiers = (event: MouseEvent | KeyboardEvent) => event.shiftKey && event.metaKey && !event.ctrlKey && !event.altKey;
 const previewHover = (event: KeyboardEvent) => document.documentElement.classList.toggle('preview-modifiers', previewModifiers(event));
 document.addEventListener('keyup', previewHover);
-window.addEventListener('blur', () => { document.documentElement.classList.remove('preview-modifiers'); composerFocus(); });
+window.addEventListener('blur', () => { document.documentElement.classList.remove('preview-modifiers'); composerFocus(); sync(); });
 document.addEventListener('keydown', event => { previewHover(event); if (previewKey(event)) return; if (event.defaultPrevented || event.metaKey || event.ctrlKey || event.isComposing || state.dialogs.length || pickerButton || sessionPicker !== 'closed') return; if (event.key === 'Tab') { event.preventDefault(); if (!element('field').inert) editor.focus(); return; } if (composerReceivesKeys() && !event.altKey && event.key.length === 1 && !(event.key === ' ' && isControl(event.target)) && !isTextInput(event.target)) { event.preventDefault(); editor.focus(); editor.insert(event.key); return; } if (event.key === 'Enter' && hasExited() && event.target === document.body) element('exited').querySelector('button')?.click(); if (event.key === 'Escape') { event.preventDefault(); if (editing()) return; if (state.bash.some(item => item.phase === 'running')) { escaped = false; void stop(); } else if (state.working) { escaped = true; void stop(); } else if (escaped) { editor.setText(''); } else { escaped = true; } } });
 element('model').onclick = () => picker('model'); element('thinking').onclick = () => picker('thinking');
 document.addEventListener('pointerdown', event => { if (!element('picker').contains(event.target instanceof Node ? event.target : null) && !pickerButton?.contains(event.target instanceof Node ? event.target : null)) closePicker(); });
-element('scroll').onscroll = () => { const scroll = element('scroll'); if (Math.abs(scroll.scrollTop - lastScrollTop) >= 1) { follow = scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight < 60; lastScrollTop = scroll.scrollTop; } if (scroll.scrollTop < 80) void older(); };
+element('scroll').onscroll = () => { const scroll = element('scroll'); if (Math.abs(scroll.scrollTop - lastScrollTop) >= 1) { follow = scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight < 60; lastScrollTop = scroll.scrollTop; } sync(); if (scroll.scrollTop < 80) void older(); };
+element('latest').onmousedown = event => event.preventDefault();
+element('latest').onclick = toLatest;
 setInterval(() => { status(); for (const item of state.bash) pendingBash.get(item.id)?.update(item); }, 1000);
 window.addEventListener('resize', positionPicker);
 new ResizeObserver(followResize).observe(element('scroll'));

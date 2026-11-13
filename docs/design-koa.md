@@ -859,6 +859,32 @@ the command first ("`!` commands" below).
   every write of the scroll position; the glide stops when the user
   scrolls away, and a patch whose text stays hidden does not
   scroll.
+- **Focus, new items and "↓ Latest".** The look and the rules are in
+  app/design/koa/NOTES.md, "Auto-scroll, the "new messages" divider
+  and "↓ Latest"". The pane is focused when the document has the
+  focus and is visible; the page reads both at each decision and
+  re-checks on focus, blur, `visibilitychange` and scroll, so no
+  native message is necessary and browser mode behaves the same.
+  While the pane is not focused, the scheduler writes no automatic
+  scroll, so an append, a patch, an image load or a resize leaves
+  the position; focus alone never scrolls, and the bottom-and-focused
+  state resumes following. A reset still opens at the bottom when
+  the page follows, focused or not, so a page that loads in a
+  background pane does not open at its top. An item is new at its
+  first append only: a revision or a patch of the same sequence
+  number is growth. The user's message and the `!` row that the
+  send creates are the user's own; the command's output counts
+  once, keyed by the live row's id. The recorded `bash` item has no
+  id, so it takes the key of the live row with the same command, or
+  its own sequence number when no live row exists.
+  The count is of new items whose top is below the dock's top,
+  because the dock covers the bottom of the transcript. The capsule's
+  click is a user action: it sets following and gives the scheduler
+  a short ease-out to the bottom (a snap under Reduce Motion), so
+  the scroll handler sees a position that the page wrote and does
+  not misread it as the user's. The divider and the count clear
+  together, on a send and on a reset of the transcript, which a
+  session switch, `/new`, `/reload` and `/restart` all cause.
 
 **Completion.** pi's RPC mode offers only its command list
 (`get_commands`: extension commands, prompt templates and skills, no

@@ -1231,3 +1231,57 @@ breadcrumb; app/design/pane/NOTES.md, the capsule family).
   the pane title stay koa's); the root view puts the fill back on the
   pane row. Nothing else in the sidebar changes: the records' status,
   clocks and folds are as today.
+
+## Auto-scroll, the "new messages" divider and "↓ Latest" (2026-11-13, spec)
+
+The follow rule stays: the page follows the bottom while the reader
+is at the bottom and keeps the position otherwise. Three additions.
+
+- **Focused.** The pane is focused when the page's document has the
+  focus (`document.hasFocus()`: the pane is the window's active pane,
+  the window is key, the app is active) and the page is visible
+  (`document.visibilityState === "visible"`: the tab is shown, the
+  pane not hidden by zoom or a session switch). Anything else is not
+  focused: another pane active, the window inactive, the app in the
+  background, the tab not shown.
+- **No auto-scroll while not focused.** While the pane is not
+  focused, new items append without moving the scroll, also when the
+  reader was at the bottom. On the return of the focus nothing
+  scrolls: the reader sees the divider and the button and reads on.
+  Following resumes when the reader reaches the bottom again.
+- **New items.** Every transcript item that appends and is not the
+  user's own: assistant text, run rows and their steps, agent cards,
+  job rows, notices and command results, the output of a `!`
+  command. The user's sent message and the `!` command row the send
+  creates are never new. An item is counted once at its first
+  append; streaming growth of an item adds nothing.
+- **The divider.** One rule across the transcript's text width, at
+  the place where the new items start: a 1px line in the accent at
+  35%, with the label "new messages" centred on it in a 6pt-padded
+  gap, prose .8em, 500, the accent, tabular; 14pt above and below
+  (it is a group boundary); the same numbers in dark. It appears with
+  the first item that arrives while the reader is not following the
+  bottom or the pane is not focused, above that item; while it
+  exists, later items extend the new region and no second divider
+  appears. It goes when the reader is at the bottom with the pane
+  focused (by scrolling or the button), on the user's send, on a view
+  switch, a session switch, `/reload`, `/restart` and `/new`. One at
+  a time, never two.
+- **"↓ Latest".** A capsule centred in the content column, 8pt above
+  the dock's topmost element (the queue's first block when the queue
+  shows, else the dialog card, the exit card or the field): 24pt
+  high, 12pt radius, padding 0 10pt, the field's material (the
+  background at 72% with the blur), a 0.5pt edge at 16% of the
+  foreground (14% dark), the contact shadow (black 8%, 1pt, 2pt;
+  dark 30%, 1pt, 3pt), text prose .85em in the foreground: "↓
+  Latest" while nothing is new, "↓ 3 new" ("1 new") while new items
+  exist below the viewport. Shown whenever the reader is not at the
+  bottom, focused or not; fades in and out over 120ms; the pointer a
+  hand; it never takes the focus. A click scrolls to the bottom
+  (smooth, about 250ms; instant under Reduce Motion), following
+  resumes, and the divider goes when the pane is focused. Pinned
+  with the dock, so it moves with the queue's height. No keyboard
+  equivalent: scrolling to the bottom by wheel, trackpad or Page
+  Down does the same. The view bar, when shown, is at the top and
+  unaffected.
+- **Browser mode**: the same; the focus is the browser window's.
