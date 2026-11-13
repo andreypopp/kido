@@ -152,6 +152,50 @@ import XCTest
         wait("the docked pane stays active") { (try? client.model())?.selection.pane == second }
     }
 
+    func testAChildFloatDocksBesideItsParentFloatsAgainAndDocksAgain() throws {
+        let dir = try server()
+        try put(#"{"revision":0,"layout":{"sessions":[{"name":"s","windows":[{"name":"w","tree":\#(sleep)}]}]}}"#, dir: dir)
+        _ = try createPane(#"{"parent":"pane_1","close":"on_exit","command":{"type":"argv","argv":["/bin/sleep","60"]}}"#, dir: dir)
+        let revision = try XCTUnwrap((JSONSerialization.jsonObject(with: Data(try output(["layout"], dir: dir).utf8)) as? [String: Any])?["revision"] as? Int)
+        try put(#"{"revision":\#(revision),"layout":{"sessions":[{"name":"s","windows":[{"name":"w","tree":{"pane":"pane_1"},"floats":[{"pane":"pane_2","x":2,"y":2,"cols":20,"rows":6}]}]}]}}"#, dir: dir)
+        let owner = try owner(dir)
+        wait("the owner shows the layout") { owner.testSession?.windows.values.contains { !$0.isHidden && $0.visualGeometryReady } == true }
+        let client = try XCTUnwrap(owner.testClient)
+        let session = try XCTUnwrap(owner.testSession)
+        let parent = PaneID(number: 1), editor = PaneID(number: 2)
+        let item = try floatItem()
+        wait("the editor float has a view") { session.pane(editor) != nil }
+        let view = try XCTUnwrap(session.pane(editor))
+        session.selectPane(editor)
+        wait("the editor float is selected, and the item offers Dock Pane for it") { (try? client.model())?.selection.pane == editor && view.canPerformMenuItem(item) && item.title == "Dock Pane" }
+        XCTAssertEqual(try XCTUnwrap(windows(client).first).floatEdit(editor), .unfloat(KoSchema.EditUnfloat(edge: .right, pane: editor, target: parent)))
+
+        for _ in 0..<2 {
+            session.paneCommand(.float, editor)
+            wait("the editor docks to the right of its parent") {
+                let panes = self.panes(client)
+                return self.windows(client).first?.floats.isEmpty == true && panes.map(\.id) == [parent, editor] && panes[1].geometry.x > panes[0].geometry.x
+            }
+            wait("the docked editor stays selected and offers Float Pane") { (try? client.model())?.selection.pane == editor && view.canPerformMenuItem(item) && item.title == "Float Pane" }
+            XCTAssertEqual(try XCTUnwrap(windows(client).first).floatEdit(editor), .float(KoSchema.EditFloat(pane: editor)))
+            session.paneCommand(.float, editor)
+            wait("the editor floats again over its parent") { self.windows(client).first?.floats.map(\.pane) == [editor] && self.panes(client).first { $0.id == parent }?.layer == .tiled }
+            wait("the floating editor is selected and offers Dock Pane") { (try? client.model())?.selection.pane == editor && view.canPerformMenuItem(item) && item.title == "Dock Pane" }
+        }
+    }
+
+    func testDockPaneIsOffForAFloatOverAPaneOfAChildWindow() throws {
+        let dir = try server()
+        try put(#"{"revision":0,"layout":{"sessions":[{"name":"s","windows":[{"name":"w","tree":\#(sleep)}]}]}}"#, dir: dir)
+        _ = try createPane(#"{"parent":"pane_1","close":"on_exit","command":{"type":"argv","argv":["/bin/sleep","60"]}}"#, dir: dir)
+        _ = try createPane(#"{"parent":"pane_2","close":"on_exit","command":{"type":"argv","argv":["/bin/sleep","60"]}}"#, dir: dir)
+        let revision = try XCTUnwrap((JSONSerialization.jsonObject(with: Data(try output(["layout"], dir: dir).utf8)) as? [String: Any])?["revision"] as? Int)
+        try put(#"{"revision":\#(revision),"layout":{"sessions":[{"name":"s","windows":[{"name":"a","tree":{"pane":"pane_1"}},{"name":"b","tree":{"pane":"pane_2"},"floats":[{"pane":"pane_3","x":2,"y":2,"cols":20,"rows":6}]}]}]}}"#, dir: dir)
+        let owner = try owner(dir)
+        wait("the owner shows both windows") { owner.testModel?.layout.layout.locate(PaneID(number: 3))?.window.floats.count == 1 }
+        XCTAssertNil(owner.floatTitle(PaneID(number: 3)), "the server keeps a child window's pane alone, so the float cannot dock")
+    }
+
     func testDockPaneDocksNextToTheLastFocusedTiledPaneElseTheFirst() throws {
         let (owner, client) = try shown(#"[{"name":"s","windows":[{"name":"w","tree":{"split":"h","children":[\#(sleep),\#(sleep),\#(sleep)]}}]}]"#)
         let session = try XCTUnwrap(owner.testSession)

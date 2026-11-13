@@ -7,10 +7,12 @@ public struct PaneProjection: Equatable, Sendable {
         let parent: PaneID?
         public let presentation: Presentation
     }
-    // A child in its parent's own window floats over it; a child in another window replaces it in its slot.
+    // A child in another window replaces its parent in the parent's slot. A child in its parent's own window
+    // floats over it or is tiled beside it; a tiled one is a slot of its own.
     public enum Presentation: Equatable, Sendable {
         case replacement
         case floating(owner: Snapshot.Position)
+        case tiled
     }
     public struct Entry: Equatable, Sendable {
         let session: SessionID
@@ -28,8 +30,11 @@ public struct PaneProjection: Equatable, Sendable {
                 window.children.forEach { visit(.item($0), session: session, slot: slot, parent: parent) }
             case .item(let item):
                 let position = Snapshot.Position(session: session, window: item.window, pane: item.id)
-                let root = slot ?? position
-                let presentation: Presentation = parent.flatMap { $0.window == item.window ? .floating(owner: $0) : nil } ?? .replacement
+                let presentation: Presentation = switch parent {
+                case let owner? where owner.window == item.window: item.layer == .floating ? .floating(owner: owner) : .tiled
+                default: .replacement
+                }
+                let root = presentation == .tiled ? position : slot ?? position
                 placements[item.id] = Placement(position: position, slot: root, parent: parent?.pane, presentation: presentation)
                 items[item.id] = Entry(session: session, item: item)
                 rootWindows[item.window] = root.window
@@ -40,6 +45,17 @@ public struct PaneProjection: Equatable, Sendable {
         snapshot?.sessions.forEach { session in
             session.nodes.forEach { visit($0, session: session.id, slot: nil, parent: nil) }
         }
+    }
+    // The pane that a layout command on `pane` addresses: a replacement addresses its slot, any other pane itself.
+    public func addressed(_ pane: PaneID) -> PaneID {
+        guard let placement = placements[pane], case .replacement = placement.presentation else { return pane }
+        return placement.slot.pane
+    }
+    // A float of a child window cannot dock: the server keeps a pane whose parent is in another window alone.
+    public func canDock(_ pane: PaneID) -> Bool {
+        guard case .floating(let owner)? = placements[pane]?.presentation, let host = placements[owner.pane] else { return true }
+        if case .replacement = host.presentation { return host.parent == nil }
+        return true
     }
     func path(to pane: PaneID) -> [Snapshot.Position] {
         var result: [Snapshot.Position] = []
@@ -54,7 +70,7 @@ public struct PaneProjection: Equatable, Sendable {
     public func shown(_ root: PaneID, slots: PaneSlots) -> ShownPane? {
         guard let placement = placements[slots.shown(root)], placement.slot.pane == root,
               let item = items[placement.position.pane]?.item else { return nil }
-        let ancestors = path(to: placement.position.pane).dropLast().compactMap { position in
+        let ancestors = path(to: placement.position.pane).drop { $0.pane != root }.dropLast().compactMap { position in
             items[position.pane].map { ShownPane.Entry(position: position, title: $0.item.rowTitle) }
         }
         return ShownPane(shown: .init(position: placement.position, title: item.rowTitle), ancestors: ancestors)
@@ -101,7 +117,8 @@ public struct PaneSlots: Equatable, Sendable {
         focused = focused.filter { window, focus in
             switch focus {
             case .slot(let slot): projection.placements[slot]?.slot.window == window && projection.placements[slot]?.slot.pane == slot
-            case .float(let pane): projection.placements[pane]?.slot.window == window
+            case .float(let pane):
+                if case .floating = projection.placements[pane]?.presentation { projection.placements[pane]?.slot.window == window } else { false }
             }
         }
         repairs = repairs.filter { projection.placements[$0]?.slot.pane == $0 }
@@ -147,7 +164,7 @@ public struct PaneSlots: Equatable, Sendable {
         var choice = choices[root] ?? Choice(shown: root)
         choice.shown = pane
         var child = pane
-        while let parent = projection.placements[child]?.parent {
+        while child != root, let parent = projection.placements[child]?.parent {
             choice.lastChild[parent] = child
             child = parent
         }

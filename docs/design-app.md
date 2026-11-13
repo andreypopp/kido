@@ -1837,7 +1837,7 @@ the renderer stay.
 The sidebar tree is a projection of the core's model:
 `Snapshot(model:)` in `SidebarFeed/Projection.swift`. Sessions are
 source-list sections. A window with one pane is a pane item, a window with
-more panes is a group, and a child window, always one pane (docs/protocol.md,
+more panes is a group, and a child window, always one tiled pane (docs/protocol.md,
 section 7), is nested under the pane that its pane's `parent` names, at any
 depth. The order and the parent edges
 are the core's `outline` (each item carries its window; design.md, "The
@@ -2373,10 +2373,18 @@ float of that window that it draws over the slot (below). Input,
 the clipboard, find, the cwd and runtime of a new pane, and Close Pane
 act on the shown pane.
 
-A child pane that floats in its parent's own window, such as koa's
-editor (protocol.md, section 7), is not a replacement:
-`PaneProjection` gives it a floating placement with its parent as
-owner, so it is never the pane that a slot shows. A float of the
+A child pane in its parent's own window, such as koa's editor
+(protocol.md, section 7), is not a replacement. `PaneProjection`
+reads its layer (`Item.layer`, from the window's floats): a floating
+one gets a floating placement with its parent as owner, so it is
+never the pane that a slot shows; a tiled one gets a tiled placement
+and is a slot of its own, with no breadcrumb. A layout edit addresses
+the slot only for a replacement and the pane itself otherwise
+(`PaneProjection.addressed`), so Float Pane and Dock Pane, and a
+drag to dock, float such a child and dock it again. A child that floats over a
+child window's pane cannot dock, because that pane is the only tiled
+pane of its window: Dock Pane is disabled and a drag does not dock
+it. A float focus ends when its pane docks. A float of the
 top-level window draws as any float. The floats of a child window
 that a slot shows draw over that slot, offset by the slot's origin,
 above the slot in the child window's z order. Their layout geometry is

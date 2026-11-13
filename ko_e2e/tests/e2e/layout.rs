@@ -5,7 +5,7 @@ use std::time::Duration;
 use crate::harness::{Message, Server, Ws, poll, sh, start, tagged, wait_gone};
 
 #[test]
-fn child_windows_refuse_a_second_pane_without_changing_the_document() {
+fn a_child_is_tiled_only_in_its_parents_window_or_alone() {
     let s = start(&[]);
     let parent = crate::panes::post(
         &s,
@@ -19,6 +19,12 @@ fn child_windows_refuse_a_second_pane_without_changing_the_document() {
         "/panes",
         &json!({"parent": parent["pane"], "command": {"type": "shell", "command": "exec cat"}}),
     );
+    let other = crate::panes::post(
+        &s,
+        None,
+        "/panes",
+        &json!({"session": "session_1", "command": {"type": "shell", "command": "exec cat"}}),
+    );
     let before = s.doc();
     let edit = json!({"type": "split", "pane": child["pane"], "axis": "h", "new": shell()});
     assert!(
@@ -31,10 +37,6 @@ fn child_windows_refuse_a_second_pane_without_changing_the_document() {
         let windows = draft["layout"]["sessions"][0]["windows"]
             .as_array_mut()
             .unwrap();
-        let root_at = windows
-            .iter()
-            .position(|window| window["id"] == parent["window"])
-            .unwrap();
         let child_at = windows
             .iter()
             .position(|window| window["id"] == child["window"])
@@ -46,13 +48,18 @@ fn child_windows_refuse_a_second_pane_without_changing_the_document() {
             }
             1 => windows[child_at]["floats"] = json!([{"pane": {"new": shell()}}]),
             2 => {
-                windows[root_at]["tree"] = split(
+                let other_at = windows
+                    .iter()
+                    .position(|window| window["id"] == other["window"])
+                    .unwrap();
+                windows[other_at]["tree"] = split(
                     "h",
                     vec![
-                        old(parent["pane"].as_str().unwrap()),
-                        json!({"pane": {"new": {"parent": parent["pane"], "command": {"type": "shell", "command": "exec cat"}}}}),
+                        old(other["pane"].as_str().unwrap()),
+                        old(child["pane"].as_str().unwrap()),
                     ],
-                )
+                );
+                windows.remove(child_at);
             }
             _ => unreachable!(),
         }
@@ -66,9 +73,58 @@ fn child_windows_refuse_a_second_pane_without_changing_the_document() {
                 .iter()
                 .map(|row| row["id"].clone())
                 .collect::<Vec<_>>(),
-            vec![parent["pane"].clone(), child["pane"].clone()]
+            vec![
+                parent["pane"].clone(),
+                child["pane"].clone(),
+                other["pane"].clone()
+            ]
         );
     }
+
+    let (parent_pane, child_pane) = (
+        parent["pane"].as_str().unwrap(),
+        child["pane"].as_str().unwrap(),
+    );
+    let dock = || {
+        s.edit(|layout| {
+            let windows = layout["sessions"][0]["windows"].as_array_mut().unwrap();
+            windows.retain(|window| window["id"] != child["window"]);
+            let home = windows
+                .iter_mut()
+                .find(|window| window["id"] == parent["window"])
+                .unwrap();
+            home["tree"] = split("h", vec![old(parent_pane), old(child_pane)]);
+            home["floats"] = json!([]);
+        })
+    };
+    let float = || {
+        s.edit(|layout| {
+            let windows = layout["sessions"][0]["windows"].as_array_mut().unwrap();
+            let home = windows
+                .iter_mut()
+                .find(|window| window["id"] == parent["window"])
+                .unwrap();
+            home["tree"] = old(parent_pane);
+            home["floats"] = json!([{"pane": child_pane, "border": true}]);
+        })
+    };
+    let home = |snapshot: &Value| {
+        windows(snapshot)
+            .into_iter()
+            .find(|window| window["id"] == parent["window"])
+            .unwrap()
+            .clone()
+    };
+    let docked = home(&dock());
+    assert_eq!(shape(&docked["tree"]).matches(':').count(), 2);
+    assert_eq!(docked["floats"], json!([]));
+    assert_eq!(s.row(child_pane)["parent"], parent["pane"]);
+    assert_eq!(home(&float())["floats"][0]["pane"], child["pane"]);
+    dock();
+    s.delete(&format!("/panes/{parent_pane}"));
+    poll("the cascade to remove the docked child", || {
+        s.rows().iter().all(|row| row["id"] != child["pane"])
+    });
 }
 
 pub(crate) fn put_edit(s: &Server, edit: &Value) -> Value {

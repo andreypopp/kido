@@ -785,17 +785,12 @@ fn window(
         .chain(&floated)
         .map(|(pane, _)| *pane)
         .collect();
+    let away = |parent: &Option<PaneId>| parent.is_some_and(|parent| !here.contains(&parent));
     if let Some((pane, _)) = claims
         .tiled
         .iter()
-        .find(|(_, parent)| parent.is_some())
-        .filter(|_| claims.tiled.len() > 1)
-        .or_else(|| {
-            let child_tiled = claims.tiled.iter().any(|(_, parent)| parent.is_some());
-            floated
-                .iter()
-                .find(|(_, parent)| child_tiled && parent.is_none())
-        })
+        .find(|(_, parent)| away(parent))
+        .filter(|_| claims.tiled.len() > 1 || floated.iter().any(|(_, parent)| parent.is_none()))
     {
         return Err(format!(
             "child pane {pane} must be the only pane in its window"

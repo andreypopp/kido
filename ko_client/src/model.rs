@@ -971,6 +971,16 @@ mod tests {
     }
 
     #[test]
+    fn a_tiled_child_beside_its_parent_nests_under_it_even_when_it_comes_first() {
+        let windows = vec![(Shape::Split(true, vec![Shape::Leaf, Shape::Leaf]), 0)];
+        let mut model = model(layout_of(&[windows, vec![(Shape::Leaf, 0)]]));
+        model.panes = rows_of(&model.layout.layout);
+        set_parent(&mut model, 1, Some(2));
+        assert_eq!(outline_of(&model), ["0pane_2", "1pane_1", "0pane_3"]);
+        assert_eq!(model.step(Some(pane(2)), 1), Some(pane(1)));
+    }
+
+    #[test]
     fn a_layout_event_that_adds_a_pane_with_a_parent_nests_it() {
         let first = layout_of(&[vec![(Shape::Leaf, 0)]]);
         let mut model = model(first);

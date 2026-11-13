@@ -58,7 +58,7 @@ func fixtureItem(_ id: UInt32, window: UInt32? = nil, parent: UInt32? = nil, cwd
     return Item(pane: .init(close: close, command: [], cwd: cwd, dead: dead, id: PaneID(number: id), inbox: pi,
                            label: title, mark: mark, parent: parent.map(PaneID.init(number:)), recordsSeen: false, started: 0,
                            status: live.map { .init(kind: $0, programStatus: .init(records: records, serial: serial), since: 0, title: title) },
-                           title: title, vars: [:]), window: WindowID(number: window ?? id), children: children)
+                           title: title, vars: [:]), window: WindowID(number: window ?? id), layer: .tiled, children: children)
 }
 
 func fixtureNode(_ pane: UInt32, window: UInt32? = nil, _ title: String, _ lifecycle: Lifecycle,

@@ -347,9 +347,9 @@ session implies the client's last current window in it, else its
 first window. A relative switch moves over windows or sessions in
 document order, next or previous, and wraps. A window switch visits
 only top-level windows (design.md, "The sidebar tree") and, from a
-child window, starts at the child's top-level window. Only the
-tiled pane makes a window a child window; a floating child in its
-parent's window does not. A client selects only
+child window, starts at the child's top-level window. Only a tiled
+pane whose parent is in another window makes a window a child
+window; a child in its parent's window, floating or tiled, does not. A client selects only
 over its own connection: there is no route that moves another client
 (decided 2026-11-03).
 
@@ -681,17 +681,20 @@ invariants.
   must name a pane that is not dead: an unknown one is `not_found`, a
   dead one `gone`; a caller that acts as a pane may name only itself.
   No cycle can form, because the parent exists before the child.
-  A pane with a `parent` is a child pane, in every session. A tiled
-  child is the only tiled pane of its window, and the window's floats
-  are only child panes whose parent is in that window. A floating
-  child is valid only in the window of its parent: a pane that opens
-  a helper over itself, such as koa's editor (design-koa.md), makes
-  it a floating child. Any other document in which a child pane
-  shares its window is `invalid`, with the document unchanged and no
-  pane started, so a split, a float, a move or a swap that puts an
-  unrelated pane beside a child, or a child beside another pane, is
-  refused for every client. A window is a child window because of
-  its tiled pane, not its id: a child that moves alone to a new or
+  A pane with a `parent` is a child pane, in every session. A child
+  pane may float or be tiled in the window of its parent, whether the
+  parent floats or is tiled there: a pane that opens a helper over
+  itself, such as koa's editor (design-koa.md), makes it a floating
+  child, and a client can dock it beside its parent and float it
+  again. In any other window a tiled child is the only tiled pane,
+  and the window's floats are only child panes whose parent is in
+  that window. A floating child is valid only in the window of its
+  parent. Any other document is `invalid`, with the document
+  unchanged and no pane started, so a split, a float, a move or a
+  swap that puts an unrelated pane beside a child outside its
+  parent's window, or a child into a window without its parent
+  beside another pane, is refused for every client. A window is a
+  child window because of its tiled pane, not its id: a child that moves alone to a new or
   empty window, or a swap of two single-pane windows, is valid.
   `runtime` names the runtime that the pane is born in, for its
   life; absent is the host. The row's `runtime` is the runtime that

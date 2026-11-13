@@ -853,4 +853,23 @@ fn window_switching_skips_only_real_child_windows_not_windows_with_child_floats(
     assert_eq!(shown(&mut c, "next"), json!(plain));
     assert_eq!(shown(&mut c, "next"), json!(root));
     assert_eq!(shown(&mut c, "previous"), json!(plain));
+    s.edit(|layout| {
+        let windows = layout["sessions"][0]["windows"].as_array_mut().unwrap();
+        let at = windows
+            .iter()
+            .position(|window| window["tree"]["pane"] == json!(child))
+            .unwrap();
+        let carried = windows.remove(at)["floats"].clone();
+        for window in windows {
+            if window["tree"]["pane"] == json!(root) {
+                window["tree"] = split("h", vec![old(&child), old(&root)]);
+                window["floats"]
+                    .as_array_mut()
+                    .unwrap()
+                    .extend(carried.as_array().unwrap().clone());
+            }
+        }
+    });
+    assert_eq!(shown(&mut c, "next"), json!(root));
+    assert_eq!(shown(&mut c, "next"), json!(plain));
 }

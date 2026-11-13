@@ -1543,9 +1543,9 @@ private class AlertEscape: NSView {
     }
 
     func floatTitle(_ pane: PaneID) -> String? {
-        let root = projection.placements[pane]?.slot.pane ?? pane
+        let root = projection.addressed(pane)
         guard let window = koModel?.layout.layout.locate(root)?.window, let edit = window.floatEdit(root) else { return nil }
-        if case .unfloat = edit { return "Dock Pane" }
+        if case .unfloat = edit { return projection.canDock(pane) ? "Dock Pane" : nil }
         return "Float Pane"
     }
 
@@ -1562,10 +1562,11 @@ private class AlertEscape: NSView {
             return perform(.jump(placement.position))
         default: break
         }
-        let root = projection.placements[pane]?.slot.pane ?? pane
+        let root = projection.addressed(pane)
         guard let koModel, let window = koModel.layout.layout.locate(root)?.window,
               let action = command.action(root, in: window, new: koModel.newPane(from: pane, runtime), cell: session?.cell ?? .zero, lastTiled: lastTiled[window.id]) else { return }
         switch action {
+        case .edit(.unfloat) where !projection.canDock(pane): return
         case .edit(let edit):
             submitSelecting(edit)
         case .select(let target): session?.selectPane(paneSlots.shown(target))

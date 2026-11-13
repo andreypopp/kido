@@ -934,7 +934,7 @@ final class WindowView: NSView {
             let geometry = wire(frame, pane.id, placement)
             host.position = .dragging(frame: frame, sent: sent)
             placeFloat(pane.id, placement)
-            var target = edge == nil && windowID != nil ? dropTarget(at: viewPoint(input.point), source: pane.id) : nil
+            var target = edge == nil && windowID != nil && session?.floatTitle(pane.id) != nil ? dropTarget(at: viewPoint(input.point), source: pane.id) : nil
             if case .centre? = target?.zone { target = nil }
             preview.rect = target?.rect
             if let target, let windowID, input.up {

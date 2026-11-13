@@ -974,7 +974,8 @@ composer's text; koa never sends it.
   koa's pane, 80% of it, at least 60 columns by 16 rows, moved to stay
   inside the window; only a pane below that minimum gets the float
   centred on the window, clipped to it. A nested koa is the only
-  tiled pane of its child window, so there its pane is the window.
+  tiled pane of its child window, so there its pane is the window,
+  and its editor cannot dock there.
   koa writes the float through `PUT /layout` with the
   revision it read, and reads the layout again on a `409`, three
   times at most. The float is a child pane: `parent` is koa's pane

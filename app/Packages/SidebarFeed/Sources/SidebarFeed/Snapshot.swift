@@ -94,12 +94,16 @@ public struct Item: Equatable, Sendable {
     public var pane: KoSchema.PaneJson
     public var id: PaneID { pane.id }
     public var window: WindowID
+    let layer: Layer
     public var children: [Node]
     public var runtime: RuntimeMark?
 
-    public init(pane: KoSchema.PaneJson, window: WindowID, children: [Node], runtime: RuntimeMark? = nil) {
+    public enum Layer: Equatable, Sendable { case tiled, floating }
+
+    public init(pane: KoSchema.PaneJson, window: WindowID, layer: Layer, children: [Node], runtime: RuntimeMark? = nil) {
         self.pane = pane
         self.window = window
+        self.layer = layer
         self.children = children
         self.runtime = runtime
     }
