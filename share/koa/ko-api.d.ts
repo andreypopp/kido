@@ -1211,6 +1211,9 @@ export interface components {
             kind: "select";
         } & components["schemas"]["Payload"]) | ({
             /** @constant */
+            kind: "close";
+        } & components["schemas"]["Payload"]) | ({
+            /** @constant */
             kind: "user";
         } & components["schemas"]["Payload"]));
         /** @description The sender's id of a message: 8 to 64 characters of A-Z, a-z, 0-9, _ and -. */
@@ -1388,6 +1391,11 @@ export interface components {
         ProgramKind: "permission" | "question" | "auth";
         ProgramRecord: {
             app?: string;
+            /**
+             * @description False: the program offers no close of the record. True: the program acts on a `close`
+             *     message of this record.
+             */
+            closeable?: boolean;
             id: components["schemas"]["StatusId"];
             msg?: string;
             selection?: components["schemas"]["RecordSelection"];
@@ -1550,7 +1558,7 @@ export interface components {
          * @description The kinds that a sender may give. The server reads none of them.
          * @enum {string}
          */
-        SendKind: "message" | "steer" | "interrupt" | "stop" | "notice" | "select";
+        SendKind: "message" | "steer" | "interrupt" | "stop" | "notice" | "select" | "close";
         /** @description A message to the pane in the path. The server stamps the sender. */
         SendMessage: {
             data?: components["schemas"]["Data"];
@@ -1724,6 +1732,11 @@ export interface components {
         StatusProgress: number;
         StatusReport: ({
             app?: components["schemas"]["StatusApp"];
+            /**
+             * @description False: the program offers no close of the record. True: the program acts on a `close`
+             *     message of this record.
+             */
+            closeable?: boolean;
             id: components["schemas"]["StatusId"];
             msg?: components["schemas"]["StatusText2048"];
             selection?: components["schemas"]["RecordSelection"];

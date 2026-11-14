@@ -371,7 +371,10 @@ and `clear` when the session fails. With the extension's
 `pi.session`, the row is a `PiAgent` (design-program-status.md). koa
 sets the pane title with OSC 0 from the root session's name and
 directory. Each subagent's status is a record of the pane
-(design-subagents.md, "In the sidebar"), by the same rule.
+(design-subagents.md, "In the sidebar"), by the same rule. The
+record is selectable and closeable: a `select` from the user switches
+the view, a `close` stops that subagent (design-subagents.md, "The
+pane's queue").
 
 **The session's directory** is the runtime's `cwd`, which pi sets
 from the session that it opened: a session of another directory runs

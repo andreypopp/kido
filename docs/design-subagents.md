@@ -349,6 +349,12 @@ for every message and reads no `data`.
 - `select` from the user switches the page's view to the agent of the
   record id in its text (the empty id is the root); one from a pane,
   or for an unknown id, is acked and ignored (design-koa.md, "Views").
+- `close` from the user stops the agent of the record id in its text
+  at once, by "Stopping" below, whether it works or owes a report,
+  without a question; then its parent gets the notice "the user
+  stopped subagent @<name>", because the parent did not ask for the
+  stop. One from a pane, for the root or for an unknown or stopping
+  agent, is acked and ignored.
 
 Messages wait until the root has started and while a `/reload` runs,
 so none reaches an extension that is being replaced.
@@ -524,7 +530,8 @@ title), `done` or `error` at the settle and `idle` after an abort; the
 message is the error's first line, else the first line of the last
 assistant text. `selection` is `selected` for the viewed agent and
 `offered` for every other; a click on the row in Kido.app sends the
-`select` message ("The pane's queue"). The root's own record stays
+`select` message ("The pane's queue"). Every subagent record is
+`closeable`, and the row's × in Kido.app sends the `close` message. The root's own record stays
 koa's OSC 7501 root and names the root, whatever the page shows.
 
 ## A job

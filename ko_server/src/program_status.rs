@@ -50,6 +50,7 @@ impl Set {
             msg: report.msg.map(String::from),
             started,
             selection: report.selection,
+            closeable: report.closeable,
         };
         if let Some(index) = stored {
             if self.records.get(index) == Some(&record) {
@@ -85,6 +86,7 @@ impl Set {
                         title: None,
                         msg: None,
                         selection: None,
+                        closeable: false,
                         ..
                     } if u8::from(*progress) == 0
                 )
@@ -133,6 +135,7 @@ mod tests {
                 title: None,
                 msg: None,
                 selection: None,
+                closeable: false,
             },
         }
     }

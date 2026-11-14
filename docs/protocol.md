@@ -604,6 +604,11 @@ never sets or clears it from its own click or from the reply of a
 the selection: it follows the `status` events. Clients ignore it on
 the root record, which is the pane itself.
 
+A record of the route can also carry `closeable: true`, again never
+from OSC 7501: the program acts on a `close` message that names the
+record. Absent, a client offers no close of the record. The client
+does not remove the record itself; the program's clear removes it.
+
 The first message after the welcome is the full layout with every
 pane's row, and the second is the client's `selected`. There is no event replay; a client that reconnects gets
 the state again from its new welcome's layout event and reopens its
@@ -829,6 +834,10 @@ stamps the sender, enforces the scope and carries the bytes.
   is opaque to ko and its clients: they read only its `/` nesting.
   `ko_client_select_record` (`ko_client/include/ko_client.h`) sends
   it as the user, and refuses an id that is not a status id.
+- **`close`.** The same shape for a record with `closeable`: kind
+  `close`, the record id as `text`, no `data`, sent as the user by
+  `ko_client_close_record`. The receiver decides what a close is;
+  a client sends it without a confirmation of its own.
 
 - Only the pane itself (or the user) opens the stream, and a pane has
   at most one: a second upgrade is `refused`, "the pane already has a

@@ -164,6 +164,36 @@ pub unsafe extern "C" fn ko_client_select_record(
     record_id: *const c_char,
     out: *mut Buffer,
 ) -> Code {
+    // SAFETY: the caller upholds the contract of this function, which is that of `send_record`.
+    unsafe { send_record(protocol::SendKind::Select, client_, pane, record_id, out) }
+}
+
+/// # Safety
+///
+/// `client` is a live handle. `pane` and `record_id` are NUL-terminated strings. `out` is
+/// writable for one `ko_buffer`.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ko_client_close_record(
+    client_: *const Client,
+    pane: *const c_char,
+    record_id: *const c_char,
+    out: *mut Buffer,
+) -> Code {
+    // SAFETY: the caller upholds the contract of this function, which is that of `send_record`.
+    unsafe { send_record(protocol::SendKind::Close, client_, pane, record_id, out) }
+}
+
+/// # Safety
+///
+/// `client` is a live handle. `pane` and `record_id` are NUL-terminated strings. `out` is
+/// writable for one `ko_buffer`.
+unsafe fn send_record(
+    kind: protocol::SendKind,
+    client_: *const Client,
+    pane: *const c_char,
+    record_id: *const c_char,
+    out: *mut Buffer,
+) -> Code {
     let scope = ();
     // SAFETY: ko_client.h requires these inputs to remain readable for this call.
     let (pane_text, record_text) = unsafe { (text_of(pane, &scope), text_of(record_id, &scope)) };
@@ -180,7 +210,7 @@ pub unsafe extern "C" fn ko_client_select_record(
     };
     let body = protocol::json(&protocol::SendMessage {
         id: message,
-        kind: protocol::SendKind::Select,
+        kind,
         text: String::from(record),
         data: None,
     });

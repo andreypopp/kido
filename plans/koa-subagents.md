@@ -379,7 +379,12 @@ the pane first, as a click on the pane row does, then sends the
 select, and treats every reply but an error as done. A record row
 with a `selection` is a click and Return target, part of the arrow
 navigation, with the accessibility role of a button; any other
-record stays display-only. `ko_tui` draws no records and still draws
+record stays display-only. While a record is `selected`, a click or
+Return on the pane row sends the select of the root record after the
+pane select. A record can also be `closeable`; its × sends a `close`
+message through `ko_client_close_record`, and koa stops that subagent
+and tells its parent (docs/protocol.md, section 7, "Messages";
+docs/design-app.md and docs/design-subagents.md give the rules). `ko_tui` draws no records and still draws
 none. No ko route is added.
 
 **The view in the page.** koa keeps one `Transcript` feed for each

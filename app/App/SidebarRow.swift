@@ -144,13 +144,15 @@ final class SidebarCell: NSTableCellView, NSTextFieldDelegate {
     #endif
     var terminalDark = false
     private var second = ""
+    private var pending = false
+    private var closable: Bool { row?.target != nil || row?.closing != nil }
     private var runtimeText: NSAttributedString?
     let close = IconButton("xmark", "Close pane", size: 8, hoverStyle: .close)
     let children: SidebarChildren
     private var hovered = false
     override func mouseEntered(with event: NSEvent) { hovered = close.frame.contains(convert(event.locationInWindow, from: nil)); updateClose() }
     override func mouseExited(with event: NSEvent) { hovered = false; updateClose() }
-    private func updateClose() { close.isHidden = !hovered || row?.target == nil; needsDisplay = true }
+    private func updateClose() { close.isHidden = !hovered || !closable || pending; needsDisplay = true }
     let addWindow = IconButton("plus", "New window", size: 11, hoverStyle: .iconOnly)
     override var isFlipped: Bool { true }
 
@@ -186,14 +188,17 @@ final class SidebarCell: NSTableCellView, NSTextFieldDelegate {
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
 
-    func configure(_ row: SidebarRow, now: Int) {
+    func configure(_ row: SidebarRow, now: Int, closing: Bool = false) {
         self.row = row
+        pending = closing
         children.content = row.hidden
         children.isHidden = row.hidden.isEmpty
         let folded = row.hidden.isEmpty ? "" : "\(row.hidden.count) folded children"
         second = secondLine(row.second, status: row.status)
         updateClose()
-        close.setAccessibilityLabel("Close pane: " + row.title)
+        close.setAccessibilityLabel(row.target != nil ? "Close pane: " + row.title : row.title)
+        close.toolTip = row.target != nil ? "Close pane" : nil
+        close.setAccessibilityCustomActions(row.target != nil ? [] : [NSAccessibilityCustomAction(name: "Close") { [weak self] in self?.close.invoke(); return true }])
         addWindow.isHidden = { if case .header = row.kind { return false }; return true }()
         addWindow.toolTip = nil
         addWindow.setAccessibilityLabel("New window in " + row.title)
@@ -228,7 +233,7 @@ final class SidebarCell: NSTableCellView, NSTextFieldDelegate {
     override func updateTrackingAreas() {
         super.updateTrackingAreas()
         trackingAreas.forEach(removeTrackingArea)
-        if row?.target != nil {
+        if closable {
             addTrackingArea(NSTrackingArea(rect: close.frame, options: [.mouseEnteredAndExited, .activeAlways], owner: self))
         }
     }
@@ -299,6 +304,9 @@ final class SidebarCell: NSTableCellView, NSTextFieldDelegate {
             let end = header ? addWindow.frame.minX : bounds.width - (clock.isEmpty ? 23 : trailing + clockWidth + 6)
             let paragraph = NSMutableParagraphStyle()
             paragraph.lineBreakMode = .byTruncatingTail
+            let context = NSGraphicsContext.current?.cgContext
+            let dim: CGFloat = pending ? 0.5 : 1
+            context?.setAlpha(dim)
             var titleRect = NSRect(x: leading, y: y, width: max(0, end - leading), height: line)
             let titleFont = header ? fonts.section : (row.focused || selected) ? fonts.selected : fonts.regular
             var suffix = NSRect.zero
@@ -327,9 +335,11 @@ final class SidebarCell: NSTableCellView, NSTextFieldDelegate {
                 (second as NSString).draw(in: tailRect,
                                           withAttributes: [.font: fonts.tail, .foregroundColor: Chrome.inkSecondary, .paragraphStyle: paragraph])
             }
+            context?.setAlpha(1)
             (clock as NSString).draw(at: clockRect.origin,
                                      withAttributes: [.font: fonts.clock, .foregroundColor: Chrome.inkSecondary])
             if pane && close.isHidden {
+                context?.setAlpha(dim)
                 drawStatusMark(row.status, at: NSPoint(x: dotX, y: y + line / 2), flipped: true)
             }
         }

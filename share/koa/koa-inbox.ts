@@ -12,6 +12,7 @@ export type Inbox = { close(): void };
 type Dispatch = {
   message(target: string | undefined, message: InProcessMessage): Promise<"ack" | "refuse">;
   select(record: string): void;
+  close(record: string): void;
   stop(): void;
 };
 
@@ -22,7 +23,7 @@ function isSender(value: unknown): value is Api["Sender"] {
   return isRecord(value) && (value.type === "user" || (value.type === "pane" && isString(value.pane)));
 }
 
-const MESSAGE_KINDS = ["message", "steer", "interrupt", "stop", "notice", "select", "user"];
+const MESSAGE_KINDS = ["message", "steer", "interrupt", "stop", "notice", "select", "close", "user"];
 
 function isMessage(value: unknown): value is Api["Message"] {
   if (!isRecord(value) || typeof value.seq !== "number" || !isString(value.id) || !isSender(value.from)) return false;
@@ -70,6 +71,9 @@ export async function handleMessage(m: Api["Message"], dispatch: Dispatch): Prom
       return "ack";
     case "select":
       if (m.from.type === "user") dispatch.select(m.text);
+      return "ack";
+    case "close":
+      if (m.from.type === "user") dispatch.close(m.text);
       return "ack";
     default: return "refuse";
   }

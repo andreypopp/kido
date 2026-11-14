@@ -201,6 +201,7 @@ fn size(content: &Content) -> usize {
         | Content::Stop(payload)
         | Content::Notice(payload)
         | Content::Select(payload)
+        | Content::Close(payload)
         | Content::User(payload) => payload
             .text
             .len()

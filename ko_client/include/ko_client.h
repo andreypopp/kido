@@ -47,7 +47,8 @@ extern "C" {
  * bytes of an older snapshot never follow a newer restore. The surface may
  * be fed from that thread only; the caller's queue plays no part in it. The
  * calls that return a ko_buffer (ko_client_put_layout, ko_client_prompt,
- * ko_client_select_record, ko_client_prompt_resolve, ko_client_delete, ko_client_runtime_up, ko_client_runtime_down,
+ * ko_client_select_record, ko_client_close_record, ko_client_prompt_resolve, ko_client_delete,
+ * ko_client_runtime_up, ko_client_runtime_down,
  * ko_client_edit, ko_client_image),
  * ko_client_launch, ko_client_stop_server and ko_client_probe block until the
  * server answered: call them off the main queue.
@@ -802,6 +803,16 @@ ko_code ko_client_select_record(const ko_client *client,
                                 const char *pane,
                                 const char *record_id,
                                 ko_buffer *out);
+
+/*
+ * Sends a `close` message for the record `record_id` to the program of the pane `pane`, as the
+ * user. It is `ko_client_select_record` with the kind `close`: the same arguments, results and
+ * blocking. The receiver decides what a close means; only a record with `closeable` offers it.
+ */
+ko_code ko_client_close_record(const ko_client *client,
+                               const char *pane,
+                               const char *record_id,
+                               ko_buffer *out);
 
 enum {
     KO_DELETE_PANE = 1,
