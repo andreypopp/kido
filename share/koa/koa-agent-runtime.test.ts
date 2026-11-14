@@ -629,11 +629,12 @@ for (const reason of ["quit", "new", "resume", "fork", "reload"]) {
       await pollUntil(() => settled, 2000, "the pending start to return its refusal before its probe is released");
       const result = await work;
       writeFileSync(factsGate, "");
-      await pollUntil(() => fx.running() === (second ? 2 : 0));
       if (second) {
         const rows = jsonRows(await run(second, "list_async_bash", {}));
         assert.equal(rows.filter((row) => row.name === "monitor").length, 1, "the old start must not create a second job with the same name");
+        await second.emit("session_shutdown", { reason: "new" });
       }
+      await pollUntil(() => fx.running() === 0);
       assert.equal(result.isError, true, "shutdown must refuse a start that has no job yet");
       assert.match(text(result), new RegExp(`start cancelled.*${reason}`));
       assert.ok(fx.execLog().every((entry) => !JSON.stringify(entry.request.argv).includes(`must-not-run-${reason}`)));
