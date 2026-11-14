@@ -139,9 +139,12 @@ test("stream and ending-notice failures retry independently at adoption", async 
   try {
     fx.setPanes([selfPane()]);
     const first = await startSession(fx);
+    await first.emit("agent_start");
     const gate = join(fx.dir, "gate");
     const result = await first.tool("async_bash").execute("a", { command: gatedCommand(gate, "held-line\n"), name: "retry", stream: true });
     const job = backgroundJob(jobId(result));
+    await pollUntil(() => job.mode.stream.lines.includes("held-line"));
+    assert.deepEqual(customMessages(first, "ko-stream"), []);
     await first.emit("session_shutdown", { reason: "reload" });
     writeFileSync(gate, "");
     await pollUntil(() => job.state.type === "ended");
