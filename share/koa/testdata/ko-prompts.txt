@@ -273,13 +273,6 @@ could not start background command: start cancelled by session <reason>; no job 
 ```
 delivered as: tool result, an error
 
-### a replaced registry (adoptJobs)
-
-```
-<N> async_bash jobs of the previous koa version were stopped at /reload: <names>
-```
-delivered as: notice from koa; only when jobs were stopped
-
 ### an unknown kind
 
 ```
@@ -287,7 +280,7 @@ delivered as: notice from koa; only when jobs were stopped
 ```
 delivered as: followUp
 
-### a child's report (handleNotice)
+### a child's report (receiveReport)
 
 ```
 notice from <child name> (a subagent or background job's report, not the user):
@@ -310,14 +303,6 @@ message it to retry, or stop_agent to end it
 ```
 delivered as: a status notice
 
-### the exit notices (session_shutdown, reason quit)
-
-```
-subagent "<name>" is exiting before its first turn ran
-subagent "<name>" is exiting without a report on its last work[: its last turn failed: <text>]
-```
-delivered as: a status notice
-
 ### a live job's result suffix for a subagent caller
 
 ```
@@ -328,20 +313,18 @@ delivered as: tool result
 ### a spawn's result (spawn_agent)
 
 ```
-spawned <name> (session <pi session id>, window <window id>, pane <pane id>); session id is what resume_from takes later; its result arrives as a notice when it ends a turn with no unfinished work of its own (service jobs do not count) - you know nothing about it until then, so do not report, assume or predict it, continue other work or answer the user meanwhile, and if nothing else is left, end your turn - the notice wakes you; list_agents lists this agent and stop_agent stops it. A fork adds ", forked from session <source session id>" before the semicolon. Toplevel instead ends with "independent peer; no report or ending notice".
+spawned <name> (session <pi session id>); session id is what resume_from takes later; its result arrives as a notice when it ends a turn with no unfinished work of its own (service jobs do not count) - you know nothing about it until then, so do not report, assume or predict it, continue other work or answer the user meanwhile, and if nothing else is left, end your turn - the notice wakes you; list_agents lists this agent and stop_agent stops it. A fork adds ", forked from session <source session id>" before the semicolon. Toplevel instead is a pane of its own: "spawned <name> (session <pi session id>, window <window id>, pane <pane id>)", and the rule is "independent peer; no report or ending notice".
 ```
 delivered as: tool result
 
 ### a restart's result (message_agent)
 
 ```
-restarted <name> in pane <pane id>; the same result rule as a spawn follows
+restarted <name> (session <pi session id>); the same result rule as a spawn follows. A peer instead: restarted <name> in pane <pane id>; independent peer; no report or ending notice
 ```
 delivered as: tool result
 
-## Ending notices the extension composes (koa-agent.ts)
-
-`adoptJobs` builds the job notice; `announceEnding` builds the subagent notice when its pane ended or was removed.
+## Job ending notice the extension composes (koa-agent.ts)
 
 ```
 job "<name>" (<id>) exit <code> | signal <NAME> | failed: <message> | timed out after <N> s
@@ -351,14 +334,6 @@ log: <log>
 ```
 
 A stopped job sends no ending notice.
-
-```
-subagent "<name>" ended: exit <code> | signal <NAME> | failed: <message> | its pane was removed | its pane is gone; it had reported
-subagent "<name>" ended: <how>; it had not reported on its last work
---- last 4000 bytes of its screen ---   [only while the pane lingers]
-<the screen>
-message it to continue it, or stop_agent to end it
-```
 
 Every report notice also ends with:
 

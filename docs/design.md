@@ -953,6 +953,11 @@ Each decision names its date. The code states the rest.
   and Kido.app's slots, breadcrumb and ⌘↑/⌘↓. A pane's `parent`
   stays for the lifetime and the scope of the programs that make
   helper panes; the tree nests only within a window.
+- This replaces older entries below: a subagent is no pane
+  (2026-11-04); a report is in-process, with no resend; a child's
+  project trust comes from its host, not `KO_AGENT_TRUSTED_CWD`; the
+  host, not a process-wide registry, keeps each agent's jobs across
+  `/reload` (2026-11-05).
 
 2026-11-12, koa is the one harness:
 

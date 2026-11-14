@@ -9,6 +9,8 @@ export const VAR_ACTIVITY = "pi.activity";
 export const VAR_TASK = "koa.task";
 export const VAR_RUNTIME = "pi.runtime";
 
+export const reconnectBackoff = (previous: number): number => Math.min(previous ? previous * 2 : Number(process.env.KO_RECEIVER_BACKOFF_MS) || 200, 5000);
+
 export const MIN_ID_PREFIX = 8;
 const MAX_AGENT_COMPLETIONS = 10;
 const NAME_WORD_SEPARATORS = /[\s\-_/]+/;

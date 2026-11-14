@@ -1,33 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { execFileSync } from "node:child_process";
 import { selfPane, ofType, pollUntil } from "./koa-agent-fixture.ts";
 import { realFixture } from "./koa-program-fixture.ts";
 
 const prompt = (app: { post(path: string, body?: object): Promise<Response> }, text: string) => app.post("prompt", { text, mode: "prompt", attachments: [] });
-const lastUser = (app: Awaited<ReturnType<typeof realFixture>>, n = 0) => JSON.stringify(app.provider.requests[n]?.body.messages.at(-1));
-
-test("a prompt reaches real pi through the fake provider and the reply shows", { timeout: 20000 }, async t => {
-  const app = await realFixture(t, { replies: [{ reasoning: "pondering", text: "hello there" }] });
-  assert.equal((await prompt(app, "hi")).status, 200);
-  await app.until(ofType("item", record => record.item.kind === "assistant" && JSON.stringify(record.item.blocks).includes("hello there")));
-  assert.match(lastUser(app), /hi/);
-  assert.deepEqual(app.provider.violations, []);
-});
-
-test("an ordinary spawn succeeds in koa's own process and creates no pane", { timeout: 20000 }, async t => {
-  const app = await realFixture(t, { panes: [selfPane()], replies: [{ tools: [{ name: "spawn_agent", args: { name: "worker", task: "build it" } }], when: "spawn" }, { when: "spawn", text: "done" }, { when: "build it", text: "built" }, { when: "notice from worker", text: "ok" }] });
-  await prompt(app, "spawn one");
-  await pollUntil(() => app.provider.requests.some(request => request.body.messages.at(-1)?.role === "tool"), 5000, "the tool result request");
-  assert.match(JSON.stringify(app.provider.requests.find(request => request.body.messages.at(-1)?.role === "tool")?.body.messages.at(-1)), /spawned worker \(session [0-9a-f]{32}\)/);
-  assert.deepEqual((await app.apiCalls()).filter(call => call.method === "POST" && call.path === "/panes"), []);
-});
-
-test("koa runs pi in its own process: no RPC child exists", { timeout: 20000 }, async t => {
-  const app = await realFixture(t, { replies: [] });
-  const children = execFileSync("ps", ["-ax", "-o", "ppid=,command="], { encoding: "utf8" }).split("\n").filter(line => line.trim().startsWith(`${app.pid} `) && /\bpi\b|--mode rpc/.test(line.replace(/\/open\b.*/, "")));
-  assert.deepEqual(children, []);
-});
 
 test("/restart replaces koa by execve during a turn, on the same session", { timeout: 30000 }, async t => {
   const app = await realFixture(t, { replies: [{ gate: "hold", text: "late" }] });

@@ -539,7 +539,7 @@ import SidebarFeed
         let (owner, slot, _, child) = try await webviewChildSlot(keepHidden: 4,
             extraWindows: #",{"name":"budget","tree":{"split":"h","children":[\#(terminals)]}}"#)
         let session = try XCTUnwrap(owner.testSession)
-        let other = try XCTUnwrap(session.windows.first { $0.value !== slot }?.key)
+        let other = try XCTUnwrap(session.windows.first { $0.value.name == "budget" }?.key)
         try owner.testClient?.select(KO_SELECT_PANE, child)
         try await wait("the parent window stays retained under the child window") {
             session.activePane?.pane == child && slot.retainedPanes.count == 1 && session.visualHotSurfaces == 2

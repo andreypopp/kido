@@ -11,7 +11,7 @@ import { openInbox, type Inbox } from "./koa-inbox.ts";
 import type { SessionRow, SessionScope } from "./koa-records.ts";
 import type { AgentEnd, RestartState, InProcessMessage } from "./records.ts";
 import type { AgentRow } from "./agents.ts";
-import { errorText, replaceControlCharacters, utf8Prefix } from "./text.ts";
+import { errorText, cleanLine, utf8Prefix } from "./text.ts";
 import { apiArgs, apiCall, findKo } from "./runtime-exec.ts";
 import type { CompletionContext } from "./completion-context.ts";
 
@@ -103,7 +103,6 @@ export type AgentHost = {
   spawn(plan: SpawnPlan): Promise<Agent | { error: string }>;
   stop(agent: Agent): Promise<void>;
   stopDescendants(): Promise<void>;
-  recordPath(): string;
 };
 
 export type Tree = {
@@ -112,13 +111,11 @@ export type Tree = {
   all(): Agent[];
   find(id: string): Agent | undefined;
   byRecord(id: string): Agent | undefined;
-  scopeOf(agent: Agent): Scoped[];
+  selected(): Agent;
   select(agent: Agent): void;
   writeRecord(agent: Agent): void;
-  spawn(parent: Agent, plan: SpawnPlan): Promise<Agent | { error: string }>;
   retry(agent: Agent): Promise<void>;
   stop(agent: Agent, cause: AgentEnd): Promise<void>;
-  stopDescendants(agent: Agent): Promise<void>;
   restartState(): RestartState;
   dispose(): Promise<void>;
   openInbox(): void;
@@ -254,7 +251,7 @@ export function createTree(options: TreeOptions): Tree {
     const { view } = agent;
     const dialog = view.state.dialogs[0]?.title;
     const failed = view.life.type === "failed" ? view.life.message : undefined;
-    const text = utf8Prefix(replaceControlCharacters(dialog ?? failed ?? view.root.message).replace(/\s+/g, " ").trim(), 2048);
+    const text = cleanLine(dialog ?? failed ?? view.root.message, 2048);
     const common = { type: "set" as const, id: recordPath(agent), title: utf8Prefix(agent.name, 192), selection: selected === agent ? "selected" as const : "offered" as const, closeable: true, ...(text ? { msg: text } : {}) };
     records.write(dialog ? { ...common, state: "blocked", kind: "question" } : { ...common, state: failed === undefined ? view.root.value : "error" });
   };
@@ -378,7 +375,6 @@ export function createTree(options: TreeOptions): Tree {
       spawn: plan => spawn(agent(), plan),
       stop: target => stop(target, "stopped"),
       stopDescendants: () => stopDescendants(agent()),
-      recordPath: () => jobsPath(agent()),
     };
     return host;
   };
@@ -399,6 +395,7 @@ export function createTree(options: TreeOptions): Tree {
     agent.runtime = runtime;
     runtime.setRebindSession(session => bind(agent, session));
     runtime.setBeforeSessionInvalidate(() => agent.torn.add(runtime.session));
+    return runtime;
   };
 
   const spawn = async (parent: Agent, plan: SpawnPlan): Promise<Agent | { error: string }> => {
@@ -447,10 +444,17 @@ export function createTree(options: TreeOptions): Tree {
     agent.runtime = undefined;
     agent.unsubscribe?.(); agent.unsubscribe = undefined;
     await old?.dispose().catch(() => {});
+    const gone = () => agent.stopping || !agent.parent?.children.includes(agent);
+    if (gone()) return;
     view.life = { type: "starting" }; view.resetSession(); view.newSessionScope(); view.publish(true);
     try {
       const sessionManager = file ? pi.SessionManager.open(file) : pi.SessionManager.create(plan.cwd, childSessionDir(agentDir, plan.cwd), { id: plan.id });
-      await instantiate(agent, sessionManager, { kind: "child", plan });
+      const made = await instantiate(agent, sessionManager, { kind: "child", plan });
+      if (gone()) {
+        agent.runtime = undefined;
+        await made.dispose().catch(() => {});
+        return;
+      }
       await attach(agent);
     } catch (error) { view.fail(error); }
   };
@@ -490,7 +494,7 @@ export function createTree(options: TreeOptions): Tree {
 
   const root: Agent = makeAgent(undefined, undefined, "", options.cwd, undefined);
   const tree: Tree = {
-    root, records, all, find, scopeOf, select, writeRecord, spawn, retry, stop, stopDescendants,
+    root, records, all, find, selected: () => selected ?? root, select, writeRecord, retry, stop,
     byRecord: id => all().find(agent => agent.parent && recordPath(agent) === id),
     openInbox: () => {
       if (!facts.pane || !facts.ko || !facts.insideKo) { ready(); return; }

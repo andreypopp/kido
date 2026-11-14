@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SessionManager } from "@earendil-works/pi-coding-agent";
 import { Readable } from "node:stream";
+import { execFileSync } from "node:child_process";
 import { pollUntil, ofType, sse } from "./koa-agent-fixture.ts";
 import { realFixture } from "./koa-program-fixture.ts";
 
@@ -88,6 +89,9 @@ test("streamed reasoning, text and fragmented tool arguments reach the transcrip
   });
   await send(app, "write a file");
   await app.until(ofType("item", record => record.item.kind === "assistant" && JSON.stringify(record.item.blocks).includes("wrote it")));
+  assert.match(JSON.stringify(app.provider.requests[0]?.body.messages.at(-1)), /write a file/);
+  const rpcChildren = execFileSync("ps", ["-ax", "-o", "ppid=,command="], { encoding: "utf8" }).split("\n").filter(line => line.trim().startsWith(`${app.pid} `) && /\bpi\b|--mode rpc/.test(line.replace(/\/open\b.*/, "")));
+  assert.deepEqual(rpcChildren, []);
   const shown = JSON.stringify(app.records());
   assert.match(shown, /thinking hard/);
   assert.match(shown, /héllo ✓ wörld/);

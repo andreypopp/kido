@@ -1,6 +1,7 @@
 import type { ChildProcess } from "node:child_process";
 import type { components } from "./ko-api.d.ts";
 import { isRelation, type AgentRef, type InProcessMessage } from "./records.ts";
+import { reconnectBackoff } from "./agents.ts";
 import { lineReader, openStream } from "./runtime-exec.ts";
 import { isRecord, isString } from "./text.ts";
 import { later } from "./koa-timer.ts";
@@ -17,7 +18,6 @@ type Dispatch = {
 };
 
 const RECEIVED_RING = 4096;
-const reconnectBackoff = (previous: number): number => Math.min(previous ? previous * 2 : Number(process.env.KO_RECEIVER_BACKOFF_MS) || 200, 5000);
 
 function isSender(value: unknown): value is Api["Sender"] {
   return isRecord(value) && (value.type === "user" || (value.type === "pane" && isString(value.pane)));

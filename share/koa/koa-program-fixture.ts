@@ -40,7 +40,6 @@ export async function serveChild(t: TestContext, dir: string, args: string[], op
   const pattern = new RegExp(`${options.label}: (http://127\\.0\\.0\\.1:\\d+/)`);
   child.stderr.on("data", bytes => { stderr += bytes; const match = stderr.match(pattern); if (match?.[1]) ready(match[1]); });
   const close = once(child, "close");
-  child.once("exit", (code, signal) => failed(new Error(`koa exited (${code ?? signal}) before it was ready: ${stderr}`)));
   t.after(async () => { await stopChild(child, close); await rm(dir, { recursive: true, force: true }); });
   const base = await Promise.race([url, close.then(() => { throw new Error(`${options.label} exited before serving: ${stderr}`); }), new Promise<never>((_, reject) => { setTimeout(reject, 8000, new Error(`${options.label} did not serve within 8 s: ${stderr}`)).unref(); })]);
   return { child, base, close, stdout: () => stdout, stderr: () => stderr };

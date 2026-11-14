@@ -8,8 +8,10 @@ Right** control above the window shows the layout rule). It is
 implemented; docs/design-app.md ("Folded children") is the reference
 for the code. The user answered every open question ("Decisions"
 below). Change 1 went on 2026-11-13 with the child panes of subagents
-(plans/koa-subagents.md): a child in another window is an ordinary
+(docs/design.md, "Decisions", 2026-11-13): a child in another window is an ordinary
 window with a tab, and the slots, the breadcrumb and ⌘↑/⌘↓ are gone.
+The mockup still draws change 1 and its breadcrumb; that part is
+history, not the reference.
 
 **1. A child shows in its parent's place.** The window layout holds
 top-level panes only. A child window (a subagent, a run, a Claude Code

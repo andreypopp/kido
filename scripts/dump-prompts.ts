@@ -88,31 +88,23 @@ const injected: Array<[string, string, string]> = [
   ["a stream batch (sendStream)", "job \"<name>\" output (job <id>)\n<the last lines, capped>; when a held line is cut: \"... long lines were truncated (the log has them)\"; with lines dropped: \"... N lines omitted (the log has them)\" first; after the budget is spent: \"... output budget spent; the log has the rest: <log>\"", "steer; starts a turn"],
   ["a moved bash call (executeBash)", "still running after <N> s; it continues as job <id>; a notice arrives when it ends; output so far:\n<the output tail>\nlog: <log>\nFor /reload, the prefix is only \"still running\".", "tool result, not an error"],
   ["a cancelled async start (async_bash)", "could not start background command: start cancelled by session <reason>; no job was started", "tool result, an error"],
-  ["a replaced registry (adoptJobs)", "<N> async_bash jobs of the previous koa version were stopped at /reload: <names>", "notice from koa; only when jobs were stopped"],
   ["an unknown kind", "[unrecognised message kind \"<kind>\" from <from>] <text>", "followUp"],
-  ["a child's report (handleNotice)", `${noticeHeader("<child name>")}\n<its last assistant message's text, then the guidance below>; a report over the 4000-byte notice ends with \"\\n\\nfull report: read_report(\\"<child name>\\")\" before the guidance`, "steer"],
+  ["a child's report (receiveReport)", `${noticeHeader("<child name>")}\n<its last assistant message's text, then the guidance below>; a report over the 4000-byte notice ends with \"\\n\\nfull report: read_report(\\"<child name>\\")\" before the guidance`, "steer"],
   ["a child's empty report (agent_settled)", `subagent "<name>" ended its turn with no message`, "the report text"],
   ["a turn that ended on an error (agent_settled)", "subagent stopped on an error: <text>\nmessage it to retry, or stop_agent to end it", "a status notice"],
-  ["the exit notices (session_shutdown, reason quit)", "subagent \"<name>\" is exiting before its first turn ran\nsubagent \"<name>\" is exiting without a report on its last work[: its last turn failed: <text>]", "a status notice"],
   ["a live job's result suffix for a subagent caller", SUBAGENT_RESULT_RULE, "tool result"],
-  ["a spawn's result (spawn_agent)", `spawned <name> (session <pi session id>, window <window id>, pane <pane id>); session id is what resume_from takes later; ${SPAWN_RESULT_RULE}. A fork adds \", forked from session <source session id>\" before the semicolon. Toplevel instead ends with \"independent peer; no report or ending notice\".`, "tool result"],
-  ["a restart's result (message_agent)", "restarted <name> in pane <pane id>; the same result rule as a spawn follows", "tool result"],
+  ["a spawn's result (spawn_agent)", `spawned <name> (session <pi session id>); session id is what resume_from takes later; ${SPAWN_RESULT_RULE}. A fork adds ", forked from session <source session id>" before the semicolon. Toplevel instead is a pane of its own: "spawned <name> (session <pi session id>, window <window id>, pane <pane id>)", and the rule is "independent peer; no report or ending notice".`, "tool result"],
+  ["a restart's result (message_agent)", "restarted <name> (session <pi session id>); the same result rule as a spawn follows. A peer instead: restarted <name> in pane <pane id>; independent peer; no report or ending notice", "tool result"],
 ];
 for (const [when, text, how] of injected) {
   out.push(`### ${when}`, "", "```", text, "```", how ? `delivered as: ${how}` : "", "");
 }
-out.push("## Ending notices the extension composes (koa-agent.ts)", "");
-out.push("`adoptJobs` builds the job notice; `announceEnding` builds the subagent notice when its pane ended or was removed.", "");
+out.push("## Job ending notice the extension composes (koa-agent.ts)", "");
 out.push("```", `job "<name>" (<id>) exit <code> | signal <NAME> | failed: <message> | timed out after <N> s
 --- last 4000 bytes of its output ---
 <the output tail>
 log: <log>`, "```", "");
 out.push("A stopped job sends no ending notice.", "");
-out.push("```", `subagent "<name>" ended: exit <code> | signal <NAME> | failed: <message> | its pane was removed | its pane is gone; it had reported
-subagent "<name>" ended: <how>; it had not reported on its last work
---- last 4000 bytes of its screen ---   [only while the pane lingers]
-<the screen>
-message it to continue it, or stop_agent to end it`, "```", "");
 out.push("Every report notice also ends with:", "", "```", PARENT_GUIDANCE, "```", "");
 process.stdout.write(out.join("\n"));
 
