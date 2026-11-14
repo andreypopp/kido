@@ -410,10 +410,9 @@ fn put_layout(body: &str) -> ExitCode {
         return http_error(400, ErrorKind::Invalid, &message);
     }
     let _ = fs::write(revision_path(), (revision() + 1).to_string());
-    println!(
-        "{}",
-        protocol::json(&layout(&rows("KO_FAKE_PANES")).snapshot)
-    );
+    let snapshot = protocol::json(&layout(&rows("KO_FAKE_PANES")).snapshot);
+    wait_gate("KO_FAKE_PUT_DONE_GATE");
+    println!("{snapshot}");
     ExitCode::SUCCESS
 }
 
@@ -842,6 +841,7 @@ fn stream_client() -> ExitCode {
                 Err(error) => return http_error(400, ErrorKind::Invalid, &error.to_string()),
             };
             emit_message(&event);
+            append("KO_FAKE_CLIENT_FED", line);
         }
         fed = lines.len();
         std::thread::sleep(POLL);
@@ -1130,6 +1130,7 @@ fn api(argv: &[String]) -> ExitCode {
         }
         ("PUT", ["", "layout"]) => return put_layout(&body),
         ("DELETE", ["", "panes", pane]) => {
+            wait_gate("KO_FAKE_DELETE_GATE");
             let refusal = env("KO_FAKE_DELETE_FAIL");
             if !refusal.is_empty() {
                 return http_error(409, ErrorKind::Refused, &refusal);

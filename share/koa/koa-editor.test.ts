@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { floatRect } from "./koa-editor.ts";
+import { floatRect } from "./koa-float.ts";
 import type { components } from "./ko-api.d.ts";
 
 type Window = components["schemas"]["Window"];

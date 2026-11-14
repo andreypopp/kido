@@ -977,6 +977,7 @@ function apply(record: PageRecord) {
     if (!current || record.item.revision >= current.revision) { put(record.item); if (!current && arrives(record.item)) arrive(liveBash.get(record.item.kind === 'bash' ? record.item.command : '') ?? String(record.item.seq), views.get(record.item.seq)?.view); if (record.item.kind === 'bash') liveBash.delete(record.item.command); }
   } else if (record.type === 'patch') applyPatch(record, true);
   else if (record.type === 'reload') location.reload();
+  else if (record.type === 'focus') window.ko?.focus?.(record.pane);
   else if (record.type === 'state') {
     if (state.sessionId !== record.sessionId || state.life.type !== record.life.type) editor.resetCompletion();
     if (state.sessionId && state.sessionId !== record.sessionId) { closeSessions(); closePicker(); editorId = undefined; }

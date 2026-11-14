@@ -1111,7 +1111,8 @@ composer's text; koa never sends it.
   the file is `0600` and is created, never reused. koa removes the
   directory on every end: a result, a failure, a session change and
   koa's own exit.
-- **The float.** koa adds the editor as a bordered float over its
+- **The float** (`koa-float.ts`, which the job log shares). koa
+  adds the editor as a bordered float over its
   own pane, not the whole window, because the editor belongs to that
   pane's draft and must not hide a terminal beside it: centred on
   koa's pane, 80% of it, at least 60 columns by 16 rows, moved to stay
@@ -1167,6 +1168,29 @@ composer's text; koa never sends it.
   anywhere on the composer focuses the editor's float through
   `window.ko.focus`, and its press does not move the page's focus. A page without a ko pane (`--browser`) shows
   "C-g needs a ko pane" for 4 s.
+
+## The job log
+
+A `select` of a job's row (design-subagents.md, "A job's row") opens
+the job's log in a float of koa's pane: `less -R +F <log>` under `ko
+shell --`, so the log keeps its colours, its scrollback and search,
+and follows the file until Control-C; `F` follows again. The float
+has the editor's placement, `parent`, `close: on_exit` and
+`close_confirm: never` ("The external editor"), and the fixed title
+"Job · <job name>".
+
+- One float for each job. A second `select` while the float opens or
+  is open opens nothing and focuses it; another job opens its own.
+- The end of the job does not touch the float: `less` keeps showing
+  the log. The title has no outcome, because a fixed title does not
+  change for the pane's life.
+- `q`, a close of the pane or its death ends only the float; the job
+  runs on. koa's exit removes every open float.
+- **Focus.** koa sends a transient `focus` record to the page of the
+  view that is shown, and the page calls `window.ko.focus` with the
+  float's pane ("Focus" above).
+- A koa outside a ko pane, inside a runtime or without `ko` on PATH
+  opens no float and shows a warning notice.
 
 ## The composer's foot
 

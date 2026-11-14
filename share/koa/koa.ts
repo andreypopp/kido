@@ -23,8 +23,9 @@ import { commandCatalog, parseCommand, dispatchCommand, deferralText, type Defer
 import { installedIdentity } from './koa-identity.ts';
 import { bashCommand } from "./prompt.ts";
 import { koaEditor } from "./koa-editor.ts";
+import { createFloat } from "./koa-float.ts";
 import { findKo, apiArgs } from "./runtime-exec.ts";
-import type { Agent, Tree } from "./koa-agents.ts";
+import type { Agent, JobViewer, Tree } from "./koa-agents.ts";
 import { createView, type AgentView, type Own } from "./koa-view.ts";
 import { agentCompletionItems, type AgentRow } from "./agents.ts";
 import { ATTACHMENT_LIMITS, type PromptMode, type PageRecord, type State, type ThinkingLevel, type Dialog, type CompletionCommand, type CompletionQuery, type SessionStats, type Bash } from "./koa-records.ts";
@@ -240,8 +241,20 @@ async function main(): Promise<void> {
       refreshRows(next);
       next.view.feed.show(previous.view.feed);
     };
+    const jobViewers = new Map<string, ReturnType<typeof createFloat>>();
+    teardown.push(async () => { await Promise.all([...jobViewers.values()].map(float => float.cancel())); });
+    const viewJob: JobViewer = async job => {
+      const warn = (text: string) => tree.selected().view.feed.notify(text, "warning");
+      const self = process.env.KO_PANE, ko = findKo();
+      if (!self || process.env.KO_RUNTIME || !ko) { warn("The job log needs a ko pane and ko on PATH"); return; }
+      const float = jobViewers.get(job.key) ?? createFloat({ label: "Job viewer", notify: (text, level) => tree.selected().view.feed.notify(text, level), changed: () => {} });
+      jobViewers.set(job.key, float);
+      const placed = await float.open(self, { command: { type: "argv", argv: [ko, "shell", "--", "less", "-R", "+F", job.log] }, cwd: tree.selected().view.state.cwd, parent: self, close: "on_exit", fixed_title: `Job · ${job.name}`, close_confirm: "never" }, async () => {});
+      if ("error" in placed) { if (!float.busy()) jobViewers.delete(job.key); warn(`The job log did not open: ${placed.error}`); return; }
+      tree.selected().view.feed.focus(placed.pane);
+    };
     const tree: Tree = koaAgents.createTree({
-      sdk, args: sdk.pi.parseArgs(restartArgs(pass, undefined)), cwd: process.cwd(), agentDir, facts: koaAgents.hostFacts(process.env), browser, makeView,
+      sdk, args: sdk.pi.parseArgs(restartArgs(pass, undefined)), cwd: process.cwd(), agentDir, facts: koaAgents.hostFacts(process.env), browser, viewJob, makeView,
       beforeStop: agent => { if (chain(tree.selected()).includes(agent)) switchView(agent.parent ?? root()); },
       changed: () => refreshRows(tree.selected()),
       select: (agent, record) => { if (agent && record !== undefined) switchView(agent); },

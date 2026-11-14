@@ -451,6 +451,7 @@ export function transcript({ dir, flushMs, metrics = false }: { dir: string; flu
     items.push(item); publish(item); flush();
   };
   const notify = (text: string, level: NotifyLevel): void => append({ kind: 'notify', level, text: cap(text, MAX_WEBVIEW_RESULT_BYTES) });
+  const focus = (pane: string): void => broadcast({ type: "focus", pane });
   const state = (record: State): void => { currentState = { ...record, type: "state" }; broadcast(currentState); };
   const toolRunning = (id: string, at: number): void => {
     flush();
@@ -520,5 +521,5 @@ export function transcript({ dir, flushMs, metrics = false }: { dir: string; flu
     if (current?.kind === 'command') { current.result = result; current.final = result.type !== 'compaction' || result.state.type !== 'running'; publish(current); flush(); }
     else append({ kind: 'command', result });
   };
-  return { command, itemFile, release, show, message, thinking, annotation, rebuild, toolRunning, toolPartial, toolDone, state, notify, handle, close, get metrics() { return counters && { ...counters, subscribers: subscribers.size }; } };
+  return { command, itemFile, release, show, message, thinking, annotation, rebuild, toolRunning, toolPartial, toolDone, state, focus, notify, handle, close, get metrics() { return counters && { ...counters, subscribers: subscribers.size }; } };
 }

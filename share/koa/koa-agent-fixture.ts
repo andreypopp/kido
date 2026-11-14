@@ -23,7 +23,7 @@ import { join, delimiter } from "node:path";
 
 import { SessionManager, initTheme } from "@earendil-works/pi-coding-agent";
 
-import { agentExtension, createJobs, isBackgroundJob, type BackgroundJob, type Job, type JobRegistry } from "./koa-agent.ts";
+import { agentExtension, createJobs, isBackgroundJob, type BackgroundJob, type Job, type JobRegistry, type Jobs } from "./koa-agent.ts";
 import type { components } from "./ko-api.d.ts";
 import { isRecord } from "./text.ts";
 
@@ -98,6 +98,8 @@ type Extension = (pi: object) => void;
 
 const hosts = new Map<object, AgentHost>();
 const liveHosts: AgentHost[] = [];
+export const viewed: { key: string; name: string; log: string }[] = [];
+export const liveJobs = (): Jobs => { const host = liveHosts.at(-1); assert.ok(host); return host.jobs; };
 let shared: ReturnType<typeof createChannel> | undefined;
 export const koaExtension: Extension = pi => { Reflect.apply(agentExtension(hosts.get(pi) ?? (() => { throw new Error("no host for this pi"); })()), undefined, [pi]); };
 
@@ -443,7 +445,7 @@ export function createChannel() {
   const records = createRecords(facts);
   const self = stubAgent({ id: "self-session", parent: undefined, children: [], name: "", runtime: undefined, extension: undefined, stopping: false, view: { state: { name: "Self", cwd: process.cwd(), dialogs: [] }, root: { value: "idle" } } });
   const host: AgentHost = {
-    self, get facts() { return hostFacts(process.env); }, browser: false, trusted: undefined, records, jobs: createJobs({ records, path: () => "jobs", sink: () => host.extension }), extension: undefined,
+    self, get facts() { return hostFacts(process.env); }, browser: false, trusted: undefined, records, jobs: createJobs({ records, path: () => "jobs", sink: () => host.extension, viewer: async job => { viewed.push(job); } }), extension: undefined,
     notify() {}, scope: () => [], find: () => undefined, spawn: unused, stop: unused, stopDescendants: async () => {},
   };
   liveHosts.push(host);

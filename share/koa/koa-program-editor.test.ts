@@ -186,3 +186,12 @@ test("an observer lost while the float is being placed deletes the float", { tim
   assert.deepEqual(await opening, { status: 409, body: { error: "Editor link lost" } });
   await f.closed("pane_10");
 });
+
+test("two opens at once make one draft and one float", { timeout: 15000 }, async t => {
+  const f = await editing(t);
+  const [one, two] = await Promise.all([f.open("a"), f.open("b")]);
+  assert.equal(one.status, 200);
+  assert.ok(two.status === 409 || two.body.pane === one.body.pane);
+  assert.equal((await f.api()).filter(call => call.method === "PUT").length, 1);
+  assert.equal((await f.rows()).filter(row => row.float).length, 1);
+});

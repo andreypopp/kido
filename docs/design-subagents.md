@@ -629,10 +629,26 @@ one when it moves. A routed job has one as a local job does.
   pi-tui's control character replacement, then whitespace collapses
   to one space. The text is cut at a UTF-8 boundary to the route's
   limits. An empty title or message is omitted.
-- A finished record lingers for `KO_JOB_RECORD_LINGER_MS` (5000).
-  Then the extension clears its id. A job's record never changes the pane's
+- A finished record lingers for `KO_JOB_RECORD_LINGER_MS` (60000),
+  so the user can still open its log. Then the extension clears its
+  id. A job's record never changes the pane's
   status: an agent's status comes from its root record alone
   (design-program-status.md, "Reduction").
+
+**Select and close.** A job record is `offered` and `closeable`
+(design-program-status.md, "The record set"); the user's `select` and
+`close` of it reach koa through the pane's message queue, as for an
+agent's record, and the tree gives a record that names no agent to
+the agent whose registry holds the job. The record keeps its job, so
+a finished row stays clickable after the registry prunes the job.
+
+- `select` opens the job's log in a float of koa's pane
+  (design-koa.md, "The job log"). The record stays `offered` while
+  the float is open: `selected` means the record that koa's pane
+  shows, and the log is in another pane.
+- `close` of a running job stops it as `stop_async_bash` does, a
+  service too; the row stays until the record shows the end. `close`
+  of a finished record only clears it. Neither closes an open log.
 
 **The writer.** Every record of the pane, job and agent alike, is one
 `ko api POST /panes/$KO_PANE/status` through the tree's one queue,

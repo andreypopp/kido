@@ -87,6 +87,8 @@ export type Agent = {
 type Relationship = "own" | "peer" | "parent" | "relative";
 type Scoped = { agent: Agent; relationship: Relationship };
 
+export type JobViewer = (job: { key: string; name: string; log: string }) => Promise<void>;
+
 export type Records = { active: boolean; write(report: Api["StatusReport"]): boolean; drain(): Promise<void> };
 
 export type AgentHost = {
@@ -132,6 +134,7 @@ type TreeOptions = {
   cwd: string;
   agentDir: string;
   browser: boolean;
+  viewJob: JobViewer | undefined;
   facts: HostFacts;
   makeView(agent: () => Agent, parent: Agent | undefined, name: string | undefined, cwd: string): AgentView;
   beforeStop(agent: Agent): void;
@@ -232,6 +235,7 @@ export function createTree(options: TreeOptions): Tree {
     return root ? walk(root) : [];
   };
   const find = (id: string): Agent | undefined => all().find(agent => agent.runtime !== undefined && !agent.stopping && agent.id === id);
+  const jobOwner = (record: string): Agent | undefined => all().find(agent => agent.host.jobs.owns(record));
   const depth = (agent: Agent): number => agent.parent ? depth(agent.parent) + 1 : 0;
   const scopeOf = (self: Agent): Scoped[] => {
     const rows = new Map<Agent, Relationship>();
@@ -368,7 +372,7 @@ export function createTree(options: TreeOptions): Tree {
   const makeHost = (agent: () => Agent, trusted: string | undefined): AgentHost => {
     const host: AgentHost = {
       get self() { return agent(); },
-      facts, browser: options.browser, trusted, records, jobs: createJobs({ records, path: () => jobsPath(agent()), sink: () => host.extension }), extension: undefined,
+      facts, browser: options.browser, trusted, records, jobs: createJobs({ records, path: () => jobsPath(agent()), sink: () => host.extension, viewer: options.viewJob }), extension: undefined,
       notify: (message, level = "info") => agent().view.hooks.notify(message, level),
       scope: () => scopeOf(agent()),
       find,
@@ -505,11 +509,16 @@ export function createTree(options: TreeOptions): Tree {
           await agent.extension.receive(message);
           return "ack";
         },
-        select: record => options.select(record === "" ? root : tree.byRecord(record), record),
+        select: record => {
+          const agent = record === "" ? root : tree.byRecord(record);
+          if (agent) options.select(agent, record);
+          else jobOwner(record)?.host.jobs.select(record);
+        },
         close: record => {
           const agent = tree.byRecord(record);
           const parent = agent?.parent;
-          if (!agent || !parent || agent.stopping) return;
+          if (!agent) { jobOwner(record)?.host.jobs.close(record); return; }
+          if (!parent || agent.stopping) return;
           void stop(agent, "stopped").then(() => parent.extension?.receive({ kind: "notice", text: `the user stopped subagent @${agent.name}`, agent: { name: "the user" } })).catch(() => {});
         },
         stop: () => { setImmediate(options.shutdown); },

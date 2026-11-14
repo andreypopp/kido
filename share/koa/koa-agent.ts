@@ -38,7 +38,7 @@ import { randomBytes } from "node:crypto";
 import { type WriteStream, createWriteStream, mkdirSync, readFileSync, readdirSync, realpathSync, statSync } from "node:fs";
 import os from "node:os";
 import type { CompletionContext } from "./completion-context.ts";
-import type { AgentHost, Agent, Extension, Records, SpawnPlan } from "./koa-agents.ts";
+import type { AgentHost, Agent, Extension, JobViewer, Records, SpawnPlan } from "./koa-agents.ts";
 import { runtimeExec, lineReader, openStream, runCommand, apiCall, apiArgs, KO_TIMEOUT_MS, type Reply, type ExecOptions, type ExecResult } from "./runtime-exec.ts";
 import { contentText, mintId, utf8Prefix, utf8Suffix, errorText, cleanLine, isRecord, isString, str } from "./text.ts";
 import { dirname, delimiter, extname, join, posix, resolve } from "node:path";
@@ -356,9 +356,9 @@ export type JobSink = {
 };
 
 // The jobs of one agent live as long as the agent: a reload replaces the extension that delivers their notices, not them.
-export function createJobs(options: { records: Records; path: () => string; sink: () => JobSink | undefined }) {
+export function createJobs(options: { records: Records; path: () => string; sink: () => JobSink | undefined; viewer: JobViewer | undefined }) {
   const registry = createJobRegistry("");
-  const jobRecords = new Map<string, { type: "running" } | { type: "finished"; timer: NodeJS.Timeout }>();
+  const jobRecords = new Map<string, { job: BackgroundJob } & ({ type: "running" } | { type: "finished"; timer: NodeJS.Timeout })>();
   let working = false;
   const write = (id: string | undefined, state: "idle" | "working" | "done" | "error" | "clear", title?: string, message?: string): boolean => {
     const recordId = id === undefined ? options.path() : `${options.path()}/${id}`;
@@ -368,6 +368,7 @@ export function createJobs(options: { records: Records; path: () => string; sink
       type: "set", id: recordId, state,
       ...(cleanedTitle ? { title: cleanedTitle } : {}),
       ...(cleanedMessage ? { msg: cleanedMessage } : {}),
+      ...(options.viewer ? { selection: "offered" as const, closeable: true } : {}),
     };
     return options.records.write(report);
   };
@@ -385,14 +386,18 @@ export function createJobs(options: { records: Records; path: () => string; sink
       clearOne(oldestFinished[0]);
     }
     if (job.state.type === "running") {
-      if (write(id, jobRecordState(job), job.mode.name, job.command)) jobRecords.set(id, { type: "running" });
+      if (write(id, jobRecordState(job), job.mode.name, job.command)) jobRecords.set(id, { type: "running", job });
     } else {
       if (!write(id, job.state.end.type === "exit" && job.state.end.code === 0 ? "done" : "error", job.mode.name, jobEndText(job.state.end))) return;
-      const timer = setTimeout(() => clearOne(id), envMs("KO_JOB_RECORD_LINGER_MS", 5000));
+      const timer = setTimeout(() => clearOne(id), envMs("KO_JOB_RECORD_LINGER_MS", 60000));
       timer.unref();
       jobRecords.delete(id);
-      jobRecords.set(id, { type: "finished", timer });
+      jobRecords.set(id, { type: "finished", timer, job });
     }
+  };
+  const recordOf = (record: string) => {
+    const prefix = `${options.path()}/`;
+    return record.startsWith(prefix) ? jobRecords.get(record.slice(prefix.length)) : undefined;
   };
   const interval = (): number => envMs("KO_STREAM_INTERVAL_MS", 5000);
   const untilDue = (stream: BackgroundJob["mode"]["stream"]): number => stream.lastBatch + interval() - performance.now();
@@ -449,6 +454,20 @@ export function createJobs(options: { records: Records; path: () => string; sink
       }
     },
     detach(): void { for (const job of background()) detachJob(job); },
+    owns: (record: string): boolean => recordOf(record) !== undefined,
+    select(record: string): boolean {
+      const held = recordOf(record);
+      if (!held || !options.viewer) return false;
+      void options.viewer({ key: record, name: cleanLine(held.job.mode.name, MAX_JOB_TITLE_BYTES), log: held.job.mode.log });
+      return true;
+    },
+    close(record: string): boolean {
+      const held = recordOf(record);
+      if (!held) return false;
+      if (held.type === "running") stopJob(held.job);
+      else clearOne(record.slice(options.path().length + 1));
+      return true;
+    },
     // What ended or streamed while no extension was bound is delivered once by the one that binds next.
     drain(): void {
       for (const job of background()) {
