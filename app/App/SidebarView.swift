@@ -49,14 +49,29 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSM
     private let dragOwner = UUID().uuidString
     var navigate: (Navigation, SelectionFocus) -> Void = { _, _ in }
     var selectRecord: (PaneID, String) -> Void = { _, _ in }
+    var closeRecord: (PaneID, String) -> Void = { _, _ in }
+    var uptime: () -> TimeInterval = { ProcessInfo.processInfo.systemUptime }
+    var closeTimeout: TimeInterval = 5
+    private var closing: [SidebarRow.ID: TimeInterval] = [:]
+    private var closingTimer: Timer?
     var paneCommand: (PaneCommand, PaneID) -> Void = { _, _ in }
     var onIntent: () -> Void = {}
     var commandTarget: () -> PaneView? = { nil }
     func validateMenuItem(_ item: NSMenuItem) -> Bool {
-        item.action == #selector(runCommand(_:)) && (window?.firstResponder === table || window?.firstResponder === runtimeSection) && commandTarget()?.validateMenuItem(item) == true
+        switch item.action {
+        case #selector(showRecord(_:)): recordRow(item)?.pick != nil
+        case #selector(closeRecordItem(_:)): recordRow(item).map { $0.closing != nil && closing[$0.id] == nil } ?? false
+        case #selector(runCommand(_:)):
+            (window?.firstResponder === table || window?.firstResponder === runtimeSection) && commandTarget()?.validateMenuItem(item) == true
+        default: false
+        }
+    }
+    private func recordRow(_ item: NSMenuItem) -> SidebarRow? {
+        (item.representedObject as? SidebarRow.ID).flatMap { id in items.first { $0.id == id } }
     }
     @objc func runCommand(_ sender: NSMenuItem) {
         guard window?.firstResponder === table || window?.firstResponder === runtimeSection, let pane = commandTarget() else { return }
+        if case .close? = sender.representedObject as? PaneCommand, window?.firstResponder === table, closeSelectedRecord() { return }
         leave()
         pane.runCommand(sender)
     }
@@ -98,7 +113,7 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSM
         edit.cell.renameError.isHidden = true
         edit.cell.needsDisplay = true
         if let row = items.firstIndex(where: { $0.id == edit.id }) {
-            edit.cell.configure(items[row], now: clockNow)
+            edit.cell.configure(items[row], now: clockNow, closing: isClosing(edit.id))
             resizeRows([row])
         }
         Sidebar.grantFocus(in: window) { window?.makeFirstResponder(edit.responder) }
@@ -300,10 +315,15 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSM
             }
         }
         items = sidebarDividers(items)
+        if !closing.isEmpty {
+            let present = Set(items.map(\.id))
+            closing = closing.filter { present.contains($0.key) }
+            scheduleClosingTimer()
+        }
         if let edit = editing, !items.contains(where: { $0.id == edit.id }) { endRename() }
         if let edit = editing {
             if let row = items.first(where: { $0.id == edit.id }) {
-                edit.cell.configure(row, now: clockNow)
+                edit.cell.configure(row, now: clockNow, closing: isClosing(row.id))
             }
             let changes = items.map(\.id).difference(from: previous.map(\.id))
             table.beginUpdates()
@@ -416,7 +436,71 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSM
     fileprivate func activate(_ index: Int, focus: SelectionFocus) {
         guard let row = entry(index), let target = row.clickTarget else { return }
         navigate(.jump(target), focus)
-        if let pick = row.pick { selectRecord(pick.pane.pane, pick.record) }
+        if let pick = row.rootPick ?? row.pick { selectRecord(pick.pane.pane, pick.record) }
+    }
+
+    func isClosing(_ id: SidebarRow.ID) -> Bool { closing[id] != nil }
+
+    func beginClosing(_ row: SidebarRow) {
+        guard let pick = row.closing, closing[row.id] == nil else { return }
+        closing[row.id] = uptime() + closeTimeout
+        reloadRow(row.id)
+        scheduleClosingTimer()
+        closeRecord(pick.pane.pane, pick.record)
+    }
+
+    func expireClosing() {
+        let now = uptime()
+        let expired = closing.filter { $0.value <= now }.keys
+        for id in expired { closing[id] = nil }
+        for id in expired { reloadRow(id) }
+        scheduleClosingTimer()
+    }
+
+    private func scheduleClosingTimer() {
+        closingTimer?.invalidate()
+        closingTimer = nil
+        guard let deadline = closing.values.min() else { return }
+        let timer = Timer(timeInterval: max(0, deadline - uptime()), repeats: false) { [weak self] _ in
+            MainActor.assumeIsolated { self?.expireClosing() }
+        }
+        closingTimer = timer
+        RunLoop.main.add(timer, forMode: .common)
+    }
+
+    private func reloadRow(_ id: SidebarRow.ID) {
+        if let index = items.firstIndex(where: { $0.id == id }) { table.reloadData(forRowIndexes: [index], columnIndexes: [0]) }
+    }
+
+    // True when the selected row is a record row, which swallows the key whether or not the record closes.
+    private func closeSelectedRecord() -> Bool {
+        guard let row = entry(table.selectedRow), case .program = row.kind else { return false }
+        beginClosing(row)
+        return true
+    }
+
+    fileprivate func menu(forRowAt index: Int) -> NSMenu? {
+        guard let row = entry(index), case .program = row.kind, row.pick != nil || row.closing != nil else { return nil }
+        let menu = NSMenu()
+        if row.pick != nil {
+            let item = menu.addItem(withTitle: "Show", action: #selector(showRecord(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = row.id
+        }
+        if row.closing != nil {
+            let item = menu.addItem(withTitle: "Close", action: #selector(closeRecordItem(_:)), keyEquivalent: "")
+            item.target = self
+            item.representedObject = row.id
+        }
+        return menu
+    }
+
+    @objc private func showRecord(_ item: NSMenuItem) {
+        if let row = recordRow(item), let index = items.firstIndex(where: { $0.id == row.id }) { activate(index, focus: .pane) }
+    }
+
+    @objc private func closeRecordItem(_ item: NSMenuItem) {
+        if let row = recordRow(item) { beginClosing(row) }
     }
 
     func select(_ target: Snapshot.Position) {
@@ -436,6 +520,7 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSM
         case (125, _, []), (_, "j", []), (_, "n", .control): move(1)
         case (126, _, []), (_, "k", []), (_, "p", .control): move(-1)
         case (36, _, []), (76, _, []): activate(table.selectedRow, focus: .pane)
+        case (51, _, []), (117, _, []): return closeSelectedRecord()
         case (53, _, []):
             navigate(.releaseSideFocus, .pane)
         default: return false
@@ -615,8 +700,8 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSM
             }
         }
         cell.terminalDark = terminalDark
-        cell.configure(item, now: clockNow)
-        cell.close.invoke = { [weak self] in self?.closePane(item) }
+        cell.configure(item, now: clockNow, closing: isClosing(item.id))
+        cell.close.invoke = { [weak self] in if item.target != nil { self?.closePane(item) } else { self?.beginClosing(item) } }
         cell.addWindow.invoke = { [weak self] in self?.newWindow(item.id.session) }
         return cell
     }
@@ -682,6 +767,9 @@ final class Table: NSTableView {
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
     #endif
     override func frameOfCell(atColumn column: Int, row: Int) -> NSRect { rect(ofRow: row) }
+    override func menu(for event: NSEvent) -> NSMenu? {
+        (delegate as? SidebarView)?.menu(forRowAt: row(at: convert(event.locationInWindow, from: nil))) ?? super.menu(for: event)
+    }
     override func keyDown(with event: NSEvent) {
         keyboardSelection = true
         if (delegate as? SidebarView)?.key(event) != true { super.keyDown(with: event) }

@@ -3990,6 +3990,14 @@ mod tests {
             ko_client_select_record(client, c"pane_3".as_ptr(), c"a b".as_ptr(), &mut out)
         };
         assert_eq!(code, Code::Argument);
+        let mut out = empty_buffer();
+        // SAFETY: the client is live, the strings are valid and out is writable.
+        let code = unsafe {
+            ko_client_close_record(client, c"pane_3".as_ptr(), c"agents/a".as_ptr(), &mut out)
+        };
+        assert_eq!(code, Code::Ok);
+        // SAFETY: out owns a core allocation that is not freed yet.
+        unsafe { freed_once(&mut out) };
         let sent: Vec<serde_json::Value> = server
             .bodies("POST", "/panes/pane_3/messages")
             .iter()
@@ -4001,7 +4009,8 @@ mod tests {
                 .collect::<Vec<_>>(),
             [
                 (Some("select"), Some("agents/a/agents/b")),
-                (Some("select"), Some(""))
+                (Some("select"), Some("")),
+                (Some("close"), Some("agents/a"))
             ]
         );
         // SAFETY: the null arguments are the point of this call.

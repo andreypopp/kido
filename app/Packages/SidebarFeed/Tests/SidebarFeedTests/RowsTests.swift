@@ -482,6 +482,27 @@ private func recordRows(_ records: [KoSchema.ProgramRecord], client: Int, lifecy
     #expect(rows.map(\.pick) == [nil, .init(pane: rows[0].target!, record: "a"), .init(pane: rows[0].target!, record: "b"), nil])
 }
 
+@Test func thePaneRowOfAShownRecordOnAnOpenInboxCarriesTheRootPick() {
+    let shown: [KoSchema.ProgramRecord] = [.working(.init(id: "a", selection: .selected)), .idle(.init(id: "b", selection: .offered))]
+    let own = recordRows(shown, client: 0)
+    #expect(own[0].rootPick == .init(pane: own[0].target!, record: ""))
+    #expect(own[0].pick == nil)
+    let other = sidebarRows(makeSnapshot([pane(0, lifecycle: piAgent(), records: shown), pane(1)], client: 1)).filter { $0.target != nil }
+    #expect(other[0].rootPick == .init(pane: other[0].target!, record: ""))
+    #expect(recordRows([.idle(.init(id: "b", selection: .offered))], client: 0)[0].rootPick == nil)
+    #expect(recordRows(shown, client: 0, lifecycle: agent())[0].rootPick == nil)
+}
+
+@Test func onlyACloseableRecordOnAnOpenInboxOffersAClose() {
+    let records: [KoSchema.ProgramRecord] = [.working(.init(closeable: true, id: "a", selection: .offered)), .idle(.init(closeable: true, id: "c")), .done(.init(id: "d", selection: .offered))]
+    let rows = recordRows(records, client: 0)
+    #expect(rows.map { $0.closing?.record } == [nil, "a", "c", nil])
+    #expect(rows.map { $0.pick?.record } == [nil, "a", nil, "d"])
+    #expect(rows[1].closing?.actions == [.select, .close])
+    #expect(rows[2].clickTarget == nil)
+    #expect(recordRows(records, client: 0, lifecycle: agent()).map { $0.closing == nil } == [true, true, true, true])
+}
+
 @Test func aSelectionOnAClosedInboxMarksButIsNoClickTarget() {
     let rows = recordRows([.working(.init(id: "a", selection: .selected)), .idle(.init(id: "b", selection: .offered))], client: 0, lifecycle: agent())
     #expect(rows.map { $0.clickTarget != nil } == [true, false, false])

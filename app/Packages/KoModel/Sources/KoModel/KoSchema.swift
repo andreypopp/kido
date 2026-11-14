@@ -1697,6 +1697,7 @@ public enum KoSchema {
 
     public struct ProgramRecordBlocked: Codable, Equatable, Sendable {
         public var app: String?
+        public var closeable: Bool?
         public var id: StatusId
         public var kind: ProgramKind?
         public var msg: String?
@@ -1704,8 +1705,9 @@ public enum KoSchema {
         public var selection: RecordSelection?
         public var started: Int?
         public var title: String?
-        public init(app: String? = nil, id: StatusId, kind: ProgramKind? = nil, msg: String? = nil, progress: StatusProgress? = nil, selection: RecordSelection? = nil, started: Int? = nil, title: String? = nil) {
+        public init(app: String? = nil, closeable: Bool? = nil, id: StatusId, kind: ProgramKind? = nil, msg: String? = nil, progress: StatusProgress? = nil, selection: RecordSelection? = nil, started: Int? = nil, title: String? = nil) {
             self.app = app
+            self.closeable = closeable
             self.id = id
             self.kind = kind
             self.msg = msg
@@ -1717,6 +1719,7 @@ public enum KoSchema {
         public init(from decoder: Decoder) throws {
             let container = try decoder.container(keyedBy: CodingKeys.self)
             self.app = try container.decodeIfPresent(String.self, forKey: .app)
+            self.closeable = try container.decodeIfPresent(Bool.self, forKey: .closeable)
             self.id = try container.decode(StatusId.self, forKey: .id)
             self.kind = try container.decodeIfPresent(ProgramKind.self, forKey: .kind)
             self.msg = try container.decodeIfPresent(String.self, forKey: .msg)
@@ -1733,6 +1736,7 @@ public enum KoSchema {
         }
         private enum CodingKeys: String, CodingKey {
             case app
+            case closeable
             case id
             case kind
             case msg
@@ -1745,13 +1749,15 @@ public enum KoSchema {
 
     public struct ProgramRecordDone: Codable, Equatable, Sendable {
         public var app: String?
+        public var closeable: Bool?
         public var id: StatusId
         public var msg: String?
         public var selection: RecordSelection?
         public var started: Int?
         public var title: String?
-        public init(app: String? = nil, id: StatusId, msg: String? = nil, selection: RecordSelection? = nil, started: Int? = nil, title: String? = nil) {
+        public init(app: String? = nil, closeable: Bool? = nil, id: StatusId, msg: String? = nil, selection: RecordSelection? = nil, started: Int? = nil, title: String? = nil) {
             self.app = app
+            self.closeable = closeable
             self.id = id
             self.msg = msg
             self.selection = selection
@@ -1761,6 +1767,7 @@ public enum KoSchema {
         public init(from decoder: Decoder) throws {
             let container = try decoder.container(keyedBy: CodingKeys.self)
             self.app = try container.decodeIfPresent(String.self, forKey: .app)
+            self.closeable = try container.decodeIfPresent(Bool.self, forKey: .closeable)
             self.id = try container.decode(StatusId.self, forKey: .id)
             self.msg = try container.decodeIfPresent(String.self, forKey: .msg)
             self.selection = try container.decodeIfPresent(RecordSelection.self, forKey: .selection)
@@ -1772,6 +1779,7 @@ public enum KoSchema {
         }
         private enum CodingKeys: String, CodingKey {
             case app
+            case closeable
             case id
             case msg
             case selection
@@ -1782,13 +1790,15 @@ public enum KoSchema {
 
     public struct ProgramRecordError: Codable, Equatable, Sendable {
         public var app: String?
+        public var closeable: Bool?
         public var id: StatusId
         public var msg: String?
         public var selection: RecordSelection?
         public var started: Int?
         public var title: String?
-        public init(app: String? = nil, id: StatusId, msg: String? = nil, selection: RecordSelection? = nil, started: Int? = nil, title: String? = nil) {
+        public init(app: String? = nil, closeable: Bool? = nil, id: StatusId, msg: String? = nil, selection: RecordSelection? = nil, started: Int? = nil, title: String? = nil) {
             self.app = app
+            self.closeable = closeable
             self.id = id
             self.msg = msg
             self.selection = selection
@@ -1798,6 +1808,7 @@ public enum KoSchema {
         public init(from decoder: Decoder) throws {
             let container = try decoder.container(keyedBy: CodingKeys.self)
             self.app = try container.decodeIfPresent(String.self, forKey: .app)
+            self.closeable = try container.decodeIfPresent(Bool.self, forKey: .closeable)
             self.id = try container.decode(StatusId.self, forKey: .id)
             self.msg = try container.decodeIfPresent(String.self, forKey: .msg)
             self.selection = try container.decodeIfPresent(RecordSelection.self, forKey: .selection)
@@ -1809,6 +1820,7 @@ public enum KoSchema {
         }
         private enum CodingKeys: String, CodingKey {
             case app
+            case closeable
             case id
             case msg
             case selection
@@ -1819,13 +1831,15 @@ public enum KoSchema {
 
     public struct ProgramRecordIdle: Codable, Equatable, Sendable {
         public var app: String?
+        public var closeable: Bool?
         public var id: StatusId
         public var msg: String?
         public var selection: RecordSelection?
         public var started: Int?
         public var title: String?
-        public init(app: String? = nil, id: StatusId, msg: String? = nil, selection: RecordSelection? = nil, started: Int? = nil, title: String? = nil) {
+        public init(app: String? = nil, closeable: Bool? = nil, id: StatusId, msg: String? = nil, selection: RecordSelection? = nil, started: Int? = nil, title: String? = nil) {
             self.app = app
+            self.closeable = closeable
             self.id = id
             self.msg = msg
             self.selection = selection
@@ -1835,6 +1849,7 @@ public enum KoSchema {
         public init(from decoder: Decoder) throws {
             let container = try decoder.container(keyedBy: CodingKeys.self)
             self.app = try container.decodeIfPresent(String.self, forKey: .app)
+            self.closeable = try container.decodeIfPresent(Bool.self, forKey: .closeable)
             self.id = try container.decode(StatusId.self, forKey: .id)
             self.msg = try container.decodeIfPresent(String.self, forKey: .msg)
             self.selection = try container.decodeIfPresent(RecordSelection.self, forKey: .selection)
@@ -1846,6 +1861,7 @@ public enum KoSchema {
         }
         private enum CodingKeys: String, CodingKey {
             case app
+            case closeable
             case id
             case msg
             case selection
@@ -1856,14 +1872,16 @@ public enum KoSchema {
 
     public struct ProgramRecordWorking: Codable, Equatable, Sendable {
         public var app: String?
+        public var closeable: Bool?
         public var id: StatusId
         public var msg: String?
         public var progress: StatusProgress?
         public var selection: RecordSelection?
         public var started: Int?
         public var title: String?
-        public init(app: String? = nil, id: StatusId, msg: String? = nil, progress: StatusProgress? = nil, selection: RecordSelection? = nil, started: Int? = nil, title: String? = nil) {
+        public init(app: String? = nil, closeable: Bool? = nil, id: StatusId, msg: String? = nil, progress: StatusProgress? = nil, selection: RecordSelection? = nil, started: Int? = nil, title: String? = nil) {
             self.app = app
+            self.closeable = closeable
             self.id = id
             self.msg = msg
             self.progress = progress
@@ -1874,6 +1892,7 @@ public enum KoSchema {
         public init(from decoder: Decoder) throws {
             let container = try decoder.container(keyedBy: CodingKeys.self)
             self.app = try container.decodeIfPresent(String.self, forKey: .app)
+            self.closeable = try container.decodeIfPresent(Bool.self, forKey: .closeable)
             self.id = try container.decode(StatusId.self, forKey: .id)
             self.msg = try container.decodeIfPresent(String.self, forKey: .msg)
             self.progress = try container.decodeIfPresent(StatusProgress.self, forKey: .progress)
@@ -1889,6 +1908,7 @@ public enum KoSchema {
         }
         private enum CodingKeys: String, CodingKey {
             case app
+            case closeable
             case id
             case msg
             case progress

@@ -30,11 +30,25 @@ public struct SidebarRow: Equatable, Sendable {
         case record(msg: String?)
     }
     public struct Pick: Equatable, Sendable {
+        struct Actions: OptionSet, Sendable {
+            let rawValue: Int
+            static let select = Actions(rawValue: 1)
+            static let close = Actions(rawValue: 2)
+        }
         public let pane: Snapshot.Position
         public let record: String
+        let actions: Actions
+        init(pane: Snapshot.Position, record: String, actions: Actions = .select) {
+            self.pane = pane
+            self.record = record
+            self.actions = actions
+        }
+    }
+    public enum Showing: Equatable, Sendable {
+        case pane, record
     }
     public enum Kind: Equatable, Sendable {
-        case header, pane(Snapshot.Position, [HiddenChild]), program(Pick?, [HiddenChild]), divider, gap
+        case header, pane(Snapshot.Position, Showing, [HiddenChild]), program(Pick?, [HiddenChild]), divider, gap
     }
     public let id: ID
     public internal(set) var kind: Kind
@@ -57,13 +71,15 @@ public struct SidebarRow: Equatable, Sendable {
     public var leading: Double { 5 + Double(indent) * 15 }
     public var tailY: Double { 24 }
     public var hidden: [HiddenChild] {
-        switch kind { case .pane(_, let hidden), .program(_, let hidden): hidden; default: [] }
+        switch kind { case .pane(_, _, let hidden), .program(_, let hidden): hidden; default: [] }
     }
     public var topLevel: Snapshot.Position? { indent == 0 ? target : nil }
     public var target: Snapshot.Position? {
-        if case .pane(let target, _) = kind { return target }; return nil
+        if case .pane(let target, _, _) = kind { return target }; return nil
     }
-    public var pick: Pick? { if case .program(let pick, _) = kind { pick } else { nil } }
+    public var pick: Pick? { if case .program(let pick?, _) = kind, pick.actions.contains(.select) { pick } else { nil } }
+    public var closing: Pick? { if case .program(let pick?, _) = kind, pick.actions.contains(.close) { pick } else { nil } }
+    public var rootPick: Pick? { if case .pane(let target, .record, _) = kind { Pick(pane: target, record: "") } else { nil } }
     public var clickTarget: Snapshot.Position? { target ?? pick?.pane }
 }
 
@@ -96,6 +112,15 @@ extension KoSchema.ProgramRecord {
         case .done(let r): r.selection
         case .blocked(let r): r.selection
         case .error(let r): r.selection
+        }
+    }
+    fileprivate var closeable: Bool {
+        switch self {
+        case .idle(let r): r.closeable == true
+        case .working(let r): r.closeable == true
+        case .done(let r): r.closeable == true
+        case .blocked(let r): r.closeable == true
+        case .error(let r): r.closeable == true
         }
     }
 }
@@ -227,7 +252,7 @@ public func sidebarRows(_ snapshot: Snapshot?) -> [SidebarRow] {
             ($0.element.summary, $0.offset) < ($1.element.summary, $1.offset)
         }.map { .init(title: $0.element.row.showsTitleWhenFolded ? $0.element.row.title : nil, status: $0.element.summary) }
         switch row.kind {
-        case .pane(let position, _): row.kind = .pane(position, hidden)
+        case .pane(let position, let showing, _): row.kind = .pane(position, showing, hidden)
         case .program(let pick, _): row.kind = .program(pick, hidden)
         default: break
         }
@@ -252,8 +277,9 @@ public func sidebarRows(_ snapshot: Snapshot?) -> [SidebarRow] {
                     }
                     return left.count < right.count
                 }
-                let markedRecord = isClient ? records.first { $0.selection == .selected }?.id : nil
-                let row = SidebarRow(id: .pane(session, item.id), kind: .pane(target, []), indent: depth,
+                let shownRecord = records.first { $0.selection == .selected }?.id
+                let markedRecord = isClient ? shownRecord : nil
+                let row = SidebarRow(id: .pane(session, item.id), kind: .pane(target, shownRecord != nil && item.pane.inbox == true ? .record : .pane, []), indent: depth,
                                      title: item.rowTitle, second: item.second,
                                      runtime: item.runtime.flatMap { $0.name == above ? nil : $0 },
                                      status: status, indicatorDescription: description, focused: isClient && markedRecord == nil,
@@ -270,6 +296,12 @@ public func sidebarRows(_ snapshot: Snapshot?) -> [SidebarRow] {
                     }
                     byParent[parent, default: []].append(record)
                 }
+                func offered(_ record: KoSchema.ProgramRecord, on pane: Snapshot.Position) -> SidebarRow.Pick? {
+                    var actions: SidebarRow.Pick.Actions = []
+                    if record.selection != nil { actions.insert(.select) }
+                    if record.closeable { actions.insert(.close) }
+                    return actions.isEmpty ? nil : .init(pane: pane, record: record.id, actions: actions)
+                }
                 func recordRows(_ parent: Data?, depth: Int, open: Bool) -> [Branch] {
                     (byParent[parent] ?? []).map { record in
                         let (status, description, title, msg, started): (SidebarRow.Status, String, String?, String?, Int?) = switch record {
@@ -280,7 +312,7 @@ public func sidebarRows(_ snapshot: Snapshot?) -> [SidebarRow] {
                         case .idle(let r): (.quiet, "idle", r.title, r.msg, nil)
                         }
                         let id = Data(record.id.utf8)
-                        let row = SidebarRow(id: .program(session, item.id, id), kind: .program(record.selection != nil && item.pane.inbox == true ? .init(pane: target, record: record.id) : nil, []), indent: depth,
+                        let row = SidebarRow(id: .program(session, item.id, id), kind: .program(item.pane.inbox == true ? offered(record, on: target) : nil, []), indent: depth,
                                              title: title.flatMap { $0.isEmpty ? nil : $0 } ?? record.id,
                                              second: .record(msg: msg), status: [.done, .error].contains(status) && item.pane.recordsSeen ? .quiet : status,
                                              indicatorDescription: description, focused: record.id == markedRecord, showsTitleWhenFolded: true, root: root, started: started)

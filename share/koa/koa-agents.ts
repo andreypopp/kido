@@ -255,7 +255,7 @@ export function createTree(options: TreeOptions): Tree {
     const dialog = view.state.dialogs[0]?.title;
     const failed = view.life.type === "failed" ? view.life.message : undefined;
     const text = utf8Prefix(replaceControlCharacters(dialog ?? failed ?? view.root.message).replace(/\s+/g, " ").trim(), 2048);
-    const common = { type: "set" as const, id: recordPath(agent), title: utf8Prefix(agent.name, 192), selection: selected === agent ? "selected" as const : "offered" as const, ...(text ? { msg: text } : {}) };
+    const common = { type: "set" as const, id: recordPath(agent), title: utf8Prefix(agent.name, 192), selection: selected === agent ? "selected" as const : "offered" as const, closeable: true, ...(text ? { msg: text } : {}) };
     records.write(dialog ? { ...common, state: "blocked", kind: "question" } : { ...common, state: failed === undefined ? view.root.value : "error" });
   };
   const select = (agent: Agent): void => {
@@ -455,18 +455,25 @@ export function createTree(options: TreeOptions): Tree {
     } catch (error) { view.fail(error); }
   };
 
-  const stopOne = async (agent: Agent, cause: AgentEnd): Promise<void> => {
+  const stops = new WeakMap<Agent, Promise<void>>();
+  const finishOne = async (agent: Agent, cause: AgentEnd): Promise<void> => {
     agent.view.cancelDialogs();
     const runtime = agent.runtime;
     try { await runtime?.dispose(); } catch (error) { process.stderr.write(`koa: ${errorText(error)}\n`); }
     agent.unsubscribe?.(); agent.unsubscribe = undefined;
     if (agent.parent) {
-      agent.parent.children.splice(agent.parent.children.indexOf(agent), 1);
+      const at = agent.parent.children.indexOf(agent);
+      if (at >= 0) agent.parent.children.splice(at, 1);
       records.write({ type: "clear", id: recordPath(agent) });
       agent.parent.extension?.markEnded(agent.id, cause);
     }
     agent.view.close();
     options.changed();
+  };
+  const stopOne = (agent: Agent, cause: AgentEnd): Promise<void> => {
+    const running = stops.get(agent) ?? finishOne(agent, cause);
+    stops.set(agent, running);
+    return running;
   };
   const marked = (agent: Agent): Agent[] => [...agent.children.flatMap(marked), agent];
   const stop = async (agent: Agent, cause: AgentEnd): Promise<void> => {
@@ -495,6 +502,12 @@ export function createTree(options: TreeOptions): Tree {
           return "ack";
         },
         select: record => options.select(record === "" ? root : tree.byRecord(record), record),
+        close: record => {
+          const agent = tree.byRecord(record);
+          const parent = agent?.parent;
+          if (!agent || !parent || agent.stopping) return;
+          void stop(agent, "stopped").then(() => parent.extension?.receive({ kind: "notice", text: `the user stopped subagent @${agent.name}`, agent: { name: "the user" } })).catch(() => {});
+        },
         stop: () => { setImmediate(options.shutdown); },
       }, gate);
       ready();

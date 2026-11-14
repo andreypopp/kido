@@ -486,6 +486,10 @@ pub struct StatusRecord {
     /// Absent: selecting the record means nothing to the program. Offered: the program acts on a
     /// `select` message of this record. Selected: the record that the program shows now.
     pub selection: Option<RecordSelection>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    /// False: the program offers no close of the record. True: the program acts on a `close`
+    /// message of this record.
+    pub closeable: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -506,6 +510,10 @@ pub struct ProgramRecord {
     /// Absent: selecting the record means nothing to the program. Offered: the program acts on a
     /// `select` message of this record. Selected: the record that the program shows now.
     pub selection: Option<RecordSelection>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    /// False: the program offers no close of the record. True: the program acts on a `close`
+    /// message of this record.
+    pub closeable: bool,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -2362,6 +2370,7 @@ pub enum SendKind {
     Stop,
     Notice,
     Select,
+    Close,
 }
 
 /// A message to the pane in the path. The server stamps the sender.
@@ -2406,6 +2415,7 @@ pub enum Content {
     Stop(Payload),
     Notice(Payload),
     Select(Payload),
+    Close(Payload),
     User(Payload),
 }
 
@@ -2418,6 +2428,7 @@ impl Content {
             SendKind::Stop => Content::Stop(payload),
             SendKind::Notice => Content::Notice(payload),
             SendKind::Select => Content::Select(payload),
+            SendKind::Close => Content::Close(payload),
         }
     }
 }

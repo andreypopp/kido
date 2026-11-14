@@ -93,8 +93,10 @@ test("the pane's one queue reaches the agent that data.to names; a select switch
   const view = () => state(app).view.id;
   await app.feed({ id: "select-user-1", kind: "select", text: "agents/kid" });
   await pollUntil(() => view() === kid, 5000, "the select of the kid");
+  const posts = await statusPosts(app);
   await app.feed({ id: "select-user-2", kind: "select", text: "" });
   await pollUntil(() => view() === rootId, 5000, "the select of the root");
+  await pollUntil(async () => (await statusPosts(app)).slice(posts.length).some(post => post.id === "agents/kid" && post.selection === "offered"), 5000, "the former child record to be offered again");
   await app.feed({ id: "select-pane-3", kind: "select", text: "agents/kid", from: { type: "pane", pane: "pane_2", session: "other", name: "other" } });
   await app.feed({ id: "select-none-4", kind: "select", text: "agents/nobody" });
   await pollUntil(async () => (await acked(app, "select-none-4")).length > 0, 5000, "the last select ack");
@@ -112,6 +114,25 @@ test("the pane's one queue reaches the agent that data.to names; a select switch
   await pollUntil(() => headers().some(text => text.includes("message from @external")), 5000, "the message that names its sender");
   assert.ok(headers().some(text => text.includes("message from @external (session 0123456789abcdef in pane_2; another agent in this session, not the user):")), headers().join("\n"));
   assert.ok(!headers().some(text => text.includes("lost")));
+});
+
+test("a close of a record stops that subagent for the user only, with a notice to its parent", { timeout: 30000 }, async t => {
+  const replies = [...kidScript, { when: "the user stopped subagent @kid", text: "close noted" }];
+  const app = await realFixture(t, { panes: [selfPane()], replies });
+  await send(app, "spawn one");
+  await app.until(listed("kid"));
+  await pollUntil(async () => (await statusPosts(app)).some(post => post.id === "agents/kid" && post.closeable === true), 10000, "the closeable record");
+  await app.feed({ id: "close-pane-1", kind: "close", text: "agents/kid", from: { type: "pane", pane: "pane_2", session: "other", name: "other" } });
+  await app.feed({ id: "close-none-2", kind: "close", text: "agents/nobody" });
+  await app.feed({ id: "close-root-3", kind: "close", text: "" });
+  await pollUntil(async () => (await app.acks()).length >= 3, 5000, "the first acks");
+  assert.deepEqual(await acked(app, "close-pane-1"), ["ack"]);
+  assert.ok(state(app).agents.some(agent => agent.name === "kid"));
+  await app.feed({ id: "close-user-4", kind: "close", text: "agents/kid" });
+  await pollUntil(() => !state(app).agents.some(agent => agent.name === "kid"), 10000, "the kid to go");
+  await pollUntil(async () => (await statusPosts(app)).some(post => post.type === "clear" && post.id === "agents/kid"), 5000, "the clear of the kid's record");
+  await pollUntil(() => app.provider.requests.some(request => JSON.stringify(request.body.messages.at(-1)).includes("the user stopped subagent @kid")), 10000, "the notice to the parent");
+  assert.deepEqual(await acked(app, "close-user-4"), ["ack"]);
 });
 
 const tool = (name: string, args: object) => ({ name, args });

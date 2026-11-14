@@ -2001,11 +2001,31 @@ focused pane and one of its records is `selected` (the first in row
 order when a program writes two), that record row is the focused row
 and the pane row is not; with no selected record the pane row is, as
 for every pane. The pane stays the focused pane: the tab, the title and
-the fold of its rows do not change.
+the fold of its rows do not change. While one of a pane's records is
+`selected` and its `inbox` is open, focused or not, a click or Return on
+the pane row selects the pane and then sends the select of the root
+record (the empty id), so the program shows the pane's own view again;
+the mark moves only with the program's next status.
+
+A record with `closeable` on a pane whose `inbox` is open has the pane
+row's close button: hovering its status-indicator slot replaces the
+indicator with the same ×, and the clock stays. A click sends
+`ko_client_close_record` off the main queue, without the confirmation of
+pane closes: the program owns the record and decides. Until the record
+goes, the row is pending: its title, second line and indicator are
+drawn at 50%, it has no ×, and a second close does nothing. A pending
+row that still exists 5 s later is a closable row again. The pending set
+lives in `SidebarView`, keyed by row, and ends when the row goes. In
+sidebar focus, Delete and Command-W close a selected closable record
+row and do nothing, without a beep, on any other record row. A record
+row's context menu has "Show" (the select) when it has a `selection`
+and "Close" when it is closable; a record with neither has no menu. The
+× has no tooltip; its accessibility label is the record's title and its
+action is "Close".
 
 Hovering a pane row's status-indicator slot, the 12pt square of the
 trailing column, replaces the indicator with a 12pt × close button; the rest of the row has no hover
-treatment and records have no close button. Every app-issued
+treatment, and a record has the button only with `closeable` (above). Every app-issued
 close goes through one confirmation: the row and tab ×, Close Pane (Command-W)
 and the menu commands. A close proceeds at once only when every live pane in
 the target (the pane, the window or the session, each with every descendant

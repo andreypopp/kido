@@ -12,10 +12,11 @@ const message = (extra: object): Api => api({ seq: 1, id: "message-id-1", kind: 
 function recorder() {
   const log: Array<{ to: string | undefined; message: InProcessMessage }> = [];
   const selects: string[] = [];
+  const closes: string[] = [];
   let stops = 0;
   return {
-    log, selects, stops: () => stops,
-    dispatch: { message: async (to: string | undefined, m: InProcessMessage) => { log.push({ to, message: m }); return to === "gone" ? "refuse" as const : "ack" as const; }, select: (record: string) => { selects.push(record); }, stop: () => { stops++; } },
+    log, selects, closes, stops: () => stops,
+    dispatch: { message: async (to: string | undefined, m: InProcessMessage) => { log.push({ to, message: m }); return to === "gone" ? "refuse" as const : "ack" as const; }, select: (record: string) => { selects.push(record); }, close: (record: string) => { closes.push(record); }, stop: () => { stops++; } },
   };
 }
 
@@ -31,7 +32,7 @@ test("data.to picks the agent, data.from names the sender with its return addres
   assert.deepEqual(r.log[1]?.message, { kind: "message", text: "hello", agent: { name: "reviewer", session: "0123456789abcdef", pane: "pane_2" }, relation: "sibling", runtime: "dev", returnTo: { session: "0123456789abcdef", pane: "pane_2" } });
 });
 
-test("a user text is plain, a select acts only for the user, and a stop with a target is refused", async () => {
+test("a user text is plain, a select and a close act only for the user, and a stop with a target is refused", async () => {
   const r = recorder();
   const user = { type: "user" } as const;
   assert.equal(await handleMessage(api({ seq: 1, id: "user-id-0001", kind: "user", text: "typed", from: user }), r.dispatch), "ack");
@@ -39,6 +40,9 @@ test("a user text is plain, a select acts only for the user, and a stop with a t
   assert.equal(await handleMessage(api({ seq: 2, id: "select-id-01", kind: "select", text: "agents/kid", from: user }), r.dispatch), "ack");
   assert.equal(await handleMessage(api({ seq: 3, id: "select-id-02", kind: "select", text: "agents/kid", from: pane, relation: "sibling" }), r.dispatch), "ack");
   assert.deepEqual(r.selects, ["agents/kid"]);
+  assert.equal(await handleMessage(api({ seq: 6, id: "close-id-001", kind: "close", text: "agents/kid", from: user }), r.dispatch), "ack");
+  assert.equal(await handleMessage(api({ seq: 7, id: "close-id-002", kind: "close", text: "agents/kid", from: pane, relation: "sibling" }), r.dispatch), "ack");
+  assert.deepEqual(r.closes, ["agents/kid"]);
   assert.equal(await handleMessage(api({ seq: 4, id: "stop-id-0001", kind: "stop", text: "", from: user, data: { to: "kid" } }), r.dispatch), "refuse");
   assert.equal(r.stops(), 0);
   assert.equal(await handleMessage(api({ seq: 5, id: "stop-id-0002", kind: "stop", text: "", from: user }), r.dispatch), "ack");

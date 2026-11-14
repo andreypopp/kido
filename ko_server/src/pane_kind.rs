@@ -195,6 +195,7 @@ mod tests {
             title: None,
             msg: None,
             selection: None,
+            closeable: false,
         }]
     }
 

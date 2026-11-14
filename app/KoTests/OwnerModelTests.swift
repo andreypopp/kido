@@ -78,14 +78,19 @@ import XCTest
                        "the other window of the host agrees without a shared record")
     }
 
-    func testPressingARecordRowFocusesItsPaneAndSendsASelectMessage() throws {
+    private func recordOwner(_ status: String) throws -> (WindowOwner, log: String) {
         let checkout = try XCTUnwrap(ProcessInfo.processInfo.environment["KO_CHECKOUT"].flatMap { $0.isEmpty ? nil : $0 }, "KO_CHECKOUT")
         let ko = "\(checkout)/build/ko/bin/ko"
         let dir = try stateDir()
         let log = dir + "-messages"
         let script = "printf '\\033]7501;state=idle:app=pi\\007'; \(ko) api --stream \"/panes/$KO_PANE/messages\" </dev/null >\(log) & "
-            + "echo '{\"type\":\"set\",\"id\":\"agents/a-b\",\"state\":\"idle\",\"selection\":\"offered\"}' | \(ko) api --input - \"/panes/$KO_PANE/status\" >/dev/null; " + cat
+            + "echo '\(status)' | \(ko) api --input - \"/panes/$KO_PANE/status\" >/dev/null; " + cat
         let (_, owner) = try shown("[{\"name\":\"w\",\"tree\":\(shell(script, vars: #"{"pi.session":"s1","pi.name":"Worker"}"#))}]", at: dir)
+        return (owner, log)
+    }
+
+    func testPressingARecordRowFocusesItsPaneAndSendsASelectMessage() throws {
+        let (owner, log) = try recordOwner(#"{"type":"set","id":"agents/a-b","state":"idle","selection":"offered"}"#)
         let row = { sidebarRows(owner.snapshot).first { $0.pick != nil } }
         wait("the offered record, clickable once the message stream is open") { row() != nil }
         let pick = try XCTUnwrap(row()?.pick)
@@ -95,6 +100,32 @@ import XCTest
             let text = (try? String(contentsOfFile: log, encoding: .utf8)) ?? ""
             return text.contains("\"select\"") && text.contains("agents/a-b")
         }
+    }
+
+    func testPressingThePaneRowOfAShownRecordSendsTheRootSelect() throws {
+        let (owner, log) = try recordOwner(#"{"type":"set","id":"agents/a-b","state":"idle","selection":"selected"}"#)
+        let rows = { sidebarRows(owner.snapshot) }
+        wait("the shown record, once the message stream is open") { rows().contains { $0.pick != nil } }
+        let pane = try XCTUnwrap(rows().first { $0.target != nil })
+        owner.sidebar.list.press(pane.id)
+        wait("the select message of the root reaches the program") {
+            let text = (try? String(contentsOfFile: log, encoding: .utf8)) ?? ""
+            return text.contains("\"select\"") && text.contains("\"text\":\"\"")
+        }
+    }
+
+    func testClosingARecordRowSendsAClose() throws {
+        let (owner, log) = try recordOwner(#"{"type":"set","id":"agents/a-b","state":"idle","selection":"offered","closeable":true}"#)
+        let row = { sidebarRows(owner.snapshot).first { $0.closing != nil } }
+        wait("the closeable record, once the message stream is open") { row() != nil }
+        let record = try XCTUnwrap(row())
+        owner.sidebar.list.beginClosing(record)
+        owner.sidebar.list.beginClosing(record)
+        wait("the close message reaches the program") {
+            let text = (try? String(contentsOfFile: log, encoding: .utf8)) ?? ""
+            return text.contains("\"close\"") && text.contains("agents/a-b")
+        }
+        XCTAssertEqual(((try? String(contentsOfFile: log, encoding: .utf8)) ?? "").components(separatedBy: "\"close\"").count - 1, 1, "a second click does nothing")
     }
 
     func testAPromptResolvesItsCandidatesAndSendsThroughTheCore() throws {

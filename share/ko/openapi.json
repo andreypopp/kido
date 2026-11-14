@@ -2628,6 +2628,23 @@
             ],
             "properties": {
               "kind": {
+                "const": "close",
+                "type": "string"
+              }
+            },
+            "required": [
+              "kind"
+            ],
+            "type": "object"
+          },
+          {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/Payload"
+              }
+            ],
+            "properties": {
+              "kind": {
                 "const": "user",
                 "type": "string"
               }
@@ -3312,6 +3329,10 @@
           "app": {
             "type": "string"
           },
+          "closeable": {
+            "description": "False: the program offers no close of the record. True: the program acts on a `close`\nmessage of this record.",
+            "type": "boolean"
+          },
           "id": {
             "$ref": "#/components/schemas/StatusId"
           },
@@ -3819,7 +3840,8 @@
           "interrupt",
           "stop",
           "notice",
-          "select"
+          "select",
+          "close"
         ],
         "type": "string"
       },
@@ -4579,6 +4601,10 @@
             "properties": {
               "app": {
                 "$ref": "#/components/schemas/StatusApp"
+              },
+              "closeable": {
+                "description": "False: the program offers no close of the record. True: the program acts on a `close`\nmessage of this record.",
+                "type": "boolean"
               },
               "id": {
                 "$ref": "#/components/schemas/StatusId"
