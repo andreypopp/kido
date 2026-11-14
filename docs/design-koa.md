@@ -688,8 +688,20 @@ foot shows its state. `/new`, `/resume`, `/reload`, `/restart` and
 `<command>: only in @<root's name>'s view`, also as routes. The page
 keeps one draft for each view (the text and the ready attachments),
 cancels pending uploads, completion and history reads at a switch,
-closes its pickers, menus and the lightbox, and opens the new view at
-its end.
+closes its pickers, menus and the lightbox, and opens the new view
+where the reader left it (app/design/koa/NOTES.md, "A view switch").
+At a switch it remembers, for the view it leaves, either that it
+followed the bottom or the top visible item, its offset and the
+newest item shown. On a return it restores that item, loads older
+pages until the item is present, and opens at the end when the item
+is gone; the items newer than the remembered one arrive as new
+items. The memory is the page's alone. A position belongs to the
+view's pi session as well as to the view, because each agent of the
+tree has its own `sessionId` and `/new` and `/resume` replace the
+root's session under the same view: a view returns to a position
+only under the session that it was saved in. A page load, so also
+`/reload` and `/restart`, starts with no memory, and a view not left
+before opens at its end.
 
 **Links.** An `@name` link of an agent of this process switches the
 view; one of another pane focuses that pane with `window.ko.focus`,

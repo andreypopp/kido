@@ -1822,6 +1822,101 @@ test('a view change keeps each view its own draft and closes what belongs to the
   assert.deepEqual(result.again, ['child draft', 0]);
 });
 
+async function viewScrollPage() {
+  const page = await latestPage(), create = page.app.context.document.createElement;
+  page.app.context.document.createElement = (tag: string) => {
+    const node = create(tag), own = node.getBoundingClientRect.bind(node);
+    return Object.assign(node, { getBoundingClientRect: () => {
+      const seq = Reflect.get(Reflect.get(node, 'dataset') ?? {}, 'seq');
+      if (seq === undefined) return own();
+      const top = Number(seq) * 100 - Number(page.evaluate("element('scroll').scrollTop"));
+      return { left: 0, top, bottom: top + 100, height: 100 };
+    } });
+  };
+  page.evaluate("element('scroll').getBoundingClientRect=()=>({top:0})");
+  const go = (id: string, session = id === 'r' ? 's' : 'c') => page.evaluate(`apply({...state,type:'state',sessionId:'${session}',view:{id:'${id}',path:[{id:'r',name:'ko'}${id === 'r' ? '' : ",{id:'" + id + "',name:'x'}"}]},life:{type:'ready'}})`);
+  const open = (seqs: number[], more = false) => page.evaluate(`apply({type:'reset',epoch:'a',more:${more},items:${JSON.stringify(seqs.map(seq => page.text(seq)))}})`);
+  const at = (top: number) => page.evaluate(`Object.assign(element('scroll'),{scrollHeight:1000,clientHeight:100,scrollTop:${top}});element('scroll').onscroll()`);
+  const state = () => String(page.evaluate("[element('scroll').scrollTop, follow].join()"));
+  go('r'); open([0, 1, 2, 3, 4]);
+  return { ...page, go, open, at, state };
+}
+
+test('a view that was left scrolled up opens at the same place, and a view that was followed opens at the end', async () => {
+  const page = await viewScrollPage();
+  page.at(250);
+  page.go('a'); page.open([10]);
+  assert.equal(page.state().split(',')[1], 'true');
+  page.at(900);
+  page.go('r'); page.open([0, 1, 2, 3, 4]);
+  assert.equal(page.state(), '250,false');
+  assert.equal(page.dividers(), '0,1,2,3,4');
+  page.go('a'); page.open([10]);
+  page.step(16);
+  assert.equal(page.state(), '1000,true');
+  assert.equal(page.dividers(), '10');
+});
+
+test('items that arrived while away get the divider and the count when the view was left scrolled up', async () => {
+  const page = await viewScrollPage();
+  page.at(250);
+  page.go('a'); page.open([10]);
+  page.go('r'); page.open([0, 1, 2, 3, 4, 5, 6]);
+  assert.equal(page.dividers(), '0,1,2,3,4,divider,5,6');
+  assert.equal(page.state(), '250,false');
+  assert.match(page.latest(), /^↓ \d+ new,true$/);
+});
+
+test('an anchor older than the loaded tail loads older pages first, and a missing anchor opens at the end', async () => {
+  const page = await viewScrollPage();
+  page.at(50);
+  page.go('a'); page.open([10]);
+  const urls: string[] = [];
+  Object.assign(page.app.context, { fetch: async (url: string) => { urls.push(url); return { ok: true, json: async () => ({ type: 'reset', epoch: 'a', more: false, items: [0, 1, 2].map(page.text) }) }; } });
+  page.go('r'); page.open([3, 4], true);
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(urls.map(url => url.replace(/\?.*before=/, '?before=').replace(/&.*/, '')), ['/items?before=3']);
+  assert.equal(page.state(), '50,false');
+  page.go('a'); page.open([10]);
+  page.go('r'); page.open([7, 8], false);
+  page.step(16);
+  assert.equal(page.state().split(',')[1], 'true');
+});
+
+test('a session switch opens every view at the end', async () => {
+  const page = await viewScrollPage();
+  page.at(250);
+  page.go('a'); page.open([10]);
+  page.go('r', 'other'); page.open([0, 1, 2, 3, 4]);
+  page.step(16);
+  assert.equal(page.state(), '1000,true');
+});
+
+test('a restore that waits for older items is dropped when the view is left and entered again', async () => {
+  const page = await viewScrollPage();
+  page.at(50);
+  page.go('a'); page.open([10]);
+  const held: (() => void)[] = [];
+  Object.assign(page.app.context, { fetch: () => new Promise(resolve => held.push(() => resolve({ ok: true, json: async () => ({ type: 'reset', epoch: 'a', more: false, items: [0, 1, 2].map(page.text) }) }))) });
+  page.go('r'); page.open([3, 4], true);
+  page.go('a'); page.open([10]);
+  page.go('r'); page.open([3, 4], false);
+  page.evaluate("element('scroll').scrollTop=0");
+  held[0]?.();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(held.length, 1);
+  assert.equal(page.state().split(',')[0], '0');
+});
+
+test('a position saved under one session is not restored when the view returns under another', async () => {
+  const page = await viewScrollPage();
+  page.at(250);
+  page.go('a'); page.open([10]);
+  page.go('r', 'resumed'); page.open([0, 1, 2, 3, 4]);
+  page.step(16);
+  assert.equal(page.state(), '1000,true');
+});
+
 test('a name link opens the view of its agent, and a pane link still focuses the pane', async () => {
   const app = await page();
   const link = app.run(`(()=>{${views}

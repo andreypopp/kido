@@ -843,6 +843,10 @@ function restoreQueued(entries: QueuedPrompt[]) {
 }
 let takingBack: Promise<void> | undefined;
 const drafts = new Map<string, string>();
+type Position = { sessionId: string | undefined; seq: number; offset: number; last: number };
+const positions = new Map<string, Position>();
+let returning: Position | undefined;
+function arrives(item: WireItem) { return item.kind !== 'user' && item.kind !== 'annotations' && (item.kind !== 'bash' || !!item.result.output.text); }
 function takeBack(): Promise<void> {
   if (state.life.type !== 'ready' || state.dialogs.length) return Promise.resolve();
   return takingBack ??= (async () => {
@@ -967,9 +971,10 @@ function apply(record: PageRecord) {
     if (follow) { scrollMode = 'load'; schedule(true); }
     sync();
     refreshBash(); refreshComposer();
+    if (returning) void restore(returning);
   } else if (record.type === 'item') {
     const current = items.get(record.item.seq);
-    if (!current || record.item.revision >= current.revision) { put(record.item); if (!current && record.item.kind !== 'user' && record.item.kind !== 'annotations' && (record.item.kind !== 'bash' || record.item.result.output.text)) arrive(liveBash.get(record.item.kind === 'bash' ? record.item.command : '') ?? String(record.item.seq), views.get(record.item.seq)?.view); if (record.item.kind === 'bash') liveBash.delete(record.item.command); }
+    if (!current || record.item.revision >= current.revision) { put(record.item); if (!current && arrives(record.item)) arrive(liveBash.get(record.item.kind === 'bash' ? record.item.command : '') ?? String(record.item.seq), views.get(record.item.seq)?.view); if (record.item.kind === 'bash') liveBash.delete(record.item.command); }
   } else if (record.type === 'patch') applyPatch(record, true);
   else if (record.type === 'reload') location.reload();
   else if (record.type === 'state') {
@@ -977,9 +982,9 @@ function apply(record: PageRecord) {
     if (state.sessionId && state.sessionId !== record.sessionId) { closeSessions(); closePicker(); editorId = undefined; }
     const agentsChanged = JSON.stringify(state.agents) !== JSON.stringify(record.agents);
     const wasEditing = !!state.edit, viewChanged = state.view.id !== record.view.id;
-    if (viewChanged) leaveView(record.view.id);
+    if (viewChanged) { leaveView(record.view.id); const saved = positions.get(record.view.id); returning = saved?.sessionId === record.sessionId ? saved : undefined; }
     state = record; if (agentsChanged || viewChanged) refreshAgentCards(); document.body.dataset.sessionId = state.sessionId ?? ''; element('items').hidden = state.life.type === 'switching';
-    if (viewChanged) { rescopeImages(); follow = true; scrollMode = 'load'; schedule(true); }
+    if (viewChanged) { rescopeImages(); follow = !returning; scrollMode = 'load'; schedule(true); }
     renderBar(); refreshBash(); refreshComposer(); dialogs(); queue(); exited();
     if (state.life.type === 'ready' && state.editor && editorId !== state.editor.id) {
       editor.setText(state.editor.text); editorId = state.editor.id;
@@ -997,8 +1002,24 @@ function leaveView(next: string) {
   element('error').textContent = '';
   draft.view(next);
   if (!previous) return;
+  const scroll = element('scroll'), top = scroll.getBoundingClientRect().top, seen = [...views].sort(([x], [y]) => x - y), visible = seen.find(([, { view }]) => view.getBoundingClientRect().bottom > top);
+  returning = undefined;
+  if (follow || !visible) positions.delete(previous);
+  else positions.set(previous, { sessionId: state.sessionId, seq: visible[0], offset: visible[1].view.getBoundingClientRect().top - top, last: seen.at(-1)?.[0] ?? visible[0] });
   drafts.set(previous, editor.text());
   editor.setText(drafts.get(next) ?? ''); drafts.delete(next);
+}
+async function restore(target: Position) {
+  for (let before = first; more && first !== undefined && target.seq < first && returning === target;) { await older(); if (first === before) break; before = first; }
+  if (returning !== target) return;
+  returning = undefined;
+  const anchor = views.get(target.seq)?.view;
+  if (!anchor) { follow = true; scrollMode = 'load'; schedule(true); return; }
+  const scroll = element('scroll');
+  scroll.scrollTop += anchor.getBoundingClientRect().top - scroll.getBoundingClientRect().top - target.offset;
+  lastScrollTop = scroll.scrollTop; follow = false;
+  for (const [seq, { item }] of [...views].sort(([x], [y]) => x - y)) if (seq > target.last && arrives(item)) arrive(String(seq), views.get(seq)?.view);
+  sync();
 }
 function rescopeImages() {
   for (const thumb of element('items').querySelectorAll<HTMLButtonElement>('[data-base]')) {

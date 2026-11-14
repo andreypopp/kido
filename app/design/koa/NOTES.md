@@ -1264,9 +1264,14 @@ is at the bottom and keeps the position otherwise. Three additions.
   bottom or the pane is not focused, above that item; while it
   exists, later items extend the new region and no second divider
   appears. It goes when the reader is at the bottom with the pane
-  focused (by scrolling or the button), on the user's send, on a view
-  switch, a session switch, `/reload`, `/restart` and `/new`. One at
-  a time, never two.
+  focused (by scrolling or the button), on the user's send, on a
+  session switch, `/reload`, `/restart` and `/new`. One at a time,
+  never two.
+- **A view switch.** A view that is not shown is a not-focused pane.
+  A view that the reader left scrolled up opens at the same position,
+  instantly, with the divider above the first item that arrived
+  while it was not shown and "↓ N new". A view that the reader left
+  at the bottom opens at the end, with no divider and no button.
 - **"↓ Latest".** A capsule centred in the content column, 8pt above
   the dock's topmost element (the queue's first block when the queue
   shows, else the dialog card, the exit card or the field): 24pt
