@@ -722,7 +722,7 @@ function status() {
   const waiting = state.dialogs.length > 0, label = element('status');
   const bang = editor.bash(), running = state.bash.find(item => item.phase !== 'completed');
   label.classList.toggle('err', !!bang && draft.count > 0);
-  const word = hasFailed() ? 'failed' : state.life.type === 'ended' ? 'ended' : waiting ? 'waiting' : state.edit ? 'Editing…' : state.life.type === 'starting' ? 'starting' : state.life.type === 'switching' ? 'loading' : state.working ? state.compaction === 'running' ? 'compacting' : 'working' : running ? 'running' : bang ? bang.excludeFromContext ? 'run, quiet' : 'run' : state.aborted ? 'aborted' : 'idle';
+  const word = hasFailed() ? 'failed' : waiting ? 'waiting' : state.edit ? 'Editing…' : state.life.type === 'starting' ? 'starting' : state.life.type === 'switching' ? 'loading' : state.working ? state.compaction === 'running' ? 'compacting' : 'working' : running ? 'running' : bang ? bang.excludeFromContext ? 'run, quiet' : 'run' : state.aborted ? 'aborted' : 'idle';
   const completing = editor.completionStatus();
   label.title = word === 'Editing…' && state.edit ? `Editing in ${state.edit.editor}` : bang && draft.count ? 'remove the attachments' : '';
   label.textContent = bang && completing === 'pending' ? 'completing…' : bang && completing === 'none' ? 'no completions' : word;

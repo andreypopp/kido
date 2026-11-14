@@ -338,9 +338,11 @@ and the title; Kido.app shows the caption and the child rows too.
 - For `PiAgent`, `pi.session` and `pi.name` give identity and name.
   OSC 7501 gives status.
 - A pane's kind determines only its row and `ko prompt` scope. The
-  harness's messaging and control use the message stream, the
-  `parent` edges and session ids under the same trust rule. A child's report and the parent watch
-  read only `pi.session` and pane death (design.md, "The trust rule").
+  harness's messaging and control between panes use the message
+  stream, the `parent` edges and session ids under the same trust
+  rule (design.md, "The trust rule"). The agents of one koa pane
+  are in one process; their relations and reports are the host's
+  and read no pane row (design-subagents.md, "The tree").
 
 ## Clients
 

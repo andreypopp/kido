@@ -1978,19 +1978,19 @@ new-window plus; hovering brightens only its icon. Sessions do not fold.
 Each pane's children in its window immediately follow that pane, before
 its next sibling; drawn order and navigation share the row-model traversal.
 The rows under a pane show only while the pane or one of its descendants is focused ([Folded children](#folded-children)).
-OSC 7501 non-root records follow their pane before its child panes, ordered
+Non-root status records (OSC 7501 or the status route) follow their pane before its child panes, ordered
 by slash components in UTF-8 byte order. A record row is indented one level
 under its pane, plus one level for each ancestor id (a slash prefix) that is
 present among the pane's non-root records. Thus
 koa's `jobs/<id>` rows, which have no `jobs` record, align with child-pane
-rows. Each record is mapped to an agent
-row (title or full id, message as the activity line, state mapped
+rows. Each record is mapped to a program
+row (title or full id, message as the second line, state mapped
 working→running, blocked→waiting, error→failed, done→done, idle after the
 parent's seen suppression for done/error) and drawn through the same row
-path as every other row; there is no separate record view. A record differs
-from a child-window agent row in having no @ prefix. A record without a
-`selection` is display-only: its body is never a navigation, click, hover
-or selection target, and arrow navigation skips it. A record with a
+path as every other row; there is no separate record view. A record
+row has no @ prefix and no pane actions. The body of a record without a
+`selection` is never a navigation, click or selection target, and arrow
+navigation skips it; only its close control below can act. A record with a
 `selection` (docs/protocol.md, section 6), on a pane whose `inbox` is
 open, is a click and Return target in the arrow navigation, with the
 accessibility role of a button. Its activation selects the pane as a

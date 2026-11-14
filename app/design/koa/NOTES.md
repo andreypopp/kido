@@ -1181,9 +1181,9 @@ the muted tone and is no link.
 
 ## The view bar: a subagent's transcript in koa's page (2026-11-13, spec)
 
-plans/koa-subagents.md moves subagents into koa's process: a click on
+Subagents are sessions of koa's process (docs/design-subagents.md): a click on
 a subagent's sidebar record switches the page to that agent's view.
-The breadcrumb pill Kido.app draws for descendant panes moves into
+The breadcrumb pill that Kido.app drew for descendant panes moved into
 the page, with its geometry (app/design/sidebar/NOTES.md, the
 breadcrumb; app/design/pane/NOTES.md, the capsule family).
 

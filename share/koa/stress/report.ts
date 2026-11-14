@@ -77,5 +77,5 @@ if (process.argv[1] === new URL(import.meta.url).pathname) {
   const rows = await report(resolve(directory));
   console.table(rows);
   if (rows.some(row => row.status === 'failed')) process.exitCode = 1;
-  console.log('flush→frame uses rAF, not a paint-completion signal; flush→apply measures record application without a frame. Chrome heap is measured after GC. Kido measures phys_footprint of its own WebContent processes; the budget divides the increase by the number of pages, and the maximum is reported without a gate. Visible-page footprints have no budget because they have not been measured. W12 creates parented panes through the API; unit 5 covers spawn_agent argv. W9 slot ordering is checked through Kido. Browser body kinds do not reproduce the bridge constraint.');
+  console.log('flush→frame uses rAF, not a paint-completion signal; flush→apply measures record application without a frame. Chrome heap is measured after GC. Kido measures phys_footprint of its own WebContent processes; the budget divides the increase by the number of pages, and the maximum is reported without a gate. Visible-page footprints have no budget because they have not been measured. W12 creates parented panes through the API. Browser body kinds do not reproduce the bridge constraint.');
 }

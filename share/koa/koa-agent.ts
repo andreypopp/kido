@@ -40,18 +40,17 @@ import os from "node:os";
 import type { CompletionContext } from "./completion-context.ts";
 import type { AgentHost, Agent, Extension, Records, SpawnPlan } from "./koa-agents.ts";
 import { runtimeExec, lineReader, openStream, runCommand, apiCall, apiArgs, KO_TIMEOUT_MS, type Reply, type ExecOptions, type ExecResult } from "./runtime-exec.ts";
-import { contentText, mintId, utf8Prefix, utf8Suffix, errorText, replaceControlCharacters, isRecord, isString, str } from "./text.ts";
+import { contentText, mintId, utf8Prefix, utf8Suffix, errorText, cleanLine, isRecord, isString, str } from "./text.ts";
 import { dirname, delimiter, extname, join, posix, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Type } from "typebox";
 import type { components } from "./ko-api.d.ts";
 import { isAgentFailure, jobEndText, type RestartState, type InProcessMessage, type AgentEnd, type Relation, type AgentRef, type AgentOutcome, type MessageDetails, type SteerDetails, type NoticeDetails, type StreamDetails, type JobRef, type JobEnd } from "./records.ts";
-import { parsePanes, placesOf, piAgent, peerPanes, runningRows, MIN_ID_PREFIX, VAR_SESSION, VAR_NAME, VAR_ACTIVITY, VAR_TASK, VAR_RUNTIME, type PaneInfo, type AgentRow, type Where } from "./agents.ts";
+import { reconnectBackoff, parsePanes, placesOf, piAgent, peerPanes, runningRows, MIN_ID_PREFIX, VAR_SESSION, VAR_NAME, VAR_ACTIVITY, VAR_TASK, VAR_RUNTIME, type PaneInfo, type AgentRow, type Where } from "./agents.ts";
 
 type Api = components["schemas"];
 
 const PEER_RESULT_RULE = "independent peer; no report or ending notice";
-const reconnectBackoff = (previous: number): number => Math.min(previous ? previous * 2 : envMs("KO_RECEIVER_BACKOFF_MS", 200), 5000);
 
 const VAR_KO_RUNTIME = "ko.runtime";
 const VAR_KEYS = [VAR_SESSION, VAR_NAME, VAR_ACTIVITY];
@@ -362,10 +361,9 @@ export function createJobs(options: { records: Records; path: () => string; sink
   const jobRecords = new Map<string, { type: "running" } | { type: "finished"; timer: NodeJS.Timeout }>();
   let working = false;
   const write = (id: string | undefined, state: "idle" | "working" | "done" | "error" | "clear", title?: string, message?: string): boolean => {
-    const clean = (text: string, bytes: number): string => utf8Prefix(replaceControlCharacters(text).replace(/\s+/g, " ").trim(), bytes);
     const recordId = id === undefined ? options.path() : `${options.path()}/${id}`;
-    const cleanedTitle = title === undefined ? undefined : clean(title, MAX_JOB_TITLE_BYTES);
-    const cleanedMessage = message === undefined ? undefined : clean(message, MAX_JOB_MESSAGE_BYTES);
+    const cleanedTitle = title === undefined ? undefined : cleanLine(title, MAX_JOB_TITLE_BYTES);
+    const cleanedMessage = message === undefined ? undefined : cleanLine(message, MAX_JOB_MESSAGE_BYTES);
     const report: Api["StatusReport"] = state === "clear" ? { type: "clear", id: recordId } : {
       type: "set", id: recordId, state,
       ...(cleanedTitle ? { title: cleanedTitle } : {}),
@@ -1349,7 +1347,7 @@ export const agentExtension = (host: AgentHost) => (pi: ExtensionAPI): void => {
     return value;
   };
 
-  const discovery = async (maxAgeMs = 0): Promise<Snapshot> => {
+  const discovery = async (maxAgeMs = 0, liveOnly = false): Promise<Snapshot> => {
     const { ok, panes } = await layout(maxAgeMs);
     const byPane = new Map(panes.map((p) => [p.pane, p]));
     const me = panes.find((p) => p.pane === pane);
@@ -1394,7 +1392,7 @@ export const agentExtension = (host: AgentHost) => (pi: ExtensionAPI): void => {
       live.add(agent.id);
       all.push(row);
     }
-    for (const child of registry) {
+    for (const child of liveOnly ? [] : registry) {
       if (live.has(child.session)) continue;
       const report = reportOf(child);
       all.push({
@@ -1424,7 +1422,7 @@ export const agentExtension = (host: AgentHost) => (pi: ExtensionAPI): void => {
       (me && p.session === me.session ? all : elsewhere).push(row);
     }
     const liveSessions = new Set(all.concat(elsewhere).filter((row) => row.state === "running").map((row) => row.id));
-    const savedSessions = new Set(registryPeers.length ? sessionFiles(session?.sessionManager.getSessionDir()).map((file) => file.id) : []);
+    const savedSessions = new Set(registryPeers.length && !liveOnly ? sessionFiles(session?.sessionManager.getSessionDir()).map((file) => file.id) : []);
     for (const peer of registryPeers) {
       if (liveSessions.has(peer.session)) continue;
       if (!savedSessions.has(peer.session)) continue;
@@ -1951,10 +1949,10 @@ export const agentExtension = (host: AgentHost) => (pi: ExtensionAPI): void => {
       return made;
     });
 
-  const resumeChild = (child: ChildData, task: string): Promise<Agent | { error: string }> =>
+  const resumeChild = (child: ChildData, task: string): Promise<Agent | { running: Agent } | { error: string }> =>
     withRestartLock(child.session, async () => {
       const live = host.find(child.session);
-      if (live) return live;
+      if (live) return { running: live };
       if (!session) return { error: "no active session" };
       const files = sessionFiles(session.sessionManager.getSessionDir()).filter((file) => file.id === child.session);
       if (files.length > 1) return { error: `several session files have id ${child.session}` };
@@ -2105,7 +2103,10 @@ export const agentExtension = (host: AgentHost) => (pi: ExtensionAPI): void => {
           markChildWork(known);
           const resumed = await resumeChild(known, params.message);
           if ("error" in resumed) return refuse(resumed.error, 'error', name);
-          return reply(`restarted ${name} (session ${known.session}); ${liveRunRule(SPAWN_RESULT_RULE)}`, { to: name, outcome: { ok: true } satisfies AgentOutcome });
+          if (!("running" in resumed)) return reply(`restarted ${name} (session ${known.session}); ${liveRunRule(SPAWN_RESULT_RULE)}`, { to: name, outcome: { ok: true } satisfies AgentOutcome });
+          const live = (await discovery()).all.find((row) => row.id === known.session);
+          if (!live) return refuse(`${name} is no longer running`, 'not_running', name);
+          target = live;
         }
       }
       if (target.where.type === "process") {
@@ -2669,7 +2670,7 @@ export const agentExtension = (host: AgentHost) => (pi: ExtensionAPI): void => {
   });
 
   host.extension = {
-    completionContext, restartState, receive, childState, scope: async (maxAgeMs) => (await discovery(maxAgeMs)).rows, jobNotice: deliverNotice, jobStream,
+    completionContext, restartState, receive, childState, scope: async (maxAgeMs) => (await discovery(maxAgeMs, true)).rows, jobNotice: deliverNotice, jobStream,
     markWork: (child) => { const known = children().find((c) => c.session === child); if (known) markChildWork(known); },
     receiveReport: (child, text) => {
       append(ENTRY_REPORT, { child: child.session, name: child.name, text });

@@ -1,4 +1,4 @@
-import type { AgentRef, AgentOutcome, AgentEnd, JobRef, JobEnd, Inbound } from "./records.ts";
+import type { AgentRef, AgentOutcome, JobRef, JobEnd, Inbound } from "./records.ts";
 
 export const ATTACHMENT_LIMITS = { files: 16, fileBytes: 64 * 1024 * 1024, chunkBytes: 768 * 1024, pendingBytes: 256 * 1024 * 1024 };
 
@@ -47,7 +47,7 @@ export type Item = { seq: number; revision: number; at: number; final: boolean }
 export type Assistant = Extract<Item, { kind: "assistant" }>;
 export type WireAssistant = Omit<Assistant, "lifecycle">;
 export type WireItem = Exclude<Item, Assistant> | WireAssistant;
-export type Life = { type: "starting" } | { type: "ready" } | { type: "switching" } | { type: "reloading" } | { type: "failed"; at: number; message: string } | { type: "ended"; cause: AgentEnd };
+export type Life = { type: "starting" } | { type: "ready" } | { type: "switching" } | { type: "reloading" } | { type: "failed"; at: number; message: string };
 export type Dialog = { id: string; title: string; expires?: number } & (
   { method: "select"; options: string[]; timeout?: number } |
   { method: "confirm"; message: string; timeout?: number } |

@@ -40,6 +40,7 @@ test("an ordinary spawn is an agent of koa's own process: no pane, a view of its
   assert.deepEqual(edges.map(edge => [edge.owner, edge.parent]), [[kid, rootId]]);
   assert.deepEqual(state(app).view.path.map(node => node.id), [rootId]);
   await app.until(ofType("item", record => record.item.kind === "agent" && record.item.inbound.form === "report"));
+  assert.match(JSON.stringify(app.provider.requests.find(request => request.body.messages.at(-1)?.role === "tool")?.body.messages.at(-1)), /spawned kid \(session [0-9a-f]{32}\)/);
   const cursor = app.count();
   assert.equal((await app.post("view", { id: kid })).status, 200);
   const switched = await app.until(ofType("state", record => record.view.id === kid), cursor);

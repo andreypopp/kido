@@ -10,7 +10,7 @@ import type { AgentSession, SlashCommandSource } from "@earendil-works/pi-coding
 import { bashResult } from "./koa-transcript.ts";
 import { later } from "./koa-timer.ts";
 import { respond, readBody, wrongPostType } from "./koa-http.ts";
-import { isRecord, errorText, replaceControlCharacters, utf8Prefix } from "./text.ts";
+import { isRecord, errorText, cleanLine, replaceControlCharacters, utf8Prefix } from "./text.ts";
 import { webview } from "../webview/index.ts";
 import { assemblePage } from "./koa-assemble.ts";
 import { complete, findFd } from "./koa-complete.ts";
@@ -183,13 +183,12 @@ async function main(): Promise<void> {
     const background = (work: Promise<unknown>) => { void work.catch(error => { if (!stopping) process.stderr.write(`koa: ${errorText(error)}\n`); }); };
     const attached = attachments(join(dir, "attachments"), uploadIdleMs);
     teardown.push(() => attached.close());
-    let selected: Agent;
     const root = () => tree.root;
     let editorOwner: Agent | undefined;
     const edits = koaEditor({
-      agentDir, cwd: () => (editorOwner ?? selected).view.state.cwd, session: () => (editorOwner ?? selected).view.state.sessionId, name: () => (editorOwner ?? selected).view.state.name,
-      replace: text => { const owner = editorOwner ?? selected; owner.view.state.editor = { id: randomUUID(), text }; owner.view.publish(); },
-      notify: (text, level) => (editorOwner ?? selected).view.feed.notify(text, level), changed: () => (editorOwner ?? selected).view.publish(),
+      agentDir, cwd: () => (editorOwner ?? tree.selected()).view.state.cwd, session: () => (editorOwner ?? tree.selected()).view.state.sessionId, name: () => (editorOwner ?? tree.selected()).view.state.name,
+      replace: text => { const owner = editorOwner ?? tree.selected(); owner.view.state.editor = { id: randomUUID(), text }; owner.view.publish(); },
+      notify: (text, level) => (editorOwner ?? tree.selected()).view.feed.notify(text, level), changed: () => (editorOwner ?? tree.selected()).view.publish(),
     });
     teardown.push(() => edits.cancel());
     const rootName = () => root().view.state.name;
@@ -206,7 +205,7 @@ async function main(): Promise<void> {
     })());
     const agentsFor = (agent: Agent): State["agents"] => (rowsOf.get(agent) ?? []).map(row => ({ name: row.name, target: row.where.type === "process" ? { type: "view" as const, id: row.id } : { type: "pane" as const, pane: row.where.pane } }));
     const compose = (agent: Agent) => (own: Own): State => ({
-      ...own, ...(agent === selected ? { edit: edits.view() } : {}),
+      ...own, ...(agent === tree.selected() ? { edit: edits.view() } : {}),
       view: { id: agent.id, path: chain(agent).map(member => ({ id: member.id, name: nameOf(member) })) },
       agents: agentsFor(agent),
     });
@@ -219,7 +218,7 @@ async function main(): Promise<void> {
         status: (value, message, dialog) => {
           const agent = agentRef();
           if (first) {
-            const encoded = Buffer.from(utf8Prefix(replaceControlCharacters(dialog ?? message).replace(/\s+/g, " ").trim(), 2048)).toString("base64");
+            const encoded = Buffer.from(cleanLine(dialog ?? message, 2048)).toString("base64");
             process.stdout.write(`\x1b]7501;state=${value === "clear" ? value : dialog ? "blocked" : value}${value === "clear" ? "" : `:app=pi${dialog ? ":kind=question" : ""}:msg=${encoded}`}\x1b\\`);
           } else {
             tree.writeRecord(agent);
@@ -227,16 +226,15 @@ async function main(): Promise<void> {
         },
         title: own => { if (first) process.stdout.write(`\x1b]0;${utf8Prefix(replaceControlCharacters(`koa - ${own.name} - ${basename(own.cwd)}`), 2048)}\x1b\\`); },
         closed: () => stopping,
-        cancelEditor: () => { if (selected === agentRef()) void edits.cancel(); },
+        cancelEditor: () => { if (tree.selected() === agentRef()) void edits.cancel(); },
         shutdown: () => { if (first) background(quit()); },
         agentsChanged: () => refreshRows(agentRef()),
       });
     };
     const switchView = (next: Agent) => {
-      if (next === selected || next.stopping || !next.runtime) return;
-      const previous = selected;
+      const previous = tree.selected();
+      if (next === previous || next.stopping || !next.runtime) return;
       void edits.cancel();
-      selected = next;
       tree.select(next);
       next.view.publish(true);
       refreshRows(next);
@@ -244,12 +242,11 @@ async function main(): Promise<void> {
     };
     const tree: Tree = koaAgents.createTree({
       sdk, args: sdk.pi.parseArgs(restartArgs(pass, undefined)), cwd: process.cwd(), agentDir, facts: koaAgents.hostFacts(process.env), browser, makeView,
-      beforeStop: agent => { if (chain(selected).includes(agent)) switchView(agent.parent ?? root()); },
-      changed: () => refreshRows(selected),
+      beforeStop: agent => { if (chain(tree.selected()).includes(agent)) switchView(agent.parent ?? root()); },
+      changed: () => refreshRows(tree.selected()),
       select: (agent, record) => { if (agent && record !== undefined) switchView(agent); },
       shutdown: () => background(quit()),
     });
-    selected = tree.root;
     teardown.push(() => { for (const agent of tree.all()) agent.view.close(); });
     stopHost = async () => { stopping = true; for (const agent of tree.all()) agent.view.cancelDialogs(); await tree.dispose(); };
     type Access = "ready" | "session" | "alive" | "dialog" | "failed" | "any";
@@ -333,7 +330,7 @@ async function main(): Promise<void> {
       else { restartKoa(response); return; }
       answer();
     };
-    const owned = (agent: Agent, owner: AgentSession) => { if (agent.session !== owner || agent.torn.has(owner) || selected !== agent) throw new Error("pi session changed"); };
+    const owned = (agent: Agent, owner: AgentSession) => { if (agent.session !== owner || agent.torn.has(owner) || tree.selected() !== agent) throw new Error("pi session changed"); };
     const queuePrompt = async (agent: Agent, session: AgentSession, text: string, requested: PromptMode | "steer", files: Awaited<ReturnType<AgentView["attached"]["prepare"]>>) => {
       const v = agent.view;
       const message = [text, ...files.paths].filter(Boolean).join("\n");
@@ -364,7 +361,7 @@ async function main(): Promise<void> {
             if (v.life.type !== "ready") return [];
             return [...completion, ...koaAgents.commandList(agent.session).filter(value => !catalog.some(builtin => builtin.name === value.name))];
           } });
-          if (!requestSignal.aborted) respond(response, signal.aborted || owner !== agent.session || ownerSession !== v.state.sessionId || selected !== agent ? 409 : 200, JSON.stringify(result));
+          if (!requestSignal.aborted) respond(response, signal.aborted || owner !== agent.session || ownerSession !== v.state.sessionId || tree.selected() !== agent ? 409 : 200, JSON.stringify(result));
         });
       } },
       "/sessions/list": { method: "POST", access: "ready", handle: async (value, response, agent) => {
@@ -555,7 +552,7 @@ async function main(): Promise<void> {
           let samples: unknown;
           try { samples = JSON.parse(bytes.toString("utf8")); } catch { respond(response, 400, "{}"); return; }
           if (!Array.isArray(samples) || samples.length > 50 || !samples.every(sample => sample && typeof sample === "object" && Number.isFinite(sample.t) && (Number.isFinite(sample.frame) || Number.isFinite(sample.applied)) && Number.isFinite(sample.clockError) && Number.isSafeInteger(sample.bytes) && sample.bytes >= 0)) { respond(response, 400, "{}"); return; }
-          const line = JSON.stringify({ type: "metrics", at: Date.now(), samples, ...selected.view.feed.metrics }) + "\n";
+          const line = JSON.stringify({ type: "metrics", at: Date.now(), samples, ...tree.selected().view.feed.metrics }) + "\n";
           const file = metricsFile;
           const write = (metricsWrites ?? Promise.resolve()).then(() => appendFile(file, line));
           metricsWrites = write.catch(() => {});
@@ -567,7 +564,7 @@ async function main(): Promise<void> {
           if (stale) { const record: PageRecord = { type: "reload" }; respond(response, 200, `data: ${JSON.stringify(record)}\n\n`, "text/event-stream"); return; }
         }
         if (await attached.handle(request, response, () => { if (stopping) throw new Error("koa is stopping"); })) return;
-        const agent = selected, entrySession = agent.view.state.sessionId;
+        const agent = tree.selected(), entrySession = agent.view.state.sessionId;
         const accessScoped = () => access(agent, "alive", url.searchParams.get("sessionId") ?? undefined);
         if (await stepFile(request, response, agent.view.feed.itemFile, agent.view.state.cwd, agent.view.state.home, accessScoped)) return;
         if (request.method === "GET" && ["/images/", "/history", "/items"].some(path => url.pathname.startsWith(path))) access(agent, "any", url.searchParams.get("sessionId") ?? undefined);
@@ -587,7 +584,7 @@ async function main(): Promise<void> {
           if (bytes === undefined) { respond(response, 413, "{}"); return; }
           try { value = JSON.parse(bytes.toString("utf8")); } catch { respond(response, 400, JSON.stringify({ error: "A JSON body is required" })); return; }
         } else value = { sessionId: url.searchParams.get("sessionId") ?? undefined };
-        if (selected !== agent || agent.view.state.sessionId !== entrySession) throw new Error("pi session changed");
+        if (tree.selected() !== agent || agent.view.state.sessionId !== entrySession) throw new Error("pi session changed");
         access(agent, route.access, isRecord(value) ? value.sessionId : undefined);
         await route.handle(value, response, agent);
       } catch (error) { respond(response, 409, JSON.stringify({ error: errorText(error) })); }

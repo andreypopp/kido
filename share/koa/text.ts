@@ -14,6 +14,8 @@ export const errorText = (error: unknown): string => error instanceof Error ? er
 
 export const replaceControlCharacters = (text: string): string => text.replace(/[\u0000-\u001f\u007f-\u009f]+/g, " ");
 
+export const cleanLine = (text: string, bytes: number): string => utf8Prefix(replaceControlCharacters(text).replace(/\s+/g, " ").trim(), bytes);
+
 export function contentText(value: Content, separator = "\n"): string {
   return typeof value === "string" ? value : value.flatMap((block) => block.type === "text" ? [block.text ?? ""] : []).join(separator);
 }

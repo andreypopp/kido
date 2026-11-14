@@ -32,7 +32,3 @@ export type InProcessMessage =
   | { kind: "message" | "steer" | "interrupt"; text: string; agent: AgentRef; relation: Relation | undefined; runtime?: string; returnTo?: { session: string; pane: string } }
   | { kind: "notice"; text: string; agent: AgentRef };
 
-export type Inbox = {
-  ring: string[];
-  close(): void;
-};
