@@ -63,16 +63,19 @@ func guestIP(mac: VZMACAddress) -> String? {
     guard let leases = try? String(contentsOfFile: "/var/db/dhcpd_leases", encoding: .utf8) else { return nil }
     let want = mac.string.split(separator: ":").map { String(Int($0, radix: 16) ?? 0, radix: 16) }.joined(separator: ":")
     var ip: String?
-    var found: String?
+    var matches = false
+    var found: (ip: String, lease: UInt64)?
     for line in leases.split(separator: "\n") {
         let line = line.trimmingCharacters(in: .whitespaces)
-        if line.hasPrefix("ip_address=") { ip = String(line.dropFirst(11)) }
+        if line.hasPrefix("ip_address=") { ip = String(line.dropFirst(11)); matches = false }
         if line.hasPrefix("hw_address=") {
-            let hw = line.dropFirst(11).split(separator: ",").last.map(String.init) ?? ""
-            if hw == want { found = ip }
+            matches = (line.dropFirst(11).split(separator: ",").last.map(String.init) ?? "") == want
+        }
+        if matches, let ip, line.hasPrefix("lease=0x"), let lease = UInt64(line.dropFirst(8), radix: 16), lease >= (found?.lease ?? 0) {
+            found = (ip, lease)
         }
     }
-    return found
+    return found?.ip
 }
 
 func configuration(shares: [Share], cpus: Int, memoryGB: Int) throws -> VZVirtualMachineConfiguration {
