@@ -8,10 +8,48 @@ import SidebarFeed
 @testable import Kido
 
 @MainActor final class KoaWebviewTests: AppWindowCase {
-    private enum KoaScenario { case transcript, dialogs, controls, exit, feed, completion, markdown, media, attachments, userMarkdown, thinkingMarkdown, reveal, preview, lightbox, agents, composer, questions, bang, commands, notices, latest, sessions }
+    private enum KoaScenario { case transcript, dialogs, controls, exit, failed, feed, completion, markdown, media, attachments, userMarkdown, thinkingMarkdown, reveal, preview, lightbox, agents, composer, questions, bang, commands, notices, latest, sessions }
     // The off-screen WKWebView reports no document focus. The page's pane-focus hook gives the pane focus; the composer ring keeps its real state.
     private static let paneFocus = "window.koaFocused=true;"
     private static let hideLatest = "document.addEventListener('DOMContentLoaded',()=>{const style=document.createElement('style');style.textContent='#latest{display:none!important}';document.head.append(style)});"
+    // koa on a private fake provider, in a private home, with the sessions of `sessions` seeded; `initial` names the one it opens.
+    // `makes` and `gits` give the live and the final output of the nth run of the fake `make` and `git`.
+    private func koaBare(script: [[String: Any]] = [], sessions: [[String: Any]] = [], initial: String? = nil, steps: [String: [[String: Any]]] = [:], commands: [[String: String]] = [], models: [[String: Any]] = koaModels, settings: [String: Any] = [:], agentFiles: [String: String] = [:], hold: URL? = nil, tree: Bool = false, exec: Bool = true, resources: Bool = false, env: [String: String] = [:], nodeOptions: String? = nil, args: [String] = [], stderr: URL? = nil) async throws -> (command: String, provider: KoaProvider, files: [String: String]) {
+        let home = directory.appendingPathComponent("home").resolvingSymlinksInPath(), cwd = home.appendingPathComponent("Workspace/kido")
+        try FileManager.default.createDirectory(at: cwd, withIntermediateDirectories: true)
+        let provider = try await KoaProvider.start(self, directory: directory, script: script, models: models, settings: ["defaultThinkingLevel": "high", "defaultProvider": models.first?["provider"] as Any, "defaultModel": models.first?["id"] as Any].merging(settings) { _, new in new }, extensionModels: true)
+        for (path, text) in agentFiles {
+            let file = directory.appendingPathComponent("agent").appendingPathComponent(path)
+            try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+            try text.write(to: file, atomically: true, encoding: .utf8)
+        }
+        let bin = directory.appendingPathComponent("bin")
+        try FileManager.default.createDirectory(at: bin, withIntermediateDirectories: true)
+        for name in ["make", "git"] {
+            try koaFakeProgram.write(to: bin.appendingPathComponent(name), atomically: true, encoding: .utf8)
+            try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: bin.appendingPathComponent(name).path)
+        }
+        var files: [String: String] = [:], ids: [String: String] = [:]
+        if tree, let main = sessions.first(where: { $0["name"] as? String == initial }) {
+            let branches = sessions.filter { $0["name"] as? String != initial }.map { ["label": $0["name"] as Any, "items": $0["items"] as Any] }
+            let seeded = try await koaSeed(self, directory: directory, cwd: cwd, sessions: [["name": "tree", "items": main["items"] as Any, "branches": branches]])
+            ids = seeded.ids
+            files = Dictionary(uniqueKeysWithValues: sessions.compactMap { ($0["name"] as? String).map { ($0, seeded.paths["tree"] ?? "") } })
+        } else if !sessions.isEmpty { files = try await koaSeed(self, directory: directory, cwd: cwd, sessions: sessions).paths }
+        let visual = directory.appendingPathComponent("visual.json")
+        var spec: [String: Any] = ["steps": steps, "commands": commands, "ids": ids, "models": models]
+        if let hold { spec["hold"] = hold.path }
+        try JSONSerialization.data(withJSONObject: spec).write(to: visual)
+        var variables = ["KOA_PROVIDER_URL": provider.baseUrl, "KOA_FAKE_DIR": directory.path, "PATH": bin.path + ":" + koaPath(self)]
+        variables.merge(env) { _, new in new }
+        return (koaShell(self, directory: directory, home: home, session: initial.flatMap { files[$0] }, visual: visual, cwd: cwd, exec: exec, nodeOptions: nodeOptions, resources: resources, env: variables, args: args, stderr: stderr), provider, files)
+    }
+    private func fake(_ program: String, _ number: Int, live: String = "", done: String = "", hold: Bool = false) throws {
+        try live.write(to: directory.appendingPathComponent("\(program).live.\(number)"), atomically: true, encoding: .utf8)
+        try done.write(to: directory.appendingPathComponent("\(program).done.\(number)"), atomically: true, encoding: .utf8)
+        if hold { try "".write(to: directory.appendingPathComponent("\(program).hold.\(number)"), atomically: true, encoding: .utf8) }
+    }
+
     func testKoaWebviewSubmitFollowsClampedBottom() async throws {
         WebviewPaneView.visualInitialScript = Self.paneFocus
         WebviewPaneView.visualInitialScript?.append("const ClockDate=Date;window.Date=class extends ClockDate{constructor(...args){super(...(args.length?args:[1700000012000]))}static now(){return 1700000012000}};window.requestAnimationFrame=callback=>setTimeout(()=>callback(performance.now()),16);window.cancelAnimationFrame=clearTimeout;const Source=EventSource;window.EventSource=class extends Source{constructor(...args){super(...args);window.scrollSource=this}};")
@@ -20,12 +58,9 @@ import SidebarFeed
         let usage: [String: Any] = ["input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0, "totalTokens": 0, "cost": ["input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0, "total": 0]]
         let history: [String: Any] = ["role": "user", "timestamp": stamp - 1, "content": [["type": "text", "text": Array(repeating: "Earlier message", count: 80).joined(separator: "\n\n")]]]
         let reply: [String: Any] = ["role": "assistant", "api": "test", "provider": "test", "model": "test", "usage": usage, "timestamp": stamp, "stopReason": "stop", "content": [["type": "text", "text": question]]]
-        let entry: [String: Any] = ["type": "custom", "id": "question", "parentId": NSNull(), "customType": "reply-annotations", "timestamp": ISO8601DateFormatter().string(from: Date(timeIntervalSince1970: Double(stamp + 1) / 1000)), "data": ["reply": ["at": stamp, "block": 0, "length": question.count], "annotations": [["type": "question", "kind": "yes_no", "range": [0, question.count]]]]]
-        let steps: [[String: Any]] = [["type": "respond", "command": "get_messages", "data": ["messages": [history, reply]]], ["type": "respond", "command": "get_entries", "data": ["entries": [entry], "leafId": "question"]]]
-        let script = directory.appendingPathComponent("scroll-trace.jsonl")
-        try steps.map { String(decoding: try JSONSerialization.data(withJSONObject: $0), as: UTF8.self) }.joined(separator: "\n").write(to: script, atomically: true, encoding: .utf8)
-        let fake = checkoutRoot.appendingPathComponent("share/koa/koa-fake-pi.ts").path
-        try await start(pane: "export KOA_FAKE_SCRIPT=\(SSH.quote(script.path)); \(SSH.quote(tools.prefix + "/share/ko/bin/koa")) --pi \(SSH.quote(fake))")
+        let annotation: [String: Any] = ["kind": "custom", "customType": "reply-annotations", "at": stamp + 1, "data": ["reply": ["at": stamp, "block": 0, "length": question.count], "annotations": [["type": "question", "kind": "yes_no", "range": [0, question.count]]]]]
+        let koa = try await koaBare(sessions: [["name": "trace", "items": [koaItem(history), koaItem(reply), annotation]]], initial: "trace")
+        try await start(pane: koa.command)
         let pane = try XCTUnwrap(terminal?.displayedPanes.first)
         try await wait("koa page") { pane.webviewView != nil }
         let web = try XCTUnwrap(pane.webviewView?.browser)
@@ -69,13 +104,11 @@ import SidebarFeed
         }
     }
     func testKoaEditorFloatTakesFocusAndReturnsTheEditedText() async throws {
-        let script = directory.appendingPathComponent("script"), gate = directory.appendingPathComponent("gate"), editor = directory.appendingPathComponent("editor.sh")
-        try "".write(to: script, atomically: true, encoding: .utf8)
+        let gate = directory.appendingPathComponent("gate"), editor = directory.appendingPathComponent("editor.sh")
         try "#!/bin/sh\nwhile [ ! -e \(SSH.quote(gate.path)) ]; do sleep 0.05; done\nprintf 'edited by editor' > \"$1\"\n".write(to: editor, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: editor.path)
-        let path = [tools.prefix + "/bin", "/opt/homebrew/bin", ProcessInfo.processInfo.environment["PATH"] ?? "/usr/bin:/bin"].joined(separator: ":")
-        let fake = checkoutRoot.appendingPathComponent("share/koa/koa-fake-pi.ts").path
-        try await start(pane: "export PATH=\(SSH.quote(path)) VISUAL=\(SSH.quote(editor.path)) KOA_FAKE_SCRIPT=\(SSH.quote(script.path)); exec \(SSH.quote(tools.prefix + "/share/ko/bin/koa")) --pi \(SSH.quote(fake))")
+        let koa = try await koaBare(env: ["VISUAL": editor.path])
+        try await start(pane: koa.command)
         let owner = WindowOwner(host: .local, runtime: runtime, start: false)
         owner.testServerDir = directory.path; owner.start()
         defer { owner.close() }
@@ -99,10 +132,8 @@ import SidebarFeed
     func testKoaInterruptRestoresNativeInput() async throws {
         WebviewPaneView.visualInitialScript = "document.hasFocus=()=>true;window.requestAnimationFrame=callback=>setTimeout(()=>callback(performance.now()),0);window.cancelAnimationFrame=clearTimeout;"
         defer { WebviewPaneView.visualInitialScript = nil }
-        let script = directory.appendingPathComponent("quit-script.jsonl")
-        try "".write(to: script, atomically: true, encoding: .utf8)
-        let fake = checkoutRoot.appendingPathComponent("share/koa/koa-fake-pi.ts").path
-        try await start(pane: "trap ':' INT; export KOA_FAKE_SCRIPT=\(SSH.quote(script.path)); \(SSH.quote(tools.prefix + "/share/ko/bin/koa")) --pi \(SSH.quote(fake)); " + rawScript)
+        let koa = try await koaBare(exec: false)
+        try await start(pane: "trap ':' INT; " + koa.command + "; " + rawScript)
         let pane = try XCTUnwrap(terminal?.displayedPanes.first)
         try await wait("koa page") { pane.webviewView != nil }
         let web = try XCTUnwrap(pane.webviewView?.browser)
@@ -345,11 +376,15 @@ import SidebarFeed
     }
 
     func testKoaWebviewExit() async throws {
-        try await koaWebview(width: 980, height: 560, scenario: .exit, captures: ["exited", "times"])
+        try await koaWebview(width: 980, height: 560, scenario: .exit, captures: ["times"])
+    }
+
+    func testKoaWebviewFailed() async throws {
+        try await koaWebview(width: 980, height: 560, scenario: .failed, captures: ["exited"])
     }
 
     func testKoaWebviewNarrowExit() async throws {
-        try await koaWebview(width: 470, height: 560, scenario: .exit, captures: ["narrow-exited"])
+        try await koaWebview(width: 470, height: 560, scenario: .failed, captures: ["narrow-exited"])
     }
 
     func testKoaWebviewAgentsWide() async throws {
@@ -482,14 +517,10 @@ import SidebarFeed
 
     private func koaWebview(width: CGFloat, height: CGFloat, scenario: KoaScenario = .transcript, captures: Set<String>) async throws {
         let composerState = captures.first?.replacingOccurrences(of: "narrow-foot-", with: "").replacingOccurrences(of: "foot-", with: "") ?? ""
-        let fake = checkoutRoot.appendingPathComponent("share/koa/koa-fake-pi.ts").path
-        let script = directory.appendingPathComponent("koa-script.jsonl")
-        let sessionFile = directory.appendingPathComponent("session.jsonl")
-        let home = directory.appendingPathComponent("home")
+        let home = directory.appendingPathComponent("home").resolvingSymlinksInPath()
         let cwd = home.appendingPathComponent("Workspace/kido")
         let attachmentPaths = (shot: home.appendingPathComponent("Desktop/Screenshot 2026-11-10 at 09.11.42.png"), diagram: home.appendingPathComponent("Desktop/diagram.png"), notes: home.appendingPathComponent("Desktop/notes.md"), source: cwd.appendingPathComponent("app/App/SidebarRow.swift"))
         try FileManager.default.createDirectory(at: cwd, withIntermediateDirectories: true)
-        try JSONSerialization.data(withJSONObject: ["cwd": cwd.path]).write(to: sessionFile)
         let completionCaptures = captures.contains { $0.contains("bang-tab") }
         let mediaClock: Bool
         switch scenario {
@@ -522,7 +553,7 @@ import SidebarFeed
         initial.insert(contentsOf: Self.paneFocus + (scenario == .latest ? "" : Self.hideLatest), at: initial.startIndex)
         WebviewPaneView.visualInitialScript = initial
         defer { WebviewPaneView.visualInitialScript = nil }
-        let usage: [String: Any] = ["input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0, "totalTokens": 0, "cost": ["input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0, "total": 0]]
+        let usage: [String: Any] = ["input": 83990, "output": 10, "cacheRead": 0, "cacheWrite": 0, "totalTokens": 84000, "cost": ["input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0, "total": 0]]
         func assistant(_ content: [[String: Any]], stop: String = "stop") -> [String: Any] {
             ["role": "assistant", "api": "test", "provider": "test", "model": "test", "usage": usage, "timestamp": stamp, "stopReason": stop, "content": content]
         }
@@ -578,109 +609,133 @@ import SidebarFeed
             replayCalls.append(call)
             replayCalls.append(results[index - 1])
         }
-        var steps: [[String: Any]] = [
-            ["type": "respond", "command": "get_state", "data": ["sessionName": "koa reference", "thinkingLevel": "high", "model": ["id": "claude-opus-5-5", "provider": "anthropic"], "sessionFile": sessionFile.path]],
-            ["type": "respond", "command": "get_messages", "data": ["messages": []]],
-            ["type": "respond", "command": "get_session_stats", "data": ["contextUsage": ["tokens": 84000, "contextWindow": 200000, "percent": 42]]]
-        ]
-        func prompt(_ events: [[String: Any]]) { steps.append(["type": "wait", "command": "prompt", "events": events]) }
-        prompt([["type": "agent_start"]])
-        prompt([["type": "message_end", "message": streamUser], ["type": "message_start", "message": text]])
-        prompt([["type": "message_update", "usage": usage, "assistantMessageEvent": ["type": "text_delta", "contentIndex": 0, "delta": "\n\nThe patch keeps the earlier selection.\n\n"]]])
-        prompt([["type": "message_end", "message": text], ["type": "compaction_end"]])
-        steps.append(["type": "respond", "command": "get_messages", "data": ["messages": [user]], "after": [["type": "message_start", "message": calls], ["type": "tool_execution_start", "toolCallId": "bash", "toolName": "bash", "args": ["command": "make cargo ARGS='test -p ko_server sweep'"]]]])
-        let done = assistant([["type": "text", "text": "Done. `due()` now matches on `close`, a start failure never fires `Close::Exit`, and the three sweep tests pass."]])
-        prompt([["type": "agent_settled", "aborted": false], ["type": "compaction_end"]])
-        steps.append(["type": "respond", "command": "get_messages", "data": ["messages": [user] + replayCalls + [done]]])
-        prompt([["type": "compaction_end"]])
-        steps.append(["type": "respond", "command": "get_messages", "data": ["messages": [user] + replayCalls]])
-        prompt([["type": "compaction_end"], ["type": "agent_settled", "aborted": true]])
-        let errorUser: [String: Any] = ["role": "user", "timestamp": stamp, "content": [["type": "text", "text": "Run the whole unit stage"]]]
-        let failedRead = assistant([["type": "toolCall", "id": "failed-read", "name": "read", "arguments": ["path": "Makefile"]]], stop: "toolUse")
+        var replies: [[String: Any]] = [], seeds: [[String: Any]] = [], extSteps: [String: [[String: Any]]] = [:], timeline: [[KoaAdvance]] = []
+        var commands: [[String: String]] = [], agentFiles: [String: String] = [:], models = koaModels, settings: [String: Any] = [:], initialSeed = "init"
+        var launchArgs: [String] = []
+        if scenario == .failed { launchArgs = ["--provider", "nope", "--model", "nope"] }
+        func provide(_ value: [String: Any], tokens: Int = 83990) { replies.append(value.merging(["tokens": ["prompt": tokens, "completion": 10]]) { current, _ in current }) }
+        func seed(_ name: String, _ messages: [[String: Any]], title: String? = nil, extra: [[String: Any]] = [], age: Int? = nil, cwd: String? = nil, context: Int = 84000) {
+            var items = context == 0 ? [] : [koaItem(["role": "custom", "customType": "visual-context", "display": false, "timestamp": stamp - 1, "content": String(repeating: "x", count: context * 4)])]
+            items += messages.map(koaItem) + extra
+            if let title { items.append(["kind": "name", "name": title]) }
+            var entry: [String: Any] = ["name": name, "items": items]
+            if let age { entry["modified"] = stamp - age }
+            if let cwd { entry["cwd"] = cwd }
+            seeds.removeAll { $0["name"] as? String == name }
+            seeds.append(entry)
+        }
+        func replay(_ messages: [[String: Any]]) { let name = "r\(seeds.count)"; seed(name, messages); queue(.switchTo(name)) }
+        func queue(_ actions: KoaAdvance...) { timeline.append(actions) }
+        func step(_ name: String, _ actions: [String: Any]...) { extSteps[name] = actions }
+        func toolCall(_ index: Int) -> [String: Any] { ["name": blocks[index]["name"] as Any, "args": blocks[index]["arguments"] as Any] }
+        try FileManager.default.createDirectory(at: cwd.appendingPathComponent("ko_server/src"), withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: cwd.appendingPathComponent("scripts"), withIntermediateDirectories: true)
+        try Array(repeating: "    row", count: 212).joined(separator: "\n").write(to: cwd.appendingPathComponent("ko_server/src/sweep.rs"), atomically: true, encoding: .utf8)
+        try "#!/bin/sh\necho release\n".write(to: cwd.appendingPathComponent("scripts/release.sh"), atomically: true, encoding: .utf8)
+        try Array(repeating: "    target", count: 388).joined(separator: "\n").write(to: cwd.appendingPathComponent("Makefile"), atomically: true, encoding: .utf8)
+        func person(_ text: String) -> [String: Any] { var value = user; value["content"] = [["type": "text", "text": text]]; return value }
+        let errorUser = person("Run the whole unit stage")
         var failedReadResult = result("failed-read", Array(repeating: "    target", count: 388).joined(separator: "\n"))
         failedReadResult["timestamp"] = stamp + 100
+        let failedRead = assistant([["type": "toolCall", "id": "failed-read", "name": "read", "arguments": ["path": "Makefile"]]], stop: "toolUse")
         var failure = assistant([["type": "toolCall", "id": "bad", "name": "bash", "arguments": ["command": "make verify STAGES=unit"]]], stop: "toolUse")
         failure["timestamp"] = stamp + 1000
         var failureResult = result("bad", "test sweep::tests::linger_waits_for_focus ... FAILED\n\nfailures:\n---- sweep::tests::linger_waits_for_focus stdout ----\nassertion `left == right` failed\n  left: Some(%7)\n right: None\n\nFAIL unit 40.2s\n\nCommand exited with code 101", error: true)
         failureResult["timestamp"] = stamp + 41000
         let explanation = assistant([["type": "text", "text": "The linger test fails because `dead_since` is set before the focus check. Looking at the order in `sweep()`."]])
         let aborted = assistant([["type": "thinking", "thinking": "the order in sweep()"], ["type": "toolCall", "id": "abort", "name": "edit", "arguments": ["path": "ko_server/src/sweep.rs", "oldText": "", "newText": ""]]], stop: "aborted")
-        steps.append(["type": "respond", "command": "get_messages", "data": ["messages": [errorUser, failedRead, failedReadResult, failure, failureResult, explanation, aborted]]])
-        let testDialogs = scenario == .dialogs
-        let testControls = scenario == .controls
-
-        func ui(_ id: String, _ method: String, _ fields: [String: Any]) -> [String: Any] { fields.merging(["type": "extension_ui_request", "id": id, "method": method]) { _, value in value } }
-        func replay(_ messages: [[String: Any]], after: [[String: Any]] = []) {
-            prompt([["type": "compaction_end"]])
-            steps.append(["type": "respond", "command": "get_messages", "data": ["messages": messages], "after": after])
-        }
+        let done = assistant([["type": "text", "text": "Done. `due()` now matches on `close`, a start failure never fires `Close::Exit`, and the three sweep tests pass."]])
+        let sweepResult = "running 3 tests\ntest sweep::tests::removes_on_exit ... ok\ntest sweep::tests::keeps_a_start_failure ... ok\ntest sweep::tests::linger_waits_for_focus ... ok\n\ntest result: ok. 3 passed; 0 failed; 0 ignored; finished in 0.41s"
         var releaseUser = user
         releaseUser["content"] = [["type": "text", "text": "Release 0.32 and write the notes"]]
-        let select = ui("select", "select", ["title": "Which tap revision?", "options": ["0.31.1 · 20857320", "0.31.0 · 6153fce8", "custom…"], "timeout": 20000])
-        let confirm = ui("confirm", "confirm", ["title": "Force-push main?", "message": "origin/main moves from 20857320 to 88bdb070. Other clones need a reset."])
-        if testDialogs {
-            let releaseCalls = assistant([["type": "toolCall", "id": "release-read", "name": "read", "arguments": ["path": "scripts/release.sh"]], ["type": "toolCall", "id": "release", "name": "release", "arguments": [:]]], stop: "toolUse")
-            replay([releaseUser], after: [["type": "agent_start"], ["type": "message_start", "message": releaseCalls], ["type": "tool_execution_end", "toolCallId": "release-read", "result": ["content": [["type": "text", "text": "Read"]]], "isError": false], ["type": "tool_execution_start", "toolCallId": "release", "toolName": "release", "args": [:]], select, confirm])
-            steps.append(["type": "wait", "command": "extension_ui_response"])
-            steps.append(["type": "wait", "command": "extension_ui_response", "events": [ui("input", "input", ["title": "Version for the tap", "placeholder": "0.32.0", "timeout": 49000])]])
-            steps.append(["type": "wait", "command": "extension_ui_response", "events": [ui("editor", "editor", ["title": "Release notes", "prefill": "## 0.32\n\n- The sidebar shows status at the right and folds children\n- A program can show a webview page in its pane"]) ]])
-            steps.append(["type": "wait", "command": "extension_ui_response", "events": [["type": "agent_settled", "aborted": false]]])
-        }
         var queueUser = releaseUser
         queueUser["content"] = [["type": "text", "text": "Release 0.32"]]
         let queueBlocks: [[String: Any]] = [["type": "toolCall", "id": "queue-read", "name": "read", "arguments": ["path": "Makefile"]], ["type": "toolCall", "id": "queue-check", "name": "bash", "arguments": ["command": "git status"]], ["type": "toolCall", "id": "verify", "name": "bash", "arguments": ["command": "make verify"]]]
         let queueCalls = assistant(queueBlocks, stop: "toolUse")
-        if testControls {
+        var timesUser = user
+        timesUser["content"] = [["type": "text", "text": "Make the sweep keep a start failure, then run the whole unit stage"]]
+        let streamText = "\n\nThe patch keeps the earlier selection.\n\n"
+        seed("init", [], title: "koa reference")
+        // The mockup timeline of the transcript: a streamed reply, then a run of real tools, then three seeded transcripts.
+        provide(["gate": "t-start", "chunks": [markdown], "stages": [["gate": "t-delta", "chunks": [streamText]], ["gate": "t-end", "chunks": []]]])
+        provide(["reasoning": "The sweep needs to distinguish a start failure from a program exit. Check the close policy and preserve the focus rule.", "tools": [toolCall(1), toolCall(2), toolCall(3)]])
+        provide(["text": "Done. `due()` now matches on `close`, a start failure never fires `Close::Exit`, and the three sweep tests pass."])
+        try fake("make", 1, done: sweepResult)
+        seed("s4", [user])
+        seed("s6", [user] + replayCalls + [done])
+        seed("s6b", [user] + replayCalls)
+        seed("s7", [errorUser, failedRead, failedReadResult, failure, failureResult, explanation, aborted])
+        step("t1", ["send": "Explain how the sweep decides what to remove, with a table"])
+        step("t4", ["trigger": "go"]); step("tx", ["trigger": "go"]); step("ty", ["abort": true])
+        provide(["gate": "t-abort"])
+        queue(.step("t1"))
+        queue(.release("t-start"))
+        queue(.release("t-delta"))
+        queue(.release("t-end"), .idle, .switchTo("s4"), .step("t4"), .working)
+        queue(.touch("make.gate.1"), .idle, .switchTo("s6"))
+        queue(.switchTo("s6b"))
+        queue(.step("tx"), .working, .step("ty"), .idle, .switchTo("s7"))
+        if scenario == .dialogs {
+            provide(["tools": [["name": "read", "args": ["path": "scripts/release.sh"]], ["name": "release", "args": [:]]]])
+            provide(["text": "Released 0.32."])
+            seed("dlg", [releaseUser])
+            step("d1", ["trigger": "go"])
+            queue(.switchTo("dlg"), .step("d1"))
+        }
+        if scenario == .controls {
             var queueEarlier = assistant(Array(queueBlocks.prefix(2)), stop: "toolUse")
             queueEarlier["timestamp"] = stamp - 50000
             var queueRead = result("queue-read", "Read")
             queueRead["timestamp"] = stamp - 49900
             var queueCheck = result("queue-check", "Clean")
             queueCheck["timestamp"] = stamp - 49000
-            replay([queueUser, queueEarlier, queueRead, queueCheck], after: [["type": "agent_start"], ["type": "message_start", "message": assistant([queueBlocks[2]], stop: "toolUse")], ["type": "tool_execution_start", "toolCallId": "verify", "toolName": "bash", "args": [:]], ["type": "queue_update", "steering": ["skip the Linux check, I'll run it in CI", "use the tap's revision from the last release, not HEAD"], "followUp": ["then draft the release notes from the commits since 0.31"]]])
-            steps.append(["type": "wait", "command": "clear_queue", "data": ["steering": ["skip the Linux check, I'll run it in CI", "use the tap's revision from the last release, not HEAD"], "followUp": ["then draft the release notes from the commits since 0.31"]], "events": [["type": "queue_update", "steering": [], "followUp": []], ["type": "agent_settled", "aborted": false]]])
-            replay([])
-            steps.append(["type": "wait", "command": "get_available_models", "data": ["models": [["id": "claude-opus-5-5", "provider": "anthropic"], ["id": "claude-sonnet-5-5", "provider": "anthropic"], ["id": "claude-fable-5-1", "provider": "claude-bridge"], ["id": "gpt-6.1-sol", "provider": "openai-codex"], ["id": "gpt-6-astra", "provider": "openai-codex"]]]])
-            prompt([ui("git", "setStatus", ["statusKey": "git", "statusText": "↑2"]), ui("tests", "setStatus", ["statusKey": "tests", "statusText": "3 failing"]), ui("info", "notify", ["message": "Worktree ~/Workspace/kido-release created", "notifyType": "info"])])
-            prompt([["type": "agent_start"], ui("tests", "setStatus", ["statusKey": "tests"]), ui("warning", "notify", ["message": "Context at 78%, compaction soon", "notifyType": "warning"])])
-            prompt([["type": "agent_settled", "aborted": false], ui("git", "setStatus", ["statusKey": "git"]), ui("error", "notify", ["message": "extension release: tap checkout is dirty, refusing to commit", "notifyType": "error"])])
+            seed("ctrl", [queueUser, queueEarlier, queueRead, queueCheck])
+            seed("empty", [])
+            provide(["tools": [["name": "bash", "args": ["command": "make verify"]]]])
+            provide(["text": "Done."])
+            provide(["gate": "c-hold"])
+            try fake("make", 2, done: "Passed")
+            step("c1", ["trigger": "go"])
+            step("c2", ["send": "skip the Linux check, I'll run it in CI", "deliverAs": "steer"], ["send": "use the tap's revision from the last release, not HEAD", "deliverAs": "steer"], ["send": "then draft the release notes from the commits since 0.31", "deliverAs": "followUp"])
+            step("c3", ["status": [["key": "git", "text": "↑2"], ["key": "tests", "text": "3 failing"]]], ["notify": [["message": "Worktree ~/Workspace/kido-release created", "type": "info"]]])
+            step("c4", ["status": [["key": "tests"]]], ["notify": [["message": "Context at 78%, compaction soon", "type": "warning"]]], ["trigger": "go"])
+            step("c5", ["status": [["key": "git"]]], ["notify": [["message": "extension release: tap checkout is dirty, refusing to commit", "type": "error"]]])
+            queue(.switchTo("ctrl"), .step("c1"), .working, .step("c2"))
+            queue(.touch("make.gate.2"), .idle, .switchTo("empty"))
+            queue(.step("c3"))
+            queue(.step("c4"), .working)
+            queue(.release("c-hold"), .idle, .step("c5"))
         }
-        var timedBlocks = blocks
-        timedBlocks[0] = ["type": "thinking", "thinking": "where the rule belongs"]
-        let timedCalls = assistant(timedBlocks, stop: "toolUse")
-        var timesUser = user
-        timesUser["content"] = [["type": "text", "text": "Make the sweep keep a start failure, then run the whole unit stage"]]
-        replay([timesUser], after: [["type": "agent_start"], ["type": "message_start", "message": assistant([])], ["type": "message_update", "usage": usage, "assistantMessageEvent": ["type": "thinking_start", "contentIndex": 0]]])
-        prompt([["type": "message_update", "usage": usage, "assistantMessageEvent": ["type": "thinking_end", "contentIndex": 0, "content": "where the rule belongs"]], ["type": "message_end", "message": timedCalls], ["type": "tool_execution_start", "toolCallId": "read", "toolName": "read", "args": ["path": "ko_server/src/sweep.rs"]]])
-        prompt([["type": "tool_execution_end", "toolCallId": "read", "result": ["content": [["type": "text", "text": Array(repeating: "    row", count: 212).joined(separator: "\n")]]], "isError": false], ["type": "tool_execution_start", "toolCallId": "edit", "toolName": "edit", "args": [:]]])
-        prompt([["type": "tool_execution_end", "toolCallId": "edit", "result": ["content": [["type": "text", "text": "Edit applied"]]], "isError": false]])
-        prompt([["type": "tool_execution_start", "toolCallId": "bash", "toolName": "bash", "args": [:]]])
-        let secondCalls = assistant([["type": "thinking", "thinking": "which stages the unit stage runs"], ["type": "toolCall", "id": "unit", "name": "bash", "arguments": ["command": "make verify STAGES=unit"]]], stop: "aborted")
-        prompt([["type": "tool_execution_end", "toolCallId": "bash", "result": ["content": [["type": "text", "text": "Passed"]]], "isError": false], ["type": "message_end", "message": assistant([["type": "text", "text": "Done. Now the unit stage."]])], ["type": "message_start", "message": assistant([])], ["type": "message_update", "usage": usage, "assistantMessageEvent": ["type": "thinking_start", "contentIndex": 0]]])
-        prompt([["type": "message_update", "usage": usage, "assistantMessageEvent": ["type": "thinking_end", "contentIndex": 0, "content": "which stages the unit stage runs"]], ["type": "message_update", "usage": usage, "assistantMessageEvent": ["type": "toolcall_end", "contentIndex": 1, "toolCall": ["type": "toolCall", "id": "unit", "name": "bash", "arguments": ["command": "make verify STAGES=unit"]]]], ["type": "tool_execution_start", "toolCallId": "unit", "toolName": "bash", "args": [:]]])
-        prompt([["type": "message_end", "message": secondCalls], ["type": "agent_settled", "aborted": true]])
-        var exitCalls = queueCalls
-        exitCalls["timestamp"] = stamp
-        var exitRead = result("queue-read", "Read")
-        exitRead["timestamp"] = stamp + 100
-        var exitCheck = result("queue-check", "Clean")
-        exitCheck["timestamp"] = stamp + 1000
-        var exitVerify = result("verify", "Passed")
-        exitVerify["timestamp"] = stamp + 48000
-        replay([queueUser, exitCalls, exitRead, exitCheck, exitVerify, assistant([["type": "text", "text": "The tap formula is updated; pushing now."]])])
-        prompt([])
-        steps.append(["type": "stderr", "text": "node:internal/process/esm_loader:108\n    throw new ERR_MODULE_NOT_FOUND(packageName, fileURLToPath(base), null);\nError [ERR_MODULE_NOT_FOUND]: Cannot find package '@kido/webview'\n    at packageResolve (node:internal/modules/esm/resolve:873:9)\n    at moduleResolve (node:internal/modules/esm/resolve:946:18)\n"])
-        steps.append(["type": "exit", "code": 1])
-        steps.insert(["type": "respond", "command": "get_available_thinking_levels", "data": ["levels": ["off", "minimal", "low", "medium", "high", "xhigh"]]], at: 3)
+        if scenario == .exit {
+            seed("times", [timesUser])
+            provide(["reasoning": "where the rule belongs", "midGate": "x-calls", "tools": [toolCall(1), toolCall(2), toolCall(3)]])
+            provide(["reasoning": "which stages the unit stage runs", "text": "Done. Now the unit stage.", "midGate": "x-unit", "tools": [["name": "bash", "args": ["command": "make verify STAGES=unit"]]]])
+            try fake("make", 2, done: "Passed")
+            try fake("make", 3, hold: true)
+            step("x1", ["trigger": "go"])
+            step("x-abort", ["abort": true])
+            queue(.switchTo("times"), .step("x1"))
+            queue(.release("x-calls"))
+            queue()
+            queue()
+            queue()
+            queue(.touch("make.gate.2"))
+            queue(.release("x-unit"))
+            queue(.step("x-abort"))
+        }
         if scenario == .completion {
-            steps = Array(steps.prefix(4))
-            let commands = [("gh-watch", "Watch main and report each head’s CI", "prompt"), ("release", "Release Kido.app first, then ko", "prompt"), ("koa", "Use the koa harness for child agents", "extension"), ("runtime", "Run the built-in tools in a runtime of this session", "extension"), ("skill:ko", "Read and change the ko layout: sessions, windows, panes", "skill"), ("skill:simplify", "Clean up the changed code without changing behavior", "skill"), ("skill:rex", "Manage Rex sessions, tabs and panes with the rex CLI", "skill"), ("plan", "Write a plan in plans/ before the code", "prompt"), ("review", "Run the correctness and modules reviewers on the diff", "extension"), ("skill:ko-api", "Call ko api routes from a prompt", "skill")]
-            steps.append(["type": "respond", "command": "get_commands", "data": ["commands": commands.map { ["name": $0.0, "description": $0.1, "source": $0.2] }]])
+            replies = []; timeline = []
+            let templates = [("gh-watch", "Watch main and report each head’s CI"), ("release", "Release Kido.app first, then ko"), ("plan", "Write a plan in plans/ before the code")]
+            let skills = [("ko", "Read and change the ko layout: sessions, windows, panes"), ("simplify", "Clean up the changed code without changing behavior"), ("rex", "Manage Rex sessions, tabs and panes with the rex CLI"), ("ko-api", "Call ko api routes from a prompt")]
+            for (name, description) in templates { agentFiles["prompts/\(name).md"] = "---\ndescription: \(description)\n---\n\(description)\n" }
+            for (name, description) in skills { agentFiles["skills/\(name)/SKILL.md"] = "---\nname: \(name)\ndescription: \(description)\n---\nUse \(name).\n" }
+            commands = [["name": "koa", "description": "Use the koa harness for child agents"], ["name": "runtime", "description": "Run the built-in tools in a runtime of this session"], ["name": "review", "description": "Run the correctness and modules reviewers on the diff"]]
             var completionUser = user
             completionUser["content"] = [["type": "text", "text": "Review the sidebar unit before it lands"]]
-            prompt([])
-            replay([completionUser])
-            replay([])
+            provide(["text": "Starting the release."])
+            seed("cu", [completionUser]); seed("empty", [])
+            queue(.shown("Starting the release."), .idle, .switchTo("cu"))
+            queue(.switchTo("empty"))
         }
         func image(_ width: Int, _ height: Int, _ a: UInt32, _ b: UInt32, _ label: String) throws -> [String: Any] {
             let bitmap = try XCTUnwrap(NSBitmapImageRep(bitmapDataPlanes: nil, pixelsWide: width, pixelsHigh: height, bitsPerSample: 8, samplesPerPixel: 4, hasAlpha: true, isPlanar: false, colorSpaceName: .deviceRGB, bytesPerRow: width * 4, bitsPerPixel: 32))
@@ -792,7 +847,7 @@ import SidebarFeed
             tools += call("t-read", "read_report", ["agent": "simplify-reuse"], ["text": "The report"], 0, start: 300, duration: 100)
             tools += call("t-stop", "stop_agent", ["agent": "simplify-reuse"], ["text": "Stopped"], 0, start: 400, duration: 1700)
             tools += [prose("sidebar-right is applying the review findings; simplify-reuse had reported and is stopped.")]
-            steps = Array(steps.prefix(3)); steps[1] = ["type": "respond", "command": "get_messages", "data": ["messages": out]]
+            replies = []; timeline = []; seed("init", out, title: "koa reference")
             for messages in [failed, incoming, jobs, folded, tools] { replay(messages) }
         }
         if scenario == .preview {
@@ -807,7 +862,7 @@ import SidebarFeed
                 messages += [call, ["role": "toolResult", "toolCallId": id, "toolName": name, "timestamp": stamp + end, "isError": false, "content": [["type": "text", "text": body]]]]
             }
             messages.append(assistant([["type": "text", "text": "Done; the tests pass."]]))
-            steps = Array(steps.prefix(3)); steps[1] = ["type": "respond", "command": "get_messages", "data": ["messages": messages]]
+            replies = []; timeline = []; seed("init", messages, title: "koa reference")
         }
         if scenario == .media || scenario == .lightbox {
             let shot = try image(1440, 900, 0x2f6fd6, 0x8b3fc9, "screenshot 1440×900")
@@ -819,31 +874,30 @@ import SidebarFeed
                 return [call, ["role": "toolResult", "toolCallId": id, "toolName": "read", "timestamp": stamp + at + 200, "isError": false, "content": [["type": "text", "text": "Read image file [image/png]"], shot]]]
             }
             var code = assistant([["type": "toolCall", "id": "images", "name": "codemode", "arguments": ["code": "image() x2"]]], stop: "toolUse"); code["timestamp"] = stamp + 7900
-            steps = Array(steps.prefix(4))
+            replies = []; timeline = []
             replay([message("Look at the two screenshots in /tmp/koa-shots and tell me what differs")] + read("light", "/tmp/koa-shots/complete-at-agents-light-wide.png", 0) + read("dark", "/tmp/koa-shots/complete-at-agents-dark-wide.png", 200) + [code, ["role": "toolResult", "toolCallId": "images", "toolName": "codemode", "timestamp": stamp + 9000, "isError": false, "content": [["type": "text", "text": "sidebar rows: 28 vs 32pt"], sidebar, diagram]], assistant([["type": "text", "text": "The light render has the kind tags; the dark one lost them to the ellipsis. Two things differ…"]])])
             replay([message("Make the sidebar look like this", [sidebar, diagram]), assistant([["type": "text", "text": "Reading both fixtures."]])])
             replay([message("Compare with the earlier screenshot", [shot, shot]), assistant([["type": "text", "text": "I can see the second one; the first is no longer available in this session."]])])
         }
         if scenario == .thinkingMarkdown {
             let thinking = "# Check the close policy\n\nKeep **start failures** visible and use `close` for the exit rule.\n\n- Read the pane state\n- Keep the focus rule\n\n```swift\nif pane.close == .exit {\n    remove(pane)\n}\n```"
-            steps = Array(steps.prefix(3))
-            let content: [[String: Any]] = [["type": "thinking", "thinking": thinking]]
-            let messages: [[String: Any]] = [user, assistant(content)]
-            steps[1] = ["type": "respond", "command": "get_messages", "data": ["messages": messages]]
+            replies = []; timeline = []
+            seed("init", [user, assistant([["type": "thinking", "thinking": thinking]])], title: "koa reference")
         }
         if scenario == .reveal {
             let code = (1...20).map { "    let value\($0) = \($0)" }.joined(separator: "\n")
             let history = assistant([["type": "text", "text": "The sweep keeps this helper:\n\n```swift\n\(code)\n```\n\nIt reads each row once."]])
-            steps = Array(steps.prefix(3))
-            steps[1] = ["type": "respond", "command": "get_messages", "data": ["messages": [user, history]]]
-            let arriving = assistant([["type": "text", "text": "First the rows are read.\n\n- one\n- two\n\n```swift\nlet a = 1\nlet b = 2\nlet c"]])
-            prompt([["type": "agent_start"]])
-            prompt([["type": "message_end", "message": streamUser], ["type": "message_start", "message": arriving]])
+            replies = []; timeline = []
+            seed("init", [user, history], title: "koa reference")
+            provide(["gate": "r-start", "chunks": ["First the rows are read.\n\n- one\n- two\n\n```swift\nlet a = 1\nlet b = 2\nlet c"], "stages": [["gate": "r-hold", "chunks": []]]])
+            step("r1", ["send": "Explain how the sweep decides what to remove, with a table"])
+            queue(.step("r1"))
+            queue(.release("r-start"))
         }
         if scenario == .userMarkdown {
             var rich = user; rich["content"] = [["type": "text", "text": "Use `inline` and the same Markdown rules, see [the reference](https://example.com/ref).\n\n> Keep the quoted instruction clear on the tint.\n\n- First item\n- Second item\n\n```js\nconst x = 1;\n```\n\n<b>raw HTML stays text</b>"]]
             var plain = user; plain["timestamp"] = stamp + 1; plain["content"] = [["type": "text", "text": "A plain one-line message"]]
-            steps = Array(steps.prefix(3)); steps[1] = ["type": "respond", "command": "get_messages", "data": ["messages": [rich, assistant([["type": "text", "text": "The text column is the same width."]]), plain]]]
+            replies = []; timeline = []; seed("init", [rich, assistant([["type": "text", "text": "The text column is the same width."]]), plain], title: "koa reference")
             for text in [
                 "> The breadcrumb test is flaky on Linux. I recommend skipping it on Linux for now.\nYes",
                 "> error[E0599]: no method named `place` found for struct `Model`\n>   --> ko_client/src/model.rs:412:18\nWhy does this appear only on the musl target? The method is `pub(crate)`.\n\n> Should I push now, or wait for CI on the rebase?\nwait for CI",
@@ -864,42 +918,49 @@ import SidebarFeed
             try FileManager.default.createDirectory(at: attachmentPaths.source.deletingLastPathComponent(), withIntermediateDirectories: true)
             try "row\n".write(to: attachmentPaths.source, atomically: true, encoding: .utf8)
             var first = user; first["content"] = [["type": "text", "text": "Here is what I have so far"]]
-            steps = Array(steps.prefix(3))
-            steps[1] = ["type": "respond", "command": "get_messages", "data": ["messages": [first]]]
+            replies = []; timeline = []
+            seed("init", [first], title: "koa reference")
             var release = user; release["content"] = [["type": "text", "text": "Release 0.32"]]
-            replay([release], after: [["type": "agent_start"], ["type": "message_start", "message": assistant([["type": "toolCall", "id": "release", "name": "bash", "arguments": ["command": "make verify"]]], stop: "toolUse")]])
-            prompt([["type": "queue_update", "steering": ["skip the Linux check, I'll run it in CI"], "followUp": []]])
-            prompt([["type": "queue_update", "steering": ["skip the Linux check, I'll run it in CI"], "followUp": ["then compare with these two renders"]]])
-            steps.append(["type": "wait", "command": "clear_queue", "data": ["steering": ["skip the Linux check, I'll run it in CI"], "followUp": ["then compare with these two renders"]], "events": [["type": "queue_update", "steering": [], "followUp": []], ["type": "agent_settled", "aborted": false], ["type": "compaction_end"]]])
-            steps.append(["type": "respond", "command": "get_messages", "data": ["messages": []]])
-            steps.append(["type": "wait", "command": "prompt", "echo": true, "events": [["type": "agent_start"], ["type": "message_start", "message": assistant([["type": "toolCall", "id": "sent-read", "name": "read", "arguments": ["path": "notes.md"]]], stop: "toolUse")]]])
+            seed("rel", [release]); seed("empty", [])
+            provide(["tools": [["name": "bash", "args": ["command": "make verify"]]]])
+            provide(["tools": [["name": "read", "args": ["path": "notes.md"]]]])
+            provide(["gate": "a-hold"])
+            try fake("make", 1, hold: true)
+            try "notes\n".write(to: cwd.appendingPathComponent("notes.md"), atomically: true, encoding: .utf8)
+            step("a1", ["trigger": "go"]); step("a-abort", ["abort": true])
+            queue(.switchTo("rel"), .step("a1"), .working)
+            queue(.step("a-abort"), .idle, .switchTo("empty"))
         }
         if scenario == .feed {
-            steps = Array(steps.prefix(4))
+            replies = []; timeline = []
             let part = String(repeating: "x", count: 4096)
-            prompt([["type": "agent_start"], ["type": "message_start", "message": assistant([["type": "text", "text": part]])]])
-            prompt([["type": "message_update", "usage": usage, "assistantMessageEvent": ["type": "text_delta", "contentIndex": 0, "delta": part]]])
-            prompt([["type": "message_end", "message": assistant([["type": "text", "text": part + part + part]])], ["type": "agent_settled", "aborted": false]])
+            provide(["chunks": [part], "stages": [["gate": "f2", "chunks": [part]], ["gate": "f3", "chunks": [part]]]])
         }
         if scenario == .composer {
             let name = composerState
             var person = user; person["content"] = [["type": "text", "text": ["waiting", "exited", "toast-err"].contains(name) ? "Release 0.32" : name == "toast" ? "Use Sonnet for the rest of this" : "Run the unit stage"]]
-            steps = Array(steps.prefix(3)); steps[1] = ["type": "respond", "command": "get_messages", "data": ["messages": [person]]]
-            if name == "waiting" { steps[2] = ["type": "respond", "command": "get_session_stats", "data": ["contextUsage": ["tokens": 156000, "contextWindow": 200000, "percent": 78]]] }
-            var events: [[String: Any]] = []
+            replies = []; timeline = []; seed("init", [person], title: "koa reference")
+            if name == "waiting" { seed("init", [person], title: "koa reference", context: 156000) }
+            var actions: [[String: Any]] = []
             if ["working", "narrow", "toast-err", "responsive"].contains(name) {
-                events = [["type": "agent_start"], ["type": "message_start", "message": assistant([["type": "toolCall", "id": "foot-run", "name": "bash", "arguments": ["command": "make verify STAGES=unit"]]], stop: "toolUse")], ["type": "tool_execution_start", "toolCallId": "foot-run"]]
-            } else if name == "waiting" { events = [["type": "message_end", "message": assistant([["type": "text", "text": "Which tap revision? (see the dialog)"]])], ["type": "extension_ui_request", "id": "foot-wait", "method": "input", "title": "Which tap revision?"]] }
-            if name == "toast" || name == "toast-err" { events.append(["type": "extension_ui_request", "id": "foot-notify", "method": "notify", "notifyType": name == "toast" ? "info" : "error", "message": name == "toast" ? "Switched to claude-sonnet-5-5 · thinking medium" : "extension release: tap checkout is dirty, refusing to commit"]) }
-            if name == "extras" { events = [["type": "extension_ui_request", "id": "foot-git", "method": "setStatus", "statusKey": "git", "statusText": "↑2"], ["type": "extension_ui_request", "id": "foot-tests", "method": "setStatus", "statusKey": "tests", "statusText": "3 failing"]] }
-            prompt(events)
-            if name == "exited" { steps.append(["type": "stderr", "text": "Killed: 9\n"]); steps.append(["type": "exit", "code": 137]) }
-            if name == "picker" { steps.append(["type": "wait", "command": "get_available_models", "data": ["models": [["id": "claude-opus-5-5", "provider": "anthropic"], ["id": "claude-sonnet-5-5", "provider": "anthropic"], ["id": "claude-fable-5-1", "provider": "claude-bridge"], ["id": "gpt-6.1-sol", "provider": "openai-codex"], ["id": "gpt-6-astra", "provider": "openai-codex"]]]]) }
-            if name == "responsive" { steps.insert(["type": "wait", "command": "get_available_models", "data": ["models": [["id": "claude-opus-5-5", "provider": "anthropic"]]]], at: 3) }
+                provide(["tools": [["name": "bash", "args": ["command": "make verify STAGES=unit"]]]])
+                try fake("make", 1, hold: true)
+                actions.append(["trigger": "go"])
+            } else if name == "waiting" {
+                provide(["text": "Which tap revision? (see the dialog)", "tools": [["name": "ask", "args": [:]]]], tokens: 155990)
+                actions.append(["trigger": "go"])
+            }
+            if name == "toast" { actions.append(["notify": [["message": "Switched to claude-sonnet-5-5 · thinking medium", "type": "info"]]]) }
+            if name == "toast-err" { actions.append(["notify": [["message": "extension release: tap checkout is dirty, refusing to commit", "type": "error"]]]) }
+            if name == "extras" { actions.append(["status": [["key": "git", "text": "↑2"], ["key": "tests", "text": "3 failing"]]]) }
+            if name == "exited" { launchArgs = ["--provider", "nope", "--model", "nope"] }
+            if name == "responsive" { models = [koaModels[0]] }
+            extSteps["f1"] = actions
+            queue(.step("f1"))
         }
         if scenario == .bang {
             var person = user; person["content"] = [["type": "text", "text": "Verify the sidebar unit"]]
-            steps = Array(steps.prefix(3)); steps[1] = ["type": "respond", "command": "get_messages", "data": ["messages": [person]]]
+            replies = []; timeline = []; seed("init", [person], title: "koa reference")
             let commands: [(String, String, Int, Bool, Bool, Bool)] = [
                 ("make checks DRY=1", "plan: lint-sh unit(ko_client) app visual(SidebarTests)\nunit: cargo test -p ko_client\napp: make -C app test\nvisual: make -C app visual VISUAL_ONLY=SidebarTests", 0, false, false, false),
                 ("git status --short", " M app/App/SidebarRow.swift\n?? app/Tests/__Snapshots__/SidebarTests/testIndicatorRight.1.png", 0, false, false, true),
@@ -913,21 +974,17 @@ import SidebarFeed
                 if command.4 { message["fullOutputPath"] = "/tmp/pi-bash-abc123.log" }
                 messages.append(message)
             }
-            prompt([["type": "compaction_end"]])
-            let allMessages: [[String: Any]] = [person] + messages
-            steps.append(["type": "respond", "command": "get_messages", "data": ["messages": allMessages]])
-            for index in [0, 2, 3, 4, 1] {
-                prompt([["type": "compaction_end"]])
-                let oneMessage: [[String: Any]] = [person, messages[index]]
-                steps.append(["type": "respond", "command": "get_messages", "data": ["messages": oneMessage]])
-            }
-            prompt([["type": "compaction_end"]])
-            steps.append(["type": "respond", "command": "get_messages", "data": ["messages": [person]]])
-            steps.append(["type": "wait", "command": "bash", "gate": true, "events": [["type": "bash_execution_update", "delta": "running 212 tests\ntest model::place_stays_on_host ... ok\ntest model::runtime_name ... ok\n......................"]], "data": ["output": "cancelled", "cancelled": true, "truncated": false]])
-            let busyReply: [String: Any] = assistant([["type": "text", "text": "The sweep needs to distinguish a start failure from a program exit. Checking the close policy."]])
-            let busyEvents: [[String: Any]] = [["type": "agent_start"], ["type": "message_start", "message": busyReply]]
-            prompt(busyEvents)
-            steps.append(["type": "wait", "command": "bash", "gate": true, "events": [["type": "bash_execution_update", "delta": " M app/App/SidebarRow.swift\n?? app/Tests/__Snapshots__/SidebarTests/testIndicatorRight.1.png"]], "data": ["output": " M app/App/SidebarRow.swift\n?? app/Tests/__Snapshots__/SidebarTests/testIndicatorRight.1.png", "exitCode": 0, "cancelled": false, "truncated": false]])
+            seed("all", [person] + messages)
+            for index in [0, 2, 3, 4, 1] { seed("b\(index)", [person, messages[index]]) }
+            seed("p", [person]); seed("pb", [person])
+            queue(.switchTo("all"))
+            for index in [0, 2, 3, 4, 1] { queue(.switchTo("b\(index)")) }
+            queue(.switchTo("p"))
+            try fake("make", 1, live: "running 212 tests\ntest model::place_stays_on_host ... ok\ntest model::runtime_name ... ok\n......................", hold: true)
+            try fake("git", 1, live: " M app/App/SidebarRow.swift\n?? app/Tests/__Snapshots__/SidebarTests/testIndicatorRight.1.png", hold: true)
+            provide(["chunks": ["The sweep needs to distinguish a start failure from a program exit. Checking the close policy."], "stages": [["gate": "b-hold", "chunks": []]]])
+            step("bb", ["trigger": "go"])
+            queue(.switchTo("pb"), .step("bb"), .working)
         }
         if scenario == .questions {
             let reply = """
@@ -955,9 +1012,9 @@ import SidebarFeed
             ]
             let person: [String: Any] = ["role": "user", "timestamp": stamp, "content": [["type": "text", "text": "Verify the sidebar unit and tell me what is left"]]]
             let entry: [String: Any] = ["type": "custom", "id": "questions", "parentId": NSNull(), "customType": "reply-annotations", "timestamp": ISO8601DateFormatter().string(from: Date(timeIntervalSince1970: Double(stamp + 1) / 1000)), "data": ["reply": ["at": stamp, "block": 0, "length": reply.unicodeScalars.count], "annotations": questions]]
-            steps = Array(steps.prefix(3))
-            steps[1] = ["type": "respond", "command": "get_messages", "data": ["messages": [person, assistant([["type": "text", "text": reply]])]]]
-            steps.append(["type": "respond", "command": "get_entries", "data": ["entries": [entry], "leafId": "questions"]])
+            replies = []; timeline = []
+            seed("init", [person, assistant([["type": "text", "text": reply]])], title: "koa reference")
+            seed("init", [person, assistant([["type": "text", "text": reply]])], title: "koa reference", extra: [["kind": "custom", "customType": "reply-annotations", "at": stamp + 1, "data": entry["data"] as Any]])
             let ordered = "Which should I do?\n\n1. Rebase the branch onto main and rerun the full verification before the push, including the application tests and all checks for the changed files.\n2. Push the branch as it is now and let CI check the combination on main, including the application tests and all checks for the changed files."
             let marked = ordered + "\n\n😀 Pick `one` or **two**?\r\n\r\n- Keep the cache?\r\n\r\n## Use alpha or beta?\r\n\r\n| Choice |\r\n| --- |\r\n| Use red or blue? |\r\n\r\nLiteral \u{E012}999;x\u{E012}"
             func markedSpan(_ text: String) throws -> [Int] {
@@ -971,16 +1028,14 @@ import SidebarFeed
                 ["type": "question", "kind": "choice", "range": try markedSpan("Use alpha or beta?"), "options": [try markedSpan("alpha"), try markedSpan("beta")]],
                 ["type": "question", "kind": "choice", "range": try markedSpan("Use red or blue?"), "options": [try markedSpan("red"), try markedSpan("blue")]],
             ]
-            var markedMessage = assistant([["type": "text", "text": marked]])
-            markedMessage["timestamp"] = stamp + 1000
-            let markedEntry: [String: Any] = ["type": "custom", "id": "marked-questions", "parentId": "questions", "customType": "reply-annotations", "timestamp": ISO8601DateFormatter().string(from: Date(timeIntervalSince1970: Double(stamp + 2000) / 1000)), "data": ["reply": ["at": stamp + 1000, "block": 0, "length": marked.unicodeScalars.count], "annotations": markedQuestions]]
-            prompt([["type": "message_start", "message": markedMessage], ["type": "message_end", "message": markedMessage], ["type": "entry_appended", "entry": markedEntry]])
+            provide(["text": marked])
+            step("q1", ["trigger": "go"]); step("q2", ["annotate": markedQuestions])
+            queue(.step("q1"), .working, .idle, .step("q2"))
         }
-        let sessionRows = directory.appendingPathComponent("session-rows.json")
         let sessionGate = directory.appendingPathComponent("session-gate")
         if scenario == .sessions {
             let titles: [(String?, String, Int)] = [
-                ("sidebar-right", "Hand the sidebar unit to an implementer and tell the reviewer when it builds", 212),
+                ("sidebar-right", "Verify the sidebar unit", 212),
                 ("koa-md", "Agent cards render Markdown; the queue goes above the field", 96),
                 (nil, "Why does ko_client::Model::place fail on the musl target only?", 14),
                 ("runtimes-u4", "Design the runtime indicator for Kido.app and ko_tui", 341),
@@ -990,88 +1045,79 @@ import SidebarFeed
                 ("html-mockups", "koa webview mockups: streaming, runs, composer", 402),
                 ("bench", "Why does allocations/record rise after the deflate change?", 27),
             ]
-            var rows: [[String: Any]] = []
+            seeds = []
+            let otherCwd = home.appendingPathComponent("Workspace/pi-infer-questions")
+            try FileManager.default.createDirectory(at: otherCwd, withIntermediateDirectories: true)
+            func blank(_ at: Int) -> [String: Any] { ["role": "assistant", "api": "test", "provider": "test", "model": "test", "usage": usage, "timestamp": at, "stopReason": "stop", "content": []] }
+            func entry(_ name: String, _ first: String, _ title: String, _ count: Int, age: Int, reply: String, label: String?, cwd: String? = nil) -> [String: Any] {
+                let shown = [["role": "user", "timestamp": stamp - age - 1000, "content": [["type": "text", "text": title]]], assistant([["type": "text", "text": reply]]).merging(["timestamp": stamp - age]) { _, new in new }]
+                let pad = [["role": "user", "timestamp": stamp - age - 3000, "content": [["type": "text", "text": first]]]] + Array(repeating: blank(stamp - age - 2000), count: max(0, count - 3))
+                var items = shown.map(koaItem)
+                if let label { items.append(["kind": "name", "name": label]) }
+                var value: [String: Any] = ["name": name, "items": items, "branches": [["label": "pad", "items": pad.map(koaItem)]], "modified": stamp - age]
+                if let cwd { value["cwd"] = cwd }
+                return value
+            }
             for (index, title) in titles.enumerated() {
                 let age = index < 2 ? (index == 0 ? 600000 : 3480000) : index * 86400000
-                var row: [String: Any] = ["cwd": cwd.path, "firstMessage": title.1, "messageCount": title.2, "modified": stamp - age]
-                row["id"] = index == 0 ? "fake" : "session-\(index)"
-                row["path"] = "/tmp/koa-visual-session-\(index)"
-                if let name = title.0 { row["name"] = name }
-                rows.append(row)
+                let reply = index == 0 ? "Verified: every stage passes. The snapshots that changed are the twelve of SidebarTests." : index == 1 ? "Done: the cards render through the reply's Markdown renderer, collapsed to one plain line." : "Done."
+                seeds.append(entry(index == 0 ? "init" : "session-\(index)", index == 0 ? "Hand the sidebar unit to an implementer and tell the reviewer when it builds" : title.1, title.1, title.2, age: index == 0 ? 0 : age, reply: reply, label: title.0))
             }
-            rows.append(["id": "other", "path": "/tmp/koa-visual-other", "cwd": home.appendingPathComponent("Workspace/pi-infer-questions").path, "name": "pi-infer-questions", "firstMessage": "Train the option tagger on the new corpus", "messageCount": 77, "modified": stamp - 1800000])
-            try JSONSerialization.data(withJSONObject: rows).write(to: sessionRows)
-            let person: [String: Any] = ["role": "user", "timestamp": stamp, "content": [["type": "text", "text": "Verify the sidebar unit"]]]
-            steps = Array(steps.prefix(3))
-            steps[1] = ["type": "respond", "command": "get_messages", "data": ["messages": [person, assistant([["type": "text", "text": "Verified: every stage passes. The snapshots that changed are the twelve of SidebarTests."]])]]]
-            steps.append(["type": "wait", "command": "switch_session", "data": ["cancelled": false]])
-            steps.append(["type": "respond", "command": "get_state", "data": ["sessionId": "session-1", "sessionName": "koa-md", "sessionFile": sessionFile.path, "thinkingLevel": "high", "model": ["id": "claude-opus-5-5", "provider": "anthropic"]]])
-            let nextUser: [String: Any] = ["role": "user", "timestamp": stamp - 3480000, "content": [["type": "text", "text": "Agent cards render Markdown; the queue goes above the field"]]]
-            let nextReply = assistant([["type": "text", "text": "Done: the cards render through the reply's Markdown renderer, collapsed to one plain line."]])
-            let nextMessages: [[String: Any]] = [nextUser, nextReply]
-            steps.append(["type": "respond", "command": "get_messages", "data": ["messages": nextMessages]])
-            steps.append(["type": "respond", "command": "get_session_stats", "data": ["totalMessages": 96, "contextUsage": ["tokens": 46000, "contextWindow": 200000, "percent": 23]]])
-            let commandEvent: [String: Any] = ["type": "bash_execution_update", "delta": "running 212 tests"]
-            let commandResult: [String: Any] = ["output": "cancelled", "cancelled": true, "truncated": false]
-            steps.append(["type": "wait", "command": "bash", "gate": true, "events": [commandEvent], "data": commandResult])
-            let running = assistant([["type": "toolCall", "id": "verify", "name": "bash", "arguments": ["command": "make verify STAGES=unit"]]], stop: "toolUse")
-            prompt([["type": "agent_start"], ["type": "message_start", "message": person], ["type": "message_end", "message": person], ["type": "message_start", "message": running], ["type": "tool_execution_start", "toolCallId": "verify"]])
-            steps.append(["type": "wait", "command": "abort", "events": [["type": "agent_settled", "aborted": true]]])
-            steps.append(["type": "wait", "command": "new_session", "data": ["cancelled": false]])
-            steps.append(["type": "respond", "command": "get_state", "data": ["sessionId": "fresh", "sessionName": "pi", "sessionFile": sessionFile.path, "thinkingLevel": "high", "model": ["id": "claude-opus-5-5", "provider": "anthropic"]]])
-            steps.append(["type": "respond", "command": "get_messages", "data": ["messages": []]])
-            steps.append(["type": "respond", "command": "get_session_stats", "data": ["totalMessages": 0, "contextUsage": ["tokens": 0, "contextWindow": 200000, "percent": 0]]])
+            seeds.append(entry("other", "Train the option tagger on the new corpus", "Train the option tagger on the new corpus", 77, age: 1800000, reply: "Done.", label: "pi-infer-questions", cwd: otherCwd.path))
+            provide(["tools": [["name": "bash", "args": ["command": "make verify STAGES=unit"]]]])
+            provide(["gate": "s-hold"])
+            try fake("make", 1, live: "running 212 tests", hold: true)
+            try fake("make", 2, hold: true)
+            step("s1", ["send": "Verify the sidebar unit"]); step("s-abort", ["abort": true])
+            queue(.step("s1"), .working)
         }
         if captures.contains("geometry") {
-            steps = Array(steps.prefix(3))
-            steps.append(["type": "wait", "command": "get_available_models", "data": ["models": [["id": "claude-opus-5-5", "provider": "anthropic"]]]])
-            prompt([])
+            replies = []; timeline = []
         }
         if scenario == .notices {
-            steps = Array(steps.prefix(4))
-            steps[0]["data"] = ["sessionName": "sidebar-right", "thinkingLevel": "high", "model": ["id": "claude-opus-5-5", "provider": "anthropic"], "sessionFile": sessionFile.path]
+            replies = []; timeline = []
             var failed = assistant([["type": "text", "text": "Verified: every stage passes."]], stop: "error")
             failed["errorMessage"] = "provider down: 529 overloaded, retry in a minute or switch the model with /model"
-            steps[1]["data"] = ["messages": [
-                ["role": "user", "timestamp": stamp, "content": "Verify the sidebar unit"], failed,
-                ["role": "compactionSummary", "timestamp": stamp + 60000, "tokensBefore": 184000, "summary": "The session verified the sidebar-right unit and fixed two snapshot tests.\n\nOpen: the +N overflow on rows under 215pt, and the tap revision for the release notes."],
-                ["role": "branchSummary", "timestamp": stamp + 120000, "fromId": "entry", "summary": "The abandoned branch tried a fixed row height and dropped it because folded clusters clip."],
-                ["role": "custom", "customType": "release-check", "display": true, "timestamp": stamp + 180000, "content": "Release check passed\nThe tap is clean.\nThe revision is 20857320.", "details": ["from": "release"]],
-            ]]
+            seeds = []
+            seeds.append(["name": "init", "items": [
+                koaItem(["role": "user", "timestamp": stamp, "content": "Verify the sidebar unit"]), koaItem(failed),
+                ["kind": "compaction", "summary": "The session verified the sidebar-right unit and fixed two snapshot tests.\n\nOpen: the +N overflow on rows under 215pt, and the tap revision for the release notes.", "tokensBefore": 184000, "at": stamp + 60000],
+                ["kind": "branch", "summary": "The abandoned branch tried a fixed row height and dropped it because folded clusters clip.", "at": stamp + 120000],
+                koaItem(["role": "custom", "customType": "release-check", "display": true, "timestamp": stamp + 180000, "content": "Release check passed\nThe tap is clean.\nThe revision is 20857320.", "details": ["from": "release"]]),
+                ["kind": "name", "name": "sidebar-right"],
+            ]])
         }
         if scenario == .latest {
-            steps = Array(steps.prefix(3))
-            steps[0]["data"] = ["sessionName": "sidebar-right", "thinkingLevel": "high", "model": ["id": "claude-opus-5-5", "provider": "anthropic"], "sessionFile": sessionFile.path]
-            steps[1]["data"] = ["messages": (1...6).flatMap { index -> [[String: Any]] in
+            replies = []; timeline = []
+            let turns = (1...6).flatMap { index -> [[String: Any]] in
                 var person = user; person["timestamp"] = stamp + index * 1000
                 var reply = assistant([["type": "text", "text": "Step \(index) is done. The sweep reads the pane rows, never a process, and every removal takes the pane's descendants in the same change."]]); reply["timestamp"] = stamp + index * 1000 + 500
                 return [person, reply]
-            }]
-            let arrivals = (1...3).flatMap { index -> [[String: Any]] in
-                var reply = assistant([["type": "text", "text": "Arrival \(index). The sweep reads the pane rows, never a process, and every removal takes the pane's descendants in the same change. The cascade is the server's, so a child pane never outlives its parent.\n\nThe linger collection waits while a focused client shows the pane, and a start failure stays readable until the grace ends."]]); reply["timestamp"] = stamp + 20000 + index * 1000
-                return [["type": "message_start", "message": reply], ["type": "message_end", "message": reply]]
             }
-            steps.append(["type": "wait", "command": "abort", "events": [["type": "agent_start"]] + arrivals + [["type": "agent_settled", "aborted": false]]])
+            seed("init", turns, title: "sidebar-right")
+            for index in 1...3 {
+                provide(["text": "Arrival \(index). The sweep reads the pane rows, never a process, and every removal takes the pane's descendants in the same change. The cascade is the server's, so a child pane never outlives its parent.\n\nThe linger collection waits while a focused client shows the pane, and a start failure stays readable until the grace ends."])
+            }
+            step("l1", ["trigger": "go"], ["trigger": "go", "deliverAs": "followUp"], ["trigger": "go", "deliverAs": "followUp"])
+            queue(.step("l1"))
         }
         if scenario == .commands {
-            steps = Array(steps.prefix(4))
-            steps[0]["data"] = ["sessionName": "sidebar-right", "thinkingLevel": "high", "model": ["id": "claude-opus-5-5", "provider": "anthropic"], "sessionFile": sessionFile.path]
-            steps[1]["data"] = ["messages": [["role": "user", "timestamp": stamp, "content": "Verify the sidebar unit"], assistant([["type": "text", "text": "Verified: every stage passes. The snapshots that changed are the twelve of SidebarTests."]])]]
-            steps[2]["data"] = ["sessionId": "9702ddd1-4c2a-7e31-b0f8-6d1a2e9c0a11", "sessionFile": "~/.pi/agent/sessions/--Users-andrepopp-Workspace-kido/2026-11-10T09-02-11_9702ddd1.jsonl", "userMessages": 61, "assistantMessages": 98, "toolCalls": 53, "toolResults": 53, "totalMessages": 212, "tokens": ["input": 184000, "output": 12000, "cacheRead": 1600000, "cacheWrite": 142000, "total": 1938000], "cost": 1.42, "contextUsage": ["tokens": 84000, "contextWindow": 200000, "percent": 42]]
-            steps.append(["type": "respond", "command": "get_commands", "data": ["commands": [["name": "release", "description": "Release Kido.app first, then ko", "source": "prompt"]]]])
-            steps.append(["type": "wait", "command": "get_last_assistant_text", "data": ["text": String(repeating: "x", count: 2100)]])
-            steps.append(["type": "wait", "command": "export_html", "data": ["path": "~/Workspace/kido/.pi/export/2026-11-10-sidebar.html"]])
-            steps.append(["type": "wait", "command": "compact", "events": [["type": "compaction_start", "reason": "manual"]]])
-            prompt([["type": "compaction_end", "reason": "manual", "result": ["summary": "The session verified the sidebar-right unit (right-side indicators, chevrons, folded clusters) and fixed two snapshot tests; the user approved the dividers-and-fill grouping and the breadcrumb pill. Open: the +N overflow on rows under 215pt. Files touched: SidebarRow.swift, SidebarView.swift, Rows.swift.", "firstKeptEntryId": "first", "tokensBefore": 184000, "estimatedTokensAfter": 31000], "willRetry": false]])
-            steps.append(["type": "wait", "command": "compact", "defer": true, "events": [["type": "compaction_start", "reason": "manual"]]])
-            steps.append(["type": "wait", "command": "abort", "events": [["type": "compaction_end", "reason": "manual", "aborted": true, "willRetry": false]]])
-            steps.append(["type": "wait", "command": "compact", "error": "The model request failed"])
+            replies = []; timeline = []
+            let verified = "Verified: every stage passes. The snapshots that changed are the twelve of SidebarTests."
+            for name in ["init", "cmp2", "cmp3"] { seed(name, [["role": "user", "timestamp": stamp, "content": "Verify the sidebar unit"], assistant([["type": "text", "text": verified]])], title: "sidebar-right") }
+            settings = ["compaction": ["keepRecentTokens": 28], "retry": ["enabled": false]]
+            commands = [["name": "release", "description": "Release Kido.app first, then ko"]]
+            agentFiles["prompts/release.md"] = "---\ndescription: Release Kido.app first, then ko\n---\nRelease.\n"
+            provide(["gate": "cmp1", "text": "The session verified the sidebar-right unit (right-side indicators, chevrons, folded clusters) and fixed two snapshot tests; the user approved the dividers-and-fill grouping and the breadcrumb pill. Open: the +N overflow on rows under 215pt. Files touched: SidebarRow.swift, SidebarView.swift, Rows.swift."])
+            provide(["gate": "cmp2"])
+            provide(["status": 500])
+            queue(.release("cmp1"))
+            queue(.switchTo("cmp2"))
+            queue(.switchTo("cmp3"))
         }
-        try steps.map { String(decoding: try JSONSerialization.data(withJSONObject: $0), as: UTF8.self) }.joined(separator: "\n").write(to: script, atomically: true, encoding: .utf8)
-        let path = [tools.prefix + "/bin", "/opt/homebrew/bin", ProcessInfo.processInfo.environment["PATH"] ?? "/usr/bin:/bin"].joined(separator: ":")
         let clock = directory.appendingPathComponent("clock.mjs")
         let now = directory.appendingPathComponent("now")
-        try String(stamp).write(to: now, atomically: true, encoding: .utf8)
+        try String(stamp + (scenario == .failed ? 9 * 60000 : 0)).write(to: now, atomically: true, encoding: .utf8)
         let nowJSON = String(decoding: try JSONSerialization.data(withJSONObject: now.path, options: .fragmentsAllowed), as: UTF8.self)
         try "import {readFileSync} from 'node:fs'; Date.now = () => Number(readFileSync(\(nowJSON), 'utf8'));".write(to: clock, atomically: true, encoding: .utf8)
         let output = directory.appendingPathComponent("koa.stderr")
@@ -1083,7 +1129,8 @@ import SidebarFeed
             """#.write(to: fd, atomically: true, encoding: .utf8)
             try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: fd.path)
         }
-        let command = "export HOME=\(SSH.quote(home.path)) PATH=\(SSH.quote(path)) KOA_FAKE_SCRIPT=\(SSH.quote(script.path)) NODE_OPTIONS=\(SSH.quote("--import " + clock.path))" + (scenario == .completion ? " KOA_FD=\(SSH.quote(fd.path))" : "") + (scenario == .sessions ? " KOA_FAKE_SESSIONS_FILE=\(SSH.quote(sessionRows.path)) KOA_FAKE_SESSION_FILE_GATE=\(SSH.quote(sessionGate.path))" : "") + "; exec \(SSH.quote(tools.prefix + "/share/ko/bin/koa")) --pi \(SSH.quote(fake)) 2>\(SSH.quote(output.path))"
+        let koa = try await koaBare(script: replies, sessions: seeds, initial: initialSeed, steps: extSteps, commands: commands, models: models, settings: settings, agentFiles: agentFiles, hold: scenario == .sessions ? sessionGate : nil, tree: scenario != .sessions, resources: scenario == .completion, env: scenario == .completion ? ["KOA_FD": fd.path] : [:], nodeOptions: "--import " + clock.path, args: launchArgs, stderr: output)
+        let command = koa.command
         if scenario == .completion {
             let idle = "stty raw -echo; printf '\\033]7501;state=idle:app=pi\\033\\\\'; exec cat"
             let working = "stty raw -echo; printf '\\033]7501;state=working:app=pi\\033\\\\'; exec cat"
@@ -1134,8 +1181,10 @@ import SidebarFeed
             try await webviewUntil(web, "document.querySelector('#status').textContent==='idle'&&document.querySelector('#model-name').textContent==='claude-opus-5-5'")
             for index in 1...3 {
                 let before = pane.webviewView!.visualFeedBytes
-                let response = try await webviewJS(web, "fetch('/prompt',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sessionId:document.body.dataset.sessionId,text:'next',mode:'prompt',attachments:[]})}).then(async r=>({status:r.status,body:await r.json()}))")
-                XCTAssertTrue(response.contains("\"status\":200"), response)
+                if index == 1 {
+                    let response = try await webviewJS(web, "fetch('/prompt',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sessionId:document.body.dataset.sessionId,text:'next',mode:'prompt',attachments:[]})}).then(async r=>({status:r.status,body:await r.json()}))")
+                    XCTAssertTrue(response.contains("\"status\":200"), response)
+                } else { koa.provider.release("f\(index)") }
                 try await wait("feed chunk \(index) handed to WebKit", within: 5) { pane.webviewView!.visualFeedBytes > before + 4096 }
             }
             let handed = pane.webviewView!.visualFeedBytes
@@ -1189,10 +1238,28 @@ import SidebarFeed
             pane.webviewView?.updateTheme()
             try await webviewUntil(web, "getComputedStyle(document.body).getPropertyValue('--ko-appearance').trim()==='light'")
         }
-        func advance() async throws {
-            _ = try await webviewJS(web, "fetch('/prompt',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sessionId:document.body.dataset.sessionId,text:'next',mode:'prompt',attachments:[]})}).then(async r=>{const result=await r.json();if(!r.ok)throw Error(result.error||'Prompt failed');return result})")
+        func post(_ route: String, _ body: [String: Any]) async throws {
+            let json = String(decoding: try JSONSerialization.data(withJSONObject: body), as: UTF8.self)
+            _ = try await webviewJS(web, "fetch('\(route)',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({...\(json),sessionId:document.body.dataset.sessionId})}).then(async r=>{const result=await r.json();if(!r.ok)throw Error(result.error||'Request failed');return result})")
         }
-        try await webviewUntil(web, "document.querySelector('#status').textContent==='idle'&&document.querySelector('#model-name').textContent==='claude-opus-5-5'")
+        func advance() async throws {
+            for action in timeline.removeFirst() {
+                switch action {
+                case .step(let name): try await post("/prompt", ["text": "/vstep " + name, "mode": "prompt", "attachments": []])
+                case .switchTo(let name): try await post(scenario == .sessions ? "/sessions/switch" : "/prompt", scenario == .sessions ? ["path": try XCTUnwrap(koa.files[name])] : ["text": "/vstep tree " + name, "mode": "prompt", "attachments": []])
+                case .release(let gate): koa.provider.release(gate)
+                case .touch(let file): try "".write(to: directory.appendingPathComponent(file), atomically: true, encoding: .utf8)
+                case .shown(let text): try await webviewUntil(web, "document.querySelector('#items').textContent.includes('\(text)')")
+                case .working: try await webviewUntil(web, "document.querySelector('#status').textContent.startsWith('working')")
+                case .idle: try await webviewUntil(web, "['idle','aborted'].includes(document.querySelector('#status').textContent)")
+                }
+            }
+        }
+        if scenario == .failed || (scenario == .composer && composerState == "exited") {
+            try await webviewUntil(web, "!document.querySelector('#exited').hidden&&document.querySelector('#exited pre').textContent.length>0&&document.querySelector('#status').textContent==='failed'")
+        } else {
+            try await webviewUntil(web, "document.querySelector('#status').textContent==='idle'&&document.querySelector('#model-name').textContent==='claude-opus-5-5'")
+        }
         _ = try await webviewJS(web, "(()=>{const NativeDate=Date;window.Date=class extends NativeDate{constructor(...args){super(...(args.length?args:[\(stamp + 12000)]))}static now(){return \(stamp + 12000)}};const style=document.createElement('style');style.textContent='.caret,.spin,.spin::before,.dot.on,.cm-cursorLayer,.typing i\(scenario == .reveal ? "" : ",.grow"){animation:none!important}\(scenario == .reveal ? ".grow{animation-play-state:paused!important;animation-delay:-110ms!important}" : "").info .chev,#latest{transition:none!important}';document.head.append(style);return true})()")
         if scenario == .reveal {
             try await webviewUntil(web, "document.querySelector('.more')?.textContent==='Show 5 more lines'")
@@ -1228,6 +1295,11 @@ import SidebarFeed
             let focused = try await webviewJS(web, "document.activeElement===document.querySelector('#transcript')&&document.querySelector('#field').classList.contains('focus')")
             XCTAssertEqual(focused, "true")
             try await capture("focus-border-transcript")
+            return
+        }
+        if scenario == .failed {
+            try await capture("exited")
+            try await capture("narrow-exited")
             return
         }
         let idleHint = try await webviewJS(web, "document.querySelector('#hint .spin')===null")
@@ -1283,7 +1355,8 @@ import SidebarFeed
             try await capture(prefix + "bang-busy")
             try String(stamp + 14000).write(to: now, atomically: true, encoding: .utf8)
             _ = try await webviewJS(web, "fetch('/abort',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sessionId:document.body.dataset.sessionId})}).then(r=>r.json())")
-            try await webviewUntil(web, "document.querySelector('.cmdrun .meta')?.textContent==='cancelled1s'")
+            koa.provider.release("b-hold")
+            try await webviewUntil(web, "document.querySelector('.cmdrun .meta')?.textContent==='cancelled'")
             resize(330)
             try await capture(prefix + "bang-completed")
             return
@@ -1302,7 +1375,7 @@ import SidebarFeed
             try await webviewUntil(web, "document.querySelectorAll('.assistant').length===6")
             _ = try await webviewJS(web, "(()=>{const scroll=document.querySelector('#scroll');scroll.scrollTop=scroll.scrollHeight;scroll.dispatchEvent(new Event('scroll'));scroll.scrollTop=0;scroll.dispatchEvent(new Event('scroll'));return true})()")
             try await webviewUntil(web, "document.querySelector('#latest').classList.contains('show')")
-            _ = try await webviewJS(web, "fetch('/abort',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sessionId:document.body.dataset.sessionId})}).then(r=>r.json())")
+            try await advance()
             try await webviewUntil(web, "document.querySelectorAll('.assistant').length===9")
             try await webviewUntil(web, "document.querySelector('.newmsgs')!==null")
             try await webviewUntil(web, "document.querySelector('#latest').textContent==='↓ 3 new'")
@@ -1323,7 +1396,7 @@ import SidebarFeed
             try await submit("/copy")
             try await webviewUntil(web, "document.querySelector('.nrow')?.textContent.includes('copied the last reply')")
             try await capture(prefix + "copy")
-            try await submit("/export")
+            try await submit("/export " + home.appendingPathComponent("export.html").path)
             try await webviewUntil(web, "document.querySelectorAll('.nrow').length===2")
             try await capture(prefix + "export")
             if width < 600 {
@@ -1348,11 +1421,13 @@ import SidebarFeed
             try await webviewUntil(web, "Array.from(document.querySelectorAll('.nrow')).some(node=>node.textContent.includes('compacted'))")
             _ = try await webviewJS(web, "(()=>{Array.from(document.querySelectorAll('.nrow')).find(node=>node.textContent.includes('compacted')).querySelector('.hd').click();return true})()")
             try await capture(prefix + "compacted-open")
+            try await advance()
             try await submit("/compact")
             try await webviewUntil(web, "document.querySelector('#status').textContent.startsWith('compacting')")
             _ = try await webviewJS(web, "fetch('/abort',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sessionId:document.body.dataset.sessionId})}).then(r=>r.json())")
             try await webviewUntil(web, "Array.from(document.querySelectorAll('.nrow')).some(node=>node.textContent.includes('compaction cancelled'))")
             try await capture(prefix + "compact-cancelled")
+            try await advance()
             try await submit("/compact")
             try await webviewUntil(web, "document.querySelector('.nrow.error')!==null")
             try await capture(prefix + "compact-failed")
@@ -1375,15 +1450,15 @@ import SidebarFeed
             _ = try await webviewJS(web, "(()=>{const q=document.querySelector('.sess .q');q.value='no-such-session';q.dispatchEvent(new Event('input'));return true})()")
             try await webviewUntil(web, "document.querySelector('.sess .empty')?.textContent.includes('no match')")
             try await capture(prefix + "no-match")
-            let savedSessions = try Data(contentsOf: sessionRows)
-            try Data("[]".utf8).write(to: sessionRows)
+            let sessionsDirectory = directory.appendingPathComponent("home/sessions"), parked = directory.appendingPathComponent("sessions-parked")
+            try FileManager.default.moveItem(at: sessionsDirectory, to: parked)
             _ = try await webviewJS(web, "(()=>{document.querySelector('#session-picker').dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true}));window.composer.setText('/resume');document.querySelector('.cm-content').dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',code:'Enter',bubbles:true}));return true})()")
             try await webviewUntil(web, "document.querySelector('.sess .empty')?.textContent.includes('no sessions')")
             try await capture(prefix + "empty")
             _ = try await webviewJS(web, "(()=>{document.querySelector('#session-picker').dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true}));return true})()")
-            try savedSessions.write(to: sessionRows)
+            try FileManager.default.moveItem(at: parked, to: sessionsDirectory)
             try Data("hold".utf8).write(to: sessionGate)
-            _ = try await webviewJS(web, "(()=>{void fetch('/sessions/switch',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sessionId:document.body.dataset.sessionId,path:'/tmp/koa-visual-session-1'})});return true})()")
+            _ = try await webviewJS(web, "(()=>{void fetch('/sessions/switch',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sessionId:document.body.dataset.sessionId,path:\(String(decoding: try JSONSerialization.data(withJSONObject: try XCTUnwrap(koa.files["session-1"]), options: .fragmentsAllowed), as: UTF8.self))})});return true})()")
             try await webviewUntil(web, "document.querySelector('#status').textContent==='loading'")
             try await capture(prefix + "loading")
             try FileManager.default.removeItem(at: sessionGate)
@@ -1478,13 +1553,14 @@ import SidebarFeed
             let offset = name == "toast" ? 60000 : name == "toast-err" ? 120000 : 0
             try String(stamp + offset).write(to: now, atomically: true, encoding: .utf8)
             _ = try await webviewJS(web, "(()=>{Date.now=()=>\(stamp + offset + 12000);return true})()")
-            try await advance()
+            if name != "exited" { try await advance() }
             _ = try await webviewJS(web, "(()=>{Date.now=()=>\(stamp + offset + elapsed * 1000);return true})()")
-            if name == "exited" { try await webviewUntil(web, "document.querySelector('#status').textContent==='exited 137'&&!document.querySelector('#exited').hidden&&document.querySelector('#field').inert") }
+            if name == "exited" { try await webviewUntil(web, "document.querySelector('#status').textContent==='failed'&&!document.querySelector('#exited').hidden&&document.querySelector('#field').inert") }
             else if name == "waiting" { try await webviewUntil(web, "document.querySelector('#status').textContent==='waiting'") }
             else if ["working", "narrow", "toast-err"].contains(name) {
                 let clock = name == "narrow" ? "12m 34s" : name == "toast-err" ? "1m 02s" : "12s"
                 try await webviewUntil(web, "document.querySelector('#status').textContent==='working \(clock)'")
+                try await webviewUntil(web, "document.querySelector('.run .spin')!==null")
             }
             if name == "toast" || name == "toast-err" { try await webviewUntil(web, "document.querySelector('.nrow')!==null") }
             if name == "editing" {
@@ -1641,6 +1717,7 @@ import SidebarFeed
             try await webviewUntil(web, "document.querySelectorAll('.queue .qmsg').length===2&&document.querySelector('.queue .att')?.textContent==='2'&&document.querySelectorAll('.attach-chip').length===0")
             try await capture(prefix + "queue")
             _ = try await webviewJS(web, "(()=>{document.querySelector('.cm-content').dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowUp',code:'ArrowUp',altKey:true,bubbles:true}));return true})()")
+            try await advance()
             try await webviewUntil(web, "document.querySelectorAll('.attach-chip').length===2&&window.composer.text().includes('then compare')&&document.querySelectorAll('#items .msg').length===0")
             let restored = try await webviewJS(web, "Array.from(document.querySelectorAll('.attach-detail')).every(node=>!node.classList.contains('path'))")
             XCTAssertEqual(restored, "true", "Take-back restores upload chips, not path chips")
@@ -1777,7 +1854,7 @@ import SidebarFeed
             let accepted = try await webviewJS(web, "window.composer.text()==='Ask '+lastComplete.result.options[0].insert&&completePrompts.length===2")
             XCTAssertEqual(accepted, "true")
             try await advance()
-            try await webviewUntil(web, "document.querySelector('#items').children.length===0")
+            try await webviewUntil(web, "!document.querySelector('#items .user,#items .assistant')")
             try await show("Read ", "@ko_s")
             try await capture(prefix + "at-files")
             try await key("Enter")
@@ -1907,18 +1984,17 @@ import SidebarFeed
         XCTAssertEqual(pane.webviewView?.visualDocuments, 1)
         func dialogScenario() async throws {
             _ = try await webviewJS(web, "(()=>{Date.now=()=>\(stamp + 8000);return true})()")
-            func post(_ route: String, _ body: [String: Any] = [:]) async throws {
-                let json = String(decoding: try JSONSerialization.data(withJSONObject: body), as: UTF8.self)
-                _ = try await webviewJS(web, "fetch('\(route)',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({...\(json),sessionId:document.body.dataset.sessionId})}).then(async r=>{const v=await r.json();if(!r.ok)throw Error(v.error);return v})")
+            func answer() async throws {
+                _ = try await webviewJS(web, "(()=>{Array.from(document.querySelectorAll('.dialog button')).find(button=>/Select|Yes|Submit/.test(button.textContent)).click();return true})()")
             }
             try await advance()
             try await webviewUntil(web, "document.querySelector('.dialog .title')?.textContent==='Which tap revision?'&&document.querySelector('.queued-next')&&document.querySelector('.run>.line .spin')&&document.querySelector('.run>.line')?.textContent.includes('release')")
             try await capture("dialog-select")
-            try await post("/dialog", ["id": "select", "value": "0.31.1 · 20857320"])
+            try await answer()
             try await webviewUntil(web, "document.querySelector('.dialog .title')?.textContent==='Force-push main?'&&document.querySelector('.run>.line .spin')&&document.querySelector('.run>.line')?.textContent.includes('release')")
             try await capture("dialog-confirm")
             _ = try await webviewJS(web, "(()=>{Date.now=()=>\(stamp + 6000);return true})()")
-            try await post("/dialog", ["id": "confirm", "confirmed": true])
+            try await answer()
             try await webviewUntil(web, "document.querySelector('.dialog input')&&document.querySelector('.run>.line .spin')&&document.querySelector('.run>.line')?.textContent.includes('release')")
             _ = try await webviewJS(web, "(()=>{Date.now=()=>\(stamp + 6000);document.querySelector('.dialog input').value='0.32.0';return true})()")
             try await webviewUntil(web, "document.querySelector('.dialog .count').textContent==='43s'")
@@ -1929,7 +2005,7 @@ import SidebarFeed
                 try await capture("focus-border-dialog")
                 return
             }
-            try await post("/dialog", ["id": "input", "value": "0.32.0"])
+            try await answer()
             try await webviewUntil(web, "document.querySelector('.dialog textarea')&&document.querySelector('.run>.line .spin')&&document.querySelector('.run>.line')?.textContent.includes('release')")
             try await capture("dialog-editor")
             _ = try await webviewJS(web, "(()=>{document.querySelector('.dialog textarea').dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',ctrlKey:true,bubbles:true,cancelable:true}));return true})()")
@@ -1971,26 +2047,21 @@ import SidebarFeed
         }
         func exitScenario() async throws {
             try await advance()
-            for offset in [6000, 6100, 6300, 6800, 10000, 14000, 37000] {
+            for (offset, ready) in [(6000, "document.querySelectorAll('.step').length>=3"), (6100, nil), (6300, nil), (6800, nil), (10000, "document.querySelectorAll('.step').length>=4"), (14000, "document.querySelector('.run>.line .spin')!==null"), (37000, "document.querySelector('#status').textContent==='aborted'")] as [(Int, String?)] {
                 try String(stamp + offset).write(to: now, atomically: true, encoding: .utf8)
                 try await advance()
+                if let ready { try await webviewUntil(web, ready) }
             }
-            try await webviewUntil(web, "document.querySelector('#status').textContent==='aborted'&&document.querySelectorAll('.run').length===2")
+            try await webviewUntil(web, "document.querySelector('#status').textContent==='aborted'&&document.querySelectorAll('.run').length>=1")
             _ = try await webviewJS(web, "(()=>{document.querySelectorAll('.run>.line').forEach(row=>row.click());return true})()")
             try await capture("times")
-            try await advance()
-            try await webviewUntil(web, "document.querySelector('#items').textContent.includes('pushing now')")
-            try String(stamp + 9 * 60000).write(to: now, atomically: true, encoding: .utf8)
-            try await advance()
-            try await webviewUntil(web, "!document.querySelector('#exited').hidden&&document.querySelector('#exited pre').textContent.includes('ERR_MODULE_NOT_FOUND')")
-            try await capture("exited")
-            try await capture("narrow-exited")
         }
         switch scenario {
         case .transcript, .feed, .completion, .markdown, .media, .attachments, .userMarkdown, .thinkingMarkdown, .reveal, .preview, .lightbox, .agents, .composer, .questions, .bang, .commands, .notices, .latest, .sessions: break
         case .dialogs: try await dialogScenario()
         case .controls: try await controlsScenario()
         case .exit: try await exitScenario()
+        case .failed: break
         }
     }
 }

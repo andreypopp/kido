@@ -70,12 +70,6 @@ const editor = composer(element('prompt'), {
 });
 window.composer = editor;
 let reloading = false;
-let restartShown = false;
-function restartingLine() {
-  const restarting = state.pi.type === 'restarting';
-  if (restarting || restartShown) element('error').textContent = restarting ? 'Restarting pi…' : '';
-  restartShown = restarting;
-}
 const composerBlocked = () => reloading || !!state.edit || state.pi.type !== 'ready' || state.dialogs.length > 0 || sessionPicker !== 'closed';
 
 if (!window.ko) {
@@ -712,15 +706,14 @@ function refreshComposer() {
   editor.running(running);
   editor.readonly(editing());
   if (!editor.bash() && element('error').textContent === 'a command takes no attachments') { clearTimeout(attachmentRefusalTimer); element('error').textContent = ''; }
-  editor.placeholder(state.pi.type === 'switching' ? 'loading…' : running ? 'running… ⎋ cancels' : draft.hover && !state.edit ? 'Drop to attach' : hasExited() ? 'pi has exited' : working && state.compaction !== 'running' ? 'Steer koa…' : 'Message koa…');
+  editor.placeholder(state.pi.type === 'switching' ? 'loading…' : running ? 'running… ⎋ cancels' : draft.hover && !state.edit ? 'Drop to attach' : hasFailed() ? 'koa could not start the agent' : working && state.compaction !== 'running' ? 'Steer koa…' : 'Message koa…');
   status();
 }
 function status() {
   const waiting = state.dialogs.length > 0, label = element('status');
-  const cause = exitCause();
   const bang = editor.bash(), running = state.bash.find(item => item.phase !== 'completed');
   label.classList.toggle('err', !!bang && draft.count > 0);
-  const word = cause ? (cause.kind === 'code' ? 'exited' : cause.kind) + ' ' + cause.value : waiting ? 'waiting' : state.edit ? 'Editing…' : state.pi.type === 'starting' ? 'starting' : state.pi.type === 'switching' ? 'loading' : state.working ? state.compaction === 'running' ? 'compacting' : 'working' : running ? 'running' : bang ? bang.excludeFromContext ? 'run, quiet' : 'run' : state.aborted ? 'aborted' : 'idle';
+  const word = hasFailed() ? 'failed' : waiting ? 'waiting' : state.edit ? 'Editing…' : state.pi.type === 'starting' ? 'starting' : state.pi.type === 'switching' ? 'loading' : state.working ? state.compaction === 'running' ? 'compacting' : 'working' : running ? 'running' : bang ? bang.excludeFromContext ? 'run, quiet' : 'run' : state.aborted ? 'aborted' : 'idle';
   const completing = editor.completionStatus();
   label.title = word === 'Editing…' && state.edit ? `Editing in ${state.edit.editor}` : bang && draft.count ? 'remove the attachments' : '';
   label.textContent = bang && completing === 'pending' ? 'completing…' : bang && completing === 'none' ? 'no completions' : word;
@@ -729,7 +722,7 @@ function status() {
     const ms = Math.max(0, Math.floor((Date.now() - (state.working ? state.since ?? Date.now() : running?.started ?? Date.now())) / 1000)) * 1000;
     label.append(node('span', ' ' + duration(ms, ' '), 'k'));
   }
-  element('dot').className = 'dot' + (hasExited() ? ' off' : waiting ? ' wait' : state.pi.type === 'ready' && (state.working || running) ? ' on' : '');
+  element('dot').className = 'dot' + (hasFailed() ? ' off' : waiting ? ' wait' : state.pi.type === 'ready' && (state.working || running) ? ' on' : '');
   if (bang && completing === 'pending') element('dot').className = 'spin completion-spin';
   element('model-name').textContent = state.model?.id ?? '';
   element('thinking').textContent = state.thinking ? '· ' + state.thinking : '';
@@ -855,24 +848,22 @@ async function stop() {
   catch (error) { reportError(error); }
   finally { submitting = false; }
 }
-function hasExited() { return state.pi.type === 'exited'; }
-function exitCause(): { kind: 'code' | 'signal' | 'failed'; value: string } | undefined { return 'exited' in state.pi ? { kind: 'code', value: String(state.pi.exited) } : 'signal' in state.pi ? { kind: 'signal', value: state.pi.signal } : 'failed' in state.pi ? { kind: 'failed', value: state.pi.failed } : undefined; }
+function hasFailed() { return state.pi.type === 'failed'; }
 function exited() {
   composerFocus();
-  const host = element('exited'); host.hidden = !hasExited();
+  const host = element('exited'); host.hidden = !hasFailed();
   const pi = state.pi;
-  const at = pi.type === 'exited' ? pi.at : undefined;
+  const at = pi.type === 'failed' ? pi.at : undefined;
   if (shownExit === at) return;
   shownExit = at; host.replaceChildren();
-  if (pi.type !== 'exited') return;
+  if (pi.type !== 'failed') return;
   closePicker();
   const card = node('div', undefined, 'card'), head = node('div', undefined, 'head');
-  const cause = exitCause();
-  const title = node('span', 'pi exited ', 'title'); title.append(node('span', '· ' + (cause ? cause.kind + ' ' + cause.value : ''), 'err')); head.append(title, node('span', timestamp(pi.at), 'count'));
-  const actions = node('div', "last 5 lines of pi's stderr · the whole output is in the pane's terminal", 'acts'), start = button('Start pi again', '↩', true);
-  start.onclick = async () => { start.disabled = true; try { await fetchJSON('/pi/start'); } catch (error) { reportError(error); start.disabled = false; } };
-  actions.append(node('span', undefined, 'sp'), start); card.append(head, node('pre', pi.stderr || ''));
-  if (!state.sessionFile) card.append(node('div', 'No session file was saved. Start pi again starts a fresh session.', 'fresh'));
+  const title = node('span', 'koa could not start the agent', 'title'); head.append(title, node('span', timestamp(pi.at), 'count'));
+  const actions = node('div', 'Start again creates the session again', 'acts'), start = button('Start again', '↩', true);
+  start.onclick = async () => { start.disabled = true; try { await fetchJSON('/agent/start'); } catch (error) { reportError(error); start.disabled = false; } };
+  actions.append(node('span', undefined, 'sp'), start); card.append(head, node('pre', pi.message));
+  if (!state.sessionFile) card.append(node('div', 'No session file was saved. Start again starts a fresh session.', 'fresh'));
   card.append(actions); host.append(card); start.focus();
 }
 function closePicker() { element('picker').hidden = true; const trigger = pickerButton; pickerButton = undefined; if (trigger) { trigger.classList.remove('pick'); focusComposer(); } composerFocus(); }
@@ -972,7 +963,7 @@ function apply(record: PageRecord) {
     if (state.sessionId && state.sessionId !== record.sessionId) { closeSessions(); closePicker(); editorId = undefined; }
     const agentsChanged = JSON.stringify(state.agents) !== JSON.stringify(record.agents);
     const wasEditing = !!state.edit;
-    state = record; if (agentsChanged) refreshAgentCards(); document.body.dataset.sessionId = state.sessionId ?? ''; element('items').hidden = state.pi.type === 'switching'; restartingLine(); refreshBash(); refreshComposer(); dialogs(); queue(); exited();
+    state = record; if (agentsChanged) refreshAgentCards(); document.body.dataset.sessionId = state.sessionId ?? ''; element('items').hidden = state.pi.type === 'switching'; refreshBash(); refreshComposer(); dialogs(); queue(); exited();
     if (state.pi.type === 'ready' && state.editor && editorId !== state.editor.id) {
       editor.setText(state.editor.text); editorId = state.editor.id;
       void fetchJSON('/editor/ack', { sessionId: state.sessionId, id: state.editor.id }).catch(reportError);
@@ -1264,7 +1255,7 @@ const previewModifiers = (event: MouseEvent | KeyboardEvent) => event.shiftKey &
 const previewHover = (event: KeyboardEvent) => document.documentElement.classList.toggle('preview-modifiers', previewModifiers(event));
 document.addEventListener('keyup', previewHover);
 window.addEventListener('blur', () => { document.documentElement.classList.remove('preview-modifiers'); composerFocus(); sync(); });
-document.addEventListener('keydown', event => { previewHover(event); if (previewKey(event)) return; if (event.defaultPrevented || event.metaKey || event.ctrlKey || event.isComposing || state.dialogs.length || pickerButton || sessionPicker !== 'closed') return; if (event.key === 'Tab') { event.preventDefault(); if (!element('field').inert) editor.focus(); return; } if (composerReceivesKeys() && !event.altKey && event.key.length === 1 && !(event.key === ' ' && isControl(event.target)) && !isTextInput(event.target)) { event.preventDefault(); editor.focus(); editor.insert(event.key); return; } if (event.key === 'Enter' && hasExited() && event.target === document.body) element('exited').querySelector('button')?.click(); if (event.key === 'Escape') { event.preventDefault(); if (editing()) return; if (state.bash.some(item => item.phase === 'running')) { escaped = false; void stop(); } else if (state.working) { escaped = true; void stop(); } else if (escaped) { editor.setText(''); } else { escaped = true; } } });
+document.addEventListener('keydown', event => { previewHover(event); if (previewKey(event)) return; if (event.defaultPrevented || event.metaKey || event.ctrlKey || event.isComposing || state.dialogs.length || pickerButton || sessionPicker !== 'closed') return; if (event.key === 'Tab') { event.preventDefault(); if (!element('field').inert) editor.focus(); return; } if (composerReceivesKeys() && !event.altKey && event.key.length === 1 && !(event.key === ' ' && isControl(event.target)) && !isTextInput(event.target)) { event.preventDefault(); editor.focus(); editor.insert(event.key); return; } if (event.key === 'Enter' && hasFailed() && event.target === document.body) element('exited').querySelector('button')?.click(); if (event.key === 'Escape') { event.preventDefault(); if (editing()) return; if (state.bash.some(item => item.phase === 'running')) { escaped = false; void stop(); } else if (state.working) { escaped = true; void stop(); } else if (escaped) { editor.setText(''); } else { escaped = true; } } });
 element('model').onclick = () => picker('model'); element('thinking').onclick = () => picker('thinking');
 document.addEventListener('pointerdown', event => { if (!element('picker').contains(event.target instanceof Node ? event.target : null) && !pickerButton?.contains(event.target instanceof Node ? event.target : null)) closePicker(); });
 element('scroll').onscroll = () => { const scroll = element('scroll'); if (Math.abs(scroll.scrollTop - lastScrollTop) >= 1) { follow = scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight < 60; lastScrollTop = scroll.scrollTop; } sync(); if (scroll.scrollTop < 80) void older(); };

@@ -92,9 +92,11 @@ the pane's terminal. It runs 20 random cases under `cargo test`;
 
 `scripts/test-ts.sh` runs `koa-*.test.ts` and `agents.test.ts` of
 `share/koa/` and the `.pi/tests/` guard under Node's native TypeScript support. koa's
-own tests run koa against the scripted pi of `koa-fake-pi.ts`. The
+own tests run koa with the pinned real pi against the scripted model
+provider of `koa-fake-provider.ts` (design-koa.md, "Tests"). The
 agent extension's tests (`koa-agent-*.test.ts`, over
-`koa-agent-fixture.ts`) run it in a fake pi on the fake `ko` of
+`koa-agent-fixture.ts`) run it in a fake pi with a fake host on the
+fake `ko` of
 `share/koa/testdata/fake_ko/`, a Rust binary that `make
 build-fake-ko` builds. The fake answers the routes that the extension
 calls with the real server's shapes: it decodes and encodes every

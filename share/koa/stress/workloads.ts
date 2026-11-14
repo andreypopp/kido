@@ -1,6 +1,8 @@
 import { writeFile, mkdir, realpath } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { SessionManager } from '@earendil-works/pi-coding-agent';
+import type { Reply } from '../koa-fake-provider.ts';
 
 export const workloads = [
   { name: 'long-session', memory: { type: 'limited' } },
@@ -17,31 +19,35 @@ export const workloads = [
   { name: 'children', memory: { type: 'limited' } },
 ] as const;
 export const pageWorkloads = [1, 2, 3, 4, 5, 8, 9, 10, 11];
+export const stressModels = [{ provider: 'fake', id: 'fake-model', contextWindow: 1_000_000_000 }];
+export const stressSettings = { compaction: { enabled: false } };
 const usage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } };
-const assistant = (content: object[]) => ({ role: 'assistant', api: 'test', provider: 'test', model: 'test', usage, timestamp: Date.now(), stopReason: 'stop', content });
-export async function scripts(directory: string) {
+type Assistant = Extract<Parameters<SessionManager['appendMessage']>[0], { role: 'assistant' }>;
+const assistant = (content: Assistant['content'], timestamp: number): Assistant => ({ role: 'assistant', api: 'test', provider: 'test', model: 'test', usage, timestamp, stopReason: 'stop', content });
+
+// Writes `${id}.json` for each workload: the provider's replies and, for the long session, the seeded session file.
+export async function scripts(directory: string, cwd: string) {
   await mkdir(directory, { recursive: true });
+  await mkdir(cwd, { recursive: true });
   for (let id = 1; id <= workloads.length; id++) {
-    const messages = id === 1 ? Array.from({ length: 2000 }, (_, i) => assistant(i % 2 ? [{ type: 'toolCall', id: 'tool-' + i, name: 'read', arguments: { path: 'file-' + i } }] : [{ type: 'text', text: 'Paragraph ' + i + '\n\n' + 'Long session text. '.repeat(20) }])) : [];
-    const steps: object[] = [
-      { type: 'respond', command: 'get_messages', data: { messages } },
-      { type: 'wait', command: 'prompt', events: [{ type: 'agent_start' }, { type: 'message_start', message: assistant([{ type: 'text', text: '' }]) }] },
-    ];
-    if (id === 3) {
-      const call = { type: 'toolCall', id: 'large', name: 'bash', arguments: { command: 'a'.repeat(4 * 1024 * 1024) } };
-      steps.push({ type: 'emit', event: { type: 'message_start', message: assistant([call]) } }, { type: 'emit', event: { type: 'tool_execution_end', toolCallId: 'large', result: { content: [{ type: 'text', text: 'r'.repeat(16 * 1024 * 1024) }] }, isError: false } }, { type: 'emit', event: { type: 'message_end', message: assistant([call]) } });
-    } else if (id === 10) {
-      steps.push({ type: 'repeat', count: 1024, delayMs: 1, events: [{ type: 'message_end', message: assistant([{ type: 'text', text: 'slow reader payload '.repeat(3277) }]) }] });
-    } else if (![1, 4, 11].includes(id)) {
-      const delta = 'abcdefghijklmnopqr\n\n';
-      steps.push({ type: 'repeat', count: 20000, delayMs: 1, events: [{ type: 'message_update', usage, assistantMessageEvent: { type: 'text_delta', contentIndex: 0, delta } }] }, { type: 'emit', event: { type: 'message_end', message: assistant([{ type: 'text', text: delta.repeat(20000) }]) } });
+    let replies: Reply[];
+    let session: string | undefined;
+    if (id === 3) replies = [{ tools: [{ name: 'big', args: { data: 'a'.repeat(4 * 1024 * 1024) }, pieces: 256 }] }, {}];
+    else if (id === 10) replies = [{ tools: Array.from({ length: 1024 }, () => ({ name: 'pay', args: {} })) }, {}];
+    else if ([1, 4, 11].includes(id)) replies = [{}];
+    else replies = [{ chunks: Array(20000).fill('abcdefghijklmnopqr\n\n'), delayMs: 1 }];
+    if (id === 1) {
+      const manager = SessionManager.create(cwd, resolve(directory, 'session-1'));
+      for (let i = 0; i < 2000; i++) manager.appendMessage(assistant(i % 2 ? [{ type: 'toolCall', id: 'tool-' + i, name: 'read', arguments: { path: 'file-' + i } }] : [{ type: 'text', text: 'Paragraph ' + i + '\n\n' + 'Long session text. '.repeat(20) }], 1700000000000 + i));
+      session = manager.getSessionFile();
+      if (!session) throw Error('The long session has no file');
+      await writeFile(session, [manager.getHeader(), ...manager.getEntries()].map(entry => JSON.stringify(entry)).join('\n') + '\n');
     }
-    steps.push({ type: 'emit', event: { type: 'message_end', message: { role: 'custom', customType: 'stress', display: true, timestamp: Date.now(), content: `STRESS DONE ${id}` } } }, { type: 'emit', event: { type: 'agent_settled', aborted: false } });
-    await writeFile(resolve(directory, `${id}.jsonl`), steps.map(step => JSON.stringify(step)).join('\n'));
+    await writeFile(resolve(directory, `${id}.json`), JSON.stringify({ replies, session }));
   }
 }
 if (process.argv[1] && await realpath(process.argv[1]) === await realpath(fileURLToPath(import.meta.url))) {
-  const directory = process.argv[2];
-  if (!directory) throw Error('A script directory is required');
-  await scripts(resolve(directory));
+  const [directory, cwd] = process.argv.slice(2);
+  if (!directory || !cwd) throw Error('A script directory and a working directory are required');
+  await scripts(resolve(directory), resolve(cwd));
 }

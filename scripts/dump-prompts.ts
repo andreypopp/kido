@@ -13,7 +13,7 @@
 
 import { fileURLToPath } from "node:url";
 
-const { createFakePi, withEnv } = await import("../share/koa/koa-agent-fixture.ts");
+const { createFakePi, withEnv, koaExtension } = await import("../share/koa/koa-agent-fixture.ts");
 
 type Schema = { type?: string; items?: Schema; anyOf?: Schema[]; description?: string };
 const typeName = (schema: Schema): string =>
@@ -37,8 +37,8 @@ process.env.KO_AGENT_SESSION = "dump-session";
 process.env.KO_AGENT_PARENT_SESSION = "dump-parent";
 delete process.env.KO_PANE;
 
-const { default: extension, RELATION_TEXT, senderHeader, noticeHeader, PARENT_GUIDANCE, SPAWN_RESULT_RULE, SUBAGENT_RESULT_RULE } = await import("../share/koa/koa-agent.ts");
-extension(pi as never);
+const { RELATION_TEXT, senderHeader, noticeHeader, PARENT_GUIDANCE, SPAWN_RESULT_RULE, SUBAGENT_RESULT_RULE } = await import("../share/koa/koa-agent.ts");
+koaExtension(pi as never);
 for (const tool of registered.values()) tools.push(tool as Tool);
 await emit("session_start", { type: "session_start" }, { hasUI: false, sessionManager: { getSessionId: () => "dump-session", getCwd: () => process.cwd(), getSessionFile: () => undefined, getBranch: () => [] } });
 
