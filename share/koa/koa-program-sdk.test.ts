@@ -18,7 +18,7 @@ test("a prompt reaches real pi through the fake provider and the reply shows", {
 test("an ordinary spawn succeeds in koa's own process and creates no pane", { timeout: 20000 }, async t => {
   const app = await realFixture(t, { panes: [selfPane()], replies: [{ tools: [{ name: "spawn_agent", args: { name: "worker", task: "build it" } }], when: "spawn" }, { when: "spawn", text: "done" }, { when: "build it", text: "built" }, { when: "notice from worker", text: "ok" }] });
   await prompt(app, "spawn one");
-  await pollUntil(() => app.provider.requests.length >= 2, 5000, "the tool result request");
+  await pollUntil(() => app.provider.requests.some(request => request.body.messages.at(-1)?.role === "tool"), 5000, "the tool result request");
   assert.match(JSON.stringify(app.provider.requests.find(request => request.body.messages.at(-1)?.role === "tool")?.body.messages.at(-1)), /spawned worker \(session [0-9a-f]{32}\)/);
   assert.deepEqual((await app.apiCalls()).filter(call => call.method === "POST" && call.path === "/panes"), []);
 });
