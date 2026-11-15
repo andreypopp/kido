@@ -373,7 +373,7 @@ import XCTest
         window.contentView = list
         var snapshot = sidebarChildrenFixture(records: true)
         snapshot.client = .init(session: .init(number: 0), window: .init(number: 3000), pane: .init(number: 3000))
-        snapshot.mapItems { if $0.id.number == 3000 { $0.pane.status?.programStatus.records.append(.working(.init(id: "agent-b/nested", title: "Nested record"))) } }
+        snapshot.mapItems { if $0.id.number == 3000 { $0.pane.status?.programStatus.records.append(.blocked(.init(id: "agent-b/nested", title: "Nested record"))) } }
         list.show(snapshot)
         var navigations = 0
         list.navigate = { _, _ in navigations += 1 }

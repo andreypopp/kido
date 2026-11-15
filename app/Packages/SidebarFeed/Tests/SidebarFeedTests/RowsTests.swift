@@ -32,8 +32,8 @@ private func programs(_ rows: [SidebarRow]) -> [String] { rows.filter { if case 
     let records: [KoSchema.ProgramRecord] = [.working(.init(id: "a")), .done(.init(id: "a/b"))]
     let tree = [pane(0, records: records, children: [pane(1)])]
     #expect(programs(sidebarRows(makeSnapshot(tree, client: away))) == [])
-    #expect(programs(sidebarRows(makeSnapshot(tree, client: 0))) == ["a", "a/b"])
-    #expect(programs(sidebarRows(makeSnapshot(tree, client: 1))) == ["a", "a/b"])
+    #expect(programs(sidebarRows(makeSnapshot(tree, client: 0))) == ["a"])
+    #expect(programs(sidebarRows(makeSnapshot(tree, client: 1))) == ["a"])
     let blocked = [pane(0, records: [.working(.init(id: "a")), .blocked(.init(id: "a/b"))])]
     let rows = sidebarRows(makeSnapshot(blocked, client: away))
     #expect(programs(rows) == ["a", "a/b"])
@@ -158,6 +158,38 @@ private func programs(_ rows: [SidebarRow]) -> [String] { rows.filter { if case 
         .init(title: "a/b", status: .running),
         .init(title: "a/d", status: .quiet)
     ])
+}
+
+@Test func onlyTheFocusPathOfRecordsIsOpen() {
+    let rootFocused = sidebarRows(makeSnapshot([pane(0, records: [.working(.init(id: "a")), .done(.init(id: "a/b"))])], client: 0))
+    #expect(programs(rootFocused) == ["a"])
+    #expect(rootFocused[2].hidden == [.init(title: "a/b", status: .quiet)])
+
+    let viewed: [KoSchema.ProgramRecord] = [.working(.init(id: "a", selection: .selected)), .working(.init(id: "a/b")), .working(.init(id: "a/b/c"))]
+    let rows = sidebarRows(makeSnapshot([pane(0, records: viewed)], client: 0))
+    #expect(programs(rows) == ["a", "a/b"])
+    #expect(rows[3].hidden == [.init(title: "a/b/c", status: .running)])
+
+    let blocked = sidebarRows(makeSnapshot([pane(0, records: [.working(.init(id: "a")), .blocked(.init(id: "a/b"))])], client: 0))
+    #expect(programs(blocked) == ["a", "a/b"])
+
+    let nested: [KoSchema.ProgramRecord] = [.working(.init(id: "a", selection: .selected)), .working(.init(id: "a/b")), .working(.init(id: "a/b/c"))]
+    let child = sidebarRows(makeSnapshot([pane(0, children: [pane(1, records: nested)])], client: 1))
+    #expect(numbers(child) == [0, 1])
+    #expect(programs(child) == ["a", "a/b"])
+    #expect(child[4].hidden == [.init(title: "a/b/c", status: .running)])
+}
+
+@Test func aFoldedRecordSelectionUsesItsNearestVisibleAncestor() {
+    let records: [KoSchema.ProgramRecord] = [.working(.init(id: "a")), .working(.init(id: "a/b"))]
+    let session = SessionID(number: 0)
+    let leaf = SidebarRow.ID.program(session, PaneID(number: 0), Data("a/b".utf8))
+    let open = makeSnapshot([pane(0, records: [.working(.init(id: "a", selection: .selected)), .working(.init(id: "a/b"))] )], client: 0)
+    let viewed = makeSnapshot([pane(0, records: records)], client: 0)
+    #expect(sidebarRows(open).contains { $0.id == leaf })
+    #expect(visibleSidebarRow(replacing: leaf, in: sidebarRows(viewed), projection: PaneProjection(viewed)) == 2)
+    let elsewhere = makeSnapshot([pane(0, records: records)], client: away)
+    #expect(visibleSidebarRow(replacing: leaf, in: sidebarRows(elsewhere), projection: PaneProjection(elsewhere)) == 1)
 }
 
 @Test func aHiddenSelectionUsesItsNearestVisibleAncestor() {
@@ -382,7 +414,7 @@ func heightAndPaddingMatrix(_ nested: Bool, _ multi: Bool) throws {
         .error(.init(id: "a-")),
         .blocked(.init(id: "a/missing/leaf", msg: "Record-only caption")),
         .working(.init(id: "a", title: "Record-only title")),
-        .done(.init(id: "a/child")),
+        .blocked(.init(id: "a/child")),
         .idle(.init(id: "é")), .idle(.init(id: "é")),
         .working(.init(id: "", title: "Root"))
     ]
@@ -394,7 +426,7 @@ func heightAndPaddingMatrix(_ nested: Bool, _ multi: Bool) throws {
     #expect(programs.allSatisfy { $0.target == nil && $0.showsTitleWhenFolded })
     #expect(programs.allSatisfy { $0.height == 43 })
     #expect(programs.allSatisfy { $0.padding == 5 && $0.tailY == 24 && !$0.focused && $0.target == nil })
-    #expect(programs.map(\.status) == [.running, .done, .waiting, .error, .quiet, .quiet, .quiet])
+    #expect(programs.map(\.status) == [.running, .waiting, .waiting, .error, .quiet, .quiet, .quiet])
     #expect(rows[1].target?.pane == PaneID(number: 0))
     #expect(rows[9].target?.pane == PaneID(number: 1))
     #expect(Set(rows.map(\.id)).count == rows.count)
@@ -403,7 +435,7 @@ func heightAndPaddingMatrix(_ nested: Bool, _ multi: Bool) throws {
 
 @Test func recordIndentsCountOnlyPresentAncestors() throws {
     let records = ["a/b/c", "a/b", "a", "a/d/e", "a/", "a//b", "/", "/b", "", "e\u{301}", "z", "\u{e9}/child"]
-        .map { KoSchema.ProgramRecord.working(.init(id: $0)) }
+        .map { KoSchema.ProgramRecord.blocked(.init(id: $0)) }
     let snapshot = makeSnapshot([pane(0, children: [pane(1, records: records)])], client: 1)
     let rows = renderedRows(snapshot).filter { if case .program = $0.id { true } else { false } }
     #expect(rows.map(\.title) == ["/", "/b", "a", "a/", "a//b", "a/b", "a/b/c", "a/d/e", "e\u{301}", "z", "\u{e9}/child"])
@@ -412,9 +444,9 @@ func heightAndPaddingMatrix(_ nested: Bool, _ multi: Bool) throws {
 
 @Test func programIDsOrderBySlashComponents() throws {
     let records: [KoSchema.ProgramRecord] = [
-        .working(.init(id: "a-b")),
-        .working(.init(id: "a/b")),
-        .working(.init(id: "a"))
+        .blocked(.init(id: "a-b")),
+        .blocked(.init(id: "a/b")),
+        .blocked(.init(id: "a"))
     ]
     let rows = renderedRows(fixture(records: records)).filter { if case .program = $0.id { true } else { false } }
     #expect(rows.map(\.title) == ["a", "a/b", "a-b"])

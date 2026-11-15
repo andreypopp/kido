@@ -302,7 +302,7 @@ public func sidebarRows(_ snapshot: Snapshot?) -> [SidebarRow] {
                     if record.closeable { actions.insert(.close) }
                     return actions.isEmpty ? nil : .init(pane: pane, record: record.id, actions: actions)
                 }
-                func recordRows(_ parent: Data?, depth: Int, open: Bool) -> [Branch] {
+                func recordRows(_ parent: Data?, depth: Int) -> [Branch] {
                     (byParent[parent] ?? []).map { record in
                         let (status, description, title, msg, started): (SidebarRow.Status, String, String?, String?, Int?) = switch record {
                         case .working(let r): (.running, "working", r.title, r.msg, r.started)
@@ -316,12 +316,13 @@ public func sidebarRows(_ snapshot: Snapshot?) -> [SidebarRow] {
                                              title: title.flatMap { $0.isEmpty ? nil : $0 } ?? record.id,
                                              second: .record(msg: msg), status: [.done, .error].contains(status) && item.pane.recordsSeen ? .quiet : status,
                                              indicatorDescription: description, focused: record.id == markedRecord, showsTitleWhenFolded: true, root: root, started: started)
-                        return finish(row, children: recordRows(id, depth: depth + 1, open: open), open: open)
+                        let children = recordRows(id, depth: depth + 1)
+                        return finish(row, children: children, open: row.focused || children.contains { $0.containsFocus })
                     }
                 }
                 let panes = windows(item.children, session: session, depth: depth + 1, root: root, above: item.runtime?.name)
                 let open = isClient || panes.contains { $0.containsFocus }
-                return finish(row, children: recordRows(nil, depth: depth + 1, open: open) + panes, open: open)
+                return finish(row, children: recordRows(nil, depth: depth + 1) + panes, open: open)
             }
         }
     }
@@ -368,6 +369,20 @@ public func visibleSidebarRow(for pane: PaneID, in rows: [SidebarRow], projectio
         current = projection.placements[id]?.parent
     }
     return nil
+}
+
+public func visibleSidebarRow(replacing id: SidebarRow.ID, in rows: [SidebarRow], projection: PaneProjection) -> Int? {
+    switch id {
+    case .pane(_, let pane): return visibleSidebarRow(for: pane, in: rows, projection: projection)
+    case .program(_, let pane, let record):
+        var prefix = record
+        while let slash = prefix.lastIndex(of: UInt8(ascii: "/")) {
+            prefix = prefix.prefix(upTo: slash)
+            if let index = rows.firstIndex(where: { $0.id == .program(id.session, pane, prefix) }) { return index }
+        }
+        return visibleSidebarRow(for: pane, in: rows, projection: projection)
+    default: return nil
+    }
 }
 
 public func sidebarElapsed(started: Int, now: Int) -> String {

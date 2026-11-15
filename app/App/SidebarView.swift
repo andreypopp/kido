@@ -349,7 +349,7 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSM
         if let row = items.firstIndex(where: { recenter ? $0.target == next?.client : $0.id == selected }) {
             table.selectRowIndexes([row], byExtendingSelection: false)
             if recenter { table.scrollRowToVisible(row) }
-        } else if let pane = (recenter ? next?.client.pane : previous.first { $0.id == selected }?.target?.pane), let row = visibleSidebarRow(for: pane, in: items, projection: projection) {
+        } else if let row = recenter ? next.flatMap({ visibleSidebarRow(for: $0.client.pane, in: items, projection: projection) }) : selected.flatMap({ visibleSidebarRow(replacing: $0, in: items, projection: projection) }) {
             table.selectRowIndexes([row], byExtendingSelection: false)
         } else { table.deselectAll(nil) }
         if !recenter {

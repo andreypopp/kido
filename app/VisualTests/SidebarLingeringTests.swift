@@ -21,7 +21,7 @@ import XCTest
                 .working(.init(id: "job/42", started: 3535_000_000_000, title: "Build app")),
                 .done(.init(id: "job/43", started: 0, title: "Run tests")),
                 .blocked(.init(id: "review", started: 0, title: "Review")),
-                .working(.init(id: "review/missing/check", started: 3710_000_000_000, title: "Check guides")),
+                .blocked(.init(id: "review/missing/check", started: 3710_000_000_000, title: "Check guides")),
             ], serial: 1, mark: .running, children: [
                 .item(child),
             ])),

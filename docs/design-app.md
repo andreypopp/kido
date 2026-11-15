@@ -2372,9 +2372,12 @@ has no connection.
 Focus alone decides which children (child panes of the window and OSC
 7501 child records alike) show. A pane row is open when it is the focused pane or
 an ancestor of the focused pane, so a focused child keeps its path open;
-an open row shows every child, and its records show their whole record
-tree. Every other row is folded. Records never take focus: they follow
-their pane. No fold state exists, there is no chevron, and no key or
+an open row shows every child. Its top-level records show as rows, and
+each of them is folded unless it is the record that the focused pane
+shows (the viewed subagent, the marked row) or an ancestor of it: a
+record row opens along the marked record as a pane row opens along the
+focused pane. Every other row is folded. Records never take focus; the
+marked record only follows its pane's view. No fold state exists, there is no chevron, and no key or
 click folds or opens a row. `sidebarRows` in `SidebarFeed/Rows.swift`
 computes the rule from the snapshot alone; a pane or record row carries
 only its hidden children (`SidebarRow.HiddenChild`), none when it is
