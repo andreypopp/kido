@@ -62,7 +62,7 @@ let travel: { from: number; start: number } | undefined;
 let accepted = 0;
 let sentBlock: { sessionId: string | undefined; view: string } | undefined;
 let divider: HTMLElement | undefined;
-const fresh = new Map<string, HTMLElement>(), counted = new Set<string>(), waiting = new Map<string, HTMLElement>(), liveBash = new Map<string, string>();
+const fresh = new Map<string, HTMLElement>(), counted = new Set<string>(), waiting = new Map<string, HTMLElement>();
 let epoch = '', after = -1, first: number | undefined, more = false, delay = 200;
 let escaped = false, dialogId: string | undefined;
 let submitting = false, editorId: string | undefined, dialogTimer: number | undefined, shownExit: number | undefined, pickerButton: HTMLElement | undefined, shownQueue: string | undefined, shownStatuses: string | undefined;
@@ -842,7 +842,6 @@ function refreshBash() {
     if (!card) { card = commandRun(item, 'live-bash:' + item.id); pendingBash.set(item.id, card); }
     else card.update(item);
     if (!card.view.isConnected) element('items').append(card.view);
-    if ((item.phase === 'completed' ? item.result.output : item.output).text) { liveBash.set(item.command, 'bash:' + item.id); arrive('bash:' + item.id, card.view); }
   }
 }
 function refreshComposer() {
@@ -993,7 +992,7 @@ function restoreQueued(entries: QueuedPrompt[]) {
 let takingBack: Promise<void> | undefined;
 const drafts = new Map<string, string>();
 const positions = new Map<string, Position>();
-function arrives(item: WireItem) { return item.kind !== 'user' && item.kind !== 'annotations' && (item.kind !== 'bash' || !!item.result.output.text); }
+function arrives(item: WireItem) { return item.kind === 'assistant'; }
 function takeBack(): Promise<void> {
   if (state.life.type !== 'ready' || state.dialogs.length) return Promise.resolve();
   return takingBack ??= (async () => {
@@ -1112,7 +1111,7 @@ function apply(record: PageRecord) {
   if (record.type === 'reset') {
     editor.resetCompletion();
     epoch = record.epoch; after = -1; first = undefined; items.clear(); views.clear(); texts.clear(); liveMarks.clear(); clearWorking(); revealing.clear(); growing.length = 0; dirty = false; stopFrames(); annotationItems.clear(); folds.clear(); jobOwners.clear(); historyRequest = undefined; more = record.more;
-    element('items').replaceChildren(); divider = undefined; fresh.clear(); waiting.clear(); counted.clear(); liveBash.clear();
+    element('items').replaceChildren(); divider = undefined; fresh.clear(); waiting.clear(); counted.clear();
     readScroll();
     element('older').hidden = !more;
     for (const item of record.items) put(item);
@@ -1122,7 +1121,7 @@ function apply(record: PageRecord) {
     if (scrolling.kind === 'restoring') void restore(scrolling);
   } else if (record.type === 'item') {
     const current = items.get(record.item.seq);
-    if (!current || record.item.revision >= current.revision) { put(record.item); if (!current && record.item.kind === 'user' && sentBlock?.view === state.view.id && sentBlock.sessionId === state.sessionId) { sentBlock = undefined; atEnd(); } if (!current && arrives(record.item)) arrive(liveBash.get(record.item.kind === 'bash' ? record.item.command : '') ?? String(record.item.seq), views.get(record.item.seq)?.view); if (record.item.kind === 'bash') liveBash.delete(record.item.command); }
+    if (!current || record.item.revision >= current.revision) { put(record.item); if (!current && record.item.kind === 'user' && sentBlock?.view === state.view.id && sentBlock.sessionId === state.sessionId) { sentBlock = undefined; atEnd(); } if (!current && arrives(record.item)) arrive(String(record.item.seq), views.get(record.item.seq)?.view); }
   } else if (record.type === 'patch') applyPatch(record, true);
   else if (record.type === 'reload') location.reload();
   else if (record.type === 'job-reset') { epoch = record.epoch; job.reset(record); after = job.cursor(); atEnd(); if (scrolling.kind === 'restoring') void restore(scrolling); }

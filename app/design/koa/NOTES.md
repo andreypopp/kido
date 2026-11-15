@@ -1307,16 +1307,20 @@ Open WebUI): the scroll has two states and one animation.
   old position with the divider and the button, and it resumes
   following only by the three ways above. Browser mode: the same,
   the focus the browser window's.
-- **New items.** Every item that appends and is not the user's own
-  (assistant text, run rows and steps, agent cards, job rows,
-  notices and command results, `!` output); the user's sent message
-  and the `!` command row are never new; counted once at first
-  append, streaming growth adds nothing.
+- **New items** (user, 2026-11-15): an item is new only if it is an
+  assistant message with visible content (text, or a run with at
+  least one step shown). Nothing else counts and nothing else places
+  the divider: not the user's own items, not agent cards, job rows,
+  notices, command results, summaries or `!` output. Counted once at
+  first append; streaming growth adds nothing. The divider and the
+  count follow the same rule, so the divider stands above the first
+  new assistant message, and the rows between it and the previous
+  content (a notice, a job row) are above the rule.
 - **The divider.** One rule across the transcript's text width: a
   1px line in the accent at 35%, the label "new messages" centred in
   a 6pt gap, prose .8em 500 in the accent, 14pt above and below. It
-  appears above the first item that appends while the state is
-  `reader` or the pane is not focused; later items extend the
+  appears above the first assistant message that appends while the
+  state is `reader` or the pane is not focused; later ones extend the
   region; never a second one. It goes when the state becomes
   `following` with the pane focused, on the user's send, on a view
   switch, a session switch, `/reload`, `/restart` and `/new`.

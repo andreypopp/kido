@@ -1098,11 +1098,9 @@ the command first ("`!` commands" below).
   and marks what arrived meanwhile as new. A `following` view
   returns at the end with no divider. An item is new at its
   first append only: a revision or a patch of the same sequence
-  number is growth. The user's message and the `!` row that the
-  send creates are the user's own; the command's output counts
-  once, keyed by the live row's id. The recorded `bash` item has no
-  id, so it takes the key of the live row with the same command, or
-  its own sequence number when no live row exists.
+  number is growth. Only an assistant message is new. The user's
+  message, an agent message, a job event, a notice, a command, a
+  summary and a `!` row never count and never place the divider.
   The count is of new items whose top is below the dock's top,
   because the dock covers the bottom of the transcript. The capsule
   shows exactly while the state is `reader`. The divider and the count clear

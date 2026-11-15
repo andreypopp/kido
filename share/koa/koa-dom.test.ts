@@ -1777,22 +1777,18 @@ test('blur stops every automatic scroll, also a patch to a streaming reply and a
   assert.equal(page.latest().split(',')[0], '↓ Latest');
 });
 
-test('the output of a ! command is new once, from its live row or its record, and its row is the one the divider marks', async () => {
+test('only an assistant message counts as new: an agent message, a job event and a ! output add nothing', async () => {
   const page = await latestPage();
   page.add(page.text(0));
   page.scroll(0);
-  page.evaluate("state={...state,bash:[{id:'r',phase:'running',command:'ls',excludeFromContext:false,started:1,output:{text:'',cut:0}}]};refreshBash()");
-  assert.equal(page.dividers(), '0,');
-  page.evaluate("state.bash[0].output={text:'a',cut:0};refreshBash()");
-  assert.equal(page.evaluate("element('items').children.indexOf(divider)"), 1);
+  page.add({ seq: 1, revision: 0, at: 1, final: true, kind: 'agent', direction: 'in', from: { name: 'boss', session: 'b', pane: 'pane_2' }, text: { text: 'hi', cut: 0 }, inbound: { form: 'message', relation: 'parent' } });
+  page.add({ seq: 2, revision: 0, at: 1, final: true, kind: 'job', job: { id: 'j1', name: 'build', service: false, log: '/l', command: 'make', startedAt: 1, place: { type: 'mac' } }, event: { type: 'stream', batch: { text: 'x', cut: 0 }, omitted: 0, cut: false } });
+  page.evaluate("state={...state,bash:[{id:'r',phase:'running',command:'ls',excludeFromContext:false,started:1,output:{text:'a',cut:0}}]};refreshBash()");
+  page.add({ seq: 3, revision: 0, at: 1, final: true, kind: 'bash', command: 'ls', excludeFromContext: false, result: { output: { text: 'a', cut: 0 }, exit: 0, cancelled: false, truncated: false } });
+  assert.equal(page.evaluate("element('items').children.includes(divider)"), false);
+  assert.equal(page.latest().split(',')[0], '↓ Latest');
+  page.add(page.text(4));
   assert.equal(page.latest().split(',')[0], '↓ 1 new');
-  page.evaluate("state.bash[0].output={text:'ab',cut:0};refreshBash()");
-  page.add({ seq: 1, revision: 0, at: 1, final: true, kind: 'bash', command: 'ls', excludeFromContext: false, result: { output: { text: 'ab', cut: 0 }, exit: 0, cancelled: false, truncated: false } });
-  assert.equal(page.latest().split(',')[0], '↓ 1 new');
-  page.evaluate("state={...state,bash:[{id:'s',phase:'running',command:'ls',excludeFromContext:false,started:2,output:{text:'x',cut:0}}]};refreshBash()");
-  assert.equal(page.latest().split(',')[0], '↓ 2 new');
-  page.add({ seq: 2, revision: 0, at: 1, final: true, kind: 'bash', command: 'true', excludeFromContext: false, result: { output: { text: '', cut: 0 }, exit: 0, cancelled: false, truncated: false } });
-  assert.equal(page.latest().split(',')[0], '↓ 2 new');
 });
 
 test('the capsule snaps at once under reduced motion', async () => {
