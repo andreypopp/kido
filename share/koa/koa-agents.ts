@@ -93,6 +93,7 @@ export type Selection = { type: "agent"; agent: Agent } | { type: "job"; agent: 
 
 export type JobsView = {
   viewed(): BackgroundJob | undefined;
+  watched(job: BackgroundJob): boolean;
   output(job: BackgroundJob): void;
   changed(job: BackgroundJob): void;
 };
@@ -145,6 +146,7 @@ type TreeOptions = {
   agentDir: string;
   browser: boolean;
   jobOutput(job: BackgroundJob): void;
+  jobWatched(job: BackgroundJob): boolean;
   jobChanged(agent: Agent, job: BackgroundJob): void;
   facts: HostFacts;
   makeView(agent: () => Agent, parent: Agent | undefined, name: string | undefined, cwd: string): AgentView;
@@ -397,6 +399,7 @@ export function createTree(options: TreeOptions): Tree {
       get self() { return agent(); },
       facts, browser: options.browser, trusted, records, jobs: createJobs({ records, path: () => jobsPath(agent()), sink: () => host.extension, place: facts.place, view: {
         viewed: () => { const current = view(); return current.type === "job" && current.agent === agent() ? current.job : undefined; },
+        watched: job => options.jobWatched(job),
         output: job => options.jobOutput(job),
         changed: job => options.jobChanged(agent(), job),
       } }), extension: undefined,

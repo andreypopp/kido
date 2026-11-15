@@ -150,19 +150,19 @@ test("a viewed record does not linger until the view is left, re-entry cancels t
     const delays = () => spy.mock.calls.map(call => call.arguments[1]);
     const spy = t.mock.method(globalThis, "setTimeout");
     const cancel = t.mock.method(globalThis, "clearTimeout");
-    viewing.job = job;
+    viewing.job = job; viewing.watched.add(job);
     liveJobs().viewChanged();
     await pollUntil(() => at(reported(id), -1).selection === "selected");
     writeFileSync(gate, "");
     await pollUntil(() => reported(id).some(r => r.state === "done"));
     assert.equal(at(reported(id), -1).selection, "selected");
     assert.equal(delays().includes(60000), false, "a viewed record does not linger");
-    viewing.job = undefined;
+    viewing.job = undefined; viewing.watched.delete(job);
     liveJobs().viewChanged();
     assert.equal(delays().includes(60000), true, "the linger starts when the view is left");
     await pollUntil(() => at(reported(id), -1).selection === "offered");
     const cancelled = cancel.mock.callCount();
-    viewing.job = job;
+    viewing.job = job; viewing.watched.add(job);
     liveJobs().viewChanged();
     assert.equal(cancel.mock.callCount() > cancelled, true, "re-entry cancels the linger");
     await pollUntil(() => at(reported(id), -1).selection === "selected");
@@ -178,7 +178,7 @@ test("a viewed record does not linger until the view is left, re-entry cancels t
     liveJobs().viewChanged();
     owner.onEnd(job);
     assert.equal(reports().length, count, "a cleared record is not written again");
-  } finally { viewing.job = undefined; await fx.restore(); }
+  } finally { viewing.job = undefined; viewing.watched.clear(); await fx.restore(); }
 });
 
 test("a finished job record lingers 60 s by default", async (t) => {

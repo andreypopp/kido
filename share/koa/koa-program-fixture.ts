@@ -68,7 +68,7 @@ async function launch(t: After, dir: string, cwd: string, env: NodeJS.ProcessEnv
       post: (path: string, body: object = {}) => fetch(base + path, { method: "POST", headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ sessionId: own(), view, ...body }) }),
     };
   };
-  return { pid: child.pid, post, url, subscribe, until, records: () => stream.records, count: () => stream.records.length, close, stdout, stderr, base };
+  return { pid: child.pid, post, url, subscribe, until, records: () => stream.records, count: () => stream.records.length, disconnect: () => controller.abort(), close, stdout, stderr, base };
 }
 export const assistantMessage = { ...assistant("stop"), api: "test", provider: "test", model: "test", usage: {}, timestamp: 42 };
 

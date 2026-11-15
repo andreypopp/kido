@@ -98,7 +98,7 @@ type Extension = (pi: object) => void;
 
 const hosts = new Map<object, AgentHost>();
 const liveHosts: AgentHost[] = [];
-export const viewing: { job: BackgroundJob | undefined } = { job: undefined };
+export const viewing: { job: BackgroundJob | undefined; watched: Set<BackgroundJob> } = { job: undefined, watched: new Set() };
 export const liveJobs = (): Jobs => { const host = liveHosts.at(-1); assert.ok(host); return host.jobs; };
 let shared: ReturnType<typeof createChannel> | undefined;
 export const koaExtension: Extension = pi => { Reflect.apply(agentExtension(hosts.get(pi) ?? (() => { throw new Error("no host for this pi"); })()), undefined, [pi]); };
@@ -445,7 +445,7 @@ export function createChannel() {
   const records = createRecords(facts);
   const self = stubAgent({ id: "self-session", parent: undefined, children: [], name: "", runtime: undefined, extension: undefined, stopping: false, view: { state: { name: "Self", cwd: process.cwd(), dialogs: [] }, root: { value: "idle" } } });
   const host: AgentHost = {
-    self, get facts() { return hostFacts(process.env); }, browser: false, trusted: undefined, records, jobs: createJobs({ records, path: () => "jobs", sink: () => host.extension, place: { type: "machine" }, view: { viewed: () => viewing.job, output() {}, changed() {} } }), extension: undefined,
+    self, get facts() { return hostFacts(process.env); }, browser: false, trusted: undefined, records, jobs: createJobs({ records, path: () => "jobs", sink: () => host.extension, place: { type: "machine" }, view: { viewed: () => viewing.job, watched: job => viewing.watched.has(job), output() {}, changed() {} } }), extension: undefined,
     notify() {}, scope: () => [], find: () => undefined, spawn: unused, stop: unused, stopDescendants: async () => {},
   };
   liveHosts.push(host);
@@ -572,6 +572,7 @@ export function sse(input: NodeJS.ReadableStream, state: { text: string; records
     let end: number;
     while ((end = partial.indexOf("\n\n")) >= 0) {
       const line = partial.slice(0, end); partial = partial.slice(end + 2);
+      if (line === ":") continue;
       assert.match(line, /^data: [^\r\n]*$/);
       state.records.push(JSON.parse(line.slice(6)));
     }

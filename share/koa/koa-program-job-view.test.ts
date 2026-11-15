@@ -24,7 +24,7 @@ async function viewing(t: TestContext, before = "hello\n", env: NodeJS.ProcessEn
   const tools = [{ name: "async_bash", args: { command: `cat '${output}'; ${gatedCommand(gate, "", "bye\n", 1)}`, name: "one" } }];
   const app = await realFixture(t, { panes: [selfPane()], replies: [{ tools }, { text: "started" }], env: { KO_RUNTIME: "", ...env } });
   await app.post("prompt", { text: "run a job", mode: "prompt", attachments: [] });
-  const statuses = async () => (await app.apiCalls()).filter(call => call.path === "/panes/pane_1/status").map(call => { const body: { id: string; state?: string; selection?: string } = JSON.parse(call.body); return body; });
+  const statuses = async () => (await app.apiCalls()).filter(call => call.path === "/panes/pane_1/status").map(call => { const body: { id: string; type: string; state?: string; selection?: string } = JSON.parse(call.body); return body; });
   await pollUntil(async () => (await statuses()).some(r => r.id.startsWith("jobs/")), 10000, "the job record");
   const record = (await statuses()).find(r => r.id.startsWith("jobs/"))?.id ?? "";
   const id = record.slice("jobs/".length);
@@ -246,4 +246,32 @@ test("the last disconnect of a viewer of an unselected job retires its feed", { 
   await pollUntil(async () => (await one.post("job/earlier", { id: f.id, epoch, before: 6 })).status === 409, 5000, "koa to retire the feed");
   const again = await f.app.subscribe(f.id);
   assert.notEqual((await again.until(isReset)).epoch, epoch);
+});
+
+async function finished(t: TestContext) {
+  const f = await viewing(t, "hello\n", { KO_JOB_RECORD_LINGER_MS: "300" });
+  const cleared = async () => (await f.statuses()).some(r => r.id === f.record && r.type === "clear");
+  return { f, cleared, end: async () => { await f.release(); await pollUntil(async () => (await f.statuses()).some(r => r.id === f.record && r.state === "error"), 10000, "the job ends"); } };
+}
+
+test("a finished job's record clears when the selection-following stream disconnects", { timeout: 30000 }, async t => {
+  const { f, cleared, end } = await finished(t);
+  await f.select(f.record);
+  await f.app.until(ofType("state", record => record.view.type === "job"));
+  await end();
+  assert.equal(await cleared(), false, "the connected stream holds the record");
+  f.app.disconnect();
+  await pollUntil(cleared, 10000, "the record to clear");
+});
+
+test("a finished job's record clears when its last named viewer disconnects", { timeout: 30000 }, async t => {
+  const { f, cleared, end } = await finished(t);
+  const one = await f.app.subscribe(f.id), two = await f.app.subscribe(f.id);
+  await one.until(isReset); await two.until(isReset);
+  await end();
+  one.close();
+  await pollUntil(() => one.ended(), 5000, "the first viewer to close");
+  assert.equal(await cleared(), false, "the remaining viewer holds the record");
+  two.close();
+  await pollUntil(cleared, 10000, "the record to clear");
 });

@@ -360,10 +360,11 @@ export type JobSink = {
 // The jobs of one agent live as long as the agent: a reload replaces the extension that delivers their notices, not them.
 export function createJobs(options: { records: Records; path: () => string; sink: () => JobSink | undefined; view: JobsView | undefined; place: JobPlace }) {
   const registry = createJobRegistry("");
-  const jobRecords = new Map<string, { job: BackgroundJob } & ({ type: "running"; selected: boolean } | { type: "viewed" } | { type: "lingering"; timer: NodeJS.Timeout })>();
+  const jobRecords = new Map<string, { job: BackgroundJob; selected: boolean } & ({ type: "running" } | { type: "viewed" } | { type: "lingering"; timer: NodeJS.Timeout })>();
   const cleared = new WeakSet<BackgroundJob>();
   let working = false;
-  const viewed = (job: BackgroundJob): boolean => options.view?.viewed() === job;
+  const selectedJob = (job: BackgroundJob): boolean => options.view?.viewed() === job;
+  const watched = (job: BackgroundJob): boolean => options.view?.watched(job) ?? false;
   const write = (id: string | undefined, state: "idle" | "working" | "done" | "error" | "clear", title?: string, message?: string, selected = false): boolean => {
     const recordId = id === undefined ? options.path() : `${options.path()}/${id}`;
     const cleanedTitle = title === undefined ? undefined : cleanLine(title, MAX_JOB_TITLE_BYTES);
@@ -400,12 +401,12 @@ export function createJobs(options: { records: Records; path: () => string; sink
       if (!oldest) return;
       clearOne(oldest[0]);
     }
-    const selected = viewed(job);
+    const selected = selectedJob(job);
     if (!put(job, selected)) return;
     const previous = jobRecords.get(id);
     if (previous?.type === "lingering") clearTimeout(previous.timer);
     jobRecords.delete(id);
-    jobRecords.set(id, job.state.type === "running" ? { type: "running", job, selected } : selected ? { type: "viewed", job } : { type: "lingering", timer: linger(id), job });
+    jobRecords.set(id, job.state.type === "running" ? { type: "running", job, selected } : watched(job) ? { type: "viewed", job, selected } : { type: "lingering", timer: linger(id), job, selected });
   };
   const recordOf = (record: string) => {
     const prefix = `${options.path()}/`;
@@ -480,10 +481,10 @@ export function createJobs(options: { records: Records; path: () => string; sink
     },
     viewChanged(): void {
       for (const [id, record] of jobRecords) {
-        const selected = viewed(record.job);
-        if (record.type === "running") { if (selected === record.selected) continue; record.selected = selected; }
-        else if (record.type === "lingering" && selected) { clearTimeout(record.timer); jobRecords.set(id, { type: "viewed", job: record.job }); }
-        else if (record.type === "viewed" && !selected) jobRecords.set(id, { type: "lingering", timer: linger(id), job: record.job });
+        const selected = selectedJob(record.job), keep = watched(record.job);
+        if (record.type === "lingering" && keep) { clearTimeout(record.timer); jobRecords.set(id, { type: "viewed", job: record.job, selected }); }
+        else if (record.type === "viewed" && !keep) jobRecords.set(id, { type: "lingering", timer: linger(id), job: record.job, selected });
+        else if (selected !== record.selected) record.selected = selected;
         else continue;
         put(record.job, selected);
       }

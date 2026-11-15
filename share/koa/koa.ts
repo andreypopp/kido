@@ -257,7 +257,7 @@ async function main(): Promise<void> {
       const id = viewedId(selection);
       let open = feeds.get(id);
       if (!open) {
-        open = { selection, feed: jobView(selection.type === "job" ? liveSource(selection.job) : fileSource(selection.ref), () => retire(id)) };
+        open = { selection, feed: jobView(selection.type === "job" ? liveSource(selection.job) : fileSource(selection.ref), () => { retire(id); selection.agent.host.jobs.viewChanged(); }) };
         feeds.set(id, open);
         selection.agent.view.publish();
       }
@@ -278,10 +278,12 @@ async function main(): Promise<void> {
       refreshRows(next.agent);
       incoming.show(holder);
       if (previous.type !== "agent") retire(viewedId(previous));
+      for (const agent of new Set([previous.agent, next.agent])) agent.host.jobs.viewChanged();
     };
     const tree: Tree = koaAgents.createTree({
       sdk, args: sdk.pi.parseArgs(restartArgs(pass, undefined)), cwd: process.cwd(), agentDir, facts: koaAgents.hostFacts(process.env), browser, makeView,
       jobOutput: job => feeds.get(job.id)?.feed.output(),
+      jobWatched: job => feeds.get(job.id)?.feed.subscribed() ?? false,
       jobChanged: (agent, job) => { if (feeds.has(job.id)) agent.view.publish(); },
       beforeStop: agent => {
         const parent = (agent.parent ?? root()).id, inside = (member: Agent) => chain(member).includes(agent);
@@ -659,7 +661,10 @@ async function main(): Promise<void> {
         const accessScoped = () => access(agent, "alive", url.searchParams.get("sessionId") ?? undefined);
         if (await stepFile(request, response, agent.view.feed.itemFile, agent.view.state.cwd, agent.view.state.home, accessScoped)) return;
         if (request.method === "GET" && ["/images/", "/history", "/items"].some(path => url.pathname.startsWith(path))) access(agent, "any", url.searchParams.get("sessionId") ?? undefined);
-        if (selection.type === "agent" ? agent.view.feed.handle(request, response, address) : request.method === "GET" && url.pathname === "/events" && jobFeed(selection).handle(request, response, address)) return;
+        if (selection.type === "agent" ? agent.view.feed.handle(request, response, address) : request.method === "GET" && url.pathname === "/events" && jobFeed(selection).handle(request, response, address)) {
+          if (selection.type !== "agent") agent.host.jobs.viewChanged();
+          return;
+        }
         if (request.method === "GET" && url.pathname === "/") {
           try {
             const html = page ?? await assemblePage(location, instance, metrics);

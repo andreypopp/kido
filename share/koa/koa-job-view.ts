@@ -7,6 +7,8 @@ import { LOG_CHUNK, readLog } from "./koa-job-log.ts";
 import type { LogChunk, PageRecord } from "./koa-records.ts";
 import { mintId } from "./text.ts";
 
+const KEEPALIVE_MS = 15000;
+
 type Cursor = { sent: number; busy: boolean; stateDue: boolean };
 
 type Source = { id: string; log: string; logged(): number; tail(): Buffer; flushed(): Promise<void>; missing(): boolean };
@@ -93,7 +95,9 @@ export function jobView(source: Source, empty: () => void = () => {}) {
     handle(request: IncomingMessage, response: ServerResponse, address: ViewAddress = { type: "selected" }): boolean {
       const url = new URL(request.url ?? "/", "http://koa");
       if (request.method !== "GET" || url.pathname !== "/events") return false;
-      response.once("close", () => forget(response));
+      const keepalive = setInterval(() => { if (!response.destroyed && !response.writableEnded) response.write(":\n\n"); }, KEEPALIVE_MS);
+      keepalive.unref();
+      response.once("close", () => { clearInterval(keepalive); forget(response); });
       response.writeHead(200, { "Content-Type": "text/event-stream" });
       response.flushHeaders();
       follow(subscribers, response, address, empty);

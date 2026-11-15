@@ -636,9 +636,15 @@ one when it moves. A routed job has one as a local job does.
   limits. An empty title or message is omitted.
 - A finished record lingers for `KO_JOB_RECORD_LINGER_MS` (60000),
   so the user can still open its log. Then the extension clears its
-  id. The linger does not run while the job is viewed: it starts
-  when the view is left, and a return cancels it, so a viewed record
-  never goes under the reader. A new job's slot never takes the
+  id. The linger does not run while a client views the job: an
+  `/events` stream that follows a selection of the job, or a named
+  `/events?view=` stream of the job. It starts in full when the last
+  such stream ends or follows the selection away from the job, and a
+  return cancels it, so a viewed record never goes under the reader.
+  The selection alone does not keep the record: a selected job that
+  no client shows lingers as any other. A job stream writes an SSE
+  comment every 15 s, so a peer that went silently fails a write
+  and its stream ends. A new job's slot never takes the
   viewed record. A job's record never changes the pane's
   status: an agent's status comes from its root record alone
   (design-program-status.md, "Reduction").
