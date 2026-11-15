@@ -885,7 +885,17 @@ source into top-level blocks; every block before the first that
 changed keeps its node; the last block is the streaming tail, which
 `remend` heals (an open emphasis, code span, link or fence) before
 marked parses it. Thus a token costs the size of its paragraph, not of
-the message. The memo keeps the latest raw text apart from the blocks:
+the message. The lexer also sees only the end of the message: the
+caller passes the offset from which the source may differ (the old
+length for an append, 0 otherwise), and the memo lexes again from two
+tokens before the token that contains it, because the containing
+token can grow and the one before it can absorb it (a lazy
+continuation, a list's next item, a setext underline). The kept
+tokens are trusted only if the first token lexed again has the raw
+text of the kept one and the tokens cover the source; else, and when
+a reference definition is in the lexed part or the definitions
+change, the memo lexes the whole source, because marked keeps the
+first definition of a label and an old, half-streamed one would win. The memo keeps the latest raw text apart from the blocks:
 a kept block that held a slice of the message kept every old version
 of a streaming answer alive (117 MB of JS heap after 20 000 tokens,
 16 MB after the fix). marked passes raw HTML through, so the page
@@ -1805,14 +1815,20 @@ windows (`make -C app koa-stress`), and prints one report
 applied it (Kido's off-screen windows run no `requestAnimationFrame`)
 or framed it (Chrome), with koa's byte, reconnect and cap counters.
 The streaming workload (`run.sh stream`) measures the page's frame
-while one long turn streams over a large history, in headless Chrome
+while one long turn streams over a large history (short replies
+between tool calls, then one reply of 10 000 words), in headless Chrome
 and in visible Kido windows (`KoaStressTests/testStreamingHistory`,
 `KOA_STRESS_VISIBLE=1`). It loads the whole history through the
 page's own Older action before it measures, so the frames lay out a
 full document. It runs twice in each engine, because the counters
 that wrap the DOM cost time: in mode `frame` the page times only its
 frame task, the gap between chained frames, each record's apply, the
-lexer and key-to-frame latency; in mode `probe` it also counts
+lexer per record and per changed Markdown render (with the memo's
+full-lex fallbacks), and key-to-frame latency; each flush marker
+carries an id, and the page stamps its receipt and the request and
+the start of the frame that renders it, so the report splits
+flush-to-frame into write to receipt, receipt to request, request to
+`requestAnimationFrame` and the frame itself. In mode `probe` it also counts
 geometry reads made while the layout is dirty and removals of the
 working mark's node. The report takes the timings from the first
 pass and the counts from the second. The page's counters are
@@ -1865,7 +1881,9 @@ fake document with the page's types stripped (`koa-dom.test.ts`);
 its reveal tests drive the frame loop and the clock by hand over a
 height model. The
 Markdown memo is a pure module, tested under Node against a full
-render of every prefix, its annotation marks over each kind of block
+render of every prefix, a fresh render after each step of every
+fixture streamed in random chunks with appends, replacements and
+resets, its annotation marks over each kind of block
 and the reveal's cut at whole units (`koa-page.test.ts`).
 
 Kido.app's `KoaWebviewTests` snapshot each state of the mockups in

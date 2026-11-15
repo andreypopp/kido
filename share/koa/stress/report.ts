@@ -4,15 +4,15 @@ import { Console } from 'node:console';
 import { Writable } from 'node:stream';
 import { resolve, join } from 'node:path';
 import { workloads, streaming } from './workloads.ts';
-import { engineDeltas, evaluate, percentile, streamBudgets, totals, type Engine, type Spread } from './statistics.ts';
-import type { Observation } from '../koa-records.ts';
+import { NEAR_WORDS, engineDeltas, evaluate, latency, percentile, streamBudgets, totals, type Detail, type Engine, type Spread } from './statistics.ts';
+import type { MetricsSample, Observation } from '../koa-records.ts';
 
-type Sample = { t: number; bytes: number; clockError: number; frame?: number; applied?: number };
-type Batch = { observations: Observation[]; samples: Sample[]; bytes: number; opens: number; caps: number; flushes: number; highWater: number };
+type Batch = { observations: Observation[]; samples: MetricsSample[]; bytes: number; opens: number; caps: number; flushes: number; highWater: number };
 type Memory = { footprintBytes: number; maxFootprintBytes: number; processes: number };
 type Summary = { since?: number; until?: number; engine?: Engine[]; dots?: Record<string, string[]>; dotsNodes?: number; layerEvents?: number; mappedLayers?: number; keys?: 'cdp' | 'synthetic'; timing: 'applied' | 'frame'; id: number; status: string; error?: string; metrics: string[]; seconds: number; heap?: number; before?: Memory; after?: Memory } & ({ target: 'page' } | { target: 'kido'; visible: boolean });
 type Row = { stream?: Record<string, string>; pages?: 'hidden pages' | 'visible pages'; target: 'chrome' | 'kido'; id: number; name: string | undefined; status: 'ok' | 'failed'; error?: string; timing?: 'flush→frame' | 'flush→apply'; seconds?: string; p50?: number; p95?: number; p99?: number; bytes?: number; opens?: number; caps?: number; flushes?: number; flushHz?: string; sampleHz?: string; heapMB?: string; footprintDeltaMiB?: string; memoryMaxPageMiB?: string; memoryBudget?: string; memoryPerPageMiB?: string; processesBefore?: number; processesAfter?: number };
 const ms = (value: number | undefined) => value === undefined ? '—' : value.toFixed(1);
+const details = (summary: Detail) => `${ms(summary.mean)} / ${ms(summary.p95)} / ${ms(summary.p99)} / ${ms(summary.max)} (n=${summary.count})`;
 const spread = (summary: Spread) => `${ms(summary.p50)} / ${ms(summary.p95)} / ${ms(summary.p99)}`;
 
 type Pass = { summary: Summary; observations: Observation[] };
@@ -33,7 +33,8 @@ const layerText = (summary: Summary) => {
   return `${layers.length} of ${summary.dotsNodes} nodes layered; ids per node max ${most} (${most === 1 ? 'stable' : 'changed'})`;
 };
 
-function streamTable(frame: Pass, probe: Pass | undefined, budgets: Parameters<typeof evaluate>[0]) {
+function streamTable(frame: Pass, probe: Pass | undefined, budgets: Parameters<typeof evaluate>[0], samples: readonly MetricsSample[]) {
+  const legs = latency(samples);
   const timed = totals(frame.observations), counted = probe && totals(probe.observations);
   const engine = (pass: Pass | undefined, count: number | undefined) => pass?.summary.engine && engineDeltas(pass.summary.engine, count ?? 0);
   const both = (name: string, text: (pass: Pass, sum: ReturnType<typeof totals>) => string): [string, string][] => [[name + ' [frame pass]', text(frame, timed)], [name + ' [probe pass]', probe && counted ? text(probe, counted) : '—']];
@@ -49,6 +50,15 @@ function streamTable(frame: Pass, probe: Pass | undefined, budgets: Parameters<t
     ['applies over 16.7 / 50 ms [frame pass]', `${timed.apply.over17} / ${timed.apply.over50}`],
     ['applies over 16.7 ms by record [frame pass]', JSON.stringify(timed.slowApplies)],
     ['lex ms (all scopes) [frame pass]', timed.lexMs.toFixed(0)],
+    ['markdown lex ms mean / p95 / p99 / max per changed-source render [frame pass]', details(timed.markdown.all)],
+    [`markdown lex ms mean / p95 / p99 / max at ${NEAR_WORDS}+ words (largest render ${timed.markdown.words} words) [frame pass]`, details(timed.markdown.near)],
+    ['markdown incremental lex fallbacks (boundary + references) [frame pass]', String(timed.markdown.fallbacks)],
+    ['flush write→receive ms mean / p95 / p99 / max [frame pass]', details(legs.writeToReceive)],
+    ['receive→frame request ms mean / p95 / p99 / max (negative: already requested) [frame pass]', details(legs.receiveToRequest)],
+    ['frame request→rAF ms mean / p95 / p99 / max [frame pass]', details(legs.requestToRaf)],
+    ['rAF→tick done ms mean / p95 / p99 / max [frame pass]', details(legs.rafToDone)],
+    ['markers received while hidden / completed by timer, not rAF [frame pass]', `${legs.hidden} / ${legs.timer}`],
+    ['worst 5 flush→frame markers: id total (write→receive, receive→request, request→rAF, rAF→done) visibility [frame pass]', legs.worst.map(leg => `#${leg.id} ${leg.total.toFixed(1)} (${[leg.receive, leg.request, leg.raf, leg.done].map(ms).join(', ')}) ${leg.visibility}`).join('; ') || '—'],
     ['key→frame ms p50 / p99 [frame pass]', `${ms(timed.key.p50)} / ${ms(timed.key.p99)} (n=${timed.key.count}, ${frame.summary.keys ?? 'unknown'} keys)`],
     ['stray reads in frame / apply / other [probe pass]', counted ? `${counted.strays.frame} / ${counted.strays.apply} / ${counted.strays.other}` : '—'],
     ['stray reads by dirtying source [probe pass]', counted ? JSON.stringify(counted.strayBy) : '—'],
@@ -128,7 +138,7 @@ export async function report(directory: string, budgets = streamBudgets) {
         const probeName = `${manifest.target}-${id}-probe-summary.json`;
         const probeSummary: Summary | undefined = files.includes(probeName) ? JSON.parse(await readFile(join(directory, probeName), 'utf8')) : undefined;
         assert.ok(!probeSummary || probeSummary.status === 'ok', 'Probe pass failed: ' + probeSummary?.error);
-        stream = streamTable(await pass(summary), probeSummary && await pass(probeSummary), budgets);
+        stream = streamTable(await pass(summary), probeSummary && await pass(probeSummary), budgets, samples.filter(sample => sample.t >= (summary.since ?? 0) && sample.t <= (summary.until ?? Infinity)));
       }
       const failure = [error, ...stream?.failures ?? []].filter(reason => reason !== undefined).join('; ') || undefined;
       rows.push({ stream: stream?.table, target, id, name: workload.name, pages, status: failure ? 'failed' : 'ok', error: failure, memoryBudget: budget.type === 'limit' ? `${budget.name}: ${budget.mib} MiB/page` : budget.type === 'reported' ? `no budget: ${budget.reason}` : 'no budget: not measured', memoryPerPageMiB: memory.toFixed(1), timing: timing === 'frame' ? 'flush→frame' : 'flush→apply', seconds: summary.seconds.toFixed(1), p50: rank(.5), p95: rank(.95), p99: rank(.99), bytes: total('bytes'), opens: total('opens'), caps: total('caps'), flushes: total('flushes'), flushHz: (total('flushes') / summary.seconds).toFixed(1), sampleHz: (new Set(samples.map(sample => sample[timing])).size / summary.seconds).toFixed(1), heapMB: summary.heap === undefined ? undefined : (summary.heap / 1e6).toFixed(1), footprintDeltaMiB: footprintDelta?.toFixed(1), memoryMaxPageMiB: summary.after ? (summary.after.maxFootprintBytes / 1048576).toFixed(1) : undefined, processesBefore: summary.before?.processes, processesAfter: summary.after?.processes });

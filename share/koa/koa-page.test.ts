@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test, type TestContext } from "node:test";
 import { readFile } from "node:fs/promises";
 import { Script, runInNewContext } from "node:vm";
-import { Marked } from "marked";
+import { Lexer, Marked } from "marked";
 import remend from "remend";
 
 import { assemblePage } from "./koa-assemble.ts";
@@ -95,7 +95,7 @@ test("page assembly inlines the built document, style and module once", async ()
 });
 
 test("incremental markdown matches a fresh render after each patch and preserves finished blocks", () => {
-  for (const source of ["First **paragraph**.\n\nSecond `code`.\n\n- one\n- two", "| a | b |\n| - | - |\n| c | d |", "A [reference][id].\n\n[id]: https://example.com", "```ts\nconst x = 1;\n```\n\nDone."]) {
+  for (const source of fixtures.slice(0, 4)) {
     const update = markdown();
     for (let end = 1; end <= source.length; end++) {
       const part = source.slice(0, end);
@@ -227,6 +227,73 @@ test('tail cuts keep whole units and the rest of the lexing path', () => {
   assert.notEqual(cutTo(7, 12), first);
   assert.match(cutTo(7, 12)?.html ?? '', /<li>two<\/li>/);
   assert.equal(cutTo(0, 12)?.html, '');
+});
+
+test('an append re-lexes only the tail of a long document', () => {
+  const lex = Lexer.prototype.lex, inputs: number[] = [];
+  Lexer.prototype.lex = function (this: Lexer, source: string) { inputs.push(source.length); return lex.call(this, source); };
+  try {
+    const render = markdown(), prefix = Array.from({ length: 200 }, (_, index) => `Paragraph ${index} with **bold** words.`).join('\n\n') + '\n\n';
+    const first = render(prefix + 'Tail');
+    inputs.length = 0;
+    const grown = prefix + 'Tail grows';
+    const blocks = render(grown, false, [], undefined, prefix.length + 4), html = blocks.map(block => block.html).join('');
+    assert.equal(blocks[0], first[0]);
+    assert.ok(Math.max(...inputs) < 500, `document lex input of ${Math.max(...inputs)} code units`);
+    assert.equal(html, markdown()(grown).map(block => block.html).join(''));
+  } finally { Lexer.prototype.lex = lex; }
+});
+
+test('a nested reference definition in the re-lexed suffix does not keep a stale URL', () => {
+  const old = '[x][id]\n\nA\n\nB\n\nC\n\n> [id]: https://a', render = markdown();
+  render(old);
+  const grown = old + 'b\n';
+  assert.equal(render(grown, false, [], undefined, old.length).map(block => block.html).join(''), markdown()(grown).map(block => block.html).join(''));
+});
+
+const fixtures = [
+  'First **paragraph**.\n\nSecond `code`.\n\n- one\n- two', '| a | b |\n| - | - |\n| c | d |', 'A [reference][id].\n\n[id]: https://example.com', '```ts\nconst x = 1;\n```\n\nDone.',
+  '😀 Choose `one`?\n\n- Pick **two**?\n\nTail', 'Use [one][id]?\n\n[id]: https://example.com', 'First.\r\n\r\nPick one?\r\n\r\nLast\r\n', 'Literal 999;x and 0;x forged.',
+  '> q\nanswer', '> q\n  answer', '[link][id]\n\n[id]: https://example.com', '- ```\n  > q\n  answer\n  ```', '    ```\n\n> q\nanswer', '```invalid`opener\n> q\nanswer', '```\n> q\nanswer\n```',
+  'Intro.\n\naa bb cc dd ee ff gg', '```ts\r\na\r\nb\r\nc', '| a | b |\n| - | - |\n| 1 | 2 |\n| 3 |', '- one\n  ```\n  x\n  ```\n- two', '> q\n> ```\n> x', '- outer\n  - inner\n\n    ```js\n    a\n    b\n    ```\n- last',
+  '### Heading\n\nSetext\n===\n\n---', 'Intro.\n\n[id]: https://x.test\n\n- [one][id]\n- two\n- th', '**aa bb cc dd**', 'Done.\n\n- one\n- two\n- thr', '[x][id]\n\nA\n\nB\n\nC\n\n> [id]: https://a\n\nD\n\nE', '1. a\n2. b\n\n3. c\n\n<div>html</div>\n\ntrailing\r',
+];
+
+test('incremental markdown matches a fresh render after random chunks, replacements and cuts', () => {
+  let seed = 12345;
+  const random = (max: number) => { seed = (seed * 1664525 + 1013904223) >>> 0; return seed % max; };
+  const html = (blocks: { html?: string }[]) => blocks.map(block => block.html).join('');
+  for (const user of [false, true]) {
+    const render = markdown(user);
+    for (const [index, fixture] of fixtures.entries()) for (const round of [0, 1]) {
+      let source = '';
+      const lengths = [0], context = () => JSON.stringify({ user, index, round, source });
+      const step = (next: string, changed: number, final = false) => {
+        source = next;
+        const marks: Mark[] = random(3) ? [] : [{ offset: random(source.length + 1), side: 'open', mark: '0' }, { offset: source.length, side: 'close', mark: '' }];
+        marks.sort((a, b) => a.offset - b.offset);
+        const tail = markdown(user)(source).at(-1)?.tail;
+        const shown = tail && random(2) ? { start: tail.start, end: random(tail.token.raw.length + 1) } : undefined;
+        const blocks = render(source, final, marks, shown, changed);
+        assert.equal(html(blocks), html(markdown(user)(source, final, marks, shown)), context());
+        return blocks;
+      };
+      while (source.length < fixture.length) {
+        const end = Math.min(fixture.length, source.length + 1 + random(round ? 25 : 4));
+        step(fixture.slice(0, end), random(3) ? lengths.at(-1) ?? 0 : lengths[random(lengths.length)]);
+        lengths.push(source.length);
+      }
+      const other = fixtures[random(fixtures.length)], keep = random(source.length + 1);
+      step(source.slice(0, keep) + other.slice(random(other.length)), keep);
+      step(source, 0, true);
+      step(fixture, 0);
+      step(fixture + '\n\nmore', fixture.length);
+      step('', 0, true);
+    }
+  }
+  const split = markdown(), before = 'A\r\n\r\nB\r\n\r\nC\r\n\r\nD\r';
+  split(before);
+  assert.equal(html(split(before + '\nE', false, [], undefined, before.length)), html(markdown()(before + '\nE')));
 });
 
 test('the composer foot starts with the model and has no agent status cell', async () => {

@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { dotsPhase, holdsDots, strayReads } from './page/metrics.ts';
 import { metricsRequest } from './koa-records.ts';
-import { engineDeltas, evaluate, percentile, summarize, totals } from './stress/statistics.ts';
+import { engineDeltas, evaluate, latency, percentile, summarize, totals } from './stress/statistics.ts';
 import { CHUNK_TOKENS, STREAM_RESPONSES, STREAM_TOKENS, historyMessages, streamingReplies, HISTORY_ROWS } from './stress/workloads.ts';
 
 test('percentiles interpolate between ranks', () => {
@@ -71,17 +71,38 @@ test('a removal counts when the node is the dots or holds them', () => {
 test('the streaming workload is deterministic: size, mix and tool calls', () => {
   const replies = streamingReplies();
   assert.deepEqual(streamingReplies(), replies);
-  assert.equal(replies.length, STREAM_RESPONSES);
-  assert.equal(replies.filter(reply => reply.tools?.[0]?.name === 'probe').length, STREAM_RESPONSES - 1);
+  assert.equal(replies.length, STREAM_RESPONSES + 1);
+  assert.equal(replies.filter(reply => reply.tools?.[0]?.name === 'probe').length, STREAM_RESPONSES);
   assert.equal(replies.at(-1)?.tools, undefined);
   const texts = replies.map(reply => reply.chunks?.join('') ?? '');
-  assert.equal(texts.join('').match(/\S+/g)?.length, STREAM_TOKENS);
+  assert.equal(texts.slice(0, -1).join('').match(/\S+/g)?.length, STREAM_TOKENS);
+  assert.equal(texts.at(-1)?.match(/\S+/g)?.length, STREAM_TOKENS);
   assert.ok(replies.every(reply => reply.chunks?.every(chunk => (chunk.match(/\S+/g)?.length ?? 0) <= CHUNK_TOKENS) && reply.delayMs === 50));
   const all = texts.join('');
   assert.ok(/^- /m.test(all) && /^```ts$/m.test(all) && /^\| - \|/m.test(all));
   const history = historyMessages();
   assert.ok(history.rows >= HISTORY_ROWS && history.texts.length % 2 === 0);
   assert.deepEqual(historyMessages(), history);
+});
+
+test('markdown renders and flush stages are summarized for the worst markers', () => {
+  const sum = totals([{ type: 'markdown', at: 1, words: 100, lex: 1, fallbacks: 0 }, { type: 'markdown', at: 2, words: 9500, lex: 3, fallbacks: 1 }, { type: 'markdown', at: 3, words: 9600, lex: 5, fallbacks: 2 }]);
+  assert.deepEqual([sum.markdown.all.mean, sum.markdown.near.count, sum.markdown.near.max, sum.markdown.fallbacks, sum.markdown.words], [3, 2, 5, 3, 9600]);
+  const stages = (id: number, received: number, request?: { at: number; fired: number }) => ({ id, received, visibility: 'visible' as const, ...request && { request } });
+  const legs = latency([
+    { t: 0, bytes: 0, clockError: 0, frame: 40, stages: stages(1, 2, { at: 5, fired: 30 }) },
+    { t: 100, bytes: 0, clockError: 0, frame: 110, stages: stages(2, 101) },
+    { t: 200, bytes: 0, clockError: 0, applied: 201 },
+  ]);
+  assert.deepEqual([legs.writeToReceive.count, legs.writeToReceive.max, legs.receiveToRequest.max, legs.requestToRaf.max, legs.rafToDone.max, legs.timer], [2, 2, 3, 25, 10, 1]);
+  assert.deepEqual(legs.worst.map(leg => [leg.id, leg.total]), [[1, 40], [2, 10]]);
+});
+
+test('the metrics request validates flush stages', () => {
+  const sample = { t: 1, frame: 2, bytes: 3, clockError: 0 };
+  const accepts = (stages: object) => metricsRequest({ samples: [{ ...sample, stages }], observations: [{ type: 'markdown', at: 1, words: 5, lex: .5, fallbacks: 0 }] }) !== undefined;
+  assert.equal(accepts({ id: 1, received: 2, visibility: 'hidden', request: { at: 1, fired: 2 } }), true);
+  for (const bad of [{ id: 1.5, received: 2, visibility: 'hidden' }, { id: 1, received: 2, visibility: 'prerender' }, { id: 1, received: 2, visibility: 'hidden', request: { at: 1 } }]) assert.equal(accepts(bad), false);
 });
 
 test('dots phases follow where the dots sit before and after a removal', () => {

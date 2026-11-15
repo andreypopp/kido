@@ -8,7 +8,7 @@ import { createJobPage } from './job.ts';
 import { dots } from './working.ts';
 import { install } from './metrics.ts';
 import { ATTACHMENT_LIMITS, pathArg } from '../koa-records.ts';
-import type { State, WireJob, WireItem, QueuedPrompt, WireAssistant, Block, Patch, PageRecord, PromptMode, ImageRef, AgentCall, Bash, SessionRow, SessionScope, ThinkingLevel } from '../koa-records.ts';
+import type { State, WireJob, WireItem, QueuedPrompt, WireAssistant, Block, Patch, PageRecord, MetricsSample, Stages, PromptMode, ImageRef, AgentCall, Bash, SessionRow, SessionScope, ThinkingLevel } from '../koa-records.ts';
 import type { AgentRef, Relation } from '../records.ts';
 
 type Step = { block: Exclude<Block, { type: 'text' }>;  item: WireAssistant; index: number; key: string; slots: Map<string, Slot> };
@@ -210,18 +210,19 @@ function prose(key: string | undefined, source: string, final: boolean, annotati
     if (key !== undefined) texts.set(key, memo);
   }
   if (memo.annotationItem === annotationItem && (memo.final && final || memo.source === source && memo.final === final)) return memo.view;
+  const changed = memo.source !== undefined && source.startsWith(memo.source) ? memo.source.length : 0;
   if (final) delete memo.source;
   else memo.source = source;
   memo.annotationItem = annotationItem;
   memo.final = final;
-  show(memo, source, final);
+  show(memo, source, final, changed);
   return memo.view;
 }
-function show(memo: TextMemo, source: string, final: boolean) {
+function show(memo: TextMemo, source: string, final: boolean, changed = 0) {
   const { reveal } = memo, before = reveal?.tail;
   const annotated = memo.annotationItem ? annotations(source, memo.annotationItem.annotations, editor) : undefined;
   if (!reveal) memo.view.querySelector<HTMLElement>('.caret')?.remove();
-  const blocks = memo.render(source, final, annotated?.marks, reveal && (before ?? { start: -1, end: 0 }));
+  const blocks = memo.render(source, final, annotated?.marks, reveal && (before ?? { start: -1, end: 0 }), changed);
   let first = 0;
   while (first < blocks.length && memo.blocks[first]?.block === blocks[first]) first++;
   const removed = memo.blocks.splice(first);
@@ -1370,7 +1371,7 @@ function widthChanged() {
 }
 const koaInstance = document.querySelector<HTMLMetaElement>('meta[name="koa-instance"]')?.content;
 const metricsMode = document.querySelector<HTMLMetaElement>('meta[name="koa-metrics"]')?.content;
-const metrics: { mode: string; bytes: number; pending: number[]; samples: { t: number; bytes: number; clockError: number; applied?: number; frame?: number }[]; timer?: number; writes: Promise<void>; frames: Set<Promise<void>>; waiting: (() => void)[]; error?: string } | undefined = metricsMode ? { mode: metricsMode, bytes: 0, pending: [], samples: [], timer: undefined, writes: Promise.resolve(), frames: new Set(), waiting: [], error: undefined } : undefined;
+const metrics: { mode: string; bytes: number; pending: { t: number; stages: Stages }[]; samples: MetricsSample[]; timer?: number; writes: Promise<void>; frames: Set<Promise<void>>; waiting: (() => void)[]; error?: string } | undefined = metricsMode ? { mode: metricsMode, bytes: 0, pending: [], samples: [], timer: undefined, writes: Promise.resolve(), frames: new Set(), waiting: [], error: undefined } : undefined;
 const probe = metrics && install(tick, metrics.mode === 'probe');
 function sendMetrics(force = false) {
   if (!metrics || !force && !metrics.samples.length && !probe?.pending()) return;
@@ -1405,17 +1406,20 @@ function connect() {
   source.onopen = () => { delay = 200; if (!reloading) element('error').textContent = ''; };
   source.onerror = lost;
   source.onmessage = event => {
+    const received = metrics ? performance.timeOrigin + performance.now() : 0, visibility = metrics && document.hidden ? 'hidden' : 'visible';
     try {
       const record: PageRecord = JSON.parse(event.data);
-      if (metrics && record.type === 'flush') { metrics.bytes = record.bytes; metrics.pending.push(record.t); }
+      if (metrics && record.type === 'flush') { metrics.bytes = record.bytes; metrics.pending.push({ t: record.t, stages: { id: record.id, received, visibility } }); }
       else if (probe) probe.applying(record.type, () => apply(record));
       else apply(record);
       if (metrics?.pending.length) {
         const pending = metrics.pending.splice(0), bytes = metrics.bytes;
         const sampled = (kind: 'applied' | 'frame') => {
           const at = performance.timeOrigin + performance.now();
-          for (const t of pending) {
-            metrics.samples.push({ t, [kind]: at, bytes, clockError: Date.now() - at });
+          const request = kind === 'frame' ? probe?.request() : undefined;
+          for (const { t, stages } of pending) {
+            if (request && request.fired >= stages.received) stages.request = request;
+            metrics.samples.push({ t, [kind]: at, bytes, clockError: Date.now() - at, ...kind === 'frame' && { stages } });
             if (metrics.samples.length === 50) sendMetrics();
           }
           metrics.timer ??= setTimeout(sendMetrics, 250);

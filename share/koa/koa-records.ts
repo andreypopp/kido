@@ -67,7 +67,7 @@ export function pathArg(block: Block | undefined): string | undefined {
 }
 
 export type Patch = { type: "patch"; seq: number; baseRevision: number; revision: number; blocks: ({ index: number; block: Block } | { index: number; suffix: string })[]; final: boolean; stop: string; error: string; ended?: number };
-export type PageRecord = { type: "reset"; epoch: string; more: boolean; items: WireItem[] } | { type: "item"; item: WireItem } | Patch | ({ type: "state" } & State) | { type: "flush"; bytes: number; t: number } | { type: "reload" } | { type: "job-reset"; view: string; epoch: string; start: number; end: number; data: string } | { type: "job-append"; view: string; epoch: string; start: number; data: string } | { type: "job-gone"; view: string } | { type: "view_gone"; view: string; parent: string };
+export type PageRecord = { type: "reset"; epoch: string; more: boolean; items: WireItem[] } | { type: "item"; item: WireItem } | Patch | ({ type: "state" } & State) | { type: "flush"; id: number; bytes: number; t: number } | { type: "reload" } | { type: "job-reset"; view: string; epoch: string; start: number; end: number; data: string } | { type: "job-append"; view: string; epoch: string; start: number; data: string } | { type: "job-gone"; view: string } | { type: "view_gone"; view: string; parent: string };
 export type ViewRequest = { view?: string };
 export type ViewGone = { kind: "view_gone"; view: string; error: string };
 
@@ -77,10 +77,12 @@ export type WriteSource = keyof typeof pageSources | `apply:${PageRecord["type"]
 const isRecordType = (value: unknown): value is PageRecord["type"] => typeof value === "string" && Object.hasOwn(recordTypes, value);
 const isWriteSource = (value: unknown): value is WriteSource => typeof value === "string" && (Object.hasOwn(pageSources, value) || value.startsWith("apply:") && isRecordType(value.slice(6)));
 export type MetricsMode = "applied" | "frame" | "probe";
-export type MetricsSample = { t: number; bytes: number; clockError: number; applied?: number; frame?: number };
+export type Stages = { id: number; received: number; visibility: "visible" | "hidden"; request?: { at: number; fired: number } };
+export type MetricsSample = { t: number; bytes: number; clockError: number; applied?: number; frame?: number; stages?: Stages };
 export type Observation =
   | { type: "frame"; at: number; duration: number; gap?: number; lex: number; strays: number; probes: number; by: Partial<Record<WriteSource, number>> }
   | { type: "apply"; at: number; duration: number; record: PageRecord["type"]; lex: number; strays: number; probes: number; by: Partial<Record<WriteSource, number>> }
+  | { type: "markdown"; at: number; words: number; lex: number; fallbacks: number }
   | { type: "stray"; at: number; source: WriteSource }
   | { type: "probe"; at: number }
   | { type: "key"; at: number; latency: number }
@@ -89,11 +91,13 @@ export type MetricsRequest = { samples: MetricsSample[]; observations: Observati
 const finite = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value);
 const record = (value: unknown): value is { [key: string]: unknown } => typeof value === "object" && value !== null && !Array.isArray(value);
 const validBy = (value: unknown) => record(value) && Object.entries(value).every(([source, count]) => isWriteSource(source) && Number.isSafeInteger(count));
+const validStages = (value: unknown) => value === undefined || record(value) && Number.isSafeInteger(value.id) && finite(value.received) && (value.visibility === "visible" || value.visibility === "hidden") && (value.request === undefined || record(value.request) && finite(value.request.at) && finite(value.request.fired));
 function validObservation(entry: unknown): entry is Observation {
   if (!record(entry) || !finite(entry.at)) return false;
   switch (entry.type) {
     case "frame": return finite(entry.duration) && finite(entry.lex) && Number.isSafeInteger(entry.strays) && Number.isSafeInteger(entry.probes) && validBy(entry.by) && (entry.gap === undefined || finite(entry.gap));
     case "apply": return finite(entry.duration) && finite(entry.lex) && Number.isSafeInteger(entry.strays) && Number.isSafeInteger(entry.probes) && validBy(entry.by) && isRecordType(entry.record);
+    case "markdown": return Number.isSafeInteger(entry.words) && finite(entry.lex) && Number.isSafeInteger(entry.fallbacks);
     case "stray": return isWriteSource(entry.source);
     case "probe": return true;
     case "key": return finite(entry.latency);
@@ -104,7 +108,7 @@ function validObservation(entry: unknown): entry is Observation {
 export function metricsRequest(body: unknown): MetricsRequest | undefined {
   if (!record(body)) return;
   const { samples, observations } = body;
-  if (!Array.isArray(samples) || samples.length > 50 || !samples.every(sample => record(sample) && finite(sample.t) && (finite(sample.frame) || finite(sample.applied)) && finite(sample.clockError) && typeof sample.bytes === "number" && Number.isSafeInteger(sample.bytes) && sample.bytes >= 0)) return;
+  if (!Array.isArray(samples) || samples.length > 50 || !samples.every(sample => record(sample) && finite(sample.t) && (finite(sample.frame) || finite(sample.applied)) && finite(sample.clockError) && validStages(sample.stages) && typeof sample.bytes === "number" && Number.isSafeInteger(sample.bytes) && sample.bytes >= 0)) return;
   if (!Array.isArray(observations) || observations.length > 200 || !observations.every(validObservation)) return;
   return { samples, observations };
 }

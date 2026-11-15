@@ -1,4 +1,4 @@
-import type { Observation } from '../koa-records.ts';
+import type { MetricsSample, Observation } from '../koa-records.ts';
 
 export type Engine = { at: number; metrics: Record<string, number> };
 export type Spread = { count: number; p50?: number; p95?: number; p99?: number; over17: number; over50: number };
@@ -17,12 +17,33 @@ export const summarize = (values: readonly number[]): Spread => ({
   over17: values.filter(value => value > 16.7).length, over50: values.filter(value => value > 50).length,
 });
 
+export type Detail = { count: number; mean?: number; p95?: number; p99?: number; max?: number };
+const detail = (values: readonly number[]): Detail => ({ count: values.length, mean: values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : undefined, p95: percentile(values, .95), p99: percentile(values, .99), max: values.length ? Math.max(...values) : undefined });
+export const NEAR_WORDS = 9000;
+
+export function latency(samples: readonly MetricsSample[]) {
+  const timed = samples.flatMap(sample => sample.frame !== undefined && sample.stages ? [{ sample, frame: sample.frame, stages: sample.stages }] : []);
+  const legs = timed.map(({ sample, frame, stages }) => ({
+    id: stages.id, visibility: stages.visibility, total: frame - sample.t,
+    receive: stages.received - sample.t, request: stages.request && stages.request.at - stages.received,
+    raf: stages.request && stages.request.fired - stages.request.at, done: stages.request && frame - stages.request.fired,
+  }));
+  const defined = (pick: (leg: (typeof legs)[number]) => number | undefined) => legs.flatMap(leg => { const value = pick(leg); return value === undefined ? [] : [value]; });
+  return {
+    writeToReceive: detail(defined(leg => leg.receive)), receiveToRequest: detail(defined(leg => leg.request)), requestToRaf: detail(defined(leg => leg.raf)), rafToDone: detail(defined(leg => leg.done)),
+    hidden: legs.filter(leg => leg.visibility === 'hidden').length, timer: legs.filter(leg => leg.raf === undefined).length,
+    worst: legs.toSorted((a, b) => b.total - a.total).slice(0, 5),
+  };
+}
+
 export function totals(observations: readonly Observation[]) {
   const frames = observations.flatMap(observation => observation.type === 'frame' ? [observation] : []), applies = observations.flatMap(observation => observation.type === 'apply' ? [observation] : []);
   const strays = (list: readonly { strays: number }[]) => list.reduce((sum, entry) => sum + entry.strays, 0);
   const probes = (list: readonly { probes: number }[]) => list.reduce((sum, entry) => sum + entry.probes, 0);
   const dots = (phase: 'call' | 'text' | 'end') => observations.reduce((sum, observation) => sum + (observation.type === 'dots' && observation.phase === phase ? observation.count : 0), 0);
+  const renders = observations.flatMap(observation => observation.type === 'markdown' ? [observation] : []);
   return {
+    markdown: { all: detail(renders.map(render => render.lex)), near: detail(renders.filter(render => render.words >= NEAR_WORDS).map(render => render.lex)), fallbacks: renders.reduce((sum, render) => sum + render.fallbacks, 0), words: Math.max(0, ...renders.map(render => render.words)) },
     frame: summarize(frames.map(frame => frame.duration)),
     gap: summarize(frames.flatMap(frame => frame.gap === undefined ? [] : [frame.gap])),
     apply: summarize(applies.map(apply => apply.duration)),

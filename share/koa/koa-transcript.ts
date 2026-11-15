@@ -179,7 +179,7 @@ export function transcript({ dir, flushMs, metrics = false }: { dir: string; flu
     const line = frame(JSON.stringify(record));
     for (const req of subscribers) body(req, line, true);
   };
-  const flushRecord = (bytes: number): Extract<PageRecord, { type: "flush" }> => ({ type: "flush", t: Date.now(), bytes });
+  const flushRecord = (bytes: number, id: number): Extract<PageRecord, { type: "flush" }> => ({ type: "flush", id, t: Date.now(), bytes });
   const window = (before: number): string => {
     let start = Math.min(before, items.length);
     const strings: string[] = [];
@@ -298,7 +298,7 @@ export function transcript({ dir, flushMs, metrics = false }: { dir: string; flu
       if (item.kind === "assistant" && !item.final) sent.set(seq, { ...item, blocks: item.blocks.map((block) => ({ ...block })) });
       else sent.delete(seq);
     }
-    if (counters && dirty.size) { counters.flushes++; broadcast(flushRecord(counters.bytes)); }
+    if (counters && dirty.size) { counters.flushes++; broadcast(flushRecord(counters.bytes, counters.flushes)); }
     dirty.clear();
   };
   const applyMessage = (message: AgentMessage, phase: "start" | "update" | "end" | "branch", ended?: number, attachments: Attachment[] = []): void => {
@@ -498,7 +498,7 @@ export function transcript({ dir, flushMs, metrics = false }: { dir: string; flu
       } else { if (counters) counters.resets++; body(req, reset(), true); }
       if (req.writableEnded || req.destroyed) return true;
       follow(subscribers, req, address);
-      if (counters) body(req, frame(JSON.stringify(flushRecord(counters.bytes))), true);
+      if (counters) body(req, frame(JSON.stringify(flushRecord(counters.bytes, counters.flushes))), true);
       if (currentState) broadcast(currentState);
     } else return false;
     return true;

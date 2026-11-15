@@ -812,13 +812,13 @@ test("stream metrics use the selected mode in a Kido page", async () => {
     const waiting: (() => void)[] = [], metrics = { mode, bytes: 0, pending: [], samples: [], frames: new Set(), timer: undefined, waiting };
     class EventSource {
       onmessage?: (event: { data: string }) => void;
-      constructor() { queueMicrotask(() => this.onmessage?.({ data: '{"type":"flush","t":1000,"bytes":1234}' })); }
+      constructor() { queueMicrotask(() => this.onmessage?.({ data: '{"type":"flush","id":7,"t":1000,"bytes":1234}' })); }
     }
-    runInNewContext(connect + ";connect()", { metrics, koaInstance: "i1", EventSource, window: { addEventListener() {} }, epoch: "", after: -1, delay: 200, console, element: () => ({}), schedule() {}, performance: { timeOrigin: 1000, now: () => 12 }, Date: { now: () => 1012 }, sendMetrics() {}, setTimeout() {} });
+    runInNewContext(connect + ";connect()", { metrics, probe: undefined, document: { hidden: false }, koaInstance: "i1", EventSource, window: { addEventListener() {} }, epoch: "", after: -1, delay: 200, console, element: () => ({}), schedule() {}, performance: { timeOrigin: 1000, now: () => 12 }, Date: { now: () => 1012 }, sendMetrics() {}, setTimeout() {} });
     await Promise.resolve();
     assert.equal(metrics.waiting.length, mode === "frame" ? 1 : 0);
     for (const waiter of metrics.waiting.splice(0)) waiter();
-    assert.deepEqual(JSON.parse(JSON.stringify(metrics.samples)), [{ t: 1000, [mode]: 1012, bytes: 1234, clockError: 0 }]);
+    assert.deepEqual(JSON.parse(JSON.stringify(metrics.samples)), [{ t: 1000, [mode]: 1012, bytes: 1234, clockError: 0, ...mode === "frame" && { stages: { id: 7, received: 1012, visibility: "visible" } } }]);
   }
 });
 

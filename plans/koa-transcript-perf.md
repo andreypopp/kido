@@ -399,13 +399,17 @@ table.
    10 000 words is under 1 ms in both engines and the property test
    passes over every fixture. Open finding from unit 2: Kido's
    flush-to-frame p99 is 254 ms with no apply and no frame over
-   16.7 ms; find its cause.
+   16.7 ms; find its cause. Done: see "Unit 3" under "Baseline"; the
+   cause is in WebKit, and the proposed fix is unit 5's.
 4. **Reveal by clipping, grow without a forced read** (5.3, 5.4).
    Done when forced layouts per streaming frame are 0 in Chrome's
    metrics, the `reveal` and `dots` snapshots show the same look,
    and frame p99 is under 16.7 ms with the 10 000-word reply alone.
 5. **Containment and data-driven new items** (5.7, 5.8). Done when
-   frame p99 is under 16.7 ms with the 100 000-line history, the
+   Kido's flush-to-frame p99 is under 100 ms and its request-to-rAF
+   max under 250 ms over the stress workload (unit 3 traced the tail
+   to WebKit rebuilding style and layout for the whole history after
+   a memory-pressure release), and when frame p99 is under 16.7 ms with the 100 000-line history, the
    WebKit find test passes, the reader-anchor tests pass, and memory
    is within the report's budget.
 6. **Time-sliced history render** (5.1, last point). Done when no
@@ -510,3 +514,55 @@ about 7 during both runs.
   intake no longer has. The remaining tail (p99 254 ms) has no
   apply over 16.7 ms and no frame over 16.7 ms; the cause is not
   attributed, and unit 3 takes it as an open finding.
+
+Unit 3, on `origin/main` 7febbc263 with unit 3's change, the same
+machine, `share/koa/stress/run.sh stream`. Before: run `run-YIDPCd`
+(load average 20 to 25). After: run `run-IDNzmm` (load average 7 to
+11). The workload now ends with one reply of 10 000 words after the
+21 short replies, so the after-run streams twice as long and its
+totals do not compare with the before-run; the rates and
+percentiles do. The before-run has no per-render lex counter; its
+row comes from the same reply rendered under Node with the old and
+the new `markdown.ts`, patch by patch, at 9 000 words or more.
+
+| metric | Chrome before | Chrome after | Kido before | Kido after |
+|---|---|---|---|---|
+| lex ms per patch at 9 000+ words, mean / p99 / max | Node: 1.53 / 4.49 / 7.08 | 0.0 / 0.1 / 0.2 (n=74); Node: 0.012 / 0.031 / 0.037 | n/a | 0.1 / 1 / 1 (n=74; 67 at 0 ms, 7 at 1 ms of WebKit's 1 ms clock) |
+| incremental lex fallbacks | n/a | 0 | n/a | 0 |
+| frame task ms p50 / p95 / p99 | 2.1 / 3.1 / 3.8 | 2.4 / 3.5 / 4.3 | 8 / 16 / 38.7 | 8 / 11 / 13 |
+| frames over 16.7 / 50 ms | 1 / 0 | 1 / 0 | 52 / 8 | 2 / 0 |
+| flush to frame ms p50 / p95 / p99 | 17.3 / 49.7 / 73.3 | 18.9 / 58.4 / 81.3 | 32 / 228 / 599 | 28 / 67 / 197 |
+| flush write to receive ms mean / p99 / max | n/a | 18.0 / 74.3 / 142 | n/a | 22.6 / 135 / 502 |
+| frame request to rAF ms mean / p99 / max | n/a | 4.2 / 26.0 / 107 | n/a | 27.5 / 480 / 571 |
+| rAF to tick done ms mean / p99 / max | n/a | 2.3 / 5.0 / 21.1 | n/a | 8.0 / 14 / 19 |
+| key to frame ms p50 / p99 | 9.7 / 25.2 | 10.5 / 27.1 | 13 / 171 | 12 / 26 |
+| dots removals at calls / while text / at end | 0 / 0 / 1 | 0 / 0 / 1 | 0 / 0 / 1 | 0 / 0 / 1 |
+
+- The lexer now sees only the end of the message: under Node, the
+  lex per patch at 10 000 words drops from 1.5 ms to 0.012 ms on
+  average. Both engines are under 1 ms; WebKit's clock reads whole
+  milliseconds, so its mean is the useful figure.
+- The flush-to-frame tail in Kido is not the page. Each flush
+  marker now has an id, and the page stamps its receipt and the
+  request and start of the frame. Kido's long markers come in
+  bursts: a requested rAF does not fire for 450 to 990 ms, no
+  `onmessage` runs in that time, and then the queued flushes arrive
+  together. The page runs no task in that time. Stack samples of
+  WebContent (`spindump`, two runs) over a 542 ms stall and a
+  523 ms stall show `Document::resolveStyle` in 49 of 55 and 46 of
+  53 samples, and `LocalFrameViewLayoutContext::performLayout` in 31
+  and 29: a style and layout of the whole history's render tree.
+  Each stall comes immediately after a sample in
+  `MemoryPressureHandler::measurementTimerFired` → `releaseMemory`
+  (with `LayoutIntegration::LineLayout::releaseCaches`), while
+  WebContent's footprint was near 1.9 GB, and it drops to about
+  1.3 GB after it. The app's main thread is idle in `mach_msg` during
+  the stall, and no sync IPC waits; the test's synthetic keys are
+  asynchronous. So WebKit releases its layout caches under memory
+  pressure, and the next rendering update rebuilds style and layout
+  for the 350 000-node document. The fix is unit 5: containment and
+  keeping off-screen history out of the render tree lower both the
+  footprint that causes the release and the cost of the rebuild.
+  A proposal for the user: unit 5's acceptance adds Kido's
+  flush-to-frame p99 and request-to-rAF max.
+

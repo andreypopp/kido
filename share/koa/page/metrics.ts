@@ -1,5 +1,6 @@
 import { Lexer } from 'marked';
 import type { Observation, PageRecord, WriteSource } from '../koa-records.ts';
+import { fallbacks, instrument } from './markdown.ts';
 
 type Label = { type: 'frame'; gap?: number } | { type: 'apply'; record: PageRecord['type'] };
 type Scope = { kind: Label['type']; source: WriteSource; lex: number; strays: number; probes: number; by: Partial<Record<WriteSource, number>> };
@@ -53,23 +54,29 @@ export function install(tick: () => void, probe: boolean) {
     }
   };
 
+  let lexTotal = 0;
   const lex = Lexer.prototype.lex;
   Lexer.prototype.lex = function (this: Lexer, ...args: Parameters<Lexer['lex']>) {
     const start = performance.now();
-    try { return lex.apply(this, args); } finally { if (scope) scope.lex += performance.now() - start; }
+    try { return lex.apply(this, args); } finally { const spent = performance.now() - start; lexTotal += spent; if (scope) scope.lex += spent; }
   };
+  instrument(<T>(source: string, body: () => T): T => {
+    const start = performance.now(), before = lexTotal, skipped = fallbacks();
+    try { return body(); } finally { observations.push({ type: 'markdown', at: epoch(start), words: source.match(/\S+/g)?.length ?? 0, lex: lexTotal - before, fallbacks: fallbacks() - skipped }); }
+  });
 
   const native = window.requestAnimationFrame.bind(window), nativeCancel = window.cancelAnimationFrame.bind(window);
-  let last = 0, continuous = false, requested: number | undefined, frameStart = () => {};
+  let last = 0, continuous = false, requested: number | undefined, asked = 0, fired: { at: number; fired: number } | undefined, frameStart = () => {};
   const frame = () => {
     const start = performance.now(), gap = continuous && !document.hidden ? start - last : undefined;
-    last = start; continuous = false; requested = undefined;
+    last = start; continuous = false; requested = undefined; fired = { at: epoch(asked), fired: epoch(start) };
     frameStart();
     run(gap === undefined ? { type: 'frame' } : { type: 'frame', gap }, tick);
   };
   window.requestAnimationFrame = callback => {
     if (callback !== tick) return native(callback);
     if (scope?.kind === 'frame') continuous = true;
+    if (requested === undefined) asked = performance.now();
     return requested = native(frame);
   };
   window.cancelAnimationFrame = id => { if (id === requested) { continuous = false; requested = undefined; } nativeCancel(id); };
@@ -130,5 +137,5 @@ export function install(tick: () => void, probe: boolean) {
     }).observe(items, { childList: true, subtree: true });
   }
 
-  return { within: <T>(name: WriteSource, body: () => T): T => { source = name; try { return body(); } finally { source = 'other'; } }, applying: <T>(record: PageRecord['type'], body: () => T) => run({ type: 'apply', record }, body), pending: () => observations.length, drain: (max: number) => observations.splice(0, max) };
+  return { within: <T>(name: WriteSource, body: () => T): T => { source = name; try { return body(); } finally { source = 'other'; } }, applying: <T>(record: PageRecord['type'], body: () => T) => run({ type: 'apply', record }, body), request: () => fired, pending: () => observations.length, drain: (max: number) => observations.splice(0, max) };
 }

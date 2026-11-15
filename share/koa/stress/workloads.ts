@@ -50,8 +50,7 @@ function mixedBlock(random: () => number, limit = Infinity): { text: string; row
 
 export function streamingReplies(): Reply[] {
   const random = seeded(13);
-  return Array.from({ length: STREAM_RESPONSES }, (_, index): Reply => {
-    const budget = Math.floor(STREAM_TOKENS / STREAM_RESPONSES) + (index < STREAM_TOKENS % STREAM_RESPONSES ? 1 : 0);
+  const reply = (budget: number, tools: boolean): Reply => {
     let text = '', left = budget;
     while (left > 0) {
       const block = mixedBlock(random, left);
@@ -61,8 +60,10 @@ export function streamingReplies(): Reply[] {
     }
     const pieces = text.match(/\S+\s*/g) ?? [];
     const chunks = Array.from({ length: Math.ceil(pieces.length / CHUNK_TOKENS) }, (_, at) => pieces.slice(at * CHUNK_TOKENS, (at + 1) * CHUNK_TOKENS).join(''));
-    return { chunks, delayMs: 1000 * CHUNK_TOKENS / TOKENS_PER_SECOND, ...index < STREAM_RESPONSES - 1 && { tools: [{ name: 'probe', args: {} }] } };
-  });
+    return { chunks, delayMs: 1000 * CHUNK_TOKENS / TOKENS_PER_SECOND, ...tools && { tools: [{ name: 'probe', args: {} }] } };
+  };
+  const short = Array.from({ length: STREAM_RESPONSES }, (_, index) => reply(Math.floor(STREAM_TOKENS / STREAM_RESPONSES) + (index < STREAM_TOKENS % STREAM_RESPONSES ? 1 : 0), true));
+  return [...short, reply(STREAM_TOKENS, false)];
 }
 
 export function historyMessages(): { texts: string[]; rows: number } {
