@@ -154,3 +154,45 @@ test("an ended peer recorded without a name resumes without --name", async () =>
     assert.equal(body.name, undefined);
   } finally { await fx.restore(); }
 });
+
+test("a peer's pi.name replaces its title-derived name, on arrival, on rename and on the next layout", async () => {
+  const fx = makeFixture();
+  try {
+    fx.setPanes([selfPane()]);
+    const s = await startSession(fx);
+    const id = "77777777abcdef07";
+    savedSession(join(fx.dir, "sessions", "peer"), process.cwd(), id);
+    const titled = agentPane({ pane: "pane_2", session: id, name: "", title: "koa - Real - kido" });
+    fx.setClientPanes([selfPane(), titled]);
+    const latest = () => entriesOf(s, "koa.agent").filter((e) => e.role === "peer" && e.session === id).at(-1)?.name;
+    const listed = async () => jsonRows(await s.tool("list_agents").execute("c", { which: "peers" })).find((a) => a.id === id)?.name;
+    await pollUntil(() => latest() === "koa - Real - kido");
+    fx.clientEvent({ type: "var", pane: "pane_2", name: "pi.name", value: "Real" });
+    await pollUntil(() => latest() === "Real", 2000, "name from the var event");
+    fx.clientEvent({ type: "var", pane: "pane_2", name: "pi.name", value: "Renamed" });
+    await pollUntil(() => latest() === "Renamed", 2000, "name from a rename");
+    fx.setPanes([selfPane()]);
+    fx.setClientPanes([selfPane()]);
+    assert.equal(await listed(), "Renamed");
+    fx.dropClient();
+    await pollUntil(() => fx.streamOpens("/client") === 2);
+    fx.setClientPanes([selfPane(), agentPane({ pane: "pane_2", session: id, name: "Final", title: "koa - Real - kido" })]);
+    await pollUntil(() => latest() === "Final", 2000, "name corrected by a layout");
+    fx.clientEvent({ type: "var_deleted", pane: "pane_2", name: "pi.name" });
+    fx.clientEvent({ type: "title", pane: "pane_2", title: "koa - Later - kido" });
+    await pollUntil(() => latest() === "koa - Later - kido", 2000, "latest title without a name");
+  } finally { await fx.restore(); }
+});
+
+test("a refused pi.name write is retried until pi.name is set", async () => {
+  const fx = makeFixture();
+  try {
+    const fail = join(fx.dir, "var-fail");
+    writeFileSync(fail, "");
+    await withEnv({ KO_FAKE_VAR_FAIL: fail }, async () => {
+      fx.setPanes([selfPane({ vars: { "pi.name": "" } })]);
+      await startSession(fx, { name: "Named" });
+      await pollUntil(() => get(fx.row("pane_1"), "vars", "pi.name") === "Named", 3000, "pi.name written after the refusal");
+    });
+  } finally { await fx.restore(); }
+});

@@ -1147,13 +1147,40 @@ export const agentExtension = (host: AgentHost) => (pi: ExtensionAPI): void => {
 
   const varPath = (key: string): string => `${varsPath()}/${key}`;
 
-  const writeVars = async (entries: Array<[string, unknown]>): Promise<void> => {
-    if (!pane || host.self.parent) return;
-    const fresh = entries.filter(([key, value]) => written.get(key) !== JSON.stringify(value));
-    for (const [key, value] of fresh) {
+  const wantedVars = new Map<string, unknown>();
+  let varRetry: NodeJS.Timeout | undefined;
+  let varsStopped = false;
+  let varFlush: Promise<void> | undefined;
+  const drainVars = async (): Promise<void> => {
+    for (;;) {
+      const next = [...wantedVars].find(([key, value]) => written.get(key) !== JSON.stringify(value));
+      if (!next || varsStopped) return;
+      const [key, value] = next;
+      const reply = await apiCall("PUT", varPath(key), value, 2000);
+      if ("error" in reply || reply.status >= 500) {
+        if (!varRetry && !varsStopped) {
+          varRetry = setTimeout(() => { varRetry = undefined; void flushVars(); }, 1000);
+          varRetry.unref();
+        }
+        return;
+      }
+      if (reply.status !== 200) return;
       written.set(key, JSON.stringify(value));
-      await apiCall("PUT", varPath(key), value, 2000);
     }
+  };
+  const flushVars = (): Promise<void> => (varFlush ??= drainVars().finally(() => { varFlush = undefined; }));
+  const stopVars = async (): Promise<void> => {
+    varsStopped = true;
+    clearTimeout(varRetry);
+    varRetry = undefined;
+    wantedVars.clear();
+    await varFlush;
+  };
+
+  const writeVars = async (entries: Array<[string, unknown]>): Promise<void> => {
+    if (!pane || host.self.parent || varsStopped) return;
+    for (const [key, value] of entries) wantedVars.set(key, value);
+    await flushVars();
   };
 
   const varKeys = (): string[] => (routed && !("refusal" in routed) ? [...VAR_KEYS, VAR_RUNTIME, VAR_KO_RUNTIME] : VAR_KEYS);
@@ -1277,6 +1304,7 @@ export const agentExtension = (host: AgentHost) => (pi: ExtensionAPI): void => {
           switch (event.type) {
             case "status": row.status = event.status; break;
             case "pwd": row.cwd = event.pwd; break;
+            case "title": row.title = event.title; break;
             case "dead": row.dead = event.dead; break;
             case "var": row.vars[event.name] = event.value; break;
             case "var_deleted": delete row.vars[event.name]; break;
@@ -2579,6 +2607,7 @@ export const agentExtension = (host: AgentHost) => (pi: ExtensionAPI): void => {
     await startRouted(ctx);
     completionReady = true;
     active = !!(ctx.hasUI && ownSessionId && ko && pane);
+    varsStopped = false;
     if (active) {
       await writeVars([
         [VAR_SESSION, ownSessionId ?? ""],
@@ -2670,6 +2699,7 @@ export const agentExtension = (host: AgentHost) => (pi: ExtensionAPI): void => {
     pendingPeers.clear();
     clearImmediate(startup);
     await starting;
+    await stopVars();
     const reason = event?.reason;
     if (reason === "reload") for (const call of [...calls]) {
       if (call.type === "bash") call.move("reload");

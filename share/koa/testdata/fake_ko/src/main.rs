@@ -642,6 +642,10 @@ fn set_var(pane: &str, name: &str, value: Option<Value>) {
 }
 
 fn put_var(pane: &str, name: &str, body: &str) -> ExitCode {
+    let fail = env("KO_FAKE_VAR_FAIL");
+    if name == "pi.name" && !fail.is_empty() && fs::remove_file(&fail).is_ok() {
+        return http_error(503, ErrorKind::Unavailable, "injected var failure");
+    }
     let Ok(value) = protocol::decode::<Value>(body.as_bytes()) else {
         return http_error(400, ErrorKind::Invalid, "invalid variable value");
     };
