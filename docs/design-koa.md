@@ -970,8 +970,14 @@ the command first ("`!` commands" below).
   keeps the reader's anchor item where it was, and it is the one
   writer of the scroll position. A change that does not move the
   bottom, such as a patch whose text stays hidden, does not scroll.
-  A reveal glides to the bottom, ease-out; a glide ends at the
-  bottom even when a step rounds to no movement.
+  A reveal and a resize of the items (an entry animation, a tool
+  card or a status that grows) glide to the bottom, ease-out; a glide
+  ends at the bottom even when a step rounds to no movement. The
+  viewport, the dock and an image snap: the dock moves at once, and
+  a snap keeps the last line above it. A snap that such a change
+  requests wins over a glide, requested or under way. At a turn's end the
+  typing dots collapse over the grow duration, so the text eases
+  down to the new bottom instead of a step.
 - **Reader input and clamps.** The page cannot read the cause of a
   scroll event: a browser dispatches it at the next frame, after
   later layout, and a native scrollbar drag has no input event of
@@ -981,7 +987,10 @@ the command first ("`!` commands" below).
   reveal that replaces its blocks, a cleared composer) is a clamp,
   not the reader; the page checks for it at once after it removes
   nodes or starts an entry animation, before the content can grow
-  again. Any other move is the reader's: it resumes following
+  again. A clamp is never the start of a glide: while following, a
+  reveal that rebuilds its blocks puts back the position that it had
+  before, against the final layout, so the glide eases only the net
+  growth and the painted position never moves back to older text. Any other move is the reader's: it resumes following
   within 60 px of the bottom with the pane focused, else the reader
   positions the view. `overflow-anchor: none` keeps WebKit's own
   scroll anchoring from moving the position.

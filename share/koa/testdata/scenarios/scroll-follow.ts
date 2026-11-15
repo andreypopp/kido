@@ -13,5 +13,6 @@ const sent = expect({ on: { method: "POST", path: "/prompt" }, reply: { status: 
 
 export const scenarios: Scenarios = {
   testKoaWebviewRevealKeepsFollowing: () => ({ open, steps: [], files: {} }),
+  testKoaWebviewStreamingNeverStepsUp: () => ({ open, steps: [], files: {} }),
   testKoaWebviewSendKeepsFollowing: () => ({ open, steps: [sent, sent], files: {} }),
 };

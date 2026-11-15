@@ -1298,6 +1298,11 @@ is at the bottom and keeps the position otherwise. Three additions.
   Down does the same. The view bar, when shown, is at the top and
   unaffected.
 - **Browser mode**: the same; the focus is the browser window's.
+- **The turn's end** (2026-11-15). The typing dots collapse over the
+  grow duration (220ms, ease-in: height, opacity and the gap above
+  them to 0) while the follower keeps the bottom, so the text eases down
+  and no blank space stays. Under Reduce Motion the dots go in one
+  frame.
 
 ## The job page (job.html; 2026-11-15, approved)
 
@@ -1356,3 +1361,4 @@ back) returns to the agent. No float, no second pane.
 
 Renders: /tmp/koa-shots/koa-job-{running,ended,service,running-narrow}-light.png,
 koa-job-{running,ended}-dark.png.
+||||||| parent of 9ee55a68a (A koa transcript that follows the bottom no longer jumps while streaming)

@@ -14,7 +14,7 @@ import type { PromptMode } from "./koa-records.ts";
 async function page() {
   const source = stripTypeScriptTypes(await readFile(new URL("page/page.ts", import.meta.url), "utf8"));
   class Node {
-    value = ""; private text = ""; style: Record<string, unknown> = { setProperty() {} }; innerHTML = ''; clientWidth = 320; scrollTop = 0; scrollWidth = 0; clientHeight = 100; disabled = false; placeholder = ""; scrollHeight = 20; children: Node[] = []; dataset = {};
+    value = ""; private text = ""; style: Record<string, unknown> = { setProperty: (name: string, value: string) => { this.style[name] = value; } }; innerHTML = ''; clientWidth = 320; scrollTop = 0; scrollWidth = 0; clientHeight = 100; disabled = false; placeholder = ""; scrollHeight = 20; children: Node[] = []; dataset = {};
     get textContent() { return this.text; }
     set textContent(value: unknown) { this.text = String(value); this.children = []; }
     private classes = new Set<string>();
@@ -26,7 +26,7 @@ async function page() {
     contains(node: Node | undefined): boolean { return !!node && (node === this || this.contains(node.parent)); }
     append(...children: Node[]) { children.forEach(child => { if (child instanceof Node) child.parent = this; }); this.children.push(...children); }
     prepend(...children: Node[]) { children.forEach(child => { if (child instanceof Node) child.parent = this; }); this.children.unshift(...children); }
-    before(...children: Node[]) { this.append(...children); }
+    before(...children: Node[]) { const parent = this.parent; if (!parent) return; children.forEach(child => { if (child instanceof Node) child.parent = parent; }); parent.children.splice(parent.children.indexOf(this), 0, ...children); }
     remove() { if (this.contains(document.activeElement)) document.activeElement = undefined; if (this.parent) this.parent.children = this.parent.children.filter(child => child !== this); this.parent = undefined; }
     replaceChildren(...children: Node[]) { this.children.forEach(child => { if (child instanceof Node) child.parent = undefined; }); this.children = []; this.append(...children); }
     content: { childNodes: Node[]; querySelectorAll(): Node[] } = { childNodes: [], querySelectorAll: () => [] };
@@ -36,17 +36,18 @@ async function page() {
     onclick?: () => void;
     onkeydown?: (event: unknown) => void;
     attributes = new Map<string, string>();
-    setAttribute(name: string, value: string) { this.attributes.set(name, value); } getAttribute(name: string) { return this.attributes.get(name) ?? null; } removeAttribute(name: string) { this.attributes.delete(name); } focus() { for (let node: Node | undefined = this; node; node = node.parent) if (node.inert) return; document.activeElement = this; } setSelectionRange() {} addEventListener() {} scrollIntoView() {} getBoundingClientRect() { return { left: 0 }; }
+    setAttribute(name: string, value: string) { this.attributes.set(name, value); } getAttribute(name: string) { return this.attributes.get(name) ?? null; } removeAttribute(name: string) { this.attributes.delete(name); } focus() { for (let node: Node | undefined = this; node; node = node.parent) if (node.inert) return; document.activeElement = this; } setSelectionRange() {} handlers = new Map<string, () => void>(); addEventListener(type: string, handler: () => void) { this.handlers.set(type, handler); } scrollIntoView() {} getBoundingClientRect() { return { left: 0 }; }
     closest(selector: string): Node | null { if (selector === 'a') return this.tagName === 'A' ? this : this.parent?.closest(selector) ?? null; return ['INPUT', 'TEXTAREA', 'SELECT', ...(selector.includes('button') ? ['BUTTON'] : [])].includes(this.tagName) || (this.attributes.has('role') && selector.includes(`[role=${this.attributes.get('role')}]`)) ? this : null; }
     setRangeText(text: string) { this.value = this.value.slice(0, this.selectionStart) + text + this.value.slice(this.selectionEnd); }
     dispatchEvent() { this.oninput?.(); }
-    querySelector() { return undefined; }
+    querySelector(selector: string): Node | undefined { const match = selector.match(/^\.(\w+)(?::not\(\.(\w+)\))?$/); if (!match) return undefined; const find = (node: Node): Node | undefined => { for (const child of node.children) { if (child.classes.has(match[1]) && !(match[2] && child.classes.has(match[2]))) return child; const found = find(child); if (found) return found; } }; return find(this); }
     querySelectorAll(): Node[] { return []; }
     get isConnected(): boolean { return this === document.body || this === document.documentElement || this.parent?.isConnected === true; }
     get childNodes() { return this.children; }
     insertBefore(child: Node, next: Node | null) { if (child === next) return; child.remove(); const index = next ? this.children.indexOf(next) : this.children.length; this.children.splice(index < 0 ? this.children.length : index, 0, child); child.parent = this; }
     get offsetTop() { return (this.parent?.children.indexOf(this) ?? 0) * 100; }
     get firstElementChild() { return this.children[0]; }
+    get previousElementSibling(): Node | undefined { const index = this.parent?.children.indexOf(this) ?? -1; return index > 0 ? this.parent?.children[index - 1] : undefined; }
     get lastElementChild() { return this.children.at(-1); }
     get lastChild() { return this.children.at(-1); }
   }
@@ -82,7 +83,7 @@ async function page() {
       placeholder(text: string) { content.placeholder = text; },
     };
   };
-  const context = { Date: class extends Date { constructor(value: string | number = 1700000012000) { super(value); } static now() { return 1700000012000; } }, getComputedStyle: () => ({ display: 'block' }), composer, bashCommand, ATTACHMENT_LIMITS, isAttachment, pathArg, jobEndText, AbortController, AbortSignal, CustomEvent: class { type: string; detail?: unknown; constructor(type: string, options?: { detail?: unknown }) { this.type = type; this.detail = options?.detail; } }, Node, Element: Node, HTMLElement: Node, HTMLButtonElement: Node, HTMLImageElement: Node, markdown, markdownLine, sliceEnd, document, window: { ko: {}, addEventListener(type: string, handler: (event?: unknown) => void) { windowListeners.set(type, handler); } }, innerWidth: 980, innerHeight: 560, Event: class { type: string; constructor(type: string) { this.type = type; } }, console, setInterval() {}, clearInterval() {}, setTimeout, clearTimeout, requestAnimationFrame() {}, cancelAnimationFrame() {}, performance: { now: () => 0 }, fetch: async () => ({ ok: true, json: async () => ({}) }) };
+  const context = { matchMedia: () => ({ matches: false }), Date: class extends Date { constructor(value: string | number = 1700000012000) { super(value); } static now() { return 1700000012000; } }, getComputedStyle: (node?: { tagName?: string }) => ({ display: 'block', marginBottom: node?.tagName === 'P' ? '10px' : '0px' }), composer, bashCommand, ATTACHMENT_LIMITS, isAttachment, pathArg, jobEndText, AbortController, AbortSignal, CustomEvent: class { type: string; detail?: unknown; constructor(type: string, options?: { detail?: unknown }) { this.type = type; this.detail = options?.detail; } }, Node, Element: Node, HTMLElement: Node, HTMLButtonElement: Node, HTMLImageElement: Node, markdown, markdownLine, sliceEnd, document, window: { ko: {}, addEventListener(type: string, handler: (event?: unknown) => void) { windowListeners.set(type, handler); } }, innerWidth: 980, innerHeight: 560, Event: class { type: string; constructor(type: string) { this.type = type; } }, console, setInterval() {}, clearInterval() {}, setTimeout, clearTimeout, requestAnimationFrame() {}, cancelAnimationFrame() {}, performance: { now: () => 0 }, fetch: async () => ({ ok: true, json: async () => ({}) }) };
   const answersSource = stripTypeScriptTypes(await readFile(new URL('page/answers.ts', import.meta.url), 'utf8')).replace(/^export /gm, '');
   const annotationsSource = stripTypeScriptTypes(await readFile(new URL('page/annotations.ts', import.meta.url), 'utf8')).replace(/^import .*;\n/gm, '').replace(/^export /gm, '');
   Object.assign(context, runInNewContext(answersSource + '\n' + annotationsSource + '\n({annotations,update})', context));
@@ -1804,7 +1805,15 @@ async function flowPage() {
   const page = await latestPage(), { app, evaluate, layout } = page, doc = app.context.document;
   const pad = { value: 0 }, extra = new Map<number, number>();
   const seqs = (): number[] => JSON.parse(String(evaluate("JSON.stringify([...views.keys()].sort((a,b)=>a-b))")));
-  const size = (seq: number) => 100 * Number(evaluate(`(function count(node){return (node.tagName==='P'||node.tagName==='PRE'?1:0)+node.children.reduce((total,child)=>total+count(child),0)})(views.get(${seq}).view)`)) + (extra.get(seq) ?? 0);
+  const starts = new Map<unknown, number>(), now = () => Number(app.context.performance.now());
+  const grown = (node: { className: string }) => { if (!node.className.includes('grow')) return 1; if (!starts.has(node)) starts.set(node, now()); return Math.min(1, (now() - Number(starts.get(node))) / 220); };
+  const leaving = (node: { className: string }) => { if (!node.className.includes('leave')) return 1; if (!starts.has(node)) starts.set(node, now()); return 1 - Math.min(1, (now() - Number(starts.get(node))) / 220); };
+  type Box = { tagName: string; className: string; children: Box[]; parent?: Box; style: Record<string, string> };
+  const margin = (node: Box) => (node.parent?.children[node.parent.children.indexOf(node) + 1]?.className.includes('typing') ? 10 : 0);
+  const dots = (node: Box) => { const left = leaving(node); return 24 * left - parseFloat(node.style['--m'] ?? '0') * (1 - left); };
+  const count = (node: Box): number => (node.tagName === 'P' || node.tagName === 'PRE' ? 100 * grown(node) + margin(node) : 0) + (node.className.includes('typing') ? dots(node) : node.children.reduce((total, child) => total + count(child), 0));
+  const isBox = (value: unknown): value is Box => typeof value === 'object' && value !== null && 'children' in value;
+  const size = (seq: number) => { const view = evaluate(`views.get(${seq}).view`); assert.ok(isBox(view)); return count(view) + (extra.get(seq) ?? 0); };
   const above = (seq: number) => seqs().filter(other => other < seq).reduce((total, other) => total + size(other), 0);
   layout.height = () => seqs().reduce((total, seq) => total + size(seq), 0) + pad.value;
   const create = doc.createElement;
@@ -1829,7 +1838,8 @@ async function flowPage() {
   const open = (items: object[], more = false) => evaluate(`apply({type:'reset',epoch:'a',more:${more},items:${JSON.stringify(items)}})`);
   const gate = (items: object[]) => { let release = () => {}; Object.assign(app.context, { fetch: () => new Promise(resolve => { release = () => resolve({ ok: true, json: async () => ({ type: 'reset', epoch: 'a', more: false, items }) }); }) }); return () => release(); };
   const settled = () => new Promise<void>(resolve => setImmediate(resolve));
-  return { ...page, pad, extra, reveal, suffix, top, bottom, settle, reader, offset, open, gate, settled };
+  const trace = (frames: number) => { const tops: number[] = [], gaps: number[] = []; for (let frame = 0; frame < frames; frame++) { page.step(16); evaluate('itemsResized()'); tops.push(top()); gaps.push(bottom() - top()); } return { tops, gaps }; };
+  return { ...page, pad, extra, reveal, suffix, top, bottom, settle, reader, offset, open, gate, settled, trace };
 }
 
 test('a visible reply that shrinks and regrows under a following pane keeps following', async () => {
@@ -1845,6 +1855,110 @@ test('a visible reply that shrinks and regrows under a following pane keeps foll
   assert.equal(page.top(), page.bottom());
   page.deliver({ type: 'item', item: page.text(1) });
   page.settle(60);
+  assert.equal(page.top(), page.bottom());
+});
+
+function climbs(pre: number, tops: number[]) {
+  assert.deepEqual(tops.filter((value, index) => value < Math.max(pre, ...tops.slice(0, index))), []);
+}
+
+async function streamingPage() {
+  const page = await flowPage();
+  page.evaluate("element('scroll').clientHeight=200");
+  page.pad.value = 600;
+  page.deliver(page.reveal(0, 'Intro.\n\none two three four five six'));
+  page.step(1000); page.step(500);
+  page.settle(60);
+  page.reader(page.bottom());
+  return page;
+}
+
+test('a reveal that replaces its streaming tail never paints the following pane above where it was', async () => {
+  const page = await streamingPage(), pre = page.top();
+  page.deliver(page.suffix(0, 1, '\n\nsecond block\n\nthird'));
+  const { tops } = page.trace(30);
+  climbs(pre, tops);
+  page.settle();
+  assert.equal(page.top(), page.bottom());
+});
+
+test('an entry animation under a following pane glides from its zero-height start', async () => {
+  const page = await streamingPage(), pre = page.top();
+  page.deliver({ type: 'item', item: page.reveal(1, 'Next.\n\nwaiting tail words').item });
+  const { tops, gaps } = page.trace(30);
+  climbs(pre, tops);
+  assert.ok(gaps.some(gap => gap > 10), 'eased behind the growing bottom, not snapped to it: ' + gaps);
+  page.settle();
+  assert.equal(page.top(), page.bottom());
+});
+
+test('a card that grows after the reveal settled glides under an idle following pane', async () => {
+  const page = await streamingPage(), pre = page.top();
+  page.settle(30);
+  page.pad.value += 60;
+  const { tops } = page.trace(20);
+  climbs(pre, tops);
+  assert.ok(Math.max(...tops.map((value, index) => value - (tops[index - 1] ?? pre))) < 30, 'no full-height jump: ' + tops);
+  page.settle();
+  assert.equal(page.top(), page.bottom());
+});
+
+test('an image that loads in the frame of an items resize snaps, and the items resize alone glides', async () => {
+  const page = await streamingPage();
+  const image = { seq: 1, revision: 0, at: 1, kind: 'user', text: 'look', images: [{ id: 'i1', revision: 0, mimeType: 'image/png', bytes: 1, width: 10, height: 10 }], attachments: [] };
+  page.deliver({ type: 'item', item: image });
+  page.settle();
+  const grow = (load: boolean) => {
+    page.extra.set(1, (page.extra.get(1) ?? 0) + 80);
+    if (load) page.evaluate("(function find(node){return node.tagName==='IMG'?node:node.children.map(find).find(Boolean)})(views.get(1).view).onload()");
+    page.evaluate('itemsResized()');
+    page.step(16);
+    return page.bottom() - page.top();
+  };
+  assert.equal(grow(true), 0);
+  assert.ok(grow(false) > 40);
+});
+
+test('the typing dots of a turn that ends without new text collapse over frames, and the follower keeps the bottom', async () => {
+  const page = await streamingPage(), pre = page.top();
+  page.step(1600);
+  page.settle(30);
+  const settled = page.top();
+  page.deliver(page.suffix(0, 1, '', true));
+  const { tops } = page.trace(30);
+  const steps = tops.map((value, index) => (tops[index - 1] ?? settled) - value);
+  assert.equal(page.top(), settled - 34);
+  assert.ok(steps.filter(step => step > 0).length >= 4, 'several frames fall: ' + tops);
+  assert.ok(Math.max(...steps) <= 6, 'no single step takes a fourth of the dots at once: ' + tops);
+  assert.equal(page.evaluate("texts.get('0:0').view.children.some(child => child.className.includes('typing'))"), true);
+  const collapsed = page.top();
+  page.evaluate("texts.get('0:0').view.children.find(child => child.className.includes('typing')).handlers.get('animationend')()");
+  assert.equal(page.evaluate("texts.get('0:0').view.children.some(child => child.className.includes('typing'))"), false);
+  assert.ok(collapsed - page.top() <= 1, 'removing the collapsed dots does not step the bottom: ' + collapsed + ' to ' + page.top());
+  assert.equal(pre, settled);
+});
+
+test('under reduced motion the typing dots go in one frame', async () => {
+  const page = await streamingPage();
+  page.step(1600);
+  page.settle(30);
+  Object.assign(page.app.context, { matchMedia: () => ({ matches: true }) });
+  page.deliver(page.suffix(0, 1, '', true));
+  assert.equal(page.evaluate("texts.get('0:0').view.children.some(child => child.className.includes('typing'))"), false);
+});
+
+test('an items glide that is under way gives way to an image snap in the same frame', async () => {
+  const page = await streamingPage();
+  const image = { seq: 1, revision: 0, at: 1, kind: 'user', text: 'look', images: [{ id: 'i1', revision: 0, mimeType: 'image/png', bytes: 1, width: 10, height: 10 }], attachments: [] };
+  page.deliver({ type: 'item', item: image });
+  page.settle();
+  page.extra.set(1, 200);
+  page.evaluate('itemsResized()');
+  page.step(16);
+  assert.ok(page.bottom() - page.top() > 100, 'the glide is under way');
+  page.extra.set(1, 260);
+  page.evaluate("(function find(node){return node.tagName==='IMG'?node:node.children.map(find).find(Boolean)})(views.get(1).view).onload()");
+  page.step(16);
   assert.equal(page.top(), page.bottom());
 });
 
@@ -1934,7 +2048,7 @@ test('a reset followed by the view change opens an unfocused page at the end', a
   assert.equal(page.top(), page.bottom());
 });
 
-test('a dock resize in the middle of a glide leaves the move to the next frame', async () => {
+test('a dock resize in the middle of a glide leaves the move to the next frame, which snaps', async () => {
   const page = await flowPage();
   page.evaluate("element('scroll').clientHeight=200");
   page.pad.value = 700;
@@ -1949,7 +2063,7 @@ test('a dock resize in the middle of a glide leaves the move to the next frame',
   page.evaluate('dockResized(240)');
   assert.equal(page.top(), before);
   page.step(16);
-  assert.ok(page.top() > before && page.top() < page.bottom(), String(page.top()));
+  assert.equal(page.top(), page.bottom());
 });
 
 test('a glide that rounds its steps to whole pixels still reaches the bottom and releases the frames', async () => {

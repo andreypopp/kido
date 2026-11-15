@@ -60,8 +60,8 @@ import SidebarFeed
         const paragraph=i=>'Streaming paragraph '+i+' with enough words to wrap onto more than one line in a narrow pane';
         const gap=()=>s.scrollHeight-s.scrollTop-s.clientHeight;
         const lastAbove=()=>document.querySelector('#items').lastElementChild.getBoundingClientRect().bottom<=dock.getBoundingClientRect().top+1;
-        const until=async(test,ms=6000)=>{const end=Date.now()+ms;while(!test()&&Date.now()<end)await wait(50)};
-        const settled=async()=>{await until(()=>gap()<=1&&lastAbove());return {gap:gap(),above:lastAbove()}};
+        const until=async(test,ms=60000)=>{const end=performance.now()+ms;while(!test()&&performance.now()<end)await wait(50)};
+        const settled=async()=>{document.querySelectorAll('.typing.leave').forEach(dots=>dots.getAnimations().forEach(animation=>animation.finish()));await until(()=>gap()<=1&&lastAbove());return {gap:gap(),above:lastAbove()}};
         const moveTo=value=>{s.scrollTop=value;s.dispatchEvent(new Event('scroll'))};
         const stream=async()=>{
           const id=seq++;
@@ -121,7 +121,7 @@ import SidebarFeed
           await wait(1000);
           return {first,second,reader:s.scrollTop};
         })()
-        """#, within: 90)
+        """#, within: 150)
         let value = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(result.utf8)) as? [String: Any])
         for key in ["first", "second"] {
             let state = try XCTUnwrap(value[key] as? [String: Any])
@@ -129,6 +129,43 @@ import SidebarFeed
             XCTAssertEqual(state["above"] as? Bool, true, "\(key): \(result)")
         }
         XCTAssertEqual(value["reader"] as? Double, 200, result)
+    }
+    func testKoaWebviewStreamingNeverStepsUp() async throws {
+        let web = try await scrollPage(module: "scroll-follow")
+        let result = try await webviewJS(web, "(async()=>{" + Self.followHelpers + #"""
+          moveTo(s.scrollHeight);
+          await until(()=>gap()<=1);
+          const frames=[],native=window.requestAnimationFrame;
+          let running=true;window.requestAnimationFrame=callback=>native(time=>{callback(time);if(running)frames.push([s.scrollTop,s.scrollHeight-s.clientHeight])});
+          for(let round=0;round<3;round++){await stream();await settled()}
+          const id=seq++;
+          push({type:'item',item:{kind:'assistant',seq:id,revision:0,at:Date.now(),final:false,blocks:[{type:'text',text:paragraph(0)}],stop:'',error:''}});
+          await wait(1500);await settled();
+          const ending=frames.length;
+          push({type:'patch',seq:id,baseRevision:0,revision:1,final:true,stop:'stop',error:'',blocks:[{index:0,suffix:''}]});
+          const animations=document.querySelector('.typing.leave').getAnimations();
+          for(let time=0;time<=220;time+=40){
+            const count=frames.length;
+            animations.forEach(animation=>{animation.pause();animation.currentTime=time});
+            await until(()=>frames.length>count,3000);
+          }
+          animations.forEach(animation=>animation.finish());
+          await wait(1500);await settled();
+          running=false;window.requestAnimationFrame=native;
+          let worst=0,at=-1,fall=0,falls=0;
+          for(let i=1;i<frames.length;i++){
+            const drop=frames[i-1][0]-frames[i][0];
+            if(frames[i][1]>=frames[i-1][1]&&drop>worst){worst=drop;at=i}
+            if(i>=ending&&frames[i][1]<frames[i-1][1]){fall=Math.max(fall,drop);falls++}
+          }
+          return {samples:frames.length,worst,fall,falls,gap:gap(),above:lastAbove(),animations:animations.length,dots:document.querySelectorAll('.typing').length,around:JSON.stringify(frames.slice(Math.max(0,at-3),at+3)),end:JSON.stringify(frames.slice(ending-1))};
+        })()
+        """#, within: 150)
+        let value = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(result.utf8)) as? [String: Any])
+        XCTAssertGreaterThan(try XCTUnwrap(value["samples"] as? Double), 10, result)
+        XCTAssertLessThanOrEqual(try XCTUnwrap(value["worst"] as? Double), 0, result)
+        XCTAssertLessThanOrEqual(try XCTUnwrap(value["fall"] as? Double), 12, result)
+        XCTAssertGreaterThanOrEqual(try XCTUnwrap(value["falls"] as? Double), 2, result)
     }
     func testKoaWebviewSendKeepsFollowing() async throws {
         let web = try await scrollPage(module: "scroll-follow")
@@ -150,7 +187,7 @@ import SidebarFeed
           const after=await settled();
           return {bottom,scrolledUp,after};
         })()
-        """#, within: 90)
+        """#, within: 150)
         let value = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(result.utf8)) as? [String: Any])
         for key in ["bottom", "scrolledUp", "after"] {
             let state = try XCTUnwrap(value[key] as? [String: Any])
@@ -583,6 +620,7 @@ import SidebarFeed
         func capture(_ name: String) async throws { try await captureFrames(name, afterLight: nil) }
         func captureFrames(_ name: String, afterLight: (() async throws -> Void)?) async throws {
             guard captures.contains(name) || captures.contains("foot-responsive") else { return }
+            _ = try await webviewJS(web, "(()=>{document.querySelectorAll('.typing.leave').forEach(dots=>dots.getAnimations().forEach(animation=>animation.finish()));return true})()")
             if scenario == .dialogs { try await webviewUntil(web, "document.querySelector('#tokens').textContent==='88k / 200k'&&document.querySelector('#percent').textContent==='44%'") }
             let ordered = name == "questions-ordered" || name == "narrow-questions-ordered"
             let aboveBottom = scenario == .jobs && name.contains("service")

@@ -52,7 +52,9 @@ type Anchor = Pick<Position, 'seq' | 'offset'>;
 type Motion = { kind: 'idle' } | { kind: 'snap'; reason: 'layout' | 'action' } | { kind: 'glide' | 'dash'; until: number };
 type ScrollState = { kind: 'following'; motion: Motion } | { kind: 'reader'; anchor: Anchor | undefined } | { kind: 'restoring'; target: Position };
 let scrolling: ScrollState = { kind: 'following', motion: { kind: 'idle' } };
-let invalidated: 'none' | 'snap' | 'glide' = 'none';
+type Request = 'none' | 'layout' | 'glide' | 'snap';
+const REQUESTS: Request[] = ['none', 'layout', 'glide', 'snap'];
+let invalidated: Request = 'none';
 let measured = { top: 0, max: 0 };
 let divider: HTMLElement | undefined, wasFocused = paneFocused();
 const fresh = new Map<string, HTMLElement>(), counted = new Set<string>(), liveBash = new Map<string, string>();
@@ -210,8 +212,12 @@ function prose(key: string | undefined, source: string, final: boolean, annotati
 }
 function show(memo: TextMemo, source: string, final: boolean) {
   const { reveal } = memo, before = reveal?.tail;
+  if (scrolling.kind === 'following') observe();
+  const held = scrolling.kind === 'following' ? { top: element('scroll').scrollTop, max: measured.max } : undefined;
   const annotated = memo.annotationItem ? annotations(source, memo.annotationItem.annotations, editor) : undefined;
-  memo.view.querySelector(reveal ? '.typing' : '.caret')?.remove();
+  const old = memo.view.querySelector<HTMLElement>(reveal ? '.typing:not(.leave)' : '.caret');
+  const leaving = final && reveal && !matchMedia('(prefers-reduced-motion: reduce)').matches ? old : null;
+  if (!leaving) old?.remove();
   const blocks = memo.render(source, final, annotated?.marks, reveal && (before ?? { start: -1, end: 0 }));
   let first = 0;
   while (first < blocks.length && memo.blocks[first]?.block === blocks[first]) first++;
@@ -231,7 +237,8 @@ function show(memo: TextMemo, source: string, final: boolean) {
     const nodes = [...template.content.childNodes];
     if (!block.streaming) delete block.html;
     memo.blocks.push({ block, nodes });
-    memo.view.append(...nodes);
+    if (leaving) leaving.before(...nodes);
+    else memo.view.append(...nodes);
     const elements = nodes.filter(child => child instanceof HTMLElement);
     if (!reveal || !elements.length) return;
     const { tail } = block, fresh = index >= memo.grown;
@@ -255,6 +262,14 @@ function show(memo: TextMemo, source: string, final: boolean) {
       (last?.tagName === 'P' ? last : memo.view).append(node('span', undefined, 'caret'));
     }
   }
+  if (leaving) {
+    leaving.style.setProperty('--h', leaving.getBoundingClientRect().height + 'px');
+    leaving.style.setProperty('--m', leaving.previousElementSibling ? getComputedStyle(leaving.previousElementSibling).marginBottom : '0px');
+    leaving.style.animationDuration = REVEAL.grow + 'ms';
+    leaving.classList.add('leave');
+    leaving.addEventListener('animationend', () => leaving.remove(), { once: true });
+  }
+  if (held && scrolling.kind === 'following') { const scroll = element('scroll'); scroll.scrollTop = held.top; measured = { top: scroll.scrollTop, max: held.max }; }
   layoutChanged();
 }
 function foldFence(memo: TextMemo, pre: HTMLElement, key: string) {
@@ -345,8 +360,8 @@ function observe() {
   if (scrolling.kind === 'reader' && near && paneFocused()) { scrolling = { kind: 'following', motion: { kind: 'idle' } }; measured.max = max; clearDivider(); return; }
   scrolling = { kind: 'reader', anchor: anchorOf() };
 }
-function layoutChanged(kind: 'snap' | 'glide' = 'snap', urgent = false) {
-  if (invalidated !== 'glide') invalidated = kind;
+function layoutChanged(kind: Request = 'layout', urgent = false) {
+  if (REQUESTS.indexOf(kind) > REQUESTS.indexOf(invalidated)) invalidated = kind;
   schedule(urgent);
 }
 function move(now: number, dt: number) {
@@ -357,7 +372,7 @@ function move(now: number, dt: number) {
   let { motion } = scrolling;
   if (request !== 'none' && maxTop(scroll) !== measured.max) {
     if (request === 'glide' && (motion.kind === 'idle' || motion.kind === 'glide' || motion.kind === 'snap' && motion.reason === 'layout')) motion = { kind: 'glide', until: now + REVEAL.grow };
-    else if (motion.kind === 'idle') motion = { kind: 'snap', reason: 'layout' };
+    else if (request === 'snap' ? motion.kind !== 'dash' && !(motion.kind === 'snap' && motion.reason === 'action') : motion.kind === 'idle') motion = { kind: 'snap', reason: 'layout' };
   }
   if (motion.kind !== 'idle' && motion.kind !== 'dash' && !(motion.kind === 'snap' && motion.reason === 'action') && !paneFocused()) motion = { kind: 'idle' };
   if (motion.kind !== 'idle') {
@@ -446,6 +461,7 @@ function thumbnails(refs: ImageRef[], slots: Map<string, Slot>, name?: string) {
         const target = thumb;
         image.onload = () => layoutChanged('snap', true);
         image.onerror = () => {
+          if (target.classList.contains('gone')) return;
           target.classList.add('gone'); target.setAttribute('role', 'img'); target.setAttribute('aria-label', 'Image unavailable'); target.disabled = true;
           image.hidden = true; target.append(node('span', 'Image unavailable')); layoutChanged('snap', true);
         };
@@ -1201,6 +1217,7 @@ function dockResized(height: number) {
   observe();
   followResize();
 }
+function itemsResized() { layoutChanged('glide', true); }
 function followResize() {
   const scroll = element('scroll');
   if (scroll.clientWidth !== fitWidth) { fitWidth = scroll.clientWidth; fitAll = true; }
@@ -1246,7 +1263,7 @@ function connect() {
       const record: PageRecord = JSON.parse(event.data);
       if (metrics && record.type === 'flush') { metrics.bytes = record.bytes; metrics.pending.push(record.t); }
       else apply(record);
-      layoutChanged('snap', true);
+      layoutChanged('layout', true);
       if (metrics?.pending.length) {
         const pending = metrics.pending.splice(0), bytes = metrics.bytes;
         const sampled = (kind: 'applied' | 'frame') => {
@@ -1289,7 +1306,7 @@ async function older() {
       for (const item of result.items) if (!items.has(item.seq)) put(item);
       for (const patch of mine.patches) { applyPatch(patch, false); if (historyRequest !== mine) return; }
       element('older').hidden = !more;
-      layoutChanged('snap', true);
+      layoutChanged('layout', true);
     }
   } catch (error) { reportError(error); } finally { if (historyRequest === mine) historyRequest = undefined; }
 }
@@ -1484,7 +1501,7 @@ element('latest').onclick = toLatest;
 setInterval(() => { job.tick(); if (state.view.type === 'job') return; status(); for (const item of state.bash) pendingBash.get(item.id)?.update(item); }, 1000);
 window.addEventListener('resize', positionPicker);
 new ResizeObserver(() => { followResize(); layoutBar(); }).observe(element('scroll'));
-new ResizeObserver(() => layoutChanged('snap', true)).observe(element('items'));
+new ResizeObserver(itemsResized).observe(element('items'));
 new ResizeObserver(() => layoutChanged('snap', true)).observe(element('jobv'));
 new ResizeObserver(([entry]) => dockResized(entry.borderBoxSize[0].blockSize)).observe(element('dock'));
 refreshComposer(); focusComposer(); void connect();
