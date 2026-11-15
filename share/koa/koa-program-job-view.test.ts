@@ -19,7 +19,9 @@ async function viewing(t: TestContext, before = "hello\n", env: NodeJS.ProcessEn
   const aux = await mkdtemp(join(tmpdir(), "koa-job-view-test-"));
   t.after(() => rm(aux, { recursive: true, force: true }));
   const gate = join(aux, "gate");
-  const tools = [{ name: "async_bash", args: { command: gatedCommand(gate, before, "bye\n", 1), name: "one" } }];
+  const output = join(aux, "before");
+  await writeFile(output, before);
+  const tools = [{ name: "async_bash", args: { command: `cat '${output}'; ${gatedCommand(gate, "", "bye\n", 1)}`, name: "one" } }];
   const app = await realFixture(t, { panes: [selfPane()], replies: [{ tools }, { text: "started" }], env: { KO_RUNTIME: "", ...env } });
   await app.post("prompt", { text: "run a job", mode: "prompt", attachments: [] });
   const statuses = async () => (await app.apiCalls()).filter(call => call.path === "/panes/pane_1/status").map(call => { const body: { id: string; state?: string; selection?: string } = JSON.parse(call.body); return body; });
