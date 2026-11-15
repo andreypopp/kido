@@ -22,7 +22,7 @@ test('stress reports refuse missing files, empty samples and clock jumps', async
   await writeFile(file, JSON.stringify({ ...record, samples: [{ t: 1000, frame: 1010, bytes: 50, clockError: 0 }, { t: 1020, frame: 1040, bytes: 50, clockError: 0 }] }));
   const rows = await report(dir);
   assert.equal(rows[0]?.timing, 'flush→frame');
-  assert.equal(rows[0]?.p50, 20);
+  assert.equal(rows[0]?.p50, 15);
   assert.equal(rows[0]?.bytes, 50);
   await writeFile(join(dir, 'page-2-summary.json'), JSON.stringify({ target: 'page', timing: 'frame', id: 2, status: 'ok', seconds: 1, heap: 33 * 1048576, metrics: [file] }));
   const overHeap = await report(dir);
@@ -80,4 +80,22 @@ test('WebContent footprint budgets use the per-page average and report the maxim
   assert.equal(visible[0]?.pages, 'visible pages');
   assert.equal(visible[0]?.timing, 'flush→apply');
   assert.equal(visible[0]?.p95, 12);
+});
+
+test('a streaming budget above its limit fails the row', async t => {
+  const dir = await mkdtemp(join(tmpdir(), 'koa-report-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const file = join(dir, 'samples.jsonl');
+  const observations = [{ type: 'frame', at: 100, duration: 20, lex: 0, strays: 0 }, { type: 'apply', at: 101, duration: 1, lex: 0, strays: 0 }, { type: 'frame', at: 9000, duration: 99, lex: 0, strays: 0 }];
+  await writeFile(file, JSON.stringify({ samples: [{ t: 1000, frame: 1010, bytes: 50, clockError: 0 }], observations, bytes: 50, opens: 1, caps: 0, flushes: 1, highWater: 50 }));
+  await writeFile(join(dir, 'page-manifest.json'), JSON.stringify({ target: 'page', ids: [13] }));
+  const engine = [{ at: 0, metrics: { LayoutCount: 1 } }, { at: 1000, metrics: { LayoutCount: 3 } }];
+  await writeFile(join(dir, 'page-13-summary.json'), JSON.stringify({ target: 'page', timing: 'frame', id: 13, status: 'ok', seconds: 1, heap: 1000, metrics: [file], since: 50, until: 200, engine }));
+  const budgets = [{ name: 'frame p99 ms', limit: { type: 'max' as const, value: 10 } }, { name: 'frames over 50 ms', limit: { type: 'reported' as const } }];
+  const [row] = await report(dir, budgets);
+  assert.equal(row?.status, 'failed');
+  assert.match(row?.error ?? '', /frame p99 ms: 20.00 exceeds its budget/);
+  assert.equal(row?.stream?.['frames (render task) [frame pass]'], '1');
+  assert.equal(row?.stream?.['budget frames over 50 ms'], 'reported (0.00)');
+  assert.equal((await report(dir, [{ name: 'frame p99 ms', limit: { type: 'max' as const, value: 30 } }]))[0]?.status, 'ok');
 });

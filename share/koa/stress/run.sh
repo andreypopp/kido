@@ -18,8 +18,9 @@ case "$mode" in
   table) ;;
   page) shift; node "$root/share/koa/stress/run.ts" "$@" || status=$? ;;
   kido) make -C "$root/app" koa-stress || status=$? ;;
+  stream) node "$root/share/koa/stress/run.ts" 13 || status=$?; make -C "$root/app" koa-stress ONLY="KoaStressTests/testStreamingHistory KoaStressTests/testStreamingHistoryProbe" KOA_STRESS_VISIBLE=1 || status=$? ;;
   all) node "$root/share/koa/stress/run.ts" || status=$?; make -C "$root/app" koa-stress || status=$? ;;
-  *) echo 'usage: run.sh [all|page [ID ...]|kido|table]' >&2; exit 2 ;;
+  *) echo 'usage: run.sh [all|page [ID ...]|kido|stream|table]' >&2; exit 2 ;;
 esac
 node "$root/share/koa/stress/report.ts" || status=$?
 exit "$status"

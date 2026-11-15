@@ -1,0 +1,58 @@
+import type { Observation } from '../koa-records.ts';
+
+export type Engine = { at: number; metrics: Record<string, number> };
+export type Spread = { count: number; p50?: number; p95?: number; p99?: number; over17: number; over50: number };
+type Budget = { name: string; limit: { type: 'reported' } | { type: 'max'; value: number } };
+type Verdict = { name: string; value: number | undefined; status: 'reported' | 'ok' | 'failed' };
+
+export function percentile(values: readonly number[], fraction: number): number | undefined {
+  if (!values.length) return undefined;
+  const sorted = values.toSorted((a, b) => a - b), rank = fraction * (sorted.length - 1), low = Math.floor(rank), high = Math.ceil(rank);
+  const a = sorted[low], b = sorted[high];
+  return a === undefined || b === undefined ? undefined : a + (b - a) * (rank - low);
+}
+
+export const summarize = (values: readonly number[]): Spread => ({
+  count: values.length, p50: percentile(values, .5), p95: percentile(values, .95), p99: percentile(values, .99),
+  over17: values.filter(value => value > 16.7).length, over50: values.filter(value => value > 50).length,
+});
+
+export function totals(observations: readonly Observation[]) {
+  const timed = (type: 'frame' | 'apply') => observations.flatMap(observation => observation.type === type ? [observation] : []);
+  const frames = timed('frame'), applies = timed('apply');
+  const strays = (list: readonly { strays: number }[]) => list.reduce((sum, entry) => sum + entry.strays, 0);
+  const dots = (phase: 'call' | 'text' | 'end') => observations.reduce((sum, observation) => sum + (observation.type === 'dots' && observation.phase === phase ? observation.count : 0), 0);
+  return {
+    frame: summarize(frames.map(frame => frame.duration)),
+    gap: summarize(frames.flatMap(frame => frame.gap === undefined ? [] : [frame.gap])),
+    apply: summarize(applies.map(apply => apply.duration)),
+    lexMs: [...frames, ...applies].reduce((sum, entry) => sum + entry.lex, 0),
+    key: summarize(observations.flatMap(observation => observation.type === 'key' ? [observation.latency] : [])),
+    strays: { frame: strays(frames), apply: strays(applies), other: observations.filter(observation => observation.type === 'stray').length },
+    dots: { call: dots('call'), text: dots('text'), end: dots('end') },
+  };
+}
+
+export function engineDeltas(samples: readonly Engine[], frames: number) {
+  const first = samples.at(0), last = samples.at(-1);
+  if (!first || !last || first === last) return undefined;
+  const seconds = (last.at - first.at) / 1000, delta = (name: string) => (last.metrics[name] ?? 0) - (first.metrics[name] ?? 0);
+  return {
+    seconds, layouts: delta('LayoutCount'), layoutsPerSecond: delta('LayoutCount') / seconds, layoutsPerFrame: frames ? delta('LayoutCount') / frames : undefined,
+    layoutSeconds: delta('LayoutDuration'), recalcs: delta('RecalcStyleCount'), taskSeconds: delta('TaskDuration'),
+    heapMax: Math.max(...samples.map(sample => sample.metrics.JSHeapUsedSize ?? 0)), nodes: last.metrics.Nodes,
+  };
+}
+
+export const evaluate = (budgets: readonly Budget[], values: Readonly<Record<string, number | undefined>>): Verdict[] => budgets.map(({ name, limit }) => {
+  const value = values[name];
+  return { name, value, status: limit.type === 'reported' || value === undefined ? 'reported' : value > limit.value ? 'failed' : 'ok' };
+});
+
+export const streamBudgets: Budget[] = [
+  { name: 'frame p99 ms', limit: { type: 'reported' } },
+  { name: 'frames over 50 ms', limit: { type: 'reported' } },
+  { name: 'stray reads per frame', limit: { type: 'reported' } },
+  { name: 'dots detachments while text streams', limit: { type: 'reported' } },
+  { name: 'key→frame p99 ms', limit: { type: 'reported' } },
+];

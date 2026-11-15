@@ -70,3 +70,31 @@ export type Patch = { type: "patch"; seq: number; baseRevision: number; revision
 export type PageRecord = { type: "reset"; epoch: string; more: boolean; items: WireItem[] } | { type: "item"; item: WireItem } | Patch | ({ type: "state" } & State) | { type: "flush"; bytes: number; t: number } | { type: "reload" } | { type: "job-reset"; view: string; epoch: string; start: number; end: number; data: string } | { type: "job-append"; view: string; epoch: string; start: number; data: string } | { type: "job-gone"; view: string } | { type: "view_gone"; view: string; parent: string };
 export type ViewRequest = { view?: string };
 export type ViewGone = { kind: "view_gone"; view: string; error: string };
+
+export type MetricsMode = "applied" | "frame" | "probe";
+export type MetricsSample = { t: number; bytes: number; clockError: number; applied?: number; frame?: number };
+export type Observation =
+  | { type: "frame" | "apply"; at: number; duration: number; gap?: number; lex: number; strays: number }
+  | { type: "stray"; at: number }
+  | { type: "key"; at: number; latency: number }
+  | { type: "dots"; at: number; phase: "call" | "text" | "end"; count: number };
+export type MetricsRequest = { samples: MetricsSample[]; observations: Observation[] };
+const finite = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value);
+const record = (value: unknown): value is { [key: string]: unknown } => typeof value === "object" && value !== null && !Array.isArray(value);
+function validObservation(entry: unknown): entry is Observation {
+  if (!record(entry) || !finite(entry.at)) return false;
+  switch (entry.type) {
+    case "frame": case "apply": return finite(entry.duration) && finite(entry.lex) && Number.isSafeInteger(entry.strays) && (entry.gap === undefined || finite(entry.gap));
+    case "stray": return true;
+    case "key": return finite(entry.latency);
+    case "dots": return (entry.phase === "call" || entry.phase === "text" || entry.phase === "end") && Number.isSafeInteger(entry.count);
+    default: return false;
+  }
+}
+export function metricsRequest(body: unknown): MetricsRequest | undefined {
+  if (!record(body)) return;
+  const { samples, observations } = body;
+  if (!Array.isArray(samples) || samples.length > 50 || !samples.every(sample => record(sample) && finite(sample.t) && (finite(sample.frame) || finite(sample.applied)) && finite(sample.clockError) && typeof sample.bytes === "number" && Number.isSafeInteger(sample.bytes) && sample.bytes >= 0)) return;
+  if (!Array.isArray(observations) || observations.length > 200 || !observations.every(validObservation)) return;
+  return { samples, observations };
+}

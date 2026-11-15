@@ -1777,6 +1777,29 @@ windows (`make -C app koa-stress`), and prints one report
 `--metrics`, koa stamps each flush and the page reports when it
 applied it (Kido's off-screen windows run no `requestAnimationFrame`)
 or framed it (Chrome), with koa's byte, reconnect and cap counters.
+The streaming workload (`run.sh stream`) measures the page's frame
+while one long turn streams over a large history, in headless Chrome
+and in visible Kido windows (`KoaStressTests/testStreamingHistory`,
+`KOA_STRESS_VISIBLE=1`). It loads the whole history through the
+page's own Older action before it measures, so the frames lay out a
+full document. It runs twice in each engine, because the counters
+that wrap the DOM cost time: in mode `frame` the page times only its
+frame task, the gap between chained frames, each record's apply, the
+lexer and key-to-frame latency; in mode `probe` it also counts
+geometry reads made while the layout is dirty and removals of the
+working mark's node. The report takes the timings from the first
+pass and the counts from the second. The page's counters are
+`page/metrics.ts`, which the page installs only in metrics mode; the
+shape that the page posts to `/metrics` and its check are in
+`koa-records.ts`. A stray read is the page's view of a forced layout,
+an upper bound by design: Chrome's `Performance.getMetrics` layout
+count, sampled over the same window, is the check on it, and
+WebKit has no such counter. A dots removal is counted by where the
+mark was before and after it: a move at a tool call, a removal while
+text streams (which restarts the bounce's animations), or the end of
+the turn. The streaming budgets report only, until the plan's later
+units set them.
+
 The runs are manual, never in `make verify`. What they found shaped
 the design: the SSE feed, the memo's raw-text rule, and no limit on
 the number of webviews in Kido, because eight visible streaming panes

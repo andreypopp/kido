@@ -420,4 +420,47 @@ sentence about the raw-text slice. The plan is deleted then.
 
 ## Baseline
 
-Appended by unit 1.
+Unit 1, on `origin/main` 08cfda34a, macOS 27.0, Mac17,6 (Apple M5
+Max), `share/koa/stress/run.sh stream`, run `run-DGOt4w`. The machine
+ran other agents: the load average was 28.4/27.0/24.6 at the start
+of the Kido leg and 39.3/20.8/19.4 at its end, so the Kido numbers
+are noisy. Timings come from the `frame` pass, counts from the
+`probe` pass. WebKit's clock is coarse, so Kido's values are whole
+milliseconds.
+
+| metric | headless Chrome | Kido, visible |
+|---|---|---|
+| frames | 764 | 710 |
+| frame task ms p50 / p95 / p99 | 0.9 / 2.8 / 4.0 | 11 / 15 / 22 |
+| frame task, probe pass, p50 / p95 / p99 | 1.5 / 3.0 / 3.8 | 14 / 31 / 39.5 |
+| frames over 16.7 / 50 ms | 0 / 0 | 24 / 0 |
+| frame gap ms p50 / p95 / p99 | 24.5 / 25.3 / 25.4 | none: no tick chained |
+| apply ms p50 / p95 / p99 | 0.3 / 4.8 / 5.7 | 0 / 1 / 7 |
+| applies over 16.7 / 50 ms | 0 / 0 | 3 / 3 |
+| flush to frame ms p50 / p95 / p99 | 17.8 / 48.9 / 76.7 | 33 / 80 / 421 |
+| lex ms, whole stream | 65 | 205 |
+| key to frame ms p50 / p99 | 8.9 / 28.2 (CDP keys) | 6 / 38 (synthetic) |
+| stray reads in frame / apply / other | 2464 / 1561 / 1655 | 2407 / 718 / 3064 |
+| stray reads per frame | 3.2 | 3.7 |
+| dots removals at calls / while text / at end | 40 / 43 / 1 | 40 / 43 / 1 |
+| Chrome layouts, total / per frame | 5658 / 7.4 | n/a |
+| Chrome layout s / style recalcs / task s (of 53 s) | 6.1 / 5905 / 51.6 | n/a |
+| heap max / per-page memory MiB | 52.6 / 25.7 | n/a / 1509.6 |
+| DOM nodes at end | 350 252 | n/a |
+
+Findings that shape the next units:
+
+- Chrome's main thread is busy for almost the whole stream (51.6 s
+  of task time in 53 s), but the page's frame task is short: the
+  cost is style, layout and the intake outside the frame, and the
+  frames chain at about 40 per second, not 60.
+- In Kido no tick schedules the next one: every frame comes from an
+  intake, 27 to 125 ms apart, and the flush-to-frame p99 is 421 ms.
+- The working mark is removed 43 times while text streams, in both
+  engines, against the goal of zero.
+- The stray-read counter sees about 3 reads per frame against
+  Chrome's 7.4 layouts per frame, of which about one is the frame's
+  own layout.
+- Headless Chrome does not composite the dots, so the layer-id check
+  has no layer to follow there; the dots' detachments are the
+  measure in both engines.

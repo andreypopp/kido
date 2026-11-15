@@ -30,7 +30,7 @@ import type { JobSnapshot } from "./records.ts";
 import type { Agent, Selection, Tree } from "./koa-agents.ts";
 import { createView, type AgentView, type Own } from "./koa-view.ts";
 import { agentCompletionItems, type AgentRow } from "./agents.ts";
-import { ATTACHMENT_LIMITS, type ViewGone, type PromptMode, type PageRecord, type State, type ThinkingLevel, type Dialog, type CompletionCommand, type CompletionQuery, type SessionStats, type Bash, type View } from "./koa-records.ts";
+import { ATTACHMENT_LIMITS, type ViewGone, type PromptMode, type PageRecord, type State, type ThinkingLevel, type Dialog, type CompletionCommand, type CompletionQuery, type SessionStats, type Bash, type View, type MetricsMode, metricsRequest } from "./koa-records.ts";
 
 function completeBody(value: unknown): CompletionQuery | { error: string } {
   return isRecord(value) && typeof value.text === "string" && typeof value.pos === "number" && Number.isSafeInteger(value.pos) && value.pos >= 0 && value.pos <= value.text.length ? { text: value.text, pos: value.pos } : { error: "Completion requires text and a cursor offset in that text" };
@@ -103,12 +103,12 @@ async function main(): Promise<void> {
   const endOptions = args.indexOf('--');
   const options = args.slice(0, endOptions < 0 ? args.length : endOptions);
   if (options.some(arg => arg === '--help' || arg === '-h')) {
-    process.stdout.write("Usage: koa [options] [pi arguments]\n\nOptions:\n  --help                 Show this help\n  --browser              Open the page in a browser\n  --pi PATH              Use this pi executable\n  --metrics PATH         Write rendering metrics\n  --metrics-mode MODE    Select applied or frame metrics\n\nOther arguments go to pi.\n");
+    process.stdout.write("Usage: koa [options] [pi arguments]\n\nOptions:\n  --help                 Show this help\n  --browser              Open the page in a browser\n  --pi PATH              Use this pi executable\n  --metrics PATH         Write rendering metrics\n  --metrics-mode MODE    Select applied, frame or probe metrics\n\nOther arguments go to pi.\n");
     return;
   }
   let browser = false;
   let metricsFile: string | undefined;
-  let metricsMode: "applied" | "frame" | undefined;
+  let metricsMode: MetricsMode | undefined;
   let executable = "pi";
   const pass: string[] = [], own: string[] = [];
   for (let i = 0; i < args.length; i++) {
@@ -120,7 +120,7 @@ async function main(): Promise<void> {
       if (!metricsFile) throw new Error("--metrics requires a path");
     } else if (arg === "--metrics-mode") {
       const mode = args[++i];
-      if (mode !== "applied" && mode !== "frame") throw new Error("--metrics-mode requires applied or frame");
+      if (mode !== "applied" && mode !== "frame" && mode !== "probe") throw new Error("--metrics-mode requires applied, frame or probe");
       metricsMode = mode;
     } else if (arg === "--pi") {
       const path = args[++i];
@@ -628,10 +628,11 @@ async function main(): Promise<void> {
         if (metricsFile && request.method === "POST" && url.pathname === "/metrics") {
           const bytes = await readBody(request, 1 << 20);
           if (!bytes) { respond(response, 413, "{}"); return; }
-          let samples: unknown;
-          try { samples = JSON.parse(bytes.toString("utf8")); } catch { respond(response, 400, "{}"); return; }
-          if (!Array.isArray(samples) || samples.length > 50 || !samples.every(sample => sample && typeof sample === "object" && Number.isFinite(sample.t) && (Number.isFinite(sample.frame) || Number.isFinite(sample.applied)) && Number.isFinite(sample.clockError) && Number.isSafeInteger(sample.bytes) && sample.bytes >= 0)) { respond(response, 400, "{}"); return; }
-          const line = JSON.stringify({ type: "metrics", at: Date.now(), samples, ...tree.selected().view.feed.metrics }) + "\n";
+          let body: unknown;
+          try { body = JSON.parse(bytes.toString("utf8")); } catch { respond(response, 400, "{}"); return; }
+          const accepted = metricsRequest(body);
+          if (!accepted) { respond(response, 400, "{}"); return; }
+          const line = JSON.stringify({ type: "metrics", at: Date.now(), ...accepted, ...tree.selected().view.feed.metrics }) + "\n";
           const file = metricsFile;
           const write = (metricsWrites ?? Promise.resolve()).then(() => appendFile(file, line));
           metricsWrites = write.catch(() => {});

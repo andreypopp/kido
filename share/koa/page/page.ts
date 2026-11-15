@@ -6,6 +6,7 @@ import { closeLightbox, preview, previewKey } from './preview.ts';
 import { fetchJSON, scoped } from './http.ts';
 import { createJobPage } from './job.ts';
 import { dots } from './working.ts';
+import { install } from './metrics.ts';
 import { ATTACHMENT_LIMITS, pathArg } from '../koa-records.ts';
 import type { State, WireJob, WireItem, QueuedPrompt, WireAssistant, Block, Patch, PageRecord, PromptMode, ImageRef, AgentCall, Bash, SessionRow, SessionScope, ThinkingLevel } from '../koa-records.ts';
 import type { AgentRef, Relation } from '../records.ts';
@@ -19,7 +20,7 @@ declare global {
   interface Window {
     composer: Pick<ReturnType<typeof composer>, 'text' | 'setText' | 'focus'>;
     koaFocused?: boolean;
-    koaMetrics?: { flush(): Promise<void>; readonly after: number; readonly items: WireItem[] };
+    koaMetrics?: { flush(): Promise<void>; readonly after: number; readonly count: number; readonly items: WireItem[] };
   }
 }
 
@@ -1290,23 +1291,25 @@ function widthChanged() {
 const koaInstance = document.querySelector<HTMLMetaElement>('meta[name="koa-instance"]')?.content;
 const metricsMode = document.querySelector<HTMLMetaElement>('meta[name="koa-metrics"]')?.content;
 const metrics: { mode: string; bytes: number; pending: number[]; samples: { t: number; bytes: number; clockError: number; applied?: number; frame?: number }[]; timer?: number; writes: Promise<void>; frames: Set<Promise<void>>; error?: string } | undefined = metricsMode ? { mode: metricsMode, bytes: 0, pending: [], samples: [], timer: undefined, writes: Promise.resolve(), frames: new Set(), error: undefined } : undefined;
+const probe = metrics && install(tick, metrics.mode === 'probe');
 function sendMetrics(force = false) {
-  if (!metrics || !force && !metrics.samples.length) return;
+  if (!metrics || !force && !metrics.samples.length && !probe?.pending()) return;
   clearTimeout(metrics.timer); metrics.timer = undefined;
-  const samples = metrics.samples.splice(0, 50);
+  const samples = metrics.samples.splice(0, 50), observations = probe?.drain(200) ?? [];
   metrics.writes = metrics.writes.then(async () => {
-    const response = await fetch('/metrics', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(samples) });
+    const response = await fetch('/metrics', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ samples, observations }) });
     if (!response.ok) throw Error('Metrics write failed: ' + response.status);
   }).catch(error => { metrics.error = error.message; console.error(error); });
 }
 if (metrics) window.koaMetrics = {
   async flush() {
     await Promise.all([...metrics.frames]);
-    while (metrics.samples.length) sendMetrics();
+    while (metrics.samples.length || probe?.pending()) sendMetrics();
     sendMetrics(true); await metrics.writes;
     if (metrics.error) throw Error(metrics.error);
   },
   get after() { return after; },
+  get count() { return items.size; },
   get items() { return [...items.values()]; },
 };
 let source: EventSource, reconnect: number | undefined, closed = false, failed = false;

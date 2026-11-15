@@ -1,25 +1,29 @@
 import assert from 'node:assert/strict';
 import { spawn, type ChildProcess } from 'node:child_process';
 import { EventEmitter, once } from 'node:events';
-import { mkdtemp, readFile, writeFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, writeFile, rm, copyFile } from 'node:fs/promises';
 import { resolve, join } from 'node:path';
 import { tmpdir } from 'node:os';
 import http from 'node:http';
-import { scripts, workloads, pageWorkloads, stressModels, stressSettings } from './workloads.ts';
+import { scripts, workloads, pageWorkloads, streaming, stressModels, stressSettings } from './workloads.ts';
+import type { Engine } from './statistics.ts';
 
 const configured = process.env.KOA_STRESS_OUTPUT;
 if (!configured) throw Error('KOA_STRESS_OUTPUT is required; use stress/run.sh');
 const output = resolve(configured);
 const selected = process.argv.slice(2).map(Number);
 const ids = selected.length ? selected : pageWorkloads;
-assert.ok(ids.every(id => pageWorkloads.includes(id)), 'Unknown page workload');
+assert.ok(ids.every(id => pageWorkloads.includes(id) || id === streaming), 'Unknown page workload');
 await writeFile(join(output, 'page-manifest.json'), JSON.stringify({ target: 'page', ids }), { flag: 'wx' });
 const work = join(output, 'work');
 await scripts(join(output, 'scripts'), work);
 const root = resolve(new URL('../../..', import.meta.url).pathname);
 const koaRoot = join(root, 'share/koa');
-type Reply = { id?: number; method?: string; params?: { chunk?: string }; error?: unknown; result?: { result?: { value?: unknown }; exceptionDetails?: unknown; usedSize?: number } };
-for (const id of ids) {
+type Layer = { layerId: string; backendNodeId?: number };
+type Reply = { id?: number; method?: string; params?: { chunk?: string; layers?: Layer[] }; error?: unknown; result?: { result?: { value?: unknown }; exceptionDetails?: unknown; usedSize?: number; metrics?: { name: string; value: number }[]; root?: { nodeId: number }; nodeId?: number; node?: { backendNodeId: number; children?: { backendNodeId: number }[] } } };
+const SAMPLE_MS = 1000, KEY_MS = 250, PROGRESS_MS = 10000;
+for (const [id, mode] of ids.flatMap((id): [number, 'frame' | 'probe'][] => id === streaming ? [[id, 'frame'], [id, 'probe']] : [[id, 'frame']])) {
+  const tag = mode === 'probe' ? `${id}-probe` : String(id);
   let directory: string | undefined;
   let socket: WebSocket | undefined;
   let stalled: http.IncomingMessage | undefined;
@@ -47,12 +51,14 @@ for (const id of ids) {
   try {
     directory = await mkdtemp(join(tmpdir(), 'koa-stress-'));
     for (const opener of ['open', 'xdg-open']) await writeFile(join(directory, opener), '#!/bin/sh\nexit 0\n', { mode: 0o700 });
-    const file = join(output, `page-${id}.jsonl`);
-    const workload: { replies: object[]; session?: string } = JSON.parse(await readFile(join(output, `scripts/${id}.json`), 'utf8'));
+    const file = join(output, `page-${tag}.jsonl`);
+    const workload: { replies: object[]; session?: string; items?: number } = JSON.parse(await readFile(join(output, `scripts/${id}.json`), 'utf8'));
     const agent = join(directory, 'agent');
+    const seeded = join(directory, 'seed.jsonl');
+    if (workload.session) await copyFile(workload.session, seeded);
     const provider = startChild(process.execPath, [join(koaRoot, 'koa-fake-provider.ts'), '@' + join(output, `scripts/${id}.json`), agent, JSON.stringify(stressSettings), JSON.stringify(stressModels)], process.env, 'pipe');
     await Promise.race([failed, new Promise<void>((resolve, reject) => { provider.stdout?.once('data', () => resolve()); provider.once('close', () => reject(Error('Provider exited before it was ready'))); })]);
-    const koa = startChild(process.execPath, [join(root, 'build/ko/share/ko/koa/koa.ts'), '--browser', '--no-extensions', '--extension', join(koaRoot, 'testdata/stress-ext.ts'), '--no-skills', '--no-prompt-templates', '--no-context-files', '--session-dir', join(directory, 'sessions'), ...(workload.session ? ['--session', workload.session] : []), '--metrics', file, '--metrics-mode', 'frame'], { ...process.env, KO_SOCKET: '', KO_PANE: '', KO_PANE_TOKEN: '', PATH: `${directory}:${process.env.PATH}`, PI_CODING_AGENT_DIR: agent, PI_OFFLINE: '1', PI_SKIP_VERSION_CHECK: '1', KOA_STRESS_ID: String(id) });
+    const koa = startChild(process.execPath, [join(root, 'build/ko/share/ko/koa/koa.ts'), '--browser', '--no-extensions', '--extension', join(koaRoot, 'testdata/stress-ext.ts'), '--no-skills', '--no-prompt-templates', '--no-context-files', '--session-dir', join(directory, 'sessions'), ...(workload.session ? ['--session', seeded] : []), '--metrics', file, '--metrics-mode', mode], { ...process.env, KO_SOCKET: '', KO_PANE: '', KO_PANE_TOKEN: '', PATH: `${directory}:${process.env.PATH}`, PI_CODING_AGENT_DIR: agent, PI_OFFLINE: '1', PI_SKIP_VERSION_CHECK: '1', KOA_STRESS_ID: String(id) });
     const url = await address(koa, /http:\/\/127\.0\.0\.1:\d+\//, 'koa');
     koa.stderr?.resume();
     const chrome = startChild(process.env.KOA_CHROME ?? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome', ['--headless=new', '--no-first-run', '--no-default-browser-check', '--disable-background-timer-throttling', '--disable-renderer-backgrounding', '--remote-debugging-port=0', `--user-data-dir=${directory}/chrome`, 'about:blank']);
@@ -106,7 +112,7 @@ for (const id of ids) {
       } finally { events.off('HeapProfiler.addHeapSnapshotChunk', chunk); }
     };
     await snapshot('before');
-    const started = performance.now();
+    let started = performance.now();
     const observations: Record<string, unknown> = {};
     const prompt = (size: number) => evaluate(`fetch('/prompt',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sessionId:document.body.dataset.sessionId,text:'p'.repeat(${size}),mode:'prompt',attachments:[]})}).then(r=>r.status)`);
     if (id === 10) {
@@ -116,7 +122,57 @@ for (const id of ids) {
         request.once('error', reject);
       });
     }
+    const engine: Engine[] = [], layers = new Map<number, Set<string>>(), dotsIds: number[] = [];
+    let stopSampling = async () => {}, since = 0, ended = 0, layerEvents = 0, mappedLayers = 0, latest: Layer[] = [];
+    const poll = async (condition: string, ms: number, label: string) => {
+      const begin = performance.now();
+      let reported = begin;
+      for (;;) {
+        if (await evaluate(condition)) return;
+        const now = performance.now();
+        if (now - begin > ms) throw Error('Condition deadline: ' + label);
+        if (now - reported >= PROGRESS_MS) { reported = now; console.log(`progress: ${label} ${((now - begin) / 1000).toFixed(0)} s`); }
+        await new Promise(resolve => setTimeout(resolve, 200));
+      }
+    };
+    const engineSample = async () => engine.push({ at: Date.now(), metrics: Object.fromEntries(((await call('Performance.getMetrics')).metrics ?? []).map(metric => [metric.name, metric.value])) });
+    const track = () => { for (const layer of latest) if (layer.backendNodeId !== undefined && dotsIds.includes(layer.backendNodeId)) layers.set(layer.backendNodeId, (layers.get(layer.backendNodeId) ?? new Set()).add(layer.layerId)); };
+    if (id === streaming) {
+      const expected = workload.items;
+      assert.ok(expected, 'The streaming workload has no seeded items');
+      await poll(`(()=>{const older=document.querySelector('#older');if(window.koaMetrics.count<${expected}&&!older.hidden)older.click();return window.koaMetrics.count===${expected}})()`, 180000, 'history load');
+      assert.equal(await evaluate(`document.querySelectorAll('#items [data-seq]').length`), expected, 'History is not in the DOM');
+      await evaluate('window.koaMetrics.flush().then(()=>true)');
+      events.on('LayerTree.layerTreeDidChange', (params: { layers?: Layer[] }) => {
+        layerEvents++; latest = params.layers ?? [];
+        mappedLayers += latest.filter(layer => layer.backendNodeId !== undefined).length;
+        track();
+      });
+      await call('LayerTree.enable'); await call('Performance.enable');
+      await evaluate(`document.querySelector('#prompt .cm-content').focus()`);
+      since = Number(await evaluate('performance.timeOrigin+performance.now()'));
+      await engineSample();
+      started = performance.now();
+      let sampling = false, typing = false, running = true, inflight: Promise<void> = Promise.resolve();
+      const sample = setInterval(() => { if (sampling || !running) return; sampling = true; inflight = engineSample().then(() => {}, () => {}).finally(() => { sampling = false; }); }, SAMPLE_MS);
+      const keys = setInterval(() => { if (typing || !running) return; typing = true; void call('Input.dispatchKeyEvent', { type: 'keyDown', key: 'a', code: 'KeyA', text: 'a' }).then(() => call('Input.dispatchKeyEvent', { type: 'keyUp', key: 'a', code: 'KeyA' })).catch(() => {}).finally(() => { typing = false; }); }, KEY_MS);
+      stopSampling = async () => { running = false; clearInterval(sample); clearInterval(keys); await inflight; };
+      timersToClear.add(sample); timersToClear.add(keys);
+    }
     assert.equal(await prompt(id === 4 ? 900 * 1024 : 2), 200, 'Prompt was not accepted');
+    if (id === streaming) {
+      await poll(`!!document.querySelector('#items [aria-label=working]')`, 60000, 'working mark');
+      const root = (await call('DOM.getDocument', { depth: 0 })).root;
+      const found = await call('DOM.querySelector', { nodeId: root?.nodeId, selector: '#items .dots' });
+      const node = (await call('DOM.describeNode', { nodeId: found.nodeId, depth: 1 })).node;
+      dotsIds.push(...[node?.backendNodeId, ...node?.children?.map(child => child.backendNodeId) ?? []].flatMap(value => value === undefined ? [] : [value]));
+      track();
+      await poll(`(()=>{if(document.querySelector('#field').inert||document.querySelector('#items [aria-label=working]'))return false;let node=document.querySelector('#items').lastElementChild;for(let step=0;node&&step<6;step++,node=node.previousElementSibling)if(node.textContent.includes('STRESS DONE ${id}'))return true;return false})()`, 300000, 'stream');
+      await stopSampling();
+      await engineSample();
+      ended = Number(await evaluate('performance.timeOrigin+performance.now()'));
+      await evaluate(`(()=>{window.composer.setText('');return true})()`);
+    }
     if (id === 4) {
       assert.equal(await prompt(1.5 * 1024 * 1024), 413);
       await evaluate(`(()=>{window.composer.setText('p'.repeat(1.5*1024*1024));document.querySelector('#prompt .cm-content').dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',bubbles:true}));return true})()`);
@@ -145,7 +201,7 @@ for (const id of ids) {
     if (id === 8) observations.themeFrame = await evaluate(`(async()=>{const times=[];for(let n=0;n<50;n++){const t=performance.now();document.documentElement.style.setProperty('--ko-bg',n%2?'#fff':'#111');dispatchEvent(new Event('ko-theme'));await new Promise(requestAnimationFrame);times.push(performance.now()-t)}return times})()`);
     if (id === 9) assert.deepEqual(await evaluate(`Promise.all(Array.from({length:8},()=>fetch('/items?before=0').then(r=>r.status)))`), Array(8).fill(200));
     if (id === 11) assert.deepEqual(await evaluate(`Promise.all([new Blob([JSON.stringify({text:'body-kind probe',mode:'prompt',attachments:[]})]),new FormData()].map(body=>fetch('/prompt',{method:'POST',body}).then(r=>r.status)))`), [415, 415]);
-    await until(`!document.querySelector('#field').inert&&!document.querySelector('#items [aria-label=working]')&&document.querySelector('#items').textContent.includes('STRESS DONE ${id}')`, 120000);
+    if (id !== streaming) await until(`!document.querySelector('#field').inert&&!document.querySelector('#items [aria-label=working]')&&document.querySelector('#items').textContent.includes('STRESS DONE ${id}')`, 120000);
     if ([2, 5, 8, 9].includes(id)) {
       await evaluate(`(()=>{if(document.querySelector('#items').textContent.length<400000&&!document.querySelector('#older').hidden)document.querySelector('#older').click();return true})()`);
       await until(`document.querySelectorAll('#items .assistant p').length===20000&&Array.from(document.querySelectorAll('#items .assistant p')).every(p=>p.textContent==='abcdefghijklmnopqr')`);
@@ -164,15 +220,16 @@ for (const id of ids) {
     await snapshot('after');
     await call('HeapProfiler.collectGarbage');
     const heap = await call('Runtime.getHeapUsage');
-    const records: { samples: { frame: number }[]; caps: number; opens: number; subscribers: number }[] = (await readFile(file, 'utf8')).trim().split('\n').map(line => JSON.parse(line));
+    const records: { samples: { frame: number }[]; observations: { type: string; at: number }[]; caps: number; opens: number; subscribers: number }[] = (await readFile(file, 'utf8')).trim().split('\n').map(line => JSON.parse(line));
     assert.ok(records.flatMap(record => record.samples).length > 0, 'No frame samples');
+    if (id === streaming) for (const type of ['frame', 'apply']) assert.ok(records.flatMap(record => record.observations).some(observation => observation.type === type && observation.at >= since && observation.at <= ended), `No ${type} observations: a metrics hook is broken`);
     const last = records.at(-1); assert.ok(last); assert.equal(last.subscribers, 1);
     if (id === 10) { assert.ok(last.caps > 0, 'Stalled reader did not reach the output cap'); assert.ok(last.opens > 1, 'No independent stalled subscriber'); }
-    const summary = { target: 'page', id, name: workloads[id - 1]?.name, timing: 'frame', status: 'ok', seconds, metrics: [file], heap: heap.usedSize, observations };
-    await writeFile(join(output, `page-${id}-summary.json`), JSON.stringify(summary));
+    const summary = { target: 'page', id, name: workloads[id - 1]?.name, timing: 'frame', status: 'ok', seconds, metrics: [file], heap: heap.usedSize, observations, ...id === streaming && { since, until: ended, engine, dots: Object.fromEntries([...layers].map(([node, ids]) => [node, [...ids]])), dotsNodes: dotsIds.length, layerEvents, mappedLayers, keys: 'cdp', mode } };
+    await writeFile(join(output, `page-${tag}-summary.json`), JSON.stringify(summary));
     console.log(JSON.stringify(summary));
   } catch (error) {
-    await writeFile(join(output, `page-${id}-summary.json`), JSON.stringify({ target: 'page', timing: 'frame', id, status: 'failed', error: String(error) }));
+    await writeFile(join(output, `page-${tag}-summary.json`), JSON.stringify({ target: 'page', timing: 'frame', id, status: 'failed', error: String(error) }));
     throw error;
   } finally {
     stopping = true;
