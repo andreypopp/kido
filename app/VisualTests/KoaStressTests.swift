@@ -9,7 +9,8 @@ import XCTest
 
 @MainActor final class KoaStressTests: VisualTestCase {
     private static var startingWebContent: Int?
-    private static let visibleWorkloads: Set<Int> = [2, 6, 13]
+    private static let visibleWorkloads: Set<Int> = [2, 6, 13, 14]
+    private static let streamingWorkloads: Set<Int> = [13, 14]
     private var dir = ""
     private var owner: WindowOwner!
     private var output: URL!
@@ -31,7 +32,7 @@ import XCTest
         }
         let manifest = output.appendingPathComponent("kido-manifest.json")
         let selected = Set((ProcessInfo.processInfo.environment["KOA_STRESS_TESTS"] ?? "").split(separator: " ").map(String.init))
-        let workloads = [(1, "testLongSession"), (2, "testFastTokens"), (6, "testManyPanes"), (7, "testHiddenShown"), (8, "testThemes"), (12, "testParentChildren"), (13, "testStreamingHistory"), (13, "testStreamingHistoryProbe")]
+        let workloads = [(1, "testLongSession"), (2, "testFastTokens"), (6, "testManyPanes"), (7, "testHiddenShown"), (8, "testThemes"), (12, "testParentChildren"), (13, "testStreamingHistory"), (13, "testStreamingHistoryProbe"), (14, "testStreaming"), (14, "testStreamingProbe")]
         let ids = Set(workloads.compactMap { id, test -> Int? in
             let enabled = selected.isEmpty || selected.contains("KoaStressTests") || selected.contains("KoaStressTests/" + test)
             return enabled && (!visible || Self.visibleWorkloads.contains(id)) ? id : nil
@@ -65,8 +66,8 @@ import XCTest
     }
 
     private func complete(_ web: WKWebView, id: Int, deadline: Date) async throws {
-        if id == 13 {
-            try await webviewUntil(web, "(()=>{if(!(\(koaIdle)))return false;let node=document.querySelector('#items').lastElementChild;for(let step=0;node&&step<6;step++,node=node.previousElementSibling)if(node.textContent.includes('STRESS DONE 13'))return true;return false})()", within: max(0.001, deadline.timeIntervalSinceNow))
+        if Self.streamingWorkloads.contains(id) {
+            try await webviewUntil(web, "(()=>{if(!(\(koaIdle)))return false;let node=document.querySelector('#items').lastElementChild;for(let step=0;node&&step<6;step++,node=node.previousElementSibling)if(node.textContent.includes('STRESS DONE \(id)'))return true;return false})()", within: max(0.001, deadline.timeIntervalSinceNow))
             return
         }
         try await webviewUntil(web, "\(koaIdle)&&document.querySelector('#items').textContent.includes('STRESS DONE \(id)')", within: max(0.001, deadline.timeIntervalSinceNow))
@@ -105,7 +106,7 @@ import XCTest
     private var panes: [PaneView] { owner.testSession?.windows.values.filter { !$0.isHidden }.flatMap(\.displayedPanes) ?? [] }
 
     private func summary(_ id: Int, started: Date, before: [String: Int], metrics: [String], since: Double? = nil, until: Double? = nil, tag: String, status: Result<Void, Error>) throws {
-        var value: [String: Any] = ["target": "kido", "visible": visible, "timing": id == 13 ? "frame" : timing, "id": id, "before": before, "after": try memory(), "metrics": metrics, "seconds": Date().timeIntervalSince(started)]
+        var value: [String: Any] = ["target": "kido", "visible": visible, "timing": Self.streamingWorkloads.contains(id) ? "frame" : timing, "id": id, "before": before, "after": try memory(), "metrics": metrics, "seconds": Date().timeIntervalSince(started)]
         if let since, let until { value["since"] = since; value["until"] = until; value["keys"] = "synthetic" }
         switch status {
         case .success: value["status"] = "ok"
@@ -133,7 +134,7 @@ import XCTest
                 before = try memory()
             }
             started = Date()
-            let completionSeconds: TimeInterval = id == 13 ? 300 : id == 6 && !visible ? 180 : 90
+            let completionSeconds: TimeInterval = Self.streamingWorkloads.contains(id) ? 300 : id == 6 && !visible ? 180 : 90
             let deadline = started.addingTimeInterval(completionSeconds)
             let workload = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(contentsOf: output.appendingPathComponent("scripts/\(id).json"))) as? [String: Any])
             var session = workload["session"] as? String
@@ -151,7 +152,7 @@ import XCTest
                 let koaDirectory = output.appendingPathComponent("koa-\(tag)-\(index)")
                 try FileManager.default.createDirectory(at: koaDirectory, withIntermediateDirectories: true)
                 _ = try await KoaProvider.start(self, directory: koaDirectory, script: try XCTUnwrap(workload["replies"] as? [[String: Any]]), models: [["provider": "fake", "id": "fake-model", "contextWindow": 1_000_000_000]], settings: ["compaction": ["enabled": false]])
-                commands.append(koaShell(self, directory: koaDirectory, home: output.appendingPathComponent("home"), session: session, visual: nil, extensionFile: "stress-ext.ts", cwd: output.appendingPathComponent("work"), env: ["PATH": path, "KOA_STRESS_ID": String(id)], args: ["--metrics", file, "--metrics-mode", id == 13 ? (probe ? "probe" : "frame") : timing], stderr: output.appendingPathComponent("kido-\(tag)-\(index).stderr")))
+                commands.append(koaShell(self, directory: koaDirectory, home: output.appendingPathComponent("home"), session: session, visual: nil, extensionFile: "stress-ext.ts", cwd: output.appendingPathComponent("work"), env: ["PATH": path, "KOA_STRESS_ID": String(id)], args: ["--metrics", file, "--metrics-mode", Self.streamingWorkloads.contains(id) ? (probe ? "probe" : "frame") : timing], stderr: output.appendingPathComponent("kido-\(tag)-\(index).stderr")))
             }
             func command(_ index: Int) -> String { commands[index] }
             let trees = (0..<count).map { koPane(command($0)) }
@@ -178,17 +179,18 @@ import XCTest
                     try await webviewUntil(browser, "document.visibilityState==='visible'&&!document.hidden", within: 5)
                 }
             }
-            if id == 13 {
+            if Self.streamingWorkloads.contains(id) {
                 let browser = try XCTUnwrap(panes.first?.webviewView?.browser)
-                let expected = try XCTUnwrap(workload["items"] as? Int)
+                if let expected = workload["items"] as? Int {
                 try await webviewUntil(browser, "(()=>{const older=document.querySelector('#older');if(window.koaMetrics.count<\(expected)&&!older.hidden)older.click();return window.koaMetrics.count===\(expected)})()", within: 180)
                 let attached = try await webviewJS(browser, "document.querySelectorAll('#items [data-seq]').length")
                 XCTAssertEqual(attached, String(expected))
+                }
                 _ = try await webviewJS(browser, "window.koaMetrics.flush().then(()=>true)")
                 since = Double(try await webviewJS(browser, "performance.timeOrigin+performance.now()"))
             }
             for pane in panes { try await prompt(try XCTUnwrap(pane.webviewView?.browser)) }
-            if id == 13 {
+            if Self.streamingWorkloads.contains(id) {
                 let browser = try XCTUnwrap(panes.first?.webviewView?.browser)
                 _ = try await webviewJS(browser, "(()=>{document.querySelector('#prompt .cm-content').focus();return true})()")
                 typing = Task { @MainActor in
@@ -270,7 +272,7 @@ import XCTest
                 }
             }
             typing?.cancel()
-            if id == 13 {
+            if Self.streamingWorkloads.contains(id) {
                 until = Double(try await webviewJS(try XCTUnwrap(panes.first?.webviewView?.browser), "performance.timeOrigin+performance.now()"))
                 _ = try await webviewJS(try XCTUnwrap(panes.first?.webviewView?.browser), "(()=>{window.composer.setText('');return true})()")
             }
@@ -297,4 +299,6 @@ import XCTest
     func testParentChildren() async throws { try await measure(12) }
     func testStreamingHistory() async throws { try await measure(13) }
     func testStreamingHistoryProbe() async throws { try await measure(13, probe: true) }
+    func testStreaming() async throws { try await measure(14) }
+    func testStreamingProbe() async throws { try await measure(14, probe: true) }
 }

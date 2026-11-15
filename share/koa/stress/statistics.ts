@@ -39,7 +39,6 @@ export function latency(samples: readonly MetricsSample[]) {
 export function totals(observations: readonly Observation[]) {
   const frames = observations.flatMap(observation => observation.type === 'frame' ? [observation] : []), applies = observations.flatMap(observation => observation.type === 'apply' ? [observation] : []);
   const strays = (list: readonly { strays: number }[]) => list.reduce((sum, entry) => sum + entry.strays, 0);
-  const probes = (list: readonly { probes: number }[]) => list.reduce((sum, entry) => sum + entry.probes, 0);
   const dots = (phase: 'call' | 'text' | 'end') => observations.reduce((sum, observation) => sum + (observation.type === 'dots' && observation.phase === phase ? observation.count : 0), 0);
   const renders = observations.flatMap(observation => observation.type === 'markdown' ? [observation] : []);
   return {
@@ -52,7 +51,6 @@ export function totals(observations: readonly Observation[]) {
     key: summarize(observations.flatMap(observation => observation.type === 'key' ? [observation.latency] : [])),
     strays: { frame: strays(frames), apply: strays(applies), other: observations.filter(observation => observation.type === 'stray').length },
     strayBy: [...frames, ...applies, ...observations.flatMap(observation => observation.type === 'stray' ? [{ by: { [observation.source]: 1 } }] : [])].reduce<Record<string, number>>((sum, entry) => { for (const [source, count] of Object.entries(entry.by)) sum[source] = (sum[source] ?? 0) + count; return sum; }, {}),
-    probes: { frame: probes(frames), apply: probes(applies), other: observations.filter(observation => observation.type === 'probe').length },
     dots: { call: dots('call'), text: dots('text'), end: dots('end') },
   };
 }

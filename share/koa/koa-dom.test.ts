@@ -4,7 +4,7 @@ import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 import { runInNewContext } from "node:vm";
 import { stripTypeScriptTypes } from "node:module";
-import { markdown, markdownLine, sliceEnd } from "./page/markdown.ts";
+import { markdown, markdownLine } from "./page/markdown.ts";
 import { bashCommand } from "./prompt.ts";
 import { promptHistory } from './page/history.ts';
 import { ATTACHMENT_LIMITS, isAttachment, pathArg } from "./koa-records.ts";
@@ -14,7 +14,7 @@ import type { PromptMode } from "./koa-records.ts";
 async function page() {
   const source = stripTypeScriptTypes(await readFile(new URL("page/page.ts", import.meta.url), "utf8"));
   class Node {
-    value = ""; private text = ""; style: Record<string, unknown> = { setProperty: (name: string, value: string) => { this.style[name] = value; } }; innerHTML = ''; clientWidth = 320; scrollTop = 0; scrollWidth = 0; clientHeight = 100; disabled = false; placeholder = ""; scrollHeight = 20; children: Node[] = []; dataset = {};
+    value = ""; private text = ""; style: Record<string, unknown> = { setProperty: (name: string, value: string) => { this.style[name] = value; } }; innerHTML = ''; clientWidth = 320; scrollTop = 0; scrollWidth = 0; clientHeight = 100; disabled = false; placeholder = ""; scrollHeight = 20; children: Node[] = []; dataset = {}; rects: { top: number; bottom: number }[] = [];
     get textContent() { return this.text; }
     set textContent(value: unknown) { this.text = String(value); this.children = []; }
     private classes = new Set<string>();
@@ -36,7 +36,7 @@ async function page() {
     onclick?: () => void;
     onkeydown?: (event: unknown) => void;
     attributes = new Map<string, string>();
-    setAttribute(name: string, value: string) { this.attributes.set(name, value); } getAttribute(name: string) { return this.attributes.get(name) ?? null; } removeAttribute(name: string) { this.attributes.delete(name); } focus() { for (let node: Node | undefined = this; node; node = node.parent) if (node.inert) return; document.activeElement = this; } setSelectionRange() {} handlers = new Map<string, (event?: unknown) => void>(); addEventListener(type: string, handler: (event?: unknown) => void) { this.handlers.set(type, handler); } scrollIntoView() {} getBoundingClientRect() { return { left: 0, top: 0 }; }
+    setAttribute(name: string, value: string) { this.attributes.set(name, value); } getAttribute(name: string) { return this.attributes.get(name) ?? null; } removeAttribute(name: string) { this.attributes.delete(name); } focus() { for (let node: Node | undefined = this; node; node = node.parent) if (node.inert) return; document.activeElement = this; } setSelectionRange() {} handlers = new Map<string, (event?: unknown) => void>(); addEventListener(type: string, handler: (event?: unknown) => void) { this.handlers.set(type, handler); } scrollIntoView() {} getBoundingClientRect(): { left?: number; top: number; bottom?: number; height?: number } { return { left: 0, top: 0 }; } getClientRects() { return this.rects; }
     closest(selector: string): Node | null { if (selector === 'a') return this.tagName === 'A' ? this : this.parent?.closest(selector) ?? null; return ['INPUT', 'TEXTAREA', 'SELECT', ...(selector.includes('button') ? ['BUTTON'] : [])].includes(this.tagName) || (this.attributes.has('role') && selector.includes(`[role=${this.attributes.get('role')}]`)) ? this : null; }
     setRangeText(text: string) { this.value = this.value.slice(0, this.selectionStart) + text + this.value.slice(this.selectionEnd); }
     dispatchEvent() { this.oninput?.(); }
@@ -59,7 +59,7 @@ async function page() {
     get nextSibling(): Node | null { return this.parent?.children[this.parent.children.indexOf(this) + 1] ?? null; }
   }
   const elements = new Map<string, Node>();
-  const observers: { callback: (entries: unknown[]) => void; targets: Node[] }[] = [];
+  const observers: { callback: (entries: unknown[]) => void; targets: Set<Node>; fresh: Set<Node> }[] = [];
   const intersections: { callback: (entries: unknown[]) => void; top: number; targets: Set<Node>; seen: Map<Node, boolean> }[] = [];
   class IntersectionObserver {
     private state: (typeof intersections)[number];
@@ -80,7 +80,7 @@ async function page() {
       if (entries.length) watch.callback(entries);
     }
   };
-  class ResizeObserver { private targets: Node[] = []; constructor(callback: (entries: unknown[]) => void) { observers.push({ callback, targets: this.targets }); } observe(target: Node) { this.targets.push(target); } }
+  class ResizeObserver { private state: (typeof observers)[number]; constructor(callback: (entries: unknown[]) => void) { this.state = { callback, targets: new Set(), fresh: new Set() }; observers.push(this.state); } observe(target: Node) { if (!this.state.targets.has(target)) { this.state.targets.add(target); this.state.fresh.add(target); } } unobserve(target: Node) { this.state.targets.delete(target); this.state.fresh.delete(target); } }
   const listeners = new Map<string, (event: unknown) => void>();
   const windowListeners = new Map<string, (event?: unknown) => void>();
   let activeElement: Node | undefined;
@@ -111,11 +111,11 @@ async function page() {
       placeholder(text: string) { content.placeholder = text; },
     };
   };
-  const context = { ResizeObserver, IntersectionObserver, matchMedia: () => ({ matches: false }), Date: class extends Date { constructor(value: string | number = 1700000012000) { super(value); } static now() { return 1700000012000; } }, getComputedStyle: (node?: { tagName?: string }) => ({ display: 'block', marginBottom: node?.tagName === 'P' ? '10px' : '0px' }), composer, bashCommand, ATTACHMENT_LIMITS, isAttachment, pathArg, jobEndText, AbortController, AbortSignal, CustomEvent: class { type: string; detail?: unknown; constructor(type: string, options?: { detail?: unknown }) { this.type = type; this.detail = options?.detail; } }, Node, Element: Node, HTMLElement: class { static [Symbol.hasInstance](value: unknown) { return value instanceof Node && value.tagName !== '#text'; } }, HTMLButtonElement: Node, HTMLImageElement: Node, markdown, markdownLine, sliceEnd, document, window: { ko: {}, addEventListener(type: string, handler: (event?: unknown) => void) { windowListeners.set(type, handler); } }, innerWidth: 980, innerHeight: 560, Event: class { type: string; constructor(type: string) { this.type = type; } }, console, setInterval() {}, clearInterval() {}, setTimeout, clearTimeout, requestAnimationFrame() {}, cancelAnimationFrame() {}, performance: { now: () => 0 }, fetch: async () => ({ ok: true, json: async () => ({}) }) };
+  const context = { ResizeObserver, IntersectionObserver, matchMedia: () => ({ matches: false }), Date: class extends Date { constructor(value: string | number = 1700000012000) { super(value); } static now() { return 1700000012000; } }, getComputedStyle: (node?: { tagName?: string }) => ({ display: 'block', marginBottom: node?.tagName === 'P' ? '10px' : '0px' }), composer, bashCommand, ATTACHMENT_LIMITS, isAttachment, pathArg, jobEndText, AbortController, AbortSignal, CustomEvent: class { type: string; detail?: unknown; constructor(type: string, options?: { detail?: unknown }) { this.type = type; this.detail = options?.detail; } }, Node, Element: Node, HTMLElement: class { static [Symbol.hasInstance](value: unknown) { return value instanceof Node && value.tagName !== '#text'; } }, HTMLButtonElement: Node, HTMLImageElement: Node, markdown, markdownLine, document, window: { ko: {}, addEventListener(type: string, handler: (event?: unknown) => void) { windowListeners.set(type, handler); } }, innerWidth: 980, innerHeight: 560, Event: class { type: string; constructor(type: string) { this.type = type; } }, console, setInterval() {}, clearInterval() {}, setTimeout, clearTimeout, requestAnimationFrame() {}, cancelAnimationFrame() {}, performance: { now: () => 0 }, fetch: async () => ({ ok: true, json: async () => ({}) }) };
   const answersSource = stripTypeScriptTypes(await readFile(new URL('page/answers.ts', import.meta.url), 'utf8')).replace(/^export /gm, '');
   const annotationsSource = stripTypeScriptTypes(await readFile(new URL('page/annotations.ts', import.meta.url), 'utf8')).replace(/^import .*;\n/gm, '').replace(/^export /gm, '');
   Object.assign(context, runInNewContext(answersSource + '\n' + annotationsSource + '\n({annotations,update})', context));
-  Object.assign(document, { createTreeWalker: () => ({ nextNode: () => false }) });
+  Object.assign(document, { createTreeWalker: () => ({ nextNode: () => false }), createRange: () => { let target: Node | undefined; return { selectNodeContents(node: Node) { target = node; }, getClientRects: () => target?.rects ?? [] }; } });
   Object.assign(context, { NodeFilter: { SHOW_TEXT: 4 } });
   const attachSource = stripTypeScriptTypes(await readFile(new URL('page/attach.ts', import.meta.url), 'utf8')).replace(/^import .*;\n/gm, '').replace(/^export /gm, '');
   const httpSource = stripTypeScriptTypes(await readFile(new URL('page/http.ts', import.meta.url), 'utf8')).replace(/^import .*;\n/gm, '').replace(/^export /gm, '');
@@ -124,6 +124,8 @@ async function page() {
   Object.assign(context, { ...runInNewContext(httpSource + '\n({fetchJSON,scoped})', context), attach: runInNewContext(attachSource + '\nattach', context) });
   const jobSource = ['page/job-output.ts', 'page/job.ts'].map(name => stripTypeScriptTypes(readFileSync(new URL(name, import.meta.url), 'utf8')).replace(/^import .*;\n/gm, '').replace(/^export /gm, '')).join('\n');
   Object.assign(context, runInNewContext(jobSource + '\n({createJobPage})', { ...context, atob, TextDecoder, Uint8Array }));
+  const revealSource = stripTypeScriptTypes(readFileSync(new URL('page/reveal.ts', import.meta.url), 'utf8')).replace(/^import .*;\n/gm, '').replace(/^export /gm, '');
+  Object.assign(context, runInNewContext(revealSource + '\n({revealHeight,unitsOf})', context));
   const workingSource = stripTypeScriptTypes(readFileSync(new URL('page/working.ts', import.meta.url), 'utf8')).replace(/^export /gm, '');
   Object.assign(context, runInNewContext(workingSource + '\n({dots})', context));
   const body = source.replace(/^import .*;\n/gm, "").replace(/^setInterval\([\s\S]*$/m, "") + "\nfunction put(item) { accept(item); renderDirty(); return views.get(item.seq)?.view; }";
@@ -1075,20 +1077,22 @@ test("thinking and aborted steps use live times without inventing replay times",
 async function revealPage(clientHeight = 100) {
   const app = await page(), html: string[] = [], bars: InstanceType<typeof app.context.Node>[] = [], pres: InstanceType<typeof app.context.Node>[] = [], queued = new Map<number, () => void>(), timers = new Map<number, { at: number; callback: () => void }>();
   let clock = 0, id = 0;
-  const hooks: { read?: (name: string, self: { className?: string }) => void } = {};
+  const hooks: { read?: (name: string, self: { className?: string }) => void; layout?: () => void } = {};
   const create = app.context.document.createElement;
-  const lines = (markup: string) => 20 * [...markup.matchAll(/<(p|li|h\d|pre|tr)\b[^>]*>([\s\S]*?)<\/\1>/g)].reduce((total, [, tag, inner]) => {
-    const text = inner.replace(/<[^>]*>/g, '');
-    return total + (tag === 'pre' ? text.replace(/\n$/, '').split('\n').length : Math.ceil(text.split(/\s+/).filter(Boolean).length / 3));
-  }, 0);
+  const rects = (count: number) => Array.from({ length: count }, (_, line) => ({ top: line * 20 + 2, bottom: line * 20 + 18 }));
   app.context.document.createElement = (tag: string) => {
     const node = create(tag);
-    node.getBoundingClientRect = () => { hooks.read?.('rect', node); layout.flush(); return { left: 0, top: node.offsetTop - top, height: node.className.includes('measure') ? lines(node.innerHTML) : 0 }; };
+    node.getBoundingClientRect = () => { hooks.read?.('rect', node); layout.flush(); return { left: 0, top: node.className.includes('reveal') ? 0 : node.offsetTop - top, bottom: (node.rects.at(-1)?.bottom ?? 0) + 2, height: 0 }; };
     if (tag === 'template') Object.defineProperty(node, 'innerHTML', { set(value: string) {
       html.push(value);
-      const child = create(value.startsWith('<pre') ? 'pre' : 'p');
-      Object.assign(child, { textContent: value.replace(/<[^>]*>/g, '').replace(/\n$/, ''), after: (bar: typeof child) => bars.push(bar), getBoundingClientRect: () => ({ height: 0 }) });
-      if (child.tagName === 'PRE') pres.push(child);
+      const child = create(value.startsWith('<pre') ? 'pre' : 'p'), text = value.replace(/<[^>]*>/g, '').replace(/\n$/, '');
+      Object.assign(child, { textContent: text, after: (bar: typeof child) => bars.push(bar), getBoundingClientRect: () => ({ top: 0, bottom: 20 * (child.rects.length) + 2, height: 0 }) });
+      if (child.tagName === 'PRE') {
+        const code = create('code');
+        code.rects = rects(text.split('\n').length);
+        child.querySelector = () => code;
+        pres.push(child);
+      } else child.rects = rects(Math.ceil(text.split(/\s+/).filter(Boolean).length / 3));
       node.content = { childNodes: value.trim() ? [child] : [], querySelectorAll: () => child.tagName === 'PRE' ? [child] : [] };
     } });
     return node;
@@ -1114,8 +1118,14 @@ async function revealPage(clientHeight = 100) {
     for (const [timer, { at, callback }] of [...timers]) if (at <= clock) { timers.delete(timer); callback(); }
     for (const [frame, callback] of [...queued]) { queued.delete(frame); callback(); }
     layout.flush();
-    const size = total() + '/' + client;
-    if (size !== seen) { seen = size; for (const { callback, targets } of app.observers) callback(targets.map(target => ({ target, borderBoxSize: [{ blockSize: 96 }] }))); }
+    const size = total() + '/' + client, resized = size !== seen;
+    seen = size;
+    hooks.layout?.();
+    for (const { callback, targets, fresh } of app.observers) {
+      const changed = [...resized ? targets : fresh];
+      fresh.clear();
+      if (changed.length) callback(changed.map(target => ({ target, borderBoxSize: [{ blockSize: 96 }] })));
+    }
     app.intersect();
   };
   const patch = (revision: number, suffix: string, final = false) => evaluate(`apply({type:'patch',seq:0,baseRevision:${revision - 1},revision:${revision},final:${final},stop:'',error:'',blocks:[{index:0,suffix:${JSON.stringify(suffix)}}]})`);
@@ -1125,25 +1135,37 @@ async function revealPage(clientHeight = 100) {
   return { app, evaluate, html, bars, pres, queued, timers, step, patch, put, layout, deliver, hooks };
 }
 
-test('reveal waits for a whole line, caps hidden height and time, and finalizes the rest', async () => {
+const tailOf = (fixture: Awaited<ReturnType<typeof revealPage>>) => ({
+  shown: fixture.evaluate("texts.get('0:0').reveal.tail?.shown"),
+  clip: fixture.evaluate("texts.get('0:0').reveal.tail?.view.style.maxHeight"),
+  text: fixture.evaluate("texts.get('0:0').reveal.tail?.view.children[0].textContent"),
+});
+
+test('the tail renders whole under a clip that opens at whole lines once the cap or the time asks', async () => {
   const fixture = await revealPage(200);
   fixture.evaluate("state={...state,working:true,since:1700000000000}");
   fixture.put('Intro.\n\none two three four five six');
-  assert.deepEqual(fixture.html, ['<p>Intro.</p>\n', '', '']);
+  assert.deepEqual(tailOf(fixture), { shown: 0, clip: '0px', text: 'one two three four five six' });
+  assert.equal(fixture.evaluate("texts.get('0:0').reveal.tail.view.className"), 'reveal dormant', 'a clip of zero keeps the wrapper out of the flow');
   assert.equal(fixture.evaluate("texts.get('0:0').view.children.some(child => child.className === 'caret' || child.className === 'dots')"), false);
-  fixture.step(1000);
-  assert.equal(fixture.html.length, 3);
   fixture.step(0);
+  fixture.step(0);
+  assert.equal(tailOf(fixture).shown, 0, 'two lines are under the cap of 80 px');
   assert.deepEqual([fixture.queued.size, fixture.timers.size], [0, 1]);
-  fixture.step(500);
-  assert.equal(fixture.html.at(-1), '<p>one two three</p>\n');
+  fixture.step(1500);
+  fixture.step(0);
+  assert.deepEqual(tailOf(fixture), { shown: 20, clip: '20px', text: 'one two three four five six' });
+  assert.equal(fixture.evaluate("texts.get('0:0').reveal.tail.view.className"), 'reveal', 'a clip above zero puts the wrapper in the flow');
   fixture.patch(1, ' seven eight nine ten eleven twelve thirteen fourteen');
   fixture.step(16);
-  assert.equal(fixture.html.at(-1), '<p>one two three four five six seven eight nine ten eleven twelve</p>\n');
+  assert.equal(tailOf(fixture).clip, '20px', 'new text renders under the old clip');
+  assert.equal(tailOf(fixture).text, 'one two three four five six seven eight nine ten eleven twelve thirteen fourteen');
+  fixture.step(16);
+  assert.equal(tailOf(fixture).clip, '80px', 'the hidden height reached the cap: the clip stops before the unfinished line');
   fixture.patch(2, ' more', true);
   fixture.step(0);
-  assert.equal(fixture.html.at(-1), '<p>one two three four five six seven eight nine ten eleven twelve thirteen fourteen more</p>\n');
-  assert.deepEqual([fixture.evaluate("revealing.size"), fixture.evaluate("element('items').lastChild?.className.includes('working')"), fixture.queued.size], [0, true, 1]);
+  assert.equal(fixture.evaluate("texts.get('0:0').view.children.some(child => child.className.includes('reveal'))"), false);
+  assert.deepEqual([fixture.evaluate("revealing.size"), fixture.evaluate("element('items').lastChild?.className.includes('working')")], [0, true]);
 });
 
 test('a duplicate revision repeats nothing and a replaced block restarts its own reveal', async () => {
@@ -1159,8 +1181,8 @@ test('a duplicate revision repeats nothing and a replaced block restarts its own
   const old = fixture.evaluate("texts.get('0:0')");
   fixture.evaluate("apply({type:'patch',seq:0,baseRevision:1,revision:2,final:false,stop:'',error:'',blocks:[{index:0,block:{type:'text',text:'Fresh.\\n\\nnew tail words here'}}]})");
   fixture.step(0);
-  assert.deepEqual(fixture.html.slice(shown), ['<p>Fresh.</p>\n', '', '']);
-  assert.deepEqual([fixture.evaluate("revealing.size"), fixture.evaluate("revealing.has(texts.get('0:0'))"), fixture.evaluate("texts.get('0:0')") !== old], [1, true, true]);
+  assert.deepEqual(fixture.html.slice(shown), ['<p>Fresh.</p>\n', '', '<p>new tail words here</p>\n']);
+  assert.deepEqual([fixture.evaluate("revealing.size"), fixture.evaluate("revealing.has(texts.get('0:0'))"), fixture.evaluate("texts.get('0:0')") !== old, tailOf(fixture).shown], [1, true, true, 0]);
 });
 
 test('a hidden page renders in one timer task, never in a frame, and a shown page moves that work to a frame', async () => {
@@ -1193,11 +1215,11 @@ test('a folded fence counts its lines while streaming and stays open after its b
   const code = (count: number) => Array.from({ length: count }, (_, index) => 'line ' + index).join('\n');
   fixture.put('Intro.\n\n```js\n' + code(20));
   fixture.step(16);
-  assert.deepEqual(fixture.bars.map(bar => bar.textContent), ['Show 4 more lines']);
+  assert.deepEqual(fixture.bars.map(bar => bar.textContent), ['Show 5 more lines']);
   assert.equal(fixture.pres.at(-1)?.classList.contains('folded'), true);
   fixture.patch(1, '\n' + code(5));
   fixture.step(16);
-  assert.equal(fixture.bars.at(-1)?.textContent, 'Show 9 more lines');
+  assert.equal(fixture.bars.at(-1)?.textContent, 'Show 10 more lines');
   fixture.bars.at(-1)?.onclick?.();
   const bars = fixture.bars.length;
   fixture.patch(2, '\nmore\nlines\n');
@@ -1293,14 +1315,14 @@ test('every notice is one nrow that opens only when it has more than its line', 
   const app = await page();
   const result = app.run(`(()=>{
     const row=seq=>views.get(seq).view.children[0], hd=r=>r.children[0], tx=r=>hd(r).children[0];
-    const out={},fit=()=>{for(const [row,overflows] of measureNotices())row.classList.toggle('more',overflows)};
+    const out={},fit=(...rows)=>{resized(rows.map(r=>({target:tx(r),borderBoxSize:[{blockSize:0}]})));tick()};
     put({seq:0,at:0,final:true,kind:'notify',level:'warning',text:{text:'Notice stays',cut:0}});apply({...state,type:'state'});
     const a=row(0);
     out.warning=[views.get(0).view.className,a.className,tx(a).textContent,hd(a).children[1].tagName,hd(a).children.length];
-    tx(a).scrollWidth=500;fit();out.overflow=[a.classList.contains('more'),a.children[1].textContent];
-    tx(a).scrollWidth=100;fitAll=true;fit();out.fits=a.classList.contains('more');
+    tx(a).scrollWidth=500;fit(a);out.overflow=[a.classList.contains('more'),a.children[1].textContent];
+    tx(a).scrollWidth=100;fit(a);out.kept=a.classList.contains('more');tx(a).clientWidth=300;fit(a);out.fits=a.classList.contains('more');
     put({seq:8,at:0,final:true,kind:'command',result:{type:'export',path:'/very/long/export.html'}});
-    const x=row(8);tx(x).children[1].scrollWidth=0;x.children[0].children[0].scrollWidth=900;fit();out.export=[x.classList.contains('more'),x.children[1].children.map(c=>c.textContent)];
+    const x=row(8);tx(x).children[1].scrollWidth=0;x.children[0].children[0].scrollWidth=900;fit(x);out.export=[x.classList.contains('more'),x.children[1].children.map(c=>c.textContent)];
     put({seq:1,at:0,final:true,kind:'notify',level:'info',text:{text:'one\\ntwo',cut:0}});
     const b=row(1);out.multi=[b.className,tx(b).textContent,b.children[1].textContent];
     hd(b).onclick({});out.opened=b.classList.contains('open');
@@ -1323,7 +1345,7 @@ test('every notice is one nrow that opens only when it has more than its line', 
     return out;
   })()`);
   assert.deepEqual(JSON.parse(JSON.stringify(result)), {
-    warning: ['', 'nrow warning', 'Notice stays', 'TIME', 2], overflow: [true, 'Notice stays'], fits: false, export: [true, ['exported ', '/very/long/export.html']],
+    warning: ['', 'nrow warning', 'Notice stays', 'TIME', 2], overflow: [true, 'Notice stays'], kept: true, fits: false, export: [true, ['exported ', '/very/long/export.html']],
     multi: ['nrow more', 'one', 'two'], opened: true, closed: false, entered: true,
     session: ['nrow more', 'Release · 3 messages · $1.50'], sessionOpen: true,
     summary: ['nrow more', ['lead:branch', 'prev: · first line'], 2], compaction: 'compacted',
@@ -2690,7 +2712,7 @@ test('with parallel calls the ended call loses its dots and the other keeps its 
 });
 
 function frameWatch(page: Awaited<ReturnType<typeof latestPage>>) {
-  const proto = page.app.context.Node.prototype, counts = { reads: 0, probes: 0, removals: 0 };
+  const proto = page.app.context.Node.prototype, counts = { reads: 0, removals: 0 };
   let dirty = false, depth = 0;
   const dots = () => page.evaluate('working?.primary');
   const parentOf = (node: unknown): unknown => typeof node === 'object' && node ? Reflect.get(node, 'parent') : undefined;
@@ -2712,12 +2734,12 @@ function frameWatch(page: Awaited<ReturnType<typeof latestPage>>) {
   write('replaceChildren', self => kids(self));
   for (const name of ['append', 'prepend', 'before']) write(name, moved);
   write('insertBefore', movedFirst);
-  page.hooks.read = (name, self) => {
-    if (self.className?.includes('measure')) counts.probes++;
-    else if (dirty) { counts.reads++; }
+  page.hooks.read = () => {
+    if (dirty) counts.reads++;
     dirty = false;
   };
-  return { counts, frame: (ms = 16) => { counts.reads = counts.probes = 0; dirty = false; page.step(ms); } };
+  page.hooks.layout = () => { dirty = false; };
+  return { counts, frame: (ms = 16) => { counts.reads = 0; page.step(ms); } };
 }
 
 const assistant = (seq: number, text: string, final = false) => ({ seq, revision: 0, at: 0, kind: 'assistant', final, stop: '', error: '', blocks: [{ type: 'text', text }] });
@@ -2753,6 +2775,7 @@ test('a streaming frame reads no geometry after it wrote the DOM', async () => {
   let reads = 0;
   for (let revision = 1; revision <= 20; revision++) {
     page.deliver(patchOf(0, revision, ' word' + revision + (revision % 4 ? '' : '\n\nblock ' + revision)));
+    page.evaluate("node('div').append(node('i'))");
     watch.frame(16);
     reads += watch.counts.reads;
   }
@@ -2774,13 +2797,13 @@ test('assistant items and text patches in one turn never take the dots out of th
   assert.equal(page.evaluate("element('items').lastChild.className.includes('working')"), true);
 });
 
-test('a new reveal tail is measured in the frame after its view exists, not at the time cap', async () => {
-  const page = await revealPage(200);
+test('a new reveal tail is measured after the layout that follows its render, never in a frame', async () => {
+  const page = await latestPage(), watch = frameWatch(page);
   page.deliver({ type: 'item', item: assistant(0, 'Intro.\n\none two three four five six') });
-  page.step(16);
-  assert.deepEqual([page.evaluate('revealDirty'), page.evaluate("texts.get('0:0').reveal.measured === undefined")], [true, true]);
-  page.step(16);
-  assert.equal(page.evaluate("texts.get('0:0').reveal.measured !== undefined"), true);
+  page.evaluate("node('div').append(node('i'))");
+  assert.equal(page.evaluate('texts.has("0:0")'), false);
+  watch.frame(16);
+  assert.deepEqual([watch.counts.reads, page.evaluate("texts.get('0:0').reveal.tail.units.map(unit => [unit.bottom, unit.complete]).join('|')"), page.evaluate('revealDirty')], [0, '20,true|40,false', true]);
 });
 
 test('a fresh row that jumps from below the view to above it leaves the count', async () => {
@@ -2795,14 +2818,89 @@ test('a fresh row that jumps from below the view to above it leaves the count', 
   assert.equal(page.latest().split(',')[0], '↓ Latest');
 });
 
-test('a new block holds for one frame, grows, and ends with neither class when its animation ends', async () => {
+test('a new block holds, is measured after layout, grows with its measured height, and ends with neither class', async () => {
   const page = await revealPage();
+  page.hooks.layout = () => { page.evaluate("for (const [target, watch] of observed) if (watch.type === 'hold') Object.assign(target, { scrollHeight: 66, offsetHeight: 2, clientHeight: 0 })"); };
   page.deliver({ type: 'item', item: assistant(0, 'First.\n\nSecond.') });
   const classes = () => String(page.evaluate("views.get(0).view.children[0].children.map(block => block.className).join('|')"));
+  const height = () => page.evaluate("views.get(0).view.children[0].children[0].style['--h']");
   page.step(16);
-  assert.equal(classes(), 'hold');
+  assert.deepEqual([classes(), height(), page.evaluate('measuredHolds.size')], ['hold|reveal dormant', undefined, 1]);
   page.step(16);
-  assert.equal(classes(), 'grow');
+  assert.deepEqual([classes(), height(), page.evaluate('measuredHolds.size')], ['grow|reveal dormant', '68px', 0]);
   page.evaluate("views.get(0).view.children[0].children.forEach(block => block.handlers.get('animationend')?.())");
-  assert.equal(classes(), '');
+  assert.equal(classes(), '|reveal dormant');
+});
+
+test('unit geometry groups inline fragments by line, closes complete code and skips what never reveals partially', async () => {
+  const app = await page(), { document } = app.context;
+  const box = (tag: string, rects: { top: number; bottom: number }[] = [], children: InstanceType<typeof app.context.Node>[] = []) => { const node = document.createElement(tag); node.rects = rects; node.getBoundingClientRect = () => ({ top: 0, bottom: rects.at(-1)?.bottom ?? 0 }); node.append(...children); return node; };
+  const wrap = (child: InstanceType<typeof app.context.Node>) => { const wrapper = box('div'); wrapper.append(child); return wrapper; };
+  const token = (raw: string) => markdown()(raw).at(-1)?.tail?.token;
+  const unitsOf: (wrapper: object, token: unknown) => { bottom: number; complete: boolean }[] = Reflect.get(app.context, 'unitsOf');
+  const units = (wrapper: object, raw: string) => JSON.stringify(unitsOf(wrapper, token(raw)).map(unit => [unit.bottom, unit.complete]));
+  const paragraph = box('p', [{ top: 2, bottom: 18 }, { top: 4, bottom: 16 }, { top: 22, bottom: 38 }, { top: 42, bottom: 58 }]);
+  assert.equal(units(wrap(paragraph), 'aa `bb` cc dd ee'), '[[20,true],[40,true],[60,false]]');
+  const spaced = box('p', [{ top: 6, bottom: 22 }, { top: 26, bottom: 42 }]);
+  spaced.getBoundingClientRect = () => ({ top: 4, bottom: 42 });
+  assert.equal(units(wrap(spaced), 'aa bb cc dd'), '[[20,true],[40,false]]', 'a margin inside the dormant wrapper does not shift the units');
+  const code = box('code', [{ top: 2, bottom: 18 }, { top: 22, bottom: 38 }, { top: 42, bottom: 58 }]), pre = box('pre', [], [code]);
+  pre.querySelector = () => code;
+  pre.getBoundingClientRect = () => ({ top: 0, bottom: 70 });
+  assert.equal(units(wrap(pre), '```js\na\nb\nc'), '[[20,true],[40,true],[60,false]]');
+  const closed = box('code', [{ top: 2, bottom: 18 }, { top: 22, bottom: 38 }]), shut = box('pre', [], [closed]);
+  shut.querySelector = () => closed;
+  shut.getBoundingClientRect = () => ({ top: 0, bottom: 60 });
+  assert.equal(units(wrap(shut), '```js\na\nb\n'), '[[20,true],[60,true]]');
+  const bold = box('p', [{ top: 2, bottom: 18 }, { top: 22, bottom: 38 }, { top: 2, bottom: 18 }, { top: 22, bottom: 38 }, { top: 2, bottom: 18 }]);
+  assert.equal(units(wrap(bold), 'aa **bb cc** dd'), '[[20,true],[40,false]]', 'duplicated and out-of-order fragments of a wrapped element');
+  const item = (bottom: number) => { const node = box('li'); node.getBoundingClientRect = () => ({ top: 0, bottom }); return node; };
+  assert.equal(units(wrap(box('ul', [], [item(20), item(40), item(60)])), '- a\n- b\n- c'), '[[20,true],[40,true],[60,false]]');
+  assert.equal(units(wrap(box('ul', [], [item(20), item(40)])), '- a\n  ```\n  x\n  ```\n- b'), '[]');
+  assert.equal(units(wrap(paragraph), '### Heading'), '[]');
+  assert.equal(units(wrap(paragraph), '> quote'), '[]');
+  const row = (bottom: number) => { const node = box('tr'); node.getBoundingClientRect = () => ({ top: 0, bottom }); return node; };
+  const table = box('table');
+  table.querySelectorAll = () => [row(20), row(40), row(60)];
+  assert.equal(units(wrap(table), '| a | b |\n| - | - |\n| 1 | 2 |\n| 3 |'), '[[20,true],[40,true],[60,false]]');
+  assert.equal(units(wrap(table), '| a | b |\n| - | - |\n'), '[[20,false],[40,false],[60,false]]');
+});
+
+test('a resize or an opened fence re-reads the tail geometry, and a replaced tail drops its observers', async () => {
+  const fixture = await revealPage(200);
+  const code = Array.from({ length: 20 }, (_, index) => 'line ' + index).join('\n');
+  fixture.put('Intro.\n\n```js\n' + code);
+  fixture.step(0);
+  const units = () => fixture.evaluate("texts.get('0:0').reveal.tail.units.length");
+  const watched = () => fixture.evaluate("[...observed.values()].filter(watch => watch.type === 'reveal').length");
+  assert.deepEqual([units(), watched(), fixture.evaluate("observed.has(texts.get('0:0').reveal.tail.view.children[0])")], [21, 1, true]);
+  fixture.bars.at(-1)?.onclick?.();
+  fixture.evaluate("texts.get('0:0').reveal.tail.view.children[0].querySelector('code').rects.push({ top: 422, bottom: 438 })");
+  fixture.evaluate("resized([{ target: texts.get('0:0').reveal.tail.view.children[0], borderBoxSize: [{ blockSize: 0 }] }])");
+  assert.equal(units(), 22);
+  fixture.patch(1, '\nmore');
+  fixture.step(0);
+  assert.equal(watched(), 1, 'the replaced wrapper left no observer behind');
+});
+
+test('a clip that reflow leaves inside a line snaps down to the last whole line and puts the wrapper out of the flow at zero', async () => {
+  const fixture = await revealPage(200);
+  fixture.put('Intro.\n\none two three four five six');
+  fixture.step(0);
+  fixture.step(1500);
+  fixture.step(0);
+  assert.equal(tailOf(fixture).shown, 20);
+  fixture.evaluate("texts.get('0:0').reveal.tail.view.children[0].rects = [{ top: 2, bottom: 18 }]");
+  fixture.evaluate("resized([{ target: texts.get('0:0').reveal.tail.view.children[0], borderBoxSize: [{ blockSize: 0 }] }])");
+  fixture.step(16);
+  assert.deepEqual([tailOf(fixture).shown, tailOf(fixture).clip, fixture.evaluate("texts.get('0:0').reveal.tail.view.className")], [0, '0px', 'reveal dormant']);
+});
+
+test('a measurement alone neither reads nor writes the scroll', async () => {
+  const fixture = await revealPage(200);
+  fixture.put('Intro.\n\none two three four five six');
+  fixture.step(0);
+  fixture.evaluate("globalThis.scrolls = 0; { const original = layoutChanged; layoutChanged = (...args) => { globalThis.scrolls++; return original(...args); }; }");
+  fixture.evaluate("resized([{ target: texts.get('0:0').reveal.tail.view.children[0], borderBoxSize: [{ blockSize: 0 }] }])");
+  assert.equal(fixture.evaluate('globalThis.scrolls'), 0);
 });

@@ -962,18 +962,28 @@ text to show.
   complete, that is when the next block began, and grows in. The
   reveal holds no working mark: the turn's indicator row stands
   under the arriving block ("The working mark").
-- **Slices.** The tail block's raw text is cut at a whole unit
-  before `remend` and the lexer, so a slice is never a half line:
-  a code fence by lines, a table by rows, a list by items, a
-  paragraph by its wrapped lines, which the page finds on an
-  off-screen copy at the transcript's width. A quote, a heading and
-  a list with a fence or a quote at any depth are not cut; they
-  appear whole. A slice is revealed when the hidden part reaches the
-  height cap, a share of the viewport, or when nothing was revealed
-  for the time cap and whole units wait. Without a whole unit the
-  page waits for new text or a new width. The off-screen copy is
-  written and measured in the frame, so each of its reads forces a
-  layout of the copy.
+- **Slices.** The tail block renders whole, healed by `remend`,
+  inside a wrapper that clips it (`.reveal`) at the bottom of the
+  last revealed unit, so a slice is never a half line: a code fence
+  by lines, a table by rows, a list by items, a paragraph by its
+  wrapped lines. The units are the block's real line boxes
+  (`page/reveal.ts`): a paragraph's or a fence's text rects grouped
+  by line, a list's items, a table's rows; a fence's line and a
+  table's row are complete when their source line ended, and the
+  last line of a paragraph and the last item of a list are never
+  complete. A quote, a heading and a list with a fence or a quote at
+  any depth have no units; they appear whole. A slice is revealed
+  when the hidden part reaches the height cap, a share of the
+  viewport, or when nothing was revealed for the time cap and whole
+  units wait. A new width or new text that rewraps the block moves
+  the clip to the nearest unit bottom under it, never through a
+  line. The clip stays while the tail keeps its start and starts at
+  zero for a new tail. A wrapper clipped to zero is out of the flow
+  (`.dormant`): an empty clipped box would add the tail's margins
+  to the gap above the working mark, and a block that shows nothing
+  must take no space. The cost of this design is that the hidden
+  text is in the page for at most one time cap, where find-in-page
+  and a drag selection can reach it.
 - **The fold.** A code fence of assistant prose, history included,
   longer than the fold limit shows its first lines and a bar "Show N
   more lines". A click expands it for good, also while it streams;
@@ -983,13 +993,21 @@ text to show.
   Older answer) changes only the page's model when it arrives: the
   items, their revisions, the cursor and the annotations, and the set
   of items to render. The frame renders: it first reads the geometry
-  that it needs (the scroll, the reveal's widths, the heights of the
-  blocks that grow), then renders each changed item once, in order,
+  that it needs (the scroll), applies the measurements of the last
+  layout (the reveal's units, the heights of the held blocks, the
+  notices' fits), then renders each changed item once, in order,
   with its runs, the reveal, the working mark and the grow, then
   writes the scroll once. So many records between two frames cost one
-  render, and no read follows a write in a frame. A block that
-  completes waits one frame at zero height (`.hold`) and grows from
-  the height that the next frame reads. A `state` record and a job
+  render, and no read follows a write in a frame. A frame's reads
+  can still force a layout after a write outside a frame (a key, a
+  `state` record), so the measurements are read in the
+  `ResizeObserver` callback, which runs after layout, before any of
+  its writes, and the next frame uses them: the reveal and the grow
+  lag their write by one frame. The observer watches the tail's
+  unclipped content, each held block and each notice's text; a
+  newly observed element always gets a first notification. A block
+  that completes waits one frame at zero height (`.hold`) and grows
+  from the height that the observer read. A `state` record and a job
   view's records still render at once: they are rare and drive the
   focus, the composer and the job output. The frame loop runs only
   while work waits; the time cap is one timeout. A hidden page gets
@@ -1816,8 +1834,9 @@ applied it (Kido's off-screen windows run no `requestAnimationFrame`)
 or framed it (Chrome), with koa's byte, reconnect and cap counters.
 The streaming workload (`run.sh stream`) measures the page's frame
 while one long turn streams over a large history (short replies
-between tool calls, then one reply of 10 000 words), in headless Chrome
-and in visible Kido windows (`KoaStressTests/testStreamingHistory`,
+between tool calls, then one reply of 10 000 words), and the same
+turn alone, in headless Chrome and in visible Kido windows
+(`KoaStressTests/testStreamingHistory` and `testStreaming`,
 `KOA_STRESS_VISIBLE=1`). It loads the whole history through the
 page's own Older action before it measures, so the frames lay out a
 full document. It runs twice in each engine, because the counters
@@ -1841,8 +1860,9 @@ WebKit has no such counter. A write in the page's frame is followed
 by that frame's layout, so a frame starts clean unless something
 wrote outside a frame since the last one (a `state` record, the
 composer, an observer); each stray read is counted under the source
-of the write that made the layout dirty. A read of the reveal's
-off-screen copy is a probe, counted apart from the stray reads. Each
+of the write that made the layout dirty. The `ResizeObserver`
+callback starts clean, because layout ran just before it, and
+`Range` rects count as reads too. Each
 record's apply carries its record type, so a long task names its
 record. A dots removal is counted by where the
 mark was before and after it: a move at a tool call, a removal while
@@ -1878,13 +1898,14 @@ the attachments, the reload and the restart, the session switch, the
 project trust, the crash handler, the status bytes, the transcript
 module, completion, the queue's matching, the image sniffer, and the page's DOM rules over a
 fake document with the page's types stripped (`koa-dom.test.ts`);
-its reveal tests drive the frame loop and the clock by hand over a
-height model. The
+its reveal tests drive the frame loop, the observer and the clock by
+hand over a model of line rects. The
 Markdown memo is a pure module, tested under Node against a full
 render of every prefix, a fresh render after each step of every
 fixture streamed in random chunks with appends, replacements and
 resets, its annotation marks over each kind of block
-and the reveal's cut at whole units (`koa-page.test.ts`).
+and the reveal's choice of a unit bottom over unit lists
+(`koa-page.test.ts`).
 
 Kido.app's `KoaWebviewTests` snapshot each state of the mockups in
 light and dark, windowed and narrow, and check the composer's keys,

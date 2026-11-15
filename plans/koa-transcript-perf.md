@@ -404,7 +404,7 @@ table.
 4. **Reveal by clipping, grow without a forced read** (5.3, 5.4).
    Done when forced layouts per streaming frame are 0 in Chrome's
    metrics, the `reveal` and `dots` snapshots show the same look,
-   and frame p99 is under 16.7 ms with the 10 000-word reply alone.
+   and frame p99 is under 16.7 ms with the 10 000-word reply alone. Done.
 5. **Containment and data-driven new items** (5.7, 5.8). Done when
    Kido's flush-to-frame p99 is under 100 ms and its request-to-rAF
    max under 250 ms over the stress workload (unit 3 traced the tail
@@ -566,3 +566,39 @@ the new `markdown.ts`, patch by patch, at 9 000 words or more.
   A proposal for the user: unit 5's acceptance adds Kido's
   flush-to-frame p99 and request-to-rAF max.
 
+Unit 4, rebased on `origin/main` 348f5c49f (unit 3), the same
+machine, `share/koa/stress/run.sh stream`, which now also runs
+workload 14 (the same turn with no history). Before: run `run-f3uNAa`
+(workload 13, both engines, on 7febbc263) and `run-whN56z`
+(workload 14, Chrome only). After: run `run-xzANmb` (load average 7
+to 11). Unit 3 lengthened the workload (one 10 000-word reply after
+the short ones), so totals do not compare; rates and percentiles do.
+
+| metric | 13 Chrome before | 13 Chrome after | 13 Kido before | 13 Kido after | 14 Chrome before | 14 Chrome after | 14 Kido after |
+|---|---|---|---|---|---|---|---|
+| frame task ms p50 / p95 / p99 | 2.2 / 4.1 / 5.6 | 0.8 / 1.2 / 1.3 | 10 / 17 / 25 | 1 / 2 / 2 | 0.3 / 0.5 / 0.7 | 0.3 / 0.9 / 1.1 | 0 / 1 / 1 |
+| frames over 16.7 / 50 ms | 0 / 0 | 0 / 0 | 55 / 2 | 0 / 0 | 0 / 0 | 0 / 0 | 0 / 0 |
+| stray reads in frame / apply / other | 79 / 0 / 1049 | 0 / 0 / 429 | 98 / 0 / 711 | 0 / 0 / 498 | 22 / 0 / 979 | 0 / 0 / 428 | 0 / 2 / 480 |
+| reveal probe reads in frame | 1376 | gone | 1378 | gone | 1432 | gone | gone |
+| Chrome layouts per frame | 3.90 | 3.14 | n/a | n/a | 4.21 | 3.09 | n/a |
+| key to frame ms p50 / p99 | 12.7 / 32.3 | 9.2 / 17.8 | 17 / 59 | 6 / 14.3 | 14.4 / 17.0 | 11.6 / 16.7 | 12 / 18 |
+| flush to frame ms p50 / p95 / p99 | 20 / 70.8 / 99.6 | 13.4 / 30.7 / 35.7 | 49 / 167 / 833 | 28 / 64 / 131 | 10.2 / 19.8 / 30.3 | 10.8 / 19.5 / 30.5 | 9 / 17 / 19 |
+| flush write to receive ms mean / p99 / max | n/a | 4.0 / 26.7 / 60.7 | n/a | 27.7 / 114 / 425 | n/a | 1.4 / 14.0 / 31.2 | 0.1 / 4 / 104 |
+| frame request to rAF ms mean / p99 / max | n/a | 9.2 / 14.7 / 18.9 | n/a | 30.8 / 229 / 485 | n/a | 9.2 / 16.9 / 18.0 | 9.2 / 18 / 19 |
+| rAF to tick done ms mean / p99 / max | n/a | 1.0 / 1.4 / 1.6 | n/a | 1.1 / 2 / 3 | n/a | 0.6 / 1.1 / 5.1 | 0.5 / 1 / 8 |
+| dots removals at calls / while text / at end | 0 / 0 / 1 | 0 / 0 / 1 | 0 / 0 / 1 | 0 / 0 / 1 | n/a | 0 / 0 / 1 | 0 / 0 / 1 |
+
+- Forced layouts in streaming frames are 0 in both engines: no
+  read in a frame follows a write. Chrome's layout count per frame
+  is not 0 and cannot be: it counts the frame's own layout, the
+  observer's second layout and the layouts outside frames (the
+  "other" stray reads: the composer, the stress harness's own
+  reads, scroll events).
+- The frames no longer chain: the reveal no longer re-dirties the
+  frame loop, so a frame comes from intake, the observer or the cap
+  timer.
+- Kido's flush-to-frame tail on workload 13 (p99 131 ms, request
+  to rAF max 485 ms) is unit 3's WebKit finding and unit 5's
+  acceptance; with the reply alone the p99 is 19 ms.
+- The grow's frames are within budget: no frame is over 16.7 ms in
+  either engine, so the grow keeps its layout animation.

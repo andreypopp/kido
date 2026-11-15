@@ -135,6 +135,9 @@ import SidebarFeed
         }
         XCTAssertEqual(value["reader"] as? Double, 200, result)
     }
+    func koaMeasured(_ web: WKWebView, _ selector: String, within seconds: Double = 5) async throws {
+        _ = try await webviewJS(web, "new Promise((resolve,reject)=>{const targets=[...document.querySelectorAll(\(String(reflecting: selector)))];if(!targets.length){reject(Error('Koa measurement target missing: '+\(String(reflecting: selector))));return}const timer=setTimeout(()=>{observer.disconnect();reject(Error('Koa measurement deadline: '+\(String(reflecting: selector))))},\(seconds * 1000));const observer=new ResizeObserver(()=>{clearTimeout(timer);observer.disconnect();resolve(true)});targets.forEach(target=>observer.observe(target))})", within: seconds)
+    }
     func testKoaWebviewDots() async throws {
         let web = try await scrollPage(module: "dots")
         let pane = try XCTUnwrap(terminal?.displayedPanes.first)
@@ -160,6 +163,7 @@ import SidebarFeed
             let running = state == "running"
             try await webviewUntil(web, running ? "document.querySelectorAll('.run:not(.working) .dots').length===1&&!document.querySelector('.run.working')" : "!!document.querySelector('.run.working .dots')&&!document.querySelector('.run:not(.working) .dots')")
             try await webviewUntil(web, "!!document.querySelector('.assistant p')")
+            try await webviewUntil(web, "!document.querySelector('#items .hold')")
             try await webviewUntil(web, "\(koaWorking)&&Number.parseFloat(getComputedStyle(document.body).getPropertyValue('--dock-h'))===document.querySelector('#dock').getBoundingClientRect().height&&document.querySelector('#scroll').scrollHeight-document.querySelector('#scroll').scrollTop-document.querySelector('#scroll').clientHeight<=1")
             _ = try await webviewJS(web, "(()=>{document.getAnimations().forEach(animation=>{if(animation.animationName==='grow'){animation.finish();return}const dot=animation.effect.target;animation.pause();animation.currentTime=330-150*[...dot.parentNode.children].indexOf(dot)});return true})()")
         }
@@ -789,14 +793,23 @@ import SidebarFeed
             XCTAssertEqual(opened, "true", "A click expands the fence in place")
             try await advance(); try await advance()
             _ = try await webviewJS(web, "(()=>{koaStep(0);return true})()")
-            try await webviewUntil(web, "document.querySelector('.dots')")
-            _ = try await webviewJS(web, "(()=>{koaStep(16);koaStep(0);return true})()")
+            try await webviewUntil(web, "document.querySelector('.dots')&&document.querySelectorAll('.assistant')[1]?.querySelector('.reveal pre')")
+            try await koaMeasured(web, ".hold,.reveal>*")
+            _ = try await webviewJS(web, "(()=>{koaStep(16);return true})()")
             try await webviewUntil(web, "document.querySelectorAll('.grow').length>=2")
             try await capture("reveal-mid")
-            let hidden = try await webviewJS(web, "document.querySelectorAll('.assistant')[1].querySelector('pre')===null")
-            XCTAssertEqual(hidden, "true", "A tail fence with unfinished lines stays hidden until the time cap")
+            let hidden = try await webviewJS(web, "(()=>{const reveal=document.querySelectorAll('.assistant')[1].querySelector('.reveal');return reveal.style.maxHeight==='0px'&&reveal.getBoundingClientRect().height===0})()")
+            XCTAssertEqual(hidden, "true", "A tail fence with unfinished lines stays clipped to nothing until the time cap")
             _ = try await webviewJS(web, "(()=>{koaStep(1500);return true})()")
-            try await webviewUntil(web, "document.querySelectorAll('.assistant')[1].querySelector('pre code')?.textContent==='let a = 1\\nlet b = 2\\n'")
+            try await webviewUntil(web, "document.querySelectorAll('.assistant')[1].querySelector('.reveal').style.maxHeight!=='0px'")
+            let measured = try await webviewJS(web, "(()=>{const reveal=document.querySelectorAll('.assistant')[1].querySelector('.reveal'),code=reveal.querySelector('pre code'),range=document.createRange();range.selectNodeContents(code);const top=reveal.getBoundingClientRect().top;return {clip:parseFloat(reveal.style.maxHeight),height:reveal.getBoundingClientRect().height,rects:[...range.getClientRects()].map(rect=>[rect.top-top,rect.bottom-top,rect.width]).reduce((lines,rect)=>{const line=lines.at(-1);if(line&&(rect[0]+rect[1])/2<line[1]){line[1]=Math.max(line[1],rect[1])}else{lines.push(rect)}return lines},[])}})()")
+            let lines = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(measured.utf8)) as? [String: Any])
+            let clip = try XCTUnwrap(lines["clip"] as? Double), height = try XCTUnwrap(lines["height"] as? Double)
+            let rects = try XCTUnwrap(lines["rects"] as? [[Double]])
+            XCTAssertGreaterThanOrEqual(rects.count, 3, measured)
+            XCTAssertGreaterThanOrEqual(clip, rects[1][1] - 0.5, "The clip shows the second line: \(measured)")
+            XCTAssertLessThanOrEqual(clip, rects[2][0] + 0.5, "The clip stops before the third line: \(measured)")
+            XCTAssertEqual(height, clip, accuracy: 1, "The wrapper is as tall as its clip: \(measured)")
             return
         }
         if scenario == .thinkingMarkdown {
@@ -882,7 +895,7 @@ import SidebarFeed
             let prefix = width < 600 ? "narrow-notices-" : "notices-"
             try await webviewUntil(web, "document.querySelectorAll('.nrow').length===4")
             try await capture(prefix + "closed")
-            try await webviewUntil(web, "document.querySelectorAll('.nrow.more').length>=3")
+            try await webviewUntil(web, "document.querySelectorAll('.nrow.more').length>=3&&[...document.querySelectorAll('.nrow:not(.more) .tx')].every(tx=>tx.scrollWidth<=tx.clientWidth)")
             _ = try await webviewJS(web, "(()=>{document.querySelectorAll('.nrow.more>.hd').forEach(header=>header.click());return true})()")
             try await capture(prefix + "open")
             return

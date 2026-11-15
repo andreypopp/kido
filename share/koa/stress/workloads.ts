@@ -18,9 +18,10 @@ export const workloads = [
   { name: 'body-kinds', memory: { type: 'limited' } },
   { name: 'children', memory: { type: 'limited' } },
   { name: 'streaming-history', memory: { type: 'reported', reason: 'the 100 000-row history sets the baseline' } },
+  { name: 'streaming', memory: { type: 'reported', reason: 'the stream alone sets the baseline' } },
 ] as const;
 export const pageWorkloads = [1, 2, 3, 4, 5, 8, 9, 10, 11];
-export const streaming = 13;
+export const streaming = [13, 14];
 export const HISTORY_ROWS = 100_000;
 export const STREAM_TOKENS = 10_000;
 export const STREAM_RESPONSES = 21;
@@ -95,7 +96,7 @@ export async function scripts(directory: string, cwd: string) {
   for (let id = 1; id <= workloads.length; id++) {
     let replies: Reply[];
     let session: string | undefined;
-    if (id === 13) replies = streamingReplies();
+    if (streaming.includes(id)) replies = streamingReplies();
     else if (id === 3) replies = [{ tools: [{ name: 'big', args: { data: 'a'.repeat(4 * 1024 * 1024) }, pieces: 256 }] }, {}];
     else if (id === 10) replies = [{ tools: Array.from({ length: 1024 }, () => ({ name: 'pay', args: {} })) }, {}];
     else if ([1, 4, 11].includes(id)) replies = [{}];

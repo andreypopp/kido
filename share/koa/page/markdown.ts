@@ -2,7 +2,7 @@ import { Marked, type Token, type TokensList, type MarkedExtension } from 'marke
 import remend from 'remend';
 
 export type Mark = { offset: number; mark: string; side: 'open' | 'close' };
-export type Tail = { start: number; end: number; token: Token; html(end: number): string };
+export type Tail = { start: number; token: Token };
 type RenderedBlock = { streaming: boolean; html?: string; marks: string; tail?: Tail };
 
 const escape = (text: string) => text.replaceAll('&', '&amp;').replaceAll('<', '&lt;').replaceAll('>', '&gt;').replaceAll('"', '&quot;');
@@ -37,28 +37,6 @@ export function markdownLine(source: string): string {
   return plain(lexer.inlineTokens(line)).replace(/\s+/g, ' ').trim();
 }
 
-const nested = (tokens: Token[]): boolean => tokens.some(token => token.type === 'code' || token.type === 'blockquote' || nested(('items' in token ? token.items : 'tokens' in token ? token.tokens : undefined) ?? []));
-
-export function sliceEnd(token: Token, height: (end: number) => number): number {
-  const { type, raw } = token;
-  if (type === 'code' || type === 'table') {
-    const whole = raw.slice(0, raw.lastIndexOf('\n') + 1);
-    return whole.split('\n').length > (type === 'table' ? 3 : 2) ? whole.length : 0;
-  }
-  if (type === 'list' && 'items' in token) {
-    const { items } = token;
-    return nested(items) ? 0 : items.slice(0, -1).reduce((end: number, item: Token) => end + item.raw.length, 0);
-  }
-  if (type !== 'paragraph') return 0;
-  const breaks = [...raw.matchAll(/\s+/g)].map(match => match.index), full = height(raw.length);
-  let low = 0, high = breaks.length;
-  while (low < high) {
-    const middle = (low + high) >> 1;
-    if (height(breaks[middle]) < full) low = middle + 1; else high = middle;
-  }
-  return low ? breaks[low - 1] : 0;
-}
-
 const lexing: { boundary: number; references: number; around?: <T>(source: string, body: () => T) => T } = { boundary: 0, references: 0 };
 export const instrument = (around: typeof lexing.around) => { lexing.around = around; };
 export const fallbacks = () => lexing.boundary + lexing.references;
@@ -85,7 +63,7 @@ export function markdown(user = false) {
     if (references !== links) { lexing.references++; return; }
     return { tokens: Object.assign(old.tokens.slice(0, first).concat(added), { links: added.links }), references };
   };
-  const render = (source: string, final: boolean, marks: readonly Mark[], shown: Pick<Tail, 'start' | 'end'> | undefined, changed: number) => {
+  const render = (source: string, final: boolean, marks: readonly Mark[], changed: number) => {
     if (marks.length && source.includes('\r')) {
       const offsets = [0];
       for (let index = 0; index < source.length; index++) offsets.push(offsets[index] + (source[index] === '\r' && source[index + 1] === '\n' ? 0 : 1));
@@ -112,30 +90,28 @@ export function markdown(user = false) {
       const streaming = tail && !final;
       const old = previous[index];
       const start = offset; offset += token.raw.length; starts.push(start);
-      const end = streaming && shown ? shown.start === start ? Math.min(shown.end, token.raw.length) : 0 : token.raw.length;
-      const cut: Tail | undefined = streaming ? { start, end, token, html: at => selectedParser.parser(lex(remend(token.raw.slice(0, at)))) } : undefined;
       const local = marks.length ? marks.filter(mark => {
         const end = mark.side === 'close';
         return (mark.offset > start || mark.offset === start && (!end || index === 0)) && (mark.offset < offset || mark.offset === offset && (end || tail));
       }) : [];
       const signature = local.length ? JSON.stringify(local.map(mark => [mark.offset - start, mark.mark, mark.side])) : '';
-      if (unchanged && old && previousRaw[index] === token.raw && old.streaming === streaming && old.tail?.end === cut?.end && old.marks === signature) return old;
+      if (unchanged && old && previousRaw[index] === token.raw && old.streaming === streaming && old.marks === signature) return old;
       unchanged = false;
-      let marked = token.raw.slice(0, end);
+      let marked = token.raw;
       for (const mark of [...local].reverse()) marked = marked.slice(0, mark.offset - start) + mark.mark + marked.slice(mark.offset - start);
       const selected: TokensList = !streaming && !local.length ? Object.assign([token], { links: tokens.links }) : lex(streaming ? remend(marked) : marked);
-      return { streaming, html: selectedParser.parser(selected), marks: signature, ...cut && { tail: cut } };
+      return { streaming, html: selectedParser.parser(selected), marks: signature, ...streaming && { tail: { start, token } } };
     });
     const result = blocks;
     if (final) { blocks = []; raw = []; links = ''; lexed = undefined; }
     else lexed = offset === source.length ? { source, tokens, starts } : undefined;
     return result;
   };
-  return (source: string, final = false, marks: readonly Mark[] = [], shown?: Pick<Tail, 'start' | 'end'>, changed = 0) => {
+  return (source: string, final = false, marks: readonly Mark[] = [], changed = 0) => {
     const around = lexing.around;
-    if (!around) return render(source, final, marks, shown, changed);
+    if (!around) return render(source, final, marks, changed);
     const unchanged = source === input;
     input = final ? undefined : source;
-    return unchanged ? render(source, final, marks, shown, changed) : around(source, () => render(source, final, marks, shown, changed));
+    return unchanged ? render(source, final, marks, changed) : around(source, () => render(source, final, marks, changed));
   };
 }

@@ -62,7 +62,6 @@ function streamTable(frame: Pass, probe: Pass | undefined, budgets: Parameters<t
     ['key→frame ms p50 / p99 [frame pass]', `${ms(timed.key.p50)} / ${ms(timed.key.p99)} (n=${timed.key.count}, ${frame.summary.keys ?? 'unknown'} keys)`],
     ['stray reads in frame / apply / other [probe pass]', counted ? `${counted.strays.frame} / ${counted.strays.apply} / ${counted.strays.other}` : '—'],
     ['stray reads by dirtying source [probe pass]', counted ? JSON.stringify(counted.strayBy) : '—'],
-    ['reveal probe reads in frame / apply / other [probe pass]', counted ? `${counted.probes.frame} / ${counted.probes.apply} / ${counted.probes.other}` : '—'],
     ['dots detachments at calls / while text / at end [probe pass]', counted ? `${counted.dots.call} / ${counted.dots.text} / ${counted.dots.end}` : '—'],
     ...both('Chrome layouts (count, per s, per frame)', layouts),
     ...both('Chrome layout s / style recalcs / task s', (pass, sum) => { const delta = engine(pass, sum.frame.count); return delta ? `${delta.layoutSeconds.toFixed(2)} / ${delta.recalcs} / ${delta.taskSeconds.toFixed(2)}` : '—'; }),
@@ -134,7 +133,7 @@ export async function report(directory: string, budgets = streamBudgets) {
       const budget = workload.memory.type === 'reported' ? workload.memory : summary.target === 'page' ? { type: 'limit' as const, name: 'retained-js-heap', mib: 32 } : !summary.visible ? { type: 'limit' as const, name: 'webcontent-phys-footprint-increase', mib: 180 } : { type: 'unmeasured' as const };
       const error = budget.type === 'limit' && memory > budget.mib ? `${budget.name}: ${memory.toFixed(1)} MiB/page exceeds ${budget.mib} MiB/page` : undefined;
       let stream: { table: Record<string, string>; failures: string[] } | undefined;
-      if (id === streaming) {
+      if (streaming.includes(id)) {
         const probeName = `${manifest.target}-${id}-probe-summary.json`;
         const probeSummary: Summary | undefined = files.includes(probeName) ? JSON.parse(await readFile(join(directory, probeName), 'utf8')) : undefined;
         assert.ok(!probeSummary || probeSummary.status === 'ok', 'Probe pass failed: ' + probeSummary?.error);
@@ -153,7 +152,7 @@ if (process.argv[1] === new URL(import.meta.url).pathname) {
   const lines: string[] = [];
   const sink = new Console({ stdout: new Writable({ write(chunk, _encoding, done) { lines.push(String(chunk)); done(); } }) });
   sink.table(rows, [...new Set(rows.flatMap(row => Object.keys(row)))].filter(key => key !== 'stream'));
-  const streamed = rows.flatMap(row => row.stream ? [{ name: row.target + (row.pages ? ' ' + row.pages : ''), stream: row.stream }] : []);
+  const streamed = rows.flatMap(row => row.stream ? [{ name: row.target + ' ' + row.id + (row.pages ? ' ' + row.pages : ''), stream: row.stream }] : []);
   if (streamed[0]) sink.table(Object.keys(streamed[0].stream).map(metric => ({ metric, ...Object.fromEntries(streamed.map(({ name, stream }) => [name, stream[metric] ?? '—'])) })));
   const text = lines.join('');
   process.stdout.write(text);

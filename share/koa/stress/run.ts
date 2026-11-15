@@ -13,7 +13,7 @@ if (!configured) throw Error('KOA_STRESS_OUTPUT is required; use stress/run.sh')
 const output = resolve(configured);
 const selected = process.argv.slice(2).map(Number);
 const ids = selected.length ? selected : pageWorkloads;
-assert.ok(ids.every(id => pageWorkloads.includes(id) || id === streaming), 'Unknown page workload');
+assert.ok(ids.every(id => pageWorkloads.includes(id) || streaming.includes(id)), 'Unknown page workload');
 await writeFile(join(output, 'page-manifest.json'), JSON.stringify({ target: 'page', ids }), { flag: 'wx' });
 const work = join(output, 'work');
 await scripts(join(output, 'scripts'), work);
@@ -22,7 +22,7 @@ const koaRoot = join(root, 'share/koa');
 type Layer = { layerId: string; backendNodeId?: number };
 type Reply = { id?: number; method?: string; params?: { chunk?: string; layers?: Layer[] }; error?: unknown; result?: { result?: { value?: unknown }; exceptionDetails?: unknown; usedSize?: number; metrics?: { name: string; value: number }[]; root?: { nodeId: number }; nodeId?: number; node?: { backendNodeId: number; children?: { backendNodeId: number }[] } } };
 const SAMPLE_MS = 1000, KEY_MS = 250, PROGRESS_MS = 10000;
-for (const [id, mode] of ids.flatMap((id): [number, 'frame' | 'probe'][] => id === streaming ? [[id, 'frame'], [id, 'probe']] : [[id, 'frame']])) {
+for (const [id, mode] of ids.flatMap((id): [number, 'frame' | 'probe'][] => streaming.includes(id) ? [[id, 'frame'], [id, 'probe']] : [[id, 'frame']])) {
   const tag = mode === 'probe' ? `${id}-probe` : String(id);
   let directory: string | undefined;
   let socket: WebSocket | undefined;
@@ -137,11 +137,12 @@ for (const [id, mode] of ids.flatMap((id): [number, 'frame' | 'probe'][] => id =
     };
     const engineSample = async () => engine.push({ at: Date.now(), metrics: Object.fromEntries(((await call('Performance.getMetrics')).metrics ?? []).map(metric => [metric.name, metric.value])) });
     const track = () => { for (const layer of latest) if (layer.backendNodeId !== undefined && dotsIds.includes(layer.backendNodeId)) layers.set(layer.backendNodeId, (layers.get(layer.backendNodeId) ?? new Set()).add(layer.layerId)); };
-    if (id === streaming) {
+    if (streaming.includes(id)) {
       const expected = workload.items;
-      assert.ok(expected, 'The streaming workload has no seeded items');
-      await poll(`(()=>{const older=document.querySelector('#older');if(window.koaMetrics.count<${expected}&&!older.hidden)older.click();return window.koaMetrics.count===${expected}})()`, 180000, 'history load');
-      assert.equal(await evaluate(`document.querySelectorAll('#items [data-seq]').length`), expected, 'History is not in the DOM');
+      if (expected) {
+        await poll(`(()=>{const older=document.querySelector('#older');if(window.koaMetrics.count<${expected}&&!older.hidden)older.click();return window.koaMetrics.count===${expected}})()`, 180000, 'history load');
+        assert.equal(await evaluate(`document.querySelectorAll('#items [data-seq]').length`), expected, 'History is not in the DOM');
+      }
       await evaluate('window.koaMetrics.flush().then(()=>true)');
       events.on('LayerTree.layerTreeDidChange', (params: { layers?: Layer[] }) => {
         layerEvents++; latest = params.layers ?? [];
@@ -160,7 +161,7 @@ for (const [id, mode] of ids.flatMap((id): [number, 'frame' | 'probe'][] => id =
       timersToClear.add(sample); timersToClear.add(keys);
     }
     assert.equal(await prompt(id === 4 ? 900 * 1024 : 2), 200, 'Prompt was not accepted');
-    if (id === streaming) {
+    if (streaming.includes(id)) {
       await poll(`!!document.querySelector('#items [aria-label=working]')`, 60000, 'working mark');
       const root = (await call('DOM.getDocument', { depth: 0 })).root;
       const found = await call('DOM.querySelector', { nodeId: root?.nodeId, selector: '#items .dots' });
@@ -201,7 +202,7 @@ for (const [id, mode] of ids.flatMap((id): [number, 'frame' | 'probe'][] => id =
     if (id === 8) observations.themeFrame = await evaluate(`(async()=>{const times=[];for(let n=0;n<50;n++){const t=performance.now();document.documentElement.style.setProperty('--ko-bg',n%2?'#fff':'#111');dispatchEvent(new Event('ko-theme'));await new Promise(requestAnimationFrame);times.push(performance.now()-t)}return times})()`);
     if (id === 9) assert.deepEqual(await evaluate(`Promise.all(Array.from({length:8},()=>fetch('/items?before=0').then(r=>r.status)))`), Array(8).fill(200));
     if (id === 11) assert.deepEqual(await evaluate(`Promise.all([new Blob([JSON.stringify({text:'body-kind probe',mode:'prompt',attachments:[]})]),new FormData()].map(body=>fetch('/prompt',{method:'POST',body}).then(r=>r.status)))`), [415, 415]);
-    if (id !== streaming) await until(`!document.querySelector('#field').inert&&!document.querySelector('#items [aria-label=working]')&&document.querySelector('#items').textContent.includes('STRESS DONE ${id}')`, 120000);
+    if (!streaming.includes(id)) await until(`!document.querySelector('#field').inert&&!document.querySelector('#items [aria-label=working]')&&document.querySelector('#items').textContent.includes('STRESS DONE ${id}')`, 120000);
     if ([2, 5, 8, 9].includes(id)) {
       await evaluate(`(()=>{if(document.querySelector('#items').textContent.length<400000&&!document.querySelector('#older').hidden)document.querySelector('#older').click();return true})()`);
       await until(`document.querySelectorAll('#items .assistant p').length===20000&&Array.from(document.querySelectorAll('#items .assistant p')).every(p=>p.textContent==='abcdefghijklmnopqr')`);
@@ -222,10 +223,10 @@ for (const [id, mode] of ids.flatMap((id): [number, 'frame' | 'probe'][] => id =
     const heap = await call('Runtime.getHeapUsage');
     const records: { samples: { frame: number }[]; observations: { type: string; at: number }[]; caps: number; opens: number; subscribers: number }[] = (await readFile(file, 'utf8')).trim().split('\n').map(line => JSON.parse(line));
     assert.ok(records.flatMap(record => record.samples).length > 0, 'No frame samples');
-    if (id === streaming) for (const type of ['frame', 'apply']) assert.ok(records.flatMap(record => record.observations).some(observation => observation.type === type && observation.at >= since && observation.at <= ended), `No ${type} observations: a metrics hook is broken`);
+    if (streaming.includes(id)) for (const type of ['frame', 'apply']) assert.ok(records.flatMap(record => record.observations).some(observation => observation.type === type && observation.at >= since && observation.at <= ended), `No ${type} observations: a metrics hook is broken`);
     const last = records.at(-1); assert.ok(last); assert.equal(last.subscribers, 1);
     if (id === 10) { assert.ok(last.caps > 0, 'Stalled reader did not reach the output cap'); assert.ok(last.opens > 1, 'No independent stalled subscriber'); }
-    const summary = { target: 'page', id, name: workloads[id - 1]?.name, timing: 'frame', status: 'ok', seconds, metrics: [file], heap: heap.usedSize, observations, ...id === streaming && { since, until: ended, engine, dots: Object.fromEntries([...layers].map(([node, ids]) => [node, [...ids]])), dotsNodes: dotsIds.length, layerEvents, mappedLayers, keys: 'cdp', mode } };
+    const summary = { target: 'page', id, name: workloads[id - 1]?.name, timing: 'frame', status: 'ok', seconds, metrics: [file], heap: heap.usedSize, observations, ...streaming.includes(id) && { since, until: ended, engine, dots: Object.fromEntries([...layers].map(([node, ids]) => [node, [...ids]])), dotsNodes: dotsIds.length, layerEvents, mappedLayers, keys: 'cdp', mode } };
     await writeFile(join(output, `page-${tag}-summary.json`), JSON.stringify(summary));
     console.log(JSON.stringify(summary));
   } catch (error) {

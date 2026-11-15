@@ -1,5 +1,6 @@
 import { annotations, update } from './annotations.ts';
-import { markdown, markdownLine, sliceEnd, type Tail } from './markdown.ts';
+import { markdown, markdownLine, type Tail } from './markdown.ts';
+import { revealHeight, unitsOf, type Unit } from './reveal.ts';
 import { composer } from './composer.ts';
 import { attach } from './attach.ts';
 import { closeLightbox, preview, previewKey } from './preview.ts';
@@ -42,8 +43,9 @@ const views = new Map<number, { view: HTMLElement; item: WireItem; slots: Map<st
 const template = document.createElement('template');
 const folds = new Map<string, boolean>();
 const REVEAL = { cap: .4, wait: 1500, fold: 15, grow: 220, travel: 250 };
-type Reveal = { at: number; tail?: Tail; measured?: { tail: Tail; width: number; full: number; waiting: number; end?: number } };
-type TextMemo = { render: ReturnType<typeof markdown>; view: HTMLElement; blocks: { block: ReturnType<ReturnType<typeof markdown>>[number]; nodes: ChildNode[] }[]; final?: boolean; source?: string; annotationItem?: Extract<WireItem, { kind: 'annotations' }>; assistant: boolean; reveal?: Reveal; grown: number; open: Set<string>; width?: number };
+type Reveal = { at: number; tail?: { block: Tail; view: HTMLElement; shown: number; units?: Unit[] } };
+type Watch = { type: 'reveal'; memo: TextMemo } | { type: 'hold' } | { type: 'fit'; row: HTMLElement; width: number };
+type TextMemo = { render: ReturnType<typeof markdown>; view: HTMLElement; blocks: { block: ReturnType<ReturnType<typeof markdown>>[number]; nodes: ChildNode[] }[]; final?: boolean; source?: string; annotationItem?: Extract<WireItem, { kind: 'annotations' }>; assistant: boolean; reveal?: Reveal; grown: number; open: Set<string> };
 const texts = new Map<string, TextMemo>();
 type StepMarks = { key: string; shape: string; child: HTMLElement; sum: HTMLElement; name?: HTMLElement; label: HTMLElement; after: HTMLElement; tail: HTMLElement[]; tailKey: string; result: HTMLElement; time: HTMLElement; detail: HTMLElement; current: Step; live: boolean; file?: string; images?: ReturnType<typeof thumbnails>; show?: () => void };
 type RunMarks = { key: string; summary: HTMLElement; names: HTMLElement; namesKey: string; time: HTMLElement; children: HTMLElement; steps: StepMarks[] };
@@ -52,11 +54,11 @@ const liveMarks = new Map<string, RunMarks>();
 let working: { view: string; since: number; primary: HTMLElement; row: HTMLElement; extra: Map<string, HTMLElement> } | undefined;
 type Spot = { key: string; parent: HTMLElement; before: ChildNode | null };
 const revealing = new Set<TextMemo>();
-let measurer: HTMLElement | undefined, capTimer: number | undefined;
+let capTimer: number | undefined;
 let pending: { kind: 'frame' | 'timer'; id: number } | undefined;
 const dirty = new Set<number>(), stale = new Set<string>(), arrivals = new Set<number>(), waiters: (() => void)[] = [];
 let revealDirty = false, resetting = false, correcting = false, annotated = false, wantEnd = false, stick = false, frameAnchor: Anchor | undefined;
-const growing: HTMLElement[] = [], holding: HTMLElement[] = [];
+const growing: HTMLElement[] = [], observed = new Map<Element, Watch>(), measuredHolds = new Map<HTMLElement, number>(), fits = new Map<HTMLElement, boolean>();
 let state: State = { view: { id: '', path: [], type: 'agent' }, agents: [], bash: [], compaction: 'idle', life: { type: 'starting' }, working: false, aborted: false, name: '', levels: [], cwd: '', home: '', statuses: {}, queue: { steering: [], followUp: [] }, dialogs: [] };
 type ItemId = { kind: 'message'; seq: number } | { kind: 'job'; byte: number };
 type Anchor = { item: ItemId; offset: number };
@@ -222,11 +224,11 @@ function show(memo: TextMemo, source: string, final: boolean, changed = 0) {
   const { reveal } = memo, before = reveal?.tail;
   const annotated = memo.annotationItem ? annotations(source, memo.annotationItem.annotations, editor) : undefined;
   if (!reveal) memo.view.querySelector<HTMLElement>('.caret')?.remove();
-  const blocks = memo.render(source, final, annotated?.marks, reveal && (before ?? { start: -1, end: 0 }), changed);
+  const blocks = memo.render(source, final, annotated?.marks, changed);
   let first = 0;
   while (first < blocks.length && memo.blocks[first]?.block === blocks[first]) first++;
   const removed = memo.blocks.splice(first);
-  for (const saved of removed) for (const child of saved.nodes) child.remove();
+  for (const saved of removed) for (const child of saved.nodes) { unwatch(child); child.remove(); }
   blocks.slice(first).forEach((block, offset) => {
     const index = first + offset;
     template.innerHTML = linkNames(block.html ?? '');
@@ -237,27 +239,39 @@ function show(memo: TextMemo, source: string, final: boolean, changed = 0) {
       const language = pre.querySelector('code')?.className.match(/language-(\S+)/)?.[1];
       if (language) pre.append(node('span', language, 'lang'));
     });
-    const nodes = [...template.content.childNodes];
+    const { tail } = block, content = [...template.content.childNodes];
     if (!block.streaming) delete block.html;
+    const shown = reveal && tail && before?.block.start === tail.start ? before.shown : 0;
+    const wrapper = reveal && tail ? node('div', undefined, shown ? 'reveal' : 'reveal dormant') : undefined;
+    wrapper?.append(...content);
+    const nodes = wrapper ? [wrapper] : content;
     memo.blocks.push({ block, nodes });
     memo.view.append(...nodes);
-    const elements = nodes.filter(child => child instanceof HTMLElement);
-    if (!reveal || !elements.length) return;
-    const { tail } = block, fresh = index >= memo.grown;
-    if (fresh) { memo.grown = index + 1; if (scrolling.kind !== 'restoring') growing.push(...elements); }
-    if (fresh || !tail || tail.start !== before?.start || tail.end > (before?.end ?? 0)) reveal.at = performance.now();
+    if (!reveal) return;
+    if (wrapper && tail) {
+      wrapper.style.maxHeight = shown + 'px';
+      reveal.tail = { block: tail, view: wrapper, shown };
+      for (const child of wrapper.children) { observed.set(child, { type: 'reveal', memo }); layoutObserver.observe(child); }
+      if (before?.block.start !== tail.start) reveal.at = performance.now();
+      return;
+    }
+    const elements = nodes.filter(child => child instanceof HTMLElement), fresh = index >= memo.grown;
+    if (!elements.length) return;
+    if (fresh) { memo.grown = index + 1; if (scrolling.kind !== 'restoring') growing.push(...elements); reveal.at = performance.now(); }
   });
   if (reveal) {
-    reveal.tail = blocks.at(-1)?.tail;
+    if (!blocks.at(-1)?.tail) reveal.tail = undefined;
     if (reveal.tail && !final) revealing.add(memo); else revealing.delete(memo);
-    revealDirty = true;
-    schedule();
     armCap();
   }
   if (!final && !reveal) {
     const last = memo.view.lastElementChild;
     (last?.tagName === 'P' ? last : memo.view).append(node('span', undefined, 'caret'));
   }
+}
+function unwatch(target: ChildNode) {
+  if (!(target instanceof HTMLElement)) return;
+  for (const watched of [target, ...target.children]) if (observed.delete(watched)) layoutObserver.unobserve(watched);
 }
 function foldFence(memo: TextMemo, pre: HTMLElement, key: string) {
   const count = (pre.textContent ?? '').replace(/\n$/, '').split('\n').length;
@@ -268,7 +282,7 @@ function foldFence(memo: TextMemo, pre: HTMLElement, key: string) {
   bar.onclick = () => { memo.open.add(key); pre.classList.remove('folded'); bar.remove(); };
   pre.after(bar);
 }
-const wanted = () => dirty.size > 0 || stick || resetting || revealDirty || correcting || !document.hidden && (fitPending.size > 0 || fitAll) || growing.length > 0 || holding.length > 0 || !!travel || waiters.length > 0 || !!metrics?.waiting.length;
+const wanted = () => dirty.size > 0 || stick || resetting || revealDirty || correcting || fits.size > 0 || growing.length > 0 || measuredHolds.size > 0 || !!travel || waiters.length > 0 || !!metrics?.waiting.length;
 function schedule() {
   if (pending || !wanted()) return;
   pending = document.hidden ? { kind: 'timer', id: setTimeout(tick, 50) } : { kind: 'frame', id: requestAnimationFrame(tick) };
@@ -293,12 +307,11 @@ function tick() {
   pending = undefined;
   stick = wantEnd; wantEnd = false;
   const now = performance.now(), geo = geometry();
-  const widths = new Map([...revealing].map(memo => { const width = memo.width ?? memo.view.clientWidth; if (width) memo.width = width; return [memo, width] as const; }));
-  const grown = holding.splice(0).map(target => [target, target.scrollHeight + target.offsetHeight - target.clientHeight] as const);
-  const fits = fitPending.size || fitAll ? measureNotices() : [];
+  const grown = [...measuredHolds], fitted = [...fits];
+  measuredHolds.clear(); fits.clear();
   if (scrolling.kind === 'following' && !paneFocused() && (dirty.size || arrivals.size || waiting.size)) frameAnchor = captureAnchor();
   if (correcting) { correcting = false; layoutChanged(geo); }
-  for (const [row, overflows] of fits) row.classList.toggle('more', overflows);
+  for (const [row, overflows] of fitted) row.classList.toggle('more', overflows);
   for (const [target, height] of grown) {
     if (height) target.style.setProperty('--h', height + 'px');
     target.style.animationDuration = REVEAL.grow + 'ms';
@@ -306,12 +319,12 @@ function tick() {
     target.classList.add('grow');
     target.addEventListener('animationend', () => target.classList.remove('grow'), { once: true });
   }
-  const changed = dirty.size > 0 || arrivals.size > 0 || resetting, restoring = renderDirty();
   if (revealDirty) {
     revealDirty = false;
-    for (const memo of revealing) { const width = widths.get(memo); if (width === undefined) revealDirty = true; else revealStep(memo, now, geo.viewport, width); }
+    for (const memo of revealing) revealStep(memo, now, geo.viewport);
   }
-  for (const target of growing.splice(0)) { target.classList.add('hold'); holding.push(target); }
+  const changed = dirty.size > 0 || arrivals.size > 0 || resetting, restoring = renderDirty();
+  for (const target of growing.splice(0)) { target.classList.add('hold'); observed.set(target, { type: 'hold' }); layoutObserver.observe(target); }
   if (restoring && scrolling.kind === 'restoring') void restore(scrolling);
   if (travel) travelFrame(now, geo);
   if (changed || fresh.size || waiting.size) settle();
@@ -457,22 +470,15 @@ function travelFrame(now: number, geo: ReturnType<typeof geometry>) {
   if (progress >= 1 || Math.abs(target - travel.from) < 1) { follow(target); return; }
   writeTop(travel.from + (target - travel.from) * (1 - (1 - progress) ** 3), target);
 }
-function revealStep(memo: TextMemo, now: number, viewport: number, width: number) {
-  const { reveal, source } = memo, tail = reveal?.tail;
-  if (!reveal || !tail || source === undefined || !width) return;
-  if (!measurer) { measurer = node('div', undefined, 'prose measure'); document.body.append(measurer); }
-  const host = measurer;
-  const measure = (end: number) => { host.style.width = width + 'px'; host.innerHTML = tail.html(end); return host.getBoundingClientRect().height; };
-  let measured = reveal.measured;
-  if (measured?.tail !== tail || measured.width !== width) {
-    const full = measure(tail.token.raw.length);
-    measured = reveal.measured = { tail, width, full, waiting: full - measure(tail.end) };
-  }
-  const { full } = measured;
-  if (measured.end === undefined && (measured.waiting >= REVEAL.cap * viewport || now - reveal.at >= REVEAL.wait && tail.end < tail.token.raw.length)) measured.end = sliceEnd(tail.token, end => end >= tail.token.raw.length ? full : measure(end));
-  if (measured.end === undefined || measured.end <= tail.end) return;
-  reveal.tail = { ...tail, end: measured.end };
-  show(memo, source, false);
+function revealStep(memo: TextMemo, now: number, viewport: number) {
+  const { reveal } = memo, tail = reveal?.tail;
+  if (!reveal || !tail?.units) return;
+  const shown = revealHeight(tail.units, tail.shown, REVEAL.cap * viewport, now - reveal.at >= REVEAL.wait);
+  if (shown === undefined) return;
+  if (shown > tail.shown) { reveal.at = now; memo.grown = Math.max(memo.grown, memo.blocks.length); }
+  tail.shown = shown;
+  tail.view.style.maxHeight = shown + 'px';
+  tail.view.classList.toggle('dormant', shown === 0);
 }
 
 function thumbnails(refs: ImageRef[], owner: () => Map<string, Slot>, name?: string) {
@@ -765,8 +771,6 @@ function reconcileRuns(seq: number, done = new Set<number>()) {
 }
 type NoticeContent = { type: 'text'; text: string } | { type: 'markdown'; text: string } | { type: 'details'; text: string; body: HTMLElement } | { type: 'lead'; lead: string; preview: string; body: HTMLElement } | { type: 'inline'; head: () => HTMLElement[] };
 type NoticeRow = { key: string; at: number; level?: 'warning' | 'error'; content: NoticeContent };
-const fitPending = new Set<HTMLElement>();
-let fitAll = false, fitWidth = 0;
 function noticeRow({ key, at, level, content }: NoticeRow) {
   const row = node('div', undefined, level ? 'nrow ' + level : 'nrow'), line = node('div', undefined, 'hd'), tx = node('span', undefined, 'tx'), details = node('div', undefined, 'bd');
   let more = false;
@@ -779,16 +783,9 @@ function noticeRow({ key, at, level, content }: NoticeRow) {
   else if (content.type === 'lead') { more = true; tx.append(node('span', content.lead, 'lead'), node('span', content.preview, 'prev')); details.append(content.body); }
   else { tx.append(...content.head()); details.append(...content.head()); }
   line.append(tx, node('time', timestamp(at)));
-  if (more) row.classList.add('more'); else { row.dataset.fit = ''; fitPending.add(row); }
+  if (more) row.classList.add('more'); else { observed.set(tx, { type: 'fit', row, width: 0 }); layoutObserver.observe(tx); }
   fold(row, key, line, details);
   return row;
-}
-function measureNotices() {
-  const rows = fitAll ? [...views.values()].flatMap(({ view }) => Array.from(view.children).filter((row): row is HTMLElement => row instanceof HTMLElement && row.dataset.fit !== undefined)) : [...fitPending];
-  const measured = rows.flatMap(row => { const tx = row.firstElementChild?.firstElementChild; return tx instanceof HTMLElement && tx.clientWidth ? [[row, tx.scrollWidth > tx.clientWidth] as const] : []; });
-  for (const [row] of measured) fitPending.delete(row);
-  fitAll = false;
-  return measured;
 }
 function paragraphs(text: string) {
   const body = node('div');
@@ -893,7 +890,7 @@ function renderDirty() {
   const reset = resetting;
   if (resetting) {
     resetting = false;
-    views.clear(); texts.clear(); liveMarks.clear(); clearWorking(); revealing.clear(); growing.length = holding.length = 0;
+    views.clear(); texts.clear(); liveMarks.clear(); clearWorking(); revealing.clear(); growing.length = 0; measuredHolds.clear();
     element('items').replaceChildren(); divider = undefined; fresh.clear(); waiting.clear(); counted.clear();
   }
   for (const key of stale) { const memo = texts.get(key); if (memo) revealing.delete(memo); texts.delete(key); }
@@ -1361,14 +1358,6 @@ function dockResized(height: number) {
   tracker = tracking();
   sync();
 }
-function widthChanged() {
-  const scroll = element('scroll');
-  if (scroll.clientWidth === fitWidth) return;
-  fitWidth = scroll.clientWidth; fitAll = true;
-  for (const memo of revealing) delete memo.width;
-  revealDirty ||= revealing.size > 0;
-  schedule();
-}
 const koaInstance = document.querySelector<HTMLMetaElement>('meta[name="koa-instance"]')?.content;
 const metricsMode = document.querySelector<HTMLMetaElement>('meta[name="koa-metrics"]')?.content;
 const metrics: { mode: string; bytes: number; pending: { t: number; stages: Stages }[]; samples: MetricsSample[]; timer?: number; writes: Promise<void>; frames: Set<Promise<void>>; waiting: (() => void)[]; error?: string } | undefined = metricsMode ? { mode: metricsMode, bytes: 0, pending: [], samples: [], timer: undefined, writes: Promise.resolve(), frames: new Set(), waiting: [], error: undefined } : undefined;
@@ -1653,9 +1642,21 @@ element('latest').onmousedown = event => event.preventDefault();
 element('latest').onclick = toLatest;
 const layoutObserver = new ResizeObserver(entries => probe ? probe.within('ResizeObserver', () => resized(entries)) : resized(entries));
 function resized(entries: ResizeObserverEntry[]) {
+  const tails = new Set<TextMemo>(), items = element('items');
+  for (const { target } of entries) {
+    const watch = observed.get(target);
+    if (!watch) continue;
+    if (!items.contains(target)) { observed.delete(target); layoutObserver.unobserve(target); continue; }
+    if (watch.type === 'reveal' && watch.memo.reveal?.tail?.view.contains(target)) tails.add(watch.memo);
+    else if (watch.type === 'hold' && target instanceof HTMLElement) { measuredHolds.set(target, target.scrollHeight + target.offsetHeight - target.clientHeight); observed.delete(target); layoutObserver.unobserve(target); }
+    else if (watch.type === 'fit' && target.clientWidth && target.clientWidth !== watch.width) { watch.width = target.clientWidth; fits.set(watch.row, target.scrollWidth > target.clientWidth); }
+  }
+  for (const memo of tails) { const tail = memo.reveal?.tail; if (tail) tail.units = unitsOf(tail.view, tail.block.token); }
+  if (tails.size || measuredHolds.size || fits.size) { revealDirty ||= tails.size > 0; schedule(); }
+  if (entries.every(({ target }) => observed.has(target))) return;
   for (const { target, borderBoxSize } of entries) {
     if (target === element('dock')) dockResized(borderBoxSize[0].blockSize);
-    if (target === element('scroll')) { widthChanged(); layoutBar(); }
+    if (target === element('scroll')) layoutBar();
   }
   layoutChanged();
   sync();

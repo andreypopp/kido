@@ -3,7 +3,7 @@ import type { Observation, PageRecord, WriteSource } from '../koa-records.ts';
 import { fallbacks, instrument } from './markdown.ts';
 
 type Label = { type: 'frame'; gap?: number } | { type: 'apply'; record: PageRecord['type'] };
-type Scope = { kind: Label['type']; source: WriteSource; lex: number; strays: number; probes: number; by: Partial<Record<WriteSource, number>> };
+type Scope = { kind: Label['type']; source: WriteSource; lex: number; strays: number; by: Partial<Record<WriteSource, number>> };
 type Probe = { matches(selector: string): boolean; querySelector(selector: string): unknown };
 export type Spot = 'row' | 'step';
 
@@ -46,11 +46,11 @@ export function install(tick: () => void, probe: boolean) {
   const epoch = (time: number) => performance.timeOrigin + time;
   let scope: Scope | undefined, source: WriteSource = 'other', dirtySource: WriteSource = 'frame';
   const run = <T>(label: Label, body: () => T): T => {
-    const start = performance.now(), mine: Scope = { kind: label.type, source: label.type === 'frame' ? 'frame' : `apply:${label.record}`, lex: 0, strays: 0, probes: 0, by: {} };
+    const start = performance.now(), mine: Scope = { kind: label.type, source: label.type === 'frame' ? 'frame' : `apply:${label.record}`, lex: 0, strays: 0, by: {} };
     scope = mine;
     try { return body(); } finally {
       scope = undefined;
-      observations.push({ ...label, at: epoch(start), duration: performance.now() - start, lex: mine.lex, strays: mine.strays, probes: mine.probes, by: mine.by });
+      observations.push({ ...label, at: epoch(start), duration: performance.now() - start, lex: mine.lex, strays: mine.strays, by: mine.by });
     }
   };
 
@@ -66,7 +66,7 @@ export function install(tick: () => void, probe: boolean) {
   });
 
   const native = window.requestAnimationFrame.bind(window), nativeCancel = window.cancelAnimationFrame.bind(window);
-  let last = 0, continuous = false, requested: number | undefined, asked = 0, fired: { at: number; fired: number } | undefined, frameStart = () => {};
+  let last = 0, continuous = false, requested: number | undefined, asked = 0, fired: { at: number; fired: number } | undefined, frameStart = () => {}, laidOut = () => {};
   const frame = () => {
     const start = performance.now(), gap = continuous && !document.hidden ? start - last : undefined;
     last = start; continuous = false; requested = undefined; fired = { at: epoch(asked), fired: epoch(start) };
@@ -96,6 +96,7 @@ export function install(tick: () => void, probe: boolean) {
     const reads = strayReads(() => { native(() => channel.port2.postMessage(0)); });
     channel.port1.onmessage = reads.settle;
     frameStart = reads.frameStart;
+    laidOut = reads.settle;
     const owners = new WeakMap<object, Node>();
     const written = (self: unknown) => {
       const owner = self instanceof Node ? self : typeof self === 'object' && self ? owners.get(self) : undefined;
@@ -105,9 +106,8 @@ export function install(tick: () => void, probe: boolean) {
     };
     const stray = (self: unknown) => {
       if (self instanceof Node && !self.isConnected || !reads.read()) return;
-      const probing = self instanceof Element && self.classList.contains('measure');
-      if (scope) { scope[probing ? 'probes' : 'strays']++; if (!probing) scope.by[dirtySource] = (scope.by[dirtySource] ?? 0) + 1; }
-      else observations.push(probing ? { type: 'probe', at: epoch(performance.now()) } : { type: 'stray', at: epoch(performance.now()), source: dirtySource });
+      if (scope) { scope.strays++; scope.by[dirtySource] = (scope.by[dirtySource] ?? 0) + 1; }
+      else observations.push({ type: 'stray', at: epoch(performance.now()), source: dirtySource });
     };
     owning(Element.prototype, 'classList', owners);
     owning(HTMLElement.prototype, 'style', owners);
@@ -120,7 +120,7 @@ export function install(tick: () => void, probe: boolean) {
     for (const key of ['add', 'remove', 'toggle', 'replace']) around(DOMTokenList.prototype, key, 'value', written);
     for (const key of Object.getOwnPropertyNames(CSSStyleDeclaration.prototype)) around(CSSStyleDeclaration.prototype, key, 'set', written);
     for (const key of ['setProperty', 'removeProperty']) around(CSSStyleDeclaration.prototype, key, 'value', written);
-    for (const key of ['getBoundingClientRect', 'getClientRects']) around(Element.prototype, key, 'value', stray);
+    for (const key of ['getBoundingClientRect', 'getClientRects']) { around(Element.prototype, key, 'value', stray); around(Range.prototype, key, 'value', stray); }
     for (const key of ['clientWidth', 'clientHeight', 'scrollTop', 'scrollHeight', 'scrollWidth', 'offsetHeight']) around(Element.prototype, key, 'get', stray);
 
     const items = document.getElementById('items');
@@ -137,5 +137,5 @@ export function install(tick: () => void, probe: boolean) {
     }).observe(items, { childList: true, subtree: true });
   }
 
-  return { within: <T>(name: WriteSource, body: () => T): T => { source = name; try { return body(); } finally { source = 'other'; } }, applying: <T>(record: PageRecord['type'], body: () => T) => run({ type: 'apply', record }, body), request: () => fired, pending: () => observations.length, drain: (max: number) => observations.splice(0, max) };
+  return { within: <T>(name: WriteSource, body: () => T): T => { source = name; if (name === 'ResizeObserver') laidOut(); try { return body(); } finally { source = 'other'; } }, applying: <T>(record: PageRecord['type'], body: () => T) => run({ type: 'apply', record }, body), request: () => fired, pending: () => observations.length, drain: (max: number) => observations.splice(0, max) };
 }

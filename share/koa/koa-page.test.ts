@@ -6,7 +6,8 @@ import { Lexer, Marked } from "marked";
 import remend from "remend";
 
 import { assemblePage } from "./koa-assemble.ts";
-import { markdown, markdownLine, sliceEnd, type Mark } from "./page/markdown.ts";
+import { markdown, markdownLine, type Mark } from "./page/markdown.ts";
+import { revealHeight, type Unit } from "./page/reveal.ts";
 import { answer, current, quote } from "./page/answers.ts";
 import { composerLanguage } from "./page/composer.ts";
 import { highlightTree, tags } from '@lezer/highlight';
@@ -193,40 +194,30 @@ test('user quotes end before answers; assistant quotes keep lazy continuation', 
   assert.equal(render(true, '```\n> q\nanswer\n```'), '<pre><code>&gt; q\nanswer\n</code></pre>\n');
 });
 
-test('tail cuts keep whole units and the rest of the lexing path', () => {
-  const words = (text: string) => Math.ceil(text.split(/\s+/).filter(Boolean).length / 3);
-  const shown = (source: string) => {
-    const tail = markdown()(source).at(-1)?.tail;
-    assert.ok(tail);
-    const end = sliceEnd(tail.token, at => words(source.slice(tail.start, tail.start + at)));
-    const html = markdown()(source, false, [], { start: tail.start, end }).map(block => block.html).join('');
-    return [tail.token.raw.slice(0, end), html] as const;
-  };
-  assert.deepEqual(shown('Intro.\n\naa bb cc dd ee ff gg')[0], 'aa bb cc dd ee ff');
-  assert.deepEqual(shown('aa bb cc')[0], '');
-  assert.deepEqual(shown('```ts\na\nb\nc')[0], '```ts\na\nb\n');
-  assert.match(shown('```ts\na\nb\nc')[1], /<code class="language-ts">a\nb\n<\/code>/);
-  assert.equal(shown('```ts\nco')[0], '');
-  assert.equal(shown('```ts\r\na\r\nb\r\nc')[0], '```ts\na\nb\n');
-  assert.equal(shown('| a | b |\n| - | - |\n| 1 | 2 |\n| 3 |')[0], '| a | b |\n| - | - |\n| 1 | 2 |\n');
-  assert.doesNotMatch(shown('| a | b |\n| - | - |\n| 1 | 2 |\n| 3 |')[1], /<td>3<\/td>/);
-  assert.equal(shown('| a | b |\n| - | - |\n')[0], '');
-  assert.equal(shown('- one\n- two\n- thr')[0], '- one\n- two\n');
-  assert.equal(shown('- one')[0], '');
-  assert.equal(shown('- one\n  ```\n  x\n  ```\n- two')[0], '');
-  assert.equal(shown('> q\n> ```\n> x')[0], '');
-  assert.equal(shown('- outer\n  - inner\n\n    ```js\n    a\n    b\n    ```\n- last')[0], '');
-  assert.equal(shown('### Heading')[0], '');
-  assert.match(shown('Intro.\n\n[id]: https://x.test\n\n- [one][id]\n- two\n- th')[1], /<a href="https:\/\/x.test">one<\/a>/);
-  const bold = markdown()('**aa bb cc dd**');
-  assert.match(bold[0].tail?.html(8) ?? '', /<strong>aa bb<\/strong>/);
-  const render = markdown(), list = 'Done.\n\n- one\n- two\n- thr';
-  const cutTo = (start: number, end: number) => render(list, false, [], { start, end }).at(-1);
-  const first = cutTo(7, 6);
-  assert.equal(cutTo(7, 6), first);
-  assert.notEqual(cutTo(7, 12), first);
-  assert.match(cutTo(7, 12)?.html ?? '', /<li>two<\/li>/);
-  assert.equal(cutTo(0, 12)?.html, '');
+test('the tail is the whole last token with its start, healed in one piece', () => {
+  const tail = markdown()('Intro.\n\n**aa bb').at(-1);
+  assert.equal(tail?.tail?.start, 8);
+  assert.equal(tail?.tail?.token.raw, '**aa bb');
+  assert.match(tail?.html ?? '', /<strong>aa bb<\/strong>/);
+  assert.equal(markdown()('Intro.\n\ndone', true).at(-1)?.tail, undefined);
+});
+
+test('revealHeight shows the last complete unit above the clip once the hidden height or the time asks for it', () => {
+  const unit = (bottom: number, complete = true): Unit => ({ bottom, complete });
+  const lines = [unit(20), unit(40), unit(60), unit(80, false)];
+  assert.equal(revealHeight(lines, 0, 100, false), undefined, 'the hidden height is under the cap');
+  assert.equal(revealHeight(lines, 0, 80, false), 60, 'the cap reserves the unfinished last unit');
+  assert.equal(revealHeight(lines, 0, 1000, true), 60, 'the time reveals the same units');
+  assert.equal(revealHeight(lines, 60, 1000, true), undefined, 'nothing complete lies above the clip');
+  assert.equal(revealHeight(lines, 20, 50, false), 60, 'the hidden height counts from the clip');
+  assert.equal(revealHeight([unit(20, false)], 0, 10, true), undefined, 'a lone unfinished unit never shows');
+  assert.equal(revealHeight([], 0, 0, true), undefined);
+  assert.equal(revealHeight([unit(18), unit(50), unit(53)], 0, 40, false), 53, 'unequal heights');
+  assert.equal(revealHeight([unit(20), unit(40)], 0, 30, false), 40, 'complete trailing code lines show whole');
+  assert.equal(revealHeight([unit(20), unit(40, false)], 60, 1000, false), 20, 'a widened paragraph snaps the clip down to its last whole line');
+  assert.equal(revealHeight([unit(20), unit(40), unit(60, false)], 45, 1000, false), 40, 'a patch that rewraps snaps the clip to a line boundary');
+  assert.equal(revealHeight([unit(20), unit(40), unit(60, false)], 40.2, 1000, false), undefined, 'a clip on a boundary stays');
+  assert.equal(revealHeight([unit(20, false)], 20, 1000, false), 0, 'no whole line left');
 });
 
 test('an append re-lexes only the tail of a long document', () => {
@@ -237,7 +228,7 @@ test('an append re-lexes only the tail of a long document', () => {
     const first = render(prefix + 'Tail');
     inputs.length = 0;
     const grown = prefix + 'Tail grows';
-    const blocks = render(grown, false, [], undefined, prefix.length + 4), html = blocks.map(block => block.html).join('');
+    const blocks = render(grown, false, [], prefix.length + 4), html = blocks.map(block => block.html).join('');
     assert.equal(blocks[0], first[0]);
     assert.ok(Math.max(...inputs) < 500, `document lex input of ${Math.max(...inputs)} code units`);
     assert.equal(html, markdown()(grown).map(block => block.html).join(''));
@@ -248,7 +239,7 @@ test('a nested reference definition in the re-lexed suffix does not keep a stale
   const old = '[x][id]\n\nA\n\nB\n\nC\n\n> [id]: https://a', render = markdown();
   render(old);
   const grown = old + 'b\n';
-  assert.equal(render(grown, false, [], undefined, old.length).map(block => block.html).join(''), markdown()(grown).map(block => block.html).join(''));
+  assert.equal(render(grown, false, [], old.length).map(block => block.html).join(''), markdown()(grown).map(block => block.html).join(''));
 });
 
 const fixtures = [
@@ -272,10 +263,8 @@ test('incremental markdown matches a fresh render after random chunks, replaceme
         source = next;
         const marks: Mark[] = random(3) ? [] : [{ offset: random(source.length + 1), side: 'open', mark: '0' }, { offset: source.length, side: 'close', mark: '' }];
         marks.sort((a, b) => a.offset - b.offset);
-        const tail = markdown(user)(source).at(-1)?.tail;
-        const shown = tail && random(2) ? { start: tail.start, end: random(tail.token.raw.length + 1) } : undefined;
-        const blocks = render(source, final, marks, shown, changed);
-        assert.equal(html(blocks), html(markdown(user)(source, final, marks, shown)), context());
+        const blocks = render(source, final, marks, changed);
+        assert.equal(html(blocks), html(markdown(user)(source, final, marks)), context());
         return blocks;
       };
       while (source.length < fixture.length) {
@@ -293,7 +282,7 @@ test('incremental markdown matches a fresh render after random chunks, replaceme
   }
   const split = markdown(), before = 'A\r\n\r\nB\r\n\r\nC\r\n\r\nD\r';
   split(before);
-  assert.equal(html(split(before + '\nE', false, [], undefined, before.length)), html(markdown()(before + '\nE')));
+  assert.equal(html(split(before + '\nE', false, [], before.length)), html(markdown()(before + '\nE')));
 });
 
 test('the composer foot starts with the model and has no agent status cell', async () => {

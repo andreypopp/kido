@@ -1248,12 +1248,13 @@ grow by the chunk; it grows by blocks and by slices of whole lines.
 - Height cap: while the tail block is incomplete, when its hidden
   part reaches 40% of the transcript's viewport height, the page
   reveals a slice of whole lines and repeats: a paragraph by its
-  wrapped lines (measured off-screen at the transcript's width), a
-  code fence by lines, a table by rows, a list by items; never a
-  half line. A nested block (a quote with a code fence, a list
-  with a fence) is not sliced: it appears whole. The slice is the
-  tail block's raw text cut at that line, through the existing
-  repair-and-lex path for a streaming block.
+  wrapped lines, a code fence by lines, a table by rows, a list by
+  items; never a half line. A nested block (a quote with a code
+  fence, a list with a fence) is not sliced: it appears whole. The
+  slice is a clip of the whole tail block at the bottom of its last
+  revealed line (2026-11-16): the hidden text is in the page for at
+  most one time cap, so find-in-page or a drag selection can reach
+  it in that time.
 - Time cap: when nothing was revealed for 1.5 s and text waits,
   reveal the whole lines that arrived.
 - The reveal is rendering only; it moves no scroll of its own

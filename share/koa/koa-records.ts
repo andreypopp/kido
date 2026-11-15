@@ -80,11 +80,10 @@ export type MetricsMode = "applied" | "frame" | "probe";
 export type Stages = { id: number; received: number; visibility: "visible" | "hidden"; request?: { at: number; fired: number } };
 export type MetricsSample = { t: number; bytes: number; clockError: number; applied?: number; frame?: number; stages?: Stages };
 export type Observation =
-  | { type: "frame"; at: number; duration: number; gap?: number; lex: number; strays: number; probes: number; by: Partial<Record<WriteSource, number>> }
-  | { type: "apply"; at: number; duration: number; record: PageRecord["type"]; lex: number; strays: number; probes: number; by: Partial<Record<WriteSource, number>> }
+  | { type: "frame"; at: number; duration: number; gap?: number; lex: number; strays: number; by: Partial<Record<WriteSource, number>> }
+  | { type: "apply"; at: number; duration: number; record: PageRecord["type"]; lex: number; strays: number; by: Partial<Record<WriteSource, number>> }
   | { type: "markdown"; at: number; words: number; lex: number; fallbacks: number }
   | { type: "stray"; at: number; source: WriteSource }
-  | { type: "probe"; at: number }
   | { type: "key"; at: number; latency: number }
   | { type: "dots"; at: number; phase: "call" | "text" | "end"; count: number };
 export type MetricsRequest = { samples: MetricsSample[]; observations: Observation[] };
@@ -95,11 +94,10 @@ const validStages = (value: unknown) => value === undefined || record(value) && 
 function validObservation(entry: unknown): entry is Observation {
   if (!record(entry) || !finite(entry.at)) return false;
   switch (entry.type) {
-    case "frame": return finite(entry.duration) && finite(entry.lex) && Number.isSafeInteger(entry.strays) && Number.isSafeInteger(entry.probes) && validBy(entry.by) && (entry.gap === undefined || finite(entry.gap));
-    case "apply": return finite(entry.duration) && finite(entry.lex) && Number.isSafeInteger(entry.strays) && Number.isSafeInteger(entry.probes) && validBy(entry.by) && isRecordType(entry.record);
+    case "frame": return finite(entry.duration) && finite(entry.lex) && Number.isSafeInteger(entry.strays) && validBy(entry.by) && (entry.gap === undefined || finite(entry.gap));
+    case "apply": return finite(entry.duration) && finite(entry.lex) && Number.isSafeInteger(entry.strays) && validBy(entry.by) && isRecordType(entry.record);
     case "markdown": return Number.isSafeInteger(entry.words) && finite(entry.lex) && Number.isSafeInteger(entry.fallbacks);
     case "stray": return isWriteSource(entry.source);
-    case "probe": return true;
     case "key": return finite(entry.latency);
     case "dots": return (entry.phase === "call" || entry.phase === "text" || entry.phase === "end") && Number.isSafeInteger(entry.count);
     default: return false;

@@ -90,7 +90,7 @@ test("metrics are opt-in and record frame samples with stream counters", { timeo
   assert.equal(record.opens, 1); assert.equal(record.resets, 1); assert.equal(record.cursors, 0);
   assert.equal(record.caps, 0); assert.equal(record.subscribers, 1);
   assert.ok(record.bytes > 0); assert.ok(record.highWater > 0);
-  assert.equal((await on.post("metrics", { samples: [{ t: flush.t, applied: flush.t + 1, bytes: 100, clockError: 0 }], observations: [{ type: "frame", at: 1, duration: 2, lex: 0, strays: 0, probes: 0, by: {} }] })).status, 200);
+  assert.equal((await on.post("metrics", { samples: [{ t: flush.t, applied: flush.t + 1, bytes: 100, clockError: 0 }], observations: [{ type: "frame", at: 1, duration: 2, lex: 0, strays: 0, by: {} }] })).status, 200);
   assert.equal((await on.post("metrics", { samples: [{ t: "bad" }], observations: [] })).status, 400);
   assert.equal((await on.post("metrics", { samples: [], observations: [{ type: "bogus", at: 1 }] })).status, 400);
   await rm(file); await mkdir(file);
