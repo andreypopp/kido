@@ -411,14 +411,43 @@ the step lines start 18pt from the run's left edge.
 Tool output and diffs inside a step's detail are smaller than the step
 text: .detail pre and .diff at .88em; user, 2026-11-09.
 
-## Running: a gray spinner, no word, no bold (user, 2026-11-09)
+## Running: one indicator, the typing dots (user, 2026-11-15; was the gray spinner of 2026-11-09)
 
-The run line in progress shows an animated spinner in the gray tones
-(8pt ring, 1.5pt, `--hair2` with a `--muted` arc, .8s) and then the
-running label as regular text in the muted tone: "⟳ make verify
-STAGES=unit", "⟳ thinking". The word "running" and the bold label go.
-The spinner is the one animated mark; the status-icon rule still holds
-for finished states (colour only).
+The spinner goes. The typing dots are the one working mark of the
+page, in the tool row and alone:
+
+- **The dots**: three 6px circles, 4px apart (26px wide), `--faint`,
+  the bounce as today (1.1s, 180ms apart); the box is the row's line
+  height (1.5 of the row's .95em), `inline-flex`, centred on the
+  text's x-height, so it adds no height to a row. Reduce Motion: the
+  three dots static, no bounce.
+- **In a running tool row**: after the tool's name with the 6px gap
+  the spinner had: "bash ···"; the elapsed time at the right as
+  today. In an expanded run only the running step's line has the
+  dots; finished steps have their times. The folded run line shows
+  one dots mark after its summary ("read x2, bash ···"); several
+  tools running at once show one mark on each running step and one
+  after the folded summary.
+- **The bare row**: while the turn works and no tool call runs
+  (thinking before the first call, between two calls, while text
+  streams), the last row of the turn is a run row with the dots and
+  no name: the same `.run > .line` (padding-left `--pad`, 1px
+  paddings, the row's line height), the dots where the tool name
+  starts, nothing at the right. It has exactly a tool row's height,
+  so "bash ···" and "···" swap without moving the text. While
+  assistant text streams, this row stands under the arriving block
+  (where the typing dots stood), indented like a tool row.
+- **Transitions, one frame per patch, one node**: the indicator row
+  is the turn's last node. A call starting puts its name into that
+  row (it becomes the tool row). A call finishing takes the dots out
+  of its row and puts the time in, and the indicator row appends
+  below in the same frame, unless the same patch starts the next
+  call, in which case the next tool row is that node. No frame shows
+  neither; no frame shows both a bare row and a running tool row.
+- **The turn's end**: the indicator row goes in one frame (the
+  Auto-scroll rule); an abort turns a running tool row into the
+  "aborted" row as today, dots gone.
+- The status-icon rule holds for finished states: colour only.
 
 ## Even word spacing on a step line (user, 2026-11-09)
 
@@ -1143,8 +1172,9 @@ grow by the chunk; it grows by blocks and by slices of whole lines.
   code fence, table, heading, quote) appears when it is complete,
   that is when the next block has begun or the item is final, and
   grows in over 220 ms (max-height from 0 to its height, opacity
-  0 to 1). While a block is still arriving, typing dots (three 6pt
-  circles in the faint tone, bouncing) stand where the caret stood.
+  0 to 1). While a block is still arriving, the working indicator
+  (the bare dots row of "Running: one indicator", indented like a
+  tool row) stands under the arriving block, where the caret stood.
 - Height cap: while the tail block is incomplete, when its hidden
   part reaches 40% of the transcript's viewport height, the page
   reveals a slice of whole lines and repeats: a paragraph by its

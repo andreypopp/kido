@@ -24,9 +24,9 @@ async function page() {
     parent?: Node;
     inert = false;
     contains(node: Node | undefined): boolean { return !!node && (node === this || this.contains(node.parent)); }
-    append(...children: Node[]) { children.forEach(child => { if (child instanceof Node) child.parent = this; }); this.children.push(...children); }
-    prepend(...children: Node[]) { children.forEach(child => { if (child instanceof Node) child.parent = this; }); this.children.unshift(...children); }
-    before(...children: Node[]) { const parent = this.parent; if (!parent) return; children.forEach(child => { if (child instanceof Node) child.parent = parent; }); parent.children.splice(parent.children.indexOf(this), 0, ...children); }
+    append(...children: Node[]) { children.forEach(child => { if (child instanceof Node) { child.remove(); child.parent = this; } }); this.children.push(...children); }
+    prepend(...children: Node[]) { children.forEach(child => { if (child instanceof Node) { child.remove(); child.parent = this; } }); this.children.unshift(...children); }
+    before(...children: Node[]) { const parent = this.parent; if (!parent) return; children.forEach(child => { if (child instanceof Node) { child.remove(); child.parent = parent; } }); parent.children.splice(parent.children.indexOf(this), 0, ...children); }
     remove() { if (this.contains(document.activeElement)) document.activeElement = undefined; if (this.parent) this.parent.children = this.parent.children.filter(child => child !== this); this.parent = undefined; }
     replaceChildren(...children: Node[]) { this.children.forEach(child => { if (child instanceof Node) child.parent = undefined; }); this.children = []; this.append(...children); }
     content: { childNodes: Node[]; querySelectorAll(): Node[] } = { childNodes: [], querySelectorAll: () => [] };
@@ -50,6 +50,11 @@ async function page() {
     get previousElementSibling(): Node | undefined { const index = this.parent?.children.indexOf(this) ?? -1; return index > 0 ? this.parent?.children[index - 1] : undefined; }
     get lastElementChild() { return this.children.at(-1); }
     get lastChild() { return this.children.at(-1); }
+    animations: { options: { duration: number; iterations: number }; startTime: number | null }[] = [];
+    animate(_keyframes: unknown, options: { duration: number; iterations: number }) { const animation = { options, startTime: null }; this.animations.push(animation); return animation; }
+    get firstChild() { return this.children[0] ?? null; }
+    get parentNode(): Node | null { return this.parent ?? null; }
+    get nextSibling(): Node | null { return this.parent?.children[this.parent.children.indexOf(this) + 1] ?? null; }
   }
   const elements = new Map<string, Node>();
   const observers: { callback: (entries: unknown[]) => void; targets: Node[] }[] = [];
@@ -57,7 +62,7 @@ async function page() {
   const listeners = new Map<string, (event: unknown) => void>();
   const windowListeners = new Map<string, (event?: unknown) => void>();
   let activeElement: Node | undefined;
-  const document = { hidden: false, visibilityState: 'visible', documentElement: new Node(), body: new Node(), hasFocus: () => true, get activeElement() { return activeElement; }, set activeElement(node: Node | undefined) { if (activeElement === node) return; const previous = activeElement; activeElement = node; if (previous) listeners.get('focusout')?.({ target: previous }); if (node) listeners.get('focusin')?.({ target: node }); }, querySelector: (selector?: string): Node | null => selector === '.cm-content' ? document.getElementById('prompt').children[0] ?? null : selector === '.lightbox' ? document.body.children.find(node => node.classList.contains('lightbox')) ?? null : null, getElementById(id: string) { let node = elements.get(id); if (!node) { node = new Node(); elements.set(id, node); if (id === 'prompt') document.getElementById('field').append(node); if (id === 'composer') node.hidden = false; } return node; }, createElement: (tag: string) => { const node = new Node(); node.tagName = tag.toUpperCase(); return node; }, createElementNS: () => new Node(), createTextNode: (text: string) => { const node = new Node(); node.tagName = '#text'; node.textContent = text; return node; }, addEventListener(type: string, handler: (event: unknown) => void) { listeners.set(type, handler); }, querySelectorAll: () => [] };
+  const document = { timeline: { currentTime: 100000 }, hidden: false, visibilityState: 'visible', documentElement: new Node(), body: new Node(), hasFocus: () => true, get activeElement() { return activeElement; }, set activeElement(node: Node | undefined) { if (activeElement === node) return; const previous = activeElement; activeElement = node; if (previous) listeners.get('focusout')?.({ target: previous }); if (node) listeners.get('focusin')?.({ target: node }); }, querySelector: (selector?: string): Node | null => selector === '.cm-content' ? document.getElementById('prompt').children[0] ?? null : selector === '.lightbox' ? document.body.children.find(node => node.classList.contains('lightbox')) ?? null : null, getElementById(id: string) { let node = elements.get(id); if (!node) { node = new Node(); elements.set(id, node); if (id === 'prompt') document.getElementById('field').append(node); if (id === 'composer') node.hidden = false; } return node; }, createElement: (tag: string) => { const node = new Node(); node.tagName = tag.toUpperCase(); return node; }, createElementNS: () => new Node(), createTextNode: (text: string) => { const node = new Node(); node.tagName = '#text'; node.textContent = text; return node; }, addEventListener(type: string, handler: (event: unknown) => void) { listeners.set(type, handler); }, querySelectorAll: () => [] };
   type Handlers = { input(user: boolean): void; send(mode: PromptMode): void; quit(): void; edit(): void };
   let handlers: Handlers | undefined;
   let text = () => '';
@@ -98,6 +103,8 @@ async function page() {
   Object.assign(context, { ...runInNewContext(httpSource + '\n({fetchJSON,scoped})', context), attach: runInNewContext(attachSource + '\nattach', context) });
   const jobSource = ['page/job-output.ts', 'page/job.ts'].map(name => stripTypeScriptTypes(readFileSync(new URL(name, import.meta.url), 'utf8')).replace(/^import .*;\n/gm, '').replace(/^export /gm, '')).join('\n');
   Object.assign(context, runInNewContext(jobSource + '\n({createJobPage})', { ...context, atob, TextDecoder, Uint8Array }));
+  const workingSource = stripTypeScriptTypes(readFileSync(new URL('page/working.ts', import.meta.url), 'utf8')).replace(/^export /gm, '');
+  Object.assign(context, runInNewContext(workingSource + '\n({dots})', context));
   const body = source.replace(/^import .*;\n/gm, "").replace(/^setInterval\([\s\S]*$/m, "");
   return { observers, repl: (): ((code: string) => unknown) => runInNewContext("(() => {\n" + body + "\nreturn code => eval(code);\n})()", context), context, elements, listeners, windowListeners, completionResets: () => completionResets, handlers: () => handlers, prompt: () => prompt, text: () => text(), run: (code: string) => runInNewContext("{\n" + body + "\n" + code + "\n}", context) };
 }
@@ -887,14 +894,9 @@ test("a pending tool shows its name until its label arguments arrive", async () 
   })`), true);
 });
 
-test("a running tool takes priority over a later pending step", async () => {
-  const app = await page();
-  assert.equal(app.run("const item={final:false,stop:'',blocks:[]};const steps=[['running','read'],['pending','edit']].map(([type,name],index)=>({key:'0:'+index,index,item,block:{type:'tool',name,args:{text:'{}'},state:{type}}}));run(steps).children[0].children[0].children[0].textContent"), 'read');
-});
-
 test("ended thinking is not active while assistant text streams", async () => {
   const app = await page();
-  assert.equal(app.run("const block={type:'thinking',text:'done',started:1,ended:2};const item={final:false,blocks:[block,{type:'text',text:'streaming'}]};run([{block,item,index:0,key:'0:0'}]).children[0].children[0].children.some(child=>child?.className==='spin')"), false);
+  assert.equal(app.run("const block={type:'thinking',text:'done',started:1,ended:2};const item={final:false,blocks:[block,{type:'text',text:'streaming'}]};run([{block,item,index:0,key:'0:0'}]).children[0].children[0].children.some(child=>child?.className==='dots')"), false);
 });
 
 test("model picker matches provider and id", async () => {
@@ -1105,9 +1107,10 @@ async function revealPage(clientHeight = 100) {
 
 test('reveal waits for a whole line, caps hidden height and time, and finalizes the rest', async () => {
   const fixture = await revealPage(200);
+  fixture.evaluate("state={...state,working:true,since:1700000000000}");
   fixture.put('Intro.\n\none two three four five six');
   assert.deepEqual(fixture.html, ['<p>Intro.</p>\n', '', '']);
-  assert.equal(fixture.evaluate("texts.get('0:0').view.children.at(-1).className"), 'typing');
+  assert.equal(fixture.evaluate("texts.get('0:0').view.children.some(child => child.className === 'caret' || child.className === 'dots')"), false);
   fixture.step(1000);
   assert.equal(fixture.html.length, 3);
   assert.deepEqual([fixture.queued.size, fixture.timers.size], [0, 1]);
@@ -1118,7 +1121,7 @@ test('reveal waits for a whole line, caps hidden height and time, and finalizes 
   assert.equal(fixture.html.at(-1), '<p>one two three four five six seven eight nine ten eleven twelve</p>\n');
   fixture.patch(2, ' more', true);
   assert.equal(fixture.html.at(-1), '<p>one two three four five six seven eight nine ten eleven twelve thirteen fourteen more</p>\n');
-  assert.deepEqual([fixture.evaluate("revealing.size"), fixture.evaluate("texts.get('0:0').view.children.at(-1).className === 'typing'"), fixture.queued.size], [0, false, 1]);
+  assert.deepEqual([fixture.evaluate("revealing.size"), fixture.evaluate("element('items').lastChild?.className.includes('working')"), fixture.queued.size], [0, true, 1]);
 });
 
 test('a duplicate revision repeats nothing and a replaced block restarts its own reveal', async () => {
@@ -1295,7 +1298,7 @@ test('every notice is one nrow that opens only when it has more than its line', 
     multi: ['nrow more', 'one', 'two'], opened: true, closed: false, entered: true,
     session: ['nrow more', 'Release · 3 messages · $1.50'], sessionOpen: true,
     summary: ['nrow more', ['lead:branch', 'prev: · first line'], 2], compaction: 'compacted',
-    failed: ['nrow error', 'compaction · pi restarted'], running: ['nrow', ['', 'spin']],
+    failed: ['nrow error', 'compaction · pi restarted'], running: ['nrow', ['', 'dots']],
     error: [2, 'nrow error', 'provider down', 'TIME'],
   });
 });
@@ -1766,12 +1769,11 @@ async function flowPage() {
   const starts = new Map<unknown, number>(), now = () => Number(app.context.performance.now());
   const grown = (node: { className: string }) => { if (!node.className.includes('grow')) return 1; if (!starts.has(node)) starts.set(node, now()); return Math.min(1, (now() - Number(starts.get(node))) / 220); };
   type Box = { tagName: string; className: string; children: Box[]; parent?: Box; style: Record<string, string> };
-  const margin = (node: Box) => (node.parent?.children[node.parent.children.indexOf(node) + 1]?.className.includes('typing') ? 10 : 0);
-  const count = (node: Box): number => (node.tagName === 'P' || node.tagName === 'PRE' ? 100 * grown(node) + margin(node) : 0) + (node.className.includes('typing') ? 24 : node.children.reduce((total, child) => total + count(child), 0));
+  const count = (node: Box): number => (node.tagName === 'P' || node.tagName === 'PRE' ? 100 * grown(node) : 0) + node.children.reduce((total, child) => total + count(child), 0);
   const isBox = (value: unknown): value is Box => typeof value === 'object' && value !== null && 'children' in value;
   const size = (seq: number) => { const view = evaluate(`views.get(${seq}).view`); assert.ok(isBox(view)); return count(view) + (extra.get(seq) ?? 0); };
   const above = (seq: number) => seqs().filter(other => other < seq).reduce((total, other) => total + size(other), 0);
-  layout.height = () => seqs().reduce((total, seq) => total + size(seq), 0) + pad.value;
+  layout.height = () => seqs().reduce((total, seq) => total + size(seq), 0) + pad.value + (evaluate("!!element('items').lastChild?.className.includes('working')") ? 38 : 0);
   const create = doc.createElement;
   doc.createElement = (tag: string) => {
     const node = create(tag), own = node.getBoundingClientRect.bind(node), add = node.classList.add;
@@ -1823,6 +1825,7 @@ async function streamingPage() {
   const page = await flowPage();
   page.evaluate("element('scroll').clientHeight=200");
   page.pad.value = 600;
+  page.evaluate("state={...state,working:true,since:1700000000000}");
   page.deliver(page.reveal(0, 'Intro.\n\none two three four five six'));
   page.step(1000); page.step(500);
   page.settle(60);
@@ -2041,15 +2044,16 @@ test('an image that loads and a card that grows move the following pane to the n
   assert.equal(page.bottom() - page.top(), 0);
 });
 
-test('the typing dots of a turn that ends go in one frame and the follower writes the new bottom in it', async () => {
+test('the working row of a turn that ends go in one frame and the follower writes the new bottom in it', async () => {
   const page = await streamingPage();
   page.step(1600);
   page.settle(30);
   const settled = page.top();
   page.deliver(page.suffix(0, 1, '', true));
+  page.evaluate("apply({...state,type:'state',working:false})");
   page.step(16);
-  assert.equal(page.evaluate("texts.get('0:0').view.children.some(child => child.className.includes('typing'))"), false);
-  assert.deepEqual([page.top(), page.top() - page.bottom()], [settled - 34, 0]);
+  assert.equal(page.evaluate("!!element('items').lastChild?.className.includes('working')"), false);
+  assert.deepEqual([page.top(), page.top() - page.bottom()], [settled - 38, 0]);
 });
 
 test('a reveal moves a following pane to the bottom in its first frame and never pulls a reader who scrolled up', async () => {
@@ -2436,4 +2440,69 @@ test('a failed earlier-output request for a job that was left does not mark the 
   f.failed[0]?.();
   await f.flush();
   assert.deepEqual(f.lines(), ['other']);
+});
+
+const FIND_DOTS = "(function find(n){return n.className==='dots'?n:n.children.map(c=>c.children?find(c):undefined).find(Boolean)})(element('items'))";
+const dotsCount = "(function f(n){return (n.className==='dots'?1:0)+n.children.reduce((t,c)=>t+(c.children?f(c):0),0)})(element('items'))";
+test('working dots: the dots in the page keep their node and their start time through patches, reveal, replacements, rebuilds and hide', async () => {
+  const fixture = await revealPage(200), ev = fixture.evaluate;
+  const starts = () => JSON.parse(String(ev("JSON.stringify(" + FIND_DOTS + ".children.map(dot => dot.animations.map(animation => [animation.startTime, animation.options.duration, animation.options.iterations])))")));
+  const TURN = [[[78000, 1100, null]], [[78180, 1100, null]], [[78360, 1100, null]]];
+  ev("state={...state,working:true,since:1699999990000}");
+  fixture.put('Intro.\n\none two three four five six');
+  const first = ev(FIND_DOTS);
+  assert.deepEqual([Number(ev(dotsCount)), starts()], [1, TURN]);
+  ev("Date = class extends Date { static now() { return 1700000030000; } }");
+  const stay = (label: string) => assert.deepEqual([ev(FIND_DOTS) === first, Number(ev(dotsCount)), starts()], [true, 1, TURN], label);
+  for (let revision = 1; revision <= 12; revision++) { fixture.patch(revision, ' word' + revision + '\n\nblock ' + revision); fixture.step(16); stay('patch ' + revision); }
+  fixture.step(1000); fixture.step(500); stay('reveal');
+  ev("apply({type:'patch',seq:0,baseRevision:12,revision:13,final:false,stop:'',error:'',blocks:[{index:0,block:{type:'text',text:'replaced'}}]})");
+  fixture.step(16); stay('replacement');
+  ev("put({seq:1,revision:0,at:0,kind:'assistant',final:false,stop:'',error:'',blocks:[{type:'tool',id:'a',name:'bash',args:{text:'{}'},state:{type:'running'}}]})");
+  stay('tool starts');
+  ev("put({seq:1,revision:0,at:0,kind:'assistant',final:false,stop:'',error:'',blocks:[{type:'tool',id:'a',name:'bash',args:{text:'{}'},state:{type:'running'}},{type:'thinking',text:'x'}]})");
+  stay('run rebuild');
+  ev("document.hidden = true");
+  fixture.app.listeners.get('visibilitychange')?.({});
+  ev("document.hidden = false");
+  fixture.app.listeners.get('visibilitychange')?.({});
+  stay('show');
+  ev("state={...state,view:{id:'other',path:[],type:'agent'}}; reconcileWorking()");
+  ev("state={...state,view:{id:'',path:[],type:'agent'}}; reconcileWorking()");
+  const back = ev(FIND_DOTS);
+  assert.deepEqual([back === first, Number(ev(dotsCount)), starts()], [false, 1, [[[60000, 1100, null]], [[60180, 1100, null]], [[60360, 1100, null]]]], 'view return keeps the turn clock');
+});
+
+test('working dots: one indicator in every frame, a bare row or a running mark, never both and never neither', async () => {
+  const fixture = await revealPage(200), ev = fixture.evaluate;
+  const marks = () => Number(ev(dotsCount));
+  const bare = () => Boolean(ev("!!element('items').lastChild?.className.includes('working')"));
+  const tool = (id: string, state: string) => ({ type: 'tool', id, name: 'bash', args: { text: '{}' }, state: { type: state, ...(state === 'done' ? { error: false, result: { text: 'ok', images: [] } } : {}) } });
+  const show = (blocks: object[], final = false, stop = '') => ev('put(' + JSON.stringify({ seq: 1, revision: 0, at: 0, kind: 'assistant', final, stop, error: '', blocks }) + ')');
+  const where = () => String(ev("(function(){const d=" + FIND_DOTS + ";return d.parent.className+'|'+d.parent.parent.parent.className})()"));
+  const toggle = () => ev("views.get(1).slots.get('1:1').view.firstElementChild.children[0].onclick({})");
+  const summary = () => String(ev("views.get(1).slots.get('1:1').view.firstElementChild.children[0].children[0].children[0].children.map(c => c.textContent).join('')"));
+  ev("state={...state,working:true,since:1699999990000}");
+  show([{ type: 'text', text: 'hello' }]);
+  assert.deepEqual([bare(), marks()], [true, 1]);
+  show([{ type: 'text', text: 'hello' }, tool('a', 'running')]);
+  assert.deepEqual([bare(), marks(), where().startsWith('sum|run')], [false, 1, true]);
+  show([{ type: 'text', text: 'hello' }, tool('a', 'running')], false, 'toolUse');
+  assert.deepEqual([bare(), marks(), where().startsWith('sum|run')], [false, 1, true], 'the stop reason toolUse does not end the call');
+  show([{ type: 'text', text: 'hello' }, tool('a', 'done')]);
+  assert.deepEqual([bare(), marks()], [true, 1]);
+  show([{ type: 'text', text: 'hello' }, tool('a', 'done'), tool('b', 'running')]);
+  assert.deepEqual([bare(), marks(), summary()], [false, 1, 'bash x2'], 'the folded summary keeps the counts');
+  show([{ type: 'text', text: 'hello' }, tool('a', 'done'), tool('b', 'done'), tool('c', 'running')]);
+  assert.deepEqual([bare(), marks()], [false, 1], 'one call finishes and the next starts in one patch');
+  show([{ type: 'text', text: 'hello' }, tool('a', 'running'), tool('b', 'running')]);
+  assert.deepEqual([bare(), marks()], [false, 3], 'folded: one after the summary and one on each running step');
+  toggle();
+  assert.deepEqual([bare(), marks(), where().startsWith('sum|step')], [false, 2, true], 'open: only the running steps');
+  toggle();
+  assert.deepEqual([bare(), marks()], [false, 3]);
+  show([{ type: 'text', text: 'hello' }, tool('a', 'running')], false, 'aborted');
+  assert.deepEqual([bare(), marks()], [true, 1], 'an aborted call is no running call');
+  ev("apply({...state,type:'state',working:false})");
+  assert.deepEqual([bare(), marks()], [false, 0], 'the end takes every mark in one update');
 });

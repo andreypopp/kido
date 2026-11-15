@@ -857,6 +857,30 @@ A click on it opens as every webview page's link does
 `http` and `https`, and refuses `mailto` with a notice.
 The user's text renders through the same renderer.
 
+**The working mark.** The typing dots are the page's one working
+mark (app/design/koa/NOTES.md, "Running: one indicator"); there is
+no spinner. A working turn has one indicator, which belongs to the
+turn and not to a text block: `page/page.ts` keeps it in one record
+for the view and the turn's start (`State.since`), and no rebuilt
+content holds it. While no tool call runs, it is a bare run row, the
+last row of the items, with a tool row's height, indent and baseline;
+while a call runs, the same node stands after the tool's name, on a
+folded run's summary or on the running step of an opened run.
+Parallel calls add one mark for each running step, never only inside
+a closed run. Each page update places the indicator after the items
+and runs change, so no frame shows neither or both; the turn's end,
+an abort, compaction and the job view remove it. A stream, a reveal
+step or a rebuilt run does not recreate it, so the bounce never
+restarts. The bounce's phase is a function of the mark's start: each
+dot is a Web Animation whose start time is the turn's start, so a
+move, a new node or a closed ancestor that opens again continues the
+same phase. A CSS animation cannot do this: `display: none` restarts
+it, and a new `animation-delay` on a running one counts the elapsed
+time twice. Compaction, a running `!` command, a
+pending completion and a pending attachment use the same dots, with
+the start of their own operation (`page/working.ts`). Under Reduce
+Motion the dots are static.
+
 **The reveal.** An answer grows by blocks and by slices of whole
 lines, not by the chunk (app/design/koa/NOTES.md, item 9; `REVEAL`
 in `page/page.ts` holds its parameters). It is presentation only:
@@ -871,8 +895,9 @@ text to show.
   item is final or a later block of the same item began (a tool
   step, an agent card).
 - **Blocks.** A top-level block of the lexer appears when it is
-  complete, that is when the next block began, and grows in. Typing
-  dots stand where the caret stood while a block arrives.
+  complete, that is when the next block began, and grows in. The
+  reveal holds no working mark: the turn's indicator row stands
+  under the arriving block ("The working mark").
 - **Slices.** The tail block's raw text is cut at a whole unit
   before `remend` and the lexer, so a slice is never a half line:
   a code fence by lines, a table by rows, a list by items, a
@@ -978,7 +1003,7 @@ the command first ("`!` commands" below).
   moves the scroll by its delta; when the item is gone the anchor
   moves to the next item below, or the page goes to the bottom.
   The reveal and the grow are rendering only: no scroll animates
-  toward them, and the typing dots go in one frame. The one
+  toward them, and the working mark goes in one frame. The one
   animated scroll is "↓ Latest": about 250 ms, ease-out, re-targeted
   each frame to the moving bottom; the state stays `reader` until
   it arrives, and reader input, a view switch or a hidden page
@@ -1548,7 +1573,8 @@ The user decided the look with the mockups `agents.html` and
   whole line folds it. Tool names, step names and the agent lead are
   prose at the row's size; only a command or path inside a step is
   terminal text. Times are prose at .8em with tabular digits. A
-  running tool shows its name and then the spinner, not its command.
+  running tool shows its name and then the working mark, not its
+  command.
   Rows indent by `--pad` from the text edge and their times end on it;
   an opened body, a run's steps or an agent's text, indents from that
   point. Consecutive run, agent, job and notice rows sit 2pt apart;

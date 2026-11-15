@@ -1,6 +1,7 @@
 import { ATTACHMENT_LIMITS, isAttachment } from '../koa-records.ts';
 import { fetchJSON } from './http.ts';
 import { preview } from './preview.ts';
+import { dots } from './working.ts';
 import type { Attachment } from '../koa-records.ts';
 
 type Chip = { view: HTMLDivElement; icon: HTMLSpanElement; name: HTMLSpanElement; detail: HTMLSpanElement; body: HTMLButtonElement; controller: AbortController; state: { type: 'pending'; name: string; size: number; received: number; id?: string } | { type: 'ready'; file: Attachment } | { type: 'refused'; name: string; reason: string } };
@@ -29,10 +30,11 @@ export function attach(host: HTMLElement, changed: () => void, displayPath: (val
     chip.body.setAttribute('aria-label', chip.name.textContent);
     chip.body.disabled = state.type !== 'ready';
     chip.view.classList.toggle('refused', state.type === 'refused');
-    chip.icon.className = state.type === 'pending' ? 'attach-icon spin' : 'attach-icon';
+    chip.icon.className = state.type === 'pending' ? 'attach-icon pending' : 'attach-icon';
     chip.body.onclick = () => { if (chip.state.type === 'ready') preview('/attachments/' + chip.state.file.id, chip.body, chip.state.file.kind, changed, chip.state.file.name); };
     if (file?.kind === 'image') { const image = document.createElement('img'); image.src = '/attachments/' + file.id; image.alt = ''; chip.icon.replaceChildren(image); }
-    else chip.icon.innerHTML = state.type === 'pending' ? '' : '<svg viewBox="0 0 16 16"><path d="M4 1.5h5.5L13 5v9.5H4z"/><path d="M9.5 1.5V5H13"/></svg>';
+    else if (state.type === 'pending') { if (chip.icon.firstElementChild?.className !== 'dots') chip.icon.replaceChildren(dots(Date.now())); }
+    else chip.icon.innerHTML = '<svg viewBox="0 0 16 16"><path d="M4 1.5h5.5L13 5v9.5H4z"/><path d="M9.5 1.5V5H13"/></svg>';
     chip.detail.classList.toggle('path', file?.origin === 'path');
     chip.detail.textContent = state.type === 'refused' ? state.reason : state.type === 'pending' ? (state.size >= 1048576 ? Math.floor(state.received / 1048576) + ' / ' + Math.ceil(state.size / 1048576) + ' MB' : sizeLabel(state.received) + ' / ' + sizeLabel(state.size)) : state.file.origin === 'path' ? displayPath(state.file.path.slice(0, state.file.path.lastIndexOf('/') + 1)) : sizeLabel(state.file.size);
     refresh();

@@ -5,6 +5,7 @@ import { attach } from './attach.ts';
 import { closeLightbox, preview, previewKey } from './preview.ts';
 import { fetchJSON, scoped } from './http.ts';
 import { createJobPage } from './job.ts';
+import { dots } from './working.ts';
 import { ATTACHMENT_LIMITS, pathArg } from '../koa-records.ts';
 import type { State, WireJob, WireItem, QueuedPrompt, WireAssistant, Block, Patch, PageRecord, PromptMode, ImageRef, AgentCall, Bash, SessionRow, SessionScope, ThinkingLevel } from '../koa-records.ts';
 import type { AgentRef, Relation } from '../records.ts';
@@ -43,6 +44,11 @@ const REVEAL = { cap: .4, wait: 1500, fold: 15, grow: 220, travel: 250 };
 type Reveal = { at: number; tail?: Tail; measured?: { tail: Tail; width: number; full: number; waiting: number; end?: number } };
 type TextMemo = { render: ReturnType<typeof markdown>; view: HTMLElement; blocks: { block: ReturnType<ReturnType<typeof markdown>>[number]; nodes: ChildNode[] }[]; final?: boolean; source?: string; annotationItem?: Extract<WireItem, { kind: 'annotations' }>; assistant: boolean; reveal?: Reveal; grown: number; open: Set<string> };
 const texts = new Map<string, TextMemo>();
+type RunMarks = { key: string; summary: HTMLElement; steps: { key: string; sum: HTMLElement; after: HTMLElement; live: boolean }[] };
+const runMarks = new WeakMap<HTMLElement, RunMarks>();
+const liveMarks = new Map<string, RunMarks>();
+let working: { view: string; since: number; primary: HTMLElement; row: HTMLElement; extra: Map<string, HTMLElement> } | undefined;
+type Spot = { key: string; parent: HTMLElement; before: ChildNode | null };
 const revealing = new Set<TextMemo>();
 let measurer: HTMLElement | undefined, frame: number | undefined, capTimer: number | undefined, dirty = false;
 const growing: HTMLElement[] = [];
@@ -68,6 +74,7 @@ const draft = attach(element('attachments'), () => refreshComposer(), displayPat
   element('error').textContent = 'a command takes no attachments';
   attachmentRefusalTimer = setTimeout(() => { if (element('error').textContent === 'a command takes no attachments') element('error').textContent = ''; }, 4000);
 });
+let completionDots: HTMLElement | undefined;
 const pendingBash = new Map<string, ReturnType<typeof commandRun>>();
 const editor = composer(element('prompt'), {
   drop: draft.drop, paste: draft.paste,
@@ -212,7 +219,7 @@ function prose(key: string | undefined, source: string, final: boolean, annotati
 function show(memo: TextMemo, source: string, final: boolean) {
   const { reveal } = memo, before = reveal?.tail;
   const annotated = memo.annotationItem ? annotations(source, memo.annotationItem.annotations, editor) : undefined;
-  memo.view.querySelector<HTMLElement>(reveal ? '.typing' : '.caret')?.remove();
+  if (!reveal) memo.view.querySelector<HTMLElement>('.caret')?.remove();
   const blocks = memo.render(source, final, annotated?.marks, reveal && (before ?? { start: -1, end: 0 }));
   let first = 0;
   while (first < blocks.length && memo.blocks[first]?.block === blocks[first]) first++;
@@ -246,15 +253,9 @@ function show(memo: TextMemo, source: string, final: boolean) {
     schedule();
     armCap();
   }
-  if (!final) {
-    if (reveal) {
-      const dots = node('span', undefined, 'typing');
-      dots.append(node('i'), node('i'), node('i'));
-      memo.view.append(dots);
-    } else {
-      const last = memo.view.lastElementChild;
-      (last?.tagName === 'P' ? last : memo.view).append(node('span', undefined, 'caret'));
-    }
+  if (!final && !reveal) {
+    const last = memo.view.lastElementChild;
+    (last?.tagName === 'P' ? last : memo.view).append(node('span', undefined, 'caret'));
   }
 }
 function foldFence(memo: TextMemo, pre: HTMLElement, key: string) {
@@ -492,17 +493,18 @@ function stepInfo(step: Step & { args: Record<string, unknown> }) {
   }
   return { edit, labelClass, label: typeof label === 'string' ? label : label === undefined ? block.name + (block.state.type === 'pending' && !item.final ? '' : ' ' + block.args.text) : JSON.stringify(label), detail, kind, aborted: item.stop === 'aborted' && block.state.type !== 'done' };
 }
-function fold(view: HTMLElement, key: string, line: HTMLElement, details: HTMLElement, show?: () => void, className = 'open') {
+function fold(view: HTMLElement, key: string, line: HTMLElement, details: HTMLElement, show?: () => void, className = 'open', changed?: () => void) {
   view.classList.toggle(className, folds.get(key) === true);
   line.setAttribute('role', 'button'); line.tabIndex = -1;
   line.setAttribute('aria-expanded', String(folds.get(key) === true));
-  const toggle = () => { const open = !view.classList.contains(className); folds.set(key, open); view.classList.toggle(className, open); line.setAttribute('aria-expanded', String(open)); if (open) show?.(); };
+  const toggle = () => { const open = !view.classList.contains(className); folds.set(key, open); view.classList.toggle(className, open); line.setAttribute('aria-expanded', String(open)); if (open) show?.(); changed?.(); };
   line.onclick = event => { if (!(event?.target instanceof Element && event.target.closest('a'))) toggle(); };
   line.onkeydown = event => { if (!(event.target instanceof Element && event.target.closest('a')) && !event.metaKey && !event.ctrlKey && (event.key === 'Enter' || event.key === ' ')) { event.preventDefault(); toggle(); } };
   if (view !== line) view.append(line);
   view.append(details);
   if (folds.get(key)) show?.();
 }
+const isLive = (step: Step) => step.block.type === 'tool' && !step.item.final && step.item.stop !== 'aborted' && (step.block.state.type === 'running' || step.block.state.type === 'pending');
 function run(input: Step[]) {
   const steps = input.map(step => { const value = { ...step, args: step.block.type === 'tool' ? args(step.block) : {}, file: pathArg(step.block) }; return { ...value, info: stepInfo(value) }; });
   const view = node('div', undefined, 'run');
@@ -510,9 +512,9 @@ function run(input: Step[]) {
   const summary = node('span', undefined, 'sum');
   const failed = steps.filter(step => step.block.type === 'tool' && step.block.state.type === 'done' && step.block.state.error);
   const aborted = steps.some(step => step.item.stop === 'aborted' && step.item.blocks.slice(step.index + 1).every(block => block.type !== 'text' || !block.text));
-  const active = steps.find(step => step.block.type === 'tool' && step.block.state.type === 'running') ?? steps.findLast(step => step.block.type === 'tool' ? step.block.state.type === 'pending' && !step.item.final : !step.item.final && step.block.ended === undefined);
+  const marks: RunMarks = { key: 'run:' + steps[0].key, summary, steps: [] };
+  const active = steps.some(step => isLive(step) || step.block.type !== 'tool' && !step.item.final && step.block.ended === undefined);
   if (aborted) summary.append('aborted, you pressed Escape');
-  else if (active) summary.append(node('span', active.info.kind, 'names'), node('span', undefined, 'spin'));
   else {
     const counts = new Map<string, number>();
     for (const step of steps) { const kind = step.info.kind; counts.set(kind, (counts.get(kind) || 0) + 1); }
@@ -534,9 +536,11 @@ function run(input: Step[]) {
     const child = node('div', undefined, 'step');
     const row = node('div', undefined, 'line');
     const sum = node('span', undefined, 'sum');
-    if (block.type === 'tool' && (block.name === 'bash' || info.labelClass === 'path')) sum.append(node('span', block.name, error ? 'name err' : 'name'), ' ');
+    const name = block.type === 'tool' && (block.name === 'bash' || info.labelClass === 'path') ? node('span', block.name, error ? 'name err' : 'name') : undefined;
+    if (name) sum.append(name, ' ');
     const label = node('span', info.label, error && block.type === 'tool' && block.name !== 'bash' && info.labelClass !== 'path' ? 'err' : info.labelClass);
     sum.append(label, ' ');
+    marks.steps.push({ key, sum, after: name ?? label, live: isLive(step) });
     const counts = info.detail.match(/^\+(\d+) −(\d+)$/);
     if (counts) sum.append(node('span', '+' + counts[1], 'added'), ' ', node('span', '−' + counts[2], 'err'));
     else sum.append(node('span', info.detail, 'delta'));
@@ -578,10 +582,52 @@ function run(input: Step[]) {
     }
     children.append(child);
   }
-  fold(view, 'run:' + steps[0].key, line, children);
+  fold(view, marks.key, line, children, undefined, 'open', reconcileWorking);
+  runMarks.set(view, marks);
+  if (marks.steps.some(step => step.live)) liveMarks.set(marks.key, marks); else liveMarks.delete(marks.key);
   return view;
 }
 
+function clearWorking() {
+  working?.row.remove(); working?.primary.remove();
+  working?.extra.forEach(mark => mark.remove());
+  working = undefined;
+}
+function reconcileWorking() {
+  const since = state.working && state.view.type !== 'job' && state.compaction !== 'running' ? state.since : undefined;
+  if (since === undefined) { clearWorking(); return; }
+  if (working?.view !== state.view.id || working.since !== since) {
+    clearWorking();
+    const row = node('div', undefined, 'run working'), line = node('div', undefined, 'line');
+    line.append(node('span', undefined, 'sum')); row.append(line);
+    working = { view: state.view.id, since, primary: dots(since), row, extra: new Map() };
+  }
+  const turn = working, spots: Spot[] = [];
+  for (const marks of liveMarks.values()) {
+    const live = marks.steps.filter(step => step.live), open = folds.get(marks.key) === true;
+    if (!open) spots.push({ key: 'sum:' + marks.key, parent: marks.summary, before: null });
+    if (open || live.length > 1) for (const step of live) spots.push({ key: 'step:' + step.key, parent: step.sum, before: step.after.nextSibling });
+  }
+  const place = (mark: HTMLElement, { parent, before }: Omit<Spot, 'key'>) => {
+    if (before === mark || mark.parentNode === parent && mark.nextSibling === before) return;
+    parent.insertBefore(mark, before);
+  };
+  if (!spots.length) {
+    const items = element('items'), sum = turn.row.firstElementChild?.firstElementChild;
+    if (sum instanceof HTMLElement) place(turn.primary, { parent: sum, before: null });
+    if (turn.row.parentNode !== items || items.lastChild !== turn.row) items.append(turn.row);
+  } else {
+    turn.row.remove();
+    place(turn.primary, spots[0]);
+  }
+  const extra = new Map(spots.slice(1).map(spot => [spot.key, spot]));
+  for (const [key, mark] of turn.extra) if (!extra.has(key)) { mark.remove(); turn.extra.delete(key); }
+  for (const [key, spot] of extra) {
+    let mark = turn.extra.get(key);
+    if (!mark) { mark = dots(since); turn.extra.set(key, mark); }
+    place(mark, spot);
+  }
+}
 function reconcileRuns(seq: number) {
   if (items.get(seq)?.kind !== 'assistant') return;
   let start = seq, end = seq;
@@ -596,7 +642,7 @@ function reconcileRuns(seq: number) {
       if (owner.signature !== signature) { owner.view.replaceChildren(run(steps)); owner.signature = signature; }
       for (const step of steps.slice(1)) {
         const slot = views.get(step.item.seq)?.slots.get(step.key);
-        if (slot?.type === 'run' && slot !== owner) { slot.view.replaceChildren(); slot.signature = undefined; }
+        if (slot?.type === 'run' && slot !== owner) { const first = slot.view.firstElementChild; if (first instanceof HTMLElement) liveMarks.delete(runMarks.get(first)?.key ?? ''); slot.view.replaceChildren(); slot.signature = undefined; }
       }
     }
     steps = [];
@@ -657,7 +703,7 @@ function commandNotice(item: Extract<WireItem, { kind: 'command' }>): NoticeRow 
       return { key, at, content: { type: 'details', text: result.name + ' · ' + stats.totalMessages + ' messages · $' + stats.cost.toFixed(2), body: grid } };
     }
     case 'compaction': switch (result.state.type) {
-      case 'running': return { key, at, content: { type: 'inline', head: () => [node('span', 'compacting'), node('span', undefined, 'spin')] } };
+      case 'running': return { key, at, content: { type: 'inline', head: () => [node('span', 'compacting'), dots(at)] } };
       case 'cancelled': return { key, at, content: { type: 'text', text: 'compaction cancelled' } };
       case 'failed': return { key, at, level: 'error', content: { type: 'text', text: 'compaction · ' + result.state.message } };
       case 'done': return { key, at, content: { type: 'details', text: 'compacted · ' + quantity(result.state.before) + ' → ' + (result.state.after === undefined ? '—' : quantity(result.state.after)) + ' tokens', body: paragraphs(result.state.summary) } };
@@ -730,6 +776,7 @@ function put(item: WireItem) {
     }
   }
   if (item.kind === 'job') reconcileJobs(item.seq);
+  reconcileWorking();
   element('older').hidden = !more;
   after = Math.max(after, first - 1);
   while (items.get(after + 1)?.final) after++;
@@ -738,6 +785,7 @@ function put(item: WireItem) {
 
 function commandRun(value: Extract<WireItem, { kind: 'bash' }> | Bash, key: string) {
   const view = node('div', undefined, 'cmdrun'), line = node('div', undefined, 'line');
+  const live = dots('phase' in value ? value.started : Date.now());
   const bang = node('span'), command = node('span'), meta = node('span', undefined, 'meta'), outcome = node('span'), time = node('span');
   meta.append(outcome, time); line.append(bang, command, meta);
   const output = node('div', undefined, 'out'), pre = node('pre'), footer = node('div', undefined, 'ft');
@@ -746,11 +794,12 @@ function commandRun(value: Extract<WireItem, { kind: 'bash' }> | Bash, key: stri
   fold(view, key, line, output);
   const text = (target: HTMLElement, next: string) => { if (target.textContent !== next) target.textContent = next; };
   const update = (value: Extract<WireItem, { kind: 'bash' }> | Bash) => {
-    const live = 'phase' in value && value.phase !== 'completed';
+    const running = 'phase' in value && value.phase !== 'completed';
     const result = 'phase' in value ? value.phase === 'completed' ? value.result : undefined : value.result;
     const failed = result?.exit !== undefined && result.exit !== 0;
-    text(bang, live ? '' : value.excludeFromContext ? '!!' : '!');
-    const marker = live ? 'spin' : 'bang' + (value.excludeFromContext ? ' quiet' : '');
+    if (running) { if (bang.firstChild !== live) bang.replaceChildren(live); }
+    else text(bang, value.excludeFromContext ? '!!' : '!');
+    const marker = running ? 'busy' : 'bang' + (value.excludeFromContext ? ' quiet' : '');
     if (bang.className !== marker) bang.className = marker;
     const title = value.excludeFromContext ? "not in the model's context" : '';
     if (bang.title !== title) bang.title = title;
@@ -762,7 +811,7 @@ function commandRun(value: Extract<WireItem, { kind: 'bash' }> | Bash, key: stri
     if (outcome.className !== outcomeClass) outcome.className = outcomeClass;
     outcome.hidden = !outcome.textContent;
     text(time, 'phase' in value ? duration((value.phase === 'completed' ? value.ended : Date.now()) - value.started) : '');
-    text(pre, result?.output.text ?? ('output' in value ? value.output.text : '')); pre.classList.toggle('live', live);
+    text(pre, result?.output.text ?? ('output' in value ? value.output.text : '')); pre.classList.toggle('live', running);
     footer.hidden = !(result?.truncated || result?.output.cut);
     text(footer, result?.fullOutputPath ? '… full output: ' + result.fullOutputPath : '… output truncated');
   };
@@ -811,7 +860,12 @@ function status() {
     label.append(node('span', ' ' + duration(ms, ' '), 'k'));
   }
   element('dot').className = 'dot' + (hasFailed() ? ' off' : waiting ? ' wait' : state.life.type === 'ready' && (state.working || running) ? ' on' : '');
-  if (bang && completing === 'pending') element('dot').className = 'spin completion-spin';
+  const mark = element('dot');
+  if (bang && completing === 'pending') {
+    mark.className = 'dot dots-host';
+    completionDots ??= dots(Date.now());
+    if (mark.firstChild !== completionDots) mark.replaceChildren(completionDots);
+  } else if (mark.firstChild) mark.replaceChildren();
   element('model-name').textContent = state.model?.id ?? '';
   element('thinking').textContent = state.thinking ? '· ' + state.thinking : '';
   const context = state.context, percent = context?.percent;
@@ -1041,14 +1095,14 @@ function applyPatch(record: Patch, buffer: boolean) {
 function apply(record: PageRecord) {
   if (record.type === 'reset') {
     editor.resetCompletion();
-    epoch = record.epoch; after = -1; first = undefined; items.clear(); views.clear(); texts.clear(); revealing.clear(); growing.length = 0; dirty = false; stopFrames(); annotationItems.clear(); folds.clear(); jobOwners.clear(); historyRequest = undefined; more = record.more;
+    epoch = record.epoch; after = -1; first = undefined; items.clear(); views.clear(); texts.clear(); liveMarks.clear(); clearWorking(); revealing.clear(); growing.length = 0; dirty = false; stopFrames(); annotationItems.clear(); folds.clear(); jobOwners.clear(); historyRequest = undefined; more = record.more;
     element('items').replaceChildren(); divider = undefined; fresh.clear(); counted.clear(); liveBash.clear();
     readScroll();
     element('older').hidden = !more;
     for (const item of record.items) put(item);
     atEnd();
     sync();
-    refreshBash(); refreshComposer();
+    refreshBash(); refreshComposer(); reconcileWorking();
     if (scrolling.kind === 'restoring') void restore(scrolling);
   } else if (record.type === 'item') {
     const current = items.get(record.item.seq);
@@ -1067,7 +1121,7 @@ function apply(record: PageRecord) {
     state = record; if (agentsChanged || viewChanged) refreshAgentCards(); document.body.dataset.sessionId = state.sessionId ?? ''; element('items').hidden = state.life.type === 'switching';
     showJobView();
     if (viewChanged) { rescopeImages(); readScroll(); atEnd(); }
-    renderBar(); refreshBash(); refreshComposer(); dialogs(); queue(); exited();
+    renderBar(); refreshBash(); reconcileWorking(); refreshComposer(); dialogs(); queue(); exited();
     if (state.life.type === 'ready' && state.editor && editorId !== state.editor.id) {
       editor.setText(state.editor.text); editorId = state.editor.id;
       void fetchJSON('/editor/ack', { sessionId: state.sessionId, id: state.editor.id }).catch(reportError);
