@@ -59,13 +59,13 @@ import XCTest
     }
 
     private func prompt(_ web: WKWebView) async throws {
-        try await webviewUntil(web, "document.querySelector('#status').textContent==='idle'")
+        try await webviewUntil(web, "\(koaIdle)")
         let status = try await webviewJS(web, "fetch('/prompt',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sessionId:document.body.dataset.sessionId,text:'go',mode:'prompt',attachments:[]})}).then(r=>r.status)")
         XCTAssertEqual(status, "200")
     }
 
     private func complete(_ web: WKWebView, id: Int, deadline: Date) async throws {
-        try await webviewUntil(web, "document.querySelector('#status').textContent==='idle'&&document.querySelector('#items').textContent.includes('STRESS DONE \(id)')", within: max(0.001, deadline.timeIntervalSinceNow))
+        try await webviewUntil(web, "\(koaIdle)&&document.querySelector('#items').textContent.includes('STRESS DONE \(id)')", within: max(0.001, deadline.timeIntervalSinceNow))
         if id == 1 {
             let loaded = try await webviewJS(web, "document.querySelector('#items').textContent.includes('Paragraph 1998')")
             XCTAssertEqual(loaded, "true")
@@ -162,7 +162,7 @@ import XCTest
                 }
             }
             for pane in panes { try await prompt(try XCTUnwrap(pane.webviewView?.browser)) }
-            if id != 1 { try await webviewUntil(try XCTUnwrap(panes.first?.webviewView?.browser), "document.querySelector('#status').textContent.startsWith('working')") }
+            if id != 1 { try await webviewUntil(try XCTUnwrap(panes.first?.webviewView?.browser), "\(koaWorking)") }
             if id == 12 {
                 let parent = try XCTUnwrap(panes.first).pane
                 let parentWindow = try XCTUnwrap(owner.testModel?.layout.layout.sessions.first?.windows.first).id

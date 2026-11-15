@@ -9,6 +9,8 @@ const BOUNCE = [
 export function dots(since: number) {
   const view = document.createElement('span');
   view.className = 'dots';
+  view.setAttribute('role', 'img');
+  view.setAttribute('aria-label', 'working');
   const still = matchMedia('(prefers-reduced-motion: reduce)').matches;
   for (let index = 0; index < 3; index++) {
     const dot = document.createElement('i');

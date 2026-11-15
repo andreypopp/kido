@@ -50,7 +50,7 @@ import SidebarFeed
         let web = try XCTUnwrap(pane.webviewView?.browser)
         assertReplayRan(web)
         try await wait("koa document loaded") { web.url?.scheme == "ko" && !web.isLoading }
-        try await webviewUntil(web, "window.composer&&\(ready)document.querySelector('#status').textContent==='idle'")
+        try await webviewUntil(web, "window.composer&&\(ready)\(koaIdle)&&document.querySelector('#items').childElementCount>0")
         return web
     }
     private static let followHelpers = #"""
@@ -160,7 +160,7 @@ import SidebarFeed
             let running = state == "running"
             try await webviewUntil(web, running ? "document.querySelectorAll('.run:not(.working) .dots').length===1&&!document.querySelector('.run.working')" : "!!document.querySelector('.run.working .dots')&&!document.querySelector('.run:not(.working) .dots')")
             try await webviewUntil(web, "!!document.querySelector('.assistant p')")
-            try await webviewUntil(web, "document.querySelector('#status').textContent.startsWith('working')&&Number.parseFloat(getComputedStyle(document.body).getPropertyValue('--dock-h'))===document.querySelector('#dock').getBoundingClientRect().height&&document.querySelector('#scroll').scrollHeight-document.querySelector('#scroll').scrollTop-document.querySelector('#scroll').clientHeight<=1")
+            try await webviewUntil(web, "\(koaWorking)&&Number.parseFloat(getComputedStyle(document.body).getPropertyValue('--dock-h'))===document.querySelector('#dock').getBoundingClientRect().height&&document.querySelector('#scroll').scrollHeight-document.querySelector('#scroll').scrollTop-document.querySelector('#scroll').clientHeight<=1")
             _ = try await webviewJS(web, "(()=>{document.getAnimations().forEach(animation=>{if(animation.animationName==='grow'){animation.finish();return}const dot=animation.effect.target;animation.pause();animation.currentTime=330-150*[...dot.parentNode.children].indexOf(dot)});return true})()")
         }
         func appearance(_ name: String, from base: Int) async throws {
@@ -608,15 +608,15 @@ import SidebarFeed
             web.superview?.layoutSubtreeIfNeeded()
             try await webviewUntil(web, "(()=>{const popup=document.querySelector('.koa-complete')?.getBoundingClientRect(),dock=document.querySelector('#dock').getBoundingClientRect(),list=document.querySelector('.koa-complete ul');return innerHeight<250&&!!popup&&popup.top>=0&&popup.bottom<=dock.top&&list.scrollHeight>list.clientHeight})()")
             _ = try await webviewJS(web, "(()=>{tabKey('Escape');window.tabKind='none';window.composer.setText('!make checkz');window.tabTimeout=window.setTimeout;window.setTimeout=(fn,ms,...args)=>ms===1500?(window.tabNone=fn,0):tabTimeout(fn,ms,...args);tabKey('Tab');return true})()")
-            try await webviewUntil(web, "document.querySelector('#status').textContent==='no completions'")
+            try await webviewUntil(web, "document.querySelector('.koa-complete.empty')?.textContent==='no completions'")
             try await capture(prefix + "bang-tab-none")
             _ = try await webviewJS(web, "(()=>{window.setTimeout=window.tabTimeout;tabNone();return true})()")
-            try await webviewUntil(web, "document.querySelector('#status').textContent==='run'")
+            try await webviewUntil(web, "document.querySelector('#field').classList.contains('bash-mode')&&!document.querySelector('.koa-complete')")
             _ = try await webviewJS(web, "(()=>{window.tabKind='pending';window.composer.setText('!git checkout kido-');tabKey('Tab');tabKey('Tab');return true})()")
-            try await webviewUntil(web, "document.querySelector('#status').textContent==='completing…'&&document.querySelector('#dot').classList.contains('dots-host')")
+            try await webviewUntil(web, "document.querySelector('#prompt .dots')!==null&&!document.querySelector('.koa-complete')")
             try await capture(prefix + "bang-tab-pending")
             _ = try await webviewJS(web, "(()=>{window.composer.setText('!git checkout other');tabResolve();return true})()")
-            try await webviewUntil(web, "document.querySelector('#status').textContent==='run'&&!document.querySelector('.koa-complete')")
+            try await webviewUntil(web, "document.querySelector('#field').classList.contains('bash-mode')&&document.querySelector('#prompt .dots')===null&&!document.querySelector('.koa-complete')")
             let stale = try await webviewJS(web, "window.composer.text()==='!git checkout other'&&tabRequests===4")
             XCTAssertEqual(stale, "true")
     }
@@ -772,11 +772,11 @@ import SidebarFeed
             XCTAssertEqual(status, "200", "advance")
         }
         if scenario == .failed || (scenario == .composer && composerState == "exited") {
-            try await webviewUntil(web, "!document.querySelector('#exited').hidden&&document.querySelector('#exited pre').textContent.length>0&&document.querySelector('#status').textContent==='failed'")
+            try await webviewUntil(web, "!document.querySelector('#exited').hidden&&document.querySelector('#exited pre').textContent.length>0")
         } else if scenario == .jobs {
             try await webviewUntil(web, "document.body.classList.contains('jobmode')")
         } else {
-            try await webviewUntil(web, "document.querySelector('#status').textContent==='idle'&&document.querySelector('#model-name').textContent==='claude-opus-5-5'")
+            try await webviewUntil(web, "\(koaIdle)&&document.querySelector('#model-name').textContent==='claude-opus-5-5'")
         }
         _ = try await webviewJS(web, "(()=>{const NativeDate=Date;window.Date=class extends NativeDate{constructor(...args){super(...(args.length?args:[\(stamp + 12000)]))}static now(){return \(stamp + 12000)}};const style=document.createElement('style');style.textContent='.caret,.dot.on,.cm-cursorLayer\(scenario == .reveal ? "" : ",.grow"){animation:none!important}\(scenario == .reveal ? ".grow{animation-play-state:paused!important;animation-delay:-110ms!important}" : "").info .chev,#latest{transition:none!important}';document.head.append(style);return true})()")
         if scenario == .reveal {
@@ -838,9 +838,9 @@ import SidebarFeed
             _ = try await webviewJS(web, "(()=>{window.composer.setText('');window.ko.local=true;window.dispatchEvent(new CustomEvent('ko-drop',{detail:{files:[{id:'bang-chip',name:'notes.md',path:'/tmp/notes.md',origin:'path',kind:'file',mimeType:'text/markdown',size:8192}],refused:false}}));window.composer.setText('!make checks DRY=1');return true})()")
             try await capture(prefix + "bang-attachments")
             _ = try await webviewJS(web, "(()=>{window.ko.local=true;window.dispatchEvent(new CustomEvent('ko-drop',{detail:{files:[{id:'refused-drop',name:'other.md',path:'/tmp/other.md',origin:'path',kind:'file',mimeType:'text/markdown',size:1}],refused:false}}));return true})()")
-            try await webviewUntil(web, "document.querySelector('#error').textContent==='a command takes no attachments'")
+            try await webviewUntil(web, "document.querySelector('.attach-notice').textContent==='a command takes no attachments'&&!document.querySelector('.attach-notice').hidden")
             try await capture(prefix + "bang-drop")
-            _ = try await webviewJS(web, "(()=>{document.querySelector('.attach-remove').click();window.composer.setText('');document.querySelector('#error').textContent='';return true})()")
+            _ = try await webviewJS(web, "(()=>{document.querySelector('.attach-remove').click();window.composer.setText('');return true})()")
             resize(560)
             try await advance()
             try await webviewUntil(web, "document.querySelectorAll('.cmdrun').length===5")
@@ -857,12 +857,12 @@ import SidebarFeed
             try await webviewUntil(web, "document.querySelectorAll('.cmdrun').length===0")
             resize(220)
             _ = try await webviewJS(web, "fetch('/prompt',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sessionId:document.body.dataset.sessionId,text:'!make verify STAGES=unit',mode:'prompt',attachments:[]})}).then(r=>r.json())")
-            try await webviewUntil(web, "document.querySelector('.cmdrun .live')?.textContent.includes('running 212 tests')&&document.querySelector('#status').textContent.startsWith('running')")
+            try await webviewUntil(web, "document.querySelector('.cmdrun .live')?.textContent.includes('running 212 tests')&&document.querySelector('.cmdrun .dots')!==null")
             try await capture(prefix + "bang-running")
             _ = try await webviewJS(web, "fetch('/abort',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sessionId:document.body.dataset.sessionId})}).then(r=>r.json())")
             try await webviewUntil(web, "!document.querySelector('.cmdrun .live')")
             try await advance()
-            try await webviewUntil(web, "document.querySelector('#status').textContent.startsWith('working')")
+            try await webviewUntil(web, "\(koaWorking)")
             _ = try await webviewJS(web, "(()=>{window.composer.setText('!git status --short');return true})()")
             try await capture(prefix + "bang-typing")
             _ = try await webviewJS(web, "(()=>{Date.now=()=>\(stamp + 14000);return true})()")
@@ -931,7 +931,7 @@ import SidebarFeed
             try await capture(prefix + "session-open")
             _ = try await webviewJS(web, "(()=>{document.querySelector('.nrow .kv').closest('.nrow').querySelector('.hd').click();return true})()")
             try await submit("/compact")
-            try await webviewUntil(web, "document.querySelector('#status').textContent.startsWith('compacting')")
+            try await webviewUntil(web, "document.querySelector('#items').textContent.includes('compacting')&&document.querySelector('#items [aria-label=working]')!==null")
             try await capture(prefix + "compacting")
             try await advance()
             try await webviewUntil(web, "Array.from(document.querySelectorAll('.nrow')).some(node=>node.textContent.includes('compacted'))")
@@ -939,7 +939,7 @@ import SidebarFeed
             try await capture(prefix + "compacted-open")
             try await advance()
             try await submit("/compact")
-            try await webviewUntil(web, "document.querySelector('#status').textContent.startsWith('compacting')")
+            try await webviewUntil(web, "document.querySelector('#items').textContent.includes('compacting')&&document.querySelector('#items [aria-label=working]')!==null")
             _ = try await webviewJS(web, "fetch('/abort',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sessionId:document.body.dataset.sessionId})}).then(r=>r.json())")
             try await webviewUntil(web, "Array.from(document.querySelectorAll('.nrow')).some(node=>node.textContent.includes('compaction cancelled'))")
             try await capture(prefix + "compact-cancelled")
@@ -971,25 +971,25 @@ import SidebarFeed
             try await capture(prefix + "empty")
             _ = try await webviewJS(web, "(()=>{document.querySelector('#session-picker').dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true}));return true})()")
             _ = try await webviewJS(web, "(()=>{void fetch('/sessions/switch',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sessionId:document.body.dataset.sessionId,path:\(String(decoding: try JSONSerialization.data(withJSONObject: home.path + "/sessions/2026-11-10T09-00-00-000Z_00000000-0000-7000-8000-000000000002.jsonl", options: .fragmentsAllowed), as: UTF8.self))})});return true})()")
-            try await webviewUntil(web, "document.querySelector('#status').textContent==='loading'")
+            try await webviewUntil(web, "document.querySelector('#prompt .cm-placeholder')?.textContent==='Loading…'")
             try await capture(prefix + "loading")
             try await release("session-switch")
-            try await webviewUntil(web, "document.querySelector('#status').textContent==='idle'&&document.querySelector('#items').textContent.includes('session: koa-md · 96 messages')")
+            try await webviewUntil(web, "\(koaIdle)&&document.querySelector('#items').textContent.includes('session: koa-md · 96 messages')")
             try await capture(prefix + "after")
             _ = try await webviewJS(web, "fetch('/prompt',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sessionId:document.body.dataset.sessionId,text:'!make verify STAGES=unit',mode:'prompt',attachments:[]})}).then(r=>r.json())")
-            try await webviewUntil(web, "document.querySelector('#status').textContent.startsWith('running')&&document.querySelector('.cmdrun .live')?.textContent.trim()==='running 212 tests'")
+            try await webviewUntil(web, "document.querySelector('.cmdrun .dots')!==null&&document.querySelector('.cmdrun .live')?.textContent.trim()==='running 212 tests'")
             _ = try await webviewJS(web, "(()=>{window.composer.setText('/resume');document.querySelector('.cm-content').dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',code:'Enter',bubbles:true}));return true})()")
             try await webviewUntil(web, "document.querySelector('#session-picker .msg2')?.textContent==='a command is running; it will be cancelled.'")
             try await capture(prefix + "confirm-bash")
             _ = try await webviewJS(web, "(()=>{document.querySelector('#session-picker').dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true}));return fetch('/abort',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sessionId:document.body.dataset.sessionId})}).then(r=>r.json())})()")
-            try await webviewUntil(web, "document.querySelectorAll('.cmdrun').length===0&&document.querySelector('#status').textContent==='idle'")
+            try await webviewUntil(web, "document.querySelectorAll('.cmdrun').length===0&&\(koaIdle)")
             try await advance()
-            try await webviewUntil(web, "document.querySelector('#status').textContent.startsWith('working')")
+            try await webviewUntil(web, "\(koaWorking)")
             _ = try await webviewJS(web, "(()=>{window.composer.setText('/resume');document.querySelector('.cm-content').dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',code:'Enter',bubbles:true}));return true})()")
             try await webviewUntil(web, "document.querySelector('#session-picker .title')?.textContent==='Switch session?'")
             try await capture(prefix + "confirm")
             _ = try await webviewJS(web, "(()=>{document.querySelector('#session-picker').dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true}));return fetch('/abort',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sessionId:document.body.dataset.sessionId})}).then(r=>r.json())})()")
-            try await webviewUntil(web, "document.querySelector('#status').textContent==='aborted'")
+            try await webviewUntil(web, "document.querySelector('#items').textContent.includes('aborted')")
             _ = try await webviewJS(web, "(()=>{window.composer.setText('/new');document.querySelector('.cm-content').dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',code:'Enter',bubbles:true}));return true})()")
             try await webviewUntil(web, "document.querySelector('#items').textContent.includes('new session')&&!document.querySelector('#items').textContent.includes('Done:')")
             try await capture(prefix + "new")
@@ -1044,14 +1044,14 @@ import SidebarFeed
             XCTAssertEqual(thinkingPickerFits, "true", "The thinking picker stays inside the viewport when its foot cell is hidden")
             _ = try await webviewJS(web, "(()=>{document.querySelector('#picker').dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true,cancelable:true}));return true})()")
             _ = try await webviewJS(web, "(()=>{window.composer.setText('!make checks');return true})()")
-            try await webviewUntil(web, "document.querySelector('#status').textContent==='run'")
+            try await webviewUntil(web, "document.querySelector('#field').classList.contains('bash-mode')")
             try await widths("run")
             _ = try await webviewJS(web, "(()=>{const nativeFetch=window.fetch;window.fetch=(url,options)=>url==='/complete'?new Promise((resolve,reject)=>options.signal.addEventListener('abort',()=>reject(new DOMException('Aborted','AbortError')),{once:true})):nativeFetch(url,options);window.composer.setText('!git checkout kido-');document.querySelector('.cm-content').dispatchEvent(new KeyboardEvent('keydown',{key:'Tab',keyCode:9,bubbles:true,cancelable:true}));return true})()")
-            try await webviewUntil(web, "document.querySelector('#status').textContent==='completing…'")
+            try await webviewUntil(web, "document.querySelector('#prompt .dots')!==null")
             try await widths("completing")
             _ = try await webviewJS(web, "(()=>{window.composer.setText('');Date.now=()=>\(stamp + 754000);return true})()")
             try await advance()
-            try await webviewUntil(web, "document.querySelector('#status').textContent==='working 12m 34s'")
+            try await webviewUntil(web, "\(koaWorking)")
             try await widths("working")
             _ = try await webviewJS(web, "(()=>{footSource.dispatchEvent(new MessageEvent('message',{data:JSON.stringify({...footState,cwd:footState.home+'/Workspace/kido-sidebar-layout/app/App/SidebarFeed'})}));return true})()")
             try await widths("cwd")
@@ -1067,17 +1067,15 @@ import SidebarFeed
             if name != "exited" { try await advance() }
             _ = try await webviewJS(web, "(()=>{Date.now=()=>\(stamp + offset + elapsed * 1000);return true})()")
             if name == "toast-err" || name == "narrow" { try await advance() }
-            if name == "exited" { try await webviewUntil(web, "document.querySelector('#status').textContent==='failed'&&!document.querySelector('#exited').hidden&&document.querySelector('#field').inert") }
-            else if name == "waiting" { try await webviewUntil(web, "document.querySelector('#status').textContent==='waiting'") }
+            if name == "exited" { try await webviewUntil(web, "!document.querySelector('#exited').hidden&&document.querySelector('#field').inert") }
+            else if name == "waiting" { try await webviewUntil(web, "document.querySelector('#dialogs .dialog')!==null&&document.querySelector('#field').inert") }
             else if ["working", "narrow", "toast-err"].contains(name) {
-                let clock = name == "narrow" ? "12m 34s" : name == "toast-err" ? "1m 02s" : "12s"
-                try await webviewUntil(web, "document.querySelector('#status').textContent==='working \(clock)'")
                 try await webviewUntil(web, "document.querySelector('.run .dots')!==null")
             }
             if name == "toast" || name == "toast-err" { try await webviewUntil(web, "document.querySelector('.nrow')!==null") }
             if name == "editing" {
                 _ = try await webviewJS(web, "(()=>{window.composer.setText('Make the sweep keep a start failure');footSource.dispatchEvent(new MessageEvent('message',{data:JSON.stringify({...footState,edit:{pane:'pane_2',editor:'nvim'}})}));return true})()")
-                try await webviewUntil(web, "document.querySelector('#status').textContent==='Editing…'&&document.querySelector('#field').classList.contains('editing')&&document.querySelector('#field').inert")
+                try await webviewUntil(web, "document.querySelector('#composer').title==='Editing in nvim'&&document.querySelector('#field').classList.contains('editing')&&document.querySelector('#field').inert")
             }
             if name == "extras" { try await webviewUntil(web, "document.querySelectorAll('.foot .ext').length===2") }
             if name == "picker" {
@@ -1085,14 +1083,12 @@ import SidebarFeed
                 try await webviewUntil(web, "!document.querySelector('#picker').hidden")
                 _ = try await webviewJS(web, "document.querySelector('#picker').dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowDown',bubbles:true,cancelable:true}))")
             }
-            let facts = try await webviewJS(web, "document.querySelectorAll('.field .foot>.cell').length===4&&document.querySelector('#send')===null&&document.querySelector('#notice')===null&&document.querySelector('footer.status')===null&&document.querySelector('#model-cell').contains(document.querySelector('#thinking'))&&Math.abs(document.querySelector('#dock').getBoundingClientRect().bottom-innerHeight)<.1")
-            XCTAssertEqual(facts, "true", "The bottom-edge composer has four fixed facts and no old controls")
+            let facts = try await webviewJS(web, "document.querySelectorAll('.field .foot>.cell').length===3&&document.querySelector('#send')===null&&document.querySelector('#notice')===null&&document.querySelector('footer.status')===null&&document.querySelector('#model-cell').contains(document.querySelector('#thinking'))&&Math.abs(document.querySelector('#dock').getBoundingClientRect().bottom-innerHeight)<.1")
+            XCTAssertEqual(facts, "true", "The bottom-edge composer has three fixed facts and no old controls")
             try await capture(captureName)
             return
         }
         if captures.contains("geometry") {
-            let fixed = try await webviewJS(web, "(()=>{const label=document.querySelector('#status'),positions=()=>['model','context-bar','cwd'].map(id=>document.getElementById(id).getBoundingClientRect().left);label.textContent='idle';const idle=positions();label.textContent='working 9s';const short=positions();label.textContent='working 100m 00s';const long=positions();return idle.every((x,i)=>Math.abs(x-short[i])<.1&&Math.abs(x-long[i])<.1)})()")
-            XCTAssertEqual(fixed, "true", "State and elapsed-time changes move no other composer cell")
             web.configuration.preferences.tabFocusesLinks = true
             XCTAssertTrue(window.makeFirstResponder(web))
             func key(_ text: String, _ code: UInt16) throws {
@@ -1159,7 +1155,7 @@ import SidebarFeed
                 }
                 let wide = try await shape()
                 XCTAssertFalse(wide.cap, "The full width needs no shortened ancestor names")
-                try await webviewUntil(web, "document.querySelector('#status').textContent==='idle'")
+                try await webviewUntil(web, "\(koaIdle)")
                 try await capture(prefix + "overflow")
                 let before = try await dock()
                 try await click("#bar .ellipsis")
@@ -1173,7 +1169,7 @@ import SidebarFeed
                 return
             }
             func assertBar(_ viewed: String, _ placeholder: String) async throws {
-                try await webviewUntil(web, "!document.querySelector('#bar').hidden&&document.querySelector('#bar .cur').textContent===\(String(reflecting: viewed))&&document.querySelector('#status').textContent!=='loading'")
+                try await webviewUntil(web, "!document.querySelector('#bar').hidden&&document.querySelector('#bar .cur').textContent===\(String(reflecting: viewed))&&document.querySelector('#prompt .cm-placeholder')?.textContent!=='Loading…'")
                 try await followed()
                 let now = try await shape()
                 XCTAssertTrue(now.inset && now.fits && !now.clipped, "The bar sits 8pt inside the content column, 22pt high")
@@ -1195,12 +1191,12 @@ import SidebarFeed
             XCTAssertEqual(childDock, rootDock, "The dock does not move when the bar appears")
             try await capture(prefix + "child")
             try await advance()
-            try await webviewUntil(web, "document.querySelector('#status').textContent.startsWith('working')")
+            try await webviewUntil(web, "\(koaWorking)")
             let steer = try await text("document.querySelector('#prompt .cm-placeholder')?.textContent")
             XCTAssertEqual(steer, "Steer @reviewer…", "A working agent is steered")
             try await capture(prefix + "working")
             try await advance()
-            try await webviewUntil(web, "document.querySelector('#status').textContent==='idle'")
+            try await webviewUntil(web, "\(koaIdle)")
             let submitValue = String(decoding: try JSONSerialization.data(withJSONObject: "/new", options: .fragmentsAllowed), as: UTF8.self)
             _ = try await webviewJS(web, "fetch('/prompt',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sessionId:document.body.dataset.sessionId,text:\(submitValue),mode:'prompt',attachments:[]})}).then(r=>r.status)")
             try await webviewUntil(web, "document.querySelector('.nrow.warning')?.textContent.includes(\"/new: only in @ko's view\")")
@@ -1329,7 +1325,7 @@ import SidebarFeed
             try await capture(prefix + "folder")
             _ = try await webviewJS(web, "(()=>{clearAttachments();window.Date.now=()=>\(stamp + 3000);return true})()")
             try await advance()
-            try await webviewUntil(web, "document.querySelector('#status').textContent==='working 3s'&&document.querySelector('.run')!==null")
+            try await webviewUntil(web, "\(koaWorking)&&document.querySelector('.run')!==null")
             _ = try await webviewJS(web, "(()=>{const run=document.querySelector('.run');if(run.classList.contains('open'))run.querySelector('.line').click();window.composer.setText(\"skip the Linux check, I'll run it in CI\");document.querySelector('.cm-content').dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',code:'Enter',bubbles:true}));return true})()")
             try await webviewUntil(web, "document.querySelectorAll('.queue .qmsg').length===1&&window.composer.text()===''")
             _ = try await webviewJS(web, "(()=>{dropAttachments([attachFiles.shot,attachFiles.diagram]);window.composer.setText('then compare with these two renders');return true})()")
@@ -1349,13 +1345,13 @@ import SidebarFeed
             try await webviewUntil(web, "document.querySelectorAll('.attach-chip').length===3&&document.querySelectorAll('.attach-icon.pending').length===0&&!document.querySelector('#field').inert")
             _ = try await webviewJS(web, "window.ko.local=false")
             _ = try await webviewJS(web, "(()=>{document.querySelector('.cm-content').dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',code:'Enter',bubbles:true}));return true})()")
-            try await webviewUntil(web, "document.querySelectorAll('.attach-chip').length===0&&document.querySelector('.user .paths')?.textContent.includes('SidebarRow.swift')&&document.querySelector('.user .thumb img')!==null&&document.querySelector('#status').textContent==='working 3s'")
+            try await webviewUntil(web, "document.querySelectorAll('.attach-chip').length===0&&document.querySelector('.user .paths')?.textContent.includes('SidebarRow.swift')&&document.querySelector('.user .thumb img')!==null&&\(koaWorking)")
             _ = try await webviewJS(web, "Promise.all(Array.from(document.querySelectorAll('.user .thumb img'),image=>image.decode())).then(()=>true)")
             let text = try await webviewJS(web, "document.querySelector('.user .t .prose').firstElementChild.textContent")
             XCTAssertEqual(text, "\"Attach these to the review\"", "The appended paths are separate data, not repeated prose")
             let actualPaths = try await webviewJS(web, #"document.querySelector('.user .paths').textContent===window.notesPath+'\n'+\#(source)"#)
             XCTAssertEqual(actualPaths, "true", "Sent paths identify the stored copy and the original file")
-            let pathStyle = try await webviewJS(web, "(()=>{const p=getComputedStyle(document.querySelector('.user .paths')),u=getComputedStyle(document.querySelector('.user'));return p.fontFamily===getComputedStyle(document.querySelector('#status')).fontFamily&&Math.abs(parseFloat(p.fontSize)/parseFloat(u.fontSize)-.92)<.001})()")
+            let pathStyle = try await webviewJS(web, "(()=>{const p=getComputedStyle(document.querySelector('.user .paths')),u=getComputedStyle(document.querySelector('.user'));return p.fontFamily===getComputedStyle(document.querySelector('#cwd')).fontFamily&&Math.abs(parseFloat(p.fontSize)/parseFloat(u.fontSize)-.92)<.001})()")
             XCTAssertEqual(pathStyle, "true", "Attachment paths use the terminal font at .92em")
             _ = try await webviewJS(web, "(()=>{document.querySelector('.user .paths').textContent='/Users/andrepopp/Desktop/notes.md\\n/Users/andrepopp/Workspace/kido/app/App/SidebarRow.swift';return true})()")
             try await capture(prefix + "sent")
@@ -1537,8 +1533,8 @@ import SidebarFeed
         try await capture("composer-multi")
         _ = try await webviewJS(web, "(()=>{window.composer.setText('');return true})()")
         try await advance()
-        try await webviewUntil(web, "document.querySelector('#status').textContent==='working 12s'")
-        let workingState = try await webviewJS(web, "document.querySelector('#status').textContent==='working 12s'&&document.querySelector('.foot .dot.on')!==null&&document.querySelector('#hint')===null&&document.querySelector('#send')===null&&getComputedStyle(document.querySelector('#field'),'::after').content==='none'")
+        try await webviewUntil(web, "\(koaWorking)")
+        let workingState = try await webviewJS(web, "document.querySelector('#status')===null&&document.querySelector('.foot .dot')===null&&document.querySelector('.foot').firstElementChild.id==='model-cell'&&\(koaWorking)&&document.querySelector('#hint')===null&&document.querySelector('#send')===null&&getComputedStyle(document.querySelector('#field'),'::after').content==='none'")
         XCTAssertEqual(workingState, "true")
         try await capture("user-well")
         try await advance()
@@ -1584,7 +1580,7 @@ import SidebarFeed
         try await webviewUntil(web, "document.querySelector('.run')&&!document.querySelector('table')")
         try await capture("run-running")
         try await advance()
-        try await webviewUntil(web, "document.querySelector('#status').textContent==='idle'&&document.querySelector('#items').textContent.includes('three sweep tests pass')")
+        try await webviewUntil(web, "\(koaIdle)&&document.querySelector('#items').textContent.includes('three sweep tests pass')")
         try await capture("run-done")
         _ = try await webviewJS(web, "(()=>{document.querySelector('.run>.line').click();return true})()")
         try await capture("lines")
@@ -1668,11 +1664,11 @@ import SidebarFeed
         }
         func exitScenario() async throws {
             try await advance()
-            for ready in ["document.querySelectorAll('.step').length>=3", nil, nil, nil, "document.querySelectorAll('.step').length>=4", "document.querySelector('.run>.line .dots')!==null", "document.querySelector('#status').textContent==='aborted'"] as [String?] {
+            for ready in ["document.querySelectorAll('.step').length>=3", nil, nil, nil, "document.querySelectorAll('.step').length>=4", "document.querySelector('.run>.line .dots')!==null", "document.querySelector('#items').textContent.includes('aborted')"] as [String?] {
                 try await advance()
                 if let ready { try await webviewUntil(web, ready) }
             }
-            try await webviewUntil(web, "document.querySelector('#status').textContent==='aborted'&&document.querySelectorAll('.run').length>=1")
+            try await webviewUntil(web, "document.querySelector('#items').textContent.includes('aborted')&&document.querySelectorAll('.run').length>=1")
             _ = try await webviewJS(web, "(()=>{document.querySelectorAll('.run>.line').forEach(row=>row.click());return true})()")
             try await capture("times")
         }

@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
-import { test } from "node:test";
+import { test, type TestContext } from "node:test";
 import { readFile } from "node:fs/promises";
-import { Script } from "node:vm";
+import { Script, runInNewContext } from "node:vm";
 import { Marked } from "marked";
 import remend from "remend";
 
@@ -10,7 +10,13 @@ import { markdown, markdownLine, sliceEnd, type Mark } from "./page/markdown.ts"
 import { answer, current, quote } from "./page/answers.ts";
 import { composerLanguage } from "./page/composer.ts";
 import { highlightTree, tags } from '@lezer/highlight';
-import { HighlightStyle } from '@codemirror/language';
+import { EditorState, StateEffect, StateField } from '@codemirror/state';
+import { Decoration, EditorView, ViewPlugin, WidgetType, showTooltip, tooltips } from '@codemirror/view';
+import { acceptCompletion, autocompletion, closeCompletion, completionStatus, moveCompletionSelection, pickedCompletion, selectedCompletion, startCompletion } from '@codemirror/autocomplete';
+import { fileToken, slashToken } from './token.ts';
+import { stripTypeScriptTypes } from 'node:module';
+import { bashCommand } from './prompt.ts';
+import { HighlightStyle, syntaxTree } from '@codemirror/language';
 
 test('Markdown previews strip first-line syntax and use the first fenced code line', () => {
   for (const [source, expected] of [
@@ -221,4 +227,169 @@ test('tail cuts keep whole units and the rest of the lexing path', () => {
   assert.notEqual(cutTo(7, 12), first);
   assert.match(cutTo(7, 12)?.html ?? '', /<li>two<\/li>/);
   assert.equal(cutTo(0, 12)?.html, '');
+});
+
+test('the composer foot starts with the model and has no agent status cell', async () => {
+  const html = await readFile(new URL('page/page.html', import.meta.url), 'utf8');
+  const css = await readFile(new URL('page/page.css', import.meta.url), 'utf8');
+  assert.match(html, /<div class="foot"><span id="model-cell"/);
+  assert.doesNotMatch(html, /id="(status|dot)"/);
+  assert.match(html, /id="jobfoot"[^]*id="job-dot"[^]*id="job-word"/);
+  assert.doesNotMatch(css, /\.foot \.(st|dot)\b/);
+});
+
+class Fake {
+  className = ''; textContent = ''; children: Fake[] = []; attributes = new Map<string, string>(); parent?: Fake; list?: Fake; onmousedown?: unknown; dataset = {};
+  append(...nodes: Fake[]) { for (const node of nodes) { node.remove(); node.parent = this; this.children.push(node); } }
+  remove() { if (this.parent) this.parent.children = this.parent.children.filter(child => child !== this); this.parent = undefined; }
+  setAttribute(name: string, value: string) { this.attributes.set(name, value); }
+  animate() { return {}; }
+  getBoundingClientRect() { return { left: 0, right: 0, top: 0, width: 0 }; }
+  get lastElementChild() { return this.children.at(-1); }
+  querySelector(selector: string): Fake | undefined {
+    if (selector === '.koa-complete > ul') return this.list;
+    const names = selector.slice(1).split('.');
+    return this.children.find(child => names.every(name => child.className.split(' ').includes(name)));
+  }
+}
+
+async function feedbackFixture(t: TestContext) {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const read = async (name: string) => stripTypeScriptTypes(await readFile(new URL(name, import.meta.url), 'utf8')).replace(/^import .*;\n/gm, '').replace(/^export /gm, '');
+  const body = new Fake(), replies: ((value: unknown) => void)[] = [], popup = { open: false }, capture: { config?: Parameters<typeof autocompletion>[0] } = {};
+  const context = {
+    StateEffect, StateField, EditorState, Decoration, showTooltip, tooltips, ViewPlugin, EditorView, WidgetType, capture, currentCompletions: () => popup.open ? [{}] : [], autocompletion: (config: Parameters<typeof autocompletion>[0]) => { capture.config = config; return autocompletion(config); }, acceptCompletion, closeCompletion, completionStatus, moveCompletionSelection, pickedCompletion, selectedCompletion, startCompletion, syntaxTree, fileToken, slashToken, bashCommand,
+    document: { createElement: () => new Fake(), body, querySelector: () => undefined, timeline: { currentTime: 0 } },
+    matchMedia: () => ({ matches: false }), window: { innerHeight: 100 }, console, AbortController, Date,
+    setTimeout: (...args: Parameters<typeof setTimeout>) => setTimeout(...args), clearTimeout: (id?: Parameters<typeof clearTimeout>[0]) => clearTimeout(id),
+    fetch: () => new Promise(resolve => replies.push(value => resolve({ ok: true, json: async () => value }))),
+  };
+  const fixture = runInNewContext(await read('page/working.ts') + await read('page/complete.ts') + `
+    const host = { parentElement: { getBoundingClientRect: () => ({ left: 0, right: 0, top: 0, width: 0 }) } };
+    const mode = StateField.define({ create: state => bashCommand(state.doc.toString()), update: (value, transaction) => transaction.docChanged ? bashCommand(transaction.newDoc.toString()) : value });
+    const completions = completion(host, () => {}, mode);
+    const view = {
+      state: EditorState.create({ doc: '!ls', selection: { anchor: 3 }, extensions: [mode, completions.extension] }),
+      dispatch(spec) {
+        const transaction = view.state.update(spec);
+        view.state = transaction.state;
+        for (const listener of view.state.facet(EditorView.updateListener)) listener({ docChanged: transaction.docChanged, selectionSet: !!transaction.selection, state: view.state });
+      },
+    };
+    completions.extension.find(extension => extension instanceof ViewPlugin).create(view);
+    ({
+      view,
+      key: name => completions.keys.find(binding => binding.key === name).run(view),
+      widgets: () => view.state.facet(EditorView.decorations).flatMap(source => {
+        const found = [];
+        for (const cursor = (typeof source === 'function' ? source(view) : source).iter(); cursor.value; cursor.next()) { const dom = cursor.value.spec.widget.toDOM(); found.push({ from: cursor.from, side: cursor.value.spec.side, className: dom.className, label: dom.attributes.get('aria-label') }); }
+        return found;
+      }),
+      prompt: () => { const aborts = []; capture.config.override[0]({ state: view.state, pos: view.state.doc.length, explicit: false, aborted: false, addEventListener: (type, listener) => aborts.push(listener) }); return () => aborts.forEach(listener => listener()); },
+      tooltips: () => view.state.facet(showTooltip).flatMap(tooltip => { if (!tooltip) return []; const { dom } = tooltip.create(view); return [{ className: dom.className, text: dom.textContent }]; }),
+    })
+  `, context);
+  const layer = body.children[0];
+  const plain = (value: unknown) => JSON.parse(JSON.stringify(value));
+  return {
+    key: (name: string): unknown => fixture.key(name),
+    widgets: () => plain(fixture.widgets()),
+    tooltips: () => plain(fixture.tooltips()),
+    dispatch: (spec: object) => fixture.view.dispatch(spec),
+    prompt: (): (() => void) => fixture.prompt(), open: (value: boolean) => { popup.open = value; },
+    layer, replies,
+  };
+}
+const settle = () => new Promise<void>(resolve => setImmediate(resolve));
+const shellReply = (options: { label: string; insert: string }[]) => ({ type: 'shell', from: 3, to: 3, options, common: '', more: 0 });
+
+test('shell Tab shows the dots after the caret once the wait passes 150 ms and drops them with the reply', async t => {
+  const f = await feedbackFixture(t);
+  f.key('Tab');
+  t.mock.timers.tick(149);
+  assert.deepEqual(f.widgets(), []);
+  t.mock.timers.tick(1);
+  assert.deepEqual(f.widgets(), [{ from: 3, side: 1, className: 'dots', label: 'working' }]);
+  f.replies[0](shellReply([{ label: 'a', insert: 'a' }, { label: 'b', insert: 'b' }]));
+  await settle();
+  assert.deepEqual(f.widgets(), []);
+});
+
+test('a pending request in an open popup is the last row of the list, not an inline mark', async t => {
+  const f = await feedbackFixture(t);
+  const list = new Fake(), more = new Fake();
+  more.className = 'row more'; list.append(more);
+  if (f.layer) f.layer.list = list;
+  f.open(true);
+  f.key('Tab');
+  t.mock.timers.tick(150);
+  assert.deepEqual(f.widgets(), []);
+  assert.deepEqual(list.children.map(child => child.className), ['row more', 'row pending']);
+  assert.equal(list.children.at(-1)?.attributes.get('role'), 'presentation');
+  assert.equal(list.children.at(-1)?.children[0]?.className, 'dots');
+  f.key('Escape');
+  assert.deepEqual(list.children.map(child => child.className), ['row more']);
+});
+
+test('no completions shows in a tooltip from the reply until 1500 ms and goes with a caret move or Escape', async t => {
+  const f = await feedbackFixture(t);
+  const empty = async () => { f.key('Tab'); f.replies.at(-1)?.(shellReply([])); await settle(); };
+  await empty();
+  assert.deepEqual(f.tooltips(), [{ className: 'cm-tooltip-autocomplete koa-complete empty', text: 'no completions' }]);
+  assert.deepEqual(f.widgets(), []);
+  t.mock.timers.tick(1499);
+  assert.equal(f.tooltips().length, 1);
+  t.mock.timers.tick(1);
+  assert.deepEqual(f.tooltips(), []);
+  await empty();
+  assert.equal(f.tooltips().length, 1);
+  f.dispatch({ selection: { anchor: 1 } });
+  assert.deepEqual(f.tooltips(), []);
+  f.dispatch({ selection: { anchor: 3 } });
+  await empty();
+  f.key('Escape');
+  assert.deepEqual(f.tooltips(), []);
+});
+
+test('a cancelled request leaves no feedback when its reply arrives late', async t => {
+  const f = await feedbackFixture(t);
+  f.key('Tab');
+  t.mock.timers.tick(150);
+  assert.equal(f.widgets().length, 1);
+  f.key('Escape');
+  assert.deepEqual(f.widgets(), []);
+  f.replies[0](shellReply([]));
+  await settle();
+  assert.deepEqual(f.widgets(), []);
+  assert.deepEqual(f.tooltips(), []);
+  f.key('Tab');
+  t.mock.timers.tick(150);
+  f.dispatch({ changes: { from: 3, insert: 'x' }, selection: { anchor: 4 } });
+  assert.deepEqual(f.widgets(), []);
+});
+
+test('prose Tab consumes the key without an open completion', async t => {
+  const f = await feedbackFixture(t);
+  f.dispatch({ changes: { from: 0, to: 3, insert: 'ls' } });
+  assert.equal(f.key('Tab'), true);
+  assert.equal(f.key('Shift-Tab'), true);
+});
+
+test('a prompt request shows the dots after 150 ms and an aborted one leaves none', async t => {
+  const f = await feedbackFixture(t);
+  f.dispatch({ changes: { from: 0, to: 3, insert: '@a' } });
+  const cancel = f.prompt();
+  t.mock.timers.tick(149);
+  assert.deepEqual(f.widgets(), []);
+  t.mock.timers.tick(1);
+  assert.equal(f.widgets().length, 1);
+  cancel();
+  f.dispatch({ changes: { from: 2, insert: 'b' }, selection: { anchor: 3 } });
+  assert.deepEqual(f.widgets(), []);
+  const aborted = f.prompt();
+  t.mock.timers.tick(100);
+  aborted();
+  f.dispatch({ changes: { from: 3, insert: 'c' }, selection: { anchor: 4 } });
+  t.mock.timers.tick(100);
+  assert.deepEqual(f.widgets(), []);
 });

@@ -384,8 +384,8 @@ in that folder. koa's own working directory does not change.
 **A session that fails to start.** When the root's session cannot be made
 (an unknown model, a broken settings file, a switch whose new session
 fails after pi tore the old one down), koa goes to `failed`: the
-transcript stays, the foot says that the agent failed, and the
-failed card shows pi's error and "Start again". "Start again"
+transcript stays, and the failed card above the field shows pi's
+error and "Start again"; the foot has no state. "Start again"
 (`/agent/start`) makes the session again from the arguments of a
 restart (`restartArgs` in `koa-args.ts`: `--session` of the last
 session file, without the session, provider, model and thinking
@@ -684,8 +684,8 @@ switches the view; keys for the hierarchy are a later item.
 the user's own text, without a header: the person is the user of
 every view. Escape, the queue, the pickers, the dialogs, the
 attachments, `!` commands, `/model`, `/thinking`, `/compact`, `/copy`,
-`/session`, `/export` and `/name` act on the viewed agent, and the
-foot shows its state. `/new`, `/resume`, `/reload`, `/restart` and
+`/session`, `/export` and `/name` act on the viewed agent, and its
+transcript and composer show its state. `/new`, `/resume`, `/reload`, `/restart` and
 `/quit` are refused outside the root's view with the warning line
 `<command>: only in @<root's name>'s view`, also as routes. The page
 keeps one draft for each view (the text and the ready attachments),
@@ -1189,7 +1189,12 @@ completion source for each mode.
   NUL-separated matches with their quoted insert text; koa checks the
   framing and converts the span to the page's UTF-16 offsets.
 - **The page.** A pending Tab waits (no second request) and shows
-  "completing…" after 150 ms; typing or a caret move cancels it. A
+  the working dots after 150 ms: as the popup's last row, which is
+  not an option, when the popup is open, else in the field after the
+  caret. An answer with no matches shows "no completions" in the
+  popup's place for 1.5 s. The completion module owns this feedback;
+  typing or a caret move cancels it, and a late answer does not
+  restore it. A
   stale answer (another text, caret, session or child) is dropped.
   Tab and ↓ move in the list and ↩ accepts, as its hints line says:
   the spec's "Tab accepts" conflicted with its hints, and the hints
@@ -1261,11 +1266,11 @@ composer's text; koa never sends it.
 - **While the editor is open**, from the Control-G on, the draft is
   locked; once the float exists, the state record's `edit` names the
   float and the editor. The draft stays visible and read-only, the
-  state cell says "Editing…" with the tooltip "Editing in <editor>", sending, the take-back and
-  the pickers are off, and Escape and Return do nothing; the queue and
+  composer's tooltip is "Editing in <editor>", sending, the take-back
+  and the pickers are off, and Escape and Return do nothing; the queue and
   the transcript stay live. While `edit` is set, the field is `inert`
   and has the class `editing` (design: `app/design/floats/NOTES.md`):
-  the composer is dimmed to 45%, except the state cell. The dim is on
+  the composer is dimmed to 45%; the dim is the editing state. The dim is on
   the children of the field and on the chips and the queue, not on
   the field itself, because a child cannot be more opaque than its
   parent. Nothing in the composer takes a pointer event. A click
@@ -1332,11 +1337,20 @@ owner's `sessionId`.
 ## The composer's foot
 
 The user decided with the mockup that koa has no status bar: the
-foot of the field holds the state, the model and thinking-level
-buttons, the context, the extensions' statuses (`setStatus`) and the
-working directory at the right. The state cell has a fixed width, so
-a change of state or time never moves the cells to its right. The row
-has no send or stop button and says nothing about Return and Escape.
+foot of the field holds the model and thinking-level buttons, the
+context, the extensions' statuses (`setStatus`) and the working
+directory at the right. The foot has no state cell (user,
+2026-11-15; app/design/koa/NOTES.md, "The foot without the status
+cell"): each state shows on the element that it is about. The
+transcript's working dots are the turn, without a clock; the
+compaction row, the dialog card and the failed card are their states;
+the field's placeholder reads "Starting pi…" or "Loading…" while it
+is inert; a `!` draft is the field's own look; a live command's row
+has its dots and its time; a completion shows its own feedback in the
+popup or the field; the editing look is the external editor's. The
+dots have the spoken name "working". The job view's foot keeps its
+own state ("The job view"). The row has no send or stop button and
+says nothing about Return and Escape.
 
 - **Narrow widths.** The foot drops cells by its own width, a
   container query on the field, not the window's: the field is what
@@ -1344,8 +1358,9 @@ has no send or stop button and says nothing about Return and Escape.
   extensions' statuses go first. Under 540px the level, the cwd's
   leading directories and the context numbers go; the model picker
   then offers the levels. Under 340px the model and the cwd go, and
-  the context moves to the right. Under 200px the context goes and
-  the state cell gives up its reserved width, so its text ellipsizes.
+  the context moves to the right. Under 200px the context goes, and
+  the empty foot keeps its 20px height, so the field's bottom padding
+  does not change.
   The cwd and the model's name ellipsize at every width, so a deep
   directory or a long model never pushes the other cells, and the
   foot never overflows the field. What a step hides stays reachable:
@@ -1415,7 +1430,10 @@ NOTES.md "`!` runs a command".
   a cancel reaches only the command that the user sees. A completed
   command does not block the next. koa also refuses `!` with
   attachments, because their paths would become shell text, and `!`
-  with no command.
+  with no command. The page refuses Return first: while a `!` draft
+  has attachments, its chips take the refused border, with their
+  detail muted, and the notice beside them in the chip row says "a
+  command takes no attachments".
 - **While pi works** the command runs at once, beside the turn, as in
   pi. pi stores its `bashExecution` message only after the turn
   settles.

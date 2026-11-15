@@ -114,6 +114,9 @@ extension Snapshotting where Value == NSView, Format == NSImage {
 // A pane that runs `cat` in raw mode, so what a test writes to it comes back as output.
 let rawScript = "stty raw -echo; printf '\\033]2;raw-ready\\007'; exec /bin/cat"
 
+let koaIdle = "!document.querySelector('#field').inert&&document.querySelector('#items [aria-label=working]')===null"
+let koaWorking = "document.querySelector('#items [aria-label=working]')!==null"
+
 @MainActor class VisualTestCase: XCTestCase {
     var serverEnvironment: [String: String] = [:]
     var checkoutRoot: URL { URL(fileURLWithPath: #filePath).deletingLastPathComponent().deletingLastPathComponent().deletingLastPathComponent() }
@@ -127,7 +130,7 @@ let rawScript = "stty raw -echo; printf '\\033]2;raw-ready\\007'; exec /bin/cat"
     }
 
     func webviewUntil(_ web: WKWebView, _ condition: String, within seconds: Double = 10) async throws {
-        _ = try await webviewJS(web, "new Promise((resolve,reject)=>{const observer=new MutationObserver(check);const timer=setTimeout(()=>{clean();reject(Error('Webview condition deadline: '+\(String(reflecting: condition))+' | status='+document.querySelector('#status')?.textContent+' | items='+(document.querySelector('#items')?.textContent||'').slice(-400)+' | dialogs='+document.querySelectorAll('.dialog').length+' | runs='+document.querySelectorAll('.run').length+' | spin='+document.querySelectorAll('.spin').length))},\(seconds * 1000));function clean(){observer.disconnect();clearTimeout(timer);removeEventListener('resize',check)}function check(){if(\(condition)){clean();resolve(true)}}observer.observe(document.documentElement,{attributes:true,childList:true,characterData:true,subtree:true});addEventListener('resize',check);check()})", within: seconds)
+        _ = try await webviewJS(web, "new Promise((resolve,reject)=>{const observer=new MutationObserver(check);const timer=setTimeout(()=>{clean();reject(Error('Webview condition deadline: '+\(String(reflecting: condition))+' | field='+document.querySelector('#prompt .cm-placeholder')?.textContent+' inert='+document.querySelector('#field')?.inert+' | items='+(document.querySelector('#items')?.textContent||'').slice(-400)+' | dialogs='+document.querySelectorAll('.dialog').length+' | runs='+document.querySelectorAll('.run').length+' | spin='+document.querySelectorAll('.spin').length))},\(seconds * 1000));function clean(){observer.disconnect();clearTimeout(timer);removeEventListener('resize',check);clearInterval(poll)}function check(){if(\(condition)){clean();resolve(true)}}observer.observe(document.documentElement,{attributes:true,childList:true,characterData:true,subtree:true});addEventListener('resize',check);const poll=setInterval(check,100);check()})", within: seconds)
     }
 
     func presentedFrame(_ pane: PaneView, attempts: Int = 3, file: StaticString = #filePath, line: UInt = #line) async {

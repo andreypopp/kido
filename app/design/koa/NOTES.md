@@ -449,6 +449,65 @@ page, in the tool row and alone:
   "aborted" row as today, dots gone.
 - The status-icon rule holds for finished states: colour only.
 
+## The foot without the status cell (user, 2026-11-15, spec)
+
+The working mark in the transcript (the dots) says what the status
+cell's dot and word said; the cell goes. The foot is then: model ·
+thinking, the context, the extension statuses, the gap, the cwd; the
+separator after the first cell goes with it, so the foot starts with
+the model button at the field's left padding. Where each thing the
+cell carried goes:
+
+- **The agent state**: `working` and its elapsed time: the dots in
+  the transcript, no clock (the run rows carry their own times; the
+  turn's elapsed time was never acted on). `starting` and `loading`:
+  the composer's placeholder reads "Starting pi…" / "Loading…" with
+  the field inert; nothing else. `compacting`: the compaction row in
+  the transcript ("compacting ···", the notice row with the dots)
+  already shows it; the field stays usable as today. `waiting` (a
+  dialog is open): the dialog card above the field is the state;
+  nothing in the foot. `idle`: nothing: a quiet transcript end and an
+  enabled field. `aborted`: the run's "aborted, you pressed Escape"
+  row says it; nothing in the foot. `failed` (pi failed to start or
+  exited): the exit card above the field, as today, with its red
+  text; the foot has no red dot any more.
+- **`!` mode**: the mode is the field's own look (the bang in the
+  link colour, the mono font); the words "run" / "run, quiet" go. A
+  live command: its `.cmdrun` row in the transcript has the dots
+  and the elapsed time (the same mark); the foot shows nothing. A
+  `!` draft with attachments: the attachment chips take the refused
+  border (`.attach-chip.refused`), their detail staying muted (the
+  directory is not the reason; the red detail is for a chip whose
+  detail is a reason word), and the existing `.attach-notice` "a
+  command takes no attachments" sits beside the chips in their row,
+  as "Folders are not attached" does; Return is refused as today.
+- **Completion hints**: "completing…" becomes the dots at the end
+  of the completion popup's list (one row, the dots at the row's
+  text start) while the request runs, and the popup's empty state
+  reads "no completions" for 1.5 s as today, in the popup, not the
+  foot. With no popup open yet (Tab pressed, nothing back), the dots
+  appear in the field after the caret for the wait (inline, the same
+  mark); they go with the answer.
+- **"Editing…"**: the field's `editing` look (45% opacity, inert) is
+  the state; the words go; the tooltip "Editing in nvim" moves to the
+  field (the whole composer's `title` while editing).
+- **The job view's foot** keeps its own cell: it is the job's state,
+  not the agent's, and the job view has no transcript mark for it
+  (the dot, "running 3m 04s", the byte count, Stop/Clear stay as the
+  job page draws them). Its layout is `#jobfoot`'s, unchanged.
+- **Narrow breakpoints** (page.css 29–32): the `< 540` rule hides the
+  level, the cwd's lead and the context's numbers; `< 340` hides the
+  model cell and its separator, the gap and the cwd, leaving the
+  context at the right (`margin-left: auto`); `< 200` hides the
+  context too, leaving an empty foot of its min-height (20px) so the
+  field's bottom padding does not change. The `.foot .st + .sep`
+  rule goes with the cell.
+- **Extension statuses** (`#status-extras`, the 630px rule) stay as
+  they are, after the context cell.
+- **Accessibility**: the state words move with their elements (the
+  dots carry `aria-label="working"`, the placeholder its text, the
+  exit card its own); nothing loses a spoken name.
+
 ## Even word spacing on a step line (user, 2026-11-09)
 
 The step summary (.step .sum) is set in the terminal font at .92em, so

@@ -31,14 +31,14 @@ import KoModel
         try await wait("koa page in the owner") { owner.testSession?.activePane?.webviewView?.browser.isLoading == false && owner.testSession?.activePane?.webviewView?.browser.url?.scheme == "ko" }
         let pane = try XCTUnwrap(owner.testSession?.activePane), view = try XCTUnwrap(pane.webviewView), web = view.browser
         view.visualAttended = true
-        try await webviewUntil(web, "window.composer&&document.querySelector('#status').textContent==='idle'")
+        try await webviewUntil(web, "window.composer&&\(koaIdle)&&document.querySelector('#model-name').textContent!==''")
         _ = try await webviewJS(web, "(()=>{composer.setText('draft');composer.focus();return true})()")
         _ = try await webviewJS(web, "(()=>{document.querySelector('.cm-content').dispatchEvent(new KeyboardEvent('keydown',{key:'g',ctrlKey:true,bubbles:true,cancelable:true}));return true})()")
         let floats = { owner.testModel?.layout.layout.windows.flatMap(\.floats).map(\.pane) ?? [] }
         try await wait("the editor float", within: 15) { !floats().isEmpty }
         let float = try XCTUnwrap(floats().first)
         try await wait("the float has the focus", within: 10) { owner.testModel?.selection.pane == float }
-        try await webviewUntil(web, "document.querySelector('#status').textContent.startsWith('Editing…')")
+        try await webviewUntil(web, "document.querySelector('#composer').title.startsWith('Editing in ')")
         try "".write(to: gate, atomically: true, encoding: .utf8)
         try await wait("the float is gone", within: 15) { floats().isEmpty }
         try await webviewUntil(web, "composer.text()==='edited by editor'", within: 15)
@@ -56,7 +56,7 @@ import KoModel
         try await wait("koa document loaded") { web.url?.scheme == "ko" && !web.isLoading }
         try await webviewUntil(web, "document.getElementById('prompt') !== null")
         XCTAssertTrue((window.firstResponder as? NSView)?.isDescendant(of: web) == true, "A page in the focused pane starts with the WKWebView as first responder")
-        try await webviewUntil(web, "window.composer&&document.querySelector('#status').textContent==='idle'")
+        try await webviewUntil(web, "window.composer&&\(koaIdle)")
         let accent = try XCTUnwrap(NSColor.controlAccentColor.usingColorSpace(.sRGB))
         let expectedFocus = "rgba(\(Int(accent.redComponent * 255)),\(Int(accent.greenComponent * 255)),\(Int(accent.blueComponent * 255)),0.5)"
         let pageFocus = try await webviewJS(web, "getComputedStyle(document.documentElement).getPropertyValue('--ko-focus').trim()")
@@ -65,7 +65,7 @@ import KoModel
         let unfocused = try await webviewJS(web, "(()=>{const field=document.getElementById('field');const reference=document.createElement('div');reference.style.color=getComputedStyle(document.documentElement).getPropertyValue('--ko-focus');document.body.append(reference);const result=!field.matches(':focus-within')&&field.classList.contains('focus')&&getComputedStyle(field).borderTopColor===getComputedStyle(reference).color;reference.remove();return result})()")
         XCTAssertEqual(unfocused, "true", "The composer keeps the focus border when focus moves to the transcript")
         _ = try await webviewJS(web, "(()=>{window.composer.focus();return true})()")
-        try await webviewUntil(web, "window.composer&&document.querySelector('#status').textContent==='idle'")
+        try await webviewUntil(web, "window.composer&&\(koaIdle)")
         _ = try await webviewJS(web, "(()=>{const reference=document.createElement('div');reference.style.color='var(--ko-cursor)';document.body.append(reference);window.expectedCursorColor=getComputedStyle(reference).color;reference.remove();return true})()")
         try await webviewUntil(web, "document.querySelector('#prompt .cm-cursor')&&getComputedStyle(document.querySelector('#prompt .cm-cursor')).display!=='none'")
         let cursorStyle = try await webviewJS(web, "(()=>{const cursor=document.querySelector('#prompt .cm-cursor'),style=getComputedStyle(cursor);return {display:style.display,height:cursor.getBoundingClientRect().height,width:style.borderLeftWidth,color:style.borderLeftColor,expected:window.expectedCursorColor,caret:getComputedStyle(document.querySelector('#prompt .cm-content')).caretColor}})()")
@@ -156,7 +156,7 @@ import KoModel
         let pane = try XCTUnwrap(terminal?.displayedPanes.first)
         try await wait("koa webview", within: 20) { (pane.webviewView?.visualDocuments ?? 0) > 0 }
         let web = try XCTUnwrap(pane.webviewView?.browser)
-        try await webviewUntil(web, "document.querySelector('#status').textContent==='idle'&&document.querySelector('#model-name').textContent==='claude-opus-5-5'")
+        try await webviewUntil(web, "\(koaIdle)&&document.querySelector('#model-name').textContent==='claude-opus-5-5'")
         pane.webviewView?.visualFeedPath = "/events"
         pane.webviewView?.visualFeedScript = #"""
         const NativeEventSource=EventSource;
@@ -164,7 +164,7 @@ import KoModel
         """#
         web.reload()
         try await wait("reloaded feed", within: 10) { !web.isLoading }
-        try await webviewUntil(web, "document.querySelector('#status').textContent==='idle'&&document.querySelector('#model-name').textContent==='claude-opus-5-5'")
+        try await webviewUntil(web, "\(koaIdle)&&document.querySelector('#model-name').textContent==='claude-opus-5-5'")
         for index in 1...3 {
             let before = pane.webviewView!.visualFeedBytes
             if index == 1 {
@@ -174,7 +174,7 @@ import KoModel
             try await wait("feed chunk \(index) handed to WebKit", within: 5) { pane.webviewView!.visualFeedBytes > before + 4096 }
         }
         let handed = pane.webviewView!.visualFeedBytes
-        try await webviewUntil(web, "document.querySelector('#status').textContent==='idle'&&document.querySelector('.assistant p')?.textContent==='x'.repeat(12288)", within: 5)
+        try await webviewUntil(web, "\(koaIdle)&&document.querySelector('.assistant p')?.textContent==='x'.repeat(12288)", within: 5)
         XCTAssertEqual(pane.webviewView!.visualFeedBytes, handed)
         let open = try await webviewJS(web, "feedSource.readyState===EventSource.OPEN")
         XCTAssertEqual(open, "true")
@@ -188,10 +188,10 @@ import KoModel
         try await wait("koa page") { pane.webviewView != nil }
         let web = try XCTUnwrap(pane.webviewView?.browser)
         try await wait("koa document loaded") { web.url?.scheme == "ko" && !web.isLoading }
-        try await webviewUntil(web, "window.composer&&document.querySelector('#status').textContent==='idle'&&document.querySelector('#model-name').textContent==='claude-opus-5-5'")
+        try await webviewUntil(web, "window.composer&&\(koaIdle)&&document.querySelector('#model-name').textContent==='claude-opus-5-5'")
         let response = try await webviewJS(web, "fetch('/prompt',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sessionId:document.body.dataset.sessionId,text:'Make the sweep keep a start failure',mode:'prompt',attachments:[]})}).then(async r=>({status:r.status,body:await r.json()}))")
         XCTAssertTrue(response.contains("\"status\":200"), response)
-        try await webviewUntil(web, "document.querySelector('#status').textContent==='idle'&&document.querySelector('.user')!==null&&document.querySelector('.assistant p')?.textContent==='The sweep keeps a start failure for the linger grace.'", within: 20)
+        try await webviewUntil(web, "\(koaIdle)&&document.querySelector('.user')!==null&&document.querySelector('.assistant p')?.textContent==='The sweep keeps a start failure for the linger grace.'", within: 20)
         _ = try await webviewJS(web, "fetch('/quit',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({sessionId:document.body.dataset.sessionId})}).then(r=>r.status)")
         try await wait("koa left its page") { pane.webviewView == nil }
         window.makeFirstResponder(pane)

@@ -7,15 +7,26 @@ import type { Attachment } from '../koa-records.ts';
 type Chip = { view: HTMLDivElement; icon: HTMLSpanElement; name: HTMLSpanElement; detail: HTMLSpanElement; body: HTMLButtonElement; controller: AbortController; state: { type: 'pending'; name: string; size: number; received: number; id?: string } | { type: 'ready'; file: Attachment } | { type: 'refused'; name: string; reason: string } };
 const sizeLabel = (size: number) => size >= 1048576 ? (size / 1048576).toFixed(size >= 10 * 1048576 ? 0 : 1) + ' MB' : size >= 1024 ? Math.ceil(size / 1024) + ' KB' : size + ' B';
 
-export function attach(host: HTMLElement, changed: () => void, displayPath: (value: string) => string, blocked: () => boolean, onRefused: () => void) {
+const COMMAND_REFUSAL = 'a command takes no attachments';
+
+export function attach(host: HTMLElement, changed: () => void, displayPath: (value: string) => string, refusal: () => 'command' | 'editing' | undefined) {
   const chips: Chip[] = [], saved = new Map<string, Chip[]>();
   let current: string | undefined;
   const notice = document.createElement('div'); notice.className = 'attach-notice'; notice.hidden = true; host.append(notice);
-  let timer: ReturnType<typeof setTimeout> | undefined, hover = false, depth = 0;
-  const refresh = () => { host.hidden = chips.length === 0 && notice.hidden; changed(); };
+  let timer: ReturnType<typeof setTimeout> | undefined, hover = false, depth = 0, transient = '';
+  const layout = () => {
+    const command = refusal() === 'command';
+    if (!command && transient === COMMAND_REFUSAL) transient = '';
+    const text = command && chips.length ? COMMAND_REFUSAL : transient;
+    for (const chip of chips) chip.view.classList.toggle('refused', command || chip.state.type === 'refused');
+    notice.textContent = text; notice.hidden = !text;
+    host.hidden = chips.length === 0 && notice.hidden;
+  };
+  const refresh = () => { layout(); changed(); };
   const hovering = (value: boolean) => { if (hover !== value) { hover = value; changed(); } };
-  const beginDrop = () => { clearTimeout(timer); notice.hidden = true; depth = 0; hovering(false); refresh(); };
-  const refuse = (message: string) => { notice.textContent = message; notice.hidden = false; clearTimeout(timer); timer = setTimeout(() => { notice.hidden = true; refresh(); }, 4000); refresh(); };
+  const beginDrop = () => { clearTimeout(timer); transient = ''; depth = 0; hovering(false); refresh(); };
+  const refuse = (message: string) => { transient = message; clearTimeout(timer); timer = setTimeout(() => { transient = ''; refresh(); }, 4000); refresh(); };
+  const notify = () => { if (refusal() === 'command') refuse(COMMAND_REFUSAL); };
   const deleteFile = (id: string) => { void fetchJSON(`/attachments/${id}/delete`).catch(() => {}); };
   const remove = (chip: Chip, erase = true) => {
     const index = chips.indexOf(chip); if (index < 0) return;
@@ -29,13 +40,13 @@ export function attach(host: HTMLElement, changed: () => void, displayPath: (val
     chip.name.textContent = file?.name ?? (state.type === 'ready' ? '' : state.name);
     chip.body.setAttribute('aria-label', chip.name.textContent);
     chip.body.disabled = state.type !== 'ready';
-    chip.view.classList.toggle('refused', state.type === 'refused');
     chip.icon.className = state.type === 'pending' ? 'attach-icon pending' : 'attach-icon';
     chip.body.onclick = () => { if (chip.state.type === 'ready') preview('/attachments/' + chip.state.file.id, chip.body, chip.state.file.kind, changed, chip.state.file.name); };
     if (file?.kind === 'image') { const image = document.createElement('img'); image.src = '/attachments/' + file.id; image.alt = ''; chip.icon.replaceChildren(image); }
     else if (state.type === 'pending') { if (chip.icon.firstElementChild?.className !== 'dots') chip.icon.replaceChildren(dots(Date.now())); }
     else chip.icon.innerHTML = '<svg viewBox="0 0 16 16"><path d="M4 1.5h5.5L13 5v9.5H4z"/><path d="M9.5 1.5V5H13"/></svg>';
     chip.detail.classList.toggle('path', file?.origin === 'path');
+    chip.detail.classList.toggle('reason', state.type === 'refused');
     chip.detail.textContent = state.type === 'refused' ? state.reason : state.type === 'pending' ? (state.size >= 1048576 ? Math.floor(state.received / 1048576) + ' / ' + Math.ceil(state.size / 1048576) + ' MB' : sizeLabel(state.received) + ' / ' + sizeLabel(state.size)) : state.file.origin === 'path' ? displayPath(state.file.path.slice(0, state.file.path.lastIndexOf('/') + 1)) : sizeLabel(state.file.size);
     refresh();
   };
@@ -83,7 +94,7 @@ export function attach(host: HTMLElement, changed: () => void, displayPath: (val
     const transfer = event.dataTransfer;
     if (!transfer.files.length && !Array.from(transfer.items).some(item => item.webkitGetAsEntry?.()?.isDirectory)) return false;
     event.preventDefault();
-    if (blocked()) { beginDrop(); onRefused(); return true; }
+    if (refusal()) { beginDrop(); notify(); return true; }
     if (window.ko?.local) { depth = 0; hovering(false); return true; }
     beginDrop();
     const files: File[] = []; let refused = false;
@@ -97,7 +108,7 @@ export function attach(host: HTMLElement, changed: () => void, displayPath: (val
   const paste = (event: ClipboardEvent) => {
     if (event.defaultPrevented || !event.clipboardData?.files.length) return false;
     event.preventDefault();
-    if (blocked()) { onRefused(); return true; }
+    if (refusal()) { notify(); return true; }
     for (const file of Array.from(event.clipboardData.files).slice(0, ATTACHMENT_LIMITS.files + 1)) void add(file);
     return true;
   };
@@ -110,12 +121,12 @@ export function attach(host: HTMLElement, changed: () => void, displayPath: (val
     if (!window.ko?.local || !(event instanceof CustomEvent)) return;
     const value: unknown = event.detail;
     if (!value || typeof value !== 'object' || !('files' in value) || !Array.isArray(value.files) || value.files.length > ATTACHMENT_LIMITS.files || !value.files.every(file => isAttachment(file) && file.origin === 'path') || !('refused' in value) || typeof value.refused !== 'boolean') return;
-    beginDrop(); if (blocked()) { onRefused(); for (const file of value.files) deleteFile(file.id); return; }
+    beginDrop(); if (refusal()) { notify(); for (const file of value.files) deleteFile(file.id); return; }
     if (value.refused) refuse('Folders are not attached');
     for (const file of value.files) create({ type: 'ready', file });
   });
   return {
-    drop, paste,
+    drop, paste, refresh: layout,
     view(id: string) {
       if (id === current) return;
       const previous = current; current = id;

@@ -92,7 +92,7 @@ for (const id of ids) {
       await call(reload ? 'Page.reload' : 'Page.navigate', reload ? {} : { url });
       await Promise.race([loaded, failed]);
       await until('!!document.querySelector("#prompt")', 10000);
-      await until('document.querySelector("#status").textContent === "idle" || document.querySelector("#status").textContent.startsWith("working")', 10000);
+      await until('!document.querySelector("#field").inert', 10000);
     };
     await load();
     const snapshot = async (phase: string) => {
@@ -145,7 +145,7 @@ for (const id of ids) {
     if (id === 8) observations.themeFrame = await evaluate(`(async()=>{const times=[];for(let n=0;n<50;n++){const t=performance.now();document.documentElement.style.setProperty('--ko-bg',n%2?'#fff':'#111');dispatchEvent(new Event('ko-theme'));await new Promise(requestAnimationFrame);times.push(performance.now()-t)}return times})()`);
     if (id === 9) assert.deepEqual(await evaluate(`Promise.all(Array.from({length:8},()=>fetch('/items?before=0').then(r=>r.status)))`), Array(8).fill(200));
     if (id === 11) assert.deepEqual(await evaluate(`Promise.all([new Blob([JSON.stringify({text:'body-kind probe',mode:'prompt',attachments:[]})]),new FormData()].map(body=>fetch('/prompt',{method:'POST',body}).then(r=>r.status)))`), [415, 415]);
-    await until(`document.querySelector('#status').textContent==='idle'&&document.querySelector('#items').textContent.includes('STRESS DONE ${id}')`, 120000);
+    await until(`!document.querySelector('#field').inert&&!document.querySelector('#items [aria-label=working]')&&document.querySelector('#items').textContent.includes('STRESS DONE ${id}')`, 120000);
     if ([2, 5, 8, 9].includes(id)) {
       await evaluate(`(()=>{if(document.querySelector('#items').textContent.length<400000&&!document.querySelector('#older').hidden)document.querySelector('#older').click();return true})()`);
       await until(`document.querySelectorAll('#items .assistant p').length===20000&&Array.from(document.querySelectorAll('#items .assistant p')).every(p=>p.textContent==='abcdefghijklmnopqr')`);

@@ -1,17 +1,41 @@
-import type { StateField } from '@codemirror/state';
+import { StateEffect, StateField } from '@codemirror/state';
 import { bashCommand } from '../prompt.ts';
-import { autocompletion, acceptCompletion, closeCompletion, completionStatus, moveCompletionSelection, pickedCompletion, selectedCompletion, startCompletion, type Completion, type CompletionContext } from '@codemirror/autocomplete';
-import { tooltips, ViewPlugin, EditorView, type Command } from '@codemirror/view';
+import { autocompletion, acceptCompletion, closeCompletion, completionStatus, currentCompletions, moveCompletionSelection, pickedCompletion, selectedCompletion, startCompletion, type Completion, type CompletionContext } from '@codemirror/autocomplete';
+import { Decoration, showTooltip, tooltips, ViewPlugin, EditorView, WidgetType, type Command } from '@codemirror/view';
 import { syntaxTree } from '@codemirror/language';
 import { fileToken, slashToken } from '../token.ts';
+import { dots } from './working.ts';
 import type { CompletionOption, CompletionResult, ShellCompletion, CompletionQuery } from '../koa-records.ts';
 
-export function completion(host: HTMLElement, send: () => void, mode: StateField<ReturnType<typeof bashCommand>>, changed: () => void) {
+type Feedback = 'idle' | 'pending' | 'none';
+class Pending extends WidgetType {
+  eq() { return true; }
+  toDOM() { return dots(Date.now()); }
+}
+
+export function completion(host: HTMLElement, send: () => void, mode: StateField<ReturnType<typeof bashCommand>>) {
   const field = host.parentElement;
   if (!field) throw new Error('The composer host must have a parent');
   const layer = document.createElement('div');
   layer.className = 'completion-layer';
   const options = new WeakMap<Completion, CompletionOption>();
+  const setFeedback = StateEffect.define<Feedback>();
+  const feedback = StateField.define<Feedback>({
+    create: () => 'idle',
+    update(value, transaction) {
+      if (transaction.docChanged || transaction.selection) value = 'idle';
+      for (const effect of transaction.effects) if (effect.is(setFeedback)) value = effect.value;
+      return value;
+    },
+    provide: field => [
+      showTooltip.compute([field], state => state.field(field) === 'none' ? { pos: state.selection.main.head, above: true, create: () => {
+        const dom = document.createElement('div');
+        dom.className = 'cm-tooltip-autocomplete koa-complete empty'; dom.textContent = 'no completions';
+        return { dom };
+      } } : null),
+      EditorView.decorations.of(view => view.state.field(field) === 'pending' && !currentCompletions(view.state).length ? Decoration.set([Decoration.widget({ widget: new Pending(), side: 1 }).range(view.state.selection.main.head)]) : Decoration.none),
+    ],
+  });
   const active = (command: Command): Command => view => completionStatus(view.state) === 'active' && command(view);
   let editor: EditorView | undefined;
   const query = async (text: string, pos: number, signal: AbortSignal): Promise<CompletionResult | undefined> => {
@@ -19,9 +43,10 @@ export function completion(host: HTMLElement, send: () => void, mode: StateField
     return response.ok ? response.json() : undefined;
   };
   let shell: { type: 'idle' } | { type: 'pending'; controller: AbortController } | { type: 'none' } | { type: 'list'; result: ShellCompletion; to: number } = { type: 'idle' };
-  let pendingTimer: ReturnType<typeof setTimeout> | undefined, noneTimer: ReturnType<typeof setTimeout> | undefined;
-  let pendingVisible = false, applying = false;
-  const reset = () => { if (shell.type === 'pending') shell.controller.abort(); clearTimeout(pendingTimer); clearTimeout(noneTimer); pendingVisible = false; shell = { type: 'idle' }; if (editor) closeCompletion(editor); changed(); };
+  let pendingTimer: ReturnType<typeof setTimeout> | undefined, noneTimer: ReturnType<typeof setTimeout> | undefined, promptRequest: AbortController | undefined;
+  let applying = false;
+  const show = (value: Feedback) => { if (editor && editor.state.field(feedback) !== value) editor.dispatch({ effects: setFeedback.of(value) }); };
+  const reset = () => { if (shell.type === 'pending') shell.controller.abort(); clearTimeout(pendingTimer); clearTimeout(noneTimer); promptRequest?.abort(); promptRequest = undefined; shell = { type: 'idle' }; if (editor) { show('idle'); closeCompletion(editor); } };
   const shellTab: Command = view => {
     if (!view.state.field(mode)) return false;
     if (shell.type === 'pending') return true;
@@ -29,14 +54,15 @@ export function completion(host: HTMLElement, send: () => void, mode: StateField
     reset();
     const controller = new AbortController(), doc = view.state.doc, pos = view.state.selection.main.head;
     shell = { type: 'pending', controller };
-    pendingTimer = setTimeout(() => { pendingVisible = true; changed(); }, 150);
+    pendingTimer = setTimeout(() => show('pending'), 150);
     void (async () => {
       try {
         const result = await query(doc.toString(), pos, controller.signal);
         if (controller.signal.aborted || view.state.doc !== doc || view.state.selection.main.head !== pos) return;
         if (result?.type !== 'shell') { reset(); return; }
-        clearTimeout(pendingTimer); pendingVisible = false;
-        if (!result.options.length) { shell = { type: 'none' }; changed(); noneTimer = setTimeout(reset, 1500); return; }
+        clearTimeout(pendingTimer);
+        if (!result.options.length) { shell = { type: 'none' }; show('none'); noneTimer = setTimeout(reset, 1500); return; }
+        show('idle');
         applying = true;
         try {
           if (result.options.length === 1 && !result.more) {
@@ -50,7 +76,7 @@ export function completion(host: HTMLElement, send: () => void, mode: StateField
             view.dispatch({ changes: { from: result.from, to: result.to, insert: result.common }, selection: { anchor: result.from + result.common.length }, userEvent: 'input.complete' });
             to = result.from + result.common.length;
           }
-          shell = { type: 'list', result, to }; startCompletion(view); changed();
+          shell = { type: 'list', result, to }; startCompletion(view);
         } finally { applying = false; }
       } catch (error) { if (!controller.signal.aborted) { reset(); console.error(error); } }
     })();
@@ -74,6 +100,9 @@ export function completion(host: HTMLElement, send: () => void, mode: StateField
     if (!bang && fileToken(before) === undefined && slashToken(text, context.pos) === undefined) return null;
     const controller = new AbortController();
     context.addEventListener('abort', () => controller.abort(), { onDocChange: true });
+    promptRequest = controller;
+    const timer = setTimeout(() => { if (promptRequest === controller) show('pending'); }, 150);
+    controller.signal.addEventListener('abort', () => clearTimeout(timer));
     try {
       const result = await query(text, context.pos, controller.signal);
       if (result?.type !== 'prompt' || !result.options.length || context.aborted) return null;
@@ -95,9 +124,9 @@ export function completion(host: HTMLElement, send: () => void, mode: StateField
         },
       };
     } catch (error) { if (!controller.signal.aborted) console.error(error); return null; }
+    finally { clearTimeout(timer); if (promptRequest === controller) { promptRequest = undefined; show('idle'); } }
   };
   return {
-    status: () => shell.type === 'none' ? 'none' : pendingVisible ? 'pending' : 'idle',
     reset,
     extension: [
       ViewPlugin.define(view => {
@@ -106,14 +135,23 @@ export function completion(host: HTMLElement, send: () => void, mode: StateField
       }),
       EditorView.updateListener.of(update => {
         if (!applying && shell.type !== 'idle' && (update.docChanged || update.selectionSet)) reset();
-        if (shell.type !== 'list' || !shell.result.more) return;
-        const tooltip = layer.querySelector('.koa-complete');
-        if (!tooltip || tooltip.querySelector('.row.more')) return;
-        const more = document.createElement('div');
-        more.className = 'row more'; more.textContent = `… ${shell.result.more} more, type to narrow`;
-        more.setAttribute('role', 'presentation'); more.onmousedown = event => event.preventDefault();
-        tooltip.querySelector('ul')?.append(more);
+        const list = layer.querySelector('.koa-complete > ul');
+        if (!list) return;
+        if (shell.type === 'list' && shell.result.more && !list.querySelector('.row.more')) {
+          const more = document.createElement('div');
+          more.className = 'row more'; more.textContent = `… ${shell.result.more} more, type to narrow`;
+          more.setAttribute('role', 'presentation'); more.onmousedown = event => event.preventDefault();
+          list.append(more);
+        }
+        const row = list.querySelector('.row.pending');
+        if (update.state.field(feedback) !== 'pending') row?.remove();
+        else if (!row) {
+          const pending = document.createElement('div');
+          pending.className = 'row pending'; pending.setAttribute('role', 'presentation'); pending.onmousedown = event => event.preventDefault();
+          pending.append(dots(Date.now())); list.append(pending);
+        } else if (list.lastElementChild !== row) list.append(row);
       }),
+      feedback,
       tooltips({ position: 'absolute', parent: layer, tooltipSpace() {
         const bounds = field.getBoundingClientRect();
         const top = Math.min(bounds.top, document.querySelector('#dock')?.getBoundingClientRect().top ?? bounds.top);

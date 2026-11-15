@@ -67,14 +67,8 @@ let epoch = '', after = -1, first: number | undefined, more = false, delay = 200
 let escaped = false, dialogId: string | undefined;
 let submitting = false, editorId: string | undefined, dialogTimer: number | undefined, shownExit: number | undefined, pickerButton: HTMLElement | undefined, shownQueue: string | undefined, shownStatuses: string | undefined;
 let historyRequest: { patches: Patch[] } | undefined;
-let attachmentRefusalTimer: number | undefined, editorOpening = false;
-const draft = attach(element('attachments'), () => refreshComposer(), displayPath, () => !!editor.bash() || !!state.edit, () => {
-  if (state.edit) return;
-  clearTimeout(attachmentRefusalTimer);
-  element('error').textContent = 'a command takes no attachments';
-  attachmentRefusalTimer = setTimeout(() => { if (element('error').textContent === 'a command takes no attachments') element('error').textContent = ''; }, 4000);
-});
-let completionDots: HTMLElement | undefined;
+let editorOpening = false;
+const draft = attach(element('attachments'), () => refreshComposer(), displayPath, () => state.edit ? 'editing' : editor.bash() ? 'command' : undefined);
 const pendingBash = new Map<string, ReturnType<typeof commandRun>>();
 const editor = composer(element('prompt'), {
   drop: draft.drop, paste: draft.paste,
@@ -857,30 +851,9 @@ function refreshComposer() {
   const running = state.bash.some(item => item.phase !== 'completed') && !working && editor.empty();
   editor.running(running);
   editor.readonly(editing());
-  if (!editor.bash() && element('error').textContent === 'a command takes no attachments') { clearTimeout(attachmentRefusalTimer); element('error').textContent = ''; }
-  editor.placeholder(state.life.type === 'switching' ? 'loading…' : running ? 'running… ⎋ cancels' : draft.hover && !state.edit ? 'Drop to attach' : hasFailed() ? 'koa could not start the agent' : working && state.compaction !== 'running' ? 'Steer ' + viewedName() + '…' : 'Message ' + viewedName() + '…');
-  status();
-}
-function status() {
-  const waiting = state.dialogs.length > 0, label = element('status');
-  const bang = editor.bash(), running = state.bash.find(item => item.phase !== 'completed');
-  label.classList.toggle('err', !!bang && draft.count > 0);
-  const word = hasFailed() ? 'failed' : waiting ? 'waiting' : state.edit ? 'Editing…' : state.life.type === 'starting' ? 'starting' : state.life.type === 'switching' ? 'loading' : state.working ? state.compaction === 'running' ? 'compacting' : 'working' : running ? 'running' : bang ? bang.excludeFromContext ? 'run, quiet' : 'run' : state.aborted ? 'aborted' : 'idle';
-  const completing = editor.completionStatus();
-  label.title = word === 'Editing…' && state.edit ? `Editing in ${state.edit.editor}` : bang && draft.count ? 'remove the attachments' : '';
-  label.textContent = bang && completing === 'pending' ? 'completing…' : bang && completing === 'none' ? 'no completions' : word;
-  label.classList.toggle('completion-hint', !!bang && completing !== 'idle');
-  if (state.life.type === 'ready' && (state.working || running) && !waiting) {
-    const ms = Math.max(0, Math.floor((Date.now() - (state.working ? state.since ?? Date.now() : running?.started ?? Date.now())) / 1000)) * 1000;
-    label.append(node('span', ' ' + duration(ms, ' '), 'k'));
-  }
-  element('dot').className = 'dot' + (hasFailed() ? ' off' : waiting ? ' wait' : state.life.type === 'ready' && (state.working || running) ? ' on' : '');
-  const mark = element('dot');
-  if (bang && completing === 'pending') {
-    mark.className = 'dot dots-host';
-    completionDots ??= dots(Date.now());
-    if (mark.firstChild !== completionDots) mark.replaceChildren(completionDots);
-  } else if (mark.firstChild) mark.replaceChildren();
+  draft.refresh();
+  editor.placeholder(state.life.type === 'starting' ? 'Starting pi…' : state.life.type === 'switching' ? 'Loading…' : running ? 'running… ⎋ cancels' : draft.hover && !state.edit ? 'Drop to attach' : hasFailed() ? 'koa could not start the agent' : working && state.compaction !== 'running' ? 'Steer ' + viewedName() + '…' : 'Message ' + viewedName() + '…');
+  if (state.edit) element('composer').setAttribute('title', 'Editing in ' + state.edit.editor); else element('composer').removeAttribute('title');
   element('model-name').textContent = state.model?.id ?? '';
   element('thinking').textContent = state.thinking ? '· ' + state.thinking : '';
   const context = state.context, percent = context?.percent;
@@ -1555,6 +1528,6 @@ const layoutObserver = new ResizeObserver(entries => {
   sync();
 });
 for (const id of ['scroll', 'items', 'jobv', 'dock']) layoutObserver.observe(element(id));
-setInterval(() => { job.tick(); if (state.view.type === 'job') return; status(); for (const item of state.bash) pendingBash.get(item.id)?.update(item); }, 1000);
+setInterval(() => { job.tick(); if (state.view.type === 'job') return; for (const item of state.bash) pendingBash.get(item.id)?.update(item); }, 1000);
 window.addEventListener('resize', positionPicker);
 refreshComposer(); focusComposer(); void connect();
