@@ -40,11 +40,13 @@ async function page() {
     closest(selector: string): Node | null { if (selector === 'a') return this.tagName === 'A' ? this : this.parent?.closest(selector) ?? null; return ['INPUT', 'TEXTAREA', 'SELECT', ...(selector.includes('button') ? ['BUTTON'] : [])].includes(this.tagName) || (this.attributes.has('role') && selector.includes(`[role=${this.attributes.get('role')}]`)) ? this : null; }
     setRangeText(text: string) { this.value = this.value.slice(0, this.selectionStart) + text + this.value.slice(this.selectionEnd); }
     dispatchEvent() { this.oninput?.(); }
-    querySelector(selector: string): Node | undefined { const match = selector.match(/^\.(\w+)(?::not\(\.(\w+)\))?$/); if (!match) return undefined; const find = (node: Node): Node | undefined => { for (const child of node.children) { if (child.classes.has(match[1]) && !(match[2] && child.classes.has(match[2]))) return child; const found = find(child); if (found) return found; } }; return find(this); }
+    querySelector(selector: string): Node | undefined { const match = selector.match(/^\.(\w+)(?::not\(\.(\w+)\))?$/); if (!match) return undefined; const find = (node: Node): Node | undefined => { for (const child of node.children) { if (!(child instanceof Node)) continue; if (child.classes.has(match[1]) && !(match[2] && child.classes.has(match[2]))) return child; const found = find(child); if (found) return found; } }; return find(this); }
     querySelectorAll(): Node[] { return []; }
     get isConnected(): boolean { return this === document.body || this === document.documentElement || this.parent?.isConnected === true; }
     get childNodes() { return this.children; }
-    insertBefore(child: Node, next: Node | null) { if (child === next) return; child.remove(); const index = next ? this.children.indexOf(next) : this.children.length; this.children.splice(index < 0 ? this.children.length : index, 0, child); child.parent = this; }
+    removeChild(child: Node) { this.children = this.children.filter(other => other !== child); if (child instanceof Node) child.parent = undefined; return child; }
+    hasAttribute(name: string) { return this.attributes.has(name); } getAttributeNames() { return [...this.attributes.keys()]; }
+    insertBefore(child: Node, next: Node | null) { if (child === next) return; if (child instanceof Node) child.remove(); const index = next ? this.children.indexOf(next) : this.children.length; this.children.splice(index < 0 ? this.children.length : index, 0, child); if (child instanceof Node) child.parent = this; }
     get offsetTop() { return (this.parent?.children.indexOf(this) ?? 0) * 100; }
     get firstElementChild() { return this.children[0]; }
     get previousElementSibling(): Node | undefined { const index = this.parent?.children.indexOf(this) ?? -1; return index > 0 ? this.parent?.children[index - 1] : undefined; }
@@ -2581,4 +2583,78 @@ test('working dots: one indicator in every frame, a bare row or a running mark, 
   assert.deepEqual([bare(), marks()], [true, 1], 'an aborted call is no running call');
   ev("apply({...state,type:'state',working:false})");
   assert.deepEqual([bare(), marks()], [false, 0], 'the end takes every mark in one update');
+});
+
+async function dotsWatch() {
+  const page = await latestPage(), proto = page.app.context.Node.prototype;
+  const counts = { detached: 0, moved: 0 };
+  const attached = () => page.evaluate("(()=>{for(let node=working?.primary;node;node=node.parent)if(node===element('items'))return true;return false})()") === true;
+  let depth = 0;
+  for (const name of ['remove', 'removeChild', 'replaceChildren', 'insertBefore', 'append', 'prepend', 'before']) {
+    const original = Reflect.get(proto, name);
+    Reflect.set(proto, name, function (this: unknown, ...args: unknown[]) {
+      if (depth++) { try { return original.apply(this, args); } finally { depth--; } }
+      const was = attached();
+      if (name === 'insertBefore' && args[0] === page.evaluate('working?.primary')) counts.moved++;
+      try { return original.apply(this, args); } finally { depth--; if (was && !attached()) counts.detached++; }
+    });
+  }
+  page.evaluate("state={...state,life:{type:'ready'},working:true,since:1700000000000}");
+  return { page, counts, attached, reset: () => { counts.detached = counts.moved = 0; } };
+}
+const bash = (id: string, command: string, state: object) => ({ type: 'tool', id, name: 'bash', args: { text: JSON.stringify({ command }) }, state });
+const running = { type: 'running', output: { text: '', cut: 0 } };
+const finished = { type: 'done', error: false, result: { text: '', images: [] } };
+
+test('the working dots are never detached while a turn runs, and move once when a call starts or ends', async () => {
+  const { page, counts, attached, reset } = await dotsWatch();
+  const patch = (seq: number, revision: number, blocks: object[]) => page.evaluate(`apply({type:'patch',seq:${seq},baseRevision:${revision - 1},revision:${revision},final:false,stop:'',error:'',blocks:${JSON.stringify(blocks)}})`);
+  const item = (seq: number, blocks: object[]) => ({ seq, revision: 0, at: 0, kind: 'assistant', final: false, stop: '', error: '', blocks });
+  page.add(item(0, [{ type: 'text', text: 'Reading.' }]));
+  page.step(16);
+  assert.equal(attached(), true);
+  reset();
+  for (let revision = 1; revision <= 50; revision++) { patch(0, revision, [{ index: 0, suffix: ' word' }]); page.step(16); }
+  assert.deepEqual({ ...counts }, { detached: 0, moved: 0 });
+  page.evaluate("folds.set('1:0',true)");
+  page.add(item(1, [{ type: 'thinking', text: 'deep thought', started: 1, ended: 2 }, bash('call', 'make', running)]));
+  page.step(16);
+  assert.ok(counts.detached <= 1 && counts.moved <= 1, `start: ${JSON.stringify(counts)}`);
+  assert.equal(page.evaluate("[...liveMarks.values()].every(marks=>marks.summary.children.includes(working.primary))"), true);
+  patch(1, 1, [{ index: 1, block: bash('call', 'make', running) }]);
+  const thinking = page.evaluate("(()=>{const find=n=>n.children.filter(c=>typeof c==='object').flatMap(c=>c.className.includes('think')?[c]:find(c));return find(element('items'))[0]})()");
+  assert.ok(thinking);
+  reset();
+  for (let revision = 2; revision <= 51; revision++) {
+    patch(1, revision, [{ index: 1, block: bash('call', 'make ' + revision, running) }]);
+    page.step(16);
+    patch(0, 50 + revision, [{ index: 0, suffix: ' more' }]);
+    page.step(16);
+  }
+  assert.deepEqual({ ...counts }, { detached: 0, moved: 0 });
+  assert.equal(String(page.evaluate("JSON.stringify(element('items').children.map(function text(n){return typeof n==='object'?[n.textContent,...n.children.map(text)]:n}))")).includes('make 51'), true);
+  assert.equal(page.evaluate("[...liveMarks.values()].every(marks=>marks.summary.children.includes(working.primary))"), true);
+  assert.equal(page.evaluate("(()=>{const find=n=>n.children.filter(c=>typeof c==='object').flatMap(c=>c.className.includes('think')?[c]:find(c));return find(element('items')).length})()"), 1);
+  patch(1, 52, [{ index: 1, block: bash('call', 'make 51', finished) }]);
+  page.step(16);
+  assert.ok(counts.detached <= 1 && counts.moved <= 1, `end: ${JSON.stringify(counts)}`);
+  assert.equal(page.evaluate("liveMarks.size"), 0);
+  assert.equal(page.evaluate("element('items').lastChild.className.includes('working')&&element('items').lastChild.children[0].children[0].children.includes(working.primary)"), true);
+});
+
+test('with parallel calls the ended call loses its dots and the other keeps its own', async () => {
+  const { page, counts, reset } = await dotsWatch();
+  page.add({ seq: 1, revision: 0, at: 0, kind: 'assistant', final: false, stop: '', error: '', blocks: [bash('a', 'one', running), bash('b', 'two', running)] });
+  page.evaluate("folds.set([...liveMarks.keys()][0],true);reconcileWorking()");
+  page.step(16);
+  const marks = () => String(page.evaluate("JSON.stringify([...liveMarks.values()].flatMap(m=>m.steps.map(s=>[s.live,s.sum.children.some(c=>c===working.primary||[...working.extra.values()].includes(c))])))"));
+  assert.equal(marks(), '[[true,true],[true,true]]');
+  const patch = (revision: number, index: number, block: object) => page.evaluate(`apply({type:'patch',seq:1,baseRevision:${revision - 1},revision:${revision},final:false,stop:'',error:'',blocks:[{index:${index},block:${JSON.stringify(block)}}]})`);
+  patch(1, 0, bash('a', 'one', finished));
+  page.step(16);
+  assert.equal(marks(), '[[false,false],[true,true]]');
+  reset();
+  for (let revision = 2; revision <= 30; revision++) { patch(revision, 1, bash('b', 'two ' + revision, running)); page.step(16); }
+  assert.deepEqual({ ...counts }, { detached: 0, moved: 0 });
+  assert.equal(marks(), '[[false,false],[true,true]]');
 });

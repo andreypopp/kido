@@ -1,7 +1,7 @@
 const CYCLE = 1100, STAGGER = 180;
 const BOUNCE = [
   { transform: 'none', opacity: .55, offset: 0 },
-  { transform: 'translateY(-4px)', opacity: 1, offset: .3 },
+  { transform: 'translateY(-2px)', opacity: 1, offset: .3 },
   { transform: 'none', opacity: .55, offset: .6 },
   { transform: 'none', opacity: .55, offset: 1 },
 ];

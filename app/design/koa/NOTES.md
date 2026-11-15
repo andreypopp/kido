@@ -416,11 +416,21 @@ text: .detail pre and .diff at .88em; user, 2026-11-09.
 The spinner goes. The typing dots are the one working mark of the
 page, in the tool row and alone:
 
-- **The dots**: three 6px circles, 4px apart (26px wide), `--faint`,
-  the bounce as today (1.1s, 180ms apart); the box is the row's line
-  height (1.5 of the row's .95em), `inline-flex`, centred on the
-  text's x-height, so it adds no height to a row. Reduce Motion: the
-  three dots static, no bounce.
+- **The dots** (user, 2026-11-15: the old spinner's size, not the
+  composer dots'): three 3px circles, 3px apart, 15px wide in all;
+  the bounce 2px high (the old spinner was an 8px ring, and the
+  dots' box with the bounce is 8px tall: 3px dots, 2px travel, the
+  rest the ring's margin), `--faint`, the bounce as today (1.1s,
+  180ms apart); the box is 15×8px, `inline-flex`, `vertical-align:
+  middle` so its centre sits on the row text's x-height centre as
+  the spinner's ring did (the spinner had `vertical-align: -1px` on
+  an 8px ring; the same -1px on the 8px box gives the same place),
+  so it adds no height to a row. The same 15×8 box in the `!`
+  command row (after the command, the spinner's 6px gap), in the
+  completion popup's last row (at the row's text start) and inline
+  after the caret. The composer's own typing dots (6px) are gone with
+  the old typing element. Reduce Motion: the three dots static, no
+  bounce.
 - **In a running tool row**: after the tool's name with the 6px gap
   the spinner had: "bash ···"; the elapsed time at the right as
   today. In an expanded run only the running step's line has the
@@ -432,8 +442,9 @@ page, in the tool row and alone:
   (thinking before the first call, between two calls, while text
   streams), the last row of the turn is a run row with the dots and
   no name: the same `.run > .line` (padding-left `--pad`, 1px
-  paddings, the row's line height), the dots where the tool name
-  starts, nothing at the right. It has exactly a tool row's height,
+  paddings, the row's line height), the 15×8 box where the tool
+  name's first glyph starts, at the same vertical place as in "bash
+  ···", nothing at the right. It has exactly a tool row's height,
   so "bash ···" and "···" swap without moving the text. While
   assistant text streams, this row stands under the arriving block
   (where the typing dots stood), indented like a tool row.

@@ -918,9 +918,18 @@ move, a new node or a closed ancestor that opens again continues the
 same phase. A CSS animation cannot do this: `display: none` restarts
 it, and a new `animation-delay` on a running one counts the elapsed
 time twice. Compaction, a running `!` command, a
-pending completion and a pending attachment use the same dots, with
-the start of their own operation (`page/working.ts`). Under Reduce
-Motion the dots are static.
+pending completion and a pending attachment use the same dots, in
+the same box as the old spinner's ring, with the start of their own
+operation (`page/working.ts`). Under Reduce Motion the dots are
+static.
+
+The bounce is a `transform` and `opacity` animation, which WebKit
+runs in the compositor while the main thread is busy. A detached
+node loses its layer, and its bounce then advances only when a frame
+of the page runs, so the mark stutters. So a patch never detaches
+the mark while a call runs: a run with a running step is patched in
+place around it, and the run view is rebuilt only when its shape
+changes, as when a call starts or ends.
 
 **The reveal.** An answer grows by blocks and by slices of whole
 lines, not by the chunk (app/design/koa/NOTES.md, item 9; `REVEAL`

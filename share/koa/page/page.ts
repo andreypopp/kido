@@ -637,6 +637,44 @@ function reconcileWorking() {
     place(mark, spot);
   }
 }
+const elementsOf = (parent: Element) => [...parent.children].filter(child => child instanceof HTMLElement);
+const hostsDots = (element: Element) => !!element.querySelector('.dots');
+function fits(kept: HTMLElement, next: HTMLElement): boolean {
+  const aligned = elementsOf(next);
+  return elementsOf(kept).filter(child => child.className !== 'dots').every((child, index) => !hostsDots(child) || aligned[index] !== undefined && child.tagName === aligned[index].tagName && fits(child, aligned[index]));
+}
+function adopt(kept: HTMLElement, next: HTMLElement, adopted: Map<HTMLElement, HTMLElement>) {
+  adopted.set(next, kept);
+  for (const name of kept.getAttributeNames()) if (!next.hasAttribute(name)) kept.removeAttribute(name);
+  for (const name of next.getAttributeNames()) kept.setAttribute(name, next.getAttribute(name) ?? '');
+  kept.className = next.className;
+  const aligned = elementsOf(next), substitutes = new Map<Node, Node>(), marks: { dots: Node; before: number }[] = [];
+  let seen = 0;
+  for (const child of kept.childNodes) {
+    if (!(child instanceof HTMLElement)) continue;
+    if (child.className === 'dots') marks.push({ dots: child, before: seen });
+    else { if (hostsDots(child)) { adopt(child, aligned[seen], adopted); substitutes.set(aligned[seen], child); } seen++; }
+  }
+  const list = [...next.childNodes].map(child => substitutes.get(child) ?? child);
+  for (const { dots, before } of marks) list.splice(before ? list.indexOf(substitutes.get(aligned[before - 1]) ?? aligned[before - 1]) + 1 : 0, 0, dots);
+  const stay = new Set(list);
+  for (const child of [...kept.childNodes]) if (!stay.has(child)) kept.removeChild(child);
+  let before: Node | null = null;
+  for (let index = list.length - 1; index >= 0; index--) {
+    if (list[index].parentNode !== kept) kept.insertBefore(list[index], before);
+    before = list[index];
+  }
+}
+function patchInPlace(current: HTMLElement, next: HTMLElement) {
+  const old = runMarks.get(current), marks = runMarks.get(next);
+  if (!old || !marks || !old.steps.some(step => step.live) || old.steps.length !== marks.steps.length || old.steps.some((step, index) => step.live !== marks.steps[index].live) || !fits(current, next)) return false;
+  const adopted = new Map<HTMLElement, HTMLElement>();
+  adopt(current, next, adopted);
+  marks.summary = adopted.get(marks.summary) ?? marks.summary;
+  for (const step of marks.steps) step.sum = adopted.get(step.sum) ?? step.sum;
+  runMarks.set(current, marks);
+  return true;
+}
 function reconcileRuns(seq: number) {
   if (items.get(seq)?.kind !== 'assistant') return;
   let start = seq, end = seq;
@@ -648,7 +686,11 @@ function reconcileRuns(seq: number) {
     const owner = views.get(steps[0].item.seq)?.slots.get(steps[0].key);
     if (owner?.type === 'run') {
       const signature = JSON.stringify(steps.map(step => [step.block, step.item.final, step.item.stop, step.item.ended]));
-      if (owner.signature !== signature) { owner.view.replaceChildren(run(steps)); owner.signature = signature; }
+      if (owner.signature !== signature) {
+        const next = run(steps), current = owner.view.firstElementChild;
+        if (!(current instanceof HTMLElement && patchInPlace(current, next))) owner.view.replaceChildren(next);
+        owner.signature = signature;
+      }
       for (const step of steps.slice(1)) {
         const slot = views.get(step.item.seq)?.slots.get(step.key);
         if (slot?.type === 'run' && slot !== owner) { const first = slot.view.firstElementChild; if (first instanceof HTMLElement) liveMarks.delete(runMarks.get(first)?.key ?? ''); slot.view.replaceChildren(); slot.signature = undefined; }
