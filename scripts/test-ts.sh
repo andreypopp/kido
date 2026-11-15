@@ -49,6 +49,6 @@ make -C ../.. koa-page
 	--target ES2024 --allowImportingTsExtensions --erasableSyntaxOnly --skipLibCheck \
 	--typeRoots ./node_modules/@types --types node ../../.pi/tests/no-git-writes.test.ts
 if [ "$#" -gt 0 ]; then
-	exec ../../scripts/quiet-limit 180 -- node --test --test-timeout=60000 --test-concurrency=4 --test-reporter=spec "$@"
+	exec ../../scripts/quiet-limit 180 -- node --test --test-timeout=60000 --test-concurrency=4 --test-reporter=spec --test-reporter-destination=stdout --test-reporter=./testdata/start-reporter.mjs --test-reporter-destination=stdout "$@"
 fi
-exec ../../scripts/quiet-limit 180 -- node --test --test-timeout=60000 --test-concurrency=4 --test-reporter=spec koa-*.test.ts agents.test.ts ../../.pi/tests/no-git-writes.test.ts
+exec ../../scripts/quiet-limit 180 -- node --test --test-timeout=60000 --test-concurrency=4 --test-reporter=spec --test-reporter-destination=stdout --test-reporter=./testdata/start-reporter.mjs --test-reporter-destination=stdout koa-*.test.ts agents.test.ts ../../.pi/tests/no-git-writes.test.ts

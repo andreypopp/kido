@@ -67,8 +67,7 @@ test("concurrent selects open one viewer, reuse focuses it, and job completion k
   assert.deepEqual(f.focused().slice(2), ["pane_11"]);
   await f.dead("pane_10");
   await f.deleted("pane_10");
-  await f.select(first);
-  await pollUntil(() => f.focused().length === 4, 5000, "the job has a viewer again");
+  await pollUntil(async () => { if (f.focused().length < 4) await f.select(first); return f.focused().length >= 4; }, 5000, "the job has a viewer again");
   assert.equal(f.focused()[3], "pane_12");
 });
 

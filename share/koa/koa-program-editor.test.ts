@@ -27,9 +27,10 @@ async function editing(t: TestContext, env: NodeJS.ProcessEnv = {}) {
   const dead = (pane: string, cause: object) => appendFile(feed, JSON.stringify({ type: "dead", pane, dead: { at: 1, cause } }) + "\n");
   const closed = (pane: string) => pollUntil(async () => (await api()).some(call => call.method === "DELETE" && call.path === `/panes/${pane}`) && !(await rows()).some(row => row.id === pane), 5000, "the float is deleted");
   const sent = (method: string) => pollUntil(async () => (await api()).some(call => call.method === method), 5000, `a ${method} reaches ko`);
+  const reopen = async (text: string) => { let last = await open(text); await pollUntil(async () => { last = await open(text); return last.body.error !== "The editor is busy"; }, 5000, "the editor is idle"); return last; };
   const notified = (text: string) => f_notified(app, text);
   const gone = (path: string) => pollUntil(() => stat(path).then(() => false, () => true), 5000, `${path} is removed`);
-  return { dir, app, api, rows, float, open, dead, closed, gone, sent, notified, panes, gate: join(dir, "put-gate") };
+  return { dir, app, api, rows, float, open, dead, closed, gone, sent, reopen, notified, panes, gate: join(dir, "put-gate") };
 }
 
 test("an edit with exit 0 replaces the draft, does not send it and leaves nothing behind", { timeout: 15000 }, async t => {
@@ -69,7 +70,7 @@ test("a failed or unchanged edit keeps the draft", { timeout: 15000 }, async t =
   await f.notified("Editor exited 3; draft kept");
   await f.closed(pane.id); await f.gone(dirname(file));
   const first = pane.id;
-  assert.equal((await f.open("same")).status, 200);
+  assert.equal((await f.reopen("same")).status, 200);
   pane = await f.float(); file = pane.file;
   assert.notEqual(pane.id, first);
   await writeFile(file, "same\n");
@@ -77,6 +78,19 @@ test("a failed or unchanged edit keeps the draft", { timeout: 15000 }, async t =
   await f.closed(pane.id); await f.gone(dirname(file));
   assert.equal(f.app.records().filter(record => record.type === "item" && record.item.kind === "notify" && record.item.text.text === "Editor exited 3; draft kept").length, 1);
   assert.equal(f.app.records().some(record => record.type === "state" && record.editor), false);
+});
+
+test("an open while the float's delete is still in flight is busy, and works once it is done", { timeout: 15000 }, async t => {
+  const gate = join(await mkdtemp(join(tmpdir(), "koa-delete-gate-")), "gate");
+  t.after(() => rm(dirname(gate), { recursive: true, force: true }));
+  const f = await editing(t, { KO_FAKE_DELETE_DONE_GATE: gate });
+  await f.open("held");
+  const pane = await f.float();
+  await f.dead(pane.id, { type: "exited", code: 3 });
+  await f.closed(pane.id); await f.gone(dirname(pane.file));
+  assert.deepEqual(await f.open("early"), { status: 409, body: { error: "The editor is busy" } });
+  await writeFile(gate, "");
+  assert.equal((await f.reopen("late")).status, 200);
 });
 
 test("a second open reuses the float, and a stale revision is retried", { timeout: 15000 }, async t => {

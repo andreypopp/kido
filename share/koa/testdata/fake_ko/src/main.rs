@@ -1135,7 +1135,9 @@ fn api(argv: &[String]) -> ExitCode {
             if !refusal.is_empty() {
                 return http_error(409, ErrorKind::Refused, &refusal);
             }
-            return stop_pane(pane);
+            let code = stop_pane(pane);
+            wait_gate("KO_FAKE_DELETE_DONE_GATE");
+            return code;
         }
         ("POST", ["", "panes"]) => return new_pane(&body),
         ("POST", ["", "panes", pane, "stop"]) => {
