@@ -30,6 +30,7 @@ fn wait_gate(name: &str) {
     if gate.is_empty() {
         return;
     }
+    let _ = fs::write(format!("{gate}.waiting"), "");
     let deadline = Instant::now() + GATE_DEADLINE;
     while !Path::new(&gate).exists() && Instant::now() < deadline {
         std::thread::sleep(POLL);

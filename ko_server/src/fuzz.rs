@@ -12,6 +12,7 @@ use std::os::fd::AsFd;
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use ko_sys::event::{Events, Interest, Mode, Poll, Timer};
@@ -391,7 +392,13 @@ fn with_rig<T>(f: impl FnOnce(&mut Rig) -> T) -> T {
             ko_sys::signal::ignore(ko_sys::signal::Signal::Pipe).unwrap();
             let exe = std::env::var_os("KO_PANE_EXE")
                 .expect("KO_PANE_EXE names ko-pane; fuzz.sh and make test set it");
-            let dir = PathBuf::from(format!("/tmp/ko-fuzz-http-{}", std::process::id()));
+            static NEXT: AtomicUsize = AtomicUsize::new(0);
+            let dir = PathBuf::from(format!(
+                "/tmp/ko-fuzz-http-{}-{}",
+                std::process::id(),
+                NEXT.fetch_add(1, Ordering::SeqCst)
+            ));
+            std::fs::create_dir(&dir).expect("a fresh scratch directory");
             let mut rig = Rig::new(dir, PathBuf::from(exe), "stty raw -echo; exec cat");
             // A later pane is never a real program: a fuzzed request must not run a command.
             rig.state.config.pane_exe = PathBuf::from("/usr/bin/true");
@@ -450,6 +457,36 @@ mod tests {
         .concat();
         let found = with_rig(|rig| statuses(rig.exchange(&input)));
         assert_eq!(found, [200, 404, 431]);
+    }
+
+    #[test]
+    fn rigs_on_two_threads_get_their_own_scratch_directories() {
+        let (ready, arrivals) = std::sync::mpsc::channel();
+        let (go, goes): (Vec<_>, Vec<_>) = (0..2).map(|_| std::sync::mpsc::channel::<()>()).unzip();
+        let wait = Duration::from_secs(5);
+        std::thread::scope(|scope| {
+            let runs: Vec<_> = goes
+                .into_iter()
+                .map(|goes| {
+                    let ready = ready.clone();
+                    scope.spawn(move || {
+                        with_rig(|rig| {
+                            ready.send(()).unwrap();
+                            goes.recv_timeout(wait).expect("the peer rig");
+                            rig.dir.clone()
+                        })
+                    })
+                })
+                .collect();
+            for _ in 0..2 {
+                arrivals.recv_timeout(wait).expect("a rig");
+            }
+            for go in &go {
+                go.send(()).unwrap();
+            }
+            let dirs: Vec<_> = runs.into_iter().map(|run| run.join().unwrap()).collect();
+            assert_ne!(dirs[0], dirs[1]);
+        });
     }
 
     #[test]

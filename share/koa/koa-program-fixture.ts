@@ -29,7 +29,8 @@ export async function stopChild(child: ChildProcess, closed: Promise<unknown>, m
   }
   throw new Error(`child ${child.pid} did not close after SIGKILL: ${child.spawnargs.join(" ")}`);
 }
-export async function serveChild(t: TestContext, dir: string, args: string[], options: { env: NodeJS.ProcessEnv; cwd?: string; label: string }) {
+export type After = { after(hook: () => unknown): void };
+export async function serveChild(t: After, dir: string, args: string[], options: { env: NodeJS.ProcessEnv; cwd?: string; label: string }) {
   await writeFile(join(dir, process.platform === "darwin" ? "open" : "xdg-open"), '#!/bin/sh\nprintf "%s\\n" "$1" >> "$OPEN_LOG"\n', { mode: 0o700 });
   const child = spawn(process.execPath, args, { env: { ...options.env, PATH: `${dir}:${options.env.PATH ?? process.env.PATH}` }, stdio: "pipe", cwd: options.cwd });
   let stdout = "";
@@ -44,7 +45,7 @@ export async function serveChild(t: TestContext, dir: string, args: string[], op
   const base = await Promise.race([url, close.then(() => { throw new Error(`${options.label} exited before serving: ${stderr}`); }), new Promise<never>((_, reject) => { setTimeout(reject, 8000, new Error(`${options.label} did not serve within 8 s: ${stderr}`)).unref(); })]);
   return { child, base, close, stdout: () => stdout, stderr: () => stderr };
 }
-async function launch(t: TestContext, dir: string, cwd: string, env: NodeJS.ProcessEnv, pi: string, args: string[], program: string) {
+async function launch(t: After, dir: string, cwd: string, env: NodeJS.ProcessEnv, pi: string, args: string[], program: string) {
   const { child, base, close, stdout, stderr } = await serveChild(t, dir, [program, "--browser", "--pi", pi, ...args], { env: { ...hostEnv, HOME: join(dir, "home"), OPEN_LOG: join(dir, "urls"), KO_PANE: "", ...env }, cwd, label: "koa" });
   const controller = new AbortController();
   t.after(() => controller.abort());
@@ -63,8 +64,17 @@ export const realPi = fileURLToPath(new URL("./node_modules/.bin/pi", import.met
 export const realPiPackage = fileURLToPath(new URL("./node_modules/@earendil-works/pi-coding-agent", import.meta.url));
 export type Real = { resources?: boolean; discover?: boolean; panes?: object[]; replies: Reply[]; models?: Model[]; args?: string[]; env?: NodeJS.ProcessEnv; extensions?: Record<string, string>; settings?: object; program?: string; setup?: (paths: { dir: string; cwd: string; sessions: string }) => Promise<string[] | void>; start?: boolean };
 export async function realFixture(t: TestContext, options: Real) {
+  const hooks: (() => unknown)[] = [];
+  t.after(async () => {
+    let first: unknown;
+    for (const hook of hooks.reverse()) try { await hook(); } catch (error) { first ??= error; }
+    if (first) throw first;
+  });
+  const scope: After = { after: hook => { hooks.push(hook); } };
   const dir = await mkdtemp(join(tmpdir(), "koa-real-"));
+  scope.after(() => rm(dir, { recursive: true, force: true }));
   const provider = await startProvider(options.replies, 10000, options.models?.map(model => model.id));
+  scope.after(() => provider.close());
   const agentDir = join(dir, "agent"), sessions = join(dir, "sessions");
   let cwd = join(dir, "project");
   await Promise.all([mkdir(join(dir, "home")), mkdir(cwd), mkdir(sessions)]);
@@ -79,8 +89,7 @@ export async function realFixture(t: TestContext, options: Real) {
     await writeFile(join(dir, "acks.jsonl"), "");
   }
   const ko = options.panes ? { KO_PANE: "pane_1", KO_SOCKET: "/tmp/koa-agent-test/socket", KO_PANE_TOKEN: "", KO_FAKE_PANES: join(dir, "panes.json"), KO_FAKE_API_LOG: join(dir, "api-log"), KO_FAKE_FEED: join(dir, "feed.jsonl"), KO_FAKE_ACKS: join(dir, "acks.jsonl") } : {};
-  const app = await launch(t, dir, cwd, { PI_CODING_AGENT_DIR: agentDir, PI_OFFLINE: "1", PI_SKIP_VERSION_CHECK: "1", ...ko, ...options.env }, realPi, [...(options.discover ? [] : ["--no-extensions"]), ...(options.resources ? [] : ["--no-skills", "--no-prompt-templates"]), "--no-context-files", "--session-dir", sessions, ...extensions.flat(), ...extra, ...options.args ?? []], options.program ?? resolve("../../build/ko/share/ko/koa/koa.ts"));
-  t.after(async () => { await provider.close(); });
+  const app = await launch(scope, dir, cwd, { PI_CODING_AGENT_DIR: agentDir, PI_OFFLINE: "1", PI_SKIP_VERSION_CHECK: "1", ...ko, ...options.env }, realPi, [...(options.discover ? [] : ["--no-extensions"]), ...(options.resources ? [] : ["--no-skills", "--no-prompt-templates"]), "--no-context-files", "--session-dir", sessions, ...extensions.flat(), ...extra, ...options.args ?? []], options.program ?? resolve("../../build/ko/share/ko/koa/koa.ts"));
   if (options.start !== false) await app.until(ofType("state", record => record.life?.type === "ready"));
   let seq = 0;
   const feed = (message: { id: string; kind: string; text?: string; data?: unknown; from?: object; relation?: string }) => {

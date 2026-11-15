@@ -27,7 +27,7 @@ async function editing(t: TestContext, env: NodeJS.ProcessEnv = {}) {
   const dead = (pane: string, cause: object) => appendFile(feed, JSON.stringify({ type: "dead", pane, dead: { at: 1, cause } }) + "\n");
   const closed = (pane: string) => pollUntil(async () => (await api()).some(call => call.method === "DELETE" && call.path === `/panes/${pane}`) && !(await rows()).some(row => row.id === pane), 5000, "the float is deleted");
   const sent = (method: string) => pollUntil(async () => (await api()).some(call => call.method === method), 5000, `a ${method} reaches ko`);
-  const reopen = async (text: string) => { let last = await open(text); await pollUntil(async () => { last = await open(text); return last.body.error !== "The editor is busy"; }, 5000, "the editor is idle"); return last; };
+  const reopen = async (text: string) => { let last = await open(text); await pollUntil(async () => { if (last.body.error === "The editor is busy") last = await open(text); return last.body.error !== "The editor is busy"; }, 5000, "the editor is idle"); return last; };
   const notified = (text: string) => f_notified(app, text);
   const gone = (path: string) => pollUntil(() => stat(path).then(() => false, () => true), 5000, `${path} is removed`);
   return { dir, app, api, rows, float, open, dead, closed, gone, sent, reopen, notified, panes, gate: join(dir, "put-gate") };

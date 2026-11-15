@@ -1,6 +1,6 @@
 import { test, type TestContext } from "node:test";
 import assert from "node:assert/strict";
-import { appendFile, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { appendFile, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
@@ -84,10 +84,10 @@ test("a death that the observer delivered before the placement returns ends the 
 test("a float removed before the placement returns ends the viewer", { timeout: 30000 }, async t => {
   const f = await viewing(t, { KO_FAKE_PUT_DONE_GATE: "gate" });
   await f.select(f.ids[0] ?? "");
+  await pollUntil(() => stat(join(f.aux, "KO_FAKE_PUT_DONE_GATE.waiting")).then(() => true, () => false), 5000, "the placement holds its response");
   await pollUntil(async () => (await f.lines("layouts")).some(line => line.includes("pane_10")), 5000, "the observer sees the new float");
-  const before = (await f.lines("layouts")).length;
   await execFileAsync(join(f.app.dir, "ko"), ["api", "-X", "DELETE", "/panes/pane_10"], { env: { KO_FAKE_PANES: join(f.app.dir, "panes.json"), KO_FAKE_API_LOG: "" } });
-  await pollUntil(async () => (await f.lines("layouts")).length > before, 5000, "the observer sees the float gone");
+  await pollUntil(async () => { const seen = await f.lines("layouts"); const at = seen.findIndex(line => line.includes("pane_10")); return at >= 0 && seen.slice(at + 1).some(line => !line.includes("pane_10")); }, 5000, "the observer sees the float gone");
   await f.release("KO_FAKE_PUT_DONE_GATE");
   await f.deleted("pane_10");
 });

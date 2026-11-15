@@ -6,6 +6,7 @@ import path from 'node:path';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { shellComplete } from './koa-shell.ts';
+import { pollUntil } from './koa-agent-fixture.ts';
 
 async function functionCompletion(t: TestContext, cwd: string, env: NodeJS.ProcessEnv): Promise<boolean> {
   const script = await readFile(new URL('./koa-shell.sh', import.meta.url), 'utf8');
@@ -125,7 +126,7 @@ test('runtime completion sends the mapped cwd without host environment and never
   } finally { await rm(cwd, { recursive: true, force: true }); }
 });
 
-test('malformed shell records are refused and cancellation during helper read starts no exec', async t => {
+test('malformed shell records are refused and a cancelled signal starts no exec', async t => {
   const cwd = await mkdtemp(path.join(os.tmpdir(), 'koa-complete-'));
   try {
     const ko = path.join(cwd, 'ko'), marker = path.join(cwd, 'started');
@@ -134,10 +135,22 @@ test('malformed shell records are refused and cancellation during helper read st
     const context = { type: 'runtime' as const, name: 'dev', cwd };
     for (const line of Object.keys(records)) await t.test(line, async () => assert.deepEqual((await shellComplete(line, line.length, context, ko, new AbortController().signal)).options, []));
     await rm(marker, { force: true });
-    const controller = new AbortController();
-    const pending = shellComplete('cancel', 6, context, ko, controller.signal); controller.abort();
-    assert.deepEqual((await pending).options, []);
+    const aborted = new AbortController(); aborted.abort();
+    assert.deepEqual((await shellComplete('cancel', 6, context, ko, aborted.signal)).options, []);
     await assert.rejects(readFile(marker), { code: 'ENOENT' });
+  } finally { await rm(cwd, { recursive: true, force: true }); }
+});
+
+test('cancelling a running remote exec ends the completion', async () => {
+  const cwd = await mkdtemp(path.join(os.tmpdir(), 'koa-complete-'));
+  try {
+    const ko = path.join(cwd, 'ko'), marker = path.join(cwd, 'started');
+    await writeFile(ko, `#!${process.execPath}\nimport fs from 'node:fs';fs.writeFileSync(${JSON.stringify(marker)},'started');process.stdin.resume();setInterval(()=>{},1000);`, { mode: 0o700 });
+    const controller = new AbortController();
+    const pending = shellComplete('cancel', 6, { type: 'runtime', name: 'dev', cwd }, ko, controller.signal);
+    await pollUntil(() => readFile(marker).then(() => true, () => false), 5000, 'the exec starts');
+    controller.abort();
+    assert.deepEqual((await pending).options, []);
   } finally { await rm(cwd, { recursive: true, force: true }); }
 });
 
