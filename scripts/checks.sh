@@ -105,8 +105,9 @@ for stage in build build-linux lint lint-rs lint-sh unit e2e ts verus app ko-tes
 done
 if (( e2e_all )); then e2e=; fi
 if (( visual_all )); then visual=; fi
+if [[ -n ${KO_CHECKS_VISUAL:-} ]]; then visual=$KO_CHECKS_VISUAL; fi
 e2e=${e2e# }; e2e=${e2e% }
 visual=${visual# }; visual=${visual% }
 printf 'STAGES=%s\nE2E=%s\nVISUAL_ONLY=%s\n' "$selected" "$e2e" "$visual"
 if (( dry )) || [[ -z $selected ]]; then exit 0; fi
-STAGES=$selected E2E=$e2e VISUAL_ONLY=$visual bash scripts/verify.sh
+KO_FAIL_FAST=1 STAGES=$selected E2E=$e2e VISUAL_ONLY=$visual bash scripts/verify.sh

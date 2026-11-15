@@ -21,7 +21,9 @@ app's `make test`), `ko-test` and `visual` (the app's `make visual`,
 which runs in the guest VM of docs/build.md, "The visual-test VM",
 limited by `VISUAL_ONLY`) are not in the default list;
 `scripts/checks.sh` selects them. Every selected stage runs even after
-a failure and prints PASS/FAIL/SKIP with its time.
+a failure and prints PASS/FAIL/SKIP with its time, unless
+`KO_FAIL_FAST=1`: then the first FAIL stops the loop and each
+remaining stage prints SKIP.
 
 `scripts/verify.sh` scrubs the environment: it unsets `KO_STATE_DIR`,
 `KO_PANE`, `KO_SOCKET`, `KO_PANE_TOKEN` and every `KO_AGENT_*`, and
@@ -36,7 +38,9 @@ diff --name-only` against the merge-base with the upstream branch or
 `origin/main`, and the untracked files), finds the checks of each
 path in the one table of the script, prints the plan and runs the
 checks through `scripts/verify.sh`. A path that the table does not
-name selects every check.
+name selects every check. It sets `KO_FAIL_FAST=1`, so it stops at
+the first failing stage. `KO_CHECKS_VISUAL` (test names as
+`VISUAL_ONLY` takes them) replaces the computed visual selection.
 
 koa's stress runs are manual and never in verify:
 `share/koa/stress/run.sh` (headless Chrome) and `make -C app

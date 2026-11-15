@@ -27,6 +27,14 @@ stage() {
   elapsed=$(perl -e 'printf "%.1f", $ARGV[1] - $ARGV[0]' "$start" "$end")
   echo "$result: $name (${elapsed}s)"
 }
+for_stages=${STAGES:-build build-linux lint unit e2e ts verus}
+skip_rest() {
+  local seen=0 other
+  for other in $for_stages; do
+    if (( seen )); then echo "SKIP: $other (not run after a failure)"; fi
+    [[ $other != "$1" ]] || seen=1
+  done
+}
 # make verus prints SKIP: and succeeds when the Verus archive cannot be fetched.
 verus() {
   local log rc
@@ -37,7 +45,7 @@ verus() {
   rm -f "$log"
   return "$rc"
 }
-for name in ${STAGES:-build build-linux lint unit e2e ts verus}; do
+for name in $for_stages; do
   case $name in
     build) stage build make build ;;
     build-linux) stage build-linux make build-linux check-static ;;
@@ -53,5 +61,6 @@ for name in ${STAGES:-build build-linux lint unit e2e ts verus}; do
     verus) stage verus verus ;;
     *) echo "Unknown stage: $name" >&2; status=1 ;;
   esac
+  if (( status )) && [[ ${KO_FAIL_FAST:-} == 1 ]]; then skip_rest "$name"; break; fi
 done
 exit "$status"

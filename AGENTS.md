@@ -524,7 +524,9 @@ batch changes.
 base). It reads the paths that the unit changed, finds the checks of
 each path in the one table of the script, prints the plan and runs
 the checks through `scripts/verify.sh`. A path that the table does
-not name selects every check. Full `make verify` runs on CI, on
+not name selects every check. It stops at the first failing stage. A
+small unit narrows the visual stage to the tests that it changed with
+`KO_CHECKS_VISUAL="Class/test ..."`. Full `make verify` runs on CI, on
 Ubuntu and macOS for every push and PR. A release, a move of the
 Ghostty pin and a rebase with resolved conflicts also run full `make
 verify` and the app's full `make visual`. Agents run `make fuzz` only
@@ -664,7 +666,8 @@ delegates as its brief says and does not write code.
   quick check such as `scripts/lint.sh`, and no tests, reviewers or
   full verification. A small product change (one behaviour, a few
   files) takes the small track: no planner, one implementer and one
-  correctness reviewer, and the manager says that it chose it. A
+  correctness reviewer, and the manager says that it chose it. Its final
+  check narrows visual with `KO_CHECKS_VISUAL`. A
   trivial visual change (a colour, a spacing, a font or a text, with
   an exact rule from `@kido-app-design` in the brief) takes the
   trivial track: no manager, no planner and no reviewer. The
@@ -802,6 +805,10 @@ delegates as its brief says and does not write code.
   A test checks the validation. It never sends a signal to prove it.
   When you change a fuzz target or a kill path, use grep to examine
   the kill paths.
+- **Fast gates first.** After every edit, before it reports or runs
+  `scripts/checks.sh`, an implementer runs the fast gates of what it
+  changed: `make lint`, and `scripts/test-ts.sh` for TypeScript. A
+  slow stage never runs on a tree that fails a fast gate.
 - **Verify what you touched; CI runs the whole.** If a bug's cause is
   not clear from the code, write the test first. This includes a
   race, a flake, or an incorrect assumption about libghostty-vt, pi
