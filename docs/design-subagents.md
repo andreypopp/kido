@@ -279,7 +279,8 @@ parent sends it work.
 edge: one `POST /panes` with the caller's ko session as `session`, no
 `parent` and no `close`, the command `ko shell -- koa` (with
 `--browser` when the caller's host is in browser mode, the session as
-`--session-id`, `--session` or `--fork`, the name and the model), and
+`--session-id`, `--session` or `--fork`, the name of a new session
+and the model), and
 the task as the pane variable `koa.task`, which the new root delivers
 as a message from the caller and then deletes. This is the one
 remaining use of `koa.task` and of `ko shell -- koa`. The server
@@ -323,7 +324,11 @@ peer. A recorded peer does not reserve its name for `spawn_agent`.
 **Restart and stop.** `message_agent` in `message` mode to an ended
 peer restarts it as a top-level pane ("Restarting through a
 message"), and `spawn_agent(name, resume_from)` of a recorded peer
-continues it as a peer. A peer never gets `koa.work`, a report, a
+continues it as a peer. A continued peer keeps the name that its
+own session file holds: its start passes no `--name`, which would
+append a new session name, and its window and its starting pane take
+the file's name. The recorded name and the `name` of `spawn_agent`
+only address it. A peer never gets `koa.work`, a report, a
 notice or `koa.ended`.
 
 ## The pane's queue

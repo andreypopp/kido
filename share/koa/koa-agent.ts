@@ -1937,7 +1937,7 @@ export const agentExtension = (host: AgentHost) => (pi: ExtensionAPI): void => {
   const formatModel = (provider: string, id: string, thinking?: string): string => `${provider}/${id}${thinking === undefined ? "" : `:${thinking}`}`;
   const callerModel = (ctx: ExtensionContext): string | undefined => ctx.model ? formatModel(ctx.model.provider, ctx.model.id, pi.getThinkingLevel()) : undefined;
 
-  const readSavedSession = (file: { id: string; path: string }, registry: ExtensionContext["modelRegistry"]): { cwd: string; model: string | undefined } | { error: string } => {
+  const readSavedSession = (file: { id: string; path: string }, registry: ExtensionContext["modelRegistry"]): { cwd: string; model: string | undefined; name: string | undefined } | { error: string } => {
     let content: string;
     try { content = readFileSync(file.path, "utf8"); }
     catch (error) { return { error: `could not read session file ${file.path}: ${error instanceof Error ? error.message : String(error)}` }; }
@@ -1947,7 +1947,8 @@ export const agentExtension = (host: AgentHost) => (pi: ExtensionAPI): void => {
     if (!isRecord(header) || header.type !== "session" || header.id !== file.id || typeof header.cwd !== "string") return { error: `invalid session header: ${file.path}` };
     try {
       const entries = parseSessionEntries(content);
-      const branch = SessionManager.inMemory(header.cwd, undefined, entries).getBranch();
+      const manager = SessionManager.inMemory(header.cwd, undefined, entries);
+      const branch = manager.getBranch();
       const change = branch.findLast((entry) => entry.type === "model_change" && typeof entry.provider === "string" && typeof entry.modelId === "string");
       // pi 1.5.0 does not export getBranchSelection from core/virtual-models.js.
       const virtual = change?.type === "model_change" && registry.find(change.provider, change.modelId)?.api === "pi-virtual";
@@ -1960,7 +1961,7 @@ export const agentExtension = (host: AgentHost) => (pi: ExtensionAPI): void => {
           model = virtual && change?.type === "model_change" ? change : { provider: entry.message.provider, modelId: entry.message.model };
         }
       }
-      return { cwd: header.cwd, model: model ? formatModel(model.provider, model.modelId, thinking) : undefined };
+      return { cwd: header.cwd, model: model ? formatModel(model.provider, model.modelId, thinking) : undefined, name: manager.getSessionName() };
     } catch { return { error: `invalid session file: ${file.path}` }; }
   };
 
@@ -1972,7 +1973,7 @@ export const agentExtension = (host: AgentHost) => (pi: ExtensionAPI): void => {
       ...(host.browser ? ["--browser"] : []),
       ...(plan.runtime?.mode === "routed" ? ["--runtime", plan.runtime.name] : []),
       ...(plan.mode.kind === "continue" ? ["--session", plan.mode.file] : ["--session-id", plan.session]),
-      ...(plan.name ? ["--name", plan.name] : []),
+      ...(plan.name && plan.mode.kind !== "continue" ? ["--name", plan.name] : []),
       "--model", plan.model,
       ...(plan.mode.kind === "copy" ? ["--fork", plan.mode.file] : []),
     ];
@@ -2024,7 +2025,7 @@ export const agentExtension = (host: AgentHost) => (pi: ExtensionAPI): void => {
       if ("error" in saved) return saved;
       const model = saved.model ?? callerModel(session);
       if (!model) return { error: "caller has no model; specify model" };
-      const plan: Plan = { name: peer.name || undefined, session: peer.session, cwd: saved.cwd, model, task, mode: { kind: "continue", file: file.path }, koSession: snapshot.me?.session ?? "" };
+      const plan: Plan = { name: saved.name, session: peer.session, cwd: saved.cwd, model, task, mode: { kind: "continue", file: file.path }, koSession: snapshot.me?.session ?? "" };
       const made = await createPane(plan);
       if ("error" in made) return made;
       recordPeer(plan, made.placement);
@@ -2276,7 +2277,7 @@ export const agentExtension = (host: AgentHost) => (pi: ExtensionAPI): void => {
       if (childRuntime?.mode === "inside" && (params.resume_from || params.fork)) return refuse("a saved session is a file of this filesystem: resume_from and fork need a runtime whose pi runs on the host");
       const modelError = validateModel(params.model, ctx.modelRegistry);
       if (modelError) return refuse(modelError);
-      let source: { id: string; path: string; cwd: string; model: string | undefined } | undefined;
+      let source: { id: string; path: string; cwd: string; model: string | undefined; name: string | undefined } | undefined;
       if (params.resume_from) {
         const wanted = params.resume_from;
         const files = sessionFiles(ctx.sessionManager.getSessionDir());
@@ -2324,7 +2325,7 @@ export const agentExtension = (host: AgentHost) => (pi: ExtensionAPI): void => {
             if (!ko) return refuse("ko is not on PATH");
             if (!pane) return refuse("this session has no pane");
             if (!snapshot.me) return refuse("could not read the layout");
-            const plan: Plan = { name, session: childSession, model, cwd, runtime: childRuntime, runtimeInfo, task, mode, koSession: snapshot.me.session };
+            const plan: Plan = { name: mode.kind === "continue" ? source?.name : name, session: childSession, model, cwd, runtime: childRuntime, runtimeInfo, task, mode, koSession: snapshot.me.session };
             if (taskTooLarge(task)) return refuse(`the task does not fit the ${MAX_TASK_BYTES} byte limit of a pane variable`);
             const made = await createPane(plan);
             if ("error" in made) return refuse(made.error);

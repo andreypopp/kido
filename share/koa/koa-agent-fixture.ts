@@ -544,12 +544,13 @@ export function createFakePi(sessionDir = "/tmp/koa-agent-no-sessions/caller", e
   };
 }
 
-export function savedSession(dir: string, cwd: string, id: string): string {
+export function savedSession(dir: string, cwd: string, id: string, name?: string): string {
   mkdirSync(dir, { recursive: true });
   const session = SessionManager.create(cwd, dir, { id });
   const path = session.getSessionFile();
   assert.ok(path);
-  writeFileSync(path, JSON.stringify(session.getHeader()) + "\n");
+  if (name) session.appendSessionInfo(name);
+  writeFileSync(path, [session.getHeader(), ...session.getEntries()].map((line) => JSON.stringify(line)).join("\n") + "\n");
   return path;
 }
 

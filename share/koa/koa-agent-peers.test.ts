@@ -138,7 +138,7 @@ test("a subagent and a pi inside a runtime open no peer observer", async () => {
   } finally { await fx.restore(); }
 });
 
-test("an ended peer recorded without a name resumes without --name", async () => {
+test("an ended peer resumes without --name, whatever name its record has", async () => {
   const fx = makeFixture();
   try {
     fx.setPanes([selfPane()]);
@@ -152,6 +152,15 @@ test("an ended peer recorded without a name resumes without --name", async () =>
     const body = at(fx.posts("/panes"), 0);
     assert.ok(!getList(body, "command", "argv").includes("--name"));
     assert.equal(body.name, undefined);
+    const named = "44444444abcdef04";
+    savedSession(join(fx.dir, "sessions", "peer"), process.cwd(), named, "kido-app-design");
+    fx.setClientPanes([selfPane(), agentPane({ pane: "pane_3", session: named, name: "", title: "koa - Old - kido" })]);
+    await pollUntil(() => entriesOf(s, "koa.agent").some((e) => e.role === "peer" && e.session === named && e.name === "koa - Old - kido"));
+    fx.setClientPanes([selfPane()]);
+    assert.match(text(await s.tool("message_agent").execute("c", { to: named, message: "continue" })), /restarted/);
+    const revived = at(fx.posts("/panes"), 1);
+    assert.ok(!getList(revived, "command", "argv").includes("--name"));
+    assert.equal(revived.name, "kido-app-design");
   } finally { await fx.restore(); }
 });
 
