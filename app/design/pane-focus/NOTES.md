@@ -1,6 +1,6 @@
 # Focused pane treatment (shipped: Shift + focus edge)
 
-`mockup.html` is a self-contained reference for how Kido.app can show which pane has keyboard focus in a multi-pane window. Open it in a browser; no network access. Code is the source of truth (docs/design-app.md, "Focus treatment"). Shipped: **Shift + focus edge**, with a 3% shift by default (`window.unfocused_shift`, same range and direction rule as the sidebar shade) and the 1pt `controlAccentColor` stroke at 50% inside the chrome rect; where a corner of the pane is a corner of the window the stroke follows the window's rounded corner, concentric (macOS 27, outside full screen; square on macOS 26). The 45% overlay stays only on floating panes that are not active. Not shipped: the 5, 8 and 12% strengths, the accent dividers, the overlay on tiled panes.
+`mockup.html` is a self-contained reference for how Kido.app can show which pane has keyboard focus in a multi-pane window. Open it in a browser; no network access. Code is the source of truth (docs/design-app.md, "Focus treatment"). Shipped: **Shift + focus edge**, with a 3% shift by default (`window.unfocused_shift`, same range and direction rule as the sidebar shade) and the 1pt `controlAccentColor` stroke at 50% inside the chrome rect; where a corner of the pane is a corner of the window the stroke follows the window's rounded corner, concentric (outside full screen). The 45% overlay stays only on floating panes that are not active. Not shipped: the 5, 8 and 12% strengths, the accent dividers, the overlay on tiled panes.
 
 ## Treatments
 

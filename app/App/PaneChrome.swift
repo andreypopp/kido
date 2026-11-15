@@ -83,7 +83,7 @@ final class PaneChrome: NSView {
                                CGPoint(x: rect.maxX, y: rect.maxY), CGPoint(x: rect.minX, y: rect.maxY)]
                 let tolerance: CGFloat = 0.51
                 let windowCorners: (CGRect, [CGFloat])? = {
-                    guard #available(macOS 27, *), let window, !window.styleMask.contains(.fullScreen),
+                    guard let window, !window.styleMask.contains(.fullScreen),
                           let content = window.contentView, let radii = content.effectiveCornerRadii else { return nil }
                     return (content.convert(content.bounds, to: nil), [radii.topLeft, radii.topRight, radii.bottomLeft, radii.bottomRight])
                 }()

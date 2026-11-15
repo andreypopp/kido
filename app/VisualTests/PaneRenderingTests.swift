@@ -468,16 +468,15 @@ import XCTest
                 try await drain(runtime)
                 let side = hidden ? "left" : "right"
                 try await snapshot(hidden || dark ? "corner-\(side)-\(name)" : "pane-\(name)", view: root)
-                if #available(macOS 27, *), let radii = window.contentView?.effectiveCornerRadii {
-                    let radius = hidden ? radii.bottomLeft : radii.bottomRight
-                    XCTAssertGreaterThan(radius, 0)
-                    let offset = radius - (radius - 0.5) / sqrt(2)
-                    let point = CGPoint(x: hidden ? offset : chrome.bounds.maxX - offset, y: chrome.bounds.maxY - offset)
-                    let image = try capture()
-                    let curve = try color(image, chrome, point)
-                    let contrast = zip([curve.redComponent, curve.greenComponent, curve.blueComponent], pure).map { abs($0 * 255 - Double($1)) }.max() ?? 0
-                    XCTAssertGreaterThan(contrast, 30, "focus stroke follows the window curve")
-                }
+                let radii = try XCTUnwrap(window.contentView?.effectiveCornerRadii)
+                let radius = hidden ? radii.bottomLeft : radii.bottomRight
+                XCTAssertGreaterThan(radius, 0)
+                let offset = radius - (radius - 0.5) / sqrt(2)
+                let point = CGPoint(x: hidden ? offset : chrome.bounds.maxX - offset, y: chrome.bounds.maxY - offset)
+                let image = try capture()
+                let curve = try color(image, chrome, point)
+                let contrast = zip([curve.redComponent, curve.greenComponent, curve.blueComponent], pure).map { abs($0 * 255 - Double($1)) }.max() ?? 0
+                XCTAssertGreaterThan(contrast, 30, "focus stroke follows the window curve")
                 focusWindow.fullscreen = true
                 chrome.needsDisplay = true
                 try await snapshot("corner-\(side)-fullscreen-\(name)", view: root)

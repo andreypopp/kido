@@ -385,7 +385,7 @@ the probe) only connect to `<dir>/socket`.
 
 The entry points below route every remote request to a remote owner.
 
-On macOS Tahoe, the Shortcuts action **Connect to Remote Host in Kido**
+The Shortcuts action **Connect to Remote Host in Kido**
 (`app/App/RemoteIntent.swift`) has a required Host string in its parameter
 summary. It works only in team-signed builds: Linkd rejects ad-hoc bundles
 with `requiresValidatedBundle`. Spotlight does not list the action directly.
@@ -977,8 +977,7 @@ content view's `effectiveCornerRadii` for that corner minus the stroke's
 0.5pt inset. The stroke reads the corners from the geometry when it draws,
 so a docked sidebar, a hidden sidebar and zoom need no rule of their own.
 In full screen the window has no rounded corners, and the stroke is square.
-`effectiveCornerRadii` exists only on macOS 27. On macOS 26 the stroke stays
-square, because no measured radius exists for that release. A single-pane window draws no shift and no edge on its pane while
+A single-pane window draws no shift and no edge on its pane while
 its window is key, also under sidebar focus. Floating panes keep a 45%
 theme-background overlay when they are not active.
 

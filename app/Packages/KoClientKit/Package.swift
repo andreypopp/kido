@@ -3,7 +3,7 @@ import PackageDescription
 
 let package = Package(
     name: "KoClientKit",
-    platforms: [.macOS("26.0"), .iOS("26.0")],
+    platforms: [.macOS("27.0"), .iOS("26.0")],
     products: [.library(name: "KoClientKit", targets: ["KoClientKit"])],
     dependencies: [.package(path: "../KoModel")],
     targets: [

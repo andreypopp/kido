@@ -44,7 +44,7 @@ echo "SHA256: $sha"
 if [[ -z $local_tag ]]; then action git tag "$tag"; fi
 action git push origin "refs/tags/$tag"
 action gh release create "$tag" "$zip" --repo andreypopp/kido --title "Kido.app $version" \
-  --notes "Native macOS client for the ko terminal server. Apple Silicon and macOS 26 or later required. Apple Development (Personal Team) signed; not notarized. Install with brew install --cask andreypopp/tap/kido-app." --prerelease
+  --notes "Native macOS client for the ko terminal server. Apple Silicon and macOS 27 or later required. Apple Development (Personal Team) signed; not notarized. Install with brew install --cask andreypopp/tap/kido-app." --prerelease
 action git -C "$tap" pull --ff-only origin main
 cask="$tap/Casks/kido-app.rb"
 echo "+ write $cask"
@@ -58,7 +58,7 @@ cask "kido-app" do
   desc "Native macOS client for the ko agent terminal server"
   homepage "https://github.com/andreypopp/kido"
   depends_on arch: :arm64
-  depends_on macos: :tahoe
+  depends_on macos: :golden_gate
   app "Kido.app"
   caveats <<~EOS
     Kido.app is Apple Development (Personal Team) signed, not notarized.

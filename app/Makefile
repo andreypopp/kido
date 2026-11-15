@@ -1,5 +1,5 @@
 export DEVELOPER_DIR ?= /Applications/Xcode.app/Contents/Developer
-export MACOSX_DEPLOYMENT_TARGET := 26.0
+export MACOSX_DEPLOYMENT_TARGET := 27.0
 
 KO_CHECKOUT ?= ..
 KO_ABS = $(abspath $(KO_CHECKOUT))

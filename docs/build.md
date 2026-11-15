@@ -216,8 +216,8 @@ the Swift target `KoClientKit`. SwiftPM resolves the binary target
 when xcodebuild opens the project, so `make -C app project` builds the
 xcframework first, on every app build; an Xcode build alone does not
 refresh it. The macOS slice needs
-`MACOSX_DEPLOYMENT_TARGET` (26.0: Kido.app supports only Apple
-Silicon and macOS 26 or later), an iOS slice
+`MACOSX_DEPLOYMENT_TARGET` (27.0: Kido.app supports only Apple
+Silicon and macOS 27 or later), an iOS slice
 `IPHONEOS_DEPLOYMENT_TARGET`; the Makefile's one table maps each
 target to its SDK and clang triple and refuses another. It fails when
 the production graph of `ko_client` has `ko_vt` or `ko_server`: the
