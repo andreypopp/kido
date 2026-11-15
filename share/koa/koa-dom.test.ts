@@ -62,7 +62,7 @@ async function page() {
   const listeners = new Map<string, (event: unknown) => void>();
   const windowListeners = new Map<string, (event?: unknown) => void>();
   let activeElement: Node | undefined;
-  const document = { timeline: { currentTime: 100000 }, hidden: false, visibilityState: 'visible', documentElement: new Node(), body: new Node(), hasFocus: () => true, get activeElement() { return activeElement; }, set activeElement(node: Node | undefined) { if (activeElement === node) return; const previous = activeElement; activeElement = node; if (previous) listeners.get('focusout')?.({ target: previous }); if (node) listeners.get('focusin')?.({ target: node }); }, querySelector: (selector?: string): Node | null => selector === '.cm-content' ? document.getElementById('prompt').children[0] ?? null : selector === '.lightbox' ? document.body.children.find(node => node.classList.contains('lightbox')) ?? null : null, getElementById(id: string) { let node = elements.get(id); if (!node) { node = new Node(); elements.set(id, node); if (id === 'prompt') document.getElementById('field').append(node); if (id === 'composer') node.hidden = false; } return node; }, createElement: (tag: string) => { const node = new Node(); node.tagName = tag.toUpperCase(); return node; }, createElementNS: () => new Node(), createTextNode: (text: string) => { const node = new Node(); node.tagName = '#text'; node.textContent = text; return node; }, addEventListener(type: string, handler: (event: unknown) => void) { listeners.set(type, handler); }, querySelectorAll: () => [] };
+  const document = { timeline: { currentTime: 100000 }, hidden: false, visibilityState: 'visible', documentElement: new Node(), body: new Node(), hasFocus: () => true, get activeElement() { return activeElement; }, set activeElement(node: Node | undefined) { if (activeElement === node) return; const previous = activeElement; activeElement = node; if (previous) listeners.get('focusout')?.({ target: previous }); if (node) listeners.get('focusin')?.({ target: node }); }, querySelector: (selector?: string): Node | null => selector === '.cm-content' ? document.getElementById('prompt').children[0] ?? null : selector === '.lightbox' ? document.body.children.find(node => node.classList.contains('lightbox')) ?? null : null, getElementById(id: string) { let node = elements.get(id); if (!node) { node = new Node(); elements.set(id, node); if (id === 'prompt') document.getElementById('field').append(node); if (id === 'composer') node.hidden = false; } return node; }, createElement: (tag: string) => { const node = new Node(); node.hidden = false; node.tagName = tag.toUpperCase(); return node; }, createElementNS: () => new Node(), createTextNode: (text: string) => { const node = new Node(); node.tagName = '#text'; node.textContent = text; return node; }, addEventListener(type: string, handler: (event: unknown) => void) { listeners.set(type, handler); }, querySelectorAll: () => [] };
   type Handlers = { input(user: boolean): void; send(mode: PromptMode): void; quit(): void; edit(): void };
   let handlers: Handlers | undefined;
   let text = () => '';
@@ -90,7 +90,7 @@ async function page() {
       placeholder(text: string) { content.placeholder = text; },
     };
   };
-  const context = { ResizeObserver, matchMedia: () => ({ matches: false }), Date: class extends Date { constructor(value: string | number = 1700000012000) { super(value); } static now() { return 1700000012000; } }, getComputedStyle: (node?: { tagName?: string }) => ({ display: 'block', marginBottom: node?.tagName === 'P' ? '10px' : '0px' }), composer, bashCommand, ATTACHMENT_LIMITS, isAttachment, pathArg, jobEndText, AbortController, AbortSignal, CustomEvent: class { type: string; detail?: unknown; constructor(type: string, options?: { detail?: unknown }) { this.type = type; this.detail = options?.detail; } }, Node, Element: Node, HTMLElement: Node, HTMLButtonElement: Node, HTMLImageElement: Node, markdown, markdownLine, sliceEnd, document, window: { ko: {}, addEventListener(type: string, handler: (event?: unknown) => void) { windowListeners.set(type, handler); } }, innerWidth: 980, innerHeight: 560, Event: class { type: string; constructor(type: string) { this.type = type; } }, console, setInterval() {}, clearInterval() {}, setTimeout, clearTimeout, requestAnimationFrame() {}, cancelAnimationFrame() {}, performance: { now: () => 0 }, fetch: async () => ({ ok: true, json: async () => ({}) }) };
+  const context = { ResizeObserver, matchMedia: () => ({ matches: false }), Date: class extends Date { constructor(value: string | number = 1700000012000) { super(value); } static now() { return 1700000012000; } }, getComputedStyle: (node?: { tagName?: string }) => ({ display: 'block', marginBottom: node?.tagName === 'P' ? '10px' : '0px' }), composer, bashCommand, ATTACHMENT_LIMITS, isAttachment, pathArg, jobEndText, AbortController, AbortSignal, CustomEvent: class { type: string; detail?: unknown; constructor(type: string, options?: { detail?: unknown }) { this.type = type; this.detail = options?.detail; } }, Node, Element: Node, HTMLElement: class { static [Symbol.hasInstance](value: unknown) { return value instanceof Node && value.tagName !== '#text'; } }, HTMLButtonElement: Node, HTMLImageElement: Node, markdown, markdownLine, sliceEnd, document, window: { ko: {}, addEventListener(type: string, handler: (event?: unknown) => void) { windowListeners.set(type, handler); } }, innerWidth: 980, innerHeight: 560, Event: class { type: string; constructor(type: string) { this.type = type; } }, console, setInterval() {}, clearInterval() {}, setTimeout, clearTimeout, requestAnimationFrame() {}, cancelAnimationFrame() {}, performance: { now: () => 0 }, fetch: async () => ({ ok: true, json: async () => ({}) }) };
   const answersSource = stripTypeScriptTypes(await readFile(new URL('page/answers.ts', import.meta.url), 'utf8')).replace(/^export /gm, '');
   const annotationsSource = stripTypeScriptTypes(await readFile(new URL('page/annotations.ts', import.meta.url), 'utf8')).replace(/^import .*;\n/gm, '').replace(/^export /gm, '');
   Object.assign(context, runInNewContext(answersSource + '\n' + annotationsSource + '\n({annotations,update})', context));
@@ -1606,6 +1606,89 @@ test('a reader who scrolled up gets one divider above the first new item and a c
   assert.equal(page.latest(), '↓ 3 new,true');
   page.evaluate("element('scroll').scrollTop=400;element('scroll').onscroll()");
   assert.equal(page.latest(), '↓ 1 new,true');
+});
+
+const think = (seq: number, text = 'hmm') => ({ seq, revision: 0, kind: 'assistant', final: false, blocks: [{ type: 'thinking', text, redacted: false }] });
+
+test('an assistant item with nothing to show gets no divider and no count', async () => {
+  const page = await latestPage();
+  page.add(page.text(0)); page.add(page.own(1));
+  page.scroll(0);
+  page.add({ ...page.text(2), blocks: [] });
+  page.add({ ...page.text(3), blocks: [{ type: 'text', text: '' }] });
+  assert.equal(page.dividers(), '0,1,2,3');
+  assert.equal(page.latest(), '↓ Latest,true');
+});
+
+test('a step that joins the run above gets no divider of its own, and the divider stays above the run', async () => {
+  const page = await latestPage();
+  page.add(page.text(0)); page.add(page.own(1));
+  page.scroll(0);
+  page.add(think(2));
+  assert.equal(page.dividers(), '0,1,divider,2');
+  page.add(think(3));
+  assert.equal(page.dividers(), '0,1,divider,2,3');
+  assert.equal(page.latest(), '↓ 1 new,true');
+});
+
+test('a patch that empties the item of the divider moves or removes it, and that item no longer counts', async () => {
+  const page = await latestPage();
+  page.add(page.text(0));
+  page.scroll(0);
+  page.add(page.text(1)); page.add(page.text(2));
+  assert.equal(page.dividers(), '0,divider,1,2');
+  page.add({ ...page.text(1), revision: 1, blocks: [] });
+  assert.equal(page.dividers(), '0,1,divider,2');
+  assert.equal(page.latest(), '↓ 1 new,true');
+  page.add({ ...page.text(2), revision: 1, blocks: [] });
+  assert.equal(page.dividers(), '0,1,2');
+  assert.equal(page.latest(), '↓ Latest,true');
+});
+
+test('an item that gets its content later is new once, and streaming growth is not new', async () => {
+  const page = await latestPage();
+  page.add(page.text(0));
+  page.scroll(0);
+  page.add({ ...page.text(1), blocks: [] });
+  assert.equal(page.dividers(), '0,1');
+  page.add({ ...page.text(1), revision: 1 });
+  assert.equal(page.dividers(), '0,divider,1');
+  assert.equal(page.latest(), '↓ 1 new,true');
+  page.add({ ...page.text(1), revision: 2, blocks: [{ type: 'text', text: 'reply 1 and more' }] });
+  assert.equal(page.latest(), '↓ 1 new,true');
+});
+
+test('the divider stands above the first new item in the transcript order, not in the order that they became visible', async () => {
+  const page = await latestPage();
+  page.add(page.text(0));
+  page.scroll(0);
+  page.add({ ...page.text(1), blocks: [] });
+  page.add(page.text(2));
+  assert.equal(page.dividers(), '0,1,divider,2');
+  page.add({ ...page.text(1), revision: 1 });
+  assert.equal(page.dividers(), '0,divider,1,2');
+  assert.equal(page.latest(), '↓ 2 new,true');
+});
+
+test('an empty item that arrived while following and gets its first content after the reader scrolled up is counted once', async () => {
+  const page = await latestPage();
+  page.add(page.text(0));
+  page.add({ ...page.text(1), blocks: [] });
+  page.step(16);
+  page.scroll(0);
+  page.add({ ...page.text(1), revision: 1 });
+  assert.equal(page.dividers(), '0,divider,1');
+  assert.equal(page.latest(), '↓ 1 new,true');
+});
+
+test('a view counts as visible only with text, a visible child or a media element', async () => {
+  const page = await latestPage();
+  const shown = (setup: string) => page.evaluate("(function(){const e=document.createElement('div');" + setup + ";return visible(e)})()");
+  assert.equal(shown("e.append(document.createElement('span'))"), false);
+  assert.equal(shown("e.append(document.createElement('p'))"), false);
+  assert.equal(shown("const h=document.createElement('div');h.textContent='x';h.hidden=true;e.append(h)"), false);
+  assert.equal(shown("const h=document.createElement('div');h.textContent='x';h.hidden=true;e.append(h,document.createTextNode('t'))"), true);
+  assert.equal(shown("e.append(document.createElement('img'))"), true);
 });
 
 test('the capsule reads Latest while nothing is new and hides at the bottom', async () => {

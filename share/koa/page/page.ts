@@ -62,7 +62,7 @@ let travel: { from: number; start: number } | undefined;
 let accepted = 0;
 let sentBlock: { sessionId: string | undefined; view: string } | undefined;
 let divider: HTMLElement | undefined;
-const fresh = new Map<string, HTMLElement>(), counted = new Set<string>(), liveBash = new Map<string, string>();
+const fresh = new Map<string, HTMLElement>(), counted = new Set<string>(), waiting = new Map<string, HTMLElement>(), liveBash = new Map<string, string>();
 let epoch = '', after = -1, first: number | undefined, more = false, delay = 200;
 let escaped = false, dialogId: string | undefined;
 let submitting = false, editorId: string | undefined, dialogTimer: number | undefined, shownExit: number | undefined, pickerButton: HTMLElement | undefined, shownQueue: string | undefined, shownStatuses: string | undefined;
@@ -294,7 +294,7 @@ function tick() {
     target.addEventListener('animationend', () => target.classList.remove('grow'), { once: true });
   });
   if (travel) travelFrame(now); else layoutChanged();
-  sync();
+  settle();
   schedule();
   armCap();
 }
@@ -374,9 +374,24 @@ function refocus() {
   sync();
   layoutChanged();
 }
+function visible(element: HTMLElement): boolean {
+  if (element.hidden) return false;
+  if (['IMG', 'SVG', 'CANVAS', 'VIDEO', 'HR'].includes(element.tagName.toUpperCase())) return true;
+  if (!element.childNodes.length) return !!element.textContent?.trim();
+  return [...element.childNodes].some(child => child instanceof HTMLElement ? visible(child) : !!child.textContent?.trim());
+}
+function settle() {
+  for (const [key, view] of fresh) if (!visible(view)) { fresh.delete(key); counted.delete(key); waiting.set(key, view); }
+  for (const [key, view] of waiting) if (visible(view)) { waiting.delete(key); arrive(key, view); }
+  const views = new Set(fresh.values()), view = [...element('items').children].find(child => child instanceof HTMLElement && views.has(child));
+  if (!view) { divider?.remove(); divider = undefined; }
+  else if (divider && divider.nextSibling !== view) element('items').insertBefore(divider, view);
+  sync();
+}
 function arrive(key: string, view: HTMLElement | undefined) {
   if (!view) return;
   if (counted.has(key)) { if (fresh.has(key)) fresh.set(key, view); return; }
+  if (!visible(view)) { waiting.set(key, view); return; }
   counted.add(key);
   if (scrolling.kind === 'following' && paneFocused()) return;
   if (!divider) { divider = node('div', undefined, 'newmsgs'); divider.append(node('span', 'new messages')); element('items').insertBefore(divider, view); }
@@ -777,6 +792,7 @@ function put(item: WireItem) {
   }
   if (item.kind === 'job') reconcileJobs(item.seq);
   reconcileWorking();
+  if (fresh.size || waiting.size) settle();
   element('older').hidden = !more;
   after = Math.max(after, first - 1);
   while (items.get(after + 1)?.final) after++;
@@ -1096,7 +1112,7 @@ function apply(record: PageRecord) {
   if (record.type === 'reset') {
     editor.resetCompletion();
     epoch = record.epoch; after = -1; first = undefined; items.clear(); views.clear(); texts.clear(); liveMarks.clear(); clearWorking(); revealing.clear(); growing.length = 0; dirty = false; stopFrames(); annotationItems.clear(); folds.clear(); jobOwners.clear(); historyRequest = undefined; more = record.more;
-    element('items').replaceChildren(); divider = undefined; fresh.clear(); counted.clear(); liveBash.clear();
+    element('items').replaceChildren(); divider = undefined; fresh.clear(); waiting.clear(); counted.clear(); liveBash.clear();
     readScroll();
     element('older').hidden = !more;
     for (const item of record.items) put(item);
