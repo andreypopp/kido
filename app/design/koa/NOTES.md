@@ -1156,9 +1156,12 @@ grow by the chunk; it grows by blocks and by slices of whole lines.
   repair-and-lex path for a streaming block.
 - Time cap: when nothing was revealed for 1.5 s and text waits,
   reveal the whole lines that arrived.
-- The scroll glides to the bottom once per reveal (ease-out, time
-  constant 150 ms) instead of jumping; the follow flag works as
-  before, so a user who scrolled up is not pulled down.
+- The reveal is rendering only; it moves no scroll of its own
+  (2026-11-15, the Auto-scroll section): while the reader follows,
+  the follower writes the bottom instantly before each paint the
+  reveal changes, so the grown block is in view at once; a reader
+  who scrolled up keeps their anchor and is never pulled down. The
+  earlier glide per reveal is dropped.
 - A code fence with more than 15 lines is folded: the first 15
   lines, then a full-width bar "Show N more lines" under the pre
   (the well's fill, a hairline above, the accent colour, the
@@ -1232,77 +1235,96 @@ breadcrumb; app/design/pane/NOTES.md, the capsule family).
   pane row. Nothing else in the sidebar changes: the records' status,
   clocks and folds are as today.
 
-## Auto-scroll, the "new messages" divider and "↓ Latest" (2026-11-13, spec)
+## Auto-scroll, the "new messages" divider and "↓ Latest" (rewritten 2026-11-15)
 
-The follow rule stays: the page follows the bottom while the reader
-is at the bottom and keeps the position otherwise. Three additions.
+The user's model after the research into chat UIs (use-stick-to-
+bottom, assistant-ui, Virtuoso, TanStack Virtual, LibreChat, LobeChat,
+Open WebUI): the scroll has two states and one animation.
 
-- **Focused.** The pane is focused when the page's document has the
-  focus (`document.hasFocus()`: the pane is the window's active pane,
-  the window is key, the app is active) and the page is visible
-  (`document.visibilityState === "visible"`: the tab is shown, the
-  pane not hidden by zoom or a session switch). Anything else is not
-  focused: another pane active, the window inactive, the app in the
-  background, the tab not shown.
-- **No auto-scroll while not focused.** While the pane is not
-  focused, new items append without moving the scroll, also when the
-  reader was at the bottom. On the return of the focus nothing
-  scrolls: the reader sees the divider and the button and reads on.
-  Following resumes when the reader reaches the bottom again.
-- **New items.** Every transcript item that appends and is not the
-  user's own: assistant text, run rows and their steps, agent cards,
-  job rows, notices and command results, the output of a `!`
-  command. The user's sent message and the `!` command row the send
-  creates are never new. An item is counted once at its first
-  append; streaming growth of an item adds nothing.
-- **The user's send.** The user's own send scrolls the transcript to
-  the bottom (the sent block in view) and resumes following, in the
-  same frame the block appends; the divider goes and "↓ Latest"
-  hides. Independent of focus: a send from the composer is the
-  reader's act, in Kido and in browser mode alike. A send that is
-  not the user's (a steer the app delivers, a programmatic message,
-  a queued follow-up pi takes) is a new item under the normal rule:
-  no scroll unless following, the divider if not.
-- **The divider.** One rule across the transcript's text width, at
-  the place where the new items start: a 1px line in the accent at
-  35%, with the label "new messages" centred on it in a 6pt-padded
-  gap, prose .8em, 500, the accent, tabular; 14pt above and below
-  (it is a group boundary); the same numbers in dark. It appears with
-  the first item that arrives while the reader is not following the
-  bottom or the pane is not focused, above that item; while it
-  exists, later items extend the new region and no second divider
-  appears. It goes when the reader is at the bottom with the pane
-  focused (by scrolling or the button), on the user's send, on a
-  session switch, `/reload`, `/restart` and `/new`. One at a time,
-  never two.
-- **A view switch.** A view that is not shown is a not-focused pane.
-  A view that the reader left scrolled up opens at the same position,
-  instantly, with the divider above the first item that arrived
-  while it was not shown and "↓ N new". A view that the reader left
-  at the bottom opens at the end, with no divider and no button.
-- **"↓ Latest".** A capsule centred in the content column, 8pt above
-  the dock's topmost element (the queue's first block when the queue
-  shows, else the dialog card, the exit card or the field): 24pt
-  high, 12pt radius, padding 0 10pt, the field's material (the
-  background at 72% with the blur), a 0.5pt edge at 16% of the
-  foreground (14% dark), the contact shadow (black 8%, 1pt, 2pt;
-  dark 30%, 1pt, 3pt), text prose .85em in the foreground: "↓
-  Latest" while nothing is new, "↓ 3 new" ("1 new") while new items
-  exist below the viewport. Shown whenever the reader is not at the
-  bottom, focused or not; fades in and out over 120ms; the pointer a
-  hand; it never takes the focus. A click scrolls to the bottom
-  (smooth, about 250ms; instant under Reduce Motion), following
-  resumes, and the divider goes when the pane is focused. Pinned
-  with the dock, so it moves with the queue's height. No keyboard
-  equivalent: scrolling to the bottom by wheel, trackpad or Page
-  Down does the same. The view bar, when shown, is at the top and
-  unaffected.
-- **Browser mode**: the same; the focus is the browser window's.
-- **The turn's end** (2026-11-15). The typing dots collapse over the
-  grow duration (220ms, ease-in: height, opacity and the gap above
-  them to 0) while the follower keeps the bottom, so the text eases down
-  and no blank space stays. Under Reduce Motion the dots go in one
-  frame.
+- **States.** `following`, or `reader(anchor)` with an anchor of item
+  id and pixel offset. A third case, restoring a saved view, is a
+  `reader` anchor applied once at the switch. There is no glide
+  while following.
+- **Following writes the bottom instantly.** While the pane is
+  focused and the state is `following`, the page sets the scroll to
+  the bottom before every paint that changes the layout: streaming
+  text, a revealed block, an image that loaded, a fold, the dock's
+  height (the queue, a dialog, the exit card, the composer growing),
+  a viewport resize, the typing dots going. The block reveal
+  animation (strategy G) stays as rendering; the scroll follows the
+  measured layout frame by frame, never animates toward it. Nothing
+  flashes, because the write happens before the paint.
+- **Leaving following.** Only the reader's input leaves it: a wheel
+  or trackpad scroll, a touch drag, a key (Page Up, Home, the arrows
+  in the transcript), a scrollbar drag. A layout change never leaves
+  it. The state becomes `reader(anchor)` at the item under the
+  viewport's top and its offset.
+- **Keeping the anchor.** In `reader`, every layout change keeps
+  the anchored item where it is: content above it (older history
+  loaded, a fold above, an image above) moves the scroll by its
+  delta; content below changes nothing. The anchor's item being
+  removed moves the anchor to the next item below (or the bottom
+  when none).
+- **Resuming following.** Only three things resume it: the reader
+  reaches the bottom (within 1px, by any input); the user's send
+  from the composer; a click on "↓ Latest". Nothing else: not a
+  focus change, not a turn's end, not a layout change.
+- **Focused.** `document.hasFocus()` and `visibilityState ===
+  "visible"`. Not focused: the state is kept as it is, but a
+  `following` page does not write the bottom while not focused (new
+  items append without moving the scroll; the first such append
+  places the divider); on the return of the focus the page is at its
+  old position with the divider and the button, and it resumes
+  following only by the three ways above. Browser mode: the same,
+  the focus the browser window's.
+- **New items.** Every item that appends and is not the user's own
+  (assistant text, run rows and steps, agent cards, job rows,
+  notices and command results, `!` output); the user's sent message
+  and the `!` command row are never new; counted once at first
+  append, streaming growth adds nothing.
+- **The divider.** One rule across the transcript's text width: a
+  1px line in the accent at 35%, the label "new messages" centred in
+  a 6pt gap, prose .8em 500 in the accent, 14pt above and below. It
+  appears above the first item that appends while the state is
+  `reader` or the pane is not focused; later items extend the
+  region; never a second one. It goes when the state becomes
+  `following` with the pane focused, on the user's send, on a view
+  switch, a session switch, `/reload`, `/restart` and `/new`.
+- **"↓ Latest".** A capsule centred in the content column 8pt above
+  the dock's topmost element (the queue's first block, else the
+  dialog card, the exit card or the field): 24pt high, 12pt radius,
+  padding 0 10pt, the field's material (the background at 72% with
+  the blur), a 0.5pt edge at 16% of the foreground (14% dark), the
+  contact shadow (black 8%, 1pt, 2pt; dark 30%, 1pt, 3pt), text prose
+  .85em in the foreground: "↓ Latest" while nothing is new, "↓ 3
+  new" ("1 new") while new items are below the viewport. Shown while
+  the state is `reader`, focused or not; 120ms fade; the pointer a
+  hand; it never takes the focus; pinned with the dock. A click is
+  **the one animated scroll** of the page: one interruptible scroll
+  toward the bottom (about 250ms, re-targeted each frame while the
+  bottom moves; any reader input cancels it and stays `reader`);
+  when it arrives the state is `following` and the divider goes.
+  Reduce Motion: instant.
+- **The user's send** sets `following` and writes the bottom in the
+  frame the sent block appends; the divider goes and the button
+  hides; focus or not; browser mode too. A send that is not the
+  user's (a delivered steer, a programmatic message, a queued
+  follow-up pi takes) is a new item under the normal rule.
+- **A view that is not shown** (a subagent view) is a not-focused
+  pane: the page remembers each view's state on leave and restores
+  it on return, instantly: `reader(anchor)` restored with the divider
+  above what arrived meanwhile and "↓ N new"; `following` restored at
+  the end, no divider and no button.
+- **The typing dots at the turn's end** go in one frame; following
+  writes the new bottom in the same frame, so the text moves down by
+  the dots' height at once. The earlier 220ms collapse is dropped:
+  the one animation is "↓ Latest".
+- **Kept animated, and why.** Only "↓ Latest": it is the reader's
+  request to travel, and a jump would lose where they were. The
+  block reveal (strategy G) is rendering, not scrolling, and stays.
+  Everything the layout does under a following reader is instant,
+  because an animated follow and a streaming layout fight each
+  other, which was the "sometimes it jumps".
 
 ## The job page (job.html; 2026-11-15, approved)
 

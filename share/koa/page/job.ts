@@ -14,7 +14,7 @@ type JobEnv = {
   earlier(id: string, epoch: string, before: number): Promise<LogChunk>;
   act(action: 'stop' | 'clear', id: string): void;
   resync(): void;
-  keepTop(change: () => void): void;
+  changed(): void;
   reportError(error: unknown): void;
 };
 
@@ -43,11 +43,12 @@ export function createJobPage(env: JobEnv) {
   const header = node('div', undefined, 'jhd'), older = node('button', undefined, 'jolder'), out = node('pre', undefined, 'jout'), end = node('div', undefined, 'jend');
   older.hidden = out.hidden = end.hidden = true;
   root.append(older, header, out, end);
-  let view: JobView | undefined, loaded: { id: string; epoch: string; start: number; end: number; chunks: Uint8Array[]; output: ReturnType<typeof createOutput>; rows: HTMLElement[]; loading: boolean } | undefined;
+  let view: JobView | undefined, loaded: { id: string; epoch: string; start: number; end: number; chunks: Uint8Array[]; output: ReturnType<typeof createOutput>; rows: HTMLElement[]; pending?: Promise<boolean> } | undefined;
   let gone = false;
 
   const row = (line: StyledLine) => {
     const result = node('div', undefined, 'ln');
+    result.dataset.byte = String(line.byte);
     for (const span of line.spans) {
       const part = node('span', span.text);
       if (span.bold) part.style.fontWeight = '600';
@@ -112,26 +113,35 @@ export function createJobPage(env: JobEnv) {
     older.hidden = !loaded || loaded.start === 0;
     if (loaded && loaded.start > 0) older.textContent = 'Load earlier output · ' + size(loaded.start) + ' on disk';
   };
-  const missing = () => { gone = true; out.hidden = false; out.replaceChildren(env.node('span', 'the log is gone', 'gone')); };
+  const missing = () => { loaded?.rows.splice(0); gone = true; out.hidden = false; out.replaceChildren(env.node('span', 'the log is gone', 'gone')); };
 
-  older.onclick = () => {
+  const earlier = (): Promise<boolean> => {
     const current = loaded;
-    if (!current || current.loading || current.start === 0) return;
-    current.loading = true;
-    env.earlier(current.id, current.epoch, current.start).then(chunk => {
-      if (loaded !== current || chunk.end !== current.start) return;
-      env.keepTop(() => {
-        const all = joined([bytes64(chunk.data), ...current.chunks]);
-        current.chunks = [all];
-        current.start = chunk.start;
-        render(current.start, all);
-        drawOlder();
-      });
-    }).catch(error => { if (loaded !== current) return; if (error?.status === 404) missing(); else env.reportError(error); }).finally(() => { current.loading = false; });
+    if (!current || current.start === 0) return Promise.resolve(false);
+    return current.pending ??= env.earlier(current.id, current.epoch, current.start).then(chunk => {
+      if (loaded !== current || chunk.end !== current.start) return false;
+      const all = joined([bytes64(chunk.data), ...current.chunks]);
+      current.chunks = [all];
+      current.start = chunk.start;
+      render(current.start, all);
+      drawOlder();
+      env.changed();
+      return true;
+    }).catch(error => { if (loaded === current) { if (error?.status === 404) missing(); else env.reportError(error); } return false; }).finally(() => { current.pending = undefined; });
   };
+  older.onclick = () => { void earlier(); };
   act.onclick = () => { if (view) env.act(view.job.state.type === 'running' ? 'stop' : 'clear', view.id); };
 
   return {
+    rows: () => loaded?.rows ?? [],
+    row(byte: number) {
+      const rows = loaded?.rows ?? [];
+      let low = 0, high = rows.length;
+      while (low < high) { const middle = (low + high) >> 1; if (Number(rows[middle].dataset.byte) < byte) low = middle + 1; else high = middle; }
+      return rows[low]?.dataset.byte === String(byte) ? rows[low] : undefined;
+    },
+    start: () => loaded?.start ?? 0,
+    earlier,
     show(next: JobView) {
       if (view?.id !== next.id) { loaded = undefined; gone = false; out.replaceChildren(); out.hidden = true; older.hidden = true; }
       view = next;
@@ -147,7 +157,7 @@ export function createJobPage(env: JobEnv) {
       if (!view || view.id !== record.view) return;
       const first = bytes64(record.data);
       gone = false; out.replaceChildren();
-      loaded = { id: record.view, epoch: record.epoch, start: record.start, end: record.end, chunks: [first], output: createOutput(record.start, record.start > 0), rows: [], loading: false };
+      loaded = { id: record.view, epoch: record.epoch, start: record.start, end: record.end, chunks: [first], output: createOutput(record.start, record.start > 0), rows: [] };
       render(record.start, first);
       drawOlder(); drawFoot();
     },

@@ -61,8 +61,13 @@ import SidebarFeed
         const gap=()=>s.scrollHeight-s.scrollTop-s.clientHeight;
         const lastAbove=()=>document.querySelector('#items').lastElementChild.getBoundingClientRect().bottom<=dock.getBoundingClientRect().top+1;
         const until=async(test,ms=60000)=>{const end=performance.now()+ms;while(!test()&&performance.now()<end)await wait(50)};
-        const settled=async()=>{document.querySelectorAll('.typing.leave').forEach(dots=>dots.getAnimations().forEach(animation=>animation.finish()));await until(()=>gap()<=1&&lastAbove());return {gap:gap(),above:lastAbove()}};
+        const settled=async()=>{await until(()=>gap()<=1&&lastAbove());return {gap:gap(),above:lastAbove()}};
         const moveTo=value=>{s.scrollTop=value;s.dispatchEvent(new Event('scroll'))};
+        const probe=selector=>{const top=s.getBoundingClientRect().top;for(const row of document.querySelectorAll(selector)){const rect=row.getBoundingClientRect();if(rect.bottom>top)return [row.dataset.seq??row.dataset.byte,Math.round(rect.top-top)]}};
+        const offsetOf=(selector,key)=>{const row=[...document.querySelectorAll(selector)].find(row=>(row.dataset.seq??row.dataset.byte)===key);return row&&Math.round(row.getBoundingClientRect().top-s.getBoundingClientRect().top)};
+        const root={id:'s1',name:'ko',type:'agent'};
+        const view=(node,path,extra={})=>({type:'state',view:{id:node.id,path,type:node.type},agents:[],bash:[],compaction:'idle',life:{type:'ready'},working:false,aborted:false,name:'t',levels:[],cwd:'/w',home:'/h',statuses:{},queue:{steering:[],followUp:[]},dialogs:[],sessionId:'s1',...extra});
+        const rootItems=[{kind:'user',seq:0,revision:0,at:Date.now(),final:true,text:Array(80).fill('Earlier message').join('\n\n'),images:[],attachments:[]},{kind:'assistant',seq:1,revision:0,at:Date.now(),final:true,blocks:[{type:'text',text:Array(40).fill('Earlier reply').join('\n\n')}],stop:'stop',error:''}];
         const stream=async()=>{
           const id=seq++;
           push({type:'item',item:{kind:'assistant',seq:id,revision:0,at:Date.now(),final:false,blocks:[{type:'text',text:paragraph(0)}],stop:'',error:''}});
@@ -135,65 +140,118 @@ import SidebarFeed
         let result = try await webviewJS(web, "(async()=>{" + Self.followHelpers + #"""
           moveTo(s.scrollHeight);
           await until(()=>gap()<=1);
-          const frames=[],native=window.requestAnimationFrame;
-          let running=true;window.requestAnimationFrame=callback=>native(time=>{callback(time);if(running)frames.push([s.scrollTop,s.scrollHeight-s.clientHeight])});
+          const frames=[];
+          const observer=new ResizeObserver(()=>frames.push([s.scrollTop,s.scrollHeight-s.clientHeight]));
+          observer.observe(document.querySelector('#items'));observer.observe(dock);
           for(let round=0;round<3;round++){await stream();await settled()}
           const id=seq++;
           push({type:'item',item:{kind:'assistant',seq:id,revision:0,at:Date.now(),final:false,blocks:[{type:'text',text:paragraph(0)}],stop:'',error:''}});
-          await wait(1500);await settled();
-          const ending=frames.length;
+          await wait(1500);
           push({type:'patch',seq:id,baseRevision:0,revision:1,final:true,stop:'stop',error:'',blocks:[{index:0,suffix:''}]});
-          const animations=document.querySelector('.typing.leave').getAnimations();
-          for(let time=0;time<=220;time+=40){
-            const count=frames.length;
-            animations.forEach(animation=>{animation.pause();animation.currentTime=time});
-            await until(()=>frames.length>count,3000);
+          await wait(500);await settled();
+          observer.disconnect();
+          let worst=0,ups=0;
+          for(let i=0;i<frames.length;i++){
+            worst=Math.max(worst,frames[i][1]-frames[i][0]);
+            if(i&&frames[i][0]<frames[i-1][0]-.5&&frames[i][1]>=frames[i-1][1])ups++;
           }
-          animations.forEach(animation=>animation.finish());
-          await wait(1500);await settled();
-          running=false;window.requestAnimationFrame=native;
-          let worst=0,at=-1,fall=0,falls=0;
-          for(let i=1;i<frames.length;i++){
-            const drop=frames[i-1][0]-frames[i][0];
-            if(frames[i][1]>=frames[i-1][1]&&drop>worst){worst=drop;at=i}
-            if(i>=ending&&frames[i][1]<frames[i-1][1]){fall=Math.max(fall,drop);falls++}
-          }
-          return {samples:frames.length,worst,fall,falls,gap:gap(),above:lastAbove(),animations:animations.length,dots:document.querySelectorAll('.typing').length,around:JSON.stringify(frames.slice(Math.max(0,at-3),at+3)),end:JSON.stringify(frames.slice(ending-1))};
+          return {samples:frames.length,worst,ups,gap:gap(),above:lastAbove(),dots:document.querySelectorAll('.typing').length};
         })()
         """#, within: 150)
         let value = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(result.utf8)) as? [String: Any])
         XCTAssertGreaterThan(try XCTUnwrap(value["samples"] as? Double), 10, result)
-        XCTAssertLessThanOrEqual(try XCTUnwrap(value["worst"] as? Double), 0, result)
-        XCTAssertLessThanOrEqual(try XCTUnwrap(value["fall"] as? Double), 12, result)
-        XCTAssertGreaterThanOrEqual(try XCTUnwrap(value["falls"] as? Double), 2, result)
+        XCTAssertLessThanOrEqual(try XCTUnwrap(value["worst"] as? Double), 1, result)
+        XCTAssertEqual(value["ups"] as? Double, 0, result)
+        XCTAssertEqual(value["above"] as? Bool, true, result)
+        XCTAssertEqual(value["dots"] as? Double, 0, result)
     }
     func testKoaWebviewSendKeepsFollowing() async throws {
         let web = try await scrollPage(module: "scroll-follow")
         let result = try await webviewJS(web, "(async()=>{" + Self.followHelpers + #"""
-          const send=async text=>{
-            const original=window.fetch;let finish;const done=new Promise(resolve=>finish=resolve);
-            window.fetch=async(path,options)=>{const response=await original(path,options);if(path==='/prompt'){push({type:'item',item:{kind:'user',seq:seq++,revision:0,at:Date.now(),final:true,text,images:[],attachments:[]}});finish()}return response};
-            composer.setText(text);
+          const original=window.fetch;
+          const send=async(text,order)=>{
+            composer.setText(Array(12).fill(text).join('\n\n'));await wait(100);
+            moveTo(200);await wait(100);
+            let release;const gate=new Promise(resolve=>release=resolve);
+            window.fetch=async(path,options)=>{const response=await original(path,options);if(path==='/prompt')await gate;return response};
             document.querySelector('#prompt .cm-content').dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',keyCode:13,bubbles:true,cancelable:true}));
-            await Promise.race([done,wait(5000)]);window.fetch=original;
+            await wait(100);
+            const immediate=gap();
+            const item={type:'item',item:{kind:'user',seq:seq++,revision:0,at:Date.now(),final:true,text,images:[],attachments:[]}};
+            if(order==='item-first'){push(item);await wait(100)}
+            release();
+            await until(()=>composer.text()==='',5000);
+            await wait(100);
+            if(order==='clamp-first')push(item);
+            window.fetch=original;
+            return {immediate,...await settled()};
           };
           moveTo(s.scrollHeight);
-          await send('first');await stream();
-          const bottom=await settled();
-          moveTo(200);
-          await send('second');
-          const scrolledUp=await settled();
+          const itemFirst=await send('alpha','item-first');
+          const clampFirst=await send('beta','clamp-first');
           await stream();
           const after=await settled();
-          return {bottom,scrolledUp,after};
+          return {itemFirst,clampFirst,after};
         })()
         """#, within: 150)
         let value = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(result.utf8)) as? [String: Any])
-        for key in ["bottom", "scrolledUp", "after"] {
+        for key in ["itemFirst", "clampFirst", "after"] {
             let state = try XCTUnwrap(value[key] as? [String: Any])
             XCTAssertLessThanOrEqual(try XCTUnwrap(state["gap"] as? Double), 1, "\(key): \(result)")
             XCTAssertEqual(state["above"] as? Bool, true, "\(key): \(result)")
+            if key != "after" { XCTAssertLessThanOrEqual(try XCTUnwrap(state["immediate"] as? Double), 1, "\(key) at the send: \(result)") }
         }
+    }
+    func testKoaWebviewOlderHistoryKeepsTheReaderAnchor() async throws {
+        let web = try await scrollPage(module: "scroll-follow")
+        let result = try await webviewJS(web, "(async()=>{" + Self.followHelpers + #"""
+          moveTo(300);await wait(100);
+          const before=probe('#items > [data-seq]');
+          moveTo(60);const anchored=probe('#items > [data-seq]');
+          await until(()=>document.querySelector('#items [data-seq="8"]'),20000);
+          await wait(300);
+          return {anchored,after:offsetOf('#items > [data-seq]',anchored[0]),older:!!document.querySelector('#items [data-seq="8"]'),before};
+        })()
+        """#, within: 60)
+        let value = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(result.utf8)) as? [String: Any])
+        let anchored = try XCTUnwrap(value["anchored"] as? [Any])
+        XCTAssertEqual(value["older"] as? Bool, true, result)
+        XCTAssertEqual(try XCTUnwrap(value["after"] as? Double), try XCTUnwrap(anchored[1] as? Double), accuracy: 1, result)
+    }
+    func testKoaWebviewViewSwitchRestoresTheReaderAndJobViewFollows() async throws {
+        let web = try await scrollPage(module: "scroll-follow")
+        let result = try await webviewJS(web, "(async()=>{" + Self.followHelpers + #"""
+          const child={id:'v2',name:'sub',type:'agent'},job={id:'j1',name:'build',type:'job'};
+          const snapshot={name:'build',command:'make',service:false,startedAt:Date.now(),place:{type:'mac'},log:'/tmp/j1.log',state:{type:'running'}};
+          const lines=(from,to)=>Array.from({length:to-from},(_,i)=>'job line '+(from+i)+'\n').join('');
+          let end=0;
+          const open=text=>{push(view(job,[root,job],{view:{id:'j1',path:[root,job],type:'job',job:snapshot}}));end=text.length;push({type:'job-reset',view:'j1',epoch:'je',start:0,end,data:btoa(text)})};
+          const append=text=>{push({type:'job-append',view:'j1',epoch:'je',start:end,data:btoa(text)});end+=text.length};
+          moveTo(300);await wait(100);
+          const before=probe('#items > [data-seq]');
+          push(view(child,[root,child],{sessionId:'v2'}));push({type:'reset',epoch:'ev2',more:false,items:[rootItems[0]]});await wait(300);
+          push(view(root,[root]));push({type:'reset',epoch:'e1',more:false,items:rootItems});await wait(500);
+          const restored=offsetOf('#items > [data-seq]',before[0]);
+          open(lines(0,200));await wait(300);
+          const opened=gap();
+          for(let i=0;i<5;i++){append(lines(200+i*10,210+i*10));await wait(100)}
+          const followed=gap();
+          moveTo(400);await wait(100);
+          const reading=probe('#jobv .ln');
+          append(lines(250,300));await wait(300);
+          const stayed=offsetOf('#jobv .ln',reading[0]);
+          push(view(root,[root]));push({type:'reset',epoch:'e1',more:false,items:rootItems});await wait(300);
+          open(lines(0,300));await wait(500);
+          return {before,restored,opened,followed,reading,stayed,back:offsetOf('#jobv .ln',reading[0])};
+        })()
+        """#, within: 60)
+        let value = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(result.utf8)) as? [String: Any])
+        let before = try XCTUnwrap(value["before"] as? [Any]), reading = try XCTUnwrap(value["reading"] as? [Any])
+        XCTAssertEqual(try XCTUnwrap(value["restored"] as? Double), try XCTUnwrap(before[1] as? Double), accuracy: 1, result)
+        XCTAssertLessThanOrEqual(try XCTUnwrap(value["opened"] as? Double), 1, result)
+        XCTAssertLessThanOrEqual(try XCTUnwrap(value["followed"] as? Double), 1, result)
+        XCTAssertEqual(try XCTUnwrap(value["stayed"] as? Double), try XCTUnwrap(reading[1] as? Double), accuracy: 1, result)
+        XCTAssertEqual(try XCTUnwrap(value["back"] as? Double), try XCTUnwrap(reading[1] as? Double), accuracy: 1, result)
     }
     func testKoaWebviewBangCompletionWide() async throws {
         try await koaWebview(width: 980, height: 360, scenario: .bang, captures: ["bang-tab", "bang-tab-cap", "bang-tab-none", "bang-tab-pending"])
@@ -620,7 +678,7 @@ import SidebarFeed
         func capture(_ name: String) async throws { try await captureFrames(name, afterLight: nil) }
         func captureFrames(_ name: String, afterLight: (() async throws -> Void)?) async throws {
             guard captures.contains(name) || captures.contains("foot-responsive") else { return }
-            _ = try await webviewJS(web, "(()=>{document.querySelectorAll('.typing.leave').forEach(dots=>dots.getAnimations().forEach(animation=>animation.finish()));return true})()")
+            _ = try await webviewJS(web, "(async()=>{\(scenario == .reveal ? "" : "document.getAnimations().filter(animation=>animation.animationName==='grow'&&animation.effect?.target?.closest('#items')).forEach(animation=>animation.finish());")await new Promise(resolve=>setTimeout(resolve,50));return true})()")
             if scenario == .dialogs { try await webviewUntil(web, "document.querySelector('#tokens').textContent==='88k / 200k'&&document.querySelector('#percent').textContent==='44%'") }
             let ordered = name == "questions-ordered" || name == "narrow-questions-ordered"
             let aboveBottom = scenario == .jobs && name.contains("service")
@@ -692,6 +750,7 @@ import SidebarFeed
         if captures.contains("focus-border-transcript") {
             try await advance(); try await advance()
             try await webviewUntil(web, "document.querySelector('.assistant p')!==null")
+            _ = try await webviewJS(web, "(async()=>{document.getAnimations().filter(animation=>animation.animationName==='grow'&&animation.effect?.target?.closest('#items')).forEach(animation=>animation.finish());await new Promise(resolve=>setTimeout(resolve,50));return true})()")
             _ = try await webviewJS(web, "(()=>{const transcript=document.querySelector('#transcript');transcript.tabIndex=-1;transcript.focus();const range=document.createRange();range.selectNodeContents(document.querySelector('.assistant p'));getSelection().removeAllRanges();getSelection().addRange(range);return true})()")
             let focused = try await webviewJS(web, "document.activeElement===document.querySelector('#transcript')&&document.querySelector('#field').classList.contains('focus')")
             XCTAssertEqual(focused, "true")

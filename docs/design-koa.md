@@ -888,8 +888,8 @@ text to show.
   more lines". A click expands it for good, also while it streams;
   until then a streaming fence stays folded and the count grows, so
   a long fence costs a fixed height during the stream.
-- **Frames.** The reveal, the grow and the glide run in one frame
-  loop, which runs only while something animates or waits for a
+- **Frames.** The reveal, the grow and the "↓ Latest" scroll run in
+  one frame loop, which runs only while something animates or waits for a
   measurement; the time cap is one timeout. A hidden page and a
   `reset` cancel both, so a background page accumulates no timers.
 
@@ -960,59 +960,77 @@ the command first ("`!` commands" below).
   padding at the dock's height. WebKit's private system glass needs a
   private preference, and WebKit's snapshot does not show it, so no
   test could check it.
-- **Bottom-following.** One owner in `page.ts` decides the scroll:
-  its state is following the bottom, positioned by the reader (with
-  an anchor item and offset), or restoring a saved view. Only the
-  reader's own scroll leaves following. Layout changes (an append, a
-  reveal, a patch, an image, a resize of the viewport, the items or
-  the dock, a page of older items) only mark the layout as changed;
-  the frame scheduler then moves to the bottom while following, or
-  keeps the reader's anchor item where it was, and it is the one
-  writer of the scroll position. A change that does not move the
-  bottom, such as a patch whose text stays hidden, does not scroll.
-  A reveal and a resize of the items (an entry animation, a tool
-  card or a status that grows) glide to the bottom, ease-out; a glide
-  ends at the bottom even when a step rounds to no movement. The
-  viewport, the dock and an image snap: the dock moves at once, and
-  a snap keeps the last line above it. A snap that such a change
-  requests wins over a glide, requested or under way. At a turn's end the
-  typing dots collapse over the grow duration, so the text eases
-  down to the new bottom instead of a step.
-- **Reader input and clamps.** The page cannot read the cause of a
-  scroll event: a browser dispatches it at the next frame, after
-  later layout, and a native scrollbar drag has no input event of
-  its own. So the page compares the position with the one that it
-  last accepted, at each scroll event and before each change that it
-  makes itself. A move to the new maximum after content shrank (a
-  reveal that replaces its blocks, a cleared composer) is a clamp,
-  not the reader; the page checks for it at once after it removes
-  nodes or starts an entry animation, before the content can grow
-  again. A clamp is never the start of a glide: while following, a
-  reveal that rebuilds its blocks puts back the position that it had
-  before, against the final layout, so the glide eases only the net
-  growth and the painted position never moves back to older text. Any other move is the reader's: it resumes following
-  within 60 px of the bottom with the pane focused, else the reader
-  positions the view. `overflow-anchor: none` keeps WebKit's own
-  scroll anchoring from moving the position.
-- **The user's send** follows the bottom at the submit, before the
-  POST, focused or not, and clears the divider and the count; the
-  page cannot tell its own block from other user items, so the
-  records that follow simply arrive under following. Restoring a
-  view shows its items without entry animations, and keeps the
-  anchor through later layout such as an image decode.
+- **Bottom-following.** One owner in `page.ts` decides the scroll,
+  for the transcript and the job view alike. Its state is
+  `following`, `reader` with an anchor (an item, a message's
+  sequence number or a job row's byte offset, and the item's top
+  relative to the viewport), or `restoring` a saved view. While the
+  pane is focused and the state is `following`, the page writes the
+  bottom on every layout change, at once and before the paint: one
+  `ResizeObserver` on the scroller, the items, the job output and
+  the dock, and the end of each animation frame call the same
+  correction; a record does not correct on its own, because its
+  layout change reaches the observer before the paint. A `ResizeObserver` callback runs
+  after layout and before paint, so the painted position is always
+  the bottom of the painted layout and streaming never steps back.
+  In `reader`, the correction keeps the anchor item at its offset,
+  so content above it (older history, a fold, an image, a reveal)
+  moves the scroll by its delta; when the item is gone the anchor
+  moves to the next item below, or the page goes to the bottom.
+  The reveal and the grow are rendering only: no scroll animates
+  toward them, and the typing dots go in one frame. The one
+  animated scroll is "↓ Latest": about 250 ms, ease-out, re-targeted
+  each frame to the moving bottom; the state stays `reader` until
+  it arrives, and reader input, a view switch or a hidden page
+  cancels it. Under Reduce Motion the click follows at once.
+- **Reader input and clamps.** Only the reader leaves following. An
+  upward wheel, a downward touch drag and the keys Up, Page Up, Home
+  and Shift-Space outside a control set `reader` with the current
+  anchor before the browser moves. A scrollbar drag has no input
+  event of its own, and a browser dispatches a scroll event at the
+  next frame, after later layout. So the page keeps the position
+  that it last wrote or read, records the clamped result of each
+  write, and compares the position with it at each scroll event and
+  at the start of each correction. A move under 1 px is not a move.
+  A move down to a smaller maximum is a clamp: content shrank (a
+  reveal that rebuilds its blocks, a cleared composer), and it is
+  never the reader. The page also reads the position at once after
+  it removes nodes, so a regrowth cannot hide the clamp. Every other
+  move is the reader's: within 1 px of the bottom it resumes
+  following, else it sets `reader` at the new anchor. Nothing else
+  resumes following except the user's send and "↓ Latest".
+  `overflow-anchor: none` keeps the browser's scroll anchoring out:
+  it selects no anchor at offset zero (older history loads there),
+  the dock's padding change suppresses it, and it does not follow
+  the bottom, so a second owner would only conflict with the page.
+- **The user's send** sets `following`, clears the divider and the
+  count and writes the bottom at the submit, focused or not. The
+  page remembers the send's view and session, and the first user
+  item that then appends in them writes the bottom again, also in
+  an unfocused pane, so the sent block is visible in the frame that
+  it appears. A failed send, a command that the page handles and a
+  view switch forget it. Another user item (a delivered steer, a
+  queued follow-up) is a new item under the normal rule. Restoring
+  a view shows its items without entry animations.
 - **Focus, new items and "↓ Latest".** The look and the rules are in
   app/design/koa/NOTES.md, "Auto-scroll, the "new messages" divider
   and "↓ Latest"". The pane is focused when the document has the
   focus and is visible; the page reads both at each decision and
   re-checks on focus, blur, `visibilitychange` and scroll, so no
   native message is necessary and browser mode behaves the same.
-  While the pane is not focused, the scheduler does not move to the
-  bottom, so an append, a patch, an image load or a resize leaves
-  the reader's view where it is (the anchor correction still keeps
-  the visible item in place); focus alone never scrolls, and the bottom-and-focused
-  state resumes following. A reset still opens at the bottom when
-  the page follows, focused or not, so a page that loads in a
-  background pane does not open at its top. An item is new at its
+  While the pane is not focused, a `following` page does not write
+  the bottom; a layout change that moves the bottom away, or the
+  first new item, sets `reader` at the current anchor, and a new
+  item places the divider, so the view stays where it was and the
+  button shows on the return. Focus alone never scrolls
+  and never resumes following. A reset, a view change and a job's
+  reset still open at the bottom when the page follows, focused or
+  not, so a page that loads in a background pane does not open at
+  its top. A view switch saves a `reader` view's anchor and the last
+  sequence number it had; the return loads older pages (or job
+  output) until the anchor's item exists, applies the anchor once
+  and marks what arrived meanwhile as new. A `following` view
+  returns at the end with no divider. An item is new at its
   first append only: a revision or a patch of the same sequence
   number is growth. The user's message and the `!` row that the
   send creates are the user's own; the command's output counts
@@ -1020,11 +1038,8 @@ the command first ("`!` commands" below).
   id, so it takes the key of the live row with the same command, or
   its own sequence number when no live row exists.
   The count is of new items whose top is below the dock's top,
-  because the dock covers the bottom of the transcript. The capsule's
-  click is a user action: it sets following and gives the scheduler
-  a short ease-out to the bottom (a snap under Reduce Motion), so
-  the scroll handler sees a position that the page wrote and does
-  not misread it as the user's. The divider and the count clear
+  because the dock covers the bottom of the transcript. The capsule
+  shows exactly while the state is `reader`. The divider and the count clear
   together, on a send and on a reset of the transcript, which a
   session switch, `/new`, `/reload` and `/restart` all cause.
 
@@ -1240,9 +1255,10 @@ owner's `sessionId`.
   that it ends, so a progress bar shows its last state. A range that
   does not start the file drops its partial first line and starts in
   the default style. The page builds text nodes, never HTML, from
-  the log. The job view's follow and "Latest" are the transcript's
-  own scroll code, through one group of hooks in `page.ts`; a return
-  to a job opens at its end.
+  the log. The job view's follow, anchor and "Latest" are the
+  transcript's own scroll owner: a job row carries its byte offset
+  as its item id, and a return to a job restores its saved anchor
+  or opens at its end.
 - **Stop and Clear.** `POST /job/stop` stops the job as
   `stop_async_bash` does, a service too; the view stays and shows the
   end. `POST /job/clear` removes the record and switches to the
