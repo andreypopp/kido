@@ -50,6 +50,11 @@ test("each kind reaches pi as its own kind of message", async () => {
     assert.deepEqual(notices(s), ["notice from peer (a subagent or background job's report, not the user):\nheads up"]);
     assert.equal(get(at(customMessages(s, "ko-notice"), 0).message.details, "inbound", "form"), "notice");
 
+    await receive({ kind: "system", text: "the user stopped subagent @x" });
+    const system = at(customMessages(s, "ko-notice"), 1).message;
+    assert.equal(system.content, "the user stopped subagent @x", "a notice with no sender has no header");
+    assert.deepEqual(system.details, {}, "its details name no agent, so the page shows a plain notice");
+
     await receive({ kind: "message", text: "from a terminal", relation: undefined, agent: { name: "the user" } });
     assert.equal(at(s.delivered, -1).text, "from a terminal", "a message with no relation is plain text");
   } finally {

@@ -519,7 +519,7 @@ export function createTree(options: TreeOptions): Tree {
           const parent = agent?.parent;
           if (!agent) { jobOwner(record)?.host.jobs.close(record); return; }
           if (!parent || agent.stopping) return;
-          void stop(agent, "stopped").then(() => parent.extension?.receive({ kind: "notice", text: `the user stopped subagent @${agent.name}`, agent: { name: "the user" } })).catch(() => {});
+          void stop(agent, "stopped").then(() => parent.extension?.receive({ kind: "system", text: `the user stopped subagent @${agent.name}` })).catch(() => {});
         },
         stop: () => { setImmediate(options.shutdown); },
       }, gate);

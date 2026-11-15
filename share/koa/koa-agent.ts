@@ -1667,6 +1667,9 @@ export const agentExtension = (host: AgentHost) => (pi: ExtensionAPI): void => {
       case "notice":
         if (m.text) deliverNotice(m.text, { inbound: { form: 'notice' }, agent: m.agent, body: m.text });
         return;
+      case "system":
+        if (m.text) pi.sendMessage({ customType: NOTICE_CUSTOM_TYPE, content: m.text, display: true, details: {} }, { deliverAs: "steer", triggerTurn: true });
+        return;
     }
   };
 
@@ -1834,7 +1837,7 @@ export const agentExtension = (host: AgentHost) => (pi: ExtensionAPI): void => {
   };
 
   type Plan = {
-    name: string;
+    name?: string;
     session: string;
     model: string;
     cwd: string;
@@ -1909,12 +1912,12 @@ export const agentExtension = (host: AgentHost) => (pi: ExtensionAPI): void => {
       ...(host.browser ? ["--browser"] : []),
       ...(plan.runtime?.mode === "routed" ? ["--runtime", plan.runtime.name] : []),
       ...(plan.mode.kind === "continue" ? ["--session", plan.mode.file] : ["--session-id", plan.session]),
-      "--name", plan.name,
+      ...(plan.name ? ["--name", plan.name] : []),
       "--model", plan.model,
       ...(plan.mode.kind === "copy" ? ["--fork", plan.mode.file] : []),
     ];
     const body: Api["NewWindow"] = {
-      name: plan.name,
+      ...(plan.name ? { name: plan.name } : {}),
       cwd: plan.cwd,
       ...(inside && plan.runtime ? { runtime: plan.runtime.name } : {}),
       command: { type: "argv", argv },
@@ -1928,7 +1931,7 @@ export const agentExtension = (host: AgentHost) => (pi: ExtensionAPI): void => {
 
   const recordPeer = (plan: Plan, placement: Api["Placement"]): void => {
     if (!recordsPeers) return;
-    append(ENTRY_AGENT, { role: "peer", name: plan.name, session: plan.session, cwd: plan.cwd });
+    append(ENTRY_AGENT, { role: "peer", name: plan.name ?? "", session: plan.session, cwd: plan.cwd });
     pendingPeers.set(plan.session, placement.pane);
   };
 
@@ -1961,7 +1964,7 @@ export const agentExtension = (host: AgentHost) => (pi: ExtensionAPI): void => {
       if ("error" in saved) return saved;
       const model = saved.model ?? callerModel(session);
       if (!model) return { error: "caller has no model; specify model" };
-      const plan: Plan = { name: peer.name, session: peer.session, cwd: saved.cwd, model, task, mode: { kind: "continue", file: file.path }, koSession: snapshot.me?.session ?? "" };
+      const plan: Plan = { name: peer.name || undefined, session: peer.session, cwd: saved.cwd, model, task, mode: { kind: "continue", file: file.path }, koSession: snapshot.me?.session ?? "" };
       const made = await createPane(plan);
       if ("error" in made) return made;
       recordPeer(plan, made.placement);

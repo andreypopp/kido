@@ -137,3 +137,20 @@ test("a subagent and a pi inside a runtime open no peer observer", async () => {
     assert.equal(fx.streamOpens("/client"), 0);
   } finally { await fx.restore(); }
 });
+
+test("an ended peer recorded without a name resumes without --name", async () => {
+  const fx = makeFixture();
+  try {
+    fx.setPanes([selfPane()]);
+    const s = await startSession(fx);
+    const id = "33333333abcdef03";
+    savedSession(join(fx.dir, "sessions", "peer"), process.cwd(), id);
+    fx.setClientPanes([selfPane(), agentPane({ pane: "pane_2", session: id, name: "", title: "" })]);
+    await pollUntil(() => entriesOf(s, "koa.agent").some((e) => e.role === "peer" && e.session === id && e.name === ""));
+    fx.setClientPanes([selfPane()]);
+    assert.match(text(await s.tool("message_agent").execute("c", { to: id, message: "continue" })), /restarted/);
+    const body = at(fx.posts("/panes"), 0);
+    assert.ok(!getList(body, "command", "argv").includes("--name"));
+    assert.equal(body.name, undefined);
+  } finally { await fx.restore(); }
+});

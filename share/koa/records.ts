@@ -30,5 +30,6 @@ export function jobEndText(end: JobEnd): string {
 export type InProcessMessage =
   | { kind: "user"; text: string }
   | { kind: "message" | "steer" | "interrupt"; text: string; agent: AgentRef; relation: Relation | undefined; runtime?: string; returnTo?: { session: string; pane: string } }
-  | { kind: "notice"; text: string; agent: AgentRef };
+  | { kind: "notice"; text: string; agent: AgentRef }
+  | { kind: "system"; text: string };
 

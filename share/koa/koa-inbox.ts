@@ -64,7 +64,7 @@ export async function handleMessage(m: Api["Message"], dispatch: Dispatch): Prom
       const runtime = data.runtime;
       return dispatch.message(data.to, { kind: m.kind, text: m.text, agent: sender.agent, relation: m.relation, ...(runtime ? { runtime } : {}), ...(sender.returnTo && m.from.type === "pane" ? { returnTo: sender.returnTo } : {}) });
     }
-    case "notice": return m.text ? dispatch.message(data.to, { kind: "notice", text: m.text, agent: senderOf(m, data).agent }) : "ack";
+    case "notice": return m.text ? dispatch.message(data.to, m.from.type === "pane" ? { kind: "notice", text: m.text, agent: senderOf(m, data).agent } : { kind: "system", text: m.text }) : "ack";
     case "stop":
       if (data.to !== undefined) return "refuse";
       dispatch.stop();
