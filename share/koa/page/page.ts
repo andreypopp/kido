@@ -4,8 +4,9 @@ import { composer } from './composer.ts';
 import { attach } from './attach.ts';
 import { closeLightbox, preview, previewKey } from './preview.ts';
 import { fetchJSON, scoped } from './http.ts';
+import { createJobPage } from './job.ts';
 import { ATTACHMENT_LIMITS, pathArg } from '../koa-records.ts';
-import type { State, WireItem, QueuedPrompt, WireAssistant, Block, Patch, PageRecord, PromptMode, ImageRef, AgentCall, Bash, SessionRow, SessionScope, ThinkingLevel } from '../koa-records.ts';
+import type { State, WireJob, WireItem, QueuedPrompt, WireAssistant, Block, Patch, PageRecord, PromptMode, ImageRef, AgentCall, Bash, SessionRow, SessionScope, ThinkingLevel } from '../koa-records.ts';
 import type { AgentRef, Relation } from '../records.ts';
 
 type Step = { block: Exclude<Block, { type: 'text' }>;  item: WireAssistant; index: number; key: string; slots: Map<string, Slot> };
@@ -45,7 +46,7 @@ const texts = new Map<string, TextMemo>();
 const revealing = new Set<TextMemo>();
 let measurer: HTMLElement | undefined, frame: number | undefined, frameAt = 0, capTimer: number | undefined, dirty = false;
 const growing: HTMLElement[] = [];
-let state: State = { view: { id: '', path: [] }, agents: [], bash: [], compaction: 'idle', life: { type: 'starting' }, working: false, aborted: false, name: '', levels: [], cwd: '', home: '', statuses: {}, queue: { steering: [], followUp: [] }, dialogs: [] };
+let state: State = { view: { id: '', path: [], type: 'agent' }, agents: [], bash: [], compaction: 'idle', life: { type: 'starting' }, working: false, aborted: false, name: '', levels: [], cwd: '', home: '', statuses: {}, queue: { steering: [], followUp: [] }, dialogs: [] };
 type Position = { sessionId: string | undefined; seq: number; offset: number; last: number };
 type Anchor = Pick<Position, 'seq' | 'offset'>;
 type Motion = { kind: 'idle' } | { kind: 'snap'; reason: 'layout' | 'action' } | { kind: 'glide' | 'dash'; until: number };
@@ -156,6 +157,7 @@ function showJob(group: JobGroup) {
   }
   group.shownStreams = batches;
   group.footer.textContent = 'log: ' + group.first.job.log + (group.omitted ? ' · … ' + group.omitted + ' lines omitted' : '') + (group.cut ? ' · long lines truncated' : '');
+  group.footer.append(' ', jobOpen(group.first.job));
 }
 const jobOwners = new Map<number, JobGroup>();
 function reconcileJobs(seq: number) {
@@ -559,8 +561,8 @@ function run(input: Step[]) {
         if (suffix) old.slice(-suffix).forEach(text => line(text, '', 'ctx'));
         detail.append(diff);
       } else {
-        if (block.name === 'async_bash') { if (typeof step.args.command === 'string') detail.append(node('pre', step.args.command)); if (block.job) detail.append(node('div', 'log: ' + block.job.log, 'delta')); }
-        else if (block.name === 'bash') detail.append(node('div', 'cwd ' + displayPath(state.cwd), 'kv'));
+        if (block.name === 'async_bash') { if (typeof step.args.command === 'string') detail.append(node('pre', step.args.command)); if (block.job) detail.append(jobLog(block.job)); }
+        else if (block.name === 'bash') { detail.append(node('div', 'cwd ' + displayPath(state.cwd), 'kv')); if (block.job) detail.append(jobLog(block.job)); }
         if ((block.name !== 'async_bash' || !block.job) && 'result' in block.state && block.state.result?.text) detail.append(node(images && block.name === 'read' ? 'div' : 'pre', block.state.result.text, images && block.name === 'read' ? 'note' : ''));
       }
       if ('result' in block.state && block.state.result?.cut) detail.append(node('div', block.state.result.cut + ' bytes omitted', 'delta'));
@@ -781,6 +783,7 @@ function refreshBash() {
   }
 }
 function refreshComposer() {
+  if (state.view.type === 'job') { element('field').inert = true; composerFocus(); return; }
   update(editor.text());
   const blocked = composerBlocked(), working = state.working && !blocked;
   const available = element('field').inert && !blocked;
@@ -1056,7 +1059,9 @@ function apply(record: PageRecord) {
     if (!current || record.item.revision >= current.revision) { put(record.item); if (!current && arrives(record.item)) arrive(liveBash.get(record.item.kind === 'bash' ? record.item.command : '') ?? String(record.item.seq), views.get(record.item.seq)?.view); if (record.item.kind === 'bash') liveBash.delete(record.item.command); }
   } else if (record.type === 'patch') applyPatch(record, true);
   else if (record.type === 'reload') location.reload();
-  else if (record.type === 'focus') window.ko?.focus?.(record.pane);
+  else if (record.type === 'job-reset') { epoch = record.epoch; job.reset(record); after = job.cursor(); }
+  else if (record.type === 'job-gone') job.gone(record);
+  else if (record.type === 'job-append') { job.append(record); after = job.cursor(); }
   else if (record.type === 'state') {
     if (state.sessionId !== record.sessionId || state.life.type !== record.life.type) editor.resetCompletion();
     if (state.sessionId && state.sessionId !== record.sessionId) { closeSessions(); closePicker(); editorId = undefined; }
@@ -1064,6 +1069,7 @@ function apply(record: PageRecord) {
     const wasEditing = !!state.edit, viewChanged = state.view.id !== record.view.id;
     if (viewChanged) { leaveView(record.view.id); const saved = positions.get(record.view.id); if (saved && saved.sessionId === record.sessionId) scrolling = { kind: 'restoring', target: saved }; else if (scrolling.kind !== 'following' || scrolling.motion.kind !== 'snap') scrolling = { kind: 'following', motion: { kind: 'snap', reason: 'layout' } }; }
     state = record; if (agentsChanged || viewChanged) refreshAgentCards(); document.body.dataset.sessionId = state.sessionId ?? ''; element('items').hidden = state.life.type === 'switching';
+    showJobView();
     if (viewChanged) { rescopeImages(); schedule(true); }
     renderBar(); refreshBash(); refreshComposer(); dialogs(); queue(); exited();
     if (state.life.type === 'ready' && state.editor && editorId !== state.editor.id) {
@@ -1108,6 +1114,27 @@ function rescopeImages() {
     image.hidden = false; image.setAttribute('src', src);
   }
 }
+// The job view: its page module, and the hooks that tie it to the one follow mechanism above.
+const job = createJobPage({
+  root: element('jobv'), foot: { dot: element('job-dot'), word: element('job-word'), time: element('job-time'), count: element('job-count'), act: element('job-act') }, node, resync, reportError,
+  log: link => previewFile(link, '/job/log'),
+  earlier: (id, jobEpoch, before) => fetchJSON('/job/earlier', { sessionId: state.sessionId, id, epoch: jobEpoch, before }),
+  act: (action, id) => { fetchJSON(action === 'stop' ? '/job/stop' : '/job/clear', { sessionId: state.sessionId, id }).catch(reportError); },
+  keepTop(change) { const scroll = element('scroll'), height = scroll.scrollHeight; observe(); change(); writeTop(scroll.scrollTop + scroll.scrollHeight - height); layoutChanged('snap', true); },
+});
+function showJobView() {
+  const current = state.view.type === 'job' ? state.view : undefined;
+  document.body.classList.toggle('jobmode', !!current);
+  element('jobv').hidden = element('jobfoot').hidden = !current;
+  if (current) job.show(current); else job.hide();
+}
+function jobOpen(ref: WireJob) {
+  if (ref.gone) return '';
+  const link = node('a', 'open', 'jopen');
+  link.onclick = event => { event.preventDefault(); event.stopPropagation(); fetchJSON('/view', { sessionId: state.sessionId, id: ref.id }).catch(reportError); };
+  return link;
+}
+function jobLog(ref: WireJob) { const result = node('div', 'log: ' + ref.log, 'delta'); result.append(' ', jobOpen(ref)); return result; }
 const bar = element('bar'), barMenu = element('bar-menu');
 let shownBar: string | undefined;
 const viewedName = () => state.view.path.length > 1 ? '@' + (state.view.path.at(-1)?.name ?? '') : 'koa';
@@ -1138,7 +1165,7 @@ function drawBar(collapse: boolean) {
     }
     bar.append(part('@' + ancestor.name, 'anc', ancestor.id), separator());
   });
-  bar.append(part('@' + path[last].name, 'cur'));
+  bar.append(part((path[last].type === 'job' ? '' : '@') + path[last].name, 'cur'));
 }
 function openBarMenu(anchor: HTMLElement, hidden: { id: string; name: string }[]) {
   if (!barMenu.hidden) { closeBarMenu(); return; }
@@ -1250,7 +1277,7 @@ function connect() {
 window.addEventListener('pagehide', () => { closed = true; source?.close(); clearTimeout(reconnect); });
 window.addEventListener('pageshow', event => { if (event.persisted && closed && !failed) { closed = false; connect(); } });
 async function older() {
-  if (!more || historyRequest || first === undefined) return;
+  if (state.view.type === 'job' || !more || historyRequest || first === undefined) return;
   const patches: Patch[] = [], mine = historyRequest = { patches };
   try {
     const response = await fetch(scoped('/items?before=' + first, state.sessionId)); if (!response.ok) throw Error('Could not load earlier messages');
@@ -1448,15 +1475,16 @@ const previewModifiers = (event: MouseEvent | KeyboardEvent) => event.shiftKey &
 const previewHover = (event: KeyboardEvent) => document.documentElement.classList.toggle('preview-modifiers', previewModifiers(event));
 document.addEventListener('keyup', previewHover);
 window.addEventListener('blur', () => { document.documentElement.classList.remove('preview-modifiers'); composerFocus(); sync(); });
-document.addEventListener('keydown', event => { previewHover(event); if (previewKey(event)) return; if (!barMenu.hidden && event.key === 'Escape') { event.preventDefault(); closeBarMenu(); return; } if (event.defaultPrevented || event.metaKey || event.ctrlKey || event.isComposing || state.dialogs.length || pickerButton || sessionPicker !== 'closed') return; if (event.key === 'Tab') { event.preventDefault(); if (!element('field').inert) editor.focus(); return; } if (composerReceivesKeys() && !event.altKey && event.key.length === 1 && !(event.key === ' ' && isControl(event.target)) && !isTextInput(event.target)) { event.preventDefault(); editor.focus(); editor.insert(event.key); return; } if (event.key === 'Enter' && hasFailed() && event.target === document.body) element('exited').querySelector('button')?.click(); if (event.key === 'Escape') { event.preventDefault(); if (editing()) return; if (state.bash.some(item => item.phase === 'running')) { escaped = false; void stop(); } else if (state.working) { escaped = true; void stop(); } else if (escaped) { editor.setText(''); } else { escaped = true; } } });
+document.addEventListener('keydown', event => { previewHover(event); if (previewKey(event)) return; if (!barMenu.hidden && event.key === 'Escape') { event.preventDefault(); closeBarMenu(); return; } if (state.view.type === 'job') return; if (event.defaultPrevented || event.metaKey || event.ctrlKey || event.isComposing || state.dialogs.length || pickerButton || sessionPicker !== 'closed') return; if (event.key === 'Tab') { event.preventDefault(); if (!element('field').inert) editor.focus(); return; } if (composerReceivesKeys() && !event.altKey && event.key.length === 1 && !(event.key === ' ' && isControl(event.target)) && !isTextInput(event.target)) { event.preventDefault(); editor.focus(); editor.insert(event.key); return; } if (event.key === 'Enter' && hasFailed() && event.target === document.body) element('exited').querySelector('button')?.click(); if (event.key === 'Escape') { event.preventDefault(); if (editing()) return; if (state.bash.some(item => item.phase === 'running')) { escaped = false; void stop(); } else if (state.working) { escaped = true; void stop(); } else if (escaped) { editor.setText(''); } else { escaped = true; } } });
 element('model').onclick = () => picker('model'); element('thinking').onclick = () => picker('thinking');
 document.addEventListener('pointerdown', event => { if (!barMenu.hidden && !barMenu.contains(event.target instanceof Node ? event.target : null) && !(event.target instanceof Element && event.target.closest('.ellipsis'))) closeBarMenu(); if (!element('picker').contains(event.target instanceof Node ? event.target : null) && !pickerButton?.contains(event.target instanceof Node ? event.target : null)) closePicker(); });
 element('scroll').onscroll = () => { observe(); sync(); if (element('scroll').scrollTop < 80) void older(); };
 element('latest').onmousedown = event => event.preventDefault();
 element('latest').onclick = toLatest;
-setInterval(() => { status(); for (const item of state.bash) pendingBash.get(item.id)?.update(item); }, 1000);
+setInterval(() => { job.tick(); if (state.view.type === 'job') return; status(); for (const item of state.bash) pendingBash.get(item.id)?.update(item); }, 1000);
 window.addEventListener('resize', positionPicker);
 new ResizeObserver(() => { followResize(); layoutBar(); }).observe(element('scroll'));
 new ResizeObserver(() => layoutChanged('snap', true)).observe(element('items'));
+new ResizeObserver(() => layoutChanged('snap', true)).observe(element('jobv'));
 new ResizeObserver(([entry]) => dockResized(entry.borderBoxSize[0].blockSize)).observe(element('dock'));
 refreshComposer(); focusComposer(); void connect();

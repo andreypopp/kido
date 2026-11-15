@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 import { runInNewContext } from "node:vm";
@@ -92,6 +93,8 @@ async function page() {
   const previewSource = stripTypeScriptTypes(await readFile(new URL('page/preview.ts', import.meta.url), 'utf8')).replace(/^export /gm, '');
   Object.assign(context, runInNewContext(previewSource + '\n({preview,previewKey,closeLightbox})', context));
   Object.assign(context, { ...runInNewContext(httpSource + '\n({fetchJSON,scoped})', context), attach: runInNewContext(attachSource + '\nattach', context) });
+  const jobSource = ['page/job-output.ts', 'page/job.ts'].map(name => stripTypeScriptTypes(readFileSync(new URL(name, import.meta.url), 'utf8')).replace(/^import .*;\n/gm, '').replace(/^export /gm, '')).join('\n');
+  Object.assign(context, runInNewContext(jobSource + '\n({createJobPage})', { ...context, atob, TextDecoder, Uint8Array }));
   const body = source.replace(/^import .*;\n/gm, "").replace(/^setInterval\([\s\S]*$/m, "");
   return { repl: (): ((code: string) => unknown) => runInNewContext("(() => {\n" + body + "\nreturn code => eval(code);\n})()", context), context, elements, listeners, windowListeners, completionResets: () => completionResets, handlers: () => handlers, prompt: () => prompt, text: () => text(), run: (code: string) => runInNewContext("{\n" + body + "\n" + code + "\n}", context) };
 }
@@ -2170,4 +2173,108 @@ test('a stop whose take-back ends after a view change aborts nothing in the new 
     return JSON.stringify(calls.map(call=>call[0]));
   })()`));
   assert.deepEqual(result, ['/queue/clear']);
+});
+
+async function jobPage() {
+  const page = await latestPage(), requests: { path: string; body: string }[] = [];
+  const held: ((chunk: object) => void)[] = [], failed: (() => void)[] = [];
+  Object.assign(page.app.context, { fetch: (path: string, init: { body: string }) => {
+    requests.push({ path, body: init.body });
+    if (path === '/job/earlier') return new Promise(resolve => { held.push(chunk => resolve({ ok: true, json: async () => chunk })); failed.push(() => resolve({ ok: false, status: 404, json: async () => ({ error: 'gone' }) })); });
+    return Promise.resolve({ ok: true, json: async () => ({}) });
+  } });
+  const b64 = (text: string) => Buffer.from(text).toString('base64');
+  const job = (id: string, state: object = { type: 'running' }) => ({ name: 'build', command: 'make', service: false, startedAt: 1700000000000, place: { type: 'mac' }, log: '/tmp/koa/' + id + '.log', state });
+  const open = (id: string, state?: object, extra = '') => page.evaluate(`apply({...state,type:'state',sessionId:'s',life:{type:'ready'},view:{id:'${id}',type:'job',path:[{id:'r',name:'ko',type:'agent'},{id:'${id}',name:'build',type:'job'}],job:${JSON.stringify(job(id, state))}}});${extra}`);
+  const reset = (id: string, text: string, start = 0) => page.evaluate(`apply({type:'job-reset',view:'${id}',epoch:'e${id}',start:${start},end:${start + Buffer.byteLength(text)},data:'${b64(text)}'})`);
+  const append = (id: string, start: number, text: string) => page.evaluate(`apply({type:'job-append',view:'${id}',epoch:'e${id}',start:${start},data:'${b64(text)}'})`);
+  const lines = () => page.evaluate("element('jobv').children[2].children.map(row => row.children.map(span => span.textContent).join(''))");
+  const flush = () => new Promise<void>(resolve => setImmediate(resolve));
+  return { ...page, requests, held, failed, job, open, reset, append, lines, flush, b64 };
+}
+
+test('a job view renders the log, follows live output, and shows Latest with no count and no divider while the reader is above', async () => {
+  const f = await jobPage();
+  f.open('j1');
+  const first = 'one\n\x1b[31mtwo\x1b[0m\n', size = Buffer.byteLength(first);
+  f.reset('j1', first);
+  assert.deepEqual(f.lines(), ['one', 'two']);
+  assert.equal(f.evaluate("document.body.classList.contains('jobmode')"), true);
+  assert.equal(f.evaluate('[epoch, after].join()'), 'ej1,' + size);
+  f.scroll(0);
+  f.append('j1', size, 'three\n');
+  assert.deepEqual(f.lines(), ['one', 'two', 'three']);
+  assert.equal(f.evaluate('after'), size + 6);
+  assert.equal(f.latest(), '↓ Latest,true');
+  assert.equal(f.dividers(), '');
+  f.append('j1', size + 20, 'gap\n');
+  assert.deepEqual(f.lines(), ['one', 'two', 'three'], 'a gap in the byte range is not painted');
+});
+
+test('the job foot acts on the job: Stop while it runs, Clear after it ends', async () => {
+  const f = await jobPage();
+  f.open('j1');
+  assert.equal(f.evaluate("element('job-act').textContent"), 'Stop');
+  f.evaluate("element('job-act').onclick()");
+  f.open('j1', { type: 'ended', end: { type: 'exit', code: 1 }, at: 1700000130000 });
+  assert.equal(f.evaluate("element('job-act').textContent"), 'Clear');
+  assert.equal(f.evaluate("element('job-word').textContent"), 'exit 1');
+  assert.equal(f.evaluate("element('jobv').children[3].hidden"), false);
+  assert.equal(f.evaluate("[element('jobv').children[3].children[0].textContent, element('jobv').children[3].children[0].className, String(element('jobv').children[3].children[1]).startsWith(' · ')].join()"), 'exit 1,err,true');
+  f.evaluate("element('job-act').onclick()");
+  await f.flush();
+  assert.deepEqual(f.requests.map(request => [request.path, JSON.parse(request.body)]), [['/job/stop', { sessionId: 's', id: 'j1' }], ['/job/clear', { sessionId: 's', id: 'j1' }]]);
+});
+
+test('a job view gives no key to the composer and Escape sends no abort', async () => {
+  const f = await jobPage();
+  f.open('j1');
+  assert.equal(f.evaluate("element('field').inert"), true);
+  f.app.listeners.get('keydown')?.({ key: 'a', target: f.doc.body, preventDefault() {} });
+  f.app.listeners.get('keydown')?.({ key: 'Escape', target: f.doc.body, preventDefault() {} });
+  await f.flush();
+  assert.equal(f.app.text(), '');
+  assert.deepEqual(f.requests, []);
+});
+
+test('earlier output prepends once, drops the old partial line, and a response for a view that was left is ignored', async () => {
+  const f = await jobPage();
+  f.open('j1');
+  f.reset('j1', 'cut\nlive\n', 100);
+  assert.deepEqual(f.lines(), ['live']);
+  assert.equal(f.evaluate("element('jobv').children[0].hidden"), false);
+  f.evaluate("element('jobv').children[0].onclick()");
+  f.evaluate("element('jobv').children[0].onclick()");
+  assert.equal(f.requests.length, 1, 'one request at a time');
+  assert.deepEqual(JSON.parse(f.requests[0]?.body ?? '{}'), { sessionId: 's', id: 'j1', epoch: 'ej1', before: 100 });
+  f.held[0]?.({ start: 89, end: 100, data: f.b64('tail\nolder\n') });
+  await f.flush();
+  assert.deepEqual(f.lines(), ['older', 'cut', 'live']);
+  assert.equal(f.evaluate("element('jobv').children[0].hidden"), false);
+  f.evaluate("element('jobv').children[0].onclick()");
+  f.open('j2');
+  f.reset('j2', 'other\n');
+  f.held[1]?.({ start: 0, end: 89, data: f.b64('x'.repeat(89)) });
+  await f.flush();
+  assert.deepEqual(f.lines(), ['other']);
+});
+
+test('a job link on a card opens the job view by its id', async () => {
+  const f = await jobPage();
+  f.evaluate("jobOpen({id:'j9',name:'x',service:false,log:'/tmp/x.log'}).onclick({preventDefault(){},stopPropagation(){}})");
+  await f.flush();
+  assert.deepEqual(f.requests.map(request => request.path), ['/view']);
+  assert.equal(JSON.parse(f.requests[0]?.body ?? '{}').id, 'j9');
+});
+
+test('a failed earlier-output request for a job that was left does not mark the new job as gone', async () => {
+  const f = await jobPage();
+  f.open('j1');
+  f.reset('j1', 'cut\nlive\n', 100);
+  f.evaluate("element('jobv').children[0].onclick()");
+  f.open('j2');
+  f.reset('j2', 'other\n');
+  f.failed[0]?.();
+  await f.flush();
+  assert.deepEqual(f.lines(), ['other']);
 });

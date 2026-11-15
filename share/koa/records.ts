@@ -11,7 +11,9 @@ const failures = new Set<string>(['refused', 'not_found', 'ambiguous', 'not_runn
 export const isAgentFailure = (value: unknown): value is Extract<AgentOutcome, { ok: false }>['failure'] => typeof value === 'string' && failures.has(value);
 export type Inbound = { form: 'message'; relation: Relation; runtime?: string } | { form: 'notice' } | { form: 'steer'; relation?: Relation } | { form: 'report'; relation?: Relation };
 export type JobEnd = { type: 'exit'; code: number } | { type: 'signal'; signal: string } | { type: 'failed'; message: string } | { type: 'stopped' } | { type: 'timeout'; seconds: number };
-export type JobRef = { id: string; name: string; service: boolean; log: string };
+export type JobPlace = { type: 'runtime'; name: string } | { type: 'mac' } | { type: 'machine' } | { type: 'remote'; host: string };
+export type JobSnapshot = { name: string; command: string; service: boolean; startedAt: number; place: JobPlace; log: string; state: { type: 'running' } | { type: 'ended'; end: JobEnd; at: number } | { type: 'cleared' } };
+export type JobRef = { id: string; name: string; service: boolean; log: string; command: string; startedAt: number; place: JobPlace };
 export type AgentDetails = { agent: AgentRef; body: string; inbound: Inbound };
 export type MessageDetails = AgentDetails & { from?: string; work?: boolean; inbound: Extract<Inbound, { form: 'message' }> };
 export type SteerDetails = AgentDetails & { from?: string; work?: boolean; inbound: Extract<Inbound, { form: 'steer' }> };

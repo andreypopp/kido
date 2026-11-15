@@ -218,3 +218,25 @@ body .cm-tooltip.cm-tooltip-autocomplete.koa-complete::after{flex-shrink:0;conte
 .bar.cap .anc{max-width:60px;overflow:hidden;text-overflow:ellipsis}.bar.shrink .cur{flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis}.bar.noback .back{display:none}
 .bar-menu{position:fixed;z-index:40;display:flex;flex-direction:column;min-width:140px;max-width:min(460px,calc(100vw - 16px));background:color-mix(in srgb,var(--ko-fg) 8%,var(--ko-bg));border:1px solid color-mix(in srgb,var(--ko-fg) 22%,transparent);border-radius:9px;box-shadow:inset 0 .5px 0 color-mix(in srgb,#fff 28%,transparent),0 6px 22px color-mix(in srgb,var(--ko-fg) 14%,transparent),0 1px 3px color-mix(in srgb,var(--ko-fg) 10%,transparent);padding:5px;font:.95em/1.5 var(--prose);color:var(--ko-fg)}
 .bar-menu button{display:block;height:23px;padding:3px 8px;border:0;border-radius:6px;background:none;text-align:left;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;color:var(--ko-fg);font:inherit;cursor:pointer}.bar-menu button:hover,.bar-menu button:focus-visible{background:var(--well2);outline:none}
+.jobmode #items,.jobmode #older,.jobmode #composer,.jobmode #dialogs,.jobmode #session-picker,.jobmode #exited{display:none}
+.viewing.jobmode #transcript{padding-top:38px}
+.jhd{margin:0 0 10px}
+.jhd .nm{font:600 1.15em/1.4 var(--prose);color:var(--ko-fg);display:flex;align-items:baseline;gap:8px}
+.jhd .nm .svc{font:500 .7em/1.4 var(--prose);color:var(--muted);padding:0 6px;border:1px solid var(--hair2);border-radius:5px}
+.jhd .cmd{margin:6px 0 8px;font:.92em/1.5 var(--ko-font-family);color:var(--ko-fg);white-space:pre-wrap;overflow-wrap:anywhere;background:var(--well);border:1px solid var(--hair);border-radius:7px;padding:6px 10px}
+.jhd .facts{display:flex;flex-wrap:wrap;gap:4px 14px;font:.92em/1.5 var(--prose);color:var(--muted)}
+.jhd .facts .k{color:var(--faint)}.jhd .facts .who{font-size:1em}
+.jhd .facts .path{font:.92em var(--ko-font-family);color:var(--ko-fg);cursor:pointer;border-bottom:0}.jhd .facts .path:hover{text-decoration:underline;text-underline-offset:2px;text-decoration-color:var(--muted)}
+.jout{font:.88em/1.45 var(--ko-font-family);color:var(--ko-fg);white-space:pre-wrap;overflow-wrap:anywhere;margin:0;overflow:visible}
+.jout .gone{color:var(--muted)}
+.jolder{display:block;margin:0 0 10px;border:0;background:none;padding:0;font:.85em/1.5 var(--prose);color:var(--muted);cursor:pointer}.jolder:hover{color:var(--ko-fg)}
+.jend{margin:10px 0 0;font:.92em/1.5 var(--prose);color:var(--muted)}.jend .err{color:var(--ko-color-1)}.jend .ok{color:var(--ko-color-2)}
+.jopen{cursor:pointer;color:var(--muted);border-bottom:0}.jopen:hover{color:var(--ko-fg);text-decoration:underline}
+.jfoot{display:flex;align-items:center;gap:0;font:.8em/1.4 var(--ko-font-family);color:var(--muted);min-height:20px;white-space:nowrap}
+.jfoot .st{display:flex;align-items:center;gap:6px;flex-shrink:0;font-variant-numeric:tabular-nums}
+.jfoot .dot{width:6px;height:6px;border-radius:50%;background:var(--faint);flex-shrink:0}.jfoot .dot.on{background:var(--ko-color-2);animation:breathe 1.6s ease-in-out infinite}.jfoot .dot.off{background:var(--ko-color-1)}
+.jfoot .sep{width:1px;height:12px;background:var(--hair);margin:0 10px;flex-shrink:0}
+.jfoot .t{color:var(--faint)}.jfoot .t:empty{display:none}
+.jfoot .gap{flex:1}
+.jfoot .jact{border:1px solid var(--hair2);background:none;border-radius:6px;padding:1px 9px;font:inherit;color:var(--ko-fg);cursor:pointer;flex-shrink:0}.jfoot .jact:hover{background:var(--well2)}.jfoot .jact.stop:hover{color:var(--ko-color-1);border-color:color-mix(in srgb,var(--ko-color-1) 45%,var(--ko-bg))}
+.dock .field.jfield{padding:9px 16px 8px}

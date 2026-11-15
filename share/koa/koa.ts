@@ -9,7 +9,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import type { AgentSession, SlashCommandSource } from "@earendil-works/pi-coding-agent";
 import { bashResult } from "./koa-transcript.ts";
 import { later } from "./koa-timer.ts";
-import { respond, readBody, wrongPostType } from "./koa-http.ts";
+import { respond, readBody, serveFile, wrongPostType } from "./koa-http.ts";
 import { isRecord, errorText, cleanLine, replaceControlCharacters, utf8Prefix } from "./text.ts";
 import { webview } from "../webview/index.ts";
 import { assemblePage } from "./koa-assemble.ts";
@@ -23,12 +23,13 @@ import { commandCatalog, parseCommand, dispatchCommand, deferralText, type Defer
 import { installedIdentity } from './koa-identity.ts';
 import { bashCommand } from "./prompt.ts";
 import { koaEditor } from "./koa-editor.ts";
-import { createFloat } from "./koa-float.ts";
 import { findKo, apiArgs } from "./runtime-exec.ts";
-import type { Agent, JobViewer, Tree } from "./koa-agents.ts";
+import { fileSource, jobView, liveSource } from "./koa-job-view.ts";
+import type { JobSnapshot } from "./records.ts";
+import type { Agent, Selection, Tree } from "./koa-agents.ts";
 import { createView, type AgentView, type Own } from "./koa-view.ts";
 import { agentCompletionItems, type AgentRow } from "./agents.ts";
-import { ATTACHMENT_LIMITS, type PromptMode, type PageRecord, type State, type ThinkingLevel, type Dialog, type CompletionCommand, type CompletionQuery, type SessionStats, type Bash } from "./koa-records.ts";
+import { ATTACHMENT_LIMITS, type PromptMode, type PageRecord, type State, type ThinkingLevel, type Dialog, type CompletionCommand, type CompletionQuery, type SessionStats, type Bash, type View } from "./koa-records.ts";
 
 function completeBody(value: unknown): CompletionQuery | { error: string } {
   return isRecord(value) && typeof value.text === "string" && typeof value.pos === "number" && Number.isSafeInteger(value.pos) && value.pos >= 0 && value.pos <= value.text.length ? { text: value.text, pos: value.pos } : { error: "Completion requires text and a cursor offset in that text" };
@@ -205,9 +206,17 @@ async function main(): Promise<void> {
       agent.view.publish();
     })());
     const agentsFor = (agent: Agent): State["agents"] => (rowsOf.get(agent) ?? []).map(row => ({ name: row.name, target: row.where.type === "process" ? { type: "view" as const, id: row.id } : { type: "pane" as const, pane: row.where.pane } }));
+    const viewOf = (agent: Agent): View => {
+      const path = chain(agent).map(member => ({ id: member.id, name: nameOf(member), type: "agent" as const }));
+      const current = tree.view();
+      if (current.type === "agent" || current.agent !== agent) return { id: agent.id, path, type: "agent" };
+      const id = viewedId(current);
+      const job: JobSnapshot = current.type === "job" ? agent.host.jobs.snapshot(current.job) : { name: current.ref.name, command: current.ref.command, service: current.ref.service, startedAt: current.ref.startedAt, place: current.ref.place, log: current.ref.log, state: { type: "cleared" } };
+      return { id, path: [...path, { id, name: job.name, type: "job" }], type: "job", job };
+    };
     const compose = (agent: Agent) => (own: Own): State => ({
       ...own, ...(agent === tree.selected() ? { edit: edits.view() } : {}),
-      view: { id: agent.id, path: chain(agent).map(member => ({ id: member.id, name: nameOf(member) })) },
+      view: viewOf(agent),
       agents: agentsFor(agent),
     });
     const makeView = (agentRef: () => Agent, parent: Agent | undefined, name: string | undefined, cwd: string): AgentView => {
@@ -215,7 +224,11 @@ async function main(): Promise<void> {
       return createView({
         dir: join(dir, randomUUID()), metrics: metricsFile !== undefined, attached, name, cwd: first ? process.cwd() : cwd, home: homedir(),
         agent: () => { const agent = agentRef(); if (!agent.runtime) throw new Error("the agent is not started"); return { session: agent.runtime.session, runtime: agent.runtime }; },
-        compose: own => compose(agentRef())(own),
+        compose: own => {
+          const agent = agentRef(), state = compose(agent)(own), current = tree.view();
+          if (current.type !== "agent" && current.agent === agent) jobFeed(current).state({ ...state, type: "state" });
+          return state;
+        },
         status: (value, message, dialog) => {
           const agent = agentRef();
           if (first) {
@@ -232,32 +245,36 @@ async function main(): Promise<void> {
         agentsChanged: () => refreshRows(agentRef()),
       });
     };
-    const switchView = (next: Agent) => {
-      const previous = tree.selected();
-      if (next === previous || next.stopping || !next.runtime) return;
+    const feeds = new WeakMap<Selection, ReturnType<typeof jobView>>();
+    const jobFeed = (selection: Exclude<Selection, { type: "agent" }>) => {
+      let feed = feeds.get(selection);
+      if (!feed) { feed = jobView(selection.type === "job" ? liveSource(selection.job) : fileSource(selection.ref)); feeds.set(selection, feed); }
+      return feed;
+    };
+    const feedOf = (selection: Selection) => selection.type === "agent" ? selection.agent.view.feed : jobFeed(selection);
+    const closeFeed = (selection: Selection) => { if (selection.type !== "agent") feeds.get(selection)?.close(); };
+    const viewedId = (current: Exclude<Selection, { type: "agent" }>) => current.type === "job" ? current.job.id : current.ref.id;
+    const sameView = (a: Selection, b: Selection): boolean => a.agent === b.agent && (a.type === "agent" ? b.type === "agent" : a.type === "job" ? b.type === "job" && a.job === b.job : b.type === "file" && a.ref.id === b.ref.id);
+    teardown.push(() => closeFeed(tree.view()));
+    const switchView = (next: Selection) => {
+      const previous = tree.view();
+      if (sameView(next, previous) || next.agent.stopping || !next.agent.runtime) return;
       void edits.cancel();
+      const holder = feedOf(previous);
       tree.select(next);
-      next.view.publish(true);
-      refreshRows(next);
-      next.view.feed.show(previous.view.feed);
+      next.agent.view.publish(true);
+      refreshRows(next.agent);
+      feedOf(next).show(holder);
+      closeFeed(previous);
     };
-    const jobViewers = new Map<string, ReturnType<typeof createFloat>>();
-    teardown.push(async () => { await Promise.all([...jobViewers.values()].map(float => float.cancel())); });
-    const viewJob: JobViewer = async job => {
-      const warn = (text: string) => tree.selected().view.feed.notify(text, "warning");
-      const self = process.env.KO_PANE, ko = findKo();
-      if (!self || process.env.KO_RUNTIME || !ko) { warn("The job log needs a ko pane and ko on PATH"); return; }
-      const float = jobViewers.get(job.key) ?? createFloat({ label: "Job viewer", notify: (text, level) => tree.selected().view.feed.notify(text, level), changed: () => {} });
-      jobViewers.set(job.key, float);
-      const placed = await float.open(self, { command: { type: "argv", argv: [ko, "shell", "--", "less", "-R", "+F", job.log] }, cwd: tree.selected().view.state.cwd, parent: self, close: "on_exit", fixed_title: `Job · ${job.name}`, close_confirm: "never" }, async () => {});
-      if ("error" in placed) { if (!float.busy()) jobViewers.delete(job.key); warn(`The job log did not open: ${placed.error}`); return; }
-      tree.selected().view.feed.focus(placed.pane);
-    };
+    const agentView = (agent: Agent) => { const current = tree.view(); return current.type === "agent" && current.agent === agent; };
     const tree: Tree = koaAgents.createTree({
-      sdk, args: sdk.pi.parseArgs(restartArgs(pass, undefined)), cwd: process.cwd(), agentDir, facts: koaAgents.hostFacts(process.env), browser, viewJob, makeView,
-      beforeStop: agent => { if (chain(tree.selected()).includes(agent)) switchView(agent.parent ?? root()); },
+      sdk, args: sdk.pi.parseArgs(restartArgs(pass, undefined)), cwd: process.cwd(), agentDir, facts: koaAgents.hostFacts(process.env), browser, makeView,
+      jobOutput: job => { const current = tree.view(); if (current.type === "job" && current.job === job) jobFeed(current).output(); },
+      jobChanged: (agent, job) => { const current = tree.view(); if (current.type === "job" && current.job === job) agent.view.publish(); },
+      beforeStop: agent => { if (chain(tree.selected()).includes(agent)) switchView({ type: "agent", agent: agent.parent ?? root() }); },
       changed: () => refreshRows(tree.selected()),
-      select: (agent, record) => { if (agent && record !== undefined) switchView(agent); },
+      select: switchView,
       shutdown: () => background(quit()),
     });
     teardown.push(() => { for (const agent of tree.all()) agent.view.close(); });
@@ -308,7 +325,7 @@ async function main(): Promise<void> {
       try {
         await tree.start(sdk.pi.parseArgs(restartArgs(pass, v.state.sessionFile)));
         v.refresh();
-        tree.select(root());
+        if (tree.view().type !== "agent") switchView({ type: "agent", agent: root() }); else tree.select({ type: "agent", agent: root() });
         refreshRows(root());
         if (!started) { started = true; tree.openInbox(); }
         return true;
@@ -343,7 +360,7 @@ async function main(): Promise<void> {
       else { restartKoa(response); return; }
       answer();
     };
-    const owned = (agent: Agent, owner: AgentSession) => { if (agent.session !== owner || agent.torn.has(owner) || tree.selected() !== agent) throw new Error("pi session changed"); };
+    const owned = (agent: Agent, owner: AgentSession) => { if (agent.session !== owner || agent.torn.has(owner) || !agentView(agent)) throw new Error("pi session changed"); };
     const queuePrompt = async (agent: Agent, session: AgentSession, text: string, requested: PromptMode | "steer", files: Awaited<ReturnType<AgentView["attached"]["prepare"]>>) => {
       const v = agent.view;
       const message = [text, ...files.paths].filter(Boolean).join("\n");
@@ -354,16 +371,47 @@ async function main(): Promise<void> {
         return { entry, disposition };
       } catch (error) { v.prompts.reject(entry); throw error; }
     };
-    const routes: Record<string, { method: "GET" | "POST"; access: Access; handle(value: unknown, response: ServerResponse, agent: Agent): void | Promise<void> }> = {
-      "/view": { method: "POST", access: "any", handle: (value, response) => {
+    const routes: Record<string, { method: "GET" | "POST"; access: Access; scope: "agent" | "view" | "job"; handle(value: unknown, response: ServerResponse, agent: Agent): void | Promise<void> }> = {
+      "/view": { method: "POST", access: "any", scope: "view", handle: (value, response) => {
         const id = idBody(value);
         if ("error" in id) { respond(response, 400, JSON.stringify(id)); return; }
-        const next = tree.find(id.id);
-        if (!next) { respond(response, 409, JSON.stringify({ error: "that agent is not running" })); return; }
+        const next = tree.resolveView(id.id);
+        if (!next || next.agent.stopping || !next.agent.runtime) { respond(response, 409, JSON.stringify({ error: "that view is not available" })); return; }
         switchView(next);
         respond(response, 200, "{}");
       } },
-      "/complete": { method: "POST", access: "alive", handle: async (value, response, agent) => {
+      "/job/earlier": { method: "POST", access: "any", scope: "job", handle: async (value, response) => {
+        const current = tree.view();
+        if (!isRecord(value) || typeof value.id !== "string" || typeof value.epoch !== "string" || typeof value.before !== "number") { respond(response, 400, JSON.stringify({ error: "A job id, epoch and offset are required" })); return; }
+        if (current.type === "agent" || viewedId(current) !== value.id) { respond(response, 409, JSON.stringify({ error: "that job is not open" })); return; }
+        const { epoch, before } = value, reader = jobFeed(current);
+        await withRequestSignal(response, lifetime.signal, async signal => {
+          const chunk = await reader.earlier(epoch, before, signal).catch(error => { if (signal.aborted) throw error; return error instanceof Error ? error : new Error(String(error)); });
+          if (signal.aborted) return;
+          if (chunk instanceof Error) respond(response, 404, JSON.stringify({ error: errorText(chunk) }));
+          else respond(response, chunk && tree.view() === current ? 200 : 409, JSON.stringify(chunk ?? { error: "that view changed" }));
+        });
+      } },
+      "/job/stop": { method: "POST", access: "any", scope: "job", handle: (value, response) => {
+        const current = tree.view();
+        if (current.type !== "job" || !isRecord(value) || value.id !== current.job.id) { respond(response, 409, JSON.stringify({ error: "that job is not open" })); return; }
+        current.agent.host.jobs.stop(current.job);
+        respond(response, 200, "{}");
+      } },
+      "/job/clear": { method: "POST", access: "any", scope: "job", handle: (value, response) => {
+        const current = tree.view();
+        if (current.type === "agent" || !isRecord(value) || value.id !== viewedId(current)) { respond(response, 409, JSON.stringify({ error: "that job is not open" })); return; }
+        switchView({ type: "agent", agent: current.agent });
+        if (current.type === "job") current.agent.host.jobs.clear(current.job);
+        respond(response, 200, "{}");
+      } },
+      "/job/log": { method: "GET", access: "any", scope: "job", handle: async (_value, response) => {
+        const current = tree.view();
+        if (current.type === "agent") { respond(response, 409, JSON.stringify({ error: "no job is open" })); return; }
+        const log = current.type === "job" ? current.job.mode.log : current.ref.log;
+        await serveFile(response, log, basename(log), 404);
+      } },
+      "/complete": { method: "POST", access: "alive", scope: "agent", handle: async (value, response, agent) => {
         const query = completeBody(value);
         if ("error" in query) { respond(response, 400, JSON.stringify(query)); return; }
         const v = agent.view;
@@ -374,10 +422,10 @@ async function main(): Promise<void> {
             if (v.life.type !== "ready") return [];
             return [...completion, ...koaAgents.commandList(agent.session).filter(value => !catalog.some(builtin => builtin.name === value.name))];
           } });
-          if (!requestSignal.aborted) respond(response, signal.aborted || owner !== agent.session || ownerSession !== v.state.sessionId || tree.selected() !== agent ? 409 : 200, JSON.stringify(result));
+          if (!requestSignal.aborted) respond(response, signal.aborted || owner !== agent.session || ownerSession !== v.state.sessionId || !agentView(agent) ? 409 : 200, JSON.stringify(result));
         });
       } },
-      "/sessions/list": { method: "POST", access: "ready", handle: async (value, response, agent) => {
+      "/sessions/list": { method: "POST", access: "ready", scope: "agent", handle: async (value, response, agent) => {
         if (!isRecord(value) || (value.scope !== "current" && value.scope !== "all")) { respond(response, 400, "{}"); return; }
         if (!isRoot(agent)) { respond(response, 409, JSON.stringify({ error: `/resume: only in @${rootName()}'s view` })); return; }
         const scope = value.scope;
@@ -386,17 +434,17 @@ async function main(): Promise<void> {
           if (!signal.aborted) respond(response, 200, JSON.stringify({ rows }));
         });
       } },
-      "/sessions/switch": { method: "POST", access: "session", handle: (value, response, agent) => {
+      "/sessions/switch": { method: "POST", access: "session", scope: "agent", handle: (value, response, agent) => {
         if (!isRecord(value) || typeof value.path !== "string" || !value.path) { respond(response, 400, "{}"); return; }
         if (!isRoot(agent)) { respond(response, 409, JSON.stringify({ error: `/resume: only in @${rootName()}'s view` })); return; }
         return switchSession(value.path, response);
       } },
-      "/sessions/new": { method: "POST", access: "session", handle: (_value, response, agent) => {
+      "/sessions/new": { method: "POST", access: "session", scope: "agent", handle: (_value, response, agent) => {
         if (!isRoot(agent)) { respond(response, 409, JSON.stringify({ error: `/new: only in @${rootName()}'s view` })); return; }
         return switchSession(undefined, response);
       } },
-      "/models": { method: "GET", access: "ready", handle: (_value, response, agent) => respond(response, 200, JSON.stringify({ models: agent.session.modelRuntime.getAvailableSnapshot() })) },
-      "/prompt": { method: "POST", access: "session", handle: async (value, response, agent) => {
+      "/models": { method: "GET", access: "ready", scope: "agent", handle: (_value, response, agent) => respond(response, 200, JSON.stringify({ models: agent.session.modelRuntime.getAvailableSnapshot() })) },
+      "/prompt": { method: "POST", access: "session", scope: "agent", handle: async (value, response, agent) => {
         const v = agent.view;
         const builtin = isRecord(value) && typeof value.text === 'string' ? parseCommand(value.text, catalog) : undefined;
         const prompt = promptBody(builtin && isRecord(value) ? { ...value, attachments: [] } : value);
@@ -456,14 +504,14 @@ async function main(): Promise<void> {
         v.attached.consume(prompt.attachments, disposition === "queued" ? "queued" : "used");
         respond(response, 200, JSON.stringify({ disposition }));
       } },
-      "/abort": { method: "POST", access: "session", handle: (_value, response, agent) => {
+      "/abort": { method: "POST", access: "session", scope: "agent", handle: (_value, response, agent) => {
         const v = agent.view;
         const running = v.state.bash.find(item => item.phase === 'running');
         if (running) { running.phase = 'cancelling'; v.publish(); }
         if (running) agent.session.abortBash(); else return agent.session.abort().then(() => respond(response, 200, "{}"));
         respond(response, 200, "{}");
       } },
-      "/queue/clear": { method: "POST", access: "session", handle: (_value, response, agent) => { const v = agent.view, owner = agent.session; return v.serial(async () => {
+      "/queue/clear": { method: "POST", access: "session", scope: "agent", handle: (_value, response, agent) => { const v = agent.view, owner = agent.session; return v.serial(async () => {
         owned(agent, owner);
         v.prompts.beginClear();
         try {
@@ -472,7 +520,7 @@ async function main(): Promise<void> {
           v.publish(); respond(response, 200, JSON.stringify(restored));
         } finally { v.prompts.endClear(); }
       }); } },
-      "/queue/remove": { method: "POST", access: "session", handle: (value, response, agent) => { const v = agent.view, owner = agent.session; return v.serial(async () => {
+      "/queue/remove": { method: "POST", access: "session", scope: "agent", handle: (value, response, agent) => { const v = agent.view, owner = agent.session; return v.serial(async () => {
         owned(agent, owner);
         if (!isRecord(value) || value.kind !== "steer" && value.kind !== "follow-up" || typeof value.index !== "number" || !Number.isSafeInteger(value.index) || value.index < 0 || typeof value.text !== "string") { respond(response, 400, JSON.stringify({ error: "A queue kind, index and text are required" })); return; }
         const { kind, index, text } = value;
@@ -505,20 +553,20 @@ async function main(): Promise<void> {
           respond(response, stale ? 409 : 200, JSON.stringify(stale ? { error: "The queue changed" } : {}));
         } finally { v.prompts.endClear(); }
       }); } },
-      "/model": { method: "POST", access: "session", handle: (value, response, agent) => {
+      "/model": { method: "POST", access: "session", scope: "agent", handle: (value, response, agent) => {
         const model = modelBody(value);
         if ("error" in model) throw new Error(model.error);
         const found = agent.session.modelRuntime.getAvailableSnapshot().find(entry => entry.provider === model.provider && entry.id === model.modelId);
         if (!found) throw new Error(`Model not found: ${model.provider}/${model.modelId}`);
         return agent.view.setModel(found).then(() => respond(response, 200, JSON.stringify(found)));
       } },
-      "/thinking": { method: "POST", access: "session", handle: (value, response, agent) => {
+      "/thinking": { method: "POST", access: "session", scope: "agent", handle: (value, response, agent) => {
         const thinking = thinkingBody(value, agent.view.state.levels);
         if ("error" in thinking) throw new Error(thinking.error);
         agent.session.setThinkingLevel(thinking.level);
         respond(response, 200, "{}");
       } },
-      "/dialog": { method: "POST", access: "dialog", handle: async (value, response, agent) => {
+      "/dialog": { method: "POST", access: "dialog", scope: "agent", handle: async (value, response, agent) => {
         const id = idBody(value);
         if ("error" in id) throw new Error(id.error);
         const dialog = agent.view.state.dialogs.find(dialog => dialog.id === id.id);
@@ -527,23 +575,23 @@ async function main(): Promise<void> {
         if ("error" in answer) throw new Error(answer.error);
         agent.view.removeDialog(dialog.id, answer); respond(response, 200, "{}");
       } },
-      "/editor/open": { method: "POST", access: "session", handle: async (value, response, agent) => {
+      "/editor/open": { method: "POST", access: "session", scope: "agent", handle: async (value, response, agent) => {
         if (!isRecord(value) || typeof value.text !== "string") { respond(response, 400, JSON.stringify({ error: "A draft text is required" })); return; }
         editorOwner = agent;
         const result = await edits.open(value.text);
         respond(response, "error" in result ? 409 : 200, JSON.stringify(result));
       } },
-      "/editor/ack": { method: "POST", access: "session", handle: (value, response, agent) => {
+      "/editor/ack": { method: "POST", access: "session", scope: "agent", handle: (value, response, agent) => {
         const id = idBody(value);
         if ("error" in id) throw new Error(id.error);
         if (agent.view.state.editor?.id === id.id) { delete agent.view.state.editor; agent.view.publish(); }
         respond(response, 200, "{}");
       } },
-      "/agent/start": { method: "POST", access: "failed", handle: async (_value, response, agent) => {
+      "/agent/start": { method: "POST", access: "failed", scope: "agent", handle: async (_value, response, agent) => {
         if (isRoot(agent)) await startRoot(); else await tree.retry(agent);
         respond(response, 200, "{}");
       } },
-      "/quit": { method: "POST", access: "any", handle: (_value, response, agent) => {
+      "/quit": { method: "POST", access: "any", scope: "agent", handle: (_value, response, agent) => {
         if (!isRoot(agent)) { respond(response, 409, JSON.stringify({ error: `/quit: only in @${rootName()}'s view` })); return; }
         response.setHeader("Connection", "close");
         const timer = later(() => background(quit()), QUIT_REPLY_MS);
@@ -577,11 +625,11 @@ async function main(): Promise<void> {
           if (stale) { const record: PageRecord = { type: "reload" }; respond(response, 200, `data: ${JSON.stringify(record)}\n\n`, "text/event-stream"); return; }
         }
         if (await attached.handle(request, response, () => { if (stopping) throw new Error("koa is stopping"); })) return;
-        const agent = tree.selected(), entrySession = agent.view.state.sessionId;
+        const agent = tree.selected(), entrySession = agent.view.state.sessionId, current = tree.view();
         const accessScoped = () => access(agent, "alive", url.searchParams.get("sessionId") ?? undefined);
         if (await stepFile(request, response, agent.view.feed.itemFile, agent.view.state.cwd, agent.view.state.home, accessScoped)) return;
         if (request.method === "GET" && ["/images/", "/history", "/items"].some(path => url.pathname.startsWith(path))) access(agent, "any", url.searchParams.get("sessionId") ?? undefined);
-        if (agent.view.feed.handle(request, response)) return;
+        if (feedOf(current).handle(request, response)) return;
         if (request.method === "GET" && url.pathname === "/") {
           try {
             const html = page ?? await assemblePage(location, instance, metrics);
@@ -591,13 +639,14 @@ async function main(): Promise<void> {
         }
         const route = routes[url.pathname];
         if (!route || route.method !== request.method) { respond(response, 404, "{}"); return; }
+        if (current.type !== "agent" && route.scope === "agent") { respond(response, 409, JSON.stringify({ error: "a job view takes no agent action" })); return; }
         let value: unknown;
         if (request.method === "POST") {
           const bytes = await readBody(request, 1 << 20);
           if (bytes === undefined) { respond(response, 413, "{}"); return; }
           try { value = JSON.parse(bytes.toString("utf8")); } catch { respond(response, 400, JSON.stringify({ error: "A JSON body is required" })); return; }
         } else value = { sessionId: url.searchParams.get("sessionId") ?? undefined };
-        if (tree.selected() !== agent || agent.view.state.sessionId !== entrySession) throw new Error("pi session changed");
+        if (tree.view() !== current || agent.view.state.sessionId !== entrySession) throw new Error("pi session changed");
         access(agent, route.access, isRecord(value) ? value.sessionId : undefined);
         await route.handle(value, response, agent);
       } catch (error) { respond(response, 409, JSON.stringify({ error: errorText(error) })); }

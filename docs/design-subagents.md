@@ -631,7 +631,10 @@ one when it moves. A routed job has one as a local job does.
   limits. An empty title or message is omitted.
 - A finished record lingers for `KO_JOB_RECORD_LINGER_MS` (60000),
   so the user can still open its log. Then the extension clears its
-  id. A job's record never changes the pane's
+  id. The linger does not run while the job is viewed: it starts
+  when the view is left, and a return cancels it, so a viewed record
+  never goes under the reader. A new job's slot never takes the
+  viewed record. A job's record never changes the pane's
   status: an agent's status comes from its root record alone
   (design-program-status.md, "Reduction").
 
@@ -642,13 +645,13 @@ agent's record, and the tree gives a record that names no agent to
 the agent whose registry holds the job. The record keeps its job, so
 a finished row stays clickable after the registry prunes the job.
 
-- `select` opens the job's log in a float of koa's pane
-  (design-koa.md, "The job log"). The record stays `offered` while
-  the float is open: `selected` means the record that koa's pane
-  shows, and the log is in another pane.
+- `select` switches koa's view to the job (design-koa.md, "The job
+  view"), and the record is `selected`, as an agent's record is for
+  its view.
 - `close` of a running job stops it as `stop_async_bash` does, a
   service too; the row stays until the record shows the end. `close`
-  of a finished record only clears it. Neither closes an open log.
+  of a finished record only clears it. Neither leaves an open view of
+  the job: a cleared record stays viewable until the view is left.
 
 **The writer.** Every record of the pane, job and agent alike, is one
 `ko api POST /panes/$KO_PANE/status` through the tree's one queue,

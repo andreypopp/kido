@@ -658,10 +658,11 @@ scan again.
 ## Views
 
 koa keeps one transcript feed for each agent and shows one at a time,
-the view. The page's `State` (`koa-records.ts`) is the viewed agent's:
-its `view` gives the path from the root to the viewed agent, and its
-`agents` the targets of `@name` links, a view of this process or a
-pane. The look of a subagent's view and of the bar is the spec of
+the view. A view is an agent or a background job ("The job view").
+The page's `State` (`koa-records.ts`) is the viewed agent's, or for a
+job its owner's: its `view` gives the path from the root to the view
+and its case, and its `agents` the targets of `@name` links, a view
+of this process or a pane. The look of a subagent's view and of the bar is the spec of
 app/design/koa/NOTES.md, "The view bar".
 
 **One switch.** `switchView` in `koa.ts` is the only code that changes
@@ -1126,7 +1127,7 @@ composer's text; koa never sends it.
   the file is `0600` and is created, never reused. koa removes the
   directory on every end: a result, a failure, a session change and
   koa's own exit.
-- **The float** (`koa-float.ts`, which the job log shares). koa
+- **The float** (`koa-float.ts`). koa
   adds the editor as a bordered float over its
   own pane, not the whole window, because the editor belongs to that
   pane's draft and must not hide a terminal beside it: centred on
@@ -1184,28 +1185,60 @@ composer's text; koa never sends it.
   `window.ko.focus`, and its press does not move the page's focus. A page without a ko pane (`--browser`) shows
   "C-g needs a ko pane" for 4 s.
 
-## The job log
+## The job view
 
-A `select` of a job's row (design-subagents.md, "A job's row") opens
-the job's log in a float of koa's pane: `less -R +F <log>` under `ko
-shell --`, so the log keeps its colours, its scrollback and search,
-and follows the file until Control-C; `F` follows again. The float
-has the editor's placement, `parent`, `close: on_exit` and
-`close_confirm: never` ("The external editor"), and the fixed title
-"Job · <job name>".
+A background job is a view of the page, as a subagent is ("Views").
+The look is the spec of app/design/koa/NOTES.md, "The job page". The
+job's log is the content: no float, no second pane. The selection is
+one `Selection` of `koa-agents.ts`, with three cases: an agent, a
+live job of the registry and a job whose record is gone. A job case
+holds its owner, the agent whose registry started it, which the bar's
+back and Clear return to. A job's view id is the job id, scoped by the
+owner's `sessionId`.
 
-- One float for each job. A second `select` while the float opens or
-  is open opens nothing and focuses it; another job opens its own.
-- The end of the job does not touch the float: `less` keeps showing
-  the log. The title has no outcome, because a fixed title does not
-  change for the pane's life.
-- `q`, a close of the pane or its death ends only the float; the job
-  runs on. koa's exit removes every open float.
-- **Focus.** koa sends a transient `focus` record to the page of the
-  view that is shown, and the page calls `window.ko.focus` with the
-  float's pane ("Focus" above).
-- A koa outside a ko pane, inside a runtime or without `ko` on PATH
-  opens no float and shows a warning notice.
+- **Opening.** A `select` of the job's row, or the "open" link of a
+  job card (the `async_bash` result, a `bash` call that went to the
+  background, a notice) through `POST /view`. `/view` resolves the
+  live registry first, then the job facts that the owner's
+  transcript holds in its cards. It takes an id, never a path, so the
+  page reads only a log that koa's own registry or session named. A
+  card has no link when its log file does not exist; the host decides
+  that when it projects the card.
+- **A gone record.** A job pruned from the registry, or a record
+  cleared while viewed, shows the file read-only: the foot's state is
+  "cleared" with no button. A log deleted by then shows "the log is
+  gone" (`job-gone`).
+- **One gate.** Each page route of `koa.ts` names its scope: the
+  view, the job or the agent. While a job is viewed, a route of the
+  agent's scope, `/abort` too, is refused, so no action reaches the
+  owner by accident. Escape does nothing.
+- **The content.** `koa-job-view.ts` streams raw log bytes, never
+  transcript items: a `job-reset` with the in-memory tail (the last
+  64 KiB) at the open, then `job-append` records, each with its
+  absolute byte offset in the log file. The offsets are of the file,
+  not of the program's output, because a `bash` call that moved
+  writes a header into its log. `POST /job/earlier` reads the file
+  backward in 256 KiB ranges (`koa-job-log.ts`), after the log writer
+  has flushed what the tail holds. A page that reconnects under the
+  same epoch sends its byte cursor; koa catches it up from the file,
+  then from the tail, and sends the state only after that output, so
+  an end never appears before its last bytes. Another epoch gets a
+  new reset. The transcript and the job view share one SSE transport
+  (`koa-feed.ts`) and its queue cap.
+- **Rendering.** `page/job-output.ts` decodes the bytes incrementally
+  to styled lines: SGR bold, dim and the 16 colours; every other
+  escape and control removed; a carriage return replaces the line
+  that it ends, so a progress bar shows its last state. A range that
+  does not start the file drops its partial first line and starts in
+  the default style. The page builds text nodes, never HTML, from
+  the log. The job view's follow and "Latest" are the transcript's
+  own scroll code, through one group of hooks in `page.ts`; a return
+  to a job opens at its end.
+- **Stop and Clear.** `POST /job/stop` stops the job as
+  `stop_async_bash` does, a service too; the view stays and shows the
+  end. `POST /job/clear` removes the record and switches to the
+  owner. `GET /job/log` serves the viewed job's log file, for the
+  path's preview.
 
 ## The composer's foot
 
@@ -1522,7 +1555,8 @@ The user decided the look with the mockups `agents.html` and
   to its output, gray on success and in the error colour on failure,
   and the stream
   batches of one job join into one entry. The page has no live list of
-  jobs; the sidebar shows them.
+  jobs; the sidebar shows them. A job card's "open" link switches to
+  the job's view ("The job view").
 
 ## Reply annotations
 

@@ -1,4 +1,4 @@
-import type { CompletionQuery, CompletionResult, PromptMode, PromptResult, QueuedPrompt, SessionRow, SessionScope, ThinkingLevel, UploadProgress, WireItem } from '../koa-records.ts';
+import type { LogChunk, CompletionQuery, CompletionResult, PromptMode, PromptResult, QueuedPrompt, SessionRow, SessionScope, ThinkingLevel, UploadProgress, WireItem } from '../koa-records.ts';
 
 type Session = { sessionId: string | undefined };
 type Empty = Record<string, never>;
@@ -23,6 +23,9 @@ export type Routes = {
   '/agent/start': { request: Session; response: Empty };
   '/quit': { request: Session; response: Empty };
   '/view': { request: Session & { id: string }; response: Empty };
+  '/job/earlier': { request: Session & { id: string; epoch: string; before: number }; response: LogChunk };
+  '/job/stop': { request: Session & { id: string }; response: Empty };
+  '/job/clear': { request: Session & { id: string }; response: Empty };
   '/attachments': { request: { name: string; type: string; size: number }; response: { id: string; path: string } };
   [path: `/attachments/${string}/${number}`]: { request: Uint8Array<ArrayBuffer>; response: UploadProgress };
   [path: `/attachments/${string}/delete`]: { request: undefined; response: Empty };

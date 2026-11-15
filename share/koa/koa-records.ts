@@ -1,4 +1,4 @@
-import type { AgentRef, AgentOutcome, JobRef, JobEnd, Inbound } from "./records.ts";
+import type { AgentRef, AgentOutcome, JobRef, JobEnd, JobSnapshot, Inbound } from "./records.ts";
 
 export const ATTACHMENT_LIMITS = { files: 16, fileBytes: 64 * 1024 * 1024, chunkBytes: 768 * 1024, pendingBytes: 256 * 1024 * 1024 };
 
@@ -30,13 +30,13 @@ export type ImageRef = { id: string; revision: number; mimeType: string; bytes: 
 export type AgentCall = { direction: "out"; to: AgentRef; text: Text; call: { tool: "spawn"; model?: string; fork: boolean; runtime?: string } | { tool: "message"; mode: "message" | "steer" | "interrupt-and-steer" }; outcome?: AgentOutcome };
 type ToolResult = Text & { images: ImageRef[] };
 type ToolState = { type: "pending" } | { type: "running"; result?: ToolResult } | { type: "done"; result: ToolResult; error: boolean } | { type: "not_run" };
-export type Block = (({ type: "text" } | { type: "thinking" }) & { text: string; redacted?: boolean; started?: number; ended?: number }) | { type: "tool"; id: string; name: string; args: Text; state: ToolState; started?: number; ended?: number; durationMs?: number; exit?: number; agent?: AgentCall; job?: JobRef };
+export type Block = (({ type: "text" } | { type: "thinking" }) & { text: string; redacted?: boolean; started?: number; ended?: number }) | { type: "tool"; id: string; name: string; args: Text; state: ToolState; started?: number; ended?: number; durationMs?: number; exit?: number; agent?: AgentCall; job?: WireJob };
 export type Annotation = { type: "question"; range: [number, number] } & ({ kind: "choice"; options: [number, number][] } | { kind: "yes_no" } | { kind: "open" });
 export type Item = { seq: number; revision: number; at: number; final: boolean } & (
   { kind: "user"; text: string; images: ImageRef[]; attachments: Attachment[] } |
   { kind: "assistant"; blocks: Block[]; stop: string; error: string; ended?: number; lifecycle: "streaming" | "ended" } |
   { kind: "agent"; direction: "in"; from: AgentRef; text: Text; inbound: Inbound } |
-  { kind: "job"; job: JobRef; event: { type: "ended"; end: JobEnd; tail: Text } | { type: "stream"; batch: Text; omitted: number; cut: boolean } } |
+  { kind: "job"; job: WireJob; event: { type: "ended"; end: JobEnd; tail: Text } | { type: "stream"; batch: Text; omitted: number; cut: boolean } } |
   { kind: "annotations"; reply: { seq: number; block: number }; annotations: Annotation[] } |
   { kind: "notify"; level: NotifyLevel; text: Text } |
   { kind: 'command'; result: CommandResult } |
@@ -56,11 +56,15 @@ export type Dialog = { id: string; title: string; expires?: number } & (
 );
 export type BashResult = { output: Text; exit?: number; cancelled: boolean; truncated: boolean; fullOutputPath?: string };
 export type Bash = { id: string; command: string; excludeFromContext: boolean; started: number } & ({ phase: 'running' | 'cancelling'; output: Text } | { phase: 'completed'; ended: number; result: BashResult });
-export type State = { compaction: 'idle' | 'running'; view: { id: string; path: { id: string; name: string }[] }; agents: { name: string; target: { type: "view"; id: string } | { type: "pane"; pane: string } }[]; bash: Bash[]; working: boolean; since?: number; aborted: boolean; name: string; model?: { provider: string; id: string }; thinking?: ThinkingLevel; levels: ThinkingLevel[]; context?: { tokens: number | null; window: number; percent: number | null }; cwd: string; home: string; sessionId?: string; sessionFile?: string; queue: { steering: readonly QueuedPrompt[]; followUp: readonly QueuedPrompt[] }; dialogs: Dialog[]; statuses: Record<string, string>; editor?: { id: string; text: string }; edit?: { pane: string; editor: string }; life: Life };
+export type WireJob = JobRef & { gone?: true };
+export type LogChunk = { start: number; end: number; data: string };
+type ViewEntry = { id: string; name: string; type: "agent" | "job" };
+export type View = { id: string; path: ViewEntry[] } & ({ type: "agent" } | { type: "job"; job: JobSnapshot });
+export type State = { compaction: 'idle' | 'running'; view: View; agents: { name: string; target: { type: "view"; id: string } | { type: "pane"; pane: string } }[]; bash: Bash[]; working: boolean; since?: number; aborted: boolean; name: string; model?: { provider: string; id: string }; thinking?: ThinkingLevel; levels: ThinkingLevel[]; context?: { tokens: number | null; window: number; percent: number | null }; cwd: string; home: string; sessionId?: string; sessionFile?: string; queue: { steering: readonly QueuedPrompt[]; followUp: readonly QueuedPrompt[] }; dialogs: Dialog[]; statuses: Record<string, string>; editor?: { id: string; text: string }; edit?: { pane: string; editor: string }; life: Life };
 export function pathArg(block: Block | undefined): string | undefined {
   if (block?.type !== "tool" || !["read", "edit", "write"].includes(block.name)) return;
   try { const value = JSON.parse(block.args.text); return value && typeof value.path === "string" && value.path && !/[\p{Cc}]/u.test(value.path) ? value.path : undefined; } catch { return; }
 }
 
 export type Patch = { type: "patch"; seq: number; baseRevision: number; revision: number; blocks: ({ index: number; block: Block } | { index: number; suffix: string })[]; final: boolean; stop: string; error: string; ended?: number };
-export type PageRecord = { type: "reset"; epoch: string; more: boolean; items: WireItem[] } | { type: "item"; item: WireItem } | Patch | ({ type: "state" } & State) | { type: "flush"; bytes: number; t: number } | { type: "reload" } | { type: "focus"; pane: string };
+export type PageRecord = { type: "reset"; epoch: string; more: boolean; items: WireItem[] } | { type: "item"; item: WireItem } | Patch | ({ type: "state" } & State) | { type: "flush"; bytes: number; t: number } | { type: "reload" } | { type: "job-reset"; view: string; epoch: string; start: number; end: number; data: string } | { type: "job-append"; view: string; epoch: string; start: number; data: string } | { type: "job-gone"; view: string };

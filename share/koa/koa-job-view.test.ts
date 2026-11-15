@@ -1,0 +1,35 @@
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { createServer } from "node:http";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { jobView } from "./koa-job-view.ts";
+
+test("a response that moved to another feed gets nothing from a pump that was reading the disk", async t => {
+  const dir = await mkdtemp(join(tmpdir(), "koa-job-view-unit-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const log = join(dir, "job.log");
+  await writeFile(log, Buffer.alloc(200000, 120));
+  let release: () => void = () => {};
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const view = jobView({ id: "j", log, missing: () => false, logged: () => 200000, tail: () => Buffer.alloc(1000), flushed: () => gate });
+  const server = createServer((request, response) => { view.handle(request, response); });
+  await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+  t.after(() => { server.closeAllConnections(); server.close(); });
+  const address = server.address();
+  assert.ok(address && typeof address === "object");
+  const base = `http://127.0.0.1:${address.port}/events`;
+  const first = await fetch(base);
+  assert.ok(first.body);
+  const firstReader = first.body.getReader();
+  const epoch = /"epoch":"([^"]+)"/.exec(new TextDecoder().decode((await firstReader.read()).value))?.[1] ?? "";
+  assert.notEqual(epoch, "");
+  const second = await fetch(`${base}?epoch=${epoch}&after=0`);
+  assert.ok(second.body);
+  const reader = second.body.getReader();
+  view.release();
+  release();
+  const outcome = await Promise.race([reader.read().then(result => result.done ? "ended" : new TextDecoder().decode(result.value)), new Promise<string>(resolve => { setTimeout(resolve, 150, "quiet"); })]);
+  assert.equal(outcome, "quiet");
+});

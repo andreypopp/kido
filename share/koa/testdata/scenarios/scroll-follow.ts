@@ -7,7 +7,7 @@ const open: PageRecord[] = [
     { seq: 0, revision: 0, at: stamp, final: true, kind: "user", text: Array(80).fill("Earlier message").join("\n\n"), images: [], attachments: [] },
     { seq: 1, revision: 0, at: stamp + 1, final: true, kind: "assistant", blocks: [{ type: "text", text: Array(40).fill("Earlier reply").join("\n\n") }], stop: "stop", error: "" },
   ] },
-  { type: "state", compaction: "idle", view: { id: "s1", path: [{ id: "s1", name: "ko" }] }, agents: [], bash: [], working: false, aborted: false, name: "trace", levels: [], cwd: "/work", home: "/home", sessionId: "s1", queue: { steering: [], followUp: [] }, dialogs: [], statuses: {}, life: { type: "ready" } },
+  { type: "state", compaction: "idle", view: { id: "s1", path: [{ id: "s1", name: "ko", type: "agent" }], type: "agent" }, agents: [], bash: [], working: false, aborted: false, name: "trace", levels: [], cwd: "/work", home: "/home", sessionId: "s1", queue: { steering: [], followUp: [] }, dialogs: [], statuses: {}, life: { type: "ready" } },
 ];
 const sent = expect({ on: { method: "POST", path: "/prompt" }, reply: { status: 200, json: { disposition: "started" } } });
 

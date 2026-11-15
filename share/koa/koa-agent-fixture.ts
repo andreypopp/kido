@@ -98,7 +98,7 @@ type Extension = (pi: object) => void;
 
 const hosts = new Map<object, AgentHost>();
 const liveHosts: AgentHost[] = [];
-export const viewed: { key: string; name: string; log: string }[] = [];
+export const viewing: { job: BackgroundJob | undefined } = { job: undefined };
 export const liveJobs = (): Jobs => { const host = liveHosts.at(-1); assert.ok(host); return host.jobs; };
 let shared: ReturnType<typeof createChannel> | undefined;
 export const koaExtension: Extension = pi => { Reflect.apply(agentExtension(hosts.get(pi) ?? (() => { throw new Error("no host for this pi"); })()), undefined, [pi]); };
@@ -445,7 +445,7 @@ export function createChannel() {
   const records = createRecords(facts);
   const self = stubAgent({ id: "self-session", parent: undefined, children: [], name: "", runtime: undefined, extension: undefined, stopping: false, view: { state: { name: "Self", cwd: process.cwd(), dialogs: [] }, root: { value: "idle" } } });
   const host: AgentHost = {
-    self, get facts() { return hostFacts(process.env); }, browser: false, trusted: undefined, records, jobs: createJobs({ records, path: () => "jobs", sink: () => host.extension, viewer: async job => { viewed.push(job); } }), extension: undefined,
+    self, get facts() { return hostFacts(process.env); }, browser: false, trusted: undefined, records, jobs: createJobs({ records, path: () => "jobs", sink: () => host.extension, place: { type: "machine" }, view: { viewed: () => viewing.job, output() {}, changed() {} } }), extension: undefined,
     notify() {}, scope: () => [], find: () => undefined, spawn: unused, stop: unused, stopDescendants: async () => {},
   };
   liveHosts.push(host);

@@ -8,7 +8,7 @@ import SidebarFeed
 @testable import Kido
 
 @MainActor final class KoaWebviewTests: AppWindowCase {
-    private enum KoaScenario: String { case transcript, dialogs, controls, exit, failed, completion, markdown, media, attachments, userMarkdown, thinkingMarkdown, reveal, preview, lightbox, agents, composer, questions, bang, commands, notices, latest, sessions, views }
+    private enum KoaScenario: String { case transcript, dialogs, controls, exit, failed, completion, markdown, media, attachments, userMarkdown, thinkingMarkdown, reveal, preview, lightbox, agents, composer, questions, bang, commands, notices, latest, sessions, views, jobs }
     // The off-screen WKWebView reports no document focus. The page's pane-focus hook gives the pane focus; the composer ring keeps its real state.
     private static let paneFocus = "window.koaFocused=true;"
     private static let hideLatest = "document.addEventListener('DOMContentLoaded',()=>{const style=document.createElement('style');style.textContent='#latest{display:none!important}';document.head.append(style)});"
@@ -339,6 +339,18 @@ import SidebarFeed
     func testKoaWebviewViewBarNarrow() async throws {
         try await koaWebview(width: 470, height: 560, scenario: .views, captures: Set(["overflow", "menu", "return"].map { "narrow-viewbar-" + $0 }))
     }
+    func testKoaWebviewJobRunning() async throws {
+        try await koaWebview(width: 980, height: 560, scenario: .jobs, captures: ["job-running"])
+    }
+    func testKoaWebviewJobEnded() async throws {
+        try await koaWebview(width: 980, height: 560, scenario: .jobs, captures: ["job-ended"])
+    }
+    func testKoaWebviewJobService() async throws {
+        try await koaWebview(width: 980, height: 560, scenario: .jobs, captures: ["job-service"])
+    }
+    func testKoaWebviewJobNarrow() async throws {
+        try await koaWebview(width: 470, height: 560, scenario: .jobs, captures: ["narrow-job-running"])
+    }
     func testKoaWebviewLightbox() async throws {
         try await koaWebview(width: 980, height: 560, scenario: .lightbox, captures: ["media-lightbox"])
     }
@@ -491,7 +503,7 @@ import SidebarFeed
             WebviewPaneView.visualInitialScript = (WebviewPaneView.visualInitialScript ?? "") + "const FootSource=EventSource;window.EventSource=class extends FootSource{constructor(...args){super(...args);window.footSource=this;this.addEventListener('message',event=>{const record=JSON.parse(event.data);if(record.type==='state')window.footState=record})}};"
         }
         var initial = WebviewPaneView.visualInitialScript ?? ""
-        initial.insert(contentsOf: Self.paneFocus + (scenario == .latest ? "" : Self.hideLatest), at: initial.startIndex)
+        initial.insert(contentsOf: Self.paneFocus + (scenario == .latest || scenario == .jobs ? "" : Self.hideLatest), at: initial.startIndex)
         WebviewPaneView.visualInitialScript = initial
         defer { WebviewPaneView.visualInitialScript = nil }
         for (name, text) in [("ko_server/src/sweep.rs", Array(repeating: "    row", count: 212).joined(separator: "\n")), ("scripts/release.sh", "#!/bin/sh\necho release\n"), ("Makefile", Array(repeating: "    target", count: 388).joined(separator: "\n")), ("notes.md", "notes\n")] {
@@ -573,14 +585,15 @@ import SidebarFeed
             guard captures.contains(name) || captures.contains("foot-responsive") else { return }
             if scenario == .dialogs { try await webviewUntil(web, "document.querySelector('#tokens').textContent==='88k / 200k'&&document.querySelector('#percent').textContent==='44%'") }
             let ordered = name == "questions-ordered" || name == "narrow-questions-ordered"
+            let aboveBottom = scenario == .jobs && name.contains("service")
             let top = scenario == .questions || scenario == .media || scenario == .lightbox || scenario == .agents || scenario == .composer || scenario == .views
             window.contentView?.layoutSubtreeIfNeeded()
             pane.webviewView?.layoutSubtreeIfNeeded()
             let viewportHeight = try await webviewJS(web, "innerHeight")
             XCTAssertEqual(viewportHeight, String(Int(web.bounds.height)), "The page fills the native webview at capture \(name)")
-            _ = try await webviewJS(web, "(()=>{if(\(name != "focus-border-transcript")&&!document.querySelector('.lightbox')&&!document.querySelector('.dialog')&&!document.querySelector('#exited:not([hidden])')&&document.querySelector('#picker').hidden)window.composer.focus();const scroll=document.querySelector('#scroll');scroll.scrollTop=\(top ? "0" : scenario == .latest ? "scroll.scrollTop" : "scroll.scrollHeight");if(\(ordered))document.querySelectorAll('.assistant')[1].scrollIntoView({block:'start'});return true})()")
+            _ = try await webviewJS(web, "(()=>{if(\(name != "focus-border-transcript")&&!document.querySelector('.lightbox')&&!document.querySelector('.dialog')&&!document.querySelector('#exited:not([hidden])')&&document.querySelector('#picker').hidden)window.composer.focus();const scroll=document.querySelector('#scroll');scroll.scrollTop=\(top ? "0" : scenario == .latest ? "scroll.scrollTop" : aboveBottom ? "0" : "scroll.scrollHeight");if(\(ordered))document.querySelectorAll('.assistant')[1].scrollIntoView({block:'start'});return true})()")
             try await webviewUntil(web, "(()=>{const dock=document.querySelector('#dock');return Number.parseFloat(getComputedStyle(document.body).getPropertyValue('--dock-h'))===dock.getBoundingClientRect().height})()")
-            try await webviewUntil(web, "(()=>{const scroll=document.querySelector('#scroll');if(\(ordered)){document.querySelectorAll('.assistant')[1].scrollIntoView({block:'start'});return true}scroll.scrollTop=\(top || scenario == .latest && name.hasSuffix("new") ? "0" : scenario == .latest ? "document.querySelector('.newmsgs').offsetTop-300" : "scroll.scrollHeight");\(scenario == .latest ? "scroll.dispatchEvent(new Event('scroll'));" : "")return \(top || scenario == .latest && name.hasSuffix("new") ? "scroll.scrollTop===0" : scenario == .latest ? "true" : "scroll.scrollHeight-scroll.scrollTop-scroll.clientHeight<1")})()&&\(scenario == .latest ? "document.querySelector('#latest').textContent==='\(latestText)'" : "true")")
+            try await webviewUntil(web, "(()=>{const scroll=document.querySelector('#scroll');if(\(ordered)){document.querySelectorAll('.assistant')[1].scrollIntoView({block:'start'});return true}scroll.scrollTop=\(top || scenario == .latest && name.hasSuffix("new") ? "0" : scenario == .latest ? "document.querySelector('.newmsgs').offsetTop-300" : aboveBottom ? "0" : "scroll.scrollHeight");\(scenario == .latest || aboveBottom ? "scroll.dispatchEvent(new Event('scroll'));" : "")return \(top || scenario == .latest && name.hasSuffix("new") ? "scroll.scrollTop===0" : scenario == .latest ? "true" : aboveBottom ? "document.querySelector('#latest').classList.contains('show')" : "scroll.scrollHeight-scroll.scrollTop-scroll.clientHeight<1")})()&&\(scenario == .latest ? "document.querySelector('#latest').textContent==='\(latestText)'" : scenario == .jobs ? "document.querySelectorAll('#jobv .ln').length>0&&document.querySelector('#latest').textContent==='↓ Latest'" : "true")")
             let lastAboveDock = try await webviewJS(web, "(()=>{const last=document.querySelector('#items').lastElementChild;return !last||last.getBoundingClientRect().bottom<=document.querySelector('#dock').getBoundingClientRect().top})()")
             if !top && scenario != .latest { XCTAssertEqual(lastAboveDock, "true", "dock space keeps the last message above the composer") }
             if name.hasSuffix("queue") {
@@ -605,6 +618,8 @@ import SidebarFeed
         }
         if scenario == .failed || (scenario == .composer && composerState == "exited") {
             try await webviewUntil(web, "!document.querySelector('#exited').hidden&&document.querySelector('#exited pre').textContent.length>0&&document.querySelector('#status').textContent==='failed'")
+        } else if scenario == .jobs {
+            try await webviewUntil(web, "document.body.classList.contains('jobmode')")
         } else {
             try await webviewUntil(web, "document.querySelector('#status').textContent==='idle'&&document.querySelector('#model-name').textContent==='claude-opus-5-5'")
         }
@@ -940,6 +955,11 @@ import SidebarFeed
                 let levels = try await webviewJS(web, "Array.from(document.querySelectorAll('#picker .ph')).some(node=>node.textContent==='Thinking')")
                 XCTAssertEqual(levels, "true", "The narrow model picker keeps levels reachable")
             }
+            return
+        }
+        if scenario == .jobs {
+            try await webviewUntil(web, "document.body.classList.contains('jobmode')&&document.querySelectorAll('#jobv .ln').length>0&&document.querySelector('#job-act').textContent.length>0")
+            try await capture(try XCTUnwrap(captures.first))
             return
         }
         if scenario == .views {
@@ -1501,7 +1521,7 @@ import SidebarFeed
             try await capture("times")
         }
         switch scenario {
-        case .transcript, .completion, .markdown, .media, .attachments, .userMarkdown, .thinkingMarkdown, .reveal, .preview, .lightbox, .agents, .composer, .questions, .bang, .commands, .notices, .latest, .sessions, .views: break
+        case .transcript, .completion, .markdown, .media, .attachments, .userMarkdown, .thinkingMarkdown, .reveal, .preview, .lightbox, .agents, .composer, .questions, .bang, .commands, .notices, .latest, .sessions, .views, .jobs: break
         case .dialogs: try await dialogScenario()
         case .controls: try await controlsScenario()
         case .exit: try await exitScenario()

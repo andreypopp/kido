@@ -38,7 +38,7 @@ test("a local job uses the call cwd and environment, logs both streams, and anno
     assert.ok(at(notices(s), 0).endsWith(`log: ${log}`));
     const details = at(customMessages(s, 'ko-notice'), 0).message.details;
     assert.equal(get(details, "kind"), 'job');
-    assert.deepEqual(get(details, "job"), { id: job, name: 'build', service: false, log, end: { type: 'exit', code: 3 } });
+    assert.deepEqual(get(details, "job"), { id: job, name: 'build', service: false, log, command, startedAt: get(details, "job", "startedAt"), place: { type: 'machine' }, end: { type: 'exit', code: 3 } });
     assert.ok(getStr(details, "tail").endsWith('stdout\nstderr\n'));
     assert.equal(readFileSync(log, "utf8"), `${realpathSync(fx.dir)}\npane_1\nstdout\nstderr\n`);
     const [{ startedAt, ...row }] = await list(s);
@@ -102,7 +102,7 @@ test("stream batches strip escapes and flush the partial line before the notice"
     await pollUntil(() => logHas(jobLog(result), "green"));
     await s.emit("turn_end", { toolResults: [{}] });
     assert.ok(at(customMessages(s, "ko-stream"), 0).message.content.endsWith("\ngreen"));
-    assert.deepEqual(at(customMessages(s, 'ko-stream'), 0).message.details, { from: 'stream', job: { id: jobId(result), name: 'stream', service: false, log: jobLog(result) }, batch: 'green', omitted: 0, cut: false });
+    assert.deepEqual(at(customMessages(s, 'ko-stream'), 0).message.details, { from: 'stream', job: { id: jobId(result), name: 'stream', service: false, log: jobLog(result), command: get(result.details, "job", "command"), startedAt: get(result.details, "job", "startedAt"), place: { type: 'machine' } }, batch: 'green', omitted: 0, cut: false });
     writeFileSync(gate, "");
     await pollUntil(() => notices(s).length === 1);
     const messages = s.messages.map((m) => m.message.content);

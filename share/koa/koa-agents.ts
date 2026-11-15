@@ -1,15 +1,16 @@
 import { spawnSync } from "node:child_process";
+import { hostname } from "node:os";
 import { join, resolve } from "node:path";
 import type { ImageContent } from "@earendil-works/pi-ai";
 import type { AgentSession, AgentSessionRuntime, Args, ExtensionUIContext, SessionManager, SettingsManager } from "@earendil-works/pi-coding-agent";
 import type { components } from "./ko-api.d.ts";
 import type { Sdk } from "./koa-sdk.ts";
-import { agentExtension, createJobs, type Jobs, type JobSink } from "./koa-agent.ts";
+import { agentExtension, createJobs, type BackgroundJob, type Jobs, type JobSink } from "./koa-agent.ts";
 import { sessionDir } from "./koa-session-dir.ts";
 import type { AgentView } from "./koa-view.ts";
 import { openInbox, type Inbox } from "./koa-inbox.ts";
 import type { SessionRow, SessionScope } from "./koa-records.ts";
-import type { AgentEnd, RestartState, InProcessMessage } from "./records.ts";
+import type { AgentEnd, JobPlace, JobRef, RestartState, InProcessMessage } from "./records.ts";
 import type { AgentRow } from "./agents.ts";
 import { errorText, cleanLine, utf8Prefix } from "./text.ts";
 import { apiArgs, apiCall, findKo } from "./runtime-exec.ts";
@@ -39,11 +40,12 @@ function uiContext(sdk: Sdk, dialogs: Dialogs): ExtensionUIContext {
   };
 }
 
-type HostFacts = { pane: string | null; ko: string | null; insideKo: boolean; runtime: string | undefined };
+type HostFacts = { pane: string | null; ko: string | null; insideKo: boolean; runtime: string | undefined; place: JobPlace };
 
 export function hostFacts(env: NodeJS.ProcessEnv): HostFacts {
   const ko = findKo(env.PATH);
-  return { pane: env.KO_PANE || null, ko, insideKo: !!env.KO_SOCKET && ko !== null, runtime: env.KO_RUNTIME || undefined };
+  const name = env.SSH_CONNECTION ? hostname() : "";
+  return { pane: env.KO_PANE || null, ko, insideKo: !!env.KO_SOCKET && ko !== null, runtime: env.KO_RUNTIME || undefined, place: name ? { type: "remote", host: name } : process.platform === "darwin" ? { type: "mac" } : { type: "machine" } };
 }
 
 const MAX_DEPTH = 2;
@@ -87,7 +89,13 @@ export type Agent = {
 type Relationship = "own" | "peer" | "parent" | "relative";
 type Scoped = { agent: Agent; relationship: Relationship };
 
-export type JobViewer = (job: { key: string; name: string; log: string }) => Promise<void>;
+export type Selection = { type: "agent"; agent: Agent } | { type: "job"; agent: Agent; job: BackgroundJob } | { type: "file"; agent: Agent; ref: JobRef };
+
+export type JobsView = {
+  viewed(): BackgroundJob | undefined;
+  output(job: BackgroundJob): void;
+  changed(job: BackgroundJob): void;
+};
 
 export type Records = { active: boolean; write(report: Api["StatusReport"]): boolean; drain(): Promise<void> };
 
@@ -114,7 +122,9 @@ export type Tree = {
   find(id: string): Agent | undefined;
   byRecord(id: string): Agent | undefined;
   selected(): Agent;
-  select(agent: Agent): void;
+  view(): Selection;
+  resolveView(id: string): Selection | undefined;
+  select(selection: Selection): void;
   writeRecord(agent: Agent): void;
   retry(agent: Agent): Promise<void>;
   stop(agent: Agent, cause: AgentEnd): Promise<void>;
@@ -134,12 +144,13 @@ type TreeOptions = {
   cwd: string;
   agentDir: string;
   browser: boolean;
-  viewJob: JobViewer | undefined;
+  jobOutput(job: BackgroundJob): void;
+  jobChanged(agent: Agent, job: BackgroundJob): void;
   facts: HostFacts;
   makeView(agent: () => Agent, parent: Agent | undefined, name: string | undefined, cwd: string): AgentView;
   beforeStop(agent: Agent): void;
   changed(): void;
-  select(agent: Agent | undefined, record: string): void;
+  select(selection: Selection): void;
   shutdown(): void;
 };
 
@@ -222,7 +233,7 @@ export function createTree(options: TreeOptions): Tree {
   const paths = (values: string[] | undefined) => values?.map(value => sdk.isLocalPath(value) ? sdk.resolvePath(value, options.cwd) : value);
   const reserved = new Map<string, Agent>();
   const plans = new WeakMap<Agent, SpawnPlan>();
-  let selected: Agent | undefined;
+  let selection: Selection | undefined;
   let ended = false;
   let frozen: Promise<void> | undefined;
   let inbox: Inbox | undefined;
@@ -256,14 +267,26 @@ export function createTree(options: TreeOptions): Tree {
     const dialog = view.state.dialogs[0]?.title;
     const failed = view.life.type === "failed" ? view.life.message : undefined;
     const text = cleanLine(dialog ?? failed ?? view.root.message, 2048);
-    const common = { type: "set" as const, id: recordPath(agent), title: utf8Prefix(agent.name, 192), selection: selected === agent ? "selected" as const : "offered" as const, closeable: true, ...(text ? { msg: text } : {}) };
+    const common = { type: "set" as const, id: recordPath(agent), title: utf8Prefix(agent.name, 192), selection: selection?.type === "agent" && selection.agent === agent ? "selected" as const : "offered" as const, closeable: true, ...(text ? { msg: text } : {}) };
     records.write(dialog ? { ...common, state: "blocked", kind: "question" } : { ...common, state: failed === undefined ? view.root.value : "error" });
   };
-  const select = (agent: Agent): void => {
-    const previous = selected;
-    selected = agent;
-    if (previous && previous !== agent) writeRecord(previous);
-    writeRecord(agent);
+  const view = (): Selection => selection ??= { type: "agent", agent: root };
+  const select = (next: Selection): void => {
+    const previous = view();
+    selection = next;
+    for (const agent of new Set([previous.agent, next.agent])) { writeRecord(agent); agent.host.jobs.viewChanged(); }
+  };
+  const resolveView = (id: string): Selection | undefined => {
+    const agent = id === "" ? root : tree.byRecord(id) ?? find(id);
+    if (agent) return { type: "agent", agent };
+    for (const owner of all()) {
+      const job = owner.host.jobs.job(id);
+      if (job) return { type: "job", agent: owner, job };
+    }
+    for (const owner of all()) {
+      const ref = owner.view.feed.jobFacts(id);
+      if (ref) return { type: "file", agent: owner, ref };
+    }
   };
 
   const create = (agent: Agent, role: { kind: "root" } | { kind: "child"; plan: SpawnPlan }): Parameters<typeof pi.createAgentSessionRuntime>[0] => async ({ cwd, agentDir, sessionManager, sessionStartEvent, projectTrustContext }) => {
@@ -372,7 +395,11 @@ export function createTree(options: TreeOptions): Tree {
   const makeHost = (agent: () => Agent, trusted: string | undefined): AgentHost => {
     const host: AgentHost = {
       get self() { return agent(); },
-      facts, browser: options.browser, trusted, records, jobs: createJobs({ records, path: () => jobsPath(agent()), sink: () => host.extension, viewer: options.viewJob }), extension: undefined,
+      facts, browser: options.browser, trusted, records, jobs: createJobs({ records, path: () => jobsPath(agent()), sink: () => host.extension, place: facts.place, view: {
+        viewed: () => { const current = view(); return current.type === "job" && current.agent === agent() ? current.job : undefined; },
+        output: job => options.jobOutput(job),
+        changed: job => options.jobChanged(agent(), job),
+      } }), extension: undefined,
       notify: (message, level = "info") => agent().view.hooks.notify(message, level),
       scope: () => scopeOf(agent()),
       find,
@@ -498,7 +525,7 @@ export function createTree(options: TreeOptions): Tree {
 
   const root: Agent = makeAgent(undefined, undefined, "", options.cwd, undefined);
   const tree: Tree = {
-    root, records, all, find, selected: () => selected ?? root, select, writeRecord, retry, stop,
+    root, records, all, find, selected: () => view().agent, view, resolveView, select, writeRecord, retry, stop,
     byRecord: id => all().find(agent => agent.parent && recordPath(agent) === id),
     openInbox: () => {
       if (!facts.pane || !facts.ko || !facts.insideKo) { ready(); return; }
@@ -510,9 +537,8 @@ export function createTree(options: TreeOptions): Tree {
           return "ack";
         },
         select: record => {
-          const agent = record === "" ? root : tree.byRecord(record);
-          if (agent) options.select(agent, record);
-          else jobOwner(record)?.host.jobs.select(record);
+          const next = resolveView(record);
+          if (next) options.select(next);
         },
         close: record => {
           const agent = tree.byRecord(record);

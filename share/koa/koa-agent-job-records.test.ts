@@ -4,7 +4,7 @@ import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { createJobs } from "./koa-agent.ts";
 import { createRecords, hostFacts } from "./koa-agents.ts";
-import { makeFixture, selfPane, startSession, freshExtension, pollUntil, gatedCommand, processGone, captureStatusRecords, at, jobId, liveRegistry, backgroundJob, liveJobs, viewed, jobLog } from "./koa-agent-fixture.ts";
+import { makeFixture, selfPane, startSession, freshExtension, pollUntil, gatedCommand, processGone, captureStatusRecords, at, jobId, liveRegistry, backgroundJob, liveJobs, viewing } from "./koa-agent-fixture.ts";
 
 for (const mode of ["interactive", "rpc"]) test(`job reports use the status route in ${mode} mode`, async (t) => {
   const stdout = captureStatusRecords(t);
@@ -82,7 +82,7 @@ test("service reports stay idle and job text and capacity are bounded", async (t
     owner.onStart({ ...job, id: "encoded", command: "a:b;\n\x1b\x9b λ", mode: { ...job.mode, name: "a:b;\tλ" } });
     owner.onStart({ ...job, id: "bounded", command: "λ".repeat(1100), mode: { ...job.mode, name: "λ".repeat(100) } });
     for (let i = 0; i < 32; i++) owner.onStart({ ...job, id: `extra${i}` });
-    owner.onEnd({ ...job, state: { type: "ended", end: { type: "exit", code: 0 }, announced: true } });
+    owner.onEnd({ ...job, state: { type: "ended", end: { type: "exit", code: 0 }, announced: true, at: 0 } });
     owner.onStart({ ...job, id: "replacement" });
     await pollUntil(() => reported("replacement", "working").length === 1);
     assert.equal(at(reported("encoded"), 0).title, "a:b; λ");
@@ -130,32 +130,55 @@ test("job records are offered and closeable, and close stops a running job, a se
     await pollUntil(() => reported(live).some(r => r.type === "clear"));
     const count = reports().length;
     assert.equal(jobs.close(`jobs/${live}`), false);
-    assert.equal(jobs.select(`jobs/${live}`), false);
     assert.equal(reports().length, count, "a cleared record is not written again");
   } finally { await fx.restore(); }
 });
 
-test("a finished record stays selectable after the registry prunes its job", async (t) => {
+test("a viewed record does not linger until the view is left, re-entry cancels the linger, and an external clear is final", async (t) => {
   captureStatusRecords(t);
   const fx = makeFixture();
   const reports = () => fx.posts(`/panes/${process.env.KO_PANE}/status`);
+  const reported = (id: string) => reports().filter(r => r.id === `jobs/${id}`);
   try {
-    process.env.KO_JOB_RECORD_LINGER_MS = "60000";
+    delete process.env.KO_JOB_RECORD_LINGER_MS;
     fx.setPanes([selfPane()]);
     const s = await startSession(fx);
-    const first = await s.tool("async_bash").execute("first", { command: "true", name: "first" });
-    const log = jobLog(first);
-    await pollUntil(() => reports().some(r => r.id === `jobs/${jobId(first)}` && r.state === "done"));
-    for (let i = 0; i < 22; i++) {
-      const next = await s.tool("async_bash").execute(`n${i}`, { command: "true", name: `n${i}` });
-      await pollUntil(() => reports().some(r => r.id === `jobs/${jobId(next)}` && r.state === "done"));
-    }
-    assert.equal(liveRegistry().jobs.has(jobId(first)), false, "the registry pruned it");
-    viewed.length = 0;
-    assert.equal(liveJobs().select(`jobs/${jobId(first)}`), true);
-    assert.deepEqual(viewed, [{ key: `jobs/${jobId(first)}`, name: "first", log }]);
-    assert.equal(liveJobs().select("jobs/unknown"), false);
-  } finally { await fx.restore(); }
+    const gate = join(fx.dir, "gate");
+    const id = jobId(await s.tool("async_bash").execute("a", { command: gatedCommand(gate), name: "watched" }));
+    const job = backgroundJob(id);
+    await pollUntil(() => reported(id).length === 1);
+    const delays = () => spy.mock.calls.map(call => call.arguments[1]);
+    const spy = t.mock.method(globalThis, "setTimeout");
+    const cancel = t.mock.method(globalThis, "clearTimeout");
+    viewing.job = job;
+    liveJobs().viewChanged();
+    await pollUntil(() => at(reported(id), -1).selection === "selected");
+    writeFileSync(gate, "");
+    await pollUntil(() => reported(id).some(r => r.state === "done"));
+    assert.equal(at(reported(id), -1).selection, "selected");
+    assert.equal(delays().includes(60000), false, "a viewed record does not linger");
+    viewing.job = undefined;
+    liveJobs().viewChanged();
+    assert.equal(delays().includes(60000), true, "the linger starts when the view is left");
+    await pollUntil(() => at(reported(id), -1).selection === "offered");
+    const cancelled = cancel.mock.callCount();
+    viewing.job = job;
+    liveJobs().viewChanged();
+    assert.equal(cancel.mock.callCount() > cancelled, true, "re-entry cancels the linger");
+    await pollUntil(() => at(reported(id), -1).selection === "selected");
+    const owner = liveRegistry().owner;
+    assert.ok(owner);
+    for (let i = 0; i < 40; i++) owner.onStart({ ...job, id: `extra${i}`, state: { type: "running" } });
+    await pollUntil(() => reported("extra30").length === 1);
+    assert.equal(reported(id).some(r => r.type === "clear"), false, "capacity does not evict the viewed record");
+    assert.equal(liveJobs().close(`jobs/${id}`), true);
+    assert.equal(liveJobs().cleared(job), true);
+    assert.equal(liveJobs().owns(`jobs/${id}`), false);
+    const count = reports().length;
+    liveJobs().viewChanged();
+    owner.onEnd(job);
+    assert.equal(reports().length, count, "a cleared record is not written again");
+  } finally { viewing.job = undefined; await fx.restore(); }
 });
 
 test("a finished job record lingers 60 s by default", async (t) => {
@@ -182,13 +205,12 @@ test("a host with no viewer offers no selection and no close", async (t) => {
     const s = await startSession(fx);
     const made = jobId(await s.tool("async_bash").execute("a", { command: gatedCommand(join(fx.dir, "live")), name: "live" }));
     const job = backgroundJob(made);
-    const plain = createJobs({ records: createRecords(hostFacts(process.env)), path: () => "jobs", sink: () => undefined, viewer: undefined });
+    const plain = createJobs({ records: createRecords(hostFacts(process.env)), path: () => "jobs", sink: () => undefined, view: undefined, place: { type: "machine" } });
     assert.ok(plain.registry.owner);
     plain.registry.owner.onStart({ ...job, id: "plain" });
     await pollUntil(() => reports().some(r => r.id === "jobs/plain"));
     const record = at(reports().filter(r => r.id === "jobs/plain"), 0);
     assert.equal("selection" in record || "closeable" in record, false);
-    assert.equal(plain.select("jobs/plain"), false);
     plain.clearRecords();
   } finally { await fx.restore(); }
 });

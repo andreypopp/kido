@@ -20,7 +20,7 @@ const checkerItems = [user(0, "Measure the right column of the sidebar rows at 2
 const links = (...nodes: Node[]): State["agents"] => nodes.map(node => ({ name: node.name, target: { type: "view", id: node.id } }));
 const viewState = (dir: string, path: Node[], extra: Partial<State> = {}): PageRecord => {
   const viewed = path[path.length - 1];
-  return { ...stateIdle(dir), view: { id: viewed.id, path }, sessionId: viewed.id, name: viewed === root ? "koa reference" : viewed.name, ...extra, type: "state" };
+  return { ...stateIdle(dir), view: { id: viewed.id, path: path.map(node => ({ id: node.id, name: node.name, type: "agent" as const })), type: "agent" }, sessionId: viewed.id, name: viewed === root ? "koa reference" : viewed.name, ...extra, type: "state" };
 };
 const switchTo = (dir: string, from: Node, to: Node, path: Node[], epoch: string, items: WireItem[], extra: Partial<State> = {}): Step => expect({
   on: { method: "POST", path: "/view", body: value => same(value, { sessionId: from.id, id: to.id }) },

@@ -35,17 +35,17 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { type ChildProcess, spawn, spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
-import { type WriteStream, createWriteStream, mkdirSync, readFileSync, readdirSync, realpathSync, statSync } from "node:fs";
+import { type WriteStream, createWriteStream, mkdirSync, openSync, readFileSync, readdirSync, realpathSync, statSync } from "node:fs";
 import os from "node:os";
 import type { CompletionContext } from "./completion-context.ts";
-import type { AgentHost, Agent, Extension, JobViewer, Records, SpawnPlan } from "./koa-agents.ts";
+import type { AgentHost, Agent, Extension, JobsView, Records, SpawnPlan } from "./koa-agents.ts";
 import { runtimeExec, lineReader, openStream, runCommand, apiCall, apiArgs, KO_TIMEOUT_MS, type Reply, type ExecOptions, type ExecResult } from "./runtime-exec.ts";
 import { contentText, mintId, utf8Prefix, utf8Suffix, errorText, cleanLine, isRecord, isString, str } from "./text.ts";
 import { dirname, delimiter, extname, join, posix, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Type } from "typebox";
 import type { components } from "./ko-api.d.ts";
-import { isAgentFailure, jobEndText, type RestartState, type InProcessMessage, type AgentEnd, type Relation, type AgentRef, type AgentOutcome, type MessageDetails, type SteerDetails, type NoticeDetails, type StreamDetails, type JobRef, type JobEnd } from "./records.ts";
+import { isAgentFailure, jobEndText, type RestartState, type InProcessMessage, type AgentEnd, type Relation, type AgentRef, type AgentOutcome, type MessageDetails, type SteerDetails, type NoticeDetails, type StreamDetails, type JobRef, type JobEnd, type JobPlace, type JobSnapshot } from "./records.ts";
 import { reconnectBackoff, parsePanes, placesOf, piAgent, peerPanes, runningRows, MIN_ID_PREFIX, VAR_SESSION, VAR_NAME, VAR_ACTIVITY, VAR_TASK, VAR_RUNTIME, type PaneInfo, type AgentRow, type Where } from "./agents.ts";
 
 type Api = components["schemas"];
@@ -218,6 +218,7 @@ type JobOutput = {
   log: string;
   output: WriteStream;
   logClosed: Promise<void>;
+  logged: number;
   stream: { held: number; lines: string[]; dropped: number; cut: boolean; split: SplitState; carry: Buffer; timer: NodeJS.Timeout | null; lastBatch: number };
 };
 export type Job = {
@@ -228,7 +229,7 @@ export type Job = {
   tail: Buffer;
   producedBytes: number;
   mode: { type: "foreground"; call: JobCall | null } | JobOutput;
-  state: { type: "running" } | { type: "ended"; end: JobEnd; announced: boolean };
+  state: { type: "running" } | { type: "ended"; end: JobEnd; announced: boolean; at: number };
   deadline: NodeJS.Timeout | null;
   stopping: { end: JobEnd; timer: NodeJS.Timeout } | null;
   closed: Promise<void>;
@@ -236,7 +237,8 @@ export type Job = {
 export type BackgroundJob = Job & { mode: JobOutput };
 export const isBackgroundJob = (job: Job): job is BackgroundJob => job.mode.type === "job";
 const serviceJob = (job: BackgroundJob): boolean => job.mode.origin.type === "async_bash" && job.mode.origin.service;
-const jobReference = (job: BackgroundJob): JobRef => ({ id: job.id, name: job.mode.name, service: serviceJob(job), log: job.mode.log });
+const jobPlace = (job: BackgroundJob, local: JobPlace): JobPlace => job.where.type === "routed" ? { type: "runtime", name: job.where.runtime } : local;
+const jobReference = (job: BackgroundJob, local: JobPlace): JobRef => ({ id: job.id, name: job.mode.name, service: serviceJob(job), log: job.mode.log, command: job.command, startedAt: Date.parse(job.startedAt), place: jobPlace(job, local) });
 const jobRecordState = (job: BackgroundJob): "idle" | "working" => serviceJob(job) ? "idle" : "working";
 const streams = (job: BackgroundJob): boolean => job.mode.origin.type === "async_bash" && job.mode.origin.stream;
 const TAIL_BYTES = 4000;
@@ -258,7 +260,7 @@ export type JobRegistry = {
   session: string;
   stopAll(): string[];
   jobs: Map<string, Job>;
-  owner: { onStart(job: BackgroundJob): void; onLines(job: BackgroundJob): void; onEnd(job: BackgroundJob): void } | null;
+  owner: { onStart(job: BackgroundJob): void; onOutput(job: BackgroundJob): void; onLines(job: BackgroundJob): void; onEnd(job: BackgroundJob): void } | null;
   exit: () => void;
 };
 
@@ -356,11 +358,13 @@ export type JobSink = {
 };
 
 // The jobs of one agent live as long as the agent: a reload replaces the extension that delivers their notices, not them.
-export function createJobs(options: { records: Records; path: () => string; sink: () => JobSink | undefined; viewer: JobViewer | undefined }) {
+export function createJobs(options: { records: Records; path: () => string; sink: () => JobSink | undefined; view: JobsView | undefined; place: JobPlace }) {
   const registry = createJobRegistry("");
-  const jobRecords = new Map<string, { job: BackgroundJob } & ({ type: "running" } | { type: "finished"; timer: NodeJS.Timeout })>();
+  const jobRecords = new Map<string, { job: BackgroundJob } & ({ type: "running"; selected: boolean } | { type: "viewed" } | { type: "lingering"; timer: NodeJS.Timeout })>();
+  const cleared = new WeakSet<BackgroundJob>();
   let working = false;
-  const write = (id: string | undefined, state: "idle" | "working" | "done" | "error" | "clear", title?: string, message?: string): boolean => {
+  const viewed = (job: BackgroundJob): boolean => options.view?.viewed() === job;
+  const write = (id: string | undefined, state: "idle" | "working" | "done" | "error" | "clear", title?: string, message?: string, selected = false): boolean => {
     const recordId = id === undefined ? options.path() : `${options.path()}/${id}`;
     const cleanedTitle = title === undefined ? undefined : cleanLine(title, MAX_JOB_TITLE_BYTES);
     const cleanedMessage = message === undefined ? undefined : cleanLine(message, MAX_JOB_MESSAGE_BYTES);
@@ -368,32 +372,40 @@ export function createJobs(options: { records: Records; path: () => string; sink
       type: "set", id: recordId, state,
       ...(cleanedTitle ? { title: cleanedTitle } : {}),
       ...(cleanedMessage ? { msg: cleanedMessage } : {}),
-      ...(options.viewer ? { selection: "offered" as const, closeable: true } : {}),
+      ...(options.view ? { selection: selected ? "selected" as const : "offered" as const, closeable: true } : {}),
     };
     return options.records.write(report);
   };
   const clearOne = (id: string): void => {
     const record = jobRecords.get(id);
-    if (record?.type === "finished") clearTimeout(record.timer);
+    if (!record) { write(id, "clear"); return; }
+    if (record.type === "lingering") clearTimeout(record.timer);
     jobRecords.delete(id);
+    cleared.add(record.job);
     write(id, "clear");
+    options.view?.changed(record.job);
   };
+  const linger = (id: string): NodeJS.Timeout => {
+    const timer = setTimeout(() => clearOne(id), envMs("KO_JOB_RECORD_LINGER_MS", 60000));
+    timer.unref();
+    return timer;
+  };
+  const put = (job: BackgroundJob, selected: boolean): boolean => job.state.type === "running"
+    ? write(job.id, jobRecordState(job), job.mode.name, job.command, selected)
+    : write(job.id, job.state.end.type === "exit" && job.state.end.code === 0 ? "done" : "error", job.mode.name, jobEndText(job.state.end), selected);
   const report = (job: BackgroundJob): void => {
     const id = job.id;
     if (!jobRecords.has(id) && jobRecords.size >= 32) {
-      const oldestFinished = [...jobRecords].find(([, record]) => record.type === "finished");
-      if (!oldestFinished) return;
-      clearOne(oldestFinished[0]);
+      const oldest = [...jobRecords].find(([, record]) => record.type === "lingering");
+      if (!oldest) return;
+      clearOne(oldest[0]);
     }
-    if (job.state.type === "running") {
-      if (write(id, jobRecordState(job), job.mode.name, job.command)) jobRecords.set(id, { type: "running", job });
-    } else {
-      if (!write(id, job.state.end.type === "exit" && job.state.end.code === 0 ? "done" : "error", job.mode.name, jobEndText(job.state.end))) return;
-      const timer = setTimeout(() => clearOne(id), envMs("KO_JOB_RECORD_LINGER_MS", 60000));
-      timer.unref();
-      jobRecords.delete(id);
-      jobRecords.set(id, { type: "finished", timer, job });
-    }
+    const selected = viewed(job);
+    if (!put(job, selected)) return;
+    const previous = jobRecords.get(id);
+    if (previous?.type === "lingering") clearTimeout(previous.timer);
+    jobRecords.delete(id);
+    jobRecords.set(id, job.state.type === "running" ? { type: "running", job, selected } : selected ? { type: "viewed", job } : { type: "lingering", timer: linger(id), job });
   };
   const recordOf = (record: string) => {
     const prefix = `${options.path()}/`;
@@ -426,19 +438,19 @@ export function createJobs(options: { records: Records; path: () => string; sink
   };
   const ended = (job: BackgroundJob): void => {
     if (jobRecords.has(job.id)) report(job);
+    options.view?.changed(job);
     detachJob(job);
     const sink = options.sink();
     if (!sink || job.state.type !== "ended" || job.state.announced) return;
     if (job.state.end.type !== "stopped") {
       if (streams(job)) flush(job);
       const tail = jobTail(job);
-      sink.jobNotice(`job ${quote(job.mode.name)} (${job.id}) ${jobEndText(job.state.end)}\n--- last ${TAIL_BYTES} bytes of its output ---\n${tail}\nlog: ${job.mode.log}`, { kind: "job", job: { ...jobReference(job), end: job.state.end }, tail });
+      sink.jobNotice(`job ${quote(job.mode.name)} (${job.id}) ${jobEndText(job.state.end)}\n--- last ${TAIL_BYTES} bytes of its output ---\n${tail}\nlog: ${job.mode.log}`, { kind: "job", job: { ...jobReference(job, options.place), end: job.state.end }, tail });
     }
     job.state.announced = true;
-    job.tail = Buffer.alloc(0);
     pruneJobs(registry);
   };
-  registry.owner = { onStart: report, onLines(job) { if (streams(job)) schedule(job); }, onEnd: ended };
+  registry.owner = { onStart: report, onOutput: job => options.view?.output(job), onLines(job) { if (streams(job)) schedule(job); }, onEnd: ended };
   return {
     registry,
     set working(value: boolean) { working = value; },
@@ -455,12 +467,29 @@ export function createJobs(options: { records: Records; path: () => string; sink
     },
     detach(): void { for (const job of background()) detachJob(job); },
     owns: (record: string): boolean => recordOf(record) !== undefined,
-    select(record: string): boolean {
-      const held = recordOf(record);
-      if (!held || !options.viewer) return false;
-      void options.viewer({ key: record, name: cleanLine(held.job.mode.name, MAX_JOB_TITLE_BYTES), log: held.job.mode.log });
-      return true;
+    job(key: string): BackgroundJob | undefined {
+      const job = registry.jobs.get(key.startsWith(`${options.path()}/`) ? key.slice(options.path().length + 1) : key);
+      return job && isBackgroundJob(job) ? job : undefined;
     },
+    cleared: (job: BackgroundJob): boolean => cleared.has(job),
+    reference: (job: BackgroundJob): JobRef => jobReference(job, options.place),
+    snapshot(job: BackgroundJob): JobSnapshot {
+      const { id, name, ...facts } = jobReference(job, options.place);
+      const state: JobSnapshot["state"] = cleared.has(job) ? { type: "cleared" } : job.state.type === "ended" ? { type: "ended", end: job.state.end, at: job.state.at } : { type: "running" };
+      return { ...facts, name: cleanLine(name, MAX_JOB_TITLE_BYTES), state };
+    },
+    viewChanged(): void {
+      for (const [id, record] of jobRecords) {
+        const selected = viewed(record.job);
+        if (record.type === "running") { if (selected === record.selected) continue; record.selected = selected; }
+        else if (record.type === "lingering" && selected) { clearTimeout(record.timer); jobRecords.set(id, { type: "viewed", job: record.job }); }
+        else if (record.type === "viewed" && !selected) jobRecords.set(id, { type: "lingering", timer: linger(id), job: record.job });
+        else continue;
+        put(record.job, selected);
+      }
+    },
+    stop(job: BackgroundJob): void { stopJob(job); },
+    clear(job: BackgroundJob): void { clearOne(job.id); },
     close(record: string): boolean {
       const held = recordOf(record);
       if (!held) return false;
@@ -476,7 +505,7 @@ export function createJobs(options: { records: Records; path: () => string; sink
       }
     },
     clearRecords(): void {
-      for (const record of jobRecords.values()) if (record.type === "finished") clearTimeout(record.timer);
+      for (const record of jobRecords.values()) if (record.type === "lingering") clearTimeout(record.timer);
       jobRecords.clear();
       write(undefined, "clear");
     },
@@ -487,6 +516,7 @@ export type Jobs = ReturnType<typeof createJobs>;
 
 function writeJobOutput(job: BackgroundJob, bytes: Buffer): void {
   const output = job.mode.output;
+  job.mode.logged += bytes.length;
   if (output.destroyed || output.write(bytes)) return;
   const child = job.where.child;
   child.stdout?.pause();
@@ -535,6 +565,7 @@ function jobData(registry: JobRegistry, job: Job, bytes: Buffer): void {
     return;
   }
   writeJobOutput(job, bytes);
+  registry.owner?.onOutput(job);
   if (!streams(job) || job.stopping?.end.type === "stopped") return;
   const stream = job.mode.stream;
   const before = Buffer.byteLength(stream.split.line) + stream.carry.length;
@@ -574,7 +605,7 @@ async function finishJob(registry: JobRegistry, job: Job, result: ExecResult): P
     await job.mode.logClosed;
   }
   if (job.stopping) clearTimeout(job.stopping.timer);
-  job.state = { type: "ended", end: job.stopping?.end ?? result.end, announced: false };
+  job.state = { type: "ended", end: job.stopping?.end ?? result.end, announced: false, at: Date.now() };
   if (isBackgroundJob(job)) {
     registry.jobs.delete(job.id);
     registry.jobs.set(job.id, job);
@@ -620,12 +651,12 @@ function promoteJob(registry: JobRegistry, job: Job, origin: JobOutput["origin"]
   const dir = join(os.tmpdir(), "koa");
   mkdirSync(dir, { recursive: true, mode: 0o700 });
   const log = join(dir, `${registry.session}-${job.id}.log`);
-  const output = createWriteStream(log, { flags: "wx", mode: 0o600 });
+  const output = createWriteStream(log, { fd: openSync(log, "wx", 0o600) });
   const logClosed = new Promise<void>((done) => { output.once("finish", done); output.once("error", () => done()); });
   output.on("error", (error) => stopJob(job, { type: "failed", message: error.message }));
   const call = detachCall(job);
   const mode: JobOutput = {
-    type: "job", name, origin, log, output, logClosed,
+    type: "job", name, origin, log, output, logClosed, logged: 0,
     stream: { held: 0, lines: [], dropped: 0, cut: false, split: newSplit(), carry: Buffer.alloc(0), timer: null, lastBatch: performance.now() },
   };
   const moved = Object.assign(job, { mode });
@@ -1623,7 +1654,7 @@ export const agentExtension = (host: AgentHost) => (pi: ExtensionAPI): void => {
       customType: STREAM_CUSTOM_TYPE,
       content: `job ${JSON.stringify(job.mode.name)} output (job ${job.id})\n${body.content}`,
       display: true,
-      details: { from: job.mode.name, job: jobReference(job), batch: body.batch, omitted: body.omitted, cut: body.cut } satisfies StreamDetails,
+      details: { from: job.mode.name, job: host.jobs.reference(job), batch: body.batch, omitted: body.omitted, cut: body.cut } satisfies StreamDetails,
     }, { deliverAs: "steer", triggerTurn: true });
   };
 
@@ -1777,7 +1808,8 @@ export const agentExtension = (host: AgentHost) => (pi: ExtensionAPI): void => {
     } catch (error) {
       if (!(error instanceof MovedToJob)) throw error;
       const why = error.reason === "timeout" ? `still running after ${envMs("KO_JOB_MOVE_MS", 60000) / 1000} s` : "still running";
-      return { content: [{ type: "text" as const, text: `${why}; it continues as job ${error.job.id}; a notice arrives when it ends; output so far:\n${jobTail(error.job)}\nlog: ${error.job.mode.log}` }], details: undefined };
+      const details: NonNullable<Awaited<ReturnType<typeof definition.execute>>["details"]> & { job: JobRef } = { job: host.jobs.reference(error.job) };
+      return { content: [{ type: "text" as const, text: `${why}; it continues as job ${error.job.id}; a notice arrives when it ends; output so far:\n${jobTail(error.job)}\nlog: ${error.job.mode.log}` }], details };
     }
   };
   const registerLocalBash = (ctx: ExtensionContext): void => {
@@ -2441,7 +2473,7 @@ export const agentExtension = (host: AgentHost) => (pi: ExtensionAPI): void => {
         const lifecycle = serviceJob(job)
           ? "it does not hold your report; a notice with its exit status still arrives when it ends"
           : liveRunRule("a notice with its exit status and an output tail arrives when it ends and starts your next turn; you stay alive while it runs, so ending your turn now is safe - do not sleep or poll for it, and end your turn if nothing else is left");
-        return reply(`started job ${job.id} (${job.mode.name}); list_async_bash lists it and stop_async_bash stops it; ${lifecycle}; ${progress}; log: ${job.mode.log}`, { job: jobReference(job), stream: !!params.stream });
+        return reply(`started job ${job.id} (${job.mode.name}); list_async_bash lists it and stop_async_bash stops it; ${lifecycle}; ${progress}; log: ${job.mode.log}`, { job: host.jobs.reference(job), stream: !!params.stream });
       } catch (error) {
         const message = controller.signal.aborted ? `start cancelled by ${errorText(controller.signal.reason)}; no job was started` : errorText(error);
         return { ...reply(`could not start background command: ${message}`), isError: true };

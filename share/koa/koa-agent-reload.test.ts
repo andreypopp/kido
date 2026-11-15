@@ -24,7 +24,7 @@ test("a live job is adopted by the second instance, which alone announces its en
     assert.deepEqual(notices(first), []);
     assert.match(at(notices(second), 0), /job "build" .* exit 3/);
     assert.match(at(notices(second), 0), /before\nafter/);
-    assert.equal(job.tail.length, 0);
+    assert.match(job.tail.toString(), /before\nafter/);
     await second.emit("session_shutdown", { reason: "reload" });
     const third = await startSession(fx, { factory: await freshExtension() });
     assert.deepEqual(notices(third), [], "an announced end is not repeated");
