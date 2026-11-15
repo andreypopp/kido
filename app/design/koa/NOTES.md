@@ -1255,6 +1255,14 @@ is at the bottom and keeps the position otherwise. Three additions.
   command. The user's sent message and the `!` command row the send
   creates are never new. An item is counted once at its first
   append; streaming growth of an item adds nothing.
+- **The user's send.** The user's own send scrolls the transcript to
+  the bottom (the sent block in view) and resumes following, in the
+  same frame the block appends; the divider goes and "↓ Latest"
+  hides. Independent of focus: a send from the composer is the
+  reader's act, in Kido and in browser mode alike. A send that is
+  not the user's (a steer the app delivers, a programmatic message,
+  a queued follow-up pi takes) is a new item under the normal rule:
+  no scroll unless following, the divider if not.
 - **The divider.** One rule across the transcript's text width, at
   the place where the new items start: a 1px line in the accent at
   35%, with the label "new messages" centred on it in a 6pt-padded

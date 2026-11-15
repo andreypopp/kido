@@ -31,6 +31,7 @@ async function page() {
     content: { childNodes: Node[]; querySelectorAll(): Node[] } = { childNodes: [], querySelectorAll: () => [] };
     tagName = 'DIV'; isContentEditable = false; readOnly = false; selectionStart = 0; selectionEnd = 0; hidden = true;
     oninput?: () => void;
+    onscroll?: () => void;
     onclick?: () => void;
     onkeydown?: (event: unknown) => void;
     attributes = new Map<string, string>();
@@ -741,7 +742,7 @@ test("the transcript page applies SSE synchronously and reconnects with the appl
       received.push(record);
       if (record.epoch) context.epoch = record.epoch;
       if (record.after !== undefined) context.after = record.after;
-    }, element: () => error, followBottom() {}, setTimeout(callback: () => void) { retries.push(callback); }, clearTimeout() {} };
+    }, element: () => error, layoutChanged() {}, setTimeout(callback: () => void) { retries.push(callback); }, clearTimeout() {} };
     runInNewContext(connect + ";connect()", context);
     sources[0].onopen?.();
     sources[0].onmessage?.({ data: '{"type":"state","epoch":"new","after":3}' });
@@ -782,7 +783,7 @@ test("stream metrics use the selected mode in a Kido page", async () => {
       onmessage?: (event: { data: string }) => void;
       constructor() { queueMicrotask(() => this.onmessage?.({ data: '{"type":"flush","t":1000,"bytes":1234}' })); }
     }
-    runInNewContext(connect + ";connect()", { metrics, koaInstance: "i1", EventSource, window: { addEventListener() {} }, epoch: "", after: -1, delay: 200, console, element: () => ({}), followBottom() {}, performance: { timeOrigin: 1000, now: () => 12 }, Date: { now: () => 1012 }, sendMetrics() {}, setTimeout() {}, requestAnimationFrame(callback: () => void) { frames++; callback(); } });
+    runInNewContext(connect + ";connect()", { metrics, koaInstance: "i1", EventSource, window: { addEventListener() {} }, epoch: "", after: -1, delay: 200, console, element: () => ({}), layoutChanged() {}, performance: { timeOrigin: 1000, now: () => 12 }, Date: { now: () => 1012 }, sendMetrics() {}, setTimeout() {}, requestAnimationFrame(callback: () => void) { frames++; callback(); } });
     await Promise.resolve();
     assert.equal(frames, mode === "frame" ? 1 : 0);
     assert.deepEqual(JSON.parse(JSON.stringify(metrics.samples)), [{ t: 1000, [mode]: 1012, bytes: 1234, clockError: 0 }]);
@@ -971,18 +972,20 @@ test("a queued block's × removes that entry only and leaves the draft alone", a
 });
 
 test('a dock that grows or shrinks keeps a bottom view at the bottom and a scrolled-up view in place', async () => {
-  const app = await page();
-  assert.deepEqual(Array.from(app.run(`(()=>{
-    const scroll=element('scroll'),props={};
-    document.body.style={setProperty(name,value){props[name]=value}};
-    scroll.scrollHeight=500;scroll.clientHeight=100;
-    follow=true;scroll.scrollTop=400;lastScrollTop=400;
-    scroll.scrollHeight=540;dockResized(170);
-    const bottom=[props['--dock-h'],scroll.scrollTop];
-    follow=false;scroll.scrollTop=123;lastScrollTop=123;
-    scroll.scrollHeight=560;dockResized(190);
-    return [...bottom,props['--dock-h'],scroll.scrollTop];
-  })()`)), ['170px', 540, '190px', 123]);
+  const page = await flowPage();
+  page.pad.value = 400;
+  page.deliver({ type: 'item', item: page.text(0) });
+  page.settle(60);
+  page.evaluate('dockResized(170)');
+  page.pad.value += 40;
+  page.settle(60);
+  assert.equal(page.evaluate("document.body.style.getPropertyValue?.('--dock-h')") ?? '170px', '170px');
+  assert.equal(page.top(), page.bottom());
+  page.reader(123);
+  page.pad.value += 20;
+  page.evaluate('dockResized(190)');
+  page.settle(60);
+  assert.equal(page.top(), 123);
 });
 
 test('a remove that leaves unsent entries puts them into the draft and reports the error', async () => {
@@ -1064,15 +1067,30 @@ async function revealPage(clientHeight = 100) {
   };
   Object.assign(app.context, { performance: { now: () => clock }, requestAnimationFrame: (callback: () => void) => { queued.set(++id, callback); return id; }, cancelAnimationFrame: (frame: number) => queued.delete(frame), setTimeout: (callback: () => void, delay: number) => { timers.set(++id, { at: clock + delay, callback }); return id; }, clearTimeout: (timer: number) => timers.delete(timer) });
   const evaluate = app.repl();
-  evaluate(`Object.assign(element('scroll'),{clientHeight:${clientHeight},scrollTop:0})`);
+  const box = app.context.document.getElementById('scroll');
+  let top = 0, height = 20, client = clientHeight, moved = false;
+  const layout: { height?: () => number; floor: boolean; flush: () => void } = { floor: false, flush: () => {} };
+  const total = () => layout.height?.() ?? height;
+  layout.flush = () => { const next = Math.min(Math.max(0, total() - client), top); if (next !== top) { top = next; moved = true; } };
+  Object.defineProperties(box, {
+    scrollTop: { get: () => (layout.flush(), top), set: (value: number) => { layout.flush(); const before = top; top = Math.max(0, layout.floor ? Math.floor(Number(value)) : Number(value)); layout.flush(); if (top !== before) moved = true; } },
+    scrollHeight: { get: () => (layout.flush(), total()), set: (value: number) => { layout.flush(); height = value; layout.flush(); } },
+    clientHeight: { get: () => client, set: (value: number) => { client = value; layout.flush(); } },
+  });
+  const nodeRemove = app.context.Node.prototype.remove;
+  app.context.Node.prototype.remove = function (this: unknown) { nodeRemove.call(this); layout.flush(); };
+  const sources: { onmessage?: (event: { data: string }) => void }[] = [];
+  Object.assign(app.context, { EventSource: class { onmessage?: (event: { data: string }) => void; onerror = null; onopen = null; constructor() { sources.push(this); } close() {} } });
   const step = (ms: number) => {
     clock += ms;
+    if (moved) { moved = false; box.onscroll?.(); }
     for (const [timer, { at, callback }] of [...timers]) if (at <= clock) { timers.delete(timer); callback(); }
     for (const [frame, callback] of [...queued]) { queued.delete(frame); callback(); }
   };
   const patch = (revision: number, suffix: string, final = false) => evaluate(`apply({type:'patch',seq:0,baseRevision:${revision - 1},revision:${revision},final:${final},stop:'',error:'',blocks:[{index:0,suffix:${JSON.stringify(suffix)}}]})`);
   const put = (text: string) => evaluate(`put({seq:0,revision:0,kind:'assistant',final:false,blocks:[{type:'text',text:${JSON.stringify(text)}}]})`);
-  return { app, evaluate, html, bars, pres, queued, timers, step, patch, put };
+  const deliver = (record: object) => { if (!sources.length) evaluate('connect()'); sources.at(-1)?.onmessage?.({ data: JSON.stringify(record) }); };
+  return { app, evaluate, html, bars, pres, queued, timers, step, patch, put, layout, deliver };
 }
 
 test('reveal waits for a whole line, caps hidden height and time, and finalizes the rest', async () => {
@@ -1135,7 +1153,7 @@ test('a reveal glides to the bottom in one step per frame and never pulls a user
   fixture.patch(1, '\n\nsecond block\n\nthird');
   fixture.step(16); fixture.step(16);
   assert.equal(fixture.evaluate("element('scroll').scrollTop"), 100);
-  assert.equal(fixture.evaluate("scrollMode"), undefined);
+  assert.equal(fixture.evaluate("scrolling.kind"), 'reader');
 });
 
 test('finishing a sliced tail glides to the new bottom instead of jumping', async () => {
@@ -1144,14 +1162,14 @@ test('finishing a sliced tail glides to the new bottom instead of jumping', asyn
   fixture.put('Intro.\n\none two three four five six');
   fixture.step(1000); fixture.step(500);
   for (let frame = 0; frame < 90; frame++) fixture.step(16);
-  assert.deepEqual([fixture.evaluate("scrollMode"), fixture.queued.size], [undefined, 0]);
+  assert.deepEqual([fixture.evaluate("scrolling.motion.kind"), fixture.queued.size], ['idle', 0]);
   fixture.evaluate("element('scroll').scrollHeight=1400");
   fixture.patch(1, ' seven', true);
-  fixture.evaluate("followBottom()");
+  fixture.evaluate("layoutChanged()");
   fixture.step(16);
   const moved = Number(fixture.evaluate("element('scroll').scrollTop"));
   assert.ok(moved > 800 && moved < 1000, String(moved));
-  assert.equal(fixture.evaluate("scrollMode"), 'glide');
+  assert.equal(fixture.evaluate("scrolling.motion.kind"), 'glide');
 });
 
 test('a text block followed by a later block is complete and shows no dots', async () => {
@@ -1590,8 +1608,10 @@ async function latestPage() {
   const dividers = () => String(evaluate("element('items').children.map(node => node.className === 'newmsgs' ? 'divider' : node.dataset.seq).join()"));
   const latest = () => String(evaluate("[element('latest').textContent, element('latest').classList.contains('show')].join()"));
   const focus = (value: boolean) => { doc.hasFocus = () => value; app.windowListeners.get(value ? 'focus' : 'blur')?.(); };
+  const go = (id: string, session = id === 'r' ? 's' : 'c') => evaluate(`apply({...state,type:'state',sessionId:'${session}',view:{id:'${id}',path:[{id:'r',name:'ko'}${id === 'r' ? '' : ",{id:'" + id + "',name:'x'}"}]},life:{type:'ready'}})`);
   evaluate("apply({type:'reset',epoch:'a',more:false,items:[]});element('dock').getBoundingClientRect=()=>({top:100})");
-  return { ...fixture, text, own, add, scroll, dividers, latest, focus, doc };
+  fixture.step(16);
+  return { ...fixture, text, own, add, scroll, dividers, latest, focus, go, doc };
 }
 
 test('a reader who scrolled up gets one divider above the first new item and a count of the new items below the view', async () => {
@@ -1678,7 +1698,7 @@ test('the capsule scrolls to the bottom through the scheduler, resumes following
   assert.ok(Number(page.evaluate("element('scroll').scrollTop")) > 899);
   page.evaluate("element('scroll').onscroll()");
   assert.equal(page.dividers(), '0,1');
-  assert.equal(page.evaluate("follow"), true);
+  assert.equal(page.evaluate("scrolling.kind"), 'following');
   assert.equal(page.latest().split(',')[1], 'false');
 });
 
@@ -1691,10 +1711,10 @@ test('a short arrival while unfocused resumes following on the return of the foc
   page.evaluate("element('scroll').scrollHeight=930");
   page.focus(true);
   assert.equal(page.dividers(), '0,1');
-  assert.equal(page.evaluate("follow"), true);
+  assert.equal(page.evaluate("scrolling.kind"), 'following');
   page.add(page.text(2));
   page.step(16);
-  assert.equal(page.evaluate("element('scroll').scrollTop"), page.evaluate("element('scroll').scrollHeight"));
+  assert.equal(page.evaluate("element('scroll').scrollTop"), 830);
 });
 
 test('blur stops every automatic scroll, also a patch to a streaming reply and a dock resize', async () => {
@@ -1734,7 +1754,7 @@ test('the capsule snaps at once under reduced motion', async () => {
   Object.assign(page.app.context, { matchMedia: () => ({ matches: true }) });
   page.evaluate("element('latest').onclick()");
   page.step(16);
-  assert.equal(page.evaluate("element('scroll').scrollTop"), 1000);
+  assert.equal(page.evaluate("element('scroll').scrollTop"), 900);
 });
 
 test('a focus event on a pane that never lost the focus keeps following while an item grows', async () => {
@@ -1742,10 +1762,205 @@ test('a focus event on a pane that never lost the focus keeps following while an
   page.add(page.text(0));
   page.scroll(900);
   page.add(page.text(1));
-  page.evaluate("element('scroll').scrollHeight=1100;followBottom()");
+  page.evaluate("element('scroll').scrollHeight=1100;layoutChanged()");
   page.app.windowListeners.get('focus')?.();
   page.step(16);
+  assert.equal(page.evaluate("element('scroll').scrollTop"), 1000);
+});
+
+test('a layout growth under a following pane keeps following', async () => {
+  const page = await latestPage();
+  page.scroll(900);
+  page.evaluate("element('scroll').scrollHeight=1200;layoutChanged()");
+  page.step(16);
   assert.equal(page.evaluate("element('scroll').scrollTop"), 1100);
+  assert.equal(page.evaluate('scrolling.kind'), 'following');
+});
+
+test('sending resumes following a scrolled-up transcript', async () => {
+  const page = await latestPage();
+  page.scroll(0);
+  await page.evaluate("editor.setText('hello'); fetchJSON=async()=>({disposition:'sent'}); send()");
+  assert.equal(page.evaluate('scrolling.kind'), 'following');
+  page.evaluate("element('scroll').scrollHeight=1200");
+  page.step(16);
+  assert.equal(page.evaluate("element('scroll').scrollTop"), 1100);
+  assert.equal(page.latest().split(',')[1], 'false');
+});
+
+test('an unfocused view load does not move the transcript', async () => {
+  const page = await latestPage();
+  page.scroll(900);
+  page.focus(false);
+  page.evaluate("element('scroll').scrollHeight=1200;scrolling={kind:'following',motion:{kind:'snap',reason:'layout'}};schedule(true)");
+  page.step(16);
+  assert.equal(page.evaluate("element('scroll').scrollTop"), 900);
+});
+
+async function flowPage() {
+  const page = await latestPage(), { app, evaluate, layout } = page, doc = app.context.document;
+  const pad = { value: 0 }, extra = new Map<number, number>();
+  const seqs = (): number[] => JSON.parse(String(evaluate("JSON.stringify([...views.keys()].sort((a,b)=>a-b))")));
+  const size = (seq: number) => 100 * Number(evaluate(`(function count(node){return (node.tagName==='P'||node.tagName==='PRE'?1:0)+node.children.reduce((total,child)=>total+count(child),0)})(views.get(${seq}).view)`)) + (extra.get(seq) ?? 0);
+  const above = (seq: number) => seqs().filter(other => other < seq).reduce((total, other) => total + size(other), 0);
+  layout.height = () => seqs().reduce((total, seq) => total + size(seq), 0) + pad.value;
+  const create = doc.createElement;
+  doc.createElement = (tag: string) => {
+    const node = create(tag), own = node.getBoundingClientRect.bind(node), add = node.classList.add;
+    node.classList.add = (name: string) => { add(name); if (name === 'grow') { extra.set(0, (extra.get(0) ?? 0) + 120); app.context.setTimeout(() => extra.set(0, (extra.get(0) ?? 0) - 120), 220); } };
+    return Object.assign(node, { getBoundingClientRect: () => {
+      const seq = Reflect.get(Reflect.get(node, 'dataset') ?? {}, 'seq');
+      if (seq === undefined) return own();
+      const top = above(Number(seq)) - Number(evaluate("element('scroll').scrollTop"));
+      return { left: 0, top, bottom: top + size(Number(seq)), height: size(Number(seq)) };
+    } });
+  };
+  evaluate("element('scroll').getBoundingClientRect=()=>({top:0})");
+  const reveal = (seq: number, text: string) => ({ type: 'item', item: { seq, revision: 0, kind: 'assistant', final: false, blocks: [{ type: 'text', text }], stop: '', error: '' } });
+  const suffix = (seq: number, revision: number, text: string, final = false) => ({ type: 'patch', seq, baseRevision: revision - 1, revision, final, stop: '', error: '', blocks: [{ index: 0, suffix: text }] });
+  const top = () => Number(evaluate("element('scroll').scrollTop"));
+  const bottom = () => Number(evaluate("element('scroll').scrollHeight - element('scroll').clientHeight"));
+  const settle = (frames = 120) => { for (let frame = 0; frame < frames; frame++) page.step(16); };
+  const reader = (value: number) => evaluate(`element('scroll').scrollTop=${value};element('scroll').onscroll()`);
+  const offset = (seq: number) => Number(evaluate(`views.get(${seq}).view.getBoundingClientRect().top`));
+  const open = (items: object[], more = false) => evaluate(`apply({type:'reset',epoch:'a',more:${more},items:${JSON.stringify(items)}})`);
+  const gate = (items: object[]) => { let release = () => {}; Object.assign(app.context, { fetch: () => new Promise(resolve => { release = () => resolve({ ok: true, json: async () => ({ type: 'reset', epoch: 'a', more: false, items }) }); }) }); return () => release(); };
+  const settled = () => new Promise<void>(resolve => setImmediate(resolve));
+  return { ...page, pad, extra, reveal, suffix, top, bottom, settle, reader, offset, open, gate, settled };
+}
+
+test('a visible reply that shrinks and regrows under a following pane keeps following', async () => {
+  const page = await flowPage();
+  page.evaluate("element('scroll').clientHeight=200");
+  page.pad.value = 800;
+  page.deliver(page.reveal(0, 'Intro.\n\none two three four five six'));
+  page.step(1000); page.step(500);
+  page.settle(60);
+  page.reader(page.bottom());
+  page.deliver(page.suffix(0, 1, ' seven eight'));
+  page.settle(60);
+  assert.equal(page.top(), page.bottom());
+  page.deliver({ type: 'item', item: page.text(1) });
+  page.settle(60);
+  assert.equal(page.top(), page.bottom());
+});
+
+test('an older page keeps the reader where they are now, also after they moved while it loaded', async () => {
+  const page = await flowPage();
+  page.open([10, 11, 12, 13, 14].map(page.text), true);
+  page.reader(200);
+  const release = page.gate([5, 6, 7, 8, 9].map(page.text));
+  void page.evaluate('older()');
+  page.reader(300);
+  release();
+  await page.settled();
+  page.step(16);
+  assert.equal(page.top(), 800);
+  assert.equal(page.offset(10), 500 - 800);
+});
+
+test('a restored position survives the entry animation of an unfinished reply and an image that decodes above it', async () => {
+  const page = await flowPage();
+  const image = { seq: 1, revision: 0, at: 1, kind: 'user', text: 'look', images: [{ id: 'i1', revision: 0, mimeType: 'image/png', bytes: 1, width: 10, height: 10 }], attachments: [] };
+  const items = [page.reveal(0, 'Intro.\n\nwaiting tail').item, image, ...[2, 3, 4, 5, 6, 7, 8, 9].map(page.text)];
+  page.go('r'); page.open(items);
+  page.settle();
+  page.reader(650);
+  const anchor = page.offset(6);
+  page.go('a'); page.open([page.text(10)]);
+  page.go('r'); page.open(items);
+  page.settle();
+  assert.equal(page.offset(6), anchor);
+  page.extra.set(1, 80);
+  page.evaluate("(function find(node){return node.tagName==='IMG'?node:node.children.map(find).find(Boolean)})(views.get(1).view).onload()");
+  page.settle();
+  assert.equal(page.offset(6), anchor);
+});
+
+test('a reset that is shorter than the pane keeps a restoring view from following while its older pages load', async () => {
+  const page = await flowPage();
+  page.go('r'); page.open([0, 1, 2, 3, 4, 5, 6, 7, 8, 9].map(page.text));
+  page.settle();
+  page.reader(550);
+  const anchor = page.offset(5);
+  page.go('a'); page.open([page.text(10)]);
+  const release = page.gate([5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19].map(page.text));
+  page.go('r'); page.open([page.text(20)], true);
+  page.step(16);
+  page.extra.set(21, 800);
+  page.deliver({ type: 'item', item: page.text(21) });
+  page.settle();
+  assert.equal(page.top(), 0);
+  release();
+  await page.settled();
+  page.settle();
+  assert.equal(page.offset(5), anchor);
+});
+
+test('a patch that changes nothing visible does not scroll a view that is near the bottom', async () => {
+  const page = await flowPage();
+  page.pad.value = 900;
+  page.deliver(page.reveal(0, 'Intro.\n\nwaiting tail'));
+  page.settle();
+  page.reader(page.bottom() - 30);
+  const before = page.top();
+  page.deliver(page.suffix(0, 1, ' x'));
+  page.settle(2);
+  assert.equal(page.top(), before);
+});
+
+test('a reader who moves up by half pixels leaves following once the sum passes the threshold', async () => {
+  const page = await flowPage();
+  page.pad.value = 900;
+  page.deliver({ type: 'item', item: page.text(0) });
+  page.settle();
+  const end = page.top();
+  for (let step = 1; step <= 130; step++) page.reader(end - step * .5);
+  page.deliver({ type: 'item', item: page.text(1) });
+  page.settle();
+  assert.equal(page.top(), end - 65);
+});
+
+test('a reset followed by the view change opens an unfocused page at the end', async () => {
+  const page = await flowPage();
+  page.focus(false);
+  page.pad.value = 900;
+  page.evaluate(`apply({type:'reset',epoch:'b',more:false,items:${JSON.stringify([0, 1, 2].map(page.text))}})`);
+  page.go('r');
+  page.settle();
+  assert.equal(page.top(), page.bottom());
+});
+
+test('a dock resize in the middle of a glide leaves the move to the next frame', async () => {
+  const page = await flowPage();
+  page.evaluate("element('scroll').clientHeight=200");
+  page.pad.value = 700;
+  page.deliver(page.reveal(0, 'Intro.\n\nwaiting tail'));
+  page.settle();
+  page.pad.value += 400;
+  page.deliver(page.suffix(0, 1, '\n\nsecond block\n\nthird'));
+  page.step(16);
+  const before = page.top();
+  assert.ok(before > page.bottom() - 800 && before < page.bottom(), String(before));
+  page.pad.value += 40;
+  page.evaluate('dockResized(240)');
+  assert.equal(page.top(), before);
+  page.step(16);
+  assert.ok(page.top() > before && page.top() < page.bottom(), String(page.top()));
+});
+
+test('a glide that rounds its steps to whole pixels still reaches the bottom and releases the frames', async () => {
+  const page = await flowPage();
+  page.layout.floor = true;
+  page.evaluate("element('scroll').clientHeight=200");
+  page.pad.value = 700;
+  page.deliver(page.reveal(0, 'Intro.\n\nwaiting tail'));
+  page.settle();
+  page.pad.value += 500;
+  page.deliver(page.suffix(0, 1, '\n\nsecond block\n\nthird', true));
+  page.settle(60);
+  assert.equal(page.top(), page.bottom());
+  assert.equal(page.queued.size, 0);
 });
 
 const views = `const root={id:'r',name:'ko'},a={id:'a',name:'reviewer'},b={id:'b',name:'checker'};
@@ -1806,10 +2021,10 @@ test('a view change keeps each view its own draft and closes what belongs to the
   const result = JSON.parse(await app.run(`(async()=>{${views}
     const file={id:'f',name:'note',path:'/tmp/note',size:1,origin:'upload',kind:'file'};
     show(root);
-    editor.setText('root draft');draft.restore([file]);follow=false;
+    editor.setText('root draft');draft.restore([file]);scrolling={kind:'reader',anchor:undefined};
     element('picker').hidden=false;element('error').textContent='old error';
     show(root,a);
-    const child=[editor.text(),draft.count,element('picker').hidden,element('error').textContent,follow];
+    const child=[editor.text(),draft.count,element('picker').hidden,element('error').textContent,scrolling.kind==='following'];
     editor.setText('child draft');
     show(root,a);
     const same=editor.text();
@@ -1834,12 +2049,12 @@ async function viewScrollPage() {
     } });
   };
   page.evaluate("element('scroll').getBoundingClientRect=()=>({top:0})");
-  const go = (id: string, session = id === 'r' ? 's' : 'c') => page.evaluate(`apply({...state,type:'state',sessionId:'${session}',view:{id:'${id}',path:[{id:'r',name:'ko'}${id === 'r' ? '' : ",{id:'" + id + "',name:'x'}"}]},life:{type:'ready'}})`);
-  const open = (seqs: number[], more = false) => page.evaluate(`apply({type:'reset',epoch:'a',more:${more},items:${JSON.stringify(seqs.map(seq => page.text(seq)))}})`);
+  const open = (seqs: number[], more = false) => { page.evaluate(`apply({type:'reset',epoch:'a',more:${more},items:${JSON.stringify(seqs.map(seq => page.text(seq)))}})`); page.step(16); };
   const at = (top: number) => page.evaluate(`Object.assign(element('scroll'),{scrollHeight:1000,clientHeight:100,scrollTop:${top}});element('scroll').onscroll()`);
-  const state = () => String(page.evaluate("[element('scroll').scrollTop, follow].join()"));
+  const state = () => String(page.evaluate("[element('scroll').scrollTop, scrolling.kind==='following'].join()"));
+  const { go } = page;
   go('r'); open([0, 1, 2, 3, 4]);
-  return { ...page, go, open, at, state };
+  return { ...page, open, at, state };
 }
 
 test('a view that was left scrolled up opens at the same place, and a view that was followed opens at the end', async () => {
@@ -1853,7 +2068,7 @@ test('a view that was left scrolled up opens at the same place, and a view that 
   assert.equal(page.dividers(), '0,1,2,3,4');
   page.go('a'); page.open([10]);
   page.step(16);
-  assert.equal(page.state(), '1000,true');
+  assert.equal(page.state(), '900,true');
   assert.equal(page.dividers(), '10');
 });
 
@@ -1875,6 +2090,7 @@ test('an anchor older than the loaded tail loads older pages first, and a missin
   Object.assign(page.app.context, { fetch: async (url: string) => { urls.push(url); return { ok: true, json: async () => ({ type: 'reset', epoch: 'a', more: false, items: [0, 1, 2].map(page.text) }) }; } });
   page.go('r'); page.open([3, 4], true);
   await new Promise(resolve => setImmediate(resolve));
+  page.step(16);
   assert.deepEqual(urls.map(url => url.replace(/\?.*before=/, '?before=').replace(/&.*/, '')), ['/items?before=3']);
   assert.equal(page.state(), '50,false');
   page.go('a'); page.open([10]);
@@ -1889,7 +2105,7 @@ test('a session switch opens every view at the end', async () => {
   page.go('a'); page.open([10]);
   page.go('r', 'other'); page.open([0, 1, 2, 3, 4]);
   page.step(16);
-  assert.equal(page.state(), '1000,true');
+  assert.equal(page.state(), '900,true');
 });
 
 test('a restore that waits for older items is dropped when the view is left and entered again', async () => {
@@ -1914,7 +2130,7 @@ test('a position saved under one session is not restored when the view returns u
   page.go('a'); page.open([10]);
   page.go('r', 'resumed'); page.open([0, 1, 2, 3, 4]);
   page.step(16);
-  assert.equal(page.state(), '1000,true');
+  assert.equal(page.state(), '900,true');
 });
 
 test('a name link opens the view of its agent, and a pane link still focuses the pane', async () => {

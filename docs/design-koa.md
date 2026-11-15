@@ -959,32 +959,47 @@ the command first ("`!` commands" below).
   padding at the dock's height. WebKit's private system glass needs a
   private preference, and WebKit's snapshot does not show it, so no
   test could check it.
-- **Bottom-following.** The transcript follows its bottom while the
-  user is within 60 px of it; a new record, an image load or a
-  resize of the viewport or the dock scrolls to the bottom in the
-  next frame. A browser dispatches a scroll event at the next frame
-  and the handler reads the geometry then, not at the time of the
-  scroll. After a send, the cleared composer shrinks the dock, the
-  shorter padding clamps the scroll position, and the submitted
-  message can arrive before the clamp's event runs: that event then
-  sees the new message's height below the view. Thus the page keeps
-  the scroll position that it caused itself (its own scroll, and the
-  clamp of a resize), and a scroll event at that position does not
-  change the following. Only a scroll to another position, the
-  user's, decides it again. A reveal does not jump: it glides to
-  the bottom once, ease-out, through the same scheduler, which owns
-  every write of the scroll position; the glide stops when the user
-  scrolls away, and a patch whose text stays hidden does not
-  scroll.
+- **Bottom-following.** One owner in `page.ts` decides the scroll:
+  its state is following the bottom, positioned by the reader (with
+  an anchor item and offset), or restoring a saved view. Only the
+  reader's own scroll leaves following. Layout changes (an append, a
+  reveal, a patch, an image, a resize of the viewport, the items or
+  the dock, a page of older items) only mark the layout as changed;
+  the frame scheduler then moves to the bottom while following, or
+  keeps the reader's anchor item where it was, and it is the one
+  writer of the scroll position. A change that does not move the
+  bottom, such as a patch whose text stays hidden, does not scroll.
+  A reveal glides to the bottom, ease-out; a glide ends at the
+  bottom even when a step rounds to no movement.
+- **Reader input and clamps.** The page cannot read the cause of a
+  scroll event: a browser dispatches it at the next frame, after
+  later layout, and a native scrollbar drag has no input event of
+  its own. So the page compares the position with the one that it
+  last accepted, at each scroll event and before each change that it
+  makes itself. A move to the new maximum after content shrank (a
+  reveal that replaces its blocks, a cleared composer) is a clamp,
+  not the reader; the page checks for it at once after it removes
+  nodes or starts an entry animation, before the content can grow
+  again. Any other move is the reader's: it resumes following
+  within 60 px of the bottom with the pane focused, else the reader
+  positions the view. `overflow-anchor: none` keeps WebKit's own
+  scroll anchoring from moving the position.
+- **The user's send** follows the bottom at the submit, before the
+  POST, focused or not, and clears the divider and the count; the
+  page cannot tell its own block from other user items, so the
+  records that follow simply arrive under following. Restoring a
+  view shows its items without entry animations, and keeps the
+  anchor through later layout such as an image decode.
 - **Focus, new items and "↓ Latest".** The look and the rules are in
   app/design/koa/NOTES.md, "Auto-scroll, the "new messages" divider
   and "↓ Latest"". The pane is focused when the document has the
   focus and is visible; the page reads both at each decision and
   re-checks on focus, blur, `visibilitychange` and scroll, so no
   native message is necessary and browser mode behaves the same.
-  While the pane is not focused, the scheduler writes no automatic
-  scroll, so an append, a patch, an image load or a resize leaves
-  the position; focus alone never scrolls, and the bottom-and-focused
+  While the pane is not focused, the scheduler does not move to the
+  bottom, so an append, a patch, an image load or a resize leaves
+  the reader's view where it is (the anchor correction still keeps
+  the visible item in place); focus alone never scrolls, and the bottom-and-focused
   state resumes following. A reset still opens at the bottom when
   the page follows, focused or not, so a page that loads in a
   background pane does not open at its top. An item is new at its

@@ -39,18 +39,38 @@ import SidebarFeed
             XCTAssertEqual((value?["pending"] as? [String])?.isEmpty, true, "No reply stays held: \(status ?? "no status")")
         }
     }
-    func testKoaWebviewSubmitFollowsClampedBottom() async throws {
+    private func scrollPage(module: String, ready: String = "") async throws -> WKWebView {
         WebviewPaneView.visualInitialScript = Self.paneFocus
         WebviewPaneView.visualInitialScript?.append("const ClockDate=Date;window.Date=class extends ClockDate{constructor(...args){super(...(args.length?args:[1700000012000]))}static now(){return 1700000012000}};window.requestAnimationFrame=callback=>setTimeout(()=>callback(performance.now()),16);window.cancelAnimationFrame=clearTimeout;const Source=EventSource;window.EventSource=class extends Source{constructor(...args){super(...args);window.scrollSource=this}};")
-        defer { WebviewPaneView.visualInitialScript = nil }
+        addTeardownBlock { WebviewPaneView.visualInitialScript = nil }
         let assets = try replayRoot()
-        try await start(pane: replayCommand(module: "submit", assets: assets))
+        try await start(pane: replayCommand(module: module, assets: assets))
         let pane = try XCTUnwrap(terminal?.displayedPanes.first)
         try await wait("koa page") { pane.webviewView != nil }
         let web = try XCTUnwrap(pane.webviewView?.browser)
         assertReplayRan(web)
         try await wait("koa document loaded") { web.url?.scheme == "ko" && !web.isLoading }
-        try await webviewUntil(web, "window.composer&&document.querySelector('.ann-opt')&&document.querySelector('#status').textContent==='idle'")
+        try await webviewUntil(web, "window.composer&&\(ready)document.querySelector('#status').textContent==='idle'")
+        return web
+    }
+    private static let followHelpers = #"""
+        const s=document.querySelector('#scroll'),dock=document.querySelector('#dock'),wait=ms=>new Promise(resolve=>setTimeout(resolve,ms));
+        let seq=100;
+        const push=record=>scrollSource.dispatchEvent(new MessageEvent('message',{data:JSON.stringify(record)}));
+        const paragraph=i=>'Streaming paragraph '+i+' with enough words to wrap onto more than one line in a narrow pane';
+        const gap=()=>s.scrollHeight-s.scrollTop-s.clientHeight;
+        const lastAbove=()=>document.querySelector('#items').lastElementChild.getBoundingClientRect().bottom<=dock.getBoundingClientRect().top+1;
+        const until=async(test,ms=6000)=>{const end=Date.now()+ms;while(!test()&&Date.now()<end)await wait(50)};
+        const settled=async()=>{await until(()=>gap()<=1&&lastAbove());return {gap:gap(),above:lastAbove()}};
+        const moveTo=value=>{s.scrollTop=value;s.dispatchEvent(new Event('scroll'))};
+        const stream=async()=>{
+          const id=seq++;
+          push({type:'item',item:{kind:'assistant',seq:id,revision:0,at:Date.now(),final:false,blocks:[{type:'text',text:paragraph(0)}],stop:'',error:''}});
+          for(let i=1;i<=8;i++){await wait(60);push({type:'patch',seq:id,baseRevision:i-1,revision:i,final:i===8,stop:i===8?'stop':'',error:'',blocks:[{index:0,suffix:'\n\n'+paragraph(i)}]})}
+        };
+        """#
+    func testKoaWebviewSubmitFollowsClampedBottom() async throws {
+        let web = try await scrollPage(module: "submit", ready: "document.querySelector('.ann-opt')&&")
         let result = try await webviewJS(web, #"""
         (async()=>{
           const s=document.querySelector('#scroll'),dock=document.querySelector('#dock'),results=[],originalFetch=window.fetch,raf=window.requestAnimationFrame;
@@ -85,7 +105,57 @@ import SidebarFeed
         for result in results {
             let mode = result["mode"] as? String
             if mode == "fractional-unsupported" { NSLog("WK rounds scrollTop; skip the sub-pixel case"); continue }
-            XCTAssertEqual(result[mode == "up" || mode == "fractional-up" ? "stationary" : "bottom"] as? Bool, true, String(describing: result))
+            XCTAssertEqual(result[mode == "fractional-up" ? "stationary" : "bottom"] as? Bool, true, String(describing: result))
+        }
+    }
+    func testKoaWebviewRevealKeepsFollowing() async throws {
+        let web = try await scrollPage(module: "scroll-follow")
+        let result = try await webviewJS(web, "(async()=>{" + Self.followHelpers + #"""
+          moveTo(s.scrollHeight);
+          await stream();
+          const first=await settled();
+          await stream();
+          const second=await settled();
+          moveTo(200);
+          await stream();
+          await wait(1000);
+          return {first,second,reader:s.scrollTop};
+        })()
+        """#, within: 90)
+        let value = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(result.utf8)) as? [String: Any])
+        for key in ["first", "second"] {
+            let state = try XCTUnwrap(value[key] as? [String: Any])
+            XCTAssertLessThanOrEqual(try XCTUnwrap(state["gap"] as? Double), 1, "\(key): \(result)")
+            XCTAssertEqual(state["above"] as? Bool, true, "\(key): \(result)")
+        }
+        XCTAssertEqual(value["reader"] as? Double, 200, result)
+    }
+    func testKoaWebviewSendKeepsFollowing() async throws {
+        let web = try await scrollPage(module: "scroll-follow")
+        let result = try await webviewJS(web, "(async()=>{" + Self.followHelpers + #"""
+          const send=async text=>{
+            const original=window.fetch;let finish;const done=new Promise(resolve=>finish=resolve);
+            window.fetch=async(path,options)=>{const response=await original(path,options);if(path==='/prompt'){push({type:'item',item:{kind:'user',seq:seq++,revision:0,at:Date.now(),final:true,text,images:[],attachments:[]}});finish()}return response};
+            composer.setText(text);
+            document.querySelector('#prompt .cm-content').dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',keyCode:13,bubbles:true,cancelable:true}));
+            await Promise.race([done,wait(5000)]);window.fetch=original;
+          };
+          moveTo(s.scrollHeight);
+          await send('first');await stream();
+          const bottom=await settled();
+          moveTo(200);
+          await send('second');
+          const scrolledUp=await settled();
+          await stream();
+          const after=await settled();
+          return {bottom,scrolledUp,after};
+        })()
+        """#, within: 90)
+        let value = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(result.utf8)) as? [String: Any])
+        for key in ["bottom", "scrolledUp", "after"] {
+            let state = try XCTUnwrap(value[key] as? [String: Any])
+            XCTAssertLessThanOrEqual(try XCTUnwrap(state["gap"] as? Double), 1, "\(key): \(result)")
+            XCTAssertEqual(state["above"] as? Bool, true, "\(key): \(result)")
         }
     }
     func testKoaWebviewBangCompletionWide() async throws {
