@@ -390,12 +390,16 @@ table.
    produce the report and the baseline is in this plan.
 2. **Intake per frame, read and write phases, dots never detached**
    (5.1, 5.5, 5.6). Done when, over the workload: stray reads are 0
-   in streaming frames, dots detachments are 0 between call
-   transitions, Chrome's `LayoutCount` per flush drops to the reveal's
-   probes only, and key-to-frame latency equals the baseline.
+   in streaming frames except those that unit 4 moves (the grown
+   blocks' heights and the notices' fits after writes outside a
+   frame), dots detachments are 0 between call transitions, Chrome's
+   layouts per frame during streaming drop (7.4 before; 4.2 after),
+   and key-to-frame latency equals the baseline. Done.
 3. **Incremental lex** (5.2). Done when the lex time per patch at
    10 000 words is under 1 ms in both engines and the property test
-   passes over every fixture.
+   passes over every fixture. Open finding from unit 2: Kido's
+   flush-to-frame p99 is 254 ms with no apply and no frame over
+   16.7 ms; find its cause.
 4. **Reveal by clipping, grow without a forced read** (5.3, 5.4).
    Done when forced layouts per streaming frame are 0 in Chrome's
    metrics, the `reveal` and `dots` snapshots show the same look,
@@ -464,3 +468,45 @@ Findings that shape the next units:
 - Headless Chrome does not composite the dots, so the layer-id check
   has no layer to follow there; the dots' detachments are the
   measure in both engines.
+
+Unit 2, on `origin/main` 358c8ecaf with unit 2's change, the same
+machine, `share/koa/stress/run.sh stream`. Before: Chrome is the
+unit 1 column above (the Chrome leg of the before-run ran against a
+stale page build, which `run.sh` now rebuilds first); Kido is run
+`run-hEHt9m` on 358c8ecaf. After: run `run-34ykXJ`. Load average
+about 7 during both runs.
+
+| metric | Chrome before | Chrome after | Kido before | Kido after |
+|---|---|---|---|---|
+| frames | 764 | 1466 | 760 | 1356 |
+| frame task ms p50 / p95 / p99 | 0.9 / 2.8 / 4.0 | 1.8 / 2.6 / 3.0 | 10 / 13 / 16 | 6 / 9 / 10 |
+| chained ticks | 2 | 737 | 0 | 739 |
+| frame gap ms p50 / p95 / p99 | 24.5 / 25.3 / 25.4 (n=2) | 16.8 / 20.4 / 24.1 | none | 32 / 41 / 48.2 |
+| applies over 16.7 ms | 0 | 0 | 1 | 0 |
+| flush to frame ms p50 / p95 / p99 | 17.8 / 48.9 / 76.7 | 14.8 / 45.6 / 60.0 | 35 / 89 / 431 | 22 / 58 / 254 |
+| key to frame ms p50 / p99 | 8.9 / 28.2 | 10.7 / 20.2 | 9 / 74.9 | 6 / 20 |
+| stray reads in frame / apply / other | 2464 / 1561 / 1655 | 57 / 0 / 1078 | 2629 / 724 / 3958 | 80 / 0 / 758 |
+| reveal probe reads in frame | counted as stray | 1448 | counted as stray | 1388 |
+| dots removals at calls / while text / at end | 40 / 43 / 1 | 0 / 0 / 1 | 40 / 23 / 1 | 0 / 0 / 1 |
+| Chrome layouts total / per frame / per flush | 5658 / 7.4 / n/a | 6184 / 4.2 / 7.5 | n/a | n/a |
+| per-page memory MiB | 25.7 | 25.6 | 1485.8 | 756.3 |
+
+- The dots' removals while text streams came from new item rows:
+  `put` appended a new row after the working row, and
+  `reconcileWorking` then appended the working row again, which
+  detached the dots. A new row now goes in before the working row.
+- The 57 and 80 stray reads that remain in frames follow writes
+  outside the frame, by source: the composer's keys, `state`
+  records and unlabelled writers. They are the reads of the grown
+  blocks' heights and of the notices' fits; unit 4 (5.4) moves the
+  height read.
+- Chrome's layouts per frame drop from 7.4 to 4.2. Per flush they
+  stay at about 7.5, because the frames now chain at the display
+  rate and each lays out; so unit 2's target is per frame. The
+  reveal's probes are about 1.7 per flush.
+- Kido chained no tick before because the reveal re-dirties only
+  when a slice is revealed; most frames came from intake. Its
+  flush-to-frame tail came from apply tasks of 424 to 470 ms, which
+  intake no longer has. The remaining tail (p99 254 ms) has no
+  apply over 16.7 ms and no frame over 16.7 ms; the cause is not
+  attributed, and unit 3 takes it as an open finding.

@@ -926,15 +926,19 @@ static.
 The bounce is a `transform` and `opacity` animation, which WebKit
 runs in the compositor while the main thread is busy. A detached
 node loses its layer, and its bounce then advances only when a frame
-of the page runs, so the mark stutters. So a patch never detaches
-the mark while a call runs: a run with a running step is patched in
-place around it, and the run view is rebuilt only when its shape
-changes, as when a call starts or ends.
+of the page runs, so the mark stutters. So nothing but a move of its
+spot detaches the mark. A run view is built once and patched in
+place: its summary, its time and each step's label, outcome and
+detail change in their own nodes, and a new step appends a row. The
+mark moves by one insertion when its spot changes, as when a call
+starts or ends, and before a host that goes is removed. A new item
+row goes in before the indicator row, so a new assistant message
+does not move the mark either.
 
 **The reveal.** An answer grows by blocks and by slices of whole
 lines, not by the chunk (app/design/koa/NOTES.md, item 9; `REVEAL`
 in `page/page.ts` holds its parameters). It is presentation only:
-the page applies every patch to its items at once, by the revision
+the page applies every patch to its model at once, by the revision
 rule above, and the reveal only chooses how much of the assistant
 text to show.
 
@@ -957,16 +961,32 @@ text to show.
   appear whole. A slice is revealed when the hidden part reaches the
   height cap, a share of the viewport, or when nothing was revealed
   for the time cap and whole units wait. Without a whole unit the
-  page waits for new text or a new width.
+  page waits for new text or a new width. The off-screen copy is
+  written and measured in the frame, so each of its reads forces a
+  layout of the copy.
 - **The fold.** A code fence of assistant prose, history included,
   longer than the fold limit shows its first lines and a bar "Show N
   more lines". A click expands it for good, also while it streams;
   until then a streaming fence stays folded and the count grows, so
   a long fence costs a fixed height during the stream.
-- **Frames.** The reveal, the grow and the "↓ Latest" scroll run in
-  one frame loop, which runs only while something animates or waits for a
-  measurement; the time cap is one timeout. A hidden page and a
-  `reset` cancel both, so a background page accumulates no timers.
+- **Frames.** A transcript record (`reset`, `item`, `patch`, an
+  Older answer) changes only the page's model when it arrives: the
+  items, their revisions, the cursor and the annotations, and the set
+  of items to render. The frame renders: it first reads the geometry
+  that it needs (the scroll, the reveal's widths, the heights of the
+  blocks that grow), then renders each changed item once, in order,
+  with its runs, the reveal, the working mark and the grow, then
+  writes the scroll once. So many records between two frames cost one
+  render, and no read follows a write in a frame. A block that
+  completes waits one frame at zero height (`.hold`) and grows from
+  the height that the next frame reads. A `state` record and a job
+  view's records still render at once: they are rare and drive the
+  focus, the composer and the job output. The frame loop runs only
+  while work waits; the time cap is one timeout. A hidden page gets
+  no animation frames: it renders its records in one timer task at
+  koa's flush cadence, so its DOM is current when it shows. A
+  visibility change moves the waiting work to the other kind, and
+  `pagehide` cancels it.
 
 ## The composer
 
@@ -1043,9 +1063,12 @@ the command first ("`!` commands" below).
   pane is focused and the state is `following`, the page writes the
   bottom on every layout change, at once and before the paint: one
   `ResizeObserver` on the scroller, the items, the job output and
-  the dock, and the end of each animation frame call the same
-  correction; a record does not correct on its own, because its
-  layout change reaches the observer before the paint. A `ResizeObserver` callback runs
+  the dock calls the correction. A frame corrects only when its own
+  work asks for it (a restored view, an image that loaded or
+  failed); its other writes reach the observer before the paint.
+  The observer, the scroll event and the focus keep the last scroll
+  geometry that they read after layout, and a frame starts from it,
+  so a frame does not force a layout to learn the scroll. A `ResizeObserver` callback runs
   after layout and before paint, so the painted position is always
   the bottom of the painted layout and streaming never steps back.
   In `reader`, the correction keeps the anchor item at its offset,
@@ -1069,8 +1092,7 @@ the command first ("`!` commands" below).
   at the start of each correction. A move under 1 px is not a move.
   A move down to a smaller maximum is a clamp: content shrank (a
   reveal that rebuilds its blocks, a cleared composer), and it is
-  never the reader. The page also reads the position at once after
-  it removes nodes, so a regrowth cannot hide the clamp. Every other
+  never the reader. Every other
   move is the reader's: within 1 px of the bottom it resumes
   following, else it sets `reader` at the new anchor. Nothing else
   resumes following except the user's send and "↓ Latest".
@@ -1111,7 +1133,12 @@ the command first ("`!` commands" below).
   message, an agent message, a job event, a notice, a command, a
   summary and a `!` row never count and never place the divider.
   The count is of new items whose top is below the dock's top,
-  because the dock covers the bottom of the transcript. The capsule
+  because the dock covers the bottom of the transcript. An
+  `IntersectionObserver` on the scroller, with the dock's height
+  cut from its bottom and its top extended by 10⁷ px (inside WebKit's
+  layout range, which a margin of 10⁹ px overflowed), tells
+  which new items are below, so a jump past them also counts, and
+  the count reads no geometry of its own. The capsule
   shows exactly while the state is `reader`. The divider and the count clear
   together, on a send and on a reset of the transcript, which a
   session switch, `/new`, `/reload` and `/restart` all cause.
@@ -1794,7 +1821,14 @@ shape that the page posts to `/metrics` and its check are in
 `koa-records.ts`. A stray read is the page's view of a forced layout,
 an upper bound by design: Chrome's `Performance.getMetrics` layout
 count, sampled over the same window, is the check on it, and
-WebKit has no such counter. A dots removal is counted by where the
+WebKit has no such counter. A write in the page's frame is followed
+by that frame's layout, so a frame starts clean unless something
+wrote outside a frame since the last one (a `state` record, the
+composer, an observer); each stray read is counted under the source
+of the write that made the layout dirty. A read of the reveal's
+off-screen copy is a probe, counted apart from the stray reads. Each
+record's apply carries its record type, so a long task names its
+record. A dots removal is counted by where the
 mark was before and after it: a move at a tool call, a removal while
 text streams (which restarts the bounce's animations), or the end of
 the turn. The streaming budgets report only, until the plan's later

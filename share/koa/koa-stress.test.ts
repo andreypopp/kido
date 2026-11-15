@@ -86,7 +86,7 @@ test('a streaming budget above its limit fails the row', async t => {
   const dir = await mkdtemp(join(tmpdir(), 'koa-report-'));
   t.after(() => rm(dir, { recursive: true, force: true }));
   const file = join(dir, 'samples.jsonl');
-  const observations = [{ type: 'frame', at: 100, duration: 20, lex: 0, strays: 0 }, { type: 'apply', at: 101, duration: 1, lex: 0, strays: 0 }, { type: 'frame', at: 9000, duration: 99, lex: 0, strays: 0 }];
+  const observations = [{ type: 'frame', at: 100, duration: 20, lex: 0, strays: 0, probes: 0, by: {} }, { type: 'apply', record: 'patch', at: 101, duration: 1, lex: 0, strays: 0, probes: 0, by: {} }, { type: 'frame', at: 9000, duration: 99, lex: 0, strays: 0, probes: 0, by: {} }];
   await writeFile(file, JSON.stringify({ samples: [{ t: 1000, frame: 1010, bytes: 50, clockError: 0 }], observations, bytes: 50, opens: 1, caps: 0, flushes: 1, highWater: 50 }));
   await writeFile(join(dir, 'page-manifest.json'), JSON.stringify({ target: 'page', ids: [13] }));
   const engine = [{ at: 0, metrics: { LayoutCount: 1 } }, { at: 1000, metrics: { LayoutCount: 3 } }];

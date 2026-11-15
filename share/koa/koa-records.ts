@@ -71,21 +71,31 @@ export type PageRecord = { type: "reset"; epoch: string; more: boolean; items: W
 export type ViewRequest = { view?: string };
 export type ViewGone = { kind: "view_gone"; view: string; error: string };
 
+const recordTypes: Record<PageRecord["type"], true> = { reset: true, item: true, patch: true, state: true, flush: true, reload: true, "job-reset": true, "job-gone": true, "job-append": true, view_gone: true };
+const pageSources = { frame: true, key: true, scroll: true, pointer: true, animationend: true, ResizeObserver: true, IntersectionObserver: true, other: true };
+export type WriteSource = keyof typeof pageSources | `apply:${PageRecord["type"]}`;
+const isRecordType = (value: unknown): value is PageRecord["type"] => typeof value === "string" && Object.hasOwn(recordTypes, value);
+const isWriteSource = (value: unknown): value is WriteSource => typeof value === "string" && (Object.hasOwn(pageSources, value) || value.startsWith("apply:") && isRecordType(value.slice(6)));
 export type MetricsMode = "applied" | "frame" | "probe";
 export type MetricsSample = { t: number; bytes: number; clockError: number; applied?: number; frame?: number };
 export type Observation =
-  | { type: "frame" | "apply"; at: number; duration: number; gap?: number; lex: number; strays: number }
-  | { type: "stray"; at: number }
+  | { type: "frame"; at: number; duration: number; gap?: number; lex: number; strays: number; probes: number; by: Partial<Record<WriteSource, number>> }
+  | { type: "apply"; at: number; duration: number; record: PageRecord["type"]; lex: number; strays: number; probes: number; by: Partial<Record<WriteSource, number>> }
+  | { type: "stray"; at: number; source: WriteSource }
+  | { type: "probe"; at: number }
   | { type: "key"; at: number; latency: number }
   | { type: "dots"; at: number; phase: "call" | "text" | "end"; count: number };
 export type MetricsRequest = { samples: MetricsSample[]; observations: Observation[] };
 const finite = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value);
 const record = (value: unknown): value is { [key: string]: unknown } => typeof value === "object" && value !== null && !Array.isArray(value);
+const validBy = (value: unknown) => record(value) && Object.entries(value).every(([source, count]) => isWriteSource(source) && Number.isSafeInteger(count));
 function validObservation(entry: unknown): entry is Observation {
   if (!record(entry) || !finite(entry.at)) return false;
   switch (entry.type) {
-    case "frame": case "apply": return finite(entry.duration) && finite(entry.lex) && Number.isSafeInteger(entry.strays) && (entry.gap === undefined || finite(entry.gap));
-    case "stray": return true;
+    case "frame": return finite(entry.duration) && finite(entry.lex) && Number.isSafeInteger(entry.strays) && Number.isSafeInteger(entry.probes) && validBy(entry.by) && (entry.gap === undefined || finite(entry.gap));
+    case "apply": return finite(entry.duration) && finite(entry.lex) && Number.isSafeInteger(entry.strays) && Number.isSafeInteger(entry.probes) && validBy(entry.by) && isRecordType(entry.record);
+    case "stray": return isWriteSource(entry.source);
+    case "probe": return true;
     case "key": return finite(entry.latency);
     case "dots": return (entry.phase === "call" || entry.phase === "text" || entry.phase === "end") && Number.isSafeInteger(entry.count);
     default: return false;

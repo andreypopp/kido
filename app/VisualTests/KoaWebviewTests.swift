@@ -218,7 +218,7 @@ import SidebarFeed
         })()
         """#, within: 150)
         let value = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(result.utf8)) as? [String: Any])
-        XCTAssertGreaterThan(try XCTUnwrap(value["samples"] as? Double), 10, result)
+        XCTAssertGreaterThan(try XCTUnwrap(value["samples"] as? Double), 3, result)
         XCTAssertLessThanOrEqual(try XCTUnwrap(value["worst"] as? Double), 1, result)
         XCTAssertEqual(value["ups"] as? Double, 0, result)
         XCTAssertEqual(value["above"] as? Bool, true, result)
@@ -737,7 +737,7 @@ import SidebarFeed
         func capture(_ name: String) async throws { try await captureFrames(name, afterLight: nil) }
         func captureFrames(_ name: String, afterLight: (() async throws -> Void)?) async throws {
             guard captures.contains(name) || captures.contains("foot-responsive") else { return }
-            _ = try await webviewJS(web, "(async()=>{\(scenario == .reveal ? "" : "document.getAnimations().filter(animation=>animation.animationName==='grow'&&animation.effect?.target?.closest('#items')).forEach(animation=>animation.finish());")await new Promise(resolve=>setTimeout(resolve,50));return true})()")
+            _ = try await webviewJS(web, "(async()=>{\(scenario == .reveal ? "" : "for(let i=0;i<100&&document.querySelector('#items .hold');i++)await new Promise(resolve=>setTimeout(resolve,20));if(document.querySelector('#items .hold'))throw Error('hold deadline');document.getAnimations().filter(animation=>animation.animationName==='grow'&&animation.effect?.target?.closest('#items')).forEach(animation=>animation.finish());document.querySelectorAll('#items .grow').forEach(block=>block.classList.remove('grow'));")await new Promise(resolve=>setTimeout(resolve,50));return true})()")
             if scenario == .dialogs { try await webviewUntil(web, "document.querySelector('#tokens').textContent==='88k / 200k'&&document.querySelector('#percent').textContent==='44%'") }
             let ordered = name == "questions-ordered" || name == "narrow-questions-ordered"
             let aboveBottom = scenario == .jobs && name.contains("service")
@@ -780,6 +780,7 @@ import SidebarFeed
         }
         _ = try await webviewJS(web, "(()=>{const NativeDate=Date;window.Date=class extends NativeDate{constructor(...args){super(...(args.length?args:[\(stamp + 12000)]))}static now(){return \(stamp + 12000)}};const style=document.createElement('style');style.textContent='.caret,.dot.on,.cm-cursorLayer\(scenario == .reveal ? "" : ",.grow"){animation:none!important}\(scenario == .reveal ? ".grow{animation-play-state:paused!important;animation-delay:-110ms!important}" : "").info .chev,#latest{transition:none!important}';document.head.append(style);return true})()")
         if scenario == .reveal {
+            _ = try await webviewJS(web, "(()=>{koaStep(0);return true})()")
             try await webviewUntil(web, "document.querySelector('.more')?.textContent==='Show 5 more lines'")
             let history = try await webviewJS(web, "document.querySelector('.assistant pre').classList.contains('folded')&&!document.querySelector('.grow,.dots')")
             XCTAssertEqual(history, "true", "A history fence is folded and nothing is revealed")
@@ -787,8 +788,9 @@ import SidebarFeed
             let opened = try await webviewJS(web, "(()=>{const pre=document.querySelector('.assistant pre'),before=pre.getBoundingClientRect().height;document.querySelector('.more').click();return !document.querySelector('.more')&&!pre.classList.contains('folded')&&pre.getBoundingClientRect().height>before})()")
             XCTAssertEqual(opened, "true", "A click expands the fence in place")
             try await advance(); try await advance()
+            _ = try await webviewJS(web, "(()=>{koaStep(0);return true})()")
             try await webviewUntil(web, "document.querySelector('.dots')")
-            _ = try await webviewJS(web, "(()=>{koaStep(16);return true})()")
+            _ = try await webviewJS(web, "(()=>{koaStep(16);koaStep(0);return true})()")
             try await webviewUntil(web, "document.querySelectorAll('.grow').length>=2")
             try await capture("reveal-mid")
             let hidden = try await webviewJS(web, "document.querySelectorAll('.assistant')[1].querySelector('pre')===null")

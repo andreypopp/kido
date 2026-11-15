@@ -36,7 +36,7 @@ async function page() {
     onclick?: () => void;
     onkeydown?: (event: unknown) => void;
     attributes = new Map<string, string>();
-    setAttribute(name: string, value: string) { this.attributes.set(name, value); } getAttribute(name: string) { return this.attributes.get(name) ?? null; } removeAttribute(name: string) { this.attributes.delete(name); } focus() { for (let node: Node | undefined = this; node; node = node.parent) if (node.inert) return; document.activeElement = this; } setSelectionRange() {} handlers = new Map<string, (event?: unknown) => void>(); addEventListener(type: string, handler: (event?: unknown) => void) { this.handlers.set(type, handler); } scrollIntoView() {} getBoundingClientRect() { return { left: 0 }; }
+    setAttribute(name: string, value: string) { this.attributes.set(name, value); } getAttribute(name: string) { return this.attributes.get(name) ?? null; } removeAttribute(name: string) { this.attributes.delete(name); } focus() { for (let node: Node | undefined = this; node; node = node.parent) if (node.inert) return; document.activeElement = this; } setSelectionRange() {} handlers = new Map<string, (event?: unknown) => void>(); addEventListener(type: string, handler: (event?: unknown) => void) { this.handlers.set(type, handler); } scrollIntoView() {} getBoundingClientRect() { return { left: 0, top: 0 }; }
     closest(selector: string): Node | null { if (selector === 'a') return this.tagName === 'A' ? this : this.parent?.closest(selector) ?? null; return ['INPUT', 'TEXTAREA', 'SELECT', ...(selector.includes('button') ? ['BUTTON'] : [])].includes(this.tagName) || (this.attributes.has('role') && selector.includes(`[role=${this.attributes.get('role')}]`)) ? this : null; }
     setRangeText(text: string) { this.value = this.value.slice(0, this.selectionStart) + text + this.value.slice(this.selectionEnd); }
     dispatchEvent() { this.oninput?.(); }
@@ -60,6 +60,26 @@ async function page() {
   }
   const elements = new Map<string, Node>();
   const observers: { callback: (entries: unknown[]) => void; targets: Node[] }[] = [];
+  const intersections: { callback: (entries: unknown[]) => void; top: number; targets: Set<Node>; seen: Map<Node, boolean> }[] = [];
+  class IntersectionObserver {
+    private state: (typeof intersections)[number];
+    constructor(callback: (entries: unknown[]) => void, options: { rootMargin: string }) { const top = parseFloat(options.rootMargin); this.state = { callback, top: -top, targets: new Set(), seen: new Map() }; intersections.push(this.state); }
+    observe(target: Node) { this.state.targets.add(target); }
+    unobserve(target: Node) { this.state.targets.delete(target); this.state.seen.delete(target); }
+    disconnect() { this.state.targets.clear(); this.state.seen.clear(); const at = intersections.indexOf(this.state); if (at >= 0) intersections.splice(at, 1); }
+  }
+  const intersect = () => {
+    const dock = elements.get('dock'), dockTop = Number(dock && Reflect.get(dock, 'getBoundingClientRect')?.call(dock)?.top) || 0;
+    for (const watch of intersections) {
+      const bottom = dockTop, entries = [...watch.targets].flatMap(target => {
+        const rect = Reflect.get(target, 'getBoundingClientRect').call(target), isIntersecting = rect.top < bottom && rect.top >= watch.top;
+        if (watch.seen.get(target) === isIntersecting) return [];
+        watch.seen.set(target, isIntersecting);
+        return [{ target, isIntersecting, boundingClientRect: { ...rect, height: 100 } }];
+      });
+      if (entries.length) watch.callback(entries);
+    }
+  };
   class ResizeObserver { private targets: Node[] = []; constructor(callback: (entries: unknown[]) => void) { observers.push({ callback, targets: this.targets }); } observe(target: Node) { this.targets.push(target); } }
   const listeners = new Map<string, (event: unknown) => void>();
   const windowListeners = new Map<string, (event?: unknown) => void>();
@@ -91,7 +111,7 @@ async function page() {
       placeholder(text: string) { content.placeholder = text; },
     };
   };
-  const context = { ResizeObserver, matchMedia: () => ({ matches: false }), Date: class extends Date { constructor(value: string | number = 1700000012000) { super(value); } static now() { return 1700000012000; } }, getComputedStyle: (node?: { tagName?: string }) => ({ display: 'block', marginBottom: node?.tagName === 'P' ? '10px' : '0px' }), composer, bashCommand, ATTACHMENT_LIMITS, isAttachment, pathArg, jobEndText, AbortController, AbortSignal, CustomEvent: class { type: string; detail?: unknown; constructor(type: string, options?: { detail?: unknown }) { this.type = type; this.detail = options?.detail; } }, Node, Element: Node, HTMLElement: class { static [Symbol.hasInstance](value: unknown) { return value instanceof Node && value.tagName !== '#text'; } }, HTMLButtonElement: Node, HTMLImageElement: Node, markdown, markdownLine, sliceEnd, document, window: { ko: {}, addEventListener(type: string, handler: (event?: unknown) => void) { windowListeners.set(type, handler); } }, innerWidth: 980, innerHeight: 560, Event: class { type: string; constructor(type: string) { this.type = type; } }, console, setInterval() {}, clearInterval() {}, setTimeout, clearTimeout, requestAnimationFrame() {}, cancelAnimationFrame() {}, performance: { now: () => 0 }, fetch: async () => ({ ok: true, json: async () => ({}) }) };
+  const context = { ResizeObserver, IntersectionObserver, matchMedia: () => ({ matches: false }), Date: class extends Date { constructor(value: string | number = 1700000012000) { super(value); } static now() { return 1700000012000; } }, getComputedStyle: (node?: { tagName?: string }) => ({ display: 'block', marginBottom: node?.tagName === 'P' ? '10px' : '0px' }), composer, bashCommand, ATTACHMENT_LIMITS, isAttachment, pathArg, jobEndText, AbortController, AbortSignal, CustomEvent: class { type: string; detail?: unknown; constructor(type: string, options?: { detail?: unknown }) { this.type = type; this.detail = options?.detail; } }, Node, Element: Node, HTMLElement: class { static [Symbol.hasInstance](value: unknown) { return value instanceof Node && value.tagName !== '#text'; } }, HTMLButtonElement: Node, HTMLImageElement: Node, markdown, markdownLine, sliceEnd, document, window: { ko: {}, addEventListener(type: string, handler: (event?: unknown) => void) { windowListeners.set(type, handler); } }, innerWidth: 980, innerHeight: 560, Event: class { type: string; constructor(type: string) { this.type = type; } }, console, setInterval() {}, clearInterval() {}, setTimeout, clearTimeout, requestAnimationFrame() {}, cancelAnimationFrame() {}, performance: { now: () => 0 }, fetch: async () => ({ ok: true, json: async () => ({}) }) };
   const answersSource = stripTypeScriptTypes(await readFile(new URL('page/answers.ts', import.meta.url), 'utf8')).replace(/^export /gm, '');
   const annotationsSource = stripTypeScriptTypes(await readFile(new URL('page/annotations.ts', import.meta.url), 'utf8')).replace(/^import .*;\n/gm, '').replace(/^export /gm, '');
   Object.assign(context, runInNewContext(answersSource + '\n' + annotationsSource + '\n({annotations,update})', context));
@@ -106,8 +126,8 @@ async function page() {
   Object.assign(context, runInNewContext(jobSource + '\n({createJobPage})', { ...context, atob, TextDecoder, Uint8Array }));
   const workingSource = stripTypeScriptTypes(readFileSync(new URL('page/working.ts', import.meta.url), 'utf8')).replace(/^export /gm, '');
   Object.assign(context, runInNewContext(workingSource + '\n({dots})', context));
-  const body = source.replace(/^import .*;\n/gm, "").replace(/^setInterval\([\s\S]*$/m, "");
-  return { observers, repl: (): ((code: string) => unknown) => runInNewContext("(() => {\n" + body + "\nreturn code => eval(code);\n})()", context), context, elements, listeners, windowListeners, completionResets: () => completionResets, handlers: () => handlers, prompt: () => prompt, text: () => text(), run: (code: string) => runInNewContext("{\n" + body + "\n" + code + "\n}", context) };
+  const body = source.replace(/^import .*;\n/gm, "").replace(/^setInterval\([\s\S]*$/m, "") + "\nfunction put(item) { accept(item); renderDirty(); return views.get(item.seq)?.view; }";
+  return { observers, intersect, repl: (): ((code: string) => unknown) => runInNewContext("(() => {\n" + body + "\nreturn code => eval(code);\n})()", context), context, elements, listeners, windowListeners, completionResets: () => completionResets, handlers: () => handlers, prompt: () => prompt, text: () => text(), run: (code: string) => runInNewContext("{\n" + body + "\n" + code + "\n}", context) };
 }
 
 test('Tab outside the composer returns focus without changing dialog keys', async () => {
@@ -526,7 +546,7 @@ test("composer handlers send the selected mode and quit", async () => {
 
 async function connectSource(name: string) {
   const source = stripTypeScriptTypes(await readFile(new URL(name, import.meta.url), "utf8"));
-  return source.slice(source.indexOf("let source"), source.indexOf("async function older()"));
+  return source.slice(source.indexOf("let source"), source.indexOf("function older()"));
 }
 
 test("starting and switching show a placeholder over an inert field and no status cell", async () => {
@@ -732,7 +752,7 @@ test("closing a picker or a dialog returns focus to the composer", async () => {
   assert.equal(app.context.document.activeElement, app.prompt());
 });
 
-test("the transcript page applies SSE synchronously and reconnects with the applied cursor", async () => {
+test("the transcript page hands each SSE record to apply at intake and reconnects with the applied cursor", async () => {
   for (const name of ["page/page.ts"]) {
     const connect = await connectSource(name);
     const sources: EventSource[] = [];
@@ -749,7 +769,7 @@ test("the transcript page applies SSE synchronously and reconnects with the appl
     let teardown: () => void = () => {};
     let restore: (event: { persisted: boolean }) => void = () => {};
     const error = { textContent: '' };
-    const context = { metrics: undefined, koaInstance: "i1", reloading: false, epoch: "", after: -1, delay: 200, disconnected: false, EventSource, Error, console: { error() {} }, window: { addEventListener(name: string, handler: (event?: { persisted: boolean }) => void) { if (name === "pagehide") teardown = handler; else if (name === "pageshow") restore = handler; } }, apply(record: { type: string; epoch?: string; after?: number }) {
+    const context = { metrics: undefined, probe: undefined, koaInstance: "i1", reloading: false, epoch: "", after: -1, delay: 200, disconnected: false, EventSource, Error, console: { error() {} }, window: { addEventListener(name: string, handler: (event?: { persisted: boolean }) => void) { if (name === "pagehide") teardown = handler; else if (name === "pageshow") restore = handler; } }, apply(record: { type: string; epoch?: string; after?: number }) {
       if (record.type === "bad") throw Error("Apply failed");
       received.push(record);
       if (record.epoch) context.epoch = record.epoch;
@@ -789,15 +809,15 @@ test("the transcript page applies SSE synchronously and reconnects with the appl
 test("stream metrics use the selected mode in a Kido page", async () => {
   const connect = await connectSource("page/page.ts");
   for (const mode of ["applied", "frame"]) {
-    const metrics = { mode, bytes: 0, pending: [], samples: [], frames: new Set(), timer: undefined };
-    let frames = 0;
+    const waiting: (() => void)[] = [], metrics = { mode, bytes: 0, pending: [], samples: [], frames: new Set(), timer: undefined, waiting };
     class EventSource {
       onmessage?: (event: { data: string }) => void;
       constructor() { queueMicrotask(() => this.onmessage?.({ data: '{"type":"flush","t":1000,"bytes":1234}' })); }
     }
-    runInNewContext(connect + ";connect()", { metrics, koaInstance: "i1", EventSource, window: { addEventListener() {} }, epoch: "", after: -1, delay: 200, console, element: () => ({}), schedule() {}, performance: { timeOrigin: 1000, now: () => 12 }, Date: { now: () => 1012 }, sendMetrics() {}, setTimeout() {}, requestAnimationFrame(callback: () => void) { frames++; callback(); } });
+    runInNewContext(connect + ";connect()", { metrics, koaInstance: "i1", EventSource, window: { addEventListener() {} }, epoch: "", after: -1, delay: 200, console, element: () => ({}), schedule() {}, performance: { timeOrigin: 1000, now: () => 12 }, Date: { now: () => 1012 }, sendMetrics() {}, setTimeout() {} });
     await Promise.resolve();
-    assert.equal(frames, mode === "frame" ? 1 : 0);
+    assert.equal(metrics.waiting.length, mode === "frame" ? 1 : 0);
+    for (const waiter of metrics.waiting.splice(0)) waiter();
     assert.deepEqual(JSON.parse(JSON.stringify(metrics.samples)), [{ t: 1000, [mode]: 1012, bytes: 1234, clockError: 0 }]);
   }
 });
@@ -806,8 +826,8 @@ test("finished prose and view change checks retain no extra text strings", async
   const app = await page();
   const retained = app.run("const text='payload '.repeat(10000);put({seq:0,kind:'assistant',final:true,blocks:[{type:'text',text}]});({source:texts.get('0:0').source,signature:views.get(0).signature})");
   assert.deepEqual({ source: retained.source?.length ?? 0, signature: retained.signature?.length ?? 0 }, { source: 0, signature: 0 });
-  assert.equal(app.run("const initial={seq:1,revision:0,kind:'assistant',final:false,blocks:[{type:'text',text:'first'}]};put(initial);apply({type:'patch',baseRevision:0,revision:1,seq:1,final:false,blocks:[{index:0,suffix:' last'}]});const updated=items.get(1),streaming=texts.get('1:0').source==='first last';apply({type:'patch',baseRevision:1,revision:2,seq:1,final:true,stop:'',error:'',blocks:[]});initial!==updated&&initial.blocks!==updated.blocks&&initial.blocks[0]!==updated.blocks[0]&&initial.blocks[0].text==='first'&&streaming&&texts.get('1:0').source===undefined&&views.get(1).item===items.get(1)"), true);
-  assert.equal(app.run("const finished={seq:0,revision:0,kind:'assistant',final:true,blocks:[{type:'text',text:'same'}]};put(finished);const proseView=texts.get('0:0').view;put({...finished,blocks:[{type:'text',text:'same'}]});apply({type:'patch',baseRevision:0,revision:1,seq:0,final:true,stop:'stop',ended:42,blocks:[]});texts.get('0:0').view===proseView&&items.get(0).stop==='stop'&&items.get(0).ended===42"), true);
+  assert.equal(app.run("const initial={seq:1,revision:0,kind:'assistant',final:false,blocks:[{type:'text',text:'first'}]};put(initial);apply({type:'patch',baseRevision:0,revision:1,seq:1,final:false,blocks:[{index:0,suffix:' last'}]});renderDirty();const updated=items.get(1),streaming=texts.get('1:0').source==='first last';apply({type:'patch',baseRevision:1,revision:2,seq:1,final:true,stop:'',error:'',blocks:[]});renderDirty();initial!==updated&&initial.blocks!==updated.blocks&&initial.blocks[0]!==updated.blocks[0]&&initial.blocks[0].text==='first'&&streaming&&texts.get('1:0').source===undefined&&views.get(1).item===items.get(1)"), true);
+  assert.equal(app.run("const finished={seq:0,revision:0,kind:'assistant',final:true,blocks:[{type:'text',text:'same'}]};put(finished);const proseView=texts.get('0:0').view;put({...finished,blocks:[{type:'text',text:'same'}]});apply({type:'patch',baseRevision:0,revision:1,seq:0,final:true,stop:'stop',ended:42,blocks:[]});renderDirty();texts.get('0:0').view===proseView&&items.get(0).stop==='stop'&&items.get(0).ended===42"), true);
 });
 
 test('thinking Markdown renders only on expand and stays current across streaming rebuilds', async () => {
@@ -833,12 +853,12 @@ test('thinking Markdown renders only on expand and stays current across streamin
     if (step.children[1].children.length) throw Error('Collapsed details have children');
     step.children[0].onclick();
     if (texts.get('0:0').view.className!=='think prose') throw Error('Missing Markdown class');
-    apply({type:'patch',baseRevision:0,revision:1,seq:0,final:false,blocks:[{index:0,suffix:' and **more'}]});
+    apply({type:'patch',baseRevision:0,revision:1,seq:0,final:false,blocks:[{index:0,suffix:' and **more'}]});renderDirty();
     if (texts.get('0:0').source!=='**Plan**\\n\\n- Use \`code\` and **more') throw Error('Stale thinking');
     folds.set('0:0',false);
-    apply({type:'patch',baseRevision:1,revision:2,seq:0,final:false,blocks:[{index:0,suffix:' words**'}]});
+    apply({type:'patch',baseRevision:1,revision:2,seq:0,final:false,blocks:[{index:0,suffix:' words**'}]});renderDirty();
     if (texts.get('0:0').source!=='**Plan**\\n\\n- Use \`code\` and **more') throw Error('Collapsed thinking updated');
-    folds.set('0:0',true);apply({type:'patch',baseRevision:2,revision:3,seq:0,final:true,blocks:[]});
+    folds.set('0:0',true);apply({type:'patch',baseRevision:2,revision:3,seq:0,final:true,blocks:[]});renderDirty();
   `);
   assert.equal(renderers, 1);
   assert.equal(rendered.length, 3);
@@ -1055,6 +1075,7 @@ test("thinking and aborted steps use live times without inventing replay times",
 async function revealPage(clientHeight = 100) {
   const app = await page(), html: string[] = [], bars: InstanceType<typeof app.context.Node>[] = [], pres: InstanceType<typeof app.context.Node>[] = [], queued = new Map<number, () => void>(), timers = new Map<number, { at: number; callback: () => void }>();
   let clock = 0, id = 0;
+  const hooks: { read?: (name: string, self: { className?: string }) => void } = {};
   const create = app.context.document.createElement;
   const lines = (markup: string) => 20 * [...markup.matchAll(/<(p|li|h\d|pre|tr)\b[^>]*>([\s\S]*?)<\/\1>/g)].reduce((total, [, tag, inner]) => {
     const text = inner.replace(/<[^>]*>/g, '');
@@ -1062,7 +1083,7 @@ async function revealPage(clientHeight = 100) {
   }, 0);
   app.context.document.createElement = (tag: string) => {
     const node = create(tag);
-    node.getBoundingClientRect = () => ({ left: 0, top: node.offsetTop - Number(app.elements.get('scroll')?.scrollTop ?? 0), height: node.className.includes('measure') ? lines(node.innerHTML) : 0 });
+    node.getBoundingClientRect = () => { hooks.read?.('rect', node); layout.flush(); return { left: 0, top: node.offsetTop - top, height: node.className.includes('measure') ? lines(node.innerHTML) : 0 }; };
     if (tag === 'template') Object.defineProperty(node, 'innerHTML', { set(value: string) {
       html.push(value);
       const child = create(value.startsWith('<pre') ? 'pre' : 'p');
@@ -1073,19 +1094,17 @@ async function revealPage(clientHeight = 100) {
     return node;
   };
   Object.assign(app.context, { performance: { now: () => clock }, requestAnimationFrame: (callback: () => void) => { queued.set(++id, callback); return id; }, cancelAnimationFrame: (frame: number) => queued.delete(frame), setTimeout: (callback: () => void, delay: number) => { timers.set(++id, { at: clock + delay, callback }); return id; }, clearTimeout: (timer: number) => timers.delete(timer) });
+  let top = 0, height = 20, client = clientHeight, moved = false;
   const evaluate = app.repl();
   const box = app.context.document.getElementById('scroll');
-  let top = 0, height = 20, client = clientHeight, moved = false;
   const layout: { height?: () => number; flush: () => void } = { flush: () => {} };
   const total = () => layout.height?.() ?? height;
   layout.flush = () => { const next = Math.min(Math.max(0, total() - client), top); if (next !== top) { top = next; moved = true; } };
   Object.defineProperties(box, {
-    scrollTop: { get: () => (layout.flush(), top), set: (value: number) => { layout.flush(); const before = top; top = Math.max(0, Number(value)); layout.flush(); if (top !== before) moved = true; } },
-    scrollHeight: { get: () => (layout.flush(), total()), set: (value: number) => { layout.flush(); height = value; layout.flush(); } },
-    clientHeight: { get: () => client, set: (value: number) => { client = value; layout.flush(); } },
+    scrollTop: { get: () => (hooks.read?.('scrollTop', box), layout.flush(), top), set: (value: number) => { layout.flush(); const before = top; top = Math.max(0, Number(value)); layout.flush(); if (top !== before) moved = true; } },
+    scrollHeight: { get: () => (hooks.read?.('scrollHeight', box), layout.flush(), total()), set: (value: number) => { layout.flush(); height = value; layout.flush(); } },
+    clientHeight: { get: () => (hooks.read?.('clientHeight', box), client), set: (value: number) => { client = value; layout.flush(); } },
   });
-  const nodeRemove = app.context.Node.prototype.remove;
-  app.context.Node.prototype.remove = function (this: unknown) { nodeRemove.call(this); layout.flush(); };
   const sources: { onmessage?: (event: { data: string }) => void }[] = [];
   Object.assign(app.context, { EventSource: class { onmessage?: (event: { data: string }) => void; onerror = null; onopen = null; constructor() { sources.push(this); } close() {} } });
   let seen = '';
@@ -1094,14 +1113,16 @@ async function revealPage(clientHeight = 100) {
     if (moved) { moved = false; box.onscroll?.(); }
     for (const [timer, { at, callback }] of [...timers]) if (at <= clock) { timers.delete(timer); callback(); }
     for (const [frame, callback] of [...queued]) { queued.delete(frame); callback(); }
-    const size = box.scrollHeight + '/' + box.clientHeight;
+    layout.flush();
+    const size = total() + '/' + client;
     if (size !== seen) { seen = size; for (const { callback, targets } of app.observers) callback(targets.map(target => ({ target, borderBoxSize: [{ blockSize: 96 }] }))); }
+    app.intersect();
   };
   const patch = (revision: number, suffix: string, final = false) => evaluate(`apply({type:'patch',seq:0,baseRevision:${revision - 1},revision:${revision},final:${final},stop:'',error:'',blocks:[{index:0,suffix:${JSON.stringify(suffix)}}]})`);
   const put = (text: string) => evaluate(`put({seq:0,revision:0,kind:'assistant',final:false,blocks:[{type:'text',text:${JSON.stringify(text)}}]})`);
   const deliver = (record: object) => { if (!sources.length) evaluate('connect()'); sources.at(-1)?.onmessage?.({ data: JSON.stringify(record) }); };
   step(0); step(0);
-  return { app, evaluate, html, bars, pres, queued, timers, step, patch, put, layout, deliver };
+  return { app, evaluate, html, bars, pres, queued, timers, step, patch, put, layout, deliver, hooks };
 }
 
 test('reveal waits for a whole line, caps hidden height and time, and finalizes the rest', async () => {
@@ -1112,6 +1133,7 @@ test('reveal waits for a whole line, caps hidden height and time, and finalizes 
   assert.equal(fixture.evaluate("texts.get('0:0').view.children.some(child => child.className === 'caret' || child.className === 'dots')"), false);
   fixture.step(1000);
   assert.equal(fixture.html.length, 3);
+  fixture.step(0);
   assert.deepEqual([fixture.queued.size, fixture.timers.size], [0, 1]);
   fixture.step(500);
   assert.equal(fixture.html.at(-1), '<p>one two three</p>\n');
@@ -1119,6 +1141,7 @@ test('reveal waits for a whole line, caps hidden height and time, and finalizes 
   fixture.step(16);
   assert.equal(fixture.html.at(-1), '<p>one two three four five six seven eight nine ten eleven twelve</p>\n');
   fixture.patch(2, ' more', true);
+  fixture.step(0);
   assert.equal(fixture.html.at(-1), '<p>one two three four five six seven eight nine ten eleven twelve thirteen fourteen more</p>\n');
   assert.deepEqual([fixture.evaluate("revealing.size"), fixture.evaluate("element('items').lastChild?.className.includes('working')"), fixture.queued.size], [0, true, 1]);
 });
@@ -1127,21 +1150,28 @@ test('a duplicate revision repeats nothing and a replaced block restarts its own
   const fixture = await revealPage(200);
   fixture.put('Intro.\n\none two three four five six');
   fixture.patch(1, ' seven');
+  fixture.step(0);
   const shown = fixture.html.length;
   fixture.patch(1, ' seven');
   fixture.evaluate("apply({type:'patch',seq:0,baseRevision:1,revision:1,final:false,stop:'',error:'',blocks:[{index:0,suffix:' dup'}]})");
+  fixture.step(0);
   assert.equal(fixture.html.length, shown);
   const old = fixture.evaluate("texts.get('0:0')");
   fixture.evaluate("apply({type:'patch',seq:0,baseRevision:1,revision:2,final:false,stop:'',error:'',blocks:[{index:0,block:{type:'text',text:'Fresh.\\n\\nnew tail words here'}}]})");
+  fixture.step(0);
   assert.deepEqual(fixture.html.slice(shown), ['<p>Fresh.</p>\n', '', '']);
   assert.deepEqual([fixture.evaluate("revealing.size"), fixture.evaluate("revealing.has(texts.get('0:0'))"), fixture.evaluate("texts.get('0:0')") !== old], [1, true, true]);
 });
 
-test('a hidden page holds no frames until it is shown again', async () => {
+test('a hidden page renders in one timer task, never in a frame, and a shown page moves that work to a frame', async () => {
   const fixture = await revealPage();
   fixture.app.context.document.hidden = true;
-  fixture.put('Intro.\n\nwaiting tail');
-  assert.equal(fixture.queued.size, 0);
+  fixture.deliver({ type: 'item', item: assistant(0, 'Intro.\n\nwaiting tail') });
+  assert.deepEqual([fixture.queued.size, fixture.timers.size, fixture.evaluate('views.has(0)')], [0, 1, false]);
+  fixture.step(50);
+  assert.deepEqual([fixture.queued.size, fixture.evaluate('views.has(0)')], [0, true]);
+  fixture.deliver(patchOf(0, 1, ' more'));
+  assert.deepEqual([fixture.queued.size, fixture.timers.size], [0, 1]);
   fixture.app.context.document.hidden = false;
   fixture.app.listeners.get('visibilitychange')?.({});
   assert.equal(fixture.queued.size, 1);
@@ -1181,7 +1211,7 @@ test("buffered patches drain against the snapshot by revision", async () => {
     const app = await page();
     let release: (value: { ok: boolean; json: () => Promise<object> }) => void = () => {};
     app.context.fetch = () => new Promise(resolve => { release = resolve; });
-    const result = app.run(`let connects=0;connect=()=>{connects++};put=item=>items.set(item.seq,item);epoch='e';first=4;more=true;${setup};const loading=older();const patch=(seq,baseRevision,revision,suffix)=>apply({type:'patch',seq,baseRevision,revision,final:false,stop:'',error:'',blocks:[{index:0,suffix}]});${buffered};loading.then(()=>[items.get(3).blocks[0].text,items.get(2)?.blocks[0].text,connects])`);
+    const result = app.run(`let connects=0;connect=()=>{connects++};accept=item=>items.set(item.seq,item);rendered=()=>Promise.resolve();epoch='e';first=4;more=true;${setup};const loading=older();const patch=(seq,baseRevision,revision,suffix)=>apply({type:'patch',seq,baseRevision,revision,final:false,stop:'',error:'',blocks:[{index:0,suffix}]});${buffered};loading.then(()=>[items.get(3).blocks[0].text,items.get(2)?.blocks[0].text,connects])`);
     release({ ok: true, json: async () => ({ epoch: "e", more: false, items }) });
     return Array.from(await result);
   };
@@ -1199,7 +1229,7 @@ test("a history reply from before an epoch reset is dropped and does not block t
     count: () => releases.length,
   });
   const result = await app.run(`(async()=>{
-    put=item=>items.set(item.seq,item);epoch='e';first=4;more=true;
+    accept=item=>items.set(item.seq,item);rendered=()=>Promise.resolve();epoch='e';first=4;more=true;
     const one=older();
     apply({type:'reset',epoch:'f',more:true,items:[{seq:7,revision:0,kind:'assistant',final:true,blocks:[]}]});first=7;
     const two=older(), started=count();
@@ -1216,7 +1246,7 @@ test("a history reply from before an epoch reset is dropped and does not block t
 test("a duplicate patch is skipped and a gap or non-assistant target reconnects from a reset", async () => {
   const app = await page();
   const result = app.run(`(()=>{
-    let connects=0;connect=()=>{connects++};put=item=>items.set(item.seq,item);epoch='e';
+    let connects=0;connect=()=>{connects++};accept=item=>items.set(item.seq,item);rendered=()=>Promise.resolve();epoch='e';
     items.set(1,{seq:1,revision:0,kind:'assistant',final:false,blocks:[{type:'text',text:'a'}]});
     items.set(2,{seq:2,revision:0,kind:'notify'});
     const patch=(seq,baseRevision,revision,suffix)=>apply({type:'patch',seq,baseRevision,revision,final:false,stop:'',error:'',blocks:[{index:0,suffix}]});
@@ -1263,14 +1293,14 @@ test('every notice is one nrow that opens only when it has more than its line', 
   const app = await page();
   const result = app.run(`(()=>{
     const row=seq=>views.get(seq).view.children[0], hd=r=>r.children[0], tx=r=>hd(r).children[0];
-    const out={};
+    const out={},fit=()=>{for(const [row,overflows] of measureNotices())row.classList.toggle('more',overflows)};
     put({seq:0,at:0,final:true,kind:'notify',level:'warning',text:{text:'Notice stays',cut:0}});apply({...state,type:'state'});
     const a=row(0);
     out.warning=[views.get(0).view.className,a.className,tx(a).textContent,hd(a).children[1].tagName,hd(a).children.length];
-    tx(a).scrollWidth=500;measureNotices();out.overflow=[a.classList.contains('more'),a.children[1].textContent];
-    tx(a).scrollWidth=100;fitAll=true;measureNotices();out.fits=a.classList.contains('more');
+    tx(a).scrollWidth=500;fit();out.overflow=[a.classList.contains('more'),a.children[1].textContent];
+    tx(a).scrollWidth=100;fitAll=true;fit();out.fits=a.classList.contains('more');
     put({seq:8,at:0,final:true,kind:'command',result:{type:'export',path:'/very/long/export.html'}});
-    const x=row(8);tx(x).children[1].scrollWidth=0;x.children[0].children[0].scrollWidth=900;measureNotices();out.export=[x.classList.contains('more'),x.children[1].children.map(c=>c.textContent)];
+    const x=row(8);tx(x).children[1].scrollWidth=0;x.children[0].children[0].scrollWidth=900;fit();out.export=[x.classList.contains('more'),x.children[1].children.map(c=>c.textContent)];
     put({seq:1,at:0,final:true,kind:'notify',level:'info',text:{text:'one\\ntwo',cut:0}});
     const b=row(1);out.multi=[b.className,tx(b).textContent,b.children[1].textContent];
     hd(b).onclick({});out.opened=b.classList.contains('open');
@@ -1433,7 +1463,7 @@ test('browser lightbox Escape closes before abort and keeps the draft', async ()
 
 test('thumbnails call native preview with their resource and rectangle', async () => {
   const app = await page();
-  assert.equal(app.run(`(()=>{window.ko={preview:(url,rect)=>{window.lastPreview={url,rect}}};const images=thumbnails([{id:'0.0',revision:0,mimeType:'image/png',bytes:10}],new Map());images.load();const button=images.view.children[0];button.getBoundingClientRect=()=>({x:1,y:2,width:30,height:40});button.onclick();return window.lastPreview.url==='/images/0.0?e=&r=0'&&window.lastPreview.rect.width===30})()`), true);
+  assert.equal(app.run(`(()=>{window.ko={preview:(url,rect)=>{window.lastPreview={url,rect}}};const images=thumbnails([{id:'0.0',revision:0,mimeType:'image/png',bytes:10}],()=>new Map());images.load();const button=images.view.children[0];button.getBoundingClientRect=()=>({x:1,y:2,width:30,height:40});button.onclick();return window.lastPreview.url==='/images/0.0?e=&r=0'&&window.lastPreview.rect.width===30})()`), true);
 });
 
 test("user thumbnails reuse their image node and a failed image becomes non-interactive", async () => {
@@ -1582,8 +1612,8 @@ async function latestPage() {
   Object.assign(app.context, { matchMedia: () => ({ matches: false }) });
   const text = (seq: number) => ({ seq, revision: 0, kind: 'assistant', final: true, blocks: [{ type: 'text', text: 'reply ' + seq }] });
   const own = (seq: number) => ({ seq, revision: 0, at: 1, kind: 'user', text: 'mine', images: [], attachments: [] });
-  const add = (item: object) => evaluate(`apply({type:'item',item:${JSON.stringify(item)}})`);
-  const scroll = (top: number, height = 1000) => evaluate(`Object.assign(element('scroll'),{scrollHeight:${height},clientHeight:100,scrollTop:${top === 900 ? 899 : 900}});element('scroll').onscroll();element('scroll').scrollTop=${top};element('scroll').onscroll()`);
+  const add = (item: object) => { evaluate(`apply({type:'item',item:${JSON.stringify(item)}})`); fixture.step(0); };
+  const scroll = (top: number, height = 1000) => { evaluate(`Object.assign(element('scroll'),{scrollHeight:${height},clientHeight:100,scrollTop:${top === 900 ? 899 : 900}});element('scroll').onscroll();element('scroll').scrollTop=${top};element('scroll').onscroll()`); app.intersect(); };
   const dividers = () => String(evaluate("element('items').children.map(node => node.className === 'newmsgs' ? 'divider' : node.dataset.seq).join()"));
   const latest = () => String(evaluate("[element('latest').textContent, element('latest').classList.contains('show')].join()"));
   const focus = (value: boolean) => { doc.hasFocus = () => value; app.windowListeners.get(value ? 'focus' : 'blur')?.(); };
@@ -1604,6 +1634,7 @@ test('a reader who scrolled up gets one divider above the first new item and a c
   page.add({ ...page.text(3), revision: 1 });
   assert.equal(page.latest(), '↓ 3 new,true');
   page.evaluate("element('scroll').scrollTop=400;element('scroll').onscroll()");
+  page.app.intersect();
   assert.equal(page.latest(), '↓ 1 new,true');
 });
 
@@ -1745,6 +1776,7 @@ test('a session switch removes the divider', async () => {
   page.add(page.text(1));
   assert.equal(page.dividers(), '0,divider,1');
   page.evaluate(`apply({type:'reset',epoch:'b',more:false,items:[${JSON.stringify(page.text(0))}]})`);
+  page.step(0);
   assert.equal(page.dividers(), '0');
   assert.equal(page.latest().split(',')[0], '↓ Latest');
 });
@@ -1845,7 +1877,7 @@ async function flowPage() {
   const pad = { value: 0 }, extra = new Map<number, number>();
   const seqs = (): number[] => JSON.parse(String(evaluate("JSON.stringify([...views.keys()].sort((a,b)=>a-b))")));
   const starts = new Map<unknown, number>(), now = () => Number(app.context.performance.now());
-  const grown = (node: { className: string }) => { if (!node.className.includes('grow')) return 1; if (!starts.has(node)) starts.set(node, now()); return Math.min(1, (now() - Number(starts.get(node))) / 220); };
+  const grown = (node: { className: string }) => { if (node.className.includes('hold')) return 0; if (!node.className.includes('grow')) return 1; if (!starts.has(node)) starts.set(node, now()); return Math.min(1, (now() - Number(starts.get(node))) / 220); };
   type Box = { tagName: string; className: string; children: Box[]; parent?: Box; style: Record<string, string> };
   const count = (node: Box): number => (node.tagName === 'P' || node.tagName === 'PRE' ? 100 * grown(node) : 0) + node.children.reduce((total, child) => total + count(child), 0);
   const isBox = (value: unknown): value is Box => typeof value === 'object' && value !== null && 'children' in value;
@@ -1871,7 +1903,7 @@ async function flowPage() {
   const settle = (frames = 120) => { for (let frame = 0; frame < frames; frame++) page.step(16); };
   const reader = (value: number) => evaluate(`element('scroll').scrollTop=${value};element('scroll').onscroll()`);
   const offset = (seq: number) => Number(evaluate(`views.get(${seq}).view.getBoundingClientRect().top`));
-  const open = (items: object[], more = false) => evaluate(`apply({type:'reset',epoch:'a',more:${more},items:${JSON.stringify(items)}})`);
+  const open = (items: object[], more = false) => { evaluate(`apply({type:'reset',epoch:'a',more:${more},items:${JSON.stringify(items)}})`); page.step(0); };
   const gate = (items: object[]) => { let release = () => {}; Object.assign(app.context, { fetch: () => new Promise(resolve => { release = () => resolve({ ok: true, json: async () => ({ type: 'reset', epoch: 'a', more: false, items }) }); }) }); return () => release(); };
   const settled = () => new Promise<void>(resolve => setImmediate(resolve));
   const trace = (frames: number) => { const tops: number[] = [], gaps: number[] = []; for (let frame = 0; frame < frames; frame++) { page.step(16); tops.push(top()); gaps.push(bottom() - top()); } return { tops, gaps }; };
@@ -1967,6 +1999,8 @@ test('a reset that is shorter than the pane keeps a restoring view from followin
   page.settle();
   assert.equal(page.top(), 0);
   release();
+  await page.settled();
+  page.settle();
   await page.settled();
   page.settle();
   assert.equal(page.offset(5), anchor);
@@ -2193,6 +2227,7 @@ test('the pane that comes back from the background keeps a reader where it was, 
   page.settle();
   page.focus(false);
   page.deliver({ type: 'item', item: page.text(1) });
+  page.settle(3);
   page.focus(true);
   page.settle(3);
   assert.deepEqual([page.dividers(), page.evaluate('scrolling.kind'), page.latest().split(',')[1]], ['0,divider,1', 'reader', 'true']);
@@ -2225,6 +2260,7 @@ test('a view that was left scrolled up opens at the same place, and a view that 
   assert.equal(page.state().split(',')[1], 'true');
   page.at(900);
   page.go('r'); page.open([0, 1, 2, 3, 4]);
+  page.step(16);
   assert.equal(page.state(), '250,false');
   assert.equal(page.dividers(), '0,1,2,3,4');
   page.go('a'); page.open([10]);
@@ -2238,6 +2274,7 @@ test('items that arrived while away get the divider and the count when the view 
   page.at(250);
   page.go('a'); page.open([10]);
   page.go('r'); page.open([0, 1, 2, 3, 4, 5, 6]);
+  page.step(16);
   assert.equal(page.dividers(), '0,1,2,3,4,divider,5,6');
   assert.equal(page.state(), '250,false');
   assert.match(page.latest(), /^↓ \d+ new,true$/);
@@ -2250,6 +2287,8 @@ test('an anchor older than the loaded tail loads older pages first, and a missin
   const urls: string[] = [];
   Object.assign(page.app.context, { fetch: async (url: string) => { urls.push(url); return { ok: true, json: async () => ({ type: 'reset', epoch: 'a', more: false, items: [0, 1, 2].map(page.text) }) }; } });
   page.go('r'); page.open([3, 4], true);
+  await new Promise(resolve => setImmediate(resolve));
+  page.step(16);
   await new Promise(resolve => setImmediate(resolve));
   page.step(16);
   assert.deepEqual(urls.map(url => url.replace(/\?.*before=/, '?before=').replace(/&.*/, '')), ['/items?before=3']);
@@ -2440,6 +2479,7 @@ test('a job reader keeps their line when earlier output prepends, and a followed
   f.held[0]?.({ start: 89, end: 100, data: f.b64('tail\nolder\n') });
   await f.flush();
   assert.deepEqual(f.lines(), ['older', 'cut', 'live', 'more', 'next']);
+  f.step(16);
   assert.equal(f.evaluate("element('scroll').scrollTop"), 300);
 });
 
@@ -2586,28 +2626,18 @@ test('working dots: one indicator in every frame, a bare row or a running mark, 
 });
 
 async function dotsWatch() {
-  const page = await latestPage(), proto = page.app.context.Node.prototype;
-  const counts = { detached: 0, moved: 0 };
+  const page = await latestPage(), watch = frameWatch(page);
+
   const attached = () => page.evaluate("(()=>{for(let node=working?.primary;node;node=node.parent)if(node===element('items'))return true;return false})()") === true;
-  let depth = 0;
-  for (const name of ['remove', 'removeChild', 'replaceChildren', 'insertBefore', 'append', 'prepend', 'before']) {
-    const original = Reflect.get(proto, name);
-    Reflect.set(proto, name, function (this: unknown, ...args: unknown[]) {
-      if (depth++) { try { return original.apply(this, args); } finally { depth--; } }
-      const was = attached();
-      if (name === 'insertBefore' && args[0] === page.evaluate('working?.primary')) counts.moved++;
-      try { return original.apply(this, args); } finally { depth--; if (was && !attached()) counts.detached++; }
-    });
-  }
   page.evaluate("state={...state,life:{type:'ready'},working:true,since:1700000000000}");
-  return { page, counts, attached, reset: () => { counts.detached = counts.moved = 0; } };
+  return { page, removals: () => watch.counts.removals, attached, reset: () => { watch.counts.removals = 0; } };
 }
 const bash = (id: string, command: string, state: object) => ({ type: 'tool', id, name: 'bash', args: { text: JSON.stringify({ command }) }, state });
 const running = { type: 'running', output: { text: '', cut: 0 } };
 const finished = { type: 'done', error: false, result: { text: '', images: [] } };
 
 test('the working dots are never detached while a turn runs, and move once when a call starts or ends', async () => {
-  const { page, counts, attached, reset } = await dotsWatch();
+  const { page, removals, attached, reset } = await dotsWatch();
   const patch = (seq: number, revision: number, blocks: object[]) => page.evaluate(`apply({type:'patch',seq:${seq},baseRevision:${revision - 1},revision:${revision},final:false,stop:'',error:'',blocks:${JSON.stringify(blocks)}})`);
   const item = (seq: number, blocks: object[]) => ({ seq, revision: 0, at: 0, kind: 'assistant', final: false, stop: '', error: '', blocks });
   page.add(item(0, [{ type: 'text', text: 'Reading.' }]));
@@ -2615,11 +2645,11 @@ test('the working dots are never detached while a turn runs, and move once when 
   assert.equal(attached(), true);
   reset();
   for (let revision = 1; revision <= 50; revision++) { patch(0, revision, [{ index: 0, suffix: ' word' }]); page.step(16); }
-  assert.deepEqual({ ...counts }, { detached: 0, moved: 0 });
+  assert.equal(removals(), 0);
   page.evaluate("folds.set('1:0',true)");
   page.add(item(1, [{ type: 'thinking', text: 'deep thought', started: 1, ended: 2 }, bash('call', 'make', running)]));
   page.step(16);
-  assert.ok(counts.detached <= 1 && counts.moved <= 1, `start: ${JSON.stringify(counts)}`);
+  assert.ok(removals() <= 1, `start: ${removals()}`);
   assert.equal(page.evaluate("[...liveMarks.values()].every(marks=>marks.summary.children.includes(working.primary))"), true);
   patch(1, 1, [{ index: 1, block: bash('call', 'make', running) }]);
   const thinking = page.evaluate("(()=>{const find=n=>n.children.filter(c=>typeof c==='object').flatMap(c=>c.className.includes('think')?[c]:find(c));return find(element('items'))[0]})()");
@@ -2631,19 +2661,19 @@ test('the working dots are never detached while a turn runs, and move once when 
     patch(0, 50 + revision, [{ index: 0, suffix: ' more' }]);
     page.step(16);
   }
-  assert.deepEqual({ ...counts }, { detached: 0, moved: 0 });
+  assert.equal(removals(), 0);
   assert.equal(String(page.evaluate("JSON.stringify(element('items').children.map(function text(n){return typeof n==='object'?[n.textContent,...n.children.map(text)]:n}))")).includes('make 51'), true);
   assert.equal(page.evaluate("[...liveMarks.values()].every(marks=>marks.summary.children.includes(working.primary))"), true);
   assert.equal(page.evaluate("(()=>{const find=n=>n.children.filter(c=>typeof c==='object').flatMap(c=>c.className.includes('think')?[c]:find(c));return find(element('items')).length})()"), 1);
   patch(1, 52, [{ index: 1, block: bash('call', 'make 51', finished) }]);
   page.step(16);
-  assert.ok(counts.detached <= 1 && counts.moved <= 1, `end: ${JSON.stringify(counts)}`);
+  assert.ok(removals() <= 1, `end: ${removals()}`);
   assert.equal(page.evaluate("liveMarks.size"), 0);
   assert.equal(page.evaluate("element('items').lastChild.className.includes('working')&&element('items').lastChild.children[0].children[0].children.includes(working.primary)"), true);
 });
 
 test('with parallel calls the ended call loses its dots and the other keeps its own', async () => {
-  const { page, counts, reset } = await dotsWatch();
+  const { page, removals, reset } = await dotsWatch();
   page.add({ seq: 1, revision: 0, at: 0, kind: 'assistant', final: false, stop: '', error: '', blocks: [bash('a', 'one', running), bash('b', 'two', running)] });
   page.evaluate("folds.set([...liveMarks.keys()][0],true);reconcileWorking()");
   page.step(16);
@@ -2655,6 +2685,124 @@ test('with parallel calls the ended call loses its dots and the other keeps its 
   assert.equal(marks(), '[[false,false],[true,true]]');
   reset();
   for (let revision = 2; revision <= 30; revision++) { patch(revision, 1, bash('b', 'two ' + revision, running)); page.step(16); }
-  assert.deepEqual({ ...counts }, { detached: 0, moved: 0 });
+  assert.equal(removals(), 0);
   assert.equal(marks(), '[[false,false],[true,true]]');
+});
+
+function frameWatch(page: Awaited<ReturnType<typeof latestPage>>) {
+  const proto = page.app.context.Node.prototype, counts = { reads: 0, probes: 0, removals: 0 };
+  let dirty = false, depth = 0;
+  const dots = () => page.evaluate('working?.primary');
+  const parentOf = (node: unknown): unknown => typeof node === 'object' && node ? Reflect.get(node, 'parent') : undefined;
+  const holds = (node: unknown) => { for (let at = dots(); at; at = parentOf(at)) if (at === node) return true; return false; };
+  const write = (name: string, removed: (self: unknown, args: unknown[]) => unknown[]) => {
+    const original = Reflect.get(proto, name);
+    Reflect.set(proto, name, function (this: unknown, ...args: unknown[]) {
+      dirty = true;
+      if (depth++) { try { return original.apply(this, args); } finally { depth--; } }
+      for (const node of removed(this, args)) if (holds(node)) counts.removals++;
+      try { return original.apply(this, args); } finally { depth--; }
+    });
+  };
+  const kids = (self: unknown): unknown[] => { const list = typeof self === 'object' && self ? Reflect.get(self, 'children') : []; return Array.isArray(list) ? [...list] : []; };
+  const moved = (_: unknown, args: unknown[]) => args.filter(arg => !!parentOf(arg));
+  const movedFirst = (_: unknown, args: unknown[]) => moved(_, args.slice(0, 1));
+  write('remove', self => [self]);
+  write('removeChild', (_, args) => [args[0]]);
+  write('replaceChildren', self => kids(self));
+  for (const name of ['append', 'prepend', 'before']) write(name, moved);
+  write('insertBefore', movedFirst);
+  page.hooks.read = (name, self) => {
+    if (self.className?.includes('measure')) counts.probes++;
+    else if (dirty) { counts.reads++; }
+    dirty = false;
+  };
+  return { counts, frame: (ms = 16) => { counts.reads = counts.probes = 0; dirty = false; page.step(ms); } };
+}
+
+const assistant = (seq: number, text: string, final = false) => ({ seq, revision: 0, at: 0, kind: 'assistant', final, stop: '', error: '', blocks: [{ type: 'text', text }] });
+const patchOf = (seq: number, revision: number, suffix: string) => ({ type: 'patch', seq, baseRevision: revision - 1, revision, final: false, stop: '', error: '', blocks: [{ index: 0, suffix }] });
+
+test('a record reaches the model at once and the DOM only in the next frame', async () => {
+  const page = await latestPage();
+  page.deliver({ type: 'item', item: assistant(0, 'first words') });
+  assert.deepEqual([page.evaluate('items.has(0)'), page.evaluate('views.has(0)'), page.evaluate("element('items').children.length")], [true, false, 0]);
+  page.deliver(patchOf(0, 1, ' and more'));
+  assert.deepEqual([page.evaluate('items.get(0).blocks[0].text'), page.evaluate('views.has(0)')], ['first words and more', false]);
+  page.step(16);
+  assert.deepEqual([page.evaluate('views.has(0)'), page.evaluate("element('items').children.length")], [true, 1]);
+});
+
+test('patches between two frames render once', async () => {
+  const page = await latestPage();
+  page.deliver({ type: 'item', item: assistant(0, 'Intro.\n\nbody') });
+  page.step(16);
+  page.evaluate("globalThis.renders = 0; { const original = renderItem; renderItem = item => { globalThis.renders++; return original(item); }; }");
+  for (let revision = 1; revision <= 5; revision++) page.deliver(patchOf(0, revision, ' w' + revision));
+  assert.equal(page.evaluate('globalThis.renders'), 0);
+  page.step(16);
+  assert.equal(page.evaluate('globalThis.renders'), 1);
+  assert.equal(page.evaluate('items.get(0).blocks[0].text'), 'Intro.\n\nbody w1 w2 w3 w4 w5');
+});
+
+test('a streaming frame reads no geometry after it wrote the DOM', async () => {
+  const page = await latestPage(), watch = frameWatch(page);
+  page.evaluate("state={...state,life:{type:'ready'},working:true,since:1700000000000}");
+  page.deliver({ type: 'item', item: assistant(0, 'Intro.\n\none two three four five six') });
+  page.step(16);
+  let reads = 0;
+  for (let revision = 1; revision <= 20; revision++) {
+    page.deliver(patchOf(0, revision, ' word' + revision + (revision % 4 ? '' : '\n\nblock ' + revision)));
+    watch.frame(16);
+    reads += watch.counts.reads;
+  }
+  assert.equal(reads, 0);
+});
+
+test('assistant items and text patches in one turn never take the dots out of the page', async () => {
+  const page = await latestPage(), watch = frameWatch(page);
+  page.evaluate("state={...state,life:{type:'ready'},working:true,since:1700000000000}");
+  page.deliver({ type: 'item', item: assistant(0, 'Reading.') });
+  page.step(16);
+  watch.counts.removals = 0;
+  for (let seq = 1; seq <= 4; seq++) {
+    page.deliver({ type: 'item', item: assistant(seq, 'Part ' + seq) });
+    page.step(16);
+    for (let revision = 1; revision <= 3; revision++) { page.deliver(patchOf(seq, revision, ' more ' + revision)); page.step(16); }
+  }
+  assert.equal(watch.counts.removals, 0);
+  assert.equal(page.evaluate("element('items').lastChild.className.includes('working')"), true);
+});
+
+test('a new reveal tail is measured in the frame after its view exists, not at the time cap', async () => {
+  const page = await revealPage(200);
+  page.deliver({ type: 'item', item: assistant(0, 'Intro.\n\none two three four five six') });
+  page.step(16);
+  assert.deepEqual([page.evaluate('revealDirty'), page.evaluate("texts.get('0:0').reveal.measured === undefined")], [true, true]);
+  page.step(16);
+  assert.equal(page.evaluate("texts.get('0:0').reveal.measured !== undefined"), true);
+});
+
+test('a fresh row that jumps from below the view to above it leaves the count', async () => {
+  const page = await latestPage();
+  page.add(page.text(0)); page.add(page.own(1));
+  page.scroll(0);
+  page.add(page.text(2)); page.add(page.text(3));
+  page.app.intersect();
+  assert.equal(page.latest(), '↓ 2 new,true');
+  page.evaluate("element('scroll').scrollTop=900;element('scroll').onscroll()");
+  page.app.intersect();
+  assert.equal(page.latest().split(',')[0], '↓ Latest');
+});
+
+test('a new block holds for one frame, grows, and ends with neither class when its animation ends', async () => {
+  const page = await revealPage();
+  page.deliver({ type: 'item', item: assistant(0, 'First.\n\nSecond.') });
+  const classes = () => String(page.evaluate("views.get(0).view.children[0].children.map(block => block.className).join('|')"));
+  page.step(16);
+  assert.equal(classes(), 'hold');
+  page.step(16);
+  assert.equal(classes(), 'grow');
+  page.evaluate("views.get(0).view.children[0].children.forEach(block => block.handlers.get('animationend')?.())");
+  assert.equal(classes(), '');
 });

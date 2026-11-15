@@ -43,13 +43,16 @@ function streamTable(frame: Pass, probe: Pass | undefined, budgets: Parameters<t
     ...both('frames (render task)', (_, sum) => String(sum.frame.count)),
     ...both('frame ms p50 / p95 / p99', (_, sum) => spread(sum.frame)),
     ['frames over 16.7 / 50 ms [frame pass]', `${timed.frame.over17} / ${timed.frame.over50}`],
-    ['frame gap ms p50 / p95 / p99 [frame pass]', timed.gap.count ? spread(timed.gap) : 'no tick re-scheduled itself'],
+    ['frame gap ms p50 / p95 / p99 [frame pass]', (timed.gap.count ? spread(timed.gap) : 'no tick re-scheduled itself') + ` (${timed.gap.count} chained of ${timed.frame.count} frames)`],
     ['gaps over 16.7 / 50 ms [frame pass]', `${timed.gap.over17} / ${timed.gap.over50}`],
     ['record apply ms p50 / p95 / p99 [frame pass]', spread(timed.apply)],
     ['applies over 16.7 / 50 ms [frame pass]', `${timed.apply.over17} / ${timed.apply.over50}`],
+    ['applies over 16.7 ms by record [frame pass]', JSON.stringify(timed.slowApplies)],
     ['lex ms (all scopes) [frame pass]', timed.lexMs.toFixed(0)],
-    [`key→frame ms p50 / p99 (${frame.summary.keys ?? 'unknown'} keys) [frame pass]`, `${ms(timed.key.p50)} / ${ms(timed.key.p99)} (n=${timed.key.count})`],
+    ['key→frame ms p50 / p99 [frame pass]', `${ms(timed.key.p50)} / ${ms(timed.key.p99)} (n=${timed.key.count}, ${frame.summary.keys ?? 'unknown'} keys)`],
     ['stray reads in frame / apply / other [probe pass]', counted ? `${counted.strays.frame} / ${counted.strays.apply} / ${counted.strays.other}` : '—'],
+    ['stray reads by dirtying source [probe pass]', counted ? JSON.stringify(counted.strayBy) : '—'],
+    ['reveal probe reads in frame / apply / other [probe pass]', counted ? `${counted.probes.frame} / ${counted.probes.apply} / ${counted.probes.other}` : '—'],
     ['dots detachments at calls / while text / at end [probe pass]', counted ? `${counted.dots.call} / ${counted.dots.text} / ${counted.dots.end}` : '—'],
     ...both('Chrome layouts (count, per s, per frame)', layouts),
     ...both('Chrome layout s / style recalcs / task s', (pass, sum) => { const delta = engine(pass, sum.frame.count); return delta ? `${delta.layoutSeconds.toFixed(2)} / ${delta.recalcs} / ${delta.taskSeconds.toFixed(2)}` : '—'; }),
@@ -77,18 +80,18 @@ export async function report(directory: string, budgets = streamBudgets) {
       const summary: Summary = JSON.parse(await readFile(join(directory, `${manifest.target}-${id}-summary.json`), 'utf8'));
       assert.equal(summary.target, manifest.target); assert.equal(summary.id, id);
       assert.ok(summary.status === 'ok' || summary.status === 'failed', 'Invalid workload status');
-      assert.ok(Number.isFinite(summary.seconds) && summary.seconds > 0, 'Invalid duration');
-      assert.ok(Array.isArray(summary.metrics));
-      const timing = summary.timing;
-      assert.ok(timing === 'frame' || timing === 'applied', 'Missing timing mode');
       const target = summary.target === 'page' ? 'chrome' : 'kido';
       if (summary.target === 'kido') assert.equal(typeof summary.visible, 'boolean', 'Missing visibility');
       const pages = summary.target === 'kido' ? summary.visible ? 'visible pages' : 'hidden pages' : undefined;
       if (summary.status === 'failed') {
         assert.ok(typeof summary.error === 'string' && summary.error.length > 0, 'Missing failure reason');
-        rows.push({ target, id, name: workload.name, pages, status: 'failed', error: summary.error, seconds: summary.seconds.toFixed(1), processesBefore: summary.before?.processes, processesAfter: summary.after?.processes });
+        rows.push({ target, id, name: workload.name, pages, status: 'failed', error: summary.error, seconds: Number.isFinite(summary.seconds) ? summary.seconds.toFixed(1) : undefined, processesBefore: summary.before?.processes, processesAfter: summary.after?.processes });
         continue;
       }
+      assert.ok(Number.isFinite(summary.seconds) && summary.seconds > 0, 'Invalid duration');
+      assert.ok(Array.isArray(summary.metrics));
+      const timing = summary.timing;
+      assert.ok(timing === 'frame' || timing === 'applied', 'Missing timing mode');
       assert.equal(summary.metrics.length, summary.target === 'page' ? 1 : id === 6 ? 8 : id === 12 ? 7 : 1, 'Missing pane metrics');
       const streams = await Promise.all(summary.metrics.map(async path => {
         const records: Batch[] = (await readFile(path, 'utf8')).trim().split('\n').map(line => JSON.parse(line));
