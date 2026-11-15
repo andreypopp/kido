@@ -831,7 +831,17 @@ fn stream_client() -> ExitCode {
             let event = ClientEvent::Layout(event);
             known = table.iter().map(|row| text(row, "id")).collect();
             emit_message(&event);
-            append("KO_FAKE_CLIENT_LAYOUTS", &protocol::json(&event));
+            let line = protocol::json(&event);
+            append("KO_FAKE_CLIENT_LAYOUTS", &line);
+            let own = env("KO_FAKE_CLIENT_LAYOUTS");
+            if !own.is_empty()
+                && let Ok(mut file) = OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(format!("{own}.{}", hello.name))
+            {
+                let _ = file.write_all(format!("{line}\n").as_bytes());
+            }
             previous = raw;
         }
         let feed = fs::read_to_string(env("KO_FAKE_CLIENT_FEED")).unwrap_or_default();
