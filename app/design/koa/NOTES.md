@@ -1298,3 +1298,61 @@ is at the bottom and keeps the position otherwise. Three additions.
   Down does the same. The view bar, when shown, is at the top and
   unaffected.
 - **Browser mode**: the same; the focus is the browser window's.
+
+## The job page (job.html; 2026-11-15, approved)
+
+A background job (async_bash, a bash call gone to the background)
+becomes a view of koa's page, as an in-process subagent is: a click
+on its sidebar record switches the view, the record is `selected`,
+the pane row's fill goes, the pane row's click (or the view bar's
+back) returns to the agent. No float, no second pane.
+
+- **The view bar**: the job under the agent that started it: "‹ @ko
+  › make-verify", or "‹ @ko › @sidebar-right › main-watch" for a
+  subagent's job; the job's name is the last item, 600; the ancestors
+  switch to their views.
+- **The header** (the transcript's column, under the bar): the name
+  at 1.15em 600 with a "service" tag (11pt, a hairline pill) when it
+  is one; the command in a mono block (the pre's well, wrapping);
+  one facts line in the muted prose: "started 14:31 by @ko · on this
+  Mac" (or "on runtime devbox") · "log <path>", the path mono,
+  previewable as a step's path (⇧⌘-click Quick Look in Kido; a click
+  opens the file in browser mode).
+- **The output**: the log as text in the mono at .88em, wrapping
+  (`pre-wrap`, `overflow-wrap: anywhere`), ANSI SGR colours mapped to
+  the theme's `--ko-color-N` (bold, dim and the 16 colours; every
+  other escape stripped; no cursor movement: a progress bar that
+  rewrites its line shows as its last state, carriage returns
+  collapsing the line). Live: the page appends what koa's tail
+  streams, with the transcript's follow rule: following at the
+  bottom, the position kept otherwise, "↓ Latest" above the foot
+  while not at the bottom (no count: lines are not messages), no
+  divider. At the open the page shows koa's in-memory tail (the last
+  64 KB); "Load earlier output · 1.2 MB on disk" at the top reads
+  the file backward in 256 KB steps when the tail did not hold the
+  start; the button goes when the start is reached. Nothing is
+  truncated at the end.
+- **The foot** replaces the composer (the field keeps its frame, no
+  text input, no model/context/cwd): the state at the left with the
+  dot (green breathing "running 3m 04s", red "exit 1 2m 10s", gray
+  "done 2m 10s", "stopped", "signal TERM"), the byte count after a
+  separator, and at the right one text button: "Stop" while running
+  (services too; hover red), "Clear" when ended. Stop sends the
+  job's stop; the view stays and shows the end. Clear removes the
+  record and returns to the agent's view.
+- **The job ends while viewed**: the output shows its last lines, an
+  outcome line "exit 1 · 14:30" (the colour of the state) under the
+  output, the foot's state changes, Stop becomes Clear. The record's
+  60 s linger does not run while the job is viewed: it starts when
+  the view is left, so a viewed record never vanishes under the
+  reader. A record cleared by another client while viewed: the view
+  stays until left, then is gone.
+- **Browser mode** (no sidebar): the transcript's job row card gets
+  one link "open" at its end that switches to the same view; the view
+  bar's back returns. The same link exists in Kido for parity.
+- **Keys**: none new; Escape in the view is the agent's abort, as in a
+  subagent view, so the view has nothing to abort and Escape does
+  nothing.
+
+Renders: /tmp/koa-shots/koa-job-{running,ended,service,running-narrow}-light.png,
+koa-job-{running,ended}-dark.png.
