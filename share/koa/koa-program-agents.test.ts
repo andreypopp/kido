@@ -170,7 +170,7 @@ test("a tree of three levels refuses a fourth, writes a record for each agent wi
   await app.feed({ id: "user-stop-2", kind: "user", text: "stop it" });
   await pollUntil(() => state(app).view.path.length === 1 && !state(app).agents.some(agent => agent.name === "kid"), 10000, "the stop to select the root and drop the kid");
   await pollUntil(async () => (await statusPosts(app)).some(post => post.type === "clear" && post.id === "agents/kid"), 5000, "the subtree clear");
-  assert.ok(app.provider.requests.some(request => JSON.stringify(request.body.messages.at(-1)).includes("stopped kid")));
+  await pollUntil(() => app.provider.requests.some(request => JSON.stringify(request.body.messages.at(-1)).includes("stopped kid")), 5000, "the stop_agent result to reach the model");
   assert.deepEqual(app.provider.violations, []);
 });
 
