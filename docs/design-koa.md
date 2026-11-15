@@ -672,7 +672,8 @@ bar's buttons (`POST /view` from the page), and the stop of a viewed
 subagent, which switches to its nearest surviving ancestor. A switch
 is instant. It cancels the external editor and moves the page's
 event stream to the new agent's feed: it publishes the new agent's
-`state` first, then a `reset` of its feed under a new epoch, because
+`state` first, then a `reset` of its feed, under a new epoch when no
+named stream follows that feed ("Named views" below), because
 the page renders `@name` links from the state and scopes its image
 reads by its `sessionId`. The feed is not rebuilt, so a streaming
 reply and a running tool continue where they were. Then the tree
@@ -707,6 +708,46 @@ before opens at its end.
 **Links.** An `@name` link of an agent of this process switches the
 view; one of another pane focuses that pane with `window.ko.focus`,
 and that pane keeps its own view.
+
+**Named views.** The view above is the pane's selection: the page,
+the sidebar, the records' `selection`, OSC 7501 and the external
+editor follow it. A client with its own navigation, such as the iOS
+app, names its view in each request instead: `view=<id>` in the
+query of a `GET` (`/events`, `/items`, `/history`, `/images/`,
+`/steps/`) and `view` in the JSON body of a `POST` (`ViewRequest` in
+`koa-records.ts`). The id is one that `resolveView` accepts: `""`
+for the root, an agent's id or record path, or a job's id. Without
+it, a request serves the selection, as the page's requests do. A
+named request never changes the selection, so two clients navigate
+the tree each on its own; only `POST /view` moves the selection.
+`handle` in `koa.ts` resolves the address once, after it reads the
+body, and every rule that the selection decides applies to the
+addressed view: the session check, "a job view takes no agent
+action", the root-only commands and the job actions. A selected
+request stays invalid when the selection or its session changes
+before it acts; a named one when its agent stops or its session
+changes. A named job `Clear` does not switch the pane. The external
+editor opens only for the selected agent: a named `/editor/open`
+for another agent is refused, so C-g keeps one owner.
+
+A named `/events` stream gets the addressed view's feed and its
+`state`, whose `view` is the view it named; `edit` is only in the
+state of the selected agent. A switch moves only the selected
+streams to the new feed and leaves the named ones where they are.
+A switch into a feed that has subscribers flushes its pending
+output to them and keeps its epoch; only a feed with no subscribers
+starts again under a new epoch. An agent's feed lives as long as
+the agent. A job's feed lives while the job is selected or a stream
+follows it, and closes when the last one ends; a new one starts
+under a new epoch. `/job/earlier` needs an open feed.
+
+An unknown or gone view answers 404 with the kind `view_gone`
+(`ViewGone`). When an agent stops, each named stream of it or of a
+view below it gets the record `view_gone` with the nearest
+surviving ancestor as `parent`, then the stream ends, so the client
+returns to that parent; the selected streams switch to it as
+before. A job that ends keeps its log view: its stream gets
+`job-gone` only when its log is gone ("The job view").
 
 ## The transcript
 

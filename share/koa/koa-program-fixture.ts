@@ -55,7 +55,20 @@ async function launch(t: After, dir: string, cwd: string, env: NodeJS.ProcessEnv
   const sessionId = () => stream.records.filter(record => record.type === 'state').at(-1)?.sessionId;
   const url = (path: string) => base + path + (path.includes('?') ? '&' : '?') + 'sessionId=' + encodeURIComponent(sessionId() ?? '');
   const post = (path: string, body: object = {}) => fetch(path.startsWith('attachments') ? url(path) : base + path, { method: "POST", headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(Array.isArray(body) ? body : { sessionId: stream.records.filter(record => record.type === 'state').at(-1)?.sessionId, ...body }) });
-  return { pid: child.pid, post, url, until, records: () => stream.records, count: () => stream.records.length, close, stdout, stderr, base };
+  const subscribe = async (view: string, query = "") => {
+    const viewer = new AbortController();
+    t.after(() => viewer.abort());
+    const named = await fetch(base + "events?view=" + encodeURIComponent(view) + query, { signal: viewer.signal });
+    const opened = sse(Readable.from(named.ok && named.body ? named.body : []));
+    const own = () => opened.state.records.filter(record => record.type === 'state').at(-1)?.sessionId;
+    const scoped = (path: string) => base + path + (path.includes('?') ? '&' : '?') + 'view=' + encodeURIComponent(view) + '&sessionId=' + encodeURIComponent(own() ?? '');
+    return {
+      status: named.status, error: named.ok ? undefined : await named.json(), until: opened.until, records: () => opened.state.records, ended: () => opened.state.ended, close: () => viewer.abort(),
+      get: (path: string) => fetch(scoped(path)),
+      post: (path: string, body: object = {}) => fetch(base + path, { method: "POST", headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ sessionId: own(), view, ...body }) }),
+    };
+  };
+  return { pid: child.pid, post, url, subscribe, until, records: () => stream.records, count: () => stream.records.length, close, stdout, stderr, base };
 }
 export const assistantMessage = { ...assistant("stop"), api: "test", provider: "test", model: "test", usage: {}, timestamp: 42 };
 

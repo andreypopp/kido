@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Readable } from "node:stream";
 import { sse, ofType, selfPane, pollUntil } from "./koa-agent-fixture.ts";
+import type { PageRecord } from "./koa-records.ts";
 import { realFixture } from "./koa-program-fixture.ts";
 
 type App = Awaited<ReturnType<typeof realFixture>>;
@@ -282,4 +283,105 @@ test("a child whose start failed starts again alone, from its saved session", { 
   assert.equal((await app.post("agent/start")).status, 200);
   await app.until(ofType("state", record => record.view.id === kid && record.life.type === "ready"), app.count() - 1);
   assert.equal(state(app).view.id, kid);
+});
+
+const pingScript = [...kidScript, { when: "ping kid", text: "pong" }];
+const seen = (records: object[], text: string) => JSON.stringify(records).includes(text);
+
+test("a named view streams and serves its own agent, and no request of it moves the pane's selection", { timeout: 30000 }, async t => {
+  const app = await realFixture(t, { panes: [selfPane()], replies: pingScript });
+  await send(app, "spawn one");
+  const kid = viewOf(await app.until(listed("kid")), "kid");
+  await app.until(ofType("item", record => record.item.kind === "agent" && record.item.inbound.form === "report"));
+  const rootId = state(app).view.id;
+  const rootView = await app.subscribe(rootId), kidView = await app.subscribe(kid);
+  assert.deepEqual([rootView.status, kidView.status], [200, 200]);
+  const kidReset = await kidView.until(ofType("reset", record => items(record).includes("kid done")));
+  assert.ok(!items(kidReset).includes("spawn one"));
+  assert.ok(items(await rootView.until(ofType("reset"))).includes("spawn one"));
+  assert.equal((await kidView.until(ofType("state"))).view.id, kid);
+  assert.equal((await rootView.until(ofType("state"))).view.id, rootId);
+  const before = app.count();
+  assert.equal((await kidView.post("prompt", { text: "ping kid", mode: "prompt", attachments: [] })).status, 200);
+  await pollUntil(() => seen(kidView.records(), "pong"), 10000, "the reply in the kid's view");
+  assert.ok(!seen(rootView.records(), "ping kid"));
+  assert.ok(!seen(app.records().slice(before), "ping kid"));
+  assert.equal(state(app).view.id, rootId);
+  const kidHistory: { entries: string[] } = await (await kidView.get("history")).json();
+  const rootHistory: { entries: string[] } = await (await rootView.get("history")).json();
+  assert.ok(kidHistory.entries.includes("ping kid") && !rootHistory.entries.includes("ping kid"));
+  const kidItems: { items: object[] } = await (await kidView.get("items?before=100")).json();
+  assert.ok(seen(kidItems.items, "pong"));
+  const mark = rootView.records().length;
+  assert.equal((await app.post("view", { id: kid })).status, 200);
+  await app.until(ofType("state", record => record.view.id === kid));
+  assert.equal((await app.post("view", { id: rootId })).status, 200);
+  await app.until(ofType("state", record => record.view.id === rootId), app.count() - 1);
+  await pollUntil(() => rootView.records().length > mark, 5000, "a state after the switch");
+  assert.deepEqual(rootView.records().slice(mark).filter(record => record.type === "reset"), []);
+  assert.equal(kidView.records().filter(ofType("state")).at(-1)?.view.id, kid);
+  assert.equal(kidView.records().filter(record => record.type === "state" && "edit" in record).length, 0);
+});
+
+test("a named subagent view refuses root-only routes, and a stopped subtree ends its streams and its requests with view_gone", { timeout: 30000 }, async t => {
+  const app = await realFixture(t, { panes: [selfPane()], replies: kidScript });
+  await send(app, "spawn one");
+  const kid = viewOf(await app.until(listed("kid")), "kid");
+  const rootId = state(app).view.id;
+  const kidView = await app.subscribe(kid);
+  await kidView.until(ofType("state"));
+  for (const [path, body] of [["sessions/new", {}], ["sessions/list", { scope: "current" }], ["sessions/switch", { path: "/x" }], ["quit", {}]] as const) {
+    const refused = await kidView.post(path, body);
+    assert.equal(refused.status, 409, path);
+    assert.match((await refused.json()).error, /only in @/);
+  }
+  assert.equal((await kidView.get("models")).status, 200);
+  await pollUntil(async () => (await statusPosts(app)).some(post => post.id === "agents/kid" && post.closeable === true), 10000, "the closeable record");
+  await app.feed({ id: "close-user-1", kind: "close", text: "agents/kid" });
+  const gone = await kidView.until(ofType("view_gone"));
+  assert.deepEqual([gone.view, gone.parent], [kid, rootId]);
+  await pollUntil(() => kidView.ended(), 5000, "the end of the stream");
+  const reopened = await app.subscribe(kid);
+  assert.deepEqual([reopened.status, reopened.error?.kind, reopened.error?.view], [404, "view_gone", kid]);
+  const late = await kidView.post("prompt", { text: "late", mode: "prompt", attachments: [] });
+  assert.equal(late.status, 404);
+  assert.equal((await late.json()).kind, "view_gone");
+  assert.equal((await kidView.get("history")).status, 404);
+});
+
+const jobIdIn = (records: PageRecord[]): string | undefined => {
+  for (const record of records) {
+    const blocks = record.type === "patch" ? record.blocks.flatMap(entry => "block" in entry ? [entry.block] : []) : (record.type === "reset" ? record.items : record.type === "item" ? [record.item] : []).flatMap(item => item.kind === "assistant" ? item.blocks : []);
+    for (const block of blocks) if (block.type === "tool" && block.job) return block.job.id;
+  }
+};
+
+test("stopping an agent ends the named streams of its grandchild and its job with view_gone naming the surviving parent", { timeout: 40000 }, async t => {
+  const app = await realFixture(t, { panes: [selfPane()], replies: [
+    { when: "spawn one", tools: [tool("spawn_agent", { name: "kid", task: "kidwork" })] },
+    { when: "spawn one", text: "spawned" },
+    { when: "kidwork", tools: [tool("spawn_agent", { name: "gk", task: "gkwork" })] },
+    { when: "kidwork", tools: [tool("async_bash", { command: "sleep 30", name: "nap" })] },
+    { when: "kidwork", text: "kid waits" },
+    { when: "gkwork", text: "gk done" },
+    { when: "notice from gk", text: "kid got it" },
+    { when: "notice from kid", text: "root noted" },
+  ] });
+  await send(app, "spawn one");
+  const kid = viewOf(await app.until(listed("kid")), "kid");
+  const rootId = state(app).view.id;
+  const kidView = await app.subscribe(kid);
+  const gk = viewOf(await kidView.until(listed("gk")), "gk");
+  await pollUntil(() => jobIdIn(kidView.records()) !== undefined, 15000, "the kid's job");
+  const job = jobIdIn(kidView.records()) ?? "";
+  const gkView = await app.subscribe(gk), jobStream = await app.subscribe(job);
+  assert.deepEqual([gkView.status, jobStream.status], [200, 200]);
+  await jobStream.until(ofType("job-reset"));
+  await pollUntil(async () => (await statusPosts(app)).some(post => post.id === "agents/kid" && post.closeable === true), 10000, "the closeable record");
+  await app.feed({ id: "close-user-1", kind: "close", text: "agents/kid" });
+  for (const [stream, id] of [[kidView, kid], [gkView, gk], [jobStream, job]] as const) {
+    const gone = await stream.until(ofType("view_gone"));
+    assert.deepEqual([gone.view, gone.parent], [id, rootId]);
+    await pollUntil(() => stream.ended(), 5000, "the end of the stream");
+  }
 });

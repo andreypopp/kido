@@ -67,4 +67,6 @@ export function pathArg(block: Block | undefined): string | undefined {
 }
 
 export type Patch = { type: "patch"; seq: number; baseRevision: number; revision: number; blocks: ({ index: number; block: Block } | { index: number; suffix: string })[]; final: boolean; stop: string; error: string; ended?: number };
-export type PageRecord = { type: "reset"; epoch: string; more: boolean; items: WireItem[] } | { type: "item"; item: WireItem } | Patch | ({ type: "state" } & State) | { type: "flush"; bytes: number; t: number } | { type: "reload" } | { type: "job-reset"; view: string; epoch: string; start: number; end: number; data: string } | { type: "job-append"; view: string; epoch: string; start: number; data: string } | { type: "job-gone"; view: string };
+export type PageRecord = { type: "reset"; epoch: string; more: boolean; items: WireItem[] } | { type: "item"; item: WireItem } | Patch | ({ type: "state" } & State) | { type: "flush"; bytes: number; t: number } | { type: "reload" } | { type: "job-reset"; view: string; epoch: string; start: number; end: number; data: string } | { type: "job-append"; view: string; epoch: string; start: number; data: string } | { type: "job-gone"; view: string } | { type: "view_gone"; view: string; parent: string };
+export type ViewRequest = { view?: string };
+export type ViewGone = { kind: "view_gone"; view: string; error: string };

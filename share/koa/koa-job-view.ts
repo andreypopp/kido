@@ -2,7 +2,7 @@ import { closeSync, existsSync, openSync, readSync, fstatSync } from "node:fs";
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { BackgroundJob } from "./koa-agent.ts";
 import type { JobRef } from "./records.ts";
-import { frame, forget, send, follow } from "./koa-feed.ts";
+import { frame, forget, send, follow, take, expire, type ViewAddress } from "./koa-feed.ts";
 import { LOG_CHUNK, readLog } from "./koa-job-log.ts";
 import type { LogChunk, PageRecord } from "./koa-records.ts";
 import { mintId } from "./text.ts";
@@ -31,11 +31,11 @@ export function fileSource(ref: JobRef): Source {
   return { id: ref.id, log: ref.log, missing: () => missing, logged: () => size, tail: () => tail, flushed: () => Promise.resolve() };
 }
 
-export function jobView(source: Source) {
+export function jobView(source: Source, empty: () => void = () => {}) {
   const epoch = mintId();
   const lifetime = new AbortController();
   const cursors = new WeakMap<ServerResponse, Cursor>();
-  let subscribers = new Set<ServerResponse>();
+  const subscribers = new Set<ServerResponse>();
   let currentState: PageRecord | undefined;
   const tailStart = (): number => source.logged() - source.tail().length;
   const flushed = source.flushed;
@@ -73,13 +73,12 @@ export function jobView(source: Source) {
   };
   return {
     release(): Set<ServerResponse> {
-      const held = subscribers;
-      subscribers = new Set();
+      const held = take(subscribers);
       for (const response of held) cursors.delete(response);
       return held;
     },
     show(previous: { release(): Set<ServerResponse> }): void {
-      for (const response of previous.release()) { follow(subscribers, response); sendState(response); open(response); }
+      for (const response of previous.release()) { follow(subscribers, response, { type: "selected" }, empty); sendState(response); open(response); }
     },
     state(record: Extract<PageRecord, { type: "state" }>): void {
       currentState = record;
@@ -88,14 +87,16 @@ export function jobView(source: Source) {
         if (cursor?.busy) cursor.stateDue = true; else sendState(response);
       }
     },
+    subscribed: (): boolean => subscribers.size > 0,
+    expire: (parent: string): void => expire(subscribers, parent),
     output(): void { for (const response of subscribers) void pump(response); },
-    handle(request: IncomingMessage, response: ServerResponse): boolean {
+    handle(request: IncomingMessage, response: ServerResponse, address: ViewAddress = { type: "selected" }): boolean {
       const url = new URL(request.url ?? "/", "http://koa");
       if (request.method !== "GET" || url.pathname !== "/events") return false;
       response.once("close", () => forget(response));
       response.writeHead(200, { "Content-Type": "text/event-stream" });
       response.flushHeaders();
-      follow(subscribers, response);
+      follow(subscribers, response, address, empty);
       const after = Number(url.searchParams.get("after") ?? "");
       if (url.searchParams.get("epoch") === epoch && Number.isSafeInteger(after) && after >= 0 && after <= source.logged()) {
         cursors.set(response, { sent: after, busy: false, stateDue: true });

@@ -9,7 +9,7 @@ import { pathArg, type Annotation } from "./koa-records.ts";
 import { isRelation, isAgentFailure } from "./records.ts";
 import { promptText } from "./prompt.ts";
 import type { Text, Block, Item, Assistant, WireItem, State, PageRecord, ImageRef, Attachment, AgentCall, NotifyLevel, CommandResult, BashResult } from "./koa-records.ts";
-import { send, forget, follow } from "./koa-feed.ts";
+import { send, forget, follow, take, expire, type ViewAddress } from "./koa-feed.ts";
 import type { WireJob } from "./koa-records.ts";
 import type { JobPlace, AgentRef, AgentOutcome, JobRef, JobEnd, Inbound, AgentDetails, NoticeDetails, StreamDetails } from "./records.ts";
 import { mintId, contentText, utf8Prefix, isRecord, errorText, type Content } from "./text.ts";
@@ -166,7 +166,6 @@ export function transcript({ dir, flushMs, metrics = false }: { dir: string; flu
   let session: { type: 'unbound' } | { type: 'bound'; id: string | undefined } = { type: 'unbound' };
   let assistant: number | undefined;
   let subscribers = new Set<ServerResponse>();
-  const subscribe = (req: ServerResponse): void => follow(subscribers, req);
   const tools = new Map<string, { item: Assistant; block: Extract<Block, { type: "tool" }> }>();
   const dirty = new Set<number>();
   const sent = new Map<number, Assistant>();
@@ -418,22 +417,20 @@ export function transcript({ dir, flushMs, metrics = false }: { dir: string; flu
         case 'annotation': annotation(event.entry, false); break;
       }
     }
-    const responses = [...subscribers];
-    subscribers.clear();
     flush(false);
     for (const item of items) if (item.kind === "assistant") notRun(item);
     sent.clear();
     const record = reset();
-    for (const req of responses) { subscribe(req); body(req, record, true); }
+    for (const req of [...subscribers]) body(req, record, true);
   };
 
-  const release = (): Set<ServerResponse> => { const held = subscribers; subscribers = new Set(); return held; };
+  const release = (): Set<ServerResponse> => take(subscribers);
   const show = (previous: { release(): Set<ServerResponse> }): void => {
     const responses = previous.release();
-    flush(false); sent.clear();
-    epoch = mintId();
+    flush();
+    if (!subscribers.size) { sent.clear(); epoch = mintId(); }
     const record = reset(), state = currentState && frame(JSON.stringify(currentState));
-    for (const req of responses) { subscribe(req); if (state) body(req, state, true); body(req, record, true); }
+    for (const req of responses) { follow(subscribers, req, { type: "selected" }); if (state) body(req, state, true); body(req, record, true); }
   };
   const message: (message: AgentMessage, phase: "start" | "update" | "end", ended?: number, attachments?: Attachment[]) => void = applyMessage;
   const thinking = (index: number, edge: "started" | "ended", at: number): void => {
@@ -466,7 +463,7 @@ export function transcript({ dir, flushMs, metrics = false }: { dir: string; flu
     for (const response of subscribers) response.end();
     subscribers.clear();
   };
-  const handle = (request: IncomingMessage, req: ServerResponse): boolean => {
+  const handle = (request: IncomingMessage, req: ServerResponse, address: ViewAddress = { type: "selected" }): boolean => {
     const url = new URL(request.url ?? "/", "http://ko");
     if (request.method === "GET" && url.pathname.startsWith("/images/")) {
       const image = images.get(url.pathname.slice(8));
@@ -500,7 +497,7 @@ export function transcript({ dir, flushMs, metrics = false }: { dir: string; flu
         }
       } else { if (counters) counters.resets++; body(req, reset(), true); }
       if (req.writableEnded || req.destroyed) return true;
-      subscribe(req);
+      follow(subscribers, req, address);
       if (counters) body(req, frame(JSON.stringify(flushRecord(counters.bytes))), true);
       if (currentState) broadcast(currentState);
     } else return false;
@@ -523,5 +520,5 @@ export function transcript({ dir, flushMs, metrics = false }: { dir: string; flu
       if (item.kind === 'assistant') for (const block of item.blocks) if (block.type === 'tool' && block.job?.id === id) return block.job;
     }
   };
-  return { command, jobFacts, itemFile, release, show, message, thinking, annotation, rebuild, toolRunning, toolPartial, toolDone, state, notify, handle, close, get metrics() { return counters && { ...counters, subscribers: subscribers.size }; } };
+  return { command, jobFacts, itemFile, release, show, expire: (parent: string) => expire(subscribers, parent), message, thinking, annotation, rebuild, toolRunning, toolPartial, toolDone, state, notify, handle, close, get metrics() { return counters && { ...counters, subscribers: subscribers.size }; } };
 }

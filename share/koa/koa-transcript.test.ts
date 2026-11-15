@@ -15,7 +15,7 @@ function directory(t: TestContext) {
   return dir;
 }
 
-function request(view: ReturnType<typeof transcript>, path: string) {
+function request(view: ReturnType<typeof transcript>, path: string, address: Parameters<ReturnType<typeof transcript>["handle"]>[2] = { type: "selected" }) {
   const request = new IncomingMessage(new Socket());
   request.method = "GET";
   request.url = path;
@@ -23,7 +23,7 @@ function request(view: ReturnType<typeof transcript>, path: string) {
   const lines: string[] = [];
   response.write = (chunk: string) => { lines.push(chunk); return true; };
   response.end = (chunk?: unknown) => { if (typeof chunk === "string") lines.push(chunk); return response; };
-  assert.equal(view.handle(request, response), true);
+  assert.equal(view.handle(request, response, address), true);
   return lines;
 }
 
@@ -493,5 +493,22 @@ test("a page that moved to another feed and then disconnects is held by neither 
   assert.deepEqual([before.metrics?.subscribers, after.metrics?.subscribers], [0, 1]);
   response.emit("close");
   assert.deepEqual([before.metrics?.subscribers, after.metrics?.subscribers], [0, 0]);
+  before.close(); after.close();
+});
+
+test("show keeps a named page's epoch and cursor: pending output reaches it first, and only the moved pages get a reset", t => {
+  const before = transcript({ dir: directory(t), flushMs: 1000 }), after = transcript({ dir: directory(t), flushMs: 1000 });
+  after.message(assistant("a"), "start");
+  const moved = request(before, "/events");
+  const named = request(after, "/events", { type: "named", id: "b" });
+  const epoch = record(named[0]).epoch;
+  after.message(assistant("ab"), "update");
+  moved.length = 0; named.length = 0;
+  after.show(before);
+  const patches = named.map(record);
+  assert.deepEqual(patches.map(entry => [entry.type, entry.blocks?.[0]?.suffix]), [["patch", "b"]]);
+  const reset = moved.map(record).find(entry => entry.type === "reset");
+  assert.equal(reset?.epoch, epoch);
+  assert.ok(JSON.stringify(reset?.items).includes('"ab"'));
   before.close(); after.close();
 });

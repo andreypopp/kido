@@ -1,6 +1,6 @@
-import type { LogChunk, CompletionQuery, CompletionResult, PromptMode, PromptResult, QueuedPrompt, SessionRow, SessionScope, ThinkingLevel, UploadProgress, WireItem } from '../koa-records.ts';
+import type { ViewRequest, LogChunk, CompletionQuery, CompletionResult, PromptMode, PromptResult, QueuedPrompt, SessionRow, SessionScope, ThinkingLevel, UploadProgress, WireItem } from '../koa-records.ts';
 
-type Session = { sessionId: string | undefined };
+type Session = { sessionId: string | undefined } & ViewRequest;
 type Empty = Record<string, never>;
 
 export type Routes = {

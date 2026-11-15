@@ -191,3 +191,59 @@ test("a registry job whose log was deleted opens with the log is gone", { timeou
   assert.equal((await f.app.post("view", { id: f.id })).status, 200);
   await f.app.until(ofType("job-gone", record => record.view === f.id), after);
 });
+
+test("two named viewers of a job share its feed and keep its output across the pane's switches", { timeout: 30000 }, async t => {
+  const f = await viewing(t);
+  const one = await f.app.subscribe(f.id), two = await f.app.subscribe(f.id);
+  assert.deepEqual([one.status, two.status], [200, 200]);
+  assert.equal((await one.until(isReset)).epoch, (await two.until(isReset)).epoch);
+  const named = await one.until(ofType("state", record => record.view.type === "job"));
+  assert.equal(named.view.id, f.id);
+  assert.equal("edit" in named, false);
+  await pollUntil(() => received(one.records()) === "hello\n" && received(two.records()) === "hello\n", 5000, "the output arrives in both");
+  await f.select(f.record);
+  await f.app.until(ofType("state", record => record.view.type === "job"));
+  const mark = f.app.count();
+  await f.select("");
+  await f.app.until(ofType("state", record => record.view.type === "agent"), mark);
+  await f.release();
+  await pollUntil(() => received(one.records()) === "hello\nbye\n" && received(two.records()) === "hello\nbye\n", 5000, "the rest arrives in both");
+  assert.deepEqual([one.records().filter(isReset).length, two.records().filter(isReset).length], [1, 1]);
+  assert.equal(one.records().filter(ofType("state")).at(-1)?.view.type, "job");
+});
+
+test("a job feed lives while a viewer or the pane's selection holds it, and a new feed has a new epoch", { timeout: 30000 }, async t => {
+  const f = await viewing(t);
+  const one = await f.app.subscribe(f.id), two = await f.app.subscribe(f.id);
+  const epoch = (await one.until(isReset)).epoch;
+  await pollUntil(() => received(two.records()) === "hello\n", 5000, "the output arrives");
+  one.close();
+  const resumed = await f.app.subscribe(f.id, `&epoch=${epoch}&after=6`);
+  await resumed.until(ofType("state"));
+  assert.deepEqual(resumed.records().filter(isReset), [], "the first disconnect keeps the feed");
+  await f.select(f.record);
+  assert.equal((await f.app.until(isReset)).epoch, epoch, "the selection shares the feed of the viewers");
+  two.close(); resumed.close();
+  const kept = await f.app.subscribe(f.id, `&epoch=${epoch}&after=6`);
+  await kept.until(ofType("state"));
+  assert.deepEqual(kept.records().filter(isReset), [], "the selection keeps the feed without viewers");
+  kept.close();
+  await f.select("");
+  await pollUntil(async () => {
+    const probe = await f.app.subscribe(f.id);
+    const reset = await probe.until(isReset);
+    probe.close();
+    return reset.epoch !== epoch;
+  }, 5000, "a new epoch after the last holder went");
+});
+
+test("the last disconnect of a viewer of an unselected job retires its feed", { timeout: 30000 }, async t => {
+  const f = await viewing(t);
+  const one = await f.app.subscribe(f.id);
+  const epoch = (await one.until(isReset)).epoch;
+  await pollUntil(() => received(one.records()) === "hello\n", 5000, "the output arrives");
+  one.close();
+  await pollUntil(async () => (await one.post("job/earlier", { id: f.id, epoch, before: 6 })).status === 409, 5000, "koa to retire the feed");
+  const again = await f.app.subscribe(f.id);
+  assert.notEqual((await again.until(isReset)).epoch, epoch);
+});
