@@ -1,0 +1,23 @@
+#include <tunables/global>
+profile caddy /usr/bin/caddy flags=(complain) {
+  #include <abstractions/base>
+  #include <abstractions/nameservice>
+  #include <abstractions/ssl_certs>
+  capability net_bind_service,
+  network inet stream,
+  network inet6 stream,
+  network netlink raw,
+  network unix stream,
+  /usr/bin/caddy mr,
+  /etc/caddy/** r,
+  /var/lib/caddy/ rw,
+  /var/lib/caddy/** rwk,
+  /var/log/caddy/ rw,
+  /var/log/caddy/** rw,
+  /run/caddy/ rw,
+  /run/caddy/** rw,
+  /var/lib/ko-devices/ r,
+  /var/lib/ko-devices/*.pem r,
+  /var/lib/ko/socket rw,
+  /sys/kernel/mm/transparent_hugepage/hpage_pmd_size r,
+}

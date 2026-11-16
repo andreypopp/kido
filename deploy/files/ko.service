@@ -1,0 +1,14 @@
+[Unit]
+Description=ko server
+After=network.target systemd-tmpfiles-setup.service
+
+[Service]
+User=me
+Environment=KO_STATE_DIR=/var/lib/ko
+Environment=PATH=/opt/ko/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/opt/ko/bin/ko server --allow-uid @CADDY_UID@
+Restart=always
+RestartSec=1
+
+[Install]
+WantedBy=multi-user.target

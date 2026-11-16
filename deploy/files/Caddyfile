@@ -1,0 +1,32 @@
+{
+	admin unix//run/caddy/admin.sock|0600
+	auto_https disable_redirects
+	servers {
+		protocols h1 h2
+	}
+	grace_period 3s
+}
+@ENROLL@ {
+	@enroll {
+		method POST
+		path /v1/enroll
+	}
+	request_body {
+		max_size 16KB
+	}
+	reverse_proxy @enroll 127.0.0.1:@PAIR_PORT@
+	respond 404
+}
+@HOST@ {
+	tls {
+		client_auth {
+			mode require
+			verifier leaf {
+				folder /var/lib/ko-devices
+			}
+		}
+	}
+	reverse_proxy unix//var/lib/ko/socket {
+		flush_interval -1
+	}
+}

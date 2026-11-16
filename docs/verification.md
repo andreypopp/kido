@@ -397,6 +397,25 @@ Miri in a 6 GiB container. Under `cfg(miri)`, `ko_sys`'s `Mapping`
 is heap memory (`ko_sys/src/mapping/heap.rs`), so the ring's writer
 and reader run on it.
 
+## The deployment
+
+`deploy/` (deploy/README.md) has two test scripts that `make verify`
+does not run. `scripts/checks.sh` gives `deploy/` only the lint-sh
+stage.
+
+- `deploy/test.sh` tests the pairing scripts against a private folder
+  under `/tmp`, with stubs for `caddy validate` and the Caddy restart.
+  It needs `python3-cryptography`, `qrencode`, `openssl` and `curl`,
+  so it runs in a Debian 13 container (on the Mac, through Apple's
+  `container`; deploy/README.md gives the command) or on the droplet.
+  It builds each request with `deploy/enroll-request.py`, which uses
+  `openssl` and not the code under test. `deploy/testdata/` holds the
+  fixed vector of the signed enrollment message, which the app's
+  tests also use.
+- `deploy/smoke.sh HOST` tests a provisioned droplet from the
+  operator's Mac: the TLS refusals, a pairing, a request and a
+  WebSocket, the revocation, the socket's uids and the open ports.
+
 ## Reproducing a CI-only failure
 
 `scripts/ci-like.sh` runs a Linux container with the repo
