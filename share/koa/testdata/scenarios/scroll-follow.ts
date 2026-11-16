@@ -22,6 +22,7 @@ export const scenarios: Scenarios = {
   testKoaWebviewOlderHistoryKeepsTheReaderAnchor: () => ({ open: open.map(record => record.type === "reset" ? { ...record, more: true, items: record.items.map(item => ({ ...item, seq: item.seq + 10 })) } : record), steps: [older], files: {} }),
   testKoaWebviewViewSwitchRestoresTheReaderAndJobViewFollows: () => ({ open, steps: [], files: {} }),
   testKoaWebviewScrollbarJumpMountsHistory: () => ({ open, steps: [], files: {} }),
+  testKoaWebviewSelectAllCopiesTheWholeTranscript: () => ({ open, steps: [], files: {} }),
   testKoaWebviewFindSkippedHistory: () => ({ open, steps: [], files: {} }),
   testKoaWebviewSendKeepsFollowing: () => ({ open, steps: [sent, sent], files: {} }),
 };

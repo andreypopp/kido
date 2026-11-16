@@ -1027,9 +1027,13 @@ text to show.
   unmounted, so the dots and the reveal keep their nodes. A run
   that continues over several assistant items and a job's stream
   rows mount whole or not at all, because their DOM lives in the
-  first row. `#items`'s top and bottom padding stand for the absent
-  rows above and below, and one `.gap` box for the absent rows
-  between the window and the tail. A frame mounts for at most 8 ms,
+  first row. The mounted rows where a selection that is not
+  collapsed meets `#items` are pinned like the live tail, until the
+  selection collapses; so a drag that scrolls mounts the
+  rows ahead of it and keeps those behind it. `#items`'s top and
+  bottom padding stand for the absent rows above and below, and one
+  `.gap` box for the absent rows between two mounted ranges (the
+  window, a selection, the tail). A frame mounts for at most 8 ms,
   nearest the viewport first, and continues in the next frame. An
   unmounted row drops its prose memos and its observers; the open
   folds and fences are keyed by item, so they survive a remount.
@@ -1064,6 +1068,18 @@ text to show.
   for a frame answers `cancelled` before it touches the selection,
   and the bar ignores that answer; closing the bar cancels the
   find (`window.__koFindCancel`).
+- **Select All.** In Kido, ⌘A is the app's Select All, which
+  reaches WebKit and never the page as a key, so the page knows a
+  Select All only from the selection: at a copy, a selection that
+  covers all of `#items`, from the start of its first text to the
+  end of its last, is the whole transcript. Then the page's copy
+  writes every loaded item's text from the model, in order, with a
+  blank line between items: the Markdown source of a user message
+  and a text block, the find text of everything else (`exportText`
+  in `page/find.ts`). Any other selection gets WebKit's copy. A
+  Select All pins no rows, so it never mounts the rows between the
+  window and the tail. The job view keeps WebKit's selection and
+  copy.
   A frame's reads
   can still force a layout after a write outside a frame (a key, a
   `state` record), so the measurements are read in the
@@ -1958,8 +1974,23 @@ record's apply carries its record type, so a long task names its
 record. A dots removal is counted by where the
 mark was before and after it: a move at a tool call, a removal while
 text streams (which restarts the bounce's animations), or the end of
-the turn. The streaming budgets report only, until the plan's later
-units set them.
+the turn. The report also counts the request→rAF waits over 100 ms
+and the DOM's size, sampled once a second (Kido counts elements,
+Chrome's `Nodes` also counts text nodes, so the two do not compare).
+The streaming budgets (`streamBudgets` in `statistics.ts`) are
+limits; the memory one is relative, workload 13's page at most
+workload 14's of the same run plus 400 MiB, because Kido's measure
+is the WebContent process's footprint, which is about 1.2 GB even
+for a short session and drops when WebKit purges its caches under
+memory pressure.
+
+The working dots keep moving in WKWebView while the page's main
+thread is stalled: `KoaStressTests/testDotsUnderStall` captures the
+window every 50 ms during a 2 s spin and saw 30 distinct crops of
+the dots, as many as without the spin. So jumpy dots come from late
+rendering updates, which the request→rAF waits measure, not from
+the animation. A capture within about 2 s of the first paint shows
+a stale window.
 
 The runs are manual, never in `make verify`. What they found shaped
 the design: the SSE feed, the memo's raw-text rule, and no limit on

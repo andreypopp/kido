@@ -42,42 +42,48 @@ function jobFirst(context: FindContext, seq: number): number {
   return first;
 }
 
+const makeSegment = (text: string, folds: string[] = [], fences: string[] = [], lazy?: string): Segment => ({ text, lowered: lowered(text), folds, fences, lazy });
+const plainSegments = (text: string, ...folds: string[]): Segment[] => text ? [makeSegment(text, folds)] : [];
+const proseSegments = (context: FindContext, source: string, key: string, folds: string[], user = false, lazy?: string): Segment[] =>
+  markdownPlain(source, context.fold, user).map(part => makeSegment(part.text, folds, part.fence ? [key + ':' + part.fence.block + '.' + part.fence.ordinal] : [], lazy));
+const headSegments = (text: string, key: string): Segment[] => { const [first, ...rest] = text.split('\n'); return [...plainSegments(first), ...plainSegments(rest.join('\n'), key)]; };
+
+function blockSegments(item: Extract<WireItem, { kind: 'assistant' }>, index: number, context: FindContext): Segment[] {
+  const block = item.blocks[index], key = item.seq + ':' + index;
+  if (block.type === 'text') return proseSegments(context, block.text, key, []);
+  if (block.type === 'tool' && block.agent) return plainSegments(agentBody(block.agent), 'agent:' + key);
+  const run = runOf(context, item.seq, index, item.blocks), folds = [run, key];
+  const step = { block, item, args: block.type === 'tool' ? toolArgs(block) : {} }, info = stepInfo(step);
+  const thinking = block.type === 'thinking' && !block.redacted;
+  const labels = [...block.type === 'tool' && (block.name === 'bash' || info.labelClass === 'path') ? plainSegments(block.name, run) : [], ...plainSegments(info.label, run), ...thinking ? [] : plainSegments(info.detail, run)];
+  if (thinking && block.type === 'thinking') return [...labels, ...proseSegments(context, block.text, key, folds, false, key)];
+  return [...labels, ...stepParts(step, info, context.cwd, false).flatMap(part => plainSegments(part.text, ...folds))];
+}
+
 export function findSegments(item: WireItem, context: FindContext): Segment[] {
-  const segment = (text: string, folds: string[] = [], fences: string[] = [], lazy?: string): Segment => ({ text, lowered: lowered(text), folds, fences, lazy });
-  const plain = (text: string, ...folds: string[]): Segment[] => text ? [segment(text, folds)] : [];
-  const prose = (source: string, key: string, folds: string[], user = false, lazy?: string): Segment[] =>
-    markdownPlain(source, context.fold, user).map(part => segment(part.text, folds, part.fence ? [key + ':' + part.fence.block + '.' + part.fence.ordinal] : [], lazy));
-  const head = (text: string, key: string): Segment[] => { const [first, ...rest] = text.split('\n'); return [...plain(first), ...plain(rest.join('\n'), key)]; };
   switch (item.kind) {
-    case 'user': return prose(item.text, item.seq + ':user', [], true);
+    case 'user': return proseSegments(context, item.text, item.seq + ':user', [], true);
     case 'annotations': return [];
-    case 'assistant': {
-      const result = item.blocks.flatMap((block, index): Segment[] => {
-        const key = item.seq + ':' + index;
-        if (block.type === 'text') return prose(block.text, key, []);
-        if (block.type === 'tool' && block.agent) return plain(agentBody(block.agent), 'agent:' + key);
-        const run = runOf(context, item.seq, index, item.blocks), folds = [run, key];
-        const step = { block, item, args: block.type === 'tool' ? toolArgs(block) : {} }, info = stepInfo(step);
-        const thinking = block.type === 'thinking' && !block.redacted;
-        const labels = [...block.type === 'tool' && (block.name === 'bash' || info.labelClass === 'path') ? plain(block.name, run) : [], ...plain(info.label, run), ...thinking ? [] : plain(info.detail, run)];
-        if (thinking && block.type === 'thinking') return [...labels, ...prose(block.text, key, folds, false, key)];
-        return [...labels, ...stepParts(step, info, context.cwd, false).flatMap(part => plain(part.text, ...folds))];
-      });
-      return [...result, ...plain(item.error)];
-    }
-    case 'agent': return plain(agentBody(item), 'agent:' + item.seq);
-    case 'job': return [...plain(item.job.name), ...plain(item.event.type === 'stream' ? item.event.batch.text : item.event.tail.text, 'job:' + jobFirst(context, item.seq))];
-    case 'notify': return head(item.text.text, 'notice:' + item.seq);
+    case 'assistant': return [...item.blocks.flatMap((_, index) => blockSegments(item, index, context)), ...plainSegments(item.error)];
+    case 'agent': return plainSegments(agentBody(item), 'agent:' + item.seq);
+    case 'job': return [...plainSegments(item.job.name), ...plainSegments(item.event.type === 'stream' ? item.event.batch.text : item.event.tail.text, 'job:' + jobFirst(context, item.seq))];
+    case 'notify': return headSegments(item.text.text, 'notice:' + item.seq);
     case 'command': switch (item.result.type) {
       case 'copy': return [];
-      case 'export': return plain('exported ' + item.result.path);
-      case 'session': return plain(item.result.name);
-      case 'compaction': return item.result.state.type === 'done' ? plain(item.result.state.summary, 'notice:' + item.seq) : [];
+      case 'export': return plainSegments('exported ' + item.result.path);
+      case 'session': return plainSegments(item.result.name);
+      case 'compaction': return item.result.state.type === 'done' ? plainSegments(item.result.state.summary, 'notice:' + item.seq) : [];
     }
-    case 'notice': return head(item.text, 'notice:' + item.seq);
-    case 'bash': return [...plain(item.command), ...plain(item.result.output.text, 'bash:' + item.seq)];
-    case 'summary': return head(item.text, 'notice:' + item.seq);
+    case 'notice': return headSegments(item.text, 'notice:' + item.seq);
+    case 'bash': return [...plainSegments(item.command), ...plainSegments(item.result.output.text, 'bash:' + item.seq)];
+    case 'summary': return headSegments(item.text, 'notice:' + item.seq);
   }
+}
+
+export function exportText(item: WireItem, context: FindContext) {
+  if (item.kind === 'user') return item.text;
+  if (item.kind !== 'assistant') return findSegments(item, context).map(part => part.text).join('\n');
+  return [...item.blocks.flatMap((block, index) => block.type === 'text' ? [block.text] : blockSegments(item, index, context).map(part => part.text)), item.error].filter(Boolean).join('\n');
 }
 
 export function matchesIn(segment: Segment, needle: string): number[] {

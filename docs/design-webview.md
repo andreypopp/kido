@@ -293,7 +293,8 @@ which keeps its view and its feed, so `leave` shows current terminal
 content with no snapshot. design-app.md, "Webview panes", gives the
 key route, find, the theme properties and hidden pages. The
 decisions: Kido's Command keys win over the page and every other key
-goes to the page; the selection is WebKit's and copy mode is off
+goes to the page; the selection is WebKit's (a page can serve a copy
+from its own model, as koa's Select All does) and copy mode is off
 while the page has focus; find is WebKit's, which gives no count,
 unless the page defines the find hook `window.__koFind`, which counts
 in the page's model and places the selection where WebKit's find

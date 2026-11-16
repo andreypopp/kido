@@ -4,7 +4,7 @@ import { revealHeight, unitsOf, type Unit } from './reveal.ts';
 import { continuesRun, estimateExtent, groupAt, runStarts, windowOf, type SeqRange } from './extent.ts';
 import { composer } from './composer.ts';
 import { agentBody, stepInfo, stepParts, toolArgs, type AgentCard } from './steps.ts';
-import { findSegments, lowered, matchesIn, type Segment } from './find.ts';
+import { exportText, findSegments, lowered, matchesIn, type Segment } from './find.ts';
 import { attach } from './attach.ts';
 import { closeLightbox, preview, previewKey } from './preview.ts';
 import { fetchJSON, scoped } from './http.ts';
@@ -48,7 +48,7 @@ const openers = new Map<string, { view: HTMLElement; open: () => void }>(), fenc
 type Extent = { kind: 'measured'; width: number; lh: number; px: number } | { kind: 'estimated'; px: number };
 type Group = SeqRange & ({ kind: 'run' } | { kind: 'job'; id: string });
 type Table = { followers: Set<number>; index: Map<number, number>; starts: number[]; total: number; groups: Group[]; divider: { before: number; px: number } | undefined };
-let table: Table | undefined, windowDirty = true, mountedSpans: { start: number; end: number }[] = [], gap: HTMLElement | undefined, measured = { width: 0, lh: 0 }, dividerPx: number | undefined;
+let table: Table | undefined, windowDirty = true, mountedSpans: { start: number; end: number }[] = [], gaps: HTMLElement[] = [], measured = { width: 0, lh: 0 }, dividerPx: number | undefined;
 const template = document.createElement('template');
 const folds = new Map<string, boolean>();
 const REVEAL = { cap: .4, wait: 1500, fold: 15, grow: 220, travel: 250 };
@@ -1003,9 +1003,10 @@ function viewTop(t: Table, geo: Geo) {
 function windowStep(geo: Geo, rendered: { seq: number; runs: boolean }[]) {
   const t = ensureTable(), top = viewTop(t, geo);
   windowDirty = false;
-  const want = windowOf(order, t.starts, top, geo.viewport, geo.viewport, t.groups), tail = liveRange(t);
+  const want = windowOf(order, t.starts, top, geo.viewport, geo.viewport, t.groups), tail = liveRange(t), chosen = selected && { lo: t.index.get(selected.from), hi: t.index.get(selected.to) };
+  const pins = [tail, chosen && chosen.lo !== undefined && chosen.hi !== undefined ? { lo: chosen.lo, hi: chosen.hi } : undefined].filter(range => range !== undefined);
   const lo = want ? t.index.get(want.from) ?? 0 : 0, hi = want ? t.index.get(want.to) ?? -1 : -1;
-  const inTail = (at: number) => !!tail && at >= tail.lo && at <= tail.hi, keep = (at: number) => at >= lo && at <= hi || inTail(at);
+  const inPins = (at: number) => pins.some(range => at >= range.lo && at <= range.hi), keep = (at: number) => at >= lo && at <= hi || inPins(at);
   const at = (seq: number) => t.index.get(seq);
   for (const seq of [...views.keys()]) { const index = at(seq); if (index === undefined || !keep(index)) unmountRow(seq); }
   const mount = (index: number) => {
@@ -1017,7 +1018,7 @@ function windowStep(geo: Geo, rendered: { seq: number; runs: boolean }[]) {
   const bounds = (index: number): [number, number] => { const group = groupAt(t.groups, order[index]); return group ? [at(group.from) ?? index, at(group.to) ?? index] : [index, index]; };
   let pivot = 0;
   { let low = 0, high = order.length; while (low < high) { const middle = (low + high) >> 1; if (t.starts[middle + 1] > top) high = middle; else low = middle + 1; } pivot = Math.max(lo, Math.min(hi, low)); }
-  const have = [...views.keys()].map(seq => at(seq) ?? -1).filter(index => index >= lo && index <= hi && !inTail(index)).sort((x, y) => x - y);
+  const have = [...views.keys()].map(seq => at(seq) ?? -1).filter(index => index >= lo && index <= hi && !inPins(index)).sort((x, y) => x - y);
   const runs: { lo: number; hi: number }[] = [];
   for (const index of have) { const last = runs.at(-1); if (last && last.hi === index - 1) last.hi = index; else runs.push({ lo: index, hi: index }); }
   const distance = (run: { lo: number; hi: number }) => pivot < run.lo ? run.lo - pivot : pivot > run.hi ? pivot - run.hi : 0;
@@ -1035,7 +1036,7 @@ function windowStep(geo: Geo, rendered: { seq: number; runs: boolean }[]) {
     }
     if (low > lo || high < hi) windowDirty = true;
   }
-  if (tail) for (let index = tail.lo; index <= tail.hi; index++) mount(index);
+  for (const range of pins) for (let index = range.lo; index <= range.hi; index++) mount(index);
   layoutWindow(t);
 }
 function layoutWindow(t: Table) {
@@ -1045,13 +1046,12 @@ function layoutWindow(t: Table) {
   const first = ranges[0], last = ranges.at(-1);
   list.style.paddingTop = (first ? t.starts[first.lo] : 0) + 'px';
   list.style.paddingBottom = (last ? t.total - t.starts[last.hi + 1] : 0) + 'px';
-  const next = ranges[1] && views.get(order[ranges[1].lo])?.view;
-  if (!next) { gap?.remove(); gap = undefined; }
-  else {
-    gap ??= node('div', undefined, 'gap');
-    gap.style.height = t.starts[ranges[1].lo] - t.starts[ranges[0].hi + 1] + 'px';
-    if (gap.nextSibling !== next) list.insertBefore(gap, next);
-  }
+  gaps.splice(Math.max(0, ranges.length - 1)).forEach(extra => extra.remove());
+  ranges.slice(1).forEach((range, index) => {
+    const next = views.get(order[range.lo])?.view, between = gaps[index] ??= node('div', undefined, 'gap');
+    between.style.height = t.starts[range.lo] - t.starts[ranges[index].hi + 1] + 'px';
+    if (next && between.nextSibling !== next) list.insertBefore(between, next);
+  });
   mountedSpans = ranges.map(range => ({ start: t.starts[range.lo], end: t.starts[range.hi + 1] }));
 }
 function renderDirty(geo: Geo = geometry()) {
@@ -1061,7 +1061,7 @@ function renderDirty(geo: Geo = geometry()) {
     const list = element('items');
     for (const target of [...observed.keys()]) if (list.contains(target)) { observed.delete(target); layoutObserver.unobserve(target); }
     views.clear(); texts.clear(); openers.clear(); fenceOpeners.clear(); liveMarks.clear(); clearWorking(); revealing.clear(); growing.length = 0; measuredHolds.clear(); fits.clear(); animating.clear(); openFences.clear();
-    list.replaceChildren(); divider = undefined; gap = undefined; mountedSpans = []; fresh.clear(); counted.clear(); table = undefined; windowDirty = true;
+    list.replaceChildren(); divider = undefined; gaps.length = 0; mountedSpans = []; fresh.clear(); counted.clear(); table = undefined; windowDirty = true;
   }
   for (const key of stale) { const memo = texts.get(key); if (memo) revealing.delete(memo); texts.delete(key); }
   stale.clear();
@@ -1370,7 +1370,7 @@ function applyPatch(record: Patch, buffer: boolean) {
 function apply(record: PageRecord) {
   if (record.type === 'reset') {
     editor.resetCompletion();
-    find = undefined; segmentCache.clear(); owners.clear(); epoch = record.epoch; after = -1; first = undefined; items.clear(); order.length = 0; extents.clear(); live.clear(); dirty.clear(); stale.clear(); arrivals.clear(); annotationItems.clear(); folds.clear(); jobOwners.clear(); historyRequest = undefined; more = record.more;
+    find = undefined; selected = undefined; segmentCache.clear(); owners.clear(); epoch = record.epoch; after = -1; first = undefined; items.clear(); order.length = 0; extents.clear(); live.clear(); dirty.clear(); stale.clear(); arrivals.clear(); annotationItems.clear(); folds.clear(); jobOwners.clear(); historyRequest = undefined; more = record.more;
     resetting = true; wantEnd = true;
     for (const item of record.items) accept(item);
     schedule();
@@ -1532,12 +1532,42 @@ type FindAnswer = { index: number; count: number; loading: boolean } | { cancell
 let find: Find | undefined;
 type Cached = { item: WireItem; previous: WireItem | undefined; segments: Segment[]; needle?: string; starts?: number[][] };
 const segmentCache = new Map<number, Cached>(), owners = new Map<string, string>();
+const findContext = () => ({ items: (at: number) => items.get(at), fold: REVEAL.fold, cwd: displayPath(state.cwd), owners });
+let selected: { from: number; to: number } | undefined;
+function rowSeq(node: Node | null) {
+  for (let at = node; at; at = at.parentNode) if (at.parentNode === element('items') && at instanceof HTMLElement && at.dataset.seq !== undefined) return Number(at.dataset.seq);
+  return undefined;
+}
+function wholeSelection() {
+  const selection = getSelection();
+  if (!selection || !order.length || !selection.rangeCount || selection.isCollapsed) return false;
+  let first: Node = element('items'), last: Node = first;
+  while (first.firstChild) first = first.firstChild;
+  while (last.lastChild) last = last.lastChild;
+  const range = selection.getRangeAt(0), length = last.textContent?.length ?? 0;
+  const top = range.startContainer === first && range.startOffset === 0 || selection.containsNode(first, false);
+  const bottom = range.endContainer === last && range.endOffset === length || selection.containsNode(last, false);
+  return first !== last && top && bottom;
+}
+function pinnedRows() {
+  const selection = getSelection();
+  if (!selection || !selection.rangeCount || selection.isCollapsed || wholeSelection()) return undefined;
+  const range = selection.getRangeAt(0), list = element('items'), rows = [...list.children].flatMap(child => child instanceof HTMLElement && child.dataset.seq !== undefined ? [Number(child.dataset.seq)] : []);
+  const first = rowSeq(range.startContainer), last = rowSeq(range.endContainer);
+  const from = first ?? (last !== undefined && list.compareDocumentPosition(range.startContainer) & 2 ? rows[0] : undefined);
+  const to = last ?? (first !== undefined && list.compareDocumentPosition(range.endContainer) & 4 ? rows[rows.length - 1] : undefined);
+  return from !== undefined && to !== undefined ? { from: Math.min(from, to), to: Math.max(from, to) } : undefined;
+}
+function transcriptText() {
+  const context = findContext();
+  return order.flatMap(seq => { const item = items.get(seq), text = item ? exportText(item, context) : ''; return text ? [text] : []; }).join('\n\n');
+}
 function cached(seq: number) {
   const item = items.get(seq), previous = items.get(seq - 1), entry = segmentCache.get(seq);
   if (!item) return undefined;
   if (entry?.item === item && entry.previous === previous) return entry;
   owners.delete('run:' + seq); owners.delete('job:' + seq);
-  const fresh: Cached = { item, previous, segments: findSegments(item, { items: at => items.get(at), fold: REVEAL.fold, cwd: displayPath(state.cwd), owners }) };
+  const fresh: Cached = { item, previous, segments: findSegments(item, findContext()) };
   segmentCache.set(seq, fresh);
   return fresh;
 }
@@ -1894,6 +1924,16 @@ const previewModifiers = (event: MouseEvent | KeyboardEvent) => event.shiftKey &
 const previewHover = (event: KeyboardEvent) => document.documentElement.classList.toggle('preview-modifiers', previewModifiers(event));
 document.addEventListener('keyup', previewHover);
 window.addEventListener('blur', () => { document.documentElement.classList.remove('preview-modifiers'); composerFocus(); sync(); });
+document.addEventListener('selectionchange', () => {
+  const next = pinnedRows();
+  if (next?.from === selected?.from && next?.to === selected?.to) return;
+  selected = next; windowDirty = true; schedule();
+});
+document.addEventListener('copy', event => {
+  if (state.view.type === 'job' || !wholeSelection()) return;
+  event.preventDefault();
+  event.clipboardData?.setData('text/plain', transcriptText());
+});
 document.addEventListener('keydown', event => { if ((['ArrowUp', 'PageUp', 'Home'].includes(event.key) || event.key === ' ' && event.shiftKey) && !isControl(event.target)) readerInput(); previewHover(event); if (previewKey(event)) return; if (!barMenu.hidden && event.key === 'Escape') { event.preventDefault(); closeBarMenu(); return; } if (state.view.type === 'job') return; if (!event.defaultPrevented && event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey && !event.isComposing && event.key === 'g' && composerReceivesKeys() && !editing()) { event.preventDefault(); void openEditor(); return; } if (event.defaultPrevented || event.metaKey || event.ctrlKey || event.isComposing || state.dialogs.length || pickerButton || sessionPicker !== 'closed') return; if (event.key === 'Tab') { event.preventDefault(); if (!element('field').inert) editor.focus(); return; } if (composerReceivesKeys() && !event.altKey && event.key.length === 1 && !(event.key === ' ' && isControl(event.target)) && !isTextInput(event.target)) { event.preventDefault(); editor.focus(); editor.insert(event.key); return; } if (event.key === 'Enter' && hasFailed() && event.target === document.body) element('exited').querySelector('button')?.click(); if (event.key === 'Escape') { event.preventDefault(); if (editing()) return; if (state.bash.some(item => item.phase === 'running')) { escaped = false; void stop(); } else if (state.working) { escaped = true; void stop(); } else if (escaped) { editor.setText(''); } else { escaped = true; } } });
 element('model').onclick = () => picker('model'); element('thinking').onclick = () => picker('thinking');
 document.addEventListener('pointerdown', event => { if (!barMenu.hidden && !barMenu.contains(event.target instanceof Node ? event.target : null) && !(event.target instanceof Element && event.target.closest('.ellipsis'))) closeBarMenu(); if (!element('picker').contains(event.target instanceof Node ? event.target : null) && !pickerButton?.contains(event.target instanceof Node ? event.target : null)) closePicker(); });

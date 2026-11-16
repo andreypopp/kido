@@ -3496,3 +3496,104 @@ test('an obsolete find never collapses the selection and answers cancelled', asy
   for (let turn = 0; turn < 10; turn++) { page.step(16); await page.settled(); }
   assert.deepEqual(JSON.parse(JSON.stringify(await reset)), { cancelled: true });
 });
+
+async function selectionPage() {
+  const page = await findPage();
+  const { app, evaluate } = page;
+  type Pick = { rangeCount: number; isCollapsed: boolean; whole: boolean; startContainer?: unknown; endContainer?: unknown };
+  const selection: Pick & { containsNode(node: unknown): boolean; getRangeAt(): { startContainer: unknown; endContainer: unknown } } = { rangeCount: 0, isCollapsed: true, whole: false, containsNode() { return this.whole; }, getRangeAt() { return { startContainer: this.startContainer, endContainer: this.endContainer }; } };
+  Object.assign(app.context, { getSelection: () => selection });
+  const list = app.context.document.getElementById('items');
+  Object.assign(list, { compareDocumentPosition: (other: unknown) => other instanceof app.context.Node && list.contains(other) ? 20 : 4 });
+  const leaf = (seq: number) => evaluate(`views.get(${seq}).view.children[0].children[0] ?? views.get(${seq}).view.children[0]`);
+  const fire = () => app.listeners.get('selectionchange')?.({});
+  const set = (start: unknown, end: unknown, whole = false) => { Object.assign(selection, { rangeCount: 1, isCollapsed: false, whole, startContainer: start, endContainer: end }); fire(); };
+  const select = (from: number, to: number) => set(leaf(from), leaf(to));
+  const selectAll = () => set(leaf(page.seqs()[0]), leaf(page.seqs().at(-1) ?? 0), true);
+  const collapse = () => { Object.assign(selection, { rangeCount: 1, isCollapsed: true }); fire(); };
+  const copy = () => { const written: Record<string, string> = {}; let prevented = false; app.listeners.get('copy')?.({ preventDefault() { prevented = true; }, clipboardData: { setData(type: string, value: string) { written[type] = value; } } }); return { written, prevented }; };
+  return { ...page, selection, select, selectAll, set, leaf, collapse, copy };
+}
+
+test('a row inside a selection stays mounted when the window moves, and a collapse releases it', async () => {
+  const page = await selectionPage();
+  page.open(page.rows(0, 300));
+  page.settle(8);
+  page.reader(1500);
+  page.settle(8);
+  const near = page.seqs();
+  const [low, high] = [near[1], near[3]];
+  page.select(low, high);
+  page.reader(0);
+  page.settle(8);
+  const kept = page.seqs();
+  for (let seq = low; seq <= high; seq++) assert.ok(kept.includes(seq), 'row ' + seq + ' is pinned');
+  assert.ok(kept.includes(0), 'and the viewport rows are mounted');
+  page.collapse();
+  page.settle(8);
+  assert.ok(!page.seqs().includes(low) && !page.seqs().includes(high), 'a collapse releases the rows');
+});
+
+test('a pinned selection, the window and the live tail are three ranges with a gap each', async () => {
+  const page = await selectionPage();
+  page.evaluate("state={...state,working:true,since:1700000000000}");
+  page.open(page.rows(0, 300));
+  page.deliver(page.reveal(300, 'tail'));
+  page.settle(8);
+  page.reader(1500);
+  page.settle(8);
+  const near = page.seqs();
+  page.select(near[1], near[2]);
+  page.reader(0);
+  page.settle(8);
+  assert.equal(page.evaluate("element('items').children.filter(child => child.className.includes('gap')).length"), 2);
+  assert.ok(page.seqs().includes(300) && page.seqs().includes(0) && page.seqs().includes(near[1]));
+  assert.equal(page.evaluate('table.total + geometry().origin + 38'), page.evaluate("element('scroll').scrollHeight"), 'the table and the layout agree, the working row apart');
+});
+
+test('Select All never pins the rows between the window and a distant tail', async () => {
+  const page = await selectionPage();
+  page.evaluate("state={...state,working:true,since:1700000000000}");
+  page.open(page.rows(0, 300));
+  page.deliver(page.reveal(300, 'tail'));
+  page.settle(8);
+  page.reader(0);
+  page.settle(8);
+  page.selectAll();
+  page.settle(8);
+  assert.ok(page.seqs().length < 60, 'mounted ' + page.seqs().length);
+});
+
+test('a selection that leaves the transcript pins the rows where it meets it, and one inside the composer pins nothing', async () => {
+  const page = await selectionPage();
+  page.open(page.rows(0, 300));
+  page.settle(8);
+  page.reader(1500);
+  page.settle(8);
+  const near = page.seqs();
+  page.set(page.leaf(near[1]), page.app.prompt());
+  page.reader(0);
+  page.settle(8);
+  for (const seq of [near[1], near[2], near[near.length - 1]]) assert.ok(page.seqs().includes(seq), 'row ' + seq + ' stays between the start and the last row that was mounted');
+  page.collapse();
+  page.settle(8);
+  page.set(page.app.prompt(), page.app.prompt());
+  page.settle(8);
+  assert.ok(page.seqs().length < 40 && !page.seqs().includes(near[1]), 'a composer selection pins nothing');
+});
+
+test('Select All is derived from the selection at copy time, in the menu and the key alike', async () => {
+  const page = await selectionPage();
+  page.open(page.history({ 3: 'bold **word** here' }, 60));
+  page.settle(8);
+  assert.equal(page.copy().prevented, false, 'no selection, native copy');
+  page.selectAll();
+  const whole = page.copy();
+  assert.equal(whole.prevented, true);
+  const text = whole.written['text/plain'] ?? '';
+  assert.deepEqual([text.startsWith('filler 0\n\nfiller 1'), text.includes('bold **word** here'), text.includes('filler 59'), text.split('\n\n').length], [true, true, true, 60]);
+  page.set(page.leaf(page.seqs()[1]), page.leaf(page.seqs().at(-1) ?? 0));
+  assert.equal(page.copy().prevented, false, 'a keyboard adjustment that drops the first row is a native copy');
+  page.collapse();
+  assert.equal(page.copy().prevented, false);
+});

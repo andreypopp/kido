@@ -309,6 +309,40 @@ import SidebarFeed
         XCTAssertEqual(value["usable"] as? Bool, true, result)
         XCTAssertLessThan(try XCTUnwrap(value["top"] as? Double), try XCTUnwrap(value["start"] as? Double) - 20 * (try XCTUnwrap(value["viewport"] as? Double)), result)
     }
+    func testKoaWebviewSelectAllCopiesTheWholeTranscript() async throws {
+        let web = try await scrollPage(module: "scroll-follow")
+        let window = try XCTUnwrap(web.window)
+        let board = NSPasteboard.general
+        board.clearContents()
+        let start = try await webviewJS(web, "(async()=>{" + Self.followHelpers + #"""
+          const sentence='The quick brown fox jumps over the lazy dog and keeps running across the field. ';
+          const history=Array.from({length:400},(_,i)=>({kind:'assistant',seq:i,revision:0,at:Date.now(),final:true,blocks:[{type:'text',text:(i===3?'earlyunmounted ':'filler ')+sentence.repeat(4)}],stop:'stop',error:''}));
+          push(view(root,[root]));push({type:'reset',epoch:'sa',more:false,items:history});
+          await until(()=>document.querySelector('#items [data-seq="399"]')&&gap()<=1);
+          await wait(300);
+          return {rows:document.querySelectorAll('#items > [data-seq]').length,absent:!document.querySelector('#items [data-seq="3"]')};
+        })()
+        """#, within: 60)
+        let before = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(start.utf8)) as? [String: Any])
+        XCTAssertEqual(before["absent"] as? Bool, true, "Row 3 is not mounted: \(start)")
+        XCTAssertTrue(window.makeFirstResponder(web))
+        _ = try await webviewJS(web, "(()=>{window.__copies=[];window.addEventListener('copy',event=>window.__copies.push({prevented:event.defaultPrevented}));return true})()")
+        XCTAssertTrue(try XCTUnwrap(window.firstResponder).tryToPerform(#selector(NSText.selectAll(_:)), with: nil), "Select All reached a responder: \(String(describing: window.firstResponder))")
+        let evidence = try await webviewJS(web, #"""
+          (async()=>{await new Promise(resolve=>setTimeout(resolve,300));
+          const s=getSelection(),name=node=>node&&node.nodeName,row=node=>node&&(node.nodeType===1?node:node.parentElement)?.closest('[data-seq]')?.dataset.seq;
+          let first=document.querySelector('#items'),last=first;while(first.firstChild)first=first.firstChild;while(last.lastChild)last=last.lastChild;
+          return {anchor:[name(s.anchorNode),s.anchorOffset,row(s.anchorNode)],focus:[name(s.focusNode),s.focusOffset,row(s.focusNode)],first:[name(first),(first.textContent||'').slice(0,20),s.containsNode(first,false),row(first)],last:[name(last),(last.textContent||'').slice(-20),s.containsNode(last,false),row(last)],rows:document.querySelectorAll('#items > [data-seq]').length,collapsed:s.isCollapsed}})()
+        """#)
+        XCTAssertTrue(try XCTUnwrap(window.firstResponder).tryToPerform(#selector(NSText.copy(_:)), with: nil), "Copy reached a responder: \(String(describing: window.firstResponder))")
+        let copies = try await webviewJS(web, "(async()=>{await new Promise(resolve=>setTimeout(resolve,500));return window.__copies})()")
+        let text = board.string(forType: .string) ?? ""
+        let report = "selection \(evidence); copy events \(copies); pasteboard \(text.count) characters, \(text.components(separatedBy: "\n\n").count) chunks, early item \(text.contains("earlyunmounted"))"
+        XCTAssertTrue(text.contains("earlyunmounted"), report)
+        XCTAssertEqual(text.components(separatedBy: "\n\n").count, 400, report)
+        let after = try await webviewJS(web, "document.querySelectorAll('#items > [data-seq]').length")
+        XCTAssertLessThan(try XCTUnwrap(Int(after)), 60, "Select All never mounted the history: \(after)")
+    }
     func testKoaWebviewFindSkippedHistory() async throws {
         let web = try await scrollPage(module: "scroll-follow")
         let pane = try XCTUnwrap(terminal?.displayedPanes.first)

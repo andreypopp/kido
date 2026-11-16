@@ -1530,8 +1530,8 @@ koa-job-{running,ended}-dark.png.
 
 ## Find and selection on a virtualized transcript (2026-11-16, spec)
 
-plans/koa-transcript-virtual.md keeps only the rows near the viewport
-in the DOM. Kido's find bar asks the page for the match in its model,
+koa's page keeps only the rows near the viewport in the DOM
+(docs/design-koa.md, "The window"). Kido's find bar asks the page for the match in its model,
 the page mounts the row, WKWebView.find highlights it.
 
 - **Count.** The bar shows "3 of 12" for a koa page, as it does for
