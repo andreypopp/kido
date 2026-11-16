@@ -82,6 +82,8 @@ export function install(tick: () => void, probe: boolean) {
   window.cancelAnimationFrame = id => { if (id === requested) { continuous = false; requested = undefined; } nativeCancel(id); };
   document.addEventListener('visibilitychange', () => { continuous = false; });
 
+  setInterval(() => observations.push({ type: 'nodes', at: epoch(performance.now()), count: document.getElementsByTagName('*').length }), 1000);
+
   const mark = (name: WriteSource) => () => { source = name; queueMicrotask(() => { source = 'other'; }); };
   const events: Record<string, WriteSource> = { keydown: 'key', input: 'key', animationend: 'animationend', pointerdown: 'pointer', click: 'pointer' };
   for (const [type, name] of Object.entries(events)) document.addEventListener(type, mark(name), true);

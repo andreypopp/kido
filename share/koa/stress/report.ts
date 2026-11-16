@@ -58,6 +58,7 @@ function streamTable(frame: Pass, probe: Pass | undefined, budgets: Parameters<t
     ['flush write→receive ms mean / p95 / p99 / max [frame pass]', details(legs.writeToReceive)],
     ['receive→frame request ms mean / p95 / p99 / max (negative: already requested) [frame pass]', details(legs.receiveToRequest)],
     ['frame request→rAF ms mean / p95 / p99 / max [frame pass]', details(legs.requestToRaf)],
+    ['frame request→rAF samples over 100 ms [frame pass]', `${legs.rafOver100} of ${legs.requestToRaf.count}`],
     ['rAF→tick done ms mean / p95 / p99 / max [frame pass]', details(legs.rafToDone)],
     ['markers received while hidden / completed by timer, not rAF [frame pass]', `${legs.hidden} / ${legs.timer}`],
     ['worst 5 flush→frame markers: id total (write→receive, receive→request, request→rAF, rAF→done) visibility [frame pass]', legs.worst.map(leg => `#${leg.id} ${leg.total.toFixed(1)} (${[leg.receive, leg.request, leg.raf, leg.done].map(ms).join(', ')}) ${leg.visibility}`).join('; ') || '—'],
@@ -68,6 +69,7 @@ function streamTable(frame: Pass, probe: Pass | undefined, budgets: Parameters<t
     ...both('Chrome layouts (count, per s, per frame)', layouts),
     ...both('Chrome layout s / style recalcs / task s', (pass, sum) => { const delta = engine(pass, sum.frame.count); return delta ? `${delta.layoutSeconds.toFixed(2)} / ${delta.recalcs} / ${delta.taskSeconds.toFixed(2)}` : '—'; }),
     ...both('Chrome heap max MiB / nodes at end', (pass, sum) => { const delta = engine(pass, sum.frame.count); return delta ? `${(delta.heapMax / 1048576).toFixed(1)} / ${delta.nodes}` : '—'; }),
+    ['DOM nodes at end / max [frame pass]', (() => { const delta = engine(frame, timed.frame.count); return delta ? `${delta.nodes} / ${delta.nodesMax} (CDP Nodes)` : `${timed.nodes.end ?? '—'} / ${timed.nodes.max ?? '—'} (1 s samples)`; })()],
     ['dots layer [probe pass]', probe ? layerText(probe.summary) : '—'],
     ...verdicts.map(verdict => ['budget ' + verdict.name, `${verdict.status}${verdict.value === undefined ? '' : ' (' + verdict.value.toFixed(2) + ')'}`]),
   ]);

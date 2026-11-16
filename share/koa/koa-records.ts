@@ -85,7 +85,8 @@ export type Observation =
   | { type: "markdown"; at: number; words: number; lex: number; fallbacks: number }
   | { type: "stray"; at: number; source: WriteSource }
   | { type: "key"; at: number; latency: number }
-  | { type: "dots"; at: number; phase: "call" | "text" | "end"; count: number };
+  | { type: "dots"; at: number; phase: "call" | "text" | "end"; count: number }
+  | { type: "nodes"; at: number; count: number };
 export type MetricsRequest = { samples: MetricsSample[]; observations: Observation[] };
 const finite = (value: unknown): value is number => typeof value === "number" && Number.isFinite(value);
 const record = (value: unknown): value is { [key: string]: unknown } => typeof value === "object" && value !== null && !Array.isArray(value);
@@ -100,6 +101,7 @@ function validObservation(entry: unknown): entry is Observation {
     case "stray": return isWriteSource(entry.source);
     case "key": return finite(entry.latency);
     case "dots": return (entry.phase === "call" || entry.phase === "text" || entry.phase === "end") && Number.isSafeInteger(entry.count);
+    case "nodes": return Number.isSafeInteger(entry.count);
     default: return false;
   }
 }

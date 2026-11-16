@@ -301,4 +301,73 @@ import XCTest
     func testStreamingHistoryProbe() async throws { try await measure(13, probe: true) }
     func testStreaming() async throws { try await measure(14) }
     func testStreamingProbe() async throws { try await measure(14, probe: true) }
+
+    private static func windowImage(_ id: CGWindowID) -> CGImage? {
+        typealias Capture = @convention(c) (CGRect, CGWindowListOption, CGWindowID, CGWindowImageOption) -> Unmanaged<CGImage>?
+        guard let symbol = dlsym(UnsafeMutableRawPointer(bitPattern: -2), "CGWindowListCreateImage") else { return nil }
+        return unsafeBitCast(symbol, to: Capture.self)(.null, .optionIncludingWindow, id, [.boundsIgnoreFraming, .bestResolution])?.takeRetainedValue()
+    }
+
+    private func dotsCaptures(web: WKWebView, rect: NSRect, spin: Bool) async throws -> String {
+        var pending: Task<String, Error>?
+        if spin { pending = Task { @MainActor in try await self.webviewJS(web, "(()=>{const t=performance.now();while(performance.now()-t<2000);return true})()", within: 10) } }
+        let id = CGWindowID(owner.window.windowNumber)
+        let started = Date()
+        var hashes: [Int] = [], stamps: [Double] = []
+        var saved = false
+        while Date().timeIntervalSince(started) < 2 {
+            let tick = Date()
+            if let image = Self.windowImage(id) {
+                let scale = Double(image.width) / owner.window.frame.width
+                let inWindow = web.convert(rect, to: nil)
+                let crop = CGRect(x: inWindow.minX * scale, y: (owner.window.frame.height - inWindow.maxY) * scale, width: inWindow.width * scale, height: inWindow.height * scale).integral
+                if !saved, let png = NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:]) {
+                    try png.write(to: output.appendingPathComponent("dots-window-\(spin ? "spin" : "control").png"))
+                    try "\(crop) image=\(image.width)x\(image.height) frame=\(owner.window.frame) web=\(inWindow)".write(to: output.appendingPathComponent("dots-geometry-\(spin ? "spin" : "control").txt"), atomically: true, encoding: .utf8)
+                }
+                if let cut = image.cropping(to: crop), let data = cut.dataProvider?.data as Data? {
+                    hashes.append(data.hashValue); stamps.append(tick.timeIntervalSince(started))
+                    if !saved, let png = NSBitmapImageRep(cgImage: cut).representation(using: .png, properties: [:]) { try png.write(to: output.appendingPathComponent("dots-crop-\(spin ? "spin" : "control").png")); saved = true }
+                }
+            }
+            let rest = 0.05 - Date().timeIntervalSince(tick)
+            if rest > 0 { try await Task.sleep(for: .seconds(rest)) }
+        }
+        _ = try await pending?.value
+        var longest = 0.0, run = 0
+        for index in hashes.indices {
+            if index > 0, hashes[index] == hashes[index - 1] { run += 1 } else { run = 0 }
+            if run > 0 { longest = max(longest, stamps[index] - stamps[index - run] + 0.05) }
+        }
+        return "\(spin ? "spin" : "control"): captures=\(hashes.count) distinct=\(Set(hashes).count) longestIdenticalRunMs=\(Int(longest * 1000))"
+    }
+
+    func testDotsUnderStall() async throws {
+        guard visible else { throw XCTSkip("Set KOA_STRESS_VISIBLE=1: the compositor output needs a visible window") }
+        let koaDirectory = output.appendingPathComponent("koa-dots")
+        try FileManager.default.createDirectory(at: koaDirectory, withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: output.appendingPathComponent("home"), withIntermediateDirectories: true)
+        _ = try await KoaProvider.start(self, directory: koaDirectory, script: [["gate": "hold", "text": "done"]], models: [["provider": "fake", "id": "fake-model", "contextWindow": 1_000_000_000]], settings: ["compaction": ["enabled": false]])
+        let command = koaShell(self, directory: koaDirectory, home: output.appendingPathComponent("home"), session: nil, visual: nil, extensionFile: "stress-ext.ts", cwd: output.appendingPathComponent("work"), env: ["PATH": path, "KOA_STRESS_ID": "14"])
+        try await koPut(dir, #"[{"name":"stress","windows":[{"name":"koa","tree":\#(koPane(command))}]}]"#)
+        owner.start()
+        owner.window.makeKeyAndOrderFront(nil)
+        NSApp.activate(ignoringOtherApps: true)
+        try await wait("koa page", within: 30) { self.panes.count == 1 && (self.panes[0].webviewView?.visualDocuments ?? 0) > 0 }
+        let web = try XCTUnwrap(panes.first?.webviewView?.browser)
+        try await webviewUntil(web, "document.visibilityState==='visible'&&!document.hidden", within: 5)
+        try await prompt(web)
+        try await webviewUntil(web, "document.querySelector('#items .dots')!==null", within: 30)
+        try await Task.sleep(for: .seconds(4))
+        let box = try await webviewJS(web, "(()=>{const r=document.querySelector('#items .dots').getBoundingClientRect();return {x:r.x,y:r.y,w:r.width,h:r.height}})()")
+        let parsed = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(box.utf8)) as? [String: Double])
+        let rect = NSRect(x: try XCTUnwrap(parsed["x"]), y: try XCTUnwrap(parsed["y"]), width: try XCTUnwrap(parsed["w"]), height: try XCTUnwrap(parsed["h"]))
+        XCTAssertGreaterThan(rect.width, 0)
+        let control = try await dotsCaptures(web: web, rect: rect, spin: false)
+        try await Task.sleep(for: .seconds(2))
+        let spin = try await dotsCaptures(web: web, rect: rect, spin: true)
+        let result = "rect=\(rect) scale=\(owner.window.backingScaleFactor)\n\(control)\n\(spin)\n"
+        try result.write(to: output.appendingPathComponent("dots-under-stall.txt"), atomically: true, encoding: .utf8)
+        print("DOTS-UNDER-STALL\n" + result)
+    }
 }

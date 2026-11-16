@@ -392,10 +392,13 @@ not stop it. If it does stop under WKWebView, the dots cannot be
 smoother than the main thread, and the dots criterion equals the
 stall criterion.
 
-- **How.** A one-off test in `KoaStressTests`, run on the host with
-  `KOA_STRESS_VISIBLE=1` (KoaStressTests.swift:17): open a koa page
+- **How.** A one-off test in `KoaStressTests`, run in the VM guest's
+  visible session with `KOA_STRESS_VISIBLE=1`
+  (KoaStressTests.swift:17), as the stress harness's Kido leg runs;
+  never on the host, where it opens windows on the user's desktop.
+  It opens a koa page
   with the working row and its dots (`dots`, working.ts:9), then
-  evaluate a script that spins the main thread for 2 s
+  evaluates a script that spins the main thread for 2 s
   (`const t = performance.now(); while (performance.now() - t <
   2000);`). From the app's side, the test captures the pane's window
   every 50 ms with `CGWindowListCreateImage` for those 2 s (the UI
@@ -533,3 +536,49 @@ then, and plans/koa-transcript-perf.md with it.
   with a `Range`, and the bar's status comes from `__koFind` alone.
 - **A visual test that needs a row outside the viewport** must
   scroll there first; none does today.
+
+## Baseline
+
+Unit 1 results, before any window code. Stream run
+`share/koa/stress/run.sh stream` (run `run-b8AFwT`), Kido legs in the
+visual VM. Frame ms is the render task. Kido's node count is
+`getElementsByTagName('*')` (elements only); Chrome's is the CDP
+`Nodes` metric (it also counts text nodes), so the two do not compare.
+
+| Metric [frame pass] | Chrome 13 | Kido 13 | Chrome 14 | Kido 14 |
+| --- | --- | --- | --- | --- |
+| frame ms p50 / p95 / p99 | 0.4 / 1.1 / 1.4 | 12.0 / 15.0 / 17.0 | 0.3 / 0.9 / 1.2 | 1.0 / 1.0 / 2.0 |
+| frames over 16.7 / 50 ms | 0 / 0 | 38 / 0 | 0 / 0 | 0 / 0 |
+| request→rAF ms mean / p95 / p99 / max | 9.3 / 16.6 / 18.2 / 21.5 | 38.1 / 53.0 / 363.0 / 391.0 | 9.2 / 16.2 / 17.3 / 18.3 | 15.6 / 19.0 / 19.2 / 66.0 |
+| request→rAF samples over 100 ms | 0 of 1442 | 22 of 1501 | 0 of 1492 | 0 of 1485 |
+| key→frame ms p50 / p99 | 8.8 / 17.3 | 18.0 / 37.7 | 8.6 / 17.7 | 11.0 / 19.0 |
+| DOM nodes at end / max | 334535 / 334685 | 127173 / 127173 | 10680 / 12971 | 3998 / 3998 |
+
+Workload 13 is the 20000-paragraph history with a stream; workload 14
+streams with a short history. The 22 samples over 100 ms in Kido 13
+are the stalls that the dots criterion of unit 2 counts.
+
+**The dots under a main-thread stall.** `testDotsUnderStall`
+(`KoaStressTests.swift`), in the visual VM's visible session: a koa
+page held in the working state (dots, no streaming text), the dots'
+`DOMRect` read after the layout settled, a 2 s main-thread spin in
+the page, and `CGWindowListCreateImage` of the pane's window every
+50 ms, cropped to the dots. 40 captures wanted; the loop made 37 and
+38.
+
+| Run | Captures | Distinct crops | Longest identical run |
+| --- | --- | --- | --- |
+| Control, no spin | 37 | 29 | 103 ms |
+| 2 s spin | 38 | 30 | 102 ms |
+
+The control shows that the capture sees the motion. The dots keep
+moving while the WebContent main thread is stalled: they do not freeze
+in WKWebView. So, per section 8, the stalls that the user sees as
+jumpy dots come through the layer tree commit, not the animation. Unit
+2 keeps the request→rAF criterion and adds the layer-id check of the
+dots node in Chrome as the second measure.
+
+Two traps of the measurement: a capture taken within about 2 s of the
+first paint shows a stale window (1 distinct crop even in the control),
+and a rect read when the dots first appear is wrong because the layout
+still moves.

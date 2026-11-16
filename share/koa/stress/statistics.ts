@@ -31,6 +31,7 @@ export function latency(samples: readonly MetricsSample[]) {
   const defined = (pick: (leg: (typeof legs)[number]) => number | undefined) => legs.flatMap(leg => { const value = pick(leg); return value === undefined ? [] : [value]; });
   return {
     writeToReceive: detail(defined(leg => leg.receive)), receiveToRequest: detail(defined(leg => leg.request)), requestToRaf: detail(defined(leg => leg.raf)), rafToDone: detail(defined(leg => leg.done)),
+    rafOver100: defined(leg => leg.raf).filter(value => value > 100).length,
     hidden: legs.filter(leg => leg.visibility === 'hidden').length, timer: legs.filter(leg => leg.raf === undefined).length,
     worst: legs.toSorted((a, b) => b.total - a.total).slice(0, 5),
   };
@@ -51,6 +52,7 @@ export function totals(observations: readonly Observation[]) {
     key: summarize(observations.flatMap(observation => observation.type === 'key' ? [observation.latency] : [])),
     strays: { frame: strays(frames), apply: strays(applies), other: observations.filter(observation => observation.type === 'stray').length },
     strayBy: [...frames, ...applies, ...observations.flatMap(observation => observation.type === 'stray' ? [{ by: { [observation.source]: 1 } }] : [])].reduce<Record<string, number>>((sum, entry) => { for (const [source, count] of Object.entries(entry.by)) sum[source] = (sum[source] ?? 0) + count; return sum; }, {}),
+    nodes: (counts => ({ end: counts.at(-1), max: counts.length ? Math.max(...counts) : undefined }))(observations.flatMap(observation => observation.type === 'nodes' ? [observation.count] : [])),
     dots: { call: dots('call'), text: dots('text'), end: dots('end') },
   };
 }
@@ -62,7 +64,7 @@ export function engineDeltas(samples: readonly Engine[], frames: number) {
   return {
     seconds, layouts: delta('LayoutCount'), layoutsPerSecond: delta('LayoutCount') / seconds, layoutsPerFrame: frames ? delta('LayoutCount') / frames : undefined,
     layoutSeconds: delta('LayoutDuration'), recalcs: delta('RecalcStyleCount'), taskSeconds: delta('TaskDuration'),
-    heapMax: Math.max(...samples.map(sample => sample.metrics.JSHeapUsedSize ?? 0)), nodes: last.metrics.Nodes,
+    heapMax: Math.max(...samples.map(sample => sample.metrics.JSHeapUsedSize ?? 0)), nodes: last.metrics.Nodes, nodesMax: Math.max(...samples.map(sample => sample.metrics.Nodes ?? 0)),
   };
 }
 
