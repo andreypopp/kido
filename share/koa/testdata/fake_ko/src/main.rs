@@ -813,7 +813,13 @@ fn stream_client() -> ExitCode {
     }));
     let mut previous = String::new();
     let mut known = BTreeSet::new();
-    let mut fed = 0;
+    let own = env("KO_FAKE_CLIENT_LAYOUTS");
+    let reconnect = !own.is_empty() && Path::new(&format!("{own}.{}", hello.name)).exists();
+    let mut fed = if reconnect {
+        fs::read_to_string(env("KO_FAKE_CLIENT_FEED")).map_or(0, |feed| feed.lines().count())
+    } else {
+        0
+    };
     loop {
         let drop = env("KO_FAKE_CLIENT_DROP");
         if !drop.is_empty() && Path::new(&drop).exists() {
@@ -837,7 +843,6 @@ fn stream_client() -> ExitCode {
             emit_message(&event);
             let line = protocol::json(&event);
             append("KO_FAKE_CLIENT_LAYOUTS", &line);
-            let own = env("KO_FAKE_CLIENT_LAYOUTS");
             if !own.is_empty()
                 && let Ok(mut file) = OpenOptions::new()
                     .create(true)

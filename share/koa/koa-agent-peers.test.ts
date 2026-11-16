@@ -1,7 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { join } from "node:path";
-import { appendFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { appendFileSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { makeFixture, selfPane, agentPane, startSession, savedSession, entriesOf, pollUntil, text, createChannel, withEnv, at, jsonRows, get, getList } from "./koa-agent-fixture.ts";
 
 test("peers observed only on /client can end and resume as independent peers", async () => {
@@ -19,6 +19,8 @@ test("peers observed only on /client can end and resume as independent peers", a
     fx.dropClient();
     await pollUntil(() => fx.streamOpens("/client") === 2);
     await pollUntil(() => entriesOf(s, "koa.agent").filter((e) => e.role === "peer" && e.session === id && e.cwd === process.cwd()).length === 2);
+    fx.clientEvent({ type: "pwd", pane: "pane_2", pwd: fx.dir });
+    await pollUntil(() => entriesOf(s, "koa.agent").filter((e) => e.role === "peer" && e.session === id).at(-1)?.cwd === fx.dir);
     const live = agentPane({ pane: "pane_3", session: "0123456789abcdee", name: "PeerLive" });
     fx.setPanes([selfPane(), live]);
     fx.setClientPanes([selfPane(), live]);
@@ -181,12 +183,17 @@ test("a peer's pi.name replaces its title-derived name, on arrival, on rename an
     fx.clientEvent({ type: "var", pane: "pane_2", name: "pi.name", value: "Renamed" });
     await pollUntil(() => latest() === "Renamed", 2000, "name from a rename");
     fx.setPanes([selfPane()]);
+    const before = fx.clientLayouts().length;
     fx.setClientPanes([selfPane()]);
+    await pollUntil(() => fx.clientLayouts().length > before, 2000, "layout without the peer");
     assert.equal(await listed(), "Renamed");
+    const snapshots = fx.clientLayouts().length;
     fx.dropClient();
-    await pollUntil(() => fx.streamOpens("/client") === 2);
+    await pollUntil(() => fx.streamOpens("/client") === 2 && fx.clientLayouts().length > snapshots, 2000, "snapshot of the reconnect");
     fx.setClientPanes([selfPane(), agentPane({ pane: "pane_2", session: id, name: "Final", title: "koa - Real - kido" })]);
     await pollUntil(() => latest() === "Final", 2000, "name corrected by a layout");
+    assert.equal(await listed(), "Final");
+    assert.equal(readFileSync(join(fx.dir, "client-fed.jsonl"), "utf8").trim().split("\n").length, 2, "the reconnect replays no event from before its snapshot");
     fx.clientEvent({ type: "var_deleted", pane: "pane_2", name: "pi.name" });
     fx.clientEvent({ type: "title", pane: "pane_2", title: "koa - Later - kido" });
     await pollUntil(() => latest() === "koa - Later - kido", 2000, "latest title without a name");

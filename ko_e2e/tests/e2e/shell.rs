@@ -439,6 +439,14 @@ fn wait_screen(s: &Server, pane: &str, needle: &str) {
     );
 }
 
+const SMALL_FPATH: &str = r#"mkdir -p "$HOME/zfn"
+for fn in compinit compdump compaudit compinstall add-zsh-hook; do
+  for dir in $fpath; do [[ -f $dir/$fn ]] && { ln -sf "$dir/$fn" "$HOME/zfn/$fn"; break; }; done
+done
+fpath=("$HOME/site-functions" "$HOME/zfn" "${(@M)fpath:#*/ko-shell.*}")
+export FPATH
+"#;
+
 #[test]
 fn shell_completions_survive_priming_cleanup() {
     let s = start_with(
@@ -457,11 +465,9 @@ fn shell_completions_survive_priming_cleanup() {
         dotfiles(
             &flavour,
             &s.dir,
-            if zsh {
-                r#"zmodload zsh/datetime
+            &if zsh {
+                [SMALL_FPATH, r#"zmodload zsh/datetime
 trace() { print -r -- "$EPOCHREALTIME $*" >> "$HOME/zsh-trace" }
-fpath=("$HOME/site-functions" "${(@)fpath:#*/(site-functions|vendor-*)}")
-export FPATH
 trace "zshrc zsh=$ZSH_VERSION FPATH=$FPATH ZDOTDIR=$ZDOTDIR"
 autoload -Uz compinit add-zsh-hook
 recompinit() {
@@ -484,9 +490,9 @@ add-zsh-hook precmd _auto_compinit_if_fpath_changed
 add-zsh-hook precmd trace_precmd
 trace_precmd() { trace "precmd" }
 precmd() { eval "$PROMPT_COMMAND" }
-print -r -- "$_ko_dir" > "$HOME/ko-completion-dir""#
+print -r -- "$_ko_dir" > "$HOME/ko-completion-dir""#].concat()
             } else {
-                ""
+                String::new()
             },
         );
         if zsh {
@@ -585,7 +591,9 @@ print -r -- "$_ko_dir" > "$HOME/ko-completion-dir""#
             dotfiles(
                 &flavour,
                 &s.dir,
-                r#"autoload -Uz compinit compdump
+                &[
+                    SMALL_FPATH,
+                    r#"autoload -Uz compinit compdump
 _ko_test_fpath=("${fpath[@]}")
 fpath=("${(@)fpath:#*/ko-shell.*}")
 compinit -u -D -d "$HOME/complete.dump"
@@ -595,6 +603,8 @@ fpath=("${_ko_test_fpath[@]}")
 unset _ko_test_fpath
 compinit -C -d "$HOME/complete.dump"
 print -r -- "${_comps[ko]-absent}" > "$HOME/ko-before-precmd""#,
+                ]
+                .concat(),
             );
             let stale = s.pane(&format!(
                 "KO_SHELL={} exec {} shell",

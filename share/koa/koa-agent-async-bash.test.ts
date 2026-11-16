@@ -219,13 +219,15 @@ test("stop by name and id stops owned groups, sends no notice, and handles ended
     const s = await startSession(fx);
     for (const address of ["name", "id"]) {
       const marker = `koa-job-${fx.dir.split("/").at(-1)}-${address}`;
-      const ready = join(fx.dir, `ready-${address}`);
       const sleeper = join(fx.dir, marker);
       symlinkSync("/bin/sleep", sleeper);
-      const command = `'${sleeper}' 30 & echo ready > '${ready}'; wait`;
+      const command = `exec '${sleeper}' 30`;
       const result = await s.tool("async_bash").execute("c", { command, name: address });
-      await pollUntil(() => existsSync(ready));
-      await s.tool("stop_async_bash").execute("s", { job: address === "name" ? "NAME" : jobId(result) });
+      await pollUntil(async () => !(await processGone(`^${sleeper} 30$`)));
+      const before = rowWhere(await list(s), "job", jobId(result));
+      assert.equal(before.state, "running", JSON.stringify(before));
+      const stopped = await s.tool("stop_async_bash").execute("s", { job: address === "name" ? "NAME" : jobId(result) });
+      assert.match(text(stopped), /stopped job/, text(stopped));
       assert.equal(rowWhere(await list(s), "job", jobId(result)).end, "stopped");
       await pollUntil(() => processGone(marker));    }
     assert.deepEqual(notices(s), []);

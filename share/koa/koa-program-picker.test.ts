@@ -66,8 +66,8 @@ test("resume selects before the browser, cancels, and reports a broken picker", 
     assert.equal((await closed)[0], item.code, output);
     assert.match(output, item.output);
     if (item.gate === "signal") {
-      assert.ok((await readLog()).some(record => record.type === "picker_signal" && record.signal === "SIGTERM"));
-      assert.ok((await readLog()).some(record => record.type === "picker_exit"));
+      await pollUntil(async () => (await readLog()).some(record => record.type === "picker_signal" && record.signal === "SIGTERM"), 5000, "picker_signal");
+      await pollUntil(async () => (await readLog()).some(record => record.type === "picker_exit"), 5000, "picker_exit");
     }
   });
 });

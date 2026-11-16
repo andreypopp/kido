@@ -245,8 +245,8 @@ fn client_two_clients_one_window_and_the_sizer() {
     });
     assert_eq!(small.cell(PANE_X + first, 0).text, "│");
     small.detach();
-    large.click(3, 2);
     large.wait("the remaining client's select claims the window", || {
+        large.click(3, 2);
         let d = s.doc();
         window_size(&d, 0) == (95, 30)
     });

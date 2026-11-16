@@ -1292,9 +1292,13 @@ impl Server {
         mut check: impl FnMut(&Value) -> bool,
     ) -> Value {
         let mut last = Value::Null;
-        poll(what, || {
+        poll_detailed(what, (DEADLINE, Duration::from_millis(10)), || {
             last = self.row(pane);
-            check(&last)
+            if check(&last) {
+                Ok(())
+            } else {
+                Err(format!("; last row: {last}"))
+            }
         });
         last
     }

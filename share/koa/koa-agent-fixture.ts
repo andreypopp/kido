@@ -309,6 +309,7 @@ export function makeFixture(): Fixture {
   process.env.KO_FAKE_PANES = panesFile;
   process.env.KO_FAKE_CLIENT_PANES = file("client-panes.json");
   process.env.KO_FAKE_CLIENT_FEED = file("client-feed.jsonl");
+  process.env.KO_FAKE_CLIENT_FED = file("client-fed.jsonl");
   process.env.KO_FAKE_CLIENT_DROP = file("client-drop");
   process.env.KO_FAKE_CLIENT_LAYOUTS = file("client-layouts.jsonl");
   process.env.KO_FAKE_FEED = feedFile;

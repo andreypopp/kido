@@ -780,6 +780,7 @@ import SidebarFeed
         func capture(_ name: String) async throws { try await captureFrames(name, afterLight: nil) }
         func captureFrames(_ name: String, afterLight: (() async throws -> Void)?) async throws {
             guard captures.contains(name) || captures.contains("foot-responsive") else { return }
+            _ = try await webviewJS(web, "(()=>{\(Self.contentVisible);return true})()")
             _ = try await webviewJS(web, "(async()=>{\(scenario == .reveal ? "" : "for(let i=0;i<100&&document.querySelector('#items .hold');i++)await new Promise(resolve=>setTimeout(resolve,20));if(document.querySelector('#items .hold'))throw Error('hold deadline');document.getAnimations().filter(animation=>animation.animationName==='grow'&&animation.effect?.target?.closest('#items')).forEach(animation=>animation.finish());document.querySelectorAll('#items .grow').forEach(block=>block.classList.remove('grow'));")await new Promise(resolve=>setTimeout(resolve,50));return true})()")
             if scenario == .dialogs { try await webviewUntil(web, "document.querySelector('#tokens').textContent==='88k / 200k'&&document.querySelector('#percent').textContent==='44%'") }
             let ordered = name == "questions-ordered" || name == "narrow-questions-ordered"
@@ -1079,7 +1080,7 @@ import SidebarFeed
                     try await webviewUntil(web, "innerWidth===\(viewportWidth)")
                     let fits = try await webviewJS(web, "(()=>{const foot=document.querySelector('.field .foot'),field=document.querySelector('#field');return foot.scrollWidth<=foot.clientWidth&&foot.getBoundingClientRect().right<=field.getBoundingClientRect().right})()")
                     XCTAssertEqual(fits, "true", "The foot stays inside the field at pane width \(viewportWidth)")
-                    try await captureFrames("foot-responsive-\(Int(size))-" + state, afterLight: state == "working" && size == 674 ? { try await advance() } : nil)
+                    try await captureFrames("foot-responsive-\(Int(size))-" + state, afterLight: state == "working" && size == 674 ? { try await advance(); try await self.webviewUntil(web, "!!document.querySelector('.run:not(.working) .dots')&&!!document.querySelector('.run:not(.working) .time')") } : nil)
                 }
             }
             try await widths("idle")
