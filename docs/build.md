@@ -184,13 +184,17 @@ make, which would rebuild `ko_wire` and every crate above it.
 
 `make build-linux` builds the static Linux ko for each architecture
 of `LINUX_ARCHS` (`aarch64`, `x86_64`; by default the host's alone)
-into `build/ko/share/ko/linux/<arch>/`: `bin/ko` and `share/ko` with
-the shims, `shim.sh`, the pi extension, the webview SDK and the
-terminfo. It has no `ko-pane`, because no server runs inside. zig is
+into `build/ko/share/ko/linux/<arch>/`: `bin/ko`, `bin/ko-pane` and
+`share/ko` with the shims, `shim.sh`, the pi extension, the webview
+SDK and the terminfo. A runtime uses only `ko`; `ko-pane` is there
+for a ko server on a Linux host, such as a droplet that gets the
+layout whole. Linux CI runs the e2e suite against the glibc build,
+not the musl build; the musl server passed the suite once, in the `ci-like` container on
+aarch64, when `ko-pane` joined the layout. zig is
 the C compiler and the linker, and `ko_vt_sys/build.rs` builds
 libghostty-vt with `-Dtarget=<arch>-linux-musl`, so libghostty-vt,
-zig's static libc++ and musl link into one static executable; `make
-check-static` checks it. `make install` builds and copies the same
+zig's static libc++ and musl link into each static executable; `make
+check-static` checks both. `make install` builds and copies the same
 architectures, so the Homebrew formula builds the host's alone, and
 `make verify` and each CI runner build and check theirs: the two
 runners cover both. `LINUX_ARCHS="aarch64 x86_64"` builds both. The

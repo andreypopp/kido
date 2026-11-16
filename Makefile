@@ -125,25 +125,28 @@ build: $(TERMINFO)/x/xterm-ghostty koa-page
 	cp -R share/webview $(KO)/share/ko/webview
 	cp share/ko/shim.sh $(KO)/share/ko/shim.sh
 
-# The static Linux ko under share/ko/linux/<arch>: bin/ko and share/ko, which has the SHARE files of
-# the host's layout. No ko-pane: no server runs inside.
+# Static Linux runtimes and host servers: bin/ko, bin/ko-pane and share/ko
+# under share/ko/linux/<arch>.
 # zig is the C compiler and linker (.cargo/config.toml names scripts/zig-cc-*).
 LINUX := $(KO)/share/ko/linux
 build-linux: build
 	set -e; for arch in $(LINUX_ARCHS); do \
-	  $(CARGO) build --locked --release --bin ko --target $$arch-unknown-linux-musl; \
+	  $(CARGO) build --locked --release --bin ko --bin ko-pane --target $$arch-unknown-linux-musl; \
 	  dir=$(LINUX)/$$arch; \
 	  rm -rf $$dir; mkdir -p $$dir/bin $$dir/share/ko; \
-	  cp target/$$arch-unknown-linux-musl/release/ko $$dir/bin/ko; \
+	  cp target/$$arch-unknown-linux-musl/release/ko target/$$arch-unknown-linux-musl/release/ko-pane $$dir/bin/; \
 	  cp -R $(addprefix $(KO)/share/ko/,$(SHARE)) $$dir/share/ko/; \
 	done
 
-# Fails when a built Linux ko is not one static executable.
+# Fails when a built Linux binary is not static.
 check-static:
 	set -e; for arch in $(LINUX_ARCHS); do \
-	  out=$$(file -b $(LINUX)/$$arch/bin/ko); \
-	  case "$$out" in *"statically linked"*|*"static-pie linked"*) ;; \
-	    *) echo "check-static: $$arch ko is not static: $$out" >&2; exit 1 ;; esac; \
+	  for bin in ko ko-pane; do \
+	    path=$(LINUX)/$$arch/bin/$$bin; \
+	    out=$$(file -b $$path); \
+	    case "$$out" in *"statically linked"*|*"static-pie linked"*) ;; \
+	      *) echo "check-static: $$path is not static: $$out" >&2; exit 1 ;; esac; \
+	  done; \
 	done
 
 $(TERMINFO)/x/xterm-ghostty: ko_vt/terminfo.zig $(wildcard third_party/ghostty/src/terminfo/*.zig)
