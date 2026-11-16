@@ -4,6 +4,7 @@ import { open } from 'node:fs/promises';
 import { basename } from 'node:path';
 import { imageInfo } from './koa-image.ts';
 import { ATTACHMENT_LIMITS } from './koa-records.ts';
+import { later } from './koa-timer.ts';
 
 export async function readBody(request: IncomingMessage, limit: number): Promise<Buffer | undefined> {
   const chunks: Buffer[] = [];
@@ -21,6 +22,15 @@ export const wrongPostType = (request: IncomingMessage) => request.method === "P
 export function respond(response: ServerResponse, status: number, text: string, contentType = "application/json"): void {
   response.writeHead(status, { "Content-Type": contentType });
   response.end(text);
+}
+
+export function afterReply(response: ServerResponse, timeoutMs: number, stop: () => void): void {
+  response.shouldKeepAlive = true;
+  response.setHeader('Connection', 'keep-alive');
+  const socket = response.socket;
+  const finish = () => { clearTimeout(timer); socket?.off('close', finish); stop(); };
+  const timer = later(finish, timeoutMs);
+  socket?.once('close', finish);
 }
 
 function fileDisposition(name: string): string {

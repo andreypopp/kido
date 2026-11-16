@@ -10,7 +10,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import type { AgentSession, SlashCommandSource } from "@earendil-works/pi-coding-agent";
 import { bashResult } from "./koa-transcript.ts";
 import { later } from "./koa-timer.ts";
-import { respond, readBody, serveFile, wrongPostType } from "./koa-http.ts";
+import { afterReply, respond, readBody, serveFile, wrongPostType } from "./koa-http.ts";
 import type { ViewAddress } from "./koa-feed.ts";
 import { isRecord, errorText, cleanLine, replaceControlCharacters, utf8Prefix } from "./text.ts";
 import { webview } from "../webview/index.ts";
@@ -324,15 +324,13 @@ async function main(): Promise<void> {
       return true;
     };
     const restartKoa = (response: ServerResponse) => {
-      response.setHeader("Connection", "close");
       const restart = () => {
         if (reloading) return;
         reloading = true;
         const ended = tree.all().filter(agent => agent.parent).length;
         void shutdown().then(() => Promise.all([process.stdout, process.stderr].map(stream => new Promise<void>(resolve => { const timer = later(resolve, QUIT_REPLY_MS); stream.write("", () => { clearTimeout(timer); resolve(); }); })))).then(() => { if (!process.execve) throw Error("this node has no process.execve"); process.execve(process.execPath, [process.execPath, ...process.execArgv, process.argv[1] ?? "", ...own, ...restartArgs(pass, root().view.state.sessionFile)], { ...process.env, KOA_RELOAD: String(ended) }); }).catch(error => { process.stderr.write(`koa: reload: ${errorText(error)}\n`); process.exitCode = 1; });
       };
-      const timer = later(restart, QUIT_REPLY_MS);
-      response.once("finish", () => { clearTimeout(timer); restart(); });
+      afterReply(response, QUIT_REPLY_MS, restart);
       respond(response, 200, JSON.stringify({ disposition: "handled", action: { type: "reload" } }));
     };
     const reloadBusy = () => tree.all().some(agent => agent.view.reloadBusy()) || edits.busy();
@@ -616,9 +614,7 @@ async function main(): Promise<void> {
       } },
       "/quit": { method: "POST", access: "any", scope: "agent", handle: (_value, response, { agent }) => {
         if (!isRoot(agent)) { respond(response, 409, JSON.stringify({ error: `/quit: only in @${rootName()}'s view` })); return; }
-        response.setHeader("Connection", "close");
-        const timer = later(() => background(quit()), QUIT_REPLY_MS);
-        response.once("finish", () => { clearTimeout(timer); background(quit()); });
+        afterReply(response, QUIT_REPLY_MS, () => background(quit()));
         respond(response, 200, "{}");
       } },
     };
