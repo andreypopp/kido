@@ -1787,8 +1787,9 @@ import SidebarFeed
                 try await advance()
                 if let ready { try await webviewUntil(web, ready) }
             }
-            try await webviewUntil(web, "document.querySelector('#items').textContent.includes('aborted')&&document.querySelectorAll('.run').length>=1")
-            _ = try await webviewJS(web, "(()=>{document.querySelectorAll('.run>.line').forEach(row=>row.click());return true})()")
+            try await webviewUntil(web, "document.querySelectorAll('.run').length===1&&document.querySelector('.run .step')?.textContent.includes('where the rule belongs')&&document.querySelector('.run .names .err')?.textContent==='bash'&&document.querySelector('#items').textContent.includes('This operation was aborted')")
+            let expanded = try await webviewJS(web, "(()=>{const line=document.querySelector('.run>.line');if(line.getAttribute('aria-expanded')!=='true')line.click();return line.getAttribute('aria-expanded')==='true'})()")
+            XCTAssertEqual(expanded, "true")
             try await capture("times")
         }
         switch scenario {
