@@ -36,7 +36,7 @@ against this.
 |---|---|---|
 | The network, no key | Nothing | Caddy refuses the handshake of a certificate that is not in the folder (`mode require` with the leaf verifier). ko has no TCP listener. |
 | The network, between the Mac and the droplet | Nothing | The client checks the server certificate (WebPKI) and the server name. |
-| A request with SNI of `enroll.` and `Host` of the ko host | Nothing | Caddy sets `strict_sni_host` when a policy has client authentication. Spike 1 confirms the 421. |
+| A request with SNI of `enroll.` and `Host` of the ko host | Nothing | Caddy answers 421 with no option set (spike 1). |
 | A browser on the user's Mac | Nothing | The key is not in a browser's reach, and ko refuses every request with an `Origin` header (docs/protocol.md, section 1). This rule stays. |
 | A stolen or copied Mac disk | Nothing without the Secure Enclave of that Mac | The key is a Secure Enclave key. Its blob on disk works only in that enclave. |
 | Malware as the Mac user | It can sign while it runs on that Mac; it cannot copy the key | Out of reach of this design. Revoke the device. |
@@ -54,11 +54,14 @@ installed version:
   session resumption on the ko host: every connection is a full
   handshake with a client signature, and a revoked certificate cannot
   resume. The cost is in section 4.6.
-- From a release between v2.11.2 and v2.11.9, the verifiers run in
-  `VerifyConnection`, on every connection. Older releases run them in
-  `VerifyPeerCertificate`, which Go skips on a resumed session; that
-  is safe there only because of the first fact. The provisioning pins
-  a minimum Caddy version with `VerifyConnection`.
+- From v2.11.3 the verifiers run in `VerifyConnection`, on every
+  connection; v2.11.3 gave the leaf verifier no certificate bytes,
+  which v2.11.4 fixed (commit 6c675e29f87c). The provisioning
+  requires Caddy 2.11.4 or later.
+- `mode require` with the leaf verifier checks the handshake
+  signature and that the certificate is in the folder. It does not
+  check the EKU or the validity dates of a pinned certificate
+  (spike 1). So the profile checks belong to `ko-pair` (4.3).
 - The folder loader reads the `*.pem` files when the configuration is
   provisioned. A removed file has no effect until a reload or a
   restart.
@@ -231,11 +234,14 @@ and `qrencode`. No crate and no ko code is involved.
 2. It serves `POST /v1/enroll` on `127.0.0.1` (`http.server` of the
    standard library), behind Caddy's `enroll.` host, for at most
    120 s. Outside a pairing, Caddy answers 502 there.
-3. On the first valid request it writes the device and answers 200.
-   Then it restarts Caddy and waits (10 s) until the unit is active
-   and port 443 accepts. Only then it prints the device's name and
-   fingerprint as paired and exits 0. A failed restart is a nonzero
-   exit with the state that it left.
+3. On the first valid request it writes the device and runs `caddy
+   validate`, because a `.pem` that Caddy cannot load stops Caddy's
+   start (spike 1). If the validation fails, it removes the new
+   files, answers 400 and exits nonzero; the old set stays in
+   service. Else it answers 200, restarts Caddy and waits (10 s)
+   until the unit is active and port 443 accepts. Only then it
+   prints the device's name and fingerprint as paired and exits 0. A
+   failed restart is a nonzero exit with the state that it left.
 4. On expiry it prints that no device paired and exits 1.
 
 The answer goes out before the restart, because it travels through
@@ -378,10 +384,11 @@ with only Zone, DNS, Edit on the one zone; the zone's id and name.
 - `/usr/local/sbin/ko-pair`, `ko-revoke`, `ko-devices`, and
   `/var/lib/ko-devices`.
 
-**The Caddyfile** (shape; spike 1 fixes the exact syntax):
+**The Caddyfile** (this syntax passed `caddy validate` on 2.11.9):
 
 ```
-{ admin unix//run/caddy/admin.sock    # mode 0600; not localhost:2019
+{ admin unix//run/caddy/admin.sock|0600    # not localhost:2019
+  auto_https disable_redirects        # port 80 is closed
   servers { protocols h1 h2 }         # phase 2 adds h3
   grace_period 3s }
 enroll.<domain> {
@@ -474,10 +481,35 @@ impl Stream { fd, read, write, interest, close }   // every caller matches throu
 | The server certificate is not valid | new: `tls` | no |
 | A TLS alert after the client's certificate (`bad_certificate`, `certificate_required`, `access_denied`) | new: `identity` | no |
 | A lost link | as today | yes |
+| A close with code 1001 on `/client` | a lost link (below) | yes |
 
   In TLS 1.3 the server judges the client certificate after the
   client's handshake is complete, so the alert arrives with the
   first read. The upgrade step maps it.
+
+**Close code 1001.** docs/protocol.md, section 1, says that only
+1001 means the end of the server, and that a client detaches on it.
+Behind Caddy that is no longer true: a Caddy restart (each pairing
+and revocation) closes every WebSocket with 1001 while ko runs
+(spike 1). The places that read the code:
+
+- `ko_client/src/wire.rs:706` maps 1001 to `Next::Shutdown`.
+- `ko_tui/src/client.rs:2005` is the one reader that acts on it: the
+  terminal client quits. It has no TLS endpoint in phase 1.
+- `ko_client/src/ffi/engine.rs:393` (`/client`) and `:691` (a view)
+  handle `Shutdown` as `Closed`: an outage, and the engine dials
+  again. `webview.rs:343`, `:607`, `api.rs:334` and
+  `ko_tui/src/mirror.rs:424` also make no difference. The app's
+  Swift reads no close code.
+
+So Kido.app already reconnects after a 1001: the next dial gets the
+same `instance` and the views resume, or a 502, which is "no
+server". No code changes; unit 4 adds the test that pins it (the TLS
+test server closes `/client` with 1001 and stays up; the engine
+reports an outage, then a welcome that is not fresh). The rule for
+the docs: on a TLS endpoint, 1001 is a lost link, because a proxy
+can send it; the reconnect learns whether the server ended. A
+terminal client for TLS (Q2) must follow the same rule (Q10).
 
 **Crates** (for approval):
 
@@ -491,10 +523,15 @@ impl Stream { fd, read, write, interest, close }   // every caller matches throu
   `scripts/crates.txt` list the packages of every target, so both
   sets are in the list.
 
-`ring` has C and assembly, built by the `cc` crate with zig for the
-musl targets; the unit confirms that `make build-linux` and the iOS
-slices build, and that the xcframework's export check passes with
-the Security crates. `aws-lc-rs` needs cmake; a pure-Rust provider
+`ring` has C and assembly, built by the `cc` crate. Spike 2 showed
+that it links into the xcframework (macOS and both arm64 iOS slices)
+with no duplicate symbol beside Zig's libghostty-vt, and that the
+export checks pass. Two build changes are part of unit 4: for the
+musl targets, `ring`'s `cc` build adds `--target=<arch>-unknown-linux-musl`,
+which overrides zig's target, so the Makefile's zig compiler wrapper
+drops that argument; and the iOS builds need `DEVELOPER_DIR`
+exported. The unit confirms the export check again with the
+Security crates of the platform verifier. `aws-lc-rs` needs cmake; a pure-Rust provider
 is not production quality. Hand-written TLS is not an option.
 
 **Tests** (`ko_client`, in-process, no network beyond loopback):
@@ -545,8 +582,7 @@ the cost: one QUIC connection carries every stream.
 **Rule.** The private key never enters Rust. `rustls` asks for a
 signature through its `SigningKey` and `Signer` traits; the
 implementation calls a C function pointer that Swift provides.
-Where Swift keeps the key (the Secure Enclave, or a software key in
-a VM) is Swift's fact alone.
+Where Swift keeps the key is Swift's fact alone.
 
 **The C shape** (`ko_client.h`):
 
@@ -623,8 +659,9 @@ visual builds are ad-hoc signed (docs/design-app.md, "Release
 signing"): a `SecKey` in the Secure Enclave needs the data protection
 keychain, which needs an entitlement and a provisioning profile; a
 CryptoKit enclave key needs neither, and its `dataRepresentation` (a
-blob that only this enclave can use) is a file. Spike 2 confirms
-this on the three signing kinds. `swift-certificates` builds the
+blob that only this enclave can use) is a file. Spike 2 confirmed
+this for an ad-hoc signature and an Apple Development identity, with
+no entitlement and no prompt; the `SecKey` path is not needed. `swift-certificates` builds the
 certificate from either (`Certificate.PrivateKey` has an initialiser
 for `SecureEnclave.P256.Signing.PrivateKey` and for `SecKey`).
 
@@ -635,8 +672,7 @@ for `SecureEnclave.P256.Signing.PrivateKey` and for `SecKey`).
 `unsafe impl`. The cost is the point of the design: the key is bytes
 in a file or a keychain item and in the process memory, so a copy of
 the disk or one memory read is a shell on the server. The callback
-design covers this case too, with the software key held in Swift, so
-the plan needs it only if the callback is refused.
+plan needs it only if the callback is refused.
 
 ### 4.8 Kido.app
 
@@ -660,13 +696,13 @@ every `case .remote` gets its decision:
 **The identity store** (a new file, `app/App/Identity.swift`): one
 identity for each server, in `~/Library/Application
 Support/Kido/servers/<host>/`: `certificate.der` and `key` (the
-enclave blob, mode 0600). The key is an enum of two cases: an enclave
-key, or a software key where the Mac has no enclave
-(`SecureEnclave.isAvailable` is false: the visual-test VM). Removing
-the directory forgets the server. The enclave key is made with the
-access `afterFirstUnlockThisDeviceOnly` and no user presence, so a
-reconnect works while the screen is locked and never shows a prompt;
-spike 2 confirms.
+enclave blob of 324 bytes, mode 0600). The key is always an enclave
+key: the visual-test VM has a working enclave API too (spike 2), so
+no software key exists in the app. Removing the directory forgets
+the server. The enclave key is made with the access
+`afterFirstUnlockThisDeviceOnly` and `privateKeyUsage`, with no user
+presence, so it never shows a prompt. Signing while the screen is
+locked is not tested yet; the user checks it once (Q6).
 
 **Pairing** (Swift; the UI is 4.9):
 
@@ -698,7 +734,7 @@ cannot agree on a wrong formula); the payload decode with each
 refusal; the pairing against a local `URLProtocol` stub for each
 answer; `Host` parsing; the connect sequence against the TLS test
 server of 4.5 through `KoClientKit`. Visual snapshots for each state
-of 4.9, recorded once at the end, with the software key in the VM.
+of 4.9, recorded once at the end; the VM makes its own enclave key.
 
 ### 4.9 The UI
 
@@ -899,7 +935,7 @@ risk, about 3 hours).
    and the callback of 4.7 completes a TLS 1.3 handshake with client
    authentication against `openssl s_server -Verify`.
 2. Under each signing: ad-hoc, Personal Team, and inside the
-   visual-test VM (expected: no enclave).
+   visual-test VM.
 3. The blob in a file: a second process uses it; a copy on another
    Mac does not.
 4. Signing while the screen is locked, with the chosen access; no
@@ -911,6 +947,59 @@ risk, about 3 hours).
    slices and for `x86_64-unknown-linux-musl` with zig?
 7. If the CryptoKit key fails a point: the same with a `SecKey`, and
    the entitlement that it needs.
+
+**Spike 1: results** (done; evidence in `/tmp/spike-caddy/`).
+
+1. Caddy 2.11.9 from Caddy's Debian repository. The minimum is
+   2.11.4 (section 2). The Caddyfile of 4.4 is the validated one.
+2. No certificate, a certificate that is not pinned and a pinned
+   certificate with a wrong key are refused. A pinned certificate
+   that is expired, or has no `clientAuth` EKU, is accepted.
+3. A restart serves again 20 ms after SIGTERM. A removed `.pem`
+   stays accepted until the restart. A broken `.pem` makes `caddy
+   validate` and `caddy run` exit 1.
+4. No session is reused in TLS 1.2 or 1.3 with client
+   authentication. After a removal and a restart, the certificate
+   gets `bad certificate`. Revocation by restart is complete.
+5. A restart ends every WebSocket and keep-alive connection within
+   1.5 ms. The WebSockets get close code 1001 from Caddy (4.5).
+6. SNI `enroll.` with the `Host` of the ko host gets 421, with no
+   `strict_sni_host` in the configuration.
+7. ACME TLS-ALPN-01 with client authentication and port 80 closed:
+   not tested; it needs the droplet (unit 3, Q4).
+8. ko through Caddy passes: `ko api`, a view upgrade with a binary
+   snapshot, an RGBA image, a webview response, a WebSocket message
+   of 32 MiB byte for byte. `Content-Length` is kept; the webview
+   response is chunked. ko down gives 502; ko's stop reaches the
+   client as 1001.
+9. The admin endpoint on a unix socket of mode 0600 works. The
+   systemd units and the sandbox are not tested (the container has
+   no systemd); unit 3 tests them on the droplet.
+
+**Spike 2: results** (done; the code is not in the repository).
+
+1. Pass. A CryptoKit enclave P-256 key, a self-signed certificate
+   from swift-certificates 1.21.1 with the profile of 4.3, and
+   rustls 0.23.46 with the exact callback of 4.7 completed a TLS 1.3
+   handshake with client authentication against OpenSSL 3.5.9
+   `s_server -Verify 1 -verify_return_error -tls1_3`. The callback
+   got 146 bytes and returned a DER signature of 71 bytes.
+2. Signing kinds: ad-hoc works, with no entitlement and no prompt;
+   an Apple Development identity works. The macOS 27.2.1 guest of
+   the visual-test VM creates, uses and reloads enclave keys; the
+   API works there, and its hardware isolation is not proven. A blob
+   from the host fails in the VM (CryptoTokenKit -10), as expected.
+3. The blob file (324 bytes) works from a second process. A copy on
+   another Mac was not testable.
+4. Access `afterFirstUnlockThisDeviceOnly` with `privateKeyUsage`
+   and no user presence. Signing with the screen locked is not
+   tested.
+5. One signature takes about 5.1 ms on the host (about 1 ms in the
+   VM); 8 signatures on 2 threads take about 37 ms. So a window with
+   8 views pays about 40 ms of signatures on each connect.
+6. `ring`: see 4.5 (the xcframework passes; musl needs the wrapper;
+   iOS needs `DEVELOPER_DIR`).
+7. The `SecKey` path was not needed.
 
 **Spike 3: WebSockets over HTTP/3 through Caddy, migration, the
 client** (high risk, about 1 day; can run after phase 1 starts).
@@ -947,8 +1036,8 @@ client** (high risk, about 1 day; can run after phase 1 starts).
 **Where the spikes run** (a proposal; section 9, Q6). Spike 1 and
 the HTTP/3 parts of spike 3 run in a Debian 13 container through
 Apple's `container`, so nothing is installed on the Mac (podman does
-not exist on macOS). Spike 2 runs on the macOS host, because it
-needs the enclave. Real roaming (spike 3, points 3, 4 and 7) and
+not exist on macOS). Spike 2 ran on the macOS host and in the
+visual-test VM. Real roaming (spike 3, points 3, 4 and 7) and
 ACME (spike 1, point 7) need a test droplet that lives for a short
 time, with the Mac changing networks; the user runs that step.
 
@@ -960,12 +1049,12 @@ with reviews, not calendar time.
 
 | # | Unit | Delivers | Needs | Risk | Time |
 |---|---|---|---|---|---|
-| S1 | Spike 1 | Section 6 answers; fixes 4.3 and 4.4 | | low | 2 h |
-| S2 | Spike 2 | Section 6 answers; fixes 4.7 | | medium | 3 h |
+| S1 | Spike 1 | Done: results in section 6 | | | |
+| S2 | Spike 2 | Done: results in section 6 | | | |
 | 1 | Second uid | `--allow-uid`, the directory rule, the socket mode, docs, tests (4.1) | | low | 2 h |
 | 2 | Static Linux server | `ko-pane` in `build-linux`, musl e2e run (4.2) | | medium | 3 h |
 | 3 | `deploy/` | Terraform, provisioning, units, Caddyfile, `ko-pair`, `ko-revoke`, `ko-devices`, `test.sh`, `smoke.sh`, README (4.3, 4.4) | S1, 1, 2 | medium | 8 h, and one droplet session with the user |
-| 4 | TLS transport | `Endpoint`, `Stream`, rustls, the resolver, the failure kinds, tests (4.5) | crates | high | 12 h |
+| 4 | TLS transport | `Endpoint`, `Stream`, rustls, the resolver, the failure kinds, the 1001 test and its docs rule, tests (4.5) | crates | high | 12 h |
 | 5 | Identity ABI | `ko_endpoint`, `ko_identity`, the signer, KoClientKit (4.7) | 4, S2, unsafe approval | medium | 4 h |
 | 6 | Kido.app | The `Host` case, the identity store, pairing, connect, sheets, snapshots (4.8, 4.9) | 5, the request shape of 4.3 | high | 12 h |
 | 7 | Measurement | The numbers of 4.6 in the docs; the decision on `ko_client_reconnect` and the request pool | 3, 6 | low | 3 h, and the user switches networks |
@@ -1021,17 +1110,20 @@ Each has a recommendation; the plan above assumes it.
    servers cannot link the device. The SAN's install id is then the
    one value that the Mac's certificates share; if that is not
    wanted, it becomes random for each identity.
-4. **Port 80.** *Recommend closed,* if spike 1 shows that
-   TLS-ALPN-01 works with client authentication; else open for
-   HTTP-01 only.
+4. **Port 80.** *Recommend closed,* if the droplet shows that
+   TLS-ALPN-01 works with client authentication (spike 1 could not
+   test it); else open for HTTP-01 only, without
+   `disable_redirects`.
 5. **`build-linux` grows by `ko-pane`**, also in the app bundle.
    *Recommend yes* (one target, one layout); a separate
    `build-linux-server` target if the bundle size matters.
 6. **Where the spikes run.** *Recommend the proposal of section 6:*
    a Debian 13 container through Apple's `container` for Caddy, the
-   pairing scripts and the HTTP/3 parts, the macOS host for the
-   enclave, and one short-lived test droplet for ACME and real
-   roaming, which the user starts and destroys.
+   pairing scripts and the HTTP/3 parts, and one short-lived test
+   droplet for ACME and real roaming, which the user starts and
+   destroys. Spike 2 is done. Two checks stay with the user, on real
+   Macs: a signature while the screen is locked, and that a copied
+   blob fails on another Mac.
 7. **Phase 2: HTTP/3 through Caddy, or a ko tunnel** (section 5,
    option B). *Recommend no decision before spike 3;* the spike
    tests both. The lean is to the tunnel if Caddy or quic-go fails
@@ -1043,3 +1135,11 @@ Each has a recommendation; the plan above assumes it.
     one rule with no link to the flag. The alternative keeps 0700
     for all and accepts 0710 only in a server with `--allow-uid`;
     then each `ko` command in a pane needs a second way to know it.
+10. **Close code 1001 behind a proxy** (4.5). *Recommend:* on a TLS
+    endpoint, 1001 is a lost link, and the reconnect finds out
+    whether the server ended (a 502, or a welcome with another
+    `instance`). Kido.app's engine already does this, so phase 1
+    needs only a test and the docs. The alternative, a final
+    "server stops" event on `/client` before the close, is a wire
+    change for every client and is not needed until a terminal
+    client has a TLS endpoint.
