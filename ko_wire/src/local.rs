@@ -63,8 +63,8 @@ pub fn socket(mode: Dir, dir: &Path) -> Result<PathBuf, String> {
         Ok(socket)
     } else if meta.uid() != ko_sys::sock::uid() {
         Err("server directory is not owned by this user".to_owned())
-    } else if meta.permissions().mode() & 0o077 != 0 {
-        Err("server directory is accessible to other users".to_owned())
+    } else if meta.permissions().mode() & 0o067 != 0 {
+        Err("server directory permits group read, group write or other access".to_owned())
     } else {
         Ok(socket)
     }
@@ -79,11 +79,17 @@ mod tests {
         let scratch = tempdir();
         let dir = scratch.join("state");
         assert_eq!(socket(Dir::Create, &dir), Ok(dir.join("socket")));
-        fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).unwrap();
-        assert_eq!(
-            socket(Dir::Existing, &dir),
-            Err("server directory is accessible to other users".to_owned())
-        );
+        for mode in [0o700, 0o710] {
+            fs::set_permissions(&dir, fs::Permissions::from_mode(mode)).unwrap();
+            assert_eq!(socket(Dir::Existing, &dir), Ok(dir.join("socket")));
+        }
+        for mode in [0o750, 0o720, 0o701] {
+            fs::set_permissions(&dir, fs::Permissions::from_mode(mode)).unwrap();
+            assert_eq!(
+                socket(Dir::Existing, &dir),
+                Err("server directory permits group read, group write or other access".to_owned())
+            );
+        }
         assert_eq!(
             socket(Dir::Existing, &scratch.join("a,b")),
             Err("server directory contains a comma".to_owned())

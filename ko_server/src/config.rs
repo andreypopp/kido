@@ -16,6 +16,7 @@ use ko_wire::protocol::BUILD;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Config {
+    pub allow_uid: Option<u32>,
     pub dir: PathBuf,
     pub socket: PathBuf,
     pub pane_exe: PathBuf,
@@ -131,6 +132,7 @@ pub(crate) struct Settings {
 
 pub fn scratch(dir: &Path, pane_exe: PathBuf) -> Config {
     Config {
+        allow_uid: None,
         dir: dir.to_path_buf(),
         socket: dir.join("socket"),
         pane_exe,
@@ -278,6 +280,7 @@ impl Config {
         chosen: Option<PathBuf>,
         bin_dir: Option<PathBuf>,
         file: Option<PathBuf>,
+        allow_uid: Option<u32>,
     ) -> Result<Config, String> {
         let default_shell = set("SHELL")
             .map(PathBuf::from)
@@ -296,6 +299,7 @@ impl Config {
         let cwd = env::current_dir().map_err(|error: io::Error| error.to_string())?;
         let cap = positive("KO_LOG_BYTES").unwrap_or(8 << 20);
         Ok(Config {
+            allow_uid,
             dir,
             socket,
             pane_exe,

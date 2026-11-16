@@ -140,8 +140,11 @@ until a client removes the pane. The run rules of design.md need this.
 The protocol is HTTP/1.1 over the unix socket, with WebSocket for the
 long-lived streams. Each stream is its own connection, so a flood in
 one pane never delays a control reply or another pane. The coordinator
-checks the peer uid on every accepted connection (`ko_sys/src/sock.rs`);
-there is no other authentication.
+checks the peer uid on every connection that the host socket accepts
+(`ko_sys/src/sock.rs`): its own uid, or the one uid of `ko server
+--allow-uid` (4.13); there is no other authentication there. A
+runtime's socket checks no uid; its requests act only as a live pane
+of that runtime (design-runtimes.md).
 
 ### 4.2 Crates
 
@@ -827,9 +830,32 @@ live bytes, so a restore or a later view has nothing to show.
 `ko server --server DIR` runs in the foreground and listens on
 `DIR/socket`. `DIR` is `$KO_STATE_DIR`, else `$XDG_STATE_HOME/ko`,
 else `~/.local/state/ko` (`ko_wire/src/local.rs`), created with
-mode 0700. The server refuses a directory with other permissions or
-another owner, a path with a comma, and a socket path over 103 bytes,
-the macOS limit, on every platform.
+mode 0700. The server and a `ko` command of the user refuse a
+directory with group read, group write or any other bit, a directory
+of another owner, a path with a comma, and a socket path over 103
+bytes, the macOS limit, on every platform. Group search is allowed, so 0710
+passes: a member of the group can open a name that it knows, but
+cannot list the directory. The rule is one for every ko, with no
+link to `--allow-uid`, so a `ko` command needs no knowledge of the
+flag. A `ko` command in a pane does not check the owner or the mode of
+its own server's directory, because a container runtime mounts the
+socket in a root-owned 0755 directory (`ko_wire/src/local.rs`).
+
+`ko server --allow-uid UID` admits one more uid on `DIR/socket`, as
+the user (docs/protocol.md, section 1). The flag does not repeat,
+changes only the host socket's admission, and a server that the
+launcher starts never has it. On a runtime's socket the allowed uid
+is as any other peer: it gets nothing without a live pane's token.
+With the flag, the server sets the socket's mode to 0660 after the
+bind, because a connect on Linux needs write
+permission; without it the socket keeps the umask's mode. ko never
+changes an owner or a group: the deployment makes the directory 2710
+with a group whose one member is the proxy's uid, so the set-group-id
+bit gives the socket that group. The peer uid check is the gate and
+the modes are the second layer. A member of that group can open
+every name in `DIR` that it knows, as far as the file's own mode
+permits (the log is 0600), and a runtime's socket refuses it without
+a pane token.
 
 `ko` connects. With no socket, or a refused connection (the one case
 in which the socket file is stale; a connect timeout means a busy

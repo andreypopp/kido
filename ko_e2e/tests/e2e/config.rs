@@ -6,6 +6,46 @@ use serde_json::json;
 use crate::harness::{Dir, history_lines, run_ko, start, start_in, test_env, write_config};
 
 #[test]
+fn server_allow_uid() {
+    let dir = Dir::new("ko-allow-uid-");
+    fs::set_permissions(&*dir, fs::Permissions::from_mode(0o710)).unwrap();
+    let uid = ko_sys::sock::uid().to_string();
+    let s = start_in(
+        dir,
+        std::path::Path::new("/bin/sh"),
+        &[],
+        &["--allow-uid", &uid],
+    );
+    assert_eq!(
+        fs::metadata(s.dir.join("socket"))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777,
+        0o660
+    );
+    assert!(s.ko(&["api", "/version"], "").json()["build"].is_string());
+    let plain = start(&[]);
+    let probe = plain.scratch.join("socket");
+    let _socket = std::os::unix::net::UnixListener::bind(&probe).unwrap();
+    assert_eq!(
+        fs::metadata(plain.dir.join("socket"))
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777,
+        fs::metadata(probe).unwrap().permissions().mode() & 0o777
+    );
+    let invalid = run_ko(
+        &s.scratch,
+        &test_env(&s.dir),
+        &["server", "--allow-uid", "x"],
+        "",
+    );
+    invalid.error(124);
+}
+
+#[test]
 fn defaults_and_pane_environment() {
     let dir = Dir::new("ko-config-long-environment-socket-path-");
     write_config(

@@ -581,6 +581,7 @@ mod tests {
 
     fn config() -> Config {
         Config {
+            allow_uid: None,
             dir: PathBuf::from("/tmp"),
             socket: PathBuf::from("/tmp/ko/socket"),
             pane_exe: PathBuf::from("/nonexistent/ko-pane"),

@@ -126,9 +126,16 @@ forward and a missing socket with the same message, so the client
 asks the remote `ko api /version` through the master to tell them
 apart. A host that refuses unix-socket forwarding is unsupported.
 
-Authentication is the socket's mode (0700 directory) and the peer uid
-check on accept. Forwarded connections arrive from sshd as the user,
-so they pass. There is no TLS.
+Authentication on the host socket is the peer uid check on accept,
+with the state directory's mode as a second layer. The server admits
+its own uid and, when it runs with `--allow-uid UID`, that one more uid. A
+connection of the allowed uid has the user's authority, as one of the
+own uid: a request without identity headers is the user. The allowed
+uid is for a local proxy that terminates TLS for a remote device;
+that proxy passes the client's `Host` and adds `X-Forwarded-*`
+headers, which ko ignores, and the refusal of an `Origin` header
+covers its requests too. Forwarded SSH connections arrive from sshd
+as the user, so they pass. ko itself has no TLS and no TCP listener.
 
 A request without identity headers is the user, who may do
 everything. A request that acts as a pane sends `Ko-Pane: pane_N` and

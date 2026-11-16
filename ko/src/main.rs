@@ -177,6 +177,9 @@ enum LayoutCommand {
 
 #[derive(Debug, Args)]
 struct ServerArgs {
+    /// Admit one more user ID on the server socket.
+    #[arg(long, value_name = "UID", conflicts_with = "print_socket")]
+    allow_uid: Option<u32>,
     /// The directory of the ko shims, put first on the PATH of every pane. The default is
     /// share/ko/bin beside the installed ko, if it exists.
     #[arg(long, value_name = "DIR")]
@@ -315,6 +318,7 @@ fn server(args: ServerArgs, server: Option<PathBuf>) -> ExitCode {
         server,
         args.bin_dir.or_else(|| bin_dir::of_exe(&invoked())),
         args.config,
+        args.allow_uid,
     ) {
         Ok(config) => config,
         Err(message) => return fail("server", message),

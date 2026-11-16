@@ -1,5 +1,6 @@
 use std::io;
 use std::os::fd::AsFd;
+use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::time::Duration;
 
@@ -41,12 +42,16 @@ pub(crate) struct Verified(UnixStream, Origin);
 impl Verified {
     #[cfg(any(test, feature = "fuzz"))]
     pub(crate) fn admit(stream: UnixStream) -> Option<Verified> {
-        Verified::admit_from(stream, Origin::Host)
+        Verified::admit_from(stream, Origin::Host, None)
     }
 
-    pub(crate) fn admit_from(stream: UnixStream, origin: Origin) -> Option<Verified> {
+    fn admit_from(stream: UnixStream, origin: Origin, allow_uid: Option<u32>) -> Option<Verified> {
         let allowed = match origin {
-            Origin::Host => ko_sys::sock::peer_uid(stream.as_fd()).ok()? == ko_sys::sock::uid(),
+            Origin::Host => admits_uid(
+                ko_sys::sock::peer_uid(stream.as_fd()).ok()?,
+                ko_sys::sock::uid(),
+                allow_uid,
+            ),
             Origin::Runtime(_) => true,
         };
         let ready = allowed
@@ -66,6 +71,10 @@ impl Verified {
     }
 }
 
+fn admits_uid(peer: u32, own: u32, allowed: Option<u32>) -> bool {
+    peer == own || allowed == Some(peer)
+}
+
 #[derive(Debug)]
 pub(crate) struct Listener {
     socket: UnixListener,
@@ -73,6 +82,7 @@ pub(crate) struct Listener {
     resume: Timer,
     retry: Duration,
     origin: Origin,
+    allow_uid: Option<u32>,
 }
 
 impl Listener {
@@ -89,6 +99,7 @@ impl Listener {
             resume: poll.timer(),
             retry,
             origin,
+            allow_uid: None,
         })
     }
 
@@ -96,7 +107,11 @@ impl Listener {
         for _ in 0..ACCEPT_BURST {
             match ko_sys::retry::retry(|| self.socket.accept()) {
                 Ok((stream, _)) => {
-                    accepted.extend(Verified::admit_from(stream, self.origin.clone()));
+                    accepted.extend(Verified::admit_from(
+                        stream,
+                        self.origin.clone(),
+                        self.allow_uid,
+                    ));
                 }
                 Err(error) if error.raw_os_error() == Some(libc::ECONNABORTED) => {}
                 Err(error)
@@ -153,10 +168,14 @@ pub struct Server {
 
 impl Server {
     pub fn new(config: Config, socket: UnixListener, timing: Timing) -> io::Result<Server> {
+        if config.allow_uid.is_some() {
+            std::fs::set_permissions(&config.socket, std::fs::Permissions::from_mode(0o660))?;
+        }
         let signals = Signals::install(&[Signal::Child, Signal::Term, Signal::Int, Signal::Hup])?;
         let mut poll = Poll::new();
         let signal_token = poll.watch(signals.fd(), Interest::Read);
-        let listener = Listener::new(socket, &mut poll, timing.accept_retry, Origin::Host)?;
+        let mut listener = Listener::new(socket, &mut poll, timing.accept_retry, Origin::Host)?;
+        listener.allow_uid = config.allow_uid;
         let state = State::new(config, Instance::mint()?, &mut poll, timing.output_tick);
         Ok(Server {
             timing,
@@ -302,6 +321,16 @@ pub(crate) mod tests {
                 listener.accept(poll, accepted).unwrap();
             }
         }
+    }
+
+    #[test]
+    fn host_uid_admission() {
+        assert!(admits_uid(10, 10, Some(20)));
+        assert!(admits_uid(20, 10, Some(20)));
+        assert!(!admits_uid(30, 10, Some(20)));
+        assert!(admits_uid(10, 10, None));
+        assert!(!admits_uid(20, 10, None));
+        assert!(!admits_uid(30, 10, None));
     }
 
     #[test]
@@ -468,6 +497,7 @@ pub(crate) mod tests {
         let dir = scratch("sigterm");
         let socket = dir.join("socket");
         let config = Config {
+            allow_uid: None,
             dir: dir.clone(),
             socket: socket.clone(),
             pane_exe: ko_pane(),
