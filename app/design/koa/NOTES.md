@@ -1510,4 +1510,3 @@ back) returns to the agent. No float, no second pane.
 
 Renders: /tmp/koa-shots/koa-job-{running,ended,service,running-narrow}-light.png,
 koa-job-{running,ended}-dark.png.
-||||||| parent of 9ee55a68a (A koa transcript that follows the bottom no longer jumps while streaming)
