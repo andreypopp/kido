@@ -4,12 +4,12 @@ use std::process::ExitCode;
 
 use ko_client::api::ReplyError;
 use ko_client::prompt;
-use ko_wire::ids::MessageId;
+use ko_wire::ids::{MessageId, PaneId};
 use ko_wire::protocol::{ErrorKind, SendPrompt};
 
 use crate::{Target, complain, fail, target};
 
-pub(crate) fn prompt(server: Option<PathBuf>) -> ExitCode {
+pub(crate) fn prompt(server: Option<PathBuf>, target_pane: Option<PaneId>) -> ExitCode {
     let mut text = String::new();
     if let Err(error) = io::stdin().read_to_string(&mut text) {
         return fail("prompt", error);
@@ -30,7 +30,7 @@ pub(crate) fn prompt(server: Option<PathBuf>) -> ExitCode {
     let request = SendPrompt {
         from: caller.pane,
         id,
-        target: None,
+        target: target_pane,
         text,
     };
     let Err(failure) = prompt::send(&dir, Some(caller), &request) else {

@@ -168,7 +168,8 @@ and `pi` on PATH (docs/design-koa.md).
 
 `ko prompt` sends
 text from stdin to the one other agent in your window, over its
-message stream or as a paste for a native agent.
+message stream or as a paste for a native agent. Use `--target PANE`
+to send to another live agent pane in your session.
 
 `ko --help` lists the commands: the server, `ko api` for one request
 to the server, `ko prompt`, `ko panes`, `ko layout`,

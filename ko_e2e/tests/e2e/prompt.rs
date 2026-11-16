@@ -102,7 +102,15 @@ fn pane_in(s: &Server, anchor: &str, new: Value) -> String {
 }
 
 fn prompt(s: &Server, from: &str, n: u32) -> (i32, String) {
-    let (mut env, argv) = ko_command(s, Some(from), &["prompt"]);
+    prompt_to(s, from, n, None)
+}
+
+fn prompt_to(s: &Server, from: &str, n: u32, target: Option<&str>) -> (i32, String) {
+    let mut args = vec!["prompt"];
+    if let Some(target) = target {
+        args.extend(["--target", target]);
+    }
+    let (mut env, argv) = ko_command(s, Some(from), &args);
     env.retain(|entry| !entry.starts_with(b"KO_PANE_TOKEN="));
     let token = TOKENS.with(|tokens| tokens.borrow()[from].clone());
     env.push(format!("KO_PANE_TOKEN={token}").into_bytes());
@@ -235,6 +243,44 @@ fn a_prompt_goes_to_the_one_live_agent_of_the_callers_window() {
     assert_eq!(prompt(&s, &code_pane, 11), (0, String::new()));
     got(&s, &pi, 11);
     untouched(&s, &code_pane, 11);
+
+    assert_eq!(prompt_to(&s, &pi, 12, Some(&far)), (0, String::new()));
+    got(&s, &far, 12);
+    for (n, target) in [(13, &terminal), (14, &dead), (15, &pi)] {
+        assert_eq!(
+            prompt_to(&s, &pi, n, Some(target)),
+            (
+                1,
+                format!("ko prompt: pane {target} is no live agent of the session of pane {pi}\n")
+            )
+        );
+        for pane in [&pi, &code_pane, &far, &terminal, &dead] {
+            untouched(&s, pane, n);
+        }
+    }
+    s.edit(|layout| {
+        let sessions = layout["sessions"].as_array_mut().unwrap();
+        let windows = sessions[0]["windows"].as_array_mut().unwrap();
+        let index = windows
+            .iter()
+            .position(|window| window["tree"]["pane"] == far)
+            .unwrap();
+        let window = windows.remove(index);
+        sessions.push(json!({"name": "other", "windows": [window]}));
+    });
+    assert_eq!(
+        prompt_to(&s, &pi, 16, Some(&far)),
+        (
+            1,
+            format!("ko prompt: pane {far} is no live agent of the session of pane {pi}\n")
+        )
+    );
+    untouched(&s, &far, 16);
+    let (status, stderr) = prompt_to(&s, &pi, 17, Some("pane_bad"));
+    assert_eq!(status, 124);
+    assert!(stderr.contains("invalid id"));
+    untouched(&s, &pi, 17);
+    untouched(&s, &far, 17);
 }
 
 #[test]

@@ -1079,8 +1079,8 @@ a pane, Kido.app) names any pane. The target is an agent pane:
 `Kind::is_agent` and not dead (design-program-status.md, "Pane
 kinds"). The server picks and checks it in the turn that delivers:
 
-- With a `target`, that pane, which must be an agent of `from`'s
-  session; any other pane is `refused`.
+- With a `target`, that pane, which must be a live agent of `from`'s
+  session other than `from` itself; any other pane is invalid.
 - Without one, the one agent in `from`'s window other than `from`
   itself. None is `no_agent`, several are `multiple_agents`; the
   server never picks the caller, the focused pane or a pane of
@@ -1101,8 +1101,9 @@ The first that applies delivers:
 session, `from`'s window first, for Kido.app's picker, which then
 sends with an explicit `target`.
 
-`ko prompt` sends its own pane as `from`, no `target` and an id that
-it mints, once. It exits with 0 sent (acked, delivered or queued), 1
+`ko prompt` sends its own pane as `from` and an id that it mints,
+once. With `--target PANE`, it sends that pane as `target`; without
+that option, the server selects the agent of the caller's window. It exits with 0 sent (acked, delivered or queued), 1
 empty text or an error, 4 `no_agent`, 5 `multiple_agents`.
 
 ## 12. Flow of an app window

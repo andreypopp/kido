@@ -314,7 +314,8 @@ mode.
 `ko prompt` reads its text from stdin and sends it to the server with
 its pane identity, its pane as `from` and an id that it mints. The
 server picks the one agent of the caller's window other than the
-caller, and delivers (protocol.md, section 11). A pane whose message
+caller, unless `--target PANE` names another live agent in the caller's
+session, and delivers (protocol.md, section 11). A pane whose message
 stream is open gets the text as a message of kind `user`. The CLI
 sends once: a paste has no id, and a prompt that the user did not see
 arrive is the user's to send again.

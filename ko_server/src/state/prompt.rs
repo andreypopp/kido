@@ -69,7 +69,7 @@ impl State {
         let (session, window) = layout.locate(from).ok_or_else(|| not_found(from))?;
         if let Some(target) = request.target {
             let reachable = session.windows.iter().any(|window| window.has(target));
-            return if reachable && self.live_agent(target).is_some() {
+            return if target != from && reachable && self.live_agent(target).is_some() {
                 Ok(target)
             } else {
                 Err(Error::new(
