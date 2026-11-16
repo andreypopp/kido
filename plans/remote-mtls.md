@@ -162,10 +162,11 @@ ko never changes an owner or a group. The deployment (4.4) makes
 with Caddy as the group's one member; the set-group-id bit gives the
 socket that group. `KO_STATE_DIR=/var/lib/ko` is in `ko.service` and
 in the login environment of `me`. The peer uid check is the gate; the
-modes are the second layer. Two consequences that the docs state: a
-member of the group can read `DIR/log` by its name (it holds no input
-and no pane text), and can reach a runtime's socket, where it is
-refused without a pane token.
+modes are the second layer. Two facts that the docs state: a member
+of the group cannot read `DIR/log`, because the log is created with
+mode 0600 and group search gives no read access to it; and a
+runtime's listener checks no uid, so the allowed uid gets nothing on
+a runtime's socket without the token of a live pane.
 
 **What Caddy sends.** `X-Forwarded-*` headers, which ko ignores, and
 the client's `Host`. A request head stays under ko's 16 KiB. Caddy
