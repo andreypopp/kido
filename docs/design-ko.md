@@ -207,7 +207,11 @@ the options in the `init` frame; `ko_pane/src/pane.rs` registers the
 callbacks:
 
 - The reply path: `ko-pane` writes the terminal's replies to its pty.
-  A mirror has no pty, so it never answers.
+  A mirror has no pty, so it never answers. Not only program output
+  makes replies: a resize makes the mode 2048 size report, so every
+  request that feeds the terminal also queues its replies. A program
+  such as nvim that uses mode 2048 in place of `SIGWINCH` otherwise
+  waits for its own next output to learn its size.
 - OSC 133 (`SEMANTIC_PROMPT`) and OSC 7501 (`PROGRAM_STATUS`): the
   callbacks only record; after the write, `ko-pane` sends one frame
   for each recorded report, so a report frame follows the ring record

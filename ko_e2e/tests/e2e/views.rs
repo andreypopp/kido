@@ -407,6 +407,30 @@ fn pane_dead_snapshot() {
 }
 
 #[test]
+fn alternate_screen_receives_in_band_resize_without_input() {
+    let s = start(&[]);
+    let program = r#"import os,re,tty
+tty.setraw(0)
+print('\x1b[?1049h\x1b[?2048$p\x1b[?2048h',flush=True)
+buf=b''
+while not re.search(rb'\x1b\[48;\d+;\d+;\d+;\d+t',buf): buf+=os.read(0,4096)
+print('READY',flush=True)
+buf=b''
+while True:
+ buf+=os.read(0,4096)
+ for report in re.finditer(rb'\x1b\[48;(\d+);(\d+);\d+;\d+t',buf):
+  print('REPORT-%sx%s' % (report[2].decode(),report[1].decode()),flush=True)
+ if b't' in buf: buf=buf[buf.rfind(b't')+1:]
+"#;
+    let p = s.pane(&format!("exec python3 -c {}", quote(program)));
+    let (mut c, _) = s.client(Some(&p));
+    let mut v = s.ws(&format!("/panes/{p}/view?history=all"));
+    v.ready("READY");
+    c.send(&size_request("window_1", size(62, 22)));
+    v.output("REPORT-62x22");
+}
+
+#[test]
 fn view_resume_resize_and_input() {
     let s = start(&[]);
     let record = s.dir.join("input");

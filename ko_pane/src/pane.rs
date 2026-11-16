@@ -509,6 +509,7 @@ impl Pane {
         };
         self.io.wait_space(RESIZE_LEN)?;
         live.vt.resize(size).map_err(invalid)?;
+        live.collect();
         if let Some(process) = &live.process {
             let _ = pty::set_size(&process.master, winsize(size));
         }
