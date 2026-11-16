@@ -3,11 +3,16 @@ use std::os::unix::fs::PermissionsExt;
 
 use serde_json::json;
 
-use crate::harness::{Dir, history_lines, run_ko, start, start_serving, test_env, write_config};
+use crate::harness::{Dir, history_lines, run_ko, start, start_in, test_env, write_config};
 
 #[test]
 fn defaults_and_pane_environment() {
-    let s = start_serving("  scrollback: {bytes: 83886080, lines: 100}\n");
+    let dir = Dir::new("ko-config-long-environment-socket-path-");
+    write_config(
+        &dir,
+        "server:\n  scrollback: {bytes: 83886080, lines: 100}\n",
+    );
+    let s = start_in(dir, std::path::Path::new("/bin/sh"), &[], &[]);
     let (mut c, welcome) = s.client(None);
     let terminal = &welcome["limits"]["terminal"];
     let scrollback = &terminal["scrollback"];
@@ -53,7 +58,10 @@ fn defaults_and_pane_environment() {
         "xterm-ghostty|{pane}|{}/socket|custom|ko|{build}",
         s.dir.display()
     );
-    assert!(screen.contains(&expected), "pane environment: {screen:?}");
+    assert!(
+        screen.lines().collect::<String>().contains(&expected),
+        "pane environment: {screen:?}"
+    );
     assert!(screen.contains("/tmp"), "pane cwd: {screen:?}");
     assert!(
         screen.contains("history-2999"),
