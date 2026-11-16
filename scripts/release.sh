@@ -2,9 +2,16 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 dry=false
-if [[ ${1:-} == --dry-run ]]; then dry=true; shift; fi
-version=${1:?usage: scripts/release.sh [--dry-run] VERSION}
-if [[ ${2:-} == --dry-run ]]; then dry=true; fi
+ci=true
+version=
+for arg in "$@"; do
+  case $arg in
+    --dry-run) dry=true ;;
+    --no-ci) ci=false ;;
+    *) version=$arg ;;
+  esac
+done
+[[ -n $version ]] || { echo 'usage: scripts/release.sh [--dry-run] [--no-ci] VERSION' >&2; exit 1; }
 [[ $version =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo 'VERSION must be major.minor.patch' >&2; exit 1; }
 action() {
   printf '+'; printf ' %q' "$@"; printf '\n'
@@ -22,9 +29,13 @@ if [[ $(git rev-parse HEAD) != "$sha" ]]; then
   echo "HEAD is not origin/main: the command diff reads this checkout's build" >&2
   $dry || exit 1
 fi
-echo "+ gh run list --commit $sha --json conclusion,status --limit 100"
-ci=$(gh run list --commit "$sha" --json conclusion,status --limit 100)
-python3 -c 'import json,sys; runs=json.loads(sys.argv[1]); assert runs and all(r["status"]=="completed" and r["conclusion"]=="success" for r in runs), "origin/main CI is not all green"' "$ci"
+if $ci; then
+  echo "+ gh run list --commit $sha --json conclusion,status --limit 100"
+  runs=$(gh run list --commit "$sha" --json conclusion,status --limit 100)
+  python3 -c 'import json,sys; runs=json.loads(sys.argv[1]); assert runs and all(r["status"]=="completed" and r["conclusion"]=="success" for r in runs), "origin/main CI is not all green"' "$runs"
+else
+  echo "CI check skipped (--no-ci)" >&2
+fi
 [[ -z $(git -C "$tap" status --porcelain) && -z $(git -C "$ssh_tap" status --porcelain) ]] || { echo 'Tap checkout is dirty' >&2; exit 1; }
 remote=$(git -C "$ssh_tap" remote get-url --push origin)
 [[ $remote == git@* || $remote == ssh://* ]] || { echo 'Workspace tap must push over SSH' >&2; exit 1; }

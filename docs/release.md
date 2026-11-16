@@ -19,7 +19,8 @@ release while the tap's formula lacks it, and does not add it.
 
 After the change is on `main`, `scripts/release.sh VERSION` (or
 `make release VERSION=x.y.z`) releases ko. `--dry-run` inspects its
-actions. It requires HEAD equal to origin/main and green CI for it.
+actions. It requires HEAD equal to origin/main and green CI for it;
+`--no-ci` skips the CI check, only when the user asks for it.
 It compares the command and tool lists with the tap's current
 revision: the old names come from `$(brew --prefix ko)/bin/ko --help`
 and `share/koa/testdata/ko-prompts.txt` at the old revision, the new
