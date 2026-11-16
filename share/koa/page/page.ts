@@ -3,6 +3,8 @@ import { markdown, markdownLine, type Tail } from './markdown.ts';
 import { revealHeight, unitsOf, type Unit } from './reveal.ts';
 import { continuesRun, estimateExtent, groupAt, runStarts, windowOf, type SeqRange } from './extent.ts';
 import { composer } from './composer.ts';
+import { agentBody, stepInfo, stepParts, toolArgs, type AgentCard } from './steps.ts';
+import { findSegments, lowered, matchesIn, type Segment } from './find.ts';
 import { attach } from './attach.ts';
 import { closeLightbox, preview, previewKey } from './preview.ts';
 import { fetchJSON, scoped } from './http.ts';
@@ -10,11 +12,10 @@ import { createJobPage } from './job.ts';
 import { dots } from './working.ts';
 import { install } from './metrics.ts';
 import { ATTACHMENT_LIMITS, pathArg } from '../koa-records.ts';
-import type { State, WireJob, WireItem, QueuedPrompt, WireAssistant, Block, Patch, PageRecord, MetricsSample, Stages, PromptMode, ImageRef, AgentCall, Bash, SessionRow, SessionScope, ThinkingLevel } from '../koa-records.ts';
+import type { State, WireJob, WireItem, QueuedPrompt, WireAssistant, Block, Patch, PageRecord, MetricsSample, Stages, PromptMode, ImageRef, Bash, SessionRow, SessionScope, ThinkingLevel } from '../koa-records.ts';
 import type { AgentRef, Relation } from '../records.ts';
 
 type Step = { block: Exclude<Block, { type: 'text' }>;  item: WireAssistant; index: number; key: string; slots: Map<string, Slot> };
-type AgentCard = AgentCall | Extract<WireItem, { kind: 'agent' }>;
 type JobItem = Extract<WireItem, { kind: 'job' }>;
 type JobGroup = { first: JobItem; next: number; items: JobItem[]; shown: number; shownStreams?: number; streams: number; omitted: number; cut: boolean; view: HTMLDivElement; details: HTMLDivElement; footer?: HTMLDivElement; kind: HTMLSpanElement };
 type Slot = { type: 'image'; view: HTMLButtonElement } | { type: 'run'; view: HTMLDivElement } | { type: 'agent'; view: HTMLDivElement; rendered?: { card: AgentCard; at: number; key: string } } | { type: 'job'; view: HTMLDivElement; group: JobGroup };
@@ -22,6 +23,8 @@ declare global {
   interface Window {
     composer: Pick<ReturnType<typeof composer>, 'text' | 'setText' | 'focus'>;
     koaFocused?: boolean;
+    __koFind?: (query: string, backwards: boolean) => Promise<{ index: number; count: number; loading: boolean } | { cancelled: true } | null>;
+    __koFindCancel?: () => void;
     koaMetrics?: { flush(): Promise<void>; readonly after: number; readonly count: number; readonly items: WireItem[] };
   }
 }
@@ -41,7 +44,7 @@ const node = <K extends keyof HTMLElementTagNameMap>(tag: K, text?: string, clas
 const annotationItems = new Map<number, Map<number, Extract<WireItem, { kind: 'annotations' }>>>();
 const items = new Map<number, WireItem>();
 const views = new Map<number, { view: HTMLElement; item: WireItem; slots: Map<string, Slot> }>();
-const patched = new Set<number>(), live = new Set<number>(), order: number[] = [], extents = new Map<number, Extent>(), openFences = new Set<string>(), animating = new Map<HTMLElement, number>();
+const openers = new Map<string, { view: HTMLElement; open: () => void }>(), fenceOpeners = new Map<string, { view: HTMLElement; open: () => void }>(), patched = new Set<number>(), live = new Set<number>(), order: number[] = [], extents = new Map<number, Extent>(), openFences = new Set<string>(), animating = new Map<HTMLElement, number>();
 type Extent = { kind: 'measured'; width: number; lh: number; px: number } | { kind: 'estimated'; px: number };
 type Group = SeqRange & ({ kind: 'run' } | { kind: 'job'; id: string });
 type Table = { followers: Set<number>; index: Map<number, number>; starts: number[]; total: number; groups: Group[]; divider: { before: number; px: number } | undefined };
@@ -142,7 +145,7 @@ function agentCard(card: AgentCard, at: number, key: string, slots: Map<string, 
   const header = node('div', undefined, 'hd'), lead = node('span', undefined, 'lead');
   lead.append(kind + ' ' + (inbound ? 'from' : 'to') + ' ', who(ref));
   if (card.direction === 'in' && 'relation' in card.inbound && card.inbound.relation) lead.append(' ', node('span', relationWords[card.inbound.relation], 'rel'));
-  const body = card.text.text || (card.direction === 'out' && card.outcome?.ok === false ? card.outcome.message : '');
+  const body = agentBody(card);
   header.append(lead, node('span', markdownLine(body), 'tx'), node('time', timestamp(at)));
   const details = prose(undefined, body, true); details.className = 'bd prose';
   view.replaceChildren();
@@ -290,7 +293,9 @@ function foldFence(pre: HTMLElement, key: string) {
   const bar = node('button', 'Show ' + (count - REVEAL.fold) + ' more lines', 'more');
   pre.classList.add('folded');
   pre.style.setProperty('--fold', String(REVEAL.fold));
-  bar.onclick = () => { openFences.add(key); pre.classList.remove('folded'); bar.remove(); };
+  const expand = () => { openFences.add(key); pre.classList.remove('folded'); bar.remove(); };
+  bar.onclick = expand;
+  fenceOpeners.set(key, { view: pre, open: () => { if (pre.classList.contains('folded')) expand(); } });
   pre.after(bar);
 }
 const wanted = () => dirty.size > 0 || windowDirty && state.view.type !== 'job' || stick || resetting || revealDirty || correcting || fits.size > 0 || growing.length > 0 || measuredHolds.size > 0 || !!travel || waiters.length > 0 || !!metrics?.waiting.length;
@@ -540,44 +545,12 @@ function thumbnails(refs: ImageRef[], owner: () => Map<string, Slot>, name?: str
 
 function displayPath(value: string) { return state.home && (value === state.home || value.startsWith(state.home + '/')) ? '~' + value.slice(state.home.length) : value; }
 const duration = (ms: number | undefined, separator = '') => ms === undefined ? '' : ms < 100 && !separator ? Math.round(ms) + 'ms' : ms >= 60000 ? Math.floor(ms / 60000) + 'm' + separator + String(Math.floor(ms / 1000) % 60).padStart(2, '0') + 's' : Number((ms / 1000).toFixed(1)) + 's';
-function args(block: Extract<Block, { type: 'tool' }>): Record<string, unknown> {
-  try { const value = JSON.parse(block.args.text); return value && typeof value === 'object' && !Array.isArray(value) ? value : {}; }
-  catch { return {}; }
-}
-function stepInfo(step: Step & { args: Record<string, unknown> }) {
-  const { block, item } = step;
-  if (block.type === 'thinking') {
-    const first = block.text.indexOf('\n');
-    const second = first < 0 ? -1 : block.text.indexOf('\n', first + 1);
-    return { label: 'thinking', labelClass: 'name', detail: block.redacted ? 'redacted' : markdownLine(second < 0 ? block.text : block.text.slice(0, second)), kind: 'thinking' };
-  }
-  const values = step.args;
-  const kind = block.name;
-  if (block.name === 'async_bash') return { label: block.job?.name ?? (typeof values.name === 'string' ? values.name : 'async_bash'), labelClass: 'path', detail: '', kind };
-  const first = Object.values(values)[0];
-  const labelClass = block.name === 'bash' ? 'cmd' : ['read', 'edit', 'write'].includes(block.name) ? 'path' : '';
-  const label = labelClass === 'cmd' ? values.command : labelClass === 'path' ? values.path : block.name + (first === undefined ? '' : ' ' + (typeof first === 'string' ? first : JSON.stringify(first)));
-  let detail = '';
-  if (block.name === 'read' && 'result' in block.state && block.state.result) {
-    const image = block.state.result.images[0];
-    detail = image ? image.mimeType.replace(/^image\//, '') + (image.width && image.height ? ' · ' + image.width + '×' + image.height : '') : block.state.result.text.split('\n').length + ' lines';
-  }
-  let edit;
-  if (block.name === 'edit' && typeof values.oldText === 'string' && typeof values.newText === 'string') {
-    const old = values.oldText.split('\n'), next = values.newText.split('\n');
-    let prefix = 0, suffix = 0;
-    while (prefix < old.length && prefix < next.length && old[prefix] === next[prefix]) prefix++;
-    while (suffix < old.length - prefix && suffix < next.length - prefix && old[old.length - 1 - suffix] === next[next.length - 1 - suffix]) suffix++;
-    edit = { old, next, prefix, suffix };
-    detail = '+' + (next.length - prefix - suffix) + ' −' + (old.length - prefix - suffix);
-  }
-  return { edit, labelClass, label: typeof label === 'string' ? label : label === undefined ? block.name + (block.state.type === 'pending' && !item.final ? '' : ' ' + block.args.text) : JSON.stringify(label), detail, kind, aborted: item.stop === 'aborted' && block.state.type !== 'done' };
-}
 function fold(view: HTMLElement, key: string, line: HTMLElement, details: HTMLElement, show?: () => void, className = 'open', changed?: () => void) {
   view.classList.toggle(className, folds.get(key) === true);
   line.setAttribute('role', 'button'); line.tabIndex = -1;
   line.setAttribute('aria-expanded', String(folds.get(key) === true));
   const toggle = () => { const open = !view.classList.contains(className); folds.set(key, open); view.classList.toggle(className, open); line.setAttribute('aria-expanded', String(open)); if (open) show?.(); changed?.(); };
+  openers.set(key, { view, open: () => { if (!view.classList.contains(className)) toggle(); } });
   line.onclick = event => { if (!(event?.target instanceof Element && event.target.closest('a'))) toggle(); };
   line.onkeydown = event => { if (!(event.target instanceof Element && event.target.closest('a')) && !event.metaKey && !event.ctrlKey && (event.key === 'Enter' || event.key === ' ')) { event.preventDefault(); toggle(); } };
   if (view !== line) view.append(line);
@@ -606,23 +579,18 @@ function stepDetail(marks: StepMarks, step: Step & { args: Record<string, unknow
   const { block } = step, nodes: Node[] = [];
   const refs = block.type === 'tool' && 'result' in block.state ? block.state.result?.images : undefined;
   marks.images = refs?.length ? thumbnails(refs, () => marks.current.slots, step.file) : undefined;
-  if (block.type === 'thinking' && block.redacted) nodes.push(node('div', block.text || 'Redacted thinking', 'think redacted'));
-  else if (block.type === 'tool') {
-    if (info.edit) {
-      const diff = node('div', undefined, 'diff'); diff.append(node('div', info.label, 'h'));
-      const { old, next, prefix, suffix } = info.edit;
-      const line = (text: string, mark: string, kind: string) => { const row = node('div', undefined, 'l ' + kind); row.append(node('span', mark, 'g'), text); diff.append(row); };
-      old.slice(0, prefix).forEach(text => line(text, '', 'ctx'));
-      old.slice(prefix, old.length - suffix).forEach(text => line(text, '−', 'del'));
-      next.slice(prefix, next.length - suffix).forEach(text => line(text, '+', 'add'));
-      if (suffix) old.slice(-suffix).forEach(text => line(text, '', 'ctx'));
-      nodes.push(diff);
-    } else {
-      if (block.name === 'async_bash') { if (typeof step.args.command === 'string') nodes.push(node('pre', step.args.command)); if (block.job) nodes.push(jobLog(block.job)); }
-      else if (block.name === 'bash') { nodes.push(node('div', 'cwd ' + displayPath(state.cwd), 'kv')); if (block.job) nodes.push(jobLog(block.job)); }
-      if ((block.name !== 'async_bash' || !block.job) && 'result' in block.state && block.state.result?.text) nodes.push(node(marks.images && block.name === 'read' ? 'div' : 'pre', block.state.result.text, marks.images && block.name === 'read' ? 'note' : ''));
+  let diff: HTMLElement | undefined;
+  for (const part of stepParts(step, info, displayPath(state.cwd), !!marks.images)) {
+    switch (part.kind) {
+      case 'redacted': nodes.push(node('div', part.text, 'think redacted')); break;
+      case 'head': diff = node('div', undefined, 'diff'); diff.append(node('div', part.text, 'h')); nodes.push(diff); break;
+      case 'diff': { const row = node('div', undefined, 'l ' + part.change); row.append(node('span', part.mark, 'g'), part.text); diff?.append(row); break; }
+      case 'command': nodes.push(node('pre', part.text)); break;
+      case 'cwd': nodes.push(node('div', part.text, 'kv')); break;
+      case 'log': nodes.push(jobLog(part.job)); break;
+      case 'result': nodes.push(node(part.note ? 'div' : 'pre', part.text, part.note ? 'note' : '')); break;
+      case 'cut': nodes.push(node('div', part.text, 'delta')); break;
     }
-    if ('result' in block.state && block.state.result?.cut) nodes.push(node('div', block.state.result.cut + ' bytes omitted', 'delta'));
   }
   if (marks.images) { if (block.type === 'tool' && block.name === 'read') marks.images.view.classList.add('large'); nodes.push(marks.images.view); }
   marks.detail.replaceChildren(...nodes);
@@ -665,7 +633,7 @@ function patchStep(marks: StepMarks, step: Step & { args: Record<string, unknown
   if (folds.get(step.key)) marks.show?.();
 }
 function patchRun(marks: RunMarks, input: Step[]) {
-  const entries = input.map(step => { const value = { ...step, args: step.block.type === 'tool' ? args(step.block) : {}, file: pathArg(step.block) }; return { step, value, info: stepInfo(value) }; });
+  const entries = input.map(step => { const value = { ...step, args: step.block.type === 'tool' ? toolArgs(step.block) : {}, file: pathArg(step.block) }; return { step, value, info: stepInfo(value) }; });
   const failed = new Set(entries.filter(({ step }) => step.block.type === 'tool' && step.block.state.type === 'done' && step.block.state.error).map(({ info }) => info.kind));
   const aborted = input.some(step => step.item.stop === 'aborted' && step.item.blocks.slice(step.index + 1).every(block => block.type !== 'text' || !block.text));
   const active = input.some(isLive);
@@ -1018,6 +986,7 @@ function unmountRow(seq: number) {
   if (!entry) return;
   views.delete(seq); entry.view.remove();
   unwatch(entry.view);
+  for (const registry of [openers, fenceOpeners]) for (const [key, opener] of [...registry]) if (entry.view.contains(opener.view)) registry.delete(key);
   for (const [key, memo] of [...texts]) if (key.startsWith(seq + ':')) { texts.delete(key); revealing.delete(memo); }
   for (const [key, marks] of [...liveMarks]) if (entry.view.contains(marks.summary)) liveMarks.delete(key);
   const group = jobOwners.get(seq);
@@ -1092,7 +1061,7 @@ function renderDirty(geo: Geo = geometry()) {
     resetting = false;
     const list = element('items');
     for (const target of [...observed.keys()]) if (list.contains(target)) { observed.delete(target); layoutObserver.unobserve(target); }
-    views.clear(); texts.clear(); liveMarks.clear(); clearWorking(); revealing.clear(); growing.length = 0; measuredHolds.clear(); fits.clear(); animating.clear(); openFences.clear();
+    views.clear(); texts.clear(); openers.clear(); fenceOpeners.clear(); liveMarks.clear(); clearWorking(); revealing.clear(); growing.length = 0; measuredHolds.clear(); fits.clear(); animating.clear(); openFences.clear();
     list.replaceChildren(); divider = undefined; gap = undefined; mountedSpans = []; fresh.clear(); counted.clear(); table = undefined; windowDirty = true;
   }
   for (const key of stale) { const memo = texts.get(key); if (memo) revealing.delete(memo); texts.delete(key); }
@@ -1402,7 +1371,7 @@ function applyPatch(record: Patch, buffer: boolean) {
 function apply(record: PageRecord) {
   if (record.type === 'reset') {
     editor.resetCompletion();
-    epoch = record.epoch; after = -1; first = undefined; items.clear(); order.length = 0; extents.clear(); live.clear(); dirty.clear(); stale.clear(); arrivals.clear(); annotationItems.clear(); folds.clear(); jobOwners.clear(); historyRequest = undefined; more = record.more;
+    find = undefined; segmentCache.clear(); owners.clear(); epoch = record.epoch; after = -1; first = undefined; items.clear(); order.length = 0; extents.clear(); live.clear(); dirty.clear(); stale.clear(); arrivals.clear(); annotationItems.clear(); folds.clear(); jobOwners.clear(); historyRequest = undefined; more = record.more;
     resetting = true; wantEnd = true;
     for (const item of record.items) accept(item);
     schedule();
@@ -1558,6 +1527,102 @@ function dockResized(height: number) {
   dockHeight = height;
   sync();
 }
+type Match = { seq: number; segment: number; start: number };
+type Find = { query: string; backwards: boolean; started: boolean; loadedFrom: number | undefined; cursor: Match | undefined };
+type FindAnswer = { index: number; count: number; loading: boolean } | { cancelled: true } | null;
+let find: Find | undefined;
+type Cached = { item: WireItem; previous: WireItem | undefined; segments: Segment[]; needle?: string; starts?: number[][] };
+const segmentCache = new Map<number, Cached>(), owners = new Map<string, string>();
+function cached(seq: number) {
+  const item = items.get(seq), previous = items.get(seq - 1), entry = segmentCache.get(seq);
+  if (!item) return undefined;
+  if (entry?.item === item && entry.previous === previous) return entry;
+  owners.delete('run:' + seq); owners.delete('job:' + seq);
+  const fresh: Cached = { item, previous, segments: findSegments(item, { items: at => items.get(at), fold: REVEAL.fold, cwd: displayPath(state.cwd), owners }) };
+  segmentCache.set(seq, fresh);
+  return fresh;
+}
+const segmentsOf = (seq: number) => cached(seq)?.segments ?? [];
+function allMatches(needle: string) {
+  const list: Match[] = [];
+  for (const seq of order) {
+    const entry = cached(seq);
+    if (!entry) continue;
+    if (entry.needle !== needle) { entry.starts = entry.segments.map(segment => matchesIn(segment, needle)); entry.needle = needle; }
+    entry.starts?.forEach((starts, segment) => { for (const start of starts) list.push({ seq, segment, start }); });
+  }
+  return list;
+}
+const squash = (text: string) => text.replace(/\s+/g, '');
+function leaves(node: Node, into: Node[] = []) {
+  if (!node.childNodes.length) { if (node.textContent) into.push(node); }
+  else for (const child of node.childNodes) leaves(child, into);
+  return into;
+}
+function locate(row: HTMLElement, segments: Segment[], match: Match, length: number) {
+  const segment = segments[match.segment], key = squash(segment.text);
+  const earlier = segments.slice(0, match.segment).filter(other => squash(other.text) === key).length;
+  const containers: Node[] = [];
+  const deepest = (node: Node): boolean => {
+    if (!squash(leaves(node).map(leaf => leaf.textContent ?? '').join('')).includes(key)) return false;
+    let deeper = false;
+    for (const child of node.childNodes) if (child.childNodes.length && deepest(child)) deeper = true;
+    if (!deeper) containers.push(node);
+    return true;
+  };
+  deepest(row);
+  const container = containers[Math.min(earlier, containers.length - 1)];
+  if (!container) return undefined;
+  const chars: { node: Node; offset: number }[] = [];
+  let flat = '';
+  for (const leaf of leaves(container)) { const text = leaf.textContent ?? ''; for (let offset = 0; offset < text.length; offset++) if (!/\s/.test(text[offset])) { chars.push({ node: leaf, offset }); flat += text[offset]; } }
+  const at = flat.indexOf(key), first = at + squash(segment.text.slice(0, match.start)).length, count = squash(segment.text.slice(match.start, match.start + length)).length;
+  if (at < 0 || !count || !chars[first] || !chars[first + count - 1]) return undefined;
+  return { start: chars[first], end: { node: chars[first + count - 1].node, offset: chars[first + count - 1].offset + 1 } };
+}
+function collapseAt(match: Match, needle: string, backwards: boolean) {
+  const row = views.get(match.seq)?.view, found = row && locate(row, segmentsOf(match.seq), match, needle.length);
+  if (found) getSelection()?.collapse(backwards ? found.end.node : found.start.node, backwards ? found.end.offset : found.start.offset);
+}
+async function reveal(mine: Find, match: Match, needle: string, backwards: boolean) {
+  const view = state.view.id, generation = epoch, seq = match.seq, segment = segmentsOf(seq)[match.segment];
+  const alive = () => find === mine && state.view.id === view && epoch === generation && segmentsOf(seq)[match.segment]?.text === segment.text;
+  for (const key of segment.folds) folds.set(key, true);
+  for (const key of segment.fences) openFences.add(key);
+  travel = undefined;
+  scrolling = { kind: 'reader', anchor: { item: { kind: 'message', seq }, offset: geometry().viewport / 3 } };
+  windowDirty = true;
+  for (let turn = 0; turn < 8; turn++) { await rendered(); if (!alive()) return false; if (views.has(seq) && !windowDirty) break; }
+  for (const key of segment.folds) openers.get(key)?.open();
+  for (const key of segment.fences) fenceOpeners.get(key)?.open();
+  if (!alive()) return false;
+  collapseAt(match, needle, backwards);
+  return true;
+}
+async function koFind(query: string, backwards: boolean): Promise<FindAnswer> {
+  if (state.view.type === 'job') return null;
+  const needle = lowered(query), view = state.view.id;
+  if (!needle) { find = undefined; return { index: 0, count: 0, loading: false }; }
+  if (find?.query !== needle) find = { query: needle, backwards, started: false, loadedFrom: undefined, cursor: undefined };
+  const mine = find, list = allMatches(needle);
+  if (more) {
+    if (!historyRequest) {
+      if (mine.started && mine.loadedFrom === first) { find = undefined; throw Error('Could not load earlier messages'); }
+      mine.started = true; mine.loadedFrom = first;
+      void older();
+    }
+    return { index: 0, count: list.length, loading: true };
+  }
+  const direction = mine.started ? mine.backwards : backwards, cursor = mine.cursor;
+  mine.started = false;
+  if (!list.length) { mine.cursor = undefined; return { index: 0, count: 0, loading: false }; }
+  const current = cursor ? list.findIndex(match => match.seq === cursor.seq && match.segment === cursor.segment && match.start === cursor.start) : -1;
+  const index = current < 0 ? direction ? list.length - 1 : 0 : (current + (direction ? list.length - 1 : 1)) % list.length;
+  mine.cursor = list[index];
+  if (!await reveal(mine, list[index], needle, direction) || state.view.id !== view) return { cancelled: true };
+  return { index: index + 1, count: list.length, loading: false };
+}
+if (window.ko) { window.__koFind = koFind; window.__koFindCancel = () => { find = undefined; }; }
 const koaInstance = document.querySelector<HTMLMetaElement>('meta[name="koa-instance"]')?.content;
 const metricsMode = document.querySelector<HTMLMetaElement>('meta[name="koa-metrics"]')?.content;
 const metrics: { mode: string; bytes: number; pending: { t: number; stages: Stages }[]; samples: MetricsSample[]; timer?: number; writes: Promise<void>; frames: Set<Promise<void>>; waiting: (() => void)[]; error?: string } | undefined = metricsMode ? { mode: metricsMode, bytes: 0, pending: [], samples: [], timer: undefined, writes: Promise.resolve(), frames: new Set(), waiting: [], error: undefined } : undefined;

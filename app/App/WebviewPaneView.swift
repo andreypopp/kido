@@ -456,6 +456,25 @@ final class WebviewPaneView: NSView, WKNavigationDelegate, WKUIDelegate {
     func webView(_ webView: WKWebView, requestMediaCapturePermissionFor origin: WKSecurityOrigin, initiatedByFrame frame: WKFrameInfo, type: WKMediaCaptureType, decisionHandler: @escaping @MainActor @Sendable (WKPermissionDecision) -> Void) { decisionHandler(.deny) }
     func webView(_ webView: WKWebView, requestGeolocationPermissionFor origin: WKSecurityOrigin, initiatedByFrame frame: WKFrameInfo, decisionHandler: @escaping @MainActor @Sendable (WKPermissionDecision) -> Void) { decisionHandler(.deny) }
 
+    enum FindAnswer: Equatable { case missing, failed, cancelled, answered(index: Int, count: Int, loading: Bool) }
+
+    // A koa page finds in its model, mounts the match and collapses the selection at it; any other page has no hook.
+    func prepareFind(_ text: String, backwards: Bool, done: @escaping (FindAnswer) -> Void) {
+        let script = "return typeof window.__koFind === 'function' ? await window.__koFind(query, backwards) : null"
+        browser.callAsyncJavaScript(script, arguments: ["query": text, "backwards": backwards], in: nil, in: .page) { result in
+            switch result {
+            case .failure: done(.failed)
+            case .success(let value):
+                guard let answer = value as? [String: Any] else { done(.missing); return }
+                if answer["cancelled"] as? Bool == true { done(.cancelled); return }
+                guard let index = answer["index"] as? Int, let count = answer["count"] as? Int, let loading = answer["loading"] as? Bool else { done(.failed); return }
+                done(.answered(index: index, count: count, loading: loading))
+            }
+        }
+    }
+
+    func cancelFind() { browser.evaluateJavaScript("window.__koFindCancel&&window.__koFindCancel()", completionHandler: nil) }
+
     func find(_ text: String, backwards: Bool = false, done: @escaping (Bool) -> Void) {
         let config = WKFindConfiguration()
         config.backwards = backwards

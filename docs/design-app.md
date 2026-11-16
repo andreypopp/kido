@@ -1707,8 +1707,18 @@ only while the pane shows a page.
 
 **Find.** Command-F opens the pane's find bar, which drives
 `WKWebView.find(_:configuration:)` with wrapping. `WKFindResult` gives
-only `matchFound`, so the bar says "Match" or "No matches", with no
-count.
+only `matchFound`, so on a plain page the bar says "Match" or "No
+matches", with no count. A page that defines `window.__koFind` (koa's,
+which keeps only the rows near the viewport in its DOM) finds in its
+own model first: `WebviewPaneView.prepareFind` calls it with
+`callAsyncJavaScript`, the page mounts the match's row and collapses
+the selection at it, and then the native find, which starts from the
+selection, highlights it. The bar keeps its last status until the
+native find returns, then shows the page's "i of N" or "No matches".
+While the page still loads older history it answers `loading`: the
+bar says "Searching…", disables its arrows and asks again every
+100 ms, at most 600 times. A generation counter drops the answers of
+an older request. A page without the hook gets the native find alone.
 
 **Theme.** A document-start script sets `window.ko` (the pane id, the
 theme properties and the cell size) and the `--ko-*` properties

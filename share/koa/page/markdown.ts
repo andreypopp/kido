@@ -37,6 +37,24 @@ export function markdownLine(source: string): string {
   return plain(lexer.inlineTokens(line)).replace(/\s+/g, ' ').trim();
 }
 
+type Plain = { text: string; fence?: { block: number; ordinal: number } };
+export function markdownPlain(source: string, fold: number, user = false): Plain[] {
+  const plain = (token: Token): string => {
+    if ('items' in token && Array.isArray(token.items)) return token.items.map(plain).join('\n');
+    if (token.type === 'table') return [token.header, ...token.rows].map((row: { tokens: Token[] }[]) => row.map(cell => cell.tokens.map(plain).join('')).join('\t')).join('\n');
+    if ('tokens' in token && token.tokens) return token.tokens.map(plain).join(token.type === 'blockquote' ? '\n' : '');
+    return token.type === 'space' || token.type === 'hr' || token.type === 'def' ? '' : 'text' in token ? token.text : token.raw;
+  };
+  return (user ? userParser : parser).lexer(source.replace(/\r\n?/g, '\n')).flatMap((token, block): Plain[] => {
+    if (token.type === 'code') {
+      const lines = token.text.split('\n');
+      return lines.length > fold ? [{ text: lines.slice(0, fold).join('\n') }, { text: lines.slice(fold).join('\n'), fence: { block, ordinal: 0 } }] : [{ text: token.text }];
+    }
+    const text = plain(token).trim();
+    return text ? [{ text }] : [];
+  });
+}
+
 const lexing: { boundary: number; references: number; around?: <T>(source: string, body: () => T) => T } = { boundary: 0, references: 0 };
 export const instrument = (around: typeof lexing.around) => { lexing.around = around; };
 export const fallbacks = () => lexing.boundary + lexing.references;

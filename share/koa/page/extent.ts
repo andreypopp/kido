@@ -4,7 +4,7 @@ export type SeqRange = { from: number; to: number };
 
 const lineCount = (text: string) => { let count = 1; for (let at = text.indexOf('\n'); at >= 0; at = text.indexOf('\n', at + 1)) count++; return count; };
 
-const isStep = (block: Block) => block.type !== 'text' && !(block.type === 'tool' && block.agent);
+export const isStep = (block: Block) => block.type !== 'text' && !(block.type === 'tool' && block.agent);
 
 export const continuesRun = (previous: WireItem | undefined) => previous?.kind === 'assistant' && !previous.error && previous.blocks.length > 0 && isStep(previous.blocks[previous.blocks.length - 1]);
 

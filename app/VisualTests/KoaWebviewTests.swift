@@ -310,43 +310,65 @@ import SidebarFeed
         XCTAssertLessThan(try XCTUnwrap(value["top"] as? Double), try XCTUnwrap(value["start"] as? Double) - 20 * (try XCTUnwrap(value["viewport"] as? Double)), result)
     }
     func testKoaWebviewFindSkippedHistory() async throws {
-        try XCTSkipIf(true, "Open finding (plans/koa-transcript-perf.md, unit 5): on the real koa page WebKit's find scrolls to the estimated position of a match in skipped content (content-visibility:auto) and does not follow it after the rows render; a plain page with the same CSS lands on the match.")
         let web = try await scrollPage(module: "scroll-follow")
         let pane = try XCTUnwrap(terminal?.displayedPanes.first)
-        let leaf = "const leaf=n=>document.querySelector('#items > [data-seq=\"'+n+'\"] > .msg'),skipped=n=>leaf(n).offsetHeight<3*parseFloat(getComputedStyle(leaf(n)).lineHeight);"
-        let before = try await webviewJS(web, "(async()=>{" + Self.followHelpers + leaf + #"""
-          const sentence='The quick brown fox jumps over the lazy dog and keeps running across the field. ';
-          const history=Array.from({length:40},(_,i)=>({kind:'assistant',seq:i,revision:0,at:Date.now(),final:true,blocks:[{type:'text',text:(i===5?'zyxwvq ':'filler ')+sentence.repeat(30)}],stop:'stop',error:''}));
+        let sentence = "The quick brown fox jumps over the lazy dog and keeps running across the field. "
+        let start = try await webviewJS(web, "(async()=>{" + Self.followHelpers + #"""
+          const sentence='\#(sentence)';
+          const history=Array.from({length:40},(_,i)=>({kind:'assistant',seq:i,revision:0,at:Date.now(),final:true,blocks:[{type:'text',text:(i===5?'alpha zyxwvq beta zyxwvq gamma half**word**x ':'filler ')+sentence.repeat(30)}],stop:'stop',error:''}));
           push(view(root,[root]));push({type:'reset',epoch:'ef',more:false,items:history});
-          await until(()=>document.querySelectorAll('#items > [data-seq]').length===40&&gap()<=1);
+          await until(()=>document.querySelector('#items [data-seq="39"]')&&gap()<=1);
           await wait(300);
-          const far=skipped(5),near=skipped(39);
-          const dots=document.createElement('span');dots.className='dots';leaf(8).append(dots);await wait(100);
-          return {far,near,live:!skipped(8),top:s.scrollTop,viewport:s.clientHeight};
+          return {rows:document.querySelectorAll('#items > [data-seq]').length,absent:!document.querySelector('#items [data-seq="5"]'),top:s.scrollTop,viewport:s.clientHeight};
         })()
         """#, within: 60)
-        let start = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(before.utf8)) as? [String: Any])
-        XCTAssertEqual(start["far"] as? Bool, true, "The row ten screens up is skipped: \(before)")
-        XCTAssertEqual(start["near"] as? Bool, false, "The row at the bottom renders: \(before)")
-        XCTAssertEqual(start["live"] as? Bool, true, "A live mark keeps its row from skipping: \(before)")
-        let found = expectation(description: "webview find")
-        var matched = false
-        pane.webviewView?.find("zyxwvq") { matched = $0; found.fulfill() }
-        await fulfillment(of: [found], timeout: 10)
-        XCTAssertTrue(matched, "Find reaches the skipped row")
-        let after = try await webviewJS(web, "(async()=>{" + Self.followHelpers + leaf + #"""
-          await wait(1500);
-          const selection=getSelection(),rects=selection.rangeCount?[...selection.getRangeAt(0).getClientRects()].filter(rect=>rect.width>0&&rect.height>0):[];
-          const box=s.getBoundingClientRect(),shown=rects.some(rect=>rect.top>=box.top&&rect.bottom<=dock.getBoundingClientRect().top);
-          return {word:selection.toString(),rects:rects.length,shown,rendered:!skipped(5),top:s.scrollTop};
-        })()
-        """#, within: 30)
-        let end = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(after.utf8)) as? [String: Any])
-        XCTAssertEqual(end["word"] as? String, "zyxwvq", after)
-        XCTAssertGreaterThan(try XCTUnwrap(end["rects"] as? Int), 0, after)
-        XCTAssertEqual(end["shown"] as? Bool, true, after)
-        XCTAssertEqual(end["rendered"] as? Bool, true, after)
-        XCTAssertLessThan(try XCTUnwrap(end["top"] as? Double), try XCTUnwrap(start["top"] as? Double) - 5 * (try XCTUnwrap(start["viewport"] as? Double)), after)
+        let before = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(start.utf8)) as? [String: Any])
+        XCTAssertEqual(before["absent"] as? Bool, true, "The row ten screens up is not mounted: \(start)")
+        pane.showFind()
+        let find = try XCTUnwrap(pane.find)
+        func label() -> String { find.subviews.compactMap { $0 as? NSTextField }.map(\.stringValue).first { $0.contains(" of ") || $0 == "Match" || $0 == "No matches" || $0 == "Searching…" } ?? "" }
+        var seen: [String] = []
+        func shown(_ expected: String) async throws {
+            try await wait("find status \(expected)", within: 20) { let text = label(); if seen.last != text { seen.append(text) }; return text == expected }
+        }
+        func selection(_ expectedOffset: Int?, _ description: String, word: String = "zyxwvq") async throws {
+            let result = try await webviewJS(web, #"""
+              (()=>{const s=getSelection(),range=s.rangeCount?s.getRangeAt(0):undefined,rects=range?[...range.getClientRects()].filter(r=>r.width>0&&r.height>0):[],box=document.querySelector('#scroll').getBoundingClientRect(),dock=document.querySelector('#dock').getBoundingClientRect().top;
+              return {word:s.toString(),offset:range?.startOffset,visible:rects.some(r=>r.top>=box.top&&r.bottom<=dock),row:range?.startContainer.parentElement?.closest('[data-seq]')?.dataset.seq,top:document.querySelector('#scroll').scrollTop}})()
+            """#)
+            let value = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(result.utf8)) as? [String: Any])
+            XCTAssertEqual(value["word"] as? String, word, "\(description): \(result)")
+            if let expectedOffset { XCTAssertEqual(value["offset"] as? Int, expectedOffset, "\(description): \(result)") }
+            XCTAssertEqual(value["visible"] as? Bool, true, "\(description): \(result)")
+            XCTAssertEqual(value["row"] as? String, "5", "\(description): \(result)")
+        }
+        find.field.stringValue = "zyxwvq"
+        find.search()
+        try await shown("1 of 2")
+        try await selection(6, "first")
+        let top = try XCTUnwrap(before["top"] as? Double), viewport = try XCTUnwrap(before["viewport"] as? Double)
+        let scrolled = try await webviewJS(web, "document.querySelector('#scroll').scrollTop")
+        XCTAssertLessThan(try XCTUnwrap(Double(scrolled)), top - 5 * viewport, "The find scrolled ten screens up")
+        find.next()
+        try await shown("2 of 2")
+        try await selection(18, "second")
+        find.next()
+        try await shown("1 of 2")
+        try await selection(6, "wrapped forward")
+        find.previous()
+        try await shown("2 of 2")
+        try await selection(18, "wrapped backward")
+        find.previous()
+        try await shown("1 of 2")
+        try await selection(6, "backward")
+        XCTAssertTrue(Set(seen).isSubset(of: ["", "1 of 2", "2 of 2"]), "The bar keeps its last status until the native find answers: \(seen)")
+        find.search()
+        try await shown("2 of 2")
+        try await selection(18, "the same query repeated steps on")
+        find.field.stringValue = "halfword"
+        find.search()
+        try await shown("1 of 1")
+        try await selection(nil, "a word half in bold text", word: "halfword")
     }
     func testKoaWebviewViewSwitchRestoresTheReaderAndJobViewFollows() async throws {
         let web = try await scrollPage(module: "scroll-follow")

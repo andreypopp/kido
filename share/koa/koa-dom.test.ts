@@ -4,7 +4,7 @@ import { readFile } from "node:fs/promises";
 import { test } from "node:test";
 import { runInNewContext } from "node:vm";
 import { stripTypeScriptTypes } from "node:module";
-import { markdown, markdownLine } from "./page/markdown.ts";
+import { markdown, markdownLine, markdownPlain } from "./page/markdown.ts";
 import { bashCommand } from "./prompt.ts";
 import { promptHistory } from './page/history.ts';
 import { ATTACHMENT_LIMITS, isAttachment, pathArg } from "./koa-records.ts";
@@ -46,7 +46,7 @@ async function page() {
       return selector.split(/,(?![^(]*\))/).flatMap(part => part.replace(':scope>', '').split('>').reduce<Node[]>((nodes, step) => nodes.flatMap(node => node.children.filter((child): child is Node => child instanceof Node && (step === 'div' ? child.tagName === 'DIV' : [...step.matchAll(/\.([\w-]+)/g)].some(match => child.classes.has(match[1]))))), [this]));
     }
     get isConnected(): boolean { return this === document.body || this === document.documentElement || this.parent?.isConnected === true; }
-    get childNodes() { return this.children; }
+    get childNodes(): Node[] { return this.children.map(child => typeof child === 'string' ? Object.assign(new Node(), { tagName: '#text', textContent: child }) : child); }
     removeChild(child: Node) { this.children = this.children.filter(other => other !== child); if (child instanceof Node) child.parent = undefined; return child; }
     hasAttribute(name: string) { return this.attributes.has(name); } getAttributeNames() { return [...this.attributes.keys()]; }
     insertBefore(child: Node, next: Node | null) { if (child === next) return; if (child instanceof Node) child.remove(); const index = next ? this.children.indexOf(next) : this.children.length; this.children.splice(index < 0 ? this.children.length : index, 0, child); if (child instanceof Node) child.parent = this; }
@@ -114,7 +114,11 @@ async function page() {
   const revealSource = stripTypeScriptTypes(readFileSync(new URL('page/reveal.ts', import.meta.url), 'utf8')).replace(/^import .*;\n/gm, '').replace(/^export /gm, '');
   Object.assign(context, runInNewContext(revealSource + '\n({revealHeight,unitsOf})', context));
   const extentSource = stripTypeScriptTypes(readFileSync(new URL('page/extent.ts', import.meta.url), 'utf8')).replace(/^import .*;\n/gm, '').replace(/^export /gm, '');
-  Object.assign(context, runInNewContext(extentSource + '\n({estimateExtent,windowOf})', context));
+  Object.assign(context, runInNewContext(extentSource + '\n({estimateExtent,windowOf,groupAt,continuesRun,runStarts,isStep})', context));
+  const stepsSource = stripTypeScriptTypes(readFileSync(new URL('page/steps.ts', import.meta.url), 'utf8')).replace(/^import .*;\n/gm, '').replace(/^export /gm, '');
+  Object.assign(context, runInNewContext(stepsSource + '\n({stepInfo,stepParts,toolArgs,agentBody})', context));
+  const findSource = stripTypeScriptTypes(readFileSync(new URL('page/find.ts', import.meta.url), 'utf8')).replace(/^import .*;\n/gm, '').replace(/^export /gm, '');
+  Object.assign(context, { markdownPlain }, runInNewContext(findSource + '\n({findSegments,matchesIn})', context));
   const workingSource = stripTypeScriptTypes(readFileSync(new URL('page/working.ts', import.meta.url), 'utf8')).replace(/^export /gm, '');
   Object.assign(context, runInNewContext(workingSource + '\n({dots})', context));
   const body = source.replace(/^import .*;\n/gm, "").replace(/^setInterval\([\s\S]*$/m, "") + "\nfunction put(item) { accept(item); renderDirty(); return views.get(item.seq)?.view; }";
@@ -1081,6 +1085,8 @@ async function revealPage(clientHeight = 100) {
         child.querySelector = () => code;
         pres.push(child);
       } else child.rects = rects(Math.ceil(text.split(/\s+/).filter(Boolean).length / 3));
+      const pieces = value.replace(/<\/?p>/g, '').replace(/\n$/, '').split(/<\/?(?:strong|em|code|a)[^>]*>/);
+      if (child.tagName === 'P' && pieces.length > 1) { child.textContent = ''; child.append(...pieces.filter(Boolean).map(piece => Object.assign(create('span'), { textContent: piece }))); }
       node.content = { childNodes: value.trim() ? [child] : [], querySelectorAll: () => child.tagName === 'PRE' ? [child] : [] };
     } });
     return node;
@@ -3319,4 +3325,157 @@ test('an appended item extends the table and its last group in place', async () 
   page.settle(4);
   assert.equal(page.evaluate('table'), before, 'an append does not rebuild');
   assert.deepEqual(page.evaluate('JSON.stringify([table.groups, table.starts.length, table.index.size])'), JSON.stringify([[{ kind: 'run', from: 0, to: 2 }], 4, 3]));
+});
+
+async function findPage() {
+  const page = await windowPage();
+  const { app, evaluate } = page, doc = app.context.document;
+  const selection: { node?: unknown; offset: number; collapses: number } = { offset: -1, collapses: 0 };
+  type Leaf = { nodeType: number; textContent: string; parentNode: unknown };
+  type Tree = { children?: Tree[]; textContent?: string };
+  const leaves = (root: Tree): Leaf[] => (root.children ?? []).flatMap(child => (child.children?.length ?? 0) ? leaves(child) : child.textContent ? [{ nodeType: 3, textContent: child.textContent, parentNode: child }] : []);
+  Object.assign(doc, { createTreeWalker: (root: Tree) => { const list = leaves(root); let at = 0; return { nextNode: () => list[at++] ?? null }; } });
+  Object.assign(app.context, { getSelection: () => ({ collapse(node: unknown, offset: number) { const length = typeof node === 'object' && node !== null ? String(Reflect.get(node, 'textContent') ?? '').length : -1; if (!(offset >= 0 && offset <= length)) throw new RangeError('offset ' + offset + ' is outside a node of ' + length); selection.node = node; selection.offset = offset; selection.collapses++; } }) });
+  const find = (query: string, backwards = false): Promise<unknown> => Promise.resolve(evaluate(`window.__koFind(${JSON.stringify(query)}, ${backwards})`));
+  const answer = async (query: string, backwards = false): Promise<{ index: number; count: number; loading: boolean } | null> => { const pending = find(query, backwards).then(value => ({ value }), (error: unknown) => ({ error })); for (let turn = 0; turn < 20; turn++) { page.step(16); await page.settled(); } const result = await pending; if ('error' in result) throw new Error(String(Reflect.get(Object(result.error), 'message'))); return JSON.parse(JSON.stringify(result.value)); };
+  const history = (words: Record<number, string>, count = 40): Record<string, unknown>[] => Array.from({ length: count }, (_, seq) => ({ seq, revision: 0, at: 1, final: true, kind: 'assistant', blocks: [{ type: 'text', text: words[seq] ?? 'filler ' + seq }], stop: 'stop', error: '' }));
+  const where = () => ({ text: typeof selection.node === 'object' && selection.node !== null ? Reflect.get(selection.node, 'textContent') : undefined, offset: selection.offset });
+  return { ...page, selection, answer, find, history, where };
+}
+
+test('a find on an absent item mounts it, anchors it and collapses the selection at the occurrence', async () => {
+  const page = await findPage();
+  page.open(page.history({ 5: 'before zyxwvq after' }));
+  page.settle(8);
+  assert.ok(!page.seqs().includes(5));
+  assert.deepEqual(await page.answer('zyxwvq'), { index: 1, count: 1, loading: false });
+  assert.ok(page.seqs().includes(5));
+  assert.deepEqual([page.evaluate('scrolling.kind'), page.evaluate('scrolling.anchor.item.seq')], ['reader', 5]);
+  assert.deepEqual([page.where().offset, page.where().text], [7, 'before zyxwvq after']);
+});
+
+test('two occurrences in one block are visited forward and backward, and a repeat of the query steps', async () => {
+  const page = await findPage();
+  page.open(page.history({ 3: 'alpha beta alpha', 9: 'one alpha' }));
+  page.settle(8);
+  const run = async (backwards: boolean) => { const result = await page.answer('alpha', backwards); return [result, page.where().offset]; };
+  assert.deepEqual(await run(false), [{ index: 1, count: 3, loading: false }, 0]);
+  assert.deepEqual(await run(false), [{ index: 2, count: 3, loading: false }, 11]);
+  assert.deepEqual(await run(false), [{ index: 3, count: 3, loading: false }, 4]);
+  assert.deepEqual(await run(false), [{ index: 1, count: 3, loading: false }, 0], 'wraps forward');
+  assert.deepEqual(await run(true), [{ index: 3, count: 3, loading: false }, 9], 'wraps backward and collapses at the end');
+  assert.deepEqual(await run(true), [{ index: 2, count: 3, loading: false }, 16]);
+});
+
+test('the count is over every loaded item and markdown syntax does not match', async () => {
+  const page = await findPage();
+  page.open(page.history({ 2: 'say **bold** and `code`', 30: 'bold again' }));
+  page.settle(8);
+  assert.equal((await page.answer('bold'))?.count, 2);
+  assert.equal((await page.answer('**'))?.count, 0);
+  assert.equal((await page.answer('`'))?.count, 0);
+});
+
+test('a match in a collapsed step opens it when current and keeps it open, and a non-current match stays closed', async () => {
+  const page = await findPage();
+  const tool = (id: string, result: string) => ({ type: 'tool', id, name: 'read', args: { text: '{"path":"/a"}' }, state: { type: 'done', error: false, result: { text: result, images: [] } } });
+  const items = page.history({});
+  items[4] = { ...items[4], blocks: [tool('a', 'needle one'), tool('b', 'needle two')] };
+  page.open(items);
+  page.settle(8);
+  await page.answer('needle');
+  const open = () => page.evaluate("JSON.stringify([folds.get('4:0'), folds.get('4:1'), folds.get('run:4:0')])");
+  assert.equal(open(), '[true,null,true]');
+  await page.answer('needle');
+  assert.equal(open(), '[true,true,true]', 'the first step stays open after the cursor moved on');
+});
+
+test('a collapsed thinking step counts and renders its markdown when current', async () => {
+  const page = await findPage();
+  const items = page.history({});
+  items[6] = { ...items[6], blocks: [{ type: 'thinking', text: 'deep **thought** here', redacted: false }] };
+  page.open(items);
+  page.settle(8);
+  assert.deepEqual(await page.answer('thought'), { index: 1, count: 1, loading: false }, 'a thinking step counts once, in its body');
+  assert.deepEqual([page.evaluate("folds.get('run:6:0')"), page.evaluate("folds.get('6:0')")], [true, true], 'the match opens the step and selects it in the body');
+});
+
+test('while history remains the answer is loading, and the count grows as older pages arrive', async () => {
+  const page = await findPage();
+  const requests: number[] = [];
+  Object.assign(page.app.context, { fetch: async (path: string) => { const before = Number(path.match(/before=(\d+)/)?.[1]); requests.push(before); const from = Math.max(0, before - 20); return { ok: true, json: async () => ({ type: 'reset', epoch: 'a', more: from > 0, items: page.history({ [from + 2]: 'zyx hit' }, before).slice(from) }) }; } });
+  page.open(page.history({}, 100).slice(60), true);
+  page.settle(8);
+  const first = await page.answer('zyx');
+  assert.equal(first?.loading, true);
+  for (let turn = 0; turn < 30 && (await page.answer('zyx'))?.loading; turn++) await page.settled();
+  const done = await page.answer('zyx');
+  assert.deepEqual([done?.loading, (done?.count ?? 0) > 0], [false, true]);
+  assert.ok(requests.length >= 2);
+});
+
+test('an older request that makes no progress ends the find as an error and a job view has no hook answer', async () => {
+  const page = await findPage();
+  Object.assign(page.app.context, { fetch: async () => ({ ok: true, json: async () => ({ type: 'reset', epoch: 'a', more: true, items: [] }) }) });
+  page.open(page.history({}, 100).slice(60), true);
+  page.settle(8);
+  assert.equal((await page.answer('zyx'))?.loading, true);
+  await assert.rejects(page.answer('zyx'), /Could not load earlier messages/);
+  page.evaluate("state={...state,view:{...state.view,type:'job'}}");
+  assert.equal(await page.answer('zyx'), null);
+});
+
+test('a match across bold text is located in the nodes that hold it, forward and backward', async () => {
+  const page = await findPage();
+  page.open(page.history({ 3: 'say bo**ld** now' }));
+  page.settle(8);
+  await page.answer('bold');
+  assert.deepEqual([page.where().text, page.where().offset], ['say bo', 4]);
+  await page.answer('bold', true);
+  assert.deepEqual([page.where().text, page.where().offset], ['ld', 2]);
+});
+
+test('a match after a character that lowercases to two units lands on the right offset', async () => {
+  const page = await findPage();
+  page.open(page.history({ 3: 'İx' }));
+  page.settle(8);
+  await page.answer('x');
+  assert.deepEqual([page.where().text, page.where().offset], ['İx', 1]);
+  await page.answer('x', true);
+  assert.equal(page.where().offset, 2);
+});
+
+test('a match in a live thinking step and a live fence opens them in the DOM', async () => {
+  const page = await findPage();
+  const items = page.history({});
+  items[39] = { ...items[39], final: false, blocks: [{ type: 'thinking', text: 'first\nsecond\nthird **uniqueword**', redacted: false }, { type: 'text', text: '```\n' + Array.from({ length: 20 }, (_, line) => 'line ' + line).join('\n') + '\n```' }] };
+  page.open(items);
+  page.settle(8);
+  await page.answer('uniqueword');
+  const run = "views.get(39).view.children[0].children[0]", step = run + ".children[1].children[0]";
+  assert.deepEqual([page.evaluate(run + ".classList.contains('open')"), page.evaluate(step + ".classList.contains('open')"), page.evaluate(step + ".children[1].children.length > 0")], [true, true, true], 'the run, the step and its markdown are open');
+  await page.answer('line 18');
+  assert.equal(page.evaluate("[...views.get(39).view.children].some(child => child.className.includes('folded'))"), false);
+  assert.equal(page.pres.at(-1)?.classList.contains('folded'), false, 'the fence of the live row is open');
+});
+
+test('an obsolete find never collapses the selection and answers cancelled', async () => {
+  const page = await findPage();
+  page.open(page.history({ 3: 'alpha here', 9: 'zeta there' }));
+  page.settle(8);
+  const first = page.find('alpha').then(value => value);
+  const second = page.answer('zeta');
+  const stale = JSON.parse(JSON.stringify(await first));
+  assert.deepEqual(stale, { cancelled: true });
+  assert.deepEqual(await second, { index: 1, count: 1, loading: false });
+  assert.equal(page.selection.collapses, 1);
+  const third = page.find('alpha');
+  page.evaluate('window.__koFindCancel()');
+  for (let turn = 0; turn < 10; turn++) { page.step(16); await page.settled(); }
+  assert.deepEqual(JSON.parse(JSON.stringify(await third)), { cancelled: true });
+  assert.equal(page.selection.collapses, 1, 'a closed bar leaves the selection');
+  const reset = page.find('alpha');
+  page.evaluate("apply({type:'reset',epoch:'b',more:false,items:[]})");
+  for (let turn = 0; turn < 10; turn++) { page.step(16); await page.settled(); }
+  assert.deepEqual(JSON.parse(JSON.stringify(await reset)), { cancelled: true });
 });

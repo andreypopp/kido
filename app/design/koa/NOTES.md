@@ -1527,3 +1527,39 @@ koa-job-{running,ended}-dark.png.
   agent" (several: "@a, @b match no agent"). The text still goes to
   the model unchanged. An existing path: nothing. A matching agent:
   the link, as before.
+
+## Find and selection on a virtualized transcript (2026-11-16, spec)
+
+plans/koa-transcript-virtual.md keeps only the rows near the viewport
+in the DOM. Kido's find bar asks the page for the match in its model,
+the page mounts the row, WKWebView.find highlights it.
+
+- **Count.** The bar shows "3 of 12" for a koa page, as it does for
+  a terminal pane: the page counts in its model, so the count is of
+  the whole transcript, not of the mounted rows. "No matches" stays
+  for zero; "Searching…" while the model is still loading older
+  history (the whole-history rule of the pane find).
+- **Folds.** A match inside a collapsed run, step or folded fence is
+  a match: the page opens that fold to show it when the match is
+  made current (Return, ⌘G), as the TUI's search does, and keeps it
+  open afterwards (an opened fold is the user's state now). A match
+  in a fold that is not current is counted and not opened. A
+  thinking step's Markdown counts once rendered: the page renders a
+  collapsed thinking step's text for the count (its text is in the
+  model).
+- **Mounting.** While the page mounts the match's row, the bar keeps
+  its last status; the count and the highlight update together in
+  the frame the row is mounted. No "Searching…" for the mount: it is
+  one frame.
+- **Browser mode.** The browser's own find works over the mounted
+  rows only, and nothing more: no page-level find bar. The page
+  mounts a generous window (the plan's margin) so a ⌘F in a browser
+  finds what is near; a whole-history find is Kido's.
+- **Selection.** Rows inside an active selection stay mounted. Select
+  All (⌘A in the transcript) selects the whole transcript in the
+  model, not the mounted rows: the copy produces the whole text from
+  the model (the page's own copy handler), and the visible selection
+  highlight covers the mounted rows, which is what the eye sees
+  anyway. No visible cue is needed because what the user gets is
+  right. A drag selection that crosses unmounted rows (scrolling
+  while dragging) mounts them as it goes, as the plan says.

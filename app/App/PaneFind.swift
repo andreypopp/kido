@@ -10,13 +10,16 @@ final class PaneFind: PaneCapsule, NSTextFieldDelegate {
     private let nextButton = IconButton("chevron.down", "Next match", size: 15)
     private let done = IconButton("xmark", "Done", size: 15)
     // Ghostty searches the pane's mirror, which holds the whole history.
-    private enum Status: Equatable { case none, matches(Int), at(Int, of: Int), found(Bool) }
+    private enum Status: Equatable { case none, matches(Int), at(Int, of: Int), found(Bool), searching }
     private var status = Status.none { didSet { showStatus() } }
     private var selected: Int?
     private var start: (x: Int, y: Int)?
     private var total = 0
     private var navigating = false
     private var autoNavigate = true
+    private var generation = 0
+    private var retry: Task<Void, Never>?
+    private static let searchAttempts = 600
 
     init(_ pane: PaneView, runtime: GhosttyRuntime) {
         super.init(runtime: runtime, radius: 12, separators: 2)
@@ -64,6 +67,7 @@ final class PaneFind: PaneCapsule, NSTextFieldDelegate {
         let (text, navigable) = switch status {
         case .none: ("", false)
         case .found(let found): (found ? "Match" : "No matches", found)
+        case .searching: ("Searching…", false)
         case .matches(0): (compact ? "0" : "No matches", false)
         case .matches(let total): (compact ? "\(total)" : "\(total) matches", true)
         case .at(let index, let total): (compact ? "\(index)/\(total)" : "\(index) of \(total)", true)
@@ -98,28 +102,52 @@ final class PaneFind: PaneCapsule, NSTextFieldDelegate {
 
     func search(navigate: Bool = true) {
         autoNavigate = navigate
-        if let webview = pane?.webviewView {
-            let query = field.stringValue
-            guard !query.isEmpty else { status = .none; return }
-            webview.find(query) { [weak self] found in
-                guard let self, field.stringValue == query else { return }
-                status = .found(found)
-            }
-        } else { restartGhostty() }
+        if pane?.webviewView != nil { findInWebview(backwards: false) } else { restartGhostty() }
     }
 
     @objc func next() { move(1) }
     @objc func previous() { move(-1) }
 
     private func move(_ delta: Int) {
-        if let webview = pane?.webviewView {
-            webview.find(field.stringValue, backwards: delta < 0) { [weak self] in self?.status = .found($0) }
-            return
-        }
+        if pane?.webviewView != nil { findInWebview(backwards: delta < 0); return }
         guard total > 0 else { return }
         if total == 1, let start, pane?.copyMode != nil { pane?.copyMove("", to: start); return }
         pane?.resetScroll()
         action(delta > 0 || selected == nil ? "navigate_search:next" : "navigate_search:previous")
+    }
+
+    // The page answers from its model while the bar keeps its last status; the count and the highlight appear together after the native find.
+    private func findInWebview(backwards: Bool, attempt: Int = 0, mine: Int? = nil) {
+        guard let webview = pane?.webviewView else { return }
+        let query = field.stringValue
+        guard !query.isEmpty else { retry?.cancel(); generation += 1; status = .none; return }
+        if mine == nil { retry?.cancel(); generation += 1 }
+        let request = mine ?? generation
+        func current() -> Bool { generation == request && field.stringValue == query && pane?.webviewView === webview }
+        webview.prepareFind(query, backwards: backwards) { [weak self] answer in
+            guard let self, current() else { return }
+            let found: Status
+            switch answer {
+            case .cancelled: return
+            case .failed: status = .found(false); return
+            case .answered(_, _, true):
+                status = .searching
+                guard attempt < Self.searchAttempts else { status = .found(false); return }
+                retry = Task { @MainActor [weak self] in
+                    try? await Task.sleep(nanoseconds: 100_000_000)
+                    guard !Task.isCancelled else { return }
+                    self?.findInWebview(backwards: backwards, attempt: attempt + 1, mine: request)
+                }
+                return
+            case .answered(_, 0, false): status = .matches(0); return
+            case .answered(let index, let count, false): found = .at(index, of: count)
+            case .missing: found = .found(true)
+            }
+            webview.find(query, backwards: backwards) { [weak self] matched in
+                guard let self, current() else { return }
+                status = matched ? found : .found(false)
+            }
+        }
     }
 
     // Copy mode moves its cursor to a match and shows the count; outside it the selected match shows.
@@ -169,6 +197,9 @@ final class PaneFind: PaneCapsule, NSTextFieldDelegate {
     }
 
     @objc func close() {
+        retry?.cancel()
+        generation += 1
+        pane?.webviewView?.cancelFind()
         action("end_search")
         if pane?.copyMode != nil, !field.stringValue.isEmpty { pane?.copyFind.query = field.stringValue }
         if (window?.firstResponder as? NSView)?.isDescendant(of: self) == true { window?.makeFirstResponder(pane?.inputResponder) }

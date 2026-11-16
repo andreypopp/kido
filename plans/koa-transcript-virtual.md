@@ -1,9 +1,10 @@
 # Virtualizing koa's transcript DOM
 
-Status: units 1 (measurements) and 2 (the position table and the
-window) landed. Units 3 (find) and 4 (selection) are open: until
-they land, Kido's find (`WKWebView.find`) and Select All with copy
-reach only the mounted rows, not unmounted history. Unit 2's
+Status: units 1 (measurements), 2 (the position table and the
+window) and 3 (find) landed. Unit 4 (selection) is open: until it
+lands, Select All with copy reaches only the mounted rows, not
+unmounted history. Open from unit 3's review: the find text of a
+changed item is parsed again whole, not only its changed block. Unit 2's
 result is the run before its review fixes (section 9, unit 2); the
 review fixes that are not in the landed tree are listed there.
 Base: `origin/main` 223361541. Line numbers below are of that

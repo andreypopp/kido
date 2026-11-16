@@ -1002,28 +1002,69 @@ text to show.
   notices' fits), then renders each changed item once, in order,
   with its runs, the reveal, the working mark and the grow, then
   writes the scroll once. So many records between two frames cost one
-  render, and no read follows a write in a frame. Off-screen content
-  is skipped: each content block of an item row (a message, a user
-  row, a run, a job, a notice, a command) has `content-visibility:
-  auto` with an intrinsic size that the renderer estimates from the
-  item's source lines, and remembers its rendered size after its
-  first render. The rows are not contained, so the margins between
-  rows still collapse as before; the stylesheet removes the edge
-  margins that a contained block would keep inside, and gives a
-  message that starts with a heading or ends with a list, a table, a
-  quote or a fence the outer margin that collapsed before. A
-  contained block has a few pixels of inline padding, taken back by
-  a negative margin, so that a focus ring or an annotation's shadow
-  at a line's edge is not clipped, and an assistant message wraps a
-  long token instead of letting it overflow. A block that holds the
-  reveal, a held or growing block or the working mark is contained
-  like any other: when such a block changed from `visible` back to
-  `auto`, WebKit painted it blank. The observer's reads of a skipped
-  block lay out only that block. The rows
-  stay in the DOM, so find, selection, the anchors and Quick Look
-  see all of them; WebKit's find does not yet scroll to a match in
-  skipped content on the page (plans/koa-transcript-perf.md, unit
-  5). A frame's reads
+  render, and no read follows a write in a frame.
+- **The window.** The DOM holds only the rows near the viewport:
+  the cost of each style and layout pass grows with the retained
+  DOM, and WebKit lays out the whole document again after it
+  releases its caches under memory pressure. `items` is the model
+  of every loaded item; `views` holds only the mounted rows. The
+  position table (`Table` in `page/page.ts`) gives each loaded item
+  its extent, the distance from its row's top to the next row's
+  top, so the rows' collapsed margins are inside it: a measured
+  extent from the `ResizeObserver` callback, else an estimate from
+  the item's data (`estimateExtent`, `page/extent.ts`). A row that
+  unmounts keeps its measured extent, so the scrollbar does not
+  move when a row scrolls out and in again; a new width or line
+  height drops every measurement. The divider's height is measured
+  the same way. A patch changes only its item's entry and the
+  positions after it, and an append extends the table; a reset, an
+  Older page or new metrics rebuild it.
+  The mounted set is the window (`windowOf`: the rows that touch the
+  viewport plus one viewport of overscan on each side, from the
+  scroll owner's position, not the raw scroll) and the live tail:
+  every row from the first item that is not final, animates, grows
+  or holds the working mark to the end. A live row is never
+  unmounted, so the dots and the reveal keep their nodes. A run
+  that continues over several assistant items and a job's stream
+  rows mount whole or not at all, because their DOM lives in the
+  first row. `#items`'s top and bottom padding stand for the absent
+  rows above and below, and one `.gap` box for the absent rows
+  between the window and the tail. A frame mounts for at most 8 ms,
+  nearest the viewport first, and continues in the next frame. An
+  unmounted row drops its prose memos and its observers; the open
+  folds and fences are keyed by item, so they survive a remount.
+- **Find.** WebKit's find sees only the mounted rows, so the page
+  finds in its model and WebKit shows the match (the rules:
+  app/design/koa/NOTES.md, "Find and selection on a virtualized
+  transcript"; Kido's side: design-app.md, "Find"). The hook
+  `window.__koFind(query, backwards)` exists only under Kido
+  (`window.ko`), and returns `null` in a job view, whose rows are
+  all in the DOM. The matches are over each item's find text
+  (`page/find.ts`): the rendered plain text of its Markdown
+  (`markdownPlain`), not its source, and the labels and details of
+  its steps, folded or not, from the same functions that render
+  them (`page/steps.ts`), so the find text is the displayed text. A
+  thinking step counts its body once, not again in its preview line.
+  No match crosses two segments, and the case folding keeps the
+  text's UTF-16 offsets. The segments and the current query's
+  matches are cached per item, rebuilt when the item or the one
+  before it changes, and dropped on a reset. Find follows the pane
+  find's whole-history rule: while older history remains, a call
+  loads it and answers `loading` with the count so far, and a call
+  with the same query meanwhile only asks again; a load that makes
+  no progress fails the find. When all is loaded the cursor moves
+  once (with wrap), the page opens the folds that hold the current
+  match and leaves them open, anchors the reader at a third of the
+  viewport, mounts the row and collapses the selection at the
+  match's start, or at its end for a backward find, so that WebKit's
+  find, which starts from the selection, lands on that occurrence.
+  The page locates a segment in the row's text nodes and maps the
+  match's ends across them, so a match over bold, code or a link
+  works. A find whose query, view or item changed while it waited
+  for a frame answers `cancelled` before it touches the selection,
+  and the bar ignores that answer; closing the bar cancels the
+  find (`window.__koFindCancel`).
+  A frame's reads
   can still force a layout after a write outside a frame (a key, a
   `state` record), so the measurements are read in the
   `ResizeObserver` callback, which runs after layout, before any of
@@ -1116,14 +1157,9 @@ the command first ("`!` commands" below).
   pane is focused and the state is `following`, the page writes the
   bottom on every layout change, at once and before the paint: one
   `ResizeObserver` on the scroller, the items, the job output, the
-  dock and each content block that `content-visibility: auto` can
-  skip calls the correction, on every delivery. A skipped block
-  enters at its estimate and gets its real height only when the
-  scroll write makes it relevant. That change cannot reach the
-  observer through the items in the same cycle, because a
-  `ResizeObserver` delivers again in one cycle only to targets
-  deeper than the shallowest that it delivered; the block itself
-  is deeper, so it can. While following, each delivery also asks
+  dock and each mounted row and content block calls the correction,
+  on every delivery. A row mounted at its estimate gets its real
+  height in that delivery. While following, each delivery also asks
   for one correction in the next frame, which reads the geometry
   again: a change that the depth rule defers still reaches the
   bottom, at most one frame late. A frame corrects otherwise only
@@ -1138,7 +1174,12 @@ the command first ("`!` commands" below).
   In `reader`, the correction keeps the anchor item at its offset,
   so content above it (older history, a fold, an image, a reveal)
   moves the scroll by its delta; when the item is gone the anchor
-  moves to the next item below, or the page goes to the bottom.
+  moves to the next item below, or the page goes to the bottom. An
+  anchor whose item is loaded but not mounted asks the window step
+  to mount it. A scroll that lands in the padding (a scrollbar jump)
+  takes its anchor from the table, and the window mounts the rows
+  there; as they measure, the anchor holds and the scrollbar's
+  thumb moves by the estimate's error.
   The reveal and the grow are rendering only: no scroll animates
   toward them, and the working mark goes in one frame. The one
   animated scroll is "↓ Latest": about 250 ms, ease-out, re-targeted
@@ -1205,12 +1246,10 @@ the command first ("`!` commands" below).
   never place the divider. The divider stands before the new item
   with the lowest sequence number.
   The count is of new items whose top is below the dock's top,
-  because the dock covers the bottom of the transcript. An
-  `IntersectionObserver` on the scroller, with the dock's height
-  cut from its bottom and its top extended by 10⁷ px (inside WebKit's
-  layout range, which a margin of 10⁹ px overflowed), tells
-  which new items are below, so a jump past them also counts, and
-  the count reads no geometry of its own. The capsule
+  because the dock covers the bottom of the transcript. It comes
+  from the position table, so it counts new items that are not
+  mounted, a jump past them also counts, and the count reads no
+  geometry of its own. The capsule
   shows exactly while the state is `reader`. The divider and the count clear
   together, on a send and on a reset of the transcript, which a
   session switch, `/new`, `/reload` and `/restart` all cause.

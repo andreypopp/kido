@@ -294,7 +294,10 @@ content with no snapshot. design-app.md, "Webview panes", gives the
 key route, find, the theme properties and hidden pages. The
 decisions: Kido's Command keys win over the page and every other key
 goes to the page; the selection is WebKit's and copy mode is off
-while the page has focus; find is WebKit's, which gives no count; the
+while the page has focus; find is WebKit's, which gives no count,
+unless the page defines the find hook `window.__koFind`, which counts
+in the page's model and places the selection where WebKit's find
+starts (design-app.md, "Find"); the
 pane's theme reaches the page as CSS properties, so a page that sets
 nothing shows the pane's paper, also the shifted paper of an unfocused
 pane, and no white flash; a hidden page that comes back at a new size
