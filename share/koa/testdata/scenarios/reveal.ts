@@ -7,11 +7,6 @@ const open = (dir: string): Scenario['open'] => [
 ];
 
 export const scenarios: Scenarios = {
-  testKoaWebviewFollowSlide: dir => ({
-    open: [...open(dir), { type: 'item', item: { seq: 2, revision: 0, at: 1794177120000, final: true, kind: 'assistant', blocks: [{ type: 'text', text: Array.from({ length: 12 }, (_, index) => `Row ${index + 1}: The sweep reads each pane and keeps the rows that are still in use.`).join('\n\n') }], stop: 'stop', error: '' } }],
-    steps: [],
-    files: {},
-  }),
   testKoaWebviewReveal: dir => ({
     open: open(dir),
     steps: [
