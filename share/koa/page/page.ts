@@ -44,7 +44,7 @@ const template = document.createElement('template');
 const folds = new Map<string, boolean>();
 const REVEAL = { cap: .4, wait: 1500, fold: 15, grow: 220, travel: 250 };
 type Reveal = { at: number; tail?: { block: Tail; view: HTMLElement; shown: number; units?: Unit[] } };
-type Watch = { type: 'reveal'; memo: TextMemo } | { type: 'hold' } | { type: 'fit'; row: HTMLElement; width: number };
+type Watch = { type: 'reveal'; memo: TextMemo } | { type: 'hold' } | { type: 'block' } | { type: 'fit'; row: HTMLElement; width: number };
 type TextMemo = { render: ReturnType<typeof markdown>; view: HTMLElement; blocks: { block: ReturnType<ReturnType<typeof markdown>>[number]; nodes: ChildNode[] }[]; final?: boolean; source?: string; annotationItem?: Extract<WireItem, { kind: 'annotations' }>; assistant: boolean; reveal?: Reveal; grown: number; open: Set<string> };
 const texts = new Map<string, TextMemo>();
 type StepMarks = { key: string; shape: string; child: HTMLElement; sum: HTMLElement; name?: HTMLElement; label: HTMLElement; after: HTMLElement; tail: HTMLElement[]; tailKey: string; result: HTMLElement; time: HTMLElement; detail: HTMLElement; current: Step; live: boolean; file?: string; images?: ReturnType<typeof thumbnails>; show?: () => void };
@@ -313,7 +313,7 @@ function rendered() { return new Promise<void>(resolve => { waiters.push(resolve
 function tick() {
   pending = undefined;
   stick = wantEnd; wantEnd = false;
-  const now = performance.now(), geo = geometry();
+  const now = performance.now(), geo = correcting ? readGeometry() : geometry();
   const grown = [...measuredHolds], fitted = [...fits];
   measuredHolds.clear(); fits.clear();
   if (scrolling.kind === 'following' && !paneFocused() && dirty.size) frameAnchor = captureAnchor();
@@ -893,6 +893,10 @@ function renderItem(item: WireItem) {
   }
   return !!(slots.size || previous?.slots.size || !previous);
 }
+const ROW_BLOCKS = ':scope>:is(.msg,.aline,.nrow,.job,.cmdrun),:scope>div>.run';
+function watchBlocks(row: HTMLElement) {
+  for (const block of [...row.matches('.user') ? [row] : [], ...row.querySelectorAll(ROW_BLOCKS)]) if (!observed.has(block)) { observed.set(block, { type: 'block' }); layoutObserver.observe(block); }
+}
 function renderDirty() {
   const reset = resetting;
   if (resetting) {
@@ -911,7 +915,7 @@ function renderDirty() {
   if (annotated) { annotated = false; update(editor.text()); }
   if (reset) { refreshBash(); refreshComposer(); }
   reconcileWorking();
-  for (const seq of [...rendered.map(row => row.seq), ...done]) recount(seq);
+  for (const seq of [...rendered.map(row => row.seq), ...done]) { recount(seq); const row = views.get(seq)?.view; if (row) watchBlocks(row); }
   const older = element('older');
   if (older.hidden === more) older.hidden = !more;
   return reset;
@@ -1657,12 +1661,12 @@ function resized(entries: ResizeObserverEntry[]) {
   }
   for (const memo of tails) { const tail = memo.reveal?.tail; if (tail) tail.units = unitsOf(tail.view, tail.block.token); }
   if (tails.size || measuredHolds.size || fits.size) { revealDirty ||= tails.size > 0; schedule(); }
-  if (entries.every(({ target }) => observed.has(target))) return;
   for (const { target, borderBoxSize } of entries) {
     if (target === element('dock')) dockResized(borderBoxSize[0].blockSize);
     if (target === element('scroll')) layoutBar();
   }
   layoutChanged();
+  if (scrolling.kind === 'following' && entries.some(({ target }) => observed.get(target)?.type === 'block')) requestCorrection();
   sync();
 }
 for (const id of ['scroll', 'items', 'jobv', 'dock']) layoutObserver.observe(element(id));

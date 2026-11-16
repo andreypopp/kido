@@ -420,8 +420,10 @@ page, in the tool row and alone:
   composer dots'): three 3px circles, 3px apart, 15px wide in all;
   the bounce 2px high (the old spinner was an 8px ring, and the
   dots' box with the bounce is 8px tall: 3px dots, 2px travel, the
-  rest the ring's margin), `--faint`, the bounce as today (1.1s,
-  180ms apart); the box is 15×8px, `inline-flex`, `vertical-align:
+  rest the ring's margin), `--faint`, the bounce (2026-11-16, it
+  was jumpy with linear timing): up in the first 30% of the 1.1s
+  cycle with ease-out, down by 60% with ease-in, then at rest;
+  the dots 180ms apart, no opacity change; the box is 15×8px, `inline-flex`, `vertical-align:
   middle` so its centre sits on the row text's x-height centre as
   the spinner's ring did (the spinner had `vertical-align: -1px` on
   an 8px ring; the same -1px on the 8px box gives the same place),

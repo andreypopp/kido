@@ -923,7 +923,8 @@ and runs change, so no frame shows neither or both; the turn's end,
 an abort, compaction and the job view remove it. A stream, a reveal
 step or a rebuilt run does not recreate it, so the bounce never
 restarts. The bounce's phase is a function of the mark's start: each
-dot is a Web Animation whose start time is the turn's start, so a
+dot is a Web Animation whose start time is the turn's start, with
+its stagger as its delay, so a
 move, a new node or a closed ancestor that opens again continues the
 same phase. A CSS animation cannot do this: `display: none` restarts
 it, and a new `animation-delay` on a running one counts the elapsed
@@ -933,7 +934,7 @@ the same box as the old spinner's ring, with the start of their own
 operation (`page/working.ts`). Under Reduce Motion the dots are
 static.
 
-The bounce is a `transform` and `opacity` animation, which WebKit
+The bounce is a `transform` animation, which WebKit
 runs in the compositor while the main thread is busy. A detached
 node loses its layer, and its bounce then advances only when a frame
 of the page runs, so the mark stutters. So nothing but a move of its
@@ -1111,10 +1112,21 @@ the command first ("`!` commands" below).
   relative to the viewport), or `restoring` a saved view. While the
   pane is focused and the state is `following`, the page writes the
   bottom on every layout change, at once and before the paint: one
-  `ResizeObserver` on the scroller, the items, the job output and
-  the dock calls the correction. A frame corrects only when its own
-  work asks for it (a restored view, an image that loaded or
-  failed); its other writes reach the observer before the paint.
+  `ResizeObserver` on the scroller, the items, the job output, the
+  dock and each content block that `content-visibility: auto` can
+  skip calls the correction, on every delivery. A skipped block
+  enters at its estimate and gets its real height only when the
+  scroll write makes it relevant. That change cannot reach the
+  observer through the items in the same cycle, because a
+  `ResizeObserver` delivers again in one cycle only to targets
+  deeper than the shallowest that it delivered; the block itself
+  is deeper, so it can. While following, each delivery also asks
+  for one correction in the next frame, which reads the geometry
+  again: a change that the depth rule defers still reaches the
+  bottom, at most one frame late. A frame corrects otherwise only
+  when its own work asks for it (a restored view, an image that
+  loaded or failed); its other writes reach the observer before the
+  paint.
   The observer, the scroll event and the focus keep the last scroll
   geometry that they read after layout, and a frame starts from it,
   so a frame does not force a layout to learn the scroll. A `ResizeObserver` callback runs

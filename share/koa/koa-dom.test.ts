@@ -41,7 +41,10 @@ async function page() {
     setRangeText(text: string) { this.value = this.value.slice(0, this.selectionStart) + text + this.value.slice(this.selectionEnd); }
     dispatchEvent() { this.oninput?.(); }
     querySelector(selector: string): Node | undefined { const match = selector.match(/^\.(\w+)(?::not\(\.(\w+)\))?$/); if (!match) return undefined; const find = (node: Node): Node | undefined => { for (const child of node.children) { if (!(child instanceof Node)) continue; if (child.classes.has(match[1]) && !(match[2] && child.classes.has(match[2]))) return child; const found = find(child); if (found) return found; } }; return find(this); }
-    querySelectorAll(): Node[] { return []; }
+    matches(selector: string) { return [...selector.matchAll(/\.([\w-]+)/g)].some(match => this.classes.has(match[1])); }
+    querySelectorAll(selector = ''): Node[] {
+      return selector.split(/,(?![^(]*\))/).flatMap(part => part.replace(':scope>', '').split('>').reduce<Node[]>((nodes, step) => nodes.flatMap(node => node.children.filter((child): child is Node => child instanceof Node && (step === 'div' ? child.tagName === 'DIV' : [...step.matchAll(/\.([\w-]+)/g)].some(match => child.classes.has(match[1]))))), [this]));
+    }
     get isConnected(): boolean { return this === document.body || this === document.documentElement || this.parent?.isConnected === true; }
     get childNodes() { return this.children; }
     removeChild(child: Node) { this.children = this.children.filter(other => other !== child); if (child instanceof Node) child.parent = undefined; return child; }
@@ -52,8 +55,10 @@ async function page() {
     get previousElementSibling(): Node | undefined { const index = this.parent?.children.indexOf(this) ?? -1; return index > 0 ? this.parent?.children[index - 1] : undefined; }
     get lastElementChild() { return this.children.at(-1); }
     get lastChild() { return this.children.at(-1); }
-    animations: { options: { duration: number; iterations: number }; startTime: number | null }[] = [];
-    animate(_keyframes: unknown, options: { duration: number; iterations: number }) { const animation = { options, startTime: null }; this.animations.push(animation); return animation; }
+    animations: { keyframes: { easing?: string; offset: number; opacity?: number; transform: string }[]; options: { duration: number; iterations: number; delay?: number }; startTime: number | null }[] = [];
+    animate(keyframes: { easing?: string; offset: number; opacity?: number; transform: string }[], options: { duration: number; iterations: number; delay?: number }) { const animation = { keyframes, options, startTime: null }; this.animations.push(animation); return animation; }
+    sizeOf?: () => number; seen?: number;
+    get depth(): number { return this.parent ? this.parent.depth + 1 : 0; }
     get firstChild() { return this.children[0] ?? null; }
     get parentNode(): Node | null { return this.parent ?? null; }
     get nextSibling(): Node | null { return this.parent?.children[this.parent.children.indexOf(this) + 1] ?? null; }
@@ -1076,7 +1081,7 @@ test("thinking and aborted steps use live times without inventing replay times",
 async function revealPage(clientHeight = 100) {
   const app = await page(), html: string[] = [], bars: InstanceType<typeof app.context.Node>[] = [], pres: InstanceType<typeof app.context.Node>[] = [], queued = new Map<number, () => void>(), timers = new Map<number, { at: number; callback: () => void }>();
   let clock = 0, id = 0;
-  const hooks: { read?: (name: string, self: { className?: string }) => void; layout?: () => void } = {};
+  const hooks: { read?: (name: string, self: { className?: string }) => void; layout?: () => void; delivered?: () => void } = {};
   const create = app.context.document.createElement;
   const rects = (count: number) => Array.from({ length: count }, (_, line) => ({ top: line * 20 + 2, bottom: line * 20 + 18 }));
   app.context.document.createElement = (tag: string) => {
@@ -1121,9 +1126,16 @@ async function revealPage(clientHeight = 100) {
     seen = size;
     hooks.layout?.();
     for (const { callback, targets, fresh } of app.observers) {
-      const changed = [...resized ? targets : fresh];
+      const unseen = () => [...targets].filter(target => target.sizeOf && target.sizeOf() !== target.seen);
+      let changed = [...new Set([...resized ? targets : fresh, ...unseen()])];
       fresh.clear();
-      if (changed.length) callback(changed.map(target => ({ target, borderBoxSize: [{ blockSize: 96 }] })));
+      while (changed.length) {
+        const shallowest = Math.min(...changed.map(target => target.depth));
+        for (const target of changed) if (target.sizeOf) target.seen = target.sizeOf();
+        callback(changed.map(target => ({ target, borderBoxSize: [{ blockSize: 96 }] })));
+        hooks.delivered?.();
+        changed = unseen().filter(target => target.depth > shallowest);
+      }
     }
     app.intersect();
   };
@@ -1905,6 +1917,61 @@ test('a focus event on a pane that never lost the focus keeps following while an
   assert.equal(page.evaluate("element('scroll').scrollTop"), 1000);
 });
 
+async function blockPage(position: number) {
+  const page = await latestPage(), rounds = { count: 0, relevant: false, real: 600, late: 0 };
+  let block: InstanceType<typeof page.app.context.Node> | undefined;
+  const find = (node: InstanceType<typeof page.app.context.Node>): InstanceType<typeof page.app.context.Node> | undefined => node.classList.contains('msg') ? node : node.children.map(find).find(Boolean);
+  const found = () => {
+    const row = page.app.context.document.getElementById('items').children.find((child: { dataset?: { seq?: string } }) => child.dataset?.seq === '1');
+    if (!block && row && (block = find(row))) block.sizeOf = () => rounds.relevant ? rounds.real + rounds.late : 100;
+    return block;
+  };
+  page.add(page.text(0));
+  page.scroll(position);
+  page.layout.height = () => 1000 + (found()?.sizeOf?.() ?? 0);
+  page.hooks.delivered = () => { rounds.relevant = true; rounds.count++; };
+  const gap = () => Number(page.evaluate("element('scroll').scrollHeight - element('scroll').clientHeight - element('scroll').scrollTop"));
+  return { ...page, gap, rounds };
+}
+
+test('a block that skips its layout until it is relevant grows after the scroll write and the following pane still reaches the bottom', async () => {
+  const page = await blockPage(900);
+  page.add(page.text(1));
+  assert.equal(page.gap(), 0);
+  assert.equal(page.evaluate("element('scroll').scrollTop"), 1500);
+});
+
+test('a growth that the depth rule skipped is delivered at the next update and the following pane still reaches the bottom', async () => {
+  const page = await blockPage(900);
+  page.hooks.delivered = () => { page.rounds.relevant = true; if (++page.rounds.count === 2) page.rounds.late = 300; };
+  page.add(page.text(1));
+  page.step(16);
+  assert.equal(page.gap(), 0);
+  assert.equal(page.evaluate("element('scroll').scrollTop"), 1800);
+});
+
+test('a correction frame writes the bottom that the layout has now, not the one that the last delivery read', async () => {
+  const page = await blockPage(900);
+  page.add(page.text(1));
+  page.rounds.late = 300;
+  for (const [frame, callback] of [...page.queued]) { page.queued.delete(frame); callback(); }
+  assert.equal(page.gap(), 0);
+});
+
+test('a block that grows below a reader leaves the reader where they are', async () => {
+  const page = await blockPage(300);
+  page.add(page.text(1));
+  assert.equal(page.evaluate("[element('scroll').scrollTop, scrolling.kind].join()"), '300,reader');
+});
+
+test('a delivery of only a reveal child still scrolls a following pane to the grown bottom', async () => {
+  const page = await latestPage();
+  page.add(page.text(0));
+  page.scroll(900);
+  page.evaluate("element('scroll').scrollHeight=1200;const child=document.createElement('div');element('items').append(child);observed.set(child,{type:'reveal',memo:{}});resized([{target:child,borderBoxSize:[{blockSize:0}]}])");
+  assert.equal(page.evaluate("element('scroll').scrollTop"), 1100);
+});
+
 test('a layout growth under a following pane keeps following', async () => {
   const page = await latestPage();
   page.scroll(900);
@@ -2626,8 +2693,8 @@ const FIND_DOTS = "(function find(n){return n.className==='dots'?n:n.children.ma
 const dotsCount = "(function f(n){return (n.className==='dots'?1:0)+n.children.reduce((t,c)=>t+(c.children?f(c):0),0)})(element('items'))";
 test('working dots: the dots in the page keep their node and their start time through patches, reveal, replacements, rebuilds and hide', async () => {
   const fixture = await revealPage(200), ev = fixture.evaluate;
-  const starts = () => JSON.parse(String(ev("JSON.stringify(" + FIND_DOTS + ".children.map(dot => dot.animations.map(animation => [animation.startTime, animation.options.duration, animation.options.iterations])))")));
-  const TURN = [[[78000, 1100, null]], [[78180, 1100, null]], [[78360, 1100, null]]];
+  const starts = () => JSON.parse(String(ev("JSON.stringify(" + FIND_DOTS + ".children.map(dot => dot.animations.map(animation => [animation.startTime, animation.options.duration, animation.options.iterations, animation.options.delay])))")));
+  const TURN = [[[78000, 1100, null, 0]], [[78000, 1100, null, 180]], [[78000, 1100, null, 360]]];
   ev("state={...state,working:true,since:1699999990000}");
   fixture.put('Intro.\n\none two three four five six');
   const first = ev(FIND_DOTS);
@@ -2650,7 +2717,22 @@ test('working dots: the dots in the page keep their node and their start time th
   ev("state={...state,view:{id:'other',path:[],type:'agent'}}; reconcileWorking()");
   ev("state={...state,view:{id:'',path:[],type:'agent'}}; reconcileWorking()");
   const back = ev(FIND_DOTS);
-  assert.deepEqual([back === first, Number(ev(dotsCount)), starts()], [false, 1, [[[60000, 1100, null]], [[60180, 1100, null]], [[60360, 1100, null]]]], 'view return keeps the turn clock');
+  assert.deepEqual([back === first, Number(ev(dotsCount)), starts()], [false, 1, [[[60000, 1100, null, 0]], [[60000, 1100, null, 180]], [[60000, 1100, null, 360]]]], 'view return keeps the turn clock');
+});
+
+test('working dots: the bounce eases out up and in down, and sits still under reduced motion', async () => {
+  const fixture = await revealPage(200), ev = fixture.evaluate;
+  ev("state={...state,working:true,since:1699999990000}");
+  fixture.put('Intro.');
+  const frames = JSON.parse(String(ev("JSON.stringify(" + FIND_DOTS + ".children[0].animations[0].keyframes)")));
+  assert.deepEqual(frames, [
+    { transform: 'translateY(0)', opacity: .55, offset: 0, easing: 'ease-out' },
+    { transform: 'translateY(-2px)', opacity: 1, offset: .3, easing: 'ease-in' },
+    { transform: 'translateY(0)', opacity: .55, offset: .6 },
+    { transform: 'translateY(0)', opacity: .55, offset: 1 },
+  ]);
+  Object.assign(fixture.app.context, { matchMedia: () => ({ matches: true }) });
+  assert.equal(ev("dots(0).children.map(dot => dot.animations.length).join()"), '0,0,0');
 });
 
 test('working dots: one indicator in every frame, a bare row or a running mark, never both and never neither', async () => {
@@ -2753,14 +2835,14 @@ test('with parallel calls the ended call loses its dots and the other keeps its 
 
 function frameWatch(page: Awaited<ReturnType<typeof latestPage>>) {
   const proto = page.app.context.Node.prototype, counts = { reads: 0, removals: 0 };
-  let dirty = false, depth = 0;
+  let dirty = false, depth = 0, inFrame = false;
   const dots = () => page.evaluate('working?.primary');
   const parentOf = (node: unknown): unknown => typeof node === 'object' && node ? Reflect.get(node, 'parent') : undefined;
   const holds = (node: unknown) => { for (let at = dots(); at; at = parentOf(at)) if (at === node) return true; return false; };
   const write = (name: string, removed: (self: unknown, args: unknown[]) => unknown[]) => {
     const original = Reflect.get(proto, name);
     Reflect.set(proto, name, function (this: unknown, ...args: unknown[]) {
-      dirty = true;
+      dirty ||= inFrame;
       if (depth++) { try { return original.apply(this, args); } finally { depth--; } }
       for (const node of removed(this, args)) if (holds(node)) counts.removals++;
       try { return original.apply(this, args); } finally { depth--; }
@@ -2779,7 +2861,7 @@ function frameWatch(page: Awaited<ReturnType<typeof latestPage>>) {
     dirty = false;
   };
   page.hooks.layout = () => { dirty = false; };
-  return { counts, frame: (ms = 16) => { counts.reads = 0; page.step(ms); } };
+  return { counts, frame: (ms = 16) => { counts.reads = 0; dirty = false; inFrame = true; try { page.step(ms); } finally { inFrame = false; } } };
 }
 
 const assistant = (seq: number, text: string, final = false) => ({ seq, revision: 0, at: 0, kind: 'assistant', final, stop: '', error: '', blocks: [{ type: 'text', text }] });
@@ -2934,13 +3016,4 @@ test('a clip that reflow leaves inside a line snaps down to the last whole line 
   fixture.evaluate("resized([{ target: texts.get('0:0').reveal.tail.view.children[0], borderBoxSize: [{ blockSize: 0 }] }])");
   fixture.step(16);
   assert.deepEqual([tailOf(fixture).shown, tailOf(fixture).clip, fixture.evaluate("texts.get('0:0').reveal.tail.view.className")], [0, '0px', 'reveal dormant']);
-});
-
-test('a measurement alone neither reads nor writes the scroll', async () => {
-  const fixture = await revealPage(200);
-  fixture.put('Intro.\n\none two three four five six');
-  fixture.step(0);
-  fixture.evaluate("globalThis.scrolls = 0; { const original = layoutChanged; layoutChanged = (...args) => { globalThis.scrolls++; return original(...args); }; }");
-  fixture.evaluate("resized([{ target: texts.get('0:0').reveal.tail.view.children[0], borderBoxSize: [{ blockSize: 0 }] }])");
-  assert.equal(fixture.evaluate('globalThis.scrolls'), 0);
 });
