@@ -71,7 +71,7 @@ async function page() {
   const windowListeners = new Map<string, (event?: unknown) => void>();
   let activeElement: Node | undefined;
   const document = { timeline: { currentTime: 100000 }, hidden: false, visibilityState: 'visible', documentElement: new Node(), body: new Node(), hasFocus: () => true, get activeElement() { return activeElement; }, set activeElement(node: Node | undefined) { if (activeElement === node) return; const previous = activeElement; activeElement = node; if (previous) listeners.get('focusout')?.({ target: previous }); if (node) listeners.get('focusin')?.({ target: node }); }, querySelector: (selector?: string): Node | null => selector === '.cm-content' ? document.getElementById('prompt').children[0] ?? null : selector === '.lightbox' ? document.body.children.find(node => node.classList.contains('lightbox')) ?? null : null, getElementById(id: string) { let node = elements.get(id); if (!node) { node = new Node(); elements.set(id, node); if (id === 'prompt') document.getElementById('field').append(node); if (id === 'composer') node.hidden = false; } return node; }, createElement: (tag: string) => { const node = new Node(); node.hidden = false; node.tagName = tag.toUpperCase(); return node; }, createElementNS: () => new Node(), createTextNode: (text: string) => { const node = new Node(); node.tagName = '#text'; node.textContent = text; return node; }, addEventListener(type: string, handler: (event: unknown) => void) { listeners.set(type, handler); }, querySelectorAll: () => [] };
-  type Handlers = { input(user: boolean): void; send(mode: PromptMode): void; quit(): void; edit(): void };
+  type Handlers = { input(user: boolean): void; send(mode: PromptMode): void; quit(): void };
   let handlers: Handlers | undefined;
   let text = () => '';
   let prompt: Node | undefined;
@@ -673,6 +673,23 @@ test("pane focus selects the composer without taking page controls or dialog fie
   app.context.document.activeElement = undefined;
   app.windowListeners.get('focus')?.();
   assert.equal(app.context.document.activeElement, undefined);
+});
+
+test('C-g from the transcript opens the editor but not from a dialog', async () => {
+  const app = await page();
+  const requests: string[] = [];
+  app.context.fetch = async (path?: string) => { requests.push(path ?? ''); return { ok: true, json: async () => ({ pane: 'pane_10' }) }; };
+  app.run("state={...state,life:{type:'ready'},sessionId:'s1'};refreshComposer();element('messages').focus()");
+  let prevented = 0;
+  const key = () => app.listeners.get('keydown')?.({ key: 'g', ctrlKey: true, target: app.context.document.activeElement, preventDefault() { prevented++; } });
+  key();
+  await new Promise(resolve => setImmediate(resolve));
+  assert.deepEqual(requests, ['/editor/open']);
+  assert.equal(prevented, 1);
+  app.run("state.dialogs=[{id:'q',method:'input',title:'Question'}];dialogs()");
+  key();
+  assert.deepEqual(requests, ['/editor/open']);
+  assert.equal(prevented, 1);
 });
 
 test("printable transcript keys reach the composer but native shortcuts and fields keep their keys", async () => {
@@ -1525,13 +1542,13 @@ test('C-g sends the draft to the editor route and focuses the float, and a refus
   app.run("window.ko.focus = pane => { focused.push(pane); }");
   let refuse = false;
   app.context.fetch = async (path?: string, init?: { body: string }) => { requests.push({ path: path ?? '', body: JSON.parse(init?.body ?? '') }); return refuse ? { ok: false, json: async () => ({ error: 'C-g needs a ko pane' }) } : { ok: true, json: async () => ({ pane: 'pane_10' }) }; };
-  app.run("state={...state,life:{type:'ready'},sessionId:'s1'};editor.setText('draft')");
-  app.handlers()?.edit();
+  app.run("state={...state,life:{type:'ready'},sessionId:'s1'};refreshComposer();editor.setText('draft')");
+  app.listeners.get('keydown')?.({ key: 'g', ctrlKey: true, preventDefault() {} });
   await new Promise<void>(resolve => setImmediate(resolve));
   assert.deepEqual(requests, [{ path: '/editor/open', body: { sessionId: 's1', text: 'draft' } }]);
   assert.deepEqual(focused, ['pane_10']);
   refuse = true;
-  app.handlers()?.edit();
+  app.listeners.get('keydown')?.({ key: 'g', ctrlKey: true, preventDefault() {} });
   await new Promise<void>(resolve => setImmediate(resolve));
   assert.equal(app.run("element('error').textContent"), 'C-g needs a ko pane');
 });
