@@ -440,26 +440,46 @@ page, in the tool row and alone:
   one dots mark after its summary ("read x2, bash ···"); several
   tools running at once show one mark on each running step and one
   after the folded summary.
-- **The bare row**: while the turn works and no tool call runs
-  (thinking before the first call, between two calls, while text
-  streams), the last row of the turn is a run row with the dots and
-  no name: the same `.run > .line` (padding-left `--pad`, 1px
-  paddings, the row's line height), the 15×8 box where the tool
-  name's first glyph starts, at the same vertical place as in "bash
-  ···", nothing at the right. It has exactly a tool row's height,
-  so "bash ···" and "···" swap without moving the text. While
-  assistant text streams, this row stands under the arriving block
-  (where the typing dots stood), indented like a tool row.
-- **Transitions, one frame per patch, one node**: the indicator row
-  is the turn's last node. A call starting puts its name into that
-  row (it becomes the tool row). A call finishing takes the dots out
-  of its row and puts the time in, and the indicator row appends
-  below in the same frame, unless the same patch starts the next
-  call, in which case the next tool row is that node. No frame shows
-  neither; no frame shows both a bare row and a running tool row.
-- **The turn's end**: the indicator row goes in one frame (the
-  Auto-scroll rule); an abort turns a running tool row into the
-  "aborted" row as today, dots gone.
+- **The rule of the last element** (user, 2026-11-16, the same as
+  on iOS): the working mark sits in the last visible element of the
+  transcript when that element is a run row, and in a bare row
+  otherwise. So:
+  - Last element a run row (folded or open), no step running (the
+    agent thinks between calls): the dots on the run's own line,
+    after its summary ("thinking, bash x2 ···"), the time at the
+    right as the row has it; never a bare row under a run row.
+  - A step running: the dots on the running step's line in an open
+    run, and after the summary of a folded one; parallel steps one
+    each; the header carries none while a step runs in an open run.
+  - A new tool call starting while the mark is on the run's line:
+    the call joins that run (the run grows by a step), the mark
+    moves from the summary to the running step's line in the same
+    frame (open) or stays after the summary (folded); nothing
+    appears or goes, the row count does not change.
+  - Thinking is a step of the run as today ("thinking" in the
+    summary, a step line when open): the mark follows the same rule
+    as a tool step.
+  - Reply text starting to stream after the run: the first text
+    block appends below the run and the mark leaves the run's line
+    in the same frame and stands as the bare row under the arriving
+    text (where the caret stood), because the last element is now
+    text; when the text is final and a run follows, the mark goes
+    into that run again. The bare row exists only when the last
+    element is not a run row: under streaming text, or right after
+    the user's message before anything else.
+  - The bare row: a run row with the dots and no name, the same
+    `.run > .line` (padding-left `--pad`, 1px paddings, the row's
+    line height), the box where the name's first glyph starts,
+    nothing at the right; exactly a tool row's height; the same
+    space above it as a run row has after text (it is one).
+- **Transitions, one frame per patch**: every move of the mark
+  (summary → step, step → summary, run → bare row, bare row → run)
+  happens in the frame of the patch that changes the last element;
+  no frame shows no mark while the turn works, no frame shows two.
+- **The turn's end**: the mark goes in one frame (the Auto-scroll
+  rule): the run's line keeps its time, a bare row is removed; an
+  abort turns a running step into the "aborted" row as today, dots
+  gone.
 - The status-icon rule holds for finished states: colour only.
 
 ## The foot without the status cell (user, 2026-11-15, spec)

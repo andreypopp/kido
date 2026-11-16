@@ -2707,7 +2707,7 @@ test('working dots: the dots in the page keep their node and their start time th
   fixture.step(16); stay('replacement');
   ev("put({seq:1,revision:0,at:0,kind:'assistant',final:false,stop:'',error:'',blocks:[{type:'tool',id:'a',name:'bash',args:{text:'{}'},state:{type:'running'}}]})");
   stay('tool starts');
-  ev("put({seq:1,revision:0,at:0,kind:'assistant',final:false,stop:'',error:'',blocks:[{type:'tool',id:'a',name:'bash',args:{text:'{}'},state:{type:'running'}},{type:'thinking',text:'x'}]})");
+  ev("put({seq:1,revision:0,at:0,kind:'assistant',final:false,stop:'',error:'',blocks:[{type:'tool',id:'a',name:'bash',args:{text:'{}'},state:{type:'running'}},{type:'thinking',text:'x',started:1,ended:2}]})");
   stay('run rebuild');
   ev("document.hidden = true");
   fixture.app.listeners.get('visibilitychange')?.({});
@@ -2752,7 +2752,7 @@ test('working dots: one indicator in every frame, a bare row or a running mark, 
   show([{ type: 'text', text: 'hello' }, tool('a', 'running')], false, 'toolUse');
   assert.deepEqual([bare(), marks(), where().startsWith('sum|run')], [false, 1, true], 'the stop reason toolUse does not end the call');
   show([{ type: 'text', text: 'hello' }, tool('a', 'done')]);
-  assert.deepEqual([bare(), marks()], [true, 1]);
+  assert.deepEqual([bare(), marks(), where().startsWith('sum|run')], [false, 1, true], 'a finished run last carries the dots after its summary');
   show([{ type: 'text', text: 'hello' }, tool('a', 'done'), tool('b', 'running')]);
   assert.deepEqual([bare(), marks(), summary()], [false, 1, 'bash x2'], 'the folded summary keeps the counts');
   show([{ type: 'text', text: 'hello' }, tool('a', 'done'), tool('b', 'done'), tool('c', 'running')]);
@@ -2764,9 +2764,72 @@ test('working dots: one indicator in every frame, a bare row or a running mark, 
   toggle();
   assert.deepEqual([bare(), marks()], [false, 3]);
   show([{ type: 'text', text: 'hello' }, tool('a', 'running')], false, 'aborted');
-  assert.deepEqual([bare(), marks()], [true, 1], 'an aborted call is no running call');
+  assert.deepEqual([bare(), marks(), where().startsWith('sum|run')], [false, 1, true], 'an aborted call is no running call: the dots stay on the run');
   ev("apply({...state,type:'state',working:false})");
   assert.deepEqual([bare(), marks()], [false, 0], 'the end takes every mark in one update');
+});
+
+test('working dots: the mark sits in the last visible element, a run row or a bare row, and moves in the frame the last element changes', async () => {
+  const fixture = await revealPage(200), ev = fixture.evaluate;
+  const marks = () => Number(ev(dotsCount));
+  const rows = () => Number(ev("element('items').children.length"));
+  const bare = () => Boolean(ev("element('items').children.some(c=>c.className.includes('working'))"));
+  const node = () => ev(FIND_DOTS);
+  const tool = (id: string, state: string) => ({ type: 'tool', id, name: 'bash', args: { text: '{}' }, state: { type: state, ...(state === 'done' ? { error: false, result: { text: 'ok', images: [] } } : {}) } });
+  const show = (seq: number, blocks: object[], final = false, stop = '') => ev('put(' + JSON.stringify({ seq, revision: 0, at: 0, kind: 'assistant', final, stop, error: '', blocks }) + ')');
+  const where = () => String(ev("(function(){const d=" + FIND_DOTS + ";return d.parent.className+'|'+d.parent.parent.className+'|'+d.parent.parent.parent.className})()"));
+  const toggle = () => ev("runMarks.get(views.get(1).slots.get('1:0').view.firstElementChild).summary.parent.onclick({})");
+  const headerDots = () => Number(ev("runMarks.get(views.get(1).slots.get('1:0').view.firstElementChild).summary.children.filter(c=>c===working.primary||[...working.extra.values()].includes(c)).length"));
+  ev("state={...state,working:true,since:1699999990000}");
+  show(1, [{ type: 'thinking', text: 'x', started: 1, ended: 2 }, tool('a', 'done')]);
+  const first = node();
+  assert.deepEqual([bare(), marks(), where().startsWith('sum|line|run')], [false, 1, true], 'finished run last, folded');
+  toggle();
+  assert.deepEqual([bare(), marks(), where().startsWith('sum|line|run'), node() === first], [false, 1, true, true], 'finished run last, open');
+  show(1, [{ type: 'thinking', text: 'x', started: 1, ended: 2 }, tool('a', 'done'), tool('b', 'running')]);
+  assert.deepEqual([bare(), marks(), where().startsWith('sum|line|step'), headerDots(), node() === first], [false, 1, true, 0, true], 'running step, open: on the step line, header none');
+  toggle();
+  assert.deepEqual([bare(), marks(), where().startsWith('sum|line|run'), node() === first], [false, 1, true, true], 'running step, folded: after the summary');
+  toggle();
+  const before = rows();
+  show(1, [{ type: 'thinking', text: 'x', started: 1, ended: 2 }, tool('a', 'done'), tool('b', 'done')]);
+  assert.deepEqual([bare(), marks(), where().startsWith('sum|line|run')], [false, 1, true], 'call ends: back on the header');
+  show(1, [{ type: 'thinking', text: 'x', started: 1, ended: 2 }, tool('a', 'done'), tool('b', 'done'), tool('c', 'running')]);
+  assert.deepEqual([bare(), marks(), where().startsWith('sum|line|step'), rows() === before, node() === first], [false, 1, true, true, true], 'a new call joins: the same mark moves to the step');
+  show(1, [{ type: 'thinking', text: 'x', started: 1, ended: 2 }, tool('a', 'done'), tool('b', 'done'), tool('c', 'done')]);
+  show(2, [{ type: 'text', text: 'reply' }]);
+  assert.deepEqual([bare(), marks(), node() === first, ev("element('items').lastChild.className.includes('working')")], [true, 1, true, true], 'text starts after the run: the same mark is the bare row under it');
+  show(2, [{ type: 'text', text: 'reply' }], true);
+  show(3, [tool('d', 'done')]);
+  assert.deepEqual([bare(), marks(), node() === first, where().startsWith('sum|line|run')], [false, 1, true, true], 'a run after final text takes the mark');
+  show(3, [tool('d', 'running')]);
+  assert.deepEqual([bare(), marks(), node() === first], [false, 1, true]);
+  ev("apply({...state,type:'state',working:false})");
+  assert.deepEqual([bare(), marks()], [false, 0], 'the end removes the mark');
+  ev("state={...state,working:true,since:1699999990000}; reconcileWorking()");
+  show(3, [tool('d', 'running')], false, 'aborted');
+  ev("apply({...state,type:'state',working:false})");
+  assert.deepEqual([bare(), marks()], [false, 0], 'abort: no dots');
+});
+
+test('working dots: active thinking is a live step, the mark follows it and the next call', async () => {
+  const fixture = await revealPage(200), ev = fixture.evaluate;
+  const done = { type: 'tool', id: 'a', name: 'bash', args: { text: '{}' }, state: { type: 'done', error: false, result: { text: 'ok', images: [] } } };
+  const next = { type: 'tool', id: 'b', name: 'bash', args: { text: '{}' }, state: { type: 'running' } };
+  const show = (blocks: object[]) => ev('put(' + JSON.stringify({ seq: 1, revision: 0, at: 0, kind: 'assistant', final: false, stop: '', error: '', blocks }) + ')');
+  const where = () => String(ev("(function(){const d=" + FIND_DOTS + ";return d.parent.className+'|'+d.parent.parent.className+'|'+d.parent.parent.parent.className})()"));
+  const count = () => Number(ev(dotsCount));
+  ev("state={...state,working:true,since:1699999990000}");
+  ev("folds.set('run:1:0', true)");
+  show([done]);
+  const first = ev(FIND_DOTS);
+  show([done, { type: 'thinking', text: 'hm', started: 1 }]);
+  assert.deepEqual([count(), where(), ev(FIND_DOTS) === first], [1, 'sum|line|step', true], 'active thinking: on its step line');
+  show([done, { type: 'thinking', text: 'hm', started: 1, ended: 2 }]);
+  assert.deepEqual([count(), where(), ev(FIND_DOTS) === first], [1, 'sum|line|run open', true], 'thinking ended: back on the header');
+  show([done, { type: 'thinking', text: 'hm', started: 1 }]);
+  show([done, { type: 'thinking', text: 'hm', started: 1, ended: 2 }, next]);
+  assert.deepEqual([count(), where(), ev(FIND_DOTS) === first], [1, 'sum|line|step', true], 'the next call: on its step line');
 });
 
 async function dotsWatch() {
@@ -2813,7 +2876,8 @@ test('the working dots are never detached while a turn runs, and move once when 
   page.step(16);
   assert.ok(removals() <= 1, `end: ${removals()}`);
   assert.equal(page.evaluate("liveMarks.size"), 0);
-  assert.equal(page.evaluate("element('items').lastChild.className.includes('working')&&element('items').lastChild.children[0].children[0].children.includes(working.primary)"), true);
+  assert.equal(page.evaluate("element('items').lastChild.className.includes('working')"), false);
+  assert.equal(page.evaluate("(()=>{const run=views.get(1).slots.get('1:0').view.firstElementChild;return runMarks.get(run).summary.children.includes(working.primary)})()"), true);
 });
 
 test('with parallel calls the ended call loses its dots and the other keeps its own', async () => {

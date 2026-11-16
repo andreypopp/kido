@@ -160,31 +160,36 @@ import SidebarFeed
         func patch(_ base: Int, _ state: String) async throws {
             let tool = state == "running" ? "{type:'running'}" : "{type:'done',error:false,result:{text:'ok',images:[]}}"
             _ = try await webviewJS(web, "(()=>{" + Self.followHelpers + "push({type:'patch',seq:1,baseRevision:\(base),revision:\(base + 1),final:false,stop:'',error:'',blocks:[{index:1,block:{type:'tool',id:'c1',name:'bash',args:{text:'{\"command\":\"ls\"}'},state:\(tool),started:1700000001000\(state == "running" ? "" : ",ended:1700000003000,durationMs:2000")}}]});return true})()")
-            let running = state == "running"
-            try await webviewUntil(web, running ? "document.querySelectorAll('.run:not(.working) .dots').length===1&&!document.querySelector('.run.working')" : "!!document.querySelector('.run.working .dots')&&!document.querySelector('.run:not(.working) .dots')")
+            try await webviewUntil(web, "document.querySelectorAll('.run:not(.working) .dots').length===1&&!document.querySelector('.run.working')&&document.querySelector('.run .time').textContent==='\(state == "running" ? "11s" : "2s")'")
             try await webviewUntil(web, "!!document.querySelector('.assistant p')")
             try await webviewUntil(web, "!document.querySelector('#items .hold')")
             try await webviewUntil(web, "\(koaWorking)&&Number.parseFloat(getComputedStyle(document.body).getPropertyValue('--dock-h'))===document.querySelector('#dock').getBoundingClientRect().height&&document.querySelector('#scroll').scrollHeight-document.querySelector('#scroll').scrollTop-document.querySelector('#scroll').clientHeight<=1")
             _ = try await webviewJS(web, "(()=>{document.getAnimations().forEach(animation=>{if(animation.animationName==='grow'){animation.finish();return}const dot=animation.effect.target;animation.pause();animation.currentTime=330-150*[...dot.parentNode.children].indexOf(dot)});return true})()")
         }
         func appearance(_ name: String, from base: Int) async throws {
+            let first = try await measure()
+            let empty = first["live"] as? [String: Any]
             try await patch(base, "running")
             let tool = try await measure()
             try await webviewPageSnapshot(pane, name + "-tool", testName: "testKoaWebviewDots()")
             try await patch(base + 1, "done")
-            let bare = try await measure()
+            let last = try await measure()
             try await webviewPageSnapshot(pane, name + "-bare", testName: "testKoaWebviewDots()")
-            let live = try XCTUnwrap(tool["live"] as? [String: Any]), empty = try XCTUnwrap(bare["live"] as? [String: Any]), done = try XCTUnwrap(bare["done"] as? [String: Any])
+            let live = try XCTUnwrap(tool["live"] as? [String: Any]), after = try XCTUnwrap(last["live"] as? [String: Any])
             XCTAssertEqual(tool["count"] as? Double, 1)
-            XCTAssertEqual(bare["count"] as? Double, 1)
+            XCTAssertEqual(last["count"] as? Double, 1)
             XCTAssertEqual(live["bare"] as? Bool, false, "\(name): \(live)")
-            XCTAssertEqual(empty["bare"] as? Bool, true, "\(name): \(empty)")
-            XCTAssertEqual(empty["height"] as? Double, done["height"] as? Double, "\(name): the bare row has a finished row's height")
-            XCTAssertEqual(live["height"] as? Double, done["height"] as? Double, "\(name): the running row has a finished row's height")
-            XCTAssertEqual(empty["start"] as? Double, live["start"] as? Double, "\(name): the dots stand where the tool name starts")
-            XCTAssertEqual(empty["fold"] as? Bool, false)
-            XCTAssertEqual(empty["time"] as? Bool, false)
-            for row in [live, empty] { XCTAssertEqual(try XCTUnwrap(row["gap"] as? Double), 0, accuracy: 1.5, "\(name): the dots are centred on the x-height: \(row)") }
+            XCTAssertEqual(after["bare"] as? Bool, false, "\(name): the finished run last carries the dots, no bare row: \(after)")
+            if let empty, name == "light" {
+                XCTAssertEqual(empty["bare"] as? Bool, true, "\(name): \(empty)")
+                XCTAssertEqual(empty["height"] as? Double, live["height"] as? Double, "\(name): the bare row has a run row's height")
+                XCTAssertEqual(empty["start"] as? Double, live["start"] as? Double, "\(name): the dots stand where the tool name starts")
+                XCTAssertEqual(empty["fold"] as? Bool, false)
+                XCTAssertEqual(empty["time"] as? Bool, false)
+            }
+            XCTAssertEqual(after["height"] as? Double, live["height"] as? Double, "\(name): the dots add no height to the run row")
+            XCTAssertEqual(after["time"] as? Bool, true, "\(name): the time stays at the right")
+            for row in [live, after] + (empty.map { [$0] } ?? []) { XCTAssertEqual(try XCTUnwrap(row["gap"] as? Double), 0, accuracy: 1.5, "\(name): the dots are centred on the x-height: \(row)") }
         }
         _ = try await webviewJS(web, "(()=>{" + Self.followHelpers + #"""
           push(view(root,[root],{working:true,since:1699999990000}));

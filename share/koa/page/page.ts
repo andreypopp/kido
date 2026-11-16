@@ -571,7 +571,7 @@ function fold(view: HTMLElement, key: string, line: HTMLElement, details: HTMLEl
   view.append(details);
   if (folds.get(key)) show?.();
 }
-const isLive = (step: Step) => step.block.type === 'tool' && !step.item.final && step.item.stop !== 'aborted' && (step.block.state.type === 'running' || step.block.state.type === 'pending');
+const isLive = (step: Step) => !step.item.final && step.item.stop !== 'aborted' && (step.block.type === 'tool' ? step.block.state.type === 'running' || step.block.state.type === 'pending' : step.block.ended === undefined);
 const setText = (target: HTMLElement, next: string) => { if (target.textContent !== next) target.textContent = next; };
 const stepShape = (step: Step) => step.block.type === 'tool' ? 'tool:' + step.block.name : step.block.type;
 function rescue(host: HTMLElement, into: HTMLElement) {
@@ -655,7 +655,7 @@ function patchRun(marks: RunMarks, input: Step[]) {
   const entries = input.map(step => { const value = { ...step, args: step.block.type === 'tool' ? args(step.block) : {}, file: pathArg(step.block) }; return { step, value, info: stepInfo(value) }; });
   const failed = new Set(entries.filter(({ step }) => step.block.type === 'tool' && step.block.state.type === 'done' && step.block.state.error).map(({ info }) => info.kind));
   const aborted = input.some(step => step.item.stop === 'aborted' && step.item.blocks.slice(step.index + 1).every(block => block.type !== 'text' || !block.text));
-  const active = input.some(step => isLive(step) || step.block.type !== 'tool' && !step.item.final && step.block.ended === undefined);
+  const active = input.some(isLive);
   const counts = new Map<string, number>();
   for (const { info } of entries) counts.set(info.kind, (counts.get(info.kind) || 0) + 1);
   const namesKey = aborted ? 'aborted' : [...counts].map(([kind, count]) => kind + ':' + count + (failed.has(kind) ? '!' : '')).join(',');
@@ -697,6 +697,16 @@ function clearWorking() {
   working?.extra.forEach(mark => mark.remove());
   working = undefined;
 }
+function lastRun(skip: HTMLElement) {
+  for (const row of [...element('items').children].reverse()) {
+    if (!(row instanceof HTMLElement)) continue;
+    if (row === skip || row.hidden || !row.childNodes.length) continue;
+    const last = row.className === 'assistant' ? [...row.children].reverse().find(child => child.childNodes.length) : row;
+    if (!last) continue;
+    const view = last.firstElementChild;
+    return view instanceof HTMLElement ? runMarks.get(view) : undefined;
+  }
+}
 function reconcileWorking() {
   const since = state.working && state.view.type !== 'job' && state.compaction !== 'running' ? state.since : undefined;
   if (since === undefined) { clearWorking(); return; }
@@ -716,7 +726,11 @@ function reconcileWorking() {
     if (before === mark || mark.parentNode === parent && mark.nextSibling === before) return;
     parent.insertBefore(mark, before);
   };
-  if (!spots.length) {
+  const tail = !spots.length && lastRun(turn.row);
+  if (tail) {
+    place(turn.primary, { parent: tail.summary, before: null });
+    turn.row.remove();
+  } else if (!spots.length) {
     const items = element('items'), sum = turn.row.firstElementChild?.firstElementChild;
     if (sum instanceof HTMLElement) place(turn.primary, { parent: sum, before: null });
     if (turn.row.parentNode !== items || items.lastChild !== turn.row) items.append(turn.row);
