@@ -3,7 +3,7 @@ import { readdir, readFile, writeFile } from 'node:fs/promises';
 import { Console } from 'node:console';
 import { Writable } from 'node:stream';
 import { resolve, join } from 'node:path';
-import { workloads, streaming } from './workloads.ts';
+import { workloads, streaming, STREAM_MEMORY_MIB } from './workloads.ts';
 import { NEAR_WORDS, engineDeltas, evaluate, latency, percentile, streamBudgets, totals, type Detail, type Engine, type Spread } from './statistics.ts';
 import type { MetricsSample, Observation } from '../koa-records.ts';
 
@@ -15,12 +15,13 @@ const ms = (value: number | undefined) => value === undefined ? '—' : value.to
 const details = (summary: Detail) => `${ms(summary.mean)} / ${ms(summary.p95)} / ${ms(summary.p99)} / ${ms(summary.max)} (n=${summary.count})`;
 const spread = (summary: Spread) => `${ms(summary.p50)} / ${ms(summary.p95)} / ${ms(summary.p99)}`;
 
-type Pass = { summary: Summary; observations: Observation[] };
+type Pass = { summary: Summary; observations: Observation[]; loading: Observation[] };
 async function pass(summary: Summary): Promise<Pass> {
   assert.ok(summary.since !== undefined && summary.until !== undefined && Number.isFinite(summary.since) && Number.isFinite(summary.until), 'Missing measurement window');
   const { since, until } = summary;
   const batches: Batch[] = (await readFile(summary.metrics[0] ?? '', 'utf8')).trim().split('\n').map(line => JSON.parse(line));
-  return { summary, observations: batches.flatMap(batch => batch.observations).filter(observation => observation.at >= since && observation.at <= until) };
+  const all = batches.flatMap(batch => batch.observations);
+  return { summary, observations: all.filter(observation => observation.at >= since && observation.at <= until), loading: all.filter(observation => observation.at < since) };
 }
 
 const layerText = (summary: Summary) => {
@@ -35,15 +36,16 @@ const layerText = (summary: Summary) => {
 
 function streamTable(frame: Pass, probe: Pass | undefined, budgets: Parameters<typeof evaluate>[0], samples: readonly MetricsSample[]) {
   const legs = latency(samples);
-  const timed = totals(frame.observations), counted = probe && totals(probe.observations);
+  const timed = totals(frame.observations), counted = probe && totals(probe.observations), loaded = totals(frame.loading).frame;
   const engine = (pass: Pass | undefined, count: number | undefined) => pass?.summary.engine && engineDeltas(pass.summary.engine, count ?? 0);
   const both = (name: string, text: (pass: Pass, sum: ReturnType<typeof totals>) => string): [string, string][] => [[name + ' [frame pass]', text(frame, timed)], [name + ' [probe pass]', probe && counted ? text(probe, counted) : '—']];
   const layouts = (pass: Pass, sum: ReturnType<typeof totals>) => { const delta = engine(pass, sum.frame.count); return delta ? `${delta.layouts}, ${delta.layoutsPerSecond.toFixed(1)}/s, ${delta.layoutsPerFrame?.toFixed(2) ?? '—'}/frame` : '—'; };
-  const verdicts = evaluate(budgets, { 'frame p99 ms': timed.frame.p99, 'frames over 50 ms': timed.frame.over50, 'stray reads per frame': counted?.frame.count ? counted.strays.frame / counted.frame.count : undefined, 'dots detachments while text streams': counted?.dots.text, 'key→frame p99 ms': timed.key.p99 });
+  const verdicts = evaluate(budgets, { 'frame p99 ms': timed.frame.p99, 'frames over 50 ms': timed.frame.over50, 'stray reads per frame': counted?.frame.count ? counted.strays.frame / counted.frame.count : undefined, 'dots detachments while text streams': counted?.dots.text, 'key→frame p99 ms': timed.key.p99, 'history load max frame ms': loaded.max, 'history load frames over 50 ms': loaded.count ? loaded.over50 : undefined });
   const table = Object.fromEntries([
     ...both('frames (render task)', (_, sum) => String(sum.frame.count)),
     ...both('frame ms p50 / p95 / p99', (_, sum) => spread(sum.frame)),
     ['frames over 16.7 / 50 ms [frame pass]', `${timed.frame.over17} / ${timed.frame.over50}`],
+    ['history load (reset and older) frame ms max / frames over 50 ms [before the stream]', `${ms(loaded.max)} / ${loaded.over50} (n=${loaded.count})`],
     ['frame gap ms p50 / p95 / p99 [frame pass]', (timed.gap.count ? spread(timed.gap) : 'no tick re-scheduled itself') + ` (${timed.gap.count} chained of ${timed.frame.count} frames)`],
     ['gaps over 16.7 / 50 ms [frame pass]', `${timed.gap.over17} / ${timed.gap.over50}`],
     ['record apply ms p50 / p95 / p99 [frame pass]', spread(timed.apply)],
@@ -130,7 +132,7 @@ export async function report(directory: string, budgets = streamBudgets) {
         assert.ok(summary.heap !== undefined && Number.isFinite(summary.heap), 'Invalid Chrome heap');
         memory = summary.heap / 1048576;
       }
-      const budget = workload.memory.type === 'reported' ? workload.memory : summary.target === 'page' ? { type: 'limit' as const, name: 'retained-js-heap', mib: 32 } : !summary.visible ? { type: 'limit' as const, name: 'webcontent-phys-footprint-increase', mib: 180 } : { type: 'unmeasured' as const };
+      const budget = workload.memory.type === 'reported' ? workload.memory : summary.target === 'page' ? { type: 'limit' as const, name: 'retained-js-heap', mib: streaming.includes(id) ? STREAM_MEMORY_MIB.page : 32 } : !summary.visible ? { type: 'limit' as const, name: 'webcontent-phys-footprint-increase', mib: streaming.includes(id) ? STREAM_MEMORY_MIB.kido : 180 } : { type: 'unmeasured' as const };
       const error = budget.type === 'limit' && memory > budget.mib ? `${budget.name}: ${memory.toFixed(1)} MiB/page exceeds ${budget.mib} MiB/page` : undefined;
       let stream: { table: Record<string, string>; failures: string[] } | undefined;
       if (streaming.includes(id)) {

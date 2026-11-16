@@ -998,7 +998,28 @@ text to show.
   notices' fits), then renders each changed item once, in order,
   with its runs, the reveal, the working mark and the grow, then
   writes the scroll once. So many records between two frames cost one
-  render, and no read follows a write in a frame. A frame's reads
+  render, and no read follows a write in a frame. Off-screen content
+  is skipped: each content block of an item row (a message, a user
+  row, a run, a job, a notice, a command) has `content-visibility:
+  auto` with an intrinsic size that the renderer estimates from the
+  item's source lines, and remembers its rendered size after its
+  first render. The rows are not contained, so the margins between
+  rows still collapse as before; the stylesheet removes the edge
+  margins that a contained block would keep inside, and gives a
+  message that starts with a heading or ends with a list, a table, a
+  quote or a fence the outer margin that collapsed before. A
+  contained block has a few pixels of inline padding, taken back by
+  a negative margin, so that a focus ring or an annotation's shadow
+  at a line's edge is not clipped, and an assistant message wraps a
+  long token instead of letting it overflow. A block that holds the
+  reveal, a held or growing block or the working mark is contained
+  like any other: when such a block changed from `visible` back to
+  `auto`, WebKit painted it blank. The observer's reads of a skipped
+  block lay out only that block. The rows
+  stay in the DOM, so find, selection, the anchors and Quick Look
+  see all of them; WebKit's find does not yet scroll to a match in
+  skipped content on the page (plans/koa-transcript-perf.md, unit
+  5). A frame's reads
   can still force a layout after a write outside a frame (a key, a
   `state` record), so the measurements are read in the
   `ResizeObserver` callback, which runs after layout, before any of
@@ -1157,9 +1178,17 @@ the command first ("`!` commands" below).
   and marks what arrived meanwhile as new. A `following` view
   returns at the end with no divider. An item is new at its
   first append only: a revision or a patch of the same sequence
-  number is growth. Only an assistant message is new. The user's
-  message, an agent message, a job event, a notice, a command, a
-  summary and a `!` row never count and never place the divider.
+  number is growth. Only an assistant message with visible content
+  is new, and the page decides it from the item's data, never from
+  its DOM: a nonblank text block, or the run that it owns (a run
+  belongs to the item of its first step, so a run that later items
+  extend counts once). An appended assistant item stays a candidate
+  until its data qualifies, so an empty message that gains text
+  later is new then; history that a reset or Older brings is never
+  a candidate. The user's message, an agent card, an error notice,
+  a job event, a command, a summary and a `!` row never count and
+  never place the divider. The divider stands before the new item
+  with the lowest sequence number.
   The count is of new items whose top is below the dock's top,
   because the dock covers the bottom of the transcript. An
   `IntersectionObserver` on the scroller, with the dock's height

@@ -1,7 +1,7 @@
 import type { MetricsSample, Observation } from '../koa-records.ts';
 
 export type Engine = { at: number; metrics: Record<string, number> };
-export type Spread = { count: number; p50?: number; p95?: number; p99?: number; over17: number; over50: number };
+export type Spread = { count: number; p50?: number; p95?: number; p99?: number; max?: number; over17: number; over50: number };
 type Budget = { name: string; limit: { type: 'reported' } | { type: 'max'; value: number } };
 type Verdict = { name: string; value: number | undefined; status: 'reported' | 'ok' | 'failed' };
 
@@ -13,7 +13,7 @@ export function percentile(values: readonly number[], fraction: number): number 
 }
 
 export const summarize = (values: readonly number[]): Spread => ({
-  count: values.length, p50: percentile(values, .5), p95: percentile(values, .95), p99: percentile(values, .99),
+  count: values.length, p50: percentile(values, .5), p95: percentile(values, .95), p99: percentile(values, .99), max: values.length ? Math.max(...values) : undefined,
   over17: values.filter(value => value > 16.7).length, over50: values.filter(value => value > 50).length,
 });
 
@@ -77,4 +77,6 @@ export const streamBudgets: Budget[] = [
   { name: 'stray reads per frame', limit: { type: 'reported' } },
   { name: 'dots detachments while text streams', limit: { type: 'reported' } },
   { name: 'key→frame p99 ms', limit: { type: 'reported' } },
+  { name: 'history load max frame ms', limit: { type: 'reported' } },
+  { name: 'history load frames over 50 ms', limit: { type: 'reported' } },
 ];

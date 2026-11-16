@@ -294,6 +294,13 @@ test('the composer foot starts with the model and has no agent status cell', asy
   assert.doesNotMatch(css, /\.foot \.(st|dot)\b/);
 });
 
+test('a transcript block skips its layout off screen and keeps a remembered size', async () => {
+  const css = await readFile(new URL('page/page.css', import.meta.url), 'utf8');
+  const rules = css.split('\n').filter(line => line.includes('content-visibility'));
+  assert.equal(rules.length, 1);
+  assert.match(rules[0], /^[^{]*#items>\.user[^{]*\{content-visibility:auto;contain-intrinsic-size:auto var\(--estimate,1lh\)\}$/);
+});
+
 class Fake {
   className = ''; textContent = ''; children: Fake[] = []; attributes = new Map<string, string>(); parent?: Fake; list?: Fake; onmousedown?: unknown; dataset = {};
   append(...nodes: Fake[]) { for (const node of nodes) { node.remove(); node.parent = this; this.children.push(node); } }

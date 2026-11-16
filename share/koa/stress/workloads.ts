@@ -17,11 +17,12 @@ export const workloads = [
   { name: 'slow-page', memory: { type: 'reported', reason: '64 MiB transcript tests back-pressure' } },
   { name: 'body-kinds', memory: { type: 'limited' } },
   { name: 'children', memory: { type: 'limited' } },
-  { name: 'streaming-history', memory: { type: 'reported', reason: 'the 100 000-row history sets the baseline' } },
-  { name: 'streaming', memory: { type: 'reported', reason: 'the stream alone sets the baseline' } },
+  { name: 'streaming-history', memory: { type: 'limited' } },
+  { name: 'streaming', memory: { type: 'limited' } },
 ] as const;
 export const pageWorkloads = [1, 2, 3, 4, 5, 8, 9, 10, 11];
 export const streaming = [13, 14];
+export const STREAM_MEMORY_MIB = { page: 32, kido: 180 };
 export const HISTORY_ROWS = 100_000;
 export const STREAM_TOKENS = 10_000;
 export const STREAM_RESPONSES = 21;

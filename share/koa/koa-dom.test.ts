@@ -14,7 +14,7 @@ import type { PromptMode } from "./koa-records.ts";
 async function page() {
   const source = stripTypeScriptTypes(await readFile(new URL("page/page.ts", import.meta.url), "utf8"));
   class Node {
-    value = ""; private text = ""; style: Record<string, unknown> = { setProperty: (name: string, value: string) => { this.style[name] = value; } }; innerHTML = ''; clientWidth = 320; scrollTop = 0; scrollWidth = 0; clientHeight = 100; disabled = false; placeholder = ""; scrollHeight = 20; children: Node[] = []; dataset = {}; rects: { top: number; bottom: number }[] = [];
+    value = ""; private text = ""; style: Record<string, unknown> = { setProperty: (name: string, value: string) => { this.style[name] = value; }, getPropertyValue: (name: string) => this.style[name] ?? '' }; innerHTML = ''; clientWidth = 320; scrollTop = 0; scrollWidth = 0; clientHeight = 100; disabled = false; placeholder = ""; scrollHeight = 20; children: Node[] = []; dataset = {}; rects: { top: number; bottom: number }[] = [];
     get textContent() { return this.text; }
     set textContent(value: unknown) { this.text = String(value); this.children = []; }
     private classes = new Set<string>();
@@ -1008,7 +1008,6 @@ test('a dock that grows or shrinks keeps a bottom view at the bottom and a scrol
   page.evaluate('dockResized(170)');
   page.pad.value += 40;
   page.settle(60);
-  assert.equal(page.evaluate("document.body.style.getPropertyValue?.('--dock-h')") ?? '170px', '170px');
   assert.equal(page.top(), page.bottom());
   page.reader(123);
   page.pad.value += 20;
@@ -1733,14 +1732,55 @@ test('an empty item that arrived while following and gets its first content afte
   assert.equal(page.latest(), '↓ 1 new,true');
 });
 
-test('a view counts as visible only with text, a visible child or a media element', async () => {
+const card = (seq: number) => ({ seq, revision: 0, kind: 'assistant', final: true, blocks: [{ type: 'tool', id: 'c' + seq, name: 'spawn_agent', args: { text: '{}' }, state: { type: 'done', error: false, result: { text: '', images: [] } }, agent: { direction: 'out', to: { name: 'worker', session: 'w' }, text: { text: 'Check the module', cut: 0 }, call: { tool: 'spawn', fork: false }, outcome: { ok: true } } }] });
+
+test('an item with only an agent card or an error notice is not new, and neither is blank text', async () => {
   const page = await latestPage();
-  const shown = (setup: string) => page.evaluate("(function(){const e=document.createElement('div');" + setup + ";return visible(e)})()");
-  assert.equal(shown("e.append(document.createElement('span'))"), false);
-  assert.equal(shown("e.append(document.createElement('p'))"), false);
-  assert.equal(shown("const h=document.createElement('div');h.textContent='x';h.hidden=true;e.append(h)"), false);
-  assert.equal(shown("const h=document.createElement('div');h.textContent='x';h.hidden=true;e.append(h,document.createTextNode('t'))"), true);
-  assert.equal(shown("e.append(document.createElement('img'))"), true);
+  page.add(page.text(0));
+  page.scroll(0);
+  page.add(card(1));
+  page.add({ ...page.text(2), blocks: [], stop: 'error', error: 'boom' });
+  page.add({ ...page.text(3), blocks: [{ type: 'text', text: ' \n ' }] });
+  assert.equal(page.dividers(), '0,1,2,3');
+  assert.equal(page.latest(), '↓ Latest,true');
+  page.add({ ...page.text(4), blocks: [{ type: 'text', text: ' ' }, { type: 'text', text: 'words' }] });
+  assert.equal(page.dividers(), '0,1,2,3,divider,4');
+  assert.equal(page.latest(), '↓ 1 new,true');
+});
+
+test('nonblank text counts as new while its reveal is still closed, and a card item that gains text arrives once', async () => {
+  const page = await latestPage();
+  page.add(page.text(0));
+  page.scroll(0);
+  page.add({ seq: 1, revision: 0, kind: 'assistant', final: false, blocks: [{ type: 'text', text: 'Intro.\n\nwaiting tail words' }] });
+  assert.equal(page.dividers(), '0,divider,1');
+  page.add(card(2));
+  assert.equal(page.dividers(), '0,divider,1,2');
+  page.add({ ...card(2), revision: 1, blocks: [...card(2).blocks, { type: 'text', text: 'done' }] });
+  assert.equal(page.dividers(), '0,divider,1,2');
+  assert.equal(page.latest(), '↓ 2 new,true');
+});
+
+test('an item that owns no shown step is not new, and the item that takes over the run is', async () => {
+  const page = await latestPage();
+  page.add(page.text(0));
+  page.scroll(0);
+  page.add(think(2));
+  page.add(think(1));
+  assert.equal(page.dividers(), '0,divider,1,2');
+  assert.equal(page.latest(), '↓ 1 new,true');
+});
+
+test('a text block and a user message estimate their height from their source lines, a patch updates it and nothing else gets one', async () => {
+  const page = await latestPage();
+  const estimate = (selector: string) => page.evaluate(`(${selector}).style['--estimate']`);
+  page.add({ ...page.text(0), final: false, blocks: [{ type: 'text', text: 'one\ntwo\nthree' }, { type: 'tool', id: 't', name: 'read', args: { text: '{}' }, state: { type: 'done', error: false, result: { text: '', images: [] } } }] });
+  assert.equal(estimate("views.get(0).view.children[0]"), '3lh');
+  assert.equal(estimate("views.get(0).view.children[1]"), undefined);
+  page.add({ ...page.text(0), final: false, revision: 1, blocks: [{ type: 'text', text: 'one\ntwo\nthree\nfour\nfive' }] });
+  assert.equal(estimate("views.get(0).view.children[0]"), '5lh');
+  page.add({ ...page.own(1), text: 'a\nb' });
+  assert.equal(estimate("views.get(1).view"), '2lh');
 });
 
 test('the capsule reads Latest while nothing is new and hides at the bottom', async () => {

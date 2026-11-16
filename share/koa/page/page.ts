@@ -69,7 +69,7 @@ let travel: { from: number; start: number } | undefined;
 let accepted = 0;
 let sentBlock: { sessionId: string | undefined; view: string } | undefined;
 let divider: HTMLElement | undefined;
-const fresh = new Map<string, HTMLElement>(), counted = new Set<string>(), waiting = new Map<string, HTMLElement>();
+const fresh = new Map<number, HTMLElement>(), counted = new Set<number>(), owners = new Set<number>();
 const tracked = new Set<HTMLElement>(), below = new Set<HTMLElement>();
 let dockHeight = 0, tracker = tracking();
 let epoch = '', after = -1, first: number | undefined, more = false, delay = 200;
@@ -218,7 +218,14 @@ function prose(key: string | undefined, source: string, final: boolean, annotati
   memo.annotationItem = annotationItem;
   memo.final = final;
   show(memo, source, final, changed);
+  if (kind === 'assistant') estimate(memo.view, source);
   return memo.view;
+}
+function estimate(view: HTMLElement, text: string) {
+  let lines = 1;
+  for (let at = text.indexOf('\n'); at >= 0; at = text.indexOf('\n', at + 1)) lines++;
+  const value = lines + 'lh';
+  if (view.style.getPropertyValue('--estimate') !== value) view.style.setProperty('--estimate', value);
 }
 function show(memo: TextMemo, source: string, final: boolean, changed = 0) {
   const { reveal } = memo, before = reveal?.tail;
@@ -309,7 +316,7 @@ function tick() {
   const now = performance.now(), geo = geometry();
   const grown = [...measuredHolds], fitted = [...fits];
   measuredHolds.clear(); fits.clear();
-  if (scrolling.kind === 'following' && !paneFocused() && (dirty.size || arrivals.size || waiting.size)) frameAnchor = captureAnchor();
+  if (scrolling.kind === 'following' && !paneFocused() && dirty.size) frameAnchor = captureAnchor();
   if (correcting) { correcting = false; layoutChanged(geo); }
   for (const [row, overflows] of fitted) row.classList.toggle('more', overflows);
   for (const [target, height] of grown) {
@@ -323,11 +330,11 @@ function tick() {
     revealDirty = false;
     for (const memo of revealing) revealStep(memo, now, geo.viewport);
   }
-  const changed = dirty.size > 0 || arrivals.size > 0 || resetting, restoring = renderDirty();
+  const changed = dirty.size > 0 || resetting, restoring = renderDirty();
   for (const target of growing.splice(0)) { target.classList.add('hold'); observed.set(target, { type: 'hold' }); layoutObserver.observe(target); }
   if (restoring && scrolling.kind === 'restoring') void restore(scrolling);
   if (travel) travelFrame(now, geo);
-  if (changed || fresh.size || waiting.size) settle();
+  if (changed || fresh.size) settle();
   frameAnchor = undefined;
   for (const resolve of waiters.splice(0)) resolve();
   for (const waiter of metrics?.waiting.splice(0) ?? []) waiter();
@@ -428,28 +435,26 @@ function refocus() {
   sync();
   layoutChanged();
 }
-function visible(element: HTMLElement): boolean {
-  if (element.hidden) return false;
-  if (['IMG', 'SVG', 'CANVAS', 'VIDEO', 'HR'].includes(element.tagName.toUpperCase())) return true;
-  if (!element.childNodes.length) return !!element.textContent?.trim();
-  return [...element.childNodes].some(child => child instanceof HTMLElement ? visible(child) : !!child.textContent?.trim());
+const shown = (seq: number) => { const item = items.get(seq); return item?.kind === 'assistant' && (owners.has(seq) || item.blocks.some(block => block.type === 'text' && block.text.trim() !== '')); };
+function recount(seq: number) {
+  if (fresh.has(seq) && !shown(seq)) { fresh.delete(seq); counted.delete(seq); arrivals.add(seq); }
+  else if (arrivals.has(seq)) arrive(seq);
 }
 function settle() {
-  for (const [key, view] of fresh) if (!visible(view)) { fresh.delete(key); counted.delete(key); waiting.set(key, view); }
-  for (const [key, view] of waiting) if (visible(view)) { waiting.delete(key); arrive(key, view); }
-  const views = new Set(fresh.values()), view = [...element('items').children].find(child => child instanceof HTMLElement && views.has(child));
+  const view = views.get(Math.min(...fresh.keys()))?.view;
   if (!view) { divider?.remove(); divider = undefined; }
   else if (divider && divider.nextSibling !== view) element('items').insertBefore(divider, view);
   sync();
 }
-function arrive(key: string, view: HTMLElement | undefined) {
-  if (!view) return;
-  if (counted.has(key)) { if (fresh.has(key)) fresh.set(key, view); return; }
-  if (!visible(view)) { waiting.set(key, view); return; }
-  counted.add(key);
+function arrive(seq: number) {
+  const view = views.get(seq)?.view;
+  if (!view || counted.has(seq)) { arrivals.delete(seq); return; }
+  if (!shown(seq)) { arrivals.add(seq); return; }
+  arrivals.delete(seq);
+  counted.add(seq);
   if (scrolling.kind === 'following' && paneFocused()) return;
   if (!divider) { divider = node('div', undefined, 'newmsgs'); divider.append(node('span', 'new messages')); element('items').insertBefore(divider, view); }
-  fresh.set(key, view);
+  fresh.set(seq, view);
   if (scrolling.kind === 'following') scrolling = { kind: 'reader', anchor: frameAnchor ?? captureAnchor() };
 }
 function follow(max = readGeometry().max) {
@@ -736,10 +741,11 @@ function reconcileRuns(seq: number, done = new Set<number>()) {
   let start = seq, end = seq;
   while (items.get(start - 1)?.kind === 'assistant') start--;
   while (items.get(end + 1)?.kind === 'assistant') end++;
-  for (let at = start; at <= end; at++) done.add(at);
+  for (let at = start; at <= end; at++) { done.add(at); owners.delete(at); }
   let steps: Step[] = [];
   const flush = () => {
     if (!steps.length) return;
+    owners.add(steps[0].item.seq);
     const owner = views.get(steps[0].item.seq)?.slots.get(steps[0].key);
     if (owner?.type === 'run') {
       const current = owner.view.firstElementChild;
@@ -863,6 +869,7 @@ function renderItem(item: WireItem) {
     view.className = 'msg ' + item.kind;
     if (item.kind === 'user') {
       const time = node('time', timestamp(item.at)); time.dateTime = new Date(item.at).toISOString();
+      estimate(view, item.text);
       const text = node('div', undefined, 't'); text.append(prose(item.seq + ':user', item.text, true, undefined, 'user'));
       if (item.images.length) { const images = thumbnails(item.images, () => slots); images.load(); text.append(images.view); }
       const paths = item.attachments.filter(file => file.kind === 'file').map(file => file.path);
@@ -891,7 +898,7 @@ function renderDirty() {
   if (resetting) {
     resetting = false;
     views.clear(); texts.clear(); liveMarks.clear(); clearWorking(); revealing.clear(); growing.length = 0; measuredHolds.clear();
-    element('items').replaceChildren(); divider = undefined; fresh.clear(); waiting.clear(); counted.clear();
+    element('items').replaceChildren(); divider = undefined; fresh.clear(); counted.clear(); owners.clear();
   }
   for (const key of stale) { const memo = texts.get(key); if (memo) revealing.delete(memo); texts.delete(key); }
   stale.clear();
@@ -904,12 +911,9 @@ function renderDirty() {
   if (annotated) { annotated = false; update(editor.text()); }
   if (reset) { refreshBash(); refreshComposer(); }
   reconcileWorking();
-  for (const seq of arrivals) arrive(String(seq), views.get(seq)?.view);
-  const synced = arrivals.size > 0;
-  arrivals.clear();
+  for (const seq of [...rendered.map(row => row.seq), ...done]) recount(seq);
   const older = element('older');
   if (older.hidden === more) older.hidden = !more;
-  if (synced) sync();
   return reset;
 }
 
@@ -1256,7 +1260,7 @@ async function restore(mine: Extract<ScrollState, { kind: 'restoring' }>) {
   if (!rowOf(anchor.item)) { scrolling = { kind: 'following' }; wantEnd = true; requestCorrection(); return; }
   scrolling = { kind: 'reader', anchor };
   requestCorrection();
-  for (const [seq, { item }] of [...views].sort(([x], [y]) => x - y)) if (seq > last && arrives(item)) arrive(String(seq), views.get(seq)?.view);
+  for (const [seq, { item }] of [...views].sort(([x], [y]) => x - y)) if (seq > last && arrives(item)) arrive(seq);
   sync();
 }
 function rescopeImages() {

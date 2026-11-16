@@ -281,6 +281,45 @@ import SidebarFeed
         XCTAssertEqual(value["older"] as? Bool, true, result)
         XCTAssertEqual(try XCTUnwrap(value["after"] as? Double), try XCTUnwrap(anchored[1] as? Double), accuracy: 1, result)
     }
+    func testKoaWebviewFindSkippedHistory() async throws {
+        try XCTSkipIf(true, "Open finding (plans/koa-transcript-perf.md, unit 5): on the real koa page WebKit's find scrolls to the estimated position of a match in skipped content (content-visibility:auto) and does not follow it after the rows render; a plain page with the same CSS lands on the match.")
+        let web = try await scrollPage(module: "scroll-follow")
+        let pane = try XCTUnwrap(terminal?.displayedPanes.first)
+        let leaf = "const leaf=n=>document.querySelector('#items > [data-seq=\"'+n+'\"] > .msg'),skipped=n=>leaf(n).offsetHeight<3*parseFloat(getComputedStyle(leaf(n)).lineHeight);"
+        let before = try await webviewJS(web, "(async()=>{" + Self.followHelpers + leaf + #"""
+          const sentence='The quick brown fox jumps over the lazy dog and keeps running across the field. ';
+          const history=Array.from({length:40},(_,i)=>({kind:'assistant',seq:i,revision:0,at:Date.now(),final:true,blocks:[{type:'text',text:(i===5?'zyxwvq ':'filler ')+sentence.repeat(30)}],stop:'stop',error:''}));
+          push(view(root,[root]));push({type:'reset',epoch:'ef',more:false,items:history});
+          await until(()=>document.querySelectorAll('#items > [data-seq]').length===40&&gap()<=1);
+          await wait(300);
+          const far=skipped(5),near=skipped(39);
+          const dots=document.createElement('span');dots.className='dots';leaf(8).append(dots);await wait(100);
+          return {far,near,live:!skipped(8),top:s.scrollTop,viewport:s.clientHeight};
+        })()
+        """#, within: 60)
+        let start = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(before.utf8)) as? [String: Any])
+        XCTAssertEqual(start["far"] as? Bool, true, "The row ten screens up is skipped: \(before)")
+        XCTAssertEqual(start["near"] as? Bool, false, "The row at the bottom renders: \(before)")
+        XCTAssertEqual(start["live"] as? Bool, true, "A live mark keeps its row from skipping: \(before)")
+        let found = expectation(description: "webview find")
+        var matched = false
+        pane.webviewView?.find("zyxwvq") { matched = $0; found.fulfill() }
+        await fulfillment(of: [found], timeout: 10)
+        XCTAssertTrue(matched, "Find reaches the skipped row")
+        let after = try await webviewJS(web, "(async()=>{" + Self.followHelpers + leaf + #"""
+          await wait(1500);
+          const selection=getSelection(),rects=selection.rangeCount?[...selection.getRangeAt(0).getClientRects()].filter(rect=>rect.width>0&&rect.height>0):[];
+          const box=s.getBoundingClientRect(),shown=rects.some(rect=>rect.top>=box.top&&rect.bottom<=dock.getBoundingClientRect().top);
+          return {word:selection.toString(),rects:rects.length,shown,rendered:!skipped(5),top:s.scrollTop};
+        })()
+        """#, within: 30)
+        let end = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(after.utf8)) as? [String: Any])
+        XCTAssertEqual(end["word"] as? String, "zyxwvq", after)
+        XCTAssertGreaterThan(try XCTUnwrap(end["rects"] as? Int), 0, after)
+        XCTAssertEqual(end["shown"] as? Bool, true, after)
+        XCTAssertEqual(end["rendered"] as? Bool, true, after)
+        XCTAssertLessThan(try XCTUnwrap(end["top"] as? Double), try XCTUnwrap(start["top"] as? Double) - 5 * (try XCTUnwrap(start["viewport"] as? Double)), after)
+    }
     func testKoaWebviewViewSwitchRestoresTheReaderAndJobViewFollows() async throws {
         let web = try await scrollPage(module: "scroll-follow")
         let result = try await webviewJS(web, "(async()=>{" + Self.followHelpers + #"""
@@ -1282,7 +1321,7 @@ import SidebarFeed
         }
         if scenario == .userMarkdown {
             try await webviewUntil(web, "document.querySelectorAll('.user').length===2&&document.querySelector('.user ul li')&&document.querySelector('.user pre code')&&document.querySelector('.user blockquote')")
-            let markdown = try await webviewJS(web, "(()=>{const user=document.querySelector('.user'),plain=Array.from(document.querySelectorAll('.user')).at(-1),assistant=document.querySelector('.assistant .prose'),p=plain.querySelector('.prose p'),u=user.querySelector('.t').getBoundingClientRect(),a=assistant.getBoundingClientRect(),well=plain.getBoundingClientRect(),time=plain.querySelector('time').getBoundingClientRect(),scroll=document.querySelector('#scroll').getBoundingClientRect(),font=parseFloat(getComputedStyle(document.body).fontSize),terminal=parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--ko-font-size')),editor=getComputedStyle(document.querySelector('.cm-content'));return plain.querySelector('time').textContent==='14:32'&&user.querySelectorAll('ul li').length===2&&user.querySelectorAll('code').length===2&&user.querySelector('b')===null&&user.textContent.includes('<b>raw HTML stays text</b>')&&Math.abs(u.left-a.left)<.1&&Math.abs(u.right-a.right)<.1&&well.left>=scroll.left+4&&well.right<=scroll.right-4&&getComputedStyle(p).marginTop==='0px'&&getComputedStyle(p).marginBottom==='0px'&&Math.abs(well.height-p.getBoundingClientRect().height-16)<.1&&Math.abs(time.top-p.getBoundingClientRect().top)<.1&&Math.abs(font-terminal*.92)<.01&&Math.abs(parseFloat(editor.fontSize)-font)<.01&&Number.isInteger(parseFloat(editor.minHeight))})()")
+            let markdown = try await webviewJS(web, "(()=>{const user=document.querySelector('.user'),plain=Array.from(document.querySelectorAll('.user')).at(-1),assistant=document.querySelector('.assistant .prose'),p=plain.querySelector('.prose p'),u=user.querySelector('.t').getBoundingClientRect(),a=assistant.getBoundingClientRect(),well=plain.getBoundingClientRect(),time=plain.querySelector('time').getBoundingClientRect(),scroll=document.querySelector('#scroll').getBoundingClientRect(),font=parseFloat(getComputedStyle(document.body).fontSize),terminal=parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--ko-font-size')),editor=getComputedStyle(document.querySelector('.cm-content'));return plain.querySelector('time').textContent==='14:32'&&user.querySelectorAll('ul li').length===2&&user.querySelectorAll('code').length===2&&user.querySelector('b')===null&&user.textContent.includes('<b>raw HTML stays text</b>')&&Math.abs(u.left-a.left-4)<.1&&Math.abs(u.right-a.right+4)<.1&&well.left>=scroll.left+4&&well.right<=scroll.right-4&&getComputedStyle(p).marginTop==='0px'&&getComputedStyle(p).marginBottom==='0px'&&Math.abs(well.height-p.getBoundingClientRect().height-16)<.1&&Math.abs(time.top-p.getBoundingClientRect().top)<.1&&Math.abs(font-terminal*.92)<.01&&Math.abs(parseFloat(editor.fontSize)-font)<.01&&Number.isInteger(parseFloat(editor.minHeight))})()")
             XCTAssertEqual(markdown, "true", "Markdown, first-line time, equal text widths, compact spacing and rounded composer size")
             let prefix = width < 750 ? "narrow-user-" : "user-"
             try await capture(prefix + "markdown")

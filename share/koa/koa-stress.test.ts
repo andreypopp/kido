@@ -82,6 +82,23 @@ test('WebContent footprint budgets use the per-page average and report the maxim
   assert.equal(visible[0]?.p95, 12);
 });
 
+test('a streaming row reports the frames of the history load before the stream, and its memory is limited', async t => {
+  const dir = await mkdtemp(join(tmpdir(), 'koa-report-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const file = join(dir, 'samples.jsonl');
+  const frame = (at: number, duration: number) => ({ type: 'frame', at, duration, lex: 0, strays: 0, by: {} });
+  const observations = [frame(10, 80), frame(20, 5), frame(100, 7)];
+  await writeFile(file, JSON.stringify({ samples: [{ t: 1000, frame: 1010, bytes: 50, clockError: 0 }], observations, bytes: 50, opens: 1, caps: 0, flushes: 1, highWater: 50 }));
+  await writeFile(join(dir, 'page-manifest.json'), JSON.stringify({ target: 'page', ids: [13] }));
+  const engine = [{ at: 0, metrics: { LayoutCount: 1 } }, { at: 1000, metrics: { LayoutCount: 3 } }];
+  const summary = { target: 'page', timing: 'frame', id: 13, status: 'ok', seconds: 1, heap: 40 * 1048576, metrics: [file], since: 50, until: 200, engine };
+  await writeFile(join(dir, 'page-13-summary.json'), JSON.stringify(summary));
+  const [row] = await report(dir);
+  assert.equal(row?.stream?.['history load (reset and older) frame ms max / frames over 50 ms [before the stream]'], '80.0 / 1 (n=2)');
+  assert.equal(row?.stream?.['budget history load frames over 50 ms'], 'reported (1.00)');
+  assert.match(row?.error ?? '', /retained-js-heap: 40.0 MiB\/page exceeds 32 MiB\/page/);
+});
+
 test('a streaming budget above its limit fails the row', async t => {
   const dir = await mkdtemp(join(tmpdir(), 'koa-report-'));
   t.after(() => rm(dir, { recursive: true, force: true }));
