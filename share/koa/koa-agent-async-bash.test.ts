@@ -219,17 +219,20 @@ test("stop by name and id stops owned groups, sends no notice, and handles ended
     const s = await startSession(fx);
     for (const address of ["name", "id"]) {
       const marker = `koa-job-${fx.dir.split("/").at(-1)}-${address}`;
-      const sleeper = join(fx.dir, marker);
+      const dir = join(fx.dir, marker);
+      mkdirSync(dir);
+      const sleeper = join(dir, "sleep");
       symlinkSync("/bin/sleep", sleeper);
       const command = `exec '${sleeper}' 30`;
       const result = await s.tool("async_bash").execute("c", { command, name: address });
-      await pollUntil(async () => !(await processGone(`${marker} 30`)));
+      await pollUntil(async () => !(await processGone(`${marker}/sleep 30`)));
       const before = rowWhere(await list(s), "job", jobId(result));
       assert.equal(before.state, "running", JSON.stringify(before));
       const stopped = await s.tool("stop_async_bash").execute("s", { job: address === "name" ? "NAME" : jobId(result) });
       assert.match(text(stopped), /stopped job/, text(stopped));
       assert.equal(rowWhere(await list(s), "job", jobId(result)).end, "stopped");
-      await pollUntil(() => processGone(marker));    }
+      await pollUntil(() => processGone(marker));
+    }
     assert.deepEqual(notices(s), []);
     assert.match(text(await s.tool("stop_async_bash").execute("s", { job: "name" })), /had already ended: stopped/);
     assert.equal((await s.tool("stop_async_bash").execute("s", { job: "missing" })).isError, true);
