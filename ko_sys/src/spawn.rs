@@ -1,9 +1,11 @@
 use std::ffi::CString;
 use std::io;
-use std::os::fd::{AsRawFd, BorrowedFd, FromRawFd, OwnedFd};
+use std::os::fd::{AsFd, AsRawFd, BorrowedFd, FromRawFd, OwnedFd};
 use std::os::unix::ffi::OsStrExt;
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
 use std::ptr;
+use std::time::Instant;
 
 use crate::pid::{Pid, Program};
 use crate::retry::{check, check_code, retry};
@@ -96,20 +98,70 @@ const POSIX_SPAWN_SETSID: libc::c_int = 0x0400;
 #[cfg(target_os = "linux")]
 const POSIX_SPAWN_SETSID: libc::c_int = libc::POSIX_SPAWN_SETSID as libc::c_int;
 
+#[cfg(target_os = "macos")]
+mod launchd;
+
+#[cfg(target_os = "macos")]
+pub use launchd::Job;
+
+// Only launchd runs a managed job; no value of this type exists elsewhere.
+#[cfg(target_os = "linux")]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Job {}
+
+#[cfg(target_os = "linux")]
+impl Job {
+    pub fn ended(&self, _deadline: Instant) -> io::Result<bool> {
+        match *self {}
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Detached {
+    Child(Pid),
+    Managed(Job),
+}
+
 pub fn detached(
     program: &Path,
     args: &[&str],
-    log: BorrowedFd<'_>,
+    log: &Path,
     env: Env<'_>,
-    dir: Option<&Path>,
-) -> io::Result<Pid> {
+    cwd: Option<&Path>,
+    job_dir: &Path,
+    deadline: Instant,
+) -> io::Result<Detached> {
+    #[cfg(target_os = "macos")]
+    if let Some(job) = launchd::start(program, args, (log, cwd, job_dir), env, deadline)? {
+        return Ok(Detached::Managed(job));
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = (job_dir, deadline);
+    let output = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .mode(0o600)
+        .open(log)?;
+    let log = output.as_fd();
     start(
         program,
         args,
         &[(log, 0), (log, 1), (log, 2)],
-        (env, dir),
+        (env, cwd),
         Session::New,
     )
+    .map(Detached::Child)
+}
+
+/// Unloads the launchd job of a server directory, if it has one.
+pub fn unload(job_dir: &Path, deadline: Instant) -> io::Result<()> {
+    #[cfg(target_os = "macos")]
+    return launchd::unload(job_dir, deadline);
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (job_dir, deadline);
+        Ok(())
+    }
 }
 
 pub fn program(

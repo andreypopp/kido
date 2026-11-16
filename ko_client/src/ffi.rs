@@ -4136,6 +4136,8 @@ mod tests {
     fn ko_client_launch_stops_and_names_its_version() {
         let dir = PathBuf::from(format!("/tmp/ko-ffi-launch-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
+        #[cfg(target_os = "macos")]
+        let job = crate::launch::JobGuard(&dir);
         let c_dir = CString::new(dir.as_os_str().as_bytes()).unwrap();
         let mut socket = empty_buffer();
         for (path, cwd) in [
@@ -4232,6 +4234,8 @@ mod tests {
         // SAFETY: socket owns a core allocation that is not freed yet.
         unsafe { freed_once(&mut socket) };
         drop(listener);
+        #[cfg(target_os = "macos")]
+        drop(job);
         let _ = std::fs::remove_dir_all(&dir);
 
         let mut error = empty_buffer();

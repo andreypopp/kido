@@ -134,8 +134,10 @@ exit, a timeout, no or an empty value; also a dotfile that leaves
 a background process with the shell's stdout open) the server inherits the app's `PATH`,
 and the app logs one line. A server that already runs keeps its `PATH`, and a
 remote server is not affected. The panes get the server's `PATH` under their
-login shell, with ko's bin directory first. The core reaps the server process that it
-started. Every dial is one stderr line, `dialing SOCKET (cause) [owner]`.
+login shell, with ko's bin directory first. On macOS the server is a launchd
+job, not a child of the app, so a quit, crash or force quit of Kido.app does
+not end it or its panes, and the panes' privacy grants are those of `ko`, not
+of Kido.app (docs/design-ko.md, "Lifecycle and the command line"). Every dial is one stderr line, `dialing SOCKET (cause) [owner]`.
 
 The first welcome must arrive within 20 s (`WindowOwner.welcomeTimeout`),
 else the banner reads "Kido could not reach …" with Start. After that the

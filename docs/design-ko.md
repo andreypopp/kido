@@ -841,6 +841,37 @@ never removes the socket of a server that an explicit `ko server`
 bound meanwhile. A failed start reports the text that the server
 wrote to `DIR/log`.
 
+On macOS the launcher starts the server as a launchd job of the
+user's GUI domain, `gui/<uid>`, not as its own child
+(`ko_sys/src/spawn/launchd.rs`). A child of an app is in that app's
+coalition, and a force quit from the Dock kills every process of the
+coalition, and also of coalitions that LaunchServices relates to it:
+the server and all its panes died with an app that only started
+them. A launchd job has its own coalition, so the server outlives a
+quit, a crash or a force quit of every app. Under `launch.lock` the
+launcher writes `DIR/server.plist` (mode 0600: it holds the
+environment) with the server's arguments, environment, working
+directory and log (launchd adds the variables of its domain, such
+as `SSH_AUTH_SOCK`, to that environment), boots out the job of that label, and bootstraps
+the plist. The label comes from the device and inode of `DIR`. The
+job has no `KeepAlive`: a server that exits is not restarted, and its
+job stays loaded and not running until the next start boots it out,
+because launchd refuses a second bootstrap of a loaded label. `ko
+kill-server` stops the server, then, under `launch.lock`, unloads its
+job unless a server answers again: a launcher (such as the app) that
+started a replacement meanwhile keeps its new job. The server is no child of the
+launcher, so the launcher learns of a failed start from `launchctl
+print` (state not running or spawn scheduled after a run), which it
+asks only after a failed connect. Without a GUI domain (an ssh login
+with no user at the console) and on Linux, the launcher spawns the
+server as a detached child in a new session and reaps it.
+
+The pane programs then descend from launchd, not from the app. For
+macOS privacy (TCC), their responsible process is the bundled `ko`,
+not Kido.app: a grant that the user gave Kido.app (Documents,
+Desktop, and so on) does not cover a pane's shell, and a prompt names
+`ko`. This is the price of a server that outlives the app.
+
 `DIR/log` is also the server's diagnostic log, whether the launcher or
 the user started `ko server`: once its configuration is read, the
 server opens `DIR/log` and puts it on its stderr. The coordinator

@@ -155,7 +155,48 @@ impl Deref for Dir {
 
 impl Drop for Dir {
     fn drop(&mut self) {
+        #[cfg(target_os = "macos")]
+        {
+            let plist = self.0.join("server.plist");
+            let domain = format!("gui/{}", ko_sys::sock::uid());
+            if plist.exists() {
+                quiet_run(
+                    Path::new("/bin/launchctl"),
+                    &["bootout", &domain, &plist.to_string_lossy()],
+                    &[],
+                );
+            }
+        }
         let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+pub(crate) fn quiet_run(program: &Path, args: &[&str], env: &[Vec<u8>]) {
+    let env = if env.is_empty() {
+        Env::Inherit
+    } else {
+        Env::Only(env)
+    };
+    let Ok(null) = File::options().write(true).open("/dev/null") else {
+        return;
+    };
+    let Ok(job) = spawn::program(
+        program,
+        args,
+        &[(null.as_fd(), 1), (null.as_fd(), 2)],
+        env,
+        None,
+    ) else {
+        return;
+    };
+    let deadline = Instant::now() + DEADLINE;
+    while matches!(job.try_wait(), Ok(ko_sys::pid::Waited::Running)) {
+        if Instant::now() >= deadline {
+            let _ = job.signal(Signal::Kill);
+            let _ = job.wait();
+            return;
+        }
+        thread::park_timeout(Duration::from_millis(2));
     }
 }
 

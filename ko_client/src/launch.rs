@@ -24,9 +24,9 @@ fn remove_stale(socket: &Path, error: &io::Error) -> io::Result<()> {
     }
 }
 
-// The servers that this process started. A server is this process's child, so a thread waits for
-// it, or it stays a zombie that looks alive; after that wait its pid may name another process, so
-// the thread marks it ended.
+// The servers that this process started as its children. A thread waits for each, or it stays a
+// zombie that looks alive; after that wait its pid may name another process, so the thread marks
+// it ended. A launchd job is no child and has no entry.
 static STARTED: Mutex<Vec<(Pid, Arc<AtomicBool>)>> = Mutex::new(Vec::new());
 
 fn reap(child: Pid) -> Arc<AtomicBool> {
@@ -87,6 +87,11 @@ pub fn bind(dir: &Path, socket: &Path, patience: Patience) -> io::Result<UnixLis
     UnixListener::bind(socket)
 }
 
+enum Started {
+    Child(Arc<AtomicBool>),
+    Managed(ko_sys::spawn::Job),
+}
+
 pub fn attach(
     dir: &Path,
     executable: &Path,
@@ -116,6 +121,7 @@ pub fn attach(
         .open(&log)
         .map_err(message)?;
     let log_start = output.metadata().map_err(message)?.len();
+    let deadline = Instant::now() + patience.deadline;
     let args = ["server", "--server", &dir.to_string_lossy()];
     let environment = path.map(|path| {
         std::env::vars_os()
@@ -127,17 +133,23 @@ pub fn attach(
     let env = environment
         .as_deref()
         .map_or(ko_sys::spawn::Env::Inherit, ko_sys::spawn::Env::Only);
-    let child =
-        ko_sys::spawn::detached(executable, &args, output.as_fd(), env, cwd).map_err(message)?;
-    let ended = reap(child);
-    let deadline = Instant::now() + patience.deadline;
+    let detached = ko_sys::spawn::detached(executable, &args, &log, env, cwd, dir, deadline)
+        .map_err(message)?;
+    let started = match detached {
+        ko_sys::spawn::Detached::Child(child) => Started::Child(reap(child)),
+        ko_sys::spawn::Detached::Managed(job) => Started::Managed(job),
+    };
     loop {
         match connect(&socket, patience, None) {
             Ok(stream) => return Ok((socket, stream)),
             Err(error) if absent(&error) => {}
             Err(error) => return Err(message(error)),
         }
-        let failure = if ended.load(Ordering::SeqCst) {
+        let exited = match &started {
+            Started::Child(ended) => ended.load(Ordering::SeqCst),
+            Started::Managed(job) => job.ended(deadline).map_err(message)?,
+        };
+        let failure = if exited {
             "server exited".to_owned()
         } else if Instant::now() >= deadline {
             format!(
@@ -161,6 +173,29 @@ pub fn attach(
 }
 
 pub fn stop(dir: &Path, patience: Patience) -> Result<(), String> {
+    let stopped = signal_stop(dir, patience);
+    let unloaded = unload_if_dead(dir, patience);
+    stopped.and(unloaded)
+}
+
+// A launcher holds the lock from its bootstrap until its server answers, so a live server under
+// the lock is a replacement whose job stays.
+fn unload_if_dead(dir: &Path, patience: Patience) -> Result<(), String> {
+    let message = |error: io::Error| error.to_string();
+    if !dir.is_dir() {
+        return Ok(());
+    }
+    let _held = lock(dir, LAUNCH_LOCK, patience).map_err(message)?;
+    match connect(&dir.join("socket"), patience, None) {
+        Ok(_) => Ok(()),
+        Err(error) if absent(&error) => {
+            ko_sys::spawn::unload(dir, Instant::now() + patience.deadline).map_err(message)
+        }
+        Err(error) => Err(message(error)),
+    }
+}
+
+fn signal_stop(dir: &Path, patience: Patience) -> Result<(), String> {
     let socket = local::socket(Dir::Existing, dir)?;
     let message = |error: io::Error| error.to_string();
     let stream = connect(&socket, patience, None).map_err(message)?;
@@ -190,6 +225,16 @@ pub fn stop(dir: &Path, patience: Patience) -> Result<(), String> {
     Ok(())
 }
 
+#[cfg(all(test, target_os = "macos"))]
+pub(crate) struct JobGuard<'a>(pub(crate) &'a Path);
+
+#[cfg(all(test, target_os = "macos"))]
+impl Drop for JobGuard<'_> {
+    fn drop(&mut self) {
+        let _ = stop(self.0, crate::connect::PATIENCE);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -211,6 +256,8 @@ mod tests {
     fn a_server_that_exits_at_once_is_reported_as_an_exit_and_not_a_timeout() {
         let _forking = FORKING.lock().unwrap_or_else(PoisonError::into_inner);
         let dir = scratch("exit");
+        #[cfg(target_os = "macos")]
+        let job = JobGuard(&dir);
         std::fs::set_permissions(&dir, std::os::unix::fs::PermissionsExt::from_mode(0o700))
             .unwrap();
         let executable = dir.join("ko");
@@ -229,6 +276,8 @@ mod tests {
         assert!(error.starts_with("server exited"), "{error}");
         assert!(error.contains("�START-FAILED"), "{error}");
         assert!(!error.contains("OLD-FAILURE"), "{error}");
+        #[cfg(target_os = "macos")]
+        drop(job);
         std::fs::remove_dir_all(dir).unwrap();
     }
 

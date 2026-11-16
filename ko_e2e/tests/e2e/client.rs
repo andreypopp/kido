@@ -1124,6 +1124,113 @@ fn client_incompatible_server_reports_restart_command_and_both_versions() {
     );
 }
 
+#[cfg(target_os = "macos")]
+struct StopServer<'a> {
+    dir: &'a Path,
+    env: &'a [Vec<u8>],
+}
+
+#[cfg(target_os = "macos")]
+impl Drop for StopServer<'_> {
+    fn drop(&mut self) {
+        crate::harness::quiet_run(
+            &crate::harness::ko(),
+            &["kill-server", "--server", text_of(self.dir)],
+            self.env,
+        );
+    }
+}
+
+#[cfg(target_os = "macos")]
+#[test]
+fn a_server_started_by_a_client_is_a_launchd_job_that_a_restart_replaces() {
+    let dir = Dir::new("ko-job-");
+    let scratch = Dir::new("ko-job-run-");
+    let env = crate::harness::test_env(&dir);
+    let _stop = StopServer {
+        dir: &dir,
+        env: &env,
+    };
+    let domain = format!("gui/{}", ko_sys::sock::uid());
+    let launchctl = |args: &[&str]| {
+        crate::harness::run_program(
+            &scratch,
+            Path::new("/bin/launchctl"),
+            &[],
+            args,
+            "",
+            DEADLINE,
+        )
+    };
+    let ensure = || {
+        let socket = run_ko(
+            &scratch,
+            &env,
+            &[
+                "--server",
+                text_of(&dir),
+                "server",
+                "--print-socket",
+                "--ensure",
+            ],
+            "",
+        )
+        .ok();
+        let stream = UnixStream::connect(socket.trim()).unwrap();
+        let pid = ko_sys::sock::peer_pid(std::os::fd::AsFd::as_fd(&stream))
+            .unwrap()
+            .unwrap();
+        let Ok(plist) = std::fs::read_to_string(dir.join("server.plist")) else {
+            return (pid, String::new(), String::new());
+        };
+        let label = plist
+            .split("<key>Label</key>")
+            .nth(1)
+            .and_then(|rest| rest.split("<string>").nth(1))
+            .and_then(|rest| rest.split("</string>").next())
+            .unwrap()
+            .to_owned();
+        let job = launchctl(&["print", &format!("{domain}/{label}")]).stdout;
+        (pid, job, label)
+    };
+    let has_domain = launchctl(&["print", &domain]).exit == Exit::Exited(0);
+    let (first, job, _) = ensure();
+    if !has_domain {
+        assert!(!dir.join("server.plist").exists());
+        run_ko(
+            &scratch,
+            &env,
+            &["kill-server", "--server", text_of(&dir)],
+            "",
+        )
+        .ok();
+        return;
+    }
+    assert!(job.contains(&format!("pid = {first}\n")), "{job}");
+    run_ko(
+        &scratch,
+        &env,
+        &["kill-server", "--server", text_of(&dir)],
+        "",
+    )
+    .ok();
+    let (second, job, label) = ensure();
+    assert_ne!(first, second);
+    assert!(job.contains(&format!("pid = {second}\n")), "{job}");
+    run_ko(
+        &scratch,
+        &env,
+        &["kill-server", "--server", text_of(&dir)],
+        "",
+    )
+    .ok();
+    assert_ne!(
+        launchctl(&["print", &format!("{domain}/{label}")]).exit,
+        Exit::Exited(0),
+        "kill-server unloads the job"
+    );
+}
+
 #[test]
 fn client_attach_or_start() {
     let dir = Dir::new("ko-auto-");
