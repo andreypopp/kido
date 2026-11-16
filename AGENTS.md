@@ -654,7 +654,7 @@ delegates as its brief says and does not write code.
   change it.
   - A manager runs on `claude-bridge/claude-opus-5-5`.
   - An implementer and a builder run on
-    `claude-bridge/claude-sonnet-5-5:low`.
+    `openai-codex/gpt-6.1-sol:low`.
   - Investigation or reproduction work runs on
     `openai-codex/gpt-6.1-sol:low`.
   - Every reviewer (the four simplify reviewers, the correctness
