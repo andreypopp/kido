@@ -14,7 +14,7 @@ import type { PromptMode } from "./koa-records.ts";
 async function page() {
   const source = stripTypeScriptTypes(await readFile(new URL("page/page.ts", import.meta.url), "utf8"));
   class Node {
-    value = ""; private text = ""; style: Record<string, unknown> = { setProperty: (name: string, value: string) => { this.style[name] = value; }, getPropertyValue: (name: string) => this.style[name] ?? '' }; innerHTML = ''; clientWidth = 320; scrollTop = 0; scrollWidth = 0; clientHeight = 100; disabled = false; placeholder = ""; scrollHeight = 20; children: Node[] = []; dataset = {}; rects: { top: number; bottom: number }[] = [];
+    value = ""; private text = ""; style: Record<string, unknown> = { setProperty: (name: string, value: string) => { this.style[name] = value; }, getPropertyValue: (name: string) => this.style[name] ?? '' }; innerHTML = ''; clientWidth = 320; scrollTop = 0; scrollWidth = 0; clientHeight = 100; offsetHeight = 20; disabled = false; placeholder = ""; scrollHeight = 20; children: Node[] = []; dataset = {}; rects: { top: number; bottom: number }[] = [];
     get textContent() { return this.text; }
     set textContent(value: unknown) { this.text = String(value); this.children = []; }
     private classes = new Set<string>();
@@ -52,6 +52,7 @@ async function page() {
     insertBefore(child: Node, next: Node | null) { if (child === next) return; if (child instanceof Node) child.remove(); const index = next ? this.children.indexOf(next) : this.children.length; this.children.splice(index < 0 ? this.children.length : index, 0, child); if (child instanceof Node) child.parent = this; }
     get offsetTop() { return (this.parent?.children.indexOf(this) ?? 0) * 100; }
     get firstElementChild() { return this.children[0]; }
+    get nextElementSibling(): Node | undefined { const index = this.parent?.children.indexOf(this) ?? -1; return index >= 0 ? this.parent?.children[index + 1] : undefined; }
     get previousElementSibling(): Node | undefined { const index = this.parent?.children.indexOf(this) ?? -1; return index > 0 ? this.parent?.children[index - 1] : undefined; }
     get lastElementChild() { return this.children.at(-1); }
     get lastChild() { return this.children.at(-1); }
@@ -65,26 +66,6 @@ async function page() {
   }
   const elements = new Map<string, Node>();
   const observers: { callback: (entries: unknown[]) => void; targets: Set<Node>; fresh: Set<Node> }[] = [];
-  const intersections: { callback: (entries: unknown[]) => void; top: number; targets: Set<Node>; seen: Map<Node, boolean> }[] = [];
-  class IntersectionObserver {
-    private state: (typeof intersections)[number];
-    constructor(callback: (entries: unknown[]) => void, options: { rootMargin: string }) { const top = parseFloat(options.rootMargin); this.state = { callback, top: -top, targets: new Set(), seen: new Map() }; intersections.push(this.state); }
-    observe(target: Node) { this.state.targets.add(target); }
-    unobserve(target: Node) { this.state.targets.delete(target); this.state.seen.delete(target); }
-    disconnect() { this.state.targets.clear(); this.state.seen.clear(); const at = intersections.indexOf(this.state); if (at >= 0) intersections.splice(at, 1); }
-  }
-  const intersect = () => {
-    const dock = elements.get('dock'), dockTop = Number(dock && Reflect.get(dock, 'getBoundingClientRect')?.call(dock)?.top) || 0;
-    for (const watch of intersections) {
-      const bottom = dockTop, entries = [...watch.targets].flatMap(target => {
-        const rect = Reflect.get(target, 'getBoundingClientRect').call(target), isIntersecting = rect.top < bottom && rect.top >= watch.top;
-        if (watch.seen.get(target) === isIntersecting) return [];
-        watch.seen.set(target, isIntersecting);
-        return [{ target, isIntersecting, boundingClientRect: { ...rect, height: 100 } }];
-      });
-      if (entries.length) watch.callback(entries);
-    }
-  };
   class ResizeObserver { private state: (typeof observers)[number]; constructor(callback: (entries: unknown[]) => void) { this.state = { callback, targets: new Set(), fresh: new Set() }; observers.push(this.state); } observe(target: Node) { if (!this.state.targets.has(target)) { this.state.targets.add(target); this.state.fresh.add(target); } } unobserve(target: Node) { this.state.targets.delete(target); this.state.fresh.delete(target); } }
   const listeners = new Map<string, (event: unknown) => void>();
   const windowListeners = new Map<string, (event?: unknown) => void>();
@@ -116,10 +97,11 @@ async function page() {
       placeholder(text: string) { content.placeholder = text; },
     };
   };
-  const context = { ResizeObserver, IntersectionObserver, matchMedia: () => ({ matches: false }), Date: class extends Date { constructor(value: string | number = 1700000012000) { super(value); } static now() { return 1700000012000; } }, getComputedStyle: (node?: { tagName?: string }) => ({ display: 'block', marginBottom: node?.tagName === 'P' ? '10px' : '0px' }), composer, bashCommand, ATTACHMENT_LIMITS, isAttachment, pathArg, jobEndText, AbortController, AbortSignal, CustomEvent: class { type: string; detail?: unknown; constructor(type: string, options?: { detail?: unknown }) { this.type = type; this.detail = options?.detail; } }, Node, Element: Node, HTMLElement: class { static [Symbol.hasInstance](value: unknown) { return value instanceof Node && value.tagName !== '#text'; } }, HTMLButtonElement: Node, HTMLImageElement: Node, markdown, markdownLine, document, window: { ko: {}, addEventListener(type: string, handler: (event?: unknown) => void) { windowListeners.set(type, handler); } }, innerWidth: 980, innerHeight: 560, Event: class { type: string; constructor(type: string) { this.type = type; } }, console, setInterval() {}, clearInterval() {}, setTimeout, clearTimeout, requestAnimationFrame() {}, cancelAnimationFrame() {}, performance: { now: () => 0 }, fetch: async () => ({ ok: true, json: async () => ({}) }) };
+  const context = { ResizeObserver, matchMedia: () => ({ matches: false }), Date: class extends Date { constructor(value: string | number = 1700000012000) { super(value); } static now() { return 1700000012000; } }, getComputedStyle: (node?: { tagName?: string }) => ({ display: 'block', lineHeight: '20px', marginBottom: node?.tagName === 'P' ? '10px' : '0px' }), composer, bashCommand, ATTACHMENT_LIMITS, isAttachment, pathArg, jobEndText, AbortController, AbortSignal, CustomEvent: class { type: string; detail?: unknown; constructor(type: string, options?: { detail?: unknown }) { this.type = type; this.detail = options?.detail; } }, Node, Element: Node, HTMLElement: class { static [Symbol.hasInstance](value: unknown) { return value instanceof Node && value.tagName !== '#text'; } }, HTMLButtonElement: Node, HTMLImageElement: Node, markdown, markdownLine, document, window: { ko: {}, addEventListener(type: string, handler: (event?: unknown) => void) { windowListeners.set(type, handler); } }, innerWidth: 980, innerHeight: 560, Event: class { type: string; constructor(type: string) { this.type = type; } }, console, setInterval() {}, clearInterval() {}, setTimeout, clearTimeout, requestAnimationFrame() {}, cancelAnimationFrame() {}, performance: { now: () => 0 }, fetch: async () => ({ ok: true, json: async () => ({}) }) };
   const answersSource = stripTypeScriptTypes(await readFile(new URL('page/answers.ts', import.meta.url), 'utf8')).replace(/^export /gm, '');
   const annotationsSource = stripTypeScriptTypes(await readFile(new URL('page/annotations.ts', import.meta.url), 'utf8')).replace(/^import .*;\n/gm, '').replace(/^export /gm, '');
   Object.assign(context, runInNewContext(answersSource + '\n' + annotationsSource + '\n({annotations,update})', context));
+  document.getElementById('scroll').clientHeight = 100000;
   Object.assign(document, { createTreeWalker: () => ({ nextNode: () => false }), createRange: () => { let target: Node | undefined; return { selectNodeContents(node: Node) { target = node; }, getClientRects: () => target?.rects ?? [] }; } });
   Object.assign(context, { NodeFilter: { SHOW_TEXT: 4 } });
   const attachSource = stripTypeScriptTypes(await readFile(new URL('page/attach.ts', import.meta.url), 'utf8')).replace(/^import .*;\n/gm, '').replace(/^export /gm, '');
@@ -131,10 +113,12 @@ async function page() {
   Object.assign(context, runInNewContext(jobSource + '\n({createJobPage})', { ...context, atob, TextDecoder, Uint8Array }));
   const revealSource = stripTypeScriptTypes(readFileSync(new URL('page/reveal.ts', import.meta.url), 'utf8')).replace(/^import .*;\n/gm, '').replace(/^export /gm, '');
   Object.assign(context, runInNewContext(revealSource + '\n({revealHeight,unitsOf})', context));
+  const extentSource = stripTypeScriptTypes(readFileSync(new URL('page/extent.ts', import.meta.url), 'utf8')).replace(/^import .*;\n/gm, '').replace(/^export /gm, '');
+  Object.assign(context, runInNewContext(extentSource + '\n({estimateExtent,windowOf})', context));
   const workingSource = stripTypeScriptTypes(readFileSync(new URL('page/working.ts', import.meta.url), 'utf8')).replace(/^export /gm, '');
   Object.assign(context, runInNewContext(workingSource + '\n({dots})', context));
   const body = source.replace(/^import .*;\n/gm, "").replace(/^setInterval\([\s\S]*$/m, "") + "\nfunction put(item) { accept(item); renderDirty(); return views.get(item.seq)?.view; }";
-  return { observers, intersect, repl: (): ((code: string) => unknown) => runInNewContext("(() => {\n" + body + "\nreturn code => eval(code);\n})()", context), context, elements, listeners, windowListeners, completionResets: () => completionResets, handlers: () => handlers, prompt: () => prompt, text: () => text(), run: (code: string) => runInNewContext("{\n" + body + "\n" + code + "\n}", context) };
+  return { observers, repl: (): ((code: string) => unknown) => runInNewContext("(() => {\n" + body + "\nreturn code => eval(code);\n})()", context), context, elements, listeners, windowListeners, completionResets: () => completionResets, handlers: () => handlers, prompt: () => prompt, text: () => text(), run: (code: string) => runInNewContext("{\n" + body + "\n" + code + "\n}", context) };
 }
 
 test('Tab outside the composer returns focus without changing dialog keys', async () => {
@@ -1137,7 +1121,6 @@ async function revealPage(clientHeight = 100) {
         changed = unseen().filter(target => target.depth > shallowest);
       }
     }
-    app.intersect();
   };
   const patch = (revision: number, suffix: string, final = false) => evaluate(`apply({type:'patch',seq:0,baseRevision:${revision - 1},revision:${revision},final:${final},stop:'',error:'',blocks:[{index:0,suffix:${JSON.stringify(suffix)}}]})`);
   const put = (text: string) => evaluate(`put({seq:0,revision:0,kind:'assistant',final:false,blocks:[{type:'text',text:${JSON.stringify(text)}}]})`);
@@ -1646,7 +1629,7 @@ async function latestPage() {
   const text = (seq: number) => ({ seq, revision: 0, kind: 'assistant', final: true, blocks: [{ type: 'text', text: 'reply ' + seq }] });
   const own = (seq: number) => ({ seq, revision: 0, at: 1, kind: 'user', text: 'mine', images: [], attachments: [] });
   const add = (item: object) => { evaluate(`apply({type:'item',item:${JSON.stringify(item)}})`); fixture.step(0); };
-  const scroll = (top: number, height = 1000) => { evaluate(`Object.assign(element('scroll'),{scrollHeight:${height},clientHeight:100,scrollTop:${top === 900 ? 899 : 900}});element('scroll').onscroll();element('scroll').scrollTop=${top};element('scroll').onscroll()`); app.intersect(); };
+  const scroll = (top: number, height = 1000) => { evaluate(`Object.assign(element('scroll'),{scrollHeight:${height},clientHeight:100,scrollTop:${top === 900 ? 899 : 900}});element('scroll').onscroll();element('scroll').scrollTop=${top};element('scroll').onscroll()`); };
   const dividers = () => String(evaluate("element('items').children.map(node => node.className === 'newmsgs' ? 'divider' : node.dataset.seq).join()"));
   const latest = () => String(evaluate("[element('latest').textContent, element('latest').classList.contains('show')].join()"));
   const focus = (value: boolean) => { doc.hasFocus = () => value; app.windowListeners.get(value ? 'focus' : 'blur')?.(); };
@@ -1666,8 +1649,7 @@ test('a reader who scrolled up gets one divider above the first new item and a c
   assert.equal(page.latest(), '↓ 3 new,true');
   page.add({ ...page.text(3), revision: 1 });
   assert.equal(page.latest(), '↓ 3 new,true');
-  page.evaluate("element('scroll').scrollTop=400;element('scroll').onscroll()");
-  page.app.intersect();
+  page.evaluate("element('scroll').scrollTop=140;element('scroll').onscroll()");
   assert.equal(page.latest(), '↓ 1 new,true');
 });
 
@@ -1783,18 +1765,6 @@ test('an item that owns no shown step is not new, and the item that takes over t
   assert.equal(page.latest(), '↓ 1 new,true');
 });
 
-test('a text block and a user message estimate their height from their source lines, a patch updates it and nothing else gets one', async () => {
-  const page = await latestPage();
-  const estimate = (selector: string) => page.evaluate(`(${selector}).style['--estimate']`);
-  page.add({ ...page.text(0), final: false, blocks: [{ type: 'text', text: 'one\ntwo\nthree' }, { type: 'tool', id: 't', name: 'read', args: { text: '{}' }, state: { type: 'done', error: false, result: { text: '', images: [] } } }] });
-  assert.equal(estimate("views.get(0).view.children[0]"), '3lh');
-  assert.equal(estimate("views.get(0).view.children[1]"), undefined);
-  page.add({ ...page.text(0), final: false, revision: 1, blocks: [{ type: 'text', text: 'one\ntwo\nthree\nfour\nfive' }] });
-  assert.equal(estimate("views.get(0).view.children[0]"), '5lh');
-  page.add({ ...page.own(1), text: 'a\nb' });
-  assert.equal(estimate("views.get(1).view"), '2lh');
-});
-
 test('the capsule reads Latest while nothing is new and hides at the bottom', async () => {
   const page = await latestPage();
   page.add(page.text(0));
@@ -1826,15 +1796,15 @@ test('while the pane is unfocused nothing scrolls, also at the bottom, and the d
   page.add(page.text(1));
   page.step(16); page.step(16);
   assert.equal(page.evaluate("element('scroll').scrollTop"), 900);
-  assert.equal(page.dividers(), '0,divider,1');
+  assert.equal(page.dividers(), 'divider,1');
   page.evaluate("element('scroll').scrollHeight=1100");
   page.focus(true);
-  assert.equal(page.dividers(), '0,divider,1');
+  assert.equal(page.dividers(), 'divider,1');
   page.add(page.text(2));
   page.step(16); page.step(16);
   assert.equal(page.evaluate("element('scroll').scrollTop"), 900);
   page.evaluate("element('scroll').scrollTop=1000;element('scroll').onscroll()");
-  assert.equal(page.dividers(), '0,1,2');
+  assert.equal(page.dividers(), '2');
 });
 
 test('a view that is focused and at the bottom follows and gets no divider', async () => {
@@ -2001,22 +1971,40 @@ test('an unfocused view load does not move the transcript', async () => {
   assert.equal(page.evaluate("element('scroll').scrollTop"), 900);
 });
 
-async function flowPage() {
+async function flowPage(margin = 0) {
   const page = await latestPage(), { app, evaluate, layout } = page, doc = app.context.document;
-  const pad = { value: 0 }, extra = new Map<number, number>();
+  const pad = { value: 0 }, extra = new Map<number, number>(), origin = { value: 0 };
   const seqs = (): number[] => JSON.parse(String(evaluate("JSON.stringify([...views.keys()].sort((a,b)=>a-b))")));
   const starts = new Map<unknown, number>(), now = () => Number(app.context.performance.now());
   const grown = (node: { className: string }) => { if (node.className.includes('hold')) return 0; if (!node.className.includes('grow')) return 1; if (!starts.has(node)) starts.set(node, now()); return Math.min(1, (now() - Number(starts.get(node))) / 220); };
-  type Box = { tagName: string; className: string; children: Box[]; parent?: Box; style: Record<string, string> };
-  const count = (node: Box): number => (node.tagName === 'P' || node.tagName === 'PRE' ? 100 * grown(node) : 0) + node.children.reduce((total, child) => total + count(child), 0);
+  type Box = { tagName: string; className: string; children: Box[]; parent?: Box; style: Record<string, string>; dataset: Record<string, string> };
+  const count = (node: Box): number => (node.tagName === 'P' || node.tagName === 'PRE' ? 100 * grown(node) : 0) + (node.children ?? []).reduce((total, child) => total + count(child), 0);
   const isBox = (value: unknown): value is Box => typeof value === 'object' && value !== null && 'children' in value;
   const size = (seq: number) => { const view = evaluate(`views.get(${seq}).view`); assert.ok(isBox(view)); return count(view) + (extra.get(seq) ?? 0); };
-  const above = (seq: number) => seqs().filter(other => other < seq).reduce((total, other) => total + size(other), 0);
-  layout.height = () => seqs().reduce((total, seq) => total + size(seq), 0) + pad.value + (evaluate("!!element('items').lastChild?.className.includes('working')") ? 38 : 0);
+  const list = doc.getElementById('items');
+  assert.ok(isBox(list));
+  Object.defineProperty(list, 'offsetTop', { get: () => origin.value });
+  const px = (value: unknown) => parseFloat(String(value ?? '')) || 0;
+  const flow = (until?: number | Box) => {
+    let y = origin.value + px(list.style.paddingTop);
+    for (const child of list.children) {
+      if (child === until) return y;
+      if (child.dataset.seq !== undefined) { if (Number(child.dataset.seq) === until) return y; y += size(Number(child.dataset.seq)) + (child.hidden ? 0 : margin); }
+      else if (child.className.includes('gap')) y += px(child.style.height);
+      else if (child.className.includes('working')) y += 38;
+      else if (child.className.includes('newmsgs')) y += margin ? 16 + margin : 48;
+    }
+    return until === undefined ? y + px(list.style.paddingBottom) + pad.value : y;
+  };
+  const above = (seq: number) => flow(seq);
+  layout.height = flow;
+  const computed = app.context.getComputedStyle;
+  app.context.getComputedStyle = (node?: { tagName?: string; parent?: { dataset?: Record<string, string> } }) => node?.parent?.dataset?.seq !== undefined ? { ...computed(), marginBottom: margin + 'px' } : computed(node);
   const create = doc.createElement;
   doc.createElement = (tag: string) => {
     const node = create(tag), own = node.getBoundingClientRect.bind(node), add = node.classList.add;
     node.classList.add = (name: string) => { add(name); if (name === 'grow') { extra.set(0, (extra.get(0) ?? 0) + 120); app.context.setTimeout(() => extra.set(0, (extra.get(0) ?? 0) - 120), 220); } };
+    Object.defineProperties(node, { offsetTop: { get: () => { const seq = Reflect.get(Reflect.get(node, 'dataset') ?? {}, 'seq'); return seq !== undefined ? above(Number(seq)) : node.className.includes('newmsgs') && isBox(node) ? flow(node) : 0; } }, offsetHeight: { get: () => { const seq = Reflect.get(Reflect.get(node, 'dataset') ?? {}, 'seq'); return seq === undefined ? 0 : size(Number(seq)); } } });
     return Object.assign(node, { getBoundingClientRect: () => {
       const seq = Reflect.get(Reflect.get(node, 'dataset') ?? {}, 'seq');
       if (seq === undefined) return own();
@@ -2037,7 +2025,7 @@ async function flowPage() {
   const settled = () => new Promise<void>(resolve => setImmediate(resolve));
   const trace = (frames: number) => { const tops: number[] = [], gaps: number[] = []; for (let frame = 0; frame < frames; frame++) { page.step(16); tops.push(top()); gaps.push(bottom() - top()); } return { tops, gaps }; };
   const wheel = (deltaY: number) => evaluate(`element('scroll').handlers.get('wheel')?.({deltaY:${deltaY},deltaX:0})`);
-  return { ...page, pad, extra, reveal, suffix, top, bottom, settle, reader, wheel, offset, open, gate, settled, trace };
+  return { ...page, pad, extra, origin, seqs, reveal, suffix, top, bottom, settle, reader, wheel, offset, open, gate, settled, trace };
 }
 
 test('a visible reply that shrinks and regrows under a following pane keeps following', async () => {
@@ -2091,7 +2079,6 @@ test('an older page keeps the reader where they are now, also after they moved w
   release();
   await page.settled();
   page.step(16);
-  assert.equal(page.top(), 800);
   assert.equal(page.offset(10), 500 - 800);
 });
 
@@ -2118,6 +2105,7 @@ test('a reset that is shorter than the pane keeps a restoring view from followin
   page.go('r'); page.open([0, 1, 2, 3, 4, 5, 6, 7, 8, 9].map(page.text));
   page.settle();
   page.reader(550);
+  page.settle(3);
   const anchor = page.offset(5);
   page.go('a'); page.open([page.text(10)]);
   const release = page.gate([5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19].map(page.text));
@@ -2325,6 +2313,7 @@ test('a reader keeps their anchor through a shrink that clamps the position and 
   page.open([0, 1, 2, 3, 4, 5].map(page.text));
   page.settle(3);
   page.reader(250);
+  page.settle(3);
   const anchor = page.offset(2);
   page.extra.set(5, -300);
   page.step(16);
@@ -2359,7 +2348,7 @@ test('the pane that comes back from the background keeps a reader where it was, 
   page.settle(3);
   page.focus(true);
   page.settle(3);
-  assert.deepEqual([page.dividers(), page.evaluate('scrolling.kind'), page.latest().split(',')[1]], ['0,divider,1', 'reader', 'true']);
+  assert.deepEqual([page.dividers(), page.evaluate('scrolling.kind'), page.latest().split(',')[1]], ['divider,1', 'reader', 'true']);
   const before = page.top();
   page.deliver({ type: 'item', item: page.text(2) });
   page.settle(3);
@@ -2391,7 +2380,7 @@ test('a view that was left scrolled up opens at the same place, and a view that 
   page.go('r'); page.open([0, 1, 2, 3, 4]);
   page.step(16);
   assert.equal(page.state(), '250,false');
-  assert.equal(page.dividers(), '0,1,2,3,4');
+  assert.equal(page.dividers(), '1,2,3,4');
   page.go('a'); page.open([10]);
   page.step(16);
   assert.equal(page.state(), '900,true');
@@ -2404,7 +2393,7 @@ test('items that arrived while away get the divider and the count when the view 
   page.go('a'); page.open([10]);
   page.go('r'); page.open([0, 1, 2, 3, 4, 5, 6]);
   page.step(16);
-  assert.equal(page.dividers(), '0,1,2,3,4,divider,5,6');
+  assert.equal(page.dividers(), '1,2,3,4,divider,5');
   assert.equal(page.state(), '250,false');
   assert.match(page.latest(), /^↓ \d+ new,true$/);
 });
@@ -2659,6 +2648,7 @@ test('a view left after a clamp keeps the reader anchor from before the clamp', 
   page.go('r'); page.open(items);
   page.settle(3);
   page.reader(250);
+  page.settle(3);
   const anchor = page.offset(2);
   page.extra.set(5, -300);
   page.step(16);
@@ -2997,10 +2987,8 @@ test('a fresh row that jumps from below the view to above it leaves the count', 
   page.add(page.text(0)); page.add(page.own(1));
   page.scroll(0);
   page.add(page.text(2)); page.add(page.text(3));
-  page.app.intersect();
   assert.equal(page.latest(), '↓ 2 new,true');
   page.evaluate("element('scroll').scrollTop=900;element('scroll').onscroll()");
-  page.app.intersect();
   assert.equal(page.latest().split(',')[0], '↓ Latest');
 });
 
@@ -3097,4 +3085,238 @@ test('a view left while following reopens at the end, whatever the other view di
   assert.equal(f.evaluate('scrolling.kind'), 'following');
   assert.equal(f.evaluate("element('scroll').scrollTop"), 1100);
   assert.equal(f.latest().endsWith('false'), true);
+});
+
+async function windowPage(margin = 0) {
+  const page = await flowPage(margin);
+  page.evaluate("element('items').hidden=false");
+  const rows = (from: number, to: number) => Array.from({ length: to - from }, (_, index) => (from + index) % 2 ? page.text(from + index) : page.own(from + index));
+  const px = (value: unknown) => parseFloat(String(value ?? '')) || 0;
+  const padding = () => px(page.evaluate("element('items').style.paddingTop"));
+  const extents = (): [number, { kind: string; width?: number; px: number }][] => JSON.parse(String(page.evaluate("JSON.stringify([...extents])")));
+  const guess = (seq: number) => seq % 2 ? 20 : 50;
+  return { ...page, rows, padding, extents, guess };
+}
+
+test('a reset mounts only the end window and pads the absent rows by their extents', async () => {
+  const page = await windowPage(), shown = new Set<number>();
+  page.evaluate(`apply({type:'reset',epoch:'a',more:false,items:${JSON.stringify(page.rows(0, 300))}})`);
+  for (let frame = 0; frame < 8; frame++) { page.step(16); for (const seq of page.seqs()) shown.add(seq); }
+  const mounted = page.seqs(), first = mounted[0];
+  assert.ok(mounted.length > 0 && mounted.length < 40, 'mounted ' + mounted.length);
+  assert.deepEqual(mounted, Array.from({ length: 300 - first }, (_, index) => first + index), 'the window is one range that ends at the end');
+  let absent = 0;
+  for (let seq = 0; seq < first; seq++) absent += shown.has(seq) ? 100 : page.guess(seq);
+  assert.equal(page.padding(), absent, 'a row that was mounted keeps its measured extent, the others their estimate');
+  assert.ok(shown.size < 80, 'the window never mounted the history: ' + shown.size);
+  assert.equal(page.top(), page.bottom());
+  assert.equal(page.evaluate('scrolling.kind'), 'following');
+});
+
+test('a scrollbar jump mounts the reader and preserves its offset', async () => {
+  const page = await windowPage();
+  page.open(page.rows(0, 300));
+  page.settle(8);
+  page.reader(0);
+  page.settle(8);
+  assert.deepEqual([page.seqs()[0], page.seqs().includes(299), page.seqs().length < 40], [0, false, true], 'the first rows are mounted and the end rows are not');
+  page.reader(4000);
+  page.settle(8);
+  const mounted = page.seqs(), anchor = Number(page.evaluate('scrolling.anchor.item.seq'));
+  assert.ok(mounted.length < 40 && mounted.includes(anchor) && !mounted.includes(0) && !mounted.includes(299));
+  const before = page.offset(anchor);
+  page.extra.set(mounted[0], 60);
+  page.settle(4);
+  assert.equal(page.offset(anchor), before);
+  assert.equal(page.padding() > 0, true);
+});
+
+test('a reader window keeps the live tail connected', async () => {
+  const page = await windowPage();
+  page.evaluate("state={...state,working:true,since:1700000000000}");
+  page.open(page.rows(0, 300));
+  page.deliver(page.reveal(300, 'Intro.\n\nwaiting tail'));
+  page.settle(8);
+  const memo = page.evaluate("texts.get('300:0')"), row = page.evaluate('views.get(300).view'), dots = page.evaluate('working.primary');
+  page.reader(0);
+  page.settle(8);
+  assert.deepEqual([page.seqs()[0], page.seqs().at(-1), page.seqs().length < 60], [0, 300, true]);
+  for (let revision = 1; revision < 6; revision++) {
+    page.deliver(page.suffix(300, revision, ' more ' + revision));
+    page.settle(4);
+    assert.equal(page.evaluate("texts.get('300:0')"), memo);
+    assert.equal(page.evaluate('views.get(300).view'), row);
+    assert.equal(page.evaluate('working.primary'), dots);
+    assert.deepEqual([page.evaluate("element('items').contains(texts.get('300:0').reveal.tail.view)"), page.evaluate("element('items').contains(working.primary)"), page.evaluate("element('items').contains(views.get(300).view)")], [true, true, true]);
+  }
+  assert.ok(page.seqs().length < 60 && page.seqs()[0] === 0);
+});
+
+test('new items below the dock are counted without DOM rows', async () => {
+  const page = await windowPage();
+  page.open(page.rows(0, 300));
+  page.settle(8);
+  page.reader(0);
+  page.settle(8);
+  for (let seq = 301; seq <= 305; seq += 2) page.deliver({ type: 'item', item: page.text(seq) });
+  page.deliver({ type: 'item', item: page.text(300) });
+  page.settle(4);
+  assert.equal(page.latest(), '↓ 4 new,true');
+  assert.deepEqual([...page.seqs()].filter(seq => seq >= 300), [], 'no row for an item that nobody can see');
+  page.deliver(page.suffix(305, 1, ' more'));
+  page.settle(4);
+  assert.equal(page.latest(), '↓ 4 new,true');
+  const toward = (top: number) => { page.reader(top); page.settle(8); };
+  toward(page.bottom() - 60);
+  const fresh: number[] = JSON.parse(String(page.evaluate("JSON.stringify([...fresh])"))), below = fresh.filter(seq => page.seqs().includes(seq) && page.offset(seq) >= 4).length;
+  assert.equal(page.latest().split(',')[0], below ? '↓ ' + below + ' new' : '↓ Latest');
+  assert.ok(below < 4, 'scrolling toward the new items counted some of them as seen');
+});
+
+test('a width change replaces mounted measurements and invalidates absent ones', async () => {
+  const page = await windowPage();
+  page.open(page.rows(0, 300));
+  page.settle(8);
+  const mounted = page.seqs(), measured = () => page.extents().filter(([, extent]) => extent.kind === 'measured');
+  assert.ok(measured().length >= mounted.length && measured().every(([, extent]) => extent.width === 320), 'a row that scrolled out keeps its measurement');
+  page.evaluate("element('items').clientWidth=200;resized([{target:element('items'),borderBoxSize:[{blockSize:1}]}])");
+  assert.deepEqual(measured().map(([seq]) => seq), mounted, 'only the mounted rows are measured again');
+  assert.ok(measured().every(([, extent]) => extent.width === 200), 'every measurement is at the new width');
+  assert.deepEqual(page.extents().find(([seq]) => seq === 285)?.[1], { kind: 'estimated', px: page.guess(285) });
+});
+
+test('a run or job group is mounted whole or not at all, and a folded fence stays open through a remount', async () => {
+  const page = await windowPage();
+  const think = (seq: number) => ({ seq, revision: 0, kind: 'assistant', final: true, blocks: [{ type: 'thinking', text: 'hmm', redacted: false }] });
+  const fence = { seq: 1, revision: 0, kind: 'assistant', final: true, blocks: [{ type: 'text', text: '```\n' + Array.from({ length: 20 }, (_, line) => 'line ' + line).join('\n') + '\n```' }] };
+  const job = { id: 'j', name: 'j', service: false, log: '/l', command: 'c', startedAt: 0, place: { type: 'mac' } };
+  const stream = (seq: number) => ({ seq, revision: 0, at: 1, final: true, kind: 'job', job, event: { type: 'stream', batch: { text: 'out ' + seq, cut: 0 }, omitted: 0, cut: false } });
+  const jobs = [stream(200), stream(201), stream(202), stream(203), { seq: 204, revision: 0, at: 1, final: true, kind: 'job', job, event: { type: 'ended', end: { type: 'exit', code: 0 }, tail: { text: '', cut: 0 } } }];
+  const items = [...page.rows(0, 1), fence, ...page.rows(2, 150), ...[150, 151, 152, 153, 154, 155].map(think), ...page.rows(156, 200), ...jobs, ...page.rows(205, 300)];
+  page.open(items);
+  page.settle(8);
+  const group = [150, 151, 152, 153, 154, 155];
+  for (let top = 0; top <= page.bottom(); top += 37) {
+    page.reader(top);
+    page.settle(6);
+    const mounted = group.filter(seq => page.seqs().includes(seq)).length;
+    assert.ok(mounted === 0 || mounted === group.length, 'the run is split at ' + top);
+    const members = [200, 201, 202, 203, 204].filter(seq => page.seqs().includes(seq)).length;
+    assert.ok(members === 0 || members === 5, 'the job group is split at ' + top);
+    if (members) assert.deepEqual([page.evaluate('views.get(200).view.children.length'), page.evaluate('views.get(201).view.hidden')], [1, true], 'the job card is in the first row, followers are hidden');
+  }
+  page.reader(0);
+  page.settle(8);
+  assert.ok(page.seqs().includes(1));
+  const bars = page.bars.length;
+  assert.ok(bars > 0, 'the long fence is folded');
+  page.bars.at(-1)?.onclick?.();
+  page.reader(page.bottom());
+  page.settle(8);
+  assert.ok(!page.seqs().includes(1));
+  page.reader(0);
+  page.settle(8);
+  assert.ok(page.seqs().includes(1));
+  assert.equal(page.bars.length, bars, 'a remounted fence that was opened gets no new fold bar');
+});
+
+test('returning to an absent anchor loads older pages until it is loaded, mounts it and restores the offset', async () => {
+  const page = await windowPage();
+  const requests: number[] = [];
+  Object.assign(page.app.context, { fetch: async (path: string) => {
+    const before = Number(path.match(/before=(\d+)/)?.[1]), from = Math.max(0, before - 60);
+    requests.push(before);
+    return { ok: true, json: async () => ({ type: 'reset', epoch: 'a', more: from > 0, items: page.rows(from, before) }) };
+  } });
+  page.go('r'); page.open(page.rows(100, 300), true);
+  page.settle(8);
+  page.reader(2000);
+  page.settle(8);
+  const anchor = Number(page.evaluate('scrolling.anchor.item.seq')), offset = page.offset(anchor);
+  assert.ok(anchor > 100 && anchor < 280);
+  page.go('a'); page.open([page.text(1000)]);
+  page.go('r'); page.open(page.rows(280, 300), true);
+  page.deliver({ type: 'item', item: page.text(301) });
+  page.deliver({ type: 'item', item: page.text(303) });
+  for (let turn = 0; turn < 6; turn++) { await page.settled(); page.settle(4); }
+  assert.deepEqual(requests, [280, 220, 160].slice(0, requests.length));
+  assert.ok(requests.length >= 1 && (requests.at(-1) ?? Infinity) <= anchor + 60, 'the requests stop once the anchor is loaded: ' + requests);
+  assert.equal(page.evaluate('scrolling.kind'), 'reader');
+  assert.ok(page.seqs().includes(anchor) && page.seqs().length < 40);
+  assert.equal(page.offset(anchor), offset);
+  assert.equal(page.latest(), '↓ 2 new,true');
+});
+
+test('a history of text-only assistant items mounts a window at the end and after a jump', async () => {
+  const page = await windowPage();
+  page.open(Array.from({ length: 400 }, (_, seq) => page.text(seq)));
+  page.settle(8);
+  assert.ok(page.seqs().length < 60, 'the end window holds ' + page.seqs().length);
+  page.reader(page.bottom() / 2);
+  page.settle(8);
+  assert.ok(page.seqs().length < 60 && page.seqs().length > 0, 'the jumped window holds ' + page.seqs().length);
+});
+
+test('a patch of one item updates its table entry in place', async () => {
+  const page = await windowPage();
+  page.open(page.rows(0, 300));
+  page.deliver(page.reveal(300, 'Intro.'));
+  page.settle(8);
+  const before = page.evaluate('table'), total = Number(page.evaluate('table.total'));
+  page.deliver(page.suffix(300, 1, '\n\nmore\n\nlines\n\nhere'));
+  page.settle(4);
+  assert.equal(page.evaluate('table'), before, 'the table is not rebuilt');
+  assert.deepEqual([page.evaluate('table.total') !== total, page.evaluate('table.total === table.starts[order.length]'), page.evaluate('table.starts.length')], [true, true, 302]);
+});
+
+test('a reconcile across an unmounted text item keeps the two runs apart', async () => {
+  const page = await windowPage();
+  const step = (seq: number, blocks: object[]) => ({ seq, revision: 0, kind: 'assistant', final: true, blocks });
+  const tool = { type: 'tool', id: 't', name: 'read', args: { text: '{}' }, state: { type: 'done', error: false, result: { text: '', images: [] } } };
+  page.open([step(0, [tool]), step(1, [{ type: 'text', text: 'between' }]), step(2, [{ ...tool, id: 'u' }])]);
+  page.settle(4);
+  page.evaluate('unmountRow(1); reconcileRuns(2)');
+  assert.equal(page.evaluate("runMarks.get(views.get(0).slots.get('0:0').view.firstElementChild).steps.length"), 1, 'the first run keeps its own step');
+  assert.equal(page.evaluate("views.get(2).slots.get('2:0').view.children.length"), 1, 'the last step owns its run');
+});
+
+test('a job view that is idle schedules no frame', async () => {
+  const page = await windowPage();
+  page.open(page.rows(0, 20));
+  page.settle(4);
+  page.evaluate("state={...state,view:{...state.view,type:'job'}};windowDirty=true;schedule()");
+  page.step(16); page.step(16);
+  assert.deepEqual([page.queued.size, page.timers.size], [0, 0]);
+});
+
+test('the table total equals the layout under collapsed margins, with a divider and a reader window', async () => {
+  const page = await windowPage(14);
+  page.origin.value = 30;
+  page.open(page.rows(0, 300));
+  page.settle(8);
+  const total = () => [page.evaluate("element('scroll').scrollHeight"), page.evaluate('table.total + geometry().origin')];
+  page.reader(3000);
+  page.settle(8);
+  assert.ok(page.padding() > 0 && page.seqs().length < 40);
+  const [dom, model] = total();
+  assert.equal(model, dom, 'the window at a reader position');
+  for (let seq = 300; seq < 303; seq++) page.deliver({ type: 'item', item: page.text(seq) });
+  page.settle(8);
+  page.reader(page.bottom() - 150);
+  page.settle(8);
+  assert.ok(page.evaluate("!!divider"));
+  const [after, expected] = total();
+  assert.equal(expected, after, 'with the divider mounted');
+});
+
+test('an appended item extends the table and its last group in place', async () => {
+  const page = await windowPage();
+  const tool = { type: 'tool', id: 't', name: 'read', args: { text: '{}' }, state: { type: 'done', error: false, result: { text: '', images: [] } } };
+  page.open([{ seq: 0, revision: 0, kind: 'assistant', final: true, blocks: [tool] }]);
+  page.settle(4);
+  const before = page.evaluate('table');
+  for (const seq of [1, 2]) page.deliver({ type: 'item', item: { seq, revision: 0, kind: 'assistant', final: true, blocks: [{ ...tool, id: 'u' + seq }] } });
+  page.settle(4);
+  assert.equal(page.evaluate('table'), before, 'an append does not rebuild');
+  assert.deepEqual(page.evaluate('JSON.stringify([table.groups, table.starts.length, table.index.size])'), JSON.stringify([[{ kind: 'run', from: 0, to: 2 }], 4, 3]));
 });

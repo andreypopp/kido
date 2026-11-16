@@ -40,7 +40,8 @@ function streamTable(frame: Pass, probe: Pass | undefined, budgets: Parameters<t
   const engine = (pass: Pass | undefined, count: number | undefined) => pass?.summary.engine && engineDeltas(pass.summary.engine, count ?? 0);
   const both = (name: string, text: (pass: Pass, sum: ReturnType<typeof totals>) => string): [string, string][] => [[name + ' [frame pass]', text(frame, timed)], [name + ' [probe pass]', probe && counted ? text(probe, counted) : '—']];
   const layouts = (pass: Pass, sum: ReturnType<typeof totals>) => { const delta = engine(pass, sum.frame.count); return delta ? `${delta.layouts}, ${delta.layoutsPerSecond.toFixed(1)}/s, ${delta.layoutsPerFrame?.toFixed(2) ?? '—'}/frame` : '—'; };
-  const verdicts = evaluate(budgets, { 'frame p99 ms': timed.frame.p99, 'frames over 50 ms': timed.frame.over50, 'stray reads per frame': counted?.frame.count ? counted.strays.frame / counted.frame.count : undefined, 'dots detachments while text streams': counted?.dots.text, 'key→frame p99 ms': timed.key.p99, 'history load max frame ms': loaded.max, 'history load frames over 50 ms': loaded.count ? loaded.over50 : undefined });
+  const nodes = engine(frame, timed.frame.count)?.nodes ?? timed.nodes.end;
+  const verdicts = evaluate(budgets, { 'flush→frame p99 ms': legs.total.p99, 'request→rAF max ms': legs.requestToRaf.max, 'request→rAF samples over 100 ms': legs.rafOver100, 'DOM nodes at end': nodes, 'frame p99 ms': timed.frame.p99, 'frames over 50 ms': timed.frame.over50, 'stray reads per frame': counted?.frame.count ? counted.strays.frame / counted.frame.count : undefined, 'dots detachments while text streams': counted?.dots.text, 'key→frame p99 ms': timed.key.p99, 'history load max frame ms': loaded.max, 'history load frames over 50 ms': loaded.count ? loaded.over50 : undefined });
   const table = Object.fromEntries([
     ...both('frames (render task)', (_, sum) => String(sum.frame.count)),
     ...both('frame ms p50 / p95 / p99', (_, sum) => spread(sum.frame)),
@@ -134,7 +135,7 @@ export async function report(directory: string, budgets = streamBudgets) {
         assert.ok(summary.heap !== undefined && Number.isFinite(summary.heap), 'Invalid Chrome heap');
         memory = summary.heap / 1048576;
       }
-      const budget = workload.memory.type === 'reported' ? workload.memory : summary.target === 'page' ? { type: 'limit' as const, name: 'retained-js-heap', mib: streaming.includes(id) ? STREAM_MEMORY_MIB.page : 32 } : !summary.visible ? { type: 'limit' as const, name: 'webcontent-phys-footprint-increase', mib: streaming.includes(id) ? STREAM_MEMORY_MIB.kido : 180 } : { type: 'unmeasured' as const };
+      const budget = workload.memory.type === 'reported' ? workload.memory : summary.target === 'page' ? { type: 'limit' as const, name: 'retained-js-heap', mib: streaming.includes(id) ? STREAM_MEMORY_MIB.page : 32 } : streaming.includes(id) ? { type: 'relative' as const } : !summary.visible ? { type: 'limit' as const, name: 'webcontent-phys-footprint-increase', mib: 180 } : { type: 'unmeasured' as const };
       const error = budget.type === 'limit' && memory > budget.mib ? `${budget.name}: ${memory.toFixed(1)} MiB/page exceeds ${budget.mib} MiB/page` : undefined;
       let stream: { table: Record<string, string>; failures: string[] } | undefined;
       if (streaming.includes(id)) {
@@ -144,8 +145,13 @@ export async function report(directory: string, budgets = streamBudgets) {
         stream = streamTable(await pass(summary), probeSummary && await pass(probeSummary), budgets, samples.filter(sample => sample.t >= (summary.since ?? 0) && sample.t <= (summary.until ?? Infinity)));
       }
       const failure = [error, ...stream?.failures ?? []].filter(reason => reason !== undefined).join('; ') || undefined;
-      rows.push({ stream: stream?.table, target, id, name: workload.name, pages, status: failure ? 'failed' : 'ok', error: failure, memoryBudget: budget.type === 'limit' ? `${budget.name}: ${budget.mib} MiB/page` : budget.type === 'reported' ? `no budget: ${budget.reason}` : 'no budget: not measured', memoryPerPageMiB: memory.toFixed(1), timing: timing === 'frame' ? 'flush→frame' : 'flush→apply', seconds: summary.seconds.toFixed(1), p50: rank(.5), p95: rank(.95), p99: rank(.99), bytes: total('bytes'), opens: total('opens'), caps: total('caps'), flushes: total('flushes'), flushHz: (total('flushes') / summary.seconds).toFixed(1), sampleHz: (new Set(samples.map(sample => sample[timing])).size / summary.seconds).toFixed(1), heapMB: summary.heap === undefined ? undefined : (summary.heap / 1e6).toFixed(1), footprintDeltaMiB: footprintDelta?.toFixed(1), memoryMaxPageMiB: summary.after ? (summary.after.maxFootprintBytes / 1048576).toFixed(1) : undefined, processesBefore: summary.before?.processes, processesAfter: summary.after?.processes });
+      rows.push({ stream: stream?.table, target, id, name: workload.name, pages, status: failure ? 'failed' : 'ok', error: failure, memoryBudget: budget.type === 'limit' ? `${budget.name}: ${budget.mib} MiB/page` : budget.type === 'relative' ? `workload 13 at most workload 14 + ${STREAM_MEMORY_MIB.kidoOverShortHistory} MiB` : budget.type === 'reported' ? `no budget: ${budget.reason}` : 'no budget: not measured', memoryPerPageMiB: memory.toFixed(1), timing: timing === 'frame' ? 'flush→frame' : 'flush→apply', seconds: summary.seconds.toFixed(1), p50: rank(.5), p95: rank(.95), p99: rank(.99), bytes: total('bytes'), opens: total('opens'), caps: total('caps'), flushes: total('flushes'), flushHz: (total('flushes') / summary.seconds).toFixed(1), sampleHz: (new Set(samples.map(sample => sample[timing])).size / summary.seconds).toFixed(1), heapMB: summary.heap === undefined ? undefined : (summary.heap / 1e6).toFixed(1), footprintDeltaMiB: footprintDelta?.toFixed(1), memoryMaxPageMiB: summary.after ? (summary.after.maxFootprintBytes / 1048576).toFixed(1) : undefined, processesBefore: summary.before?.processes, processesAfter: summary.after?.processes });
     }
+  }
+  const short = rows.find(row => row.target === 'kido' && row.id === 14), long = rows.find(row => row.target === 'kido' && row.id === 13);
+  if (short && long && short.memoryPerPageMiB !== undefined && long.memoryPerPageMiB !== undefined && Number(long.memoryPerPageMiB) > Number(short.memoryPerPageMiB) + STREAM_MEMORY_MIB.kidoOverShortHistory) {
+    long.status = 'failed';
+    long.error = [long.error, `memory: ${long.memoryPerPageMiB} MiB/page exceeds workload 14 (${short.memoryPerPageMiB}) + ${STREAM_MEMORY_MIB.kidoOverShortHistory} MiB`].filter(reason => reason !== undefined).join('; ');
   }
   return rows.sort((a, b) => a.id - b.id || a.target.localeCompare(b.target));
 }

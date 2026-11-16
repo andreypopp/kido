@@ -141,7 +141,7 @@ for (const [id, mode] of ids.flatMap((id): [number, 'frame' | 'probe'][] => stre
       const expected = workload.items;
       if (expected) {
         await poll(`(()=>{const older=document.querySelector('#older');if(window.koaMetrics.count<${expected}&&!older.hidden)older.click();return window.koaMetrics.count===${expected}})()`, 180000, 'history load');
-        assert.equal(await evaluate(`document.querySelectorAll('#items [data-seq]').length`), expected, 'History is not in the DOM');
+        assert.ok(Number(await evaluate(`document.querySelectorAll('#items [data-seq]').length`)) < 200, 'The DOM holds the window, not the history');
       }
       await evaluate('window.koaMetrics.flush().then(()=>true)');
       events.on('LayerTree.layerTreeDidChange', (params: { layers?: Layer[] }) => {

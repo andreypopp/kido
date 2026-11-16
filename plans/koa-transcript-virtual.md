@@ -1,7 +1,13 @@
 # Virtualizing koa's transcript DOM
 
-Status: plan. Base: `origin/main` 223361541. Line numbers below are
-of that revision. The page is `share/koa/page/page.ts` and
+Status: units 1 (measurements) and 2 (the position table and the
+window) landed. Units 3 (find) and 4 (selection) are open: until
+they land, Kido's find (`WKWebView.find`) and Select All with copy
+reach only the mounted rows, not unmounted history. Unit 2's
+result is the run before its review fixes (section 9, unit 2); the
+review fixes that are not in the landed tree are listed there.
+Base: `origin/main` 223361541. Line numbers below are of that
+revision. The page is `share/koa/page/page.ts` and
 `page.css`; the rules it follows are in docs/design-koa.md ("The
 page and koa", "Frames", "Scroll") and app/design/koa/NOTES.md
 ("Auto-scroll, the "new messages" divider and "↓ Latest""). The
@@ -467,12 +473,28 @@ runs `share/koa/stress/run.sh stream` before and after.
    Acceptance on workload 13 in Kido, visible: flush→frame p99 under
    100 ms; request→rAF max under 250 ms and no sample over 100 ms;
    frame p99 under 16.7 ms; history load max frame under 50 ms;
-   per-page memory under 400 MiB (from 1228; workload 14 is 434
-   and is the comparison, not the budget); DOM nodes at the end
-   under 20 000 (from 350 252). These become `limit` budgets in
-   `streamBudgets` (statistics.ts:74-82) and the memory limits of
-   workloads 13 and 14 in `workloads.ts` replace the placeholders.
+   per-page memory at most workload 14's plus 400 MiB (user,
+   2026-11-16; it replaces an absolute 400 MiB); DOM nodes at the
+   end under 20 000 (from 127 173 elements). These become `limit`
+   budgets in `streamBudgets` (statistics.ts), the memory one
+   relative to workload 14's leg of the same run.
    Chrome: the same budgets as reported lines.
+   The memory budget is relative because the measure is the
+   WebContent process's physical footprint, not the page's heap:
+   in the baseline run `run-b8AFwT`, workload 14 (about 4000
+   elements) took 1207.6 MiB and workload 13 954 MiB, less than
+   14 with a far bigger history. The hypothesis, unproved, is that
+   WebKit purged its caches under memory pressure in that run of
+   13, the same purge that perf plan unit 3 traced the stalls to.
+   Landed. Open from the review: the divider is a field of the
+   table (`Table.divider`) with a measured extent, not one of its
+   entries as 3.6 says; the new `limit` budgets and the relative
+   memory budget have not run in a stress run yet. Result (run
+   `run-plFJhk`, before the review fixes, not measured again by
+   the user's decision): flush→frame p99 36 ms, request→rAF
+   max 34 ms and 0 of 1504 over 100 ms, frame p99 2 ms, history
+   load max frame 12 ms, 3993 elements, 1540 MiB against workload
+   14's 1210.6.
 3. **Find** (section 4). Tests that must fail first, in
    `koa-dom.test.ts`: `__koFind('zyxwvq')` on a 40-item history
    mounts item 5, sets the reader anchor on it, collapses the

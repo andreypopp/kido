@@ -31,6 +31,7 @@ export function latency(samples: readonly MetricsSample[]) {
   const defined = (pick: (leg: (typeof legs)[number]) => number | undefined) => legs.flatMap(leg => { const value = pick(leg); return value === undefined ? [] : [value]; });
   return {
     writeToReceive: detail(defined(leg => leg.receive)), receiveToRequest: detail(defined(leg => leg.request)), requestToRaf: detail(defined(leg => leg.raf)), rafToDone: detail(defined(leg => leg.done)),
+    total: detail(defined(leg => leg.total)),
     rafOver100: defined(leg => leg.raf).filter(value => value > 100).length,
     hidden: legs.filter(leg => leg.visibility === 'hidden').length, timer: legs.filter(leg => leg.raf === undefined).length,
     worst: legs.toSorted((a, b) => b.total - a.total).slice(0, 5),
@@ -74,11 +75,15 @@ export const evaluate = (budgets: readonly Budget[], values: Readonly<Record<str
 });
 
 export const streamBudgets: Budget[] = [
-  { name: 'frame p99 ms', limit: { type: 'reported' } },
+  { name: 'flush→frame p99 ms', limit: { type: 'max', value: 100 } },
+  { name: 'request→rAF max ms', limit: { type: 'max', value: 250 } },
+  { name: 'request→rAF samples over 100 ms', limit: { type: 'max', value: 0 } },
+  { name: 'frame p99 ms', limit: { type: 'max', value: 16.7 } },
+  { name: 'DOM nodes at end', limit: { type: 'max', value: 20000 } },
   { name: 'frames over 50 ms', limit: { type: 'reported' } },
   { name: 'stray reads per frame', limit: { type: 'reported' } },
   { name: 'dots detachments while text streams', limit: { type: 'reported' } },
   { name: 'key→frame p99 ms', limit: { type: 'reported' } },
-  { name: 'history load max frame ms', limit: { type: 'reported' } },
+  { name: 'history load max frame ms', limit: { type: 'max', value: 50 } },
   { name: 'history load frames over 50 ms', limit: { type: 'reported' } },
 ];

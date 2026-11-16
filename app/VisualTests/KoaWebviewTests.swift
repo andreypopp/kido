@@ -276,15 +276,38 @@ import SidebarFeed
           moveTo(300);await wait(100);
           const before=probe('#items > [data-seq]');
           moveTo(60);const anchored=probe('#items > [data-seq]');
-          await until(()=>document.querySelector('#items [data-seq="8"]'),20000);
+          await until(()=>document.querySelector('#items [data-seq="9"]'),20000);
           await wait(300);
-          return {anchored,after:offsetOf('#items > [data-seq]',anchored[0]),older:!!document.querySelector('#items [data-seq="8"]'),before};
+          return {anchored,after:offsetOf('#items > [data-seq]',anchored[0]),older:!!document.querySelector('#items [data-seq="9"]'),before};
         })()
         """#, within: 60)
         let value = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(result.utf8)) as? [String: Any])
         let anchored = try XCTUnwrap(value["anchored"] as? [Any])
         XCTAssertEqual(value["older"] as? Bool, true, result)
         XCTAssertEqual(try XCTUnwrap(value["after"] as? Double), try XCTUnwrap(anchored[1] as? Double), accuracy: 1, result)
+    }
+    func testKoaWebviewScrollbarJumpMountsHistory() async throws {
+        let web = try await scrollPage(module: "scroll-follow")
+        let result = try await webviewJS(web, "(async()=>{" + Self.followHelpers + #"""
+          const sentence='The quick brown fox jumps over the lazy dog and keeps running across the field. ';
+          const history=Array.from({length:400},(_,i)=>({kind:'assistant',seq:i,revision:0,at:Date.now(),final:true,blocks:[{type:'text',text:'Row '+i+' '+sentence.repeat(4)}],stop:'stop',error:''}));
+          push(view(root,[root]));push({type:'reset',epoch:'jump',more:false,items:history});
+          await until(()=>gap()<=1&&document.querySelector('#items [data-seq="399"]'));
+          await wait(300);
+          const rows=()=>document.querySelectorAll('#items > [data-seq]').length;
+          const usable=()=>{const box=s.getBoundingClientRect(),limit=dock.getBoundingClientRect().top;return [...document.querySelectorAll('#items > [data-seq]')].some(row=>{const rect=row.getBoundingClientRect();return rect.height>0&&rect.bottom>box.top&&rect.top<limit&&row.textContent.startsWith('Row ')})};
+          const start=s.scrollTop,viewport=s.clientHeight,atEnd=rows();
+          moveTo(Math.max(0,start-40*viewport));
+          await until(usable,20000);
+          await wait(500);
+          return {atEnd,rows:rows(),usable:usable(),start,top:s.scrollTop,viewport};
+        })()
+        """#, within: 60)
+        let value = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(result.utf8)) as? [String: Any])
+        XCTAssertLessThan(try XCTUnwrap(value["atEnd"] as? Int), 60, result)
+        XCTAssertLessThan(try XCTUnwrap(value["rows"] as? Int), 60, result)
+        XCTAssertEqual(value["usable"] as? Bool, true, result)
+        XCTAssertLessThan(try XCTUnwrap(value["top"] as? Double), try XCTUnwrap(value["start"] as? Double) - 20 * (try XCTUnwrap(value["viewport"] as? Double)), result)
     }
     func testKoaWebviewFindSkippedHistory() async throws {
         try XCTSkipIf(true, "Open finding (plans/koa-transcript-perf.md, unit 5): on the real koa page WebKit's find scrolls to the estimated position of a match in skipped content (content-visibility:auto) and does not follow it after the rows render; a plain page with the same CSS lands on the match.")
@@ -785,7 +808,6 @@ import SidebarFeed
         func capture(_ name: String) async throws { try await captureFrames(name, afterLight: nil) }
         func captureFrames(_ name: String, afterLight: (() async throws -> Void)?) async throws {
             guard captures.contains(name) || captures.contains("foot-responsive") else { return }
-            _ = try await webviewJS(web, "(()=>{\(Self.contentVisible);return true})()")
             _ = try await webviewJS(web, "(async()=>{\(scenario == .reveal ? "" : "for(let i=0;i<100&&document.querySelector('#items .hold');i++)await new Promise(resolve=>setTimeout(resolve,20));if(document.querySelector('#items .hold'))throw Error('hold deadline');document.getAnimations().filter(animation=>animation.animationName==='grow'&&animation.effect?.target?.closest('#items')).forEach(animation=>animation.finish());document.querySelectorAll('#items .grow').forEach(block=>block.classList.remove('grow'));")await new Promise(resolve=>setTimeout(resolve,50));return true})()")
             if scenario == .dialogs { try await webviewUntil(web, "document.querySelector('#tokens').textContent==='88k / 200k'&&document.querySelector('#percent').textContent==='44%'") }
             let ordered = name == "questions-ordered" || name == "narrow-questions-ordered"

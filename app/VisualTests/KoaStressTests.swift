@@ -184,7 +184,7 @@ import XCTest
                 if let expected = workload["items"] as? Int {
                 try await webviewUntil(browser, "(()=>{const older=document.querySelector('#older');if(window.koaMetrics.count<\(expected)&&!older.hidden)older.click();return window.koaMetrics.count===\(expected)})()", within: 180)
                 let attached = try await webviewJS(browser, "document.querySelectorAll('#items [data-seq]').length")
-                XCTAssertEqual(attached, String(expected))
+                XCTAssertLessThan(try XCTUnwrap(Int(attached)), 200, "The DOM holds the window, not the history")
                 }
                 _ = try await webviewJS(browser, "window.koaMetrics.flush().then(()=>true)")
                 since = Double(try await webviewJS(browser, "performance.timeOrigin+performance.now()"))

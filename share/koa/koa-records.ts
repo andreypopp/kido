@@ -72,7 +72,7 @@ export type ViewRequest = { view?: string };
 export type ViewGone = { kind: "view_gone"; view: string; error: string };
 
 const recordTypes: Record<PageRecord["type"], true> = { reset: true, item: true, patch: true, state: true, flush: true, reload: true, "job-reset": true, "job-gone": true, "job-append": true, view_gone: true };
-const pageSources = { frame: true, key: true, scroll: true, pointer: true, animationend: true, ResizeObserver: true, IntersectionObserver: true, other: true };
+const pageSources = { frame: true, key: true, scroll: true, pointer: true, animationend: true, ResizeObserver: true, other: true };
 export type WriteSource = keyof typeof pageSources | `apply:${PageRecord["type"]}`;
 const isRecordType = (value: unknown): value is PageRecord["type"] => typeof value === "string" && Object.hasOwn(recordTypes, value);
 const isWriteSource = (value: unknown): value is WriteSource => typeof value === "string" && (Object.hasOwn(pageSources, value) || value.startsWith("apply:") && isRecordType(value.slice(6)));

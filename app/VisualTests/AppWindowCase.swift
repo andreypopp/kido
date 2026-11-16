@@ -270,18 +270,13 @@ import XCTest
 
     var paintRetry: ((String) async throws -> Void)?
 
-    // An off-screen WKWebView gets no rendering update, so content-visibility:auto boxes stay skipped.
-    static let contentVisible = #"if (!document.getElementById("capture-visible")) document.head.insertAdjacentHTML("beforeend", "<style id=capture-visible>*{content-visibility:visible!important}</style>");"#
-
     private static func captureReady(within seconds: Double) -> String {
         """
         new Promise((resolve, reject) => {
-          \(Self.contentVisible)
           let stopped = false, events = 0, previous = "", stable = 0, last = "", turnTimer;
           const bump = () => { events += 1; };
-          document.addEventListener("contentvisibilityautostatechange", bump, true);
           document.addEventListener("scroll", bump, true);
-          const finish = (done, value) => { if (stopped) return; stopped = true; clearTimeout(timer); clearTimeout(turnTimer); document.removeEventListener("contentvisibilityautostatechange", bump, true); document.removeEventListener("scroll", bump, true); done(value); };
+          const finish = (done, value) => { if (stopped) return; stopped = true; clearTimeout(timer); clearTimeout(turnTimer); document.removeEventListener("scroll", bump, true); done(value); };
           const timer = setTimeout(() => finish(reject, Error("Capture still changing: " + last)), \(Int(seconds * 1000)));
           const signature = () => JSON.stringify([innerWidth, innerHeight, scrollX, scrollY, Array.from(document.querySelectorAll("*")).map(element => { const r = element.getBoundingClientRect(); return [r.x, r.y, r.width, r.height].map(Math.round); })]);
           const decoded = Promise.all(Array.from(document.images).map(image => new Promise(done => {

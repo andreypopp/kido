@@ -8,6 +8,9 @@ import remend from "remend";
 import { assemblePage } from "./koa-assemble.ts";
 import { markdown, markdownLine, type Mark } from "./page/markdown.ts";
 import { revealHeight, type Unit } from "./page/reveal.ts";
+import { estimateExtent, windowOf } from "./page/extent.ts";
+import type { Block, WireItem } from "./koa-records.ts";
+import type { JobRef } from "./records.ts";
 import { answer, current, quote } from "./page/answers.ts";
 import { composerLanguage } from "./page/composer.ts";
 import { highlightTree, tags } from '@lezer/highlight';
@@ -294,11 +297,78 @@ test('the composer foot starts with the model and has no agent status cell', asy
   assert.doesNotMatch(css, /\.foot \.(st|dot)\b/);
 });
 
-test('a transcript block skips its layout off screen and keeps a remembered size', async () => {
+test('the page keeps no content-visibility rule and no estimate property', async () => {
   const css = await readFile(new URL('page/page.css', import.meta.url), 'utf8');
-  const rules = css.split('\n').filter(line => line.includes('content-visibility'));
-  assert.equal(rules.length, 1);
-  assert.match(rules[0], /^[^{]*#items>\.user[^{]*\{content-visibility:auto;contain-intrinsic-size:auto var\(--estimate,1lh\)\}$/);
+  assert.doesNotMatch(css, /content-visibility|--estimate/);
+});
+
+const base = { seq: 0, revision: 0, at: 1, final: true };
+const body = { text: 'x', cut: 0 };
+const text = (value: string): Block => ({ type: 'text', text: value });
+const step = (name: string): Extract<Block, { type: 'tool' }> => ({ type: 'tool', id: name, name, args: body, state: { type: 'pending' } });
+const card = (): Block => ({ ...step('message'), agent: { direction: 'out', to: { name: 'a' }, text: body, call: { tool: 'message', mode: 'message' } } });
+const assistant = (blocks: Block[], error = ''): WireItem => ({ ...base, kind: 'assistant', blocks, stop: '', error });
+const job: JobRef = { id: 'j', name: 'j', service: false, log: '', command: '', startedAt: 0, place: { type: 'mac' } };
+
+test('estimateExtent follows the rule of every item kind', () => {
+  const lh = 20, line = lh + 16;
+  const cases: [string, WireItem, number][] = [
+    ['user', { ...base, kind: 'user', text: 'a\nb\nc', images: [], attachments: [] }, 3 * lh + 30],
+    ['annotations', { ...base, kind: 'annotations', reply: { seq: 0, block: 0 }, annotations: [] }, 0],
+    ['assistant text', assistant([text('one\ntwo')]), 2 * lh],
+    ['assistant empty text', assistant([text(' \n ')]), 0],
+    ['assistant run', assistant([step('read'), { type: 'thinking', text: 'x' }, step('bash')]), line],
+    ['assistant text between runs', assistant([step('read'), text('hi'), step('bash')]), line + lh + line],
+    ['assistant agent card ends a run', assistant([step('read'), card(), step('bash')]), line + line + line],
+    ['assistant error', assistant([text('x')], 'boom'), lh + line],
+    ['assistant joined run', assistant([step('read'), text('x')]), lh],
+    ['agent', { ...base, kind: 'agent', direction: 'in', from: { name: 'a' }, text: body, inbound: { form: 'notice' } }, line],
+    ['job', { ...base, kind: 'job', job, event: { type: 'stream', batch: body, omitted: 0, cut: false } }, line],
+    ['notify', { ...base, kind: 'notify', level: 'info', text: body }, line],
+    ['command', { ...base, kind: 'command', result: { type: 'copy', characters: 1 } }, line],
+    ['notice', { ...base, kind: 'notice', customType: '', from: '', text: 'x' }, line],
+    ['bash', { ...base, kind: 'bash', command: 'ls', excludeFromContext: false, result: { output: body, cancelled: false, truncated: false } }, line],
+    ['summary', { ...base, kind: 'summary', source: 'branch', text: 'x' }, line],
+  ];
+  for (const [name, item, expected] of cases) assert.equal(estimateExtent(item, lh, name === 'assistant joined run'), expected, name);
+});
+
+const prefix = (order: number[], px: Map<number, number>) => order.reduce((sums, seq) => [...sums, sums[sums.length - 1] + (px.get(seq) ?? 0)], [0]);
+
+test('windowOf covers the viewport and its overscan, and closes over a group', () => {
+  const order = [0, 1, 2, 4, 5, 6, 7, 8], px = new Map([[0, 50], [1, 0], [2, 50], [4, 50], [5, 50], [6, 50], [7, 50], [8, 50]]);
+  const of = (top: number, viewport: number, overscan: number, groups: { from: number; to: number }[] = []) => windowOf(order, prefix(order, px), top, viewport, overscan, groups);
+  assert.equal(windowOf([], [0], 0, 100, 100, []), undefined);
+  assert.deepEqual(of(50, 0, 0), { from: 0, to: 2 }, 'every item that shares the edge touches, a zero extent too');
+  assert.deepEqual(of(0, 10, 0), { from: 0, to: 0 });
+  assert.deepEqual(of(100, 50, 0), { from: 2, to: 5 }, 'inclusive edges touch both neighbours');
+  assert.deepEqual(of(110, 20, 0), { from: 4, to: 4 });
+  assert.deepEqual(of(110, 20, 40), { from: 2, to: 5 }, 'the overscan widens both ends over a seq gap');
+  assert.deepEqual(of(9999, 100, 100), { from: 8, to: 8 }, 'beyond the end is the last item');
+  assert.deepEqual(of(-500, 10, 0), { from: 0, to: 0 });
+  assert.deepEqual(of(110, 20, 0, [{ from: 2, to: 6 }]), { from: 2, to: 6 }, 'a group that the range touches is whole');
+  assert.deepEqual(of(150, 20, 0, [{ from: 2, to: 4 }, { from: 5, to: 7 }]), { from: 2, to: 7 }, 'a range that touches two groups takes both');
+  assert.deepEqual(of(110, 20, 0, [{ from: 7, to: 8 }]), { from: 4, to: 4 }, 'a group out of range stays out');
+});
+
+test('windowOf includes every item that the clamped range touches and no other', () => {
+  let seed = 7;
+  const random = (limit: number) => { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed % limit; };
+  for (let round = 0; round < 200; round++) {
+    const order: number[] = [], px = new Map<number, number>();
+    for (let seq = 0, at = 0; at < 1 + random(30); seq += 1 + random(3), at++) { order.push(seq); px.set(seq, random(4) * 25); }
+    const top = random(1500) - 200, viewport = random(200), overscan = random(150);
+    const result = windowOf(order, prefix(order, px), top, viewport, overscan, []);
+    assert.ok(result);
+    const total = order.reduce((sum, seq) => sum + (px.get(seq) ?? 0), 0), low = Math.min(total, Math.max(0, top - overscan)), high = Math.min(total, Math.max(0, top + viewport + overscan));
+    let start = 0;
+    for (const seq of order) {
+      const end = start + (px.get(seq) ?? 0), touches = end >= low && start <= high;
+      if (touches) assert.ok(seq >= result.from && seq <= result.to, 'item ' + seq + ' touches [' + low + ',' + high + ']');
+      start = end;
+    }
+    assert.ok(order.includes(result.from) && order.includes(result.to));
+  }
 });
 
 class Fake {

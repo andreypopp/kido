@@ -22,7 +22,7 @@ export const workloads = [
 ] as const;
 export const pageWorkloads = [1, 2, 3, 4, 5, 8, 9, 10, 11];
 export const streaming = [13, 14];
-export const STREAM_MEMORY_MIB = { page: 32, kido: 180 };
+export const STREAM_MEMORY_MIB = { page: 32, kidoOverShortHistory: 400 };
 export const HISTORY_ROWS = 100_000;
 export const STREAM_TOKENS = 10_000;
 export const STREAM_RESPONSES = 21;
