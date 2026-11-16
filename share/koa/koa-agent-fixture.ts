@@ -447,7 +447,7 @@ export function createChannel() {
   const self = stubAgent({ id: "self-session", parent: undefined, children: [], name: "", runtime: undefined, extension: undefined, stopping: false, view: { state: { name: "Self", cwd: process.cwd(), dialogs: [] }, root: { value: "idle" } } });
   const host: AgentHost = {
     self, get facts() { return hostFacts(process.env); }, browser: false, trusted: undefined, records, jobs: createJobs({ records, path: () => "jobs", sink: () => host.extension, place: { type: "machine" }, view: { viewed: () => viewing.job, watched: job => viewing.watched.has(job), output() {}, changed() {} } }), extension: undefined,
-    notify() {}, scope: () => [], find: () => undefined, spawn: unused, stop: unused, stopDescendants: async () => {},
+    notify() {}, scope: () => [], find: () => undefined, spawn: unused, stop: unused, stopDescendants: async () => {}, clearChild: name => { records.write({ type: "clear", id: `agents/${name}` }); },
   };
   liveHosts.push(host);
   return {

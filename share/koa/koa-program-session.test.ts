@@ -90,6 +90,20 @@ test("a queued steer and follow-up are removed one at a time, kept in order, and
   assert.equal((await app.post("queue/remove", { kind: "steer", index: 0, text: "gone" })).status, 409);
 });
 
+test("each queued prompt carries its own unknown-mention warning, and a removed one posts none", { timeout: 30000 }, async t => {
+  const app = await realFixture(t, { replies: [{ gate: "turn", text: "first answer" }, { text: "second" }, { text: "third" }, { text: "fourth" }] });
+  await send(app, "start");
+  await app.until(ofType("state", record => record.working === true));
+  for (const [text, mode] of [["dup @ghost", "steer"], ["dup @ghost", "steer"], ["gone @phantom", "follow_up"]] as const) assert.equal((await send(app, text, mode)).status, 200);
+  await app.until(ofType("state", record => record.queue.steering.length === 2 && record.queue.followUp.length === 1));
+  assert.equal((await app.post("queue/remove", { kind: "follow-up", index: 0, text: "gone @phantom" })).status, 200);
+  app.provider.release("turn");
+  const warnings = () => app.records().filter(ofType("item")).filter(record => record.item.kind === "notify" && record.item.text.text.includes("no agent")).map(record => record.item.kind === "notify" ? record.item.text.text : "");
+  await pollUntil(() => warnings().length >= 2, 10000, "both warnings");
+  await app.until(ofType("state", record => record.working === false && record.queue.steering.length === 0));
+  assert.deepEqual(warnings(), ["@ghost matches no agent", "@ghost matches no agent"]);
+});
+
 test("reply annotations reach events live and on a rebuild", { timeout: 30000 }, async t => {
   const entry = { reply: { at: 0, block: 0, length: 17 }, annotations: [{ type: "question", kind: "yes_no", range: [0, 17], options: [] }] };
   const app = await realFixture(t, { replies: [], setup: async ({ cwd, sessions }) => {

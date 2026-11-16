@@ -24,3 +24,9 @@ export function slashToken(text: string, pos: number): string | undefined {
   const before = text.slice(0, pos);
   return !before.includes("\n") && /^\s*\/[^\s]*$/.test(before) ? before.trimStart() : undefined;
 }
+
+export function unknownMentions(text: string, known: readonly string[], exists: (path: string) => boolean): string[] {
+  const tokens = [...text.matchAll(/(^|[^\w@])@(?:"([^"]*)"|([^\s"'=,;!?()[\]{}<>`@]+))/gu)];
+  const unknown = tokens.flatMap(match => match[2] !== undefined ? [] : [(match[3] ?? "").replace(/[.:]+$/, "")]);
+  return [...new Set(unknown)].filter(name => name && !(name[0] !== '"' && (known.includes(name) || exists(name))));
+}

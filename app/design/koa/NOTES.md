@@ -1510,3 +1510,20 @@ back) returns to the agent. No float, no second pane.
 
 Renders: /tmp/koa-shots/koa-job-{running,ended,service,running-narrow}-light.png,
 koa-job-{running,ended}-dark.png.
+
+## Ended subagents and unknown mentions (kido-app-design, 2026-11-16)
+
+- **A restart or a crash ends every subagent of the process.** koa's
+  registry after the start is the truth: the new koa clears the
+  sidebar records of the agents and jobs of the old process, the same
+  as a normal stop, which leaves no row. A live-looking record for a
+  gone agent is worse than no row. After a `/restart` the transcript
+  gets one info note: "restarted · 2 subagents ended" ("1 subagent
+  ended"; none when no subagent ended). Nothing after a crash.
+- **An `@name` that matches no agent.** Nothing before submit:
+  `@path` is legal. After submit, when a token `@name` matches no
+  agent of the scope and no existing path relative to the cwd, one
+  warning note follows the user's block: "@pr2549-asses matches no
+  agent" (several: "@a, @b match no agent"). The text still goes to
+  the model unchanged. An existing path: nothing. A matching agent:
+  the link, as before.

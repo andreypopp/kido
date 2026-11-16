@@ -1,7 +1,7 @@
 import type { Attachment, QueuedPrompt } from './koa-records.ts';
 import { promptText } from './prompt.ts';
 
-type Sent = { text: string; mode: 'prompt' | 'steer' | 'followUp'; attachments: Attachment[] };
+type Sent = { text: string; mode: 'prompt' | 'steer' | 'followUp'; attachments: Attachment[]; warning?: string };
 type Queue = { steering: readonly string[]; followUp: readonly string[] };
 
 export function prompts() {
@@ -17,7 +17,7 @@ export function prompts() {
   };
   const take = (mode: Sent['mode'], text: string, skip?: Sent) => {
     const index = sent.findIndex(entry => entry !== skip && entry.mode === mode && entry.text === text);
-    return index < 0 ? [] : sent.splice(index, 1)[0]?.attachments ?? [];
+    return index < 0 ? undefined : sent.splice(index, 1)[0];
   };
   const entries = (texts: readonly string[], mode: 'steer' | 'followUp'): QueuedPrompt[] => {
     const available = sent.filter(entry => entry.mode === mode && entry !== next?.entry);
@@ -28,15 +28,15 @@ export function prompts() {
     }).filter(entry => entry.text !== '' || entry.attachments.length > 0);
   };
   return {
-    add(text: string, mode: Sent['mode'], attachments: Attachment[]) { const entry = { text, mode, attachments }; sent.push(entry); return entry; },
+    add(text: string, mode: Sent['mode'], attachments: Attachment[], warning?: string) { const entry: Sent = { text, mode, attachments, ...(warning ? { warning } : {}) }; sent.push(entry); return entry; },
     reject(entry: Sent) { const index = sent.indexOf(entry); if (index >= 0) sent.splice(index, 1); },
     start(text: string) {
       const mark = next; next = undefined;
       if (mark) {
         const index = text === mark.text && mark.entry ? sent.indexOf(mark.entry) : -1;
-        return index < 0 ? [] : sent.splice(index, 1)[0]?.attachments ?? [];
+        return index < 0 ? undefined : sent.splice(index, 1)[0];
       }
-      if (text) return take('prompt', text);
+      if (text) return take('prompt', text) ?? take('prompt', sent.find(entry => entry.mode === 'prompt')?.text ?? '');
       const entry = sent.find(entry => entry.text === '' && entry.mode === 'steer') ?? sent.find(entry => entry.text === '' && entry.mode === 'followUp') ?? sent.find(entry => entry.text === '' && entry.mode === 'prompt');
       const steering = freshTexts(queue.steering, 'steer'), followUp = freshTexts(queue.followUp, 'followUp');
       const mode = steering.includes('') ? 'steer' : followUp.includes('') ? 'followUp' : entry?.mode ?? 'prompt';

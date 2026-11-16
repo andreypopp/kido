@@ -128,6 +128,8 @@ test("a close of a record stops that subagent for the user only, with a notice t
   await app.feed({ id: "close-none-2", kind: "close", text: "agents/nobody" });
   await app.feed({ id: "close-root-3", kind: "close", text: "" });
   await pollUntil(async () => (await app.acks()).length >= 3, 5000, "the first acks");
+  await pollUntil(async () => (await statusPosts(app)).some(post => post.type === "clear" && post.id === "agents/nobody"), 5000, "the clear of a record that matches no agent");
+  assert.ok(!(await statusPosts(app)).some(post => post.type === "clear" && post.id === ""), "the root record stays");
   assert.deepEqual(await acked(app, "close-pane-1"), ["ack"]);
   assert.ok(state(app).agents.some(agent => agent.name === "kid"));
   await app.feed({ id: "close-user-4", kind: "close", text: "agents/kid" });
@@ -135,6 +137,40 @@ test("a close of a record stops that subagent for the user only, with a notice t
   await pollUntil(async () => (await statusPosts(app)).some(post => post.type === "clear" && post.id === "agents/kid"), 5000, "the clear of the kid's record");
   await pollUntil(() => app.provider.requests.some(request => JSON.stringify(request.body.messages.at(-1)).includes("the user stopped subagent @kid")), 10000, "the notice to the parent");
   assert.deepEqual(await acked(app, "close-user-4"), ["ack"]);
+});
+
+test("koa clears the agents and jobs records before it writes any of its own", { timeout: 30000 }, async t => {
+  const app = await realFixture(t, { panes: [selfPane()], replies: kidScript });
+  await send(app, "spawn one");
+  await app.until(listed("kid"));
+  await pollUntil(async () => (await statusPosts(app)).some(post => post.id === "agents/kid" && post.type === "set"), 10000, "the record of the kid");
+  const posts = await statusPosts(app);
+  const first = posts.findIndex(post => post.type === "set");
+  assert.deepEqual(posts.slice(0, first).map(post => `${post.type} ${post.id}`).sort(), ["clear agents", "clear jobs"]);
+});
+
+test("a submitted prompt warns about each @name that is no agent and no path, and goes to the model unchanged", { timeout: 30000 }, async t => {
+  const app = await realFixture(t, { panes: [selfPane()], replies: [...kidScript, { when: "look at", text: "looked" }], setup: ({ cwd }) => writeFile(join(cwd, "real.txt"), "x") });
+  await send(app, "spawn one");
+  await app.until(listed("kid"));
+  const text = "look at @kid, @real.txt, @typo and @ghost.";
+  await send(app, text);
+  const warn = ofType("item", record => record.item.kind === "notify" && record.item.text.text === "@typo, @ghost match no agent");
+  await app.until(warn);
+  const items = app.records().filter(ofType("item")).map(record => record.item.kind);
+  const at = items.indexOf("notify");
+  assert.deepEqual(items.slice(at - 1, at + 1), ["user", "notify"], items.join());
+  await pollUntil(() => app.provider.requests.some(request => JSON.stringify(request.body.messages.at(-1)).includes(text)), 10000, "the unchanged prompt");
+});
+
+test("an ended recorded subagent is a known name for the mention warning", { timeout: 30000 }, async t => {
+  const app = await realFixture(t, { panes: [selfPane()], replies: [...kidScript, { when: "ping", text: "pinged" }] });
+  await send(app, "spawn one");
+  await app.until(listed("kid"));
+  await app.feed({ id: "close-kid", kind: "close", text: "agents/kid" });
+  await pollUntil(() => !state(app).agents.some(agent => agent.name === "kid"), 10000, "the kid to go");
+  await send(app, "ping @kid @gone");
+  await app.until(ofType("item", record => record.item.kind === "notify" && record.item.text.text === "@gone matches no agent"));
 });
 
 const tool = (name: string, args: object) => ({ name, args });
@@ -201,6 +237,7 @@ test("after an execve restart the children list as ended with 'koa restarted' an
   const page = sse(Readable.from((await fetch(base + "events", { signal: controller.signal })).body ?? []));
   const ready = await page.until(ofType("state", record => record.life.type === "ready"));
   assert.deepEqual(ready.agents, [], "no agent lives after the restart");
+  await page.until(ofType("item", record => record.item.kind === "notify" && record.item.text.text === "restarted · 1 subagent ended"));
   const prompt = (text: string) => fetch(base + "prompt", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ sessionId: ready.sessionId, text, mode: "prompt", attachments: [] }) });
   assert.equal((await prompt("list them")).status, 200);
   await pollUntil(() => app.provider.requests.some(request => JSON.stringify(request.body.messages.at(-1)).includes("koa restarted")), 10000, "the list result");

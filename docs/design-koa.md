@@ -485,9 +485,12 @@ Node, its script path as the shim gave it, its own flags and pi's
 arguments by the rule of "Start again" (`restartArgs`): the same pid
 in the same pane, so the pane's row and children stay, and the script
 path resolves to the files that a Kido.app update installed, pi's SDK
-included. `KOA_RELOAD=1` in the new process, which koa reads and
-removes at start, skips the `--resume` picker and the positional
-messages and adds the note "reloaded" once the session is ready.
+included. `KOA_RELOAD` in the new process holds the number of
+in-process subagents, at every depth, that the restart ended. koa
+reads and removes it at start; it skips the `--resume` picker and the
+positional messages and adds one note once the session is ready:
+"restarted · N subagents ended" ("1 subagent ended"), or "reloaded"
+when none ended. A crash adds no note.
 While the restart runs, the page shows "Reloading…" in its error line
 and blocks the composer; during the gap the app shows its "The
 program is not serving", and the new serve stream loads the new page
@@ -1760,6 +1763,14 @@ The user decided the look with the mockups `agents.html` and
   does not follow later changes; an agent line renders again when its
   agent joins or leaves the list, and a name that left it is muted,
   with no link ("ended"). In a browser, a click does nothing.
+- **An `@name` that matches no agent** gets one warning note after
+  the user's item, "@a matches no agent" ("@a, @b match no agent"),
+  when the submitted prompt has a token that is neither a name of the
+  list nor an existing path relative to the agent's cwd
+  (`unknownMentions` in `token.ts`). koa decides at submit and posts
+  the note at the user message's end, because pi adds the user item
+  after the submit returns. Nothing warns before the submit, because
+  `@path` is legal, and the prompt goes to the model unchanged.
 - `stop_agent`, `list_agents`, `read_report`, `list_async_bash` and
   `stop_async_bash` stay steps: they are the caller's own actions, not
   messages.

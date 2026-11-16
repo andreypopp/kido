@@ -2378,7 +2378,10 @@ export const agentExtension = (host: AgentHost) => (pi: ExtensionAPI): void => {
       if (target.self) return { ...reply(`refusing to stop ${name}: it is this agent`), isError: true };
       const child = target.relationship === "own" ? children().find((c) => c.session === target.id) : undefined;
       const reportedText = child ? (childReported(child) ? "; it had reported" : "; it had not reported on its last work") : "";
-      if (target.state === "ended") return reply(`${name} had already ended: ${target.ended ?? "its pane is gone"}`);
+      if (target.state === "ended") {
+        if (target.relationship === "own" && target.where.type === "process") host.clearChild(target.name);
+        return reply(`${name} had already ended: ${target.ended ?? "its pane is gone"}`);
+      }
       if (target.where.type === "process") {
         if (params.force) return { ...reply(`${name} runs in this process: force applies to a pane`), isError: true };
         const victim = host.find(target.id);
@@ -2756,7 +2759,7 @@ export const agentExtension = (host: AgentHost) => (pi: ExtensionAPI): void => {
   });
 
   host.extension = {
-    completionContext, restartState, receive, childState, scope: async (maxAgeMs) => (await discovery(maxAgeMs, true)).rows, jobNotice: deliverNotice, jobStream,
+    completionContext, restartState, receive, childState, scope: async (maxAgeMs, ended = false) => (await discovery(maxAgeMs, !ended)).rows, jobNotice: deliverNotice, jobStream,
     markWork: (child) => { const known = children().find((c) => c.session === child); if (known) markChildWork(known); },
     receiveReport: (child, text) => {
       append(ENTRY_REPORT, { child: child.session, name: child.name, text });

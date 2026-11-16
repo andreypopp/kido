@@ -20,27 +20,27 @@ test('equal prompt texts follow pi queue mode, not submission order', () => {
   queue.update({ steering: [], followUp: ['same'] });
   queue.update({ steering: ['same'], followUp: ['same'] });
   queue.update({ steering: [], followUp: ['same'] });
-  assert.deepEqual(queue.start('same'), [b]);
+  assert.deepEqual((queue.start('same')?.attachments ?? []), [b]);
   queue.update({ steering: [], followUp: [] });
-  assert.deepEqual(queue.start('same'), [a]);
+  assert.deepEqual((queue.start('same')?.attachments ?? []), [a]);
   queue.add('', 'followUp', [a]); queue.add('', 'steer', [b]);
-  assert.deepEqual(queue.start(''), [b]); assert.deepEqual(queue.start(''), [a]);
+  assert.deepEqual((queue.start('')?.attachments ?? []), [b]); assert.deepEqual((queue.start('')?.attachments ?? []), [a]);
 });
 
 test('delivered empty texts do not remain in the queue or return in take-back', () => {
   const queue = prompts();
   queue.add('', 'followUp', [a]); queue.update({ steering: [], followUp: [''] });
   queue.add('', 'steer', [b]); queue.update({ steering: [''], followUp: [''] });
-  assert.deepEqual(queue.start(''), [b]);
+  assert.deepEqual((queue.start('')?.attachments ?? []), [b]);
   assert.deepEqual(queue.view(), { steering: [], followUp: [{ text: '', attachments: [a] }] });
-  assert.deepEqual(queue.start(''), [a]);
+  assert.deepEqual((queue.start('')?.attachments ?? []), [a]);
   assert.deepEqual(queue.view(), { steering: [], followUp: [] });
   queue.beginClear();
   assert.deepEqual(queue.takeBack({ steering: [''], followUp: [''] }), { steering: [], followUp: [] });
   queue.endClear();
   queue.add('', 'steer', [a]); queue.update({ steering: [''], followUp: ['external'] });
   queue.update({ steering: [], followUp: ['external'] });
-  assert.deepEqual(queue.start(''), [a]);
+  assert.deepEqual((queue.start('')?.attachments ?? []), [a]);
   queue.add('', 'steer', [b]); queue.update({ steering: [''], followUp: ['external'] });
   assert.deepEqual(queue.view(), { steering: [{ text: '', attachments: [b] }], followUp: [{ text: 'external', attachments: [] }] });
 });
@@ -54,5 +54,5 @@ test('a delivering duplicate is not in the visible queue or taken back', () => {
   queue.beginClear(); queue.update({ steering: [], followUp: [] });
   assert.deepEqual(queue.takeBack({ steering: ['same'], followUp: [] }), { steering: [{ text: 'same', attachments: [b] }], followUp: [] });
   queue.endClear();
-  assert.deepEqual(queue.start('same'), [a]);
+  assert.deepEqual((queue.start('same')?.attachments ?? []), [a]);
 });

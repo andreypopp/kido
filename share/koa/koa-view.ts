@@ -122,6 +122,7 @@ export function createView(options: ViewOptions) {
     rebuild();
   };
   let userAttachments: Attachment[] = [];
+  let userWarning: string | undefined;
   let outcome: { type: "done" } | { type: "error"; message: string } = { type: "done" };
   const firstLine = (text: string) => text.split("\n").find(line => line.trim())?.trim() ?? "";
   let settleWaiter: (() => void) | undefined;
@@ -138,7 +139,7 @@ export function createView(options: ViewOptions) {
       }
       case "entry_appended": feed.annotation(event.entry); break;
       case "message_start": {
-        if (event.message.role === "user") { userAttachments = pendingPrompts.start(contentText(event.message.content)); attached.consume(userAttachments.map(file => file.id), "used"); }
+        if (event.message.role === "user") { const sent = pendingPrompts.start(contentText(event.message.content)); userAttachments = sent?.attachments ?? []; userWarning = sent?.warning; attached.consume(userAttachments.map(file => file.id), "used"); }
         feed.message(event.message, "start");
         if (event.message.role === "user") publish();
         break;
@@ -152,7 +153,11 @@ export function createView(options: ViewOptions) {
       case "message_end":
         if (event.message.role === "custom" && event.message.display) options.agentsChanged();
         feed.message(event.message, "end", event.message.role === "assistant" ? Date.now() : undefined, event.message.role === "user" ? userAttachments : []);
-        if (event.message.role === "user") userAttachments = [];
+        if (event.message.role === "user") {
+          userAttachments = [];
+          if (userWarning) hooks.notify(userWarning, "warning");
+          userWarning = undefined;
+        }
         if (event.message.role === "assistant") {
           outcome = event.message.stopReason === "error" ? { type: "error", message: firstLine(event.message.errorMessage ?? "") } : { type: "done" };
           lastText = firstLine(contentText(event.message.content));
@@ -181,7 +186,7 @@ export function createView(options: ViewOptions) {
   };
   const resetSession = () => {
     state.working = false; state.aborted = false; delete state.since; delete state.editor; delete state.context;
-    options.cancelEditor(); dropBash(); pendingPrompts.reset(); userAttachments = []; attached.reset();
+    options.cancelEditor(); dropBash(); pendingPrompts.reset(); userAttachments = []; userWarning = undefined; attached.reset();
     compaction = undefined; outcome = { type: "done" }; lastText = ""; state.statuses = {};
     status("idle");
   };

@@ -358,8 +358,9 @@ for every message and reads no `data`.
   at once, by "Stopping" below, whether it works or owes a report,
   without a question; then its parent gets the notice "the user
   stopped subagent @<name>", because the parent did not ask for the
-  stop. One from a pane, for the root or for an unknown or stopping
-  agent, is acked and ignored.
+  stop. One from the user for an `agents` record that no agent owns
+  clears that record ("In the sidebar"). One from a pane, for the
+  root or for a stopping agent, is acked and ignored.
 
 Messages wait until the root has started and while a `/reload` runs,
 so none reaches an extension that is being replaced.
@@ -538,6 +539,14 @@ assistant text. `selection` is `selected` for the viewed agent and
 `select` message ("The pane's queue"). Every subagent record is
 `closeable`, and the row's × in Kido.app sends the `close` message. The root's own record stays
 koa's OSC 7501 root and names the root, whatever the page shows.
+
+No in-process agent or job outlives its koa process, so the tree's
+registry is the truth for these records. When koa creates its tree,
+it clears `agents` and `jobs` first in the queue: a `/restart`
+(`process.execve` runs no exit handler) or a crash otherwise leaves
+the records of the old process as live-looking rows. A `close` of an
+`agents` record that no agent of the tree owns clears the record, and
+`stop_agent` on an ended subagent of this process clears its record.
 
 ## A job
 

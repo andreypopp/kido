@@ -1,9 +1,10 @@
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { appendFile, writeFile } from "node:fs/promises";
-import { mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
-import { basename, join } from "node:path";
+import { basename, join, resolve } from "node:path";
+import { unknownMentions } from "./token.ts";
 import { homedir, tmpdir } from "node:os";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import type { AgentSession, SlashCommandSource } from "@earendil-works/pi-coding-agent";
@@ -96,7 +97,7 @@ async function main(): Promise<void> {
     if (pane && ko) { try { spawnSync(ko, apiArgs("PATCH", `/panes/${pane}`, { close: "keep" }), { input: JSON.stringify({ close: "keep" }), timeout: 2000, stdio: ["pipe", "ignore", "ignore"] }); } catch {} }
     process.exit(1);
   });
-  const reloaded = process.env.KOA_RELOAD === '1';
+  const reloaded = process.env.KOA_RELOAD === undefined ? undefined : Number(process.env.KOA_RELOAD);
   delete process.env.KOA_RELOAD;
   const location = pathToFileURL(process.argv[1] ?? "");
   const args = process.argv.slice(2);
@@ -142,8 +143,8 @@ async function main(): Promise<void> {
   const sdk = await loadSdk(packageRoot);
   const checked = startupResult(sdk.pi.parseArgs(pass));
   if ('error' in checked) throw Error(checked.error);
-  let initialMessages: string[] = reloaded ? [] : checked.messages;
-  const resume = !reloaded && checked.resume;
+  let initialMessages: string[] = reloaded !== undefined ? [] : checked.messages;
+  const resume = reloaded === undefined && checked.resume;
   const koaAgents = await import('./koa-agents.ts');
   const agentDir = sdk.pi.getAgentDir();
   const { catalog, completion } = await commandCatalog(packageRoot);
@@ -327,7 +328,8 @@ async function main(): Promise<void> {
       const restart = () => {
         if (reloading) return;
         reloading = true;
-        void shutdown().then(() => Promise.all([process.stdout, process.stderr].map(stream => new Promise<void>(resolve => { const timer = later(resolve, QUIT_REPLY_MS); stream.write("", () => { clearTimeout(timer); resolve(); }); })))).then(() => { if (!process.execve) throw Error("this node has no process.execve"); process.execve(process.execPath, [process.execPath, ...process.execArgv, process.argv[1] ?? "", ...own, ...restartArgs(pass, root().view.state.sessionFile)], { ...process.env, KOA_RELOAD: "1" }); }).catch(error => { process.stderr.write(`koa: reload: ${errorText(error)}\n`); process.exitCode = 1; });
+        const ended = tree.all().filter(agent => agent.parent).length;
+        void shutdown().then(() => Promise.all([process.stdout, process.stderr].map(stream => new Promise<void>(resolve => { const timer = later(resolve, QUIT_REPLY_MS); stream.write("", () => { clearTimeout(timer); resolve(); }); })))).then(() => { if (!process.execve) throw Error("this node has no process.execve"); process.execve(process.execPath, [process.execPath, ...process.execArgv, process.argv[1] ?? "", ...own, ...restartArgs(pass, root().view.state.sessionFile)], { ...process.env, KOA_RELOAD: String(ended) }); }).catch(error => { process.stderr.write(`koa: reload: ${errorText(error)}\n`); process.exitCode = 1; });
       };
       const timer = later(restart, QUIT_REPLY_MS);
       response.once("finish", () => { clearTimeout(timer); restart(); });
@@ -383,8 +385,11 @@ async function main(): Promise<void> {
     const queuePrompt = async (agent: Agent, session: AgentSession, text: string, requested: PromptMode | "steer", files: Awaited<ReturnType<AgentView["attached"]["prepare"]>>) => {
       const v = agent.view;
       const message = [text, ...files.paths].filter(Boolean).join("\n");
+      const typed = unknownMentions(text, agentsFor(agent).map(row => row.name), path => existsSync(resolve(v.state.cwd, path)));
+      const discovered = typed.length ? (await agent.extension?.scope(0, true) ?? []).map(row => row.name) : [];
+      const unknown = typed.filter(name => !discovered.includes(name));
       const mode = v.state.working ? requested === "follow_up" ? "followUp" : "steer" : "prompt";
-      const entry = v.prompts.add(message, mode, files.files);
+      const entry = v.prompts.add(message, mode, files.files, unknown.length ? `${unknown.map(name => `@${name}`).join(", ")} ${unknown.length === 1 ? "matches" : "match"} no agent` : undefined);
       try {
         const disposition = await koaAgents.submitPrompt(v.hooks.notify, session, message, { ...(files.images.length ? { images: files.images } : {}), ...(mode !== "prompt" ? { streamingBehavior: mode } : {}) });
         return { entry, disposition };
@@ -691,7 +696,7 @@ async function main(): Promise<void> {
       root().view.status("idle", rootName());
       background((async () => {
         if (!await startRoot()) return;
-        if (reloaded) root().view.feed.notify("reloaded", "info");
+        if (reloaded !== undefined) root().view.feed.notify(reloaded ? `restarted · ${reloaded} ${reloaded === 1 ? "subagent" : "subagents"} ended` : "reloaded", "info");
         const messages = initialMessages; initialMessages = [];
         for (const message of messages) {
           const v = root().view;

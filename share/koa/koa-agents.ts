@@ -64,7 +64,7 @@ export type Extension = JobSink & {
   completionContext(signal: AbortSignal): Promise<CompletionContext>;
   restartState(): RestartState;
   receive(message: InProcessMessage): Promise<void>;
-  scope(maxAgeMs: number): Promise<AgentRow[]>;
+  scope(maxAgeMs: number, ended?: boolean): Promise<AgentRow[]>;
   markWork(child: string): void;
   childState(child: string): { reported: boolean; text?: string };
   receiveReport(child: { session: string; name: string }, text: string): void;
@@ -114,6 +114,7 @@ export type AgentHost = {
   spawn(plan: SpawnPlan): Promise<Agent | { error: string }>;
   stop(agent: Agent): Promise<void>;
   stopDescendants(): Promise<void>;
+  clearChild(name: string): void;
 };
 
 export type Tree = {
@@ -215,7 +216,8 @@ export function createRecords(facts: HostFacts): Records {
   };
 }
 
-const recordPath = (agent: Agent): string => agent.parent ? `${recordPath(agent.parent)}${agent.parent.parent ? "/" : ""}agents/${agent.name}` : "";
+const childPath = (parent: Agent, name: string): string => `${recordPath(parent)}${parent.parent ? "/" : ""}agents/${name}`;
+const recordPath = (agent: Agent): string => agent.parent ? childPath(agent.parent, agent.name) : "";
 const jobsPath = (agent: Agent): string => `${recordPath(agent)}${agent.parent ? "/" : ""}jobs`;
 
 export function createTree(options: TreeOptions): Tree {
@@ -227,6 +229,7 @@ export function createTree(options: TreeOptions): Tree {
   const { agentDir } = options;
   const dir = sessionDir(parsed, options.cwd);
   const records = createRecords(facts);
+  for (const id of ["agents", "jobs"]) records.write({ type: "clear", id });
   let modelRuntimeCache: Awaited<ReturnType<typeof pi.ModelRuntime.create>> | undefined;
   const getModelRuntime = async () => modelRuntimeCache ??= await pi.ModelRuntime.create({ authPath: join(agentDir, "auth.json"), modelsPath: join(agentDir, "models.json"), signal: AbortSignal.timeout(15_000) });
   const trustStore = new pi.ProjectTrustStore(agentDir);
@@ -409,6 +412,7 @@ export function createTree(options: TreeOptions): Tree {
       spawn: plan => spawn(agent(), plan),
       stop: target => stop(target, "stopped"),
       stopDescendants: () => stopDescendants(agent()),
+      clearChild: name => { records.write({ type: "clear", id: childPath(agent(), name) }); },
     };
     return host;
   };
@@ -546,7 +550,12 @@ export function createTree(options: TreeOptions): Tree {
         close: record => {
           const agent = tree.byRecord(record);
           const parent = agent?.parent;
-          if (!agent) { jobOwner(record)?.host.jobs.close(record); return; }
+          if (!agent) {
+            const owner = jobOwner(record);
+            if (owner) owner.host.jobs.close(record);
+            else if (record === "agents" || record.startsWith("agents/")) records.write({ type: "clear", id: record });
+            return;
+          }
           if (!parent || agent.stopping) return;
           void stop(agent, "stopped").then(() => parent.extension?.receive({ kind: "system", text: `the user stopped subagent @${agent.name}` })).catch(() => {});
         },
