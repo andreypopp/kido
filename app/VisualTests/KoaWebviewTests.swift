@@ -113,6 +113,9 @@ import SidebarFeed
             XCTAssertEqual(result[mode == "fractional-up" ? "stationary" : "bottom"] as? Bool, true, String(describing: result))
         }
     }
+    func testKoaWebviewFollowSlide() async throws {
+        try await koaWebview(width: 980, height: 360, scenario: .reveal, captures: ["follow-slide"])
+    }
     func testKoaWebviewRevealKeepsFollowing() async throws {
         let web = try await scrollPage(module: "scroll-follow")
         let result = try await webviewJS(web, "(async()=>{" + Self.followHelpers + #"""
@@ -905,7 +908,31 @@ import SidebarFeed
         } else {
             try await webviewUntil(web, "\(koaIdle)&&document.querySelector('#model-name').textContent==='claude-opus-5-5'")
         }
-        _ = try await webviewJS(web, "(()=>{const NativeDate=Date;window.Date=class extends NativeDate{constructor(...args){super(...(args.length?args:[\(stamp + 12000)]))}static now(){return \(stamp + 12000)}};const style=document.createElement('style');style.textContent='.caret,.dot.on,.cm-cursorLayer\(scenario == .reveal ? "" : ",.grow"){animation:none!important}\(scenario == .reveal ? ".grow{animation-play-state:paused!important;animation-delay:-110ms!important}" : "").info .chev,#latest{transition:none!important}';document.head.append(style);return true})()")
+        _ = try await webviewJS(web, "(()=>{const NativeDate=Date;window.Date=class extends NativeDate{constructor(...args){super(...(args.length?args:[\(stamp + 12000)]))}static now(){return \(stamp + 12000)}};const style=document.createElement('style');style.textContent='.caret,.dot.on,.cm-cursorLayer\(scenario == .reveal ? "" : ",.grow"){animation:none!important}\(scenario == .reveal ? ".grow{animation-play-state:paused!important;animation-delay:-110ms!important}" : "").info .chev,#latest{transition:none!important}\(captures.contains("follow-slide") ? "" : "#transcript{transform:none!important}")';document.head.append(style);return true})()")
+        if scenario == .reveal && captures.contains("follow-slide") {
+            _ = try await webviewJS(web, "(()=>{koaStep(0);koaStep(180);const s=document.querySelector('#scroll'),t=document.querySelector('#transcript'),clip=document.querySelector('#transcript-clip');s.scrollTop=s.scrollHeight;s.dispatchEvent(new Event('scroll'));window.slideDock=document.querySelector('#dock').getBoundingClientRect().top;window.slideRead=()=>({clipHeight:clip.getBoundingClientRect().height,transcriptHeight:t.offsetHeight});window.slideMeasurements={e0:s.scrollHeight,before:slideRead()};t.style.paddingBottom=(parseFloat(getComputedStyle(t).paddingBottom)+80)+'px';slideMeasurements.e1=s.scrollHeight;slideMeasurements.padded=slideRead();return true})()")
+            try await webviewUntil(web, "document.querySelector('#transcript').style.transform!==''")
+            _ = try await webviewJS(web, "(()=>{const s=document.querySelector('#scroll'),t=document.querySelector('#transcript');window.slideExtent=slideMeasurements.e2=s.scrollHeight;slideMeasurements.start=slideRead();const transform=t.style.transform;t.style.transform='';slideMeasurements.e3=s.scrollHeight;slideMeasurements.without=slideRead();t.style.transform=transform;koaStep(60);return true})()")
+            let frozen = try await webviewJS(web, "(()=>{const s=document.querySelector('#scroll'),t=document.querySelector('#transcript');return JSON.stringify({...slideMeasurements,mid:slideRead(),extent:s.scrollHeight,slideExtent,top:s.scrollTop,max:s.scrollHeight-s.clientHeight,dock:document.querySelector('#dock').getBoundingClientRect().top,slideDock,transform:t.style.transform,focused:window.koaFocused,hidden:document.hidden,reduced:matchMedia('(prefers-reduced-motion: reduce)').matches,clock:koaClock,now:performance.now(),frames:koaFrames.size})})()")
+            let json = try JSONDecoder().decode(String.self, from: Data(frozen.utf8))
+            let values = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any], json)
+            let extent = try XCTUnwrap(values["extent"] as? Double, frozen), initialExtent = try XCTUnwrap(values["slideExtent"] as? Double, frozen)
+            let top = try XCTUnwrap(values["top"] as? Double, frozen), maximum = try XCTUnwrap(values["max"] as? Double, frozen)
+            let dock = try XCTUnwrap(values["dock"] as? Double, frozen), initialDock = try XCTUnwrap(values["slideDock"] as? Double, frozen)
+            let transform = try XCTUnwrap(values["transform"] as? String, frozen)
+            let offset = Double(transform.replacingOccurrences(of: "translateY(", with: "").replacingOccurrences(of: "px)", with: ""))
+            XCTAssertEqual(extent, initialExtent, frozen)
+            XCTAssertLessThan(abs(maximum - top), 1, frozen)
+            XCTAssertEqual(dock, initialDock, frozen)
+            XCTAssertGreaterThan(try XCTUnwrap(offset, frozen), 0, frozen)
+            try await pageSnapshot("follow-slide", "-light")
+            try await darken(); pane.webviewView?.updateTheme()
+            try await webviewUntil(web, "getComputedStyle(document.body).getPropertyValue('--ko-appearance').trim()==='dark'")
+            try await pageSnapshot("follow-slide", "-dark")
+            let ended = try await webviewJS(web, "(()=>{koaStep(180);return document.querySelector('#transcript').style.transform===''})()")
+            XCTAssertEqual(ended, "true")
+            return
+        }
         if scenario == .reveal {
             _ = try await webviewJS(web, "(()=>{koaStep(0);return true})()")
             try await webviewUntil(web, "document.querySelector('.more')?.textContent==='Show 5 more lines'")

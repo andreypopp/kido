@@ -67,7 +67,7 @@ const revealing = new Set<TextMemo>();
 let capTimer: number | undefined;
 let pending: { kind: 'frame' | 'timer'; id: number } | undefined;
 const dirty = new Set<number>(), stale = new Set<string>(), arrivals = new Set<number>(), waiters: (() => void)[] = [];
-let revealDirty = false, resetting = false, correcting = false, annotated = false, wantEnd = false, stick = false, frameAnchor: Anchor | undefined;
+let revealDirty = false, resetting = false, annotated = false, wantEnd = false, stick = false, frameAnchor: Anchor | undefined;
 const growing: HTMLElement[] = [], observed = new Map<Element, Watch>(), measuredHolds = new Map<HTMLElement, number>(), fits = new Map<HTMLElement, boolean>();
 let state: State = { view: { id: '', path: [], type: 'agent' }, agents: [], bash: [], compaction: 'idle', life: { type: 'starting' }, working: false, aborted: false, name: '', levels: [], cwd: '', home: '', statuses: {}, queue: { steering: [], followUp: [] }, dialogs: [] };
 type ItemId = { kind: 'message'; seq: number } | { kind: 'job'; byte: number };
@@ -76,8 +76,12 @@ type Position = { sessionId: string | undefined; anchor: Anchor; last: number };
 type ScrollState = { kind: 'following' } | { kind: 'reader'; anchor: Anchor | undefined } | { kind: 'restoring'; target: Position };
 let scrolling: ScrollState = { kind: 'following' };
 let travel: { from: number; start: number } | undefined;
+let slide: { from: number; start: number; offset: number } | undefined;
+let bottom: Geo | undefined;
+type LayoutCause = { kind: 'layout' } | { kind: 'instant' } | { kind: 'sent'; seq: number; mode: 'following' | 'reader' };
+let pendingRenderCause: LayoutCause | undefined, correcting: LayoutCause | undefined;
 let accepted = 0;
-let sentBlock: { sessionId: string | undefined; view: string } | undefined;
+let sentBlock: { sessionId: string | undefined; view: string; mode: 'following' | 'reader' } | undefined;
 let divider: HTMLElement | undefined;
 const fresh = new Set<number>(), counted = new Set<number>();
 let dockHeight = 0;
@@ -298,7 +302,7 @@ function foldFence(pre: HTMLElement, key: string) {
   fenceOpeners.set(key, { view: pre, open: () => { if (pre.classList.contains('folded')) expand(); } });
   pre.after(bar);
 }
-const wanted = () => dirty.size > 0 || windowDirty && state.view.type !== 'job' || stick || resetting || revealDirty || correcting || fits.size > 0 || growing.length > 0 || measuredHolds.size > 0 || !!travel || waiters.length > 0 || !!metrics?.waiting.length;
+const wanted = () => dirty.size > 0 || windowDirty && state.view.type !== 'job' || stick || resetting || revealDirty || correcting || fits.size > 0 || growing.length > 0 || measuredHolds.size > 0 || !!travel || !!slide || waiters.length > 0 || !!metrics?.waiting.length;
 function schedule() {
   if (pending || !wanted()) return;
   pending = document.hidden ? { kind: 'timer', id: setTimeout(tick, 50) } : { kind: 'frame', id: requestAnimationFrame(tick) };
@@ -322,11 +326,13 @@ function rendered() { return new Promise<void>(resolve => { waiters.push(resolve
 function tick() {
   pending = undefined;
   stick = wantEnd; wantEnd = false;
-  const now = performance.now(), geo = correcting ? readGeometry() : geometry();
+  const correction = correcting;
+  correcting = undefined;
+  const now = performance.now(), geo = correction ? readGeometry() : geometry();
   const grown = [...measuredHolds], fitted = [...fits];
   measuredHolds.clear(); fits.clear();
   if (scrolling.kind === 'following' && !paneFocused() && dirty.size) frameAnchor = captureAnchor();
-  if (correcting) { correcting = false; layoutChanged(geo); }
+  if (correction) layoutChanged(geo, correction);
   for (const [row, overflows] of fitted) row.classList.toggle('more', overflows);
   for (const [target, height] of grown) {
     if (height) target.style.setProperty('--h', height + 'px');
@@ -340,9 +346,15 @@ function tick() {
     for (const memo of revealing) revealStep(memo, now, geo.viewport);
   }
   const changed = dirty.size > 0 || resetting, restoring = renderDirty(geo);
+  if (pendingRenderCause && (pendingRenderCause.kind !== 'sent' || views.has(pendingRenderCause.seq))) {
+    if (pendingRenderCause.kind === 'instant') clearSlide();
+    requestCorrection(pendingRenderCause);
+    pendingRenderCause = undefined;
+  }
   for (const target of growing.splice(0)) { target.classList.add('hold'); observed.set(target, { type: 'hold' }); layoutObserver.observe(target); }
   if (restoring && scrolling.kind === 'restoring') void restore(scrolling);
   if (travel) travelFrame(now, geo);
+  if (slide && slide.start !== now) writeSlide(now);
   if (changed || fresh.size) settle();
   frameAnchor = undefined;
   for (const resolve of waiters.splice(0)) resolve();
@@ -350,11 +362,11 @@ function tick() {
   schedule();
   armCap();
 }
-type Geo = { top: number; max: number; viewport: number; origin: number };
+type Geo = { top: number; max: number; viewport: number; width: number; origin: number };
 let known: Geo | undefined;
 function readGeometry() {
   const scroll = element('scroll');
-  return known = { top: scroll.scrollTop, max: Math.max(0, scroll.scrollHeight - scroll.clientHeight), viewport: scroll.clientHeight, origin: element('items').offsetTop };
+  return known = { top: scroll.scrollTop, max: Math.max(0, scroll.scrollHeight - scroll.clientHeight), viewport: scroll.clientHeight, width: scroll.clientWidth, origin: element('transcript').offsetTop + element('items').offsetTop };
 }
 const geometry = () => known ?? readGeometry();
 function writeTop(top: number, max: number) {
@@ -374,11 +386,11 @@ function captureAnchor(): Anchor | undefined {
     let middle = half;
     while (middle < high && !usable(rows[middle])) middle++;
     if (middle === high) high = half;
-    else if (rows[middle].getBoundingClientRect().bottom > top) high = middle;
+    else if (rows[middle].getBoundingClientRect().bottom - (slide?.offset ?? 0) > top) high = middle;
     else low = middle + 1;
   }
   while (low < rows.length && !usable(rows[low])) low++;
-  const item = itemOf(rows[low]), anchor = item && { item, offset: rows[low].getBoundingClientRect().top - top };
+  const item = itemOf(rows[low]), anchor = item && { item, offset: rows[low].getBoundingClientRect().top - (slide?.offset ?? 0) - top };
   return state.view.type === 'job' || anchor && anchor.offset <= geometry().viewport ? anchor : tableAnchor(geometry());
 }
 function tableAnchor(geo: Geo): Anchor | undefined {
@@ -402,11 +414,11 @@ function restoreAnchor(anchor: Anchor | undefined, geo: Geo) {
     }
     const next = Array.from(messageRows()).find(candidate => { const item = itemOf(candidate); return item?.kind === 'job' && anchor.item.kind === 'job' && item.byte > anchor.item.byte; });
     const item = itemOf(next);
-    if (next && item) scrolling = { kind: 'reader', anchor: { item, offset: next.getBoundingClientRect().top - scroll.getBoundingClientRect().top } };
+    if (next && item) scrolling = { kind: 'reader', anchor: { item, offset: next.getBoundingClientRect().top - (slide?.offset ?? 0) - scroll.getBoundingClientRect().top } };
     else writeTop(geo.max, geo.max);
     return;
   }
-  const delta = row.getBoundingClientRect().top - scroll.getBoundingClientRect().top - anchor.offset;
+  const delta = row.getBoundingClientRect().top - (slide?.offset ?? 0) - scroll.getBoundingClientRect().top - anchor.offset;
   if (Math.abs(delta) >= 1) writeTop(geo.top + delta, geo.max);
 }
 function readScroll(geo = readGeometry()) {
@@ -415,24 +427,67 @@ function readScroll(geo = readGeometry()) {
   accepted = top;
   if (top < before && max < before && Math.abs(top - max) < 1) return;
   travel = undefined;
-  if (max - top < 1) { scrolling = { kind: 'following' }; return; }
+  if (max - top < 1) { scrolling = { kind: 'following' }; clearSlide(); return; }
   scrolling = { kind: 'reader', anchor: captureAnchor() };
 }
-function requestCorrection() { correcting = true; schedule(); }
-function layoutChanged(geo: Geo = readGeometry()) {
+function clearSlide() {
+  slide = undefined;
+  element('transcript').style.transform = '';
+  element('transcript').style.willChange = '';
+}
+function slideOffset(now: number) {
+  if (!slide) return 0;
+  const progress = Math.min(1, Math.max(0, (now - slide.start) / 180));
+  if (progress === 0) return slide.from;
+  let low = 0, high = 1;
+  for (let n = 0; n < 24; n++) {
+    const t = (low + high) / 2;
+    if (1.74 * t * t * (1 - t) + t ** 3 < progress) low = t; else high = t;
+  }
+  const t = (low + high) / 2;
+  return slide.from * (1 - (3 * t * t - 2 * t ** 3));
+}
+function writeSlide(now: number) {
+  if (!slide) return;
+  if (reducedMotion() || document.hidden || !paneFocused() || scrolling.kind !== 'following' || now - slide.start >= 180) { clearSlide(); return; }
+  slide.offset = slideOffset(now);
+  element('transcript').style.transform = `translateY(${slide.offset}px)`;
+}
+function mergeCause(before: LayoutCause | undefined, next: LayoutCause): LayoutCause {
+  return before?.kind === 'instant' || next.kind === 'layout' && before ? before : next;
+}
+function instantLayout() { pendingRenderCause = { kind: 'instant' }; clearSlide(); }
+function requestCorrection(cause: LayoutCause = { kind: 'layout' }) { correcting = mergeCause(correcting, cause); schedule(); }
+function layoutChanged(geo: Geo = readGeometry(), cause: LayoutCause = { kind: 'layout' }) {
+  const previous = bottom;
+  const sentHeight = cause.kind === 'sent' && cause.mode === 'reader' ? views.get(cause.seq)?.view.offsetHeight : undefined;
   readScroll(geo);
+  if (scrolling.kind === 'reader') restoreAnchor(scrolling.anchor, geo);
+  bottom = { ...geo };
+  const resized = previous && (previous.viewport !== geo.viewport || previous.width !== geo.width);
+  if (!previous || resized || cause.kind === 'instant' || travel || scrolling.kind !== 'following' || document.hidden || !paneFocused() || reducedMotion()) clearSlide();
+  else {
+    const delta = sentHeight ?? geo.max - previous.max;
+    if (delta) {
+      const now = performance.now(), offset = Math.max(-geo.viewport, Math.min(geo.viewport, (sentHeight === undefined ? slideOffset(now) : 0) + delta));
+      if (!slide) element('transcript').style.willChange = 'transform';
+      slide = { from: offset, start: now, offset };
+      writeSlide(now);
+      schedule();
+    }
+  }
   if (travel) return;
   if (scrolling.kind === 'following') {
     if (stick || paneFocused()) writeTop(geo.max, geo.max);
     else if (geo.max - geo.top >= 1) scrolling = { kind: 'reader', anchor: captureAnchor() };
   }
-  else if (scrolling.kind === 'reader') restoreAnchor(scrolling.anchor, geo);
 }
 function atEnd() { if (scrolling.kind === 'following') { const { max } = readGeometry(); writeTop(max, max); } }
 function readerInput() {
   travel = undefined;
   if (readGeometry().max < 1 || scrolling.kind === 'reader') return;
   scrolling = { kind: 'reader', anchor: captureAnchor() };
+  clearSlide();
 }
 function paneFocused() { return window.koaFocused ?? (document.hasFocus() && document.visibilityState === 'visible'); }
 function clearDivider() { divider?.remove(); divider = undefined; dividerPx = undefined; if (fresh.size) { fresh.clear(); table = undefined; windowDirty = true; } }
@@ -482,6 +537,7 @@ function follow(max = readGeometry().max) {
   sync();
 }
 function toLatest() {
+  clearSlide();
   if (reducedMotion()) { follow(); return; }
   travel = { from: element('scroll').scrollTop, start: performance.now() };
   schedule();
@@ -490,7 +546,7 @@ function travelFrame(now: number, geo: Geo) {
   if (!travel) return;
   windowDirty = true;
   const target = geo.max, progress = Math.min(1, (now - travel.start) / REVEAL.travel);
-  if (progress >= 1 || Math.abs(target - travel.from) < 1) { follow(target); return; }
+  if (progress >= 1 || Math.abs(target - travel.from) < 1) { clearSlide(); follow(target); return; }
   writeTop(travel.from + (target - travel.from) * (1 - (1 - progress) ** 3), target);
 }
 function revealStep(memo: TextMemo, now: number, viewport: number) {
@@ -528,7 +584,7 @@ function thumbnails(refs: ImageRef[], owner: () => Map<string, Slot>, name?: str
         if (ref.width && ref.height) { image.width = ref.width; image.height = ref.height; }
         else { image.removeAttribute('width'); image.removeAttribute('height'); }
         const target = thumb;
-        image.onload = requestCorrection;
+        image.onload = () => requestCorrection();
         image.onerror = () => {
           if (target.classList.contains('gone')) return;
           target.classList.add('gone'); target.setAttribute('role', 'img'); target.setAttribute('aria-label', 'Image unavailable'); target.disabled = true;
@@ -1372,15 +1428,16 @@ function apply(record: PageRecord) {
   if (record.type === 'reset') {
     editor.resetCompletion();
     find = undefined; selected = undefined; segmentCache.clear(); owners.clear(); epoch = record.epoch; after = -1; first = undefined; items.clear(); order.length = 0; extents.clear(); live.clear(); dirty.clear(); stale.clear(); arrivals.clear(); annotationItems.clear(); folds.clear(); jobOwners.clear(); historyRequest = undefined; more = record.more;
+    instantLayout(); sentBlock = undefined;
     resetting = true; wantEnd = true;
     for (const item of record.items) accept(item);
     schedule();
   } else if (record.type === 'item') {
     const current = items.get(record.item.seq);
-    if (!current || record.item.revision >= current.revision) { accept(record.item); if (!current && record.item.kind === 'user' && sentBlock?.view === state.view.id && sentBlock.sessionId === state.sessionId) { sentBlock = undefined; wantEnd = true; } if (!current && arrives(record.item)) arrivals.add(record.item.seq); }
+    if (!current || record.item.revision >= current.revision) { accept(record.item); if (!current && record.item.kind === 'user' && sentBlock?.view === state.view.id && sentBlock.sessionId === state.sessionId) { pendingRenderCause = mergeCause(pendingRenderCause, { kind: 'sent', seq: record.item.seq, mode: sentBlock.mode }); sentBlock = undefined; wantEnd = true; } if (!current && arrives(record.item)) arrivals.add(record.item.seq); }
   } else if (record.type === 'patch') applyPatch(record, true);
   else if (record.type === 'reload') location.reload();
-  else if (record.type === 'job-reset') { epoch = record.epoch; job.reset(record); after = job.cursor(); atEnd(); if (scrolling.kind === 'restoring') void restore(scrolling); }
+  else if (record.type === 'job-reset') { instantLayout(); epoch = record.epoch; job.reset(record); after = job.cursor(); atEnd(); if (scrolling.kind === 'restoring') void restore(scrolling); }
   else if (record.type === 'job-gone') job.gone(record);
   else if (record.type === 'job-append') { job.append(record); after = job.cursor(); }
   else if (record.type === 'state') {
@@ -1388,6 +1445,7 @@ function apply(record: PageRecord) {
     if (state.sessionId && state.sessionId !== record.sessionId) { closeSessions(); closePicker(); editorId = undefined; }
     const agentsChanged = JSON.stringify(state.agents) !== JSON.stringify(record.agents);
     const wasEditing = !!state.edit, viewChanged = state.view.id !== record.view.id;
+    if (viewChanged || state.sessionId !== record.sessionId) instantLayout();
     if (viewChanged) { leaveView(record.view.id); const saved = positions.get(record.view.id); travel = undefined; sentBlock = undefined; clearDivider(); scrolling = saved && saved.sessionId === record.sessionId ? { kind: 'restoring', target: saved } : { kind: 'following' }; }
     state = record; windowDirty = true; schedule(); if (agentsChanged || viewChanged) refreshAgentCards(); document.body.dataset.sessionId = state.sessionId ?? ''; element('items').hidden = state.life.type === 'switching';
     showJobView();
@@ -1416,6 +1474,7 @@ function leaveView(next: string) {
   editor.setText(drafts.get(next) ?? ''); drafts.delete(next);
 }
 async function restore(mine: Extract<ScrollState, { kind: 'restoring' }>) {
+  instantLayout();
   const { anchor, last } = mine.target;
   if (anchor.item.kind === 'job') {
     while (scrolling === mine && state.view.type === 'job' && job.start() > anchor.item.byte && await job.earlier());
@@ -1499,9 +1558,8 @@ function openBarMenu(anchor: HTMLElement, hidden: { id: string; name: string }[]
   barMenu.style.left = Math.max(8, Math.min(rect.left - 6, innerWidth - 8 - 140)) + 'px'; barMenu.style.top = bounds.bottom + 4 + 'px';
   barMenu.hidden = false;
 }
-function layoutBar() {
+function layoutBar(column = element('transcript').getBoundingClientRect()) {
   if (bar.hidden) return;
-  const column = element('transcript').getBoundingClientRect();
   bar.style.left = column.left + 8 + 'px'; bar.style.maxWidth = Math.max(0, column.width - 16) + 'px';
   bar.classList.remove('cap', 'shrink', 'noback');
   const overflows = () => bar.scrollWidth > bar.clientWidth + 1.5;
@@ -1525,6 +1583,7 @@ function dockResized(height: number) {
   document.body.style.setProperty('--dock-h', height + 'px');
   if (height === dockHeight) return;
   dockHeight = height;
+  requestCorrection();
   sync();
 }
 type Match = { seq: number; segment: number; start: number };
@@ -1738,6 +1797,7 @@ async function loadOlder(mine: NonNullable<typeof historyRequest>) {
     const response = await fetch(scoped('/items?before=' + first, state.sessionId)); if (!response.ok) throw Error('Could not load earlier messages');
     const result: Extract<PageRecord, { type: 'reset' }> = await response.json();
     if (historyRequest === mine && result.epoch === epoch) {
+      instantLayout();
       more = result.more;
       for (const item of result.items) if (!items.has(item.seq)) accept(item);
       for (const patch of mine.patches) { applyPatch(patch, false); if (historyRequest !== mine) return; }
@@ -1877,11 +1937,12 @@ async function send(mode: PromptMode = 'prompt') {
   if (!canSend(text) || submitting) return;
   const sendingSession = state.sessionId, origin = state.view.id;
   submitting = true;
-  sentBlock = { sessionId: sendingSession, view: origin };
+  sentBlock = { sessionId: sendingSession, view: origin, mode: scrolling.kind === 'following' ? 'following' : 'reader' };
+  if (sentBlock.mode === 'reader') clearSlide();
   follow();
   try {
     const result = await fetchJSON('/prompt', { sessionId: sendingSession, text, mode, attachments: files.map(file => file.id) });
-    if (result.disposition === 'handled') sentBlock = undefined; else draft.sent(files);
+    if (result.disposition === 'handled') { sentBlock = undefined; clearSlide(); } else draft.sent(files);
     if (state.view.id !== origin) { if (drafts.get(origin) === text) drafts.delete(origin); return; }
     if (state.sessionId !== sendingSession) return;
     if (editor.text() === text) editor.setText('');
@@ -1895,7 +1956,7 @@ async function send(mode: PromptMode = 'prompt') {
       }
     }
   }
-  catch (error) { sentBlock = undefined; reportError(error); }
+  catch (error) { sentBlock = undefined; clearSlide(); reportError(error); }
   finally { submitting = false; }
 }
 element('older').onclick = older;
@@ -1924,7 +1985,7 @@ document.addEventListener('focusout', composerFocus);
 const previewModifiers = (event: MouseEvent | KeyboardEvent) => event.shiftKey && event.metaKey && !event.ctrlKey && !event.altKey;
 const previewHover = (event: KeyboardEvent) => document.documentElement.classList.toggle('preview-modifiers', previewModifiers(event));
 document.addEventListener('keyup', previewHover);
-window.addEventListener('blur', () => { document.documentElement.classList.remove('preview-modifiers'); composerFocus(); sync(); });
+window.addEventListener('blur', () => { clearSlide(); document.documentElement.classList.remove('preview-modifiers'); composerFocus(); sync(); });
 document.addEventListener('selectionchange', () => {
   const next = pinnedRows();
   if (next?.from === selected?.from && next?.to === selected?.to) return;
@@ -1965,12 +2026,17 @@ function resized(entries: ResizeObserverEntry[]) {
   }
   for (const memo of tails) { const tail = memo.reveal?.tail; if (tail) tail.units = unitsOf(tail.view, tail.block.token); }
   if (tails.size || measuredHolds.size || fits.size) { revealDirty ||= tails.size > 0; schedule(); }
+  const geo = readGeometry(), column = entries.some(({ target }) => target === element('scroll')) && !bar.hidden ? element('transcript').getBoundingClientRect() : undefined;
+  const cause: LayoutCause = bottom && (bottom.viewport !== geo.viewport || bottom.width !== geo.width) ? { kind: 'instant' } : correcting ?? { kind: 'layout' };
+  if (correcting?.kind === 'sent') correcting = undefined;
+  layoutChanged(geo, cause);
+  if (cause.kind === 'instant') requestCorrection(cause);
+  const correctionCause: LayoutCause = cause.kind === 'instant' ? cause : { kind: 'layout' };
   for (const { target, borderBoxSize } of entries) {
-    if (target === element('dock')) dockResized(borderBoxSize[0].blockSize);
-    if (target === element('scroll')) layoutBar();
+    if (target === element('dock')) { dockResized(borderBoxSize[0].blockSize); if (correcting) requestCorrection(correctionCause); }
+    if (target === element('scroll') && column) layoutBar(column);
   }
-  layoutChanged();
-  if (scrolling.kind === 'following' && entries.some(({ target }) => observed.get(target)?.type === 'block')) requestCorrection();
+  if (scrolling.kind === 'following' && entries.some(({ target }) => observed.get(target)?.type === 'block')) requestCorrection(correctionCause);
   sync();
 }
 for (const id of ['scroll', 'items', 'jobv', 'dock']) layoutObserver.observe(element(id));

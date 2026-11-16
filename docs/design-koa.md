@@ -1087,8 +1087,8 @@ text to show.
   from the height that the observer read. Under Reduce Motion, a
   completed block appears at full height and opacity in its first
   frame, without the hold or grow. The chunking, height and time
-  caps, and fence folding stay unchanged; scroll travel is disabled
-  and the dots stay static. A `state` record and a job
+  caps, and fence folding stay unchanged; scroll travel and the
+  follow slide are disabled and the dots stay static. A `state` record and a job
   view's records still render at once: they are rare and drive the
   focus, the composer and the job output. The frame loop runs only
   while work waits; the time cap is one timeout. A hidden page gets
@@ -1201,6 +1201,37 @@ the command first ("`!` commands" below).
   each frame to the moving bottom; the state stays `reader` until
   it arrives, and reader input, a view switch or a hidden page
   cancels it. Under Reduce Motion the click follows at once.
+- **The follow slide.** The glide that a following reader sees is a
+  transform, not a scroll (app/design/koa/NOTES.md, "The follow
+  slide"). The scroll stays exact at the bottom in every frame; the
+  owner moves `#transcript` (the items, the job output and the
+  bottom padding; the dock is outside it) by `translateY` and eases
+  it back to 0. An animated scroll and a streaming layout fight each
+  other; a transform on one element costs no layout and cannot lose
+  the follow. The owner takes the bottom's change from the geometry
+  that each correction already reads, against the last geometry
+  that a correction consumed, not from the scroll distance, so a
+  repeated delivery adds nothing and every cause (a slice, the grow's
+  frames, the dots, an image, the dock's padding) is one path. Each
+  change adds its height to the offset from where the content is
+  now, clamps it to one viewport and restarts the 180 ms CSS
+  `ease-out` curve. The frame loop writes the offset after its
+  reads; the owner keeps the value that it wrote, so an anchor read
+  subtracts it from a row's rect without reading styles.
+  `#transcript-clip` around it clips the overflow, because a
+  transformed box adds to the scroller's scrollable overflow, which
+  would feed the offset back into the measured bottom.
+  A layout change has a cause, carried from the render through the
+  observer delivery to the one correction that measures it: an
+  ordinary change slides; an instant one (a reset, a view or session
+  switch, a restored view, older history, a job's reset, a change of
+  the scroller's own size) only moves the baseline; the user's send
+  slides by the bottom's change when the reader followed, and by the
+  sent row's height after an instant jump when the reader was up.
+  The first measurement is a baseline. Reader input, `reader`,
+  travel, a blur, a hidden page and Reduce Motion end the slide at
+  0. A change of the dock's height slides; a resize of the window
+  does not.
 - **Reader input and clamps.** Only the reader leaves following. An
   upward wheel, a downward touch drag and the keys Up, Page Up, Home
   and Shift-Space outside a control set `reader` with the current

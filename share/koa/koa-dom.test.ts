@@ -1089,7 +1089,7 @@ async function revealPage(clientHeight = 100) {
   const rects = (count: number) => Array.from({ length: count }, (_, line) => ({ top: line * 20 + 2, bottom: line * 20 + 18 }));
   app.context.document.createElement = (tag: string) => {
     const node = create(tag);
-    node.getBoundingClientRect = () => { hooks.read?.('rect', node); layout.flush(); return { left: 0, top: node.className.includes('reveal') ? 0 : node.offsetTop - top, bottom: (node.rects.at(-1)?.bottom ?? 0) + 2, height: 0 }; };
+    node.getBoundingClientRect = () => { hooks.read?.('rect', node); layout.flush(); const offset = app.context.document.getElementById('items').contains(node) || app.context.document.getElementById('jobv').contains(node) ? Number.parseFloat(String(app.context.document.getElementById('transcript').style.transform).slice(11)) || 0 : 0; const position = (node.className.includes('reveal') ? 0 : node.offsetTop - top) + offset, height = node.rects.at(-1)?.bottom ? Number(node.rects.at(-1)?.bottom) + 2 : node.offsetHeight; return { left: 0, top: position, bottom: position + height, height }; };
     if (tag === 'template') Object.defineProperty(node, 'innerHTML', { set(value: string) {
       html.push(value);
       const child = create(value.startsWith('<pre') ? 'pre' : 'p'), text = value.replace(/<[^>]*>/g, '').replace(/\n$/, '');
@@ -1656,7 +1656,7 @@ async function latestPage() {
   const focus = (value: boolean) => { doc.hasFocus = () => value; app.windowListeners.get(value ? 'focus' : 'blur')?.(); };
   const go = (id: string, session = id === 'r' ? 's' : 'c') => evaluate(`apply({...state,type:'state',sessionId:'${session}',view:{id:'${id}',path:[{id:'r',name:'ko'}${id === 'r' ? '' : ",{id:'" + id + "',name:'x'}"}]},life:{type:'ready'}})`);
   evaluate("apply({type:'reset',epoch:'a',more:false,items:[]});element('dock').getBoundingClientRect=()=>({top:100})");
-  fixture.step(16);
+  fixture.step(16); fixture.step(0);
   return { ...fixture, text, own, add, scroll, dividers, latest, focus, go, doc };
 }
 
@@ -1812,20 +1812,21 @@ test('the own message never makes a divider, and a send removes the divider', as
 test('while the pane is unfocused nothing scrolls, also at the bottom, and the divider waits for the reader', async () => {
   const page = await latestPage();
   page.add(page.text(0));
+  page.evaluate("views.get(0).view.offsetHeight=1000;extents.set(0,{kind:'estimated',px:1000});table=undefined");
   page.scroll(900);
   page.focus(false);
   page.add(page.text(1));
   page.step(16); page.step(16);
   assert.equal(page.evaluate("element('scroll').scrollTop"), 900);
-  assert.equal(page.dividers(), 'divider,1');
+  assert.equal(page.dividers(), '0,divider,1');
   page.evaluate("element('scroll').scrollHeight=1100");
   page.focus(true);
-  assert.equal(page.dividers(), 'divider,1');
+  assert.equal(page.dividers(), '0,divider,1');
   page.add(page.text(2));
   page.step(16); page.step(16);
   assert.equal(page.evaluate("element('scroll').scrollTop"), 900);
   page.evaluate("element('scroll').scrollTop=1000;element('scroll').onscroll()");
-  assert.equal(page.dividers(), '2');
+  assert.equal(page.dividers(), '0,1,2');
 });
 
 test('a view that is focused and at the bottom follows and gets no divider', async () => {
@@ -1961,6 +1962,189 @@ test('a delivery of only a reveal child still scrolls a following pane to the gr
   page.scroll(900);
   page.evaluate("element('scroll').scrollHeight=1200;const child=document.createElement('div');element('items').append(child);observed.set(child,{type:'reveal',memo:{}});resized([{target:child,borderBoxSize:[{blockSize:0}]}])");
   assert.equal(page.evaluate("element('scroll').scrollTop"), 1100);
+});
+
+test('reader input during a follow slide captures an untransformed anchor and holds it', async () => {
+  const page = await latestPage();
+  for (let seq = 0; seq < 4; seq++) page.add(page.text(seq));
+  page.evaluate("element('scroll').scrollHeight=350;follow();layoutChanged();clearSlide();element('scroll').scrollHeight=390;layoutChanged()");
+  assert.equal(page.evaluate('slide.offset'), 40);
+  page.evaluate('readerInput()');
+  assert.equal(page.evaluate('scrolling.anchor.item.seq'), 3);
+  assert.equal(page.evaluate('scrolling.anchor.offset'), 10);
+  assert.equal(page.evaluate("element('transcript').style.transform"), '');
+  page.evaluate("element('items').prepend(document.createElement('div'));element('scroll').scrollHeight=490;layoutChanged()");
+  assert.equal(page.evaluate("views.get(3).view.getBoundingClientRect().top"), 10);
+  assert.equal(page.evaluate('scrolling.anchor.item.seq'), 3);
+});
+
+test('follow slide covers grow deliveries, dots, dock, resize, and image load', async () => {
+  const page = await latestPage();
+  page.scroll(900); page.evaluate('layoutChanged();clearSlide()');
+  const deliver = (height: number) => page.evaluate(`element('scroll').scrollHeight=${height};resized([{target:element('items'),borderBoxSize:[{blockSize:0}]}])`);
+  page.evaluate("observed.set(element('items'),{type:'block'})");
+  deliver(1040);
+  assert.equal(page.evaluate('slide.offset'), 40);
+  page.step(60);
+  const current = Number(page.evaluate('slide.offset'));
+  deliver(1060);
+  assert.ok(Math.abs(Number(page.evaluate('slide.offset')) - current - 20) < .01, 'grow frames retarget from the current offset');
+  page.step(180);
+  for (const [working, height, offset] of [[true, 1080, 20], [false, 1060, -20]] as const) {
+    page.evaluate(`state={...state,working:${working},since:1};reconcileWorking()`);
+    deliver(height);
+    assert.equal(page.evaluate('slide.offset'), offset, 'dots entering and leaving use signed bottom deltas');
+    page.step(180);
+  }
+  page.evaluate("resized([{target:element('dock'),borderBoxSize:[{blockSize:180}]}])");
+  deliver(1110);
+  assert.equal(page.evaluate('slide.offset'), 50, 'dock padding growth slides');
+  page.step(180);
+  page.evaluate("element('scroll').clientWidth=400;element('scroll').scrollHeight=1160;resized([{target:element('scroll'),borderBoxSize:[{blockSize:100}]}])");
+  assert.equal(page.evaluate("element('transcript').style.transform"), '', 'window resize is instant');
+  page.step(0);
+  page.evaluate("var picture=thumbnails([{id:'0.0',revision:0,mimeType:'image/png',bytes:10}],()=>new Map());picture.load();element('items').append(picture.view);element('scroll').scrollHeight=1190;picture.view.firstElementChild.firstElementChild.onload()");
+  page.step(0);
+  assert.equal(page.evaluate('slide.offset'), 30, 'image load slides by its layout delta');
+});
+
+test('follow slide distinguishes following sends, unfocused sends, and handled commands', async () => {
+  const page = await latestPage();
+  page.scroll(900); page.evaluate('layoutChanged();clearSlide()');
+  await page.evaluate("editor.setText('one');fetchJSON=async()=>({disposition:'sent'});send()");
+  page.evaluate("element('scroll').scrollHeight=1050"); page.add(page.own(0));
+  assert.equal(page.evaluate('slide.offset'), 50, 'following sends use the bottom delta');
+  page.step(180); page.focus(false);
+  await page.evaluate("editor.setText('two');send()");
+  page.evaluate("element('scroll').scrollHeight=1100"); page.add(page.own(1));
+  assert.equal(page.evaluate("element('transcript').style.transform"), '', 'unfocused sends keep instant positioning');
+  page.focus(true); page.evaluate("follow();element('scroll').scrollHeight=1150;layoutChanged()");
+  assert.equal(page.evaluate('slide.offset'), 50);
+  await page.evaluate("editor.setText('/help');fetchJSON=async()=>({disposition:'handled'});send()");
+  assert.equal(page.evaluate("element('transcript').style.transform"), '', 'handled commands clear active motion');
+});
+
+test('follow slide stays zero for first paint, view and session switches, restore, and history insertion', async () => {
+  const page = await latestPage();
+  page.evaluate(`apply({type:'reset',epoch:'first',more:false,items:[${JSON.stringify(page.text(0))}]});element('scroll').scrollHeight=1000`);
+  page.step(0); page.step(0);
+  assert.equal(page.evaluate("element('transcript').style.transform"), '', 'first transcript paint');
+  for (const [name, action] of [
+    ['view switch', () => page.go('child')],
+    ['session switch', () => page.go('child', 'other')],
+    ['restore', () => page.evaluate("scrolling={kind:'restoring',target:{sessionId:state.sessionId,anchor:{item:{kind:'message',seq:0},offset:0},last:0}};restore(scrolling)")],
+  ] as const) {
+    page.evaluate('follow();clearSlide()');
+    await action();
+    page.evaluate("element('scroll').scrollHeight+=30");
+    page.step(0); page.step(0);
+    assert.equal(page.evaluate("element('transcript').style.transform"), '', name);
+  }
+  page.evaluate("follow();first=1;more=true;fetch=async()=>({ok:true,json:async()=>({type:'reset',epoch,more:false,items:[{seq:-1,revision:0,kind:'assistant',final:true,blocks:[{type:'text',text:'history'}]}]})})");
+  const history = page.evaluate('older()');
+  await Promise.resolve(); await Promise.resolve(); await Promise.resolve();
+  page.evaluate("element('scroll').scrollHeight+=100");
+  page.step(0); page.step(0);
+  await history;
+  assert.equal(page.evaluate("element('transcript').style.transform"), '', 'history inserts without a slide');
+});
+
+test('follow slide accumulates bottom deltas without moving the exact bottom', async () => {
+  const page = await latestPage();
+  page.scroll(900);
+  page.evaluate("layoutChanged();element('scroll').scrollHeight=1100;layoutChanged()");
+  assert.equal(page.evaluate("element('transcript').style.transform"), 'translateY(100px)');
+  page.evaluate('layoutChanged()');
+  assert.equal(page.evaluate("element('transcript').style.transform"), 'translateY(100px)');
+  page.step(90);
+  const middle = Number(page.evaluate('slide.offset'));
+  assert.ok(middle > 0 && middle < 50);
+  page.evaluate("element('scroll').scrollHeight=1120;layoutChanged()");
+  assert.ok(Math.abs(Number(page.evaluate('slide.offset')) - middle - 20) < .01);
+  assert.equal(page.evaluate("element('scroll').scrollTop"), 1020);
+  const offset = page.evaluate("element('transcript').style.transform");
+  page.evaluate('layoutChanged();layoutChanged()');
+  assert.equal(page.evaluate("element('transcript').style.transform"), offset);
+  page.step(180);
+  assert.equal(page.evaluate("element('transcript').style.transform"), '');
+});
+
+test('follow slide clears on live Reduce Motion, blur, and a viewport resize', async () => {
+  const page = await latestPage();
+  page.scroll(900);
+  page.evaluate("layoutChanged();element('scroll').scrollHeight=1100;layoutChanged()");
+  Object.assign(page.app.context, { matchMedia: () => ({ matches: true }) });
+  page.step(16);
+  assert.equal(page.evaluate("element('transcript').style.transform"), '');
+  Object.assign(page.app.context, { matchMedia: () => ({ matches: false }) });
+  page.evaluate("element('scroll').scrollHeight=1200;layoutChanged()");
+  page.focus(false);
+  assert.equal(page.evaluate("element('transcript').style.transform"), '');
+  page.focus(true);
+  page.evaluate("element('scroll').clientWidth=400;element('scroll').scrollHeight=1300;layoutChanged()");
+  assert.equal(page.evaluate("element('transcript').style.transform"), '');
+});
+
+test('follow slide uses only the sent row height for a reader send', async () => {
+  const page = await latestPage();
+  page.scroll(0);
+  page.evaluate('layoutChanged()');
+  await page.evaluate("editor.setText('hello'); fetchJSON=async()=>({disposition:'sent'}); send()");
+  page.evaluate("element('scroll').scrollHeight=1200");
+  page.add(page.own(0));
+  assert.equal(page.evaluate("element('transcript').style.transform"), 'translateY(20px)');
+  assert.equal(page.evaluate("element('scroll').scrollTop"), 1100);
+});
+
+test('follow slide keeps a reset instant across a queued correction but not a later append', async () => {
+  const page = await latestPage();
+  page.scroll(900);
+  page.evaluate("layoutChanged();requestCorrection();apply({type:'reset',epoch:'b',more:false,items:[]});element('scroll').scrollHeight=1200");
+  page.step(0);
+  assert.equal(page.evaluate("element('transcript').style.transform"), '');
+  page.step(0);
+  assert.equal(page.evaluate("element('transcript').style.transform"), '');
+  page.evaluate("apply({type:'reset',epoch:'c',more:false,items:[]})");
+  page.step(0); page.step(0);
+  page.evaluate("element('scroll').scrollHeight=1250;layoutChanged()");
+  assert.equal(page.evaluate("element('transcript').style.transform"), 'translateY(50px)');
+});
+
+test('follow slide keeps an instant cause through two observer deliveries before correction', async () => {
+  const page = await latestPage();
+  page.scroll(900);
+  page.evaluate("layoutChanged();requestCorrection({kind:'instant'});resized([{target:element('dock'),borderBoxSize:[{blockSize:200}]}]);element('scroll').scrollHeight=1200;resized([{target:element('items'),borderBoxSize:[{blockSize:0}]}])");
+  assert.equal(page.evaluate("element('transcript').style.transform"), '');
+  page.step(0);
+  assert.equal(page.evaluate("element('transcript').style.transform"), '');
+  page.evaluate("element('scroll').scrollHeight=1250;layoutChanged()");
+  assert.equal(page.evaluate("element('transcript').style.transform"), 'translateY(50px)');
+});
+
+test('follow slide suppresses a transcript reset and begins Latest arrival at zero', async () => {
+  const page = await latestPage();
+  page.scroll(900);
+  page.evaluate("layoutChanged();element('scroll').scrollHeight=1100;layoutChanged()");
+  page.evaluate("apply({type:'reset',epoch:'b',more:false,items:[]});element('scroll').scrollHeight=1300");
+  page.step(0);
+  assert.equal(page.evaluate("element('transcript').style.transform"), '');
+  page.scroll(100, 1300);
+  page.evaluate('toLatest()');
+  page.step(250);
+  assert.equal(page.evaluate("element('transcript').style.transform"), '');
+  assert.equal(page.evaluate('scrolling.kind'), 'following');
+});
+
+test('follow slide clamps both directions and clears for reader input', async () => {
+  const page = await latestPage();
+  page.scroll(900);
+  page.evaluate("layoutChanged();element('scroll').scrollHeight=3000;layoutChanged()");
+  assert.equal(page.evaluate("element('transcript').style.transform"), 'translateY(100px)');
+  page.step(180);
+  page.evaluate("element('scroll').scrollHeight=1000;layoutChanged()");
+  assert.equal(page.evaluate("element('transcript').style.transform"), 'translateY(-100px)');
+  page.evaluate('readerInput()');
+  assert.equal(page.evaluate("element('transcript').style.transform"), '');
 });
 
 test('a layout growth under a following pane keeps following', async () => {
