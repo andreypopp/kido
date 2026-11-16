@@ -1072,35 +1072,38 @@ the history at the time of the search, for display only; a client
 jumps to a match by taking a full snapshot and searching its mirror,
 since server rows move with output.
 
-`GET /prompt/resolve?from=pane_N` lists the candidate agent panes
-for a prompt from pane `from`, with the scope rule applied in the
-server:
-the candidates of the caller's window, else, when that window has
-none, those of the other windows of its session. With `window=true`
-it never widens. Terminal panes are not candidates. A
-candidate says whether its message stream is open (`inbox`), which
-decides the path below. `POST /prompt`
-(`SendPrompt`) sends text to one candidate of its `from` and reports
-how it went (`ko_server/src/state/prompt.rs`). A pane identity may
-name only itself as `from`; the user (`ko` outside a pane, Kido.app)
-names any pane. The first that applies delivers:
+`POST /prompt` (`SendPrompt`) sends text to an agent pane for its
+`from` and reports how it went (`ko_server/src/state/prompt.rs`). A
+pane identity may name only itself as `from`; the user (`ko` outside
+a pane, Kido.app) names any pane. The target is an agent pane:
+`Kind::is_agent` and not dead (design-program-status.md, "Pane
+kinds"). The server picks and checks it in the turn that delivers:
+
+- With a `target`, that pane, which must be an agent of `from`'s
+  session; any other pane is `refused`.
+- Without one, the one agent in `from`'s window other than `from`
+  itself. None is `no_agent`, several are `multiple_agents`; the
+  server never picks the caller, the focused pane or a pane of
+  another window.
+
+The first that applies delivers:
 
 - A pane with an open message stream, or whose queue knows the
   body's `id` (a repeat), gets the text as a message of
   kind `user` with the body's `id` (section 7, "Messages"), stamped
   with the caller's identity; the reply carries the message's state
   and `seq`.
-- Any other candidate gets one `paste` input and one Enter key through
+- Any other agent gets one `paste` input and one Enter key through
   its `ko-pane`; the pane's bracketed paste mode decides the wrapping.
+  The server checks the target again before the Enter.
 
-`ko prompt` sends its own pane as `from` and mints the id. When the
-connection fails after the request may have been sent, and the
-candidate's stream was open, it resends once with the same id: the
-server enqueues each id once and answers a repeat from the original.
-It never repeats a paste, which has no id, and it does not resend an
-`io` reply. It exits with 0 sent (acked, delivered or queued), 1 empty text or an
-error, 4 no agent in scope, 5 several); its `--window` sends
-`window=true`.
+`GET /prompt/resolve?from=pane_N` lists the agents of `from`'s
+session, `from`'s window first, for Kido.app's picker, which then
+sends with an explicit `target`.
+
+`ko prompt` sends its own pane as `from`, no `target` and an id that
+it mints, once. It exits with 0 sent (acked, delivered or queued), 1
+empty text or an error, 4 `no_agent`, 5 `multiple_agents`.
 
 ## 12. Flow of an app window
 

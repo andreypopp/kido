@@ -379,10 +379,11 @@ impl State {
         poll: &mut Poll,
         id: PaneId,
         report: ko_wire::protocol::StatusReport,
+        writer: crate::telemetry::Writer,
     ) {
         let now = ko_sys::clock::Mono::now();
         if let Some(pane) = self.panes.find_mut(id)
-            && pane.telemetry_mut().records.apply(report, now)
+            && pane.telemetry_mut().status(report, now, writer)
         {
             self.model.mark(poll, pane);
         }
@@ -1060,7 +1061,9 @@ impl State {
                     self.model.mark(poll, pane);
                 }
             }
-            Event::Record(report) => self.set_status(poll, id, report),
+            Event::Record(report) => {
+                self.set_status(poll, id, report, crate::telemetry::Writer::Terminal);
+            }
             Event::Foreground(foreground) => {
                 if let Some(pane) = self.panes.find_mut(id)
                     && pane.telemetry_mut().foreground(foreground.clone())

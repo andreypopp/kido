@@ -327,7 +327,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** @description The agents that a prompt can reach from the pane `from`. A pane identity may name only itself. */
+        /** @description The live agents of the session of the pane `from`, for choosing a prompt target. A pane identity may name only itself. */
         get: operations["PromptResolve"];
         put?: never;
         post?: never;
@@ -554,8 +554,6 @@ export interface components {
             max_lines?: number;
         };
         Candidate: {
-            /** @description True while the pane has its message stream open, so a prompt goes through its queue. */
-            inbox: boolean;
             pane: components["schemas"]["PaneId"];
             session: components["schemas"]["SessionId"];
             title: string;
@@ -913,6 +911,12 @@ export interface components {
         } | {
             /** @constant */
             kind: "refused";
+        } | {
+            /** @constant */
+            kind: "no_agent";
+        } | {
+            /** @constant */
+            kind: "multiple_agents";
         } | {
             /** @constant */
             kind: "gone";
@@ -1566,13 +1570,16 @@ export interface components {
             kind: components["schemas"]["SendKind"];
             text: string;
         };
-        /** @description A prompt for the agent in a pane. The scope is the window of `from`, else its session. */
+        /**
+         * @description A prompt for an agent. Without a target it goes to the one live agent of the window of `from`,
+         *     not `from` itself. A target must be a live agent of the session of `from`.
+         */
         SendPrompt: {
             /** @description The pane that the prompt comes from. A pane identity may name only itself. */
             from: components["schemas"]["PaneId"];
             /** @description The id of the message when the prompt goes through the agent's message stream. */
             id: components["schemas"]["MessageId"];
-            target: components["schemas"]["PaneId"];
+            target?: components["schemas"]["PaneId"];
             text: string;
         };
         /**
@@ -1932,8 +1939,6 @@ export interface components {
             zoom?: components["schemas"]["PaneId"];
         };
         WindowId: string;
-        /** @enum {string} */
-        WindowOnly: "true";
         WindowSize: {
             size: components["schemas"]["Size"];
             window: components["schemas"]["WindowId"];
@@ -3139,8 +3144,6 @@ export interface operations {
             query?: {
                 /** @example pane_1 */
                 from?: components["schemas"]["PaneId"];
-                /** @example true */
-                window?: components["schemas"]["WindowOnly"];
             };
             header?: {
                 /** @example pane_1 */

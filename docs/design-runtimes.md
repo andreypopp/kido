@@ -436,8 +436,8 @@ stop and the messages (protocol.md, section 7; `ko_server/src/panes.rs`):
   itself), the variable writes and the messages: the rules that every pane identity has (protocol.md,
   sections 7 and 10), unchanged, so a parent and a child in different
   runtimes exchange messages.
-- The prompt routes: `from` is the caller, and the candidates follow
-  the scope rule. A send that would end as a paste is `refused` unless
+- The prompt routes: `from` is the caller, and the target follows
+  the rule of protocol.md, section 11. A send that would end as a paste is `refused` unless
   its target is in `R` or a descendant of `c`, the rule of `/input`;
   a message or inbox delivery follows the scope.
 

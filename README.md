@@ -167,8 +167,8 @@ has none of this: it shows its status, as Claude Code does. koa runs where its p
 and `pi` on PATH (docs/design-koa.md).
 
 `ko prompt` sends
-text from stdin to the agent in your window, over its message stream or
-as a paste for a native agent.
+text from stdin to the one other agent in your window, over its
+message stream or as a paste for a native agent.
 
 `ko --help` lists the commands: the server, `ko api` for one request
 to the server, `ko prompt`, `ko panes`, `ko layout`,

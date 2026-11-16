@@ -112,12 +112,7 @@ pub(crate) fn observe(pane: &mut Pane, poll: &mut Poll) -> Option<PaneStatus> {
     let now = Mono::now().nanos();
     let pane_title = lossy(pane.proc().title());
     let published = pane.telemetry().records.published();
-    let kind = pane_kind::classify(
-        pane.runtime(),
-        pane.telemetry().foreground.as_ref(),
-        pane.vars(),
-        &published.records,
-    );
+    let kind = pane_kind::of_pane(pane);
     let (telemetry, model) = pane.parts_mut();
     model.dirty = false;
     let foreground = telemetry

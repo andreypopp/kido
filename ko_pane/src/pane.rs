@@ -756,9 +756,14 @@ impl Pane {
             out.event(&FromPane::Alternate(on));
         }
         let at = Mono::now();
-        let mut event = false;
+        let observe = vt
+            .reports()
+            .iter()
+            .any(|report| matches!(report, Report::Prompt { .. } | Report::Status { .. }));
+        if observe {
+            watch.check(process.master.as_fd(), out, Instant::now());
+        }
         for report in vt.reports().drain(..) {
-            event |= matches!(report, Report::Prompt { .. });
             match frame_of(&report, at) {
                 Some(frame) => out.event(&frame),
                 None => clipboard_event(report, clipboard, out),
@@ -769,7 +774,9 @@ impl Pane {
         }
         collect(vt, pty_input);
         out.publish(RecordKind::Bytes, used);
-        watch.after_read(process.master.as_fd(), out, event, Instant::now());
+        if !observe {
+            watch.after_read(process.master.as_fd(), out, Instant::now());
+        }
         used
     }
 

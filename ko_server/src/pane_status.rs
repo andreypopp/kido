@@ -628,7 +628,8 @@ mod tests {
             records: &ProgramStatus,
         ) -> String {
             self.now += ms * MS;
-            let kind = classify(None, telemetry.foreground.as_ref(), vars, &records.records);
+            let root_app = root(&records.records).and_then(|record| app(&records.records, record));
+            let kind = classify(None, telemetry.foreground.as_ref(), vars, root_app);
             self.observe(label, 22, telemetry, &kind, records)
         }
 

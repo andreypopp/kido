@@ -426,11 +426,11 @@ private final class ClientHandle: @unchecked Sendable {
         return try JSONDecoder().decode(KoSchema.Edited.self, from: document)
     }
 
-    // The agents that a prompt from `from` reaches; those of its window when it has any.
-    nonisolated public func promptCandidates(from: PaneID, windowOnly: Bool = false) throws -> [KoSchema.Candidate] {
+    // The live agents of the session of `from`.
+    nonisolated public func promptCandidates(from: PaneID) throws -> [KoSchema.Candidate] {
         var buffer = ko_buffer()
         return try JSONDecoder().decode([KoSchema.Candidate].self, from: handle.call {
-            try take(ko_client_prompt_resolve($0, from.description, windowOnly, &buffer), &buffer)
+            try take(ko_client_prompt_resolve($0, from.description, &buffer), &buffer)
         })
     }
 

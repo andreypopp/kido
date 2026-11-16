@@ -768,14 +768,11 @@ ko_code ko_client_edit(const ko_client *client,
                        ko_buffer *out);
 
 /*
- * The agents that a prompt from the pane `from` can reach: `out` holds the JSON array of
- * Candidate. Those of the window of `from` come alone when it has any, or always with
- * `window_only`; else those of its session. The request carries no pane identity: it is the
- * user's, who may name any pane.
+ * The live agents of the session of the pane `from`: `out` holds the JSON array of Candidate.
+ * The request carries no pane identity: it is the user's, who may name any pane.
  */
 ko_code ko_client_prompt_resolve(const ko_client *client,
                                  const char *from,
-                                 bool window_only,
                                  ko_buffer *out);
 
 /*

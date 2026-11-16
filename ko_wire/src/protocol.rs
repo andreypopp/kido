@@ -258,6 +258,8 @@ pub struct ServerVersion {
 pub enum ErrorKind {
     Invalid,
     Refused,
+    NoAgent,
+    MultipleAgents,
     Gone,
     Io,
     PreconditionFailed,
@@ -272,7 +274,10 @@ impl ErrorKind {
     pub fn status(&self) -> Status {
         match self {
             ErrorKind::Invalid => Status::BadRequest,
-            ErrorKind::Refused | ErrorKind::VtMismatch(_) => Status::Conflict,
+            ErrorKind::Refused
+            | ErrorKind::NoAgent
+            | ErrorKind::MultipleAgents
+            | ErrorKind::VtMismatch(_) => Status::Conflict,
             ErrorKind::Gone => Status::Gone,
             ErrorKind::Io => Status::Internal,
             ErrorKind::Missing => Status::NotFound,
@@ -2252,18 +2257,18 @@ pub struct Candidate {
     pub session: SessionId,
     pub window: WindowId,
     pub title: String,
-    /// True while the pane has its message stream open, so a prompt goes through its queue.
-    pub inbox: bool,
 }
 
-/// A prompt for the agent in a pane. The scope is the window of `from`, else its session.
+/// A prompt for an agent. Without a target it goes to the one live agent of the window of `from`,
+/// not `from` itself. A target must be a live agent of the session of `from`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct SendPrompt {
     /// The pane that the prompt comes from. A pane identity may name only itself.
     pub from: PaneId,
     /// The id of the message when the prompt goes through the agent's message stream.
     pub id: MessageId,
-    pub target: PaneId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target: Option<PaneId>,
     pub text: String,
 }
 
@@ -2683,7 +2688,7 @@ mod tests {
             assert!(decode::<StreamRequest>(bad.as_bytes()).is_err(), "{bad}");
         }
         same::<Candidate>(
-            r#"{"pane":"pane_2","session":"session_1","window":"window_3","title":"Worker","inbox":true}"#,
+            r#"{"pane":"pane_2","session":"session_1","window":"window_3","title":"Worker"}"#,
         );
         for json in [
             r#"{"env":[]}"#,

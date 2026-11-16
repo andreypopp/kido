@@ -1293,7 +1293,7 @@ impl Server {
     }
 
     pub(crate) fn token(&self, pane: &str) -> Option<String> {
-        let screen = self.screen(pane);
+        let screen = self.screen(pane).replace('\n', "");
         let (_, rest) = screen.split_once("TOKEN<")?;
         Some(rest.split_once('>')?.0.to_owned())
     }

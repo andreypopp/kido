@@ -80,7 +80,7 @@ fn runtime_kinds_select_agents_keep_sender_identity_and_hide_the_transport_title
     let terminal = s.new_pane(json!({"runtime": "dev", "command": {"type": "shell", "command": "stty raw -echo; exec cat"}}));
     let agent = s.new_pane(json!({
         "runtime": "dev",
-        "command": {"type": "shell", "command": format!("printf '\\033]7501;state=idle:app=pi\\007'; stty raw -echo; {PRINT_TOKEN}; exec cat")},
+        "command": {"type": "shell", "command": format!("printf '\\033]7501;state=idle:app=pi\\007'; stty raw -echo; {PRINT_TOKEN}; cat")},
         "vars": {"pi.session": "runtime-session", "pi.name": "Runtime Worker", "ssh.dest": "stale"}
     }));
     s.wait_row(&terminal, "the runtime terminal is classified", |row| {
@@ -1040,7 +1040,7 @@ runtimes:
         "other"
     );
     let child_command =
-        json!({"type": "shell", "command": format!("stty raw -echo; {PRINT_TOKEN}; exec cat")});
+        json!({"type": "shell", "command": format!("stty raw -echo; {PRINT_TOKEN}; cat")});
     let child = {
         let reply = raw(
             &s,
@@ -1239,7 +1239,7 @@ runtimes:
 
     let agent = s.new_pane(json!({
         "command": {"type": "shell", "command": format!(
-            "printf '\\033]7501;state=idle:app=pi\\007'; stty raw -echo; {PRINT_TOKEN}; exec cat"
+            "printf '\\033]7501;state=idle:app=pi\\007'; stty raw -echo; {PRINT_TOKEN}; cat"
         )},
     }));
     s.wait_row(&agent, "its pi root", |row| {

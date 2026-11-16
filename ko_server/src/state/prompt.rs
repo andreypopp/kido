@@ -1,14 +1,18 @@
 use ko_pane_wire::frame::{Key, KeyAction, KeyCode};
 
 use super::*;
-use crate::pane_kind::{self, Kind, LocalKind, RemoteKind};
+use crate::pane::Pane;
+use crate::pane_kind::{self, Kind};
 use crate::panes::{acts_as, is_descendant};
 use crate::server::Origin;
 use ko_wire::api::routes;
-use ko_wire::ids::WindowId;
 use ko_wire::protocol::{Candidate, Content, Error, ErrorKind, Payload, SendPrompt, Sent, Via};
 
 use super::messages::{Posting, Reply};
+
+fn not_found(pane: PaneId) -> Error {
+    Error::new(ErrorKind::Invalid, format!("pane {pane} not found"))
+}
 
 const ENTER: u16 = 58;
 
@@ -24,67 +28,68 @@ fn enter() -> Option<Key> {
 }
 
 impl State {
-    fn reachable(
-        &self,
-        caller: Option<PaneId>,
-        from: PaneId,
-    ) -> Result<(Vec<Candidate>, WindowId), Error> {
-        acts_as(caller, from, "prompt only from itself")?;
-        let layout = self.document.layout();
-        let (session, own) = layout
-            .locate(from)
-            .ok_or_else(|| Error::new(ErrorKind::Invalid, format!("pane {from} not found")))?;
-        let ordered = std::iter::once(own).chain(session.windows.iter().filter(|w| w.id != own.id));
-        let mut found = Vec::new();
-        for window in ordered {
-            let mut ids = window.panes();
-            ids.sort();
-            for id in ids {
-                let Some(pane) = self.panes.find(id) else {
-                    continue;
-                };
-                let kind = pane_kind::of_pane(pane);
-                let title = lossy(pane.proc().title());
-                if matches!(kind.local(), Some(LocalKind::Terminal))
-                    || matches!(
-                        kind,
-                        Kind::Ssh {
-                            pane: RemoteKind::Terminal,
-                            ..
-                        }
-                    )
-                {
-                    continue;
-                }
-                found.push(Candidate {
-                    pane: id,
-                    session: session.id,
-                    window: window.id,
-                    title: pane_kind::title(&kind, &title).unwrap_or_default(),
-                    inbox: pane.inbox().stream().is_some(),
-                });
-            }
-        }
-        Ok((found, own.id))
+    fn live_agent(&self, id: PaneId) -> Option<(&Pane, Kind)> {
+        let pane = self.panes.find(id)?;
+        let kind = pane_kind::of_pane(pane);
+        (pane.proc().dead().is_none() && kind.is_agent()).then_some((pane, kind))
     }
 
     pub(crate) fn resolve_prompt(
         &self,
         caller: Option<PaneId>,
         from: PaneId,
-        window_only: bool,
     ) -> Result<Vec<Candidate>, Error> {
-        let (candidates, own) = self.reachable(caller, from)?;
-        let in_window: Vec<Candidate> = candidates
-            .iter()
-            .filter(|candidate| candidate.window == own)
-            .cloned()
-            .collect();
-        Ok(if window_only || !in_window.is_empty() {
-            in_window
-        } else {
-            candidates
-        })
+        acts_as(caller, from, "prompt only from itself")?;
+        let layout = self.document.layout();
+        let (session, own) = layout.locate(from).ok_or_else(|| not_found(from))?;
+        let ordered = std::iter::once(own).chain(session.windows.iter().filter(|w| w.id != own.id));
+        let mut found = Vec::new();
+        for window in ordered {
+            let mut ids = window.panes();
+            ids.sort();
+            for id in ids {
+                if let Some((pane, kind)) = self.live_agent(id) {
+                    found.push(Candidate {
+                        pane: id,
+                        session: session.id,
+                        window: window.id,
+                        title: pane_kind::title(&kind, &lossy(pane.proc().title()))
+                            .unwrap_or_default(),
+                    });
+                }
+            }
+        }
+        Ok(found)
+    }
+
+    fn prompt_target(&self, caller: Option<PaneId>, request: &SendPrompt) -> Result<PaneId, Error> {
+        let from = request.from;
+        acts_as(caller, from, "prompt only from itself")?;
+        let layout = self.document.layout();
+        let (session, window) = layout.locate(from).ok_or_else(|| not_found(from))?;
+        if let Some(target) = request.target {
+            let reachable = session.windows.iter().any(|window| window.has(target));
+            return if reachable && self.live_agent(target).is_some() {
+                Ok(target)
+            } else {
+                Err(Error::new(
+                    ErrorKind::Invalid,
+                    format!("pane {target} is no live agent of the session of pane {from}"),
+                ))
+            };
+        }
+        let mut agents = window
+            .panes()
+            .into_iter()
+            .filter(|&id| id != from && self.live_agent(id).is_some());
+        match (agents.next(), agents.next()) {
+            (Some(one), None) => Ok(one),
+            (None, _) => Err(Error::new(ErrorKind::NoAgent, "agent not found")),
+            _ => Err(Error::new(
+                ErrorKind::MultipleAgents,
+                "multiple agents found",
+            )),
+        }
     }
 
     pub(crate) fn send_prompt(
@@ -97,29 +102,17 @@ impl State {
         if request.text.is_empty() {
             return Some(Err(Error::new(ErrorKind::Invalid, "no prompt given")));
         }
-        let reachable = match self.reachable(caller, request.from) {
-            Ok((reachable, _)) => reachable,
+        let target = match self.prompt_target(caller, &request) {
+            Ok(target) => target,
             Err(failure) => return Some(Err(failure)),
         };
-        let Some(target) = reachable
-            .into_iter()
-            .find(|candidate| candidate.pane == request.target)
-        else {
-            return Some(Err(Error::new(
-                ErrorKind::Invalid,
-                format!(
-                    "pane {} is not a candidate of pane {}",
-                    request.target, request.from
-                ),
-            )));
-        };
-        let known = self
-            .pane(request.target)
-            .is_ok_and(|pane| pane.inbox().seen(&request.id).is_some());
-        if target.inbox || known {
+        let inbox = self.panes.find(target).is_some_and(|pane| {
+            pane.inbox().stream().is_some() || pane.inbox().seen(&request.id).is_some()
+        });
+        if inbox {
             let posting = Posting {
                 caller,
-                target: request.target,
+                target,
                 id: request.id,
                 content: Content::User(Payload {
                     text: request.text,
@@ -131,10 +124,10 @@ impl State {
                 .submit(poll, index, posting, &self.edges())
                 .map(|result| result.map(Sent::from));
         }
-        if let Err(refused) = self.may_paste(caller, origin, request.target) {
+        if let Err(refused) = self.may_paste(caller, origin, target) {
             return Some(Err(refused));
         }
-        self.paste_prompt(poll, index, request.target, &request.text)
+        self.paste_prompt(poll, index, target, &request.text)
     }
 
     // A paste is input to the target's terminal, so a runtime connection may paste only where it
@@ -202,6 +195,11 @@ impl State {
     ) {
         let reply = if !pasted {
             Err(Error::new(ErrorKind::Io, "the paste was not written"))
+        } else if self.live_agent(pane).is_none() {
+            Err(Error::new(
+                ErrorKind::Refused,
+                format!("{pane} is no live agent any more"),
+            ))
         } else if let Some(key) = enter() {
             match self.run(poll, pane, |pane, io| {
                 pane.proc_mut().input(pane_proc::Input::Key(&key), io)

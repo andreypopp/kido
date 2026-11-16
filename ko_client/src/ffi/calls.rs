@@ -5,7 +5,7 @@ use std::path::Path;
 use std::time::Duration;
 
 use ko_sys::event::Wake;
-use ko_wire::api::{Route, WindowOnly};
+use ko_wire::api::Route;
 use ko_wire::ids::{ClientId, MessageId, PaneId, StatusId};
 use ko_wire::protocol::{self, Revision, SendPrompt};
 
@@ -135,7 +135,7 @@ pub unsafe extern "C" fn ko_client_prompt(
     let body = protocol::json(&SendPrompt {
         from,
         id: message,
-        target,
+        target: Some(target),
         text: text.to_owned(),
     });
     let (code, bytes) = call(&client, |socket, id, cancel| {
@@ -237,7 +237,6 @@ unsafe fn send_record(
 pub unsafe extern "C" fn ko_client_prompt_resolve(
     client_: *const Client,
     from: *const c_char,
-    window_only: bool,
     out: *mut Buffer,
 ) -> Code {
     let scope = ();
@@ -250,10 +249,7 @@ pub unsafe extern "C" fn ko_client_prompt_resolve(
     ) else {
         return Code::Argument;
     };
-    let route = Route::PromptResolve {
-        from,
-        window: window_only.then_some(WindowOnly),
-    };
+    let route = Route::PromptResolve { from };
     let (code, bytes) = call(&client, |socket, id, cancel| {
         wire::request(socket, (id, None), &route, b"", Some(cancel)).map_err(rejected)
     });

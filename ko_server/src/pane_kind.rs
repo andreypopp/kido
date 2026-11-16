@@ -1,8 +1,7 @@
 use crate::pane::Pane;
-use crate::program_status::{app, root};
 use crate::runtime::RuntimeKey;
 use ko_wire::ids::VarName;
-use ko_wire::protocol::{Foreground, ProgramRecord};
+use ko_wire::protocol::Foreground;
 use ko_wire::vars::Vars;
 
 const SSH_DEST: VarName = VarName::known("ssh.dest");
@@ -44,6 +43,19 @@ pub(crate) enum Kind {
 }
 
 impl Kind {
+    pub(crate) fn is_agent(&self) -> bool {
+        match self {
+            Self::Host { pane } | Self::Runtime { pane } => match pane {
+                LocalKind::Terminal => false,
+                LocalKind::SomeAgent { .. } | LocalKind::PiAgent { .. } => true,
+            },
+            Self::Ssh { pane, .. } => match pane {
+                RemoteKind::Terminal => false,
+                RemoteKind::Agent { .. } => true,
+            },
+        }
+    }
+
     pub(crate) fn local(&self) -> Option<&LocalKind> {
         match self {
             Self::Host { pane } | Self::Runtime { pane } => Some(pane),
@@ -62,9 +74,8 @@ pub(crate) fn classify(
     runtime: Option<&RuntimeKey>,
     foreground: Option<&Foreground>,
     vars: &Vars,
-    records: &[ProgramRecord],
+    root_app: Option<&str>,
 ) -> Kind {
-    let root_app = root(records).and_then(|record| app(records, record));
     let local = || {
         let var = |name: &VarName| vars.text(name).unwrap_or_default().to_owned();
         match root_app {
@@ -110,7 +121,9 @@ pub(crate) fn of_pane(pane: &Pane) -> Kind {
         pane.runtime(),
         pane.telemetry().foreground.as_ref(),
         pane.vars(),
-        &pane.telemetry().records.published().records,
+        pane.telemetry()
+            .records
+            .owned_app(pane.telemetry().foreground.as_ref()),
     )
 }
 
@@ -149,7 +162,6 @@ mod tests {
 
     use super::*;
     use crate::telemetry::Telemetry;
-    use ko_wire::protocol::ProgramState;
 
     struct Fixture {
         telemetry: Telemetry,
@@ -157,12 +169,12 @@ mod tests {
     }
 
     impl Fixture {
-        fn kind(&self, records: &[ProgramRecord]) -> Kind {
+        fn kind(&self, root_app: Option<&str>) -> Kind {
             classify(
                 None,
                 self.telemetry.foreground.as_ref(),
                 &self.vars,
-                records,
+                root_app,
             )
         }
     }
@@ -186,19 +198,6 @@ mod tests {
         }
     }
 
-    fn root_app(name: &str) -> Vec<ProgramRecord> {
-        vec![ProgramRecord {
-            id: String::new().try_into().unwrap(),
-            started: None,
-            state: ProgramState::Idle,
-            app: Some(name.to_owned()),
-            title: None,
-            msg: None,
-            selection: None,
-            closeable: false,
-        }]
-    }
-
     #[test]
     fn a_pi_session_variable_needs_a_pi_root() {
         let pi = telemetry(
@@ -206,13 +205,13 @@ mod tests {
             &[("pi.session", json!("s1")), ("pi.name", json!("Worker"))],
         );
         assert_eq!(
-            pi.kind(&[]),
+            pi.kind(None),
             Kind::Host {
                 pane: LocalKind::Terminal
             }
         );
         assert_eq!(
-            pi.kind(&root_app("pi")),
+            pi.kind(Some("pi")),
             Kind::Host {
                 pane: LocalKind::PiAgent {
                     session: "s1".to_owned(),
@@ -223,7 +222,7 @@ mod tests {
         );
         let bare = telemetry("zsh", &[("pi.session", json!(7))]);
         assert_eq!(
-            bare.kind(&root_app("pi")),
+            bare.kind(Some("pi")),
             Kind::Host {
                 pane: LocalKind::SomeAgent {
                     name: "pi".to_owned()
@@ -231,7 +230,7 @@ mod tests {
             }
         );
         assert_eq!(
-            bare.kind(&root_app("claude-code")),
+            bare.kind(Some("claude-code")),
             Kind::Host {
                 pane: LocalKind::SomeAgent {
                     name: "claude-code".to_owned()
@@ -239,7 +238,7 @@ mod tests {
             }
         );
         assert_eq!(
-            bare.kind(&root_app("make")),
+            bare.kind(Some("make")),
             Kind::Host {
                 pane: LocalKind::Terminal
             }
@@ -249,7 +248,7 @@ mod tests {
     #[test]
     fn an_ssh_destination_needs_the_ssh_foreground_and_is_kept_as_typed() {
         let vars = [("ssh.dest", json!("deploy@realm@next.test"))];
-        let ssh = telemetry("ssh", &vars).kind(&root_app("claude-code"));
+        let ssh = telemetry("ssh", &vars).kind(Some("claude-code"));
         assert_eq!(
             ssh,
             Kind::Ssh {
@@ -260,20 +259,20 @@ mod tests {
             }
         );
         assert_eq!(
-            telemetry("zsh", &vars).kind(&[]),
+            telemetry("zsh", &vars).kind(None),
             Kind::Host {
                 pane: LocalKind::Terminal
             }
         );
         for dest in [json!(""), json!(5)] {
             assert_eq!(
-                telemetry("ssh", &[("ssh.dest", dest)]).kind(&[]),
+                telemetry("ssh", &[("ssh.dest", dest)]).kind(None),
                 Kind::Host {
                     pane: LocalKind::Terminal
                 }
             );
         }
-        let remote = telemetry("ssh", &[("ssh.dest", json!("h"))]).kind(&[]);
+        let remote = telemetry("ssh", &[("ssh.dest", json!("h"))]).kind(None);
         assert_eq!(title(&remote, "t"), None);
     }
 
@@ -317,20 +316,19 @@ mod tests {
                     vars.push(("pi.session", json!(session)));
                 }
                 let fixture = telemetry(foreground, &vars);
-                let records = app.map_or_else(Vec::new, root_app);
                 assert_eq!(
                     classify(
                         Some(&runtime),
                         fixture.telemetry.foreground.as_ref(),
                         &fixture.vars,
-                        &records
+                        app
                     ),
                     Kind::Runtime {
                         pane: expected.clone()
                     }
                 );
                 if foreground != "ssh" {
-                    assert_eq!(fixture.kind(&records), Kind::Host { pane: expected });
+                    assert_eq!(fixture.kind(app), Kind::Host { pane: expected });
                 }
             }
         }

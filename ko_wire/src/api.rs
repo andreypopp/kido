@@ -191,19 +191,6 @@ impl JsonSchema for Needle {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct WindowOnly;
-
-impl JsonSchema for WindowOnly {
-    fn schema_name() -> Cow<'static, str> {
-        "WindowOnly".into()
-    }
-
-    fn json_schema(_: &mut SchemaGenerator) -> Schema {
-        json_schema!({"type": "string", "enum": ["true"]})
-    }
-}
-
 fn natural(value: &str, max: u64) -> Result<u64, Invalid> {
     if value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_digit()) {
         return Err(Invalid::message("invalid number"));
@@ -453,24 +440,6 @@ impl Param for Needle {
 
     fn schema(generator: &mut SchemaGenerator) -> Schema {
         generator.subschema_for::<Needle>()
-    }
-}
-
-impl Param for WindowOnly {
-    const EXAMPLE: &'static str = "true";
-
-    fn parse(value: &str) -> Result<WindowOnly, Invalid> {
-        (value == "true")
-            .then_some(WindowOnly)
-            .ok_or_else(|| Invalid::message("invalid window"))
-    }
-
-    fn render(&self) -> String {
-        "true".to_owned()
-    }
-
-    fn schema(generator: &mut SchemaGenerator) -> Schema {
-        generator.subschema_for::<WindowOnly>()
     }
 }
 
@@ -792,11 +761,11 @@ routes! {
     }
     /// Takes the runtime down, as down without force does, and removes its files except the empty io directory.
     DeleteRuntime { method: DELETE, path: /runtimes/{name: RuntimeName}, query: { session: Option<SessionId> }, reply: Empty }
-    /// The agents that a prompt can reach from the pane `from`. A pane identity may name only itself.
+    /// The live agents of the session of the pane `from`, for choosing a prompt target. A pane identity may name only itself.
     PromptResolve {
         method: GET,
         path: /prompt/resolve,
-        query: { from: PaneId, window: Option<WindowOnly> },
+        query: { from: PaneId },
         caller: optional,
         reply: Vec<Candidate>,
     }
@@ -952,14 +921,7 @@ mod tests {
                 format: ScreenFormat::Plain,
                 history: ScreenRows::Full,
             },
-            Route::PromptResolve {
-                from: id,
-                window: None,
-            },
-            Route::PromptResolve {
-                from: id,
-                window: Some(WindowOnly),
-            },
+            Route::PromptResolve { from: id },
             Route::Messages { id },
             Route::PostMessage { id },
             Route::SendPrompt {},
@@ -1033,7 +995,6 @@ mod tests {
             ("PUT", "/panes"),
             ("POST", "/panes/pane_1/clear_history/x"),
             ("GET", "/panes?x=1"),
-            ("GET", "/prompt/resolve?from=pane_1&window=1"),
             ("GET", "/version?a=1?b=2"),
             ("GET", &format!("{wait}?timeout_ms=3600001")),
             ("GET", &wait),
@@ -1059,7 +1020,6 @@ mod tests {
                 "no route",
                 "no route",
                 "ListPanes",
-                "invalid window",
                 "invalid target",
                 "invalid number",
                 r#"WaitRuntime { name: RuntimeName("dev"), timeout_ms: WaitMs(30000) }"#,

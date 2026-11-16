@@ -21,7 +21,8 @@ fn session(args: &[String]) {
             "run" => emit("\x1b]133;C;cmdline_url=sleep 45\x07"),
             "agent" => emit("\x1b]7501;state=idle:app=claude-code\x07\x1b]2;Remote Claude\x07"),
             "exit" => return,
-            _ => {}
+            "" => {}
+            _ => emit(&format!("got: {line}\n")),
         }
     }
 }

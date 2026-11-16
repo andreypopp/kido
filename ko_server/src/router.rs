@@ -457,7 +457,7 @@ pub(crate) fn handle(state: &mut State, poll: &mut Poll, index: usize, incoming:
             if let Err(refused) = acts_as(caller, id, "change only its own status") {
                 return reply::<routes::SetStatus>(&mut state.conns[index], Err(refused));
             }
-            state.set_status(poll, id, body);
+            state.set_status(poll, id, body, crate::telemetry::Writer::Route);
             ok::<routes::SetStatus>(&mut state.conns[index], &Empty {});
         }
         Request::SetVar { id, name, body } => {
@@ -584,8 +584,8 @@ pub(crate) fn handle(state: &mut State, poll: &mut Poll, index: usize, incoming:
             );
             state.read_ws(poll, index);
         }
-        Request::PromptResolve { from, window } => {
-            let result = state.resolve_prompt(caller, from, window.is_some());
+        Request::PromptResolve { from } => {
+            let result = state.resolve_prompt(caller, from);
             reply::<routes::PromptResolve>(&mut state.conns[index], result);
         }
         Request::SendPrompt { body } => {
@@ -1881,12 +1881,6 @@ mod tests {
             .collect();
         assert_eq!(panes, [paste.as_str()], "pane_1 is a terminal");
         assert_eq!(candidates[0]["title"], "Paster");
-        let (_, narrowed) = prompt_call(
-            &mut server,
-            "GET /prompt/resolve?from=pane_1&window=true",
-            &json!(null),
-        );
-        assert_eq!(narrowed, json!([]), "the caller's window holds no agent");
         assert_eq!(candidates[0]["session"], "session_1");
 
         let send = |server: &mut Harness, target: &str, text: &str| {

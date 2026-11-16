@@ -422,7 +422,11 @@ most easily:
 
 **Native agent status.** Only OSC 7501 root apps `pi` and
 `claude-code` identify agent panes (docs/design-program-status.md,
-"Sources"). Three pane variables supply local pi identity, never
+"Sources"), and only while the foreground that reported the root is
+still the foreground ("The record set"). `Kind::is_agent` is the one
+test of an agent pane; `ko prompt` and its routes use it with the
+pane's death, and never fall back to the caller or the focused pane.
+Three pane variables supply local pi identity, never
 detection: `pi.session`, `pi.name` and `pi.activity`. ko trusts them
 only while the pane has an OSC 7501 root with `app=pi`, which koa
 writes for its session. ssh panes use

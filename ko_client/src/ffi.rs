@@ -77,7 +77,7 @@ impl Code {
     fn of(kind: &ErrorKind) -> Code {
         match kind {
             ErrorKind::Invalid => Code::Invalid,
-            ErrorKind::Refused => Code::Refused,
+            ErrorKind::Refused | ErrorKind::NoAgent | ErrorKind::MultipleAgents => Code::Refused,
             ErrorKind::Gone => Code::Gone,
             ErrorKind::Io | ErrorKind::Unavailable => Code::Io,
             ErrorKind::PreconditionFailed => Code::Conflict,
@@ -3856,30 +3856,27 @@ mod tests {
             };
             (code, out)
         };
-        for (window_only, expected) in [
-            (false, "/prompt/resolve?from=pane_1"),
-            (true, "/prompt/resolve?from=pane_1&window=true"),
-        ] {
+        {
             let mut out = empty_buffer();
             // SAFETY: the client is live, the caller is NUL-terminated and out is writable.
-            let code = unsafe {
-                ko_client_prompt_resolve(client, c"pane_1".as_ptr(), window_only, &mut out)
-            };
+            let code = unsafe { ko_client_prompt_resolve(client, c"pane_1".as_ptr(), &mut out) };
             assert_eq!(
                 (
                     code,
                     // SAFETY: this core buffer remains allocated through this read.
                     unsafe { contents(&out) }
                 ),
-                (Code::Ok, format!(r#"[{{"asked":"{expected}"}}]"#))
+                (
+                    Code::Ok,
+                    r#"[{"asked":"/prompt/resolve?from=pane_1"}]"#.to_owned()
+                )
             );
             // SAFETY: out owns a core allocation that is not freed yet.
             unsafe { freed_once(&mut out) };
         }
         // SAFETY: the client is live; the caller is no pane id.
-        let code = unsafe {
-            ko_client_prompt_resolve(client, c"window_1".as_ptr(), false, &mut empty_buffer())
-        };
+        let code =
+            unsafe { ko_client_prompt_resolve(client, c"window_1".as_ptr(), &mut empty_buffer()) };
         assert_eq!(code, Code::Argument);
         let (code, mut out) = prompt(c"pane_3", "hi\nthere \u{e9}".as_bytes());
         assert_eq!(
@@ -3912,9 +3909,8 @@ mod tests {
             .heads("POST", "/prompt")
             .into_iter()
             .chain(server.heads("GET", "/prompt/resolve?from=pane_1"))
-            .chain(server.heads("GET", "/prompt/resolve?from=pane_1&window=true"))
             .collect();
-        assert!(heads.len() >= 3);
+        assert!(heads.len() >= 2);
         assert!(
             heads.iter().all(|head| !head.contains("Ko-Pane")),
             "the prompt routes name their pane in the request, not as an identity"
@@ -4717,12 +4713,7 @@ mod tests {
                 Code::Argument
             );
             assert_eq!(
-                ko_client_prompt_resolve(
-                    std::ptr::null(),
-                    c"pane_1".as_ptr(),
-                    false,
-                    &mut empty_buffer(),
-                ),
+                ko_client_prompt_resolve(std::ptr::null(), c"pane_1".as_ptr(), &mut empty_buffer(),),
                 Code::Argument
             );
             assert_eq!(

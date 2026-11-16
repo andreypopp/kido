@@ -32,15 +32,9 @@ impl Watch {
         }
     }
 
-    pub(crate) fn after_read(
-        &mut self,
-        master: BorrowedFd<'_>,
-        out: &mut Out,
-        event: bool,
-        now: Instant,
-    ) {
+    pub(crate) fn after_read(&mut self, master: BorrowedFd<'_>, out: &mut Out, now: Instant) {
         match self.checked {
-            Some(at) if !event && now.saturating_duration_since(at) < THROTTLE => {
+            Some(at) if now.saturating_duration_since(at) < THROTTLE => {
                 self.deferred.get_or_insert(at + THROTTLE);
             }
             _ => self.check(master, out, now),

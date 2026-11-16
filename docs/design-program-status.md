@@ -50,8 +50,9 @@ invalid option, the route refuses the whole body, and an absent field
 is omitted, not empty. The route's text is plain, not base64. An OSC
 report that a field type refuses after Ghostty accepted it is dropped,
 not a fault of the pane. Nothing in the set records the edge of a
-report, so every rule below applies to both, and an OSC `clear`
-removes a record that the route set.
+report, so every rule below applies to both, except the root's
+foreground binding, and an OSC `clear` removes a record that the
+route set.
 
 - A record has an id, a state, and optional app, title, message and
   progress. An empty string in a report is an absent field. The
@@ -68,6 +69,19 @@ removes a record that the route set.
   `x` removes `x` and every record whose id starts with `x/`.
 - A primary prompt start (OSC 133 `A`) removes every record whose
   state is not done or error. Pane death and RIS remove every record.
+- The set binds an OSC root report to the pane's foreground (pid and
+  name) at the read that holds it; a report of the root, also an
+  identical one, binds it again. A root that the route sets binds to
+  nothing, because the route has no evidence of its writer; koa
+  writes its root by OSC and only other records by the route. A
+  prompt start, and a clear or eviction that removes the root, drop
+  the binding. The root's app identifies an agent only while the
+  binding equals the current foreground (`Set::owned_app`): a program
+  that ended without a clear leaves a done root for the outcome, but
+  no agent, and an editor in the foreground of an agent's pane makes
+  the pane a terminal until the agent is the foreground again. The
+  known limit: a writer that exits or `exec`s before `ko-pane` reads
+  its report binds the root to its successor.
 - The set stamps a non-root record with `started`, the server's `Mono`
   time when the set first stored its id. A later report of the same id
   keeps the stamp; a report after a `clear` of the id, or after any other
@@ -176,7 +190,9 @@ The shell phase:
 `ko-pane` reads the pty's foreground process group only on events
 (protocol.md, section 14) and sends a `foreground` frame when the pid
 or the name changed, and an `alternate` frame when the active screen
-changed after a write. The known limit: a shell sends `C` before it
+changed after a write. A read that holds an OSC 133 or OSC 7501
+report sends the `foreground` frame before the reports, so a root
+binds to the program that wrote it. The known limit: a shell sends `C` before it
 forks, so a program that prints nothing shows the shell as the
 foreground until its first output or its `D`. ssh prints at once, so
 the case that matters is covered.
@@ -253,6 +269,9 @@ order. A variable that is not a JSON string counts as absent.
    variable: `SomeAgent` with the app as its name.
 5. Anything else: `Terminal`.
 
+"The root app" is the app of the root record while its foreground
+binding holds ("The record set").
+
 On the host, steps 3 to 5 give `Host`. A routed pi (`koa
 --runtime`) runs on the host, so it is a `Host` pane. A plain `pi`
 (not koa) has the root without `pi.session`, so it is a `SomeAgent`.
@@ -289,7 +308,8 @@ no runtime name: the row's `runtime` is the one source of it.
   without ko's harness (`pi`, no `pi.session`).
 - Row title: the pane title, or the app name when that is empty.
 - Status: the records' reduction.
-- Supports: `ko prompt`, by paste, when it is the only agent in scope.
+- Supports: `ko prompt`, by paste, when it is the only agent of the
+  caller's window.
 
 ### `PiAgent`
 

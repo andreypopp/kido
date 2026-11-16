@@ -825,7 +825,7 @@ not ask: it is the escape hatch, and the jobs end with the process.
 
 A human uses ko's own commands, not the tools:
 
-- `ko prompt` sends text to the root agent of a pane as kind `user`,
+- `ko prompt` sends text to the one other agent of its window as kind `user`,
   which the agent reads as the user's own words (design.md, "Delivery, and
   when a paste is allowed").
 - `koa` in a pane starts a top-level agent.

@@ -1,6 +1,6 @@
 use ko_sys::clock::Mono;
 
-use ko_wire::protocol::{ProgramRecord, ProgramState, ProgramStatus, StatusReport};
+use ko_wire::protocol::{Foreground, ProgramRecord, ProgramState, ProgramStatus, StatusReport};
 
 const MAX_RECORDS: usize = 64;
 
@@ -8,6 +8,7 @@ const MAX_RECORDS: usize = 64;
 pub(crate) struct Set {
     serial: u64,
     records: Vec<ProgramRecord>,
+    owner: Option<Foreground>,
 }
 
 fn final_state(record: &ProgramRecord) -> bool {
@@ -23,10 +24,23 @@ impl Set {
     fn remove(&mut self, keep: impl Fn(&ProgramRecord) -> bool) -> bool {
         let before = self.records.len();
         self.records.retain(keep);
-        self.records.len() != before && self.changed()
+        let removed = self.records.len() != before;
+        self.unbind_without_root();
+        removed && self.changed()
     }
 
-    pub(crate) fn apply(&mut self, report: StatusReport, now: Mono) -> bool {
+    fn unbind_without_root(&mut self) {
+        if root(&self.records).is_none() {
+            self.owner = None;
+        }
+    }
+
+    pub(crate) fn apply(
+        &mut self,
+        report: StatusReport,
+        now: Mono,
+        foreground: Option<&Foreground>,
+    ) -> bool {
         let report = match report {
             StatusReport::Clear { id } => {
                 return self.remove(|record| !record.id.is_within(&id));
@@ -34,6 +48,10 @@ impl Set {
             StatusReport::Set { record } => record,
         };
         let id = report.id;
+        let rebound = id.is_root() && self.owner.as_ref() != foreground;
+        if id.is_root() {
+            self.owner = foreground.cloned();
+        }
         let stored = self.records.iter().position(|record| record.id == id);
         let started = if id.is_root() {
             None
@@ -54,7 +72,7 @@ impl Set {
         };
         if let Some(index) = stored {
             if self.records.get(index) == Some(&record) {
-                return false;
+                return rebound && self.changed();
             }
             self.records.remove(index);
         }
@@ -62,11 +80,20 @@ impl Set {
             self.records.remove(0);
         }
         self.records.push(record);
+        self.unbind_without_root();
         self.changed()
     }
 
     pub(crate) fn prompt_start(&mut self) -> bool {
-        self.remove(final_state)
+        let unbound = self.owner.take().is_some();
+        self.remove(final_state) || (unbound && self.changed())
+    }
+
+    pub(crate) fn owned_app(&self, foreground: Option<&Foreground>) -> Option<&str> {
+        self.owner
+            .as_ref()
+            .filter(|owner| Some(*owner) == foreground)?;
+        root(&self.records).and_then(|record| app(&self.records, record))
     }
 
     pub(crate) fn clear(&mut self) -> bool {
@@ -126,6 +153,13 @@ pub(crate) fn app<'a>(records: &'a [ProgramRecord], record: &ProgramRecord) -> O
 mod tests {
     use super::*;
 
+    fn fg(pid: u32, name: &str) -> Foreground {
+        Foreground {
+            pid,
+            name: name.to_owned(),
+        }
+    }
+
     fn set(id: &str, state: ProgramState, app: &str) -> StatusReport {
         StatusReport::Set {
             record: ko_wire::protocol::StatusRecord {
@@ -143,18 +177,18 @@ mod tests {
     #[test]
     fn record_start_is_owned_by_the_set() {
         let mut found = Set::default();
-        found.apply(set("", ProgramState::Idle, "pi"), Mono::from_nanos(1));
+        found.apply(set("", ProgramState::Idle, "pi"), Mono::from_nanos(1), None);
         assert_eq!(found.published().records[0].started, None);
-        found.apply(working("job/1", 1), Mono::from_nanos(2));
+        found.apply(working("job/1", 1), Mono::from_nanos(2), None);
         assert_eq!(found.published().records[1].started, Some(2));
-        assert!(!found.apply(working("job/1", 1), Mono::from_nanos(3)));
-        found.apply(working("job/1", 2), Mono::from_nanos(4));
+        assert!(!found.apply(working("job/1", 1), Mono::from_nanos(3), None));
+        found.apply(working("job/1", 2), Mono::from_nanos(4), None);
         assert_eq!(found.published().records[1].started, Some(2));
-        found.apply(clear("job/1"), Mono::from_nanos(5));
-        found.apply(working("job/1", 3), Mono::from_nanos(6));
+        found.apply(clear("job/1"), Mono::from_nanos(5), None);
+        found.apply(working("job/1", 3), Mono::from_nanos(6), None);
         assert_eq!(found.published().records[1].started, Some(6));
         found.clear();
-        found.apply(working("job/1", 4), Mono::from_nanos(7));
+        found.apply(working("job/1", 4), Mono::from_nanos(7), None);
         assert_eq!(found.published().records[0].started, Some(7));
     }
 
@@ -185,7 +219,7 @@ mod tests {
     fn set_of(records: &[(&str, &str)]) -> Set {
         let mut found = Set::default();
         for (id, app) in records {
-            found.apply(set(id, ProgramState::Idle, app), Mono::from_nanos(1));
+            found.apply(set(id, ProgramState::Idle, app), Mono::from_nanos(1), None);
         }
         found
     }
@@ -194,17 +228,21 @@ mod tests {
     fn sixty_five_records_evict_the_oldest_updated_and_an_identical_report_moves_nothing() {
         let mut found = Set::default();
         for index in 0..64 {
-            assert!(found.apply(working(&format!("r{index:02}"), 1), Mono::from_nanos(1)));
+            assert!(found.apply(
+                working(&format!("r{index:02}"), 1),
+                Mono::from_nanos(1),
+                None
+            ));
         }
-        assert!(!found.apply(working("r00", 1), Mono::from_nanos(1)));
+        assert!(!found.apply(working("r00", 1), Mono::from_nanos(1), None));
         assert_eq!(found.published().serial, 64);
-        assert!(found.apply(working("r01", 2), Mono::from_nanos(1)));
-        assert!(found.apply(working("new", 1), Mono::from_nanos(1)));
+        assert!(found.apply(working("r01", 2), Mono::from_nanos(1), None));
+        assert!(found.apply(working("new", 1), Mono::from_nanos(1), None));
         let published = ids(&found);
         assert_eq!(published.len(), 64);
         assert!(!published.contains(&"r00".to_owned()));
         assert!(published.contains(&"r01".to_owned()));
-        assert!(found.apply(working("another", 1), Mono::from_nanos(1)));
+        assert!(found.apply(working("another", 1), Mono::from_nanos(1), None));
         assert!(!ids(&found).contains(&"r02".to_owned()));
         assert!(ids(&found).contains(&"r01".to_owned()));
     }
@@ -213,11 +251,11 @@ mod tests {
     fn a_clear_removes_the_record_and_its_children_and_not_a_sibling_with_the_same_prefix() {
         let mut found = set_of(&[("x", ""), ("x/y", ""), ("xy", ""), ("", "")]);
         let serial = found.published().serial;
-        assert!(!found.apply(clear("none"), Mono::from_nanos(1)));
+        assert!(!found.apply(clear("none"), Mono::from_nanos(1), None));
         assert_eq!(found.published().serial, serial);
-        assert!(found.apply(clear("x"), Mono::from_nanos(1)));
+        assert!(found.apply(clear("x"), Mono::from_nanos(1), None));
         assert_eq!(ids(&found), ["", "xy"]);
-        assert!(found.apply(clear(""), Mono::from_nanos(1)));
+        assert!(found.apply(clear(""), Mono::from_nanos(1), None));
         assert!(ids(&found).is_empty());
         assert!(!found.clear());
     }
@@ -225,10 +263,10 @@ mod tests {
     #[test]
     fn a_prompt_start_keeps_only_the_final_records() {
         let mut found = Set::default();
-        found.apply(working("a", 3), Mono::from_nanos(1));
-        found.apply(set("b", ProgramState::Done, ""), Mono::from_nanos(1));
-        found.apply(set("c", ProgramState::Error, ""), Mono::from_nanos(1));
-        found.apply(set("d", ProgramState::Idle, ""), Mono::from_nanos(1));
+        found.apply(working("a", 3), Mono::from_nanos(1), None);
+        found.apply(set("b", ProgramState::Done, ""), Mono::from_nanos(1), None);
+        found.apply(set("c", ProgramState::Error, ""), Mono::from_nanos(1), None);
+        found.apply(set("d", ProgramState::Idle, ""), Mono::from_nanos(1), None);
         assert!(found.prompt_start());
         assert_eq!(ids(&found), ["b", "c"]);
         assert!(!found.prompt_start());
@@ -237,7 +275,7 @@ mod tests {
     #[test]
     fn bare_zero_progress_sets_no_status() {
         let mut found = Set::default();
-        found.apply(working("bare", 0), Mono::from_nanos(1));
+        found.apply(working("bare", 0), Mono::from_nanos(1), None);
         found.apply(
             StatusReport::Set {
                 record: ko_wire::protocol::StatusRecord {
@@ -249,6 +287,7 @@ mod tests {
                 },
             },
             Mono::from_nanos(1),
+            None,
         );
         found.apply(
             set(
@@ -259,6 +298,7 @@ mod tests {
                 "tool",
             ),
             Mono::from_nanos(1),
+            None,
         );
         found.apply(
             StatusReport::Set {
@@ -271,9 +311,14 @@ mod tests {
                 },
             },
             Mono::from_nanos(1),
+            None,
         );
-        found.apply(working("one", 1), Mono::from_nanos(1));
-        found.apply(set("idle", ProgramState::Idle, ""), Mono::from_nanos(1));
+        found.apply(working("one", 1), Mono::from_nanos(1), None);
+        found.apply(
+            set("idle", ProgramState::Idle, ""),
+            Mono::from_nanos(1),
+            None,
+        );
         assert_eq!(ids(&found), ["app", "idle", "msg", "one", "sel"]);
     }
 
@@ -295,5 +340,31 @@ mod tests {
                 ("z", Some("root")),
             ]
         );
+    }
+
+    #[test]
+    fn a_root_belongs_to_the_foreground_that_reported_it_until_a_prompt_or_a_clear() {
+        let (shell, editor) = (fg(1, "zsh"), fg(2, "nvim"));
+        let mut found = Set::default();
+        let root = || set("", ProgramState::Idle, "pi");
+        assert!(found.apply(root(), Mono::from_nanos(1), Some(&shell)));
+        assert_eq!(found.owned_app(Some(&shell)), Some("pi"));
+        assert_eq!(found.owned_app(Some(&editor)), None);
+        assert_eq!(found.owned_app(None), None);
+        assert!(found.apply(root(), Mono::from_nanos(2), Some(&editor)));
+        assert_eq!(found.owned_app(Some(&editor)), Some("pi"));
+        assert!(!found.apply(root(), Mono::from_nanos(3), Some(&editor)));
+        assert!(found.prompt_start());
+        assert_eq!(found.owned_app(Some(&editor)), None);
+        assert!(!found.prompt_start());
+        found.apply(root(), Mono::from_nanos(4), Some(&shell));
+        found.apply(clear(""), Mono::from_nanos(5), Some(&shell));
+        assert_eq!(found.owned_app(Some(&shell)), None);
+        found.apply(root(), Mono::from_nanos(6), Some(&shell));
+        assert!(found.clear());
+        assert_eq!(found.owned_app(Some(&shell)), None);
+        found.apply(root(), Mono::from_nanos(7), None);
+        assert_eq!(found.owned_app(None), None);
+        assert_eq!(found.owned_app(Some(&shell)), None);
     }
 }

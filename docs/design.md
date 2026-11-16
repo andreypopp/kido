@@ -312,16 +312,14 @@ mode.
 ## Delivery, and when a paste is allowed
 
 `ko prompt` reads its text from stdin and sends it to the server with
-its pane identity, its pane as `from` and an id that it mints; the
-server resolves the scope and delivers (protocol.md, section 11). A
-pane whose message stream is open gets the text as a message of kind
-`user`. When the connection fails after the request may have been
-sent, the CLI resends once with the same id to a candidate whose
-stream was open: the server delivers each id once, so the resend
-learns the truth and never delivers twice. A paste has no id, so it is
-never repeated.
+its pane identity, its pane as `from` and an id that it mints. The
+server picks the one agent of the caller's window other than the
+caller, and delivers (protocol.md, section 11). A pane whose message
+stream is open gets the text as a message of kind `user`. The CLI
+sends once: a paste has no id, and a prompt that the user did not see
+arrive is the user's to send again.
 
-A paste and a separate Enter key go only to a candidate without an
+A paste and a separate Enter key go only to an agent without an
 open message stream: Claude Code has no stream and is reachable only
 through a paste, and so is a pi without the harness or a pi whose
 stream is down.

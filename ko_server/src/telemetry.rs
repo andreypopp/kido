@@ -1,6 +1,7 @@
 use crate::program_status::Set;
 use ko_pane_wire::frame::PromptStep;
-use ko_wire::protocol::{Foreground, Progress};
+use ko_sys::clock::Mono;
+use ko_wire::protocol::{Foreground, Progress, StatusReport};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct CommandRun {
@@ -21,6 +22,12 @@ pub(crate) struct Prompt {
     pub(crate) exit: Option<i32>,
     pub(crate) at: u64,
     pub(crate) command: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Writer {
+    Terminal,
+    Route,
 }
 
 #[derive(Debug, Default)]
@@ -64,6 +71,14 @@ impl Telemetry {
                 }
             }
         }
+    }
+
+    pub(crate) fn status(&mut self, report: StatusReport, now: Mono, writer: Writer) -> bool {
+        let foreground = match writer {
+            Writer::Terminal => self.foreground.as_ref(),
+            Writer::Route => None,
+        };
+        self.records.apply(report, now, foreground)
     }
 
     pub(crate) fn foreground(&mut self, foreground: Foreground) -> bool {

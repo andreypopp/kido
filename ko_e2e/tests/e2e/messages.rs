@@ -56,9 +56,8 @@ fn row_has_inbox(s: &Server, pane: &str, inbox: bool) {
 }
 
 fn agent(s: &Server, session: &str, name: &str) -> String {
-    let command = format!(
-        "printf '\\033]7501;state=idle:app=pi\\007'; stty raw -echo; {PRINT_TOKEN}; exec cat"
-    );
+    let command =
+        format!("printf '\\033]7501;state=idle:app=pi\\007'; stty raw -echo; {PRINT_TOKEN}; cat");
     let pane = s.new_pane(json!({
         "command": {"type": "shell", "command": command},
         "vars": {"pi.session": session, "pi.name": name}

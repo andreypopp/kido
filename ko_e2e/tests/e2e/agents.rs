@@ -7,7 +7,7 @@ use crate::status::osc7501;
 fn a_pi_pane_uses_its_name_then_its_own_title() {
     let s = start(&[]);
     let pane = s.new_pane(json!({
-        "command": {"type": "shell", "command": "stty raw -echo; printf '\\033]0;Pane fallback\\007\\033]7501;state=idle:app=pi\\007'; exec cat"},
+        "command": {"type": "shell", "command": "stty raw -echo; printf '\\033]0;Pane fallback\\007\\033]7501;state=idle:app=pi\\007'; cat"},
         "parent": s.token_pane("exec cat"), "close": "on_exit",
     }));
     s.wait_row(&pane, "the pi root", |row| {

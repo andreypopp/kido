@@ -126,8 +126,9 @@ enum Command {
     Panes(PanesArgs),
     /// Print the layout document, the sessions and windows with their splits and floats.
     Layout(LayoutArgs),
-    /// Send a prompt, read from stdin, to the agent in the caller's window or session.
-    Prompt(prompt::PromptArgs),
+    /// Send a prompt, read from stdin, to the one other agent in the caller's window.
+    /// Exits 4 with no such agent and 5 with several.
+    Prompt,
     /// Show or serve a webview page in this pane.
     Webview(webview::WebviewArgs),
 }
@@ -759,7 +760,7 @@ fn main() -> ExitCode {
         Command::Run(args) => run::run(*args, cli.server),
         Command::Panes(args) => panes(args, cli.server),
         Command::Layout(args) => layout(args, cli.server),
-        Command::Prompt(args) => prompt::prompt(args, cli.server),
+        Command::Prompt => prompt::prompt(cli.server),
         Command::Webview(args) => webview::run(args, cli.server),
     }
 }

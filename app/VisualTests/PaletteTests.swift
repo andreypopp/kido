@@ -436,8 +436,8 @@ import PaneGeometry
             let session = try XCTUnwrap(snapshot.sessions.first)
             source = PromptSource(owner: owner, instance: snapshot.serverInstance, session: session.id, window: WindowID(number: 0), pane: PaneID(number: 0), windowName: "app")
             probe.candidates = [
-                KoSchema.Candidate(inbox: false, pane: PaneID(number: 0), session: session.id, title: "near", window: source.window),
-                KoSchema.Candidate(inbox: false, pane: PaneID(number: 502), session: session.id, title: "far", window: WindowID(number: 2)),
+                KoSchema.Candidate(pane: PaneID(number: 0), session: session.id, title: "near", window: source.window),
+                KoSchema.Candidate(pane: PaneID(number: 502), session: session.id, title: "far", window: WindowID(number: 2)),
             ]
             probe.install(owner)
             NSApp.mainMenu = app.mainMenu()
@@ -546,10 +546,10 @@ import PaneGeometry
             for _ in 0..<selectedAgent { _ = palette.control(palette.field, textView: NSTextView(), doCommandBy: #selector(NSResponder.moveDown(_:))) }
             image(palette, "\(theme)-root-agent")
             let probe = PromptProbe()
-            let near = KoSchema.Candidate(inbox: false, pane: PaneID(number: 0), session: session.id, title: "kido-app", window: WindowID(number: 0))
+            let near = KoSchema.Candidate(pane: PaneID(number: 0), session: session.id, title: "kido-app", window: WindowID(number: 0))
             probe.candidates = [near,
-                KoSchema.Candidate(inbox: false, pane: PaneID(number: 3), session: session.id, title: "sidebar-mockup", window: WindowID(number: 2)),
-                KoSchema.Candidate(inbox: false, pane: PaneID(number: 4), session: session.id, title: "pi-ui", window: WindowID(number: 3))]
+                KoSchema.Candidate(pane: PaneID(number: 3), session: session.id, title: "sidebar-mockup", window: WindowID(number: 2)),
+                KoSchema.Candidate(pane: PaneID(number: 4), session: session.id, title: "pi-ui", window: WindowID(number: 3))]
             probe.install(owner)
             let source = PromptSource(owner: owner, instance: try XCTUnwrap(owner.snapshot).serverInstance, session: session.id, window: near.window, pane: PaneID(number: 0), windowName: "app")
             let typed = "Look at the failing e2e test in the build log.\nIt reports failed where completed is expected.\nFind the cause and propose a fix."
@@ -1130,8 +1130,8 @@ import PaneGeometry
         NSApp.delegate = app
         defer { app.closePalette(); NSApp.delegate = delegate }
         let session = try XCTUnwrap(owner.currentSession)
-        let near = KoSchema.Candidate(inbox: false, pane: PaneID(number: 2), session: session.id, title: "near", window: WindowID(number: 1))
-        let second = KoSchema.Candidate(inbox: false, pane: PaneID(number: 3), session: session.id, title: "second", window: near.window)
+        let near = KoSchema.Candidate(pane: PaneID(number: 2), session: session.id, title: "near", window: WindowID(number: 1))
+        let second = KoSchema.Candidate(pane: PaneID(number: 3), session: session.id, title: "second", window: near.window)
         probe.candidates = [near, second]; probe.install(owner)
         owner.window.makeFirstResponder(pane)
         app.updateMenu(owner, responder: pane)
