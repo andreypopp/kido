@@ -223,7 +223,7 @@ test("stop by name and id stops owned groups, sends no notice, and handles ended
       symlinkSync("/bin/sleep", sleeper);
       const command = `exec '${sleeper}' 30`;
       const result = await s.tool("async_bash").execute("c", { command, name: address });
-      await pollUntil(async () => !(await processGone(`^${sleeper} 30$`)));
+      await pollUntil(async () => !(await processGone(`${marker} 30`)));
       const before = rowWhere(await list(s), "job", jobId(result));
       assert.equal(before.state, "running", JSON.stringify(before));
       const stopped = await s.tool("stop_async_bash").execute("s", { job: address === "name" ? "NAME" : jobId(result) });
@@ -317,7 +317,7 @@ for (const reason of ["quit", "new", "resume", "fork", "reload"]) {
         assert.equal(rowWhere(await list(s), "job", jobId(result)).state, "running");
       } else {
         assert.equal(jobRegistry(), owner);
-        assert.deepEqual((await list(s)).map((row) => row.state), ["ended"]);
+        await pollUntil(async () => (await list(s)).map((row) => row.state).join() === "ended");
         await pollUntil(() => processGone(gate));
       }
       assert.deepEqual(notices(s), []);
