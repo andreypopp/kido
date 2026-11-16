@@ -40,7 +40,7 @@ async function page() {
     closest(selector: string): Node | null { if (selector === 'a') return this.tagName === 'A' ? this : this.parent?.closest(selector) ?? null; return ['INPUT', 'TEXTAREA', 'SELECT', ...(selector.includes('button') ? ['BUTTON'] : [])].includes(this.tagName) || (this.attributes.has('role') && selector.includes(`[role=${this.attributes.get('role')}]`)) ? this : null; }
     setRangeText(text: string) { this.value = this.value.slice(0, this.selectionStart) + text + this.value.slice(this.selectionEnd); }
     dispatchEvent() { this.oninput?.(); }
-    querySelector(selector: string): Node | undefined { const match = selector.match(/^\.(\w+)(?::not\(\.(\w+)\))?$/); if (!match) return undefined; const find = (node: Node): Node | undefined => { for (const child of node.children) { if (!(child instanceof Node)) continue; if (child.classes.has(match[1]) && !(match[2] && child.classes.has(match[2]))) return child; const found = find(child); if (found) return found; } }; return find(this); }
+    querySelector(selector: string): Node | undefined { const match = selector.match(/^\.([\w-]+)(?::not\(\.([\w-]+)\))?$/); if (!match) return undefined; const find = (node: Node): Node | undefined => { for (const child of node.children) { if (!(child instanceof Node)) continue; if (child.classes.has(match[1]) && !(match[2] && child.classes.has(match[2]))) return child; const found = find(child); if (found) return found; } }; return find(this); }
     matches(selector: string) { return [...selector.matchAll(/\.([\w-]+)/g)].some(match => this.classes.has(match[1])); }
     querySelectorAll(selector = ''): Node[] {
       return selector.split(/,(?![^(]*\))/).flatMap(part => part.replace(':scope>', '').split('>').reduce<Node[]>((nodes, step) => nodes.flatMap(node => node.children.filter((child): child is Node => child instanceof Node && (step === 'div' ? child.tagName === 'DIV' : [...step.matchAll(/\.([\w-]+)/g)].some(match => child.classes.has(match[1]))))), [this]));
@@ -997,9 +997,9 @@ test("a queued block's × removes that entry only and leaves the draft alone", a
   app.context.fetch = async (path?: string, options?: { body?: string }) => { requests.push({ path: path ?? '', body: JSON.parse(options?.body ?? '{}') }); return { ok: true, json: async () => ({}) }; };
   app.run("dialogs=()=>{};exited=()=>{};editor.setText('draft');apply({...state,type:'state',sessionId:'s1',life:{type:'ready'},queue:{steering:[{text:'a',attachments:[]},{text:'b',attachments:[]}],followUp:[{text:'c',attachments:[]}]}})");
   assert.deepEqual(app.run("element('queue').children.map(row=>row.dataset.kind+':'+row.children[1].textContent)"), ['steer:steer', 'steer:steer', 'follow-up:follow-up']);
-  assert.deepEqual(JSON.parse(String(app.run("apply({...state,type:'state',queue:{steering:[{text:'**bold** first\\nsecond',attachments:[{id:'a',kind:'file'},{id:'b',kind:'file'}]}],followUp:[]}});const row=element('queue').children[0];JSON.stringify([row.children.map(c=>c.className),row.children[0].textContent,row.children[1].children.at(-1).textContent])"))), [['t', 'att', 'kind', 'attach-remove'], 'bold first', '2']);
+  assert.deepEqual(JSON.parse(String(app.run("apply({...state,type:'state',queue:{steering:[{text:'**bold** first\\nsecond',attachments:[{id:'a',kind:'file'},{id:'b',kind:'file'}]}],followUp:[]}});const row=element('queue').children[0];JSON.stringify([row.children.map(c=>c.className),row.children[0].textContent,row.children[1].children.at(-1).textContent])"))), [['t', 'att', 'kind'], 'bold first', '2']);
   app.run("apply({...state,type:'state',sessionId:'s1',queue:{steering:[{text:'a',attachments:[]},{text:'b',attachments:[]}],followUp:[{text:'c',attachments:[]}]}})");
-  app.run("element('queue').children[2].children.at(-1).onclick()");
+  app.run("element('queue').children[2].querySelector('.attach-remove').onclick()");
   await new Promise(resolve => setImmediate(resolve));
   assert.deepEqual(requests, [{ path: '/queue/remove', body: { sessionId: 's1', kind: 'follow-up', index: 0, text: 'c' } }]);
   assert.equal(app.text(), 'draft');
@@ -1024,7 +1024,7 @@ test('a dock that grows or shrinks keeps a bottom view at the bottom and a scrol
 test('a remove that leaves unsent entries puts them into the draft and reports the error', async () => {
   const app = await page();
   app.context.fetch = async () => ({ ok: false, json: async () => ({ error: 'refused', unsent: { steering: [{ text: 'first', attachments: [] }], followUp: [{ text: 'later', attachments: [] }] } }) });
-  app.run("dialogs=()=>{};exited=()=>{};editor.setText('draft');apply({...state,type:'state',sessionId:'s1',life:{type:'ready'},queue:{steering:[{text:'x',attachments:[]}],followUp:[]}});element('queue').children[0].children.at(-1).onclick()");
+  app.run("dialogs=()=>{};exited=()=>{};editor.setText('draft');apply({...state,type:'state',sessionId:'s1',life:{type:'ready'},queue:{steering:[{text:'x',attachments:[]}],followUp:[]}});element('queue').children[0].querySelector('.attach-remove').onclick()");
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(app.text(), 'draft\n\nfirst\n\nlater');
   assert.equal(app.run("element('error').textContent"), 'refused');
@@ -1034,7 +1034,7 @@ test("unchanged state keeps queue controls and status nodes and acknowledges edi
   const app = await page();
   const requests: string[] = [];
   app.context.fetch = async (path?: string) => { requests.push(path ?? ''); return {ok:true,json:async()=>({})}; };
-  assert.equal(app.run("dialogs=()=>{};exited=()=>{};const record={...state,type:'state',life:{type:'starting'},queue:{steering:[{text:'queued',attachments:[]}],followUp:[]},statuses:{tests:'ok'},editor:{id:'one',text:'draft'}};apply(record);const deferred=editorId===undefined;record.life={type:'ready'};apply(record);const back=element('queue').children[0].children.at(-1);apply({...record});deferred&&back===element('queue').children[0].children.at(-1)&&back.title==='Remove from the queue'&&element('queue').children[0].dataset.kind==='steer'&&element('queue').children[0].className==='qmsg user'&&element('status-extras').children.length===1"), true);
+  assert.equal(app.run("dialogs=()=>{};exited=()=>{};const record={...state,type:'state',life:{type:'starting'},queue:{steering:[{text:'queued',attachments:[]}],followUp:[]},statuses:{tests:'ok'},editor:{id:'one',text:'draft'}};apply(record);const deferred=editorId===undefined;record.life={type:'ready'};apply(record);const back=element('queue').children[0].querySelector('.attach-remove');apply({...record});deferred&&back===element('queue').children[0].querySelector('.attach-remove')&&back.title==='Remove from the queue'&&element('queue').children[0].dataset.kind==='steer'&&element('queue').children[0].className==='qmsg user'&&element('status-extras').children.length===1"), true);
   assert.deepEqual(requests, ['/editor/ack']);
 });
 

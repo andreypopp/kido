@@ -213,7 +213,7 @@ body .cm-tooltip.cm-tooltip-autocomplete.koa-complete::after{flex-shrink:0;conte
 .qmsg .t{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .qmsg .att{display:inline-flex;align-items:center;gap:3px;font:.8em/1.5 var(--prose);white-space:nowrap;flex-shrink:0;opacity:.8}.qmsg .att svg{width:11px;height:11px;fill:none;stroke:currentColor;stroke-width:1.5;stroke-linejoin:round}
 .qmsg .kind{font:.8em/1.5 var(--prose);color:color-mix(in srgb,var(--ko-color-4) 55%,var(--muted));white-space:nowrap;flex-shrink:0}
-.qmsg .attach-remove{align-self:flex-start;margin:2px -2px 0 -6px;color:inherit;opacity:.55}
+.qmsg .attach-remove{display:inline-grid;vertical-align:middle;margin:-8px -2px -8px 8px;color:inherit;opacity:.55}
 .qmsg .attach-remove:hover{color:inherit;opacity:1;background:color-mix(in srgb,currentColor 14%,transparent)}
 
 .field.editing,.dock .field.editing{border-color:color-mix(in srgb,var(--hair2) 45%,transparent)}

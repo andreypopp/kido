@@ -1080,7 +1080,7 @@ function queue() {
         reportError(error); close.disabled = false;
       });
     };
-    row.append(node('span', kind, 'kind'), close);
+    const label = node('span', kind, 'kind'); label.append(close); row.append(label);
     host.append(row);
   }
 }
