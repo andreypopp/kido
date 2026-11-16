@@ -171,6 +171,7 @@ impl Drop for Dir {
     }
 }
 
+#[cfg(target_os = "macos")]
 pub(crate) fn quiet_run(program: &Path, args: &[&str], env: &[Vec<u8>]) {
     let env = if env.is_empty() {
         Env::Inherit
