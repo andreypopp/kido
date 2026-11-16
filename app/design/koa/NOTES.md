@@ -1297,6 +1297,13 @@ grow by the chunk; it grows by blocks and by slices of whole lines.
   applies to every fence in the transcript, history included.
 - Annotations, agent cards, images and the user block are not
   touched: marks apply to final text only, which is never sliced.
+- Reduce Motion (2026-11-16, the gap @ko found): the chunking is
+  not motion and stays as it is: blocks still appear when complete,
+  the height and time caps still cut slices of whole lines, the
+  fence still folds. Only the animation goes: a block appears in
+  one frame at its full height and opacity, no 220 ms grow, no
+  scroll travel; the dots are static. So the reader sees the same
+  blocks at the same moments, without movement.
 
 **4 · `@name` links to the agent's pane.** Every name of an agent
 (an agent line's, a `@name` in the answer's or the user's prose, a

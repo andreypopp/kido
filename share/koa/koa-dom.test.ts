@@ -3010,6 +3010,16 @@ test('a new block holds, is measured after layout, grows with its measured heigh
   assert.equal(classes(), '|reveal dormant');
 });
 
+test('reduced motion shows a completed block at full height in its first frame without a grow', async () => {
+  const page = await revealPage();
+  Object.assign(page.app.context, { matchMedia: () => ({ matches: true }) });
+  page.deliver({ type: 'item', item: assistant(0, 'First.\n\nSecond.') });
+  page.step(16);
+  assert.equal(page.evaluate("views.get(0).view.children[0].children[0].className"), '');
+  assert.equal(page.evaluate('growing.length + measuredHolds.size'), 0);
+  assert.equal(page.evaluate('animating.size'), 0);
+});
+
 test('unit geometry groups inline fragments by line, closes complete code and skips what never reveals partially', async () => {
   const app = await page(), { document } = app.context;
   const box = (tag: string, rects: { top: number; bottom: number }[] = [], children: InstanceType<typeof app.context.Node>[] = []) => { const node = document.createElement(tag); node.rects = rects; node.getBoundingClientRect = () => ({ top: 0, bottom: rects.at(-1)?.bottom ?? 0 }); node.append(...children); return node; };

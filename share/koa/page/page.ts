@@ -51,6 +51,7 @@ type Table = { followers: Set<number>; index: Map<number, number>; starts: numbe
 let table: Table | undefined, windowDirty = true, mountedSpans: { start: number; end: number }[] = [], gaps: HTMLElement[] = [], measured = { width: 0, lh: 0 }, dividerPx: number | undefined;
 const template = document.createElement('template');
 const folds = new Map<string, boolean>();
+const reducedMotion = () => matchMedia('(prefers-reduced-motion: reduce)').matches;
 const REVEAL = { cap: .4, wait: 1500, fold: 15, grow: 220, travel: 250 };
 type Reveal = { at: number; tail?: { block: Tail; view: HTMLElement; shown: number; units?: Unit[] } };
 type Watch = { type: 'reveal'; memo: TextMemo } | { type: 'hold' } | { type: 'block' } | { type: 'row' } | { type: 'fit'; row: HTMLElement; width: number };
@@ -264,7 +265,7 @@ function show(memo: TextMemo, source: string, final: boolean, changed = 0) {
     }
     const elements = nodes.filter(child => child instanceof HTMLElement), fresh = index >= memo.grown;
     if (!elements.length) return;
-    if (fresh) { memo.grown = index + 1; if (scrolling.kind !== 'restoring') { growing.push(...elements); for (const element of elements) animating.set(element, Number(memo.key?.split(':')[0])); } reveal.at = performance.now(); }
+    if (fresh) { memo.grown = index + 1; if (scrolling.kind !== 'restoring' && !reducedMotion()) { growing.push(...elements); for (const element of elements) animating.set(element, Number(memo.key?.split(':')[0])); } reveal.at = performance.now(); }
   });
   if (reveal) {
     if (!blocks.at(-1)?.tail) reveal.tail = undefined;
@@ -481,7 +482,7 @@ function follow(max = readGeometry().max) {
   sync();
 }
 function toLatest() {
-  if (matchMedia('(prefers-reduced-motion: reduce)').matches) { follow(); return; }
+  if (reducedMotion()) { follow(); return; }
   travel = { from: element('scroll').scrollTop, start: performance.now() };
   schedule();
 }

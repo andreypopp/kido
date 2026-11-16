@@ -1084,7 +1084,11 @@ text to show.
   unclipped content, each held block and each notice's text; a
   newly observed element always gets a first notification. A block
   that completes waits one frame at zero height (`.hold`) and grows
-  from the height that the observer read. A `state` record and a job
+  from the height that the observer read. Under Reduce Motion, a
+  completed block appears at full height and opacity in its first
+  frame, without the hold or grow. The chunking, height and time
+  caps, and fence folding stay unchanged; scroll travel is disabled
+  and the dots stay static. A `state` record and a job
   view's records still render at once: they are rare and drive the
   focus, the composer and the job output. The frame loop runs only
   while work waits; the time cap is one timeout. A hidden page gets
