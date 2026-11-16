@@ -1229,7 +1229,7 @@ function apply(record: PageRecord) {
     if (viewChanged) { leaveView(record.view.id); const saved = positions.get(record.view.id); travel = undefined; sentBlock = undefined; clearDivider(); scrolling = saved && saved.sessionId === record.sessionId ? { kind: 'restoring', target: saved } : { kind: 'following' }; }
     state = record; if (agentsChanged || viewChanged) refreshAgentCards(); document.body.dataset.sessionId = state.sessionId ?? ''; element('items').hidden = state.life.type === 'switching';
     showJobView();
-    if (viewChanged) { rescopeImages(); readScroll(); atEnd(); }
+    if (viewChanged) { rescopeImages(); atEnd(); readScroll(); }
     renderBar(); refreshBash(); reconcileWorking(); refreshComposer(); dialogs(); queue(); exited();
     if (state.life.type === 'ready' && state.editor && editorId !== state.editor.id) {
       editor.setText(state.editor.text); editorId = state.editor.id;

@@ -3017,3 +3017,20 @@ test('a clip that reflow leaves inside a line snaps down to the last whole line 
   fixture.step(16);
   assert.deepEqual([tailOf(fixture).shown, tailOf(fixture).clip, fixture.evaluate("texts.get('0:0').reveal.tail.view.className")], [0, '0px', 'reveal dormant']);
 });
+
+test('a view left while following reopens at the end, whatever the other view did to the scroll box', async () => {
+  const f = await jobPage();
+  const text = (seq: number) => ({ seq, revision: 0, kind: 'assistant', final: true, blocks: [{ type: 'text', text: 'reply ' + seq }] });
+  f.evaluate(`apply({type:'item',item:${JSON.stringify(text(0))}})`); f.step(0);
+  f.scroll(900);
+  assert.equal(f.evaluate('scrolling.kind'), 'following');
+  f.open('j1');
+  f.reset('j1', 'one\n');
+  f.evaluate("Object.assign(element('scroll'),{scrollHeight:300,scrollTop:0})");
+  f.evaluate("apply({...state,type:'state',sessionId:'s',life:{type:'ready'},view:{id:'r',type:'agent',path:[{id:'r',name:'ko',type:'agent'}]}})");
+  f.evaluate("element('scroll').scrollHeight=1200");
+  f.step(16);
+  assert.equal(f.evaluate('scrolling.kind'), 'following');
+  assert.equal(f.evaluate("element('scroll').scrollTop"), 1100);
+  assert.equal(f.latest().endsWith('false'), true);
+});
