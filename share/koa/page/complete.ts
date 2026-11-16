@@ -10,7 +10,7 @@ import type { CompletionOption, CompletionResult, ShellCompletion, CompletionQue
 type Feedback = 'idle' | 'pending' | 'none';
 class Pending extends WidgetType {
   eq() { return true; }
-  toDOM() { return dots(Date.now()); }
+  toDOM() { return dots(); }
 }
 
 export function completion(host: HTMLElement, send: () => void, mode: StateField<ReturnType<typeof bashCommand>>) {
@@ -148,7 +148,7 @@ export function completion(host: HTMLElement, send: () => void, mode: StateField
         else if (!row) {
           const pending = document.createElement('div');
           pending.className = 'row pending'; pending.setAttribute('role', 'presentation'); pending.onmousedown = event => event.preventDefault();
-          pending.append(dots(Date.now())); list.append(pending);
+          pending.append(dots()); list.append(pending);
         } else if (list.lastElementChild !== row) list.append(row);
       }),
       feedback,

@@ -694,7 +694,7 @@ function reconcileWorking() {
     clearWorking();
     const row = node('div', undefined, 'run working'), line = node('div', undefined, 'line');
     line.append(node('span', undefined, 'sum')); row.append(line);
-    working = { view: state.view.id, since, primary: dots(since), row, extra: new Map() };
+    working = { view: state.view.id, since, primary: dots(), row, extra: new Map() };
   }
   const turn = working, spots: Spot[] = [];
   for (const marks of liveMarks.values()) {
@@ -722,7 +722,7 @@ function reconcileWorking() {
   for (const [key, mark] of turn.extra) if (!extra.has(key)) { mark.remove(); turn.extra.delete(key); }
   for (const [key, spot] of extra) {
     let mark = turn.extra.get(key);
-    if (!mark) { mark = dots(since); turn.extra.set(key, mark); }
+    if (!mark) { mark = dots(); turn.extra.set(key, mark); }
     place(mark, spot);
   }
 }
@@ -806,7 +806,7 @@ function commandNotice(item: Extract<WireItem, { kind: 'command' }>): NoticeRow 
       return { key, at, content: { type: 'details', text: result.name + ' · ' + stats.totalMessages + ' messages · $' + stats.cost.toFixed(2), body: grid } };
     }
     case 'compaction': switch (result.state.type) {
-      case 'running': return { key, at, content: { type: 'inline', head: () => [node('span', 'compacting'), dots(at)] } };
+      case 'running': return { key, at, content: { type: 'inline', head: () => [node('span', 'compacting'), dots()] } };
       case 'cancelled': return { key, at, content: { type: 'text', text: 'compaction cancelled' } };
       case 'failed': return { key, at, level: 'error', content: { type: 'text', text: 'compaction · ' + result.state.message } };
       case 'done': return { key, at, content: { type: 'details', text: 'compacted · ' + quantity(result.state.before) + ' → ' + (result.state.after === undefined ? '—' : quantity(result.state.after)) + ' tokens', body: paragraphs(result.state.summary) } };
@@ -1084,7 +1084,7 @@ function renderDirty(geo: Geo = geometry()) {
 
 function commandRun(value: Extract<WireItem, { kind: 'bash' }> | Bash, key: string) {
   const view = node('div', undefined, 'cmdrun'), line = node('div', undefined, 'line');
-  const live = dots('phase' in value ? value.started : Date.now());
+  const live = dots();
   const bang = node('span'), command = node('span'), meta = node('span', undefined, 'meta'), outcome = node('span'), time = node('span');
   meta.append(outcome, time); line.append(bang, command, meta);
   const output = node('div', undefined, 'out'), pre = node('pre'), footer = node('div', undefined, 'ft');

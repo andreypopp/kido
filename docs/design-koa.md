@@ -924,18 +924,13 @@ Parallel calls add one mark for each running step, never only inside
 a closed run. Each page update places the indicator after the items
 and runs change, so no frame shows neither or both; the turn's end,
 an abort, compaction and the job view remove it. A stream, a reveal
-step or a rebuilt run does not recreate it, so the bounce never
-restarts. The bounce's phase is a function of the mark's start: each
-dot is a Web Animation whose start time is the turn's start, with
-its stagger as its delay, so a
-move, a new node or a closed ancestor that opens again continues the
-same phase. A CSS animation cannot do this: `display: none` restarts
-it, and a new `animation-delay` on a running one counts the elapsed
-time twice. Compaction, a running `!` command, a
-pending completion and a pending attachment use the same dots, in
-the same box as the old spinner's ring, with the start of their own
-operation (`page/working.ts`). Under Reduce Motion the dots are
-static.
+step or a rebuilt run does not recreate it. The dots use a CSS
+animation in `page/page.css`; its phase can restart when the mark
+moves or a hidden ancestor opens. This is the user's decision:
+phase continuity is not required. Compaction, a running `!` command,
+a pending completion and a pending attachment use the same dots
+and box (`page/working.ts`). A CSS Reduce Motion media query keeps
+the dots static.
 
 The bounce is a `transform` animation, which WebKit
 runs in the compositor while the main thread is busy. A detached

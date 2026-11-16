@@ -56,8 +56,6 @@ async function page() {
     get previousElementSibling(): Node | undefined { const index = this.parent?.children.indexOf(this) ?? -1; return index > 0 ? this.parent?.children[index - 1] : undefined; }
     get lastElementChild() { return this.children.at(-1); }
     get lastChild() { return this.children.at(-1); }
-    animations: { keyframes: { easing?: string; offset: number; opacity?: number; transform: string }[]; options: { duration: number; iterations: number; delay?: number }; startTime: number | null }[] = [];
-    animate(keyframes: { easing?: string; offset: number; opacity?: number; transform: string }[], options: { duration: number; iterations: number; delay?: number }) { const animation = { keyframes, options, startTime: null }; this.animations.push(animation); return animation; }
     sizeOf?: () => number; seen?: number;
     get depth(): number { return this.parent ? this.parent.depth + 1 : 0; }
     get firstChild() { return this.children[0] ?? null; }
@@ -2704,16 +2702,14 @@ test('a failed earlier-output request for a job that was left does not mark the 
 
 const FIND_DOTS = "(function find(n){return n.className==='dots'?n:n.children.map(c=>c.children?find(c):undefined).find(Boolean)})(element('items'))";
 const dotsCount = "(function f(n){return (n.className==='dots'?1:0)+n.children.reduce((t,c)=>t+(c.children?f(c):0),0)})(element('items'))";
-test('working dots: the dots in the page keep their node and their start time through patches, reveal, replacements, rebuilds and hide', async () => {
+test('working dots: the dots in the page keep their node through patches, reveal, replacements, rebuilds and hide', async () => {
   const fixture = await revealPage(200), ev = fixture.evaluate;
-  const starts = () => JSON.parse(String(ev("JSON.stringify(" + FIND_DOTS + ".children.map(dot => dot.animations.map(animation => [animation.startTime, animation.options.duration, animation.options.iterations, animation.options.delay])))")));
-  const TURN = [[[78000, 1100, null, 0]], [[78000, 1100, null, 180]], [[78000, 1100, null, 360]]];
   ev("state={...state,working:true,since:1699999990000}");
   fixture.put('Intro.\n\none two three four five six');
   const first = ev(FIND_DOTS);
-  assert.deepEqual([Number(ev(dotsCount)), starts()], [1, TURN]);
+  assert.equal(Number(ev(dotsCount)), 1);
   ev("Date = class extends Date { static now() { return 1700000030000; } }");
-  const stay = (label: string) => assert.deepEqual([ev(FIND_DOTS) === first, Number(ev(dotsCount)), starts()], [true, 1, TURN], label);
+  const stay = (label: string) => assert.deepEqual([ev(FIND_DOTS) === first, Number(ev(dotsCount))], [true, 1], label);
   for (let revision = 1; revision <= 12; revision++) { fixture.patch(revision, ' word' + revision + '\n\nblock ' + revision); fixture.step(16); stay('patch ' + revision); }
   fixture.step(1000); fixture.step(500); stay('reveal');
   ev("apply({type:'patch',seq:0,baseRevision:12,revision:13,final:false,stop:'',error:'',blocks:[{index:0,block:{type:'text',text:'replaced'}}]})");
@@ -2730,22 +2726,7 @@ test('working dots: the dots in the page keep their node and their start time th
   ev("state={...state,view:{id:'other',path:[],type:'agent'}}; reconcileWorking()");
   ev("state={...state,view:{id:'',path:[],type:'agent'}}; reconcileWorking()");
   const back = ev(FIND_DOTS);
-  assert.deepEqual([back === first, Number(ev(dotsCount)), starts()], [false, 1, [[[60000, 1100, null, 0]], [[60000, 1100, null, 180]], [[60000, 1100, null, 360]]]], 'view return keeps the turn clock');
-});
-
-test('working dots: the bounce eases out up and in down, and sits still under reduced motion', async () => {
-  const fixture = await revealPage(200), ev = fixture.evaluate;
-  ev("state={...state,working:true,since:1699999990000}");
-  fixture.put('Intro.');
-  const frames = JSON.parse(String(ev("JSON.stringify(" + FIND_DOTS + ".children[0].animations[0].keyframes)")));
-  assert.deepEqual(frames, [
-    { transform: 'translateY(0)', opacity: .55, offset: 0, easing: 'ease-out' },
-    { transform: 'translateY(-2px)', opacity: 1, offset: .3, easing: 'ease-in' },
-    { transform: 'translateY(0)', opacity: .55, offset: .6 },
-    { transform: 'translateY(0)', opacity: .55, offset: 1 },
-  ]);
-  Object.assign(fixture.app.context, { matchMedia: () => ({ matches: true }) });
-  assert.equal(ev("dots(0).children.map(dot => dot.animations.length).join()"), '0,0,0');
+  assert.deepEqual([back === first, Number(ev(dotsCount))], [false, 1], 'view return creates a new mark');
 });
 
 test('working dots: one indicator in every frame, a bare row or a running mark, never both and never neither', async () => {

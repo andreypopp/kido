@@ -43,7 +43,7 @@ export function attach(host: HTMLElement, changed: () => void, displayPath: (val
     chip.icon.className = state.type === 'pending' ? 'attach-icon pending' : 'attach-icon';
     chip.body.onclick = () => { if (chip.state.type === 'ready') preview('/attachments/' + chip.state.file.id, chip.body, chip.state.file.kind, changed, chip.state.file.name); };
     if (file?.kind === 'image') { const image = document.createElement('img'); image.src = '/attachments/' + file.id; image.alt = ''; chip.icon.replaceChildren(image); }
-    else if (state.type === 'pending') { if (chip.icon.firstElementChild?.className !== 'dots') chip.icon.replaceChildren(dots(Date.now())); }
+    else if (state.type === 'pending') { if (chip.icon.firstElementChild?.className !== 'dots') chip.icon.replaceChildren(dots()); }
     else chip.icon.innerHTML = '<svg viewBox="0 0 16 16"><path d="M4 1.5h5.5L13 5v9.5H4z"/><path d="M9.5 1.5V5H13"/></svg>';
     chip.detail.classList.toggle('path', file?.origin === 'path');
     chip.detail.classList.toggle('reason', state.type === 'refused');

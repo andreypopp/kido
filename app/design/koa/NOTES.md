@@ -423,7 +423,10 @@ page, in the tool row and alone:
   rest the ring's margin), `--faint`, the bounce (2026-11-16, it
   was jumpy with linear timing): up in the first 30% of the 1.1s
   cycle with ease-out, down by 60% with ease-in, then at rest;
-  the dots 180ms apart, no opacity change; the box is 15×8px, `inline-flex`, `vertical-align:
+  the dots 180ms apart, opacity .55 at rest and 1 at the top.
+  Use CSS animation (user decision): its phase can restart when the
+  mark moves between the bare row and a tool row. Keep the same node
+  through patches. The box is 15×8px, `inline-flex`, `vertical-align:
   middle` so its centre sits on the row text's x-height centre as
   the spinner's ring did (the spinner had `vertical-align: -1px` on
   an 8px ring; the same -1px on the 8px box gives the same place),
