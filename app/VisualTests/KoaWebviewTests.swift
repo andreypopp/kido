@@ -1014,7 +1014,7 @@ import SidebarFeed
             let prefix = width < 600 ? "narrow-latest-" : "latest-"
             try await webviewUntil(web, "document.querySelectorAll('.assistant').length===6")
             _ = try await webviewJS(web, "(()=>{const scroll=document.querySelector('#scroll');scroll.scrollTop=scroll.scrollHeight;scroll.dispatchEvent(new Event('scroll'));scroll.scrollTop=0;scroll.dispatchEvent(new Event('scroll'));return true})()")
-            try await webviewUntil(web, "document.querySelector('#latest').classList.contains('show')")
+            try await webviewUntil(web, "(()=>{const scroll=document.querySelector('#scroll');return scroll.scrollTop===0&&scroll.scrollHeight-scroll.clientHeight>1})()")
             try await advance()
             try await webviewUntil(web, "document.querySelectorAll('.assistant').length===9")
             try await webviewUntil(web, "document.querySelector('.newmsgs')!==null")
