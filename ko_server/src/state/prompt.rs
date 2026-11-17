@@ -69,7 +69,10 @@ impl State {
         let (session, window) = layout.locate(from).ok_or_else(|| not_found(from))?;
         if let Some(target) = request.target {
             let reachable = session.windows.iter().any(|window| window.has(target));
-            return if target != from && reachable && self.live_agent(target).is_some() {
+            return if (caller.is_none() || target != from)
+                && reachable
+                && self.live_agent(target).is_some()
+            {
                 Ok(target)
             } else {
                 Err(Error::new(
@@ -81,7 +84,7 @@ impl State {
         let mut agents = window
             .panes()
             .into_iter()
-            .filter(|&id| id != from && self.live_agent(id).is_some());
+            .filter(|&id| (caller.is_none() || id != from) && self.live_agent(id).is_some());
         match (agents.next(), agents.next()) {
             (Some(one), None) => Ok(one),
             (None, _) => Err(Error::new(ErrorKind::NoAgent, "agent not found")),

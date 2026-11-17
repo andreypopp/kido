@@ -258,6 +258,21 @@ fn a_prompt_goes_to_the_one_live_agent_of_the_callers_window() {
             untouched(&s, pane, n);
         }
     }
+    for (id, from, target) in [
+        ("user-self-target", &pi, Some(&pi)),
+        ("user-self-resolve", &far, None),
+    ] {
+        let run = s.ko(
+            &["api", "-X", "POST", "--input", "-", "/prompt"],
+            &json!({"from": from, "id": id, "target": target, "text": id}).to_string(),
+        );
+        assert_eq!((code(&run), run.stderr.as_str()), (0, ""), "{id}");
+        assert_eq!(
+            serde_json::from_str::<Value>(&run.stdout).unwrap(),
+            json!({"via": {"type": "paste"}})
+        );
+        shows(&s, from, format!("got:{id}"));
+    }
     s.edit(|layout| {
         let sessions = layout["sessions"].as_array_mut().unwrap();
         let windows = sessions[0]["windows"].as_array_mut().unwrap();

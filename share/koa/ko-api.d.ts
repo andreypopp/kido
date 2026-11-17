@@ -1593,8 +1593,9 @@ export interface components {
             text: string;
         };
         /**
-         * @description A prompt for an agent. Without a target it goes to the one live agent of the window of `from`,
-         *     not `from` itself. A target must be a live agent of the session of `from`.
+         * @description A prompt for an agent. Without a target it goes to the one live agent of the window of `from`.
+         *     A target must be a live agent of the session of `from`. The target can be `from` only for the user;
+         *     a pane caller never prompts itself.
          */
         SendPrompt: {
             /** @description The pane that the prompt comes from. A pane identity may name only itself. */

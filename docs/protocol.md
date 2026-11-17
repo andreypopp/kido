@@ -1110,11 +1110,15 @@ a pane, Kido.app) names any pane. The target is an agent pane:
 kinds"). The server picks and checks it in the turn that delivers:
 
 - With a `target`, that pane, which must be a live agent of `from`'s
-  session other than `from` itself; any other pane is invalid.
-- Without one, the one agent in `from`'s window other than `from`
-  itself. None is `no_agent`, several are `multiple_agents`; the
-  server never picks the caller, the focused pane or a pane of
-  another window.
+  session; any other pane is invalid. A pane caller cannot prompt
+  itself, so for a pane identity the target is not `from`. For the
+  user, `from` only names the scope, so the target can be `from`:
+  the user can prompt the agent whose pane has the focus.
+- Without one, the one agent in `from`'s window, `from` itself
+  included for the user and excluded for a pane identity. None is
+  `no_agent`, several are `multiple_agents`; the server never picks
+  the calling pane or a pane of another window, and never reads the
+  focus.
 
 The first that applies delivers:
 

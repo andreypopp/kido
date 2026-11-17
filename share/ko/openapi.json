@@ -3906,7 +3906,7 @@
         "type": "object"
       },
       "SendPrompt": {
-        "description": "A prompt for an agent. Without a target it goes to the one live agent of the window of `from`,\nnot `from` itself. A target must be a live agent of the session of `from`.",
+        "description": "A prompt for an agent. Without a target it goes to the one live agent of the window of `from`.\nA target must be a live agent of the session of `from`. The target can be `from` only for the user;\na pane caller never prompts itself.",
         "properties": {
           "from": {
             "allOf": [
