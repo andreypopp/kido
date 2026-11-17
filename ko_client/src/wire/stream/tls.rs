@@ -135,7 +135,7 @@ impl Secured {
         let Some(connection) = connection else {
             return io::Error::other(Failure::Tls(error.to_string()));
         };
-        if let Some(failure) = connection.failure(&error) {
+        if let Some(failure) = connection.failure(&error.to_string(), None) {
             return io::Error::other(failure);
         }
         if let Some(source) = error.io_error() {

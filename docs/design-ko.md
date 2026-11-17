@@ -1182,6 +1182,28 @@ non-blocking upgrade step. A server certificate that is not valid
 and a refusal of the client's certificate are final: the client
 stops and does not reconnect. A proxy's 502 is no server.
 
+HTTP/3 (plans/remote-mtls.md, section 5) runs on one QUIC connection
+for each client, driven by `ko_client/src/wire/quic.rs` on the same
+loop as every other descriptor: `quiche` holds the QUIC state, and
+ko owns only the driver. It has no production caller yet; the
+HTTP/3 stream case gives it one. The QUIC TLS context comes from the
+same setup as TCP (`configure` in `endpoint/tls.rs`), with the same
+signer, verifier and failure kinds, and ALPN `h3`; SecTrust's pause
+is BoringSSL's verify retry inside `quiche`, and the trust `Wake` is
+a second token beside the UDP socket, which stays readable. The
+socket is unconnected and bound to the address that the route to the
+peer chooses, so a later migration only binds another socket. A
+datagram that the socket refuses with `WouldBlock` is kept as it is,
+and `quiche` is asked for no new packet until it is sent; only then
+does the socket wait for writable, and a packet's pacing time is a
+timer, not a writable wait. One window per stream and a larger one
+for the connection keep a stream that the peer does not read from
+stopping another. Caddy's QUIC idle timeout is 30 s and its server
+sends no keep-alive, so the client sends an ack-eliciting packet at
+an interval below that, which its caller chooses. The driver keeps
+`quiche`'s spare source connection ids full (limit 4) for migration.
+A close or a drain of the connection is a lost link.
+
 Reconnect: a lost link starts attempts with a backoff of 100 ms to
 2 s under one outage deadline of 60 s. The local terminal client
 uses the same attempts (section 4.11). An attempt sends a new hello,

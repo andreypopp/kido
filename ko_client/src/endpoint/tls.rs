@@ -21,8 +21,8 @@ use boring::ex_data::Index;
 use boring::ssl::{Ssl, SslAlert};
 #[cfg(any(target_vendor = "apple", test))]
 use boring::ssl::{
-    SslConnector, SslConnectorBuilder, SslInfoCallbackMode, SslInfoCallbackValue, SslMethod,
-    SslMode, SslOptions, SslRef, SslSessionCacheMode, SslVersion,
+    SslConnector, SslConnectorBuilder, SslContextBuilder, SslInfoCallbackMode,
+    SslInfoCallbackValue, SslMethod, SslMode, SslOptions, SslRef, SslSessionCacheMode, SslVersion,
 };
 #[cfg(target_vendor = "apple")]
 use ko_sys::event::Wake;
@@ -99,20 +99,21 @@ impl Connection {
         self.gate = Some(gate);
     }
 
-    pub(crate) fn failure(&self, error: &boring::ssl::Error) -> Option<Failure> {
+    pub(crate) fn failure(&self, text: &str, peer_alert: Option<u64>) -> Option<Failure> {
         let state = self.state.lock().unwrap_or_else(|error| error.into_inner());
         if state.signing == Signing::Failed
             || (state.signing == Signing::Succeeded
-                && matches!(
-                    state.alert,
-                    Some(
-                        SslAlert::BAD_CERTIFICATE
-                            | SslAlert::CERTIFICATE_REQUIRED
-                            | SslAlert::ACCESS_DENIED
-                    )
-                ))
+                && (matches!(peer_alert, Some(42 | 49 | 116))
+                    || matches!(
+                        state.alert,
+                        Some(
+                            SslAlert::BAD_CERTIFICATE
+                                | SslAlert::CERTIFICATE_REQUIRED
+                                | SslAlert::ACCESS_DENIED
+                        )
+                    )))
         {
-            return Some(Failure::Identity(error.to_string()));
+            return Some(Failure::Identity(text.to_owned()));
         }
         #[cfg(target_vendor = "apple")]
         if let Verify::Done(Err(reason)) = &state.verify {
@@ -142,11 +143,20 @@ pub(crate) fn signing(ssl: &SslRef, result: Signing) {
 
 #[cfg(any(target_vendor = "apple", test))]
 pub(crate) fn config(roots: Vec<Vec<u8>>) -> Result<SslConnectorBuilder, ErrorStack> {
-    let index = index()?;
     let mut builder = SslConnector::builder(SslMethod::tls())?;
+    configure(&mut builder, roots)?;
+    builder.set_alpn_protos(b"\x08http/1.1")?;
+    Ok(builder)
+}
+
+#[cfg(any(target_vendor = "apple", test))]
+pub(crate) fn configure(
+    builder: &mut SslContextBuilder,
+    roots: Vec<Vec<u8>>,
+) -> Result<(), ErrorStack> {
+    let index = index()?;
     builder.set_min_proto_version(Some(SslVersion::TLS1_3))?;
     builder.set_max_proto_version(Some(SslVersion::TLS1_3))?;
-    builder.set_alpn_protos(b"\x08http/1.1")?;
     builder.set_options(SslOptions::NO_TICKET);
     builder.set_session_cache_mode(SslSessionCacheMode::OFF);
     builder.set_mode(SslMode::ENABLE_PARTIAL_WRITE | SslMode::ACCEPT_MOVING_WRITE_BUFFER);
@@ -165,6 +175,7 @@ pub(crate) fn config(roots: Vec<Vec<u8>>) -> Result<SslConnectorBuilder, ErrorSt
     });
     #[cfg(not(target_vendor = "apple"))]
     {
+        builder.set_verify(boring::ssl::SslVerifyMode::PEER);
         builder.set_default_verify_paths()?;
         for root in roots {
             builder
@@ -240,7 +251,7 @@ pub(crate) fn config(roots: Vec<Vec<u8>>) -> Result<SslConnectorBuilder, ErrorSt
             Err(SslVerifyError::Retry)
         });
     }
-    Ok(builder)
+    Ok(())
 }
 
 #[cfg(target_vendor = "apple")]

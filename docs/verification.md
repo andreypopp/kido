@@ -96,6 +96,17 @@ deadline that end a dial while the worker runs, another connection
 on the same loop that progresses meanwhile, and a dial that is
 dropped before its worker ends.
 
+The QUIC driver's tests (`ko_client/src/wire/quic/tests.rs`) run a
+`quiche` server in the test process on a UDP socket, with the same
+certificates and trust gate: one signature for an accepted client,
+the identity kind for a refused one, the TLS kind for a wrong root or
+host name, a handshake that waits on the trust gate while the loop
+handles the driver's timers, a stream that the peer does not read
+beside one that completes, and a datagram kept whole across a
+`WouldBlock` that a test-only switch forces: a UDP receiver drops
+datagrams and gives the sender no back-pressure, so a real full
+buffer cannot be made.
+
 `ko_pane/tests/pane.rs` drives the `ko-pane` binary over a socketpair
 and a ring. The `Server` SIGTERM test starts the `ko-pane` that `make
 test` builds and names in `KO_PANE_EXE`.

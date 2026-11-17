@@ -1,5 +1,7 @@
 pub(crate) mod stream;
 
+#[cfg(all(feature = "tls", test))]
+mod quic;
 mod upgrade;
 pub use upgrade::{Connecting, UpgradeStep};
 

@@ -1,51 +1,19 @@
 use super::*;
 use crate::endpoint::{self, HostName, Resolved, Tls};
 use boring::pkey::PKey;
-use boring::ssl::{Ssl, SslAcceptor, SslMethod, SslStream, SslVerifyMode, SslVersion};
+use boring::ssl::{Ssl, SslAcceptor, SslMethod, SslStream};
 use boring::x509::X509;
 use std::net::{TcpListener, TcpStream};
 
 #[path = "../tls_certs.rs"]
 mod certs;
-pub(crate) use certs::Fixtures;
+pub(crate) use certs::{Fixtures, Key, server as configure_server};
 
 const WITHIN: Duration = Duration::from_secs(5);
 
 pub(crate) fn server(fixtures: &Fixtures) -> Arc<SslAcceptor> {
     let mut config = SslAcceptor::mozilla_intermediate_v5(SslMethod::tls()).unwrap();
-    config
-        .set_min_proto_version(Some(SslVersion::TLS1_3))
-        .unwrap();
-    config
-        .set_max_proto_version(Some(SslVersion::TLS1_3))
-        .unwrap();
-    config
-        .cert_store_mut()
-        .add_cert(X509::from_der(&fixtures.root.der).unwrap())
-        .unwrap();
-    let leaf = fixtures.client.der.clone();
-    config.set_verify_callback(
-        SslVerifyMode::PEER | SslVerifyMode::FAIL_IF_NO_PEER_CERT,
-        move |valid, context| {
-            if valid
-                && context.error_depth() == 0
-                && !context
-                    .current_cert()
-                    .is_some_and(|cert| cert.to_der().unwrap() == leaf)
-            {
-                context.set_error(Err(boring::x509::X509VerifyError::CERT_REJECTED));
-                return false;
-            }
-            valid
-        },
-    );
-    config
-        .set_certificate(&X509::from_der(&fixtures.server.der).unwrap())
-        .unwrap();
-    config
-        .set_private_key(&PKey::private_key_from_der(&fixtures.server.key).unwrap())
-        .unwrap();
-    config.set_options(boring::ssl::SslOptions::NO_TICKET);
+    certs::server(&mut config, fixtures);
     Arc::new(config.build())
 }
 
@@ -63,45 +31,10 @@ fn target_with(
     config
         .set_certificate(&X509::from_der(&client.der).unwrap())
         .unwrap();
-    #[derive(Debug)]
-    struct Key(PKey<boring::pkey::Private>);
-    impl boring::ssl::PrivateKeyMethod for Key {
-        fn sign(
-            &self,
-            ssl: &mut boring::ssl::SslRef,
-            input: &[u8],
-            algorithm: boring::ssl::SslSignatureAlgorithm,
-            out: &mut [u8],
-        ) -> Result<usize, boring::ssl::PrivateKeyMethodError> {
-            assert_eq!(
-                algorithm,
-                boring::ssl::SslSignatureAlgorithm::ECDSA_SECP256R1_SHA256
-            );
-            let mut signer =
-                boring::sign::Signer::new(boring::hash::MessageDigest::sha256(), &self.0).unwrap();
-            signer.update(input).unwrap();
-            let signature = signer.sign_to_vec().unwrap();
-            out[..signature.len()].copy_from_slice(&signature);
-            endpoint::tls::signing(ssl, endpoint::tls::Signing::Succeeded);
-            Ok(signature.len())
-        }
-        fn decrypt(
-            &self,
-            _: &mut boring::ssl::SslRef,
-            _: &[u8],
-            _: &mut [u8],
-        ) -> Result<usize, boring::ssl::PrivateKeyMethodError> {
-            Err(boring::ssl::PrivateKeyMethodError::FAILURE)
-        }
-        fn complete(
-            &self,
-            _: &mut boring::ssl::SslRef,
-            _: &mut [u8],
-        ) -> Result<usize, boring::ssl::PrivateKeyMethodError> {
-            Err(boring::ssl::PrivateKeyMethodError::FAILURE)
-        }
-    }
-    config.set_private_key_method(Key(PKey::private_key_from_der(&client.key).unwrap()));
+    config.set_private_key_method(Key {
+        key: PKey::private_key_from_der(&client.key).unwrap(),
+        signatures: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
+    });
     Resolved::Tls {
         target: Arc::new(Tls::new(
             HostName::try_from(host.to_owned()).unwrap(),

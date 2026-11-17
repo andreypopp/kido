@@ -4,11 +4,49 @@ use boring::ec::{EcGroup, EcKey};
 use boring::hash::MessageDigest;
 use boring::nid::Nid;
 use boring::pkey::{PKey, Private};
+use boring::ssl::{PrivateKeyMethod, PrivateKeyMethodError, SslRef, SslSignatureAlgorithm};
 use boring::x509::extension::{
     BasicConstraints, ExtendedKeyUsage, KeyUsage, SubjectAlternativeName,
 };
 use boring::x509::{X509, X509NameBuilder};
 use std::time::{SystemTime, UNIX_EPOCH};
+
+#[derive(Debug)]
+pub(crate) struct Key {
+    pub(crate) key: PKey<boring::pkey::Private>,
+    pub(crate) signatures: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+}
+impl PrivateKeyMethod for Key {
+    fn sign(
+        &self,
+        ssl: &mut SslRef,
+        input: &[u8],
+        algorithm: SslSignatureAlgorithm,
+        out: &mut [u8],
+    ) -> Result<usize, PrivateKeyMethodError> {
+        assert_eq!(algorithm, SslSignatureAlgorithm::ECDSA_SECP256R1_SHA256);
+        let mut signer =
+            boring::sign::Signer::new(boring::hash::MessageDigest::sha256(), &self.key).unwrap();
+        signer.update(input).unwrap();
+        let signature = signer.sign_to_vec().unwrap();
+        out[..signature.len()].copy_from_slice(&signature);
+        self.signatures
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        crate::endpoint::tls::signing(ssl, crate::endpoint::tls::Signing::Succeeded);
+        Ok(signature.len())
+    }
+    fn decrypt(
+        &self,
+        _: &mut SslRef,
+        _: &[u8],
+        _: &mut [u8],
+    ) -> Result<usize, PrivateKeyMethodError> {
+        Err(PrivateKeyMethodError::FAILURE)
+    }
+    fn complete(&self, _: &mut SslRef, _: &mut [u8]) -> Result<usize, PrivateKeyMethodError> {
+        Err(PrivateKeyMethodError::FAILURE)
+    }
+}
 
 #[derive(Debug)]
 pub(crate) struct Certificate {
@@ -25,6 +63,42 @@ pub(crate) struct Fixtures {
     pub(crate) client: Certificate,
     pub(crate) other_client: Certificate,
     pub(crate) other_root: Certificate,
+}
+
+pub(crate) fn server(config: &mut boring::ssl::SslContextBuilder, fixtures: &Fixtures) {
+    config
+        .set_min_proto_version(Some(boring::ssl::SslVersion::TLS1_3))
+        .unwrap();
+    config
+        .set_max_proto_version(Some(boring::ssl::SslVersion::TLS1_3))
+        .unwrap();
+    config
+        .cert_store_mut()
+        .add_cert(X509::from_der(&fixtures.root.der).unwrap())
+        .unwrap();
+    let leaf = fixtures.client.der.clone();
+    config.set_verify_callback(
+        boring::ssl::SslVerifyMode::PEER | boring::ssl::SslVerifyMode::FAIL_IF_NO_PEER_CERT,
+        move |valid, context| {
+            if valid
+                && context.error_depth() == 0
+                && !context
+                    .current_cert()
+                    .is_some_and(|cert| cert.to_der().unwrap() == leaf)
+            {
+                context.set_error(Err(boring::x509::X509VerifyError::CERT_REJECTED));
+                return false;
+            }
+            valid
+        },
+    );
+    config
+        .set_certificate(&X509::from_der(&fixtures.server.der).unwrap())
+        .unwrap();
+    config
+        .set_private_key(&PKey::private_key_from_der(&fixtures.server.key).unwrap())
+        .unwrap();
+    config.set_options(boring::ssl::SslOptions::NO_TICKET);
 }
 
 impl Certificate {
