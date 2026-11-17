@@ -326,7 +326,7 @@ container and on the droplet, not in `make verify` on macOS.
 ```
 deploy/terraform/      main.tf, variables.tf, outputs.tf, versions.tf, .terraform.lock.hcl
 deploy/provision.sh    runs on the droplet as root; safe to run again
-deploy/install.sh      runs on the Mac: copies the build and runs provision.sh over SSH
+deploy/install.sh      runs on the Mac: copies the build with rsync and runs provision.sh over SSH
 deploy/files/          Caddyfile, ko.service, caddy drop-in, tmpfiles, nftables.conf,
                        sshd drop-in, unattended-upgrades, apparmor profile
 deploy/ko-pair, ko-revoke, ko-devices     Python (4.3)
@@ -346,7 +346,9 @@ with only Zone, DNS, Edit on the one zone; the zone's id and name.
 - `digitalocean_droplet`: Debian 13 x64, region and size as
   variables, the operator's SSH key, monitoring off, the droplet
   agent removed (the web console is a second way in), `user_data`
-  that creates `me` with the key and locks root.
+  that creates `me` with the key, locks root and installs `rsync`
+  (the image has none, and `install.sh` needs it). A test VM gets its
+  seed from the same user-data, so the two cannot differ.
 - `digitalocean_firewall`: in: 22/tcp from `ssh_cidrs`, 443/tcp from
   all (phase 2 adds 443/udp). Port 80 by Q4. Out: all.
 - `cloudflare_dns_record`: A (and AAAA when the droplet has IPv6)
