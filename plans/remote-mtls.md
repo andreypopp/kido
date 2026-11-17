@@ -293,8 +293,15 @@ client opens one connection for each view and each request.
 
 ```
 { v: 1, enroll: "https://enroll.<domain>/v1/enroll",
-  host: "<ko host name>", token: base64url }
+  host: "<ko host name>", name: "<server name>", token: base64url }
 ```
+
+`name` is the server's friendly name: `ko-pair --name NAME`, by
+default the machine's hostname. It has the rules of the device
+name: 1 to 64 characters, no controls; `ko-pair` refuses another
+value, and the decoder refuses a payload that breaks them. The field
+is required, and `v` stays 1: no client has shipped, so the one
+shape changes on both sides and no second version exists.
 
 **The certificate profile** (the app builds it, 4.8): version 3,
 random 128-bit serial, ECDSA P-256, self-signed with SHA-256,
@@ -697,7 +704,7 @@ every `case .remote` gets its decision:
 |---|---|
 | `clipboardKey` | `tls:<host>` |
 | `imageFetches` | measured in unit 7; 4 until then |
-| `label`, the window title prefix | by the UI design (4.9) |
+| `label`, the window title prefix | the server's name from the identity store is the host's title, with the DNS host as the second line (decided by the user, for both apps); the rest by the UI design (4.9) |
 | `WindowOwner` connect (`:545`) | its own sequence, below; no `SSH` |
 | The mismatch sheet (`:622`) | the remote sheet; the text "on HOST" |
 | `KO_ERR_NO_SERVER` recovery (`startRemoteServer`) | none: systemd owns the server |
@@ -707,8 +714,9 @@ every `case .remote` gets its decision:
 
 **The identity store** (a new file, `app/App/Identity.swift`): one
 identity for each server, in `~/Library/Application
-Support/Kido/servers/<host>/`: `certificate.der` and `key` (the
-enclave blob of 324 bytes, mode 0600). The key is always an enclave
+Support/Kido/servers/<host>/`: `certificate.der`, `key` (the
+enclave blob of 324 bytes, mode 0600) and `name`, the server's name
+from the payload. The key is always an enclave
 key: the visual-test VM has a working enclave API too (spike 2), so
 no software key exists in the app. Removing the directory forgets
 the server. The enclave key is made with the access
@@ -719,7 +727,8 @@ locked is not tested yet; the user checks it once (Q6).
 **Pairing** (Swift; the UI is 4.9):
 
 1. Decode the payload; refuse another `v`, a URL that is not
-   `https`, a host that is not a DNS name.
+   `https`, a host that is not a DNS name, a `name` that breaks its
+   rules (4.3).
 2. Make the key and the certificate (4.3 profile) with
    `swift-certificates` and `swift-crypto`.
 3. Sign the message of 4.3 and send the POST with `URLSession` (no
@@ -1185,6 +1194,7 @@ with reviews, not calendar time.
 | 4 | TLS transport | `Endpoint`, `Stream`, rustls, the resolver, the failure kinds, the 1001 test and its docs rule, tests (4.5) | crates | high | 12 h |
 | 5 | Identity ABI | `ko_endpoint`, `ko_identity`, the signer, KoClientKit (4.7) | 4, S2, unsafe approval | medium | 4 h |
 | 6 | Kido.app | The `Host` case, the identity store, pairing, connect, sheets, snapshots (4.8, 4.9) | 5, the request shape of 4.3 | high | 12 h |
+| 6b | Shared pairing package | A Swift package beside `KoClientKit` with the code that no platform owns: `Pairing.swift`, `Identity.swift`, the activation loop, `ServerName`, and the parts of `Failure` that they need; the default device name stays in each app. With it, the `name` field in `ko-pair`, in the fixed vector of `deploy/testdata` and in the package. The package's test is the fixed-vector test (the payload decode with `name`, and the signed message). Kido.app and the iOS branch both use the package | 6 | low | 4 h |
 | 7 | Measurement | The numbers of 4.6 in the docs; the decision on `ko_client_reconnect` and the request pool | 3, 6 | low | 3 h, and the user switches networks |
 | S3 | Spike 3 | Done but for the droplet session: results in section 6 | | | a droplet session with the user |
 
