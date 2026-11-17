@@ -116,6 +116,12 @@ the connection closes. Each request on a keep-alive connection gets
 the full limit; bodies and WebSocket frames do not count. A body needs
 `Content-Length`: a chunked request gets `411 Length Required` and the
 connection closes. Without the limit, an endless head would grow memory.
+When the server answers a request and closes while part of its
+announced body is unread, as for a refusal at the head, it shuts down
+its write half after the reply and reads and discards the rest of the
+body, until `Content-Length` is reached, the client's end, or 2 s,
+before it closes; a client or proxy that still sends the body then
+gets no broken pipe and reads the answer (RFC 9112, section 9.6).
 
 Remote: the client asks its SSH ControlMaster for a unix socket
 forward, `ssh -O forward -L <local>:<dir>/socket host`, and connects to

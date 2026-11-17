@@ -5,7 +5,7 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::time::{Duration, Instant};
 
-use crate::harness::{DEADLINE, Dir, poll, quote, stays, wait_gone, within};
+use crate::harness::{DEADLINE, Dir, poll, quote, stays, wait_gone};
 use crate::panes::as_pane;
 use crate::runtime::{fifo, pid_of, release, serve_in};
 use serde_json::json;
@@ -29,6 +29,24 @@ pub(crate) fn check_runtime_drop(s: &crate::harness::Server, runtime: &str, pane
     assert_eq!(result.end, json!({"type":"exit", "status":0}));
     assert_eq!(result.stdout, bytes);
     assert_eq!(result.stderr, b"");
+}
+
+#[test]
+fn an_early_upload_refusal_keeps_its_reply_when_the_body_arrives_late() {
+    let server = crate::harness::start(&[]);
+    let mut stream = server.dial().unwrap();
+    let headers: String = server
+        .headers()
+        .iter()
+        .map(|(key, value)| format!("{key}: {value}\r\n"))
+        .collect();
+    stream.write_all(format!("POST /panes/pane_1/drops?name=.hidden HTTP/1.1\r\nHost: ko\r\n{headers}Content-Length: 1\r\n\r\n").as_bytes()).unwrap();
+    let mut reply = Vec::new();
+    let head = server.read_head(&mut stream, &mut reply);
+    assert_eq!(head.status, 400);
+    stream.read_to_end(&mut reply).unwrap();
+    stream.write_all(b"x").unwrap();
+    stream.shutdown(std::net::Shutdown::Write).unwrap();
 }
 
 #[test]
@@ -109,29 +127,22 @@ fn uploads_stream_files_and_remove_partial_drops() {
         .map(|(key, value)| format!("{key}: {value}\r\n"))
         .collect();
     for (name, framing, status) in [
-        ("test", "", "400"),
-        ("test", "Content-Length: 2147483649\r\n", "500"),
-        ("test", "Transfer-Encoding: chunked\r\n", "400"),
-        (".hidden", "Content-Length: 2147483649\r\n", "400"),
+        ("test", "", 400),
+        ("test", "Content-Length: 2147483649\r\n", 500),
+        ("test", "Transfer-Encoding: chunked\r\n", 400),
+        (".hidden", "Content-Length: 2147483649\r\n", 400),
     ] {
         let mut stream = s.dial().unwrap();
-        within(&stream, Instant::now() + DEADLINE);
         stream
             .write_all(
                 format!("POST {target}?name={name} HTTP/1.1\r\nHost: ko\r\n{headers}{framing}\r\n")
                     .as_bytes(),
             )
             .unwrap();
-        let mut reply = Vec::new();
-        stream.read_to_end(&mut reply).unwrap();
-        assert!(
-            reply.starts_with(format!("HTTP/1.1 {status} ").as_bytes()),
-            "{}",
-            String::from_utf8_lossy(&reply)
-        );
+        let (actual, reply) = s.read_reply(stream);
+        assert_eq!(actual, status, "{}", String::from_utf8_lossy(&reply));
     }
     let mut complete = s.dial().unwrap();
-    within(&complete, Instant::now() + DEADLINE);
     s.write_request(
         &mut complete,
         "POST",
@@ -140,15 +151,9 @@ fn uploads_stream_files_and_remove_partial_drops() {
         b"abc",
     );
     complete.shutdown(std::net::Shutdown::Write).unwrap();
-    let mut reply = Vec::new();
-    complete.read_to_end(&mut reply).unwrap();
-    assert!(
-        reply.starts_with(b"HTTP/1.1 200 "),
-        "{}",
-        String::from_utf8_lossy(&reply)
-    );
+    let (status, reply) = s.read_reply(complete);
+    assert_eq!(status, 200, "{}", String::from_utf8_lossy(&reply));
     let mut stream = s.dial().unwrap();
-    within(&stream, Instant::now() + DEADLINE);
     stream.write_all(format!("POST {target}?name=partial HTTP/1.1\r\nHost: ko\r\n{headers}Content-Length: 100\r\n\r\nx").as_bytes()).unwrap();
     let partial = || {
         fs::read_dir(s.dir.join("drops")).unwrap().any(|entry| {
@@ -201,7 +206,6 @@ fn uploads_stream_files_and_remove_partial_drops() {
     visit.send(&json!({"type":"visit", "cwd":"/tmp"}));
     visit.event("up");
     let mut uploading = s.dial().unwrap();
-    within(&uploading, Instant::now() + DEADLINE);
     uploading.write_all(format!("POST /panes/{caller}/drops?name=visit HTTP/1.1\r\nHost: ko\r\n{headers}Content-Length: 100\r\n\r\nx").as_bytes()).unwrap();
     let rt_partial = || {
         fs::read_dir(home.join(".local/state/ko/drops"))
@@ -217,17 +221,11 @@ fn uploads_stream_files_and_remove_partial_drops() {
     poll("visit upload started", rt_partial);
     drop(visit);
     poll("visit upload cancelled", || !rt_partial());
-    let mut reply = Vec::new();
-    uploading.read_to_end(&mut reply).unwrap();
-    assert!(
-        reply.starts_with(b"HTTP/1.1 500 "),
-        "{}",
-        String::from_utf8_lossy(&reply)
-    );
+    let (status, reply) = s.read_reply(uploading);
+    assert_eq!(status, 500, "{}", String::from_utf8_lossy(&reply));
 
     let blocked = s.token_pane_with(json!({"runtime":"blocked"}), "exec cat");
     let mut sending = s.dial().unwrap();
-    within(&sending, Instant::now() + DEADLINE);
     ko_sys::sock::set_send_buffer(sending.as_fd(), 65536).unwrap();
     let client_send = ko_sys::sock::buffers(sending.as_fd()).unwrap().send;
     let (probe, _peer) = std::os::unix::net::UnixStream::pair().unwrap();
@@ -284,7 +282,6 @@ fn uploads_stream_files_and_remove_partial_drops() {
 
     fs::remove_file(&ready).unwrap();
     let mut half = s.dial().unwrap();
-    within(&half, Instant::now() + DEADLINE);
     ko_sys::sock::set_send_buffer(half.as_fd(), 1 << 20).unwrap();
     let half_send = ko_sys::sock::buffers(half.as_fd()).unwrap().send;
     let pipe_capacity = {
@@ -322,19 +319,9 @@ fn uploads_stream_files_and_remove_partial_drops() {
     );
     release(&home, &gate, "go");
     half.set_nonblocking(false).unwrap();
-    let mut reply = Vec::new();
-    half.read_to_end(&mut reply).unwrap();
-    assert!(
-        reply.starts_with(b"HTTP/1.1 200 "),
-        "{}",
-        String::from_utf8_lossy(&reply)
-    );
-    let body = reply
-        .windows(4)
-        .position(|part| part == b"\r\n\r\n")
-        .unwrap()
-        + 4;
-    let reply: serde_json::Value = serde_json::from_slice(&reply[body..]).unwrap();
+    let (status, reply) = s.read_reply(half);
+    assert_eq!(status, 200, "{}", String::from_utf8_lossy(&reply));
+    let reply: serde_json::Value = serde_json::from_slice(&reply).unwrap();
     assert_eq!(
         fs::read(reply["path"].as_str().unwrap()).unwrap(),
         vec![b'h'; half_size]
@@ -342,7 +329,6 @@ fn uploads_stream_files_and_remove_partial_drops() {
 
     fs::remove_file(&ready).unwrap();
     let mut short = s.dial().unwrap();
-    within(&short, Instant::now() + DEADLINE);
     short.write_all(format!("POST /panes/{blocked}/drops?name=gated-short HTTP/1.1\r\nHost: ko\r\n{headers}Content-Length: 1024\r\n\r\nshort").as_bytes()).unwrap();
     poll("short upload helper waits at gate", || ready.exists());
     let helper = pid_of(&ready);

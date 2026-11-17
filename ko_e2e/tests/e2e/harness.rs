@@ -62,6 +62,14 @@ fn time_left(deadline: Instant) -> Duration {
 #[derive(Debug)]
 pub(crate) struct Steady(UnixStream);
 
+impl Steady {
+    fn connect(path: &Path) -> std::io::Result<Self> {
+        let stream = UnixStream::connect(path)?;
+        within(&stream, Instant::now() + DEADLINE);
+        Ok(Self(stream))
+    }
+}
+
 impl Deref for Steady {
     type Target = UnixStream;
 
@@ -86,13 +94,10 @@ impl Write for Steady {
     }
 }
 
-fn read_within(stream: &UnixStream, deadline: Instant) {
-    stream.set_read_timeout(Some(time_left(deadline))).unwrap();
-}
-
 pub(crate) fn within(stream: &UnixStream, deadline: Instant) {
-    read_within(stream, deadline);
-    stream.set_write_timeout(Some(time_left(deadline))).unwrap();
+    let left = time_left(deadline);
+    stream.set_read_timeout(Some(left)).unwrap();
+    stream.set_write_timeout(Some(left)).unwrap();
 }
 
 pub(crate) fn poll(what: &str, check: impl FnMut() -> bool) {
@@ -914,7 +919,7 @@ impl Server {
     }
 
     pub(crate) fn dial(&self) -> std::io::Result<Steady> {
-        UnixStream::connect(self.dir.join("socket")).map(Steady)
+        Steady::connect(&self.dir.join("socket"))
     }
 
     pub(crate) fn headers(&self) -> Headers {
@@ -1048,15 +1053,13 @@ impl Server {
         headers: &Headers,
         body: &[u8],
     ) -> Steady {
-        let mut stream = UnixStream::connect(socket).map(Steady).unwrap();
-        within(&stream, Instant::now() + DEADLINE);
+        let mut stream = Steady::connect(socket).unwrap();
         self.write_request(&mut stream, method, path, headers, body);
         stream
     }
 
     pub(crate) fn read_reply(&self, mut stream: Steady) -> (u16, Vec<u8>) {
         let deadline = Instant::now() + DEADLINE;
-        within(&stream, deadline);
         let mut buffer = Vec::new();
         let Head {
             status,
@@ -1084,7 +1087,7 @@ impl Server {
                 break;
             }
             let mut chunk = [0u8; 65536];
-            read_within(&stream, deadline);
+            let _ = time_left(deadline);
             let count = stream.read(&mut chunk).unwrap();
             if count == 0 {
                 assert!(matches!(framing, Framing::Close), "reply: body cut short");
@@ -1473,4 +1476,35 @@ pub(crate) fn wait_gone(pid: Pid, what: &str) {
     poll(&format!("program {pid} to be gone after {what}"), || {
         pid.has_ended()
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ko_sys::event::{Events, Interest, Mode, Poll};
+
+    #[test]
+    fn a_refusal_can_be_read_after_the_peer_has_closed() {
+        let server = start(&[]);
+        let mut stream = server.dial().unwrap();
+        stream
+            .write_all(b"GET /version HTTP/1.1\r\nbad header\r\n\r\n")
+            .unwrap();
+        let mut poll = Poll::new();
+        let token = poll.watch(stream.as_fd(), Interest::Hangup);
+        let timer = poll.timer();
+        poll.start(timer, DEADLINE, None).unwrap();
+        let mut events = Events::default();
+        loop {
+            poll.turn(Mode::Wait, &mut events).unwrap();
+            if events.ready().iter().any(|ready| ready.token == token) {
+                break;
+            }
+            assert!(
+                events.due().is_empty(),
+                "server did not close the refused request"
+            );
+        }
+        assert_eq!(server.read_reply(stream).0, 400);
+    }
 }

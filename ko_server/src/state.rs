@@ -1484,6 +1484,7 @@ impl State {
                 Phase::Handling(_) | Phase::Webview { .. } => {
                     self.conns[index].read(poll);
                 }
+                Phase::Closing(_) => self.conns[index].discard(poll),
                 _ => self.read_http(poll, index),
             }
         }
@@ -1822,6 +1823,14 @@ impl State {
     }
 
     fn ping(&mut self, poll: &mut Poll, timer: Timer) {
+        if self
+            .conns
+            .iter_mut()
+            .find(|conn| conn.timer == timer)
+            .is_some_and(Conn::expire_close)
+        {
+            return;
+        }
         if let Some(index) = self.conns.iter().position(|conn| {
             conn.timer == timer
                 && matches!(conn.phase, Phase::Handling(crate::conn::Handling::Exec(_)))
@@ -1854,7 +1863,7 @@ impl State {
         let mut client_closed = false;
         loop {
             for conn in &mut self.conns {
-                conn.settle();
+                conn.settle(poll);
             }
             self.cancel_uploads(poll);
             let Some(index) = self.conns.iter().position(|conn| conn.out.is_shut()) else {
@@ -1936,12 +1945,47 @@ impl State {
 
 #[cfg(test)]
 mod tests {
+    use crate::conn::{Close, Life, Phase};
     use crate::fuzz::Rig;
     use crate::server::tests::scratch;
-    use ko_sys::event::Mode;
+    use ko_sys::event::{Events, Mode, Poll};
     use ko_wire::protocol::{Command, CreatePane};
+    use std::os::unix::net::UnixStream;
     use std::path::PathBuf;
     use std::time::{Duration, Instant};
+
+    #[test]
+    fn the_loop_removes_a_lingering_connection_when_its_close_timer_expires() {
+        let dir = scratch("state-close-timer");
+        let mut poll = Poll::new();
+        let mut state = super::State::new(
+            crate::config::scratch(&dir, PathBuf::from("/nonexistent/ko-pane")),
+            ko_wire::ids::Instance::mint().unwrap(),
+            &mut poll,
+            Duration::from_secs(60),
+        );
+        let (_client, stream) = UnixStream::pair().unwrap();
+        state.accept(&mut poll, crate::server::Verified::admit(stream).unwrap());
+        let conn = &mut state.conns[0];
+        conn.phase = Phase::Closing(Close::body(1));
+        conn.out.send(b"refused".to_vec());
+        let timer = conn.timer;
+        let mut events = Events::default();
+        state
+            .turn(&mut poll, Mode::Peek, &mut events, |_, _, _| Ok(false))
+            .unwrap();
+        assert_eq!(state.conns.len(), 1);
+        assert_eq!(state.conns[0].out.life(), Life::WriteShut);
+        assert!(poll.is_active(timer));
+        poll.start(timer, Duration::ZERO, None).unwrap();
+        state
+            .turn(&mut poll, Mode::Peek, &mut events, |_, _, _| Ok(false))
+            .unwrap();
+        assert!(state.conns.is_empty());
+        assert!(!poll.is_active(timer));
+        state.shutdown(&mut poll);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 
     #[test]
     fn a_pane_row_has_no_pid_until_the_pane_is_ready() {

@@ -436,7 +436,7 @@ impl Ws {
             return Ping::Expired;
         }
         match out.life() {
-            Life::Shut => return Ping::Expired,
+            Life::Shut | Life::WriteShut => return Ping::Expired,
             Life::Draining => return Ping::After(stall.unwrap_or(STALL)),
             Life::Open => {}
         }

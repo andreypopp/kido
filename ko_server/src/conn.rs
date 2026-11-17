@@ -297,6 +297,14 @@ struct Pixels {
 pub(crate) enum Life {
     Open,
     Draining,
+    WriteShut,
+    Shut,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Transport {
+    Open,
+    WriteShut,
     Shut,
 }
 
@@ -305,7 +313,7 @@ pub(crate) struct Output {
     stream: UnixStream,
     queue: Queue,
     pixels: Option<Pixels>,
-    shut: bool,
+    transport: Transport,
     refused: bool,
     accepted: u64,
 }
@@ -323,7 +331,7 @@ impl Output {
             stream,
             queue: Queue::new(cap),
             pixels: None,
-            shut: false,
+            transport: Transport::Open,
             refused: false,
             accepted: 0,
         }
@@ -342,12 +350,11 @@ impl Output {
     }
 
     pub(crate) fn life(&self) -> Life {
-        if self.shut {
-            Life::Shut
-        } else if self.queue.sealed() {
-            Life::Draining
-        } else {
-            Life::Open
+        match self.transport {
+            Transport::Shut => Life::Shut,
+            Transport::WriteShut => Life::WriteShut,
+            Transport::Open if self.queue.sealed() => Life::Draining,
+            Transport::Open => Life::Open,
         }
     }
 
@@ -356,7 +363,7 @@ impl Output {
     }
 
     pub(crate) fn is_shut(&self) -> bool {
-        self.shut
+        self.transport == Transport::Shut
     }
 
     pub(crate) fn accepted(&self) -> u64 {
@@ -414,15 +421,27 @@ impl Output {
         }
     }
 
+    fn shut_write(&mut self) -> bool {
+        if self.transport != Transport::Open || self.waiting() {
+            return false;
+        }
+        if self.stream.shutdown(Shutdown::Write).is_err() {
+            self.shut();
+            return false;
+        }
+        self.transport = Transport::WriteShut;
+        true
+    }
+
     pub(crate) fn shut(&mut self) {
-        if !self.shut {
-            self.shut = true;
+        if self.transport != Transport::Shut {
+            self.transport = Transport::Shut;
             let _ = self.stream.shutdown(Shutdown::Both);
         }
     }
 
     pub(crate) fn flush(&mut self) {
-        if self.shut {
+        if self.transport != Transport::Open {
             return;
         }
         if self.queue.sealed() {
@@ -837,8 +856,26 @@ pub(crate) enum Phase {
     },
     Streaming,
     Ws(Box<Link>),
-    Closing,
+    Closing(Close),
 }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Close {
+    Immediate,
+    Body { remaining: usize },
+}
+
+impl Close {
+    pub(crate) fn body(remaining: usize) -> Self {
+        if remaining == 0 {
+            Self::Immediate
+        } else {
+            Self::Body { remaining }
+        }
+    }
+}
+
+const CLOSE_LINGER: std::time::Duration = std::time::Duration::from_secs(2);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum InputState {
@@ -925,7 +962,7 @@ impl Conn {
             Phase::Handling(Handling::Wait) | Phase::Webview { .. } => {
                 self.input_state != InputState::Ended
             }
-            Phase::Streaming | Phase::Closing => false,
+            Phase::Streaming | Phase::Closing(_) => false,
         };
         match self.out.life() {
             Life::Open
@@ -938,6 +975,11 @@ impl Conn {
             }
             Life::Open => Interest::of(read, self.out.waiting()),
             Life::Draining => Interest::Write,
+            Life::WriteShut => Interest::of(
+                matches!(self.phase, Phase::Closing(Close::Body { remaining }) if remaining > 0)
+                    && self.input_state != InputState::Ended,
+                false,
+            ),
             Life::Shut => Interest::Idle,
         }
     }
@@ -982,7 +1024,7 @@ impl Conn {
     }
 
     fn close_with(&mut self, bytes: Vec<u8>) {
-        self.phase = Phase::Closing;
+        self.phase = Phase::Closing(Close::Immediate);
         self.out.send(bytes);
     }
 
@@ -1001,7 +1043,7 @@ impl Conn {
             match &mut self.phase {
                 Phase::Head if buffered.is_empty() => {
                     if self.input_state == InputState::Ended {
-                        self.phase = Phase::Closing;
+                        self.phase = Phase::Closing(Close::Immediate);
                     }
                     return None;
                 }
@@ -1030,7 +1072,7 @@ impl Conn {
                                     continue;
                                 }
                             };
-                            self.phase = Phase::Closing;
+                            self.phase = Phase::Closing(Close::body(length));
                             return Some(Request {
                                 head,
                                 body: Payload::Stream(length),
@@ -1111,7 +1153,7 @@ impl Conn {
                 | Phase::Webview { .. }
                 | Phase::Streaming
                 | Phase::Ws(_)
-                | Phase::Closing => return None,
+                | Phase::Closing(_) => return None,
             }
         }
         None
@@ -1193,9 +1235,44 @@ impl Conn {
         rest
     }
 
-    pub(crate) fn settle(&mut self) {
-        if matches!(self.phase, Phase::Closing) && !self.out.waiting() {
-            self.out.close();
+    pub(crate) fn discard(&mut self, poll: &mut Poll) {
+        loop {
+            self.settle(poll);
+            if self.out.life() != Life::WriteShut || !self.read(poll) {
+                break;
+            }
+        }
+        self.settle(poll);
+    }
+
+    pub(crate) fn expire_close(&mut self) -> bool {
+        if matches!(self.phase, Phase::Closing(Close::Body { .. }))
+            && self.out.life() == Life::WriteShut
+        {
+            self.out.shut();
+            true
+        } else {
+            false
+        }
+    }
+
+    pub(crate) fn settle(&mut self, poll: &mut Poll) {
+        if let Phase::Closing(close) = &mut self.phase
+            && !self.out.waiting()
+        {
+            match close {
+                Close::Immediate => self.out.close(),
+                Close::Body { remaining } => {
+                    let count = (*remaining).min(self.end.saturating_sub(self.start));
+                    self.start = self.start.saturating_add(count);
+                    *remaining = remaining.saturating_sub(count);
+                    if *remaining == 0 || self.input_state == InputState::Ended {
+                        self.out.shut();
+                    } else if self.out.shut_write() {
+                        let _ = poll.start(self.timer, CLOSE_LINGER, None);
+                    }
+                }
+            }
         }
         let waits = match &self.phase {
             Phase::Handling(Handling::Exec(session)) => {
@@ -1237,9 +1314,13 @@ pub(crate) mod tests {
             }
             if ready.read {
                 conn.reads = Reads::new();
-                while conn.reading_http() && conn.read(poll) {
-                    while let Some(request) = conn.next_request() {
-                        handler(conn, request);
+                if matches!(conn.phase, Phase::Closing(_)) {
+                    conn.discard(poll);
+                } else {
+                    while conn.reading_http() && conn.read(poll) {
+                        while let Some(request) = conn.next_request() {
+                            handler(conn, request);
+                        }
                     }
                 }
             }
@@ -1247,7 +1328,7 @@ pub(crate) mod tests {
         while let Some(request) = conn.next_request() {
             handler(conn, request);
         }
-        conn.settle();
+        conn.settle(poll);
         poll.interest(conn.token, conn.interest());
         if conn.out.is_shut() {
             let (closed, _) = UnixStream::pair().unwrap();
@@ -1267,6 +1348,29 @@ pub(crate) mod tests {
         let mut poll = Poll::new();
         let conn = Conn::new(Verified::admit(server).unwrap(), &mut poll, CAP);
         Pair { poll, conn, client }
+    }
+
+    #[test]
+    fn closing_consumes_buffered_and_late_body_bytes_once() {
+        let Pair {
+            mut poll,
+            mut conn,
+            mut client,
+        } = pair();
+        conn.input[0] = b'a';
+        conn.end = 1;
+        conn.phase = Phase::Closing(Close::body(2));
+        conn.out.send(b"refused".to_vec());
+        conn.settle(&mut poll);
+        conn.settle(&mut poll);
+        assert!(matches!(
+            conn.phase,
+            Phase::Closing(Close::Body { remaining: 1 })
+        ));
+        assert_eq!(conn.out.life(), Life::WriteShut);
+        client.write_all(b"b").unwrap();
+        conn.discard(&mut poll);
+        assert_eq!(conn.out.life(), Life::Shut);
     }
 
     fn line(prefix: &str, size: usize) -> String {

@@ -4,7 +4,7 @@ use ko_sys::pid::Exit;
 use ko_sys::signal::Signal;
 
 use super::*;
-use crate::conn::Handling;
+use crate::conn::{Close, Handling};
 use crate::runtime::exec::{
     Admit, Chunk, Launch, Limiter, MAX_SESSIONS, Mode, Purpose, Request, Retry, Running, Session,
     Source, Stage, Stream, Target, spawn,
@@ -106,18 +106,19 @@ impl State {
     }
 
     pub(super) fn exec_fail(&mut self, poll: &mut Poll, index: usize, message: String) {
-        let upload = matches!(
+        let remaining =
             self.conns
                 .get(index)
                 .and_then(Conn::exec)
-                .map(|s| &s.purpose),
-            Some(Purpose::Drop { .. })
-        );
-        if upload {
+                .and_then(|session| match &session.purpose {
+                    Purpose::Drop { remaining, .. } => Some(*remaining),
+                    Purpose::Command => None,
+                });
+        if let Some(remaining) = remaining {
             self.exec_release(poll, index);
             let conn = &mut self.conns[index];
             poll.stop(conn.timer);
-            conn.phase = Phase::Closing;
+            conn.phase = Phase::Closing(Close::body(remaining));
             router::uploaded(conn, Err(std::io::Error::other(message)));
         } else {
             self.exec_send(index, &ExecServer::Error { message });
@@ -140,7 +141,7 @@ impl State {
                     stderr,
                     remaining,
                     ..
-                } => Some(
+                } => Some((
                     if ended == (Ended::Status { status: 0 }) && *remaining == 0 {
                         protocol::decode::<protocol::Dropped>(stdout).map_err(std::io::Error::other)
                     } else {
@@ -151,16 +152,17 @@ impl State {
                             message
                         }))
                     },
-                ),
+                    *remaining,
+                )),
             });
-        if let Some(result) = result {
+        if let Some((result, remaining)) = result {
             self.exec_release(poll, index);
             let conn = &mut self.conns[index];
             poll.stop(conn.timer);
             conn.phase = if result.is_ok() {
                 Phase::Head
             } else {
-                Phase::Closing
+                Phase::Closing(Close::body(remaining))
             };
             router::uploaded(conn, result);
             self.serve(poll, index);
