@@ -1,7 +1,8 @@
 # One remote ko server
 
 Use a Debian 13 x64 DigitalOcean droplet and a Cloudflare DNS zone.
-The Mac needs OpenTofu, Python 3, rsync, OpenSSL and curl. The build
+The Mac needs OpenTofu, Python 3, rsync, OpenSSL and a curl with
+HTTP/3 (`curl -V` lists `HTTP3`; the curl of macOS has none). The build
 needs the tools in `docs/build.md`. Keep the SSH private key in your
 SSH agent. Use a dedicated DNS zone or label set: this setup owns
 `enroll.<domain>` and the ko host.
@@ -38,9 +39,12 @@ SSH agent. Use a dedicated DNS zone or label set: this setup owns
    again. Wait for DNS and for Caddy to obtain both server certificates.
    Port 80 stays closed; ACME must use TLS-ALPN-01 on port 443.
 4. Run `deploy/smoke.sh ko.example.net`. It creates and revokes a test
-   device. It checks TLS, the WebSocket, socket access and all TCP
-   ports: only 22 and 443 may accept a connection. The scan takes
-   about a minute, because the firewall drops the other ports. Check the Caddy journal for successful ACME issuance with
+   device. It checks TLS, HTTP/3, the WebSocket, socket access, all
+   TCP ports (only 22 and 443 may accept a connection) and all UDP
+   ports (only 443 may receive a datagram). The TCP scan takes about
+   a minute, because the firewall drops the other ports. The UDP scan
+   runs a root catcher on the server over SSH: it sees the datagrams
+   that pass both firewalls. Check the Caddy journal for successful ACME issuance with
    port 80 closed. This live check is required before use.
 5. After the smoke test passes, run:
 
@@ -136,21 +140,44 @@ app/vm/.build/out/Products/Release/kido-vm linux install
 app/vm/.build/out/Products/Release/kido-vm linux up   # prints the address
 ```
 
-Copy `build/ko/share/ko/linux/aarch64/` and `deploy/` to `~/ko-install`
-with rsync as `install.sh` does, then run `sudo provision.sh --tls-cert
-...` with names such as `ko.vm.test` and `enroll.vm.test`. Run the
-smoke test with the address and the certificate as the trust root:
+Copy `build/ko/share/ko/linux/aarch64/`, `deploy/` and the
+certificate to `~/ko-install` with rsync as `install.sh` does, then
+run `sudo provision.sh --tls-cert ... ko.vm.test enroll.vm.test
+192.168.64.0/24 10.99.0.0/24`.
+
+The smoke test needs a curl with HTTP/3, and Debian's curl has it.
+Run the test in the guest, from a network namespace: its traffic to
+the guest's address enters through a veth pair, so nftables applies
+to it as to an outside client. Create the namespace after
+provisioning: in the guest, a systemd reload with the namespace
+present made `systemd-ssh-generator` crash in the vsock driver and
+the next reload hang. Copy the VM's SSH key to `~/ko-install/key`
+(mode 0600) for the test's SSH to the guest:
 
 ```sh
-SSL_CERT_FILE=server.crt CURL_CA_BUNDLE=server.crt \
-  KO_SMOKE_SSH='ssh -F ssh_config' deploy/smoke.sh ko.vm.test 192.168.64.5
+sudo ip netns add ko-smoke
+sudo ip link add ko-smoke-h type veth peer name ko-smoke-c
+sudo ip link set ko-smoke-c netns ko-smoke
+sudo ip addr add 10.99.0.1/24 dev ko-smoke-h
+sudo ip link set ko-smoke-h up
+sudo ip netns exec ko-smoke ip addr add 10.99.0.2/24 dev ko-smoke-c
+sudo ip netns exec ko-smoke ip link set ko-smoke-c up
+sudo ip netns exec ko-smoke ip link set lo up
+sudo ip netns exec ko-smoke ip route add default via 10.99.0.1
+sudo ip netns exec ko-smoke sudo -u me env \
+  SSL_CERT_FILE=$HOME/ko-install/server.crt CURL_CA_BUNDLE=$HOME/ko-install/server.crt \
+  KO_SMOKE_SSH="ssh -i $HOME/ko-install/key -o StrictHostKeyChecking=accept-new" \
+  ~/ko-install/deploy/smoke.sh ko.vm.test 192.168.64.5
+sudo ip netns delete ko-smoke   # also removes the veth pair
 ```
 
 The optional ADDRESS is where every connection goes; the names stay
 in SNI and `Host`. `KO_SMOKE_SSH` is the SSH command, for the VM's
 key (`~/.local/state/kido-vm-linux/id_ed25519`). The smoke test never
 turns off certificate checks. The VM has no cloud firewall, so its
-port scan checks only nftables, and from the Mac port 22 is open.
+port scans check only nftables. A container of Apple's `container`
+cannot replace the namespace: it did not reach the guest's address,
+on its default network or on one in the guest's subnet.
 
 ## Remove
 

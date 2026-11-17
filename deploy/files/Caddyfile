@@ -2,7 +2,7 @@
 	admin unix//run/caddy/admin.sock|0600
 	auto_https disable_redirects
 	servers {
-		protocols h1 h2
+		protocols h1 h2 h3
 	}
 	grace_period 3s
 }

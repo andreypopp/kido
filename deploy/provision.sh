@@ -118,6 +118,8 @@ if [[ ${#certificate[@]} != 0 ]]; then
     install_changed "${certificate[1]}" /etc/caddy/ko-server.key caddy 0640
     chown root:caddy /etc/caddy/ko-server.key
 fi
+install_changed "$base/files/sysctl.conf" /etc/sysctl.d/60-ko-quic.conf caddy
+sysctl -p /etc/sysctl.d/60-ko-quic.conf
 install_changed "$work/Caddyfile" /etc/caddy/Caddyfile caddy
 install_changed "$base/files/caddy.conf" /etc/systemd/system/caddy.service.d/ko.conf caddy
 if [[ -f /etc/apparmor.d/caddy ]] && ! grep -q 'flags=(complain)' /etc/apparmor.d/caddy; then

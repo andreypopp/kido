@@ -430,7 +430,10 @@ stage.
   use.
 - `deploy/smoke.sh HOST` tests a provisioned droplet from the
   operator's Mac: the TLS refusals, a pairing, a request and a
-  WebSocket, the revocation, the socket's uids and the open ports.
+  WebSocket, HTTP/3, the revocation, the socket's uids and the open
+  TCP and UDP ports. It needs a curl with HTTP/3; the rehearsal in
+  the Debian guest runs it in the guest from a network namespace
+  (deploy/README.md).
 
 ## Reproducing a CI-only failure
 

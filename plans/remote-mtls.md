@@ -356,8 +356,8 @@ with only Zone, DNS, Edit on the one zone; the zone's id and name.
   that creates `me` with the key, locks root and installs `rsync`
   (the image has none, and `install.sh` needs it). A test VM gets its
   seed from the same user-data, so the two cannot differ.
-- `digitalocean_firewall`: in: 22/tcp from `ssh_cidrs`, 443/tcp from
-  all (phase 2 adds 443/udp). Port 80 by Q4. Out: all.
+- `digitalocean_firewall`: in: 22/tcp from `ssh_cidrs`, 443/tcp and
+  443/udp from all. Port 80 by Q4. Out: all.
 - `cloudflare_dns_record`: A (and AAAA when the droplet has IPv6)
   for `enroll.<domain>` and the ko host, each with `proxied =
   false` (DNS only). The reason: Cloudflare's proxy would end the
@@ -374,8 +374,8 @@ with only Zone, DNS, Edit on the one zone; the zone's id and name.
 - Users: `me` (a login shell, the SSH key, sudo without a password);
   `caddy` (from the package); the group `ko-socket` with `caddy`.
 - SSH: keys only, no root, no keyboard-interactive, `AllowUsers me`.
-- nftables: default deny in; 22 from the SSH set, 443; loopback;
-  established. The cloud firewall has the same rules; each covers a
+- nftables: default deny in; 22 from the SSH set, 443 TCP and UDP;
+  loopback; established. The cloud firewall has the same rules; each covers a
   mistake in the other.
 - unattended-upgrades: the security origin, automatic reboot in a
   window (04:00 local by default).
@@ -391,6 +391,9 @@ with only Zone, DNS, Edit on the one zone; the zone's id and name.
   `SystemCallFilter=@system-service`, `ReadWritePaths` for its data
   and log, `SupplementaryGroups=ko-socket`. An AppArmor profile for
   Caddy, set to enforce after the smoke test passes in complain mode.
+- A sysctl file raises `net.core.rmem_max` and `wmem_max` to
+  7500000, the value that quic-go asks for: Caddy has no
+  `CAP_NET_ADMIN`, so it cannot force its UDP buffers.
 - `/usr/local/sbin/ko-pair`, `ko-revoke`, `ko-devices`, and
   `/var/lib/ko-devices`.
 
@@ -399,7 +402,7 @@ with only Zone, DNS, Edit on the one zone; the zone's id and name.
 ```
 { admin unix//run/caddy/admin.sock|0600    # not localhost:2019
   auto_https disable_redirects        # port 80 is closed
-  servers { protocols h1 h2 }         # phase 2 adds h3
+  servers { protocols h1 h2 h3 }
   grace_period 3s }
 enroll.<domain> {
   @enroll { method POST; path /v1/enroll }
@@ -427,10 +430,24 @@ a new droplet, and by spike 1 against a Caddy in the container):
 - The socket's uids (4.1): `caddy` and `me` pass, `nobody` is
   refused. `nobody` cannot read the admin socket or the device
   folder.
+- HTTP/3 (`curl --http3-only`, so curl cannot fall back to TCP):
+  without a certificate it fails; with the paired certificate it is
+  200 over version 3; after `ko-revoke` it fails, while the enroll
+  host still answers 404 over HTTP/3. The script refuses to start
+  when its curl has no HTTP/3.
 - A TCP scan of every port from outside, with a deadline, written in
-  the script itself (Python's standard library; no `nmap`, so the
-  Mac needs no install and the test has no skip): only 22 (from the
-  SSH address) and 443 accept.
+  the script itself (Python's standard library; no `nmap`): only 22
+  (from the SSH address) and 443 accept.
+- A UDP scan of every port: only 443 passes. An ICMP scan cannot
+  show this, because nftables drops without an answer and Linux
+  limits ICMP unreachable messages to about one a second. So the
+  script starts, over SSH, a root catcher on the server with raw UDP
+  sockets. The kernel gives a datagram to a raw socket only after
+  the netfilter input hook, so the catcher sees what both firewalls
+  let through. The script sends a random nonce to each port twice;
+  the catcher reports the ports that the nonce reached, which must
+  be exactly 443. Port 443 is also the control that shows that the
+  catcher works.
 - `smoke.sh HOST [ADDRESS]`: with ADDRESS, every connection goes to
   that address and keeps the names of HOST as SNI and `Host` (a VM
   or a droplet before its DNS records exist). The script has no
@@ -1242,7 +1259,7 @@ Phase 2 starts after unit 7. TCP stays the transport until unit P5.
 
 | # | Unit | Scope | Test | Risk | Time |
 |---|---|---|---|---|---|
-| P1 | Caddy HTTP/3 in `deploy/` | `protocols h1 h2 h3`; UDP 443 in the cloud firewall and nftables; `grace_period` stays | `smoke.sh`: `curl --http3` with the paired certificate gets 200, without one it fails, after `ko-revoke` it fails; the scan allows UDP 443 | low | 2 h |
+| P1 | Done. Caddy HTTP/3 in `deploy/` | `protocols h1 h2 h3`; UDP 443 in the cloud firewall and nftables; `grace_period` stays | `smoke.sh`: `curl --http3` with the paired certificate gets 200, without one it fails, after `ko-revoke` it fails; the scan allows UDP 443 | low | 2 h |
 | P2a | One TLS stack | Phase 1's TLS moves from rustls to `boring`, behind the xcframework feature of `ko_client`: `endpoint.rs`, `wire/stream.rs`, the signer of `ffi/identity.rs`, the verifier (`SecTrust` on Apple, `X509_STORE` on Linux, with a stated policy for `SecTrust`'s network work), `tls_certs.rs` and the TLS test server. rustls, `ring` and the rest of section 8's list leave | The TLS tests of 4.5, unchanged in what they assert, with a live handshake through the `SecTrust` verifier; `ko` and the static ko link no BoringSSL (a lint on the dependency graph) | high: it reworks units 4 and 5 | 12 h |
 | P3 | `quiche` in the build | The patched `quiche` from the pinned fork (section 8); cmake, a C++ toolchain and libclang in the Makefile and on both CI runners; the zig wrapper and the CMake toolchain files for musl; the size budget of the xcframework | The export check and the merge with GhosttyKit; `check-static`; CI green on both runners | medium | 6 h |
 | P2 | The QUIC driver | `quiche` on `ko_sys::event` in `ko_client`: the UDP socket, the timers, write back-pressure, the keep-alive, spare connection ids, the same signer and verifier as TCP | In process, against a `quiche` server in the test: a handshake with a client certificate and one signature; a refused certificate gives the `identity` kind; a stream that the peer does not read does not stall another | medium | 8 h |

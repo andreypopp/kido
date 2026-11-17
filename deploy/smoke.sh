@@ -17,6 +17,9 @@ import tempfile
 import threading
 import time
 
+if b"HTTP3" not in subprocess.check_output(["curl", "-V"]).split():
+    raise SystemExit("deploy/smoke.sh needs a curl with HTTP/3")
+
 base = Path(sys.argv[1])
 host = sys.argv[2]
 address = sys.argv[3] if len(sys.argv) == 4 else host
@@ -46,7 +49,8 @@ with tempfile.TemporaryDirectory(prefix="ko-smoke-") as temporary:
         assert b"HTTP/1." not in output and alert in output.lower(), output
     assert curl("https://" + host + "/version").returncode != 0
     assert curl("--cert", str(cert), "--key", str(key), "https://" + host + "/version").returncode != 0
-    print("PASS no certificate and unpaired certificate refused", flush=True)
+    assert curl("--http3-only", "https://" + host + "/version").returncode != 0
+    print("PASS no certificate and unpaired certificate refused, HTTP/3 without certificate refused", flush=True)
     errors = root / "pair-errors"
     with errors.open("wb") as stream:
         process = subprocess.Popen([*ssh, "-o", "BatchMode=yes", "me@" + address, "sudo ko-pair"], stdout=subprocess.PIPE, stderr=stream)
@@ -81,6 +85,9 @@ with tempfile.TemporaryDirectory(prefix="ko-smoke-") as temporary:
         result = curl("--fail", "--cert", str(cert), "--key", str(key), "https://" + host + "/version")
         assert result.returncode == 0, result.stderr.decode()
         version = json.loads(result.stdout)
+        result = curl("--http3-only", "--cert", str(cert), "--key", str(key), "-o", "/dev/null",
+                      "-w", "%{http_code} %{http_version}", "https://" + host + "/version")
+        assert result.returncode == 0 and result.stdout == b"200 3", result
         context = ssl.create_default_context()
         context.load_cert_chain(cert, key)
         ws = context.wrap_socket(socket.create_connection((address, 443), timeout=5), server_hostname=host)
@@ -142,6 +149,10 @@ with tempfile.TemporaryDirectory(prefix="ko-smoke-") as temporary:
         remote("sudo ko-revoke " + enrolled)
         enrolled = None
         assert curl("--cert", str(cert), "--key", str(key), "https://" + host + "/version").returncode != 0
+        result = curl("--http3-only", "-o", "/dev/null", "-w", "%{http_code} %{http_version}",
+                      "https://" + enroll + "/version")
+        assert result.returncode == 0 and result.stdout == b"404 3", result
+        assert curl("--http3-only", "--cert", str(cert), "--key", str(key), "https://" + host + "/version").returncode != 0
         ws.settimeout(5)
         closed = False
         deadline = time.monotonic() + 5
@@ -151,7 +162,7 @@ with tempfile.TemporaryDirectory(prefix="ko-smoke-") as temporary:
                 closed = True
                 break
         assert closed, "old WebSocket did not end"
-        print("PASS pairing, version, WebSocket, no TLS resumption, SNI/Host 421, revoke", flush=True)
+        print("PASS pairing, version, HTTP/3 200 3, WebSocket, no TLS resumption, SNI/Host 421, revoke including HTTP/3", flush=True)
     finally:
         if ws:
             ws.close()
@@ -206,5 +217,75 @@ if sudo -u nobody test -x /var/lib/ko-devices; then exit 1; fi
                     connection.close()
                     del pending[connection]
     assert ports == {22, 443}, ports
-    print("PASS external TCP ports: 22 and 443 only", flush=True)
+    nonce = os.urandom(32)
+    catcher = '''import json, selectors, socket, sys, time
+nonce = bytes.fromhex(sys.argv[1])
+ports = set()
+deadline = time.monotonic() + 90
+with selectors.DefaultSelector() as selector:
+    sockets = []
+    for family in (socket.AF_INET, socket.AF_INET6):
+        raw = socket.socket(family, socket.SOCK_RAW, socket.IPPROTO_UDP)
+        raw.setblocking(False)
+        sockets.append(raw)
+        selector.register(raw, selectors.EVENT_READ)
+    selector.register(sys.stdin, selectors.EVENT_READ)
+    print("ready", flush=True)
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise SystemExit("UDP catcher deadline")
+        ready = selector.select(remaining)
+        finished = any(key.fileobj is sys.stdin and not sys.stdin.read(1) for key, _ in ready)
+        for raw in sockets:
+            while True:
+                if time.monotonic() >= deadline:
+                    raise SystemExit("UDP catcher deadline")
+                try:
+                    data = raw.recv(65535)
+                except BlockingIOError:
+                    break
+                offset = (data[0] & 15) * 4 if raw.family == socket.AF_INET else 0
+                if data[offset + 8:] == nonce:
+                    ports.add(int.from_bytes(data[offset + 2:offset + 4], "big"))
+        if finished:
+            print(json.dumps(sorted(ports)), flush=True)
+            sys.exit(0)
+'''
+    process = subprocess.Popen([*ssh, "-o", "BatchMode=yes", "me@" + address,
+                                "sudo python3 -c " + shlex.quote(catcher) + " " + nonce.hex()],
+                               stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    try:
+        with selectors.DefaultSelector() as selector:
+            selector.register(process.stdout, selectors.EVENT_READ)
+            assert selector.select(10), "UDP catcher readiness deadline"
+            assert process.stdout.readline() == b"ready\n", "UDP catcher did not become ready"
+        deadline = time.monotonic() + 40
+        with socket.socket(family, socket.SOCK_DGRAM) as sender:
+            for _ in range(2):
+                for port in range(1, 65536):
+                    while True:
+                        assert time.monotonic() < deadline, "UDP scan deadline"
+                        try:
+                            sender.sendto(nonce, (endpoint[0], port, *endpoint[2:]))
+                            break
+                        except OSError as error:
+                            if error.errno != errno.ENOBUFS:
+                                raise
+                            time.sleep(0.01)
+                    if port % 256 == 0:
+                        time.sleep(0.005)
+        time.sleep(1)
+        output, errors = process.communicate(timeout=10)
+        assert process.returncode == 0, errors.decode()
+        assert json.loads(output) == [443], output
+    finally:
+        if process.poll() is None:
+            process.stdin.close()
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                process.terminate()
+                process.wait(timeout=5)
+    print("PASS external ports: TCP 22 and 443, UDP 443 only", flush=True)
 PY
