@@ -1786,6 +1786,38 @@ test('an item that owns no shown step is not new, and the item that takes over t
   assert.equal(page.latest(), '↓ 1 new,true');
 });
 
+test('the Latest threshold has hysteresis without changing reader mode', async () => {
+  const page = await latestPage();
+  page.scroll(880);
+  assert.equal(page.latest(), '↓ Latest,false');
+  assert.equal(page.evaluate('scrolling.kind'), 'reader');
+  const move = (top: number) => page.evaluate(`element('scroll').scrollTop=${top};element('scroll').onscroll()`);
+  move(866);
+  assert.equal(page.latest(), '↓ Latest,true');
+  move(870);
+  assert.equal(page.latest(), '↓ Latest,true');
+  move(876);
+  assert.equal(page.latest(), '↓ Latest,false');
+  page.evaluate("element('scroll').clientHeight=60;element('scroll').scrollTop=916;element('scroll').onscroll()");
+  assert.equal(page.latest(), '↓ Latest,true');
+  page.evaluate("element('scroll').clientHeight=120;element('scroll').scrollTop=856;element('scroll').onscroll()");
+  assert.equal(page.latest(), '↓ Latest,false');
+  move(878);
+  assert.equal(page.evaluate('scrolling.kind'), 'reader');
+  move(880);
+  assert.equal(page.evaluate('scrolling.kind'), 'following');
+});
+
+test('unread messages show the capsule below the Latest threshold', async () => {
+  const page = await latestPage();
+  for (let seq = 0; seq < 60; seq++) page.add(page.own(seq));
+  page.scroll(880);
+  page.add(page.text(60));
+  assert.equal(page.latest(), '↓ 1 new,true');
+  assert.equal(page.evaluate('scrolling.kind'), 'reader');
+  assert.ok(Number(page.evaluate("element('scroll').scrollTop")) <= 880);
+});
+
 test('the capsule reads Latest while nothing is new and hides at the bottom', async () => {
   const page = await latestPage();
   page.add(page.text(0));
@@ -2543,7 +2575,7 @@ test('Latest stops at once under a reader input and the pane stays where they mo
   assert.deepEqual([page.top(), page.evaluate('scrolling.kind')], [mid - 20, 'reader']);
 });
 
-test('the pane that comes back from the background keeps a reader where it was, with the divider and the button', async () => {
+test('the pane that comes back from the background keeps a reader with the divider but no pill below the threshold', async () => {
   const page = await flowPage();
   page.pad.value = 900;
   page.deliver({ type: 'item', item: page.text(0) });
@@ -2553,7 +2585,7 @@ test('the pane that comes back from the background keeps a reader where it was, 
   page.settle(3);
   page.focus(true);
   page.settle(3);
-  assert.deepEqual([page.dividers(), page.evaluate('scrolling.kind'), page.latest().split(',')[1]], ['divider,1', 'reader', 'true']);
+  assert.deepEqual([page.dividers(), page.evaluate('scrolling.kind'), page.latest().split(',')[1]], ['divider,1', 'reader', 'false']);
   const before = page.top();
   page.deliver({ type: 'item', item: page.text(2) });
   page.settle(3);

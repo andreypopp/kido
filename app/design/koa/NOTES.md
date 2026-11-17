@@ -1435,13 +1435,22 @@ Open WebUI): the scroll has two states and one animation.
   contact shadow (black 8%, 1pt, 2pt; dark 30%, 1pt, 3pt), text prose
   .85em in the foreground: "↓ Latest" while nothing is new, "↓ 3
   new" ("1 new") while new items are below the viewport. Shown while
-  the state is `reader`, focused or not; 120ms fade; the pointer a
+  the state is `reader`, focused or not, and the bottom is farther
+  than the threshold below (2026-11-17, user); 120ms fade; the pointer a
   hand; it never takes the focus; pinned with the dock. A click is
   **the one animated scroll** of the page: one interruptible scroll
   toward the bottom (about 250ms, re-targeted each frame while the
   bottom moves; any reader input cancels it and stays `reader`);
   when it arrives the state is `following` and the divider goes.
   Reduce Motion: instant.
+- **The threshold.** In `reader`, show "↓ Latest" when
+  `scrollHeight − scrollTop − clientHeight > clientHeight/3`.
+  Once shown, hide only when the distance is less than `clientHeight/4`.
+  Re-read both lines on resize. Keep the 120ms fade in both directions.
+  "↓ N new" shows at any distance in `reader`. Following resumes only
+  within 1px of the bottom, by any input. Between 1px and the threshold,
+  the state stays `reader` without a pill; new content does not pull
+  the reader down (user, 2026-11-17).
 - **The user's send** sets `following` and writes the bottom in the
   frame the sent block appends; the divider goes and the button
   hides; focus or not; browser mode too. A send that is not the

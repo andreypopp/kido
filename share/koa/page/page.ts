@@ -75,6 +75,7 @@ type Anchor = { item: ItemId; offset: number };
 type Position = { sessionId: string | undefined; anchor: Anchor; last: number };
 type ScrollState = { kind: 'following' } | { kind: 'reader'; anchor: Anchor | undefined } | { kind: 'restoring'; target: Position };
 let scrolling: ScrollState = { kind: 'following' };
+let latestAboveThreshold = false;
 let travel: { from: number; start: number } | undefined;
 let slide: { from: number; start: number; offset: number } | undefined;
 let bottom: Geo | undefined;
@@ -500,7 +501,12 @@ function sync() {
   for (const seq of fresh) if (rowTop(seq) >= line) below++;
   const label = below ? '↓ ' + below + ' new' : '↓ Latest';
   if (latest.textContent !== label) latest.textContent = label;
-  if (latest.classList.contains('show') !== (scrolling.kind === 'reader')) latest.classList.toggle('show');
+  const distance = geo.max - geo.top;
+  if (scrolling.kind !== 'reader') latestAboveThreshold = false;
+  else if (distance > geo.viewport / 3) latestAboveThreshold = true;
+  else if (distance < geo.viewport / 4) latestAboveThreshold = false;
+  const show = scrolling.kind === 'reader' && (below > 0 || latestAboveThreshold);
+  if (latest.classList.contains('show') !== show) latest.classList.toggle('show');
 }
 function refocus() {
   sync();
