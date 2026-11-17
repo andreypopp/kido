@@ -1150,9 +1150,24 @@ socket.
 The second transport is TLS to a proxy in front of the socket
 (protocol.md, section 1). The client core names its server by an
 `Endpoint` (`ko_client/src/endpoint.rs`): a unix socket, or a TLS
-host with its port and a finished rustls client configuration (TLS
-1.3, ALPN `http/1.1`, one signature scheme, no session resumption,
-the system's trust through `rustls-platform-verifier`). Everything
+host with its port and a finished BoringSSL connector (TLS 1.3,
+ALPN `http/1.1`, one signature scheme, no session resumption). ko
+has one TLS stack, BoringSSL, so that HTTP/3 can use the same one;
+it is behind `ko_client`'s feature `tls` (build.md). The server's
+certificate is checked against the system's trust: on Apple targets
+by SecTrust (`ko_client/src/endpoint/tls.rs`), with the extra roots
+as anchors beside the system's; on Linux by BoringSSL's store, from
+the default certificate paths and the extra roots. SecTrust's
+evaluation is synchronous and can use the network (trustd, missing
+intermediates, revocation), so it never runs on a loop: the verify
+callback copies the chain, the stapled OCSP response and the host to
+a short thread, and the handshake pauses (BoringSSL's
+`WANT_CERTIFICATE_VERIFY`). While it waits, the stream's descriptor
+in the loop is that handshake's `Wake` (`Poll::retarget` keeps the
+token), which the thread sets with its result. A blocking dial waits
+for the same wake within its limit and its cancel. The thread holds
+only copies and the shared result, so a dial that ends first leaves
+it to finish alone. Everything
 above the byte stream (`ko_client/src/wire/stream.rs`) is the same
 for both. The I/O thread resolves the host once for each dial of
 `/client`, on a short thread that it never joins, so a close never

@@ -71,11 +71,11 @@ type Failed = (Code, String);
 pub(super) fn failure(error: &io::Error) -> Failed {
     let code = if let Some(failure) = error
         .get_ref()
-        .and_then(|error| error.downcast_ref::<crate::wire::stream::Failure>())
+        .and_then(|error| error.downcast_ref::<crate::endpoint::tls::Failure>())
     {
         match failure {
-            crate::wire::stream::Failure::Tls(_) => Code::Tls,
-            crate::wire::stream::Failure::Identity(_) => Code::Identity,
+            crate::endpoint::tls::Failure::Tls(_) => Code::Tls,
+            crate::endpoint::tls::Failure::Identity(_) => Code::Identity,
         }
     } else if connect::absent(error)
         || matches!(
@@ -403,16 +403,13 @@ impl Engine<'_> {
         let Some(session) = self.session.as_mut() else {
             return Ok(());
         };
-        if ready.write {
+        session.link.begin_turn();
+        if ready.write || (ready.read && !session.link.drained()) {
             session
                 .link
                 .settle(&mut self.poll)
                 .map_err(|error| failure(&error))?;
         }
-        if !ready.read {
-            return Ok(());
-        }
-        session.link.begin_turn();
         let now = Instant::now();
         loop {
             let Some(session) = self.session.as_mut() else {
@@ -714,13 +711,13 @@ impl Engine<'_> {
 
         let pause = &open.view.pause;
         let mut outcome = Ok(());
-        if ready.write {
+        link.begin_turn();
+        if ready.write || (ready.read && !link.drained()) {
             outcome = link
                 .settle(&mut self.poll)
                 .map_err(|error| End::Outage(failure(&error)));
         }
-        if outcome.is_ok() && ready.read {
-            link.begin_turn();
+        if outcome.is_ok() && (ready.read || ready.write) {
             let now = Instant::now();
             while !pause.load(Ordering::SeqCst) {
                 match link.next(&mut self.poll, now) {

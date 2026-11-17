@@ -1,6 +1,8 @@
 use super::*;
 use crate::endpoint::{self, HostName, Resolved, Tls};
-use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
+use boring::pkey::PKey;
+use boring::ssl::{Ssl, SslAcceptor, SslMethod, SslStream, SslVerifyMode, SslVersion};
+use boring::x509::X509;
 use std::net::{TcpListener, TcpStream};
 
 #[path = "../tls_certs.rs"]
@@ -9,83 +11,42 @@ pub(crate) use certs::Fixtures;
 
 const WITHIN: Duration = Duration::from_secs(5);
 
-fn key(bytes: &[u8]) -> PrivateKeyDer<'static> {
-    PrivatePkcs8KeyDer::from(bytes.to_vec()).into()
-}
-
-#[derive(Debug)]
-struct Pinned {
-    verifier: Arc<dyn rustls::server::danger::ClientCertVerifier>,
-    leaf: Vec<u8>,
-}
-
-impl rustls::server::danger::ClientCertVerifier for Pinned {
-    fn root_hint_subjects(&self) -> &[rustls::DistinguishedName] {
-        self.verifier.root_hint_subjects()
-    }
-    fn verify_client_cert(
-        &self,
-        leaf: &CertificateDer<'_>,
-        chain: &[CertificateDer<'_>],
-        now: rustls::pki_types::UnixTime,
-    ) -> Result<rustls::server::danger::ClientCertVerified, rustls::Error> {
-        if leaf.as_ref() != self.leaf {
-            return Err(rustls::Error::InvalidCertificate(
-                rustls::CertificateError::ApplicationVerificationFailure,
-            ));
-        }
-        self.verifier.verify_client_cert(leaf, chain, now)
-    }
-    fn verify_tls12_signature(
-        &self,
-        message: &[u8],
-        cert: &CertificateDer<'_>,
-        signature: &rustls::DigitallySignedStruct,
-    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
-        self.verifier
-            .verify_tls12_signature(message, cert, signature)
-    }
-    fn verify_tls13_signature(
-        &self,
-        message: &[u8],
-        cert: &CertificateDer<'_>,
-        signature: &rustls::DigitallySignedStruct,
-    ) -> Result<rustls::client::danger::HandshakeSignatureValid, rustls::Error> {
-        self.verifier
-            .verify_tls13_signature(message, cert, signature)
-    }
-    fn supported_verify_schemes(&self) -> Vec<rustls::SignatureScheme> {
-        self.verifier.supported_verify_schemes()
-    }
-}
-
-pub(crate) fn server(fixtures: &Fixtures) -> Arc<rustls::ServerConfig> {
-    let provider = Arc::new(rustls::crypto::ring::default_provider());
-    let mut roots = rustls::RootCertStore::empty();
-    roots
-        .add(CertificateDer::from(fixtures.root.der.clone()))
+pub(crate) fn server(fixtures: &Fixtures) -> Arc<SslAcceptor> {
+    let mut config = SslAcceptor::mozilla_intermediate_v5(SslMethod::tls()).unwrap();
+    config
+        .set_min_proto_version(Some(SslVersion::TLS1_3))
         .unwrap();
-    let verifier = rustls::server::WebPkiClientVerifier::builder_with_provider(
-        Arc::new(roots),
-        Arc::clone(&provider),
-    )
-    .build()
-    .unwrap();
-    let mut config = rustls::ServerConfig::builder_with_provider(provider)
-        .with_protocol_versions(&[&rustls::version::TLS13])
-        .unwrap()
-        .with_client_cert_verifier(Arc::new(Pinned {
-            verifier,
-            leaf: fixtures.client.der.clone(),
-        }))
-        .with_single_cert(
-            vec![CertificateDer::from(fixtures.server.der.clone())],
-            key(&fixtures.server.key),
-        )
+    config
+        .set_max_proto_version(Some(SslVersion::TLS1_3))
         .unwrap();
-    config.alpn_protocols = vec![b"http/1.1".to_vec()];
-    config.send_tls13_tickets = 0;
-    Arc::new(config)
+    config
+        .cert_store_mut()
+        .add_cert(X509::from_der(&fixtures.root.der).unwrap())
+        .unwrap();
+    let leaf = fixtures.client.der.clone();
+    config.set_verify_callback(
+        SslVerifyMode::PEER | SslVerifyMode::FAIL_IF_NO_PEER_CERT,
+        move |valid, context| {
+            if valid
+                && context.error_depth() == 0
+                && !context
+                    .current_cert()
+                    .is_some_and(|cert| cert.to_der().unwrap() == leaf)
+            {
+                context.set_error(Err(boring::x509::X509VerifyError::CERT_REJECTED));
+                return false;
+            }
+            valid
+        },
+    );
+    config
+        .set_certificate(&X509::from_der(&fixtures.server.der).unwrap())
+        .unwrap();
+    config
+        .set_private_key(&PKey::private_key_from_der(&fixtures.server.key).unwrap())
+        .unwrap();
+    config.set_options(boring::ssl::SslOptions::NO_TICKET);
+    Arc::new(config.build())
 }
 
 pub(crate) fn target(fixtures: &Fixtures, address: std::net::SocketAddr) -> Resolved {
@@ -98,32 +59,107 @@ fn target_with(
     client: &certs::Certificate,
     root: &certs::Certificate,
 ) -> Resolved {
-    let provider = rustls::crypto::ring::default_provider();
-    let identity = rustls::sign::CertifiedKey::from_der(
-        vec![CertificateDer::from(client.der.clone())],
-        key(&client.key),
-        &provider,
-    )
-    .unwrap();
-    let config = endpoint::config(
-        Arc::new(identity),
-        vec![CertificateDer::from(root.der.clone())],
-    )
-    .unwrap();
+    let mut config = endpoint::config(vec![root.der.clone()]).unwrap();
+    config
+        .set_certificate(&X509::from_der(&client.der).unwrap())
+        .unwrap();
+    #[derive(Debug)]
+    struct Key(PKey<boring::pkey::Private>);
+    impl boring::ssl::PrivateKeyMethod for Key {
+        fn sign(
+            &self,
+            ssl: &mut boring::ssl::SslRef,
+            input: &[u8],
+            algorithm: boring::ssl::SslSignatureAlgorithm,
+            out: &mut [u8],
+        ) -> Result<usize, boring::ssl::PrivateKeyMethodError> {
+            assert_eq!(
+                algorithm,
+                boring::ssl::SslSignatureAlgorithm::ECDSA_SECP256R1_SHA256
+            );
+            let mut signer =
+                boring::sign::Signer::new(boring::hash::MessageDigest::sha256(), &self.0).unwrap();
+            signer.update(input).unwrap();
+            let signature = signer.sign_to_vec().unwrap();
+            out[..signature.len()].copy_from_slice(&signature);
+            endpoint::tls::signing(ssl, endpoint::tls::Signing::Succeeded);
+            Ok(signature.len())
+        }
+        fn decrypt(
+            &self,
+            _: &mut boring::ssl::SslRef,
+            _: &[u8],
+            _: &mut [u8],
+        ) -> Result<usize, boring::ssl::PrivateKeyMethodError> {
+            Err(boring::ssl::PrivateKeyMethodError::FAILURE)
+        }
+        fn complete(
+            &self,
+            _: &mut boring::ssl::SslRef,
+            _: &mut [u8],
+        ) -> Result<usize, boring::ssl::PrivateKeyMethodError> {
+            Err(boring::ssl::PrivateKeyMethodError::FAILURE)
+        }
+    }
+    config.set_private_key_method(Key(PKey::private_key_from_der(&client.key).unwrap()));
     Resolved::Tls {
         target: Arc::new(Tls::new(
             HostName::try_from(host.to_owned()).unwrap(),
             address.port(),
-            config,
+            config.build(),
         )),
         addresses: Arc::from([address]),
     }
 }
 
-pub(crate) fn accept(
-    listener: &TcpListener,
-    config: Arc<rustls::ServerConfig>,
-) -> rustls::StreamOwned<rustls::ServerConnection, TcpStream> {
+#[derive(Debug)]
+pub(crate) struct Server<S> {
+    stream: SslStream<S>,
+    accepted: bool,
+}
+
+impl<S: io::Read + io::Write> Server<S> {
+    fn new(config: &SslAcceptor, transport: S) -> Self {
+        Self {
+            stream: SslStream::new(Ssl::new(config.context()).unwrap(), transport).unwrap(),
+            accepted: false,
+        }
+    }
+
+    fn handshake(&mut self) -> io::Result<()> {
+        if !self.accepted {
+            self.stream.accept().map_err(io::Error::other)?;
+            self.accepted = true;
+        }
+        Ok(())
+    }
+
+    #[cfg(target_vendor = "apple")]
+    pub(crate) fn get_ref(&self) -> &S {
+        self.stream.get_ref()
+    }
+    pub(crate) fn get_mut(&mut self) -> &mut S {
+        self.stream.get_mut()
+    }
+}
+
+impl<S: io::Read + io::Write> io::Read for Server<S> {
+    fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
+        self.handshake()?;
+        self.stream.read(bytes)
+    }
+}
+impl<S: io::Read + io::Write> io::Write for Server<S> {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        self.handshake()?;
+        self.stream.write(bytes)
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        self.stream.flush()
+    }
+}
+
+pub(crate) fn accept(listener: &TcpListener, config: Arc<SslAcceptor>) -> Server<TcpStream> {
     assert_eq!(
         fd::wait(listener.as_fd(), Want::Read, None, Some(WITHIN)).unwrap(),
         Waited::Ready
@@ -131,7 +167,7 @@ pub(crate) fn accept(
     let (stream, _) = listener.accept().unwrap();
     stream.set_read_timeout(Some(WITHIN)).unwrap();
     stream.set_write_timeout(Some(WITHIN)).unwrap();
-    rustls::StreamOwned::new(rustls::ServerConnection::new(config).unwrap(), stream)
+    Server::new(&config, stream)
 }
 
 #[test]
@@ -207,10 +243,7 @@ fn webview_http_and_upgrade_drive_tls_only_from_socket_readiness() {
             socket.set_read_timeout(Some(WITHIN)).unwrap();
             socket.set_write_timeout(Some(WITHIN)).unwrap();
             checked.send(()).unwrap();
-            let mut stream = rustls::StreamOwned::new(
-                rustls::ServerConnection::new(Arc::clone(&config)).unwrap(),
-                socket,
-            );
+            let mut stream = Server::new(&config, socket);
             if upgrade {
                 let mut socket = tungstenite::accept(stream).unwrap();
                 socket.send(Message::text("buffered")).unwrap();
@@ -491,16 +524,22 @@ fn a_partial_tls_record_feeds_the_watchdog_without_plaintext() {
     let (sent, partial) = std::sync::mpsc::channel();
     let (release, released) = std::sync::mpsc::channel();
     let peer = std::thread::spawn(move || {
-        let stream = accept(&listener, config);
-        let stream = rustls::StreamOwned::new(
-            stream.conn,
+        assert_eq!(
+            fd::wait(listener.as_fd(), Want::Read, None, Some(WITHIN)).unwrap(),
+            Waited::Ready
+        );
+        let (transport, _) = listener.accept().unwrap();
+        transport.set_read_timeout(Some(WITHIN)).unwrap();
+        transport.set_write_timeout(Some(WITHIN)).unwrap();
+        let stream = Server::new(
+            &config,
             Fragmented {
-                socket: stream.sock,
+                socket: transport,
                 split: None,
             },
         );
         let mut socket = tungstenite::accept(stream).unwrap();
-        socket.get_mut().sock.split = Some((sent, released));
+        socket.get_mut().get_mut().split = Some((sent, released));
         socket.send(Message::text("slow")).unwrap();
         assert_eq!(socket.read().unwrap(), Message::text("done"));
     });

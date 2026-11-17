@@ -29,6 +29,7 @@ if [[ -n "$orderings" ]]; then
   echo "$orderings" | sed 's/$/: ko_pane, ko_pane_wire and ko_server use only Ordering::SeqCst/'
   failed=1
 fi
+make check-ko-tls || failed=1
 python3 - <<'PY' || failed=1
 import glob
 import pathlib

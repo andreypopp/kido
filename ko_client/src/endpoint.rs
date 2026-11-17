@@ -1,22 +1,27 @@
+#[cfg(feature = "tls")]
 use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
+#[cfg(feature = "tls")]
 use std::sync::Arc;
 
-#[cfg(all(feature = "platform-verifier", any(target_vendor = "apple", test)))]
-use rustls::pki_types::CertificateDer;
-#[cfg(all(feature = "platform-verifier", any(target_vendor = "apple", test)))]
-use rustls::sign::{CertifiedKey, SingleCertAndKey};
+#[cfg(feature = "tls")]
+pub(crate) mod tls;
+#[cfg(all(feature = "tls", any(target_vendor = "apple", test)))]
+pub(crate) use tls::config;
 
-#[cfg(any(all(target_vendor = "apple", feature = "platform-verifier"), test))]
+#[cfg(any(all(target_vendor = "apple", feature = "tls"), test))]
 #[derive(Debug, Clone)]
 pub(crate) enum Endpoint {
     Unix(PathBuf),
+    #[cfg(feature = "tls")]
     Tls(Arc<Tls>),
 }
 
+#[cfg(feature = "tls")]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct HostName(String);
 
+#[cfg(feature = "tls")]
 impl TryFrom<String> for HostName {
     type Error = &'static str;
 
@@ -46,67 +51,39 @@ impl TryFrom<String> for HostName {
     }
 }
 
+#[cfg(feature = "tls")]
 #[derive(Debug)]
 pub struct Tls {
     pub(crate) host: HostName,
-    #[cfg(any(all(target_vendor = "apple", feature = "platform-verifier"), test))]
+    #[cfg(any(target_vendor = "apple", test))]
     pub(crate) port: u16,
-    pub(crate) config: Arc<rustls::ClientConfig>,
+    pub(crate) connector: boring::ssl::SslConnector,
 }
 
+#[cfg(all(feature = "tls", any(target_vendor = "apple", test)))]
 impl Tls {
-    #[cfg(any(all(target_vendor = "apple", feature = "platform-verifier"), test))]
-    pub(crate) fn new(host: HostName, port: u16, config: Arc<rustls::ClientConfig>) -> Self {
-        Self { host, port, config }
+    pub(crate) fn new(host: HostName, port: u16, connector: boring::ssl::SslConnector) -> Self {
+        Self {
+            host,
+            port,
+            connector,
+        }
     }
-}
-
-#[cfg(all(feature = "platform-verifier", any(target_vendor = "apple", test)))]
-pub(crate) fn config(
-    identity: Arc<CertifiedKey>,
-    roots: Vec<CertificateDer<'static>>,
-) -> Result<Arc<rustls::ClientConfig>, rustls::Error> {
-    if identity
-        .key
-        .choose_scheme(&[rustls::SignatureScheme::ECDSA_NISTP256_SHA256])
-        .is_none()
-    {
-        return Err(rustls::Error::General(
-            "client identity cannot sign with P-256 SHA-256".to_owned(),
-        ));
-    }
-    let mut provider = rustls::crypto::ring::default_provider();
-    let mapping = provider.signature_verification_algorithms.mapping;
-    let scheme = mapping
-        .iter()
-        .find(|(scheme, _)| *scheme == rustls::SignatureScheme::ECDSA_NISTP256_SHA256)
-        .ok_or_else(|| rustls::Error::General("P-256 verification is unavailable".to_owned()))?;
-    provider.signature_verification_algorithms.mapping = std::slice::from_ref(scheme);
-    let provider = Arc::new(provider);
-    let verifier =
-        rustls_platform_verifier::Verifier::new_with_extra_roots(roots, Arc::clone(&provider))?;
-    let mut config = rustls::ClientConfig::builder_with_provider(provider)
-        .with_protocol_versions(&[&rustls::version::TLS13])?
-        .dangerous()
-        .with_custom_certificate_verifier(Arc::new(verifier))
-        .with_client_cert_resolver(Arc::new(SingleCertAndKey::from(identity)));
-    config.alpn_protocols = vec![b"http/1.1".to_vec()];
-    config.resumption = rustls::client::Resumption::disabled();
-    Ok(Arc::new(config))
 }
 
 #[derive(Debug, Clone)]
 pub enum Resolved {
     Unix(PathBuf),
+    #[cfg(feature = "tls")]
     Tls {
         target: Arc<Tls>,
         addresses: Arc<[SocketAddr]>,
     },
 }
 
-#[cfg(any(all(target_vendor = "apple", feature = "platform-verifier"), test))]
+#[cfg(any(all(target_vendor = "apple", feature = "tls"), test))]
 impl Endpoint {
-    #[cfg(any(all(target_vendor = "apple", feature = "platform-verifier"), test))]
+    #[cfg(any(all(target_vendor = "apple", feature = "tls"), test))]
     pub(crate) fn resolve(
         &self,
         cancel: Option<&ko_sys::event::Wake>,
@@ -158,6 +135,7 @@ impl Endpoint {
     }
 }
 
+#[cfg(feature = "tls")]
 impl HostName {
     pub(crate) fn as_str(&self) -> &str {
         &self.0

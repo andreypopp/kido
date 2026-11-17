@@ -82,13 +82,19 @@ hangup: a `posix_spawn` in another thread holds every descriptor
 until its child execs.
 
 **The TLS tests** (`ko_client/src/wire/tests/tls.rs` and, for the
-I/O thread, `ko_client/src/ffi/tests/tls.rs`) run a rustls server on
-`127.0.0.1` in the test process, in front of a scripted peer. They
+I/O thread, `ko_client/src/ffi/tests/tls.rs`) run a BoringSSL server
+on `127.0.0.1` in the test process, in front of a scripted peer. They
 make their certificates when they run (`wire/tls_certs.rs`, with
-`ring`): Apple's verifier refuses a server certificate with a long
+BoringSSL): Apple's verifier refuses a server certificate with a long
 validity, so a committed certificate would expire. The test gives its
 root to the client as an extra root, beside the system's roots; the
-system's trust store never changes.
+system's trust store never changes. On macOS every handshake goes
+through the real SecTrust evaluation. A test-only gate holds the
+trust worker until the test releases it, so the tests show a
+handshake that completes on the worker's wake alone, a cancel and a
+deadline that end a dial while the worker runs, another connection
+on the same loop that progresses meanwhile, and a dial that is
+dropped before its worker ends.
 
 `ko_pane/tests/pane.rs` drives the `ko-pane` binary over a socketpair
 and a ring. The `Server` SIGTERM test starts the `ko-pane` that `make

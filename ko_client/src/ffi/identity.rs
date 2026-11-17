@@ -2,9 +2,9 @@ use std::ffi::{CStr, c_char, c_int, c_void};
 use std::os::unix::ffi::OsStrExt;
 use std::sync::Arc;
 
-use rustls::pki_types::CertificateDer;
-use rustls::sign::{CertifiedKey, Signer, SigningKey};
-use rustls::{SignatureAlgorithm, SignatureScheme};
+use crate::endpoint::tls::{self, Signing};
+use boring::ssl::{PrivateKeyMethod, PrivateKeyMethodError, SslRef, SslSignatureAlgorithm};
+use boring::x509::X509;
 
 use super::{Code, slice_of, text_of};
 use crate::endpoint::{self, HostName, Tls};
@@ -48,8 +48,18 @@ unsafe impl Send for External {}
 // and `user` to stay valid until the close of the handle that owns this value.
 unsafe impl Sync for External {}
 
-impl Signer for External {
-    fn sign(&self, message: &[u8]) -> Result<Vec<u8>, rustls::Error> {
+impl PrivateKeyMethod for External {
+    fn sign(
+        &self,
+        ssl: &mut SslRef,
+        message: &[u8],
+        algorithm: SslSignatureAlgorithm,
+        output: &mut [u8],
+    ) -> Result<usize, PrivateKeyMethodError> {
+        tls::signing(ssl, Signing::Failed);
+        if algorithm != SslSignatureAlgorithm::ECDSA_SECP256R1_SHA256 {
+            return Err(PrivateKeyMethodError::FAILURE);
+        }
         let mut out = [0u8; 72];
         // SAFETY: both buffers are valid for their lengths for the call; `sign` writes at
         // most `capacity` bytes and keeps neither pointer.
@@ -62,47 +72,35 @@ impl Signer for External {
                 out.len(),
             )
         };
-        match out.get(..count).filter(|bytes| !bytes.is_empty()) {
-            Some(bytes) => Ok(bytes.to_vec()),
-            None => Err(rustls::Error::Other(rustls::OtherError(Arc::new(
-                crate::wire::stream::IdentitySigningFailed,
-            )))),
-        }
+        let bytes = out
+            .get(..count)
+            .filter(|bytes| !bytes.is_empty())
+            .ok_or(PrivateKeyMethodError::FAILURE)?;
+        let destination = output
+            .get_mut(..count)
+            .ok_or(PrivateKeyMethodError::FAILURE)?;
+        destination.copy_from_slice(bytes);
+        tls::signing(ssl, Signing::Succeeded);
+        Ok(count)
     }
 
-    fn scheme(&self) -> SignatureScheme {
-        SignatureScheme::ECDSA_NISTP256_SHA256
-    }
-}
-
-#[derive(Debug)]
-struct Key(Arc<External>);
-
-impl SigningKey for Key {
-    fn choose_scheme(&self, offered: &[SignatureScheme]) -> Option<Box<dyn Signer>> {
-        offered
-            .contains(&SignatureScheme::ECDSA_NISTP256_SHA256)
-            .then(|| Box::new(Key(Arc::clone(&self.0))) as Box<dyn Signer>)
+    fn decrypt(
+        &self,
+        _: &mut SslRef,
+        _: &[u8],
+        _: &mut [u8],
+    ) -> Result<usize, PrivateKeyMethodError> {
+        Err(PrivateKeyMethodError::FAILURE)
     }
 
-    fn algorithm(&self) -> SignatureAlgorithm {
-        SignatureAlgorithm::ECDSA
-    }
-}
-
-impl Signer for Key {
-    fn sign(&self, message: &[u8]) -> Result<Vec<u8>, rustls::Error> {
-        self.0.sign(message)
-    }
-
-    fn scheme(&self) -> SignatureScheme {
-        self.0.scheme()
+    fn complete(&self, _: &mut SslRef, _: &mut [u8]) -> Result<usize, PrivateKeyMethodError> {
+        Err(PrivateKeyMethodError::FAILURE)
     }
 }
 
 pub(super) unsafe fn endpoint(
     raw: *const Endpoint,
-    roots: Vec<CertificateDer<'static>>,
+    roots: Vec<Vec<u8>>,
 ) -> Result<endpoint::Endpoint, Code> {
     // SAFETY: ko_client.h requires the endpoint and its active fields to be readable.
     let raw = unsafe { raw.as_ref() }.ok_or(Code::Argument)?;
@@ -139,14 +137,16 @@ pub(super) unsafe fn endpoint(
                 unsafe { slice_of(identity.certificate, identity.certificate_len, &scope) }
                     .ok_or(Code::Argument)?
                     .to_vec();
-            let key = CertifiedKey::new(
-                vec![CertificateDer::from(certificate)],
-                Arc::new(Key(Arc::new(External {
-                    user: identity.user,
-                    sign,
-                }))),
-            );
-            let config = endpoint::config(Arc::new(key), roots).map_err(|_| Code::Argument)?;
+            let certificate = X509::from_der(&certificate).map_err(|_| Code::Argument)?;
+            let mut config = endpoint::config(roots).map_err(|_| Code::Argument)?;
+            config
+                .set_certificate(&certificate)
+                .map_err(|_| Code::Argument)?;
+            config.set_private_key_method(External {
+                user: identity.user,
+                sign,
+            });
+            let config = config.build();
             Ok(endpoint::Endpoint::Tls(Arc::new(Tls::new(
                 host, raw.port, config,
             ))))
@@ -176,7 +176,18 @@ mod tests {
                 user: std::ptr::without_provenance_mut(count_value),
                 sign: count,
             };
-            assert!(signer.sign(b"message").is_err());
+            let context = endpoint::config(Vec::new()).unwrap().build();
+            let mut ssl = boring::ssl::Ssl::new(context.context()).unwrap();
+            assert!(
+                signer
+                    .sign(
+                        &mut ssl,
+                        b"message",
+                        SslSignatureAlgorithm::ECDSA_SECP256R1_SHA256,
+                        &mut [0; 72]
+                    )
+                    .is_err()
+            );
         }
     }
 

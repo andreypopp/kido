@@ -98,14 +98,24 @@ static Linux ko, and `aarch64-apple-ios` and `aarch64-apple-ios-sim`
 of `ko_client`'s iOS slices, so `rustup toolchain install` adds them.
 For the musl targets, `.cargo/config.toml` names the wrappers
 `scripts/zig-cc-<arch>-linux-musl` (`zig cc -target
-<arch>-linux-musl`) as the linker and as the C compiler
-(`CC_<target>`) of the `cc` crate, which builds `ring`'s C and
-assembly, and sets `-C link-self-contained=no`: with rustc's own
+<arch>-linux-musl`) as the linker and sets `-C
+link-self-contained=no`: with rustc's own
 `crt1.o`, `_start` is defined twice. Both names are symlinks to
 `scripts/zig-cc-musl`, which reads the target from its own name and
 drops `-Wl,--fix-cortex-a53-843419`, which zig's linker refuses, and
 the `--target=` that the `cc` crate adds, which would override zig's
 target.
+
+BoringSSL (the crate `boring-sys`) builds with cmake, a C and C++
+compiler, and libclang for its bindgen step. Only `ko_client`'s
+feature `tls` needs it, so only the xcframework and `ko_client`'s
+tests need these tools; `ko` and the static Linux `ko` link no
+BoringSSL. `make check-ko-tls`, which `scripts/lint.sh` runs, fails
+when `ko`'s normal or build graph, for any target, has `boring` or
+`boring-sys`. Xcode supplies the compilers and libclang on macOS;
+cmake comes from Homebrew there, and CI's macOS and app jobs install
+it when it is absent. The Ubuntu job and `scripts/ci-like/Dockerfile`
+install `cmake` and `libclang-dev`.
 
 Nightly exists only for cargo-fuzz and Miri: `scripts/nightly.sh`
 pins it, and `scripts/fuzz.sh`, `scripts/miri.sh` and
@@ -150,11 +160,15 @@ no `addclosefrom_np`: `ko_sys::spawn` adds a close for each entry of
 only these branch on the platform: the C++ runtime that
 `ko_vt_sys/build.rs` and `build-bench` link (`c++` on macOS and musl,
 `stdc++` on glibc); `ko_client::ffi`, which also needs the feature
-`platform-verifier` (code that only the ffi uses lives in it; an item
+`tls` (code that only the ffi uses lives in it; an item
 that needs another module's private fields, as `Model::json`, carries
-`cfg(all(target_vendor = "apple", feature = "platform-verifier"))` on itself and on
+`cfg(all(target_vendor = "apple", feature = "tls"))` on itself and on
 the imports that only it uses, never an `#[allow(dead_code)]`); the
-podman kind's refusal (design-runtimes.md, "The podman kind"); and
+server certificate check of `ko_client::endpoint::tls` and the trust
+wait of `ko_client::wire::stream::tls`, both under the feature `tls`
+(SecTrust on Apple targets, BoringSSL's store on Linux: the trust is
+the OS's own, and `ko_sys`, which `ko` links, must not depend on
+BoringSSL); the podman kind's refusal (design-runtimes.md, "The podman kind"); and
 tests that pin a platform's behaviour. On Linux, a read of a unix
 socket whose peer closed with unread input fails with `ECONNRESET`;
 `ko_sys::fd::read` returns it as `Ok(0)`, the end of the source.
@@ -238,10 +252,11 @@ launch or stop exports), which makes every other symbol local, and
 then `nm` must show exactly the names of that list. The reason:
 Rust's `compiler_builtins` and Zig's `compiler_rt` in the app's
 libghostty define the same symbols, and the app's link refuses the
-duplicates. The same step makes `ring`'s C and assembly local. Each
-cargo build of a slice runs with `DEVELOPER_DIR`, as the `xcrun`
-steps do, so that the `cc` crate finds the slice's SDK, and with
-`ko_client`'s feature `platform-verifier`, which only this build and
+duplicates. The same step makes BoringSSL's C and C++ symbols
+local, so they cannot meet another copy in the app. Each cargo build
+of a slice runs with `DEVELOPER_DIR`, as the `xcrun` steps do, so
+that the `cc` crate and BoringSSL's cmake find the slice's SDK, and
+with `ko_client`'s feature `tls`, which only this build and
 `ko_client`'s own tests enable. The verifier links Security.framework
 and CoreFoundation, and `ko` must link neither: CoreFoundation adds
 `__CF_USER_TEXT_ENCODING` to the environment of its process, which

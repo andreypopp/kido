@@ -13,7 +13,7 @@ use ko_sys::event::{Events, Interest, Mode, Poll, Read, Reads, Token};
 use ko_sys::fd::Queue;
 use ko_wire::api::Route;
 use ko_wire::http::{self, response};
-#[cfg(all(target_vendor = "apple", feature = "platform-verifier"))]
+#[cfg(all(target_vendor = "apple", feature = "tls"))]
 use ko_wire::ids::ClientId;
 use ko_wire::protocol::Method;
 use ko_wire::protocol::webview::{
@@ -27,7 +27,7 @@ use crate::wire::{Caller, Link, Next, READ_TIMEOUT, ReadError};
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum Target {
-    #[cfg(all(target_vendor = "apple", feature = "platform-verifier"))]
+    #[cfg(all(target_vendor = "apple", feature = "tls"))]
     Server(ClientId),
     Program,
 }
@@ -102,7 +102,7 @@ impl Upstream {
         let stream = Stream::start(endpoint)?;
         let token = poll.watch(stream.fd(), Interest::ReadWrite);
         let client = match destination {
-            #[cfg(all(target_vendor = "apple", feature = "platform-verifier"))]
+            #[cfg(all(target_vendor = "apple", feature = "tls"))]
             Target::Server(client) => Some(client),
             Target::Program => None,
         };
@@ -125,7 +125,7 @@ impl Upstream {
             }
             Kind::Http(method) => {
                 let bytes = match destination {
-                    #[cfg(all(target_vendor = "apple", feature = "platform-verifier"))]
+                    #[cfg(all(target_vendor = "apple", feature = "tls"))]
                     Target::Server(client) => {
                         let mut fields = fields;
                         fields.push(("Connection", "close"));
@@ -172,7 +172,7 @@ impl Upstream {
             reads: Reads::new(),
         })
     }
-    #[cfg(all(target_vendor = "apple", feature = "platform-verifier"))]
+    #[cfg(all(target_vendor = "apple", feature = "tls"))]
     pub(crate) fn token(&self) -> Token {
         self.token
     }
@@ -218,11 +218,11 @@ impl Upstream {
             Phase::Socket { link, .. } => link.drained(),
         }
     }
-    #[cfg(all(target_vendor = "apple", feature = "platform-verifier"))]
+    #[cfg(all(target_vendor = "apple", feature = "tls"))]
     pub(crate) fn written(&self) -> u64 {
         match &self.phase {
             Phase::Closed => self.out.written(),
-            Phase::Http { stream, .. } => stream.flushed(self.out.written()),
+            Phase::Http { .. } => self.out.written(),
             Phase::Socket { link, .. } => link.written(),
         }
     }
@@ -278,16 +278,15 @@ impl Upstream {
     pub(crate) fn interest(&self, poll: &mut Poll, read: bool) {
         match &self.phase {
             Phase::Closed => {}
-            Phase::Http { stream, eof, .. } => poll.interest(
-                self.token,
-                stream.interest(read && !*eof, !self.out.is_empty()),
-            ),
+            Phase::Http { stream, eof, .. } => {
+                stream.watch_interest(poll, self.token, read && !*eof, !self.out.is_empty())
+            }
             Phase::Socket { link, phase } => {
                 link.interest(poll, read && !matches!(phase, SocketPhase::Finishing(_)))
             }
         }
     }
-    #[cfg(all(target_vendor = "apple", feature = "platform-verifier"))]
+    #[cfg(all(target_vendor = "apple", feature = "tls"))]
     pub(crate) fn writable(&mut self, poll: &mut Poll) -> io::Result<()> {
         let result = match &mut self.phase {
             Phase::Http { stream, .. } => stream.writable(),
@@ -302,7 +301,9 @@ impl Upstream {
     pub(crate) fn flush(&mut self, poll: &mut Poll) -> io::Result<()> {
         let result = match &mut self.phase {
             Phase::Closed => Ok(()),
-            Phase::Http { stream, .. } => stream.flush(&mut self.out),
+            Phase::Http { stream, .. } => {
+                stream.flush_ready(poll, self.token, &mut self.reads, &mut self.out)
+            }
             Phase::Socket { link, .. } => link.settle(poll),
         };
         match result {

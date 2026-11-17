@@ -99,6 +99,13 @@ jobs:
         timeout-minutes: 10
         run: ./scripts/verus.sh install "$PWD/build/verus/${{ steps.verus.outputs.key }}"
 
+      - name: Check TLS build tools (macOS)
+        if: runner.os == 'macOS'
+        timeout-minutes: 5
+        run: |
+          command -v cmake >/dev/null || brew install cmake
+          xcrun clang++ --version
+
       - name: Install dependencies (Ubuntu)
         if: runner.os == 'Linux'
         timeout-minutes: 10
@@ -106,7 +113,7 @@ jobs:
           printf '%s\n' 'Acquire::Retries "3";' 'Acquire::http::Timeout "30";' 'Acquire::https::Timeout "30";' \
             | sudo tee /etc/apt/apt.conf.d/80-timeouts
           sudo apt-get update
-          sudo apt-get install -y openssh-server zsh less procps
+          sudo apt-get install -y build-essential cmake libclang-dev openssh-server zsh less procps
           # Debian's global compinit can block test shells with an insecure-directories prompt.
           echo 'skip_global_compinit=1' | sudo tee -a /etc/zsh/zshenv
 
@@ -225,6 +232,12 @@ jobs:
       - name: Put zig on PATH
         timeout-minutes: 1
         run: echo "$HOME/zig" >> "$GITHUB_PATH"
+
+      - name: Check TLS build tools
+        timeout-minutes: 5
+        run: |
+          command -v cmake >/dev/null || brew install cmake
+          xcrun clang++ --version
 
       # The app's scrubbed build phase finds cargo through Homebrew's rustup directory.
       - name: Install the Rust toolchain

@@ -5,7 +5,7 @@ use std::net::TcpListener;
 use std::os::fd::AsFd;
 
 struct SoftwareSigner {
-    key: ring::signature::EcdsaKeyPair,
+    key: boring::pkey::PKey<boring::pkey::Private>,
     calls: std::sync::atomic::AtomicUsize,
     fail: bool,
 }
@@ -25,16 +25,14 @@ unsafe extern "C" fn software_sign(
     }
     // SAFETY: External passes a readable message for length bytes.
     let message = unsafe { std::slice::from_raw_parts(message, length) };
-    let signature = signer
-        .key
-        .sign(&ring::rand::SystemRandom::new(), message)
-        .unwrap();
-    assert!(signature.as_ref().len() <= capacity);
+    let mut operation =
+        boring::sign::Signer::new(boring::hash::MessageDigest::sha256(), &signer.key).unwrap();
+    operation.update(message).unwrap();
+    let signature = operation.sign_to_vec().unwrap();
+    assert!(signature.len() <= capacity);
     // SAFETY: External supplies a writable buffer of capacity bytes.
-    unsafe {
-        std::ptr::copy_nonoverlapping(signature.as_ref().as_ptr(), out, signature.as_ref().len())
-    };
-    signature.as_ref().len()
+    unsafe { std::ptr::copy_nonoverlapping(signature.as_ptr(), out, signature.len()) };
+    signature.len()
 }
 
 fn abi_endpoint(
@@ -50,12 +48,7 @@ fn abi_endpoint(
         &certificates.client
     };
     let signer = Box::new(SoftwareSigner {
-        key: ring::signature::EcdsaKeyPair::from_pkcs8(
-            &ring::signature::ECDSA_P256_SHA256_ASN1_SIGNING,
-            &certificate.key,
-            &ring::rand::SystemRandom::new(),
-        )
-        .unwrap(),
+        key: boring::pkey::PKey::private_key_from_der(&certificate.key).unwrap(),
         calls: std::sync::atomic::AtomicUsize::new(0),
         fail,
     });
@@ -78,13 +71,7 @@ fn abi_endpoint(
         &certificates.other_root
     };
     // SAFETY: every active field is readable, and signer outlives the returned endpoint.
-    let endpoint = unsafe {
-        identity::endpoint(
-            &raw,
-            vec![rustls::pki_types::CertificateDer::from(root.der.clone())],
-        )
-    }
-    .unwrap();
+    let endpoint = unsafe { identity::endpoint(&raw, vec![root.der.clone()]) }.unwrap();
     (endpoint, signer)
 }
 
@@ -346,6 +333,7 @@ fn a_tls_view_resumes_its_offset_after_a_partial_frame() {
     let config = server(&certificates);
     let (restored, restore_gate) = channel();
     let (resumed, resumed_rx) = channel();
+    let (applied, apply_gate) = channel();
     let peer = std::thread::spawn(move || {
         let mut client = tungstenite::accept(accept(&listener, Arc::clone(&config))).unwrap();
         assert!(client.read().unwrap().is_text());
@@ -375,6 +363,7 @@ fn a_tls_view_resumes_its_offset_after_a_partial_frame() {
                 restore_gate.recv_timeout(WAIT).unwrap();
                 view.send(Message::binary(output_record(10, b"abc")))
                     .unwrap();
+                apply_gate.recv_timeout(WAIT).unwrap();
                 view.get_mut().write_all(b"\x82\x05x").unwrap();
                 view.get_mut().flush().unwrap();
             } else {
@@ -402,6 +391,11 @@ fn a_tls_view_resumes_its_offset_after_a_partial_frame() {
     });
     let view = open_view(client, decoder, true);
     assert_eq!(snapshot_rx.recv_timeout(WAIT).unwrap(), b"old");
+    decoder.expect_bytes(10, b"abc");
+    until("the output offset is committed", || {
+        handle_of(view).view.resume_offset() == Some(13)
+    });
+    applied.send(()).unwrap();
     assert!(resumed_rx.recv_timeout(WAIT).unwrap().contains("offset=13"));
     assert_eq!(model_of(client)["instance"], INSTANCE);
     close_view(view);
@@ -465,7 +459,7 @@ fn a_tls_record_failure_after_upgrade_before_welcome_is_final() {
         assert!(socket.read().unwrap().is_text());
         socket
             .get_mut()
-            .sock
+            .get_mut()
             .write_all(&[
                 23, 3, 3, 0, 16, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
             ])
@@ -515,7 +509,7 @@ fn a_paused_tls_view_still_drains_a_blocked_send() {
             while client.read().is_ok() {}
         });
         let stream = accept(&listener, config);
-        ko_sys::sock::set_receive_buffer(stream.sock.as_fd(), 64 << 10).unwrap();
+        ko_sys::sock::set_receive_buffer(stream.get_ref().as_fd(), 64 << 10).unwrap();
         pause_gate.recv_timeout(WAIT).unwrap();
         let mut view = tungstenite::accept(stream).unwrap();
         read_gate.recv_timeout(WAIT).unwrap();

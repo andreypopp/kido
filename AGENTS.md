@@ -155,8 +155,9 @@ platforms and the installed layout. These requirements are fixed:
   `ko_client` also builds for iOS, as a library. Each OS call that
   differs has its two halves in `ko_sys`, behind `cfg(target_os)`.
   Outside `ko_sys`, only the C++ runtime that `ko_vt_sys/build.rs`
-  links, `ko_client::ffi`, the podman kind's refusal and tests that
-  pin a platform's behaviour branch on the platform (docs/build.md,
+  links, `ko_client::ffi`, the TLS trust check of `ko_client`'s
+  feature `tls` (`endpoint::tls`, `wire::stream::tls`), the podman
+  kind's refusal and tests that pin a platform's behaviour branch on the platform (docs/build.md,
   "Platforms").
 - **Dependencies.** `scripts/crates.txt` lists every package of
   `Cargo.lock`, and `scripts/lint.sh` compares the two. A new direct
@@ -321,7 +322,7 @@ Conventions:
   `Phase::Handling` with a waiter in `State` and a timer of the loop,
   never a thread (docs/design-ko.md, "The loop rule").
 - **The C ABI.** `ko_client::ffi` builds only for `target_vendor =
-  "apple"` with `ko_client`'s feature `platform-verifier`. The header comment of `ko_client/include/ko_client.h` is
+  "apple"` with `ko_client`'s feature `tls`. The header comment of `ko_client/include/ko_client.h` is
   the contract. A new exported function goes into `ko_client.h`,
   `ffi.rs` and `exports.txt` together (docs/build.md, "The ko_client
   xcframework").

@@ -2,7 +2,7 @@ pub mod api;
 pub mod connect;
 pub mod edit;
 pub mod endpoint;
-#[cfg(all(target_vendor = "apple", feature = "platform-verifier"))]
+#[cfg(all(target_vendor = "apple", feature = "tls"))]
 pub mod ffi;
 #[cfg(not(target_os = "ios"))]
 pub mod launch;

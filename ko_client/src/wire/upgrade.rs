@@ -75,7 +75,7 @@ impl Connecting {
         poll.watch(self.stream.fd(), self.stream.interest(true, true))
     }
 
-    #[cfg(all(target_vendor = "apple", feature = "platform-verifier"))]
+    #[cfg(all(target_vendor = "apple", feature = "tls"))]
     pub(crate) fn deadline(&self) -> Instant {
         self.stream
             .deadline()
@@ -114,9 +114,8 @@ impl Connecting {
             self.retry(poll, ready, error)?;
             return Ok(UpgradeStep::Pending(self));
         }
-        if ready.read {
-            let mut reads = Reads::new();
-
+        let mut reads = Reads::new();
+        if ready.read || ready.write {
             let mut eof = false;
             loop {
                 let mut buffer = [0; 4096];
@@ -143,6 +142,7 @@ impl Connecting {
                     eof,
                 }) {
                     Ok(upgrade) => {
+                        self.stream.watch_interest(poll, ready.token, true, false);
                         let linked = Link::upgraded(
                             self.stream,
                             upgrade,
@@ -164,10 +164,10 @@ impl Connecting {
                 }
             }
         }
-        poll.interest(
-            ready.token,
-            self.stream.interest(true, !self.request.is_empty()),
-        );
+        self.stream
+            .flush_ready(poll, ready.token, &mut reads, &mut self.request)?;
+        self.stream
+            .watch_interest(poll, ready.token, true, !self.request.is_empty());
         Ok(UpgradeStep::Pending(self))
     }
 }

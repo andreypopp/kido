@@ -171,10 +171,13 @@ impl Open {
             return Ok(true);
         }
         let token = self.upstream.token();
+        self.upstream.begin_turn();
         if ready.write {
             self.upstream
                 .writable(poll)
                 .map_err(|error| failure(&error))?;
+        }
+        if ready.write || (ready.read && !self.upstream.drained()) {
             self.upstream.flush(poll).map_err(|error| failure(&error))?;
             self.task.progress(self.upstream.written());
         }
@@ -184,8 +187,7 @@ impl Open {
         if self.upstream.reported() && self.upstream.drained() {
             return Ok(true);
         }
-        if ready.read && !self.task.backed_up() {
-            self.upstream.begin_turn();
+        if (ready.read || ready.write) && !self.task.backed_up() {
             while !self.task.backed_up() {
                 let event = self
                     .upstream

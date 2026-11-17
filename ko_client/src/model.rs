@@ -12,7 +12,7 @@ use schemars::JsonSchema;
 use serde::Serialize;
 use serde_json::Value;
 
-#[cfg(all(target_vendor = "apple", feature = "platform-verifier"))]
+#[cfg(all(target_vendor = "apple", feature = "tls"))]
 use crate::status;
 use crate::status::{Mark, Seen};
 use crate::tree;
@@ -239,7 +239,7 @@ impl Model {
         }
     }
 
-    #[cfg(all(target_vendor = "apple", feature = "platform-verifier"))]
+    #[cfg(all(target_vendor = "apple", feature = "tls"))]
     pub(crate) fn json(&self) -> ModelJson<'_> {
         ModelJson {
             now: self.server_now(),
@@ -264,7 +264,7 @@ impl Model {
         }
     }
 
-    #[cfg(any(all(target_vendor = "apple", feature = "platform-verifier"), test))]
+    #[cfg(any(all(target_vendor = "apple", feature = "tls"), test))]
     fn server_now(&self) -> u64 {
         let elapsed = u64::try_from(self.anchor.1.elapsed().as_nanos()).unwrap_or(u64::MAX);
         self.anchor.0.saturating_add(elapsed)
@@ -1395,7 +1395,7 @@ mod tests {
             Applied::State
         );
         assert_eq!(model.panes[0].row.webview, Some(webview));
-        #[cfg(all(target_vendor = "apple", feature = "platform-verifier"))]
+        #[cfg(all(target_vendor = "apple", feature = "tls"))]
         assert_eq!(
             serde_json::to_value(model.json()).unwrap()["panes"][0]["webview"]["page"]["path"],
             "/page?q=1"
@@ -1408,7 +1408,7 @@ mod tests {
             Applied::State
         );
         assert_eq!(model.panes[0].row.webview, None);
-        #[cfg(all(target_vendor = "apple", feature = "platform-verifier"))]
+        #[cfg(all(target_vendor = "apple", feature = "tls"))]
         assert!(
             serde_json::to_value(model.json()).unwrap()["panes"][0]
                 .get("webview")

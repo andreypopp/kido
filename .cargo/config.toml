@@ -1,7 +1,5 @@
 [env]
 KO_ZIG_CACHE = { value = "target/zig-cache", relative = true }
-CC_aarch64_unknown_linux_musl = { value = "scripts/zig-cc-aarch64-linux-musl", relative = true }
-CC_x86_64_unknown_linux_musl = { value = "scripts/zig-cc-x86_64-linux-musl", relative = true }
 
 [target.aarch64-unknown-linux-musl]
 linker = "scripts/zig-cc-aarch64-linux-musl"

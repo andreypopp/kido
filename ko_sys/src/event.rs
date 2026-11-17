@@ -419,6 +419,20 @@ impl Poll {
         token
     }
 
+    pub fn retarget(&mut self, token: Token, fd: BorrowedFd<'_>, interest: Interest) {
+        let Some(source) = self.sources.get(token.0) else {
+            return;
+        };
+        if source.fd != fd.as_raw_fd() {
+            self.interest(token, Interest::Idle);
+            if let Some(source) = self.sources.get_mut(token.0) {
+                source.fd = fd.as_raw_fd();
+                source.hangup = hangup_events(fd.as_raw_fd());
+            }
+        }
+        self.interest(token, interest);
+    }
+
     pub fn interest_of(&self, token: Token) -> Interest {
         self.sources
             .get(token.0)
@@ -751,6 +765,27 @@ mod tests {
         }
         seen.sort_by_key(|token| token == &writing);
         assert_eq!(seen, [reading, writing]);
+    }
+
+    #[test]
+    fn retarget_keeps_the_token_and_discards_the_old_descriptor_readiness() {
+        let first = Wake::new().unwrap();
+        let second = Wake::new().unwrap();
+        let mut poll = Poll::new();
+        let mut events = Events::default();
+        let token = poll.watch(first.fd(), Interest::Read);
+        first.wake();
+        poll.turn(Mode::Peek, &mut events).unwrap();
+        assert_eq!(events.ready().len(), 1);
+        poll.retarget(token, second.fd(), Interest::Read);
+        poll.turn(Mode::Peek, &mut events).unwrap();
+        assert!(events.ready().is_empty());
+        second.wake();
+        poll.turn(Mode::Peek, &mut events).unwrap();
+        assert_eq!(events.ready().len(), 1);
+        assert_eq!(events.ready()[0].token, token);
+        assert_eq!(poll.interest_of(token), Interest::Read);
+        poll.unwatch(token);
     }
 
     #[test]

@@ -83,11 +83,7 @@ impl Read for Interruptible<'_> {
                 }
             }
             self.stream.progress()?;
-            let want = if self.stream.pending_write() {
-                Want::Write
-            } else {
-                Want::Read
-            };
+            let want = self.stream.wait(Want::Read);
             match fd::wait(
                 self.stream.fd(),
                 want,
@@ -119,13 +115,18 @@ fn write_until(
             Ok(0) => return Err(io::ErrorKind::WriteZero.into()),
             Ok(count) => bytes = bytes.get(count..).unwrap_or_default(),
             Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                let want = stream.wait(Want::Write);
                 match fd::wait(
                     stream.fd(),
-                    Want::Write,
+                    want,
                     cancel.map(Wake::fd),
                     Some(within.remaining()?),
                 )? {
-                    Waited::Ready => {}
+                    Waited::Ready => {
+                        if matches!(want, Want::Read) {
+                            stream.receive()?;
+                        }
+                    }
                     Waited::Cancelled => return Err(connect::cancelled_error()),
                     Waited::TimedOut => return Err(io::ErrorKind::TimedOut.into()),
                 }
@@ -138,7 +139,7 @@ fn write_until(
         if stream.pending_write() {
             match fd::wait(
                 stream.fd(),
-                Want::Write,
+                stream.wait(Want::Write),
                 cancel.map(Wake::fd),
                 Some(within.remaining()?),
             )? {
@@ -261,13 +262,18 @@ impl Rejected {
 
 impl From<io::Error> for Rejected {
     fn from(error: io::Error) -> Rejected {
+        #[cfg(feature = "tls")]
         match error
             .get_ref()
-            .and_then(|error| error.downcast_ref::<stream::Failure>())
+            .and_then(|error| error.downcast_ref::<crate::endpoint::tls::Failure>())
         {
-            Some(stream::Failure::Tls(_)) => Rejected::Tls(text(error)),
-            Some(stream::Failure::Identity(_)) => Rejected::Identity(text(error)),
+            Some(crate::endpoint::tls::Failure::Tls(_)) => Rejected::Tls(text(error)),
+            Some(crate::endpoint::tls::Failure::Identity(_)) => Rejected::Identity(text(error)),
             None => Rejected::Io(text(error)),
+        }
+        #[cfg(not(feature = "tls"))]
+        {
+            Rejected::Io(text(error))
         }
     }
 }
@@ -679,7 +685,7 @@ impl Link {
         self.received
     }
 
-    #[cfg(all(target_vendor = "apple", feature = "platform-verifier"))]
+    #[cfg(all(target_vendor = "apple", feature = "tls"))]
     pub(crate) fn reset_received(&mut self, now: Instant) {
         self.received = now;
     }
@@ -701,24 +707,28 @@ impl Link {
             return Ok(Next::Closed);
         };
 
-        let next = Link::pump(
-            &mut self.ctx,
-            &mut Io {
-                stream: &mut self.stream,
-                source: Some((poll, token, &mut self.reads, now)),
-                out: &mut self.out,
-                cancel: None,
-                received: &mut self.received,
-                within: self.within,
-            },
-            &mut self.closing,
-        )?;
-        if matches!(next, Next::Shutdown | Next::Closed | Next::Gone) {
-            let _ = self.stream.flush(&mut self.out);
-        } else {
-            self.settle(poll)?;
+        loop {
+            let next = Link::pump(
+                &mut self.ctx,
+                &mut Io {
+                    stream: &mut self.stream,
+                    source: Some((poll, token, &mut self.reads, now)),
+                    out: &mut self.out,
+                    cancel: None,
+                    received: &mut self.received,
+                    within: self.within,
+                },
+                &mut self.closing,
+            )?;
+            if matches!(next, Next::Shutdown | Next::Closed | Next::Gone) {
+                let _ = self.stream.flush(&mut self.out);
+            } else {
+                self.settle(poll)?;
+            }
+            if !matches!(next, Next::Wait) || !self.stream.pending_read() {
+                return Ok(next);
+            }
         }
-        Ok(next)
     }
 
     pub fn receive(&mut self) -> io::Result<Next> {
@@ -840,9 +850,7 @@ impl Link {
     }
 
     pub(crate) fn drained(&self) -> bool {
-        self.out.is_empty()
-            && self.stream.flushed(self.out.written()) == self.out.written()
-            && !self.stream.pending_write()
+        self.out.is_empty() && !self.stream.pending_write()
     }
 
     pub(crate) fn backed_up(&self) -> bool {
@@ -851,21 +859,14 @@ impl Link {
 
     pub(crate) fn interest(&self, poll: &mut Poll, read: bool) {
         if let Some(token) = self.token {
-            poll.interest(token, self.stream.interest(read, !self.out.is_empty()));
+            self.stream
+                .watch_interest(poll, token, read, !self.out.is_empty());
         }
     }
 
-    #[cfg(all(target_vendor = "apple", feature = "platform-verifier"))]
+    #[cfg(all(target_vendor = "apple", feature = "tls"))]
     pub(crate) fn written(&self) -> u64 {
-        self.stream.flushed(self.out.written())
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        let result = self.stream.flush(&mut self.out);
-        if self.out.sent_past_half() {
-            self.out.compact();
-        }
-        result
+        self.out.written()
     }
 
     pub fn flush_blocking(&mut self) -> io::Result<()> {
@@ -878,9 +879,19 @@ impl Link {
     }
 
     pub fn settle(&mut self, poll: &mut Poll) -> io::Result<()> {
-        self.flush()?;
         if let Some(token) = self.token {
-            poll.interest(token, self.stream.interest(true, !self.out.is_empty()));
+            self.stream
+                .flush_ready(poll, token, &mut self.reads, &mut self.out)?;
+            self.stream
+                .watch_interest(poll, token, true, !self.out.is_empty());
+        } else {
+            self.stream.flush(&mut self.out)?;
+        }
+        if self.stream.take_read() {
+            self.received = Instant::now();
+        }
+        if self.out.sent_past_half() {
+            self.out.compact();
         }
         Ok(())
     }

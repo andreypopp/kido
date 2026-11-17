@@ -165,6 +165,12 @@ KO_CLIENT_XC ?= $(CURDIR)/build/ko_client.xcframework
 KO_CLIENT_SLICES := $(foreach target,$(KO_CLIENT_TARGETS),target/$(target)/release/libko_client_private.a)
 XCDEV := DEVELOPER_DIR=$${DEVELOPER_DIR:-/Applications/Xcode.app/Contents/Developer}
 
+.PHONY: check-ko-tls
+check-ko-tls:
+	@set -e; tree=$$($(CARGO) tree --locked -p ko --target all -e normal,build --prefix none); \
+	! echo "$$tree" | grep -qE '^(boring|boring-sys) v' || \
+	{ echo "ko: BoringSSL is not permitted in the CLI dependency tree" >&2; exit 1; }
+
 ko-client-xcframework: $(KO_CLIENT_XC)/Info.plist
 
 $(KO_CLIENT_XC)/Info.plist: $(shell printf '%s\n' "$(KO_CLIENT_TARGETS)" | cmp -s - $(KO_CLIENT_XC).targets || printf FORCE) $(KO_CLIENT_SLICES)
@@ -191,10 +197,10 @@ target/%/release/libko_client_private.a: target/%/release/libko_client.a ko_clie
 target/%/release/libko_client.a: build/.ko_client_deps FORCE
 	@test -d "$$(rustc --print target-libdir --target $*)" || \
 	{ echo "ko-client-xcframework: rust target $* is not installed for $$(rustc --version); run: rustup target add $*" >&2; exit 1; }
-	$(XCDEV) $(CARGO) rustc --locked --release -p ko_client --features platform-verifier --lib --crate-type staticlib --target $*
+	$(XCDEV) $(CARGO) rustc --locked --release -p ko_client --features tls --lib --crate-type staticlib --target $*
 
 build/.ko_client_deps: Cargo.lock ko_client/Cargo.toml
-	set -e; tree=$$($(CARGO) tree --locked --target all -p ko_client --features platform-verifier -e normal,build --prefix none); \
+	set -e; tree=$$($(CARGO) tree --locked --target all -p ko_client --features tls -e normal,build --prefix none); \
 	! echo "$$tree" | grep -qE '^ko_(server|vt)' || \
 	{ echo "ko-client-xcframework: ko_client depends on ko_server or ko_vt" >&2; exit 1; }
 	mkdir -p build && touch $@

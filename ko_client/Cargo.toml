@@ -5,7 +5,7 @@ edition.workspace = true
 publish.workspace = true
 
 [features]
-platform-verifier = ["dep:rustls-platform-verifier"]
+tls = ["dep:boring", "dep:security-framework"]
 
 [dependencies]
 ko_wire = { path = "../ko_wire" }
@@ -16,12 +16,13 @@ schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tungstenite.workspace = true
-rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
-rustls-platform-verifier = { version = "0.7", optional = true }
+boring = { version = "=5.5.0", optional = true }
+
+[target.'cfg(target_vendor = "apple")'.dependencies]
+security-framework = { version = "3.7", optional = true }
 
 [dev-dependencies]
-ko_client = { path = ".", features = ["platform-verifier"] }
-ring = "0.17"
+ko_client = { path = ".", features = ["tls"] }
 miniz_oxide.workspace = true
 proptest.workspace = true
 
