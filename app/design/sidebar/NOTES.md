@@ -478,6 +478,19 @@ The preview's fixtures follow the 6.0 feed shape:
 
 The "Working session + states" fixture shows the regular-weight cases: the completed `pi-ui-perf`-style subagent under review-notes (gone, completed, `agent: null`) and the still-starting `perf-notes` subagent (a run with a clock, `agent: null`, idle dot).
 
+## Approved (user, 2026-11-12): pane names at 14pt
+
+The pane title (every pane, job and record row; not the session
+header) is 14pt instead of 13, regular, semibold when the row is
+focused or keyboard-selected, as before. Its line is 19pt (was 18),
+so the two-line row is 43pt (was 42) and the status line (11pt,
+unchanged) and the folded-child cluster start at y 24 (was 23).
+Nothing else moves: the indicator stays centred on the title line,
+the elapsed clock and the session header keep their sizes. The
+mockup's "Title size" picker shows 13, 14 and 15; the user chose 14
+as clearly larger than the 11pt status line without tall rows, and
+long names still fit at 292pt, which 15 did not.
+
 ## Approved (user, 2026-11-12): back and forward
 
 The user asked for back/forward buttons in the sidebar header,
@@ -602,3 +615,54 @@ Browser-measured coordinates match frames.txt: traffic lights (19/42/65,19), New
 - `tail` is generic display text, not a distinct set_status field.
 - No pi/Claude provider field or separate monitor kind; `run` is an opaque id, so bash runs and stream monitors look alike.
 - Independent subtree folding is not implemented; sessions are plain labels.
+
+## Closable records (2026-11-14, spec)
+
+A record with `closeable: true` (koa's in-process subagents) shows
+the pane row's close button: the same ×, the same 16pt slot, only
+while hovering that slot, in place of the record's status indicator,
+the clock unchanged. No confirmation: the app sends `close` with the
+record id and the program decides. Until the program removes the
+record, the row's title and status dim to 50% and the × is gone (the
+indicator shows again, dimmed); a second click does nothing; after
+5 s without removal the row returns to full and the × works again.
+Keyboard, sidebar focus mode: the pane row's close key on a selected
+closable record; nothing on another record. Context menu: "Close",
+with "Show" above it on a selectable record; no menu otherwise. No
+tooltip; the accessibility action is "Close".
+
+## Job rows: the click, in koa's own terminal (2026-11-14, primary)
+
+The user: "why a float? turn the current view into a terminal." A
+click on a job record: koa saves the page's state (draft and
+attachments, scroll, folds, the view), `ko webview leave`, and runs
+`less -R +F <log>` on its own PTY with a prompt line "Job · <name> ·
+q back to koa  F follow  / search". Back: q, or a click on koa's pane
+row or the job row again (koa ends the viewer and `enter`s); the page
+returns as it was, the draft and attachments in the composer, the
+same view, the terminal time counted as not focused for the divider
+and the Latest count. Sidebar meanwhile: the job record `selected`,
+koa's pane row active with the activity "log · <name>". The job
+ending shows in the sidebar's status; the terminal keeps following
+until q. × stops the job, the viewer stays. Browser mode offers no
+selection on job records; the transcript's job card is the answer
+there. The float version below stays as the alternative.
+
+## Job rows: the click, the float alternative (2026-11-14)
+
+A click on an async_bash job record opens a float terminal pane with
+the editor float's machinery (a child pane of koa's, fixed title "Job
+· <name>", no close confirmation, centred over koa's pane at 80%,
+role `ko.role: job-log`) running `less -R +F <log>`: real rendering,
+colours, scrollback and search; q closes it. The record stays
+`offered` while its viewer is open (`selected` means what koa's pane
+shows; several job floats can be open); a second click raises the
+viewer; one per job. The float's title is fixed; the job's outcome
+shows in the sidebar row's status; the float stays until closed. No
+record marker (user): the context menu is the generic "Show" and
+"Close"; Close stops a running job and clears an ended row.
+Closing the viewer leaves the job running. The row's × (and the
+close key) stops the job, services too, dimming the row as for a
+closable record; on an ended row it clears the row. Finished rows
+linger 60 s, not 5, so they stay clickable. Context menu: the
+generic "Show" and "Close". ko_tui and the browser page need nothing.

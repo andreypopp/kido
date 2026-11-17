@@ -135,7 +135,10 @@ The 5pt edges were too thin.
   sits on it and keeps precedence. Cursor: open hand, closed while
   dragging. The toolbar's grip button stays, and it is the only
   handle that docks (section A); the band and the draggable padding
-  elsewhere only move the float. Visible on hover of the band: a 36×4pt pill
+  elsewhere only move the float. A runtime float's 3pt stripe moves
+  down with the band: it sits at the top of the grid's padding, 10pt
+  below the frame's edge, directly above the first row (the band is
+  chrome, the stripe marks the runtime's content). Visible on hover of the band: a 36×4pt pill
   centred in it, 2pt radius, the foreground at 25% in both themes,
   120ms fade; nothing otherwise.
 - **Resize: the bottom-right corner first.** A 20×20pt square

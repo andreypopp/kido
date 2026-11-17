@@ -3,7 +3,7 @@
 <style>
 :root{color-scheme:light dark}
 body{margin:0;padding:18px 24px 24px;background:#8d8a84;font:13px/1.45 -apple-system,BlinkMacSystemFont,"SF Pro Text",system-ui,sans-serif;color:#111}
-.controls{display:flex;flex-wrap:wrap;gap:8px 18px;align-items:center;margin:0 auto 12px;max-width:1100px;color:#fff}
+.controls{position:sticky;top:0;z-index:5;display:flex;flex-wrap:wrap;gap:8px 18px;align-items:center;margin:0 auto 12px;max-width:1100px;color:#fff;padding:10px 12px;backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);background:color-mix(in srgb,currentColor 8%,transparent)}
 .controls label{display:flex;align-items:center;gap:6px}.controls select{font:inherit;max-width:520px}
 .controls p{margin:0;flex-basis:100%;color:#fffc;font-size:12px}
 .stage{position:relative;width:1100px;height:740px;margin:auto;border-radius:18px;overflow:hidden;box-shadow:0 18px 60px #0003,0 0 0 .5px #0002}

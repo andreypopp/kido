@@ -3,7 +3,7 @@
 <style>
 :root{color-scheme:light dark}
 body{margin:0;padding:24px;background:#8d8a84;font:13px/1.45 -apple-system,BlinkMacSystemFont,"SF Pro Text",system-ui,sans-serif;color:#111}
-.controls{display:flex;flex-wrap:wrap;gap:14px 18px;align-items:center;margin:0 auto 18px;max-width:1100px;color:#fff}
+.controls{position:sticky;top:0;z-index:5;display:flex;flex-wrap:wrap;gap:14px 18px;align-items:center;margin:0 auto 18px;max-width:1100px;color:#fff;padding:10px 12px;backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);background:color-mix(in srgb,currentColor 8%,transparent)}
 .controls label{display:flex;align-items:center;gap:6px}.controls select{font:inherit}
 .controls p{margin:0;flex-basis:100%;color:#fffc}
 .app{--bg:#171717;--fg:#c9c9c9;--muted:#8f8f8f;--accent:#2466b5;--green:#05ab69;--shift:5%;--shade:color-mix(in srgb,var(--bg) calc(100% - var(--shift)),#fff);--text:#dddddd;--dimtext:#9a9a9a;--sep:#ffffff1a;--running:#30d158;--attention:#ff9f0a;--error:#ff453a;

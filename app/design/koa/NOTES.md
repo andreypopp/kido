@@ -1040,6 +1040,65 @@ in koa", and the text never reaches the model.
   summary as prose; a failure "compact failed: <message>" in `--err`.
   `/quit` ends pi and koa; the pane closes as a shell's exit does;
   nothing is drawn.
+  `/reload` (2026-11-12, unit koa-reload) replaces koa's process
+  with a fresh one on the same session, only when idle. Before the
+  serve stream drops, the old page shows "Reloading…" in the line
+  where "Connection lost. Reconnecting…" shows, same element and
+  styling, no spinner; the field is inert as while a dialog holds
+  the keys (`#field[inert]`, the faded text), the foot's word stays
+  "idle". Its popup row says "Reload extensions, settings and koa"; without
+  a saved session (`--no-session`) it refuses with "reload: not
+  without a saved session". The gap (1–2 s): koa stays
+  in webview mode, so the app shows its own "The program is not
+  serving" label; the pane never falls back to the terminal. The new
+  page loads as a first load does, then one note line "reloaded" in
+  the style of /resume's "session: …" note, time at the right; focus
+  to the composer. Two layers (user): first pi reloads in-process
+  (settings, extensions, skills, prompts; pi, the session, jobs and
+  subagents stay), and only when the installed koa differs from the
+  running one does koa restart itself, and only when nothing would
+  be lost. The note is "reloaded" after layer 1 alone and after the
+  full restart alike. When a newer koa is installed but the restart
+  did not run, one info note (muted, not a warning: nothing failed)
+  with the reason after a middle dot: "reloaded · a newer koa waits
+  for 3 jobs" ("1 job"), "reloaded · a newer koa waits for 2
+  subagents to report" ("1 subagent"), "reloaded · a newer koa
+  needs a saved session", "reloaded · a newer koa waits; ko-pi did
+  not answer, try /reload again". Refused while a turn, a `!` command, a queue, a
+  dialog or the editor float is open, on the path the other commands
+  use, with the text "reload: not while a turn, a command, a queue,
+  a dialog or an editor is open" where that path shows one.
+  While the C-g editor float is open (user, 2026-11-13): the field
+  stays inert and takes `editing`: the whole field at 45% opacity in
+  both themes, the hairline border, the draft visible under it, the
+  foot's status cell "Editing…" (the editor's name in the cell's
+  tooltip; the 15ch cell must never cut the name) alone at full
+  opacity; model,
+  thinking, context, cwd, the chips and the queue dim with it and take
+  no click; `cursor: pointer` over the whole composer, and a click
+  anywhere on it focuses the editor's pane (Kido.app raises and keys
+  the float) without moving the page's focus; Escape and Return do
+  nothing on the page. The editor's close removes the class and
+  returns the text and the focus as today.
+  After a restart or a crash the in-process subagents' records are
+  cleared (koa's registry is the truth; a normal stop leaves no row);
+  a restart adds one info note "restarted · 2 subagents ended" ("1
+  subagent ended"); a crash says nothing. A submitted `@name` that
+  matches no agent of the scope and no existing path gets one
+  warning note after the user's block, "@name matches no agent"
+  ("@a, @b match no agent"); the text goes to the model unchanged;
+  nothing before submit, nothing for a path (2026-11-16).
+  `/restart` (2026-11-12) quits pi and starts a new one on the same
+  session, koa, the page and the transcript staying; popup "Start pi
+  again on this session". During: "Restarting pi…" in the line where
+  "Reloading…" shows, the field inert, the foot "starting" then
+  "idle". Success note "pi restarted". Refused like /reload:
+  "restart: not while a turn, a command, a queue, a dialog or an
+  editor is open". Deferred (info, pi stays): "restart waits for 3
+  jobs", "restart waits for 2 subagents to report", "restart needs a
+  saved session", "restart waits; ko-pi did not answer, try /restart
+  again". A failed start: "pi did not start: <message>" (error) and
+  the exit card.
 - **Prompt history**: Up on the first line of an empty or unedited
   field puts the previous submitted prompt in the field, Down the next;
   a draft typed before Up comes back with Down. No cue: the field looks
@@ -1246,17 +1305,15 @@ macOS 27's rounder controls); 12pt is the pane capsule family's
 radius. The other radii (code blocks 7pt, chips, the queue 8pt)
 stay.
 
-**8 · The composer's depth** (user, 2026-11-11: "contact"). The
-shipped glow (an inset top highlight at white 28%, a 6pt/22pt
-shadow at 14% of the foreground and a 1pt/3pt at 10%) goes: on a
-dark theme the light foreground made it a halo, and the glass blur
-already lifts the field off the content that scrolls under it. The
-field takes the pane capsule family's treatment (design/pane/NOTES.md):
-no inset highlight, a 0.5pt edge at 16% of the foreground in a
-light theme and 14% in a dark one, and a tight contact shadow,
-black 8% at y 1pt blur 2pt in light, black 30% at y 1pt blur 3pt
-in dark. The glass background and blur stay. The same for the
-dock's dialog, exited card and queue, which share the field's rule.
+**8 · The composer's depth** (user, 2026-11-12: "border", the
+shipped look without the glow). The user first chose the pane
+capsules' contact treatment (11 Nov), then preferred the old border:
+the field keeps its 1px edge at 22% of the foreground, the inset top
+highlight at white 28% and the 1pt/3pt shadow at 10%, and loses only
+the 6pt/22pt shadow at 14%, which on a dark theme read as a halo.
+The glass background and blur stay. The same for the dock's dialog,
+exited card and queue, which share the field's rule. The mockup's
+"Composer depth" picker keeps contact, flat and fade for comparison.
 
 **9 · Streaming reveal, "G"** (user, 2026-11-11; chosen on the iOS
 comparison page ~/Workspace/kido-ios/app/design/ios/streaming.html,
@@ -1314,6 +1371,134 @@ asks the host to focus that pane, as a sidebar click does. koa links
 a `@name` in prose only when the name is in the agent extension's agent list at
 render time; otherwise it stays text. An ended agent keeps 600 in
 the muted tone and is no link.
+
+## lines.html: one row for every notice; the queue as dimmed user messages (approved 2026-11-12)
+
+Two requests of the user, approved as drawn ("ok let's implement"):
+A as drawn; B in the dock with the `tint` dimming, and no click-to-
+edit on a queued block (not asked for; Option-Up takes all back).
+On refine.html's language, with its decided pickers (solid user message, unified rows, v3 padding, 12pt
+radii, the border depth). The inventory of what the transcript
+renders today is /tmp/koa-notices/inventory.md (26 families).
+
+**A · Every notice is one row.** The user: "all of them in the same
+style as agent messages and tool calls; some are monospace now".
+One element, the row of item 5, replaces `.note` (the mono
+one-liners), `.info` (the mono disclosure with the chevron), `.msg.
+summary` (the prose block without a time) and the reply's `.msg.err`
+(the prose error block without a time):
+
+- The row: prose `.95em/1.5`, `--muted`, `padding-left: var(--pad)`
+  like a run line, the text one line with an ellipsis, the time in
+  prose `.8em` `tabular-nums` `--faint` at the transcript's text
+  edge. No chevron. Consecutive run, agent, job and notice rows sit
+  2pt apart; the group keeps the 14pt gap after it; an opened row
+  keeps 14pt under its body (the rule of item 5, extended).
+- Colour: `info` muted; `warning` the text in `--ko-color-3`; `error`
+  the text in `--ko-color-1`; the time stays faint in every case.
+  Inside the text only a path or a session file is `--mono .92em`
+  in `--ko-fg` (as a step's path); everything else is the row's
+  colour, regular weight; no `.nm` in the foreground any more.
+- Opening: a row with more than its line (a body, a text of more
+  than one line, or one line that does not fit, like the routed
+  runtime's announcement) opens on a click of the whole row, the hover
+  lifting it to `--ko-fg` and the pointer a hand, like a run. The
+  body sits `var(--pad)` in with the hairline at its left and 12pt
+  of padding, the text in `--ko-fg` prose, like an agent line's
+  body. A row with a lead (session name, "compacted") hides its
+  preview when open and keeps the lead; a row without a lead keeps
+  its first line as the header, and the body is the rest.
+- The session's statistics open to the same key-value grid in
+  prose: keys `--faint`, values `--ko-fg`, the id and the file in
+  the mono. The compaction summary opens to its text as prose
+  paragraphs, no 200px cap (the agent body has none either).
+- Texts, one for each family of the inventory (family numbers):
+  1–3, 10–12 `notify`: the text as given, by level; koa's own are
+  "Session name set: Release", "Unknown thinking level: max", the
+  routed runtime's announcement, "runtime devbox: <error>; its
+  context files are not read", "Editor pane not closed: <error>";
+  an extension's text is whatever it sends (none drawn).
+  4–5 reload: "reloaded", "reloaded · a newer koa waits for 3 jobs".
+  6 "model: claude-opus-5-5 · thinking high"; "Unknown thinking
+  level: x" warning. 7 "session: Release · 12 messages", "new
+  session". 8–9 as today, warnings. 13 "copied the last reply · 2.1k
+  characters". 14 "exported" + path (mono, previewable). 15 "sidebar-
+  right · 212 messages · $1.42", opens. 16 "compacting" + the
+  spinner 6pt after the word (the run line's). 17 "compacted · 184k →
+  31k tokens", opens to the summary. 18 "compaction cancelled". 19
+  "compaction · <message>" in error colour (no "failed", the rule
+  of runs). 20 the reply's error: the error text as an error row,
+  with its time, 14pt after the reply like any row group (merged
+  into the row). 21 stays in the run. 22–23 are the reference and
+  do not change. 24 a custom notice: its first line as Markdown;
+  opens when it has more lines. 25 a summary from the history:
+  "compacted · <first words…>" or "branch · <first words…>", opens
+  to the whole text; with the message's time when known, else no
+  time (merged with 17's look). 26 stays inside the step's detail;
+  only the read-with-image note there goes to prose `.85em` faint.
+- Disappears: the chevron of `.info`; the `.note`/`.info` split;
+  `.msg.summary`; `.msg.err`'s block; the 200px cap on the summary.
+  Nothing outside the transcript changes (foot toasts, `#error`, the
+  dialogs, the exit card).
+
+**B · The queue: dimmed user messages with a ×.** The user: "like a
+user message but dimmed, with a close icon to remove them from the
+queue".
+
+- Each queued steer and follow-up is the user block itself: the same
+  Markdown renderer, 12pt radius, `8px var(--pad)` padding, the full
+  block width, dimmed, but one line only (user, 2026-11-12: long
+  queued messages must not take the pane): the first line of the
+  text, ellipsized, blocks and paragraphs flattened into it;
+  attachments as a paperclip and a count after the text, in the
+  block's ink at 80%. Steers first, then follow-ups, in pi's order;
+  6pt between blocks.
+- Dimming, three on the picker; recommended `tint`: fill the accent
+  at 14% over the page (22% in dark), the ink the accent at 55%
+  toward the foreground (35% in dark), the user block's quote ink.
+  `opacity` shows the solid block at 45% (inline code washes out);
+  `outline` a dashed accent hairline with muted text.
+- The kind sits where the sent message's time sits: "steer" or
+  "follow-up", prose `.8em`, in the block's ink mixed to muted. A
+  sent message has a time and no kind; a queued one a kind and no
+  time.
+- The ×: 16×16, the attachment chip's remove button (9px glyph,
+  1.6 stroke, 4px radius), at the right after the kind, on the first
+  line, in the ink at 55% opacity; hover: 100% and a 14% fill of the
+  ink; tooltip "Remove from the queue". Not in the Tab order (the
+  composer's buttons are `tabindex=-1`). A click removes that one
+  entry from pi's queue and the block goes; nothing enters the
+  draft. pi has `clear_queue` only: koa clears and re-queues the
+  others with their kinds and attachments, in order.
+- Placement (user, 2026-11-12: "stick queued messages to the
+  composer"): the dock, above the field, as today. The blocks are
+  opaque over the scrolled transcript (the tint over the page's
+  background, a 1pt/3pt shadow at 10%), 8pt above the field. The
+  scroll: the transcript's bottom padding is the dock's whole height
+  (the ResizeObserver on the dock that sets it today), so the last
+  line of the reply stays readable above the first queued block.
+  The user's concern is the reply that streams while blocks wait:
+  "the bottom" that follow-bottom keeps in view is the top of the
+  dock, queue included, so every new line of the reply (and every
+  block that strategy G reveals) lands above the queue, never under
+  it; a block that arrives or goes changes the padding in the same
+  frame, and a view at the bottom stays there, a view scrolled up
+  keeps its scrollTop. When pi takes a steer mid-turn, its block
+  leaves the dock and the sent block appears in the transcript, and
+  the same rule keeps the end in view. The first proposal,
+  the transcript's end, stays on the picker for the record.
+- Gone: the "N queued · take back" footer and the mono `steer` /
+  `follow-up` tags. Option-Up still takes every entry back into the
+  draft, as today (the only keyboard path; a per-entry take-back is
+  not in this proposal). Escape's stop keeps its take-back-then-abort.
+- Open for the user: should a click on a queued block's text take
+  that one entry back into the composer for editing? Recommended
+  yes, as a later step; not drawn.
+
+Renders: `/tmp/koa-shots/koa-lines-{lines-a,lines-b,lines-a-shipped,
+lines-a-narrow}-{light,dark}.png`, `koa-lines-queue-{tint,opacity,
+outline,dock,narrow}-{light,dark}.png`.
+
 
 ## The view bar: a subagent's transcript in koa's page (2026-11-13, spec)
 
@@ -1572,6 +1757,21 @@ back) returns to the agent. No float, no second pane.
 - **Keys**: none new; Escape in the view is the agent's abort, as in a
   subagent view, so the view has nothing to abort and Escape does
   nothing.
+
+Renders: /tmp/koa-shots/koa-job-{running,ended,service,running-narrow}-light.png,
+koa-job-{running,ended}-dark.png.
+
+- **Settled with the unit** (2026-11-15): the "open" link also on the
+  async_bash tool result and on a bash call gone to the background;
+  a cleared or pruned record opens read-only from the file (the
+  card's facts, foot "cleared", no button; the link hides when the
+  file is gone); a missing log shows one muted line "the log is
+  gone"; a start failure is foot "failed" red with the error as the
+  outcome line; a timeout "timeout 5m 00s" red; "on this Mac" on
+  macOS, "on this machine" elsewhere, "on runtime NAME", "on <host>"
+  for a remote koa; a chunk that is not the file start drops its
+  partial first line, default colour until the first SGR; the output
+  keeps the pre's well.
 
 Renders: /tmp/koa-shots/koa-job-{running,ended,service,running-narrow}-light.png,
 koa-job-{running,ended}-dark.png.
