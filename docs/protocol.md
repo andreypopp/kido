@@ -1467,6 +1467,23 @@ ended ends with `exit` and the signal's name on every kind. One runtime
 runs at most 32 sessions; later ones wait in order. The user and host
 pane identities may open a session; a runtime connection may not.
 
+**A drop**, `POST /panes/{id}/drops?name=NAME`, stores the body as one
+file where the pane's program sees it: on the server host for a pane
+with no runtime, inside the runtime for a pane in one. The reply is
+the file's absolute path in that place. `NAME` is a file name of at
+most 255 bytes with no leading dot, no slash and no control
+character. The body needs `Content-Length`; it may be larger than the
+1 MiB of other bodies, because it flows to the writer as it arrives,
+and the server reads it only as fast as the writer takes it. The user
+may target any live pane, a pane caller only its own pane, and a
+runtime connection none. The server runs `ko drop` as an exec session of the
+pane's runtime, or of the host, so the drop shares the exec session's
+cancel and slot cap. Its end before the whole body, 60 s without body
+bytes, the pane's death or the end of its visit cancels the upload
+and leaves no file. `ko drop` refuses when the drops would pass
+2 GiB, and removes drops older than 7 days
+(design-runtimes.md, "A drop").
+
 ## 16. Webview panes
 
 [design-webview.md](design-webview.md) gives the design;

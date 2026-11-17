@@ -79,12 +79,7 @@ fn without_null(property: &mut Value) {
 
 const BINARY_STREAM: &str = "The pane's terminal byte stream: one application/octet-stream message, framed as in docs/protocol.md section 4.";
 
-fn parameter(
-    generator: &mut SchemaGenerator,
-    location: &str,
-    param: &ParamInfo,
-    required: bool,
-) -> Value {
+fn parameter(generator: &mut SchemaGenerator, location: &str, param: &ParamInfo) -> Value {
     let mut schema = (param.schema)(generator).to_value();
     let integer = schema.get("type") == Some(&json!("integer"));
     if let (Some(default), Some(object)) = (param.default, schema.as_object_mut()) {
@@ -99,7 +94,7 @@ fn parameter(
     json!({
         "name": param.name,
         "in": location,
-        "required": required,
+        "required": param.required && param.default.is_none(),
         "example": param.example,
         "schema": schema,
     })
@@ -123,27 +118,29 @@ fn operation(generator: &mut SchemaGenerator, route: &RouteInfo) -> Value {
     operation.insert("description".to_owned(), json!(description.join(" ")));
     let caller = ParamInfo {
         name: protocol::PANE_HEADER,
+        required: false,
         schema: <PaneId as Param>::schema,
         example: <PaneId as Param>::EXAMPLE,
         default: None,
     };
     let token = ParamInfo {
         name: protocol::PANE_TOKEN_HEADER,
+        required: false,
         schema: |generator| generator.subschema_for::<PaneToken>(),
         example: "0123456789abcdef0123456789abcdef",
         default: None,
     };
     let caller: Vec<_> = match route.caller {
         Caller::Absent => Vec::new(),
-        Caller::Optional => vec![(&caller, "header", false), (&token, "header", false)],
+        Caller::Optional => vec![(&caller, "header"), (&token, "header")],
     };
     let parameters: Vec<Value> = route
         .path_params
         .iter()
-        .map(|param| (param, "path", true))
-        .chain(route.query.iter().map(|param| (param, "query", false)))
+        .map(|param| (param, "path"))
+        .chain(route.query.iter().map(|param| (param, "query")))
         .chain(caller)
-        .map(|(param, location, required)| parameter(generator, location, param, required))
+        .map(|(param, location)| parameter(generator, location, param))
         .collect();
     if !parameters.is_empty() {
         operation.insert("parameters".to_owned(), Value::Array(parameters));
@@ -151,12 +148,14 @@ fn operation(generator: &mut SchemaGenerator, route: &RouteInfo) -> Value {
     if let Some((body, format)) = route.body {
         let media = match format {
             crate::route::BodyFormat::Json => "application/json",
-            crate::route::BodyFormat::Binary => "application/octet-stream",
+            crate::route::BodyFormat::Binary | crate::route::BodyFormat::Stream => {
+                "application/octet-stream"
+            }
         };
         operation.insert(
             "requestBody".to_owned(),
             json!({
-                "required": matches!(format, crate::route::BodyFormat::Json),
+                "required": !matches!(format, crate::route::BodyFormat::Binary),
                 "content": {(media): {"schema": body(generator).to_value()}},
             }),
         );
@@ -310,6 +309,25 @@ fn document() -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn query_requiredness_matches_route_parsing() {
+        let document = document();
+        let parameters = document["paths"]["/panes/{id}/drops"]["post"]["parameters"]
+            .as_array()
+            .unwrap();
+        assert_eq!(
+            parameters.iter().find(|p| p["name"] == "name").unwrap()["required"],
+            true
+        );
+        let parameters = document["paths"]["/runtimes/{name}"]["get"]["parameters"]
+            .as_array()
+            .unwrap();
+        assert_eq!(
+            parameters.iter().find(|p| p["name"] == "session").unwrap()["required"],
+            false
+        );
+    }
 
     #[test]
     fn webview_proxy_methods_share_media_but_only_get_upgrades() {

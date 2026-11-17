@@ -183,6 +183,7 @@ fn an_ssh_pane_rides_the_master_and_a_dead_master_ends_its_panes_and_never_recon
         "ko api /version >/dev/null && printf 'API<%s,%s>' \"$KO_RUNTIME\" \"$KO_PANE\"; exec cat",
     );
     s.screen_has(&pane, &format!("API<box,{pane}>"));
+    crate::uploads::check_runtime_drop(s, "box", &pane);
     assert_eq!(boxed.masters(), 1, "{:?}", boxed.remote.calls());
     assert_eq!(state(s, "box"), "up");
     let info: Value = serde_json::from_str(&s.request("GET", "/runtimes/box", None, 200)).unwrap();

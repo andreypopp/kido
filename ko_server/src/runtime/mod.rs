@@ -19,8 +19,8 @@ use ko_sys::sock::SUN_PATH_MAX;
 use ko_wire::exec_wire::Start as ExecStart;
 use ko_wire::ids::{PaneId, PaneToken, SessionId};
 use ko_wire::protocol::{
-    ClientEvent, ClientRuntime, Error, ErrorKind, ExecRequest, LinkState, RuntimeKind,
-    RuntimeSource, Variable, Version, check_version, version,
+    ClientEvent, ClientRuntime, Error, ErrorKind, LinkState, RuntimeKind, RuntimeSource, Variable,
+    Version, check_version, version,
 };
 use ko_wire::ssh::token_name;
 
@@ -211,7 +211,7 @@ pub(crate) fn entry(runtime: &Runtime, pane: PaneId, cx: &Ctx<'_>) -> Entry {
 pub(crate) fn exec_env<'a>(
     runtime: &'a Runtime,
     name: &'a RuntimeName,
-    request: &'a ExecRequest,
+    request: &'a exec::Request,
 ) -> BTreeMap<&'a str, &'a str> {
     let mut env: BTreeMap<&str, &str> = runtime
         .env
@@ -231,11 +231,11 @@ pub(crate) fn exec_env<'a>(
 pub(crate) fn exec_start(
     runtime: &Runtime,
     name: &RuntimeName,
-    request: &ExecRequest,
+    request: &exec::Request,
     escalation: Duration,
 ) -> ExecStart {
     ExecStart {
-        argv: request.argv.clone(),
+        command: request.command.clone(),
         cwd: request.cwd.clone().or_else(|| runtime.cwd.clone()),
         env: exec_env(runtime, name, request)
             .into_iter()
@@ -251,7 +251,7 @@ pub(crate) fn exec_start(
 /// The helper process that runs `ko enter --exec` inside the runtime.
 pub(crate) fn exec_launch(
     runtime: &Runtime,
-    request: &ExecRequest,
+    request: &exec::Request,
     cx: &Ctx<'_>,
 ) -> Result<Launch, String> {
     match &runtime.kind {
@@ -572,7 +572,7 @@ impl Registry {
         &self,
         key: &RuntimeKey,
         runtime: &Runtime,
-        request: &ExecRequest,
+        request: &exec::Request,
     ) -> Result<(Launch, ExecStart), String> {
         let socket = socket_path(&self.root, key);
         let cx = Ctx {

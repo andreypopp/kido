@@ -566,6 +566,7 @@ dependencies = [
  "ko_pane_wire",
  "ko_sys",
  "ko_vt",
+ "ko_wire",
  "miniz_oxide",
  "serde_json",
  "tungstenite",

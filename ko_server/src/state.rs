@@ -315,7 +315,7 @@ impl State {
 
     pub(super) fn hold(&mut self, poll: &mut Poll, index: usize, within: Duration) -> Token {
         let conn = &mut self.conns[index];
-        conn.phase = Phase::Handling;
+        conn.phase = Phase::Handling(crate::conn::Handling::Wait);
         let _ = poll.start(conn.timer, within, None);
         conn.token
     }
@@ -1376,7 +1376,7 @@ impl State {
         }) else {
             return;
         };
-        self.conns[index].phase = Phase::Handling;
+        self.conns[index].phase = Phase::Handling(crate::conn::Handling::Wait);
         match req {
             Some(req) => {
                 self.owners.insert(
@@ -1459,6 +1459,10 @@ impl State {
         let Some(index) = self.index(ready.token) else {
             return;
         };
+        if poll.interest_of(ready.token) == ko_sys::event::Interest::Hangup {
+            self.conns[index].hung_up();
+            return;
+        }
         let ready = poll.wants(ready);
         if ready.write {
             let conn = &mut self.conns[index];
@@ -1476,7 +1480,8 @@ impl State {
         if ready.read {
             match self.conns[index].phase {
                 Phase::Ws(_) => self.read_ws(poll, index),
-                Phase::Handling | Phase::Webview { .. } => {
+                Phase::Handling(crate::conn::Handling::Exec(_)) => self.read_upload(poll, index),
+                Phase::Handling(_) | Phase::Webview { .. } => {
                     self.conns[index].read(poll);
                 }
                 _ => self.read_http(poll, index),
@@ -1494,7 +1499,13 @@ impl State {
     }
 
     pub(crate) fn serve(&mut self, poll: &mut Poll, index: usize) {
-        while let Some(request) = self.conns.get_mut(index).and_then(Conn::next_request) {
+        loop {
+            if let Some(conn) = self.conns.get_mut(index) {
+                conn.feed_upload(poll);
+            }
+            let Some(request) = self.conns.get_mut(index).and_then(Conn::next_request) else {
+                break;
+            };
             router::handle(self, poll, index, request);
         }
     }
@@ -1811,6 +1822,13 @@ impl State {
     }
 
     fn ping(&mut self, poll: &mut Poll, timer: Timer) {
+        if let Some(index) = self.conns.iter().position(|conn| {
+            conn.timer == timer
+                && matches!(conn.phase, Phase::Handling(crate::conn::Handling::Exec(_)))
+        }) {
+            self.exec_fail(poll, index, "no upload input for 60 seconds".to_owned());
+            return;
+        }
         if let Some(Conn {
             out,
             phase: Phase::Ws(link),
@@ -1838,6 +1856,7 @@ impl State {
             for conn in &mut self.conns {
                 conn.settle();
             }
+            self.cancel_uploads(poll);
             let Some(index) = self.conns.iter().position(|conn| conn.out.is_shut()) else {
                 break;
             };
@@ -1848,6 +1867,10 @@ impl State {
             self.forget_stops(poll, conn.token);
             self.messages.forget(conn.token);
             self.webview_closed(poll, &conn);
+            if let Phase::Handling(crate::conn::Handling::Exec(session)) = conn.phase {
+                self.exec_gone(poll, conn.token, *session);
+                continue;
+            }
             if let Phase::Ws(link) = conn.phase {
                 let cause = conn.out.cause();
                 match link.role {

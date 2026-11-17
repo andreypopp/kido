@@ -308,7 +308,7 @@ impl Rig {
                     .state
                     .conns
                     .iter()
-                    .any(|conn| matches!(conn.phase, crate::conn::Phase::Handling));
+                    .any(|conn| matches!(conn.phase, crate::conn::Phase::Handling(_)));
                 if sent == data.len() && progress_seen && !waiting {
                     let _ = theirs.shutdown(std::net::Shutdown::Write);
                     shut = true;

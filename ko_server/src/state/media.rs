@@ -30,7 +30,7 @@ impl State {
         let Some(conn) = self.token(index) else {
             return;
         };
-        self.conns[index].phase = Phase::Handling;
+        self.conns[index].phase = Phase::Handling(crate::conn::Handling::Wait);
         let Some(minted) = self
             .mint_object()
             .filter(|minted| self.leaks.record(pane, key, minted).is_ok())

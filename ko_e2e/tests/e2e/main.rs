@@ -25,6 +25,7 @@ mod search;
 mod shell;
 mod sshd;
 mod status;
+mod uploads;
 mod vars;
 mod views;
 mod webview;

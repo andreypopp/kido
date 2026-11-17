@@ -93,6 +93,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/panes/{id}/drops": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** @description Store one file in a live pane's host or runtime from a streamed body with Content-Length. */
+        post: operations["UploadDrop"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/panes/{id}/images/{image}/frames/{frame}": {
         parameters: {
             query?: never;
@@ -897,6 +914,11 @@ export interface components {
                 [key: string]: unknown;
             };
             zoom?: components["schemas"]["PaneId"];
+        };
+        /** @description A file name of at most 255 UTF-8 bytes, without a leading dot, slash or control character. */
+        DropName: string;
+        Dropped: {
+            path: components["schemas"]["AbsPath"];
         };
         Empty: Record<string, never>;
         /** @description Environment variables: names without = or NUL, values without NUL. */
@@ -1784,6 +1806,7 @@ export interface components {
              */
             wait_ms?: components["schemas"]["WaitMs"];
         };
+        StreamBody: string;
         /**
          * @description What the receiver says about a message of its stream. A message that is neither acked nor
          *     refused is written again to the next stream.
@@ -2261,11 +2284,55 @@ export interface operations {
             };
         };
     };
+    UploadDrop: {
+        parameters: {
+            query: {
+                /** @example image.png */
+                name: components["schemas"]["DropName"];
+            };
+            header?: {
+                /** @example pane_1 */
+                "Ko-Pane"?: components["schemas"]["PaneId"];
+                /** @example 0123456789abcdef0123456789abcdef */
+                "Ko-Pane-Token"?: components["schemas"]["PaneToken"];
+            };
+            path: {
+                /** @example pane_1 */
+                id: components["schemas"]["PaneId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/octet-stream": components["schemas"]["StreamBody"];
+            };
+        };
+        responses: {
+            /** @description OK */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Dropped"];
+                };
+            };
+            /** @description The common error body. */
+            default: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Error"];
+                };
+            };
+        };
+    };
     Image: {
         parameters: {
-            query?: {
+            query: {
                 /** @example 3 */
-                generation?: components["schemas"]["Generation"];
+                generation: components["schemas"]["Generation"];
             };
             header?: never;
             path: {
@@ -2452,9 +2519,9 @@ export interface operations {
     };
     Search: {
         parameters: {
-            query?: {
+            query: {
                 /** @example needle */
-                needle?: components["schemas"]["Needle"];
+                needle: components["schemas"]["Needle"];
             };
             header?: never;
             path: {
@@ -3141,9 +3208,9 @@ export interface operations {
     };
     PromptResolve: {
         parameters: {
-            query?: {
+            query: {
                 /** @example pane_1 */
-                from?: components["schemas"]["PaneId"];
+                from: components["schemas"]["PaneId"];
             };
             header?: {
                 /** @example pane_1 */

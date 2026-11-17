@@ -146,6 +146,34 @@ pub fn connect_tcp(address: std::net::SocketAddr) -> io::Result<std::net::TcpStr
     Ok(std::net::TcpStream::from(socket))
 }
 
+#[cfg(feature = "e2e")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Buffers {
+    pub send: usize,
+    pub receive: usize,
+}
+
+#[cfg(feature = "e2e")]
+pub fn buffers(fd: BorrowedFd<'_>) -> io::Result<Buffers> {
+    let mut send: libc::c_int = 0;
+    let mut receive: libc::c_int = 0;
+    get(
+        fd,
+        OptionKey::new(libc::SOL_SOCKET, libc::SO_SNDBUF),
+        &mut send,
+    )?;
+    get(
+        fd,
+        OptionKey::new(libc::SOL_SOCKET, libc::SO_RCVBUF),
+        &mut receive,
+    )?;
+    Ok(Buffers {
+        send: usize::try_from(send).map_err(|_| io::Error::from(io::ErrorKind::InvalidData))?,
+        receive: usize::try_from(receive)
+            .map_err(|_| io::Error::from(io::ErrorKind::InvalidData))?,
+    })
+}
+
 pub fn set_send_buffer(fd: BorrowedFd<'_>, bytes: usize) -> io::Result<()> {
     set(fd, libc::SO_SNDBUF, bytes)
 }

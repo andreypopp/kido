@@ -347,6 +347,7 @@ runtimes:
           runtime: /work
     env:
       FROM_CONFIG: "yes"
+      HOME: "/tmp"
 {user_config}"#,
         run_args = match kind {
             EngineKind::Apple => "",
@@ -393,6 +394,7 @@ runtimes:
         s.screen_has(&first, &needle);
     }
     s.screen_has(&second, &format!("second-{name}"));
+    crate::uploads::check_runtime_drop(&s, &name, &first);
     let shell = s.new_pane(json!({"runtime": name}));
     s.wait_row(&shell, "passwd shell is primed", |row| {
         row["status"]["kind"]["pane"]["phase"]["type"] == "idle"

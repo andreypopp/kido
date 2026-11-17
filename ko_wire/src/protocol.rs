@@ -1,3 +1,10 @@
+pub const DROP_IDLE: std::time::Duration = std::time::Duration::from_secs(60);
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct Dropped {
+    pub path: AbsPath,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
 pub struct RequestTarget(String);

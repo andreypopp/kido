@@ -977,6 +977,16 @@ runtimes:
         ),
         "not available on a runtime connection",
     );
+    refuses(
+        via(
+            &s,
+            "dev",
+            ("POST", &format!("/panes/{r1}/drops?name=test")),
+            who,
+            &Value::Null,
+        ),
+        "not available on a runtime connection",
+    );
     for path in ["/runtimes", "/runtimes/dev", "/runtimes/dev/wait"] {
         refuses(read(path, who), "not available on a runtime connection");
     }
@@ -2596,7 +2606,7 @@ fn the_ko_inside_learns_that_the_transport_ended_while_it_reads_no_stdin() {
         bytes
     };
     let start = json!({
-        "argv": ["/bin/sh", text_of(&files.join("tree.sh")), text_of(&files)],
+        "command": {"type":"argv", "argv": ["/bin/sh", text_of(&files.join("tree.sh")), text_of(&files)]},
         "env": [],
         "escalation_ms": 300,
     });

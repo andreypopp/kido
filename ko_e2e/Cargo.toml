@@ -8,6 +8,7 @@ publish.workspace = true
 httparse.workspace = true
 ko_pane_wire = { path = "../ko_pane_wire" }
 ko_sys = { path = "../ko_sys", features = ["e2e"] }
+ko_wire = { path = "../ko_wire" }
 ko_vt = { path = "../ko_vt" }
 miniz_oxide.workspace = true
 serde_json.workspace = true

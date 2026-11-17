@@ -91,6 +91,20 @@ enum Command {
     /// close. On a refused upgrade it prints the error body and exits 1, as for a status that is
     /// not 2xx.
     Api(ApiArgs),
+    /// Read exactly N bytes then EOF, publish a drop, and print one JSON line with its path.
+    /// Exit 0 on success, 1 on I/O, quota, short or extra input, or 60 seconds without input,
+    /// and 124 on a usage error.
+    Drop {
+        /// The file name, without a leading dot, slash or control character (at most 255 bytes).
+        #[arg(long, value_parser = |text: &str| ko_wire::api::DropName::try_from(text.to_owned()))]
+        name: ko_wire::api::DropName,
+        /// The exact input size N in bytes.
+        #[arg(long)]
+        size: u64,
+        /// The absolute state directory; otherwise use XDG_STATE_HOME/ko or HOME/.local/state/ko.
+        #[arg(long)]
+        base: Option<PathBuf>,
+    },
     /// Exec the primed login shell, or run a command through an interactive login shell.
     ///
     /// Without a command, ko shell execs the login shell, primed to report each command to ko.
@@ -752,6 +766,56 @@ fn main() -> ExitCode {
             Err(message) => fail("api-schema", message),
         },
         Command::Api(args) => api(args, cli.server),
+        Command::Drop { name, size, base } => {
+            let result = (|| -> io::Result<_> {
+                let base = base
+                    .or_else(|| {
+                        std::env::var_os("XDG_STATE_HOME")
+                            .map(|base| PathBuf::from(base).join("ko"))
+                    })
+                    .or_else(|| {
+                        std::env::var_os("HOME")
+                            .map(|home| PathBuf::from(home).join(".local/state/ko"))
+                    })
+                    .ok_or_else(|| {
+                        io::Error::new(
+                            io::ErrorKind::InvalidInput,
+                            "base needs XDG_STATE_HOME or HOME",
+                        )
+                    })?;
+                let stdin = io::stdin();
+                let signals = ko_sys::signal::Signals::install(&[
+                    ko_sys::signal::Signal::Term,
+                    ko_sys::signal::Signal::Int,
+                    ko_sys::signal::Signal::Hup,
+                ])?;
+                ko_shell::drops::receive(&base, name, size, |buffer| {
+                    match ko_sys::fd::wait(
+                        stdin.as_fd(),
+                        ko_sys::fd::Want::Read,
+                        Some(signals.fd()),
+                        Some(ko_wire::protocol::DROP_IDLE),
+                    )? {
+                        ko_sys::fd::Waited::Ready => ko_sys::fd::read(stdin.as_fd(), buffer),
+                        ko_sys::fd::Waited::Cancelled => Err(io::Error::new(
+                            io::ErrorKind::Interrupted,
+                            "upload cancelled",
+                        )),
+                        ko_sys::fd::Waited::TimedOut => Err(io::Error::new(
+                            io::ErrorKind::TimedOut,
+                            "no input for 60 seconds",
+                        )),
+                    }
+                })
+            })();
+            match result {
+                Ok(dropped) => {
+                    say(&protocol::json(&dropped));
+                    ExitCode::SUCCESS
+                }
+                Err(error) => fail("drop", error),
+            }
+        }
         Command::Shell { command } => {
             let error = shell::exec(&command, &invoked(), inside_runtime().is_some());
             let target = target(None);

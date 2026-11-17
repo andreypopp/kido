@@ -325,7 +325,7 @@ impl Helper {
         [self.stdout.reader(), &self.stderr].into_iter()
     }
 
-    fn backed_up(&self) -> bool {
+    pub(crate) fn backed_up(&self) -> bool {
         self.stdin
             .as_ref()
             .is_some_and(|stdin| stdin.sent < stdin.pending.len())
@@ -571,10 +571,29 @@ impl Helper {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Request {
+    pub(crate) command: ko_wire::exec_wire::Command,
+    pub(crate) cwd: Option<ko_config::values::AbsPath>,
+    pub(crate) env: std::collections::BTreeMap<String, String>,
+    pub(crate) stdin: bool,
+}
+
+impl From<ExecRequest> for Request {
+    fn from(request: ExecRequest) -> Self {
+        Self {
+            command: ko_wire::exec_wire::Command::Argv { argv: request.argv },
+            cwd: request.cwd,
+            env: request.env,
+            stdin: request.stdin,
+        }
+    }
+}
+
 #[derive(Debug)]
 pub(crate) struct Running {
     pub(crate) helper: Helper,
-    pub(crate) request: ExecRequest,
+    pub(crate) request: Request,
     pub(crate) retried: bool,
     pub(crate) output: bool,
     pub(crate) fed: bool,
@@ -585,7 +604,7 @@ pub(crate) struct Running {
 pub(crate) enum Stage {
     Open,
     Queued {
-        request: ExecRequest,
+        request: Request,
         timer: Option<Timer>,
         retried: bool,
     },
@@ -593,9 +612,28 @@ pub(crate) enum Stage {
     Ended,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub(crate) enum Target {
+    Host,
+    Runtime(RuntimeKey),
+}
+
+#[derive(Debug)]
+pub(crate) enum Purpose {
+    Command,
+    Drop {
+        pane: ko_wire::ids::PaneId,
+        visit: Option<Token>,
+        remaining: usize,
+        stdout: Vec<u8>,
+        stderr: Vec<u8>,
+    },
+}
+
 #[derive(Debug)]
 pub(crate) struct Session {
-    pub(crate) runtime: RuntimeKey,
+    pub(crate) runtime: Target,
+    pub(crate) purpose: Purpose,
     pub(crate) stage: Stage,
     pub(crate) backlog: VecDeque<ExecClient>,
 }
@@ -603,13 +641,18 @@ pub(crate) struct Session {
 impl Session {
     pub(crate) fn new(runtime: RuntimeKey) -> Session {
         Session {
-            runtime,
+            runtime: Target::Runtime(runtime),
+            purpose: Purpose::Command,
             stage: Stage::Open,
             backlog: VecDeque::new(),
         }
     }
 
     pub(crate) fn reads(&self) -> bool {
+        if let Purpose::Drop { remaining, .. } = &self.purpose {
+            return *remaining > 0
+                && matches!(&self.stage, Stage::Running(running) if !running.helper.backed_up());
+        }
         match &self.stage {
             Stage::Open => true,
             Stage::Queued { .. } => self.backlog.len() < MAX_BACKLOG,

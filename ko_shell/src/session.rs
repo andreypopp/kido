@@ -387,7 +387,17 @@ impl Inside {
     }
 
     fn start(&mut self, start: Start) -> Result<(), Failure> {
-        let program = start.argv.first().cloned().unwrap_or_default();
+        let argv = match start.command {
+            ko_wire::exec_wire::Command::Argv { argv } => argv,
+            ko_wire::exec_wire::Command::Ko { args } => {
+                let exe = std::env::current_exe()?;
+                let exe = exe
+                    .to_str()
+                    .ok_or_else(|| io::Error::from(io::ErrorKind::InvalidData))?;
+                std::iter::once(exe.to_owned()).chain(args).collect()
+            }
+        };
+        let program = argv.first().cloned().unwrap_or_default();
         let given: Vec<(&[u8], &[u8])> = start
             .env
             .iter()
@@ -406,7 +416,7 @@ impl Inside {
         let (in_read, in_write) = io::pipe()?;
         let (out_read, out_write) = io::pipe()?;
         let (err_read, err_write) = io::pipe()?;
-        let args: Vec<&str> = start.argv.iter().skip(1).map(String::as_str).collect();
+        let args: Vec<&str> = argv.iter().skip(1).map(String::as_str).collect();
         let leader = spawn::grouped(
             &path,
             &args,

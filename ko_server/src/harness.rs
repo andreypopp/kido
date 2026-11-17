@@ -1658,7 +1658,7 @@ mod tests {
                 .state
                 .conns
                 .iter()
-                .any(|conn| matches!(conn.phase, Phase::Handling))
+                .any(|conn| matches!(conn.phase, Phase::Handling(_)))
         })
         .unwrap();
         // ko-pane does not report that it is blocked writing the reply, and nothing reads the pipe now.

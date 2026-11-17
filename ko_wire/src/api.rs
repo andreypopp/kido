@@ -16,7 +16,7 @@ use crate::protocol::{
     Sent, ServerVersion, Snapshot, StatusReport, StopPane, StreamRequest, VarValue, ViewEvent,
     ViewRequest, VisitClient, VisitServer,
 };
-use crate::route::{Invalid, Param, RawBody, binary, pixels, routes, text};
+use crate::route::{Invalid, Param, RawBody, StreamBody, binary, pixels, routes, text};
 
 use crate::protocol::webview::Rest;
 
@@ -167,6 +167,67 @@ impl JsonSchema for Generation {
 
     fn json_schema(_: &mut SchemaGenerator) -> Schema {
         json_schema!({"type": "integer", "minimum": 1, "maximum": u64::MAX, "description": "The serial that the pane's terminal stamped on the frame."})
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct DropName(String);
+
+impl DropName {
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl TryFrom<String> for DropName {
+    type Error = &'static str;
+
+    fn try_from(value: String) -> Result<Self, Self::Error> {
+        if value.is_empty()
+            || value.len() > 255
+            || value.starts_with('.')
+            || value.chars().any(|c| c == '/' || c.is_control())
+        {
+            Err("invalid drop name")
+        } else {
+            Ok(Self(value))
+        }
+    }
+}
+
+impl From<DropName> for String {
+    fn from(name: DropName) -> Self {
+        name.0
+    }
+}
+
+impl JsonSchema for DropName {
+    fn schema_name() -> Cow<'static, str> {
+        "DropName".into()
+    }
+
+    fn json_schema(_: &mut SchemaGenerator) -> Schema {
+        json_schema!({"type":"string","minLength":1,"maxLength":255,"pattern":"^[^./\\p{Cc}][^/\\p{Cc}]*$","description":"A file name of at most 255 UTF-8 bytes, without a leading dot, slash or control character."})
+    }
+}
+
+impl Param for DropName {
+    const EXAMPLE: &'static str = "image.png";
+
+    fn parse(value: &str) -> Result<Self, Invalid> {
+        percent_decode(value)
+            .ok_or_else(|| Invalid::message("invalid drop name"))?
+            .try_into()
+            .map_err(Invalid::message)
+    }
+
+    fn render(&self) -> String {
+        percent_encode(&self.0)
+    }
+
+    fn schema(generator: &mut SchemaGenerator) -> Schema {
+        generator.subschema_for::<Self>()
     }
 }
 
@@ -534,6 +595,9 @@ impl Param for Images {
 routes! {
     /// The protocol and terminal revisions of this server.
     Version { method: GET, path: /version, reply: ServerVersion }
+
+    /// Store one file in a live pane's host or runtime from a streamed body with Content-Length.
+    UploadDrop { method: POST, path: /panes/{id: PaneId}/drops, query: { name: DropName }, body: StreamBody, caller: optional, reply: crate::protocol::Dropped }
     /// Every pane, with its status and variables.
     ListPanes { method: GET, path: /panes, reply: Vec<Listing> }
     /// One pane, with its status and variables.
@@ -858,6 +922,29 @@ mod tests {
             Route::of_request("PUT", &longest),
             Ok(Route::SetVar { .. })
         ));
+    }
+
+    #[test]
+    fn drop_names_validate_decoded_utf8_bytes() {
+        for name in [
+            "", ".", "..", ".hidden", "a/b", "a\0b", "a\nb", "a\u{7f}b", "a\u{85}b",
+        ] {
+            assert!(DropName::try_from(name.to_owned()).is_err(), "{name:?}");
+        }
+        assert!(DropName::try_from("x".repeat(256)).is_err());
+        assert!(DropName::try_from("é".repeat(128)).is_err());
+        for name in [
+            "file.txt".to_owned(),
+            "x".repeat(255),
+            "é".repeat(127),
+            "a b;%.txt".to_owned(),
+        ] {
+            let parsed = DropName::try_from(name.clone()).unwrap();
+            assert_eq!(DropName::parse(&parsed.render()), Ok(parsed));
+        }
+        for name in ["a%2Fb", "%00", "%0A", "%FF", "%", "%2Ehidden"] {
+            assert!(DropName::parse(name).is_err(), "{name}");
+        }
     }
 
     #[test]

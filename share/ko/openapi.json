@@ -1401,6 +1401,24 @@
         ],
         "type": "object"
       },
+      "DropName": {
+        "description": "A file name of at most 255 UTF-8 bytes, without a leading dot, slash or control character.",
+        "maxLength": 255,
+        "minLength": 1,
+        "pattern": "^[^./\\p{Cc}][^/\\p{Cc}]*$",
+        "type": "string"
+      },
+      "Dropped": {
+        "properties": {
+          "path": {
+            "$ref": "#/components/schemas/AbsPath"
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "type": "object"
+      },
       "Empty": {
         "type": "object"
       },
@@ -4693,6 +4711,9 @@
         },
         "type": "object"
       },
+      "StreamBody": {
+        "type": "string"
+      },
       "StreamRequest": {
         "description": "What the receiver says about a message of its stream. A message that is neither acked nor\nrefused is written again to the next stream.",
         "oneOf": [
@@ -5709,6 +5730,82 @@
         }
       }
     },
+    "/panes/{id}/drops": {
+      "post": {
+        "description": "Store one file in a live pane's host or runtime from a streamed body with Content-Length.",
+        "operationId": "UploadDrop",
+        "parameters": [
+          {
+            "example": "pane_1",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/PaneId"
+            }
+          },
+          {
+            "example": "image.png",
+            "in": "query",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/DropName"
+            }
+          },
+          {
+            "example": "pane_1",
+            "in": "header",
+            "name": "Ko-Pane",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/PaneId"
+            }
+          },
+          {
+            "example": "0123456789abcdef0123456789abcdef",
+            "in": "header",
+            "name": "Ko-Pane-Token",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/PaneToken"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/octet-stream": {
+              "schema": {
+                "$ref": "#/components/schemas/StreamBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Dropped"
+                }
+              }
+            },
+            "description": "OK"
+          },
+          "default": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The common error body."
+          }
+        }
+      }
+    },
     "/panes/{id}/images/{image}/frames/{frame}": {
       "get": {
         "description": "One frame of an image of a pane. Frame 1 is the image itself. The reply is the pixels as an application/octet-stream body, with their format, size and timing in the ko-image-* headers. With the header Ko-Accept-Shm: 1 the reply is instead a JSON body that names a shared memory object, which the client maps and never unlinks. An image that was evicted, a frame that does not exist and a generation that moved on are not_found.",
@@ -5745,7 +5842,7 @@
             "example": "3",
             "in": "query",
             "name": "generation",
-            "required": false,
+            "required": true,
             "schema": {
               "$ref": "#/components/schemas/Generation"
             }
@@ -6048,7 +6145,7 @@
             "example": "needle",
             "in": "query",
             "name": "needle",
-            "required": false,
+            "required": true,
             "schema": {
               "$ref": "#/components/schemas/Needle"
             }
@@ -7075,7 +7172,7 @@
             "example": "pane_1",
             "in": "query",
             "name": "from",
-            "required": false,
+            "required": true,
             "schema": {
               "$ref": "#/components/schemas/PaneId"
             }

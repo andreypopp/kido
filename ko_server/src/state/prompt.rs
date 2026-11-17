@@ -176,7 +176,7 @@ impl State {
         let reply = match sent {
             Ok(Some(req)) => {
                 self.owners.insert((pane, req), Owner::Prompt(token));
-                self.conns[index].phase = Phase::Handling;
+                self.conns[index].phase = Phase::Handling(crate::conn::Handling::Wait);
                 None
             }
             Ok(None) => Some(Err(Error::new(ErrorKind::Io, "the paste has no answer"))),

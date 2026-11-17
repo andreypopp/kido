@@ -1,4 +1,5 @@
 pub mod bin_dir;
+pub mod drops;
 pub mod enter;
 mod prime;
 pub mod session;

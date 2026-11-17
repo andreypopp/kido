@@ -1,10 +1,10 @@
 use std::path::{Path, PathBuf};
 
 use crate::runtime::exec::Launch;
+use crate::runtime::exec::Request;
 use crate::runtime::{Ctx, Entry, Next, Outcome, text, words};
 use ko_config::runtime::{Command, Runtime};
 use ko_sys::file::program_path;
-use ko_wire::protocol::ExecRequest;
 
 pub(crate) const DEFAULT_PATH: &str = "/usr/bin:/bin";
 
@@ -55,7 +55,7 @@ pub(crate) fn next(out: &Outcome<'_>) -> Next {
 pub(crate) fn exec_launch(
     runtime: &Runtime,
     command: &Command,
-    (request, cx): (&ExecRequest, &Ctx<'_>),
+    (request, cx): (&Request, &Ctx<'_>),
 ) -> Result<Launch, String> {
     let env = super::exec_env(runtime, &cx.key.name, request);
     let path = env.get("PATH").copied().unwrap_or(DEFAULT_PATH);
@@ -90,8 +90,10 @@ mod tests {
         let Kind::Command(command) = &runtime.kind else {
             panic!("not a command");
         };
-        let request = |cwd: Option<&str>, path: Option<&str>| ExecRequest {
-            argv: vec!["/bin/echo".to_owned(), "x".to_owned()],
+        let request = |cwd: Option<&str>, path: Option<&str>| Request {
+            command: ko_wire::exec_wire::Command::Argv {
+                argv: vec!["/bin/echo".to_owned(), "x".to_owned()],
+            },
             cwd: cwd.map(|cwd| AbsPath::try_from(cwd.to_owned()).unwrap()),
             env: [("B", "request")]
                 .into_iter()
@@ -130,7 +132,12 @@ mod tests {
                 "PATH=/usr/bin:/bin"
             ]
         );
-        assert_eq!(start.argv, ["/bin/echo", "x"]);
+        assert_eq!(
+            start.command,
+            ko_wire::exec_wire::Command::Argv {
+                argv: vec!["/bin/echo".to_owned(), "x".to_owned()]
+            }
+        );
         assert_eq!(start.cwd.unwrap().as_str(), "/work");
         assert_eq!(start.escalation_ms, 2500);
         let moved = exec_start(

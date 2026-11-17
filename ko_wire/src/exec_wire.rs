@@ -25,11 +25,18 @@ const EXIT: u8 = 3;
 /// What the ko inside the runtime runs, in the first frame that the server sends it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Start {
-    pub argv: Vec<String>,
+    pub command: Command,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cwd: Option<AbsPath>,
     pub env: Vec<Variable>,
     pub escalation_ms: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum Command {
+    Argv { argv: Vec<String> },
+    Ko { args: Vec<String> },
 }
 
 /// A frame from the server to the ko inside the runtime.
@@ -244,7 +251,9 @@ mod tests {
 
     fn start() -> Start {
         Start {
-            argv: vec!["ls".to_owned(), "-l".to_owned()],
+            command: Command::Argv {
+                argv: vec!["ls".to_owned(), "-l".to_owned()],
+            },
             cwd: Some("/work".to_owned().try_into().unwrap()),
             env: vec![Variable {
                 name: "A".to_owned(),

@@ -802,12 +802,19 @@ impl fmt::Debug for Batch {
 pub(crate) enum Payload {
     Bytes(Vec<u8>),
     Oversized,
+    Stream(usize),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Request {
     pub(crate) head: Head,
     pub(crate) body: Payload,
+}
+
+#[derive(Debug)]
+pub(crate) enum Handling {
+    Wait,
+    Exec(Box<crate::runtime::exec::Session>),
 }
 
 #[derive(Debug)]
@@ -823,7 +830,7 @@ pub(crate) enum Phase {
         seen: usize,
         length: usize,
     },
-    Handling,
+    Handling(Handling),
     Webview {
         pane: ko_wire::ids::PaneId,
         req: u64,
@@ -831,6 +838,13 @@ pub(crate) enum Phase {
     Streaming,
     Ws(Box<Link>),
     Closing,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum InputState {
+    Open,
+    HungUp,
+    Ended,
 }
 
 #[derive(Debug)]
@@ -842,7 +856,7 @@ pub(crate) struct Conn {
     start: usize,
     end: usize,
     scanned: usize,
-    eof: bool,
+    input_state: InputState,
     pub(crate) phase: Phase,
     pub(crate) origin: Origin,
     pub(crate) caller: Option<PaneId>,
@@ -871,7 +885,7 @@ impl Conn {
             start: 0,
             end: 0,
             scanned: 0,
-            eof: false,
+            input_state: InputState::Open,
             phase: Phase::Head,
             origin,
             caller: None,
@@ -887,7 +901,7 @@ impl Conn {
     }
 
     pub(crate) fn runs_exec(&self, runtime: &RuntimeKey) -> bool {
-        matches!(self.role(), Some(Role::Exec(session)) if session.runtime == *runtime && session.live())
+        matches!(self.exec(), Some(session) if session.runtime == crate::runtime::exec::Target::Runtime(runtime.clone()) && session.live())
     }
 
     pub(crate) fn role_mut(&mut self) -> Option<(&mut Role, Wire<'_>)> {
@@ -902,13 +916,26 @@ impl Conn {
     pub(crate) fn interest(&self) -> Interest {
         let read = match &self.phase {
             Phase::Head | Phase::Body { .. } | Phase::Oversized { .. } => {
-                !self.eof && !self.out.backed_up()
+                self.input_state != InputState::Ended && !self.out.backed_up()
             }
-            Phase::Ws(link) => !self.eof && link.role.reads(),
-            Phase::Handling | Phase::Webview { .. } => !self.eof,
+            Phase::Ws(link) => self.input_state != InputState::Ended && link.role.reads(),
+            Phase::Handling(Handling::Exec(session)) => {
+                self.input_state != InputState::Ended && session.reads()
+            }
+            Phase::Handling(Handling::Wait) | Phase::Webview { .. } => {
+                self.input_state != InputState::Ended
+            }
             Phase::Streaming | Phase::Closing => false,
         };
         match self.out.life() {
+            Life::Open
+                if !read
+                    && self.input_state == InputState::Open
+                    && !self.out.waiting()
+                    && matches!(self.exec().map(|session| &session.purpose), Some(crate::runtime::exec::Purpose::Drop { remaining, .. }) if *remaining > self.buffered().len()) =>
+            {
+                Interest::Hangup
+            }
             Life::Open => Interest::of(read, self.out.waiting()),
             Life::Draining => Interest::Write,
             Life::Shut => Interest::Idle,
@@ -917,7 +944,7 @@ impl Conn {
 
     pub(crate) fn reading_http(&self) -> bool {
         self.out.is_open()
-            && !self.eof
+            && self.input_state != InputState::Ended
             && !self.out.backed_up()
             && matches!(
                 self.phase,
@@ -926,6 +953,9 @@ impl Conn {
     }
 
     pub(crate) fn read(&mut self, poll: &mut Poll) -> bool {
+        if self.input_state == InputState::Ended {
+            return false;
+        }
         if self.start > 0 {
             self.input.copy_within(self.start..self.end, 0);
             self.end = self.end.saturating_sub(self.start);
@@ -940,7 +970,7 @@ impl Conn {
                 true
             }
             Ok(Some(Read::End)) => {
-                self.eof = true;
+                self.input_state = InputState::Ended;
                 true
             }
             Ok(None) => false,
@@ -970,14 +1000,14 @@ impl Conn {
             let buffered = self.input.get(self.start..self.end).unwrap_or_default();
             match &mut self.phase {
                 Phase::Head if buffered.is_empty() => {
-                    if self.eof {
+                    if self.input_state == InputState::Ended {
                         self.phase = Phase::Closing;
                     }
                     return None;
                 }
                 Phase::Head => match http::parse_head(buffered, &mut self.scanned) {
                     Parsed::Partial => {
-                        if self.eof {
+                        if self.input_state == InputState::Ended {
                             self.out.close();
                         }
                         return None;
@@ -988,6 +1018,24 @@ impl Conn {
                     Parsed::Complete { head, size } => {
                         self.start = self.start.saturating_add(size);
                         self.scanned = 0;
+                        if ko_wire::api::Route::streams_body(&head.method, &head.target) {
+                            let length = match head.framing() {
+                                Framing::Length(length) | Framing::Oversized(length)
+                                    if head.header(http::CONTENT_LENGTH_HEADER).is_some() =>
+                                {
+                                    length
+                                }
+                                _ => {
+                                    self.close_with(http::BAD_REQUEST.to_vec());
+                                    continue;
+                                }
+                            };
+                            self.phase = Phase::Closing;
+                            return Some(Request {
+                                head,
+                                body: Payload::Stream(length),
+                            });
+                        }
                         match head.framing() {
                             Framing::Chunked => {
                                 self.refuse(Status::LengthRequired, request_policy(&head))
@@ -1024,7 +1072,7 @@ impl Conn {
                     body.extend_from_slice(buffered.get(..wanted).unwrap_or_default());
                     self.start = self.start.saturating_add(wanted);
                     if body.len() < *length {
-                        if self.eof {
+                        if self.input_state == InputState::Ended {
                             self.out.close();
                         }
                         return None;
@@ -1046,7 +1094,7 @@ impl Conn {
                     let ready = http::oversized(*seen).then(|| head.take()).flatten();
                     if seen == length {
                         self.phase = Phase::Head;
-                    } else if self.eof {
+                    } else if self.input_state == InputState::Ended {
                         self.out.close();
                     }
                     if let Some(head) = ready {
@@ -1059,7 +1107,7 @@ impl Conn {
                         return None;
                     }
                 }
-                Phase::Handling
+                Phase::Handling(_)
                 | Phase::Webview { .. }
                 | Phase::Streaming
                 | Phase::Ws(_)
@@ -1067,6 +1115,70 @@ impl Conn {
             }
         }
         None
+    }
+
+    pub(crate) fn hung_up(&mut self) {
+        self.input_state = InputState::HungUp;
+    }
+
+    fn buffered(&self) -> &[u8] {
+        self.input.get(self.start..self.end).unwrap_or_default()
+    }
+
+    pub(crate) fn feed_upload(&mut self, poll: &mut Poll) {
+        use crate::runtime::exec::{Purpose, Stage};
+        let Phase::Handling(Handling::Exec(session)) = &mut self.phase else {
+            return;
+        };
+        let (Purpose::Drop { remaining, .. }, Stage::Running(running)) =
+            (&mut session.purpose, &mut session.stage)
+        else {
+            return;
+        };
+        if running.helper.backed_up() {
+            return;
+        }
+        let bytes = self.input.get(self.start..self.end).unwrap_or_default();
+        let count = bytes
+            .len()
+            .min(*remaining)
+            .min(ko_wire::protocol::EXEC_CHUNK);
+        if count == 0 {
+            return;
+        }
+        running.helper.send(
+            poll,
+            &ko_wire::exec_wire::ToKo::Stdin(bytes.get(..count).unwrap_or_default()),
+        );
+        running.fed = true;
+        *remaining = remaining.saturating_sub(count);
+        if *remaining == 0 {
+            running.helper.send(poll, &ko_wire::exec_wire::ToKo::Eof);
+        }
+        self.start = self.start.saturating_add(count);
+        let _ = poll.start(self.timer, ko_wire::protocol::DROP_IDLE, None);
+    }
+
+    pub(crate) fn exec(&self) -> Option<&crate::runtime::exec::Session> {
+        match &self.phase {
+            Phase::Ws(link) => match &link.role {
+                Role::Exec(session) => Some(session),
+                _ => None,
+            },
+            Phase::Handling(Handling::Exec(session)) => Some(session),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn exec_mut(&mut self) -> Option<&mut crate::runtime::exec::Session> {
+        match &mut self.phase {
+            Phase::Ws(link) => match &mut link.role {
+                Role::Exec(session) => Some(session),
+                _ => None,
+            },
+            Phase::Handling(Handling::Exec(session)) => Some(session),
+            _ => None,
+        }
     }
 
     pub(crate) fn rest(&mut self) -> Vec<u8> {
@@ -1085,7 +1197,14 @@ impl Conn {
         if matches!(self.phase, Phase::Closing) && !self.out.waiting() {
             self.out.close();
         }
-        if matches!(self.phase, Phase::Handling | Phase::Webview { .. }) && self.eof {
+        let waits = match &self.phase {
+            Phase::Handling(Handling::Exec(session)) => {
+                matches!(&session.purpose, crate::runtime::exec::Purpose::Drop { remaining, .. } if *remaining > self.buffered().len())
+            }
+            Phase::Handling(Handling::Wait) | Phase::Webview { .. } => true,
+            _ => false,
+        };
+        if waits && self.input_state == InputState::Ended {
             self.out.close();
         }
     }
@@ -1405,8 +1524,9 @@ pub(crate) mod tests {
             bodies.borrow_mut().push(match request.body {
                 Payload::Bytes(body) => body.len(),
                 Payload::Oversized => usize::MAX,
+                Payload::Stream(length) => length,
             });
-            conn.phase = Phase::Handling;
+            conn.phase = Phase::Handling(Handling::Wait);
         };
         let mut sent = 0;
         for _ in 0..200 {

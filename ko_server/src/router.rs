@@ -67,6 +67,13 @@ fn error(conn: &mut Conn, kind: ErrorKind, message: impl Into<String>) {
     ));
 }
 
+pub(crate) fn uploaded(conn: &mut Conn, result: std::io::Result<protocol::Dropped>) {
+    match result {
+        Ok(value) => ok::<routes::UploadDrop>(conn, &value),
+        Err(failure) => error(conn, ErrorKind::Io, failure.to_string()),
+    }
+}
+
 fn proxy_refusal<E: Alt<429, Body = Error> + Alt<502, Body = Error> + Alt<503, Body = Error>>(
     conn: &mut Conn,
     refusal: crate::webview::Refusal,
@@ -252,6 +259,7 @@ pub(crate) fn handle(state: &mut State, poll: &mut Poll, index: usize, incoming:
         let bytes = match &payload {
             Payload::Bytes(bytes) => Some(bytes.as_slice()),
             Payload::Oversized => None,
+            Payload::Stream(_) => Some([].as_slice()),
         };
         let method = route.method();
         let request = route
@@ -274,6 +282,20 @@ pub(crate) fn handle(state: &mut State, poll: &mut Poll, index: usize, incoming:
     };
     let origin = state.conns[index].origin.clone();
     match request {
+        Request::UploadDrop { id, name, body: _ } => {
+            let Payload::Stream(length) = payload else {
+                return error(
+                    &mut state.conns[index],
+                    ErrorKind::Invalid,
+                    "this body must be streamed",
+                );
+            };
+            let admitted = acts_as(caller, id, "upload only to itself")
+                .and_then(|()| state.begin_upload(poll, index, id, name, length));
+            if let Err(failure) = admitted {
+                error(&mut state.conns[index], failure.kind, failure.message);
+            }
+        }
         Request::Version {} => {
             let version = ServerVersion {
                 version: ours,
@@ -440,7 +462,7 @@ pub(crate) fn handle(state: &mut State, poll: &mut Poll, index: usize, incoming:
             let conn = &mut state.conns[index];
             match sent {
                 Ok(None) => ok::<routes::Input>(conn, &InputResult::Sent(Empty {})),
-                Ok(Some(_)) => conn.phase = Phase::Handling,
+                Ok(Some(_)) => conn.phase = Phase::Handling(crate::conn::Handling::Wait),
                 Err(Refusal::Ended) => error(conn, ErrorKind::Io, Refusal::Ended.to_string()),
                 Err(refusal @ Refusal::TooLarge(_)) => {
                     error(conn, ErrorKind::Invalid, refusal.to_string());
@@ -669,7 +691,7 @@ fn finish(state: &mut State, poll: &mut Poll, conn: Token, reply: impl FnOnce(&m
     };
     poll.stop(state.conns[index].timer);
     reply(&mut state.conns[index]);
-    if matches!(state.conns[index].phase, Phase::Handling) {
+    if matches!(state.conns[index].phase, Phase::Handling(_)) {
         state.conns[index].phase = Phase::Head;
         state.serve(poll, index);
     }

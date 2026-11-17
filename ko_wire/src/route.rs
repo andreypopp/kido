@@ -102,6 +102,7 @@ pub(crate) fn arg<'a>(query: &[(&str, &'a str)], name: &str) -> Option<&'a str> 
 pub(crate) trait Param: Sized {
     const EXAMPLE: &'static str;
     const REST: bool = false;
+    const REQUIRED: bool = true;
 
     fn parse(value: &str) -> Result<Self, Invalid>;
     fn render(&self) -> String;
@@ -119,6 +120,7 @@ pub(crate) trait Param: Sized {
 
 impl<T: Param> Param for Option<T> {
     const EXAMPLE: &'static str = T::EXAMPLE;
+    const REQUIRED: bool = false;
 
     fn parse(value: &str) -> Result<Option<T>, Invalid> {
         T::parse(value).map(Some)
@@ -164,6 +166,7 @@ pub(crate) fn push_query<T: Param + PartialEq>(
 pub(crate) enum BodyFormat {
     Json,
     Binary,
+    Stream,
 }
 
 pub(crate) trait Body: Sized {
@@ -177,6 +180,30 @@ impl<T: Serialize + DeserializeOwned> Body for T {
     fn decode(payload: Option<&[u8]>) -> Result<T, Invalid> {
         let bytes = payload.ok_or_else(|| Invalid::message(Self::OVERSIZED))?;
         protocol::decode(bytes).map_err(|error| Invalid::message(error.to_string()))
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StreamBody;
+
+impl Body for StreamBody {
+    const FORMAT: BodyFormat = BodyFormat::Stream;
+
+    fn decode(payload: Option<&[u8]>) -> Result<Self, Invalid> {
+        match payload {
+            Some([]) => Ok(Self),
+            _ => Err(Invalid::message("this body must be streamed")),
+        }
+    }
+}
+
+impl JsonSchema for StreamBody {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        "StreamBody".into()
+    }
+
+    fn json_schema(_: &mut SchemaGenerator) -> Schema {
+        schemars::json_schema!({"type":"string","format":"binary"})
     }
 }
 
@@ -273,6 +300,7 @@ pub(crate) fn no_body(payload: Option<&[u8]>) -> Result<(), Invalid> {
 #[derive(Debug)]
 pub(crate) struct ParamInfo {
     pub(crate) name: &'static str,
+    pub(crate) required: bool,
     pub(crate) schema: SchemaFn,
     pub(crate) example: &'static str,
     pub(crate) default: Option<fn() -> String>,
@@ -486,6 +514,7 @@ macro_rules! routes {
                     path_params: &[ $( $(
                         $crate::route::ParamInfo {
                             name: stringify!($pn),
+                            required: true,
                             schema: <$pt as $crate::route::Param>::schema,
                             example: <$pt as $crate::route::Param>::EXAMPLE,
                             default: None,
@@ -494,6 +523,7 @@ macro_rules! routes {
                     query: &[ $( $(
                         $crate::route::ParamInfo {
                             name: stringify!($qn),
+                            required: <$qt as $crate::route::Param>::REQUIRED,
                             schema: <$qt as $crate::route::Param>::schema,
                             example: <$qt as $crate::route::Param>::EXAMPLE,
                             default: $crate::route::default_of!($qt $(, $qd)?),
@@ -580,6 +610,15 @@ macro_rules! routes {
 
             pub(crate) fn kind(&self) -> &'static $crate::route::Kind {
                 match self { $( Route::$name { .. } => &ROUTES[RouteIndex::$name as usize].kind, )* }
+            }
+
+            pub fn streams_body(method: &str, target: &str) -> bool {
+                let path = target.split('?').next().unwrap_or_default();
+                ROUTES.iter().any(|route| {
+                    matches!(route.body, Some((_, $crate::route::BodyFormat::Stream)))
+                        && route.method.http() == method
+                        && $crate::route::captures(route.path, path, false).is_some()
+                })
             }
 
             pub fn is_proxy(&self) -> bool {

@@ -643,6 +643,78 @@ refused channel is retried once, after the next session of that
 runtime ends (at once when one ended since it started), then reported
 as `error`. Only the ssh kind classifies one.
 
+## A drop
+
+`POST /panes/{id}/drops?name=NAME` stores one file where the pane's
+program sees it and answers its path; Kido.app pastes that path into
+the pane. The pane decides the place: a pane with no runtime (its
+`Pane::runtime()`, which also covers a visit) gets the file on the
+server host, a pane in a runtime gets it inside that runtime, and the
+path is the runtime's own path. `pi.runtime` plays no part. The user
+may upload into any live pane, a pane caller on the host socket only
+into its own pane, and a runtime connection not at all, as for the
+exec session.
+
+**One writer.** `ko drop` (`ko_shell/src/drops.rs`) is the only code
+that writes a drop, on the host and in every runtime, so one set of
+rules holds in both places. The server never writes a drop file: it
+runs `ko drop` as an exec session whose stdin is the request's body.
+For a runtime pane the session is the runtime's own, with its
+launch, its slot cap, its start and its down; for a host pane it is
+the server's own `ko enter --exec`, with a slot cap of its own. The
+first frame names the command as `ko` and its arguments
+(`exec_wire::Command::Ko`), and the inside ko runs its own
+executable, so no `PATH` inside the runtime chooses which ko writes.
+The host passes its state directory as `--base`; inside a runtime
+the base is `$XDG_STATE_HOME/ko`, else `$HOME/.local/state/ko`, never
+the socket's `io/` or `/run/ko`, which are mounts for the link and
+not storage. `ko drop --name NAME --size N [--base DIR]` reads exactly
+`N` bytes and then the end of its input, and prints one JSON line with
+the path. It exits 0 on success; 1 on an I/O error, the quota, input
+that is short or too long, a cancel signal, or 60 s without input;
+and 124 on a usage error. The idle limit is `protocol::DROP_IDLE`,
+which the server's timer also uses.
+
+**The layout.** Each upload is its own drop, `drops/<id>/<name>`: a
+random id, a `0700` directory and a `0600` file opened exclusively
+without following a symlink. The file is written into `.<id>` and
+renamed to `<id>` only after exactly the announced size and the end
+of input arrived, so a published path is always a whole file. One
+file per drop means that names never collide and that no request
+holds a multi-file transaction.
+
+**Limits and cleanup, without locks.** At its start each `ko drop`
+removes the drops whose file is older than 7 days and the partial
+`.<id>` whose file has not changed for 10 minutes (a live writer
+gets bytes at least every 60 s or exits), then refuses when the kept
+bytes, the partial bytes and the new size exceed 2 GiB. Only entries
+of the drop's own shape count: an entry with another name, a symlink,
+or a directory with other contents is skipped and never removed, so a
+stranger in `drops/` neither blocks uploads nor loses its data. An
+entry that a parallel writer renames or removes during the sweep is
+not an error. Writers that
+run in parallel do not see each other's unwritten bytes, so they can
+together exceed the limit by what they still have to write, as the
+disk check of the earlier upload script could. These limits are
+constants. Inside a runtime they hold less: nothing sweeps while no
+upload runs; a writer that a `SIGKILL` or a lost host ended leaves
+its partial until a later upload; removing a container that ko made
+from an image removes its drops; runtimes that share a user's home
+share the 2 GiB.
+
+**The body.** The request stays in `Phase::Handling` while its body
+flows. The server reads the connection only while the helper's stdin
+takes bytes, and passes the bytes that came with the head first, so
+a slow runtime slows the client's send and nothing collects in
+memory. After `Content-Length` bytes the server closes the helper's
+stdin; a client that half-closes then still gets its answer. The
+answer comes after `ko drop` exits 0 with its one JSON line; any
+other end is an error with `ko drop`'s message. The end of the
+connection before the whole body, 60 s without body bytes (a timer
+of the loop), the pane's death and the end of the pane's visit
+cancel the session as a closed exec session is cancelled, and
+`ko drop` removes its partial on the cancel signal.
+
 ## The container kind
 
 The `container` kind runs a runtime's panes and exec sessions in one
