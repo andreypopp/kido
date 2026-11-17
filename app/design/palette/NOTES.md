@@ -96,3 +96,43 @@ Shipped as C (docs/design-app.md, "Command palette"): each matched run gets a fi
 ## States (gallery, light and dark)
 
 Root empty, root filtered "mwatch", root filtered "ren" (commands), no match, connect empty, connect typing "dev", connect invalid host, connect with no recent hosts, rename, rename duplicate, rename bad character, no-window panel.
+
+## New Agent (2026-11-17, spec)
+
+An action that starts a new koa, beside New Window, which starts a
+shell.
+
+- **Where.** File > New Agent, ⇧⌘N, directly under New Window (⌘T);
+  ⇧⌘N is free in the app. The palette: the row "New Agent" with the
+  detail "in session <name>", right after the "New Window" row, the
+  same inline rows, found by the same query. The sidebar's session
+  plus and the tab strip's plus keep their meaning (a shell window);
+  an Option-click on either makes an agent window instead, the
+  standard alternate, with no change to the button's look. The
+  Runtimes menu and the runtime rows of the palette do not get a
+  second set of rows: New Agent inherits as New Window does.
+- **What.** A new window of the current session, after the current
+  window, with one pane that runs `koa` (as `ko` runs it for a pane:
+  the program is `koa`, no arguments), and the focus moves to it,
+  exactly what New Window does with the shell. Not a split and not a
+  float: a window is where an agent lives in the sidebar and the tab
+  strip; the user splits it afterwards if they want a shell beside
+  it.
+- **The directory.** The focused pane's cwd, as New Window: koa
+  takes its launch directory as the session's directory, so the
+  agent starts where the user is.
+- **The runtime.** The focused pane's runtime, as any new pane
+  (design-runtimes.md, "A new pane inherits"); the host when the
+  focused pane is on the host. A routed pi's own `pi.runtime` does
+  not count, as for New Window.
+- **Remote and TLS windows.** The same action on the window's own
+  server: the server runs `koa` from its PATH. When `koa` is not
+  there, the pane is the usual start failure (`failed`, the row's red
+  line with the server's message) and the user sees why; no check
+  before the request.
+- **The title until koa names itself.** The pane row and the tab say
+  "koa", the program's name, as a shell's row says its command, in
+  the regular weight, with the idle gray dot and no "@"; koa's OSC 0
+  title and its `app=pi` record replace that within its start, and
+  then the row is a `PiAgent` as any koa pane. No placeholder text
+  such as "New Agent".
