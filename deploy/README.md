@@ -96,6 +96,29 @@ optional when only one deployment exists.
    Check `sudo journalctl -k` for AppArmor denials. Provisioning starts
    the profile in complain mode and keeps an enforced profile enforced.
 
+## Agents on the server
+
+Provisioning gives `me` what a Koa pane needs, and no credentials:
+
+- Node 24 from NodeSource's apt repository (Debian 13 has Node 20;
+  koa needs 24). `deploy/files/nodesource.asc` is the repository's
+  key, so apt checks it, and updates come through apt.
+- pi and Claude Code, at the versions of `deploy/tools/package.json`,
+  installed by `npm ci` from its lockfile into
+  `~/.local/share/ko-tools`, with `pi` and `claude` in `~/.local/bin`.
+  npm checks every package against the lockfile's hash; Claude Code's
+  native binary is one of those packages. A changed lockfile installs
+  again on the next run.
+- `~/.pi/agent/settings.json` from `deploy/files/pi-settings.json`,
+  only when the file does not exist: later runs never touch it. It
+  names the pi packages, each pinned to a commit or a version; pi
+  installs them on its first start.
+
+Log in once on the server, in a login shell (`deploy/bin/ssh NAME`;
+a command given to ssh runs without `~/.local/bin` on PATH): run
+`claude` once for Claude Code's login, which pi-claude-bridge uses,
+and `pi`, then `/login` for each provider that you use.
+
 ## Devices
 
 Run `deploy/bin/ssh NAME -t sudo ko-pair`. It prints one line

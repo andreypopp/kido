@@ -61,9 +61,11 @@ with urllib.request.urlopen("https://dl.cloudsmith.io/public/caddy/stable/debian
 Path("/etc/apt/sources.list.d/caddy-stable.list").write_text(repo)
 PY
 fi
+install -m 0644 "$base/files/nodesource.asc" /usr/share/keyrings/nodesource.asc
+printf 'deb [signed-by=/usr/share/keyrings/nodesource.asc] https://deb.nodesource.com/node_24.x nodistro main\n' > /etc/apt/sources.list.d/nodesource.list
 old_caddy=$(dpkg-query -W -f='${Version}' caddy 2>/dev/null || true)
 apt-get update
-apt-get install -y ca-certificates curl caddy nftables unattended-upgrades apparmor-utils python3-cryptography qrencode openssh-server sudo
+apt-get install -y ca-certificates curl caddy nftables unattended-upgrades apparmor-utils python3-cryptography qrencode openssh-server sudo nodejs git
 [[ $old_caddy == "$(dpkg-query -W -f='${Version}' caddy)" ]] || caddy_changed=true
 version=$(caddy version | awk '{print $1}')
 dpkg --compare-versions "${version#v}" ge 2.11.4 || { echo 'Caddy 2.11.4 or later is required' >&2; exit 1; }
@@ -157,4 +159,5 @@ elif "$ssh_changed"; then
     systemctl reload ssh
 fi
 systemctl is-active --quiet ko caddy nftables
+runuser -u me -- env -i HOME=/home/me PATH=/usr/local/bin:/usr/bin:/bin "$base/me.sh"
 printf 'Provisioned %s; run deploy/smoke.sh before aa-enforce caddy.\n' "$1"

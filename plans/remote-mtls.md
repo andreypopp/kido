@@ -399,6 +399,9 @@ with only Zone, DNS, Edit on the one zone; the zone's id and name.
   `CAP_NET_ADMIN`, so it cannot force its UDP buffers.
 - `/usr/local/sbin/ko-pair`, `ko-revoke`, `ko-devices`, and
   `/var/lib/ko-devices`.
+- For `me`: Node 24, pi and Claude Code from a lockfile, and pi's
+  settings with pinned packages once, so a Koa pane runs; no
+  credentials (deploy/README.md, "Agents on the server").
 
 **The Caddyfile** (this syntax passed `caddy validate` on 2.11.9):
 
