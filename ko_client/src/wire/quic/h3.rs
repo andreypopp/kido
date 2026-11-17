@@ -618,10 +618,11 @@ impl std::fmt::Debug for Connection {
 }
 
 impl Connection {
+    #[cfg(target_vendor = "apple")]
     pub(crate) fn established(&mut self) -> bool {
         self.driver.connection().is_established()
     }
-    #[cfg(any(target_vendor = "apple", test))]
+    #[cfg(target_vendor = "apple")]
     pub(crate) fn start(
         target: &crate::endpoint::Remote,
         peer: std::net::SocketAddr,

@@ -17,7 +17,7 @@ pub(crate) enum Endpoint {
     Unix(PathBuf),
     #[cfg(feature = "tls")]
     Remote(Arc<Remote>),
-    #[cfg(test)]
+    #[cfg(all(test, target_vendor = "apple", feature = "tls"))]
     Fixed(Dial),
 }
 
@@ -101,11 +101,13 @@ pub(crate) enum Dial {
 #[derive(Debug)]
 pub(crate) struct Remote {
     pub(crate) tcp: Arc<Tls>,
+    #[cfg(target_vendor = "apple")]
     pub(crate) quic: quic::Quic,
+    #[cfg(target_vendor = "apple")]
     choice: std::sync::Mutex<Choice>,
 }
 
-#[cfg(all(feature = "tls", any(target_vendor = "apple", test)))]
+#[cfg(all(feature = "tls", target_vendor = "apple"))]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Choice {
     Unknown,
@@ -113,7 +115,7 @@ pub(crate) enum Choice {
     Tcp,
 }
 
-#[cfg(all(feature = "tls", any(target_vendor = "apple", test)))]
+#[cfg(all(feature = "tls", target_vendor = "apple"))]
 impl Remote {
     pub(crate) fn new(tcp: Arc<Tls>, quic: quic::Quic) -> Self {
         Self {
@@ -199,7 +201,7 @@ impl Resolving {
             Endpoint::Unix(path) => {
                 return Ok(Self(Resolution::Ready(Dial::Unix(path.clone()))));
             }
-            #[cfg(test)]
+            #[cfg(all(test, target_vendor = "apple", feature = "tls"))]
             Endpoint::Fixed(dial) => return Ok(Self(Resolution::Ready(dial.clone()))),
             Endpoint::Remote(target) => (
                 target.tcp.host.0.clone(),
@@ -286,13 +288,18 @@ mod tests {
         else {
             panic!("TLS target");
         };
-        let mut context =
-            boring::ssl::SslContextBuilder::new(boring::ssl::SslMethod::tls()).unwrap();
-        tls::configure(&mut context, Vec::new()).unwrap();
-        let configured = Endpoint::Remote(Arc::new(Remote::new(
-            Arc::clone(&target),
-            quic::Quic::new(context).unwrap(),
-        )));
+        let configured = Endpoint::Remote(Arc::new(Remote {
+            tcp: Arc::clone(&target),
+            #[cfg(target_vendor = "apple")]
+            quic: {
+                let mut context =
+                    boring::ssl::SslContextBuilder::new(boring::ssl::SslMethod::tls()).unwrap();
+                tls::configure(&mut context, Vec::new()).unwrap();
+                quic::Quic::new(context).unwrap()
+            },
+            #[cfg(target_vendor = "apple")]
+            choice: std::sync::Mutex::new(Choice::Unknown),
+        }));
         let resolved = configured.resolve_probe_tcp(None, deadline).unwrap();
         let Resolved::Tls {
             target: resolved_target,
