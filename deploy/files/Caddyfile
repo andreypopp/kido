@@ -14,8 +14,12 @@
 	request_body {
 		max_size 16KB
 	}
-	reverse_proxy @enroll 127.0.0.1:@PAIR_PORT@
-	respond 404
+	handle @enroll {
+		reverse_proxy 127.0.0.1:@PAIR_PORT@
+	}
+	handle {
+		respond 404
+	}
 }
 @HOST@ {
 	tls {

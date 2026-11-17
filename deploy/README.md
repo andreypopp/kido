@@ -1,7 +1,7 @@
 # One remote ko server
 
 Use a Debian 13 x64 DigitalOcean droplet and a Cloudflare DNS zone.
-The Mac needs OpenTofu, Python 3, rsync, OpenSSL and nmap. The build
+The Mac needs OpenTofu, Python 3, rsync, OpenSSL and curl. The build
 needs the tools in `docs/build.md`. Keep the SSH private key in your
 SSH agent. Use a dedicated DNS zone or label set: this setup owns
 `enroll.<domain>` and the ko host.
@@ -39,7 +39,8 @@ SSH agent. Use a dedicated DNS zone or label set: this setup owns
    Port 80 stays closed; ACME must use TLS-ALPN-01 on port 443.
 4. Run `deploy/smoke.sh ko.example.net`. It creates and revokes a test
    device. It checks TLS, the WebSocket, socket access and all TCP
-   ports. Check the Caddy journal for successful ACME issuance with
+   ports: only 22 and 443 may accept a connection. The scan takes
+   about a minute, because the firewall drops the other ports. Check the Caddy journal for successful ACME issuance with
    port 80 closed. This live check is required before use.
 5. After the smoke test passes, run:
 
@@ -114,6 +115,39 @@ Tests use a private folder under `/tmp`. Only tests set
 Tests pass the host, enrollment host and port as `ko-pair HOST ENROLL PORT`.
 The restart override replaces the complete restart and readiness check.
 The pairing duration must be greater than zero and at most 120 seconds.
+
+## Rehearse in a local VM
+
+`kido-vm linux` (docs/build.md, "The Debian guest") runs Debian 13
+arm64 with systemd on the Mac, from the same cloud-init as the
+droplet. It needs no DNS: Caddy cannot get ACME certificates there, so
+provisioning takes the server certificate as an input:
+`provision.sh --tls-cert CERT KEY KO_HOST ENROLL_HOST SSH_CIDR...`
+installs the pair as `/etc/caddy/ko-server.crt` and `.key` and gives
+both sites `tls` with it, on every run. Without the option, the sites
+use ACME. Make one self-signed certificate with both names in its SAN.
+
+```sh
+make -C app vm && make build-linux LINUX_ARCHS=aarch64
+app/vm/.build/out/Products/Release/kido-vm linux install
+app/vm/.build/out/Products/Release/kido-vm linux up   # prints the address
+```
+
+Copy `build/ko/share/ko/linux/aarch64/` and `deploy/` to `~/ko-install`
+with rsync as `install.sh` does, then run `sudo provision.sh --tls-cert
+...` with names such as `ko.vm.test` and `enroll.vm.test`. Run the
+smoke test with the address and the certificate as the trust root:
+
+```sh
+SSL_CERT_FILE=server.crt CURL_CA_BUNDLE=server.crt \
+  KO_SMOKE_SSH='ssh -F ssh_config' deploy/smoke.sh ko.vm.test 192.168.64.5
+```
+
+The optional ADDRESS is where every connection goes; the names stay
+in SNI and `Host`. `KO_SMOKE_SSH` is the SSH command, for the VM's
+key (`~/.local/state/kido-vm-linux/id_ed25519`). The smoke test never
+turns off certificate checks. The VM has no cloud firewall, so its
+port scan checks only nftables, and from the Mac port 22 is open.
 
 ## Remove
 

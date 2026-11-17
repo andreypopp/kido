@@ -1,12 +1,14 @@
 #!/bin/bash
 set -euo pipefail
-[[ $# == 1 ]] || { echo 'usage: deploy/smoke.sh HOST' >&2; exit 1; }
+[[ $# == 1 || $# == 2 ]] || { echo 'usage: deploy/smoke.sh HOST [ADDRESS]' >&2; exit 1; }
 base=$(cd -- "$(dirname -- "$0")" && pwd)
-python3 - "$base" "$1" <<'PY'
+python3 - "$base" "$@" <<'PY'
+import errno
 import json
 import os
 from pathlib import Path
 import selectors
+import shlex
 import socket
 import ssl
 import subprocess
@@ -17,12 +19,14 @@ import time
 
 base = Path(sys.argv[1])
 host = sys.argv[2]
+address = sys.argv[3] if len(sys.argv) == 4 else host
+ssh = shlex.split(os.environ.get("KO_SMOKE_SSH", "ssh"))
 
 def run(*args, **kwargs):
     return subprocess.run(args, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=kwargs.pop("timeout", 20), **kwargs).stdout
 
 def remote(command):
-    return run("ssh", "-o", "BatchMode=yes", "me@" + host, command)
+    return run(*ssh, "-o", "BatchMode=yes", "me@" + address, command)
 
 with tempfile.TemporaryDirectory(prefix="ko-smoke-") as temporary:
     root = Path(temporary)
@@ -31,21 +35,29 @@ with tempfile.TemporaryDirectory(prefix="ko-smoke-") as temporary:
     run("openssl", "req", "-new", "-x509", "-key", str(key), "-subj", "/CN=smoke", "-days", "1",
         "-addext", "basicConstraints=critical,CA:FALSE", "-addext", "extendedKeyUsage=clientAuth", "-out", str(cert))
     def curl(*extra):
-        return subprocess.run(["curl", "--silent", "--show-error", "--max-time", "10", *extra], stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=12)
+        return subprocess.run(["curl", "--silent", "--show-error", "--max-time", "10", *resolves, *extra], stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=12)
+    resolves = ["--resolve", f"{host}:443:{address}"] if address != host else []
     for identity in ([], ["-cert", str(cert), "-key", str(key)]):
-        result = subprocess.run(["openssl", "s_client", "-connect", host + ":443", "-servername", host, *identity],
+        result = subprocess.run(["openssl", "s_client", "-ign_eof", "-connect", address + ":443", "-servername", host, *identity],
                                 input=(f"GET /version HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n").encode(),
                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=12)
-        assert result.returncode != 0 and b"HTTP/1.1 200" not in result.stdout
+        output = result.stdout + result.stderr
+        alert = b"bad certificate" if identity else b"certificate required"
+        assert b"HTTP/1." not in output and alert in output.lower(), output
     assert curl("https://" + host + "/version").returncode != 0
     assert curl("--cert", str(cert), "--key", str(key), "https://" + host + "/version").returncode != 0
     print("PASS no certificate and unpaired certificate refused", flush=True)
-    process = subprocess.Popen(["ssh", "-o", "BatchMode=yes", "me@" + host, "sudo ko-pair"], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    errors = root / "pair-errors"
+    with errors.open("wb") as stream:
+        process = subprocess.Popen([*ssh, "-o", "BatchMode=yes", "me@" + address, "sudo ko-pair"], stdout=subprocess.PIPE, stderr=stream)
     selector = selectors.DefaultSelector()
     selector.register(process.stdout, selectors.EVENT_READ)
-    assert selector.select(10), "pairing did not print its payload"
+    if not selector.select(10):
+        process.terminate()
+        process.wait(timeout=5)
+        raise AssertionError("pairing did not print its payload: " + errors.read_text())
     line = process.stdout.readline().decode()
-    assert line.startswith("kido-pair: "), line
+    assert line.startswith("kido-pair: "), (line, errors.read_text())
     payload = json.loads(line[11:])
     selector.close()
     remaining = []
@@ -55,7 +67,12 @@ with tempfile.TemporaryDirectory(prefix="ko-smoke-") as temporary:
     ws = None
     try:
         request = run("python3", str(base / "enroll-request.py"), str(cert), str(key), "operator smoke test", input=payload["token"].encode())
-        response = subprocess.run(["curl", "--fail-with-body", "--silent", "--show-error", "--max-time", "10", "--data-binary", "@-", payload["enroll"]], input=request, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=12)
+        enroll = payload["enroll"].split("/")[2]
+        if address != host:
+            resolves += ["--resolve", f"{enroll}:443:{address}"]
+        fallback = curl("-o", "/dev/null", "-w", "%{http_code}", "https://" + enroll + "/version")
+        assert fallback.returncode == 0 and fallback.stdout == b"404", fallback
+        response = subprocess.run(["curl", *resolves, "--fail-with-body", "--silent", "--show-error", "--max-time", "10", "--data-binary", "@-", payload["enroll"]], input=request, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=12)
         assert response.returncode == 0, response.stderr.decode()
         enrolled = json.loads(response.stdout)["fingerprint"]
         process.wait(timeout=20)
@@ -66,7 +83,7 @@ with tempfile.TemporaryDirectory(prefix="ko-smoke-") as temporary:
         version = json.loads(result.stdout)
         context = ssl.create_default_context()
         context.load_cert_chain(cert, key)
-        ws = context.wrap_socket(socket.create_connection((host, 443), timeout=5), server_hostname=host)
+        ws = context.wrap_socket(socket.create_connection((address, 443), timeout=5), server_hostname=host)
         request = (f"GET /client HTTP/1.1\r\nHost: {host}\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nKo-Protocol: {version['protocol']}\r\nKo-Vt: {version['vt']}\r\n\r\n")
         ws.sendall(request.encode())
         header = b""
@@ -107,7 +124,7 @@ with tempfile.TemporaryDirectory(prefix="ko-smoke-") as temporary:
         opcode, answer = read_frame()
         assert opcode == 1 and json.loads(answer)["type"] == "welcome", answer
         for protocol in ("-tls1_2", "-tls1_3"):
-            result = run("openssl", "s_client", "-connect", host + ":443", "-servername", host, "-cert", str(cert), "-key", str(key), protocol, "-reconnect", input=b"")
+            result = run("openssl", "s_client", "-connect", address + ":443", "-servername", host, "-cert", str(cert), "-key", str(key), protocol, "-reconnect", input=b"")
             assert b"Reused," not in result and result.count(b"New,") >= 5
         enroll = payload["enroll"].split("/")[2]
         result = curl("-H", "Host: " + host, "-o", "/dev/null", "-w", "%{http_code}", "https://" + enroll + "/version")
@@ -141,7 +158,10 @@ with tempfile.TemporaryDirectory(prefix="ko-smoke-") as temporary:
         if enrolled:
             remote("sudo ko-revoke " + enrolled)
         if process.poll() is None:
-            process.wait(timeout=125)
+            abort = json.dumps({"token": payload["token"], "name": "smoke cleanup", "certificate": "!", "signature": "!"}).encode()
+            subprocess.run([*ssh, "-o", "BatchMode=yes", "me@" + address,
+                '''curl --silent --max-time 5 --data-binary @- "http://127.0.0.1:$(python3 -c 'import json; print(json.load(open("/etc/ko-pair.json"))["port"])')/v1/enroll"'''], input=abort, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10)
+            process.wait(timeout=10)
         reader.join(timeout=1)
     remote('''set -eu
 for user in me caddy; do
@@ -152,9 +172,39 @@ if sudo -u nobody test -r /run/caddy/admin.sock; then exit 1; fi
 if sudo -u nobody test -x /var/lib/ko-devices; then exit 1; fi
 ''')
     print("PASS socket admission and private admin/device paths", flush=True)
-    scan = run("nmap", "-Pn", "-p-", "--open", "--host-timeout", "5m", "-oG", "-", host, timeout=310).decode()
-    import re
-    ports = set(re.findall(r"(\d+)/open/tcp", scan))
-    assert ports == {"22", "443"}, scan
+    family, _, _, _, endpoint = socket.getaddrinfo(address, 443, type=socket.SOCK_STREAM)[0]
+    deadline = time.monotonic() + 120
+    ports = set()
+    pending = {}
+    port = 1
+    with selectors.DefaultSelector() as selector:
+        while port <= 65535 or pending:
+            now = time.monotonic()
+            assert now < deadline, "TCP scan deadline"
+            while port <= 65535 and len(pending) < 500:
+                connection = socket.socket(family, socket.SOCK_STREAM)
+                connection.setblocking(False)
+                status = connection.connect_ex((endpoint[0], port, *endpoint[2:]))
+                if status == 0:
+                    ports.add(port)
+                    connection.close()
+                elif status in (errno.EINPROGRESS, errno.EWOULDBLOCK):
+                    pending[connection] = (port, now + 0.5)
+                    selector.register(connection, selectors.EVENT_WRITE)
+                else:
+                    connection.close()
+                if port % 10000 == 0:
+                    print(f"TCP scan: {port}/65535", flush=True)
+                port += 1
+            wait = min((expires - time.monotonic() for _, expires in pending.values()), default=0)
+            ready = {key.fileobj for key, _ in selector.select(max(0, min(wait, deadline - time.monotonic())))}
+            for connection, (number, expires) in list(pending.items()):
+                if connection in ready or time.monotonic() >= expires:
+                    if connection in ready and connection.getsockopt(socket.SOL_SOCKET, socket.SO_ERROR) == 0:
+                        ports.add(number)
+                    selector.unregister(connection)
+                    connection.close()
+                    del pending[connection]
+    assert ports == {22, 443}, ports
     print("PASS external TCP ports: 22 and 443 only", flush=True)
 PY

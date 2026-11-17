@@ -1,0 +1,14 @@
+#cloud-config
+disable_root: true
+ssh_pwauth: false
+packages: [rsync]
+users:
+  - name: me
+    groups: [sudo]
+    shell: /bin/bash
+    lock_passwd: true
+    sudo: ALL=(ALL) NOPASSWD:ALL
+    ssh_authorized_keys:
+      - ${ssh_key}
+runcmd:
+  - [passwd, -l, root]

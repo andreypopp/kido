@@ -23,19 +23,7 @@ resource "digitalocean_droplet" "ko" {
   monitoring    = false
   droplet_agent = false
   ssh_keys      = [digitalocean_ssh_key.operator.fingerprint]
-  user_data = "#cloud-config\n${yamlencode({
-    disable_root = true
-    ssh_pwauth   = false
-    users = [{
-      name                = "me"
-      groups              = ["sudo"]
-      shell               = "/bin/bash"
-      lock_passwd         = true
-      sudo                = "ALL=(ALL) NOPASSWD:ALL"
-      ssh_authorized_keys = [local.ssh_key]
-    }]
-    runcmd = [["passwd", "-l", "root"]]
-  })}"
+  user_data     = templatefile("${path.module}/cloud-init.yaml", { ssh_key = jsonencode(local.ssh_key) })
 }
 
 resource "digitalocean_firewall" "ko" {

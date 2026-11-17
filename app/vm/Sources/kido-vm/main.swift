@@ -4,7 +4,8 @@ import Virtualization
 
 let user = "kido"
 let password = "kido"
-let state = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".local/state/kido-vm")
+let linuxGuest = CommandLine.arguments.dropFirst().first == "linux"
+let state = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(linuxGuest ? ".local/state/kido-vm-linux" : ".local/state/kido-vm")
 func path(_ name: String) -> URL { state.appendingPathComponent(name) }
 
 var timers: [DispatchSourceTimer] = []
@@ -113,7 +114,7 @@ func configuration(shares: [Share], cpus: Int, memoryGB: Int) throws -> VZVirtua
     return config
 }
 
-func download(_ url: URL, to file: URL) throws {
+func download(_ url: URL, to file: URL, timeout: TimeInterval? = nil) throws {
     final class Delegate: NSObject, URLSessionDownloadDelegate {
         let file: URL
         let done = DispatchSemaphore(value: 0)
@@ -138,7 +139,10 @@ func download(_ url: URL, to file: URL) throws {
     let delegate = Delegate(file: file)
     let session = URLSession(configuration: .default, delegate: delegate, delegateQueue: nil)
     session.downloadTask(with: url).resume()
-    delegate.done.wait()
+    if delegate.done.wait(timeout: timeout.map { .now() + $0 } ?? .distantFuture) == .timedOut {
+        session.invalidateAndCancel()
+        throw URLError(.timedOut)
+    }
     if let error = delegate.error { throw error }
 }
 
@@ -428,6 +432,7 @@ func exec(_ args: [String]) -> Never {
 
 var argv = Array(CommandLine.arguments.dropFirst())
 try? FileManager.default.createDirectory(at: state, withIntermediateDirectories: true)
+if linuxGuest { linux(Array(argv.dropFirst())) }
 switch argv.first {
 case "install": install(Array(argv.dropFirst()))
 case "run": run(Array(argv.dropFirst()))

@@ -1,6 +1,12 @@
 #!/bin/bash
 set -euo pipefail
-[[ $EUID == 0 && $# -ge 3 ]] || { echo 'usage: sudo provision.sh KO_HOST ENROLL_HOST SSH_CIDR...' >&2; exit 1; }
+certificate=()
+if [[ ${1:-} == --tls-cert ]]; then
+    [[ $# -ge 3 ]] || { echo '--tls-cert needs a certificate and key' >&2; exit 1; }
+    certificate=("$2" "$3")
+    shift 3
+fi
+[[ $EUID == 0 && $# -ge 3 ]] || { echo 'usage: sudo provision.sh [--tls-cert CERT KEY] KO_HOST ENROLL_HOST SSH_CIDR...' >&2; exit 1; }
 base=$(cd -- "$(dirname -- "$0")" && pwd)
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
@@ -18,12 +24,12 @@ install_changed() {
         printf -v "${service}_changed" true
     fi
 }
-python3 - "$base/files" "$work" "$pair_port" "$@" <<'PY'
+python3 - "$base/files" "$work" "$pair_port" "${certificate[0]:-}" "$@" <<'PY'
 import ipaddress
 from pathlib import Path
 import re
 import sys
-source, target, port, host, enroll, *cidrs = sys.argv[1:]
+source, target, port, certificate, host, enroll, *cidrs = sys.argv[1:]
 for name in (host, enroll):
     if len(name) > 253 or not all(re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", label) for label in name.split(".")):
         raise SystemExit("invalid DNS name")
@@ -35,6 +41,9 @@ for name in ("Caddyfile", "nftables.conf"):
     text = (Path(source) / name).read_text()
     for key, value in values.items():
         text = text.replace(key, value)
+    if name == "Caddyfile" and certificate:
+        tls = "tls /etc/caddy/ko-server.crt /etc/caddy/ko-server.key"
+        text = text.replace(enroll + " {", enroll + " {\n\t" + tls, 1).replace("\ttls {", "\t" + tls + " {", 1)
     text = re.sub(r"^\s*elements = \{  \}\n", "", text, flags=re.MULTILINE)
     (Path(target) / name).write_text(text)
 PY
@@ -104,6 +113,11 @@ import sys
 print(json.dumps({"host": sys.argv[1], "enroll": sys.argv[2], "port": int(sys.argv[3])}))
 PY
 chmod 0644 /etc/ko-pair.json
+if [[ ${#certificate[@]} != 0 ]]; then
+    install_changed "${certificate[0]}" /etc/caddy/ko-server.crt caddy
+    install_changed "${certificate[1]}" /etc/caddy/ko-server.key caddy 0640
+    chown root:caddy /etc/caddy/ko-server.key
+fi
 install_changed "$work/Caddyfile" /etc/caddy/Caddyfile caddy
 install_changed "$base/files/caddy.conf" /etc/systemd/system/caddy.service.d/ko.conf caddy
 if [[ -f /etc/apparmor.d/caddy ]] && ! grep -q 'flags=(complain)' /etc/apparmor.d/caddy; then
