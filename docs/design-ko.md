@@ -882,8 +882,10 @@ quit, a crash or a force quit of every app. Under `launch.lock` the
 launcher writes `DIR/server.plist` (mode 0600: it holds the
 environment) with the server's arguments, environment, working
 directory and log (launchd adds the variables of its domain, such
-as `SSH_AUTH_SOCK`, to that environment), boots out the job of that label, and bootstraps
-the plist. The label comes from the device and inode of `DIR`. The
+as `SSH_AUTH_SOCK`, to that environment), boots out the job of that label, waits within the start's deadline
+until `launchctl print` no longer finds the label, and bootstraps
+the plist: `bootout` returns before launchd has removed the job, and
+a bootstrap of the label in that time fails with error 5. The label comes from the device and inode of `DIR`. The
 job has no `KeepAlive`: a server that exits is not restarted, and its
 job stays loaded and not running until the next start boots it out,
 because launchd refuses a second bootstrap of a loaded label. `ko

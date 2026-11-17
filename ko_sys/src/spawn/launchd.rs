@@ -12,6 +12,7 @@ use crate::signal::Signal;
 
 const LAUNCHCTL: &str = "/bin/launchctl";
 const POLL: Duration = Duration::from_millis(2);
+const REMOVAL_POLL: Duration = Duration::from_millis(50);
 
 fn invalid(message: &str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidInput, message.to_owned())
@@ -170,6 +171,14 @@ fn target(job_dir: &Path) -> io::Result<String> {
     ))
 }
 
+fn job_present(exit: Exit, message: &str) -> io::Result<bool> {
+    match exit {
+        Exit::Exited(0) => Ok(true),
+        Exit::Exited(113) => Ok(false),
+        exit => Err(failure(&["print"], exit, message)),
+    }
+}
+
 fn boot_out(launchctl: &Launchctl<'_>, target: &str) -> io::Result<()> {
     let bootout = ["bootout", target];
     match launchctl.run(&bootout)? {
@@ -231,6 +240,19 @@ pub(super) fn start(
         .write_all(body.as_bytes())?;
     std::fs::set_permissions(&file, std::fs::Permissions::from_mode(0o600))?;
     boot_out(&launchctl, &target)?;
+    loop {
+        if Instant::now() >= launchctl.deadline {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "the old launchd job did not go away in time",
+            ));
+        }
+        let (exit, message) = launchctl.run(&["print", &target])?;
+        if !job_present(exit, &message)? {
+            break;
+        }
+        std::thread::sleep(REMOVAL_POLL);
+    }
     let file = file.to_string_lossy();
     let bootstrap = ["bootstrap", &domain, &file];
     match launchctl.run(&bootstrap)? {
@@ -245,6 +267,18 @@ pub(super) fn start(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_missing_job_is_gone_but_a_failed_print_is_not() {
+        assert!(!job_present(
+            Exit::Exited(113),
+            "Bad request.\nCould not find service \"ko.server.test\" in domain for user gui: 501",
+        )
+        .unwrap());
+        assert!(job_present(Exit::Exited(0), "state = not running").unwrap());
+        assert!(!job_present(Exit::Exited(113), "").unwrap());
+        assert!(job_present(Exit::Exited(5), "Input/output error").is_err());
+    }
 
     #[test]
     fn the_plist_escapes_values_and_splits_the_environment_at_the_first_equals() {
