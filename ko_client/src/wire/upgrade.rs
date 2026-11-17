@@ -1,10 +1,12 @@
 use super::stream::Stream;
-use crate::endpoint::Endpoint;
+use crate::endpoint::Resolved;
 use std::io::{self, Read};
 #[cfg(test)]
 use std::os::fd::AsFd;
+#[cfg(test)]
 use std::os::unix::net::UnixStream;
 use std::sync::Arc;
+use std::time::Instant;
 
 use ko_sys::event::{Poll, Read as PollData, Reads, Ready, Token, Wake};
 use ko_sys::fd::Queue;
@@ -37,6 +39,7 @@ pub struct Connecting {
     response: Vec<u8>,
     key: String,
     cancel: Option<Arc<Wake>>,
+    deadline: Instant,
 }
 
 #[derive(Debug)]
@@ -48,15 +51,14 @@ pub enum UpgradeStep {
 
 impl Connecting {
     pub fn start(
-        socket: &Endpoint,
+        socket: &Resolved,
         client: ClientId,
         route: &Route,
         cancel: Option<Arc<Wake>>,
     ) -> io::Result<Connecting> {
-        let Endpoint::Unix(socket) = socket;
-        let stream = Stream::Unix(UnixStream::from(ko_sys::sock::connect_nonblocking(socket)?));
+        let stream = Stream::start(socket)?;
         let (method, target) = route.to_request();
-        let (request, key) = upgrade_request("localhost", method, &target, Some(client), &[]);
+        let (request, key) = upgrade_request(stream.host(), method, &target, Some(client), &[]);
         let mut queued = Queue::default();
         queued.bytes = request;
         Ok(Connecting {
@@ -65,6 +67,7 @@ impl Connecting {
             response: Vec::new(),
             key,
             cancel,
+            deadline: Instant::now() + super::READ_TIMEOUT,
         })
     }
 
@@ -72,59 +75,99 @@ impl Connecting {
         poll.watch(self.stream.fd(), self.stream.interest(true, true))
     }
 
-    pub fn advance(mut self, poll: &mut Poll, ready: Ready) -> io::Result<UpgradeStep> {
-        if ready.write {
-            self.stream.flush(&mut self.request)?;
+    #[cfg(target_vendor = "apple")]
+    pub(crate) fn deadline(&self) -> Instant {
+        self.stream
+            .deadline()
+            .map_or(self.deadline, |deadline| deadline.min(self.deadline))
+    }
+
+    fn retry(&mut self, poll: &mut Poll, ready: &mut Ready, error: io::Error) -> io::Result<()> {
+        if self.request.written() != 0 {
+            return Err(error);
+        }
+        self.stream.retry_watched(poll, ready, error)
+    }
+
+    pub fn advance(mut self, poll: &mut Poll, ready: &mut Ready) -> io::Result<UpgradeStep> {
+        if self.cancel.as_ref().is_some_and(|cancel| cancel.is_set()) {
+            return Err(crate::connect::cancelled_error());
+        }
+        let now = Instant::now();
+        if now >= self.deadline {
+            return Err(io::ErrorKind::TimedOut.into());
+        }
+        if self
+            .stream
+            .deadline()
+            .is_some_and(|deadline| now >= deadline)
+        {
+            self.retry(poll, ready, io::ErrorKind::TimedOut.into())?;
+            return Ok(UpgradeStep::Pending(self));
+        }
+        if ready.write
+            && let Err(error) = self
+                .stream
+                .writable()
+                .and_then(|()| self.stream.flush(&mut self.request))
+        {
+            self.retry(poll, ready, error)?;
+            return Ok(UpgradeStep::Pending(self));
+        }
+        if ready.read {
+            let mut reads = Reads::new();
+
+            let mut eof = false;
+            loop {
+                let mut buffer = [0; 4096];
+                let read = self
+                    .stream
+                    .read_ready(poll, ready.token, &mut buffer, &mut reads);
+                let count = match read {
+                    Err(error) => {
+                        self.retry(poll, ready, error)?;
+                        return Ok(UpgradeStep::Pending(self));
+                    }
+                    Ok(read) => match read {
+                        Some(PollData::End) => {
+                            eof = true;
+                            0
+                        }
+                        Some(PollData::Data(count)) => count,
+                        None => break,
+                    },
+                };
+                self.response.extend_from_slice(&buffer[..count]);
+                match http::read_upgrade(&mut Buffered {
+                    bytes: &self.response,
+                    eof,
+                }) {
+                    Ok(upgrade) => {
+                        let linked = Link::upgraded(
+                            self.stream,
+                            upgrade,
+                            &self.key,
+                            self.cancel,
+                            Some(ready.token),
+                            protocol::Upgrade::Control,
+                        )?;
+                        return Ok(match linked {
+                            Ok(link) => UpgradeStep::Open(Box::new(link)),
+                            Err(response) => UpgradeStep::Refused(response),
+                        });
+                    }
+                    Err(error) if error.kind() == io::ErrorKind::WouldBlock => {}
+                    Err(error) => return Err(error),
+                }
+                if eof {
+                    return Err(io::ErrorKind::UnexpectedEof.into());
+                }
+            }
         }
         poll.interest(
             ready.token,
             self.stream.interest(true, !self.request.is_empty()),
         );
-        if !ready.read {
-            return Ok(UpgradeStep::Pending(self));
-        }
-        let mut reads = Reads::new();
-
-        let mut eof = false;
-        loop {
-            let mut buffer = [0; 4096];
-            let count = match self
-                .stream
-                .read_ready(poll, ready.token, &mut buffer, &mut reads)?
-            {
-                Some(PollData::End) => {
-                    eof = true;
-                    0
-                }
-                Some(PollData::Data(count)) => count,
-                None => break,
-            };
-            self.response.extend_from_slice(&buffer[..count]);
-            match http::read_upgrade(&mut Buffered {
-                bytes: &self.response,
-                eof,
-            }) {
-                Ok(upgrade) => {
-                    let linked = Link::upgraded(
-                        self.stream,
-                        upgrade,
-                        &self.key,
-                        self.cancel,
-                        Some(ready.token),
-                        protocol::Upgrade::Control,
-                    )?;
-                    return Ok(match linked {
-                        Ok(link) => UpgradeStep::Open(Box::new(link)),
-                        Err(response) => UpgradeStep::Refused(response),
-                    });
-                }
-                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {}
-                Err(error) => return Err(error),
-            }
-            if eof {
-                return Err(io::ErrorKind::UnexpectedEof.into());
-            }
-        }
         Ok(UpgradeStep::Pending(self))
     }
 }
@@ -147,6 +190,7 @@ mod tests {
             response: Vec::new(),
             key: "test-key".to_owned(),
             cancel: None,
+            deadline: Instant::now() + super::super::READ_TIMEOUT,
         };
         let mut poll = Poll::new();
         let token = connecting.watch(&mut poll);
@@ -154,7 +198,7 @@ mod tests {
             .write_all(b"HTTP/1.1 101 Switching Protocols\r\nUpgrade: web")
             .unwrap();
         let UpgradeStep::Pending(connecting) =
-            connecting.advance(&mut poll, buffered(token)).unwrap()
+            connecting.advance(&mut poll, &mut buffered(token)).unwrap()
         else {
             panic!("a partial head completed");
         };
@@ -166,7 +210,8 @@ mod tests {
             )
             .unwrap();
         server.write_all(b"\x81\x0dafter-upgrade").unwrap();
-        let UpgradeStep::Open(mut link) = connecting.advance(&mut poll, buffered(token)).unwrap()
+        let UpgradeStep::Open(mut link) =
+            connecting.advance(&mut poll, &mut buffered(token)).unwrap()
         else {
             panic!("the complete head did not open");
         };
@@ -186,6 +231,7 @@ mod tests {
             response: Vec::new(),
             key: "test-key".to_owned(),
             cancel: None,
+            deadline: Instant::now() + super::super::READ_TIMEOUT,
         };
         let mut poll = Poll::new();
         let token = connecting.watch(&mut poll);
@@ -195,7 +241,7 @@ mod tests {
         let mut rejected = None;
         for _ in 0..17 {
             server.write_all(&[b'x'; 4096]).unwrap();
-            match connecting.advance(&mut poll, buffered(token)) {
+            match connecting.advance(&mut poll, &mut buffered(token)) {
                 Ok(UpgradeStep::Pending(pending)) => connecting = pending,
                 Ok(UpgradeStep::Open(_)) => panic!("an unterminated head opened"),
                 Ok(UpgradeStep::Refused(_)) => panic!("an unterminated head was refused"),

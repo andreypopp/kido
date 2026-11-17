@@ -57,6 +57,8 @@ struct Engine<'a> {
     wake: Token,
     retry: Timer,
     watch: Timer,
+    webview_deadline: Timer,
+    webview_due: Option<Instant>,
     backoff: Duration,
     reported: Option<Code>,
     session: Option<Session>,
@@ -67,7 +69,18 @@ struct Engine<'a> {
 type Failed = (Code, String);
 
 pub(super) fn failure(error: &io::Error) -> Failed {
-    let code = if connect::absent(error) {
+    let code = if crate::wire::stream::terminal(error) {
+        Code::Refused
+    } else if connect::absent(error)
+        || matches!(
+            error.kind(),
+            io::ErrorKind::TimedOut
+                | io::ErrorKind::AddrNotAvailable
+                | io::ErrorKind::NetworkUnreachable
+                | io::ErrorKind::HostUnreachable
+                | io::ErrorKind::NetworkDown
+        )
+    {
         Code::NoServer
     } else if error.kind() == io::ErrorKind::InvalidData {
         Code::Protocol
@@ -93,7 +106,7 @@ pub(super) fn run(shared: &Arc<Shared>) {
     let mut poll = Poll::new();
     let wake = poll.watch(shared.wake.fd(), Interest::Read);
     poll.watch(shared.cancel.fd(), Interest::Read);
-    let (retry, watch) = (poll.timer(), poll.timer());
+    let (retry, watch, webview_deadline) = (poll.timer(), poll.timer(), poll.timer());
     let mut engine = Engine {
         shared,
         poll,
@@ -101,6 +114,8 @@ pub(super) fn run(shared: &Arc<Shared>) {
         wake,
         retry,
         watch,
+        webview_deadline,
+        webview_due: None,
         backoff: BACKOFF_FIRST,
         reported: None,
         session: None,
@@ -116,6 +131,7 @@ impl Engine<'_> {
     fn serve(&mut self) {
         self.connect();
         while !self.shared.cancel.is_set() {
+            self.arm_webview_deadline();
             if self.poll.turn(Mode::Wait, &mut self.events).is_err() {
                 return;
             }
@@ -135,8 +151,23 @@ impl Engine<'_> {
                     self.connect();
                 } else if due.timer == self.watch {
                     self.watchdog();
-                } else if self.views.iter().any(|open| open.deadline == due.timer) {
-                    self.lose(Code::Io, "the pane view upgrade timed out");
+                } else if due.timer == self.webview_deadline {
+                    self.webview_due = None;
+                    self.webview_expired(Instant::now());
+                } else if let Some(at) = self
+                    .views
+                    .iter()
+                    .position(|open| open.deadline == due.timer)
+                    && let Some(conn) = self.views[at].conn.as_ref()
+                {
+                    self.view_ready(
+                        at,
+                        Ready {
+                            token: conn.token,
+                            read: false,
+                            write: false,
+                        },
+                    );
                 }
             }
         }
@@ -150,16 +181,7 @@ impl Engine<'_> {
             return;
         }
         if code == Code::Refused {
-            if let Some(mut session) = self.session.take() {
-                session.link.unwatch(&mut self.poll);
-            }
-            self.shared.up.store(false, Ordering::SeqCst);
-            self.poll.stop(self.watch);
-            self.poll.stop(self.retry);
-            for open in std::mem::take(&mut self.views) {
-                self.close_view(open, code, &message);
-            }
-            post(self.shared, Posted::Failed(code, string(&message)));
+            self.lose(code, &message);
         } else if code != Code::NoServer
             && let Some((code, server)) = self.mismatch()
         {
@@ -172,16 +194,21 @@ impl Engine<'_> {
 
     fn mismatch(&self) -> Option<(Code, Version)> {
         let shared = self.shared;
+        let endpoint = locked(&shared.resolved).clone()?;
         let (mismatch, server) =
-            crate::api::version(&shared.endpoint, READ_TIMEOUT, Some(&shared.cancel)).ok()?;
+            crate::api::version(&endpoint, READ_TIMEOUT, Some(&shared.cancel)).ok()?;
         mismatch.map(|kind| (Code::of(&kind), server))
     }
 
     fn join(&mut self) -> Result<(), Failed> {
         let shared = self.shared;
-        let socket = &shared.endpoint;
+        let socket = shared
+            .endpoint
+            .resolve(Some(&shared.cancel), READ_TIMEOUT)
+            .map_err(|error| failure(&error))?;
+        *locked(&shared.resolved) = Some(Arc::clone(&socket));
         let mut link = Link::connect_within(
-            socket,
+            &socket,
             None,
             &Route::Client {},
             Some(Arc::clone(&shared.cancel)),
@@ -214,6 +241,7 @@ impl Engine<'_> {
         let joined = Model::join(&mut link, hello).map_err(|error| match error {
             JoinError::Refused(message) => (Code::Refused, message),
             JoinError::Protocol(message) => protocol_error(message),
+            JoinError::Io(error) => failure(&error),
         })?;
         let rejoin = match locked(&shared.model).as_mut() {
             Some(earlier) => earlier.gate(joined),
@@ -278,7 +306,8 @@ impl Engine<'_> {
         while !self.webview.is_empty() {
             self.end_webview(0, code, message);
         }
-        if self.reported.is_none()
+        if code == Code::Refused
+            || self.reported.is_none()
             || (code == Code::NoServer && self.reported != Some(Code::NoServer))
         {
             self.reported = Some(code);
@@ -290,6 +319,13 @@ impl Engine<'_> {
         self.shared.up.store(false, Ordering::SeqCst);
         locked(&self.shared.commands).retain(|command| !matches!(command, Command::Size(_)));
         self.poll.stop(self.watch);
+        if code == Code::Refused {
+            self.poll.stop(self.retry);
+            for open in std::mem::take(&mut self.views) {
+                self.close_view(open, code, message);
+            }
+            return;
+        }
         for open in &mut self.views {
             if open.conn.is_some() {
                 post_link(self.shared, &open.view, code, message);
@@ -302,14 +338,7 @@ impl Engine<'_> {
 
     fn watchdog(&mut self) {
         let now = Instant::now();
-        let mut at = 0;
-        while at < self.webview.len() {
-            if self.webview[at].expired(now) {
-                self.end_webview(at, Code::Io, "webview request timed out");
-            } else {
-                at += 1;
-            }
-        }
+
         let silent_client = self
             .session
             .as_ref()
@@ -506,7 +535,7 @@ impl Engine<'_> {
                 let (code, message) = failure(&error);
                 self.reopen_view(id, code, &message);
             }
-            Ok(()) if *paused => self.poll.interest(conn.token, Interest::Idle),
+            Ok(()) if *paused => link.interest(&mut self.poll, false),
             Ok(()) => {}
         }
     }
@@ -529,16 +558,18 @@ impl Engine<'_> {
             images: options.images,
             offset: open.view.resume_offset().and_then(Offset::new),
         };
-        let linked = Connecting::start(
-            &shared.endpoint,
-            client,
-            &route,
-            Some(Arc::clone(&shared.cancel)),
-        );
+        let Some(endpoint) = locked(&shared.resolved).clone() else {
+            return;
+        };
+        let linked = Connecting::start(&endpoint, client, &route, Some(Arc::clone(&shared.cancel)));
         match linked {
             Ok(link) => {
                 let token = link.watch(&mut self.poll);
-                let _ = self.poll.start(open.deadline, READ_TIMEOUT, None);
+                let _ = self.poll.start(
+                    open.deadline,
+                    link.deadline().saturating_duration_since(Instant::now()),
+                    None,
+                );
                 open.conn = Some(Conn {
                     token,
                     state: ViewLink::Connecting { link },
@@ -620,10 +651,15 @@ impl Engine<'_> {
             return;
         };
         match conn.state {
-            ViewLink::Connecting { link } => match link.advance(&mut self.poll, ready) {
+            ViewLink::Connecting { link } => match link.advance(&mut self.poll, &mut ready) {
                 Ok(UpgradeStep::Pending(link)) => {
+                    let _ = self.poll.start(
+                        open.deadline,
+                        link.deadline().saturating_duration_since(Instant::now()),
+                        None,
+                    );
                     open.conn = Some(Conn {
-                        token: conn.token,
+                        token: ready.token,
                         state: ViewLink::Connecting { link },
                     });
                     return;
@@ -711,10 +747,11 @@ impl Engine<'_> {
         }
         match outcome {
             Err(End::Gone) => self.end_view(id, Code::Closed, "pane view closed"),
+            Err(End::Outage((Code::Refused, message))) => self.lose(Code::Refused, &message),
             Err(End::Outage((code, message))) => self.reopen_view(id, code, &message),
             Ok(()) if pause.load(Ordering::SeqCst) => {
                 *paused = true;
-                self.poll.interest(conn.token, Interest::Idle);
+                link.interest(&mut self.poll, false);
             }
             Ok(()) => {}
         }
@@ -780,4 +817,22 @@ fn feed_record(view: &Arc<View>, continuation: usize, record: &Bytes) -> Result<
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn unavailable_networks_are_no_server() {
+        for kind in [
+            io::ErrorKind::NetworkUnreachable,
+            io::ErrorKind::HostUnreachable,
+            io::ErrorKind::NetworkDown,
+            io::ErrorKind::AddrNotAvailable,
+            io::ErrorKind::ConnectionRefused,
+            io::ErrorKind::TimedOut,
+        ] {
+            assert_eq!(failure(&kind.into()).0, Code::NoServer);
+        }
+    }
 }

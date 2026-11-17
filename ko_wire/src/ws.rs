@@ -84,10 +84,17 @@ pub fn accepted(response: &http::Response, key: &str) -> io::Result<()> {
 }
 
 pub fn refused(response: &http::Response) -> io::Error {
-    io::Error::other(format!(
-        "WebSocket upgrade failed: {} {}",
-        response.status, response.reason
-    ))
+    io::Error::new(
+        if response.status == 502 {
+            io::ErrorKind::ConnectionRefused
+        } else {
+            io::ErrorKind::Other
+        },
+        format!(
+            "WebSocket upgrade failed: {} {}",
+            response.status, response.reason
+        ),
+    )
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

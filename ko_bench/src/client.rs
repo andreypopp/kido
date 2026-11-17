@@ -26,7 +26,7 @@ pub(crate) fn exchange(socket: &Path, route: &Route, body: &str) -> io::Result<R
 
 pub(crate) fn create_pane(socket: &Path, argv: &[String]) -> io::Result<PaneId> {
     ko_client::layout::add_session(
-        &ko_client::endpoint::Endpoint::Unix(socket.to_owned()),
+        &ko_client::endpoint::Resolved::Unix(socket.to_owned()),
         (None, None),
         &CreatePane {
             cwd: AbsPath::try_from("/".to_owned()).ok().map(Cwd::Path),

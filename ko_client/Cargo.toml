@@ -4,6 +4,9 @@ version = "0.0.0"
 edition.workspace = true
 publish.workspace = true
 
+[features]
+platform-verifier = ["dep:rustls-platform-verifier"]
+
 [dependencies]
 ko_wire = { path = "../ko_wire" }
 ko_config = { path = "../ko_config" }
@@ -13,8 +16,12 @@ schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tungstenite.workspace = true
+rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
+rustls-platform-verifier = { version = "0.7", optional = true }
 
 [dev-dependencies]
+ko_client = { path = ".", features = ["platform-verifier"] }
+ring = "0.17"
 miniz_oxide.workspace = true
 proptest.workspace = true
 

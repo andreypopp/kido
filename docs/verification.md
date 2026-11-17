@@ -81,6 +81,15 @@ closes a peer waits, with a deadline, until the other end sees the
 hangup: a `posix_spawn` in another thread holds every descriptor
 until its child execs.
 
+**The TLS tests** (`ko_client/src/wire/tests/tls.rs` and, for the
+I/O thread, `ko_client/src/ffi/tests/tls.rs`) run a rustls server on
+`127.0.0.1` in the test process, in front of a scripted peer. They
+make their certificates when they run (`wire/tls_certs.rs`, with
+`ring`): Apple's verifier refuses a server certificate with a long
+validity, so a committed certificate would expire. The test gives its
+root to the client as an extra root, beside the system's roots; the
+system's trust store never changes.
+
 `ko_pane/tests/pane.rs` drives the `ko-pane` binary over a socketpair
 and a ring. The `Server` SIGTERM test starts the `ko-pane` that `make
 test` builds and names in `KO_PANE_EXE`.

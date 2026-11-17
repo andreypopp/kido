@@ -27,6 +27,40 @@ pub(super) fn failed(shared: &Arc<Shared>, task: &Arc<Task>, code: Code, message
 }
 
 impl Engine<'_> {
+    pub(super) fn arm_webview_deadline(&mut self) {
+        let deadline = self
+            .webview
+            .iter()
+            .filter_map(|open| open.upstream.deadline())
+            .min();
+        if deadline == self.webview_due {
+            return;
+        }
+        self.webview_due = deadline;
+        if let Some(deadline) = deadline {
+            let _ = self.poll.start(
+                self.webview_deadline,
+                deadline.saturating_duration_since(Instant::now()),
+                None,
+            );
+        } else {
+            self.poll.stop(self.webview_deadline);
+        }
+    }
+
+    pub(super) fn webview_expired(&mut self, now: Instant) {
+        let mut at = 0;
+        while at < self.webview.len() {
+            match self.webview[at].upstream.expired(&mut self.poll, now) {
+                Ok(true) => self.end_webview(at, Code::Io, "webview request timed out"),
+                Ok(false) => at += 1,
+                Err(error) => {
+                    let (code, message) = failure(&error);
+                    self.end_webview(at, code, &message);
+                }
+            }
+        }
+    }
     pub(super) fn webview_index(&self, id: u64) -> Option<usize> {
         self.webview.iter().position(|open| open.task.id == id)
     }
@@ -46,9 +80,14 @@ impl Engine<'_> {
         } else {
             Kind::Http(request.route.method())
         };
+        let Some(endpoint) = locked(&self.shared.resolved).clone() else {
+            failed(self.shared, &task, Code::NoServer, "no resolved server");
+            task.finish();
+            return;
+        };
         match Upstream::open(
             &mut self.poll,
-            &self.shared.endpoint,
+            &endpoint,
             kind,
             &target,
             &request.headers,
@@ -107,11 +146,7 @@ impl Open {
     pub(super) fn token(&self) -> Token {
         self.upstream.token()
     }
-    pub(super) fn expired(&self, now: Instant) -> bool {
-        self.upstream
-            .deadline()
-            .is_some_and(|deadline| deadline <= now)
-    }
+
     pub(super) fn dispose(self, poll: &mut Poll) {
         self.upstream.dispose(poll);
         self.task.finish();
@@ -135,9 +170,16 @@ impl Open {
         if self.task.cancelled() {
             return Ok(true);
         }
+        let token = self.upstream.token();
         if ready.write {
+            self.upstream
+                .writable(poll)
+                .map_err(|error| failure(&error))?;
             self.upstream.flush(poll).map_err(|error| failure(&error))?;
             self.task.progress(self.upstream.written());
+        }
+        if token != self.upstream.token() {
+            return Ok(false);
         }
         if self.upstream.reported() && self.upstream.drained() {
             return Ok(true);

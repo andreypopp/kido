@@ -81,6 +81,71 @@ pub fn connect_nonblocking(path: &Path) -> io::Result<OwnedFd> {
     Ok(socket)
 }
 
+pub fn connect_tcp(address: std::net::SocketAddr) -> io::Result<std::net::TcpStream> {
+    let domain = if address.is_ipv4() {
+        libc::AF_INET
+    } else {
+        libc::AF_INET6
+    };
+    let (mut v4, mut v6, raw) = crate::retry::retry(|| {
+        // SAFETY: zeroed sockaddr_in and sockaddr_in6 are valid; socket has no memory preconditions.
+        unsafe {
+            Ok((
+                std::mem::zeroed::<libc::sockaddr_in>(),
+                std::mem::zeroed::<libc::sockaddr_in6>(),
+                check(libc::socket(domain, libc::SOCK_STREAM, 0))?,
+            ))
+        }
+    })?;
+    // SAFETY: raw is a new descriptor with no other owner.
+    let socket = unsafe { OwnedFd::from_raw_fd(raw) };
+    crate::fd::set_cloexec(socket.as_fd())?;
+    crate::fd::set_nonblocking(socket.as_fd())?;
+    let (pointer, length) = match address {
+        std::net::SocketAddr::V4(address) => {
+            v4.sin_family = libc::sa_family_t::try_from(libc::AF_INET).unwrap_or_default();
+            v4.sin_port = address.port().to_be();
+            v4.sin_addr.s_addr = u32::from_ne_bytes(address.ip().octets());
+            #[cfg(any(target_os = "macos", target_os = "ios"))]
+            {
+                v4.sin_len = u8::try_from(size_of::<libc::sockaddr_in>()).unwrap_or_default();
+            }
+            (
+                (&raw const v4).cast::<libc::sockaddr>(),
+                size_of::<libc::sockaddr_in>(),
+            )
+        }
+        std::net::SocketAddr::V6(address) => {
+            v6.sin6_family = libc::sa_family_t::try_from(libc::AF_INET6).unwrap_or_default();
+            v6.sin6_port = address.port().to_be();
+            v6.sin6_addr.s6_addr = address.ip().octets();
+            v6.sin6_flowinfo = address.flowinfo().to_be();
+            v6.sin6_scope_id = address.scope_id();
+            #[cfg(any(target_os = "macos", target_os = "ios"))]
+            {
+                v6.sin6_len = u8::try_from(size_of::<libc::sockaddr_in6>()).unwrap_or_default();
+            }
+            (
+                (&raw const v6).cast::<libc::sockaddr>(),
+                size_of::<libc::sockaddr_in6>(),
+            )
+        }
+    };
+    let length = libc::socklen_t::try_from(length)
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "socket address too large"))?;
+    // SAFETY: pointer refers to the initialized address of length bytes for this call; socket is owned.
+    let connected = check(unsafe { libc::connect(socket.as_raw_fd(), pointer, length) });
+    if let Err(error) = connected
+        && !matches!(
+            error.raw_os_error(),
+            Some(libc::EINTR | libc::EINPROGRESS | libc::EALREADY)
+        )
+    {
+        return Err(error);
+    }
+    Ok(std::net::TcpStream::from(socket))
+}
+
 pub fn set_send_buffer(fd: BorrowedFd<'_>, bytes: usize) -> io::Result<()> {
     set(fd, libc::SO_SNDBUF, bytes)
 }
@@ -181,6 +246,49 @@ mod tests {
     use super::*;
     use std::os::fd::AsFd;
     use std::os::unix::net::{UnixListener, UnixStream};
+
+    #[test]
+    fn tcp_connect_reaches_ipv4_and_ipv6_and_reports_refusal() {
+        use crate::fd::{Waited, Want};
+        use std::net::TcpListener;
+        for address in ["127.0.0.1:0", "[::1]:0"] {
+            let listener = TcpListener::bind(address).unwrap();
+            let socket = connect_tcp(listener.local_addr().unwrap()).unwrap();
+            assert_eq!(
+                crate::fd::wait(
+                    socket.as_fd(),
+                    Want::Write,
+                    None,
+                    Some(std::time::Duration::from_secs(5))
+                )
+                .unwrap(),
+                Waited::Ready
+            );
+            assert_eq!(socket.take_error().unwrap().map(|error| error.kind()), None);
+            let (peer, _) = listener.accept().unwrap();
+            assert_eq!(peer.peer_addr().unwrap(), socket.local_addr().unwrap());
+        }
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = listener.local_addr().unwrap();
+        drop(listener);
+        let refused = match connect_tcp(address) {
+            Err(error) => error,
+            Ok(socket) => {
+                assert_eq!(
+                    crate::fd::wait(
+                        socket.as_fd(),
+                        Want::Write,
+                        None,
+                        Some(std::time::Duration::from_secs(5))
+                    )
+                    .unwrap(),
+                    Waited::Ready
+                );
+                socket.take_error().unwrap().unwrap()
+            }
+        };
+        assert_eq!(refused.kind(), io::ErrorKind::ConnectionRefused);
+    }
 
     #[test]
     fn a_socketpair_peer_is_this_user_and_this_process() {

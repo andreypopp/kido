@@ -379,6 +379,7 @@ struct Shared {
     callback: Callback,
     user: User,
     endpoint: Endpoint,
+    resolved: Mutex<Option<Arc<crate::endpoint::Resolved>>>,
     cancel: Arc<Wake>,
     wake: Wake,
     commands: Mutex<VecDeque<Command>>,
@@ -907,11 +908,16 @@ fn start(
     let (Ok(cancel), Ok(wake)) = (Wake::new(), Wake::new()) else {
         return Err(Code::Io);
     };
+    let resolved = match &endpoint {
+        Endpoint::Unix(path) => Some(Arc::new(crate::endpoint::Resolved::Unix(path.clone()))),
+        Endpoint::Tls(_) => None,
+    };
     let shared = Arc::new(Shared {
         queue,
         callback,
         user,
         endpoint,
+        resolved: Mutex::new(resolved),
         cancel: Arc::new(cancel),
         wake,
         commands: Mutex::new(VecDeque::new()),
@@ -1569,6 +1575,7 @@ mod tests {
     type Plain = Arc<dyn Fn(&Request) -> Option<(u16, String)> + Send + Sync>;
     type Raw = Arc<dyn Fn(&Request, &mut UnixStream) -> bool + Send + Sync>;
 
+    mod tls;
     mod webview;
 
     const WAIT: Duration = Duration::from_secs(10);
@@ -3293,6 +3300,39 @@ mod tests {
         move_focus.send(()).unwrap();
         assert_eq!(fixture.next(), Seen::Layout(4, 1, 1, 2));
         assert_eq!(focus_of(&model_of(client)), (json!(4), json!("pane_2")));
+        close(client);
+    }
+
+    #[test]
+    fn a_unix_call_reaches_the_socket_while_the_client_link_is_down() {
+        let server = serve(
+            "unix-outage-call",
+            client_script(|socket, _| {
+                socket
+                    .send(Message::text(
+                        r#"{"type":"refused","message":"client link stopped"}"#,
+                    ))
+                    .unwrap();
+            }),
+        );
+        let fixture = Fixture::new();
+        let client = fixture.connect(&server);
+        assert!(matches!(fixture.next(), Seen::Failed(Code::Refused, _)));
+        let answer = {
+            let handle = super::client(client).unwrap();
+            calls::call(&handle, |endpoint, id, cancel| {
+                crate::wire::request(
+                    endpoint,
+                    (id, None),
+                    &ko_wire::api::Route::Version {},
+                    b"",
+                    Some(cancel),
+                )
+                .map_err(calls::rejected)
+            })
+        };
+        assert_eq!(answer, (Code::Ok, b"[]".to_vec()));
+        assert!(server.targets("GET").contains(&"/version".to_owned()));
         close(client);
     }
 

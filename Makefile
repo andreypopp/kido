@@ -191,10 +191,10 @@ target/%/release/libko_client_private.a: target/%/release/libko_client.a ko_clie
 target/%/release/libko_client.a: build/.ko_client_deps FORCE
 	@test -d "$$(rustc --print target-libdir --target $*)" || \
 	{ echo "ko-client-xcframework: rust target $* is not installed for $$(rustc --version); run: rustup target add $*" >&2; exit 1; }
-	$(CARGO) rustc --locked --release -p ko_client --lib --crate-type staticlib --target $*
+	$(XCDEV) $(CARGO) rustc --locked --release -p ko_client --features platform-verifier --lib --crate-type staticlib --target $*
 
 build/.ko_client_deps: Cargo.lock ko_client/Cargo.toml
-	set -e; tree=$$($(CARGO) tree --locked --target all -p ko_client -e normal,build --prefix none); \
+	set -e; tree=$$($(CARGO) tree --locked --target all -p ko_client --features platform-verifier -e normal,build --prefix none); \
 	! echo "$$tree" | grep -qE '^ko_(server|vt)' || \
 	{ echo "ko-client-xcframework: ko_client depends on ko_server or ko_vt" >&2; exit 1; }
 	mkdir -p build && touch $@

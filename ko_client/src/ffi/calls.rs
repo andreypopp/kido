@@ -1,6 +1,6 @@
 // The calls that block until the server answered: the caller runs them off the main queue.
 
-use crate::endpoint::Endpoint;
+use crate::endpoint::Resolved;
 use std::ffi::{c_char, c_int};
 use std::time::Duration;
 
@@ -17,11 +17,14 @@ use crate::wire;
 
 pub(super) fn call(
     client: &Client,
-    work: impl FnOnce(&Endpoint, Option<ClientId>, &Wake) -> Result<Vec<u8>, (Code, Vec<u8>)>,
+    work: impl FnOnce(&Resolved, Option<ClientId>, &Wake) -> Result<Vec<u8>, (Code, Vec<u8>)>,
 ) -> (Code, Vec<u8>) {
     let shared = &client.shared;
     let id = *locked(&shared.client);
-    let result = work(&shared.endpoint, id, &shared.cancel);
+    let Some(endpoint) = locked(&shared.resolved).clone() else {
+        return (Code::NoServer, b"no resolved server".to_vec());
+    };
+    let result = work(&endpoint, id, &shared.cancel);
     match result {
         Ok(bytes) => (Code::Ok, bytes),
         Err((code, bytes)) => (
@@ -41,7 +44,15 @@ fn io_failure(message: String) -> (Code, Vec<u8>) {
 
 pub(super) fn rejected(rejected: wire::Rejected) -> (Code, Vec<u8>) {
     match rejected {
+        wire::Rejected::Tls(message) | wire::Rejected::Identity(message) => {
+            (Code::Refused, message.into_bytes())
+        }
         wire::Rejected::Io(message) | wire::Rejected::Unanswered(message) => io_failure(message),
+        wire::Rejected::Status {
+            status: 502,
+            reason,
+            ..
+        } => (Code::NoServer, reason.into_bytes()),
         wire::Rejected::Status { body, .. } => match protocol::decode::<protocol::Error>(&body) {
             Ok(error) => (Code::of(&error.kind), error.message.into_bytes()),
             Err(_) => (Code::Unknown, body),
@@ -442,7 +453,7 @@ pub unsafe extern "C" fn ko_client_probe(
         return Code::Argument;
     };
     let within = Duration::from_millis(u64::from(within_ms));
-    let (code, bytes) = match crate::api::version(&Endpoint::Unix(socket.into()), within, None)
+    let (code, bytes) = match crate::api::version(&Resolved::Unix(socket.into()), within, None)
         .map_err(|error| failure(&error))
     {
         Ok((mismatch, server)) => (

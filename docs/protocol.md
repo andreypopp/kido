@@ -84,7 +84,12 @@ this close means the end of the pane, and a client treats it as that,
 not as an outage. A server that stops (`ko kill-server`, `SIGTERM`)
 closes each `/client` link with code 1001 (going away); only this
 code means the end of the server, and a client detaches on it
-instead of reconnecting. A client reads the code, never the reason.
+instead of reconnecting. On a TLS endpoint (below), 1001 is a lost
+link: the proxy in front of the server sends it to every WebSocket
+when it restarts while ko runs. The reconnect finds out whether the
+server ended: no answer or a 502 is no server, and a welcome with
+another `instance` is a new server. A client reads the code, never
+the reason.
 
 Each side answers a received close frame with a close frame of the
 same code and reason (RFC 6455, section 5.5.1), unless it sent its own
@@ -136,6 +141,15 @@ that proxy passes the client's `Host` and adds `X-Forwarded-*`
 headers, which ko ignores, and the refusal of an `Origin` header
 covers its requests too. Forwarded SSH connections arrive from sshd
 as the user, so they pass. ko itself has no TLS and no TCP listener.
+
+TLS: the client core (`ko_client`) also reaches a server through a
+proxy that ends TLS 1.3 in front of the socket and authenticates
+each device by its client certificate. The client sends the same
+HTTP/1.1 and WebSockets over TLS; the `Host` header is the endpoint's
+host name, where a unix socket sends `localhost`. Each connection is
+one TCP connection with a full handshake, as each connection on the
+socket is one socket connection. A proxy answers 502 while no server
+runs, which the client treats as no server.
 
 A request without identity headers is the user, who may do
 everything. A request that acts as a pane sends `Ko-Pane: pane_N` and

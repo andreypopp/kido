@@ -1,4 +1,4 @@
-use ko_client::endpoint::Endpoint;
+use ko_client::endpoint::Resolved;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -237,7 +237,7 @@ pub(crate) struct Mirror {
 
 impl Mirror {
     fn connect(
-        socket: &Endpoint,
+        socket: &Resolved,
         client: ClientId,
         pane: PaneId,
         resume: Option<u64>,
@@ -259,7 +259,7 @@ impl Mirror {
     }
 
     pub(crate) fn open(
-        socket: &Endpoint,
+        socket: &Resolved,
         client: ClientId,
         pane: PaneId,
         limits: Limits,
@@ -364,11 +364,11 @@ impl Mirror {
                 link,
                 token,
                 started,
-            } => match link.advance(poll, ready) {
+            } => match link.advance(poll, &mut ready) {
                 Ok(UpgradeStep::Pending(link)) => {
                     self.connection = Connection::Connecting {
                         link,
-                        token,
+                        token: ready.token,
                         started,
                     };
                     return Ok(());
@@ -885,7 +885,7 @@ impl Mirror {
     pub(crate) fn reopen(
         &mut self,
         cause: String,
-        socket: &Endpoint,
+        socket: &Resolved,
         client: ClientId,
         pane: PaneId,
         poll: &mut Poll,
@@ -898,7 +898,7 @@ impl Mirror {
 
     pub(crate) fn relink(
         &mut self,
-        socket: &Endpoint,
+        socket: &Resolved,
         client: ClientId,
         pane: PaneId,
         poll: &mut Poll,
@@ -968,7 +968,7 @@ mod tests {
         let client = "client_1".parse().unwrap();
         let pane = "pane_1".parse().unwrap();
         let mut mirror = Mirror::open(
-            &Endpoint::Unix(path.clone()),
+            &Resolved::Unix(path.clone()),
             client,
             pane,
             default_limits(),
@@ -1045,7 +1045,7 @@ mod tests {
         let listener = UnixListener::bind(&path).unwrap();
         mirror
             .relink(
-                &Endpoint::Unix(path.clone()),
+                &Resolved::Unix(path.clone()),
                 "client_1".parse().unwrap(),
                 "pane_1".parse().unwrap(),
                 &mut poll,

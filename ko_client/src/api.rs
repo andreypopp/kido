@@ -1,4 +1,4 @@
-use crate::endpoint::Endpoint;
+use crate::endpoint::Resolved;
 use crate::wire::stream::Stream;
 use std::fmt;
 use std::io;
@@ -76,7 +76,7 @@ pub(crate) fn response_error(response: &Response) -> ReplyError {
 }
 
 pub fn version(
-    socket: &Endpoint,
+    socket: &Resolved,
     within: Duration,
     cancel: Option<&Wake>,
 ) -> io::Result<(Option<ErrorKind>, Version)> {
@@ -90,6 +90,9 @@ pub fn version(
         wire::Limit::Idle(within),
         cancel,
     )?;
+    if response.status == 502 {
+        return Err(io::ErrorKind::ConnectionRefused.into());
+    }
     if response.status != 200 {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
@@ -120,7 +123,7 @@ pub enum Error {
     Server(Failure),
 }
 
-fn socket(dir: &Path, caller: Option<&Caller>) -> Result<Endpoint, Failure> {
+fn socket(dir: &Path, caller: Option<&Caller>) -> Result<Resolved, Failure> {
     if let Err(error) = dir.symlink_metadata()
         && connect::absent(&error)
     {
@@ -132,7 +135,7 @@ fn socket(dir: &Path, caller: Option<&Caller>) -> Result<Endpoint, Failure> {
         Dir::Existing
     };
     local::socket(mode, dir)
-        .map(Endpoint::Unix)
+        .map(Resolved::Unix)
         .map_err(Failure::Failed)
 }
 
@@ -221,10 +224,8 @@ pub fn stream(
     let route = Route::of_request("GET", path).map_err(|_| Error::NotWebsocket)?;
     let limit = route.upgrade().ok_or(Error::NotWebsocket)?;
     let stream = socket(dir, caller.as_ref())
-        .and_then(|Endpoint::Unix(socket)| {
-            connect::connect(&socket, connect::PATIENCE, None)
-                .map(Stream::Unix)
-                .map_err(failure)
+        .and_then(|endpoint| {
+            Stream::open(&endpoint, wire::Limit::Idle(wire::READ_TIMEOUT), None).map_err(failure)
         })
         .map_err(Error::Server)?;
     Link::handshake(
@@ -239,7 +240,7 @@ pub fn stream(
 }
 
 pub fn patch_pane(
-    socket: &Endpoint,
+    socket: &Resolved,
     caller: Caller,
     body: &protocol::PanePatch,
 ) -> Result<(), Failure> {

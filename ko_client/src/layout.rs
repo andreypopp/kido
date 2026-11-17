@@ -1,4 +1,4 @@
-use crate::endpoint::Endpoint;
+use crate::endpoint::Resolved;
 
 use ko_sys::event::Wake;
 use ko_wire::api::Route;
@@ -75,7 +75,7 @@ fn decoded<T: Serialize + serde::de::DeserializeOwned>(body: &[u8]) -> Result<T,
     protocol::decode(body).map_err(|error| Rejected::Io(text(error)))
 }
 
-fn fetch(socket: &Endpoint, who: Who, cancel: Option<&Wake>) -> Result<Snapshot, Rejected> {
+fn fetch(socket: &Resolved, who: Who, cancel: Option<&Wake>) -> Result<Snapshot, Rejected> {
     decoded::<LayoutPanes>(&wire::request(
         socket,
         who,
@@ -87,7 +87,7 @@ fn fetch(socket: &Endpoint, who: Who, cancel: Option<&Wake>) -> Result<Snapshot,
 }
 
 pub(crate) fn send(
-    socket: &Endpoint,
+    socket: &Resolved,
     who: Who,
     revision: Revision,
     layout: DraftLayout,
@@ -164,7 +164,7 @@ pub(crate) fn edit_from(
     Err(EditError::Exhausted)
 }
 
-pub fn edit(socket: &Endpoint, who: Who, edit: &Edit) -> Result<Edited, EditError> {
+pub fn edit(socket: &Resolved, who: Who, edit: &Edit) -> Result<Edited, EditError> {
     let first = fetch(socket, who.clone(), None).map_err(EditError::from)?;
     edit_from(first, edit, |revision, layout| {
         send(socket, who.clone(), revision, layout, None)
@@ -172,7 +172,7 @@ pub fn edit(socket: &Endpoint, who: Who, edit: &Edit) -> Result<Edited, EditErro
 }
 
 pub(crate) fn replace(
-    socket: &Endpoint,
+    socket: &Resolved,
     who: Who,
     document: &Document,
     cancel: Option<&Wake>,
@@ -216,7 +216,7 @@ fn single(edited: &Edited) -> Result<PaneId, String> {
     }
 }
 
-pub fn add_session(socket: &Endpoint, who: Who, request: &CreatePane) -> Result<PaneId, String> {
+pub fn add_session(socket: &Resolved, who: Who, request: &CreatePane) -> Result<PaneId, String> {
     let edit = Edit::AddSession {
         name: ko_name()?,
         new: request.clone(),
@@ -225,7 +225,7 @@ pub fn add_session(socket: &Endpoint, who: Who, request: &CreatePane) -> Result<
 }
 
 pub fn add_window(
-    socket: &Endpoint,
+    socket: &Resolved,
     who: Who,
     (session, after): (SessionId, WindowId),
     request: &CreatePane,

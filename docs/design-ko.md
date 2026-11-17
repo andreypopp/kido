@@ -1147,6 +1147,26 @@ through the master to tell them apart. Kido.app owns its own master,
 forward and agent publication and connects to the forward's local
 socket.
 
+The second transport is TLS to a proxy in front of the socket
+(protocol.md, section 1). The client core names its server by an
+`Endpoint` (`ko_client/src/endpoint.rs`): a unix socket, or a TLS
+host with its port and a finished rustls client configuration (TLS
+1.3, ALPN `http/1.1`, one signature scheme, no session resumption,
+the system's trust through `rustls-platform-verifier`). Everything
+above the byte stream (`ko_client/src/wire/stream.rs`) is the same
+for both. The I/O thread resolves the host once for each dial of
+`/client`, on a short thread that it never joins, so a close never
+waits on the resolver. Requests and views use the latest resolved
+addresses, also during an outage, so a request dials as it does on a
+unix socket; only a TLS endpoint before its first resolution answers
+no server. A dial tries each
+address for 5 s within the request's own limit. The `/client` handshake
+runs inside the join, which blocks the I/O thread but ends on cancel
+or its deadline, as on an SSH forward; a view's runs inside its
+non-blocking upgrade step. A server certificate that is not valid
+and a refusal of the client's certificate are final: the client
+stops and does not reconnect. A proxy's 502 is no server.
+
 Reconnect: a lost link starts attempts with a backoff of 100 ms to
 2 s under one outage deadline of 60 s. The local terminal client
 uses the same attempts (section 4.11). An attempt sends a new hello,

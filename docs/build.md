@@ -96,13 +96,16 @@ changes the script.
 `aarch64-unknown-linux-musl` and `x86_64-unknown-linux-musl` of the
 static Linux ko, and `aarch64-apple-ios` and `aarch64-apple-ios-sim`
 of `ko_client`'s iOS slices, so `rustup toolchain install` adds them.
-For the musl targets, `.cargo/config.toml` names the linker wrappers
+For the musl targets, `.cargo/config.toml` names the wrappers
 `scripts/zig-cc-<arch>-linux-musl` (`zig cc -target
-<arch>-linux-musl`) and sets `-C link-self-contained=no`: with
-rustc's own `crt1.o`, `_start` is defined twice. Both names are
-symlinks to `scripts/zig-cc-musl`, which reads the target from its
-own name and drops `-Wl,--fix-cortex-a53-843419`, which zig's linker
-refuses.
+<arch>-linux-musl`) as the linker and as the C compiler
+(`CC_<target>`) of the `cc` crate, which builds `ring`'s C and
+assembly, and sets `-C link-self-contained=no`: with rustc's own
+`crt1.o`, `_start` is defined twice. Both names are symlinks to
+`scripts/zig-cc-musl`, which reads the target from its own name and
+drops `-Wl,--fix-cortex-a53-843419`, which zig's linker refuses, and
+the `--target=` that the `cc` crate adds, which would override zig's
+target.
 
 Nightly exists only for cargo-fuzz and Miri: `scripts/nightly.sh`
 pins it, and `scripts/fuzz.sh`, `scripts/miri.sh` and
@@ -233,7 +236,14 @@ launch or stop exports), which makes every other symbol local, and
 then `nm` must show exactly the names of that list. The reason:
 Rust's `compiler_builtins` and Zig's `compiler_rt` in the app's
 libghostty define the same symbols, and the app's link refuses the
-duplicates.
+duplicates. The same step makes `ring`'s C and assembly local. Each
+cargo build of a slice runs with `DEVELOPER_DIR`, as the `xcrun`
+steps do, so that the `cc` crate finds the slice's SDK, and with
+`ko_client`'s feature `platform-verifier`, which only this build and
+`ko_client`'s own tests enable. The verifier links Security.framework
+and CoreFoundation, and `ko` must link neither: CoreFoundation adds
+`__CF_USER_TEXT_ENCODING` to the environment of its process, which
+an exec session must not get.
 
 ## The benchmarks
 
@@ -338,7 +348,8 @@ What the setup does, and why:
                         head; ci-website-watch.sh; ci-like.sh and
                         ci-like/Dockerfile, the Linux reproduction;
                         install-zig.sh, the zig pin; zig-cc-musl, the
-                        musl linker wrapper of .cargo/config.toml, under
+                        musl C compiler and linker wrapper of
+                        .cargo/config.toml, under
                         its names zig-cc-<arch>-linux-musl; verus.sh,
                         nightly.sh, fuzz.sh, miri.sh, bindgen.sh;
                         quiet-limit

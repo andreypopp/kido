@@ -168,8 +168,9 @@ pub enum Rejoin {
     Fresh(Model),
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug)]
 pub enum JoinError {
+    Io(std::io::Error),
     Refused(String),
     Protocol(String),
 }
@@ -178,11 +179,8 @@ impl Model {
     pub fn join(link: &mut Link, hello: Hello) -> Result<Model, JoinError> {
         link.send(protocol::json(&ClientRequest::Hello(hello)))
             .and_then(|()| link.flush_blocking())
-            .map_err(|error| JoinError::Protocol(text(error)))?;
-        let mut next = || match link
-            .receive()
-            .map_err(|error| JoinError::Protocol(text(error)))?
-        {
+            .map_err(JoinError::Io)?;
+        let mut next = || match link.receive().map_err(JoinError::Io)? {
             Next::Text(event) => {
                 match protocol::decode::<ClientEvent>(event.as_bytes())
                     .map_err(|error| JoinError::Protocol(text(error)))?

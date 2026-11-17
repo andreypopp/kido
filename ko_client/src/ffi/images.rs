@@ -1,4 +1,4 @@
-use crate::endpoint::Endpoint;
+use crate::endpoint::Resolved;
 use std::ffi::{c_char, c_int};
 
 use ko_sys::event::Wake;
@@ -12,7 +12,7 @@ use ko_wire::protocol::{
 
 use super::calls::{call, rejected};
 use super::{Buffer, Client, Code, client, hand_over, text_of};
-use crate::wire::{Limit, READ_TIMEOUT, Rejected, exchange, succeeded, text};
+use crate::wire::{Limit, READ_TIMEOUT, Rejected, exchange, succeeded};
 
 const NAME_CAPACITY: usize = 32;
 
@@ -31,7 +31,7 @@ pub struct Image {
 }
 
 fn request(
-    socket: &Endpoint,
+    socket: &Resolved,
     client: Option<ClientId>,
     route: &Route,
     accept_shm: bool,
@@ -52,7 +52,7 @@ fn request(
         Limit::Idle(READ_TIMEOUT),
         cancel,
     )
-    .map_err(|error| Rejected::Unanswered(text(error)))?;
+    .map_err(Rejected::unanswered)?;
     succeeded(response)
 }
 

@@ -1,11 +1,11 @@
 use ko_wire::protocol::webview::FrameKind;
 
-use crate::endpoint::Endpoint;
+use crate::endpoint::Resolved;
 use crate::wire::stream::Stream;
 use std::io;
 use std::ops::Range;
 use std::os::fd::BorrowedFd;
-use std::os::unix::net::UnixStream;
+
 use std::path::Path;
 use std::time::Instant;
 
@@ -92,15 +92,14 @@ fn invalid(message: impl Into<String>) -> io::Error {
 impl Upstream {
     pub(crate) fn open(
         poll: &mut Poll,
-        endpoint: &Endpoint,
+        endpoint: &Resolved,
         kind: Kind,
         target: &ko_wire::protocol::RequestTarget,
         headers: &Headers,
         destination: Target,
         body: &[u8],
     ) -> io::Result<Self> {
-        let Endpoint::Unix(path) = endpoint;
-        let stream = Stream::Unix(UnixStream::from(ko_sys::sock::connect_nonblocking(path)?));
+        let stream = Stream::start(endpoint)?;
         let token = poll.watch(stream.fd(), Interest::ReadWrite);
         let client = match destination {
             #[cfg(target_vendor = "apple")]
@@ -121,7 +120,7 @@ impl Upstream {
         let (bytes, upgrade) = match kind {
             Kind::Upgrade => {
                 let (bytes, key) =
-                    ko_wire::ws::upgrade_request("localhost", "GET", target, client, &fields);
+                    ko_wire::ws::upgrade_request(stream.host(), "GET", target, client, &fields);
                 (bytes, Some(key))
             }
             Kind::Http(method) => {
@@ -131,7 +130,7 @@ impl Upstream {
                         let mut fields = fields;
                         fields.push(("Connection", "close"));
                         http::call(
-                            "localhost",
+                            stream.host(),
                             method.http(),
                             target,
                             Some(client),
@@ -140,7 +139,7 @@ impl Upstream {
                         )
                     }
                     Target::Program => {
-                        http::program_call("localhost", method.http(), target, &fields, body)
+                        http::program_call(stream.host(), method.http(), target, &fields, body)
                     }
                 };
                 (bytes, None)
@@ -189,6 +188,7 @@ impl Upstream {
     pub(crate) fn backed_up(&self) -> bool {
         self.out.backed_up(http::MAX_BODY)
             || matches!(&self.phase,Phase::Socket {link,..} if link.backed_up())
+            || matches!(&self.phase,Phase::Http {stream,..} if stream.pending_write())
     }
     fn is_socket(&self) -> bool {
         matches!(self.phase, Phase::Socket { .. })
@@ -214,21 +214,26 @@ impl Upstream {
     pub(crate) fn drained(&self) -> bool {
         match &self.phase {
             Phase::Closed => true,
-            Phase::Http { .. } => self.out.is_empty(),
+            Phase::Http { stream, .. } => self.out.is_empty() && !stream.pending_write(),
             Phase::Socket { link, .. } => link.drained(),
         }
     }
     #[cfg(target_vendor = "apple")]
     pub(crate) fn written(&self) -> u64 {
         match &self.phase {
-            Phase::Closed | Phase::Http { .. } => self.out.written(),
-            Phase::Socket { link, .. } => link.output().written(),
+            Phase::Closed => self.out.written(),
+            Phase::Http { stream, .. } => stream.flushed(self.out.written()),
+            Phase::Socket { link, .. } => link.written(),
         }
     }
     pub(crate) fn deadline(&self) -> Option<Instant> {
         match &self.phase {
             Phase::Closed => None,
-            Phase::Http { reader, .. } => (!reader.started()).then_some(self.deadline),
+            Phase::Http { stream, reader, .. } => (!reader.started()).then(|| {
+                stream
+                    .deadline()
+                    .map_or(self.deadline, |deadline| deadline.min(self.deadline))
+            }),
             Phase::Socket {
                 phase: SocketPhase::Closing(deadline) | SocketPhase::Finishing(deadline),
                 ..
@@ -239,6 +244,37 @@ impl Upstream {
             } => None,
         }
     }
+    fn retry(&mut self, poll: &mut Poll, error: io::Error) -> io::Result<()> {
+        let Phase::Http { stream, .. } = &mut self.phase else {
+            return Err(error);
+        };
+        if self.out.written() != 0 {
+            return Err(error);
+        }
+        let mut ready = ko_sys::event::Ready {
+            token: self.token,
+            read: false,
+            write: false,
+        };
+        stream.retry_watched(poll, &mut ready, error)?;
+        self.token = ready.token;
+        self.reads = Reads::new();
+        Ok(())
+    }
+
+    pub(crate) fn expired(&mut self, poll: &mut Poll, now: Instant) -> io::Result<bool> {
+        if let Phase::Http { stream, reader, .. } = &self.phase {
+            if !reader.started() && now >= self.deadline {
+                return Ok(true);
+            }
+            if stream.deadline().is_some_and(|deadline| now >= deadline) {
+                self.retry(poll, io::ErrorKind::TimedOut.into())?;
+                return Ok(false);
+            }
+        }
+        Ok(self.deadline().is_some_and(|deadline| now >= deadline))
+    }
+
     pub(crate) fn interest(&self, poll: &mut Poll, read: bool) {
         match &self.phase {
             Phase::Closed => {}
@@ -251,16 +287,27 @@ impl Upstream {
             }
         }
     }
+    #[cfg(target_vendor = "apple")]
+    pub(crate) fn writable(&mut self, poll: &mut Poll) -> io::Result<()> {
+        let result = match &mut self.phase {
+            Phase::Http { stream, .. } => stream.writable(),
+            _ => Ok(()),
+        };
+        match result {
+            Ok(()) => Ok(()),
+            Err(error) => self.retry(poll, error),
+        }
+    }
+
     pub(crate) fn flush(&mut self, poll: &mut Poll) -> io::Result<()> {
-        match &mut self.phase {
+        let result = match &mut self.phase {
             Phase::Closed => Ok(()),
-            Phase::Http { stream, .. } => {
-                if let Some(error) = stream.take_error()? {
-                    return Err(error);
-                }
-                stream.flush(&mut self.out)
-            }
+            Phase::Http { stream, .. } => stream.flush(&mut self.out),
             Phase::Socket { link, .. } => link.settle(poll),
+        };
+        match result {
+            Ok(()) => Ok(()),
+            Err(error) => self.retry(poll, error),
         }
     }
     fn body(&mut self, bytes: &[u8]) -> io::Result<()> {
@@ -333,10 +380,14 @@ impl Upstream {
                         _ => 0,
                     };
                     reader.commit_read(count);
-                    match result? {
-                        Some(Read::Data(_)) => {}
-                        Some(Read::End) => *eof = true,
-                        None => return Ok(None),
+                    match result {
+                        Ok(Some(Read::Data(_))) => {}
+                        Ok(Some(Read::End)) => *eof = true,
+                        Ok(None) => return Ok(None),
+                        Err(error) => {
+                            self.retry(poll, error)?;
+                            return Ok(None);
+                        }
                     }
                 }
                 Phase::Socket { link, phase } => {
@@ -496,7 +547,7 @@ fn command(
     }
     match Upstream::open(
         poll,
-        &Endpoint::Unix(path.to_owned()),
+        &Resolved::Unix(path.to_owned()),
         kind,
         &target,
         &headers,
@@ -691,8 +742,8 @@ pub fn serve(
         while at < requests.len() {
             if requests[at]
                 .upstream
-                .deadline()
-                .is_some_and(|deadline| deadline <= now)
+                .expired(&mut poll, now)
+                .unwrap_or(true)
             {
                 if !requests[at].upstream.closing() {
                     failed(&mut server, &requests[at], AbortReason::Program)?;

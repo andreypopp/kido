@@ -1,8 +1,9 @@
 pub(crate) mod stream;
+
 mod upgrade;
 pub use upgrade::{Connecting, UpgradeStep};
 
-use crate::endpoint::Endpoint;
+use crate::endpoint::Resolved;
 use std::fmt::Display;
 use std::io::{self, Read, Write};
 #[cfg(test)]
@@ -22,7 +23,7 @@ use ko_wire::ws::{accepted, refused, upgrade_request};
 use tungstenite::protocol::{Role, WebSocketConfig, WebSocketContext};
 use tungstenite::{Bytes, Error, Message, Utf8Bytes};
 
-use crate::connect::{self, PATIENCE};
+use crate::connect;
 
 const MAX_MESSAGE: usize = 128 << 20;
 const MAX_PENDING: usize = 1 << 20;
@@ -74,15 +75,33 @@ struct Interruptible<'a> {
 
 impl Read for Interruptible<'_> {
     fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
-        match fd::wait(
-            self.stream.fd(),
-            Want::Read,
-            self.cancel.map(Wake::fd),
-            Some(self.within.remaining()?),
-        )? {
-            Waited::Ready => self.stream.read(buffer),
-            Waited::Cancelled => Err(connect::cancelled_error()),
-            Waited::TimedOut => Err(io::ErrorKind::TimedOut.into()),
+        loop {
+            if let Some(result) = self.stream.buffered(buffer) {
+                match result {
+                    Err(error) if error.kind() == io::ErrorKind::WouldBlock => {}
+                    result => return result,
+                }
+            }
+            self.stream.progress()?;
+            let want = if self.stream.pending_write() {
+                Want::Write
+            } else {
+                Want::Read
+            };
+            match fd::wait(
+                self.stream.fd(),
+                want,
+                self.cancel.map(Wake::fd),
+                Some(self.within.remaining()?),
+            )? {
+                Waited::Ready if matches!(want, Want::Write) => continue,
+                Waited::Ready => match self.stream.read(buffer) {
+                    Err(error) if error.kind() == io::ErrorKind::WouldBlock => {}
+                    read => return read,
+                },
+                Waited::Cancelled => return Err(connect::cancelled_error()),
+                Waited::TimedOut => return Err(io::ErrorKind::TimedOut.into()),
+            }
         }
     }
 }
@@ -112,6 +131,21 @@ fn write_until(
                 }
             }
             Err(error) => return Err(error),
+        }
+    }
+    while stream.pending_write() {
+        stream.progress()?;
+        if stream.pending_write() {
+            match fd::wait(
+                stream.fd(),
+                Want::Write,
+                cancel.map(Wake::fd),
+                Some(within.remaining()?),
+            )? {
+                Waited::Ready => {}
+                Waited::Cancelled => return Err(connect::cancelled_error()),
+                Waited::TimedOut => return Err(io::ErrorKind::TimedOut.into()),
+            }
         }
     }
     stream.set_nonblocking(matches!(within, Limit::Deadline(_)))
@@ -153,7 +187,7 @@ fn borrowed<'a>(headers: &'a [(&'static str, String)]) -> Vec<(&'static str, &'a
 }
 
 fn open(
-    socket: &Endpoint,
+    socket: &Resolved,
     (client, caller): Who,
     (method, target): (&str, &protocol::RequestTarget),
     headers: &[(&str, &str)],
@@ -161,35 +195,18 @@ fn open(
     within: Limit,
     cancel: Option<&Wake>,
 ) -> io::Result<Stream> {
-    let Endpoint::Unix(socket) = socket;
-    let mut stream = Stream::Unix(match within {
-        Limit::Idle(_) => connect::connect(socket, PATIENCE, cancel)?,
-        Limit::Deadline(_) => loop {
-            let remaining = within.remaining()?;
-            match ko_sys::sock::connect_nonblocking(socket) {
-                Ok(socket) => break UnixStream::from(socket),
-                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
-                    std::thread::sleep(remaining.min(Duration::from_millis(10)));
-                }
-                Err(error) => return Err(error),
-            }
-        },
-    });
+    let mut stream = Stream::open(socket, within, cancel)?;
     let identity = identity(caller.as_ref());
     let mut extra = vec![("Connection", "keep-alive")];
     extra.extend_from_slice(headers);
     extra.extend(borrowed(&identity));
-    write_until(
-        &mut stream,
-        &call("localhost", method, target, client, &extra, body),
-        cancel,
-        within,
-    )?;
+    let request = call(stream.host(), method, target, client, &extra, body);
+    write_until(&mut stream, &request, cancel, within)?;
     Ok(stream)
 }
 
 pub(crate) fn exchange(
-    socket: &Endpoint,
+    socket: &Resolved,
     who: Who,
     target: (&str, &protocol::RequestTarget),
     headers: &[(&str, &str)],
@@ -226,13 +243,32 @@ pub enum Rejected {
         body: Vec<u8>,
     },
     Io(String),
+    Tls(String),
+    Identity(String),
     // The request was written and no answer was read: the server may have acted on it.
     Unanswered(String),
 }
 
+impl Rejected {
+    pub(crate) fn unanswered(error: io::Error) -> Self {
+        if stream::terminal(&error) {
+            Self::from(error)
+        } else {
+            Self::Unanswered(text(error))
+        }
+    }
+}
+
 impl From<io::Error> for Rejected {
     fn from(error: io::Error) -> Rejected {
-        Rejected::Io(text(error))
+        match error
+            .get_ref()
+            .and_then(|error| error.downcast_ref::<stream::Failure>())
+        {
+            Some(stream::Failure::Tls(_)) => Rejected::Tls(text(error)),
+            Some(stream::Failure::Identity(_)) => Rejected::Identity(text(error)),
+            None => Rejected::Io(text(error)),
+        }
     }
 }
 
@@ -248,7 +284,10 @@ impl Display for Rejected {
                 "{status} {reason}: {}",
                 String::from_utf8_lossy(body)
             ),
-            Rejected::Io(message) | Rejected::Unanswered(message) => formatter.write_str(message),
+            Rejected::Io(message)
+            | Rejected::Tls(message)
+            | Rejected::Identity(message)
+            | Rejected::Unanswered(message) => formatter.write_str(message),
         }
     }
 }
@@ -260,7 +299,7 @@ impl From<Rejected> for String {
 }
 
 fn fetch(
-    socket: &Endpoint,
+    socket: &Resolved,
     who: Who,
     route: &Route,
     body: &[u8],
@@ -284,7 +323,7 @@ fn fetch(
             Ok(())
         }
     })
-    .map_err(|error| Rejected::Unanswered(text(error)))?;
+    .map_err(Rejected::unanswered)?;
     response.body = failure;
     succeeded(response).map(|_| ())
 }
@@ -304,7 +343,7 @@ pub(crate) fn succeeded(response: Response) -> Result<Response, Rejected> {
 pub type Who = (Option<ClientId>, Option<Caller>);
 
 pub fn request(
-    socket: &Endpoint,
+    socket: &Resolved,
     who: Who,
     route: &Route,
     body: &[u8],
@@ -314,7 +353,7 @@ pub fn request(
 }
 
 pub fn request_within(
-    socket: &Endpoint,
+    socket: &Resolved,
     who: Who,
     route: &Route,
     body: &[u8],
@@ -329,7 +368,7 @@ pub fn request_within(
 }
 
 pub fn download(
-    socket: &Endpoint,
+    socket: &Resolved,
     client: ClientId,
     route: &Route,
     file: &mut impl Write,
@@ -449,14 +488,15 @@ impl Read for Io<'_> {
                     None => Err(io::ErrorKind::WouldBlock.into()),
                 }
             }
-        }?;
-        if count > 0 {
+        };
+        let read = self.stream.take_read();
+        if count.as_ref().is_ok_and(|count| *count > 0) || read {
             *self.received = self
                 .source
                 .as_ref()
                 .map_or_else(Instant::now, |(_, _, _, now)| *now);
         }
-        Ok(count)
+        count
     }
 }
 
@@ -533,7 +573,7 @@ impl Link {
         let (method, target) = route.to_request();
         let identity = identity(caller.as_ref());
         let (request, key) =
-            upgrade_request("localhost", method, &target, client, &borrowed(&identity));
+            upgrade_request(stream.host(), method, &target, client, &borrowed(&identity));
         write_until(
             &mut stream,
             &request,
@@ -601,14 +641,13 @@ impl Link {
     }
 
     pub fn connect_within(
-        socket: &Endpoint,
+        socket: &Resolved,
         client: Option<ClientId>,
         route: &Route,
         cancel: Option<Arc<Wake>>,
         within: Duration,
     ) -> io::Result<Link> {
-        let Endpoint::Unix(socket) = socket;
-        let stream = Stream::Unix(connect::connect(socket, PATIENCE, cancel.as_deref())?);
+        let stream = Stream::open(socket, Limit::Idle(within), cancel.as_deref())?;
         Link::upgrade_within(stream, client, route, cancel, within)
     }
 
@@ -802,10 +841,12 @@ impl Link {
 
     pub(crate) fn drained(&self) -> bool {
         self.out.is_empty()
+            && self.stream.flushed(self.out.written()) == self.out.written()
+            && !self.stream.pending_write()
     }
 
     pub(crate) fn backed_up(&self) -> bool {
-        self.out.backed_up(MAX_PENDING)
+        self.out.backed_up(MAX_PENDING) || self.stream.pending_write()
     }
 
     pub(crate) fn interest(&self, poll: &mut Poll, read: bool) {
@@ -815,8 +856,8 @@ impl Link {
     }
 
     #[cfg(target_vendor = "apple")]
-    pub(crate) fn output(&self) -> &Queue {
-        &self.out
+    pub(crate) fn written(&self) -> u64 {
+        self.stream.flushed(self.out.written())
     }
 
     fn flush(&mut self) -> io::Result<()> {
@@ -846,7 +887,9 @@ impl Link {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
+    #[path = "tls.rs"]
+    pub(crate) mod tls;
     use super::*;
 
     #[test]
@@ -925,7 +968,9 @@ mod tests {
             within: Limit::Idle(Duration::from_secs(5)),
         })
         .unwrap();
-        let Stream::Unix(stream) = transport;
+        let Stream::Unix(stream) = transport else {
+            panic!("expected Unix stream");
+        };
         closed(&stream);
         assert!(
             Link::upgraded(

@@ -6,6 +6,9 @@
 target=${0##*/zig-cc-}
 for arg in "$@"; do
   shift
-  [ "$arg" = -Wl,--fix-cortex-a53-843419 ] || set -- "$@" "$arg"
+  case "$arg" in
+    --target=*|-Wl,--fix-cortex-a53-843419) ;;
+    *) set -- "$@" "$arg" ;;
+  esac
 done
 exec zig cc -target "$target" "$@"

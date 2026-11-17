@@ -193,12 +193,19 @@ impl Queue {
     }
 
     pub fn flush(&mut self, fd: BorrowedFd<'_>) -> io::Result<()> {
+        self.flush_with(|bytes| write(fd, bytes))
+    }
+
+    pub fn flush_with(
+        &mut self,
+        mut write: impl FnMut(&[u8]) -> io::Result<usize>,
+    ) -> io::Result<()> {
         while let Some(pending) = self
             .bytes
             .get(self.sent..)
             .filter(|pending| !pending.is_empty())
         {
-            match write(fd, pending) {
+            match write(pending) {
                 Ok(0) => return Err(io::ErrorKind::WriteZero.into()),
                 Ok(count) => {
                     self.sent = self.sent.saturating_add(count);

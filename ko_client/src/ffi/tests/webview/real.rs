@@ -53,7 +53,7 @@ fn webview_ffi_uses_the_real_proxy_and_cancels_the_program_request() {
     started.recv_timeout(WAIT).unwrap();
     let call = |method: &str, target: &str, body: &[u8]| {
         crate::wire::exchange(
-            &crate::endpoint::Endpoint::Unix(server.dir.join("socket")),
+            &crate::endpoint::Resolved::Unix(server.dir.join("socket")),
             (None, None),
             (method, &target.to_owned().try_into().unwrap()),
             &[],
