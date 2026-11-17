@@ -123,21 +123,26 @@ private final class FreedBuffer: @unchecked Sendable {
     deinit { ko_buffer_free(&buffer) }
 }
 
-// ko_client_close frees the handle, and no call may start during or after it: every call holds
-// the handle while it runs, and the close takes it only when no call holds it.
+// Cancel wakes core calls without releasing the handle; close runs after Swift calls return.
 private final class ClientHandle: @unchecked Sendable {
+    private enum State { case open(OpaquePointer), closing(OpaquePointer), closed }
     private let lock = NSCondition()
-    private var pointer: OpaquePointer?
+    private var state = State.closed
     private var calls = 0
+    #if DEBUG
+    private var callHook: (@Sendable (KoClient.CallPhase) -> Void)?
+    func setCallHook(_ hook: (@Sendable (KoClient.CallPhase) -> Void)?) { lock.withLock { callHook = hook } }
+    #endif
 
     func set(_ pointer: OpaquePointer?) {
-        lock.withLock { self.pointer = pointer }
+        lock.withLock { state = pointer.map(State.open) ?? .closed }
     }
 
     func call<T>(_ body: (OpaquePointer) throws -> T) throws -> T {
         let pointer: OpaquePointer? = lock.withLock {
-            if self.pointer != nil { calls += 1 }
-            return self.pointer
+            guard case .open(let pointer) = state else { return nil }
+            calls += 1
+            return pointer
         }
         guard let pointer else { throw KoError(code: KO_ERR_CLOSED) }
         defer {
@@ -146,17 +151,54 @@ private final class ClientHandle: @unchecked Sendable {
                 lock.broadcast()
             }
         }
-        return try body(pointer)
+        #if DEBUG
+        let hook = lock.withLock { callHook }
+        hook?(.admitted)
+        #endif
+        let open = lock.withLock { if case .open = state { true } else { false } }
+        guard open else { throw KoError(code: KO_ERR_CLOSED) }
+        #if DEBUG
+        hook?(.entering)
+        #endif
+        do { return try body(pointer) }
+        catch {
+            let closed = lock.withLock { if case .open = state { false } else { true } }
+            if closed { throw KoError(code: KO_ERR_CLOSED) }
+            throw error
+        }
     }
 
-    // Nil when it was taken already.
-    func take() -> OpaquePointer? {
+    func beginClose() {
         lock.withLock {
-            let pointer = self.pointer
-            self.pointer = nil
+            if case .open(let pointer) = state {
+                state = .closing(pointer)
+                ko_client_cancel(pointer)
+            }
+        }
+    }
+
+    func close() {
+        let pointer: OpaquePointer? = lock.withLock {
             while calls > 0 { lock.wait() }
+            guard case .closing(let pointer) = state else { return nil }
+            state = .closed
             return pointer
         }
+        if let pointer { ko_client_close(pointer) }
+    }
+}
+
+private final class UploadReader: @unchecked Sendable {
+    private let lock = NSLock()
+    private var cancelled = false
+    let read: @Sendable (UnsafeMutableRawBufferPointer) -> Int?
+
+    init(_ read: @escaping @Sendable (UnsafeMutableRawBufferPointer) -> Int?) { self.read = read }
+    func cancel() { lock.withLock { cancelled = true } }
+    func next(_ buffer: UnsafeMutableRawBufferPointer) -> Int? {
+        guard !lock.withLock({ cancelled }) else { return nil }
+        let count = read(buffer)
+        return lock.withLock { cancelled ? nil : count }
     }
 }
 
@@ -196,6 +238,11 @@ private final class ClientHandle: @unchecked Sendable {
         identitySigner = signer
     }
 
+    #if DEBUG
+    enum CallPhase: Sendable { case admitted, entering }
+    nonisolated func testCallHook(_ hook: (@Sendable (CallPhase) -> Void)?) { handle.setCallHook(hook) }
+    #endif
+
     public func withHandle<T>(_ body: (OpaquePointer) throws -> T) throws -> T { try handle.call(body) }
 
     // Returns at once: the close waits for the calls in flight and every view's restore, so it runs
@@ -203,13 +250,14 @@ private final class ClientHandle: @unchecked Sendable {
     public func close(then done: (@MainActor () -> Void)? = nil) {
         guard !closed else { return }
         closed = true
+        handle.beginClose()
         let handle = handle
         let signer = identitySigner
         identitySigner = nil
         let user = user
         self.user = nil
         DispatchQueue.global(qos: .utility).async {
-            if let pointer = handle.take() { ko_client_close(pointer) }
+            handle.close()
             withExtendedLifetime(signer) {}
             DispatchQueue.main.async {
                 user?.release()
@@ -443,6 +491,26 @@ private final class ClientHandle: @unchecked Sendable {
         return try JSONDecoder().decode([KoSchema.Candidate].self, from: handle.call {
             try take(ko_client_prompt_resolve($0, from.description, &buffer), &buffer)
         })
+    }
+
+    nonisolated public func upload(pane: PaneID, name: String, size: UInt64, read: @escaping @Sendable (UnsafeMutableRawBufferPointer) -> Int?) async throws -> String {
+        let reader = UploadReader(read)
+        return try await withTaskCancellationHandler {
+            try Task.checkCancellation()
+            return try await Task.detached(priority: .utility) { [handle] in
+                var out = ko_buffer()
+                let bytes = try handle.call { client in
+                    try take(ko_client_upload(client, pane.description, name, size, { context, buffer, capacity, count in
+                        guard let context, let count else { return false }
+                        let reader = Unmanaged<UploadReader>.fromOpaque(context).takeUnretainedValue()
+                        guard let received = reader.next(UnsafeMutableRawBufferPointer(start: buffer, count: capacity)), received >= 0 else { return false }
+                        count.pointee = received
+                        return true
+                    }, Unmanaged.passUnretained(reader).toOpaque(), &out), &out)
+                }
+                return String(decoding: bytes, as: UTF8.self)
+            }.value
+        } onCancel: { reader.cancel() }
     }
 
     nonisolated public func prompt(from: PaneID, to target: PaneID, _ text: String) throws {

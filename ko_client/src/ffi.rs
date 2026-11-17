@@ -751,16 +751,29 @@ fn next_handle() -> Option<usize> {
     Some(id)
 }
 
-fn client(client: *const Client) -> Option<ClientCall> {
-    let client = locked(&CLIENTS).get(&client.addr()).cloned()?;
+fn client(client: *const Client) -> Result<ClientCall, Code> {
+    let client = locked(&CLIENTS)
+        .get(&client.addr())
+        .cloned()
+        .ok_or(Code::Argument)?;
     let mut calls = locked(&client.shared.calls);
     if client.shared.cancel.is_set() {
-        return None;
+        return Err(Code::Closed);
     }
     *calls += 1;
     drop(calls);
-    Some(ClientCall(client))
+    Ok(ClientCall(client))
 }
+
+macro_rules! client_call {
+    ($handle:expr) => {
+        match $crate::ffi::client($handle) {
+            Ok(client) => client,
+            Err(code) => return code,
+        }
+    };
+}
+pub(super) use client_call;
 
 fn view_handle(view: *const ViewHandle) -> Option<Arc<ViewHandle>> {
     locked(&VIEWS).get(&view.addr()).cloned()
@@ -1016,6 +1029,18 @@ pub unsafe extern "C" fn ko_client_version(out: *mut VersionInfo) -> Code {
     Code::Ok
 }
 
+#[unsafe(no_mangle)]
+pub extern "C" fn ko_client_cancel(client_: *const Client) -> Code {
+    let Some(client) = locked(&CLIENTS).get(&client_.addr()).cloned() else {
+        return Code::Argument;
+    };
+    if client.shared.cancel.is_set() {
+        return Code::Closed;
+    }
+    client.shared.cancel.wake();
+    Code::Ok
+}
+
 /// # Safety
 ///
 /// `client` is null or a handle from `ko_client_connect` that no earlier call
@@ -1053,7 +1078,8 @@ pub unsafe extern "C" fn ko_client_close(client: *mut Client) -> Code {
 /// `client` is a live handle. `out` is null or writable for one `ko_buffer`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn ko_client_model(client_: *const Client, out: *mut Buffer) -> Code {
-    let Some(client) = client(client_).filter(|_| !out.is_null()) else {
+    let client = client_call!(client_);
+    let Some(client) = (!out.is_null()).then_some(client) else {
         return Code::Argument;
     };
     let model = locked(&client.shared.model);
@@ -1096,6 +1122,7 @@ pub unsafe extern "C" fn ko_client_select(
     id: *const c_char,
     request_: *mut u64,
 ) -> Code {
+    let client = client_call!(client_);
     // SAFETY: ko_client.h requires request_ to be null or writable for one uint64_t.
     let Some(out) = (unsafe { request_.as_mut() }) else {
         return Code::Argument;
@@ -1104,7 +1131,7 @@ pub unsafe extern "C" fn ko_client_select(
     // SAFETY: ko_client.h requires these inputs to remain readable for this call.
     let id_text = unsafe { text_of(id, &scope) };
 
-    let (Some(client), Some(id)) = (client(client_), id_text) else {
+    let (Some(client), Some(id)) = (Some(client), id_text) else {
         return Code::Argument;
     };
     let selection = match kind {
@@ -1150,11 +1177,9 @@ pub unsafe extern "C" fn ko_client_switch(
     direction: c_int,
     request_: *mut u64,
 ) -> Code {
+    let client = client_call!(client_);
     // SAFETY: ko_client.h requires request_ to be null or writable for one uint64_t.
     let Some(out) = (unsafe { request_.as_mut() }) else {
-        return Code::Argument;
-    };
-    let Some(client) = client(client_) else {
         return Code::Argument;
     };
     let (over, direction) = match (over, direction) {
@@ -1180,9 +1205,7 @@ pub unsafe extern "C" fn ko_client_size(
     windows: *const WindowSize,
     count: usize,
 ) -> Code {
-    let Some(client) = client(client_) else {
-        return Code::Argument;
-    };
+    let client = client_call!(client_);
     let Ok(viewport) = protocol::Size::try_from(viewport) else {
         return Code::Argument;
     };
@@ -1231,9 +1254,7 @@ pub unsafe extern "C" fn ko_client_clipboard_answer(
     available: *const *const c_char,
     available_count: usize,
 ) -> Code {
-    let Some(client) = client(client_) else {
-        return Code::Argument;
-    };
+    let client = client_call!(client_);
     let served = if contents.is_null() {
         None
     } else {
@@ -1310,7 +1331,8 @@ pub enum ScrollbackKind {
 /// `client` is a live handle. `out` is writable for one `ko_limits`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn ko_client_limits(client_: *const Client, out: *mut Limits) -> Code {
-    let Some(client) = client(client_).filter(|_| !out.is_null()) else {
+    let client = client_call!(client_);
+    let Some(client) = (!out.is_null()).then_some(client) else {
         return Code::Argument;
     };
     let Some(limits) = locked(&client.shared.model)
@@ -1357,9 +1379,7 @@ pub unsafe extern "C" fn ko_client_limits(client_: *const Client, out: *mut Limi
 /// `client` is a live handle.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn ko_client_focus(client_: *const Client, focused: bool) -> Code {
-    let Some(client) = client(client_) else {
-        return Code::Argument;
-    };
+    let client = client_call!(client_);
     locked(&client.shared.hello).focused = focused;
     request(
         &client,
@@ -1378,13 +1398,11 @@ pub unsafe extern "C" fn ko_client_observe(
     count: usize,
     attending: bool,
 ) -> Code {
+    let client = client_call!(client_);
     let scope = ();
     // SAFETY: ko_client.h requires these inputs to remain readable for this call.
     let panes_texts = unsafe { texts_of(panes, count, &scope) };
 
-    let Some(client) = client(client_) else {
-        return Code::Argument;
-    };
     let ids: Option<Vec<PaneId>> =
         panes_texts.and_then(|names| names.iter().map(|name| name.parse().ok()).collect());
     let Some(ids) = ids else {
@@ -1435,6 +1453,7 @@ pub unsafe extern "C" fn ko_view_open(
     user: *mut c_void,
     out: *mut *mut ViewHandle,
 ) -> Code {
+    let client = client_call!(client_);
     let scope = ();
     // SAFETY: ko_client.h requires these inputs to remain readable for this call.
     let pane_text = unsafe { text_of(pane, &scope) };
@@ -1445,7 +1464,7 @@ pub unsafe extern "C" fn ko_view_open(
     // SAFETY: out is non-null and writable by contract.
     unsafe { *out = std::ptr::null_mut() };
     let (Some(client), Some(pane), Some(restore), Some(feed)) = (
-        client(client_),
+        Some(client),
         pane_text.and_then(|pane| pane.parse().ok()),
         restore,
         feed,

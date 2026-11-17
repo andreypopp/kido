@@ -73,14 +73,6 @@ import PaneGeometry
         return passenger(arguments, forwardingAgent: forwardingAgent)
     }
 
-    // OpenSSH tries the control socket before the transport; a dead master
-    // falls through to the proxy, which fails before any authentication.
-    func upload(_ arguments: [String]) -> Launch {
-        let launch = launch(arguments)
-        guard launch.path == "/usr/bin/ssh" else { return launch }
-        return Launch(launch.path, ["-o", "ProxyCommand=/usr/bin/false"] + launch.arguments, environment: launch.environment)
-    }
-
     static func recorded(_ recorded: [String], _ arguments: [String]) -> Launch {
         let options = [
             "BatchMode=yes", "ClearAllForwardings=yes", "RemoteCommand=none", "RequestTTY=no", "SessionType=default",

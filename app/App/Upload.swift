@@ -1,6 +1,9 @@
 import AppKit
 import Foundation
 import ImageIO
+import KoClientKit
+import KoModel
+import Synchronization
 import UniformTypeIdentifiers
 
 struct Upload: Sendable {
@@ -13,6 +16,46 @@ struct Upload: Sendable {
         guard !temporary else { return nil }
         let paths = sources.compactMap { if case .file(_, let path) = $0.bytes { path } else { nil } }
         return paths.count == sources.count ? paths : nil
+    }
+
+    func upload(_ client: KoClient, pane: PaneID) async throws -> [String] {
+        if let source = sources.first(where: { $0.size > Self.fileLimit }) { throw Failure(message: "\(source.name) is larger than 64 MiB.") }
+        guard size <= Self.totalLimit else { throw Failure(message: "Kido uploads at most 256 MiB at once.") }
+        var paths: [String] = []
+        for source in sources {
+            try Task.checkCancellation()
+            let reader = SourceReader(source.bytes)
+            paths.append(try await client.upload(pane: pane, name: source.name, size: UInt64(source.size), read: reader.read))
+        }
+        return paths
+    }
+
+    private final class SourceReader: @unchecked Sendable {
+        private let lock = NSLock()
+        private let bytes: Bytes
+        private var offset = 0
+        init(_ bytes: Bytes) { self.bytes = bytes }
+        func read(_ buffer: UnsafeMutableRawBufferPointer) -> Int? {
+            #if KIDO_VISUAL
+            Upload.visualReadGate.withLock { $0 }?()
+            #endif
+            return lock.withLock {
+                switch bytes {
+                case .file(let file, _):
+                    do {
+                        let chunk = try file.read(upToCount: buffer.count) ?? Data()
+                        chunk.withUnsafeBytes { buffer.copyMemory(from: $0) }
+                        return chunk.count
+                    } catch { return nil }
+                case .data(let data):
+                    let end = min(data.count, offset + buffer.count)
+                    data.withUnsafeBytes { buffer.copyMemory(from: UnsafeRawBufferPointer(rebasing: $0[offset..<end])) }
+                    let count = end - offset
+                    offset = end
+                    return count
+                }
+            }
+        }
     }
 
     enum Dropped { case file(Upload), folder, refused(Failure) }
@@ -75,6 +118,7 @@ struct Upload: Sendable {
     #if KIDO_VISUAL
     @MainActor static var promiseTimeout: TimeInterval = 30
     @MainActor static var visualImagePreparation: (@MainActor @Sendable () async -> Void)?
+    nonisolated static let visualReadGate = Mutex<(@Sendable () -> Void)?>(nil)
     #else
     static let promiseTimeout: TimeInterval = 30
     #endif
@@ -163,10 +207,9 @@ struct Upload: Sendable {
     }
 
     // The directory under the state home that holds the drops when the caller gives no base.
-    static let stateName = "kido-app"
 
     static let script = """
-    base=${1:-${XDG_STATE_HOME:-$HOME/.local/state}/\(stateName)}; id=$2; shift 2
+    base=${XDG_STATE_HOME:-$HOME/.local/state}/kido-app; id=$1; shift
     refuse() { printf '%s\\n' "kido-drop: $1" >&2; exit 1; }
     me=$(id -u)
     check() { case $(uname -s) in
@@ -197,9 +240,9 @@ struct Upload: Sendable {
     printf '%s\\n' "$base/drops/$id"
     """
 
-    func arguments(base: String, id: String) -> [String] {
+    func arguments(id: String) -> [String] {
         // tcsh, as a remote login shell, rejects a newline inside single quotes.
-        ["/bin/sh", "-c", "eval \"$(printf %s \(Data(Self.script.utf8).base64EncodedString()) | base64 -d)\"", "kido-drop", base, id] + sources.flatMap { [$0.name, String($0.size)] }
+        ["/bin/sh", "-c", "eval \"$(printf %s \(Data(Self.script.utf8).base64EncodedString()) | base64 -d)\"", "kido-drop", id] + sources.flatMap { [$0.name, String($0.size)] }
     }
 
     func send(_ pipe: FileHandle) {

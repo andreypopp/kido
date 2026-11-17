@@ -84,8 +84,14 @@ lives in the app's process, so it has threads: one I/O thread
 every view link and the reconnect, and one decoder thread for each
 view (`ffi::view`) that runs the restore and feed callbacks. A call
 wakes the I/O thread through a `ko_sys::event::Wake`. A second
-`Wake`, set at close, is the cancellation that ends the blocking
-calls (`ko_sys::fd::wait` with a cancel descriptor). Events reach
+`Wake`, set by `ko_client_cancel` or at close, is the cancellation
+that ends the blocking calls (`ko_sys::fd::wait` with a cancel
+descriptor). A cancel is sticky: every later call on that client
+returns `KO_ERR_CLOSED` without I/O. KoClientKit closes in two steps:
+it refuses new calls and cancels, waits until every call that it had
+admitted has returned, then calls `ko_client_close`, so no call
+overlaps the close, as the header requires, and a long upload
+cannot hold the close. Events reach
 the app only through `dispatch_async_f` on the caller's serial queue.
 KoClientKit turns each into a `KoEvent`, the view events included; the
 app's `KoClient.connect` gives the view events to their `KoView`.
@@ -419,8 +425,8 @@ the server-certificate sheet
 has only Close, because a reconnect fails in the same way. A mismatch
 opens the remote sheet; when the app is the older side, it asks only for
 an app update, else its host step names `deploy/install.sh` in the
-checkout that deployed the host, not `ko kill-server`. A file drop uploads nothing and shows a notice: ko has no
-upload route, and the SSH transfer needs the master.
+checkout that deployed the host, not `ko kill-server`. A file drop uploads through ko's drop route, as in
+every other window ("Uploads").
 
 **KidoPairing** (`app/Packages/KidoPairing`) is the code of the TLS
 servers that no platform owns: the payload, the request, the transport,
@@ -1346,8 +1352,9 @@ Cmd-V and unsafe paste are separate from application reads. An unsafe paste is
 asked about in a sheet showing its text, and completed exactly once: pasted,
 or refused with an empty completion on Cancel or when its surface is freed.
 
-**Uploads.** File drops prefer existing file URLs. Local panes paste their
-original paths; remote panes copy the files. Dropped paths paste through
+**Uploads.** File drops prefer existing file URLs. A pane of the local
+host that runs in no runtime pastes the original paths; every other pane
+gets a copy. Dropped paths paste through
 Ghostty's `paste_from_clipboard` binding like Cmd-V, not
 `ghostty_surface_paste_text`, which completes a standard paste directly and
 so skips the mode 5522 paste-event decision. If no file URLs exist, Kido
@@ -1373,11 +1380,30 @@ locked directory. This clears crash and post-exit writes without deleting
 another process's drops. Quit removes only this process's directory. Both
 sweeps refuse symlinked parents and subdirectories. Cleanup does not depend
 on cancelled tasks running in the termination loop.
-Promised files never paste temporary paths, even in Local panes. They use the existing transfer script and drops
-directory, with its seven-day cleanup. On both hosts the drops directory is
-`${XDG_STATE_HOME:-~/.local/state}/kido-app/drops`, never inside a ko state
-directory: an upload is a client action. Remote and Local-pane SSH consent
-rules still apply. Text and web links without files or promises are refused.
+Promised files never paste temporary paths, even in Local panes.
+
+A copy is one request of ko's drop route for each file, in order,
+through the window's own ko client (`ko_client_upload`), on the local
+host, an SSH remote and a TLS server alike. The pane decides where the
+file lands: on the server's host, or inside the pane's runtime, whose
+path the reply carries; the app never names a folder
+(design-runtimes.md, "A drop"). The client pulls the file through a
+reader in bounded chunks, so a dropped or promised file is never held
+in memory; a clipboard image is in memory already and is sent from
+there. Escape stops
+the paste at once; the transfer itself stops at the reader's next
+call, so a file that the server already published stays until its
+seven-day sweep. A server's refusal (`KO_ERR_REFUSED`) shows the
+server's message, with the runtime's name when the pane runs in one.
+A remote host asks for consent once per connection, or always allows
+after "Always allow"; the local host never asks, also for a runtime
+that is an ssh host, because the user chose where that pane runs.
+
+The one copy without a reachable ko is an ssh session inside a Local
+pane: there the transfer script runs over the session's recorded
+`ssh` arguments into `${XDG_STATE_HOME:-~/.local/state}/kido-app/drops`
+on that host, after a confirmation, with its own seven-day cleanup.
+Text and web links without files or promises are refused.
 
 Surfaces are kept per window, for the most recently shown windows of
 any session while their retained panes total at most 32; the rest have

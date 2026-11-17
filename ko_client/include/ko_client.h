@@ -20,7 +20,14 @@ extern "C" {
  * call, once. Every call on a handle may run on any thread, but no call on a
  * handle may start while, or after, its close call runs. Close the views of
  * a client before the client; a client close also ends every view that is
- * still open, and the view handle then only needs ko_view_close.
+ * still open, and the view handle then only needs ko_view_close. To close with
+ * calls admitted on another thread, first refuse new calls and call
+ * ko_client_cancel. Cancel may run on any thread while calls run or while the
+ * caller waits for them, but not during ko_client_close. Let admitted calls
+ * return before ko_client_close. Cancel
+ * does not release the handle; close it once. Cancellation is sticky: blocked
+ * calls return KO_ERR_CLOSED, and later client calls except close return
+ * KO_ERR_CLOSED without I/O.
  *
  * Caller memory. The core copies every argument that it keeps, before the
  * call returns. It never reads a caller buffer afterwards. `user` pointers
@@ -51,7 +58,7 @@ extern "C" {
  * return a ko_buffer (ko_client_put_layout, ko_client_prompt,
  * ko_client_select_record, ko_client_close_record,
  * ko_client_prompt_resolve, ko_client_delete, ko_client_runtime_up,
- * ko_client_runtime_down, ko_client_edit, ko_client_image),
+ * ko_client_runtime_down, ko_client_edit, ko_client_image, ko_client_upload),
  * ko_client_launch, ko_client_stop_server and ko_client_probe block until
  * the server answered: call them off the main queue.
  *
@@ -123,7 +130,7 @@ typedef enum ko_code {
     KO_ERR_CONFLICT = 6,
     KO_ERR_NOT_FOUND = 7,
     KO_ERR_INVALID = 8,
-    KO_ERR_REFUSED = 9,
+    KO_ERR_REFUSED = 9, /* ko_client_upload uses this for every server error answer. */
     KO_ERR_GONE = 10,
     KO_ERR_UNKNOWN = 11, /* the outcome is not known: an error that the core does not know, or a
                           * ko_client_prompt that may have reached its agent */
@@ -350,17 +357,17 @@ typedef struct ko_buffer {
 void ko_buffer_free(ko_buffer *buffer);
 
 /*
- * The pull interface of one snapshot, in the shape of ghostty_snapshot_read_fn:
- * it fills up to `capacity` bytes and sets `*count`; a count of 0 is the end.
- * It blocks until bytes arrived. It returns false when the snapshot was
- * cancelled (a newer snapshot began, or the view or the client closes) or the
- * connection ended; the restore then stops with KO_RESTORE_REJECTED. The core
- * never holds a whole snapshot: it stops reading the connection while a few
- * MiB are unread, so a slow restore slows the server's writes.
+ * Fills up to capacity bytes and sets *count. A count of 0 is the end;
+ * false cancels the read. buffer and count are writable for this call only.
  */
 typedef bool (*ko_read_fn)(void *reader, uint8_t *buffer, size_t capacity, size_t *count);
 
 /*
+ * The snapshot's read blocks until bytes arrive. It returns false when a newer
+ * snapshot begins, the view or client closes, or the connection ends; the restore
+ * then stops with KO_RESTORE_REJECTED. The core stops reading the connection while
+ * a few MiB are unread, so a slow restore slows the server's writes.
+ *
  * One snapshot to restore, valid until the restore returns. `history` says
  * whether the stream runs to its end (a full snapshot) or ends after the
  * screen. `continuation_max_bytes` is the server's limit for a sequence that
@@ -445,6 +452,12 @@ ko_code ko_client_connect(const ko_endpoint *endpoint,
                           void *user,
                           const ko_hello *hello,
                           ko_client **out);
+
+/* Signals sticky cancellation without waiting or releasing the handle. May run
+ * on any thread at any time before ko_client_close, including while calls run
+ * or while the caller waits for them. Stop admitting calls and wait for admitted
+ * calls to return before close. No callback barrier is complete until close returns. */
+ko_code ko_client_cancel(const ko_client *client);
 
 ko_code ko_client_close(ko_client *client);
 
@@ -767,6 +780,21 @@ ko_code ko_webview_ws_send(const ko_webview_ws *socket, const uint8_t *data, siz
 ko_code ko_webview_ws_close(const ko_webview_ws *socket, uint16_t code, const char *reason);
 size_t ko_webview_ws_buffered_amount(const ko_webview_ws *socket);
 ko_code ko_webview_ws_cancel(ko_webview_ws *socket);
+
+/* Uploads exactly size bytes to a live pane. Blocks until the server answered:
+ * call off the main queue. read receives bounded writable chunks; false cancels,
+ * and count 0 before size bytes is an error. reader remains valid until return.
+ * read runs on this call's thread. A caller's cancellation flag is observed only
+ * at the next read; it does not interrupt a write or response wait, which has the
+ * client's normal deadline. A file already published stays until the server sweeps it.
+ * ko_client_close interrupts this call's I/O; this call then returns KO_ERR_CLOSED.
+ * On success out owns the
+ * absolute UTF-8 path. A success answer before all body bytes were sent returns
+ * KO_ERR_PROTOCOL. A server error answer returns KO_ERR_REFUSED with its
+ * unmodified message in out. Transport failures keep their I/O, TLS or identity code. */
+ko_code ko_client_upload(const ko_client *client, const char *pane,
+                         const char *name, uint64_t size, ko_read_fn read,
+                         void *reader, ko_buffer *out);
 
 /*
  * Fetches one frame on a new connection, parallel with any other call. `accept_shm` asks for a

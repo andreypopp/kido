@@ -1,4 +1,5 @@
 _ko_buffer_free
+_ko_client_cancel
 _ko_client_clipboard_answer
 _ko_client_close
 _ko_client_connect
@@ -11,6 +12,7 @@ _ko_client_focus
 _ko_client_webview_fetch
 _ko_client_webview_ws_open
 _ko_client_image
+_ko_client_upload
 #if !TARGET_OS_IPHONE
 _ko_client_launch
 #endif

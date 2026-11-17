@@ -1,7 +1,7 @@
 // The calls that block until the server answered: the caller runs them off the main queue.
 
 use crate::endpoint::Resolved;
-use std::ffi::{c_char, c_int};
+use std::ffi::{c_char, c_int, c_void};
 use std::time::Duration;
 
 use ko_sys::event::Wake;
@@ -10,7 +10,7 @@ use ko_wire::ids::{ClientId, MessageId, PaneId, StatusId};
 use ko_wire::protocol::{self, Revision, SendPrompt};
 
 use super::engine::failure;
-use super::{Buffer, Client, Code, client, locked, put, slice_of, text_of};
+use super::{Buffer, Client, Code, client_call, locked, put, slice_of, text_of};
 use crate::edit::{Edit, Refusal};
 use crate::layout::{self, Document, EditError};
 use crate::wire;
@@ -38,6 +38,74 @@ pub(super) fn call(
     }
 }
 
+/// # Safety
+///
+/// The arguments follow the contract in ko_client.h.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn ko_client_upload(
+    client_: *const Client,
+    pane: *const c_char,
+    name: *const c_char,
+    size: u64,
+    read: Option<unsafe extern "C" fn(*mut c_void, *mut u8, usize, *mut usize) -> bool>,
+    reader: *mut c_void,
+    out: *mut Buffer,
+) -> Code {
+    let client = client_call!(client_);
+    let scope = ();
+    // SAFETY: ko_client.h requires both strings to remain readable for this call.
+    let (pane, name) = unsafe { (text_of(pane, &scope), text_of(name, &scope)) };
+    let (Some(client), Some(pane), Some(name), Some(read)) = (
+        (!out.is_null()).then_some(client),
+        pane.and_then(|pane| pane.parse::<PaneId>().ok()),
+        name.and_then(|name| ko_wire::api::DropName::try_from(name.to_owned()).ok()),
+        read,
+    ) else {
+        return Code::Argument;
+    };
+    let mut cancelled = false;
+    let (code, bytes) = call(&client, |socket, id, cancel| {
+        let body = wire::upload(
+            socket,
+            id,
+            &Route::UploadDrop { id: pane, name },
+            size,
+            cancel,
+            |buffer| {
+                let mut count = 0;
+                // SAFETY: the callback and reader remain valid for this call; buffer and count are writable.
+                if !unsafe { read(reader, buffer.as_mut_ptr(), buffer.len(), &mut count) } {
+                    cancelled = true;
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::Interrupted,
+                        "upload cancelled",
+                    ));
+                }
+                Ok(count)
+            },
+        )
+        .map_err(upload_rejected)?;
+        let dropped: protocol::Dropped = protocol::decode(&body)
+            .map_err(|error| (Code::Protocol, error.to_string().into_bytes()))?;
+        Ok(dropped.path.as_str().as_bytes().to_vec())
+    });
+    // SAFETY: ko_client.h requires out to be writable for one ko_buffer.
+    unsafe { put(out, bytes) };
+    if cancelled { Code::Closed } else { code }
+}
+
+fn upload_rejected(error: wire::Rejected) -> (Code, Vec<u8>) {
+    match error {
+        wire::Rejected::Status { reason, body, .. } => (
+            Code::Refused,
+            protocol::decode::<protocol::Error>(&body)
+                .map_or(reason, |error| error.message)
+                .into_bytes(),
+        ),
+        error => rejected(error),
+    }
+}
+
 fn io_failure(message: String) -> (Code, Vec<u8>) {
     (Code::Io, message.into_bytes())
 }
@@ -46,6 +114,7 @@ pub(super) fn rejected(rejected: wire::Rejected) -> (Code, Vec<u8>) {
     match rejected {
         wire::Rejected::Tls(message) => (Code::Tls, message.into_bytes()),
         wire::Rejected::Identity(message) => (Code::Identity, message.into_bytes()),
+        wire::Rejected::Protocol(message) => (Code::Protocol, message.into_bytes()),
         wire::Rejected::Io(message) | wire::Rejected::Unanswered(message) => io_failure(message),
         wire::Rejected::Status {
             status: 502,
@@ -82,11 +151,12 @@ pub unsafe extern "C" fn ko_client_put_layout(
     len: usize,
     out: *mut Buffer,
 ) -> Code {
+    let client = client_call!(client_);
     let scope = ();
     // SAFETY: ko_client.h requires these inputs to remain readable for this call.
     let document_bytes = unsafe { slice_of(document, len, &scope) };
 
-    let (Some(client), Some(bytes)) = (client(client_), document_bytes) else {
+    let (Some(client), Some(bytes)) = (Some(client), document_bytes) else {
         return Code::Argument;
     };
     if out.is_null() {
@@ -121,6 +191,7 @@ pub unsafe extern "C" fn ko_client_prompt(
     len: usize,
     out: *mut Buffer,
 ) -> Code {
+    let client = client_call!(client_);
     let scope = ();
     // SAFETY: ko_client.h requires these inputs to remain readable for this call.
     let (from_text, target_text, text_bytes) = unsafe {
@@ -132,7 +203,7 @@ pub unsafe extern "C" fn ko_client_prompt(
     };
 
     let (Some(client), Some(from), Some(target), Some(text)) = (
-        client(client_).filter(|_| !out.is_null()),
+        (!out.is_null()).then_some(client),
         from_text.and_then(|from| from.parse::<PaneId>().ok()),
         target_text.and_then(|target| target.parse().ok()),
         text_bytes.and_then(|text| std::str::from_utf8(text).ok()),
@@ -204,12 +275,13 @@ unsafe fn send_record(
     record_id: *const c_char,
     out: *mut Buffer,
 ) -> Code {
+    let client = client_call!(client_);
     let scope = ();
     // SAFETY: ko_client.h requires these inputs to remain readable for this call.
     let (pane_text, record_text) = unsafe { (text_of(pane, &scope), text_of(record_id, &scope)) };
 
     let (Some(client), Some(pane), Some(record)) = (
-        client(client_).filter(|_| !out.is_null()),
+        (!out.is_null()).then_some(client),
         pane_text.and_then(|pane| pane.parse::<PaneId>().ok()),
         record_text.and_then(|record| StatusId::try_from(record.to_owned()).ok()),
     ) else {
@@ -249,12 +321,13 @@ pub unsafe extern "C" fn ko_client_prompt_resolve(
     from: *const c_char,
     out: *mut Buffer,
 ) -> Code {
+    let client = client_call!(client_);
     let scope = ();
     // SAFETY: ko_client.h requires these inputs to remain readable for this call.
     let from_text = unsafe { text_of(from, &scope) };
 
     let (Some(client), Some(from)) = (
-        client(client_).filter(|_| !out.is_null()),
+        (!out.is_null()).then_some(client),
         from_text.and_then(|from| from.parse::<PaneId>().ok()),
     ) else {
         return Code::Argument;
@@ -288,12 +361,12 @@ pub unsafe extern "C" fn ko_client_edit(
     len: usize,
     out: *mut Buffer,
 ) -> Code {
+    let client = client_call!(client_);
     let scope = ();
     // SAFETY: ko_client.h requires these inputs to remain readable for this call.
     let edit_bytes = unsafe { slice_of(edit, len, &scope) };
 
-    let (Some(client), Some(bytes)) = (client(client_).filter(|_| !out.is_null()), edit_bytes)
-    else {
+    let (Some(client), Some(bytes)) = ((!out.is_null()).then_some(client), edit_bytes) else {
         return Code::Argument;
     };
     let (code, bytes) = match protocol::decode::<Edit>(bytes) {
@@ -334,11 +407,12 @@ pub unsafe extern "C" fn ko_client_delete(
     id: *const c_char,
     out: *mut Buffer,
 ) -> Code {
+    let client = client_call!(client_);
     let scope = ();
     // SAFETY: ko_client.h requires these inputs to remain readable for this call.
     let id_text = unsafe { text_of(id, &scope) };
 
-    let (Some(client), Some(id)) = (client(client_).filter(|_| !out.is_null()), id_text) else {
+    let (Some(client), Some(id)) = ((!out.is_null()).then_some(client), id_text) else {
         return Code::Argument;
     };
     let route = match kind {
@@ -395,13 +469,14 @@ pub unsafe extern "C" fn ko_client_runtime_up(
     session: *const c_char,
     out: *mut Buffer,
 ) -> Code {
+    let client = client_call!(client_);
     let scope = ();
     // SAFETY: ko_client.h requires these inputs to remain readable for this call.
     let (name_text, session_text) = unsafe { (text_of(name, &scope), text_of(session, &scope)) };
     if !session.is_null() && session_text.is_none() {
         return Code::Argument;
     }
-    let (Some(client), Some(name)) = (client(client_).filter(|_| !out.is_null()), name_text) else {
+    let (Some(client), Some(name)) = ((!out.is_null()).then_some(client), name_text) else {
         return Code::Argument;
     };
     let (code, bytes) = runtime_command(&client, name, session_text, RuntimeCommand::Up);
@@ -420,13 +495,14 @@ pub unsafe extern "C" fn ko_client_runtime_down(
     session: *const c_char,
     out: *mut Buffer,
 ) -> Code {
+    let client = client_call!(client_);
     let scope = ();
     // SAFETY: ko_client.h requires these inputs to remain readable for this call.
     let (name_text, session_text) = unsafe { (text_of(name, &scope), text_of(session, &scope)) };
     if !session.is_null() && session_text.is_none() {
         return Code::Argument;
     }
-    let (Some(client), Some(name)) = (client(client_).filter(|_| !out.is_null()), name_text) else {
+    let (Some(client), Some(name)) = ((!out.is_null()).then_some(client), name_text) else {
         return Code::Argument;
     };
     let (code, bytes) = runtime_command(&client, name, session_text, RuntimeCommand::Down);
@@ -476,4 +552,35 @@ pub(super) unsafe fn probe(
     // SAFETY: out is null or writable for one ko_buffer (ko_client.h).
     unsafe { put(out, bytes) };
     code
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn upload_refusals_keep_protocol_messages_instead_of_status_reasons() {
+        let refusal = wire::Rejected::Status {
+            status: 502,
+            reason: "Bad Gateway".to_owned(),
+            body: protocol::json(&protocol::Error::new(
+                protocol::ErrorKind::Io,
+                "runtime quota refused",
+            ))
+            .into_bytes(),
+        };
+        assert_eq!(
+            upload_rejected(refusal),
+            (Code::Refused, b"runtime quota refused".to_vec())
+        );
+        let proxy = wire::Rejected::Status {
+            status: 502,
+            reason: "Proxy gateway failure".to_owned(),
+            body: b"<html>proxy error</html>".to_vec(),
+        };
+        assert_eq!(
+            upload_rejected(proxy),
+            (Code::Refused, b"Proxy gateway failure".to_vec())
+        );
+    }
 }

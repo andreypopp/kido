@@ -363,7 +363,10 @@ import XCTest
         let board = NSPasteboard(name: .init("kido-clipboard-test-\(UUID().uuidString)"))
         let runtime = try XCTUnwrap(GhosttyRuntime(pasteboard: board))
         let owner = WindowOwner(host: .remote("copy-host"), runtime: runtime, start: false)
-        owner.testUploadBase = "/tmp/kc-" + UUID().uuidString.prefix(8)
+        _ = try await KoServer.launch(dir: directory.path)
+        try await koMain(directory.path, pane: koPane("exec cat"))
+        let uploadClient = try KoClient.connect(endpoint: .unix(directory.path + "/socket")) { _ in }
+        owner.testReceive(.viewLink(view: nil, code: KO_OK, message: ""), client: uploadClient)
         let pane = try XCTUnwrap(PaneView(runtime: runtime, pane: PaneID(number: 0), font: 13, host: owner.host) { _ in })
         owner.window.contentView = pane
         owner.window.setFrameOrigin(NSPoint(x: -10000, y: -10000))
@@ -392,7 +395,7 @@ import XCTest
         try await wait("clipboard consent sheet", within: 2) { owner.preparedAlert != nil }
         refused("clipboard consent sheet")
         owner.respondToAlert(.alertThirdButtonReturn)
-        let file = owner.testUploadBase! + "-file"
+        let file = directory.path + "/upload-file"
         try "x".write(toFile: file, atomically: true, encoding: .utf8)
         defer { try? FileManager.default.removeItem(atPath: file) }
         owner.upload(Result { () throws(Failure) in try Upload(files: [URL(fileURLWithPath: file)], copying: true) }, to: pane)

@@ -728,7 +728,7 @@ every `case .remote` gets its decision:
 | The agent publication | none: no SSH agent is forwarded |
 | `recentHosts`, `kido-app://`, `RemoteIntent`, the palette's Connect mode | by the UI design |
 | Clipboard consent, webview panes | as an SSH remote: they use only the client |
-| Upload (a drop of a file) | none in phase 1: the SSH transfer runs `ssh … exec` through the master, and ko has no upload route. A drop on a TLS window uploads nothing and shows the existing "Kido did not upload" notice (text by `@kido-app-design`). An upload route is a follow-up unit |
+| Upload (a drop of a file) | as an SSH remote: ko's drop route through the client (design-app.md, "Uploads") |
 
 **The identity store** (`IdentityStore` in the package KidoPairing, unit 6b): one
 identity for each server, in `~/Library/Application

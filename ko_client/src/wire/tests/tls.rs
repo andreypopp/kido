@@ -103,6 +103,138 @@ pub(crate) fn accept(listener: &TcpListener, config: Arc<SslAcceptor>) -> Server
     Server::new(&config, stream)
 }
 
+#[cfg(target_vendor = "apple")]
+#[test]
+fn an_upload_ignores_post_handshake_tickets_before_its_http_answer() {
+    #[derive(Debug)]
+    struct Capture {
+        socket: TcpStream,
+        pending: Option<Vec<u8>>,
+    }
+    impl Read for Capture {
+        fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
+            self.socket.read(bytes)
+        }
+    }
+    impl Write for Capture {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            if let Some(pending) = &mut self.pending {
+                pending.extend_from_slice(bytes);
+                Ok(bytes.len())
+            } else {
+                self.socket.write(bytes)
+            }
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            self.socket.flush()
+        }
+    }
+    let fixtures = Fixtures::new();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let endpoint = target(&fixtures, listener.local_addr().unwrap());
+    let config = server(&fixtures);
+    let (release, requested) = std::sync::mpsc::channel();
+    let (released, ready) = std::sync::mpsc::channel();
+    let body = b"{\"path\":\"/tmp/ticket-upload\"}".to_vec();
+    let expected = body.clone();
+    let peer = std::thread::spawn(move || -> io::Result<()> {
+        assert_eq!(
+            fd::wait(listener.as_fd(), Want::Read, None, Some(WITHIN))?,
+            Waited::Ready
+        );
+        let (socket, _) = listener.accept()?;
+        socket.set_read_timeout(Some(WITHIN))?;
+        socket.set_write_timeout(Some(WITHIN))?;
+        socket.set_nodelay(true)?;
+        let mut stream = Server::new(
+            &config,
+            Capture {
+                socket,
+                pending: None,
+            },
+        );
+        stream
+            .stream
+            .ssl_mut()
+            .clear_options(boring::ssl::SslOptions::NO_TICKET);
+        let mut head = Vec::new();
+        while !head.ends_with(b"\r\n\r\n") {
+            let mut byte = [0];
+            stream.read_exact(&mut byte)?;
+            head.extend(byte);
+        }
+        assert!(
+            String::from_utf8(head)
+                .unwrap()
+                .contains("Content-Length: 2\r\n")
+        );
+        // BoringSSL defers tickets until a write; boring skips zero-byte writes.
+        stream.get_mut().pending = Some(Vec::new());
+        stream.write_all(b"H")?;
+        let captured = stream.get_mut().pending.take().unwrap();
+        let mut records = Vec::new();
+        let mut offset = 0;
+        while offset < captured.len() {
+            assert!(offset + 5 <= captured.len());
+            records.push(offset);
+            let length = u16::from_be_bytes([captured[offset + 3], captured[offset + 4]]) as usize;
+            offset += 5 + length;
+            assert!(offset <= captured.len());
+        }
+        assert!(
+            records.len() >= 2,
+            "tickets must precede the application record"
+        );
+        let last = *records.last().unwrap();
+        requested.recv_timeout(WITHIN).unwrap();
+        stream.get_mut().socket.write_all(&captured[..last])?;
+        released.send(()).unwrap();
+        let mut uploaded = [0; 2];
+        stream.read_exact(&mut uploaded)?;
+        assert_eq!(uploaded, *b"xx");
+        stream.get_mut().socket.write_all(&captured[last..])?;
+        let response = http::response(
+            http::Status::Ok,
+            &[("Content-Length", &body.len().to_string())],
+            &body,
+            http::Policy::Control,
+        );
+        assert_eq!(response[0], b'H');
+        stream.write_all(&response[1..])?;
+        Ok(())
+    });
+    let cancel = Wake::new().unwrap();
+    let stream = Stream::open(&endpoint, Limit::Idle(WITHIN), Some(&cancel)).unwrap();
+    let observed = stream.fd().try_clone_to_owned().unwrap();
+    let mut reads = 0;
+    let outcome = upload_connected(
+        stream,
+        None,
+        &Route::UploadDrop {
+            id: "pane_1".parse().unwrap(),
+            name: "ticket".to_owned().try_into().unwrap(),
+        },
+        2,
+        &cancel,
+        |bytes| {
+            if reads == 0 {
+                release.send(()).unwrap();
+                ready.recv_timeout(WITHIN).unwrap();
+                assert_eq!(
+                    fd::wait(observed.as_fd(), Want::Read, None, Some(WITHIN)).unwrap(),
+                    Waited::Ready
+                );
+            }
+            reads += 1;
+            bytes[0] = b'x';
+            Ok(1)
+        },
+    );
+    let server_result = peer.join().unwrap();
+    assert_eq!(outcome, Ok(expected));
+    server_result.unwrap();
+}
+
 #[test]
 fn a_request_and_an_upgrade_cross_tls() {
     let fixtures = Fixtures::new();

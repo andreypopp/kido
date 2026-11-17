@@ -451,6 +451,7 @@ pub unsafe extern "C" fn ko_client_webview_fetch(
     callbacks: *const WebviewFetchCallbacks,
     out: *mut *mut WebviewHandle,
 ) -> Code {
+    let client = client_call!(client_);
     if out.is_null() {
         return Code::Argument;
     }
@@ -466,7 +467,7 @@ pub unsafe extern "C" fn ko_client_webview_fetch(
     // SAFETY: method is NUL-terminated for this call by contract.
     let method = unsafe { text_of(method, &scope) };
     let (Some(client), Some(method), Some(response), Some(body_fn), Some(end)) = (
-        client(client_),
+        Some(client),
         method,
         callbacks.response,
         callbacks.body,
@@ -510,6 +511,7 @@ pub unsafe extern "C" fn ko_client_webview_ws_open(
     callbacks: *const WebviewSocketCallbacks,
     out: *mut *mut WebviewHandle,
 ) -> Code {
+    let client = client_call!(client_);
     if out.is_null() {
         return Code::Argument;
     }
@@ -522,7 +524,7 @@ pub unsafe extern "C" fn ko_client_webview_ws_open(
         return Code::Argument;
     };
     let (Some(client), Some(open), Some(message), Some(close)) = (
-        client(client_),
+        Some(client),
         callbacks.open,
         callbacks.message,
         callbacks.close,

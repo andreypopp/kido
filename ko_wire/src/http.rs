@@ -419,9 +419,22 @@ pub fn call(
     extra: &[(&str, &str)],
     body: &[u8],
 ) -> Vec<u8> {
+    let mut request = call_head(host, method, target, client, extra, body.len() as u64);
+    request.extend_from_slice(body);
+    request
+}
+
+pub fn call_head(
+    host: &str,
+    method: &str,
+    target: &crate::protocol::RequestTarget,
+    client: Option<ClientId>,
+    extra: &[(&str, &str)],
+    length: u64,
+) -> Vec<u8> {
     let versions = version_headers();
     let client = client.map(|client| client.to_string());
-    let length = body.len().to_string();
+    let length = length.to_string();
     let mut headers = vec![("Host", host)];
     if (method, target.as_str()) != ("GET", "/version") {
         headers.extend(versions.iter().map(|(name, value)| (*name, value.as_str())));
@@ -431,7 +444,7 @@ pub fn call(
     }
     headers.extend_from_slice(extra);
     headers.push(("Content-Length", &length));
-    request(method, target, &headers, body)
+    request(method, target, &headers, b"")
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

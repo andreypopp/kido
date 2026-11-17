@@ -5,6 +5,8 @@ import PaneGeometry
 import UniformTypeIdentifiers
 import XCTest
 import KoModel
+import KoClient
+import KoClientKit
 @testable import Kido
 
 @MainActor final class SyntheticDrag: NSObject, @preconcurrency NSDraggingInfo {
@@ -79,17 +81,30 @@ private final class PromisedFile: NSFilePromiseReceiver, @unchecked Sendable {
 
 @MainActor final class UploadTests: VisualTestCase {
     private final class Input { var data = Data() }
+    private enum Connection: Equatable { case disconnected, host, runtime }
 
-    private func localPane() throws -> (owner: WindowOwner, pane: PaneView, board: NSPasteboard, input: Input, root: String) {
-        let root = "/tmp/ku-" + UUID().uuidString.prefix(8)
+    private func localPane(host: Kido.Host = .local, connection: Connection = .disconnected) async throws -> (owner: WindowOwner, pane: PaneView, board: NSPasteboard, input: Input, root: String) {
+        let root: String
+        if connection == .disconnected { root = "/tmp/ku-" + UUID().uuidString.prefix(8) }
+        else {
+            root = try koServerDir()
+            if connection == .runtime { try koRuntimes(["upload": ["command": [String: Any](), "env": ["HOME": root + "/runtime-home"]]]) }
+            _ = try await KoServer.launch(dir: root)
+            try await koMain(root, pane: connection == .runtime ? runtimePane("upload", "runtime-upload") : koPane("exec cat"))
+        }
         try FileManager.default.createDirectory(atPath: root + "/files", withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
         let board = NSPasteboard(name: .init("kido-upload-test-\(UUID().uuidString)"))
         let runtime = try XCTUnwrap(GhosttyRuntime(pasteboard: board))
-        let owner = WindowOwner(host: .local, runtime: runtime, start: false)
-        owner.testUploadBase = root + "/state"
+        let owner = WindowOwner(host: host, runtime: runtime, start: false)
+        if connection != .disconnected {
+            let client = try KoClient.connect(endpoint: .unix(root + "/socket")) { _ in }
+            owner.testReceive(.viewLink(view: nil, code: KO_OK, message: ""), client: client)
+            try await wait("upload owner connected") { (try? client.model())?.panes.count == 1 }
+        }
         owner.notices.testTime = 0
         let input = Input()
-        let pane = try XCTUnwrap(PaneView(runtime: runtime, pane: PaneID(number: 0), font: 13) { input.data.append($0) })
+        let pane = try XCTUnwrap(PaneView(runtime: runtime, pane: PaneID(number: 1), font: 13, host: host) { input.data.append($0) })
+        if connection == .runtime { pane.runtimeMark = .known(KoSchema.ClientRuntime(kind: .command, name: "upload", source: .config, state: .up), routed: false) }
         owner.window.contentView = pane
         owner.window.setFrameOrigin(NSPoint(x: -10000, y: -10000))
         owner.window.orderFront(nil)
@@ -100,7 +115,7 @@ private final class PromisedFile: NSFilePromiseReceiver, @unchecked Sendable {
             Upload.sweepPromises()
             rmdir(Upload.promiseRoot.path)
             board.releaseGlobally()
-            try? FileManager.default.removeItem(atPath: root)
+            if connection == .disconnected { try? FileManager.default.removeItem(atPath: root) }
         }
         return (owner, pane, board, input, root)
     }
@@ -116,7 +131,7 @@ private final class PromisedFile: NSFilePromiseReceiver, @unchecked Sendable {
     }
 
     func testUploadFailureKeepsFirstResponderWithoutSheet() async throws {
-        let (owner, pane, board, _, _) = try localPane()
+        let (owner, pane, board, _, _) = try await localPane()
         owner.window.makeFirstResponder(pane)
         let responder = owner.window.firstResponder
         board.clearContents()
@@ -128,22 +143,46 @@ private final class PromisedFile: NSFilePromiseReceiver, @unchecked Sendable {
         XCTAssertTrue(owner.window.firstResponder === responder)
     }
 
+    func testRemoteUploadUsesTheConnectedServerRoute() async throws {
+        let (owner, pane, _, input, root) = try await localPane(host: .remote("upload-host"), connection: .host)
+        let original = root + "/files/remote.txt"
+        try "remote".write(toFile: original, atomically: true, encoding: .utf8)
+        owner.upload(Result { () throws(Failure) in try Upload(files: [URL(fileURLWithPath: original)], copying: true) }, to: pane)
+        XCTAssertNotNil(owner.preparedAlert)
+        owner.respondToAlert(.alertFirstButtonReturn)
+        try await wait("remote upload finished") { !owner.uploading(pane) }
+        let path = String(decoding: input.data, as: UTF8.self)
+        XCTAssertTrue(path.hasPrefix(root + "/drops/"), path)
+        XCTAssertEqual(try String(contentsOfFile: path, encoding: .utf8), "remote")
+    }
+
+    func testLocalRuntimeUploadCopiesInsteadOfPastingTheOriginalPath() async throws {
+        let (owner, pane, _, input, root) = try await localPane(connection: .runtime)
+        let original = root + "/files/runtime.txt"
+        try "runtime".write(toFile: original, atomically: true, encoding: .utf8)
+        owner.upload(Result { () throws(Failure) in try Upload(files: [URL(fileURLWithPath: original)], copying: false) }, to: pane)
+        try await wait("runtime upload finished") { !owner.uploading(pane) }
+        let path = String(decoding: input.data, as: UTF8.self)
+        XCTAssertTrue(path.hasPrefix(root + "/runtime-home/.local/state/ko/drops/"), path)
+        XCTAssertEqual(try String(contentsOfFile: path, encoding: .utf8), "runtime")
+    }
+
     func testPromisedDropCopiesFile() async throws {
-        let (owner, pane, _, input, root) = try localPane()
+        let (owner, pane, _, input, root) = try await localPane(connection: .host)
         let writer = PromisedFile()
         owner.uploadPromises([writer], to: pane)
         try await wait("promise transfer", within: 5) { !owner.uploading(pane) }
         try await drain(pane.runtime)
         XCTAssertNil(notice(owner))
         let path = String(decoding: input.data, as: UTF8.self)
-        XCTAssertTrue(path.hasPrefix(root + "/state/drops/"), path)
+        XCTAssertTrue(path.hasPrefix(root + "/drops/"), path)
         XCTAssertEqual(try String(contentsOfFile: path, encoding: .utf8), "promised")
         let temporary = try XCTUnwrap(writer.destination)
         XCTAssertFalse(FileManager.default.fileExists(atPath: temporary.deletingLastPathComponent().path))
     }
 
     func testPromisedDropCancelRemovesDirectoryAndIgnoresLateReader() async throws {
-        let (owner, pane, _, input, _) = try localPane()
+        let (owner, pane, _, input, _) = try await localPane()
         let promise = PromisedFile()
         promise.stalled = true
         owner.uploadPromises([promise], to: pane)
@@ -166,7 +205,7 @@ private final class PromisedFile: NSFilePromiseReceiver, @unchecked Sendable {
     }
 
     func testSeveralPromisedFilesReplyOnTheOperationQueue() async throws {
-        let (owner, pane, _, input, root) = try localPane()
+        let (owner, pane, _, input, root) = try await localPane(connection: .host)
         let promises = (0..<3).map { index in
             let promise = PromisedFile()
             promise.name = "promised-\(index).txt"
@@ -179,14 +218,14 @@ private final class PromisedFile: NSFilePromiseReceiver, @unchecked Sendable {
         let paths = String(decoding: input.data, as: UTF8.self).split(separator: " ")
         XCTAssertEqual(paths.count, 3)
         for path in paths {
-            XCTAssertTrue(path.hasPrefix(root + "/state/drops/"))
+            XCTAssertTrue(path.hasPrefix(root + "/drops/"))
             XCTAssertEqual(try String(contentsOfFile: String(path), encoding: .utf8), "promised")
         }
         XCTAssertTrue(promises.allSatisfy(removed))
     }
 
     func testPromiseReplyAfterDeadlineCannotPasteOrLeaveFiles() async throws {
-        let (owner, pane, _, input, _) = try localPane()
+        let (owner, pane, _, input, _) = try await localPane()
         let old = Upload.promiseTimeout
         Upload.promiseTimeout = 0.02
         defer { Upload.promiseTimeout = old }
@@ -203,7 +242,7 @@ private final class PromisedFile: NSFilePromiseReceiver, @unchecked Sendable {
     }
 
     func testDisposedPaneCancelsPromiseSynchronously() async throws {
-        let (owner, pane, _, input, _) = try localPane()
+        let (owner, pane, _, input, _) = try await localPane()
         let promise = PromisedFile()
         promise.stalled = true
         owner.uploadPromises([promise], to: pane)
@@ -218,7 +257,7 @@ private final class PromisedFile: NSFilePromiseReceiver, @unchecked Sendable {
     }
 
     func testPaneThatRefusesInputDoesNotTransferPromise() async throws {
-        let (owner, pane, _, input, root) = try localPane()
+        let (owner, pane, _, input, root) = try await localPane()
         let promise = PromisedFile()
         promise.stalled = true
         owner.uploadPromises([promise], to: pane)
@@ -227,13 +266,13 @@ private final class PromisedFile: NSFilePromiseReceiver, @unchecked Sendable {
         promise.reply()
         try await wait("promise refused", within: 2) { !owner.uploading(pane) }
         XCTAssertTrue(input.data.isEmpty)
-        XCTAssertFalse(FileManager.default.fileExists(atPath: root + "/state/drops"))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: root + "/drops"))
         XCTAssertTrue(removed(promise))
         XCTAssertNil(notice(owner))
     }
 
     func testPromiseLimitsRefuseTooManyAndTooLargeFiles() async throws {
-        let (owner, pane, _, input, _) = try localPane()
+        let (owner, pane, _, input, _) = try await localPane()
         let promises = (0...Upload.countLimit).map { _ in PromisedFile() }
         owner.uploadPromises(promises, to: pane)
         try await wait("promise count refused", within: 2) { !owner.uploading(pane) }
@@ -252,7 +291,7 @@ private final class PromisedFile: NSFilePromiseReceiver, @unchecked Sendable {
     }
 
     func testOwnerInvalidationRemovesPromisesSynchronously() async throws {
-        let (owner, pane, _, input, _) = try localPane()
+        let (owner, pane, _, input, _) = try await localPane()
         let promise = PromisedFile()
         promise.stalled = true
         owner.uploadPromises([promise], to: pane)
@@ -266,7 +305,7 @@ private final class PromisedFile: NSFilePromiseReceiver, @unchecked Sendable {
     }
 
     func testPromiseSweepsPreserveAnotherProcessLock() async throws {
-        let (owner, pane, _, input, root) = try localPane()
+        let (owner, pane, _, input, root) = try await localPane()
         let promise = PromisedFile()
         promise.stalled = true
         owner.uploadPromises([promise], to: pane)
@@ -325,7 +364,7 @@ private final class PromisedFile: NSFilePromiseReceiver, @unchecked Sendable {
     }
 
     func testLocalDropPastesOriginalPathsThroughThePastePath() async throws {
-        let (owner, pane, board, input, root) = try localPane()
+        let (owner, pane, board, input, root) = try await localPane()
         let runtime = pane.runtime
         let fm = FileManager.default
         let plain = root + "/files/a.txt", quoted = root + "/files/it's b.txt"
@@ -385,7 +424,7 @@ private final class PromisedFile: NSFilePromiseReceiver, @unchecked Sendable {
             for (environment, base) in [(["HOME": root + "/home"], root + "/home/.local/state/kido-app"),
                                         (["HOME": root + "/home", "XDG_STATE_HOME": root + "/xdg"], root + "/xdg/kido-app")] {
                 let id = UUID().uuidString.lowercased()
-                let command = try XCTUnwrap(SSH.recorded(["localhost"], plan.arguments(base: "", id: id)).arguments.last)
+                let command = try XCTUnwrap(SSH.recorded(["localhost"], plan.arguments(id: id)).arguments.last)
                 XCTAssertFalse(command.contains("\n"))
                 let run = try await Child.run(shell, ["-c", command], env: environment.merging(["PATH": "/usr/bin:/bin"]) { $1 }, input: plan.send)
                 XCTAssertEqual(run.status, 0, shell + ": " + run.err)
@@ -393,16 +432,44 @@ private final class PromisedFile: NSFilePromiseReceiver, @unchecked Sendable {
                 XCTAssertEqual(try? Data(contentsOf: URL(fileURLWithPath: run.out + "/" + plan.sources[0].name)), png, shell)
             }
         }
-        let multiline = "exec " + (["/bin/sh", "-c", Upload.script, "kido-drop", "", "id"]).map(SSH.quote).joined(separator: " ")
+        let multiline = "exec " + (["/bin/sh", "-c", Upload.script, "kido-drop", "id"]).map(SSH.quote).joined(separator: " ")
         let old = try await Child.run("/bin/tcsh", ["-c", multiline], env: ["HOME": root + "/home", "PATH": "/usr/bin:/bin"])
         XCTAssertNotEqual(old.status, 0, "negative control: the script quoted across lines fails under tcsh")
         XCTAssertTrue(old.err.contains("Unmatched"), old.err)
     }
 
+    func testEscapeAndGenerationChangeDuringActiveRouteTransfersPasteNothing() async throws {
+        for close in [false, true] {
+            let (owner, pane, _, input, root) = try await localPane(connection: .host)
+            let entered = DispatchSemaphore(value: 0), proceed = DispatchSemaphore(value: 0)
+            Upload.visualReadGate.withLock { gate in
+                gate = { entered.signal(); _ = proceed.wait(timeout: .now() + 5) }
+            }
+            defer { Upload.visualReadGate.withLock { $0 = nil }; proceed.signal() }
+            owner.upload(.success(try await Upload(image: pngData(width: 2, height: 2))), to: pane)
+            try await wait("the route reader waits at its gate") { entered.wait(timeout: .now()) == .success }
+            let partials = { ((try? FileManager.default.contentsOfDirectory(atPath: root + "/drops")) ?? []).filter { $0.hasPrefix(".") } }
+            try await wait("the server has an active partial upload") { !partials().isEmpty }
+            if close { owner.close() }
+            else {
+                let escape = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0, windowNumber: owner.window.windowNumber,
+                                                          context: nil, characters: "\u{1b}", charactersIgnoringModifiers: "\u{1b}", isARepeat: false, keyCode: 53))
+                pane.keyDown(with: escape)
+            }
+            XCTAssertFalse(owner.uploading(pane))
+            Upload.visualReadGate.withLock { $0 = nil }
+            proceed.signal()
+            try await wait("the cancelled route partial is removed") { partials().isEmpty }
+            try await drain(pane.runtime)
+            XCTAssertEqual(input.data, Data())
+            XCTAssertNil(notice(owner))
+        }
+    }
+
     func testEscapeDuringImagePreparationPastesNothing() async throws {
-        let (owner, pane, board, input, root) = try localPane()
+        let (owner, pane, board, input, root) = try await localPane(connection: .host)
         defer { Upload.visualImagePreparation = nil }
-        func published() -> [String] { (try? FileManager.default.contentsOfDirectory(atPath: root + "/state/drops")) ?? [] }
+        func published() -> [String] { (try? FileManager.default.contentsOfDirectory(atPath: root + "/drops")) ?? [] }
         let preparations = WindowOwner.visualPreparedUploads
         var preparation: CheckedContinuation<Void, Never>?
         Upload.visualImagePreparation = { await withCheckedContinuation { preparation = $0 } }
@@ -427,11 +494,10 @@ private final class PromisedFile: NSFilePromiseReceiver, @unchecked Sendable {
     }
 
     func testImagePasteUploadsOnePrivatePNGAndPastesItsPath() async throws {
-        let (owner, pane, board, input, root) = try localPane()
+        let (owner, pane, board, input, root) = try await localPane(connection: .host)
         let runtime = pane.runtime
         let fm = FileManager.default
-        func published() -> [String] { ((try? fm.contentsOfDirectory(atPath: root + "/state/drops")) ?? []).sorted() }
-        try fm.createDirectory(atPath: root + "/state", withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
+        func published() -> [String] { ((try? fm.contentsOfDirectory(atPath: root + "/drops")) ?? []).sorted() }
         XCTAssertTrue(pane.feed(Data("\u{1b}[?2004h".utf8)))
         let png = pngData(width: 3, height: 2)
         board.clearContents()
@@ -439,7 +505,7 @@ private final class PromisedFile: NSFilePromiseReceiver, @unchecked Sendable {
         XCTAssertTrue(ghostty_surface_binding_action(pane.surface, "paste_from_clipboard", 20))
         try await wait("image path pasted") { input.data.count > 12 }
         let text = String(decoding: input.data, as: UTF8.self)
-        XCTAssertTrue(text.hasPrefix("\u{1b}[200~\(root)/state/drops/") && text.hasSuffix(".png\u{1b}[201~"), text)
+        XCTAssertTrue(text.hasPrefix("\u{1b}[200~\(root)/drops/") && text.hasSuffix(".png\u{1b}[201~"), text)
         let path = String(text.dropFirst(6).dropLast(6))
         XCTAssertEqual(try Data(contentsOf: URL(fileURLWithPath: path)), png)
         XCTAssertEqual(try fm.attributesOfItem(atPath: path)[.posixPermissions] as? Int, 0o600)

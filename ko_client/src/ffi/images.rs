@@ -11,7 +11,7 @@ use ko_wire::protocol::{
 };
 
 use super::calls::{call, rejected};
-use super::{Buffer, Client, Code, client, hand_over, text_of};
+use super::{Buffer, Client, Code, client_call, hand_over, text_of};
 use crate::wire::{Limit, READ_TIMEOUT, Rejected, exchange, succeeded};
 
 const NAME_CAPACITY: usize = 32;
@@ -100,11 +100,12 @@ pub unsafe extern "C" fn ko_client_image(
     accept_shm: bool,
     out: *mut Image,
 ) -> Code {
+    let client = client_call!(client_);
     let scope = ();
     // SAFETY: ko_client.h requires these inputs to remain readable for this call.
     let pane_text = unsafe { text_of(pane, &scope) };
 
-    let (Some(client), Some(pane)) = (client(client_).filter(|_| !out.is_null()), pane_text) else {
+    let (Some(client), Some(pane)) = ((!out.is_null()).then_some(client), pane_text) else {
         return Code::Argument;
     };
     let path = format!("/panes/{pane}/images/{image}/frames/{frame}?generation={generation}");

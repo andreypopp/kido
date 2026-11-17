@@ -246,6 +246,7 @@ pub enum Rejected {
         body: Vec<u8>,
     },
     Io(String),
+    Protocol(String),
     Tls(String),
     Identity(String),
     // The request was written and no answer was read: the server may have acted on it.
@@ -293,6 +294,7 @@ impl Display for Rejected {
                 String::from_utf8_lossy(body)
             ),
             Rejected::Io(message)
+            | Rejected::Protocol(message)
             | Rejected::Tls(message)
             | Rejected::Identity(message)
             | Rejected::Unanswered(message) => formatter.write_str(message),
@@ -358,6 +360,198 @@ pub fn request(
     cancel: Option<&Wake>,
 ) -> Result<Vec<u8>, Rejected> {
     request_within(socket, who, route, body, (cancel, READ_TIMEOUT))
+}
+
+#[cfg(all(target_vendor = "apple", feature = "tls"))]
+#[derive(Debug)]
+struct Available<'a> {
+    stream: &'a mut Stream,
+    cancel: &'a Wake,
+    budget: usize,
+}
+
+#[cfg(all(target_vendor = "apple", feature = "tls"))]
+impl Read for Available<'_> {
+    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        if self.cancel.is_set() {
+            return Err(connect::cancelled_error());
+        }
+        if self.budget == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "upload response exceeds read budget",
+            ));
+        }
+        let capacity = buffer.len().min(self.budget);
+        let count = self.stream.read(
+            buffer
+                .get_mut(..capacity)
+                .ok_or(io::ErrorKind::InvalidInput)?,
+        )?;
+        self.budget = self
+            .budget
+            .checked_sub(count)
+            .ok_or(io::ErrorKind::InvalidData)?;
+        Ok(count)
+    }
+}
+
+#[cfg(all(target_vendor = "apple", feature = "tls"))]
+fn upload_response(reader: &mut impl Read) -> io::Result<Response> {
+    let mut answer = Vec::new();
+    let mut response = http::read_response_with(reader, |_, piece| {
+        if answer.len().saturating_add(piece.len()) > 16384 {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "upload response is too large",
+            ));
+        }
+        answer.extend_from_slice(piece);
+        Ok(())
+    })?;
+    response.body = answer;
+    Ok(response)
+}
+
+#[cfg(all(target_vendor = "apple", feature = "tls"))]
+pub(crate) fn upload(
+    socket: &Resolved,
+    client: Option<ClientId>,
+    route: &Route,
+    size: u64,
+    cancel: &Wake,
+    read: impl FnMut(&mut [u8]) -> io::Result<usize>,
+) -> Result<Vec<u8>, Rejected> {
+    let stream = Stream::open(socket, Limit::Idle(READ_TIMEOUT), Some(cancel))?;
+    upload_connected(stream, client, route, size, cancel, read)
+}
+
+#[cfg(all(target_vendor = "apple", feature = "tls"))]
+fn upload_connected(
+    mut stream: Stream,
+    client: Option<ClientId>,
+    route: &Route,
+    size: u64,
+    cancel: &Wake,
+    mut read: impl FnMut(&mut [u8]) -> io::Result<usize>,
+) -> Result<Vec<u8>, Rejected> {
+    let within = Limit::Idle(READ_TIMEOUT);
+    let (method, target) = route.to_request();
+    let head = http::call_head(
+        stream.host(),
+        method,
+        &target,
+        client,
+        &[
+            ("Connection", "close"),
+            ("Content-Type", "application/octet-stream"),
+        ],
+        size,
+    );
+    write_until(&mut stream, &head, Some(cancel), within)?;
+    let mut remaining = size;
+    let mut buffer = [0u8; 65536];
+    while remaining > 0 {
+        if cancel.is_set() {
+            return Err(connect::cancelled_error().into());
+        }
+        match fd::wait(
+            stream.fd(),
+            Want::Read,
+            Some(cancel.fd()),
+            Some(Duration::ZERO),
+        )? {
+            Waited::Ready => {
+                stream.set_nonblocking(true)?;
+                let mut first = [0u8; 1];
+                match stream.read(&mut first) {
+                    Ok(0) => {}
+                    Err(error) if error.kind() == io::ErrorKind::WouldBlock => {}
+                    Err(error) => return Err(error.into()),
+                    Ok(count) => {
+                        let prefix = io::Cursor::new(
+                            first
+                                .get(..count)
+                                .ok_or_else(|| io::Error::from(io::ErrorKind::InvalidData))?,
+                        );
+                        let mut reader = Interruptible {
+                            stream: &mut stream,
+                            cancel: Some(cancel),
+                            within,
+                        };
+                        let response = upload_response(&mut prefix.chain(&mut reader))
+                            .map_err(Rejected::unanswered)?;
+                        return Err(if (200..300).contains(&response.status) {
+                            Rejected::Protocol(
+                                "server answered before the upload body was sent".to_owned(),
+                            )
+                        } else {
+                            Rejected::Status {
+                                status: response.status,
+                                reason: response.reason,
+                                body: response.body,
+                            }
+                        });
+                    }
+                }
+            }
+            Waited::Cancelled => return Err(connect::cancelled_error().into()),
+            Waited::TimedOut => {}
+        }
+        let capacity = usize::try_from(remaining)
+            .unwrap_or(usize::MAX)
+            .min(buffer.len());
+        let window = buffer
+            .get_mut(..capacity)
+            .ok_or_else(|| io::Error::from(io::ErrorKind::InvalidInput))?;
+        let count = read(window)?;
+        if count == 0 || count > capacity {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "upload reader did not provide the declared bytes",
+            )
+            .into());
+        }
+        if let Err(error) = write_until(
+            &mut stream,
+            window
+                .get(..count)
+                .ok_or_else(|| io::Error::from(io::ErrorKind::InvalidInput))?,
+            Some(cancel),
+            within,
+        ) {
+            if matches!(
+                error.kind(),
+                io::ErrorKind::BrokenPipe | io::ErrorKind::ConnectionReset
+            ) && !cancel.is_set()
+                && stream.set_nonblocking(true).is_ok()
+            {
+                let mut reader = Available {
+                    stream: &mut stream,
+                    cancel,
+                    budget: 65536,
+                };
+                if let Ok(response) = upload_response(&mut reader)
+                    && (400..600).contains(&response.status)
+                {
+                    return Err(Rejected::Status {
+                        status: response.status,
+                        reason: response.reason,
+                        body: response.body,
+                    });
+                }
+            }
+            return Err(error.into());
+        }
+        remaining = remaining.saturating_sub(count as u64);
+    }
+    let mut reader = Interruptible {
+        stream: &mut stream,
+        cancel: Some(cancel),
+        within,
+    };
+    succeeded(upload_response(&mut reader).map_err(Rejected::unanswered)?)
+        .map(|response| response.body)
 }
 
 pub fn request_within(
@@ -904,6 +1098,107 @@ pub(crate) mod tests {
     #[path = "tls.rs"]
     pub(crate) mod tls;
     use super::*;
+
+    #[cfg(all(target_vendor = "apple", feature = "tls"))]
+    #[test]
+    fn uploads_read_early_answers_between_chunks_without_finishing_the_body() {
+        use std::os::unix::net::UnixListener;
+        use std::sync::mpsc;
+        for status in [http::Status::BadRequest, http::Status::Ok] {
+            let dir = std::env::temp_dir().join(format!(
+                "ko-early-upload-{}",
+                ko_sys::entropy::hex(8).unwrap()
+            ));
+            std::fs::create_dir(&dir).unwrap();
+            let socket = dir.join("socket");
+            let listener = UnixListener::bind(&socket).unwrap();
+            let body = protocol::json(&protocol::Error::new(
+                protocol::ErrorKind::Invalid,
+                "early refusal",
+            ))
+            .into_bytes();
+            let reply = http::json_response(
+                status,
+                std::str::from_utf8(&body).unwrap(),
+                http::Policy::Control,
+            );
+            let (sent, ready) = mpsc::channel();
+            let (finish, finished) = mpsc::channel();
+            let server = std::thread::spawn(move || {
+                assert_eq!(
+                    fd::wait(
+                        listener.as_fd(),
+                        Want::Read,
+                        None,
+                        Some(Duration::from_secs(5))
+                    )
+                    .unwrap(),
+                    Waited::Ready
+                );
+                let (mut peer, _) = listener.accept().unwrap();
+                peer.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+                peer.set_write_timeout(Some(Duration::from_secs(5)))
+                    .unwrap();
+                let mut request = Vec::new();
+                let mut scanned = 0;
+                loop {
+                    match http::parse_head(&request, &mut scanned) {
+                        http::Parsed::Complete { head, .. } => {
+                            assert_eq!(head.method, "POST");
+                            assert_eq!(head.target.as_str(), "/panes/pane_1/drops?name=quota");
+                            assert_eq!(
+                                head.header(http::CONTENT_LENGTH_HEADER),
+                                Some("2147483649")
+                            );
+                            break;
+                        }
+                        http::Parsed::Partial => {}
+                        other => panic!("unexpected request: {other:?}"),
+                    }
+                    let mut bytes = [0u8; 512];
+                    let count = peer.read(&mut bytes).unwrap();
+                    assert!(count > 0);
+                    request.extend_from_slice(&bytes[..count]);
+                }
+                peer.write_all(&reply).unwrap();
+                sent.send(()).unwrap();
+                finished.recv_timeout(Duration::from_secs(5)).unwrap();
+            });
+            let mut reads = 0;
+            let outcome = upload(
+                &Resolved::Unix(socket),
+                None,
+                &Route::UploadDrop {
+                    id: "pane_1".parse().unwrap(),
+                    name: "quota".to_owned().try_into().unwrap(),
+                },
+                2147483649,
+                &Wake::new().unwrap(),
+                |buffer| {
+                    reads += 1;
+                    if reads > 1 {
+                        return Err(io::Error::other("reader called after the answer"));
+                    }
+                    ready.recv_timeout(Duration::from_secs(5)).unwrap();
+                    buffer[0] = b'x';
+                    Ok(1)
+                },
+            );
+            finish.send(()).unwrap();
+            server.join().unwrap();
+            std::fs::remove_dir_all(dir).unwrap();
+            let expected = if status == http::Status::Ok {
+                Rejected::Protocol("server answered before the upload body was sent".to_owned())
+            } else {
+                Rejected::Status {
+                    status: 400,
+                    reason: "Bad Request".to_owned(),
+                    body,
+                }
+            };
+            assert_eq!(outcome, Err(expected));
+        }
+    }
 
     #[test]
     fn blocking_link_writes_time_out_when_the_peer_does_not_read() {

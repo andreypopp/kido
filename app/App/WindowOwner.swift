@@ -855,14 +855,6 @@ private class AlertEscape: NSView {
     private var uploadPrompt: NSAlert?
     private var uploads: [String: (pane: PaneView, task: Task<Void, Never>)] = [:]
 
-    private var uploadBase: String? {
-        #if KIDO_VISUAL || KIDO_STRESS
-        if let testUploadBase { return testUploadBase }
-        #endif
-        if case .connected = link { return "" }
-        return nil
-    }
-
     func isLocalProgram(_ pane: PaneView) -> Bool { host == .local && pane.runtimeMark == nil && pane.webviewView != nil }
 
     func dropFiles(_ urls: [URL], into pane: PaneView) {
@@ -887,22 +879,27 @@ private class AlertEscape: NSView {
     }
 
     func upload(_ planned: Result<Upload, Failure>, to pane: PaneView) {
-        if case .tls = host { return notice("Kido did not upload", "Files cannot be uploaded to \(host.label) yet. Copy the file to the server with another tool.") }
         let plan: Upload
         do { plan = try planned.get() } catch { return notice("Kido did not upload", error.message) }
         if let destination = sshDestination(pane) { return uploadOverSSH(plan, destination, to: pane) }
-        if host == .local, let paths = plan.originals { return insert(paths, into: pane) }
-        guard let base = uploadBase else { return notice("Kido did not upload", "\(host.label) is not connected.") }
+        if host == .local, pane.runtimeMark == nil, let paths = plan.originals { return insert(paths, into: pane) }
+        guard case .connected = link else { return notice("Kido did not upload", "\(host.label) is not connected.") }
         guard admitsUpload() else { return }
-        if host == .local || uploadPermission == .allow || Self.clipboardConsent.allows(host, .upload) { return transfer(plan, base: base, to: pane) }
+        if host == .local || uploadPermission == .allow || Self.clipboardConsent.allows(host, .upload) { return transfer(plan, to: pane) }
         if uploadPermission == .deny { return notice("Kido did not upload", "Uploads to “\(host.label)” are denied for this connection.") }
-        askUpload(plan, to: host.label, "Kido copies them to \(base.isEmpty ? "~/.local/state/\(Upload.stateName)" : base)/drops on \(identity ?? host.label) and pastes their paths. Files are kept for about 7 days.",
+        let destination = identity ?? host.label
+        let detail = if let runtime = pane.runtimeMark?.name {
+            "Kido copies them into the runtime \(runtime) on \(destination) and pastes their paths. The runtime keeps them for about 7 days."
+        } else {
+            "Kido copies them to the ko server on \(destination) and pastes their paths. The server keeps them for about 7 days."
+        }
+        askUpload(plan, to: host.label, detail,
                   ["Allow for this connection", "Always allow", "Deny"]) { [weak self, weak pane] response in
             guard let self else { return }
             if response == .alertSecondButtonReturn { Self.clipboardConsent.allowAlways(host, .upload) }
             uploadPermission = response == .alertFirstButtonReturn || response == .alertSecondButtonReturn ? .allow : .deny
             guard uploadPermission == .allow, let pane else { return }
-            transfer(plan, base: base, to: pane)
+            transfer(plan, to: pane)
         }
     }
 
@@ -923,11 +920,7 @@ private class AlertEscape: NSView {
             }
         }
         guard recorded == confirmed else { return notice("Kido did not upload", refusal) }
-        var base = ""
-        #if KIDO_VISUAL || KIDO_STRESS
-        base = testUploadBase ?? ""
-        #endif
-        transfer(plan, base: base, to: pane, over: recorded)
+        transferOverSSH(plan, to: pane, over: recorded)
     }
 
     private func askUpload(_ plan: Upload, to label: String, _ detail: String, _ buttons: [String], then answered: @escaping (NSApplication.ModalResponse) -> Void) {
@@ -984,12 +977,35 @@ private class AlertEscape: NSView {
         cancelClipboardAlert(alert)
     }
 
-    private func transfer(_ plan: Upload, base: String, to pane: PaneView, over recorded: [String]? = nil) {
-        let id = UUID().uuidString.lowercased(), generation = generation, drain = drain, arguments = plan.arguments(base: base, id: id)
-        let label = recorded?.last ?? host.label
-        let launch: Launch? = if let recorded { SSH.recorded(recorded, arguments) }
-            else if host == .local { Launch(arguments[0], Array(arguments.dropFirst()), environment: tools.environment) } else { ssh?.upload(arguments) }
-        guard let launch else { return notice("Kido did not upload", "\(host.label) is not connected.") }
+    private func transfer(_ plan: Upload, to pane: PaneView) {
+        guard case .connected(let client) = link else { return notice("Kido did not upload", "\(host.label) is not connected.") }
+        let id = UUID().uuidString.lowercased(), generation = generation, runtime = pane.runtimeMark?.name
+        uploads[id] = (pane, Task { [weak self] in
+            let result: Result<[String], Error>
+            do { result = .success(try await plan.upload(client, pane: pane.pane)) }
+            catch { result = .failure(error) }
+            guard let self, accepts(generation), uploads.removeValue(forKey: id) != nil, !Task.isCancelled else { return }
+            switch result {
+            case .success(let paths): insert(paths, into: pane)
+            case .failure(let error):
+                let message: String
+                switch error {
+                case let error as KoError where error.code == KO_ERR_REFUSED:
+                    let label = runtime.map { "The runtime \($0) on \(host.label)" } ?? host.label
+                    message = "\(label) refused the upload: \(error.detail)"
+                case let error as KoError: message = error.detail.isEmpty ? error.description : error.detail
+                case let error as Failure: message = error.message
+                default: message = error.localizedDescription
+                }
+                notice("Kido did not upload", message)
+            }
+        })
+    }
+
+    private func transferOverSSH(_ plan: Upload, to pane: PaneView, over recorded: [String]) {
+        let id = UUID().uuidString.lowercased(), generation = generation, drain = drain, arguments = plan.arguments(id: id)
+        let label = recorded.last ?? host.label
+        let launch = SSH.recorded(recorded, arguments)
         let task = Task { [weak self] in
             guard !Task.isCancelled else { return }
             let result: Result<Child.Finished, Failure>
@@ -998,7 +1014,7 @@ private class AlertEscape: NSView {
             guard let self, accepts(generation), uploads.removeValue(forKey: id) != nil else { return }
             switch result {
             case .failure(let error): notice("Upload to \(label) failed", error.message)
-            case .success(let run) where run.status != 0 || !(base.isEmpty ? run.out.hasPrefix("/") && run.out.hasSuffix("/drops/" + id) : run.out == base + "/drops/" + id):
+            case .success(let run) where run.status != 0 || !(run.out.hasPrefix("/") && run.out.hasSuffix("/drops/" + id)):
                 notice("Upload to \(label) failed", run.err.isEmpty ? "The upload exited \(run.status)." : run.err)
             case .success(let run): insert(plan.sources.map { run.out + "/" + $0.name }, into: pane)
             }
@@ -1957,7 +1973,6 @@ private class AlertEscape: NSView {
     // The runtimes of an owner without a server, and the runtime of its selected pane.
     var testRuntimes: (list: [KoSchema.ClientRuntime], focused: String?)?
     var testSSH: ((SSH) -> Void)?
-    var testUploadBase: String?
     var testBanner: Banner { banner }
     var testSession: SessionView? { session }
     var testModel: KoModel? { koModel }
