@@ -30,3 +30,7 @@ address() {
         return 1
     fi
 }
+ssh_command() {
+    ssh=(ssh -F "$folder/ssh_config")
+    [[ -s $folder/known_hosts ]] || ssh+=(-o StrictHostKeyChecking=accept-new)
+}

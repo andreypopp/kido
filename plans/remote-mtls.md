@@ -348,16 +348,14 @@ a path without a row selects every check.
 **Terraform** (the providers `digitalocean` and `cloudflare`,
 versions pinned; the state and the tfvars are in the deployment's
 folder `deploy/deployments/<name>/`, ignored by git, with the
-deployment's SSH key pair and host key; deploy/README.md).
+deployment's SSH key pair and pinned host key; deploy/README.md).
 The inputs: `DIGITALOCEAN_TOKEN`; `CLOUDFLARE_API_TOKEN`, a token
 with only Zone, DNS, Edit on the one zone; the zone's id and name.
 
 - `digitalocean_droplet`: Debian 13 x64, region and size as
   variables, the deployment's own SSH key, monitoring off, the droplet
   agent removed (the web console is a second way in), `user_data`
-  that creates `me` with the key, installs the deployment's SSH host
-  key (so the first connection is already pinned), locks root and
-  installs `rsync`
+  that creates `me` with the key, locks root and installs `rsync`
   (the image has none, and `install.sh` needs it). A test VM gets its
   seed from the same user-data, so the two cannot differ.
 - `digitalocean_firewall`: in: 22/tcp from `ssh_cidrs` (by default

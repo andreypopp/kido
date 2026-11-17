@@ -18,11 +18,7 @@ resource "digitalocean_droplet" "ko" {
   monitoring    = false
   droplet_agent = false
   ssh_keys      = [digitalocean_ssh_key.operator.fingerprint]
-  user_data = templatefile("${path.module}/cloud-init.yaml", {
-    ssh_key      = jsonencode(local.ssh_key)
-    host_key     = jsonencode(file("${var.deployment}/ssh_host_ed25519_key"))
-    host_key_pub = jsonencode(trimspace(file("${var.deployment}/ssh_host_ed25519_key.pub")))
-  })
+  user_data     = templatefile("${path.module}/cloud-init.yaml", { ssh_key = jsonencode(local.ssh_key) })
 }
 
 resource "digitalocean_firewall" "ko" {

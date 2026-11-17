@@ -9,9 +9,7 @@ mkdir -p -m 0700 "$deployments"
 work=$(mktemp -d "$deployments/.new-$name-XXXXXX")
 trap 'rm -rf "$work"' EXIT
 ssh-keygen -q -t ed25519 -N '' -C "ko-deploy-$name" -f "$work/id_ed25519"
-ssh-keygen -q -t ed25519 -N '' -C "$name" -f "$work/ssh_host_ed25519_key"
-read -r type key _ < "$work/ssh_host_ed25519_key.pub"
-printf '%s %s %s\n' "$name" "$type" "$key" > "$work/known_hosts"
+install -m 0600 /dev/null "$work/known_hosts"
 cat > "$work/ssh_config" <<CONFIG
 Host *
     User me

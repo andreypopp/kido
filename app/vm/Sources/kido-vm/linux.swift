@@ -14,12 +14,9 @@ func linux(_ args: [String]) -> Never {
             var userData = try String(contentsOfFile: template, encoding: .utf8)
             let encoder = JSONEncoder()
             encoder.outputFormatting = .withoutEscapingSlashes
-            for (placeholder, file, trim) in [("ssh_key", "id_ed25519.pub", true), ("host_key", "ssh_host_ed25519_key", false), ("host_key_pub", "ssh_host_ed25519_key.pub", true)] {
-                guard userData.contains("${\(placeholder)}") else { fail("cloud-init template has no ${\(placeholder)} placeholder") }
-                let text = try String(contentsOf: deployment.appendingPathComponent(file), encoding: .utf8)
-                let value = trim ? text.trimmingCharacters(in: .whitespacesAndNewlines) : text
-                userData = userData.replacingOccurrences(of: "${\(placeholder)}", with: String(decoding: try encoder.encode(value), as: UTF8.self))
-            }
+            guard userData.contains("${ssh_key}") else { fail("cloud-init template has no ${ssh_key} placeholder") }
+            let key = try String(contentsOf: deployment.appendingPathComponent("id_ed25519.pub"), encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines)
+            userData = userData.replacingOccurrences(of: "${ssh_key}", with: String(decoding: try encoder.encode(key), as: UTF8.self))
             guard lock("install", wait: false) != nil else { fail("Linux installation is already running") }
             guard !FileManager.default.fileExists(atPath: path("disk.img").path) else { fail("Linux disk already exists") }
             let base = URL(string: "https://cloud.debian.org/images/cloud/trixie/latest/")!
@@ -128,5 +125,7 @@ func linuxDeployment() throws -> URL {
 }
 
 func linuxSSH() throws -> [String] {
-    ["-F", try linuxDeployment().appendingPathComponent("ssh_config").path]
+    let deployment = try linuxDeployment()
+    let pinned = ((try? FileManager.default.attributesOfItem(atPath: deployment.appendingPathComponent("known_hosts").path)[.size] as? Int) ?? 0) > 0
+    return ["-F", deployment.appendingPathComponent("ssh_config").path] + (pinned ? [] : ["-o", "StrictHostKeyChecking=accept-new"])
 }

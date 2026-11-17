@@ -14,15 +14,17 @@ NAME` makes it on its first run. It holds:
 - `id_ed25519`: the deployment's own SSH key pair, without a
   passphrase. Cloud-init gives its public half to `me`. Your own SSH
   keys and your SSH agent are never used.
-- `ssh_host_ed25519_key`: the server's SSH host key, made on the Mac.
-  Cloud-init installs it, so `known_hosts` is correct before the first
-  connection. There is no trust on first use.
-- `known_hosts`: that host key, under the name NAME (ssh's
-  `HostKeyAlias`), so the server's address can change.
+- `known_hosts`: the server's ed25519 host key, under the name NAME
+  (ssh's `HostKeyAlias`), so the server's address can change. It is
+  empty until the first connection, which accepts the key and pins
+  it; every later connection refuses another key. After you build the
+  server again, empty the file: the new server has a new key.
 - `ssh_config`: the one SSH configuration of `deploy/bin/ssh`,
   `install.sh`, `rsync` and `smoke.sh`: user `me`, only this key, no
   agent, no agent forwarding, no password prompt, strict host key
-  check. Use it with `ssh -F`.
+  check. Use it with `ssh -F`. `deploy/bin/ssh` and `install.sh` add
+  `StrictHostKeyChecking=accept-new` only while `known_hosts` is
+  empty.
 - `terraform.tfvars`, `terraform.tfstate` and `.terraform/`: the
   OpenTofu input and state of this deployment.
 - `address`, only for a host without a state, such as the local VM.
@@ -148,11 +150,9 @@ the operator must know:
   stolen key: remove it from `~me/.ssh/authorized_keys` through
   another session, or build the server again with a new deployment.
   `ssh_cidrs` restores a source limit when you want one.
-- The server's SSH host private key is in the droplet's user-data.
-  DigitalOcean keeps it, the account's API token can read it, and the
-  metadata service serves it on the droplet. nftables refuses that
-  service to every uid but root. The OpenTofu state in the folder
-  holds it too.
+- The first SSH connection trusts the host key that it receives, so
+  a man-in-the-middle on that one connection could impersonate the
+  server. Every later connection is pinned to that key.
 - The software key in `testdata/` is public test data. Never pair it
   on a real server.
 
@@ -179,7 +179,7 @@ The pairing duration must be greater than zero and at most 120 seconds.
 
 `kido-vm linux` (docs/build.md, "The Debian guest") runs Debian 13
 arm64 with systemd on the Mac, from the same cloud-init as the
-droplet, with the keys of a deployment folder. It needs no DNS: Caddy
+droplet, with the key of a deployment folder. It needs no DNS: Caddy
 cannot get ACME certificates there, so provisioning takes the server
 certificate as an input: `provision.sh --tls-cert CERT KEY KO_HOST
 SSH_CIDR...` installs the pair as `/etc/caddy/ko-server.crt` and
@@ -192,7 +192,7 @@ make -C app vm && make build-linux LINUX_ARCHS=aarch64
 deploy/bin/new vm
 app/vm/.build/out/Products/Release/kido-vm linux install --deployment deploy/deployments/vm
 app/vm/.build/out/Products/Release/kido-vm linux up   # writes deploy/deployments/vm/address
-deploy/bin/ssh vm true                                 # no prompt: the host key is pinned
+deploy/bin/ssh vm true                                 # pins the host key; no prompt
 ```
 
 Copy `build/ko/share/ko/linux/aarch64/`, `deploy/` (without
@@ -211,7 +211,7 @@ the next reload hang. For the test's SSH to the guest, copy
 `ssh_config`, `id_ed25519` and `known_hosts` of
 `deploy/deployments/vm` into the guest at the same absolute path
 (owned by `me`, mode 0700), so the `ssh_config` works there, and
-remove the copy afterwards. Do not copy the host key:
+remove the copy afterwards:
 
 ```sh
 sudo ip netns add ko-smoke
