@@ -25,9 +25,61 @@ import Foundation
     }
 }
 
-enum Host: Hashable, Sendable {
+struct ServerName: Hashable, Sendable, Codable {
+    private let name: String
+    var value: String { name }
+
+    init(_ value: String) throws {
+        guard value.utf8.allSatisfy({ $0 < 128 }) else { throw Failure(message: "Expected a DNS server name") }
+        let value = value.lowercased()
+        let labels = value.split(separator: ".", omittingEmptySubsequences: false)
+        guard !value.isEmpty, value.utf8.count <= 253,
+              !(labels.count == 4 && labels.allSatisfy { label in
+                  !label.isEmpty && label.allSatisfy { $0.isASCII && $0.isNumber } && UInt8(label).map { String($0) == label } == true
+              }),
+              labels.allSatisfy({ label in
+                  !label.isEmpty && label.utf8.count <= 63 && label.first != "-" && label.last != "-" &&
+                  label.utf8.allSatisfy { (97...122).contains($0) || (48...57).contains($0) || $0 == 45 }
+              }) else { throw Failure(message: "Expected a DNS server name") }
+        self.name = value
+    }
+
+    init(from decoder: any Decoder) throws {
+        try self.init(decoder.singleValueContainer().decode(String.self))
+    }
+    func encode(to encoder: any Encoder) throws {
+        var container = encoder.singleValueContainer()
+        try container.encode(value)
+    }
+}
+
+enum Host: Hashable, Sendable, Codable {
     case local
     case remote(String)
+    case tls(ServerName)
+
+    private enum Kind: String, Codable { case local, ssh, https }
+    private enum CodingKeys: CodingKey { case kind, destination }
+    init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        switch try container.decode(Kind.self, forKey: .kind) {
+        case .local: self = .local
+        case .ssh: try self.init(container.decode(String.self, forKey: .destination))
+        case .https: self = .tls(try container.decode(ServerName.self, forKey: .destination))
+        }
+    }
+    func encode(to encoder: any Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        switch self {
+        case .local: try container.encode(Kind.local, forKey: .kind)
+        case .remote(let destination):
+            try container.encode(Kind.ssh, forKey: .kind)
+            try container.encode(destination, forKey: .destination)
+        case .tls(let name):
+            try container.encode(Kind.https, forKey: .kind)
+            try container.encode(name, forKey: .destination)
+        }
+    }
 
     init(_ destination: String) throws(Failure) {
         guard !destination.isEmpty, !destination.hasPrefix("-"),
@@ -49,13 +101,12 @@ enum Host: Hashable, Sendable {
     }
 
     var clipboardKey: String {
-        switch self { case .local: "local"; case .remote(let destination): "ssh:\(destination)" }
+        switch self { case .local: "local"; case .remote(let destination): "ssh:\(destination)"; case .tls(let name): "tls:\(name.value)" }
     }
 
-    // A remote window shares one ssh connection, so it fetches fewer image frames at once.
-    var imageFetches: Int { self == .local ? 8 : 4 }
+    var imageFetches: Int { switch self { case .local: 8; case .remote, .tls: 4 } }
 
     var label: String {
-        switch self { case .local: "Local"; case .remote(let destination): destination }
+        switch self { case .local: "Local"; case .remote(let destination): destination; case .tls(let name): name.value }
     }
 }

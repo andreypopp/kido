@@ -399,6 +399,76 @@ forward, the link) is administrative and may write in the server's state
 directory; the client actions (the dial, views, image fetches, API calls,
 the probe) only connect to `<dir>/socket`.
 
+**TLS servers.** A window can also reach a ko server behind Caddy over
+HTTPS with mutual TLS (`Host.tls`, a validated DNS name, `ServerName` in
+`app/App/Host.swift`; the deployment is `deploy/README.md`). Its
+validation is the core's `HostName` rule, so the two sides refuse the same
+names. There is no SSH layer: the owner loads the server's identity off
+main, probes within 20 s through a TLS endpoint, and dials the same
+endpoint; the engine does the reconnect. The host has no administrative
+step: systemd owns the server, so `KO_ERR_NO_SERVER` is an outage with
+the engine's reconnect, never a start, and no agent is published.
+`KO_ERR_IDENTITY` and `KO_ERR_TLS`, from the probe, the dial or a
+`failed` event, are terminal: the owner closes its client, keeps the
+snapshot and opens a sheet (`Link.security`). The identity sheet offers
+Pair Again (Pair mode with HOST; the window keeps a banner with
+Reconnect, which uses the new identity) and Close (the window closes);
+the server-certificate sheet
+has only Close, because a reconnect fails in the same way. A mismatch
+opens the remote sheet; when the app is the older side, it asks only for
+an app update, else its host step names `deploy/install.sh` in the
+checkout that deployed the host, not `ko kill-server`. A file drop uploads nothing and shows a notice: ko has no
+upload route, and the SSH transfer needs the master.
+
+The identity store (`IdentityStore`, `app/App/Identity.swift`) keeps
+one identity for each server under `~/Library/Application
+Support/Kido/servers/<host>/`: `certificate.der` and `key`, the
+`dataRepresentation` of a CryptoKit Secure Enclave P-256 key, which
+only this Mac's enclave can use. The directory is 0700 and the files
+0600. The key has the access `afterFirstUnlockThisDeviceOnly` with
+`privateKeyUsage` and no user presence, so it never prompts. There is no
+software key. `install-id` beside `servers/` is the install's UUID, the
+SAN of every certificate. A commit writes and syncs the pair in a staging
+directory, then renames it into place or exchanges it with the old one
+(`renameatx_np` with `RENAME_SWAP`) and syncs `servers/`, so a reader
+sees the old pair or the new pair, never a mix. The sign closure of
+`KoIdentity` reads the key from the store at each signature and checks
+that the committed certificate is still the one it dials with; it keeps
+no key in memory. So Forget or a new pairing makes the next handshake of
+an open window fail with `KO_ERR_IDENTITY`. The signature itself runs
+outside the store's lock: the handshakes of one window's links wait for
+each other only for the two file reads.
+
+**Pairing** (`PairingSession`, `app/App/PairingSession.swift`;
+`app/App/Pairing.swift`). The code is the line that `sudo ko-pair` prints:
+JSON after an optional `kido-pair:` prefix, with whitespace around it.
+The session makes a new key and certificate (the profile of
+`deploy/ko-pair`'s checks), signs the enrollment message, and sends one
+POST through an ephemeral `URLSession` with the system's trust, a
+streamed body that is never sent twice, and no redirect. The result
+decides what happens to the token and the key:
+
+- 200 with the certificate's fingerprint: the identity is committed and
+  the host enters the recent list. The session probes the host each
+  second for at most 30 s, because Caddy restarts to load the device,
+  then opens a window.
+- Another HTTP status: the key is dropped; 403 is "used or expired".
+- A failure before the request reached the server (a closed list of
+  connection errors, with no body byte sent): Retry makes a new key and
+  request from the same code.
+- Anything else is an uncertain send: the token is spent, and the server
+  most likely pinned the certificate. The identity is committed and the
+  line says that HOST may have paired this Mac; Connect then finds out,
+  and a refusal there shows the identity sheet.
+
+The app keeps the hashes of the tokens it sent in memory (`AppDelegate`),
+so a code is never posted twice, also after Escape or a new palette; only
+a failure before the request left (making the key or the request, or the
+pre-connection failure) releases it. Pair Again keeps the old identity
+until the new one is committed. Forget (the recent row's context menu)
+deletes the server's directory off main and removes the row; it does not
+revoke the device on the server (`ko-revoke` does).
+
 The entry points below route every remote request to a remote owner.
 
 The Shortcuts action **Connect to Remote Host in Kido**
@@ -419,7 +489,9 @@ creates a new native window, including repeated requests for one alias.
 Host is trimmed and accepts an SSH alias or user@hostname, not options,
 whitespace, controls or shell syntax. Ports and jump hosts belong in SSH
 config. File → **Connect to Remote Host…** (Shift-Command-K) opens the
-[command palette](#command-palette) in its Connect mode. The mode uses the same
+[command palette](#command-palette) in its Connect mode; File → **Pair
+Server…**, below it with no key equivalent and not in the Dock menu, opens
+its Pair mode. The Connect mode uses the same
 remote routing as URLs and the App Intent. File → **Connect to Local Host**,
 directly above it and with no key equivalent, opens a new Local window on each
 request, also when other windows are open. Use it to open Local again after
@@ -436,8 +508,11 @@ the most recently used one. With no live window it opens a Local window.
 The app opts out of automatic termination at launch: AppKit marks a
 windowless app as terminated by the transparent app lifecycle (TAL), and a
 Dock reopen then does not reach the process. The recent list lives in
-preferences (`recentHosts`), and every remote path, palette, URL or intent
-alike refreshes it. There is no remote restore. The off-screen
+preferences (`recentHosts`, `RecentHosts` in `app/App/RecentHosts.swift`):
+typed hosts, SSH and TLS, each with its last use. Every remote path,
+palette, URL or intent alike refreshes it, and a pairing that commits an
+identity adds its host. Clear Recent Hosts clears only the list; it
+forgets no identity. There is no remote restore. The off-screen
 `FileMenuTests` create inert window owners without a server.
 Local keeps `SessionModel.title` (session and current window); remote prefixes
 it with resolved `user@host / `. The original dialing alias is the window
@@ -2591,7 +2666,7 @@ characters gets a fill of the terminal foreground at 14% with a 3pt radius;
 the text keeps its colour and weight. With no match, the list shows "No
 matches".
 
-The palette has six modes besides the root (`PaletteMode` in
+The palette has seven modes besides the root (`PaletteMode` in
 `app/App/Palette.swift`). A mode shows a chip left of the
 field (22pt, the mode's symbol and name) and a foot that names its keys.
 Entering a mode clears the query and the error. An error is a red line between
@@ -2617,13 +2692,33 @@ the field and the list; an edit clears it.
 - **Connect** (`globe`, "user@hostname or SSH alias"). The root row Connect
   to Remote Host…, File → Connect to Remote Host… and Shift-Command-K enter it.
   With text, the first row is "Connect to <text>", selected. The recent hosts
-  that match follow, with their relative time. With no text, the last row is
-  Clear Recent Hosts, which clears the list without confirmation. With no
-  text and no recent hosts, the list shows "No recent hosts". Return on the
+  that match follow, with their relative time and their kind ("ssh" or
+  "https") after the name. With no text, the last row is
+  Clear Recent Hosts, which clears the list without confirmation, and the
+  row before it is the hint "Paste a pairing code: Pair Server…", which
+  enters Pair mode. A recent row's context menu has Remove from Recents for
+  an SSH host and Forget HOST… for a TLS host, which asks with an alert
+  first. Typed text is always an SSH destination. With no
+  text and no recent hosts, the list shows only the hint. Return on the
   typed row validates the text as a `Host`. An invalid host keeps the text and
   shows the validation message as the error, and the typed row is absent until
   the text changes. A valid host or a host row connects through the same
   remote routing as URLs and opens a new window.
+- **Pair** (`key`, `PaletteMode.pair`, with HOST for Pair Again). File →
+  Pair Server…, its root row after Connect to Remote Host…, the Connect
+  hint and the identity sheet's Pair Again enter it. The field takes the
+  pairing code; a second row below it holds the device name, the Mac's
+  name by default, and Tab moves between them. The mode replaces the list
+  with its own view, `PalettePair`, which shows the state of the
+  `PairingSession` ([TLS servers](#remote-hosts)) as one status line:
+  the parsed HOST, the error, the progress with a spinner, Retry, or the
+  uncertain send. While a request or the activation runs, the fields are
+  inert. Escape returns to the root and does not cancel the request. A
+  success opens the window also after Escape, because the window is the
+  purpose of the pairing; the palette closes as for any window that
+  becomes key.
+  There is no `kido-app://` link for a pairing: a token in a URL stays in
+  logs and history.
 - **Rename session** (`pencil`). Session → Rename Session… and its root row
   enter it. It targets the anchor's current session, with the current name in
   the field, selected. Return commits through `SessionName`, the rules of the
@@ -3098,7 +3193,18 @@ reference. Thus, without the project lock, `xcodebuild
 -resolvePackageDependencies` writes the project's whole graph into
 PromptMarkdown's lock. Xcode 27.1 rejects `-packageResolvedPath`. When a remote
 package version in `project.yml` changes, the next build updates the project
-lock. Commit the lock with that change.
+lock. Commit the lock with that change. The graph includes
+`swift-certificates` and `swift-crypto` for the identity store.
+
+`IdentityTests` and `PairingTests` read `deploy/testdata` (a token, a
+device certificate and its software key, and the bytes of the enrollment
+message), which `project.yml` copies into the test bundle: `IdentityTests`
+compares the message, and `PairingTests` signs requests with the key. `deploy/test.sh` checks the same message
+against the real `ko-pair`, so the app and the server cannot agree on a
+wrong formula. The software key exists only in that fixture; the app makes
+only enclave keys, also in the visual-test VM. No Swift test reaches a TLS
+server: the TLS paths of `WindowOwner` and the activation run on injected
+probe results, and the transport's own TLS tests are in `ko_client`.
 
 `make visual` runs hosted SnapshotTesting tests against private ko
 servers (`VisualTestCase.koServerDir()`, a `mkdtemp` directory under

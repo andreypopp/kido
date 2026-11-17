@@ -13,6 +13,11 @@ final class WindowFrameTests: XCTestCase {
         frames.save(remote, for: .remote("host"))
         XCTAssertEqual(frames.frame(for: .local), local)
         XCTAssertEqual(frames.frame(for: .remote("host")), remote)
+        let tls = Host.tls(try ServerName("ko.example.com"))
+        frames.save(local, for: tls)
+        frames.save(remote, for: .remote("ko.example.com"))
+        XCTAssertEqual(frames.frame(for: tls), local)
+        XCTAssertEqual(frames.frame(for: .remote("ko.example.com")), remote)
     }
 
     func testRestoreClampShrinkCascadeAndCenter() {

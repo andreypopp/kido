@@ -8,6 +8,7 @@ struct WindowFrames {
         switch host {
         case .local: "windowFrame:local:" + serverDir
         case .remote(let alias): "windowFrame:remote:" + alias
+        case .tls(let name): "windowFrame:tls:" + name.value
         }
     }
 

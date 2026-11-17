@@ -5,7 +5,7 @@ import PaneGeometry
 
 struct PaletteEntry {
     enum ID: Equatable {
-        case pane(Snapshot.Position), host(String), command(Int), connectTyped, clearRecent, theme(String), themeUse(Int)
+        case pane(Snapshot.Position), host(Host), command(Int), connectTyped, pairHint, clearRecent, theme(String), themeUse(Int)
         case runtime(RuntimeKey), hostRuntime, runtimeOpen(Int), runtimeDown
     }
     let id: ID
@@ -35,7 +35,7 @@ struct PaletteEntry {
     @MainActor static func panes(_ owner: WindowOwner) -> [PaletteEntry] {
         guard owner.canNavigate, let snapshot = owner.snapshot else { return [] }
         let instance = snapshot.serverInstance
-        let host = if case .remote(let destination) = owner.host { [destination] } else { [String]() }
+        let host = owner.host == .local ? [] : [owner.host.label]
         let resolve: @MainActor (SidebarRow) -> WindowOwner? = { [weak owner] row in
             guard let owner, owner.canNavigate, owner.snapshot?.serverInstance == instance,
                   sidebarRows(owner.snapshot).contains(where: { $0.id == row.id }) else { return nil }
@@ -99,6 +99,7 @@ struct PaletteEntry {
             let operation: Operation
             var title = item.title
             if action == #selector(AppDelegate.connectRemoteHost) { operation = .enter(.connect) }
+            else if action == #selector(AppDelegate.pairServer) { operation = .enter(.pair(nil)) }
             else if action == #selector(AppDelegate.newSession), let owner {
                 title = "New Session…"
                 if let instance = owner.snapshot?.serverInstance { operation = .enter(.sessionName(owner, instance, .create)) }
@@ -166,6 +167,7 @@ struct PaletteEntry {
             }
         case #selector(AppDelegate.connectLocalHost): (12, .always)
         case #selector(AppDelegate.connectRemoteHost): (13, .always)
+        case #selector(AppDelegate.pairServer): (13, .always)
         case #selector(Sidebar.toggleSidebar(_:)): (14, .window)
         case #selector(Sidebar.focusSidebar(_:)): (15, .window)
         case NSSelectorFromString("toggleFullScreen:"): (16, .window)
@@ -206,14 +208,14 @@ struct PaletteEntry {
 extension AppDelegate {
     func paletteEntries(owner: WindowOwner?, responder: NSResponder?) -> [PaletteEntry] {
         let open = owners.filter(\.alive)
-        let hosts = routes.recent.entries.map(\.host).filter { alias in !open.contains { $0.host == .remote(alias) } }
+        let hosts = routes.recent.entries.map(\.host).filter { host in !open.contains { $0.host == host } }
         return (owner.map { PaletteEntry.panes($0) + PaletteEntry.runtimes($0) } ?? [])
             + hosts.map { hostEntry($0, detail: "Connect") }
             + (NSApp.mainMenu.map { PaletteEntry.commands($0, owner: owner, responder: responder) } ?? [])
     }
-    private func hostEntry(_ host: String, detail: String = "", shortcut: String = "") -> PaletteEntry {
-        PaletteEntry(id: .host(host), title: host, detail: detail, shortcut: shortcut, symbol: "globe",
-                     operation: .run { [routes] in routes.connect(.remote(host)) })
+    private func hostEntry(_ host: Host, detail: String = "", shortcut: String = "") -> PaletteEntry {
+        PaletteEntry(id: .host(host), title: host.label, detail: detail, shortcut: shortcut, symbol: "globe",
+                     operation: .run { [routes] in routes.connect(host) })
     }
 
     func connectEntries(query: String, invalid: Bool) -> [(entry: PaletteEntry, offsets: [[Int]])] {
@@ -223,8 +225,11 @@ extension AppDelegate {
         }
         let now = Date()
         result += routes.recent.entries.compactMap { recent -> (PaletteEntry, [[Int]])? in
-            guard let offsets = query.isEmpty ? [] : fuzzyMatch(query, recent.host)?.offsets else { return nil }
+            guard let offsets = query.isEmpty ? [] : fuzzyMatch(query, recent.host.label)?.offsets else { return nil }
             return (hostEntry(recent.host, shortcut: relativeTime(recent.date, now: now)), [offsets, []])
+        }
+        if query.isEmpty {
+            result.append((PaletteEntry(id: .pairHint, title: "Paste a pairing code: Pair Server…", detail: "", operation: .enter(.pair(nil))), [[], []]))
         }
         if query.isEmpty, !routes.recent.isEmpty {
             result.append((PaletteEntry(id: .clearRecent, title: "Clear Recent Hosts", detail: "", operation: .clearRecent), [[], []]))

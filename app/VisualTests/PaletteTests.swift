@@ -485,9 +485,9 @@ import PaneGeometry
             defer { preferences.removePersistentDomain(forName: suite) }
             var recent = RecentHosts()
             let now = Date()
-            recent.add("devbox-old", at: now.addingTimeInterval(-21 * 86400))
-            recent.add("dev@buildbox", at: now.addingTimeInterval(-86400))
-            recent.add("devbox", at: now.addingTimeInterval(-7200))
+            recent.add(.remote("devbox-old"), at: now.addingTimeInterval(-21 * 86400))
+            recent.add(.remote("dev@buildbox"), at: now.addingTimeInterval(-86400))
+            recent.add(.remote("devbox"), at: now.addingTimeInterval(-7200))
             preferences.set(try JSONEncoder().encode(recent), forKey: "recentHosts")
             let app = AppDelegate(runtime: runtime, routes: WindowRoutes(preferences: preferences))
             let owner = try XCTUnwrap(app.open(.local, start: false))
@@ -594,7 +594,7 @@ import PaneGeometry
             let noWindow = try XCTUnwrap(app.palettePanel)
             XCTAssertEqual(noWindow.palette.shown.compactMap { row -> String? in
                 if case .command = row.entry.id { row.entry.title } else { nil }
-            }, ["New Session", "Connect to Local Host", "Connect to Remote Host…", "Theme…"])
+            }, ["New Session", "Connect to Local Host", "Connect to Remote Host…", "Pair Server…", "Theme…"])
             image(noWindow.palette, "\(theme)-nowindow")
         }
     }
@@ -1347,7 +1347,7 @@ import PaneGeometry
         XCTAssertEqual(panes(local).first?.detail, "main")
         XCTAssertEqual(panes(nil).map(\.title), [])
         XCTAssertEqual(entries.filter { $0.symbol == "globe" }.map(\.title), ["devbox-old"])
-        XCTAssertEqual(entries[4].id, .host("devbox-old"))
+        XCTAssertEqual(entries[4].id, .host(.remote("devbox-old")))
         XCTAssertEqual(entries[5].title, "New Session…")
         XCTAssertTrue(entries.contains { $0.title == "Rename Session…" })
         XCTAssertTrue(entries.contains { $0.title == "Close Session" })
@@ -1485,7 +1485,7 @@ import PaneGeometry
         XCTAssertNil(app.palettePanel)
         app.connectRemoteHost()
         let again = try XCTUnwrap(app.palettePanel)
-        XCTAssertEqual(again.palette.shown.map(\.entry.title), ["devbox", "Clear Recent Hosts"])
+        XCTAssertEqual(again.palette.shown.map(\.entry.title), ["devbox", "Paste a pairing code: Pair Server…", "Clear Recent Hosts"])
         let table = try XCTUnwrap(again.palette.subviews.first?.subviews.compactMap { $0 as? NSScrollView }.first?.documentView as? NSTableView)
         again.sendEvent(try key(again, "\u{e}", code: 45, modifiers: .control, ignoring: "n"))
         XCTAssertEqual(table.selectedRow, 1)
@@ -1499,11 +1499,11 @@ import PaneGeometry
         XCTAssertEqual(opened, [.remote("devbox"), .remote("devbox")])
         app.connectRemoteHost()
         let clear = try XCTUnwrap(app.palettePanel)
-        clear.palette.choose(1)
+        clear.palette.choose(2)
         XCTAssertTrue(app.routes.recent.isEmpty)
         clear.sendEvent(try key(clear, "\u{7f}", code: 51))
         XCTAssertEqual(clear.palette.mode, .root)
-        XCTAssertEqual(clear.palette.shown.map(\.entry.title), ["New Session", "Connect to Local Host", "Connect to Remote Host…", "Theme…"])
+        XCTAssertEqual(clear.palette.shown.map(\.entry.title), ["New Session", "Connect to Local Host", "Connect to Remote Host…", "Pair Server…", "Theme…"])
         clear.sendEvent(try key(clear, "\u{1b}", code: 53))
         XCTAssertNil(app.palettePanel)
     }

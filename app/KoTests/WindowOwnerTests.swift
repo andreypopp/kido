@@ -20,6 +20,77 @@ import KoModel
         return owner
     }
 
+    func testTLSProbeFailuresAndTerminalEventsNeverStartAServer() async throws {
+        let local = try server()
+        let root = URL(fileURLWithPath: try stateDir()).appendingPathComponent("identities")
+        let store = IdentityStore(root: root)
+        let host = try ServerName("ko.example.com")
+        try store.commit(store.create(), for: host)
+        let board = NSPasteboard(name: .init("tls-failures-" + UUID().uuidString))
+        defer { board.releaseGlobally() }
+        let runtime = try XCTUnwrap(GhosttyRuntime(pasteboard: board))
+        for code in [KO_ERR_IDENTITY, KO_ERR_TLS, KO_ERR_NO_SERVER] {
+            let owner = WindowOwner(host: .tls(host), runtime: runtime, start: false, identities: store, probeTLS: { _, within in
+                XCTAssertEqual(within, 20)
+                return .unreachable(code: code, detail: "test failure")
+            })
+            defer { owner.close() }
+            owner.start()
+            await owner.testConnection?.value
+            if code == KO_ERR_NO_SERVER {
+                XCTAssertNil(owner.preparedAlert)
+                XCTAssertEqual(owner.testBanner.testText.title, "Kido could not reach ko.example.com")
+                owner.testReceive(.failed(code: KO_ERR_NO_SERVER, message: "down"), client: try KoClient(endpoint: .unix(local + "/socket")) { _ in })
+                XCTAssertEqual(owner.testBanner.testText.title, "Disconnected from ko.example.com")
+                XCTAssertNotNil(owner.testClient)
+            } else {
+                let alert = try XCTUnwrap(owner.preparedAlert?.alert)
+                XCTAssertEqual(alert.buttons.map(\.title), code == KO_ERR_IDENTITY ? ["Pair Again", "Close"] : ["Close"])
+                XCTAssertFalse(owner.canNavigate)
+                XCTAssertNil(owner.testClient)
+                if code == KO_ERR_IDENTITY {
+                    owner.respondToAlert(.alertFirstButtonReturn)
+                    XCTAssertEqual(owner.testBanner.testText.title, "ko.example.com does not accept this Mac's certificate")
+                    XCTAssertEqual(owner.testBanner.testText.button, "Reconnect")
+                }
+            }
+        }
+        let owner = WindowOwner(host: .tls(host), runtime: runtime, start: false, identities: store)
+        defer { owner.close() }
+        owner.testReceive(.failed(code: KO_ERR_TLS, message: "expired"), client: try KoClient(endpoint: .unix(local + "/socket")) { _ in })
+        XCTAssertEqual(owner.preparedAlert?.alert.messageText, "ko.example.com's certificate is not valid: expired")
+        XCTAssertNil(owner.testClient)
+    }
+
+    func testTLSProbeResultAfterCloseIsIgnored() async throws {
+        let root = URL(fileURLWithPath: try stateDir()).appendingPathComponent("identities")
+        let store = IdentityStore(root: root)
+        let host = try ServerName("ko.example.com")
+        try store.commit(store.create(), for: host)
+        let board = NSPasteboard(name: .init("tls-stale-" + UUID().uuidString))
+        defer { board.releaseGlobally() }
+        let started = expectation(description: "Probe started")
+        let stream = AsyncStream<KoClient.Probe>.makeStream()
+        let owner = WindowOwner(host: .tls(host), runtime: try XCTUnwrap(GhosttyRuntime(pasteboard: board)), start: false, identities: store, probeTLS: { _, _ in
+            await Task.detached {
+                started.fulfill()
+                for await result in stream.stream { return result }
+                return KoClient.Probe.unreachable(code: KO_ERR_CLOSED, detail: "closed")
+            }.value
+        })
+        defer { owner.close() }
+        owner.start()
+        let connection = owner.testConnection
+        await fulfillment(of: [started], timeout: 5)
+        owner.close()
+        stream.continuation.yield(.unreachable(code: KO_ERR_TLS, detail: "late"))
+        stream.continuation.finish()
+        await connection?.value
+        XCTAssertFalse(owner.alive)
+        XCTAssertNil(owner.preparedAlert)
+        XCTAssertNil(owner.testClient)
+    }
+
     func testClosingSavesAPendingMoveAndAFailedFullscreenEntry() throws {
         let name = "WindowOwnerFrameTests-" + UUID().uuidString
         let preferences = try XCTUnwrap(UserDefaults(suiteName: name))

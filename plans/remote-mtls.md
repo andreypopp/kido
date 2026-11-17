@@ -710,7 +710,8 @@ every `case .remote` gets its decision:
 | `KO_ERR_NO_SERVER` recovery (`startRemoteServer`) | none: systemd owns the server |
 | The agent publication | none: no SSH agent is forwarded |
 | `recentHosts`, `kido-app://`, `RemoteIntent`, the palette's Connect mode | by the UI design |
-| Upload, clipboard consent, webview panes | as an SSH remote: they use only the client |
+| Clipboard consent, webview panes | as an SSH remote: they use only the client |
+| Upload (a drop of a file) | none in phase 1: the SSH transfer runs `ssh … exec` through the master, and ko has no upload route. A drop on a TLS window uploads nothing and shows the existing "Kido did not upload" notice (text by `@kido-app-design`). An upload route is a follow-up unit |
 
 **The identity store** (a new file, `app/App/Identity.swift`): one
 identity for each server, in `~/Library/Application
@@ -719,7 +720,11 @@ enclave blob of 324 bytes, mode 0600) and `name`, the server's name
 from the payload. The key is always an enclave
 key: the visual-test VM has a working enclave API too (spike 2), so
 no software key exists in the app. Removing the directory forgets
-the server. The enclave key is made with the access
+the server. The sign callback reads the key file from the store at
+each signature, and keeps no key in memory. So Forget stops the next
+handshake of a window that is open (4.9, point 6): the callback
+fails, and the core maps a callback failure to `KO_ERR_IDENTITY`.
+The enclave key is made with the access
 `afterFirstUnlockThisDeviceOnly` and `privateKeyUsage`, with no user
 presence, so it never shows a prompt. Signing while the screen is
 locked is not tested yet; the user checks it once (Q6).
@@ -738,7 +743,21 @@ locked is not tested yet; the user checks it once (Q6).
    (Caddy restarts: first no server, then the answer).
 5. Open the window.
 
-A failed pairing deletes the new key.
+The three results of the POST:
+
+- 200: the new identity is stored.
+- A certain failure (an answer that is not 200, or a failure before
+  the request body was written): the new key is deleted.
+- An uncertain send (the body may have reached the server): not a
+  failure. The token is spent, and the server most likely pinned the
+  certificate, so the app stores the new identity and shows the
+  uncertain line; it does not probe, and the user uses Connect. If
+  the server did not pin it, Connect shows the refused sheet with
+  "Pair Again". Retry, after a certain failure, makes a new key and
+  a new request from the same code and name.
+
+"Pair Again" keeps the old identity until a 200 or an uncertain
+send; a certain failure leaves it in place.
 
 **Connect** (no SSH layer): load the identity; `ko_client_probe`
 within 20 s; a compatible server is dialled; a mismatch opens the

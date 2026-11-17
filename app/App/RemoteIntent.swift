@@ -31,12 +31,14 @@ struct RemoteShortcuts: AppShortcutsProvider {
         recent = preferences?.data(forKey: "recentHosts").flatMap { try? JSONDecoder().decode(RecentHosts.self, from: $0) } ?? RecentHosts()
     }
     func clearRecent() { recent.clear(); saveRecent() }
+    func removeRecent(_ host: Host) { recent.remove(host); saveRecent() }
     private func saveRecent() { preferences?.set(try? JSONEncoder().encode(recent), forKey: "recentHosts") }
     private var queued: [(Host, WindowOwner.DialCause)] = []
     private var open: ((Host, WindowOwner.DialCause) -> Void)?
     private var ordinaryAllowed = true
+    func remember(_ host: Host) { if host != .local { recent.add(host, at: Date()); saveRecent() } }
     func connect(_ host: Host, cause: WindowOwner.DialCause = .remoteRequest) {
-        if case .remote(let alias) = host { recent.add(alias, at: Date()); saveRecent() }
+        remember(host)
         if let open {
             ordinaryAllowed = true
             open(host, cause)

@@ -83,21 +83,6 @@ import KoModel
     }
 }
 
-@Test func recentHostsAddRefreshOrderClearAndEmpty() throws {
-    var recent = RecentHosts()
-    #expect(recent.isEmpty)
-    recent.add("first", at: Date(timeIntervalSince1970: 10))
-    recent.add("second", at: Date(timeIntervalSince1970: 20))
-    #expect(recent.entries.map(\.host) == ["second", "first"])
-    recent.add("first", at: Date(timeIntervalSince1970: 30))
-    #expect(recent.entries.map(\.host) == ["first", "second"])
-    #expect(recent.entries[0].date == Date(timeIntervalSince1970: 30))
-    #expect(try JSONDecoder().decode(RecentHosts.self, from: JSONEncoder().encode(recent)) == recent)
-    recent.clear()
-    #expect(recent.isEmpty)
-    #expect(recent.entries.isEmpty)
-}
-
 private func fixed(_ node: Node, title: String? = nil, confirm: KoSchema.CloseConfirm? = nil, foreground: String? = nil) -> Node {
     guard case .item(var item) = node else { return node }
     item.pane.fixedTitle = title

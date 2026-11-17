@@ -6,6 +6,7 @@ import PaneGeometry
 
 enum PaletteMode: Equatable {
     case root, connect
+    case pair(ServerName?)
     // The step that opens a pane in a runtime; nil is the host.
     case runtime(RuntimeMark?)
     case theme(ThemeStep)
@@ -14,6 +15,7 @@ enum PaletteMode: Equatable {
     static func == (lhs: Self, rhs: Self) -> Bool {
         switch (lhs, rhs) {
         case (.root, .root), (.connect, .connect): true
+        case let (.pair(a), .pair(b)): a == b
         case let (.runtime(a), .runtime(b)): a == b
         case let (.prompt(a), .prompt(b)): a == b
         case let (.theme(a), .theme(b)): a == b
@@ -26,8 +28,8 @@ enum PaletteMode: Equatable {
 private final class PaletteChip: NSView {
     var mode: PaletteMode = .root
     var dark = false
-    var title: String { switch mode { case .prompt: "Prompt"; case .connect: "Connect"; case .theme: "Theme"; case .runtime(let mark): mark?.name ?? "Host"; case .sessionName(_, _, .create): "New session"; default: "Rename session" } }
-    private var symbol: String { switch mode { case .prompt: "bubble.left"; case .connect: "globe"; case .theme: "paintpalette"; case .sessionName(_, _, .create): "plus"; default: "pencil" } }
+    var title: String { switch mode { case .prompt: "Prompt"; case .pair: "Pair"; case .connect: "Connect"; case .theme: "Theme"; case .runtime(let mark): mark?.name ?? "Host"; case .sessionName(_, _, .create): "New session"; default: "Rename session" } }
+    private var symbol: String { switch mode { case .prompt: "bubble.left"; case .pair: "key"; case .connect: "globe"; case .theme: "paintpalette"; case .sessionName(_, _, .create): "plus"; default: "pencil" } }
     private var swatch: RuntimeMark? { if case .runtime(let mark) = mode { mark } else { nil } }
     private var inset: CGFloat { if case .runtime = mode { swatch == nil ? 8 : 20 } else { 25 } }
     var width: CGFloat { inset + 8 + (title as NSString).size(withAttributes: [.font: NSFont.systemFont(ofSize: 12, weight: .medium)]).width }
@@ -144,8 +146,18 @@ private final class PaletteError: NSView {
     }
 }
 
-final class PaletteList: NSTableView, NSTableViewDataSource, NSTableViewDelegate {
+final class PaletteList: NSTableView, NSTableViewDataSource, NSTableViewDelegate, NSMenuDelegate {
     private final class Row: NSTableRowView {
+        var context = false
+        override func draw(_ dirtyRect: NSRect) {
+            super.draw(dirtyRect)
+            if context {
+                Chrome.contextRowRing.setStroke()
+                let ring = NSBezierPath(roundedRect: bounds.insetBy(dx: 6.75, dy: 1.75), xRadius: 6, yRadius: 6)
+                ring.lineWidth = 1.5
+                ring.stroke()
+            }
+        }
         override func drawSelection(in dirtyRect: NSRect) {
             Chrome.rowSelection.setFill()
             NSBezierPath(roundedRect: bounds.insetBy(dx: 6, dy: 1), xRadius: 6, yRadius: 6).fill()
@@ -227,8 +239,12 @@ final class PaletteList: NSTableView, NSTableViewDataSource, NSTableViewDelegate
             }
             let titleColor: NSColor = entry.id == .connectTyped ? Chrome.linkText : entry.id == .clearRecent ? Chrome.inkSecondary : Chrome.ink
             let left: CGFloat = entry.id == .clearRecent ? 78 : entry.theme != nil ? 46 : 42
-            let titleFont = NSFont.systemFont(ofSize: entry.id == .clearRecent ? 12 : 13, weight: entry.agent ? .semibold : .regular)
+            let titleFont = NSFont.systemFont(ofSize: entry.id == .clearRecent || entry.id == .pairHint ? 12 : 13, weight: entry.agent ? .semibold : .regular)
             let title = NSMutableAttributedString(attributedString: part(entry.title, titleFont, titleColor))
+            if entry.id == .pairHint {
+                title.addAttribute(.foregroundColor, value: Chrome.inkSecondary, range: NSRange(location: 0, length: title.length))
+                title.addAttribute(.foregroundColor, value: Chrome.linkText, range: (entry.title as NSString).range(of: "Pair Server…"))
+            }
             if entry.id == .connectTyped {
                 title.addAttribute(.font, value: NSFont.systemFont(ofSize: 13, weight: .semibold), range: NSRange(location: 11, length: max(0, title.length - 11)))
             }
@@ -275,6 +291,11 @@ final class PaletteList: NSTableView, NSTableViewDataSource, NSTableViewDelegate
                       x: left + (prefix as NSString).size(withAttributes: [.font: NSFont.systemFont(ofSize: 13)]).width)
             line.draw(with: NSRect(x: left, y: (bounds.height - height) / 2, width: max(0, right - left), height: height),
                       options: [.usesLineFragmentOrigin, .truncatesLastVisibleLine])
+            if case .host(let host) = entry.id {
+                let kind = if case .tls = host { "https" } else { "ssh" }
+                let text = part(kind, .systemFont(ofSize: 11), Chrome.inkSecondary)
+                text.draw(at: NSPoint(x: min(right - text.size().width, left + line.size().width + 8), y: (bounds.height - text.size().height) / 2))
+            }
             NSGraphicsContext.restoreGraphicsState()
         }
     }
@@ -293,6 +314,25 @@ final class PaletteList: NSTableView, NSTableViewDataSource, NSTableViewDelegate
     }
     var dark = false
     var choose: (Int) -> Void = { _ in }
+    var removeHost: (Host) -> Void = { _ in }
+    private weak var contextRow: Row?
+    override func menu(for event: NSEvent) -> NSMenu? {
+        let index = row(at: convert(event.locationInWindow, from: nil))
+        guard shown.indices.contains(index), case .host(let host) = shown[index].entry.id else { return nil }
+        let menu = NSMenu()
+        let title = if case .tls = host { "Forget \(host.label)…" } else { "Remove from Recents" }
+        let item = NSMenuItem(title: title, action: #selector(removeRecent(_:)), keyEquivalent: "")
+        item.target = self
+        item.representedObject = host
+        menu.addItem(item)
+        menu.delegate = self
+        contextRow = rowView(atRow: index, makeIfNecessary: true) as? Row
+        contextRow?.context = true
+        contextRow?.needsDisplay = true
+        return menu
+    }
+    func menuDidClose(_ menu: NSMenu) { contextRow?.context = false; contextRow?.needsDisplay = true; contextRow = nil }
+    @objc private func removeRecent(_ item: NSMenuItem) { if let host = item.representedObject as? Host { removeHost(host) } }
     var hover: (Int?) -> Void = { _ in }
     private var hovered: Int? { didSet { if oldValue != hovered { hover(hovered) } } }
     private var tracking: NSTrackingArea?
@@ -351,7 +391,7 @@ final class PaletteList: NSTableView, NSTableViewDataSource, NSTableViewDelegate
     func numberOfRows(in tableView: NSTableView) -> Int { shown.count }
 
     func tableView(_ tableView: NSTableView, heightOfRow row: Int) -> CGFloat {
-        shown[row].entry.id == .clearRecent ? 28 : Self.entryHeight
+        shown[row].entry.id == .clearRecent || shown[row].entry.id == .pairHint ? 28 : Self.entryHeight
     }
 
     func tableView(_ tableView: NSTableView, rowViewForRow row: Int) -> NSTableRowView? { Row() }
@@ -401,6 +441,8 @@ final class PaletteView: NSView, NSTextFieldDelegate {
         errorLine.theme = nil
     }
     private(set) var prompt: PalettePrompt?
+    private(set) var pair: PalettePair?
+    var makePair: (ServerName?) -> PairingSession? = { _ in nil }
     var makePrompt: (PromptSource) -> Void = { _ in }
     var modeChanged: () -> Void = {}
     var selectedEntry: PaletteEntry? { shown.indices.contains(table.selectedRow) ? shown[table.selectedRow].entry : nil }
@@ -414,6 +456,7 @@ final class PaletteView: NSView, NSTextFieldDelegate {
     var rootEntries: () -> [PaletteEntry] = { [] }
     var runtimeEntries: (RuntimeMark?) -> [PaletteEntry] = { _ in [] }
     var sessionName: (String) -> Void = { _ in }
+    var removeHost: (Host) -> Void = { _ in }
     private let card: PaneCapsule
     private let separator = NSBox()
     private let scroll = NSScrollView()
@@ -451,6 +494,7 @@ final class PaletteView: NSView, NSTextFieldDelegate {
         table.dark = runtime.background.isDark
         chip.dark = runtime.background.isDark
         table.choose = { [weak self] in self?.choose($0) }
+        table.removeHost = { [weak self] in self?.removeHost($0) }
         table.hover = { [weak self] index in
             guard let self, case .theme(.pick) = mode else { return }
             previewTheme(at: index ?? table.selectedRow)
@@ -472,27 +516,34 @@ final class PaletteView: NSView, NSTextFieldDelegate {
 
     override func layout() {
         super.layout()
-        field.isHidden = prompt != nil
-        foot.isHidden = prompt != nil || mode == .root
+        field.isHidden = if case .prompt = mode { true } else { false }
+        foot.isHidden = switch mode { case .prompt, .pair, .root: true; default: false }
         footSeparator.isHidden = foot.isHidden
-        errorLine.isHidden = prompt != nil || error == nil
+        errorLine.isHidden = switch mode { case .prompt, .pair: true; default: error == nil }
         chip.isHidden = mode == .root
         let width: CGFloat = 600
         let chipWidth = mode == .root ? 0 : chip.width
         card.frame = NSRect(x: 0, y: 0, width: width, height: preferredHeight)
         chip.frame = NSRect(x: 16, y: preferredHeight - 34, width: chipWidth, height: 22)
         themeChip.isHidden = true
-        if let prompt {
+        if case .prompt = mode, let prompt {
             prompt.targetButton.frame = NSRect(x: 16 + chip.width + 10, y: preferredHeight - 34, width: min(460 - chip.width, prompt.targetButton.fittingSize.width), height: 22)
             separator.frame = NSRect(x: 0, y: prompt.preferredHeight, width: 600, height: 1)
             prompt.frame = NSRect(x: 0, y: 0, width: 600, height: prompt.preferredHeight)
             prompt.layoutSubtreeIfNeeded()
             return
         }
+        field.frame = NSRect(x: 16 + chipWidth + (chipWidth > 0 ? 8 : 0), y: preferredHeight - (mode == .root ? 34 : 35), width: width - 32 - chipWidth - (chipWidth > 0 ? 8 : 0), height: 22)
+        if case .pair = mode, let pair {
+            separator.isHidden = true
+            pair.frame = NSRect(x: 0, y: 0, width: 600, height: pair.preferredHeight)
+            pair.layoutSubtreeIfNeeded()
+            return
+        }
+        separator.isHidden = false
         let list = listHeight
         let footer: CGFloat = mode == .root ? 0 : 30
         let errorHeight: CGFloat = error == nil ? 0 : errorLine.height
-        field.frame = NSRect(x: 16 + chipWidth + (chipWidth > 0 ? 8 : 0), y: preferredHeight - (mode == .root ? 34 : 35), width: width - 32 - chipWidth - (chipWidth > 0 ? 8 : 0), height: 22)
         if case .theme(.save(let row)) = mode {
             themeChip.row = row
             themeChip.isHidden = false
@@ -514,9 +565,15 @@ final class PaletteView: NSView, NSTextFieldDelegate {
     private var listHeight: CGFloat {
         if case .sessionName = mode { return 0 }
         if mode == .connect, shown.isEmpty { return field.stringValue.isEmpty ? 42 : 8 }
-        return shown.isEmpty ? PaletteList.entryHeight : CGFloat(min(shown.count, 12)) * PaletteList.entryHeight + 8 - (shown.prefix(12).contains { $0.entry.id == .clearRecent } ? 6 : 0)
+        return shown.isEmpty ? PaletteList.entryHeight : CGFloat(min(shown.count, 12)) * PaletteList.entryHeight + 8 - CGFloat(shown.prefix(12).filter { $0.entry.id == .clearRecent || $0.entry.id == .pairHint }.count * 6)
     }
-    var preferredHeight: CGFloat { if let prompt { 47 + prompt.preferredHeight } else { 45 + listHeight + (mode == .root ? 0 : 30) + (error == nil ? 0 : errorLine.height) } }
+    var preferredHeight: CGFloat {
+        switch mode {
+        case .pair: 45 + (pair?.preferredHeight ?? 0)
+        case .prompt: 47 + (prompt?.preferredHeight ?? 0)
+        default: 45 + listHeight + (mode == .root ? 0 : 30) + (error == nil ? 0 : errorLine.height)
+        }
+    }
 
     func enter(_ mode: PaletteMode, prompt prepared: PalettePrompt? = nil) {
         guard mode != self.mode else { return }
@@ -524,16 +581,51 @@ final class PaletteView: NSView, NSTextFieldDelegate {
         (field.currentEditor() as? NSTextView)?.insertionPointColor = Chrome.insertion
         if case .theme = self.mode, case .theme = mode {} else { endPreview() }
         modeChanged()
-        prompt?.storeDraft()
-        prompt?.targetButton.removeFromSuperview()
-        prompt?.removeFromSuperview()
-        prompt = nil
+        switch self.mode {
+        case .prompt:
+            prompt?.storeDraft()
+            prompt?.targetButton.removeFromSuperview()
+            prompt?.removeFromSuperview()
+            prompt = nil
+        case .pair:
+            pair?.session?.changed = nil
+            pair?.removeFromSuperview()
+            pair = nil
+        default: break
+        }
         self.mode = mode
         error = nil
         field.stringValue = ""
         field.isEditable = true
         field.textColor = Chrome.fieldInk
+        field.font = .systemFont(ofSize: 16)
+        field.alignment = .left
+        field.alphaValue = 1
+        chip.alphaValue = 1
         switch mode {
+        case .pair(let host):
+            field.placeholderString = host == nil ? "Paste the pairing code" : ""
+            field.setAccessibilityLabel("Pairing code")
+            field.stringValue = host?.value ?? ""
+            field.font = .monospacedSystemFont(ofSize: 14, weight: .regular)
+            let view = PalettePair(frame: .zero)
+            pair = view
+            view.session = makePair(host)
+            view.codeField = field
+            view.cancel = { [weak self] in self?.enter(.root) }
+            view.submit = { [weak self, weak view] in
+                guard let self, let view else { return }
+                view.session?.submit(field.stringValue, name: view.nameField.stringValue)
+            }
+            view.inertChanged = { [weak self] inert in
+                if let self, field.isEditable == inert { field.isEditable = !inert }
+                self?.field.alphaValue = inert ? 0.45 : 1
+                self?.chip.alphaValue = inert ? 0.45 : 1
+            }
+            view.resized = { [weak self] in self?.needsLayout = true; (self?.window as? PalettePanel)?.resizeCard() }
+            view.session?.changed = { [weak view] in view?.refresh() }
+            card.addSubview(view)
+            view.refresh()
         case .theme(let step):
             if theme == nil { theme = PaletteTheme(runtime: runtime) }
             foot.theme = theme
@@ -586,8 +678,11 @@ final class PaletteView: NSView, NSTextFieldDelegate {
             themeStatus()
         }
         layoutSubtreeIfNeeded()
-        window?.makeFirstResponder(prompt?.textView ?? field)
-        if prompt == nil { field.selectText(nil) }
+        switch mode {
+        case .prompt: window?.makeFirstResponder(prompt?.textView)
+        default: window?.makeFirstResponder(field)
+        }
+        if case .prompt = mode {} else { field.selectText(nil) }
         if let editor = field.currentEditor() as? NSTextView {
             let saving = if case .theme(.save) = mode { true } else { false }
             editor.insertionPointColor = saving ? .clear : Chrome.insertion
@@ -646,7 +741,7 @@ final class PaletteView: NSView, NSTextFieldDelegate {
         case .connect:
             shown = modeEntries(field.stringValue, error != nil)
         case .runtime(let mark): shown = PaletteEntry.ranked(runtimeEntries(mark), query: field.stringValue)
-        case .sessionName, .prompt: shown = []
+        case .sessionName, .prompt, .pair: shown = []
         case .theme(let step):
             shown = theme?.entries(step) ?? []
         }
@@ -656,7 +751,8 @@ final class PaletteView: NSView, NSTextFieldDelegate {
         empty.setAccessibilityRole(.staticText)
         empty.setAccessibilityLabel(empty.text)
         empty.needsDisplay = true
-        if prompt != nil { empty.isHidden = true }
+        if case .prompt = mode { empty.isHidden = true }
+        else if case .pair = mode { empty.isHidden = true }
         else if case .sessionName = mode { empty.isHidden = true }
         else { empty.isHidden = !shown.isEmpty || (mode == .connect && !field.stringValue.isEmpty) }
         scroll.isHidden = shown.isEmpty
@@ -724,6 +820,7 @@ final class PaletteView: NSView, NSTextFieldDelegate {
     }
 
     func controlTextDidChange(_ notification: Notification) {
+        if case .pair = mode { pair?.session?.edited(); pair?.refresh(); return }
         if case .theme(.save) = mode { field.stringValue = "Use for…"; return }
         if case .runtime = mode {} else { error = nil }
         if case .theme(.pick) = mode { theme?.query = field.stringValue }
@@ -736,7 +833,8 @@ final class PaletteView: NSView, NSTextFieldDelegate {
         case #selector(NSResponder.moveUp(_:)): select(table.selectedRow - 1)
         case #selector(NSResponder.moveDown(_:)): select(table.selectedRow + 1)
         case #selector(NSResponder.insertNewline(_:)):
-            if case .sessionName = mode { sessionName(field.stringValue) }
+            if case .pair = mode { pair?.submit() }
+            else if case .sessionName = mode { sessionName(field.stringValue) }
             else { choose(table.selectedRow) }
         case #selector(NSResponder.cancelOperation(_:)):
             if case .theme(.save) = mode { enter(.theme(.pick)) }
@@ -746,6 +844,7 @@ final class PaletteView: NSView, NSTextFieldDelegate {
             guard mode != .root, field.stringValue.isEmpty else { return false }
             enter(.root)
         case #selector(NSResponder.insertTab(_:)), #selector(NSResponder.insertBacktab(_:)):
+            if case .pair = mode { window?.makeFirstResponder(pair?.nameField); return true }
             if case .theme = mode { return true }; return false
         default:
             if case .theme(.save) = mode { return true }; return false

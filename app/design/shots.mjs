@@ -13,7 +13,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 // [page, index of the main element to take when the first is not the best]
 const pages = [
   ["sidebar/mockup.html"], ["sidebar/variants.html"], ["pane/mockup.html"], ["pane-focus/mockup.html"],
-  ["palette/mockup.html"], ["copy-select/mockup.html"], ["notices/mockup.html"], ["mismatch/mockup.html"],
+  ["palette/mockup.html"], ["copy-select/mockup.html"], ["notices/mockup.html"], ["mismatch/mockup.html"], ["pair-server/mockup.html"],
   ["runtime/mockup.html"], ["runtimes-section/mockup.html"], ["themes/ahrefs/mockup.html"],
   ["koa/mockup.html", 2], ["koa/blocks.html"], ["koa/thinking.html"], ["koa/user.html"], ["koa/working.html"],
   ["koa/composer.html"], ["koa/foot.html"], ["koa/complete.html"], ["koa/media.html"], ["koa/agents.html"],

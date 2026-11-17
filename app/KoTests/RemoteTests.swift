@@ -271,6 +271,28 @@ import XCTest
         }
     }
 
+    func testTLSSheetsAndDeploymentRemedy() throws {
+        let host = try ServerName("ko.example.com")
+        let own = KoSchema.Version(build: "mine", protocol: "1.2", vt: "aaaaaaaaaaaa")
+        let older = WindowOwner.mismatchAlert(host: .tls(host), code: KO_ERR_PROTOCOL_MISMATCH, server: .init(build: "theirs", protocol: "0.9", vt: own.vt), own: own, serverDir: "unused")
+        XCTAssertEqual(older.messageText, "Update ko on ko.example.com")
+        XCTAssertTrue(older.informativeText.contains("checked out at the release of this Kido.app"))
+        XCTAssertEqual(older.accessoryView?.subviews.compactMap { $0 as? NSTextField }.first?.stringValue, "deploy/install.sh")
+        XCTAssertFalse(older.informativeText.contains("ko server"))
+        let newer = WindowOwner.mismatchAlert(host: .tls(host), code: KO_ERR_PROTOCOL_MISMATCH, server: .init(build: "theirs", protocol: "2.0", vt: own.vt), own: own, serverDir: "unused")
+        XCTAssertNil(newer.accessoryView)
+        XCTAssertFalse(newer.informativeText.contains("checkout"))
+        let refused = WindowOwner.securityAlert(host: host, failure: .identity)
+        XCTAssertEqual(refused.messageText, "ko.example.com does not accept this Mac's certificate")
+        XCTAssertEqual(refused.buttons.map(\.title), ["Pair Again", "Close"])
+        let tls = WindowOwner.securityAlert(host: host, failure: .serverCertificate("expired"))
+        XCTAssertEqual(tls.messageText, "ko.example.com's certificate is not valid: expired")
+        XCTAssertEqual(tls.buttons.map(\.title), ["Close"])
+        let forget = AppDelegate.forgetAlert(host)
+        XCTAssertEqual(forget.messageText, "Forget ko.example.com?")
+        XCTAssertEqual(forget.buttons.map(\.title), ["Forget", "Cancel"])
+    }
+
     func testTheBannerOfEachFailureNamesTheHostAndItsRemedy() {
         let rows: [(RemoteFailure, String)] = [
             (.ssh(Failure.transport("down")), "Kido could not reach devbox"),

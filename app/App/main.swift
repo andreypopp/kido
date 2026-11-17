@@ -1,5 +1,7 @@
 import AppKit
 import KoModel
+import KoClientKit
+import KoClient
 import PaneGeometry
 import SidebarFeed
 
@@ -23,6 +25,8 @@ import SidebarFeed
     private var signals: [DispatchSourceSignal] = []
     private var trigger: String?
     let routes: WindowRoutes
+    private let identities = IdentityStore(root: FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("Kido"))
+    private var sentPairingTokens: Set<Data> = []
 
     override init() {
         routes = WindowRoutes()
@@ -148,7 +152,7 @@ import SidebarFeed
 
     @discardableResult func open(_ host: Host, start: Bool = true, cause: WindowOwner.DialCause = .launch) -> WindowOwner? {
         guard let runtime else { return nil }
-        let owner = WindowOwner(host: host, runtime: runtime, start: start, cause: cause)
+        let owner = WindowOwner(host: host, runtime: runtime, start: start, cause: cause, identities: identities)
         owners.append(owner)
         owner.becameKey = { [weak self, weak owner] in self?.lastKeyOwner = owner }
         if owner.isKeyHost { lastKeyOwner = owner }
@@ -184,6 +188,7 @@ import SidebarFeed
         let host: Host
         if target.host == "local" { host = .local }
         else if target.host.hasPrefix("ssh:") { host = .remote(String(target.host.dropFirst(4))) }
+        else if target.host.hasPrefix("tls:"), let name = try? ServerName(String(target.host.dropFirst(4))) { host = .tls(name) }
         else { return }
         let candidates = owners.filter { $0.alive && $0.host == host }
         let containing = candidates.filter {
@@ -288,7 +293,8 @@ import SidebarFeed
         file.items = [item("New Session", #selector(newSession), "n", .command), newWindow,
                       item("Close Window", #selector(closeWindow), "", []), .separator(),
                       item(Self.localConnectTitle, #selector(connectLocalHost), "", []),
-                      item(Self.remoteConnectTitle, #selector(connectRemoteHost), "K", [.command, .shift])]
+                      item(Self.remoteConnectTitle, #selector(connectRemoteHost), "K", [.command, .shift]),
+                      item("Pair Server…", #selector(pairServer), "", [])]
         for entry in file.items where entry.action != #selector(PaneView.runCommand(_:)) { entry.target = self }
         let runtimes = NSMenu(title: "Runtimes")
         runtimes.autoenablesItems = false
@@ -382,6 +388,54 @@ import SidebarFeed
         if !background { NSApp.activate(ignoringOtherApps: true) }
         if palettePanel == nil { togglePalette() }
         palettePanel?.palette.enter(.connect)
+    }
+
+    static func forgetAlert(_ host: ServerName) -> NSAlert {
+        let alert = NSAlert()
+        alert.messageText = "Forget \(host.value)?"
+        alert.informativeText = "This Mac's key and certificate for \(host.value) are deleted. Pair again to connect."
+        alert.addButton(withTitle: "Forget")
+        alert.addButton(withTitle: "Cancel").keyEquivalent = "\u{1b}"
+        return alert
+    }
+
+    private func removeRecent(_ host: Host) {
+        guard case .tls(let name) = host else {
+            routes.removeRecent(host)
+            palettePanel?.palette.reloadMode()
+            return
+        }
+        let owner = paletteFocus?.owner ?? current
+        closePalette()
+        let alert = Self.forgetAlert(name)
+        let complete: (NSApplication.ModalResponse) -> Void = { [weak self] response in
+            guard let self, response == .alertFirstButtonReturn else { return }
+            Task {
+                do {
+                    let identities = identities
+                    try await Task.detached { try identities.forget(name) }.value
+                    routes.removeRecent(host)
+                } catch {
+                    let failure = NSAlert()
+                    failure.messageText = "Kido could not forget \(name.value)"
+                    failure.informativeText = error.localizedDescription
+                    if let owner, owner.alive { owner.prepareAlert(failure) { _ in } }
+                    else { failure.runModal() }
+                }
+            }
+        }
+        withPaletteBusy {
+            if let owner { owner.prepareAlert(alert, respond: complete) }
+            else { complete(alert.runModal()) }
+        }
+    }
+
+    @objc func pairServer() { openPair(nil) }
+
+    func openPair(_ host: ServerName?) {
+        if !background { NSApp.activate(ignoringOtherApps: true) }
+        if palettePanel == nil { togglePalette() }
+        palettePanel?.palette.enter(.pair(host))
     }
 
     @objc func renameSession() {
@@ -486,6 +540,32 @@ import SidebarFeed
             } else if let pane = PaneView.owner(paletteFocus?.responder) {
                 pane.openPrompt()
             }
+        }
+        panel.palette.removeHost = { [weak self] host in self?.removeRecent(host) }
+        panel.palette.makePair = { [weak self] host in
+            guard let self else { return nil }
+            let session = PairingSession(store: identities, expectedHost: host,
+                                         claim: { [weak self] token in self?.sentPairingTokens.insert(token).inserted ?? false },
+                                         release: { [weak self] token in self?.sentPairingTokens.remove(token) })
+            session.committed = { [weak self] name in self?.routes.remember(.tls(name)) }
+            let identities = identities
+            session.probe = { host, identity, within in
+                let endpoint = identities.endpoint(for: host, certificate: identity.certificate)
+                let timeout = Double(within.components.seconds) + Double(within.components.attoseconds) / 1e18
+                let result = await Task.detached { KoClient.probe(endpoint: endpoint, within: timeout) }.value
+                switch result {
+                case .compatible, .mismatch: return .ready
+                case .unreachable(let code, let detail):
+                    if code == KO_ERR_TLS { return .serverCertificate(detail) }
+                    return code == KO_ERR_IDENTITY ? .identity : .noServer
+                }
+            }
+            session.activated = { [weak self, weak session] name in
+                guard let self else { return }
+                if let session, palettePanel?.palette.pair?.session === session { closePalette(.choice) }
+                routes.connect(.tls(name))
+            }
+            return session
         }
         panel.palette.makePrompt = { [weak self, weak panel] source in
             self?.resolvePrompt(source, panel: panel)

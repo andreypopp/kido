@@ -23,6 +23,7 @@ enum Chrome {
     static var sidebarIdleCircle: NSColor { inkSecondary.withAlphaComponent(inkSecondary.alphaComponent * 0.5) }
     static var sidebarDivider: NSColor { ink.withAlphaComponent(0.1) }
     static var rowSelection: NSColor { NSColor.systemFill }
+    static var contextRowRing: NSColor { NSColor.labelColor.withAlphaComponent(0.35) }
     static var rowHover: NSColor { NSColor.labelColor.withAlphaComponent(0.05) }
     static var iconHover: NSColor { NSColor.labelColor.withAlphaComponent(0.12) }
     static var tabPill: NSColor { NSColor.labelColor.withAlphaComponent(0.075) }
