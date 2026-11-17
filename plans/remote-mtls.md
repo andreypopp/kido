@@ -418,7 +418,15 @@ a new droplet, and by spike 1 against a Caddy in the container):
 - The socket's uids (4.1): `caddy` and `me` pass, `nobody` is
   refused. `nobody` cannot read the admin socket or the device
   folder.
-- `nmap` from outside: only 22 (from the SSH address) and 443.
+- A TCP scan of every port from outside, with a deadline, written in
+  the script itself (Python's standard library; no `nmap`, so the
+  Mac needs no install and the test has no skip): only 22 (from the
+  SSH address) and 443 accept.
+- `smoke.sh HOST [ADDRESS]`: with ADDRESS, every connection goes to
+  that address and keeps the names of HOST as SNI and `Host` (a VM
+  or a droplet before its DNS records exist). The script has no
+  option that weakens the certificate check; a test CA comes from
+  the caller's environment (`SSL_CERT_FILE`, `CURL_CA_BUNDLE`).
 
 ### 4.5 The TLS transport of `ko_client`
 
