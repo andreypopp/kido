@@ -21,7 +21,7 @@ import XCTest
         let agent = koPane("printf '\\033]7501;state=idle:app=koa\\007'; stty raw -echo; exec /bin/cat", vars: #"{"koa.session":"s1","koa.name":"Agent caption"}"#)
         let editor = #"{"split":"h","children":[\#(agent),\#(titled("Review changes"))]}"#
         _ = try await KoServer.launch(dir: directory.path)
-        try await koPut(directory.path, #"[{"name":"visual","windows":[{"name":"Shell","tree":\#(titled("Shell prompt"))},{"name":"Editor","tree":\#(editor)},{"name":"Logs","tree":\#(titled("Build output"))}]}]"#)
+        try await koPut(directory.path, #"[{"name":"visual","windows":[{"name":"Shell","tree":\#(titled("Shell prompt"))},{"name":"Editor","tree":\#(editor)},{"name":"Logs","tree":\#(titled("koa"))}]}]"#)
         let owner = WindowOwner(host: .local, runtime: runtime, start: false)
         owner.testServerDir = directory.path
         addTeardownBlock { @MainActor in owner.close() }
@@ -42,7 +42,7 @@ import XCTest
         owner.window.display()
         root.layoutSubtreeIfNeeded()
         sidebar.splitView.setPosition(256, ofDividerAt: 0)
-        try await wait("tab titles are the focus panes' labels") { let names = sidebar.tabs.entries.map(\.name); return names.count == 4 && [names[0], names[1], names[3]] == ["Shell prompt", "Agent caption", "Build output"] }
+        try await wait("tab titles are the focus panes' labels") { let names = sidebar.tabs.entries.map(\.name); return names.count == 4 && [names[0], names[1], names[3]] == ["Shell prompt", "Agent caption", "koa"] }
         try await wait("the child agent waits in its own tab and not in its parent's") { sidebar.tabs.entries.map(\.status) == [.quiet, .quiet, .waiting, .quiet] }
         let childLabel = try XCTUnwrap((sidebar.tabs.accessibilityChildren()?[2] as? NSAccessibilityElement)?.accessibilityLabel())
         XCTAssertTrue(childLabel.hasPrefix("Window: ") && childLabel.hasSuffix(" — waiting"), childLabel)
@@ -553,6 +553,12 @@ import XCTest
         header.addWindow.mouseEntered(with: hover)
         sidebarSnapshot(list, "plus-hover-light")
         header.addWindow.mouseExited(with: hover)
+        list.show(sidebarFixture { $0.sessions[0].nodes.insert(fixtureNode(3000, "koa", shellLifecycle(.unknown)), at: 1) })
+        let agent = try XCTUnwrap(list.visualRows.first { $0.id == .pane(SessionID(number: 0), PaneID(number: 3000)) })
+        XCTAssertEqual([agent.title, agent.indicatorDescription], ["koa", "idle"], "a new agent's row is its program until koa names itself")
+        sidebarSnapshot(list, "new-agent-light")
+        window.appearance = NSAppearance(named: .darkAqua)
+        sidebarSnapshot(list, "new-agent-dark")
     }
 
     func testHeaderCreatesWindowInItsSession() async throws {
@@ -766,7 +772,7 @@ import XCTest
         XCTAssertFalse(header.addWindow.isHidden)
         XCTAssertEqual(header.addWindow.accessibilityLabel(), "New window in " + fixture.sessions[0].name)
         var created: [SessionID] = []
-        list.newWindow = { created.append($0) }
+        list.newWindow = { session, _ in created.append(session) }
         header.addWindow.invoke()
         XCTAssertEqual(created, [fixture.sessions[0].id])
         func key(_ code: UInt16) throws {

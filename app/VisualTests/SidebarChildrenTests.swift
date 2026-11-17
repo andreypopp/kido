@@ -536,7 +536,7 @@ import XCTest
         XCTAssertEqual(try XCTUnwrap(reports.last), [second.window], "the report names the shown window only")
         owner.window.setContentSize(NSSize(width: 1140, height: 780))
         try await wait("the child follows the resize") { fitted() }
-        owner.paneCommand(.newWindow, second.pane)
+        owner.paneCommand(.newWindow(.shell), second.pane)
         try await wait("new tab from the child") { owner.navigation.window != second.window && owner.testModel?.selection.pane != second.pane }
         let createdPane = try XCTUnwrap(owner.testModel?.selection.pane)
         XCTAssertEqual(directory(createdPane), inheritedDirectory)

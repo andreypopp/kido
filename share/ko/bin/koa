@@ -16,4 +16,6 @@ if [ -z "$ko_custom_pi" ] && ! command -v pi >/dev/null 2>&1; then
   echo 'koa: pi is required on this host; none found on PATH' >&2
   exit 127
 fi
+# The pane's row says "koa" until koa sets its own title; its foreground program is node.
+if [ -t 1 ]; then printf '\033]0;koa\033\\'; fi
 exec node "$ko_share/koa/koa.ts" "$@"

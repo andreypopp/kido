@@ -33,6 +33,18 @@ import XCTest
         XCTAssertEqual(opened, [.local, .local])
     }
 
+    func testNewAgentIsUnderNewWindow() throws {
+        let file = try XCTUnwrap(AppDelegate().mainMenu().items.first { $0.title == "File" }?.submenu)
+        let window = try XCTUnwrap(file.items.first { $0.title == "New Window" })
+        let agent = file.items[file.index(of: window) + 1]
+        XCTAssertEqual(agent.title, "New Agent")
+        XCTAssertEqual(agent.action, #selector(PaneView.runCommand(_:)))
+        XCTAssertEqual(agent.keyEquivalent, "N")
+        XCTAssertEqual(agent.keyEquivalentModifierMask, .command)
+        guard case .newWindow(.agent) = agent.representedObject as? PaneCommand else { return XCTFail("New Agent must make an agent window") }
+        guard case .newWindow(.shell) = window.representedObject as? PaneCommand else { return XCTFail("New Window must make a shell window") }
+    }
+
     func testSessionAndWindowMenusRequireACurrentSessionButCloseWindowDoesNot() throws {
         let board = NSPasteboard(name: .init("empty-menu-" + UUID().uuidString))
         defer { board.releaseGlobally() }

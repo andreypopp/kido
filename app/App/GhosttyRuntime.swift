@@ -631,7 +631,7 @@ extension NSColor {
             }
         case GHOSTTY_ACTION_TOGGLE_SPLIT_ZOOM: return .zoom
         case GHOSTTY_ACTION_EQUALIZE_SPLITS: return .equalize
-        case GHOSTTY_ACTION_NEW_TAB: return .newWindow
+        case GHOSTTY_ACTION_NEW_TAB: return .newWindow(.shell)
         default: return nil
         }
     }

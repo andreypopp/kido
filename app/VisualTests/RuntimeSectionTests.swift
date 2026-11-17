@@ -43,7 +43,7 @@ import KoModel
         owner.perform(.selectSession(other))
         try await wait("the runtime list follows the selected session") { section.rows.map { $0.runtime.name } == ["box", "other"] }
         let command = NSMenuItem(title: "New Window", action: #selector(SidebarView.runCommand(_:)), keyEquivalent: "t")
-        command.representedObject = PaneCommand.newWindow
+        command.representedObject = PaneCommand.newWindow(.shell)
         owner.sidebar.focusSidebar(nil)
         owner.window.makeFirstResponder(section)
         section.selection = .runtime(key)

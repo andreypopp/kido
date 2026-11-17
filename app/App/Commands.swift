@@ -9,7 +9,8 @@ enum PaneCommand {
     case select(Side)
     case resize(Side, points: Double)
     case window(WindowStep)
-    case next, previous, zoom, float, equalize, close, newWindow
+    case newWindow(NewPaneProgram)
+    case next, previous, zoom, float, equalize, close
 
     @MainActor static var menu: NSMenuItem {
         let menu = NSMenu(title: "Shell")
@@ -42,5 +43,11 @@ enum PaneCommand {
         let item = NSMenuItem(title: "Shell", action: nil, keyEquivalent: "")
         item.submenu = menu
         return item
+    }
+}
+
+extension NewPaneProgram {
+    static func clicked(_ event: NSEvent?) -> Self {
+        event?.modifierFlags.contains(.option) == true ? .agent : .shell
     }
 }

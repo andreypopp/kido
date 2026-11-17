@@ -23,8 +23,8 @@ import XCTest
     private let sleep = #"{"pane":{"new":{"command":{"type":"argv","argv":["/bin/sleep","60"]}}}}"#
 
     // An owner on a server with the given session list, shown.
-    private func shown(_ sessions: String) throws -> (WindowOwner, KoClient) {
-        let dir = try server()
+    private func shown(_ sessions: String, server arguments: [String] = []) throws -> (WindowOwner, KoClient) {
+        let dir = try server(arguments: arguments)
         try put(#"{"revision":0,"layout":{"sessions":\#(sessions)}}"#, dir: dir)
         let owner = try owner(dir)
         wait("the owner shows the layout at its own size") {
@@ -266,6 +266,29 @@ import XCTest
         XCTAssertEqual(result, .some(nil))
         owner.renameSession(try XCTUnwrap(owner.navigation.session), "renamed") { _ in }
         wait("renamed") { (try? client.model())?.layout.layout.sessions.last?.name == "renamed" }
+    }
+
+    func testAnOptionClickOnTheTabPlusRunsKoaInAWindowAfterTheCurrentOne() throws {
+        let bin = try stateDir()
+        try "#!/bin/sh\nexec /bin/sleep 60\n".write(toFile: bin + "/koa", atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: bin + "/koa")
+        let (owner, client) = try shown(#"[{"name":"s","windows":[{"name":"a","tree":\#(sleep)},{"name":"b","tree":\#(sleep)}]}]"#,
+                                        server: ["--bin-dir", bin])
+        let first = try XCTUnwrap(owner.navigation.windows.first?.id)
+        owner.selectWindow(.number(1))
+        wait("the first window is selected") { owner.navigation.window == first }
+        let option = try XCTUnwrap(NSEvent.mouseEvent(with: .leftMouseUp, location: .zero, modifierFlags: .option, timestamp: ProcessInfo.processInfo.systemUptime,
+                                                      windowNumber: owner.window.windowNumber, context: nil, eventNumber: 0, clickCount: 1, pressure: 0))
+        NSApp.postEvent(option, atStart: true)
+        _ = NSApp.nextEvent(matching: .leftMouseUp, until: Date(timeIntervalSinceNow: 1), inMode: .default, dequeue: true)
+        XCTAssertEqual(NSApp.currentEvent?.modifierFlags.contains(.option), true, "AppKit's current event is the click")
+        owner.sidebar.tabs.addWindow.performClick(nil)
+        wait("the agent window is second and selected") {
+            owner.navigation.windows.count == 3 && owner.navigation.window == owner.navigation.windows[1].id && owner.navigation.windows[1].id != first
+        }
+        let agent = try XCTUnwrap(windows(client).first { $0.id == owner.navigation.windows[1].id }?.panes.first)
+        XCTAssertEqual((try client.model()).panes.first { $0.id == agent }?.command, [bin + "/koa"], "the server runs its own koa")
+        XCTAssertEqual(windows(client).first { $0.id == owner.navigation.windows[1].id }?.name, "koa", "the server names the agent's window")
     }
 
     func testAReorderHoldsItsOrderUntilTheLayoutShowsIt() throws {

@@ -84,7 +84,7 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSM
     private func entry(_ row: Int) -> SidebarRow? { items.indices.contains(row) ? items[row] : nil }
 
     var newSession: () -> Void = {}
-    var newWindow: (SessionID) -> Void = { _ in }
+    var newWindow: (SessionID, NewPaneProgram) -> Void = { _, _ in }
     var closePane: (SidebarRow) -> Void = { _ in }
     var renameSession: (SessionID, String, @escaping @MainActor @Sendable (String?) -> Void) -> Void = { _, _, done in done("The control client is not ready.") }
     private var editing: (id: SidebarRow.ID, cell: SidebarCell, original: String, responder: NSResponder?)?
@@ -702,7 +702,7 @@ final class SidebarView: NSView, NSTableViewDataSource, NSTableViewDelegate, NSM
         cell.terminalDark = terminalDark
         cell.configure(item, now: clockNow, closing: isClosing(item.id))
         cell.close.invoke = { [weak self] in if item.target != nil { self?.closePane(item) } else { self?.beginClosing(item) } }
-        cell.addWindow.invoke = { [weak self] in self?.newWindow(item.id.session) }
+        cell.addWindow.invoke = { [weak self] in self?.newWindow(item.id.session, .clicked(NSApp.currentEvent)) }
         return cell
     }
 

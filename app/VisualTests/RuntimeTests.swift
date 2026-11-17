@@ -98,7 +98,7 @@ private func runtimeMark(_ name: String, _ state: KoSchema.LinkState = .up, kind
     }
 }
 
-// palette-root, palette-step, palette-step-failed, palette-step-host and palette-step-nofocus.
+// palette-root, palette-new, palette-step, palette-step-failed, palette-step-host and palette-step-nofocus.
 @MainActor final class RuntimePaletteTests: VisualTestCase {
     func testRuntimePalette() async throws {
         let config = FileManager.default.temporaryDirectory.appendingPathComponent("runtime-palette-\(UUID().uuidString).yaml")
@@ -148,12 +148,21 @@ private func runtimeMark(_ name: String, _ state: KoSchema.LinkState = .up, kind
             XCTAssertEqual(palette.shown.compactMap { entry -> String? in switch entry.entry.id { case .hostRuntime, .runtime: entry.entry.detail; default: nil } },
                            ["this Mac", "ssh · up", "container · up", "ssh · failed · \(runtimeGapWithMessage)", "command · starting"])
             image("palette-root")
+            palette.field.stringValue = "new"
+            palette.controlTextDidChange(Notification(name: NSControl.textDidChangeNotification))
+            let found = palette.shown.map(\.entry)
+            let newWindow = try XCTUnwrap(found.firstIndex { $0.title == "New Window" })
+            XCTAssertEqual(found[newWindow + 1].title, "New Agent", "the query that finds New Window finds New Agent right after it")
+            XCTAssertEqual(found[newWindow + 1].shortcut, "⇧⌘N")
+            image("palette-new")
+            palette.field.stringValue = ""
+            palette.controlTextDidChange(Notification(name: NSControl.textDidChangeNotification))
             func step(_ name: String?, _ state: KoSchema.LinkState = .up) -> RuntimeMark? {
                 name.map { RuntimeMark.known(KoSchema.ClientRuntime(kind: .ssh, name: $0, source: .config, state: state), routed: false) }
             }
             palette.enter(.runtime(step("buildbox")))
-            XCTAssertEqual(palette.shown.map(\.entry.title), ["New Window", "Split Right", "Split Down", "Shut Down Runtime"])
-            XCTAssertEqual(palette.shown.map(\.entry.detail), ["in session main", "beside the focused pane", "below the focused pane", "buildbox"])
+            XCTAssertEqual(palette.shown.map(\.entry.title), ["New Window", "New Agent", "Split Right", "Split Down", "Shut Down Runtime"])
+            XCTAssertEqual(palette.shown.map(\.entry.detail), ["in session main", "in session main", "beside the focused pane", "below the focused pane", "buildbox"])
             image("palette-step")
             palette.enter(.root)
             palette.enter(.runtime(step("gpu-1", .failed(.init(message: runtimeGapWithMessage)))))
@@ -168,7 +177,7 @@ private func runtimeMark(_ name: String, _ state: KoSchema.LinkState = .up, kind
             app.togglePalette()
             palette = try XCTUnwrap(app.palettePanel).palette
             palette.enter(.runtime(step("buildbox")))
-            XCTAssertEqual(palette.shown.map(\.entry.title), ["New Window", "Shut Down Runtime"], "the splits need a live pane in focus")
+            XCTAssertEqual(palette.shown.map(\.entry.title), ["New Window", "New Agent", "Shut Down Runtime"], "the splits need a live pane in focus")
             image("palette-step-nofocus")
             // The step follows the model: a state change adds and removes the status line, and keeps the query and the row.
             app.closePalette()
@@ -257,6 +266,9 @@ private func runtimeMark(_ name: String, _ state: KoSchema.LinkState = .up, kind
         XCTAssertEqual(model.newPane(from: box), KoSchema.CreatePane(cwd: from(box), runtime: "box"), "the server takes a runtime pane's directory as it is")
         XCTAssertEqual(model.newPane(from: box, .host), KoSchema.CreatePane(cwd: from(box), runtime: nil), "the server maps it back to the host or uses the default")
         XCTAssertEqual(model.newPane(from: host, .named("box")), KoSchema.CreatePane(cwd: from(host), runtime: "box"), "the server maps a host directory into a runtime")
+        let koa = KoSchema.Command.koa(.init(start: .new(.init())))
+        XCTAssertEqual(model.newPane(from: box, running: .agent), KoSchema.CreatePane(command: koa, cwd: from(box), runtime: "box"), "an agent window inherits as a shell window does")
+        XCTAssertEqual(model.newPane(from: routed, running: .agent), KoSchema.CreatePane(command: koa, cwd: from(routed), runtime: nil), "a routed pi's runtime does not count")
         func made(_ number: UInt32, runtime: String?, _ command: () -> Void) async throws {
             command()
             try await wait("pane \(number)", within: 10) { owner.testModel?.pane(PaneID(number: number)) != nil }

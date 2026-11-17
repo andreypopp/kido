@@ -165,10 +165,11 @@ import XCTest
                 XCTAssertTrue(window.firstResponder === pane, "row \(index), floating \(floating)")
             }
             let header = try XCTUnwrap(table.view(atColumn: 0, row: 0, makeIfNecessary: true) as? SidebarCell)
-            var additions = 0
-            sidebar.list.newWindow = { _ in additions += 1 }
+            var programs: [NewPaneProgram] = []
+            sidebar.list.newWindow = { _, program in programs.append(program) }
             try mouse(header.addWindow, NSPoint(x: header.addWindow.bounds.midX, y: header.addWindow.bounds.midY))
-            XCTAssertEqual(additions, 1)
+            try mouse(header.addWindow, NSPoint(x: header.addWindow.bounds.midX, y: header.addWindow.bounds.midY), modifiers: .option)
+            XCTAssertEqual(programs, [.shell, .agent], "an Option-click makes an agent window")
             XCTAssertTrue(window.firstResponder === pane)
             table.scrollRowToVisible(0)
             let first = table.rect(ofRow: 0)

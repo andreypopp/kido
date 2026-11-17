@@ -367,7 +367,7 @@ private class AlertEscape: NSView {
             (NSApp.delegate as? AppDelegate)?.showRuntimePalette(RuntimeMark.known(runtime, routed: false))
         }
         sidebar.list.newSession = { [weak self] in self?.newSession() }
-        sidebar.list.newWindow = { [weak self] session in self?.newWindow(in: session) }
+        sidebar.list.newWindow = { [weak self] session, program in self?.newWindow(in: session, running: program) }
         sidebar.list.renameSession = { [weak self] id, name, done in
             guard let self else { return done("The client is not ready.") }
             renameSession(id, name, done: done)
@@ -378,7 +378,7 @@ private class AlertEscape: NSView {
         sidebar.tabs.move = sidebar.list.move
         sidebar.tabs.select = { [weak self] in self?.selectWindow($0) }
         sidebar.tabs.close = { [weak self] tab in self?.confirmClose(.window(tab.id), name: tab.name) }
-        sidebar.tabs.addWindow.invoke = { [weak self] in self?.newWindow() }
+        sidebar.tabs.addWindow.invoke = { [weak self] in self?.newWindow(running: .clicked(NSApp.currentEvent)) }
         sidebar.list.closePane = { [weak self] row in
             guard let pane = row.target?.pane else { return }
             self?.confirmClose(.pane(pane), name: row.title)
@@ -1552,10 +1552,11 @@ private class AlertEscape: NSView {
         createSession(name)
     }
 
-    func newWindow(in target: SessionID? = nil, _ runtime: NewPaneRuntime = .inherit, from pane: PaneID? = nil) {
+    func newWindow(in target: SessionID? = nil, _ runtime: NewPaneRuntime = .inherit, from pane: PaneID? = nil, running program: NewPaneProgram = .shell) {
         let placement = pane.flatMap { projection.placements[$0] }
         guard let id = target ?? placement?.position.session ?? model.session,
-              let edit = koModel?.newWindow(in: id, after: placement?.position.window ?? model.window, runtime, from: pane ?? koModel?.selection.pane) else { return }
+              let edit = koModel?.newWindow(in: id, after: placement?.position.window ?? model.window, runtime, from: pane ?? koModel?.selection.pane,
+                                            running: program) else { return }
         create(edit)
     }
 
@@ -1632,7 +1633,7 @@ private class AlertEscape: NSView {
             let name = projection.items[pane]?.item.rowTitle ?? pane.description
             return confirmClose(.pane(pane), name: name)
         case .window(let step): return selectWindow(step)
-        case .newWindow: return newWindow(in: nil, runtime, from: pane)
+        case .newWindow(let program): return newWindow(in: nil, runtime, from: pane, running: program)
         default: break
         }
         guard let koModel, let window = koModel.layout.layout.locate(pane)?.window,

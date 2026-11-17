@@ -115,15 +115,26 @@ enum NewPaneRuntime: Equatable {
     case inherit, host, named(String)
 }
 
+enum NewPaneProgram: Equatable {
+    case shell, agent
+
+    var command: KoSchema.Command? {
+        switch self {
+        case .shell: nil
+        case .agent: .koa(KoSchema.CommandKoa(start: .new(KoSchema.KoaStartNew())))
+        }
+    }
+}
+
 extension KoModel {
-    func newPane(from pane: PaneID?, _ choice: NewPaneRuntime = .inherit) -> KoSchema.CreatePane {
+    func newPane(from pane: PaneID?, _ choice: NewPaneRuntime = .inherit, running program: NewPaneProgram = .shell) -> KoSchema.CreatePane {
         let source = pane.flatMap(self.pane)
         let runtime: String? = switch choice {
         case .inherit: source?.runtime
         case .host: nil
         case .named(let name): name
         }
-        return KoSchema.CreatePane(cwd: source.map { .pane(.init(pane: $0.id)) }, runtime: runtime)
+        return KoSchema.CreatePane(command: program.command, cwd: source.map { .pane(.init(pane: $0.id)) }, runtime: runtime)
     }
 }
 
@@ -188,9 +199,10 @@ extension KoModel {
     }
 
     // After `window` of the session, else after its last window.
-    func newWindow(in id: SessionID, after window: WindowID?, _ choice: NewPaneRuntime = .inherit, from pane: PaneID? = nil) -> KoSchema.Edit? {
+    func newWindow(in id: SessionID, after window: WindowID?, _ choice: NewPaneRuntime = .inherit, from pane: PaneID? = nil,
+                   running program: NewPaneProgram = .shell) -> KoSchema.Edit? {
         guard let session = layout.layout.session(id),
               let current = session.windows.first(where: { $0.id == window }) ?? session.windows.last else { return nil }
-        return .addWindow(KoSchema.EditAddWindow(after: current.id, new: newPane(from: pane ?? source(in: current), choice), session: session.id))
+        return .addWindow(KoSchema.EditAddWindow(after: current.id, new: newPane(from: pane ?? source(in: current), choice, running: program), session: session.id))
     }
 }

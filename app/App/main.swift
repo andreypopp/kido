@@ -293,8 +293,10 @@ import SidebarFeed
         for item in view.items where item.action == #selector(togglePalette) || item.action == #selector(showThemes) { item.target = self }
         let file = NSMenu(title: "File")
         let newWindow = item("New Window", #selector(PaneView.runCommand(_:)), "t", .command)
-        newWindow.representedObject = PaneCommand.newWindow
-        file.items = [item("New Session", #selector(newSession), "n", .command), newWindow,
+        newWindow.representedObject = PaneCommand.newWindow(.shell)
+        let newAgent = item("New Agent", #selector(PaneView.runCommand(_:)), "N", .command)
+        newAgent.representedObject = PaneCommand.newWindow(.agent)
+        file.items = [item("New Session", #selector(newSession), "n", .command), newWindow, newAgent,
                       item("Close Window", #selector(closeWindow), "", []), .separator(),
                       item(Self.localConnectTitle, #selector(connectLocalHost), "", []),
                       item(Self.remoteConnectTitle, #selector(connectRemoteHost), "K", [.command, .shift]),

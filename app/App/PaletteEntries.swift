@@ -72,12 +72,15 @@ struct PaletteEntry {
     @MainActor static func runtimeStep(_ mark: RuntimeMark?, owner: WindowOwner?, responder: NSResponder?) -> [PaletteEntry] {
         guard let owner, owner.canNavigate else { return [] }
         let target: NewPaneRuntime = mark.map { .named($0.name) } ?? .host
-        var rows = [PaletteEntry(id: .runtimeOpen(0), title: "New Window", detail: "in session " + (owner.snapshot.flatMap { s in s.sessions.first { $0.id == s.client.session } }?.name ?? ""),
-                                 check: { [weak owner] in owner?.canNavigate == true ? nil : "Not available now" },
-                                 operation: .run { [weak owner] in owner?.newWindow(in: nil, target) })]
+        let session = "in session " + (owner.snapshot.flatMap { s in s.sessions.first { $0.id == s.client.session } }?.name ?? "")
+        var rows = [("New Window", NewPaneProgram.shell), ("New Agent", .agent)].enumerated().map { index, row in
+            PaletteEntry(id: .runtimeOpen(index), title: row.0, detail: session,
+                         check: { [weak owner] in owner?.canNavigate == true ? nil : "Not available now" },
+                         operation: .run { [weak owner] in owner?.newWindow(in: nil, target, running: row.1) })
+        }
         if let pane = livePane(owner, responder) {
             for (index, (title, detail, side)) in [("Split Right", "beside the focused pane", Side.right), ("Split Down", "below the focused pane", Side.down)].enumerated() {
-                rows.append(PaletteEntry(id: .runtimeOpen(index + 1), title: title, detail: detail,
+                rows.append(PaletteEntry(id: .runtimeOpen(index + 2), title: title, detail: detail,
                                          check: { [weak owner, weak pane] in owner?.canNavigate == true && owner?.owns(pane?.window) == true ? nil : "Not available now" },
                                          operation: .run { [weak owner, weak pane] in
                     guard let owner, let pane else { return }
@@ -157,30 +160,31 @@ struct PaletteEntry {
         case #selector(AppDelegate.newSession): (0, .always)
         case #selector(SessionMenus.renameItem): (1, .window)
         case #selector(SessionMenus.closeItem): (2, .window)
-        case #selector(AppDelegate.closeWindow): (4, .window)
-        case #selector(WindowOwner.navigateHistoryBack(_:)): (5, .window)
-        case #selector(WindowOwner.navigateHistoryForward(_:)): (6, .window)
+        case #selector(AppDelegate.closeWindow): (5, .window)
+        case #selector(WindowOwner.navigateHistoryBack(_:)): (6, .window)
+        case #selector(WindowOwner.navigateHistoryForward(_:)): (7, .window)
         case #selector(PaneView.runCommand(_:)):
             switch item.representedObject as? PaneCommand {
-            case .newWindow: (3, .pane)
-            case .split(.right): (7, .pane)
-            case .split(.down): (8, .pane)
-            case .close: (9, .pane)
-            case .zoom: (10, .pane)
-            case .float: (11, .pane)
+            case .newWindow(.shell): (3, .pane)
+            case .newWindow(.agent): (4, .pane)
+            case .split(.right): (8, .pane)
+            case .split(.down): (9, .pane)
+            case .close: (10, .pane)
+            case .zoom: (11, .pane)
+            case .float: (12, .pane)
             default: nil
             }
-        case #selector(AppDelegate.connectLocalHost): (12, .always)
-        case #selector(AppDelegate.connectRemoteHost): (13, .always)
-        case #selector(AppDelegate.pairServer): (13, .always)
-        case #selector(Sidebar.toggleSidebar(_:)): (14, .window)
-        case #selector(Sidebar.focusSidebar(_:)): (15, .window)
-        case NSSelectorFromString("toggleFullScreen:"): (16, .window)
-        case #selector(PaneView.showFind(_:)): (17, .pane)
-        case #selector(PaneView.toggleCopyMode(_:)): (18, .pane)
-        case #selector(PaneView.promptSelectionItem(_:)): (19, .pane)
-        case #selector(AppDelegate.resetClipboardPermissions): (20, .window)
-        case #selector(AppDelegate.showThemes): (21, .always)
+        case #selector(AppDelegate.connectLocalHost): (13, .always)
+        case #selector(AppDelegate.connectRemoteHost): (14, .always)
+        case #selector(AppDelegate.pairServer): (14, .always)
+        case #selector(Sidebar.toggleSidebar(_:)): (15, .window)
+        case #selector(Sidebar.focusSidebar(_:)): (16, .window)
+        case NSSelectorFromString("toggleFullScreen:"): (17, .window)
+        case #selector(PaneView.showFind(_:)): (18, .pane)
+        case #selector(PaneView.toggleCopyMode(_:)): (19, .pane)
+        case #selector(PaneView.promptSelectionItem(_:)): (20, .pane)
+        case #selector(AppDelegate.resetClipboardPermissions): (21, .window)
+        case #selector(AppDelegate.showThemes): (22, .always)
         default: nil
         }
     }

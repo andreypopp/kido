@@ -2134,7 +2134,7 @@ replaces it with a 16pt × close button whose hover brightens it with a 10%
 labelColor, 4pt-radius fill; leaving the slot restores the mark. A 28pt-wide,
 icon-only + at the trailing end of the strip, outside the scrolling tabs,
 creates a window after the current one through the same new-window request as
-Command-T.
+Command-T; with Option, as File → New Agent.
 
 `SidebarView` is a reusable `NSTableView` backed by the pure row model in
 `SidebarFeed/Rows.swift`. Sessions have noninteractive 26pt headers with
@@ -2399,7 +2399,18 @@ that session's current window, made from its source pane, with an
 `add_window` edit, and select it from the resulting layout. The
 source pane is the pane that this client selected when the session's
 current window is the client's, else that window's `focus`: another
-client can move the document's focus. The menu's splits make the new
+client can move the document's focus. File → New Agent
+(Shift-Command-N) and an Option-click on either plus make the same
+window with `koa` in place of the shell (`NewPaneProgram` in
+`app/App/Ko/LayoutEditor.swift`); the buttons look the same. The
+request's command is the typed `koa` command with a new session and
+nothing else, so the window's server finds its own `koa`, in a
+runtime as the runtime's setting says, and a missing `koa` is a
+failed start whose row stays. The server names the window "koa".
+The row's title comes from the pane's foreground ("ko", then the
+login shell) until the `koa` shim sets the OSC title "koa" before it
+starts node; then it reads "koa", regular, idle, until koa names
+itself. The menu's splits make the new
 pane from the pane they act on. The new pane takes the source row's
 `runtime` (`KoModel.newPane`), so a routed pi's pane gives a host
 pane. Its `cwd` names the source pane, and the server moves that
@@ -2697,7 +2708,7 @@ The root list is built from live state, in this order:
 - A fixed list of commands, each read from its menu item (found by action and
   represented object, never by title) for its title, menu path and current
   key equivalent: New Session ("New Session…" with an anchor), Rename Session…, Close Session, New Window,
-  Close Window, Back, Forward, Split Right, Split Down, Close Pane, Zoom Pane, Float Pane or Dock Pane, Connect to
+  New Agent, Close Window, Back, Forward, Split Right, Split Down, Close Pane, Zoom Pane, Float Pane or Dock Pane, Connect to
   Local Host, Connect to Remote Host…, Hide/Show Sidebar, Focus Sidebar,
   Enter Full Screen, Find…, Copy Mode, Prompt…, Reset Clipboard and Upload
   Permissions and Theme…. The window
@@ -2740,7 +2751,7 @@ the field and the list; an edit clears it.
 - **Runtime** (`PaletteMode.runtime`, nil for `Host`; the chip is the swatch and the
   name, or "Host" without a swatch; the field reads "Open as…"). A
   runtime or `Host` row of the root enters it. Its rows are New Window
-  (in the anchor's current session) and, with a live focused pane,
+  and New Agent (in the anchor's current session) and, with a live focused pane,
   Split Right and Split Down; the detail follows the title. Return
   sends one layout edit whose new pane names the runtime, or none for
   `Host`; a runtime that is down starts with that pane. The foot names

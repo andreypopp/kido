@@ -736,7 +736,7 @@ func assertPaperPixel(_ image: NSBitmapImageRep, x: Int, y: Int, expected: [Doub
         XCTAssertFalse(view?.items.contains { ["j", "k"].contains($0.keyEquivalent) && $0.keyEquivalentModifierMask == [.command, .control] } == true)
         let lone = KoSchema.Window(cols: 80, floats: [], focus: PaneID(number: 0), id: WindowID(number: 0), name: "w", rows: 24,
                                      tree: .leaf(KoSchema.Leaf(cols: 80, pane: PaneID(number: 0), rows: 24)), vars: [:])
-        XCTAssertNil(PaneCommand.newWindow.action(PaneID(number: 0), in: lone, new: KoSchema.CreatePane(), cell: .zero))
+        XCTAssertNil(PaneCommand.newWindow(.shell).action(PaneID(number: 0), in: lone, new: KoSchema.CreatePane(), cell: .zero))
     }
 
     func testSessionShortcutsNavigateOnce() {

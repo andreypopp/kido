@@ -104,9 +104,9 @@ final class Recorder {
         return dir
     }
 
-    func server(at path: String? = nil, environment: [String: String] = [:], cwd: URL? = nil) throws -> String {
+    func server(at path: String? = nil, arguments: [String] = [], environment: [String: String] = [:], cwd: URL? = nil) throws -> String {
         let dir = try path ?? stateDir()
-        let process = try ko(["server"], dir: dir, environment: environment, cwd: cwd)
+        let process = try ko(["server"] + arguments, dir: dir, environment: environment, cwd: cwd)
         serverProcesses[dir, default: []].append(process)
         wait("the server socket") { FileManager.default.fileExists(atPath: dir + "/socket") }
         return dir
