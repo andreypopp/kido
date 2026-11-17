@@ -123,7 +123,7 @@ body{margin:0;padding:24px;background:#8d8a84;font:13px/1.45 -apple-system,Blink
 <div class="stage light" id="stage"></div>
 <div class="gallery" id="gallery"><h3>Every state, light and dark</h3></div>
 <script>
-const HOST='ko.example.com',MAC='Andrey’s MacBook Pro';
+const HOST='ko.example.com',NAME='Home VM',MAC='Andrey’s MacBook Pro';
 const PAYLOAD='kido-pair:1;https://'+HOST+'/enroll;https://'+HOST+';tk_8f3kq2v7p0wz5nd1';
 const ico={session:'<svg viewBox="0 0 16 16"><rect x="2.5" y="4.5" width="11" height="9" rx="1.5"/><path d="M5 4.5V3a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v1.5"/></svg>',
 globe:'<svg viewBox="0 0 16 16"><circle cx="8" cy="8" r="6"/><path d="M2 8h12M8 2c2.2 2 2.2 10 0 12M8 2c-2.2 2-2.2 10 0 12"/></svg>',
@@ -134,20 +134,20 @@ const hlr=(s,q)=>{if(!q)return{html:s,rest:''};let out='',qi=0,run='';const flus
 const hl=(s,q)=>hlr(s,q).html;const hl2=(d,t,q)=>{const a=hlr(d,q),b=hlr(t,a.rest);return b.rest?null:[a.html,b.html]};
 const panes=[['idle','main','@working-on-kido',1],['run','main','main-watch',0],['idle','main','@kido-app',1],['idle','main','Terminal',0]];
 const cmds=[['File','New Session','⌘N'],['Session','Rename Session…',''],['Session','Close Session',''],['File','New Window','⌘T'],['File','Close Window',''],['Pane','Split Right','⌘D'],['Pane','Split Down','⇧⌘D'],['Pane','Close Pane','⌘W'],['Pane','Zoom Pane','⇧⌘↩'],['File','Connect to Remote Host…','⇧⌘K'],['File','Pair Server…',''],['View','Hide Sidebar','⇧⌘S'],['View','Focus Sidebar','⌘S'],['View','Enter Full Screen','⌃⌘F'],['Edit','Find…','⌘F'],['Edit','Copy Mode','⇧⌘C'],['Edit','Prompt…','⌘O']];
-const recents=[[HOST,'https','10 min ago'],['devbox','ssh','2 h ago'],['dev@buildbox','ssh','yesterday'],['devbox-old','ssh','3 weeks ago']];
+const recents=[[NAME,'https','10 min ago',HOST],['devbox','ssh','2 h ago'],['dev@buildbox','ssh','yesterday'],['devbox-old','ssh','3 weeks ago']];
 const item=(cls,icon,html,k,on)=>`<div class="item ${cls}${on?' on':''}"><span class="ic">${icon}</span><span class="t">${html}</span>${k?`<span class="k">${k}</span>`:''}</div>`;
 const dot=s=>`<i class="${s==='run'?'':s}"></i>`;
 const field=(txt,ph,cls='')=>`<div class="field ${cls}">${txt?txt:`<span class="ph">${ph}</span>`}<span class="caret"></span></div>`;
 function root(q,scrolled){let rows=[];if(!q||!hlr('main',q).rest)rows.push(item('',ico.session,hl('main',q),''));
   for(const [s,ses,t,ag] of panes){const m=hl2(ses,t,q);if(!m)continue;rows.push(item('',dot(s),`<span class="d">${m[0]}</span><span class="sep">›</span>${ag?'<b>'+m[1]+'</b>':m[1]}`,''))}
-  for(const [h,kind] of recents){const x=hl(h,q);if(q&&!/<em>/.test(x))continue;rows.push(item('',ico.globe,`<span class="d">Connect</span><span class="sep">›</span>${x}<span class="kind">${kind}</span>`,''))}
+  for(const [h,kind,,dns] of recents){const x=hl(h,q),y=dns?hl(dns,q):'';if(q&&!/<em>/.test(x)&&!/<em>/.test(y))continue;rows.push(item('',ico.globe,`<span class="d">Connect</span><span class="sep">›</span>${x}<span class="kind">${kind}${dns?' · '+y:''}</span>`,''))}
   for(const [m,t,k] of cmds){const mm=hl2(m,t,q);if(!mm)continue;rows.push(item('',' ',`<span class="d">${mm[0]}</span><span class="sep">›</span>${mm[1]}`,k))}
   if(!rows.length)return '<div class="empty">No matches</div>';rows[0]=rows[0].replace('class="item ','class="item on ');
   if(scrolled){const i=rows.findIndex(r=>r.includes('Pair Server'));rows=rows.slice(Math.max(0,i-11),i+1);rows[rows.length-1]=rows[rows.length-1].replace('class="item ','class="item on ');rows[0]=rows[0].replace('item on ','item ')}
   return '<div class="list">'+rows.slice(0,12).join('')+'</div>'}
-function connect(state){const ctx=state==='connect-ctx-https'?HOST:state==='connect-ctx-ssh'?'devbox':null;
-  let rows=recents.map(([h,kind,t],i)=>{const on=!ctx&&i===0;const menu=h===ctx?`<div class="cmenu"><div class="on">${kind==='https'?'Forget '+h+'…':'Remove from Recents'}</div></div>`:'';
-    return `<div class="item${on?' on':''}${h===ctx?' ctx':''}"><span class="ic">${ico.globe}</span><span class="t">${h}<span class="kind">${kind}</span></span><span class="k">${t}</span>${menu}</div>`});
+function connect(state){const ctx=state==='connect-ctx-https'?NAME:state==='connect-ctx-ssh'?'devbox':null;
+  let rows=recents.map(([h,kind,t,dns],i)=>{const on=!ctx&&i===0;const menu=h===ctx?`<div class="cmenu"><div class="on">${kind==='https'?'Forget '+h+'…':'Remove from Recents'}</div></div>`:'';
+    return `<div class="item${on?' on':''}${h===ctx?' ctx':''}"><span class="ic">${ico.globe}</span><span class="t">${h}<span class="kind">${kind}${dns?' · '+dns:''}</span></span><span class="k">${t}</span>${menu}</div>`});
   rows.push(`<div class="item hint"><span>Paste a pairing code: <span class="a">Pair Server…</span></span></div>`);
   rows.push(item('hint',' ','Clear Recent Hosts',''));
   return `<div class="palette"><div class="head"><span class="chip">${ico.globe}Connect</span>${field('','user@hostname or SSH alias')}</div><div class="list">${rows.join('')}</div><div class="foot"><span><kbd>↩</kbd> connect</span><span><kbd>⌫</kbd> on empty field back</span><span><kbd>esc</kbd> back</span></div></div>`}
@@ -158,25 +158,25 @@ function pair(state){const s=state.slice(5);const has=s!=='';const inert=['progr
   let err='',status='';
   if(s==='invalid')err=`<div class="err">${ico.warn}Not a pairing code</div>`;
   if(s==='expired')err=`<div class="err">${ico.warn}This code is used or expired. Run the pairing command again.</div>`;
-  if(s==='payload'||s==='name'||s==='again')status=`<div class="status">Pairs this Mac with <b style="color:var(--text);font-weight:500">${HOST}</b>${s==='again'?' again; the old key stays until this pairing succeeds':''}</div>`;
-  if(s==='progress')status=`<div class="status"><span class="sp"></span>Pairing with ${HOST}…</div>`;
-  if(s==='waiting')status=`<div class="status"><span class="sp"></span>Waiting for ${HOST} to activate…</div>`;
-  if(s==='netfail')status=`<div class="status err">${ico.warn}Could not reach ${HOST}: The network connection was lost.<span class="act">Retry</span></div>`;
-  if(s==='uncertain')status=`<div class="status err">${ico.warn}${HOST} may have paired this Mac; try Connect.</div>`;
+  if(s==='payload'||s==='name'||s==='again')status=`<div class="status">Pairs this Mac with <b style="color:var(--text);font-weight:500">${NAME}</b> <span style="opacity:.7">(${HOST})</span>${s==='again'?' again; the old key stays until this pairing succeeds':''}</div>`;
+  if(s==='progress')status=`<div class="status"><span class="sp"></span>Pairing with ${NAME}…</div>`;
+  if(s==='waiting')status=`<div class="status"><span class="sp"></span>Waiting for ${NAME} to activate…</div>`;
+  if(s==='netfail')status=`<div class="status err">${ico.warn}Could not reach ${NAME}: The network connection was lost.<span class="act">Retry</span></div>`;
+  if(s==='uncertain')status=`<div class="status err">${ico.warn}${NAME} may have paired this Mac; try Connect.</div>`;
   const again=s==='again';
-  return `<div class="palette${inert?' inert':''}"><div class="head"><span class="chip">${ico.key}Pair</span>${again?`<div class="field"><span>${HOST}</span></div>`:fld}</div>${name}${err}${status}<div class="foot"><span><kbd>↩</kbd> pair</span><span><kbd>⇥</kbd> device name</span><span><kbd>esc</kbd> back</span>${again?'':'<span class="r">the code the server’s CLI printed, valid about 2 minutes</span>'}</div></div>`}
+  return `<div class="palette${inert?' inert':''}"><div class="head"><span class="chip">${ico.key}Pair</span>${again?`<div class="field"><span>${NAME} <span class="ph" style="font-size:13px">${HOST}</span></span></div>`:fld}</div>${name}${err}${status}<div class="foot"><span><kbd>↩</kbd> pair</span><span><kbd>⇥</kbd> device name</span><span><kbd>esc</kbd> back</span>${again?'':'<span class="r">the code the server’s CLI printed, valid about 2 minutes</span>'}</div></div>`}
 function sheet(kind){const refused=kind==='refused';
-  const h=refused?`${HOST} does not accept this Mac’s certificate`:`${HOST}’s certificate is not valid: the certificate expired on 10 November 2026`;
+  const h=refused?`${NAME} does not accept this Mac’s certificate`:`${HOST}’s certificate is not valid: the certificate expired on 10 November 2026`;
   const p=refused?'The server has revoked this Mac, or has not activated it yet. Pair again with a new code from the server, or close this window.':'The server presented a certificate that this Mac cannot verify. Fix the certificate on the server, then connect again.';
   const btn=refused?'<button>Close</button><button class="primary">Pair Again</button>':'<button class="primary">Close</button>';
   return `<div class="sheetlayer"><section class="sheet"><div class="appicon"><span>›_</span>${ico.tri}</div><div><h1>${h}</h1><p>${p}</p><div class="actions">${btn}</div></div></section></div>`}
-const forget=()=>`<div class="sheetlayer" style="background:#0002"><section class="sheet alert"><div class="appicon"><span>›_</span>${ico.tri}</div><div><h1>Forget ${HOST}?</h1><p>This Mac’s key and certificate for ${HOST} are deleted. Pair again to connect.</p><div class="actions"><button>Cancel</button><button class="primary">Forget</button></div></div></section></div>`;
-const banner=()=>`<div class="banner">${ico.tri}<div><h1>${HOST} is not reachable</h1><p>Could not connect: The network connection was lost. Kido tries again every few seconds.</p><div class="actions"><button class="primary">Reconnect</button><button>Close Window</button></div></div></div>`;
+const forget=()=>`<div class="sheetlayer" style="background:#0002"><section class="sheet alert"><div class="appicon"><span>›_</span>${ico.tri}</div><div><h1>Forget ${NAME}?</h1><p>This Mac’s key and certificate for ${NAME} (${HOST}) are deleted. Pair again to connect.</p><div class="actions"><button>Cancel</button><button class="primary">Forget</button></div></div></section></div>`;
+const banner=()=>`<div class="banner">${ico.tri}<div><h1>${NAME} is not reachable</h1><p>Could not connect: The network connection was lost. Kido tries again every few seconds.</p><div class="actions"><button class="primary">Reconnect</button><button>Close Window</button></div></div></div>`;
 const filemenu=()=>`<div class="menubar"><span></span><span class="ap">Kido</span><span class="open">File</span><span>Edit</span><span>View</span><span>Session</span><span>Pane</span><span>Window</span><span>Help</span></div><div class="fmenu"><div>New Session<span class="k">⌘N</span></div><div>New Window<span class="k">⌘T</span></div><hr><div>Connect to Remote Host…<span class="k">⇧⌘K</span></div><div class="on">Pair Server…</div><hr><div>Close Window<span class="k">⇧⌘W</span></div><div>Close Pane<span class="k">⌘W</span></div></div>`;
-function win(remote){const tabs=`<div class="tabs">${remote?`<span class="host">${HOST}</span>`:''}<div class="tab active agent"><i></i>@kido-app</div><div class="tab">zsh</div></div>`;
+function win(remote){const tabs=`<div class="tabs">${remote?`<span class="host" title="${HOST}">${NAME}</span>`:''}<div class="tab active agent"><i></i>@kido-app</div><div class="tab">zsh</div></div>`;
   return `<div class="app"><div class="header"><div class="lights"><i></i><i></i><i></i></div>${tabs}</div>
 <aside class="sidebar"><div class="sh">main</div><div class="row agent sel"><i></i>@kido-app<span class="mark"></span></div><div class="row nest"><i></i>make verify<span class="mark">3m05s</span></div><div class="row idle"><i></i>zsh</div></aside>
-<div class="area"><section class="pane p1 focused"><pre><span class="m">pi · kido-app${remote?' · '+HOST:''}</span>
+<div class="area"><section class="pane p1 focused"><pre><span class="m">pi · kido-app${remote?' · '+NAME:''}</span>
 
 <span class="g">›</span> Review the TLS client.
 
@@ -198,7 +198,7 @@ function stage(state,light){const remote=['title','refused','tls','unreachable']
   else if(state==='refused'||state==='tls'){over=sheet(state);cls='dim'}
   else if(state==='forget'){over=forget()}
   else if(state==='unreachable'){over=banner();cls='dim'}
-  else if(state==='title')over=`<div class="caption">Window title (Mission Control, the Window menu): <b>${HOST} / main</b> · the tab strip shows the host as for SSH; an SSH window keeps <b>user@host / Session</b></div>`;
+  else if(state==='title')over=`<div class="caption">Window title (Mission Control, the Window menu): <b>${NAME} / main</b> · the tab strip's host chip shows the name, its tooltip the DNS host <b>${HOST}</b>, as an SSH chip shows the identity with the destination as tooltip; an SSH window keeps <b>user@host / Session</b></div>`;
   return `<div class="stage ${light?'light':''} ${cls}">${win(remote)}${over}</div>`}
 function apply(){const s=document.getElementById('state').value,light=document.getElementById('theme').value==='Light';const st=document.getElementById('stage');st.outerHTML=stage(s,light).replace('class="stage','id="stage" class="stage');gallery()}
 function gallery(){const g=document.getElementById('gallery');g.querySelectorAll('.cell').forEach(c=>c.remove());

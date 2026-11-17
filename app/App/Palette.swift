@@ -1,4 +1,5 @@
 import AppKit
+import KidoPairing
 import GhosttyKit
 import KoModel
 import SidebarFeed
@@ -283,20 +284,28 @@ final class PaletteList: NSTableView, NSTableViewDataSource, NSTableViewDelegate
                     start = end
                 }
             }
+            let suffix = NSMutableAttributedString(attributedString: part(entry.hostKind, .systemFont(ofSize: 11), Chrome.inkSecondary))
+            suffix.addAttribute(.paragraphStyle, value: paragraph, range: NSRange(location: 0, length: suffix.length))
+            let suffixWidth = min(suffix.size().width, max(0, right - left))
+            let lineWidth = suffix.length == 0 ? max(0, right - left) : min(line.size().width, max(0, right - left - suffixWidth - 8))
             NSGraphicsContext.saveGraphicsState()
-            NSBezierPath(rect: NSRect(x: left - 1, y: 0, width: max(0, right - left + 1), height: bounds.height)).addClip()
+            NSBezierPath(rect: NSRect(x: left - 1, y: 0, width: max(0, lineWidth + 1), height: bounds.height)).addClip()
             if !entry.detailAtRight && !entry.inline { highlight(entry.detail, offsets: offsets[1], font: .systemFont(ofSize: 13), x: left) }
             let prefix = entry.detail.isEmpty || entry.radio || entry.inline || entry.detailAtRight ? "" : entry.detail + " › "
             highlight(entry.title, offsets: offsets[0], font: titleFont,
                       x: left + (prefix as NSString).size(withAttributes: [.font: NSFont.systemFont(ofSize: 13)]).width)
-            line.draw(with: NSRect(x: left, y: (bounds.height - height) / 2, width: max(0, right - left), height: height),
+            line.draw(with: NSRect(x: left, y: (bounds.height - height) / 2, width: lineWidth, height: height),
                       options: [.usesLineFragmentOrigin, .truncatesLastVisibleLine])
-            if case .host(let host) = entry.id {
-                let kind = if case .tls = host { "https" } else { "ssh" }
-                let text = part(kind, .systemFont(ofSize: 11), Chrome.inkSecondary)
-                text.draw(at: NSPoint(x: min(right - text.size().width, left + line.size().width + 8), y: (bounds.height - text.size().height) / 2))
-            }
             NSGraphicsContext.restoreGraphicsState()
+            if suffix.length > 0 {
+                let x = min(right - suffixWidth, left + lineWidth + 8)
+                NSGraphicsContext.saveGraphicsState()
+                NSBezierPath(rect: NSRect(x: x, y: 0, width: suffixWidth, height: bounds.height)).addClip()
+                if offsets.count > 2 { highlight(entry.hostKind, offsets: offsets[2], font: .systemFont(ofSize: 11), x: x) }
+                suffix.draw(with: NSRect(x: x, y: (bounds.height - suffix.size().height) / 2, width: suffixWidth, height: height),
+                            options: [.usesLineFragmentOrigin, .truncatesLastVisibleLine])
+                NSGraphicsContext.restoreGraphicsState()
+            }
         }
     }
 
@@ -320,7 +329,7 @@ final class PaletteList: NSTableView, NSTableViewDataSource, NSTableViewDelegate
         let index = row(at: convert(event.locationInWindow, from: nil))
         guard shown.indices.contains(index), case .host(let host) = shown[index].entry.id else { return nil }
         let menu = NSMenu()
-        let title = if case .tls = host { "Forget \(host.label)…" } else { "Remove from Recents" }
+        let title = if case .tls = host { "Forget \(shown[index].entry.title)…" } else { "Remove from Recents" }
         let item = NSMenuItem(title: title, action: #selector(removeRecent(_:)), keyEquivalent: "")
         item.target = self
         item.representedObject = host
@@ -442,6 +451,7 @@ final class PaletteView: NSView, NSTextFieldDelegate {
     }
     private(set) var prompt: PalettePrompt?
     private(set) var pair: PalettePair?
+    var identities: IdentityStore?
     var makePair: (ServerName?) -> PairingSession? = { _ in nil }
     var makePrompt: (PromptSource) -> Void = { _ in }
     var modeChanged: () -> Void = {}
@@ -606,10 +616,11 @@ final class PaletteView: NSView, NSTextFieldDelegate {
         case .pair(let host):
             field.placeholderString = host == nil ? "Paste the pairing code" : ""
             field.setAccessibilityLabel("Pairing code")
-            field.stringValue = host?.value ?? ""
             field.font = .monospacedSystemFont(ofSize: 14, weight: .regular)
+            field.stringValue = host.map { Host.tls($0).title(in: identities) } ?? ""
             let view = PalettePair(frame: .zero)
             pair = view
+            view.identities = identities
             view.session = makePair(host)
             view.codeField = field
             view.cancel = { [weak self] in self?.enter(.root) }

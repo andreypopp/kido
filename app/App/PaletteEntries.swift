@@ -12,6 +12,11 @@ struct PaletteEntry {
     var order = 0
     let title: String
     let detail: String
+    var hostKind: String {
+        guard case .host(let host) = id else { return "" }
+        if case .tls = host { return title == host.label ? "https" : "https · " + host.label }
+        return "ssh"
+    }
     var shortcut = ""
     var status: SidebarRow.Status?
     var symbol: String?
@@ -198,7 +203,7 @@ struct PaletteEntry {
         let words = query.split(whereSeparator: { $0.isWhitespace || $0 == ">" || $0 == "›" })
         guard !words.isEmpty else { return entries.map { ($0, [[], []]) } }
         return entries.enumerated().compactMap { index, entry -> (score: Int, index: Int, entry: PaletteEntry, offsets: [[Int]])? in
-            fuzzyMatch(words: words, fields: [entry.title, entry.detail]).map { ($0.score, index, entry, $0.offsets) }
+            fuzzyMatch(words: words, fields: [entry.title, entry.detail, entry.hostKind]).map { ($0.score, index, entry, $0.offsets) }
         }
         .sorted { ($0.score, -$0.index) > ($1.score, -$1.index) }
         .map { ($0.entry, $0.offsets) }
@@ -214,7 +219,7 @@ extension AppDelegate {
             + (NSApp.mainMenu.map { PaletteEntry.commands($0, owner: owner, responder: responder) } ?? [])
     }
     private func hostEntry(_ host: Host, detail: String = "", shortcut: String = "") -> PaletteEntry {
-        PaletteEntry(id: .host(host), title: host.label, detail: detail, shortcut: shortcut, symbol: "globe",
+        PaletteEntry(id: .host(host), title: host.title(in: identities), detail: detail, shortcut: shortcut, symbol: "globe",
                      operation: .run { [routes] in routes.connect(host) })
     }
 
@@ -225,8 +230,9 @@ extension AppDelegate {
         }
         let now = Date()
         result += routes.recent.entries.compactMap { recent -> (PaletteEntry, [[Int]])? in
-            guard let offsets = query.isEmpty ? [] : fuzzyMatch(query, recent.host.label)?.offsets else { return nil }
-            return (hostEntry(recent.host, shortcut: relativeTime(recent.date, now: now)), [offsets, []])
+            let entry = hostEntry(recent.host, shortcut: relativeTime(recent.date, now: now))
+            guard !query.isEmpty else { return (entry, [[], [], []]) }
+            return PaletteEntry.ranked([entry], query: query).first
         }
         if query.isEmpty {
             result.append((PaletteEntry(id: .pairHint, title: "Paste a pairing code: Pair Server…", detail: "", operation: .enter(.pair(nil))), [[], []]))

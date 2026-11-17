@@ -1,4 +1,5 @@
 import AppKit
+import KidoPairing
 import GhosttyKit
 import KoClient
 import KoClientKit
@@ -25,7 +26,7 @@ import KoModel
         let root = URL(fileURLWithPath: try stateDir()).appendingPathComponent("identities")
         let store = IdentityStore(root: root)
         let host = try ServerName("ko.example.com")
-        try store.commit(store.create(), for: host)
+        try store.commit(store.create(), for: host, name: PairingName("Test Server"))
         let board = NSPasteboard(name: .init("tls-failures-" + UUID().uuidString))
         defer { board.releaseGlobally() }
         let runtime = try XCTUnwrap(GhosttyRuntime(pasteboard: board))
@@ -39,9 +40,9 @@ import KoModel
             await owner.testConnection?.value
             if code == KO_ERR_NO_SERVER {
                 XCTAssertNil(owner.preparedAlert)
-                XCTAssertEqual(owner.testBanner.testText.title, "Kido could not reach ko.example.com")
+                XCTAssertEqual(owner.testBanner.testText.title, "Kido could not reach Test Server")
                 owner.testReceive(.failed(code: KO_ERR_NO_SERVER, message: "down"), client: try KoClient(endpoint: .unix(local + "/socket")) { _ in })
-                XCTAssertEqual(owner.testBanner.testText.title, "Disconnected from ko.example.com")
+                XCTAssertEqual(owner.testBanner.testText.title, "Disconnected from Test Server")
                 XCTAssertNotNil(owner.testClient)
             } else {
                 let alert = try XCTUnwrap(owner.preparedAlert?.alert)
@@ -50,7 +51,7 @@ import KoModel
                 XCTAssertNil(owner.testClient)
                 if code == KO_ERR_IDENTITY {
                     owner.respondToAlert(.alertFirstButtonReturn)
-                    XCTAssertEqual(owner.testBanner.testText.title, "ko.example.com does not accept this Mac's certificate")
+                    XCTAssertEqual(owner.testBanner.testText.title, "Test Server does not accept this Mac's certificate")
                     XCTAssertEqual(owner.testBanner.testText.button, "Reconnect")
                 }
             }
@@ -62,11 +63,34 @@ import KoModel
         XCTAssertNil(owner.testClient)
     }
 
+    func testTLSNameLoadsWithIdentity() async throws {
+        let root = URL(fileURLWithPath: try stateDir()).appendingPathComponent("identities")
+        let store = IdentityStore(root: root)
+        let host = try ServerName("ko.example.com")
+        let identity = try store.create()
+        try store.commit(identity, for: host, name: PairingName("First VM"))
+        let board = NSPasteboard(name: .init("tls-title-" + UUID().uuidString))
+        defer { board.releaseGlobally() }
+        let owner = WindowOwner(host: .tls(host), runtime: try XCTUnwrap(GhosttyRuntime(pasteboard: board)), start: false, identities: store,
+                                probeTLS: { _, _ in .unreachable(code: KO_ERR_NO_SERVER, detail: "offline") })
+        defer { owner.close() }
+        owner.start()
+        await owner.testConnection?.value
+        XCTAssertEqual(owner.window.title, "First VM")
+        try store.commit(identity, for: host, name: PairingName("Second VM"))
+        XCTAssertEqual(owner.sidebar.tabs.hostLabel()?.text, "First VM")
+        XCTAssertEqual(owner.sidebar.tabs.hostLabel()?.alias, host.value)
+        owner.start()
+        await owner.testConnection?.value
+        XCTAssertEqual(owner.window.title, "Second VM")
+        XCTAssertEqual(owner.sidebar.tabs.hostLabel()?.text, "Second VM")
+    }
+
     func testTLSProbeResultAfterCloseIsIgnored() async throws {
         let root = URL(fileURLWithPath: try stateDir()).appendingPathComponent("identities")
         let store = IdentityStore(root: root)
         let host = try ServerName("ko.example.com")
-        try store.commit(store.create(), for: host)
+        try store.commit(store.create(), for: host, name: PairingName("Test Server"))
         let board = NSPasteboard(name: .init("tls-stale-" + UUID().uuidString))
         defer { board.releaseGlobally() }
         let started = expectation(description: "Probe started")

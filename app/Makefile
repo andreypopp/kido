@@ -162,7 +162,7 @@ test:
 	$(if $(ONLY),$(error test: ONLY selects nothing here; use ko-test ONLY=<Class>[/<test>] for KoTests, visual ONLY=... for VisualTests, or swift test --filter in app/Packages/<package>))
 	scripts/lint.sh
 	$(MAKE) all
-	@set -eo pipefail; for package in KoModel KoClientKit PaneGeometry SidebarFeed PromptMarkdown; do \
+	@set -eo pipefail; for package in KoModel KoClientKit KidoPairing PaneGeometry SidebarFeed PromptMarkdown; do \
 		(cd Packages/$$package && swift test 2>&1 | $(SWIFT_PROGRESS)); \
 	done
 

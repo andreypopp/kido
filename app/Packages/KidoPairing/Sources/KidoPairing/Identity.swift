@@ -5,30 +5,30 @@ import X509
 import KoClientKit
 import Darwin
 
-struct ServerIdentity: Sendable {
-    let certificate: Data
+public struct ServerIdentity: Sendable {
+    public let certificate: Data
     fileprivate let key: SecureEnclave.P256.Signing.PrivateKey
 
     func sign(_ message: Data) throws -> Data { try key.signature(for: message).derRepresentation }
 }
 
-final class IdentityStore: @unchecked Sendable {
+public final class IdentityStore: @unchecked Sendable {
     private let root: URL
     private let lock = NSLock()
-    init(root: URL) { self.root = root }
+    public init(root: URL) { self.root = root }
 
-    func create() throws -> ServerIdentity {
+    public func create() throws -> ServerIdentity {
         let installID = try lock.withLock {
             try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
             let path = root.appendingPathComponent("install-id")
             if FileManager.default.fileExists(atPath: path.path) {
-                guard let id = UUID(uuidString: try String(contentsOf: path, encoding: .utf8)) else { throw Failure(message: "The Kido install ID is not valid") }
+                guard let id = UUID(uuidString: try String(contentsOf: path, encoding: .utf8)) else { throw PairingFailure(message: "The Kido install ID is not valid") }
                 return id
             }
             let id = UUID()
             let staging = root.appendingPathComponent(".install-" + UUID().uuidString)
             defer { try? FileManager.default.removeItem(at: staging) }
-            guard FileManager.default.createFile(atPath: staging.path, contents: Data(id.uuidString.utf8), attributes: [.posixPermissions: 0o600]) else { throw Failure(message: "Could not write the Kido install ID") }
+            guard FileManager.default.createFile(atPath: staging.path, contents: Data(id.uuidString.utf8), attributes: [.posixPermissions: 0o600]) else { throw PairingFailure(message: "Could not write the Kido install ID") }
             let file = try FileHandle(forWritingTo: staging)
             try file.synchronize()
             try file.close()
@@ -37,7 +37,7 @@ final class IdentityStore: @unchecked Sendable {
         }
         var error: Unmanaged<CFError>?
         guard let access = SecAccessControlCreateWithFlags(nil, kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly, .privateKeyUsage, &error) else {
-            throw error?.takeRetainedValue() as Error? ?? Failure(message: "Could not create access for the Secure Enclave key")
+            throw error?.takeRetainedValue() as Error? ?? PairingFailure(message: "Could not create access for the Secure Enclave key")
         }
         let key = try SecureEnclave.P256.Signing.PrivateKey(accessControl: access)
         let name = try DistinguishedName { CommonName("Kido device") }
@@ -58,18 +58,19 @@ final class IdentityStore: @unchecked Sendable {
         return ServerIdentity(certificate: Data(try certificate.serializeAsPEM().derBytes), key: key)
     }
 
-    func load(_ host: ServerName) throws -> ServerIdentity {
+    public func load(_ host: ServerName) throws -> ServerIdentity {
         let (der, representation) = try lock.withLock {
             let directory = root.appendingPathComponent("servers").appendingPathComponent(host.value)
+            _ = try PairingName(String(contentsOf: directory.appendingPathComponent("name"), encoding: .utf8))
             return (try Data(contentsOf: directory.appendingPathComponent("certificate.der")), try Data(contentsOf: directory.appendingPathComponent("key")))
         }
         let key = try SecureEnclave.P256.Signing.PrivateKey(dataRepresentation: representation)
         let certificate = try Certificate(derEncoded: Array(der))
-        guard certificate.publicKey == Certificate.PublicKey(key.publicKey) else { throw Failure(message: "The server key does not match its certificate") }
+        guard certificate.publicKey == Certificate.PublicKey(key.publicKey) else { throw PairingFailure(message: "The server key does not match its certificate") }
         return ServerIdentity(certificate: der, key: key)
     }
 
-    func endpoint(for host: ServerName, certificate: Data) -> KoEndpoint {
+    public func endpoint(for host: ServerName, certificate: Data) -> KoEndpoint {
         .tls(host: host.value, port: 443, identity: KoIdentity(certificate: certificate) { [self] message in
             try sign(message, for: host, certificate: certificate)
         })
@@ -77,11 +78,19 @@ final class IdentityStore: @unchecked Sendable {
 
     private func sign(_ message: Data, for host: ServerName, certificate: Data) throws -> Data {
         let identity = try load(host)
-        guard identity.certificate == certificate else { throw Failure(message: "This Mac's server identity was replaced") }
+        guard identity.certificate == certificate else { throw PairingFailure(message: "The server identity was replaced") }
         return try identity.sign(message)
     }
 
-    func commit(_ identity: ServerIdentity, for host: ServerName) throws {
+    public func name(for host: ServerName) throws -> PairingName? {
+        try lock.withLock {
+            let directory = root.appendingPathComponent("servers").appendingPathComponent(host.value)
+            guard FileManager.default.fileExists(atPath: directory.path) else { return nil }
+            return try PairingName(String(contentsOf: directory.appendingPathComponent("name"), encoding: .utf8))
+        }
+    }
+
+    public func commit(_ identity: ServerIdentity, for host: ServerName, name: PairingName) throws {
         try lock.withLock {
             let manager = FileManager.default
             let servers = root.appendingPathComponent("servers")
@@ -90,9 +99,9 @@ final class IdentityStore: @unchecked Sendable {
             let destination = servers.appendingPathComponent(host.value)
             try manager.createDirectory(at: staging, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700])
             defer { try? manager.removeItem(at: staging) }
-            for (name, data) in [("certificate.der", identity.certificate), ("key", identity.key.dataRepresentation)] {
+            for (name, data) in [("certificate.der", identity.certificate), ("key", identity.key.dataRepresentation), ("name", Data(name.value.utf8))] {
                 let path = staging.appendingPathComponent(name)
-                guard manager.createFile(atPath: path.path, contents: data, attributes: [.posixPermissions: 0o600]) else { throw Failure(message: "Could not write the server identity") }
+                guard manager.createFile(atPath: path.path, contents: data, attributes: [.posixPermissions: 0o600]) else { throw PairingFailure(message: "Could not write the server identity") }
                 let file = try FileHandle(forWritingTo: path)
                 try file.synchronize()
                 try file.close()
@@ -110,7 +119,7 @@ final class IdentityStore: @unchecked Sendable {
         }
     }
 
-    func forget(_ host: ServerName) throws {
+    public func forget(_ host: ServerName) throws {
         try lock.withLock { try FileManager.default.removeItem(at: root.appendingPathComponent("servers").appendingPathComponent(host.value)) }
     }
 }

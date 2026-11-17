@@ -1,4 +1,5 @@
 import AppKit
+import KidoPairing
 import GhosttyKit
 import KoClient
 import KoClientKit
@@ -282,13 +283,13 @@ import XCTest
         let newer = WindowOwner.mismatchAlert(host: .tls(host), code: KO_ERR_PROTOCOL_MISMATCH, server: .init(build: "theirs", protocol: "2.0", vt: own.vt), own: own, serverDir: "unused")
         XCTAssertNil(newer.accessoryView)
         XCTAssertFalse(newer.informativeText.contains("checkout"))
-        let refused = WindowOwner.securityAlert(host: host, failure: .identity)
+        let refused = WindowOwner.securityAlert(host: host, failure: .identity, identities: nil)
         XCTAssertEqual(refused.messageText, "ko.example.com does not accept this Mac's certificate")
         XCTAssertEqual(refused.buttons.map(\.title), ["Pair Again", "Close"])
-        let tls = WindowOwner.securityAlert(host: host, failure: .serverCertificate("expired"))
+        let tls = WindowOwner.securityAlert(host: host, failure: .serverCertificate("expired"), identities: nil)
         XCTAssertEqual(tls.messageText, "ko.example.com's certificate is not valid: expired")
         XCTAssertEqual(tls.buttons.map(\.title), ["Close"])
-        let forget = AppDelegate.forgetAlert(host)
+        let forget = AppDelegate.forgetAlert(host, identities: nil)
         XCTAssertEqual(forget.messageText, "Forget ko.example.com?")
         XCTAssertEqual(forget.buttons.map(\.title), ["Forget", "Cancel"])
     }

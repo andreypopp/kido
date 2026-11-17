@@ -1,4 +1,5 @@
 import AppKit
+import KidoPairing
 
 @MainActor final class PalettePair: NSView, NSTextFieldDelegate {
     let nameField = NSTextField(string: Foundation.Host.current().localizedName ?? "Mac")
@@ -6,6 +7,7 @@ import AppKit
     private let status = NSTextField(wrappingLabelWithString: "")
     private let retryButton = NSButton(title: "Retry", target: nil, action: nil)
     private let spinner = NSProgressIndicator()
+    var identities: IdentityStore?
     var session: PairingSession?
     weak var codeField: NSTextField?
     var cancel: () -> Void = {}
@@ -14,8 +16,8 @@ import AppKit
     private var expectedHost: ServerName? { session?.expectedHost }
     var inertChanged: (Bool) -> Void = { _ in }
     private enum Line {
-        case empty, hint(String), progress(String), failure(String), retry(String)
-        var text: String { switch self { case .empty: ""; case .hint(let text), .progress(let text), .failure(let text), .retry(let text): text } }
+        case empty, hint(NSAttributedString), progress(String), failure(String), retry(String)
+        var text: String { switch self { case .empty: ""; case .hint(let text): text.string; case .progress(let text), .failure(let text), .retry(let text): text } }
     }
     private var line = Line.empty
     private var spinning: Bool { if case .progress = line { true } else { false } }
@@ -51,13 +53,29 @@ import AppKit
         let parsed = try? PairingCode(codeField?.stringValue ?? "", expectedHost: expectedHost)
         switch session?.state ?? .editing {
         case .editing:
-            if let parsed { line = .hint("Pairs this Mac with " + parsed.host.value) }
-            else if let expectedHost { line = .hint("Pairs this Mac with \(expectedHost.value) again; the old key stays until this pairing succeeds") }
-        case .submitting(let host): line = .progress("Pairing with \(host.value)…")
-        case .waiting(let host): line = .progress("Waiting for \(host.value) to activate…")
-        case .retryable(let code, _, let message): line = .retry("Could not reach \(code.host.value): \(message)")
-        case .uncertain(let host): line = .failure("\(host.value) may have paired this Mac; try Connect.")
-        case .rejected(let message), .activationFailed(let message): line = .failure(message)
+            if let parsed { line = .hint(hint(name: parsed.name.value, host: parsed.host, again: false)) }
+            else if let expectedHost {
+                let name = Host.tls(expectedHost).title(in: identities)
+                line = .hint(hint(name: name, host: expectedHost, again: true))
+            }
+        case .submitting(let code): line = .progress("Pairing with \(code.name.value)…")
+        case .waiting(let code): line = .progress("Waiting for \(code.name.value) to activate…")
+        case .retryable(let code, _, let message): line = .retry("Could not reach \(code.name.value): \(message)")
+        case .uncertain(let code): line = .failure("\(code.name.value) may have paired this Mac; try Connect.")
+        case .rejected(let reason):
+            let message: String = switch reason {
+            case .invalidCode: "Not a pairing code"
+            case .usedOrExpired: "This code is used or expired. Run the pairing command again."
+            case .refused: "The server refused this pairing. Run the pairing command again."
+            case .invalidDeviceName: "Use a device name of 1 to 64 characters, without control characters"
+            case .failed(let failure): failure.message
+            }
+            line = .failure(message)
+        case .activationFailed(let code, let reason):
+            switch reason {
+            case .timedOut: line = .failure("Could not reach \(code.name.value); try Connect.")
+            case .serverCertificate(let message): line = .failure(message)
+            }
         case .complete: break
         }
         let inert = session?.inert ?? false
@@ -67,16 +85,21 @@ import AppKit
         inertChanged(inert)
         status.stringValue = line.text
         status.textColor = error ? Chrome.errorText : Chrome.inkSecondary
-        if case .hint = line, let host = parsed?.host ?? expectedHost {
-            let text = NSMutableAttributedString(string: line.text, attributes: [.font: NSFont.systemFont(ofSize: 11), .foregroundColor: Chrome.inkSecondary])
-            text.addAttributes([.font: NSFont.systemFont(ofSize: 11, weight: .medium), .foregroundColor: Chrome.ink], range: (line.text as NSString).range(of: host.value))
-            status.attributedStringValue = text
-        }
+        if case .hint(let text) = line { status.attributedStringValue = text }
         retryButton.isHidden = !retrying
         if spinning { spinner.startAnimation(nil) } else { spinner.stopAnimation(nil) }
         needsLayout = true
         needsDisplay = true
         resized()
+    }
+
+    private func hint(name: String, host: ServerName, again: Bool) -> NSAttributedString {
+        let attributes: [NSAttributedString.Key: Any] = [.font: NSFont.systemFont(ofSize: 11), .foregroundColor: Chrome.inkSecondary]
+        let text = NSMutableAttributedString(string: "Pairs this Mac with ", attributes: attributes)
+        text.append(NSAttributedString(string: name, attributes: [.font: NSFont.systemFont(ofSize: 11, weight: .medium), .foregroundColor: Chrome.ink]))
+        if !again || name != host.value { text.append(NSAttributedString(string: " (\(host.value))", attributes: attributes)) }
+        if again { text.append(NSAttributedString(string: " again; the old key stays until this pairing succeeds", attributes: attributes)) }
+        return text
     }
 
     override func layout() {

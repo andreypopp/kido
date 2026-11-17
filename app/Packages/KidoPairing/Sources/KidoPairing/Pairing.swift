@@ -1,20 +1,23 @@
 import Foundation
 import CryptoKit
 
-struct PairingCode: Sendable {
-    let enroll: URL
-    let host: ServerName
-    let token: Data
-    var tokenHash: Data { Data(SHA256.hash(data: token)) }
+public struct PairingCode: Sendable {
+    public let enroll: URL
+    public let host: ServerName
+    public let name: PairingName
+    public let token: Data
+    public var tokenHash: Data { Data(SHA256.hash(data: token)) }
 
-    init(_ text: String, expectedHost: ServerName? = nil) throws {
-        struct Payload: Decodable { let v: Int; let enroll: String; let host: String; let token: String }
-        guard text.utf8.count <= 8192 else { throw Failure(message: "Not a pairing code") }
+    public init(_ text: String, expectedHost: ServerName? = nil) throws {
+        struct Payload: Decodable { let v: Int; let enroll: String; let host: String; let name: String; let token: String }
+        guard text.utf8.count <= 8192 else { throw PairingFailure(message: "Not a pairing code") }
         var text = text.trimmingCharacters(in: .whitespacesAndNewlines)
         if text.hasPrefix("kido-pair:") { text = String(text.dropFirst(10)).trimmingCharacters(in: .whitespacesAndNewlines) }
-        let payload = try JSONDecoder().decode(Payload.self, from: Data(text.utf8))
-        let name = try ServerName(payload.host)
-        guard payload.v == 1, expectedHost == nil || expectedHost == name,
+        guard let payload = try? JSONDecoder().decode(Payload.self, from: Data(text.utf8)),
+              let host = try? ServerName(payload.host), let name = try? PairingName(payload.name) else {
+            throw PairingFailure(message: "Not a pairing code")
+        }
+        guard payload.v == 1, expectedHost == nil || expectedHost == host,
               let parts = URLComponents(string: payload.enroll), parts.scheme == "https",
               let authority = parts.host, (try? ServerName(authority)) != nil,
               parts.user == nil, parts.password == nil, parts.query == nil, parts.fragment == nil,
@@ -22,9 +25,10 @@ struct PairingCode: Sendable {
               payload.token.utf8.count == 43,
               payload.token.utf8.allSatisfy({ (65...90).contains($0) || (97...122).contains($0) || (48...57).contains($0) || $0 == 45 || $0 == 95 }),
               let token = Data(base64Encoded: payload.token.replacingOccurrences(of: "-", with: "+").replacingOccurrences(of: "_", with: "/") + "="),
-              token.count == 32, token.base64URL == payload.token else { throw Failure(message: "Not a pairing code") }
+              token.count == 32, token.base64URL == payload.token else { throw PairingFailure(message: "Not a pairing code") }
         self.enroll = url
-        self.host = name
+        self.host = host
+        self.name = name
         self.token = token
     }
 }
@@ -37,26 +41,26 @@ func enrollmentMessage(token: Data, certificateDER: Data) -> Data {
     Data("kido-enroll-v1".utf8) + Data([0]) + Data(SHA256.hash(data: token)) + Data(SHA256.hash(data: certificateDER))
 }
 
-struct DeviceName: Sendable {
+public struct PairingName: Equatable, Sendable {
     private let name: String
-    var value: String { name }
-    init(_ name: String) throws {
+    public var value: String { name }
+    public init(_ name: String) throws {
         guard (1...64).contains(name.unicodeScalars.count),
               !name.unicodeScalars.contains(where: { $0.value < 32 || (127...159).contains($0.value) }) else {
-            throw Failure(message: "Use a device name of 1 to 64 characters, without control characters")
+            throw PairingFailure(message: "Use a device name of 1 to 64 characters, without control characters")
         }
         self.name = name
     }
 }
 
-struct EnrollmentRequest: Encodable {
+struct EnrollmentRequest: Encodable, Sendable {
     let token: String
     let name: String
     let certificate: String
     let signature: String
 
-    init(code: PairingCode, name: DeviceName, certificate: Data, signature: Data) throws {
-        guard certificate.count <= 2048 else { throw Failure(message: "The pairing certificate is too large") }
+    init(code: PairingCode, name: PairingName, certificate: Data, signature: Data) throws {
+        guard certificate.count <= 2048 else { throw PairingFailure(message: "The pairing certificate is too large") }
         token = code.token.base64URL
         self.name = name.value
         self.certificate = certificate.base64EncodedString()
@@ -65,7 +69,7 @@ struct EnrollmentRequest: Encodable {
 
     func body() throws -> Data {
         let data = try JSONEncoder().encode(self)
-        guard data.count <= 8192 else { throw Failure(message: "The pairing request is too large") }
+        guard data.count <= 8192 else { throw PairingFailure(message: "The pairing request is too large") }
         return data
     }
 }

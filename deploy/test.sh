@@ -67,6 +67,7 @@ with (folder / "restarts").open("a") as stream:
         errors = root / f"err-{serial}"
         args = [str(base / "ko-pair"), "ko.example.test", "enroll.example.test", str(port)]
         if fixed_token_run:
+            args[1:1] = ["--name", "Test Server"]
             args = ["python3", "-c", 'import runpy,secrets,sys; secrets.token_bytes=lambda n: bytes(range(n)); sys.argv=sys.argv[1:]; runpy.run_path(sys.argv[0],run_name="__main__")', *args]
         with output.open("wb") as stdout, errors.open("wb") as stderr:
             process = subprocess.Popen(args, env=local, stdout=stdout, stderr=stderr)
@@ -104,6 +105,7 @@ with (folder / "restarts").open("a") as stream:
     state = start(True)
     request = body(state[1])
     assert state[1]["token"] == fixed_token
+    assert state[3].read_text().splitlines()[0] + "\n" == (base / "testdata/payload").read_text()
     assert post(state[2], request, ("-H", "X-Forwarded-For: 192.0.2.4")) == (0, "200")
     response = json.loads((root / "response").read_text())
     fp = response["fingerprint"]
@@ -122,7 +124,12 @@ with (folder / "restarts").open("a") as stream:
     assert (devices / "restarts").read_text() == "1\n0\n"
     print("PASS pairing, single use, modes, logs, list, revoke, restart ordering", flush=True)
 
+    for name in ("", "x" * 65, "bad\nname", "bad\x85name"):
+        result = subprocess.run([str(base / "ko-pair"), "--name", name, "ko.example.test", "enroll.example.test", "1"], env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=5)
+        assert result.returncode == 2 and b"usage:" in result.stderr and not result.stdout
     state = start(seconds="60")
+    assert state[1]["name"] == socket.gethostname()
+    print("PASS server names, default hostname, invalid name usage errors", flush=True)
     with socket.create_connection(("127.0.0.1", state[2]), timeout=1) as connection:
         connection.sendall(b"POST /v1/enroll HTTP/1.0\r\nContent-Length: 8193\r\n\r\n")
         assert b"400" in connection.recv(1024)

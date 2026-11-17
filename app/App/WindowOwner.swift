@@ -1,4 +1,5 @@
 import AppKit
+import KidoPairing
 import KoClientKit
 import QuickLookUI
 import KoClient
@@ -282,6 +283,7 @@ private class AlertEscape: NSView {
 
     private let openBrowser: (URL) -> Void
     private let identities: IdentityStore?
+    private var hostTitle: String { identity ?? host.label }
     private let probeTLS: @Sendable (KoEndpoint, TimeInterval) async -> KoClient.Probe
 
     func openLink(_ text: String) {
@@ -322,7 +324,7 @@ private class AlertEscape: NSView {
         window.delegate = self
         Notifier.shared.register(self)
         window.isReleasedWhenClosed = false
-        window.title = host.label
+        window.title = hostTitle
         window.collectionBehavior = .fullScreenPrimary
         window.contentMinSize = Sidebar.minSize
         let width = background ? 292 : UserDefaults.standard.object(forKey: "nativeSidebarWidth") as? Double ?? 292
@@ -333,8 +335,7 @@ private class AlertEscape: NSView {
         window.contentViewController = sidebar
         sidebar.tabs.hostLabel = { [weak self] in
             guard let self, self.host != .local else { return nil }
-            let label = if case .remote = self.host { self.identity ?? self.host.label } else { self.host.label }
-            return (label, self.host.label, { if case .connected = self.link { return true }; return false }())
+            return (self.hostTitle, self.host.label, { if case .connected = self.link { return true }; return false }())
         }
         let toolbar = NSToolbar(identifier: "KidoSidebar")
         toolbar.delegate = sidebar
@@ -508,7 +509,7 @@ private class AlertEscape: NSView {
                     ssh.publishAgent(drain: drain)
                 }
                 guard accepts(generation), !welcomed else { return }
-                down("Disconnected from \(host.label)", "Reconnecting…", button: host == .local ? "Start" : "Reconnect")
+                down("Disconnected from \(hostTitle)", "Reconnecting…", button: host == .local ? "Start" : "Reconnect")
             } catch {
                 guard accepts(generation), !welcomed else { return }
                 if host == .local {
@@ -572,9 +573,13 @@ private class AlertEscape: NSView {
         guard let identities else { return securityFailed(.identity) }
         task = Task { [self] in
             do {
-                let certificate = try await Task.detached { try identities.load(host).certificate }.value
+                let loaded = try await Task.detached {
+                    (try identities.load(host).certificate, try identities.name(for: host)?.value)
+                }.value
                 guard accepts(generation) else { return }
-                let endpoint = identities.endpoint(for: host, certificate: certificate)
+                identity = loaded.1
+                window.title = hostTitle
+                let endpoint = identities.endpoint(for: host, certificate: loaded.0)
                 let result = await probeTLS(endpoint, 20)
                 guard accepts(generation) else { return }
                 switch result {
@@ -582,7 +587,7 @@ private class AlertEscape: NSView {
                 case .mismatch(let code, let server): protocolMismatch(code: code, server: server, own: KoClient.version)
                 case .unreachable(let code, let detail):
                     if let failure = TLSFailure(code: code, detail: detail) { securityFailed(failure) }
-                    else { link = .down; down("Kido could not reach \(host.value)", detail, button: "Reconnect") }
+                    else { link = .down; down("Kido could not reach \(hostTitle)", detail, button: "Reconnect") }
                 }
             } catch {
                 guard accepts(generation) else { return }
@@ -595,7 +600,7 @@ private class AlertEscape: NSView {
         guard case .tls(let host) = host else { return }
         invalidate(keepingSnapshot: true)
         link = .security(failure)
-        let alert = Self.securityAlert(host: host, failure: failure)
+        let alert = Self.securityAlert(host: host, failure: failure, identities: identities)
         down(alert.messageText, alert.informativeText, button: nil)
         let generation = generation
         prepareAlert(alert) { [weak self] response in
@@ -646,7 +651,7 @@ private class AlertEscape: NSView {
         recovering = Task { [self] in
             var delay: TimeInterval = 1
             while accepts(generation), !Task.isCancelled {
-                down("Disconnected from \(host.label)", detail + "\nReconnecting…", button: "Reconnect")
+                down("Disconnected from \(hostTitle)", detail + "\nReconnecting…", button: "Reconnect")
                 do throws(Failure) {
                     try await ssh.recover(drain: drain)
                     guard accepts(generation) else { return }
@@ -680,11 +685,11 @@ private class AlertEscape: NSView {
         }
     }
 
-    static func securityAlert(host: ServerName, failure: TLSFailure) -> NSAlert {
+    static func securityAlert(host: ServerName, failure: TLSFailure, identities: IdentityStore?) -> NSAlert {
         let alert = NSAlert()
         switch failure {
         case .identity:
-            alert.messageText = "\(host.value) does not accept this Mac's certificate"
+            alert.messageText = "\(Host.tls(host).title(in: identities)) does not accept this Mac's certificate"
             alert.informativeText = "The server has revoked this Mac, or has not activated it yet. Pair again with a new code from the server, or close this window."
             alert.addButton(withTitle: "Pair Again")
             alert.addButton(withTitle: "Close").keyEquivalent = "\u{1b}"
@@ -699,16 +704,16 @@ private class AlertEscape: NSView {
     static let restartTitle = "Restart Server"
     static let restartWarning = "Restarting ends all sessions and panes on this local ko server. Running commands and agents will stop. Other clients attached to this server will disconnect."
 
-    static func mismatchAlert(host: Host, code: ko_code, server: KoSchema.Version, own: KoSchema.Version, serverDir: String) -> NSAlert {
+    static func mismatchAlert(host: Host, code: ko_code, server: KoSchema.Version, own: KoSchema.Version, serverDir: String, identities: IdentityStore? = nil) -> NSAlert {
         let alert = NSAlert()
         let local = host == .local
         let builds = "The server is build \(server.build); this app is build \(own.build)."
         let newer = code == KO_ERR_PROTOCOL_MISMATCH && server.major.map { major in own.major.map { major > $0 } ?? false } == true
         let (instructions, command): (String, String?) = switch host {
         case .local: ("", "ko kill-server --server '\(serverDir.replacingOccurrences(of: "'", with: "'\"'\"'"))'")
-        case .remote: ("\n\nOn \(host.label), stop the server with the command below, then run ko server. All sessions and panes on that server will end.", "ko kill-server")
+        case .remote: ("\n\nOn \(host.title(in: identities)), stop the server with the command below, then run ko server. All sessions and panes on that server will end.", "ko kill-server")
         case .tls:
-            newer ? ("", nil) : ("\n\nIn the Kido checkout that deployed \(host.label), checked out at the release of this Kido.app, run the command below. It builds ko there, installs it on \(host.label) and restarts its service. All sessions and panes on that server will end.", "deploy/install.sh")
+            newer ? ("", nil) : ("\n\nIn the Kido checkout that deployed \(host.title(in: identities)), checked out at the release of this Kido.app, run the command below. It builds ko there, installs it on \(host.title(in: identities)) and restarts its service. All sessions and panes on that server will end.", "deploy/install.sh")
         }
         let protocols = "This app speaks ko protocol \(own.`protocol`). The server speaks \(server.`protocol`)."
         let revisions = "This app runs terminal revision \(own.vt.prefix(9)); the server runs \(server.vt.prefix(9))."
@@ -718,13 +723,13 @@ private class AlertEscape: NSView {
             alert.informativeText = "The running server is a different version and must be restarted to upgrade. \(detail) \(builds)"
                 + "\n\n" + restartWarning
         } else if newer {
-            alert.messageText = "Update Kido.app to connect to \(host.label)"
+            alert.messageText = "Update Kido.app to connect to \(host.title(in: identities))"
             alert.informativeText = "The server speaks ko protocol \(server.`protocol`); this app speaks \(own.`protocol`). Update Kido.app on this Mac. \(builds)"
         } else if code == KO_ERR_PROTOCOL_MISMATCH {
-            alert.messageText = "Update ko on \(host.label)"
+            alert.messageText = "Update ko on \(host.title(in: identities))"
             alert.informativeText = "\(protocols) Update ko on the host, then reconnect. \(builds)"
         } else {
-            alert.messageText = "Kido.app and ko on \(host.label) are from different releases"
+            alert.messageText = "Kido.app and ko on \(host.title(in: identities)) are from different releases"
             alert.informativeText = "\(revisions) Install the ko release of this Kido.app on the host, or update Kido.app. \(builds)"
         }
         alert.informativeText += instructions
@@ -751,8 +756,8 @@ private class AlertEscape: NSView {
     private func protocolMismatch(code: ko_code, server: KoSchema.Version, own: KoSchema.Version) {
         invalidate(keepingSnapshot: true)
         link = .mismatch(code: code, server: server, own: own)
-        down("Disconnected from \(host.label)", "", button: "Reconnect")
-        let alert = Self.mismatchAlert(host: host, code: code, server: server, own: own, serverDir: serverDir)
+        down("Disconnected from \(hostTitle)", "", button: "Reconnect")
+        let alert = Self.mismatchAlert(host: host, code: code, server: server, own: own, serverDir: serverDir, identities: identities)
         let generation = generation
         prepareAlert(alert) { [weak self] response in
             guard let self, accepts(generation) else { return }
@@ -814,8 +819,8 @@ private class AlertEscape: NSView {
               Self.clipboardConsent.askingHosts.insert("read " + host.clipboardKey).inserted else { return pane.finishClipboard(false) }
         let alert = NSAlert()
         alert.messageText = scope == .rich
-            ? "Allow applications on “\(host.label)” to read images, HTML and file lists from your Mac clipboard?"
-            : "Allow applications on “\(host.label)” to read your Mac clipboard?"
+            ? "Allow applications on “\(hostTitle)” to read images, HTML and file lists from your Mac clipboard?"
+            : "Allow applications on “\(hostTitle)” to read your Mac clipboard?"
         alert.informativeText = "This also permits applications reached through SSH inside its panes."
         for title in ["Allow for this connection", "Always allow", "Deny"] { alert.addButton(withTitle: title) }
         clipboardPrompt = (pane, alert, scope)
@@ -1101,7 +1106,7 @@ private class AlertEscape: NSView {
             }
             note("could not connect to \(address): \(error)")
             link = .down
-            down("Kido could not reach \(host.label)", "\(error)", button: host == .local ? "Start" : "Reconnect")
+            down("Kido could not reach \(hostTitle)", "\(error)", button: host == .local ? "Start" : "Reconnect")
         }
     }
 
@@ -1237,7 +1242,7 @@ private class AlertEscape: NSView {
             if code == KO_ERR_NO_SERVER {
                 switch host { case .local, .remote: return startServer(); case .tls: break }
             }
-            down("Disconnected from \(host.label)", (code == KO_ERR_NO_SERVER ? "The connection to \(host.label) is down." : message) + "\nReconnecting…", button: host == .local ? "Start" : "Reconnect")
+            down("Disconnected from \(hostTitle)", (code == KO_ERR_NO_SERVER ? "The connection to \(hostTitle) is down." : message) + "\nReconnecting…", button: host == .local ? "Start" : "Reconnect")
         case .mismatch(let code, let server, let own):
             protocolMismatch(code: code, server: server, own: own)
         case .clipboardWrite(_, let contents):
@@ -1393,7 +1398,7 @@ private class AlertEscape: NSView {
     }
 
     private func present(_ view: SessionView, projected: Snapshot?? = nil) {
-        window.title = host == .local ? model.title : "\(identity ?? host.label) / \(model.title)"
+        window.title = host == .local ? model.title : "\(hostTitle) / \(model.title)"
         if model.session == nil { received.snapshot = nil }
         updateTabs(projected)
         if view.superview == nil {
@@ -1467,7 +1472,7 @@ private class AlertEscape: NSView {
     private func connecting() {
         guard alive else { return }
         sidebar.list.leave()
-        banner.show("Connecting to \(host.label)…", "", button: nil, action: #selector(start))
+        banner.show("Connecting to \(hostTitle)…", "", button: nil, action: #selector(start))
         sidebar.list.show(nil)
     }
 
@@ -1917,7 +1922,7 @@ private class AlertEscape: NSView {
             received = Received()
             updateTabs()
         }
-        window.title = host == .local ? "Local" : identity ?? host.label
+        window.title = host == .local ? "Local" : hostTitle
     }
 
     func close() {

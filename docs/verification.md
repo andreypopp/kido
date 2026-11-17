@@ -419,8 +419,9 @@ stage.
   `container`; deploy/README.md gives the command) or on the droplet.
   It builds each request with `deploy/enroll-request.py`, which uses
   `openssl` and not the code under test. `deploy/testdata/` holds the
-  fixed vector of the signed enrollment message, which the app's
-  tests also use.
+  fixed vector of the signed enrollment message and the payload line
+  of a pairing with the fixed token, which KidoPairing's tests also
+  use.
 - `deploy/smoke.sh HOST` tests a provisioned droplet from the
   operator's Mac: the TLS refusals, a pairing, a request and a
   WebSocket, the revocation, the socket's uids and the open ports.

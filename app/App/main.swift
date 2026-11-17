@@ -1,4 +1,5 @@
 import AppKit
+import KidoPairing
 import KoModel
 import KoClientKit
 import KoClient
@@ -25,7 +26,7 @@ import SidebarFeed
     private var signals: [DispatchSourceSignal] = []
     private var trigger: String?
     let routes: WindowRoutes
-    private let identities = IdentityStore(root: FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("Kido"))
+    private(set) var identities = IdentityStore(root: FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("Kido"))
     private var sentPairingTokens: Set<Data> = []
 
     override init() {
@@ -50,9 +51,10 @@ import SidebarFeed
     }
 
     #if KIDO_VISUAL
-    init(runtime: GhosttyRuntime? = nil, routes: WindowRoutes = WindowRoutes()) {
+    init(runtime: GhosttyRuntime? = nil, routes: WindowRoutes = WindowRoutes(), identities: IdentityStore? = nil) {
         self.runtime = runtime
         self.routes = routes
+        if let identities { self.identities = identities }
         super.init()
         if let runtime { configureRuntime(runtime) }
     }
@@ -390,10 +392,12 @@ import SidebarFeed
         palettePanel?.palette.enter(.connect)
     }
 
-    static func forgetAlert(_ host: ServerName) -> NSAlert {
+    static func forgetAlert(_ host: ServerName, identities: IdentityStore?) -> NSAlert {
         let alert = NSAlert()
-        alert.messageText = "Forget \(host.value)?"
-        alert.informativeText = "This Mac's key and certificate for \(host.value) are deleted. Pair again to connect."
+        let name = Host.tls(host).title(in: identities)
+        let server = name == host.value ? name : "\(name) (\(host.value))"
+        alert.messageText = "Forget \(name)?"
+        alert.informativeText = "This Mac's key and certificate for \(server) are deleted. Pair again to connect."
         alert.addButton(withTitle: "Forget")
         alert.addButton(withTitle: "Cancel").keyEquivalent = "\u{1b}"
         return alert
@@ -407,7 +411,7 @@ import SidebarFeed
         }
         let owner = paletteFocus?.owner ?? current
         closePalette()
-        let alert = Self.forgetAlert(name)
+        let alert = Self.forgetAlert(name, identities: identities)
         let complete: (NSApplication.ModalResponse) -> Void = { [weak self] response in
             guard let self, response == .alertFirstButtonReturn else { return }
             Task {
@@ -417,7 +421,7 @@ import SidebarFeed
                     routes.removeRecent(host)
                 } catch {
                     let failure = NSAlert()
-                    failure.messageText = "Kido could not forget \(name.value)"
+                    failure.messageText = "Kido could not forget \(host.title(in: identities))"
                     failure.informativeText = error.localizedDescription
                     if let owner, owner.alive { owner.prepareAlert(failure) { _ in } }
                     else { failure.runModal() }
@@ -541,10 +545,11 @@ import SidebarFeed
                 pane.openPrompt()
             }
         }
+        panel.palette.identities = identities
         panel.palette.removeHost = { [weak self] host in self?.removeRecent(host) }
         panel.palette.makePair = { [weak self] host in
             guard let self else { return nil }
-            let session = PairingSession(store: identities, expectedHost: host,
+            let session = PairingSession(store: identities, expectedHost: host, defaultDeviceName: Foundation.Host.current().localizedName ?? "Mac",
                                          claim: { [weak self] token in self?.sentPairingTokens.insert(token).inserted ?? false },
                                          release: { [weak self] token in self?.sentPairingTokens.remove(token) })
             session.committed = { [weak self] name in self?.routes.remember(.tls(name)) }

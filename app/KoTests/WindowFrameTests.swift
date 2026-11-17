@@ -1,4 +1,5 @@
 import XCTest
+import KidoPairing
 @testable import Kido
 
 final class WindowFrameTests: XCTestCase {

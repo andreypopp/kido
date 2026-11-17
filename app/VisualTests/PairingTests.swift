@@ -1,4 +1,6 @@
 import AppKit
+import KoClient
+@testable import KidoPairing
 import XCTest
 import SnapshotTesting
 @testable import Kido
@@ -17,11 +19,15 @@ import SnapshotTesting
         owner.window.setFrameOrigin(NSPoint(x: -10000, y: -10000))
         owner.window.orderFront(nil)
         let host = try ServerName("ko.example.com")
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("pair-alerts-" + UUID().uuidString)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let store = IdentityStore(root: root)
+        try store.commit(store.create(), for: host, name: PairingName("Home VM"))
         for (theme, appearance) in [("light", NSAppearance.Name.aqua), ("dark", .darkAqua)] {
             owner.window.appearance = NSAppearance(named: appearance)
-            for (name, alert) in [("refused", WindowOwner.securityAlert(host: host, failure: .identity)),
-                                  ("tls", WindowOwner.securityAlert(host: host, failure: .serverCertificate("the certificate expired on 10 November 2026"))),
-                                  ("forget", AppDelegate.forgetAlert(host))] {
+            for (name, alert) in [("refused", WindowOwner.securityAlert(host: host, failure: .identity, identities: store)),
+                                  ("tls", WindowOwner.securityAlert(host: host, failure: .serverCertificate("the certificate expired on 10 November 2026"), identities: store)),
+                                  ("forget", AppDelegate.forgetAlert(host, identities: store))] {
                 owner.prepareAlert(alert) { _ in }
                 alert.window.appearance = NSAppearance(named: appearance)
                 try await wait("the sheet") { owner.window.attachedSheet === alert.window }
@@ -40,7 +46,7 @@ import SnapshotTesting
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: root) }
         let host = try ServerName("ko.example.com")
-        let code = #"kido-pair:{"v":1,"host":"ko.example.com","enroll":"https://enroll.example.com/v1/enroll","token":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}"#
+        let code = #"kido-pair:{"v":1,"host":"ko.example.com","name":"Home VM","enroll":"https://enroll.example.com/v1/enroll","token":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"}"#
         let previous = NSApp.mainMenu
         defer { NSApp.mainMenu = previous }
         for (theme, background, foreground) in [("light", "fff9ec", "424242"), ("dark", "171717", "c9c9c9")] {
@@ -49,21 +55,21 @@ import SnapshotTesting
             let board = NSPasteboard(name: .init("pair-" + UUID().uuidString))
             defer { board.releaseGlobally() }
             let runtime = try XCTUnwrap(GhosttyRuntime(configFile: config.path, pasteboard: board))
-            let app = AppDelegate(runtime: runtime)
+            let store = IdentityStore(root: root.appendingPathComponent(theme))
+            let app = AppDelegate(runtime: runtime, identities: store)
             NSApp.mainMenu = app.mainMenu()
             let owner = try XCTUnwrap(app.open(.local, start: false))
             defer { app.closePalette(); owner.close() }
             app.pairServer()
             let panel = try XCTUnwrap(app.palettePanel)
             let palette = panel.palette
-            let store = IdentityStore(root: root.appendingPathComponent(theme))
             var result = EnrollmentResult.rejected(403)
             var pending: CheckedContinuation<EnrollmentResult, Never>?
             var hold = false
             var tokens: Set<Data> = []
             var activation: CheckedContinuation<PairingSession.ProbeResult, Never>?
             palette.makePair = { expected in
-                let session = PairingSession(store: store, expectedHost: expected, claim: { tokens.insert($0).inserted }, release: { tokens.remove($0) }, enroll: { _, _, _ in
+                let session = PairingSession(store: store, expectedHost: expected, defaultDeviceName: Foundation.Host.current().localizedName ?? "Mac", claim: { tokens.insert($0).inserted }, release: { tokens.remove($0) }, enroll: { _, _, _ in
                     if hold { return await withCheckedContinuation { pending = $0 } }
                     return result
                 })
@@ -126,9 +132,12 @@ import SnapshotTesting
             app.routes.remember(.tls(host))
             palette.enter(.connect)
             image(palette, "\(theme)-recents")
-            let remote = try XCTUnwrap(app.open(.tls(host), start: false))
+            let remote = WindowOwner(host: .tls(host), runtime: runtime, start: false, identities: store,
+                                     probeTLS: { _, _ in .unreachable(code: KO_ERR_NO_SERVER, detail: "offline") })
+            remote.start()
+            await remote.testConnection?.value
             remote.testReceive(sidebarFixture())
-            XCTAssertEqual(remote.window.title, "ko.example.com")
+            XCTAssertEqual(remote.window.title, "Home VM")
             remote.close()
         }
     }

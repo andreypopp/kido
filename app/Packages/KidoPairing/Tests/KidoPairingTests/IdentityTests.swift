@@ -1,19 +1,22 @@
 import XCTest
 import CryptoKit
 import X509
-@testable import Kido
+@testable import KidoPairing
 
 final class IdentityTests: XCTestCase {
     func testEnrollmentVector() throws {
-        let bundle = Bundle(for: Self.self)
-        let tokenURL = try XCTUnwrap(bundle.url(forResource: "token", withExtension: nil, subdirectory: "testdata"))
+        let bundle = Bundle.module
+        let payloadURL = try XCTUnwrap(bundle.url(forResource: "payload", withExtension: nil, subdirectory: "testdata"))
         let pemURL = try XCTUnwrap(bundle.url(forResource: "device", withExtension: "pem", subdirectory: "testdata"))
         let expectedURL = try XCTUnwrap(bundle.url(forResource: "message", withExtension: "hex", subdirectory: "testdata"))
-        let tokenText = try String(contentsOf: tokenURL, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines)
-        let token = try XCTUnwrap(Data(base64Encoded: tokenText.replacingOccurrences(of: "-", with: "+").replacingOccurrences(of: "_", with: "/") + "="))
+        let code = try PairingCode(String(contentsOf: payloadURL, encoding: .utf8))
+        XCTAssertEqual(code.host.value, "ko.example.test")
+        XCTAssertEqual(code.enroll.absoluteString, "https://enroll.example.test/v1/enroll")
+        XCTAssertEqual(code.name.value, "Test Server")
+        XCTAssertEqual(code.token, Data(0..<32))
         let certificate = try Certificate(pemEncoded: String(contentsOf: pemURL, encoding: .utf8))
         let der = Data(try certificate.serializeAsPEM().derBytes)
-        let message = enrollmentMessage(token: token, certificateDER: der)
+        let message = enrollmentMessage(token: code.token, certificateDER: der)
         XCTAssertEqual(message.count, 79)
         XCTAssertEqual(message.map { String(format: "%02x", $0) }.joined(), try String(contentsOf: expectedURL, encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines))
     }
@@ -28,14 +31,14 @@ final class IdentityTests: XCTestCase {
         XCTAssertTrue(certificate.publicKey.isValidSignature(certificate.signature, for: certificate))
         let id = try String(contentsOf: root.appendingPathComponent("install-id"), encoding: .utf8).lowercased()
         XCTAssertEqual(try certificate.extensions.subjectAlternativeNames, SubjectAlternativeNames([.uniformResourceIdentifier("urn:kido:install:" + id)]))
-        try store.commit(identity, for: host)
+        try store.commit(identity, for: host, name: PairingName("Test Server"))
         let servers = root.appendingPathComponent("servers")
         try FileManager.default.setAttributes([.posixPermissions: 0o500], ofItemAtPath: servers.path)
-        XCTAssertThrowsError(try store.commit(store.create(), for: host))
+        XCTAssertThrowsError(try store.commit(store.create(), for: host, name: PairingName("Test Server")))
         try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: servers.path)
         XCTAssertEqual(try store.load(host).certificate, identity.certificate)
         let other = try ServerName("other.example.com")
-        try store.commit(identity, for: other)
+        try store.commit(identity, for: other, name: PairingName("Test Server"))
         try store.forget(host)
         XCTAssertEqual(try store.load(other).certificate, identity.certificate)
         try Data([0]).write(to: servers.appendingPathComponent("other.example.com/key"))
@@ -58,22 +61,31 @@ final class IdentityTests: XCTestCase {
         XCTAssertEqual(try certificate.extensions.basicConstraints, .notCertificateAuthority)
         XCTAssertEqual(try certificate.extensions.keyUsage, KeyUsage(digitalSignature: true))
         XCTAssertEqual(try certificate.extensions.extendedKeyUsage, try ExtendedKeyUsage([.clientAuth]))
-        try store.commit(first, for: host)
+        XCTAssertNil(try store.name(for: host))
+        try store.commit(first, for: host, name: PairingName("Test Server"))
+        XCTAssertEqual(try store.name(for: host)?.value, "Test Server")
         XCTAssertEqual(try store.load(host).certificate, first.certificate)
         let message = Data("sign after reload".utf8)
         guard case .tls(_, _, let firstSigner) = store.endpoint(for: host, certificate: first.certificate) else { return XCTFail("Expected TLS") }
         let signature = try firstSigner.sign(message)
         XCTAssertFalse(signature.isEmpty)
         let directory = root.appendingPathComponent("servers/ko.example.com")
-        for (path, permissions) in [(directory, 0o700), (directory.appendingPathComponent("key"), 0o600), (directory.appendingPathComponent("certificate.der"), 0o600)] {
+        for (path, permissions) in [(directory, 0o700), (directory.appendingPathComponent("key"), 0o600), (directory.appendingPathComponent("certificate.der"), 0o600), (directory.appendingPathComponent("name"), 0o600)] {
             XCTAssertEqual((try FileManager.default.attributesOfItem(atPath: path.path)[.posixPermissions] as? NSNumber)?.intValue, permissions)
         }
         let second = try store.create()
-        try store.commit(second, for: host)
+        try store.commit(second, for: host, name: PairingName("New Server"))
+        XCTAssertEqual(try store.name(for: host)?.value, "New Server")
         XCTAssertEqual(try store.load(host).certificate, second.certificate)
         XCTAssertThrowsError(try firstSigner.sign(message))
         guard case .tls(_, _, let secondSigner) = store.endpoint(for: host, certificate: second.certificate) else { return XCTFail("Expected TLS") }
+        try FileManager.default.removeItem(at: directory.appendingPathComponent("name"))
+        XCTAssertThrowsError(try store.load(host))
+        XCTAssertThrowsError(try store.name(for: host))
+        try store.commit(second, for: host, name: PairingName("New Server"))
+        XCTAssertFalse(try secondSigner.sign(message).isEmpty)
         try store.forget(host)
+        XCTAssertNil(try store.name(for: host))
         XCTAssertThrowsError(try secondSigner.sign(message))
     }
 }

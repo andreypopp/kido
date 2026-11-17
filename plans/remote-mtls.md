@@ -713,7 +713,7 @@ every `case .remote` gets its decision:
 | Clipboard consent, webview panes | as an SSH remote: they use only the client |
 | Upload (a drop of a file) | none in phase 1: the SSH transfer runs `ssh … exec` through the master, and ko has no upload route. A drop on a TLS window uploads nothing and shows the existing "Kido did not upload" notice (text by `@kido-app-design`). An upload route is a follow-up unit |
 
-**The identity store** (a new file, `app/App/Identity.swift`): one
+**The identity store** (`IdentityStore` in the package KidoPairing, unit 6b): one
 identity for each server, in `~/Library/Application
 Support/Kido/servers/<host>/`: `certificate.der`, `key` (the
 enclave blob of 324 bytes, mode 0600) and `name`, the server's name

@@ -142,3 +142,37 @@ does not use the app's bundled ko. HOST is the host's label.
   checkout at another release installs another mismatch.
 - Buttons as for SSH: "Reconnect" (not destructive) and "Close"
   (default, Escape). Reconnect checks the versions again.
+
+## The server's friendly name (unit 6b, 2026-11-17)
+
+The code carries a required `name` (`ko-pair --name`, default the
+machine's hostname). The name is the TLS host's title everywhere;
+the DNS host is its second value, shown where the row has room and
+as the tooltip where it has none.
+
+- Connect recent rows and the root's "Connect › …" rows stay one
+  line, 34pt: the title is the name; the trailing muted 11pt word
+  becomes "https · ko.example.com" (the kind, a middle dot, the DNS
+  host), truncated from its right when the row is narrow; the time
+  keeps its place. Fuzzy match on the name and on the DNS host: a
+  query that matches either lists the row, and the highlight is in
+  whichever matched.
+- The host chip of the tab strip: the name, with the DNS host as its
+  tooltip, exactly as an SSH chip shows the identity with the
+  destination as tooltip (`hostLabel`: text = name, alias = DNS).
+- The window title: "Home VM / Session".
+- The name where HOST stood in text: "Forget Home VM…", the alert
+  "Forget Home VM?" with "This Mac's key and certificate for Home VM
+  (ko.example.com) are deleted. Pair again to connect."; the refused
+  sheet "Home VM does not accept this Mac's certificate"; the
+  banners "Disconnected from Home VM", "Home VM is not reachable";
+  the pairing lines "Pairing with Home VM…", "Waiting for Home VM to
+  activate…", "Could not reach Home VM: …", "Home VM may have paired
+  this Mac; try Connect." (the payload has the name before the store
+  does). The parsed line: "Pairs this Mac with Home VM
+  (ko.example.com)", the DNS host muted, so the user checks both
+  before Return. Pair Again: the field holds "Home VM", selected, as
+  plain text (a field editor shows no attributes); the parsed line
+  below it carries the DNS host.
+- The DNS host stays alone in the TLS sheet ("ko.example.com's
+  certificate is not valid: …"): the certificate is the DNS name's.

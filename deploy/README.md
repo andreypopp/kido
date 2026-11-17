@@ -54,7 +54,10 @@ SSH agent. Use a dedicated DNS zone or label set: this setup owns
 ## Devices
 
 Run `ssh -t me@ko.example.net sudo ko-pair`. It prints one line
-`kido-pair: {...}` and the same text as a QR code. Within 120
+`kido-pair: {...}` and the same text as a QR code. The line carries
+the server's name, which Kido shows as the server's title: the
+machine's hostname, or `--name NAME` (1 to 64 characters, no control
+characters). Within 120
 seconds, paste the line into Kido.app (Pair Server). The token works
 once. Check the device name and fingerprint that `ko-pair` prints: if
 they are not your device, someone else used the code; revoke it. Do
@@ -112,7 +115,7 @@ container delete u3-local-test
 
 Tests use a private folder under `/tmp`. Only tests set
 `KO_DEVICES_DIR`, `KO_PAIR_RESTART` and `KO_PAIR_SECONDS`.
-Tests pass the host, enrollment host and port as `ko-pair HOST ENROLL PORT`.
+Tests pass the host, enrollment host and port as `ko-pair [--name NAME] HOST ENROLL PORT`.
 The restart override replaces the complete restart and readiness check.
 The pairing duration must be greater than zero and at most 120 seconds.
 

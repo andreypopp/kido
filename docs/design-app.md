@@ -9,7 +9,9 @@ links as a static library and calls through its C ABI
 (`ko_client/include/ko_client.h`). The Swift package
 `app/Packages/KoClientKit` wraps it without AppKit or GhosttyKit, so the
 native iOS client can share it; `app/App/Ko/KoClient.swift` keeps the
-part that needs Ghostty: the views and their surfaces.
+part that needs Ghostty: the views and their surfaces. Beside it,
+`app/Packages/KidoPairing` holds the pairing and the identity store of
+the TLS servers ([TLS servers](#remote-hosts)) for both clients.
 Sessions, windows, panes, layout, history and status live in the server;
 the app holds none of them. The core owns the connection, the reconnect,
 the client model, seen marks, layout-edit convergence and each pane's
@@ -401,7 +403,7 @@ the probe) only connect to `<dir>/socket`.
 
 **TLS servers.** A window can also reach a ko server behind Caddy over
 HTTPS with mutual TLS (`Host.tls`, a validated DNS name, `ServerName` in
-`app/App/Host.swift`; the deployment is `deploy/README.md`). Its
+KidoPairing; the deployment is `deploy/README.md`). Its
 validation is the core's `HostName` rule, so the two sides refuse the same
 names. There is no SSH layer: the owner loads the server's identity off
 main, probes within 20 s through a TLS endpoint, and dials the same
@@ -420,18 +422,27 @@ an app update, else its host step names `deploy/install.sh` in the
 checkout that deployed the host, not `ko kill-server`. A file drop uploads nothing and shows a notice: ko has no
 upload route, and the SSH transfer needs the master.
 
-The identity store (`IdentityStore`, `app/App/Identity.swift`) keeps
+**KidoPairing** (`app/Packages/KidoPairing`) is the code of the TLS
+servers that no platform owns: the payload, the request, the transport,
+the identity store, `PairingSession` and its activation loop. It has no
+AppKit or UIKit: each app passes in the store's directory and its
+default device name (on the Mac `Host.current().localizedName`), and
+keeps its own views. Kido.app and the iOS client use the same package,
+so the two apps refuse the same codes and keep the same store layout.
+
+The identity store (`IdentityStore`) keeps
 one identity for each server under `~/Library/Application
-Support/Kido/servers/<host>/`: `certificate.der` and `key`, the
+Support/Kido/servers/<host>/`: `certificate.der`, `name` (the
+server's friendly name from the pairing code) and `key`, the
 `dataRepresentation` of a CryptoKit Secure Enclave P-256 key, which
 only this Mac's enclave can use. The directory is 0700 and the files
 0600. The key has the access `afterFirstUnlockThisDeviceOnly` with
 `privateKeyUsage` and no user presence, so it never prompts. There is no
 software key. `install-id` beside `servers/` is the install's UUID, the
-SAN of every certificate. A commit writes and syncs the pair in a staging
+SAN of every certificate. A commit writes and syncs the three files in a staging
 directory, then renames it into place or exchanges it with the old one
 (`renameatx_np` with `RENAME_SWAP`) and syncs `servers/`, so a reader
-sees the old pair or the new pair, never a mix. The sign closure of
+sees the old identity or the new one, never a mix. The sign closure of
 `KoIdentity` reads the key from the store at each signature and checks
 that the committed certificate is still the one it dials with; it keeps
 no key in memory. So Forget or a new pairing makes the next handshake of
@@ -439,9 +450,22 @@ an open window fail with `KO_ERR_IDENTITY`. The signature itself runs
 outside the store's lock: the handshakes of one window's links wait for
 each other only for the two file reads.
 
-**Pairing** (`PairingSession`, `app/App/PairingSession.swift`;
-`app/App/Pairing.swift`). The code is the line that `sudo ko-pair` prints:
-JSON after an optional `kido-pair:` prefix, with whitespace around it.
+**Pairing** (`PairingSession` and `PairingCode` in KidoPairing). The
+code is the line that `sudo ko-pair` prints: JSON after an optional
+`kido-pair:` prefix, with whitespace around it. Its `name` is the
+server's friendly name, with the rules of the device name; a code
+without a valid one is not a pairing code.
+
+The store's `name` is the one source of a TLS host's title
+(`Host.title(in:)`; a window reads it with the identity at each
+connect, the palette when it builds its rows; the recent list keeps
+only the DNS name). The title stands wherever the host's name stands:
+the window title, the host chip (with the DNS host as its second
+value, as an SSH host's destination), the banners, the sheets, Forget
+and the pairing lines, which take it from the code. The palette's host
+rows show the DNS host after the kind word, and the server-certificate
+sheet names only the DNS host, because the certificate is the DNS
+name's. A host with no stored identity shows its DNS name.
 The session makes a new key and certificate (the profile of
 `deploy/ko-pair`'s checks), signs the enrollment message, and sends one
 POST through an ephemeral `URLSession` with the system's trust, a
@@ -2693,11 +2717,12 @@ the field and the list; an edit clears it.
   to Remote Host…, File → Connect to Remote Host… and Shift-Command-K enter it.
   With text, the first row is "Connect to <text>", selected. The recent hosts
   that match follow, with their relative time and their kind ("ssh" or
-  "https") after the name. With no text, the last row is
+  "https · " and the DNS host) after the name; a word matches the name
+  or the DNS host. With no text, the last row is
   Clear Recent Hosts, which clears the list without confirmation, and the
   row before it is the hint "Paste a pairing code: Pair Server…", which
   enters Pair mode. A recent row's context menu has Remove from Recents for
-  an SSH host and Forget HOST… for a TLS host, which asks with an alert
+  an SSH host and Forget NAME… for a TLS host, which asks with an alert
   first. Typed text is always an SSH destination. With no
   text and no recent hosts, the list shows only the hint. Return on the
   typed row validates the text as a `Host`. An invalid host keeps the text and
@@ -3194,14 +3219,19 @@ reference. Thus, without the project lock, `xcodebuild
 PromptMarkdown's lock. Xcode 27.1 rejects `-packageResolvedPath`. When a remote
 package version in `project.yml` changes, the next build updates the project
 lock. Commit the lock with that change. The graph includes
-`swift-certificates` and `swift-crypto` for the identity store.
+`swift-certificates` and `swift-crypto`, which KidoPairing names for the
+identity store.
 
-`IdentityTests` and `PairingTests` read `deploy/testdata` (a token, a
-device certificate and its software key, and the bytes of the enrollment
-message), which `project.yml` copies into the test bundle: `IdentityTests`
-compares the message, and `PairingTests` signs requests with the key. `deploy/test.sh` checks the same message
-against the real `ko-pair`, so the app and the server cannot agree on a
-wrong formula. The software key exists only in that fixture; the app makes
+KidoPairing's tests (`swift test` in the package, a step of `make
+test`) read `deploy/testdata` (a token, a device certificate and its
+software key, the bytes of the enrollment message, and the payload line
+of a pairing with that token) as a resource, through the symlink
+`Tests/KidoPairingTests/testdata`: `IdentityTests` decodes the payload
+and compares the message, and `PairingTests` signs requests with the
+key. `deploy/test.sh` checks the same message and the same payload
+line against the real `ko-pair`, so the apps and the server cannot
+agree on a wrong formula or shape. The enclave works for the package's
+test process as for the hosted bundles. The software key exists only in that fixture; the app makes
 only enclave keys, also in the visual-test VM. No Swift test reaches a TLS
 server: the TLS paths of `WindowOwner` and the activation run on injected
 probe results, and the transport's own TLS tests are in `ko_client`.
