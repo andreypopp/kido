@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readdir, readFile, mkdtemp, mkdir, writeFile } from "node:fs/promises";
+import { existsSync } from "node:fs";
 import { connect } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -271,9 +272,12 @@ test("a request whose body arrives after a view switch is refused", { timeout: 3
 
 // Children discover extensions as any pi does, from the agent directory; the root of these tests loads none.
 const inChildren = (source: string) => async ({ dir }: { dir: string }) => { await mkdir(join(dir, "agent", "extensions"), { recursive: true }); await writeFile(join(dir, "agent", "extensions", "probe.ts"), source); };
-const holdsThird = (gate: string) => `export default async function () {
+const holdsSecond = (gate: string) => `export default async function () {
   const n = globalThis.__loads = (globalThis.__loads ?? 0) + 1;
-  if (n === 2) while (!(await import("node:fs")).existsSync(${JSON.stringify(gate)})) await new Promise(resolve => setTimeout(resolve, 10));
+  if (n !== 2) return;
+  const fs = await import("node:fs");
+  fs.writeFileSync(${JSON.stringify(gate + ".held")}, "");
+  while (!fs.existsSync(${JSON.stringify(gate)})) await new Promise(resolve => setTimeout(resolve, 10));
 }\n`;
 const failsFirstStart = `export default function (pi) {
   pi.on("resources_discover", () => {
@@ -287,7 +291,7 @@ test("a creation that is pending while its parent is stopped does not survive th
   const gate = join(await mkdtemp(join(tmpdir(), "koa-gate-")), "gate");
   const app = await realFixture(t, {
     panes: [selfPane()],
-    setup: inChildren(holdsThird(gate)),
+    setup: inChildren(holdsSecond(gate)),
     replies: [
       { when: "spawn one", tools: [tool("spawn_agent", { name: "kid", task: "kidwork" })] },
       { when: "spawn one", text: "spawned" },
@@ -299,8 +303,10 @@ test("a creation that is pending while its parent is stopped does not survive th
   });
   await send(app, "spawn one");
   await pollUntil(() => app.provider.requests.some(request => JSON.stringify(request.body.messages.at(-1)).includes("spawned kid")), 10000, "the kid");
+  const kidView = await app.subscribe(viewOf(await app.until(listed("kid")), "kid"));
+  await pollUntil(() => existsSync(gate + ".held"), 10000, "the gated creation of gk");
   await app.feed({ id: "user-stop-1", kind: "user", text: "stop it" });
-  await pollUntil(() => app.provider.requests.length >= 4, 10000, "the stop request and the gated creation");
+  await kidView.until(ofType("view_gone"));
   await writeFile(gate, "");
   await pollUntil(() => app.provider.requests.some(request => JSON.stringify(request.body.messages.at(-1)).includes("stopped kid")), 15000, "the stop to finish");
   await pollUntil(() => state(app).agents.length === 0, 5000, "the kid to leave the list");
