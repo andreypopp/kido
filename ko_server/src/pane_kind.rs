@@ -5,9 +5,9 @@ use ko_wire::protocol::Foreground;
 use ko_wire::vars::Vars;
 
 const SSH_DEST: VarName = VarName::known("ssh.dest");
-pub(crate) const PI_SESSION: VarName = VarName::known("pi.session");
-const PI_NAME: VarName = VarName::known("pi.name");
-const PI_ACTIVITY: VarName = VarName::known("pi.activity");
+const KOA_SESSION: VarName = VarName::known("koa.session");
+const KOA_NAME: VarName = VarName::known("koa.name");
+const KOA_ACTIVITY: VarName = VarName::known("koa.activity");
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum RemoteKind {
@@ -21,7 +21,7 @@ pub(crate) enum LocalKind {
     SomeAgent {
         name: String,
     },
-    PiAgent {
+    KoaAgent {
         session: String,
         name: String,
         activity: String,
@@ -47,7 +47,7 @@ impl Kind {
         match self {
             Self::Host { pane } | Self::Runtime { pane } => match pane {
                 LocalKind::Terminal => false,
-                LocalKind::SomeAgent { .. } | LocalKind::PiAgent { .. } => true,
+                LocalKind::SomeAgent { .. } | LocalKind::KoaAgent { .. } => true,
             },
             Self::Ssh { pane, .. } => match pane {
                 RemoteKind::Terminal => false,
@@ -79,14 +79,17 @@ pub(crate) fn classify(
     let local = || {
         let var = |name: &VarName| vars.text(name).unwrap_or_default().to_owned();
         match root_app {
-            Some("pi") => match vars.text(&PI_SESSION).filter(|session| !session.is_empty()) {
-                Some(session) => LocalKind::PiAgent {
+            Some("koa") => match vars
+                .text(&KOA_SESSION)
+                .filter(|session| !session.is_empty())
+            {
+                Some(session) => LocalKind::KoaAgent {
                     session: session.to_owned(),
-                    name: var(&PI_NAME),
-                    activity: var(&PI_ACTIVITY),
+                    name: var(&KOA_NAME),
+                    activity: var(&KOA_ACTIVITY),
                 },
                 None => LocalKind::SomeAgent {
-                    name: "pi".to_owned(),
+                    name: "koa".to_owned(),
                 },
             },
             Some("claude-code") => LocalKind::SomeAgent {
@@ -104,7 +107,7 @@ pub(crate) fn classify(
                 .flatten();
             if let Some(destination) = ssh {
                 let pane = match root_app {
-                    Some(name @ ("pi" | "claude-code")) => RemoteKind::Agent {
+                    Some(name @ ("koa" | "claude-code")) => RemoteKind::Agent {
                         name: name.to_owned(),
                     },
                     _ => RemoteKind::Terminal,
@@ -139,7 +142,7 @@ pub(crate) fn title(kind: &Kind, pane_title: &str) -> Option<String> {
         Kind::Host { pane } | Kind::Runtime { pane } => match pane {
             LocalKind::Terminal => None,
             LocalKind::SomeAgent { name } => Some(named(name)),
-            LocalKind::PiAgent { name, .. } => Some(if name.is_empty() {
+            LocalKind::KoaAgent { name, .. } => Some(if name.is_empty() {
                 pane_title.to_owned()
             } else {
                 name.clone()
@@ -199,33 +202,33 @@ mod tests {
     }
 
     #[test]
-    fn a_pi_session_variable_needs_a_pi_root() {
-        let pi = telemetry(
+    fn a_koa_session_variable_needs_a_koa_root_and_a_bare_pi_is_a_terminal() {
+        let koa = telemetry(
             "zsh",
-            &[("pi.session", json!("s1")), ("pi.name", json!("Worker"))],
+            &[("koa.session", json!("s1")), ("koa.name", json!("Worker"))],
         );
         assert_eq!(
-            pi.kind(None),
+            koa.kind(None),
             Kind::Host {
                 pane: LocalKind::Terminal
             }
         );
         assert_eq!(
-            pi.kind(Some("pi")),
+            koa.kind(Some("koa")),
             Kind::Host {
-                pane: LocalKind::PiAgent {
+                pane: LocalKind::KoaAgent {
                     session: "s1".to_owned(),
                     name: "Worker".to_owned(),
                     activity: String::new(),
                 }
             }
         );
-        let bare = telemetry("zsh", &[("pi.session", json!(7))]);
+        let bare = telemetry("zsh", &[("koa.session", json!(7))]);
         assert_eq!(
-            bare.kind(Some("pi")),
+            bare.kind(Some("koa")),
             Kind::Host {
                 pane: LocalKind::SomeAgent {
-                    name: "pi".to_owned()
+                    name: "koa".to_owned()
                 }
             }
         );
@@ -235,6 +238,12 @@ mod tests {
                 pane: LocalKind::SomeAgent {
                     name: "claude-code".to_owned()
                 }
+            }
+        );
+        assert_eq!(
+            koa.kind(Some("pi")),
+            Kind::Host {
+                pane: LocalKind::Terminal
             }
         );
         assert_eq!(
@@ -256,6 +265,13 @@ mod tests {
                 pane: RemoteKind::Agent {
                     name: "claude-code".to_owned()
                 }
+            }
+        );
+        assert_eq!(
+            telemetry("ssh", &vars).kind(Some("pi")),
+            Kind::Ssh {
+                destination: "deploy@realm@next.test".to_owned(),
+                pane: RemoteKind::Terminal
             }
         );
         assert_eq!(
@@ -291,16 +307,16 @@ mod tests {
                     },
                 ),
                 (
-                    Some("pi"),
+                    Some("koa"),
                     None,
                     LocalKind::SomeAgent {
-                        name: "pi".to_owned(),
+                        name: "koa".to_owned(),
                     },
                 ),
                 (
-                    Some("pi"),
+                    Some("koa"),
                     Some("s"),
-                    LocalKind::PiAgent {
+                    LocalKind::KoaAgent {
                         session: "s".to_owned(),
                         name: "Worker".to_owned(),
                         activity: String::new(),
@@ -310,10 +326,10 @@ mod tests {
             ] {
                 let mut vars = vec![
                     ("ssh.dest", json!("transport")),
-                    ("pi.name", json!("Worker")),
+                    ("koa.name", json!("Worker")),
                 ];
                 if let Some(session) = session {
-                    vars.push(("pi.session", json!(session)));
+                    vars.push(("koa.session", json!(session)));
                 }
                 let fixture = telemetry(foreground, &vars);
                 assert_eq!(
@@ -335,7 +351,7 @@ mod tests {
     }
 
     #[test]
-    fn the_title_prefers_the_pane_title_for_an_agent_and_the_name_for_a_pi_session() {
+    fn the_title_prefers_the_pane_title_for_an_agent_and_the_name_for_a_koa_session() {
         let some = Kind::Host {
             pane: LocalKind::SomeAgent {
                 name: "claude-code".to_owned(),
@@ -343,15 +359,15 @@ mod tests {
         };
         assert_eq!(title(&some, "Claude Code").as_deref(), Some("Claude Code"));
         assert_eq!(title(&some, "").as_deref(), Some("claude-code"));
-        let pi = |name: &str| Kind::Host {
-            pane: LocalKind::PiAgent {
+        let koa = |name: &str| Kind::Host {
+            pane: LocalKind::KoaAgent {
                 session: "s".to_owned(),
                 name: name.to_owned(),
                 activity: String::new(),
             },
         };
-        assert_eq!(title(&pi("Worker"), "pane").as_deref(), Some("Worker"));
-        assert_eq!(title(&pi(""), "pane").as_deref(), Some("pane"));
+        assert_eq!(title(&koa("Worker"), "pane").as_deref(), Some("Worker"));
+        assert_eq!(title(&koa(""), "pane").as_deref(), Some("pane"));
         assert_eq!(
             title(
                 &Kind::Host {

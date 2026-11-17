@@ -461,7 +461,7 @@ mod tests {
         assert!(VarName::new(&"n".repeat(256)).is_ok());
         assert!(VarName::new(&"n".repeat(257)).is_err());
         assert!(VarName::new("a\nb").is_err());
-        assert!(VarName::new("pi.session é").is_ok());
+        assert!(VarName::new("koa.session é").is_ok());
         assert!(VarName::new(&"é".repeat(129)).is_err());
     }
 

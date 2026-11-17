@@ -31,8 +31,8 @@ extension VisualTestCase {
     }
 }
 
-let routedVars = #"{"pi.session":"s1","pi.name":"kido-app","pi.runtime":{"name":"buildbox","cwd":"/src/kido"}}"#
-let piStatus = "printf '\\033]7501;state=idle:app=pi\\007'; "
+let routedVars = #"{"koa.session":"s1","koa.name":"kido-app","koa.runtime":{"name":"buildbox","cwd":"/src/kido"}}"#
+let piStatus = "printf '\\033]7501;state=idle:app=koa\\007'; "
 
 func splitTree(_ axis: String, _ children: [String]) -> String { #"{"split":"\#(axis)","children":[\#(children.joined(separator: ","))]}"# }
 

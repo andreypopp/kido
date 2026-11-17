@@ -80,8 +80,8 @@ fn runtime_kinds_select_agents_keep_sender_identity_and_hide_the_transport_title
     let terminal = s.new_pane(json!({"runtime": "dev", "command": {"type": "shell", "command": "stty raw -echo; exec cat"}}));
     let agent = s.new_pane(json!({
         "runtime": "dev",
-        "command": {"type": "shell", "command": format!("printf '\\033]7501;state=idle:app=pi\\007'; stty raw -echo; {PRINT_TOKEN}; cat")},
-        "vars": {"pi.session": "runtime-session", "pi.name": "Runtime Worker", "ssh.dest": "stale"}
+        "command": {"type": "shell", "command": format!("printf '\\033]7501;state=idle:app=koa\\007'; stty raw -echo; {PRINT_TOKEN}; cat")},
+        "vars": {"koa.session": "runtime-session", "koa.name": "Runtime Worker", "ssh.dest": "stale"}
     }));
     s.wait_row(&terminal, "the runtime terminal is classified", |row| {
         row["status"]["kind"]["type"] == "runtime"
@@ -95,7 +95,7 @@ fn runtime_kinds_select_agents_keep_sender_identity_and_hide_the_transport_title
     assert_eq!(s.row(&terminal)["status"]["title"], "");
     s.wait_row(&agent, "the runtime pi is classified", |row| {
         row["status"]["kind"]["type"] == "runtime"
-            && row["status"]["kind"]["pane"]["type"] == "pi_agent"
+            && row["status"]["kind"]["pane"]["type"] == "koa_agent"
     });
     let resolve = s.ko(&["api", &format!("/prompt/resolve?from={from}")], "");
     assert_eq!(crate::harness::code(&resolve), 0, "{}", resolve.stderr);
@@ -572,7 +572,7 @@ fn adhoc_definitions_resolve_in_the_session_and_end_with_it() {
         .as_str()
         .unwrap()
         .to_owned();
-    let definition = json!({"command": {}, "pi": "host"});
+    let definition = json!({"command": {}, "koa": "host"});
     let api = |pane: Option<&str>, method: &str, path: &str, body: &Value| -> Value {
         let mut args = vec!["api", "--method", method, path];
         if !body.is_null() {
@@ -627,7 +627,7 @@ fn adhoc_definitions_resolve_in_the_session_and_end_with_it() {
         "PUT",
         "/runtimes/dev",
         &as_pane(&s, &a),
-        &json!({"command": {}, "pi": "runtime"}),
+        &json!({"command": {}, "koa": "runtime"}),
     );
     assert_eq!(status, 409);
     assert_eq!(
@@ -669,10 +669,10 @@ fn adhoc_definitions_resolve_in_the_session_and_end_with_it() {
         Some(&b),
         "PUT",
         "/runtimes/dev",
-        &json!({"command": {"prefix": ["/usr/bin/env", "SESSION_MARK=b"]}, "pi": "runtime"}),
+        &json!({"command": {"prefix": ["/usr/bin/env", "SESSION_MARK=b"]}, "koa": "runtime"}),
     );
     assert_eq!(second["source"], json!({"type": "session", "id": sb}));
-    assert_eq!(second["pi"], "runtime");
+    assert_eq!(second["koa"], "runtime");
     let all = api(None, "GET", "/runtimes", &Value::Null);
     assert_eq!(
         all.as_array()
@@ -734,7 +734,7 @@ fn adhoc_definitions_resolve_in_the_session_and_end_with_it() {
         .unwrap()
         .to_owned();
     s.screen_has(&layout_born, "layout-born");
-    s.rewrite("runtimes:\n  configured: {command: {}}\n  dev: {command: {}, pi: runtime}\n");
+    s.rewrite("runtimes:\n  configured: {command: {}}\n  dev: {command: {}, koa: runtime}\n");
     assert_eq!(
         api(Some(&a), "GET", "/runtimes/dev", &Value::Null)["source"],
         registered["source"]
@@ -897,7 +897,7 @@ runtimes:
         runtime: {rt}
   other:
     command: {{}}
-    pi: runtime
+    koa: runtime
 "#,
             host = text_of(&maps.join("host")),
             rt = text_of(&maps.join("rt")),
@@ -905,8 +905,8 @@ runtimes:
         &[],
     );
     let (dev, other) = (info(&s, "dev"), info(&s, "other"));
-    assert_eq!((&dev["pi"], &dev["cwd"]), (&json!("host"), &json!("/")));
-    assert_eq!((&other["pi"], other.get("cwd")), (&json!("runtime"), None));
+    assert_eq!((&dev["koa"], &dev["cwd"]), (&json!("host"), &json!("/")));
+    assert_eq!((&other["koa"], other.get("cwd")), (&json!("runtime"), None));
     let host = s.token_pane("exec cat");
     let elsewhere = token_pane_in_new_session(&s, "elsewhere");
     let doc = s.doc();
@@ -1249,7 +1249,7 @@ runtimes:
 
     let agent = s.new_pane(json!({
         "command": {"type": "shell", "command": format!(
-            "printf '\\033]7501;state=idle:app=pi\\007'; stty raw -echo; {PRINT_TOKEN}; cat"
+            "printf '\\033]7501;state=idle:app=koa\\007'; stty raw -echo; {PRINT_TOKEN}; cat"
         )},
     }));
     s.wait_row(&agent, "its pi root", |row| {
@@ -2940,5 +2940,230 @@ runtimes:
             .unwrap()
             .contains("no pane pane_999 to start in"),
         "{missing}"
+    );
+}
+
+#[test]
+fn a_koa_command_runs_the_shipped_koa_on_the_host_routed_for_or_inside_a_runtime() {
+    let (prefix, log) = (Dir::new("ko-prefix-"), Dir::new("ko-koa-log-"));
+    let build = crate::harness::ko();
+    let build = build.parent().unwrap().parent().unwrap();
+    for path in [
+        "bin/ko",
+        "bin/ko-pane",
+        "share/ko/terminfo",
+        "share/ko/bin/ko",
+    ] {
+        let at = prefix.join(path);
+        fs::create_dir_all(at.parent().unwrap()).unwrap();
+        std::os::unix::fs::symlink(build.join(path), at).unwrap();
+    }
+    let shipped = prefix.join("share/ko/bin/koa");
+    fs::write(
+        &shipped,
+        format!(
+            "#!/bin/sh\nout={}/$KO_PANE\n{{ for arg in \"$@\"; do printf 'arg=%s\\n' \"$arg\"; done\nprintf 'cwd=%s\\nruntime=%s\\nlogin=%s\\n' \"$(pwd -P)\" \"${{KO_RUNTIME-}}\" \"${{KOA_LOGIN-}}\"; }} > \"$out.tmp\"\nmv \"$out.tmp\" \"$out\"\nprintf '\\033]7501;state=idle:app=koa\\007'\nexec cat\n",
+            log.display()
+        ),
+    )
+    .unwrap();
+    fs::set_permissions(&shipped, fs::Permissions::from_mode(0o755)).unwrap();
+    let launched = |pane: &str| -> Vec<String> {
+        let file = log.join(pane);
+        poll(&format!("koa of {pane} to start"), || file.exists());
+        fs::read_to_string(file)
+            .unwrap()
+            .lines()
+            .map(str::to_owned)
+            .collect()
+    };
+    let work = Dir::new("ko-koa-work-");
+    let work = fs::canonicalize(&*work).unwrap();
+    let (host, inner) = (work.join("host"), work.join("inner"));
+    for dir in ["sub", "sub two"] {
+        fs::create_dir_all(host.join(dir)).unwrap();
+        fs::create_dir_all(inner.join(dir)).unwrap();
+    }
+    let elsewhere = Dir::new("ko-koa-path-");
+    let stray = elsewhere.join("koa");
+    fs::write(&stray, "#!/bin/sh\necho stray > \"$0.ran\"\n").unwrap();
+    fs::set_permissions(&stray, fs::Permissions::from_mode(0o755)).unwrap();
+    let paths = format!(
+        "    paths:\n      - host: {}\n        runtime: {}\n",
+        host.display(),
+        inner.display()
+    );
+    let config = Dir::new("ko-rtc-");
+    let file = config.join("config.yaml");
+    fs::write(
+        &file,
+        format!("runtimes:\n  routed:\n    command: {{}}\n{paths}  inside:\n    command: {{}}\n    koa: runtime\n{paths}"),
+    )
+    .unwrap();
+    let path = format!(
+        "{}:{}",
+        elsewhere.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let dir = Dir::new("ko-");
+    fs::write(dir.join(".profile"), "export KOA_LOGIN=yes\n").unwrap();
+    let s = crate::harness::start_exe(
+        &prefix.join("bin/ko"),
+        dir,
+        Path::new("/bin/sh"),
+        &[("KO_RUNTIME_COMMAND_KIND", "1"), ("PATH", &path)],
+        &["--config", text_of(&file)],
+    );
+    let koa = |start: Value, extra: Value| {
+        let mut body =
+            json!({"command": {"type": "koa", "start": start}, "vars": {"koa.session": "s"}});
+        for (name, value) in extra.as_object().unwrap() {
+            if name == "command" {
+                for (field, value) in value.as_object().unwrap() {
+                    body["command"][field] = value.clone();
+                }
+            } else {
+                body[name] = value.clone();
+            }
+        }
+        crate::panes::new_pane(&s, &body)
+    };
+    let args = |lines: &[String]| -> Vec<String> {
+        lines
+            .iter()
+            .filter_map(|line| line.strip_prefix("arg=").map(str::to_owned))
+            .collect()
+    };
+    let field = |lines: &[String], name: &str| -> String {
+        lines
+            .iter()
+            .find_map(|line| line.strip_prefix(&format!("{name}=")))
+            .unwrap()
+            .to_owned()
+    };
+    let saved = work.join("saved session.jsonl");
+    let saved = text_of(&saved);
+
+    let new = koa(
+        json!({"type": "new", "session_id": "s-new"}),
+        json!({"command": {"name": "Ag 'ent", "model": "p/m:high", "browser": true}, "cwd": text_of(&host)}),
+    );
+    let ran = launched(&new);
+    assert_eq!(
+        args(&ran),
+        [
+            "--browser",
+            "--session-id",
+            "s-new",
+            "--name",
+            "Ag 'ent",
+            "--model",
+            "p/m:high"
+        ]
+    );
+    assert_eq!(
+        (
+            field(&ran, "cwd"),
+            field(&ran, "runtime"),
+            field(&ran, "login")
+        ),
+        (text_of(&host).to_owned(), String::new(), "yes".to_owned()),
+        "koa runs on the host through the login shell of ko shell"
+    );
+    let row = s.wait_row(&new, "the host koa is a koa agent", |row| {
+        row["status"]["kind"]["type"] == "host"
+            && row["status"]["kind"]["pane"]["type"] == "koa_agent"
+    });
+    assert_eq!(row["command"][0], text_of(&shipped));
+    assert!(row["runtime"].is_null());
+    let resume = koa(json!({"type": "resume", "session": saved}), json!({}));
+    assert_eq!(args(&launched(&resume)), ["--session", saved]);
+    let fork = koa(
+        json!({"type": "fork", "session": saved, "session_id": "s-fork"}),
+        json!({}),
+    );
+    assert_eq!(
+        args(&launched(&fork)),
+        ["--fork", saved, "--session-id", "s-fork"]
+    );
+
+    let routed = koa(
+        json!({"type": "new"}),
+        json!({"runtime": "routed", "cwd": text_of(&host.join("sub"))}),
+    );
+    let ran = launched(&routed);
+    assert_eq!(args(&ran), ["--runtime", "routed"]);
+    assert_eq!(
+        (field(&ran, "cwd"), field(&ran, "runtime")),
+        (text_of(&host.join("sub")).to_owned(), String::new()),
+        "a routed koa runs on the host in the host directory"
+    );
+    assert!(s.row(&routed)["runtime"].is_null());
+    let inside = koa(
+        json!({"type": "new"}),
+        json!({"runtime": "inside", "cwd": text_of(&host.join("sub"))}),
+    );
+    let ran = launched(&inside);
+    assert_eq!(args(&ran), Vec::<String>::new());
+    assert_eq!(
+        (field(&ran, "cwd"), field(&ran, "runtime")),
+        (text_of(&inner.join("sub")).to_owned(), "inside".to_owned()),
+        "koa inside the runtime starts in the mapped directory"
+    );
+    let row = s.wait_row(&inside, "koa inside the runtime is a koa agent", |row| {
+        row["status"]["kind"]["type"] == "runtime"
+            && row["status"]["kind"]["pane"]["type"] == "koa_agent"
+    });
+    assert_eq!(
+        (&row["runtime"], &row["command"]),
+        (&json!("inside"), &json!(["koa"]))
+    );
+
+    let terminal = s.new_pane(
+        json!({"runtime": "inside", "command": {"type": "shell", "command": format!(
+            "printf '\\033]7;file://runtime{}\\007'; stty raw -echo; exec cat",
+            inner.join("sub%%20two").display()
+        )}}),
+    );
+    s.wait_row(&terminal, "the runtime pane reports its directory", |row| {
+        row["cwd"]
+            .as_str()
+            .is_some_and(|cwd| cwd.ends_with("/sub%20two"))
+    });
+    let from_pane = |runtime: &str| {
+        let pane = koa(
+            json!({"type": "new"}),
+            json!({"runtime": runtime, "cwd": {"pane": terminal}}),
+        );
+        field(&launched(&pane), "cwd")
+    };
+    assert_eq!(from_pane("routed"), text_of(&host.join("sub two")));
+    assert_eq!(from_pane("inside"), text_of(&inner.join("sub two")));
+    let member = s.new_pane(json!({"runtime": "routed", "command": {"type": "shell", "command": format!("{PRINT_TOKEN}; exec cat")}}));
+    poll("the runtime pane's token", || s.token(&member).is_some());
+    let token = s.token(&member).unwrap();
+    refuses(
+        via(
+            &s,
+            "routed",
+            ("POST", "/panes"),
+            Some((&member, &token)),
+            &json!({"command": {"type": "koa", "start": {"type": "new"}}}),
+        ),
+        "runtime routed runs koa on the host",
+    );
+
+    fs::remove_file(&shipped).unwrap();
+    let missing = koa(json!({"type": "new"}), json!({}));
+    let row = dead(&s, &missing);
+    assert_eq!(row["dead"]["cause"]["type"], "failed");
+    assert_eq!(row["command"][0], text_of(&shipped));
+    assert!(
+        s.has_pane(&missing),
+        "a koa that fails to start keeps its row"
+    );
+    assert!(
+        !elsewhere.join("koa.ran").exists(),
+        "the server never runs a koa from PATH"
     );
 }

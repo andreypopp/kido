@@ -44,7 +44,7 @@ function tree(fx: Fixture) {
 }
 
 function dev(t: ReturnType<typeof tree>, extra: Record<string, unknown> = {}) {
-  return { cwd: join(t.rt, "fallback"), paths: [{ host: t.host, runtime: t.rt }], pi: "host", source: { type: "session", id: "session_3" }, ...extra };
+  return { cwd: join(t.rt, "fallback"), paths: [{ host: t.host, runtime: t.rt }], koa: "host", source: { type: "session", id: "session_3" }, ...extra };
 }
 
 async function routed(fx: Fixture, t: ReturnType<typeof tree>, opts: { runtimes?: Record<string, Record<string, unknown>>; cwd?: string } = {}): Promise<Started> {
@@ -92,7 +92,7 @@ test("the runtime cwd is the longest paths match, else the configured cwd, else 
   const fx = makeFixture();
   try {
     const t = tree(fx);
-    const bare = { paths: [{ host: t.host, runtime: t.rt }], pi: "host" };
+    const bare = { paths: [{ host: t.host, runtime: t.rt }], koa: "host" };
     const cases: Array<[Record<string, Record<string, unknown>>, string, string]> = [
       [{ dev: dev(t) }, t.hostCwd, join(t.rt, "proj")],
       [{ dev: dev(t) }, "/elsewhere", join(t.rt, "fallback")],
@@ -331,7 +331,7 @@ test("a context read that fails with no known cwd is retried by the next call an
   try {
     const t = tree(fx);
     fx.setPanes([selfPane()]);
-    const failed = { paths: [], pi: "host", state: { type: "failed", message: "the image is gone" } };
+    const failed = { paths: [], koa: "host", state: { type: "failed", message: "the image is gone" } };
     const s = await routed(fx, t, { runtimes: { dev: failed }, cwd: "/elsewhere" });
     await pollUntil(() => s.notifications.length === 1, 5000, "the failure notice");
     assert.equal(at(s.notifications, 0).type, "error");
@@ -339,13 +339,13 @@ test("a context read that fails with no known cwd is retried by the next call an
     const event: PromptEvent = { systemPromptOptions: { cwd: "/host", promptGuidelines: [], sections: {}, contextFiles: [] } };
     await s.emit("before_agent_start", event);
     assert.equal(event.systemPromptOptions.cwd, "/host", "no runtime cwd is known yet");
-    assert.equal(fx.row("pane_1")?.vars?.["pi.runtime"], undefined);
+    assert.equal(fx.row("pane_1")?.vars?.["koa.runtime"], undefined);
 
-    fx.setRuntimes({ dev: { paths: [], pi: "host" } });
+    fx.setRuntimes({ dev: { paths: [], koa: "host" } });
     await s.emit("before_agent_start", event);
     assert.equal(event.systemPromptOptions.cwd, realpathSync(process.cwd()));
     assert.equal(text(await run(s, "bash", { command: "pwd" })).trim(), realpathSync(process.cwd()));
-    assert.deepEqual(fx.row("pane_1")?.vars?.["pi.runtime"], { name: "dev", cwd: realpathSync(process.cwd()) });
+    assert.deepEqual(fx.row("pane_1")?.vars?.["koa.runtime"], { name: "dev", cwd: realpathSync(process.cwd()) });
   } finally {
     await fx.restore();
   }
@@ -403,7 +403,7 @@ test("a runtime that is missing or runs pi itself refuses every routed tool and 
     const cases: Array<[Record<string, Record<string, unknown>>, RegExp]> = [
       [{}, /no runtime dev in the fake$/],
       [{ dev: { not_found: "no runtime dev in session_3 or in /config.yaml" } }, /no runtime dev in session_3 or in \/config.yaml$/],
-      [{ dev: dev(t, { pi: "runtime" }) }, /runtime dev runs pi inside it/],
+      [{ dev: dev(t, { koa: "runtime" }) }, /runtime dev runs koa inside it/],
     ];
     for (const [runtimes, refusal] of cases) {
       const s = await routed(fx, t, { runtimes });
@@ -416,7 +416,7 @@ test("a runtime that is missing or runs pi itself refuses every routed tool and 
       }
       await assert.rejects(async () => at(s.handlers.get("user_bash") ?? [], 0)({ command: "pwd", cwd: t.hostCwd, excludeFromContext: false }), refusal);
       assert.match(text(await run(s, "async_bash", { command: "true", name: "x" })), refusal);
-      assert.equal(fx.row("pane_1")?.vars?.["pi.runtime"], undefined);
+      assert.equal(fx.row("pane_1")?.vars?.["koa.runtime"], undefined);
       assert.equal(fx.execLog().length, 0, "nothing reached the runtime");
       const event: PromptEvent = { systemPromptOptions: { promptGuidelines: [], sections: {}, contextFiles: [], cwd: "/host" } };
       await s.emit("before_agent_start", event);
@@ -437,7 +437,7 @@ test("session_start does not wait for the runtime; the first prompt waits for th
     const gate = join(fx.dir, "gate");
     process.env.KO_FAKE_EXEC_GATE = gate;
     const s = await routed(fx, t);
-    assert.deepEqual(fx.row("pane_1")?.vars?.["pi.runtime"], { name: "dev", cwd: join(t.rt, "proj") }, "the cwd came from paths: the pane is marked at once");
+    assert.deepEqual(fx.row("pane_1")?.vars?.["koa.runtime"], { name: "dev", cwd: join(t.rt, "proj") }, "the cwd came from paths: the pane is marked at once");
     assert.equal(s.notifications.length, 1);
     const event: PromptEvent = { systemPromptOptions: { cwd: t.hostCwd, promptGuidelines: [], sections: {}, contextFiles: [] } };
     let prompted = false;
@@ -473,7 +473,7 @@ test("a routed async_bash is an exec session with a host log, a notice, and canc
     const t = tree(fx);
     fx.setPanes([selfPane()]);
     const s = await routed(fx, t);
-    assert.deepEqual(fx.row("pane_1")?.vars?.["pi.runtime"], { name: "dev", cwd: join(t.rt, "proj") });
+    assert.deepEqual(fx.row("pane_1")?.vars?.["koa.runtime"], { name: "dev", cwd: join(t.rt, "proj") });
     assert.equal(fx.row("pane_1")?.vars?.["ko.runtime"], "dev");
     await run(s, "bash", { command: "true" });
     const baseline = fx.running();
@@ -511,9 +511,9 @@ test("a routed async_bash is an exec session with a host log, a notice, and canc
     await pollUntil(() => fx.running() === baseline);
     assert.equal(notices(s).length, 1, "a stopped job sends no notice");
     await s.emit("session_shutdown", { reason: "quit" });
-    assert.equal(fx.row("pane_1")?.vars?.["pi.runtime"], undefined);
+    assert.equal(fx.row("pane_1")?.vars?.["koa.runtime"], undefined);
     assert.equal(fx.row("pane_1")?.vars?.["ko.runtime"], undefined);
-    assert.equal(fx.row("pane_1")?.vars?.["pi.session"], undefined);
+    assert.equal(fx.row("pane_1")?.vars?.["koa.session"], undefined);
   } finally { await fx.restore(); }
 });
 
@@ -646,13 +646,13 @@ for (const reason of ["quit", "new", "resume", "fork", "reload"]) {
   });
 }
 
-test("list_agents shows the runtime of a row or of a routed agent's pi.runtime, and its runtime cwd; messages name the sender's runtime", async () => {
+test("list_agents shows the runtime of a row or of a routed agent's koa.runtime, and its runtime cwd; messages name the sender's runtime", async () => {
   const fx = makeFixture();
   try {
     const t = tree(fx);
     fx.setPanes([
       selfPane(),
-      agentPane({ pane: "pane_2", session: "s-routed", name: "Routed", cwd: "/host/proj", vars: { "pi.runtime": { name: "dev", cwd: "/work/proj" } } }),
+      agentPane({ pane: "pane_2", session: "s-routed", name: "Routed", cwd: "/host/proj", vars: { "koa.runtime": { name: "dev", cwd: "/work/proj" } } }),
       { ...agentPane({ pane: "pane_3", session: "s-inside", name: "Inside", cwd: "/work" }), runtime: "inner" },
       agentPane({ pane: "pane_4", session: "s-host", name: "Host", cwd: "/host" }),
     ]);

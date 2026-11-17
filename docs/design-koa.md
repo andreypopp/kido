@@ -229,7 +229,10 @@ for its own modes; `main.js` exports no function that does it without
 printing, prompting or exiting. The session manager comes first, from
 `--session`, `--fork`, `--continue`, `--session-id` and
 `--no-session`, with the session directory rule of
-`koa-session-dir.ts`; then the services: the settings, the resource
+`koa-session-dir.ts`. The launch directory is the session's
+directory, also for a session that `--session` or an existing
+`--session-id` opens, whatever directory its header records
+(design.md, "Starting a koa agent"); then the services: the settings, the resource
 loader with the extension, skill and prompt paths of the command line
 (resolved from the launch directory), the model and its thinking
 level, the scoped models and the tool flags. The resource loader gets
@@ -339,9 +342,10 @@ picker's list uses pi's app bindings, but its search field has
 pi-tui's default editing keys.
 
 **A top-level agent takes its spawner's mode** (the user's decision).
-A top-level agent is `ko shell -- koa`. koa gives the agent extension
-browser mode as a field of its host, never from pi's mode, and the
-extension adds `--browser` to the new `koa` under it.
+A top-level agent is a `koa` command (design.md, "Starting a koa
+agent"). koa gives the agent extension browser mode as a field of its
+host, never from pi's mode, and the extension sets the command's
+`browser` under it.
 
 **The agent extension inside the session.** The extension takes its
 host from a closure (`agentExtension(host)` in `koa-agent.ts`); the
@@ -351,7 +355,7 @@ its environment at its edge (`hostFacts`); the extension reads no
 environment for them. The tree keeps what must outlive one load of an
 extension: the pane's message stream and its id ring, each agent's
 jobs and records, the exit cleanup, because `session.reload()` runs
-the factory again. The root's `session_start` writes the `pi.*`
+the factory again. The root's `session_start` writes the `koa.*`
 variables and starts the peer client; a subagent's writes neither. A
 message on the pane's stream goes to the agent that its `data.to`
 names (design-subagents.md, "The pane's queue") and reaches koa as
@@ -363,12 +367,12 @@ agents' messages. `koa-agents.ts` wraps `AgentSession.prototype.clearQueue`
 once in the process, so that it puts the custom messages back. The
 patch goes when pi has a `clearQueue` that keeps them.
 
-**Status and title.** koa writes the pane's root record `app=pi`
+**Status and title.** koa writes the pane's root record `app=koa`
 itself, always for the root agent, whatever the page shows: working from `agent_start` (and during a compaction), at
 `agent_settled` idle when aborted, else error or done from the last
 assistant message, blocked with kind question while a dialog is open,
 and `clear` when the session fails. With the extension's
-`pi.session`, the row is a `PiAgent` (design-program-status.md). koa
+`koa.session`, the row is a `KoaAgent` (design-program-status.md). koa
 sets the pane title with OSC 0 from the root session's name and
 directory. Each subagent's status is a record of the pane
 (design-subagents.md, "In the sidebar"), by the same rule. The
@@ -1938,7 +1942,7 @@ which finds the questions of a reply, and the page renders the
 Without the producer in koa's pi (not installed, an unsupported
 platform, models that fail to load) there is no entry and the reply
 shows as before. A routed runtime's pi runs on the host with the
-host's extensions; only a `pi: runtime` runtime and a remote host need
+host's extensions; only a `koa: runtime` runtime and a remote host need
 the producer where pi runs, and koa does not supply it.
 
 ## Browser mode and its origin rule

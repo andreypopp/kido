@@ -50,10 +50,10 @@ import XCTest
 
     func testATabIsTitledByItsFocusPaneAndAPiAgentWithAnOpenMessageStreamIsMessageable() throws {
         let checkout = try XCTUnwrap(ProcessInfo.processInfo.environment["KO_CHECKOUT"].flatMap { $0.isEmpty ? nil : $0 }, "KO_CHECKOUT")
-        let printf = "printf '\\033]7501;state=idle:app=pi\\007'; " + cat
-        let streaming = "printf '\\033]7501;state=idle:app=pi\\007'; \(checkout)/build/ko/bin/ko api --stream \"/panes/$KO_PANE/messages\" </dev/null >/dev/null & " + cat
-        let pi = shell(streaming, vars: #"{"pi.session":"s1","pi.name":"Worker"}"#)
-        let mute = shell(printf, vars: #"{"pi.session":"s2","pi.name":"Mute"}"#)
+        let printf = "printf '\\033]7501;state=idle:app=koa\\007'; " + cat
+        let streaming = "printf '\\033]7501;state=idle:app=koa\\007'; \(checkout)/build/ko/bin/ko api --stream \"/panes/$KO_PANE/messages\" </dev/null >/dev/null & " + cat
+        let pi = shell(streaming, vars: #"{"koa.session":"s1","koa.name":"Worker"}"#)
+        let mute = shell(printf, vars: #"{"koa.session":"s2","koa.name":"Mute"}"#)
         let (_, owner) = try shown(#"[{"name":"first","tree":\#(pi)},{"name":"second","tree":\#(mute)}]"#)
         wait("both tabs have their pi names") { owner.sidebar.tabs.entries.map(\.displayName) == ["@Worker", "Mute"] }
         wait("the pane with a message stream takes a prompt") { owner.sidebar.tabs.entries.map(\.messageable) == [true, false] }
@@ -83,9 +83,9 @@ import XCTest
         let ko = "\(checkout)/build/ko/bin/ko"
         let dir = try stateDir()
         let log = dir + "-messages"
-        let script = "printf '\\033]7501;state=idle:app=pi\\007'; \(ko) api --stream \"/panes/$KO_PANE/messages\" </dev/null >\(log) & "
+        let script = "printf '\\033]7501;state=idle:app=koa\\007'; \(ko) api --stream \"/panes/$KO_PANE/messages\" </dev/null >\(log) & "
             + "echo '\(status)' | \(ko) api --input - \"/panes/$KO_PANE/status\" >/dev/null; " + cat
-        let (_, owner) = try shown("[{\"name\":\"w\",\"tree\":\(shell(script, vars: #"{"pi.session":"s1","pi.name":"Worker"}"#))}]", at: dir)
+        let (_, owner) = try shown("[{\"name\":\"w\",\"tree\":\(shell(script, vars: #"{"koa.session":"s1","koa.name":"Worker"}"#))}]", at: dir)
         return (owner, log)
     }
 
@@ -206,7 +206,7 @@ import XCTest
     }
 
     func testSwitchingWindowsVisitsAChildWindowOfItsOwn() throws {
-        let pi = shell("printf '\\033]7501;state=idle:app=pi\\007'; " + cat, vars: #"{"pi.session":"s1","pi.name":"Parent"}"#)
+        let pi = shell("printf '\\033]7501;state=idle:app=koa\\007'; " + cat, vars: #"{"koa.session":"s1","koa.name":"Parent"}"#)
         let (dir, owner) = try shown(#"[{"name":"parent","tree":\#(pi)},{"name":"last","tree":\#(shell(cat))}]"#)
         let before = Set(try XCTUnwrap(owner.testModel.map(\.layout.layout.windows)).map(\.id))
         _ = try createPane(#"{"session":"session_1","name":"kid","parent":"pane_1","close":"on_exit","command":{"type":"argv","argv":["/bin/sleep","60"]}}"#, dir: dir)

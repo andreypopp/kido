@@ -596,7 +596,7 @@ fn reorder<T, K: PartialEq + Copy>(items: &mut Vec<T>, order: &[K], key: impl Fn
 
 fn created(request: &CreatePane) -> PaneRef {
     PaneRef::New {
-        new: request.clone(),
+        new: Box::new(request.clone()),
     }
 }
 

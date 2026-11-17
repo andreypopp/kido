@@ -310,8 +310,8 @@ fn identity(kind: &Kind) -> Identity {
         Kind::Host { pane } | Kind::Runtime { pane } => match pane {
             LocalKind::Terminal => (Root::Program, None, None),
             LocalKind::SomeAgent { name } => (Root::Agent(name.clone()), None, None),
-            LocalKind::PiAgent { session, .. } => {
-                (Root::Agent("pi".to_owned()), Some(session.clone()), None)
+            LocalKind::KoaAgent { session, .. } => {
+                (Root::Agent("koa".to_owned()), Some(session.clone()), None)
             }
         },
         Kind::Ssh { destination, pane } => (
@@ -387,9 +387,9 @@ pub(crate) fn observe(
                 name: name.clone(),
                 status: agent(&mut t, false, None),
             },
-            LocalKind::PiAgent {
+            LocalKind::KoaAgent {
                 session, activity, ..
-            } => Local::PiAgent {
+            } => Local::KoaAgent {
                 session: session.clone(),
                 status: agent(
                     &mut t,
@@ -584,7 +584,7 @@ mod tests {
         match live {
             Live::Host { pane } | Live::Runtime { pane } => match pane {
                 Local::Terminal(shell) => shell_text(shell),
-                Local::SomeAgent { status, .. } | Local::PiAgent { status, .. } => {
+                Local::SomeAgent { status, .. } | Local::KoaAgent { status, .. } => {
                     agent_text(status)
                 }
             },
@@ -698,14 +698,14 @@ mod tests {
 
     #[test]
     fn entering_a_runtime_keeps_the_local_agent_episode_and_reads_only_the_root() {
-        let pane = LocalKind::PiAgent {
+        let pane = LocalKind::KoaAgent {
             session: "s".to_owned(),
             name: "Worker".to_owned(),
             activity: String::new(),
         };
         let records = status(
             1,
-            agent("pi", ProgramState::Done, &[("job", working(None))]),
+            agent("koa", ProgramState::Done, &[("job", working(None))]),
         );
         let (track, host) = observe(
             T0,
@@ -734,14 +734,14 @@ mod tests {
     #[test]
     fn agent_children_do_not_change_root_state() {
         let shown = agent_steps(vec![
-            (0, "idle", 1, agent("pi", ProgramState::Idle, &[])),
-            (1000, "working", 1, agent("pi", working(Some(10)), &[])),
+            (0, "idle", 1, agent("koa", ProgramState::Idle, &[])),
+            (1000, "working", 1, agent("koa", working(Some(10)), &[])),
             (
                 1000,
                 "blocked children",
                 1,
                 agent(
-                    "pi",
+                    "koa",
                     working(None),
                     &[
                         ("b", blocked(Some(ProgramKind::Question), None)),
@@ -754,7 +754,7 @@ mod tests {
                 "working children",
                 1,
                 agent(
-                    "pi",
+                    "koa",
                     ProgramState::Idle,
                     &[("z", working(Some(9))), ("y", working(Some(8)))],
                 ),
@@ -763,7 +763,7 @@ mod tests {
                 1000,
                 "child done",
                 2,
-                agent("pi", ProgramState::Idle, &[("z", ProgramState::Done)]),
+                agent("koa", ProgramState::Idle, &[("z", ProgramState::Done)]),
             ),
         ]);
         assert_eq!(
@@ -1000,16 +1000,16 @@ mod tests {
             shown.push(run.observe(label, 20, &telemetry, kind, &status(serial, records)));
         };
         let pi = |id: &str| Kind::Host {
-            pane: LocalKind::PiAgent {
+            pane: LocalKind::KoaAgent {
                 session: id.to_owned(),
                 name: String::new(),
                 activity: String::new(),
             },
         };
         let done = |app: &str| agent(app, ProgramState::Done, &[]);
-        step("pi done", &pi("a"), 1, done("pi"));
-        step("same", &pi("a"), 2, done("pi"));
-        step("new session id", &pi("b"), 3, done("pi"));
+        step("pi done", &pi("a"), 1, done("koa"));
+        step("same", &pi("a"), 2, done("koa"));
+        step("new session id", &pi("b"), 3, done("koa"));
         let claude = Kind::Host {
             pane: LocalKind::SomeAgent {
                 name: "claude-code".to_owned(),
@@ -1029,12 +1029,12 @@ mod tests {
         let ssh = |destination: &str| Kind::Ssh {
             destination: destination.to_owned(),
             pane: RemoteKind::Agent {
-                name: "pi".to_owned(),
+                name: "koa".to_owned(),
             },
         };
-        step("remote pi", &ssh("one"), 7, done("pi"));
-        step("same destination", &ssh("one"), 8, done("pi"));
-        step("new destination", &ssh("two"), 9, done("pi"));
+        step("remote pi", &ssh("one"), 7, done("koa"));
+        step("same destination", &ssh("one"), 8, done("koa"));
+        step("new destination", &ssh("two"), 9, done("koa"));
         assert_eq!(
             shown,
             [

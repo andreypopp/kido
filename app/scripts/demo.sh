@@ -41,7 +41,7 @@ AWK
   # A pi agent: its identity in pane variables, its title and status records on the terminal.
   cat > "$D/pi-agent.sh" <<'SH'
 #!/bin/sh
-for pair in "pi.session=$1" "pi.name=$3"; do
+for pair in "koa.session=$1" "koa.name=$3"; do
   printf '"%s"' "${pair#*=}" | "$KO" api -X PUT --input - "/panes/$KO_PANE/vars/${pair%%=*}" >/dev/null
 done
 printf '\033]2;%s\007' "$3"
@@ -59,7 +59,7 @@ def pane(command=None, **env):
     return {'pane': {'new': new}}
 def agent(session, name, *records):
     return pane(f"{d}/pi-agent.sh {session} '' '{name}' " + ' '.join(f"'{r}'" for r in records), KO=ko)
-kido = agent('demo-kido', 'π kido', 'state=working:app=pi',
+kido = agent('demo-kido', 'π kido', 'state=working:app=koa',
              'id=agent-a:state=working:title=SW52ZXN0aWdhdGUgc2lkZWJhciBsYXlvdXQ=:msg=Q29tcGFyaW5nIG5hdGl2ZSByb3cgbWVhc3VyZW1lbnRz',
              'id=agent-a/permission:state=blocked:kind=permission:title=QXBwcm92ZSB0ZXN0IGNvbW1hbmQ=:msg=TWF5IEkgcnVuIHRoZSBpbnRlZ3JhdGlvbiB0ZXN0cz8=',
              'id=agent-b:state=working:title=Q2hlY2sgdG9vbGJhciBnZW9tZXRyeQ==',
@@ -71,7 +71,7 @@ print(json.dumps({'revision': 0, 'layout': {'sessions': [
         {'name': 'web', 'tree': {'split': 'h', 'children': [pane('top -o cpu'), {'split': 'v', 'children': [pane(), pane()]}]}}]},
     {'name': 'research', 'windows': [
         {'name': 'notes', 'tree': pane("printf '\\033]2;✳ notes\\007\\033]7501;state=idle:app=claude-code\\007'; exec sleep 86400")},
-        {'name': 'deep', 'tree': agent('demo-deep', 'π deep-dive', 'state=working:app=pi')}]},
+        {'name': 'deep', 'tree': agent('demo-deep', 'π deep-dive', 'state=working:app=koa')}]},
     {'name': 'ops', 'windows': [
         {'name': 'logs', 'tree': pane('tail -f /var/log/system.log')},
         {'name': 'log-1m', 'tree': log(1000000)},
@@ -81,7 +81,7 @@ PY
   printf '%s\n' '{"session":"main","name":"build","close":"on_exit","command":{"type":"argv","argv":["/bin/sleep","3600"]}}' | k api -X POST --input - /panes >/dev/null
   kido_pane=$(k api /layout | python3 -c 'import json,sys; t=json.load(sys.stdin)["layout"]["sessions"][0]["windows"][0]["tree"]; print(t["children"][0]["pane"])')
   deadline=$((SECONDS + 10))
-  until k api "/panes/$kido_pane" 2>/dev/null | python3 -c 'import json,sys; sys.exit(0 if "pi.session" in json.load(sys.stdin)["vars"] else 1)' 2>/dev/null; do
+  until k api "/panes/$kido_pane" 2>/dev/null | python3 -c 'import json,sys; sys.exit(0 if "koa.session" in json.load(sys.stdin)["vars"] else 1)' 2>/dev/null; do
     [ "$SECONDS" -lt "$deadline" ] || break
     sleep 0.1
   done
@@ -89,7 +89,7 @@ PY
     python3 - "$D" "$KO" "$kido_pane" "$name" <<'PY' | k api -X POST --input - /panes >/dev/null
 import json, sys
 directory, ko, parent, name = sys.argv[1:]
-record = 'state=blocked:app=pi:kind=question' if name == 'review' else 'state=working:app=pi'
+record = 'state=blocked:app=koa:kind=question' if name == 'review' else 'state=working:app=koa'
 print(json.dumps({'session': 'main', 'name': name, 'parent': parent, 'close': 'on_exit',
                   'env': [{'name': 'KO', 'value': ko}],
                   'command': {'type': 'argv', 'argv': [directory + '/pi-agent.sh', 'demo-' + name, '', 'π ' + name, record]}}))

@@ -111,18 +111,18 @@ func notificationWithdraws(cause: String) throws {
 
 @Test func notificationTopLevelPanePosts() throws {
     var state = try notifier()
-    let effects = try step(&state, [pane(1, lifecycle: piAgent(waiting()), mark: .waiting)])
+    let effects = try step(&state, [pane(1, lifecycle: koaAgent(waiting()), mark: .waiting)])
     #expect(effects.post.count == 1 && effects.post.first?.kind == .waiting)
 }
 
 @Test func notificationNestedPanePosts() throws {
     var state = try notifier()
-    let parent = pane(0, lifecycle: piAgent(working()), mark: .running, children: [pane(1, lifecycle: piAgent(waiting()), mark: .waiting)])
+    let parent = pane(0, lifecycle: koaAgent(working()), mark: .running, children: [pane(1, lifecycle: koaAgent(waiting()), mark: .waiting)])
     #expect(try step(&state, [parent]).post.count == 1)
 }
 
 private func paneGroup() -> Node {
-    group(5, [pane(1, window: 5, lifecycle: piAgent(waiting()), mark: .waiting), pane(2, window: 5, lifecycle: terminal())])
+    group(5, [pane(1, window: 5, lifecycle: koaAgent(waiting()), mark: .waiting), pane(2, window: 5, lifecycle: terminal())])
 }
 
 @Test func notificationTopLevelGroupPanePosts() throws {
@@ -133,7 +133,7 @@ private func paneGroup() -> Node {
 
 @Test func notificationNestedGroupPanePosts() throws {
     var state = try notifier()
-    let parent = pane(0, lifecycle: piAgent(working()), mark: .running, children: [paneGroup()])
+    let parent = pane(0, lifecycle: koaAgent(working()), mark: .running, children: [paneGroup()])
     #expect(try step(&state, [parent]).post.count == 1)
 }
 
@@ -202,7 +202,7 @@ func notificationReportsFollowIndicator(phaseName: String) throws {
 
 @Test func notificationContentAndTargetCoding() throws {
     var state = try notifier()
-    let pi = piAgent(waiting(), msg: "Allow access")
+    let pi = koaAgent(waiting(), msg: "Allow access")
     let nodes = [pane(1, title: "worker", lifecycle: pi, mark: .waiting), pane(2, title: "@named", lifecycle: pi, mark: .waiting),
                  pane(3, title: "raw", lifecycle: terminal(exited(2)), mark: .failed),
                  pane(4, title: "remote worker", lifecycle: remote(.agent(.init(name: "pi", status: report(waiting())))), mark: .waiting),

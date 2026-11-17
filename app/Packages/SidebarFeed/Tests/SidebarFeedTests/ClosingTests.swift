@@ -78,7 +78,7 @@ import KoModel
             }
         }
     }
-    for kind in [KoSchema.Live.ssh(.init(destination: "host", pane: .terminal(.init(interactive: false, status: shell())))), .host(.init(pane: .someAgent(.init(name: "pi", status: report(idle()))))), .runtime(.init(pane: .piAgent(.init(session: "s", status: report(idle())))))] {
+    for kind in [KoSchema.Live.ssh(.init(destination: "host", pane: .terminal(.init(interactive: false, status: shell())))), .host(.init(pane: .someAgent(.init(name: "pi", status: report(idle()))))), .runtime(.init(pane: .koaAgent(.init(session: "s", status: report(idle())))))] {
         #expect(closeScope(PaneProjection(makeSnapshot([pane(0, lifecycle: .live(kind))])), target: .pane(PaneID(number: 0))).ask)
     }
 }

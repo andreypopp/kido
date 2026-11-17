@@ -57,10 +57,10 @@ fn row_has_inbox(s: &Server, pane: &str, inbox: bool) {
 
 fn agent(s: &Server, session: &str, name: &str) -> String {
     let command =
-        format!("printf '\\033]7501;state=idle:app=pi\\007'; stty raw -echo; {PRINT_TOKEN}; cat");
+        format!("printf '\\033]7501;state=idle:app=koa\\007'; stty raw -echo; {PRINT_TOKEN}; cat");
     let pane = s.new_pane(json!({
         "command": {"type": "shell", "command": command},
-        "vars": {"pi.session": session, "pi.name": name}
+        "vars": {"koa.session": session, "koa.name": name}
     }));
     s.wait_row(&pane, "its pi root", |row| {
         row["status"]["program_status"]["records"]
@@ -236,7 +236,7 @@ fn the_server_stamps_the_sender_and_what_it_is_to_the_receiver_and_keeps_the_sco
     let w = agent(&s, "sess-w", "worker");
     let t = s.new_pane(json!({
         "command": {"type": "shell", "command": format!("stty raw -echo; {PRINT_TOKEN}; exec cat")},
-        "vars": {"pi.session": "no-root", "pi.name": "ghost"}
+        "vars": {"koa.session": "no-root", "koa.name": "ghost"}
     }));
     s.screen_has(&t, "TOKEN<");
 

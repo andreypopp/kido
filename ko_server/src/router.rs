@@ -1831,10 +1831,10 @@ mod tests {
         assert!(reply.starts_with("HTTP/1.1 200"), "{reply}");
     }
 
-    fn pi_pane(name: &str) -> Value {
-        let vars = json!({"pi.session": format!("session-{name}"), "pi.name": name});
+    fn koa_pane(name: &str) -> Value {
+        let vars = json!({"koa.session": format!("session-{name}"), "koa.name": name});
         json!({"command": {"type": "shell", "command":
-            "stty raw -echo; printf '\\033]7501;state=idle:app=pi\\007'; exec cat"}, "vars": vars})
+            "stty raw -echo; printf '\\033]7501;state=idle:app=koa\\007'; exec cat"}, "vars": vars})
     }
 
     fn add_window(server: &mut Harness, name: &str, pane: Value) -> String {
@@ -1880,7 +1880,7 @@ mod tests {
             }
             assert!(
                 std::time::Instant::now() < deadline,
-                "{pane} never showed a pi root"
+                "{pane} never showed a koa root"
             );
             server.step(Mode::Peek);
         }
@@ -1889,7 +1889,7 @@ mod tests {
     #[test]
     fn a_prompt_goes_to_an_agent_of_the_session_by_paste() {
         let mut server = harness("prompt");
-        let paste = add_window(&mut server, "paste", pi_pane("Paster"));
+        let paste = add_window(&mut server, "paste", koa_pane("Paster"));
         wait_for_root(&mut server, &paste);
 
         let (status, candidates) =

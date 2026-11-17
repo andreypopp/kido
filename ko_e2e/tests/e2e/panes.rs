@@ -599,7 +599,7 @@ fn closing(s: &Server) {
 
     let parent = new_pane(
         s,
-        &json!({"command": {"type": "shell", "command": "stty raw -echo; printf '\\033]7501;state=idle:app=pi\\007'; cat"}}),
+        &json!({"command": {"type": "shell", "command": "stty raw -echo; printf '\\033]7501;state=idle:app=koa\\007'; cat"}}),
     );
     s.wait_row(&parent, "its pi root", |row| {
         row["status"]["program_status"]["records"]

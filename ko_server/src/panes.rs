@@ -15,8 +15,12 @@ use crate::delivery::{Stamps, mint_stamps};
 use crate::pane::{Birth, Pane, Program};
 use crate::pane_proc::{Io, Launch, Life};
 use crate::runtime::RuntimeKey;
+use ko_config::values::RuntimeName;
+use ko_sys::file::is_executable;
 use ko_wire::ids::{PaneId, PaneToken, SessionId};
-use ko_wire::protocol::{Close, Command, CreatePane, Error, ErrorKind, Relation, Variable};
+use ko_wire::protocol::{
+    Close, Command, CreatePane, Error, ErrorKind, KoaStart, Relation, Variable,
+};
 
 #[derive(Debug)]
 pub(crate) enum AddError {
@@ -100,7 +104,10 @@ fn environment(
 pub(crate) type Wrap<'a> = &'a dyn Fn(Option<&[Vec<u8>]>) -> Vec<Vec<u8>>;
 
 pub(crate) enum Start<'a> {
-    Host(Option<&'a Path>),
+    Host {
+        cwd: Option<&'a Path>,
+        routed: Option<&'a RuntimeName>,
+    },
     Runtime(Wrap<'a>),
 }
 
@@ -117,26 +124,88 @@ pub(crate) fn program(
     {
         return Err(AddError::Invalid("invalid environment"));
     }
-    let bytes = |path: &std::path::Path| path.as_os_str().as_encoded_bytes().to_vec();
-    let shell = match start {
-        Start::Runtime(_) => b"/bin/sh".to_vec(),
-        Start::Host(_) => bytes(shell),
+    let bytes = |path: &Path| path.as_os_str().as_encoded_bytes().to_vec();
+    let (shell, routed) = match start {
+        Start::Runtime(_) => (b"/bin/sh".to_vec(), None),
+        Start::Host { routed, .. } => (bytes(shell), routed),
     };
+    let mut entered = false;
     let inner: Option<Vec<Vec<u8>>> = match &request.command {
         None => None,
         Some(Command::Argv { argv }) => {
+            if !argv
+                .first()
+                .is_some_and(|executable| executable.starts_with('/'))
+            {
+                return Err(AddError::Invalid("command executable must be absolute"));
+            }
             Some(argv.iter().map(|arg| arg.clone().into_bytes()).collect())
         }
         Some(Command::Shell { command }) => {
             Some(vec![shell, b"-c".to_vec(), command.clone().into_bytes()])
+        }
+        Some(Command::Koa {
+            start: koa,
+            name,
+            model,
+            browser,
+        }) => {
+            let mut argv = vec![match start {
+                Start::Runtime(_) => b"koa".to_vec(),
+                Start::Host { .. } => {
+                    let path = config.koa();
+                    entered = is_executable(&path);
+                    bytes(&path)
+                }
+            }];
+            if *browser {
+                argv.push(b"--browser".to_vec());
+            }
+            let mut flag = |flag: &str, value: &str| {
+                argv.extend([flag.as_bytes().to_vec(), value.as_bytes().to_vec()]);
+            };
+            if let Some(runtime) = routed {
+                flag("--runtime", runtime.as_str());
+            }
+            let session_id = match koa {
+                KoaStart::New { session_id } => session_id,
+                KoaStart::Resume { session } => {
+                    flag("--session", session.as_str());
+                    &None
+                }
+                KoaStart::Fork {
+                    session,
+                    session_id,
+                } => {
+                    flag("--fork", session.as_str());
+                    session_id
+                }
+            };
+            for (option, value) in [
+                ("--session-id", session_id),
+                ("--name", name),
+                ("--model", model),
+            ] {
+                if let Some(value) = value {
+                    flag(option, value);
+                }
+            }
+            Some(argv)
         }
     };
     let record = inner
         .clone()
         .unwrap_or_else(|| vec![bytes(&config.exe), b"shell".to_vec()]);
     Ok(match start {
-        Start::Host(cwd) => Program {
-            argv: record.clone(),
+        Start::Host { cwd, .. } => Program {
+            argv: if entered {
+                [bytes(&config.exe), b"shell".to_vec(), b"--".to_vec()]
+                    .into_iter()
+                    .chain(record.iter().cloned())
+                    .collect()
+            } else {
+                record.clone()
+            },
             record,
             cwd: cwd.map_or_else(|| config.cwd.clone(), Path::to_path_buf),
             env: request.env.clone(),
@@ -198,13 +267,6 @@ impl Panes {
         io: &mut Io<'_>,
     ) -> Result<(), AddError> {
         let program = &birth.program;
-        if !program
-            .record
-            .first()
-            .is_some_and(|executable| executable.starts_with(b"/"))
-        {
-            return Err(AddError::Invalid("command executable must be absolute"));
-        }
         if program.cwd.is_relative() {
             return Err(AddError::Invalid("cwd must be absolute"));
         }
@@ -849,7 +911,10 @@ mod tests {
                 &config(),
                 Path::new("/bin/sh"),
                 request,
-                Start::Host(Some(Path::new(cwd))),
+                Start::Host {
+                    cwd: Some(Path::new(cwd)),
+                    routed: None,
+                },
             )?;
             let birth = Birth {
                 webview_supported: false,

@@ -3,11 +3,11 @@ import { isRecord, str } from "./text.ts";
 type Api = components["schemas"];
 type Dead = Api["Dead"];
 
-export const VAR_SESSION = "pi.session";
-export const VAR_NAME = "pi.name";
-export const VAR_ACTIVITY = "pi.activity";
+export const VAR_SESSION = "koa.session";
+export const VAR_NAME = "koa.name";
+export const VAR_ACTIVITY = "koa.activity";
 export const VAR_TASK = "koa.task";
-export const VAR_RUNTIME = "pi.runtime";
+export const VAR_RUNTIME = "koa.runtime";
 
 export const reconnectBackoff = (previous: number): number => Math.min(previous ? previous * 2 : Number(process.env.KO_RECEIVER_BACKOFF_MS) || 200, 5000);
 
@@ -50,8 +50,8 @@ function rootRecord(programStatus: Api["ProgramStatus"] | null): { app: string; 
   return root ? { app: root.app ?? "", state: root.state } : null;
 }
 
-export function piAgent(kind: Api["Live"] | null) {
-  return (kind?.type === "host" || kind?.type === "runtime") && kind.pane.type === "pi_agent" ? kind.pane : undefined;
+export function koaAgent(kind: Api["Live"] | null) {
+  return (kind?.type === "host" || kind?.type === "runtime") && kind.pane.type === "koa_agent" ? kind.pane : undefined;
 }
 
 export function peerPanes(panes: PaneInfo[], of: PaneInfo): PaneInfo[] {
@@ -84,7 +84,7 @@ export function parsePanes(layout: Api["LayoutPanes"]): PaneInfo[] {
     const root = rootRecord(row.status?.program_status ?? null);
     const kind = row.status?.kind ?? null;
     const routed = row.vars[VAR_RUNTIME];
-    const route = kind?.type === "host" && piAgent(kind) && isRecord(routed) && typeof routed.name === "string" ? { name: routed.name, cwd: str(routed.cwd) } : undefined;
+    const route = kind?.type === "host" && koaAgent(kind) && isRecord(routed) && typeof routed.name === "string" ? { name: routed.name, cwd: str(routed.cwd) } : undefined;
     return {
       pane: row.id,
       session: place?.session ?? "",
@@ -128,8 +128,8 @@ export function runningRows(panes: PaneInfo[], me: PaneInfo | undefined): { pane
   const byPane = new Map(panes.map(p => [p.pane, p]));
   const related = relationships(panes, me);
   return panes.filter(p => !p.dead).map(p => ({ pane: p, row: {
-    id: piAgent(p.kind)?.session ?? p.pane, where: { type: "pane", pane: p.pane, window: p.window }, name: p.name || p.title, named: p.name !== "", self: p.pane === me?.pane,
-    status: p.root?.state ?? "starting", activity: p.activity, parent: piAgent(byPane.get(p.parent)?.kind ?? null)?.session ?? "",
+    id: koaAgent(p.kind)?.session ?? p.pane, where: { type: "pane", pane: p.pane, window: p.window }, name: p.name || p.title, named: p.name !== "", self: p.pane === me?.pane,
+    status: p.root?.state ?? "starting", activity: p.activity, parent: koaAgent(byPane.get(p.parent)?.kind ?? null)?.session ?? "",
     state: "running", relationship: p.pane === me?.pane ? "own" : related.get(p.pane) ?? "other",
   } }));
 }

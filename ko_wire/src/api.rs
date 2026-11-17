@@ -356,7 +356,7 @@ impl Param for PaneId {
 }
 
 impl Param for VarName {
-    const EXAMPLE: &'static str = "pi.session";
+    const EXAMPLE: &'static str = "koa.session";
 
     fn parse(value: &str) -> Result<VarName, Invalid> {
         percent_decode(value)
@@ -860,8 +860,8 @@ mod tests {
     #[test]
     fn variable_routes_decode_and_encode_their_name() {
         let id: PaneId = "pane_2".parse().unwrap();
-        let name = VarName::new("pi.session é/x?").unwrap();
-        let encoded = "/panes/pane_2/vars/pi.session%20%C3%A9%2Fx%3F";
+        let name = VarName::new("koa.session é/x?").unwrap();
+        let encoded = "/panes/pane_2/vars/koa.session%20%C3%A9%2Fx%3F";
         for (method, route) in [
             (
                 "PUT",

@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { join } from "node:path";
 import { appendFileSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
-import { makeFixture, selfPane, agentPane, startSession, savedSession, entriesOf, pollUntil, text, createChannel, withEnv, at, jsonRows, get, getList } from "./koa-agent-fixture.ts";
+import { makeFixture, selfPane, agentPane, startSession, savedSession, entriesOf, pollUntil, text, createChannel, withEnv, at, jsonRows, get } from "./koa-agent-fixture.ts";
 
 test("peers observed only on /client can end and resume as independent peers", async () => {
   const fx = makeFixture();
@@ -37,9 +37,7 @@ test("peers observed only on /client can end and resume as independent peers", a
     assert.equal(body.parent, undefined);
     assert.equal(body.close, undefined);
     assert.equal(body.env, undefined, "no agent environment");
-    assert.ok(!getList(body, "command", "argv").includes("--session-dir"));
-    assert.ok(getList(body, "command", "argv").includes(file));
-    assert.ok(getList(body, "command", "argv").includes("acme/saved"));
+    assert.deepEqual(body.command, { type: "koa", start: { type: "resume", session: file }, model: "acme/saved", browser: false });
     assert.equal(get(body.vars, "koa.task", "text"), "continue");
     fx.setPanes([selfPane()]);
     assert.match(text(await s.tool("spawn_agent").execute("c", { name: "Peer", resume_from: id, task: "again" })), /independent peer/);
@@ -91,7 +89,7 @@ test("sparse layouts retain existing rows and unchanged reconnects append nothin
   } finally { await fx.restore(); }
 });
 
-test("an untrusted stale pi.session does not hide an ended peer", async () => {
+test("an untrusted stale koa.session does not hide an ended peer", async () => {
   const fx = makeFixture();
   try {
     const id = "55555555abcdef05";
@@ -100,7 +98,7 @@ test("an untrusted stale pi.session does not hide an ended peer", async () => {
     const s = await startSession(fx);
     fx.setClientPanes([selfPane(), agentPane({ pane: "pane_2", session: id, name: "Stale" })]);
     await pollUntil(() => entriesOf(s, "koa.agent").some((e) => e.session === id));
-    fx.setPanes([selfPane(), { id: "pane_2", vars: { "pi.session": id } }]);
+    fx.setPanes([selfPane(), { id: "pane_2", vars: { "koa.session": id } }]);
     const rows = jsonRows(await s.tool("list_agents").execute("c", { which: "peers" }));
     assert.equal(rows.find((a) => a.id === id)?.state, "ended");
   } finally { await fx.restore(); }
@@ -152,7 +150,7 @@ test("an ended peer resumes without --name, whatever name its record has", async
     fx.setClientPanes([selfPane()]);
     assert.match(text(await s.tool("message_agent").execute("c", { to: id, message: "continue" })), /restarted/);
     const body = at(fx.posts("/panes"), 0);
-    assert.ok(!getList(body, "command", "argv").includes("--name"));
+    assert.equal(get(body.command, "name"), undefined);
     assert.equal(body.name, undefined);
     const named = "44444444abcdef04";
     savedSession(join(fx.dir, "sessions", "peer"), process.cwd(), named, "kido-app-design");
@@ -161,12 +159,12 @@ test("an ended peer resumes without --name, whatever name its record has", async
     fx.setClientPanes([selfPane()]);
     assert.match(text(await s.tool("message_agent").execute("c", { to: named, message: "continue" })), /restarted/);
     const revived = at(fx.posts("/panes"), 1);
-    assert.ok(!getList(revived, "command", "argv").includes("--name"));
+    assert.equal(get(revived.command, "name"), undefined);
     assert.equal(revived.name, "kido-app-design");
   } finally { await fx.restore(); }
 });
 
-test("a peer's pi.name replaces its title-derived name, on arrival, on rename and on the next layout", async () => {
+test("a peer's koa.name replaces its title-derived name, on arrival, on rename and on the next layout", async () => {
   const fx = makeFixture();
   try {
     fx.setPanes([selfPane()]);
@@ -178,9 +176,9 @@ test("a peer's pi.name replaces its title-derived name, on arrival, on rename an
     const latest = () => entriesOf(s, "koa.agent").filter((e) => e.role === "peer" && e.session === id).at(-1)?.name;
     const listed = async () => jsonRows(await s.tool("list_agents").execute("c", { which: "peers" })).find((a) => a.id === id)?.name;
     await pollUntil(() => latest() === "koa - Real - kido");
-    fx.clientEvent({ type: "var", pane: "pane_2", name: "pi.name", value: "Real" });
+    fx.clientEvent({ type: "var", pane: "pane_2", name: "koa.name", value: "Real" });
     await pollUntil(() => latest() === "Real", 2000, "name from the var event");
-    fx.clientEvent({ type: "var", pane: "pane_2", name: "pi.name", value: "Renamed" });
+    fx.clientEvent({ type: "var", pane: "pane_2", name: "koa.name", value: "Renamed" });
     await pollUntil(() => latest() === "Renamed", 2000, "name from a rename");
     fx.setPanes([selfPane()]);
     const before = fx.clientLayouts().length;
@@ -194,21 +192,21 @@ test("a peer's pi.name replaces its title-derived name, on arrival, on rename an
     await pollUntil(() => latest() === "Final", 2000, "name corrected by a layout");
     assert.equal(await listed(), "Final");
     assert.equal(readFileSync(join(fx.dir, "client-fed.jsonl"), "utf8").trim().split("\n").length, 2, "the reconnect replays no event from before its snapshot");
-    fx.clientEvent({ type: "var_deleted", pane: "pane_2", name: "pi.name" });
+    fx.clientEvent({ type: "var_deleted", pane: "pane_2", name: "koa.name" });
     fx.clientEvent({ type: "title", pane: "pane_2", title: "koa - Later - kido" });
     await pollUntil(() => latest() === "koa - Later - kido", 2000, "latest title without a name");
   } finally { await fx.restore(); }
 });
 
-test("a refused pi.name write is retried until pi.name is set", async () => {
+test("a refused koa.name write is retried until koa.name is set", async () => {
   const fx = makeFixture();
   try {
     const fail = join(fx.dir, "var-fail");
     writeFileSync(fail, "");
     await withEnv({ KO_FAKE_VAR_FAIL: fail }, async () => {
-      fx.setPanes([selfPane({ vars: { "pi.name": "" } })]);
+      fx.setPanes([selfPane({ vars: { "koa.name": "" } })]);
       await startSession(fx, { name: "Named" });
-      await pollUntil(() => get(fx.row("pane_1"), "vars", "pi.name") === "Named", 3000, "pi.name written after the refusal");
+      await pollUntil(() => get(fx.row("pane_1"), "vars", "koa.name") === "Named", 3000, "koa.name written after the refusal");
     });
   } finally { await fx.restore(); }
 });

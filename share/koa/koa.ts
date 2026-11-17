@@ -233,7 +233,7 @@ async function main(): Promise<void> {
           const agent = agentRef();
           if (first) {
             const encoded = Buffer.from(cleanLine(dialog ?? message, 2048)).toString("base64");
-            process.stdout.write(`\x1b]7501;state=${value === "clear" ? value : dialog ? "blocked" : value}${value === "clear" ? "" : `:app=pi${dialog ? ":kind=question" : ""}:msg=${encoded}`}\x1b\\`);
+            process.stdout.write(`\x1b]7501;state=${value === "clear" ? value : dialog ? "blocked" : value}${value === "clear" ? "" : `:app=koa${dialog ? ":kind=question" : ""}:msg=${encoded}`}\x1b\\`);
           } else {
             tree.writeRecord(agent);
           }

@@ -23,7 +23,7 @@ import XCTest
         let dir = try server()
         let echo = "stty raw -echo; exec cat"
         let build = #"{"split":"h","children":[\#(shell("printf '\\033]7501;state=working:app=claude-code\\007'; " + echo)),\#(shell("printf '\\033]7501;state=blocked:kind=permission:app=claude-code:title=TWVzc2FnZQ==\\007'; " + echo))]}"#
-        let pi = shell("printf '\\033]7501;state=working:app=pi\\007'; " + echo, vars: #"{"pi.session":"s1","pi.name":"Worker"}"#)
+        let pi = shell("printf '\\033]7501;state=working:app=koa\\007'; " + echo, vars: #"{"koa.session":"s1","koa.name":"Worker"}"#)
         let failed = shell("printf '\\033]133;C;cmdline_url=false\\007\\033]133;D;1\\007\\033]133;A\\007'; " + echo)
         let running = shell("printf '\\033]133;C;cmdline_url=make\\007'; " + echo)
         try put(#"{"revision":0,"layout":{"sessions":[{"name":"main","windows":[{"name":"build","tree":\#(build)},{"name":"running","tree":\#(running)},{"name":"failed","tree":\#(failed)},{"name":"pi","tree":\#(pi)}]},{"name":"other","windows":[{"name":"plain","tree":\#(shell(echo))}]}]}}"#, dir: dir)
@@ -37,7 +37,7 @@ import XCTest
             let running = phases.contains { if case .running = $0 { true } else { false } }
             return ran && running && panes.allSatisfy { $0.status != nil }
         }
-        let piPane = try XCTUnwrap(try client.model().panes.first { if case .host(let host)? = $0.status?.kind, case .piAgent = host.pane { true } else { false } }?.id)
+        let piPane = try XCTUnwrap(try client.model().panes.first { if case .host(let host)? = $0.status?.kind, case .koaAgent = host.pane { true } else { false } }?.id)
         let first = try createPane(#"{"session":"session_1","name":"first","parent":"\#(piPane)","close":"on_exit","command":{"type":"argv","argv":["/bin/sleep","60"]}}"#, dir: dir)
         _ = try createPane(#"{"session":"session_1","name":"nested","parent":"\#(first)","close":"on_exit","command":{"type":"argv","argv":["/bin/sleep","60"]}}"#, dir: dir)
         _ = try createPane(#"{"session":"session_1","name":"ended","close":"keep","command":{"type":"argv","argv":["/bin/sh","-c","exit 3"]}}"#, dir: dir)

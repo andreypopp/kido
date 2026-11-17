@@ -277,13 +277,13 @@ parent sends it work.
 
 `toplevel: true` starts the agent in a pane of its own with no parent
 edge: one `POST /panes` with the caller's ko session as `session`, no
-`parent` and no `close`, the command `ko shell -- koa` (with
-`--browser` when the caller's host is in browser mode, the session as
-`--session-id`, `--session` or `--fork`, the name of a new session
-and the model), and
+`parent` and no `close`, a `koa` command (design.md, "Starting a koa
+agent": browser mode when the caller's host is in it, the session as
+a new id, a resume or a fork, the name of a new session and the
+model), the caller's runtime as `runtime`, and
 the task as the pane variable `koa.task`, which the new root delivers
 as a message from the caller and then deletes. This is the one
-remaining use of `koa.task` and of `ko shell -- koa`. The server
+remaining use of `koa.task`. The server
 places the window after the caller's window and names it in the same
 change. It is a peer ("Peers", below): there is no subagent entry, no
 notice and no orphan rule. The pane has the default `close: exit`.
@@ -295,8 +295,8 @@ the caller's own children cannot become top-level.
 ## Peers
 
 A peer of a root is another root agent of its ko session: a pane whose
-status kind is a pi agent (design.md, "The trust rule"), with
-`pi.session` and no `parent`. It does not matter who started it.
+status kind is a koa agent (design.md, "The trust rule"), with
+`koa.session` and no `parent`. It does not matter who started it.
 A subagent records no peers.
 
 **Recording.** A root of a host koa (no `KO_RUNTIME`) opens `ko api
@@ -518,7 +518,7 @@ A peer restarts as a top-level agent ("A top-level agent") with
 file's last model, and the message as `koa.task`. It is refused
 without a session file. A peer entry has no pane, so the extension
 keeps the new pane in memory as the peer's starting pane until it
-publishes `pi.session` or ends; a second message in that time goes
+publishes `koa.session` or ends; a second message in that time goes
 to it. No `koa.work` is written, and the reply asks for no report.
 
 ## In the sidebar
@@ -881,6 +881,6 @@ message or a notice.
 - Two roots that record one peer can both restart it at the same
   time, because each restart lock is in its own process. Then two
   processes write one session file.
-- The live check of a resume reads this process and the panes' `pi.session`.
+- The live check of a resume reads this process and the panes' `koa.session`.
   Two koas that resume one saved session at the same time can both
   pass it, and two processes then write one session file.

@@ -18,7 +18,7 @@ import XCTest
         let status = try FileHandle(forWritingTo: URL(fileURLWithPath: feed))
         defer { try? status.close() }
         func titled(_ title: String) -> String { koPane("printf '\\033]2;\(title)\\007'; stty raw -echo; exec /bin/cat") }
-        let agent = koPane("printf '\\033]7501;state=idle:app=pi\\007'; stty raw -echo; exec /bin/cat", vars: #"{"pi.session":"s1","pi.name":"Agent caption"}"#)
+        let agent = koPane("printf '\\033]7501;state=idle:app=koa\\007'; stty raw -echo; exec /bin/cat", vars: #"{"koa.session":"s1","koa.name":"Agent caption"}"#)
         let editor = #"{"split":"h","children":[\#(agent),\#(titled("Review changes"))]}"#
         _ = try await KoServer.launch(dir: directory.path)
         try await koPut(directory.path, #"[{"name":"visual","windows":[{"name":"Shell","tree":\#(titled("Shell prompt"))},{"name":"Editor","tree":\#(editor)},{"name":"Logs","tree":\#(titled("Build output"))}]}]"#)

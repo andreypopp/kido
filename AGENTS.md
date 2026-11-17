@@ -422,18 +422,19 @@ most easily:
 - The podman kind runs only on Linux; its refusal elsewhere is the
   one platform branch outside `ko_sys` that is not an OS call.
 
-**Native agent status.** Only OSC 7501 root apps `pi` and
-`claude-code` identify agent panes (docs/design-program-status.md,
+**Native agent status.** Only OSC 7501 root apps `koa` and
+`claude-code` identify agent panes; a bare `pi`'s root `app=pi` is a
+terminal's program report (docs/design-program-status.md,
 "Sources"), and only while the foreground that reported the root is
 still the foreground ("The record set"). `Kind::is_agent` is the one
 test of an agent pane; `ko prompt` and its routes use it with the
 pane's death, and never fall back to the caller or the focused pane.
-Three pane variables supply local pi identity, never
-detection: `pi.session`, `pi.name` and `pi.activity`. ko trusts them
-only while the pane has an OSC 7501 root with `app=pi`, which koa
+Three pane variables supply koa identity, never
+detection: `koa.session`, `koa.name` and `koa.activity`. ko trusts them
+only while the pane has an OSC 7501 root with `app=koa`, which koa
 writes for its session. ssh panes use
 `ssh.dest` and `ssh.args`, trusted only while the foreground is `ssh`.
-A routed pi's `pi.runtime` follows the same rule in the harness and
+A routed koa's `koa.runtime` follows the same rule in the harness and
 in the clients, where only `ko_client`'s `Model::place` reads it; the
 server does not read it, and nothing reads the generic `ko.runtime`
 (docs/design-runtimes.md, "Agents in a runtime" and "Clients").

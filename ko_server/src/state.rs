@@ -516,7 +516,7 @@ impl State {
             .and_then(|()| self.choose_runtimes(created.iter().map(|c| (c.0, &c.1)), origin, read));
         let runtime_ops::ChosenRuntimes {
             settings: chosen,
-            keys,
+            destinations,
         } = match chosen {
             Ok(chosen) => chosen,
             Err(error) => {
@@ -526,7 +526,10 @@ impl State {
         };
         let dirs: Vec<Dir> = created
             .iter()
-            .map(|(id, request, _)| self.start_dir(keys.get(id), request, caller, read))
+            .zip(&destinations)
+            .map(|((_, request, _), destination)| {
+                self.start_dir(destination.inside(), request, caller, read)
+            })
             .collect();
         let added: usize = created.iter().map(|(_, _, vars)| vars.bytes()).sum();
         if self.vars_used().saturating_add(added) > SERVER_MAX_TOTAL {
@@ -540,7 +543,9 @@ impl State {
         let settings = OnceCell::new();
         let mut started = Vec::new();
         self.withheld.extend(created.iter().map(|(id, _, _)| *id));
-        for ((id, request, vars), dir) in created.into_iter().zip(dirs) {
+        for (((id, request, vars), dir), destination) in
+            created.into_iter().zip(dirs).zip(destinations)
+        {
             let size = sizes.get(&id).copied().unwrap_or(Size::DEFAULT);
             let settings = settings.get_or_init(|| self.config.settings(&read.server()));
             let added = self
@@ -549,7 +554,7 @@ impl State {
                     &settings.shell,
                     &request,
                     vars,
-                    (&chosen, &dir, keys.get(&id)),
+                    (&chosen, &dir, &destination),
                 )
                 .and_then(|birth| self.add_pane(poll, settings, id, size, birth));
             match added {

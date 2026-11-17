@@ -172,7 +172,7 @@ fn explicit_title(live: &Live) -> bool {
     match live {
         Live::Host { pane } | Live::Runtime { pane } => match pane {
             Local::Terminal(shell) => shell.running_command().is_some(),
-            Local::SomeAgent { .. } | Local::PiAgent { .. } => true,
+            Local::SomeAgent { .. } | Local::KoaAgent { .. } => true,
         },
         Live::Ssh { .. } => true,
     }

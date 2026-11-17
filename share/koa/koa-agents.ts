@@ -168,11 +168,11 @@ async function sessionManagerFor(sdk: Sdk, parsed: Args, cwd: string, dir: strin
     return row.path;
   };
   if (parsed.fork) return SessionManager.forkFrom(await find(parsed.fork), cwd, dir, parsed.sessionId !== undefined ? { id: parsed.sessionId } : undefined);
-  if (parsed.session) return SessionManager.open(await find(parsed.session), dir);
+  if (parsed.session) return SessionManager.open(await find(parsed.session), dir, cwd);
   if (parsed.continue) return SessionManager.continueRecent(cwd, dir);
   if (parsed.sessionId) {
     const existing = (await SessionManager.list(cwd, dir)).find(row => row.id === parsed.sessionId);
-    if (existing) return SessionManager.open(existing.path, dir);
+    if (existing) return SessionManager.open(existing.path, dir, cwd);
   }
   return SessionManager.create(cwd, dir, parsed.sessionId !== undefined ? { id: parsed.sessionId } : undefined);
 }

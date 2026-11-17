@@ -685,6 +685,7 @@ impl Claims<'_> {
                 None => return shell(),
                 Some(Command::Argv { argv }) => argv.first().map(String::as_str),
                 Some(Command::Shell { command }) => command.split_whitespace().next(),
+                Some(Command::Koa { .. }) => Some("koa"),
             },
         };
         word.and_then(base_name).or_else(shell)
@@ -698,7 +699,7 @@ impl Claims<'_> {
                 let vars = Vars::checked(std::mem::take(&mut new.vars))?;
                 let pane = self.ids.pane();
                 let parent = new.parent;
-                self.created.push((pane, new, vars));
+                self.created.push((pane, *new, vars));
                 (pane, parent)
             }
         };

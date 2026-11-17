@@ -271,6 +271,21 @@ impl Config {
         }
     }
 
+    pub(crate) fn koa(&self) -> PathBuf {
+        match &self.bin_dir {
+            Some(dir) => dir.join("koa"),
+            None => {
+                let candidates = installed(&self.exe, "share/ko/bin/koa");
+                candidates
+                    .iter()
+                    .find(|path| path.exists())
+                    .or(candidates.first())
+                    .cloned()
+                    .unwrap_or_else(|| self.exe.with_file_name("koa"))
+            }
+        }
+    }
+
     pub(crate) fn linger(&self) -> Duration {
         server_settings(&self.file).linger_seconds.duration()
     }

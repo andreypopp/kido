@@ -18,7 +18,7 @@ use crate::status::{Mark, Seen};
 use crate::tree;
 use crate::wire::{Link, Next, text};
 
-const PI_RUNTIME: VarName = VarName::known("pi.runtime");
+const KOA_RUNTIME: VarName = VarName::known("koa.runtime");
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Notice {
@@ -73,7 +73,7 @@ pub enum Place {
         name: RuntimeName,
         source: protocol::RuntimeSource,
     },
-    /// A host pane of a pi agent whose tools run in the runtime.
+    /// A host pane of a koa agent whose tools run in the runtime.
     Routed {
         name: RuntimeName,
         source: protocol::RuntimeSource,
@@ -310,7 +310,7 @@ impl Model {
         self.seen.observe(shown, *attending, &self.panes);
     }
 
-    // A pi agent's `pi.runtime` counts only while ko reads the pane as that agent, as `pi.session`
+    // A koa agent's `koa.runtime` counts only while ko reads the pane as that agent, as `koa.session`
     // does. `ko.runtime` is a marker that any program may set, so it is never read.
     pub fn place(&self, pane: &Pane) -> Option<Place> {
         let source = |name: &RuntimeName| {
@@ -338,12 +338,12 @@ impl Model {
         if !matches!(
             pane.row.status.as_ref().map(|status| &status.kind),
             Some(Live::Host {
-                pane: Local::PiAgent { .. }
+                pane: Local::KoaAgent { .. }
             })
         ) {
             return None;
         }
-        let named = pane.vars.get(&PI_RUNTIME)?["name"].as_str()?;
+        let named = pane.vars.get(&KOA_RUNTIME)?["name"].as_str()?;
         let name = RuntimeName::try_from(named.to_owned()).ok()?;
         Some(Place::Routed {
             source: source(&name),
@@ -1134,18 +1134,18 @@ mod tests {
     }
 
     #[test]
-    fn a_pane_shows_its_runtime_or_a_routed_pi_agents_and_a_runtime_event_changes_the_state() {
+    fn a_pane_shows_its_runtime_or_a_routed_koa_agents_and_a_runtime_event_changes_the_state() {
         let mut model = model(Layout { sessions: vec![] });
         model.runtimes = serde_json::from_value(json!([
             {"source": {"type": "config"}, "name": "box", "kind": "ssh", "state": {"type": "up"}},
             {"source": {"type": "config"}, "name": "other", "kind": "command", "state": {"type": "down"}},
         ]))
         .unwrap();
-        let routed = |name: &str| (("pi.runtime"), json!({"name": name, "cwd": "/w"}));
+        let routed = |name: &str| (("koa.runtime"), json!({"name": name, "cwd": "/w"}));
         let pi_status = serde_json::from_value::<protocol::PaneStatus>(json!({
-            "kind": {"type": "host", "pane": {"type": "pi_agent", "session": "s", "status":
+            "kind": {"type": "host", "pane": {"type": "koa_agent", "session": "s", "status":
                 {"since": 0, "state": {"type": "idle"}}}},
-            "program_status": {"serial": 0, "records": []}, "title": "pi", "since": 0}))
+            "program_status": {"serial": 0, "records": []}, "title": "koa", "since": 0}))
         .unwrap();
         let mut entries = vec![
             entry(1, &[]),
@@ -1185,7 +1185,7 @@ mod tests {
                 }),
                 None,
             ],
-            "the row first; a variable only on a pi agent, whether or not the runtime is listed; never ko.runtime"
+            "the row first; a variable only on a koa agent, whether or not the runtime is listed; never ko.runtime"
         );
     }
 

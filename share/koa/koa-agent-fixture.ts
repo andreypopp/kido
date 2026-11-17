@@ -71,11 +71,6 @@ export function getRows(value: unknown, ...path: string[]): Array<Record<string,
 
 export const jsonRows = (result: ToolResult): Array<Record<string, unknown>> => getRows(JSON.parse(text(result)));
 
-export const argvOf = (body: Record<string, unknown>): string[] => getList(body, "command", "argv").map((arg) => {
-  if (typeof arg !== "string") throw new Error("an argv entry is not a string");
-  return arg;
-});
-
 export const envOf = (body: Record<string, unknown>, name: string): unknown => getRows(body, "env").find((variable) => variable.name === name)?.value;
 
 export function rowWhere(rows: Array<Record<string, unknown>>, key: string, value: unknown): Record<string, unknown> {
@@ -137,8 +132,8 @@ interface PaneRow {
 
 type ApiCall = { method: string; path: string; body: string };
 
-const piStatus = (state = "idle") => ({ serial: 1, records: [{ id: "", state, app: "pi" }] });
-const piKind = (session: string) => ({ kind: { type: "host", pane: { type: "pi_agent", session, status: { since: 0, state: { type: "idle" } } } } });
+const koaStatus = (state = "idle") => ({ serial: 1, records: [{ id: "", state, app: "koa" }] });
+const koaKind = (session: string) => ({ kind: { type: "host", pane: { type: "koa_agent", session, status: { since: 0, state: { type: "idle" } } } } });
 
 export const exited = (code: number) => ({ at: 1, cause: { type: "exited", code } });
 
@@ -149,7 +144,7 @@ function paneRow(row: PaneRow): PaneRow {
     cwd: "/tmp",
     title: "",
     dead: null,
-    program_status: piStatus(),
+    program_status: koaStatus(),
     status: { kind: { type: "host", pane: { type: "terminal", phase: { type: "unknown" } } } },
     ...row,
     vars: row.vars ?? {},
@@ -157,7 +152,7 @@ function paneRow(row: PaneRow): PaneRow {
 }
 
 export function selfPane(row: Partial<PaneRow> = {}): PaneRow {
-  return paneRow({ id: "pane_1", title: "π - Self", status: piKind(String(row.vars?.["pi.session"] ?? "self-session")), ...row, vars: { "pi.session": "self-session", "pi.name": "Self", ...row.vars } });
+  return paneRow({ id: "pane_1", title: "π - Self", status: koaKind(String(row.vars?.["koa.session"] ?? "self-session")), ...row, vars: { "koa.session": "self-session", "koa.name": "Self", ...row.vars } });
 }
 
 export function agentPane(row: {
@@ -181,11 +176,11 @@ export function agentPane(row: {
     close: row.close,
     inbox: row.inbox ?? true,
     dead: row.dead ?? null,
-    program_status: piStatus(row.state ?? "idle"),
-    status: piKind(row.session),
+    program_status: koaStatus(row.state ?? "idle"),
+    status: koaKind(row.session),
     title: row.title ?? "",
     cwd: row.cwd ?? "/tmp",
-    vars: { "pi.session": row.session, "pi.name": row.name ?? "", ...row.vars },
+    vars: { "koa.session": row.session, "koa.name": row.name ?? "", ...row.vars },
   });
 }
 

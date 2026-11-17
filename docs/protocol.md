@@ -719,7 +719,11 @@ invariants.
   command?, env?, vars?, parent?, close?, runtime?}}` (`CreatePane`); its `vars`
   have the limits of the pane variables below, and a refused one is
   `invalid` with the document unchanged. A pane without `command` runs
-  `ko shell`. `parent` and `close` are the pane's for its life, and
+  `ko shell`. A `command` (`Command`) is an `argv` with an absolute
+  executable, a `shell` command line, or `koa`, which starts the
+  server's own koa (design.md, "Starting a koa agent"); with a
+  `runtime`, the runtime's `koa` setting places a `koa` pane
+  (design-runtimes.md, "A koa command in a runtime"). `parent` and `close` are the pane's for its life, and
   its row carries them from the layout event that adds it. `parent`
   must name a pane that is not dead: an unknown one is `not_found`, a
   dead one `gone`; a caller that acts as a pane may name only itself.
@@ -797,7 +801,7 @@ invariants.
   goes in the layout event of that change. The `focus` event has no
   replay: a client that reconnects reads it from `GET /layout`.
 - A new window without `name` gets a default from its first pane: the basename of the first word of the
-  pane's `command`, else of the shell that `ko shell` runs. A new
+  pane's `command`, `koa` for a `koa` command, else of the shell that `ko shell` runs. A new
   window whose first pane moves in from another window takes that
   window's name, because the document does not know a pane's program.
   An existing window without `name` keeps its name; a `name` renames
@@ -882,7 +886,7 @@ stamps the sender, enforces the scope and carries the bytes.
   any JSON of at most 4 KiB encoded; `text` is bounded by the body
   limit.
 - The server stamps `from` from the caller's identity: a pane, with
-  its `pi.session` and `pi.name` under the trust rule of section 7,
+  its `koa.session` and `koa.name` under the trust rule of section 7,
   or the user. `relation` is what the sender is to the receiver, from
   the `parent` edges (`relation` in `ko_server/src/panes.rs`):
   because a pane reaches only its scope, a receiver sees a pane
@@ -949,7 +953,7 @@ every pane's row stays under the 32 MiB limit of a server message
 without control
 characters, at most 256 bytes, percent-decoded from the path. A dead
 pane keeps its variables until it is removed. The server stores and announces
-variables and reads only the `pi.*` and `ssh.*` names under the
+variables and reads only the `koa.*` and `ssh.*` names under the
 trust rules of design-program-status.md. `ko.runtime` is a generic
 marker that the server does not read: a program in a host pane that
 runs its work in a runtime names the runtime there, for clients. `ko ssh` sets `ssh.dest` and `ssh.args`

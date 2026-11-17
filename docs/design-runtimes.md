@@ -101,7 +101,7 @@ runtimes:
         - {host: /Users/me/src, runtime: /src}
     paths:
       - {host: /Users/me/src, runtime: /src}
-    pi: runtime
+    koa: runtime
 ```
 
 The types are `ko_config/src/runtime.rs`, with the newtypes of
@@ -109,12 +109,12 @@ The types are `ko_config/src/runtime.rs`, with the newtypes of
 that the wire and the command line share (`RuntimeName`, `AbsPath`)
 and the ssh option classifier (`ssh_args.rs`). The fields that every runtime has
 are its `env`, its default `cwd`, the `paths` prefix list of the cwd
-mapping, `pi`, where an agent's pi runs ("Agents in a runtime"), and
+mapping, `koa`, where an agent's koa runs ("Agents in a runtime"), and
 `color`, an sRGB `#rrggbb` that clients draw the runtime in
 ("Clients"). The kind is one key beside them, `ssh`, `container`,
 `podman` or `command`, whose value holds the kind's fields; an entry gives exactly
 one. `GET /runtimes/NAME` reports the effective `paths`, the `cwd`,
-`pi` and the `color`; a spawner and a routed pi read the first three.
+`koa` and the `color`; a spawner and a routed koa read the first three.
 
 **The `command` kind** exists for the e2e suite only. The server
 accepts it only with `KO_RUNTIME_COMMAND_KIND=1` in its environment;
@@ -277,8 +277,8 @@ them, because the pane row carries no link state.
 **Where a pane runs** is one function, `Model::place` in
 `ko_client/src/model.rs`, which both clients use (Kido.app through
 the model JSON's `place`): the row's `runtime`, else, only while the
-pane's status is a host pi agent, the `name` of its `pi.runtime`
-("Agents in a runtime"), which is a routed pi. `ko.runtime` is not
+pane's status is a host koa agent, the `name` of its `koa.runtime`
+("Agents in a runtime"), which is a routed koa. `ko.runtime` is not
 read: any program can set it, and no rule makes it trusted. A pane
 whose runtime is not in the list still shows the name, without a
 state. `Model::place` returns the runtime's key: the name and the
@@ -294,8 +294,8 @@ client draws no colour: its suffix is the name, with a glyph for a
 `Starting` or `Failed` link (`ko_tui/src/sidebar.rs`).
 
 **A new pane inherits** the runtime of the focused pane's row, not of
-a routed pi's variable: a split or a new window from a routed pi is a
-host pane, as the pi's own shell is. The terminal client's
+a routed koa's variable: a split or a new window from a routed koa is a
+host pane, as the koa's own shell is. The terminal client's
 `C-a c` and Kido.app's split and new-window commands follow
 this rule; Kido.app's command palette names a runtime or `Host`
 explicitly. Both clients name the source pane as the new pane's
@@ -650,7 +650,7 @@ program sees it and answers its path; Kido.app pastes that path into
 the pane. The pane decides the place: a pane with no runtime (its
 `Pane::runtime()`, which also covers a visit) gets the file on the
 server host, a pane in a runtime gets it inside that runtime, and the
-path is the runtime's own path. `pi.runtime` plays no part. The user
+path is the runtime's own path. `koa.runtime` plays no part. The user
 may upload into any live pane, a pane caller on the host socket only
 into its own pane, and a runtime connection not at all, as for the
 exec session.
@@ -1063,9 +1063,10 @@ no master outlives a down.
 ## Agents in a runtime
 
 An agent works in a runtime in one of two modes, by the runtime's
-`pi`. The harness side is `share/koa/koa-agent.ts`; ko's part of either
-mode is the configuration's `pi`, the `cwd` and `pi` of `GET
-/runtimes/NAME`, the exec session and the `runtime` body field. The
+`koa`. The harness side is `share/koa/koa-agent.ts`; ko's part of either
+mode is the configuration's `koa`, the `cwd` and `koa` of `GET
+/runtimes/NAME`, the exec session, the `runtime` body field and the
+placement of a `koa` command ("A koa command in a runtime", below). The
 harness sends a runtime's name with its pane identity, so the name
 resolves in the pane's session ("The model"), and an ad-hoc runtime
 works in both modes as a configured one, with no branch in the
@@ -1073,7 +1074,7 @@ harness; a subagent shares its spawner's pane and resolves the same
 name. An ad-hoc runtime that is down starts at the first
 exec from its stored definition.
 
-**Routed** (`pi: "host"`, the default). pi runs on the host in a host
+**Routed** (`koa: "host"`, the default). koa and its pi run on the host in a host
 pane, as `koa --runtime NAME` or as a routed subagent of a host koa:
 its session file, extensions,
 skills, prompt templates and credentials are the host's. Its seven
@@ -1131,7 +1132,7 @@ The pane is a host pane in every row field.
   completion stay the host's; on a mounted project they are the same
   files, and on an ssh project they are absent.
 - **What refuses.** At `session_start` the harness reads `GET
-  /runtimes/NAME`. A missing runtime or one whose `pi` is `"runtime"`
+  /runtimes/NAME`. A missing runtime or one whose `koa` is `"runtime"`
   leaves pi running with every routed tool, `!`, `async_bash` and a
   `spawn_agent` without `runtime` refusing with the reason, and a
   notice. A `Failed` runtime does not
@@ -1147,8 +1148,8 @@ The pane is a host pane in every row field.
   log is written on the host, so the routed `read`, which runs in the
   runtime, reads it only where the runtime maps it. A job counts
   against the 32 exec sessions and keeps the runtime from going idle.
-- **The variables.** The root of a routed koa writes `pi.runtime`
-  (`{ name, cwd }`, the runtime cwd) beside `pi.session`, believed under the same trust
+- **The variables.** The root of a routed koa writes `koa.runtime`
+  (`{ name, cwd }`, the runtime cwd) beside `koa.session`, believed under the same trust
   rule, and `ko.runtime` (the name), and deletes both with the others
   at shutdown. `ko.runtime` is a generic marker: any program that
   sends its work into a runtime from a host pane may set it; no
@@ -1159,7 +1160,7 @@ The pane is a host pane in every row field.
   and the receiver's header adds `in runtime NAME`; the server never
   reads a message's data.
 
-**Inside** (`pi: "runtime"`). koa and its pi run in a runtime pane,
+**Inside** (`koa: "runtime"`). koa and its pi run in a runtime pane,
 through `ko enter`, with `KO_RUNTIME` in their environment, and the
 harness routes nothing. The image therefore needs node 24 and pi,
 which koa's shim checks; koa's page reaches the client through the
@@ -1171,20 +1172,39 @@ refuses `resume_from` and `fork` into such a runtime.
 (design-subagents.md, "The tree"), so a runtime decides only where its
 tools run. `spawn_agent`'s `runtime` reads `GET /runtimes/NAME`; a
 host koa starts a routed child in its own process, with `--runtime
-NAME` as the child's flag value, and refuses a runtime whose `pi` is
+NAME` as the child's flag value, and refuses a runtime whose `koa` is
 `"runtime"`: an inside subagent of a host koa would be a pane, and a
 subagent is not one. Without `runtime`, a routed spawner's child is
 routed in the same runtime. A koa inside a runtime runs its children
 in its own process, so they are inside that runtime by construction,
 and it refuses another runtime. `toplevel: true` is a pane and keeps
-both modes: a routed top-level koa (a host pane whose command gains
-`--runtime NAME`) or an inside one (`POST /panes` with `runtime`; the
-server maps its host cwd). An inside spawner sends its runtime cwd as
-a string, which passes unchanged because the caller is in the target
-runtime. The registry entry of a child records its runtime's name, so
+both modes through one `koa` command with the request's `runtime`;
+the server picks the mode ("A koa command in a runtime"). An inside
+spawner sends its runtime cwd as a string, which passes unchanged
+because the caller is in the target runtime. The registry entry of a child records its runtime's name, so
 a resume through a message routes it the same way. `list_agents`
 shows `runtime` for an own child from its registry entry, and for a
-pane peer from the row's field, else from a trusted `pi.runtime`.
+pane peer from the row's field, else from a trusted `koa.runtime`.
+
+**A koa command in a runtime.** `POST /panes` with a `koa` command
+(protocol.md, section 7) and a `runtime` places the pane by the
+runtime's `koa` (`Destination` in `ko_server/src/state/runtime_ops.rs`);
+every other command is inside:
+
+- `koa: host`: routed. The pane is a host pane (no row `runtime`),
+  and the server runs its own koa with `--runtime NAME`. The `cwd` is
+  a host path, as for a host pane; a `{pane}` cwd of a runtime pane
+  maps its OSC 7 directory back to the host through the runtime's
+  `paths`. koa maps its host directory into the runtime for its tools.
+  A connection of a runtime cannot create a host pane, so it gets
+  `refused` for a runtime with `koa: host`.
+- `koa: runtime`: inside. The pane is born in the runtime, as any
+  runtime pane is: the cwd maps through `paths`, a `{pane}` cwd of a
+  pane in the same runtime stays the runtime path, and `ko enter`
+  runs the runtime's `koa` with no `--runtime`, under the runtime's
+  login shell and with `KO_RUNTIME`. A runtime without koa ends the
+  pane with the transport's exit, not with cause `failed`: the server
+  cannot see inside the runtime before the start.
 
 **Cancel.** A tool's abort or timeout kills its `ko api --stream`
 process, which closes the session. On every kind, the inside ko then
@@ -1305,11 +1325,11 @@ The configuration file, 2026-11-04:
 
 Agents in a runtime, 2026-11-04:
 
-- An agent in a runtime is routed unless the runtime says `pi:
+- An agent in a runtime is routed unless the runtime says `koa:
   "runtime"`; ko never copies pi into a runtime.
-- Other extensions' tools in a routed pi run on the host, with a
+- Other extensions' tools in a routed koa run on the host, with a
   prompt section and a notice, not a refusal.
-- `@` completion in a routed pi lists host files.
+- `@` completion in a routed koa lists host files.
 - A routed tool's cancel is ko's, not the harness's.
 
 Ad-hoc runtimes, 2026-11-06:
@@ -1379,8 +1399,8 @@ Clients, 2026-11-04:
   removes one, because the configuration file can change while a
   client is connected.
 - `ko.runtime` marks no pane in a client; only the row's `runtime` and
-  a trusted pi's `pi.runtime` do.
-- A new pane takes the focused row's `runtime`; a routed pi's host
+  a trusted koa's `koa.runtime` do.
+- A new pane takes the focused row's `runtime`; a routed koa's host
   pane gives a host pane.
 
 ## Not built

@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { join } from "node:path";
 import { mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 
-import { makeFixture, selfPane, startSession, createChannel, text, entriesOf, withEnv, savedSession, argvOf, get } from "./koa-agent-fixture.ts";
+import { makeFixture, selfPane, startSession, createChannel, text, entriesOf, withEnv, savedSession, get } from "./koa-agent-fixture.ts";
 
 test("a toplevel spawn is one POST with the session and neither parent nor close nor edge, and records no child", async () => {
   const fx = makeFixture();
@@ -17,8 +17,10 @@ test("a toplevel spawn is one POST with the session and neither parent nor close
     assert.equal(fx.posts("/panes").length, 1);
     assert.deepEqual({ session: body.session, parent: body.parent, close: body.close }, { session: "session_3", parent: undefined, close: undefined });
     assert.equal(body.env, undefined, "no agent environment");
-    assert.ok(!argvOf(body).includes("--session-dir"));
-    assert.ok(argvOf(body).includes("--session-id"));
+    const session = get(body.command, "start", "session_id");
+    assert.match(String(session), /^[0-9a-f]{32}$/);
+    assert.deepEqual(body.command, { type: "koa", start: { type: "new", session_id: session }, name: "peer", model: get(body.command, "model"), browser: false });
+    assert.equal(typeof get(body.command, "model"), "string");
     assert.equal(get(body.vars, "koa.task", "text"), "go");
     assert.match(reply, /independent peer; no report or ending notice$/);
     assert.deepEqual(entriesOf(s, "koa.agent").map((entry) => entry.role), ["peer"]);
@@ -105,6 +107,21 @@ test("a tool call to spawn in a host without a tree is the host's refusal, and n
     assert.match(text(await s.tool("spawn_agent").execute("c", { name: "worker", task: "x", model: "acme/nonexistent" })), /^could not spawn agent: model "acme\/nonexistent" is not a model of a configured provider/);
     assert.deepEqual(fx.posts("/panes"), []);
     assert.deepEqual(entriesOf(s, "koa.agent"), []);
+  } finally {
+    await fx.restore();
+  }
+});
+
+test("a toplevel spawn in a runtime names the runtime and leaves where koa runs to the server", async () => {
+  const fx = makeFixture();
+  try {
+    fx.setPanes([selfPane({ session: "session_3" })]);
+    const s = await startSession(fx);
+    for (const [koa, name] of [["host", "routed"], ["runtime", "inside"]]) {
+      fx.setRuntimes({ dev: { paths: [], koa } });
+      assert.match(text(await s.tool("spawn_agent").execute("c", { name, task: "go", toplevel: true, runtime: "dev" })), /^spawned/);
+    }
+    assert.deepEqual(fx.posts("/panes").map((body) => [body.runtime, get(body.command, "type"), get(body.command, "name")]), [["dev", "koa", "routed"], ["dev", "koa", "inside"]]);
   } finally {
     await fx.restore();
   }

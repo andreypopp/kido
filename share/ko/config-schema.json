@@ -687,6 +687,11 @@
           "$ref": "#/$defs/Env",
           "default": {}
         },
+        "koa": {
+          "description": "Where koa runs for an agent in this runtime.",
+          "$ref": "#/$defs/RuntimeKoa",
+          "default": "host"
+        },
         "paths": {
           "description": "A host directory that a host caller names as cwd maps to the runtime directory of the\nlongest matching host prefix.",
           "type": "array",
@@ -694,11 +699,6 @@
           "items": {
             "$ref": "#/$defs/PathMap"
           }
-        },
-        "pi": {
-          "description": "Where pi runs for an agent in this runtime.",
-          "$ref": "#/$defs/RuntimePi",
-          "default": "host"
         },
         "podman": {
           "description": "A Podman container on a Linux server.",
@@ -772,8 +772,8 @@
       "type": "string",
       "pattern": "^#[0-9A-Fa-f]{6}$"
     },
-    "RuntimePi": {
-      "description": "Where an agent's pi runs when it works in a runtime.",
+    "RuntimeKoa": {
+      "description": "Where an agent's koa runs when it works in a runtime.",
       "oneOf": [
         {
           "description": "On the host. Its built-in tools and `!` commands run in the runtime through exec sessions.",

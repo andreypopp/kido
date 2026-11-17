@@ -1,4 +1,5 @@
 use std::collections::BTreeMap;
+use std::collections::btree_map::Entry;
 
 use super::*;
 use crate::pane::Birth;
@@ -6,9 +7,11 @@ use crate::panes::{AddError, Start, is_descendant, program, scope};
 use crate::runtime::pane::{self, Dir, Wrap as Entering, socket_path};
 use crate::runtime::{CLEANUP_LIMIT, Due, PASS_HOLD, RuntimeKey, Wait, Who};
 use crate::server::Origin;
+use ko_config::runtime::RuntimeKoa;
 use ko_wire::api::{Route, WaitMs, routes};
 use ko_wire::protocol::{
-    ClientRuntime, Empty, Error, ErrorKind, LinkState, RuntimeInfo, RuntimeSource, RuntimeWait,
+    ClientRuntime, Command, Empty, Error, ErrorKind, LinkState, RuntimeInfo, RuntimeSource,
+    RuntimeWait,
 };
 use ko_wire::vars::Vars;
 
@@ -27,10 +30,26 @@ pub(super) fn resolve_runtime(
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(super) enum Destination {
+    Host,
+    Routed { key: RuntimeKey },
+    Inside { key: RuntimeKey },
+}
+
+impl Destination {
+    pub(super) fn inside(&self) -> Option<&RuntimeKey> {
+        match self {
+            Destination::Inside { key } => Some(key),
+            Destination::Host | Destination::Routed { .. } => None,
+        }
+    }
+}
+
 #[derive(Debug)]
 pub(super) struct ChosenRuntimes {
     pub(super) settings: BTreeMap<RuntimeKey, Runtime>,
-    pub(super) keys: BTreeMap<PaneId, RuntimeKey>,
+    pub(super) destinations: Vec<Destination>,
 }
 
 impl State {
@@ -116,11 +135,13 @@ impl State {
         origin: &Origin,
         read: &Read,
     ) -> Result<ChosenRuntimes, Error> {
-        let mut chosen = BTreeMap::new();
-        let mut keys = BTreeMap::new();
-        for (id, name) in
-            requests.filter_map(|(id, request)| request.runtime.as_ref().map(|name| (id, name)))
-        {
+        let mut settings = BTreeMap::new();
+        let mut destinations = Vec::new();
+        for (id, request) in requests {
+            let Some(name) = &request.runtime else {
+                destinations.push(Destination::Host);
+                continue;
+            };
             let session = self.session_of(id);
             let key = self.runtimes.resolve(name, session, read.get())?;
             if let Origin::Runtime(own) = origin
@@ -135,14 +156,33 @@ impl State {
                     ),
                 ));
             }
-            keys.insert(id, key.clone());
-            if !chosen.contains_key(&key) {
-                chosen.insert(key.clone(), self.runtimes.settings_in(&key, read.get())?);
+            let runtime = match settings.entry(key.clone()) {
+                Entry::Occupied(cached) => cached.into_mut(),
+                Entry::Vacant(vacant) => {
+                    vacant.insert(self.runtimes.settings_in(&key, read.get())?)
+                }
+            };
+            let routed = matches!(request.command, Some(Command::Koa { .. }))
+                && runtime.koa == RuntimeKoa::Host;
+            if routed {
+                if let Origin::Runtime(own) = origin {
+                    return Err(Error::new(
+                        ErrorKind::Refused,
+                        format!(
+                            "runtime {} runs koa on the host: a connection of the runtime cannot start it",
+                            own.name
+                        ),
+                    ));
+                }
+                destinations.push(Destination::Routed { key });
+            } else {
+                destinations.push(Destination::Inside { key });
             }
         }
+        settings.retain(|key, _| destinations.iter().any(|to| to.inside() == Some(key)));
         Ok(ChosenRuntimes {
-            settings: chosen,
-            keys,
+            settings,
+            destinations,
         })
     }
 
@@ -152,11 +192,18 @@ impl State {
         shell: &Path,
         request: &CreatePane,
         vars: Vars,
-        (chosen, dir, key): (&BTreeMap<RuntimeKey, Runtime>, &Dir, Option<&RuntimeKey>),
+        (chosen, dir, destination): (&BTreeMap<RuntimeKey, Runtime>, &Dir, &Destination),
     ) -> Result<Birth, AddError> {
-        let program = match key {
-            None => program(&self.config, shell, request, Start::Host(dir.host()))?,
-            Some(key) => {
+        let host = |routed| Start::Host {
+            cwd: dir.host(),
+            routed,
+        };
+        let program = match destination {
+            Destination::Host => program(&self.config, shell, request, host(None))?,
+            Destination::Routed { key } => {
+                program(&self.config, shell, request, host(Some(&key.name)))?
+            }
+            Destination::Inside { key } => {
                 let runtime = chosen
                     .get(key)
                     .ok_or(AddError::Invalid("no such runtime"))?;
@@ -185,7 +232,7 @@ impl State {
             close: request.close,
             fixed_title: request.fixed_title.clone(),
             close_confirm: request.close_confirm,
-            runtime: key.cloned(),
+            runtime: destination.inside().cloned(),
             program,
         })
     }
@@ -383,7 +430,7 @@ impl State {
                 .into_owned(),
             paths: runtime.paths(),
             cwd: runtime.cwd.clone(),
-            pi: runtime.pi,
+            koa: runtime.koa,
         }
     }
 

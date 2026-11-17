@@ -1005,6 +1005,36 @@
               "command"
             ],
             "type": "object"
+          },
+          {
+            "description": "A Koa agent, started through ko's own koa. A runtime's `koa` setting decides whether it runs\non the host for the runtime or inside it.",
+            "properties": {
+              "browser": {
+                "default": false,
+                "description": "Render the agent in a webview page instead of the terminal.",
+                "type": "boolean"
+              },
+              "model": {
+                "description": "The model, as provider/model-id with an optional :thinking level.",
+                "type": "string"
+              },
+              "name": {
+                "description": "The agent's display name.",
+                "type": "string"
+              },
+              "start": {
+                "$ref": "#/components/schemas/KoaStart"
+              },
+              "type": {
+                "const": "koa",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "start"
+            ],
+            "type": "object"
           }
         ]
       },
@@ -2134,6 +2164,64 @@
           }
         ]
       },
+      "KoaStart": {
+        "description": "Which session a Koa agent starts with.",
+        "oneOf": [
+          {
+            "description": "A new session, with the given id or a fresh one.",
+            "properties": {
+              "session_id": {
+                "type": "string"
+              },
+              "type": {
+                "const": "new",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "The saved session file, continued in place.",
+            "properties": {
+              "session": {
+                "$ref": "#/components/schemas/AbsPath"
+              },
+              "type": {
+                "const": "resume",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "session"
+            ],
+            "type": "object"
+          },
+          {
+            "description": "A copy of the saved session file, with the given id or a fresh one.",
+            "properties": {
+              "session": {
+                "$ref": "#/components/schemas/AbsPath"
+              },
+              "session_id": {
+                "type": "string"
+              },
+              "type": {
+                "const": "fork",
+                "type": "string"
+              }
+            },
+            "required": [
+              "type",
+              "session"
+            ],
+            "type": "object"
+          }
+        ]
+      },
       "Layout": {
         "properties": {
           "sessions": {
@@ -2477,7 +2565,7 @@
                 "$ref": "#/components/schemas/Agent"
               },
               "type": {
-                "const": "pi_agent",
+                "const": "koa_agent",
                 "type": "string"
               }
             },
@@ -3613,6 +3701,15 @@
             "default": {},
             "description": "Variables for every pane of the runtime, applied before the variables of the request."
           },
+          "koa": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/RuntimeKoa"
+              }
+            ],
+            "default": "host",
+            "description": "Where koa runs for an agent in this runtime."
+          },
           "paths": {
             "default": [],
             "description": "A host directory that a host caller names as cwd maps to the runtime directory of the\nlongest matching host prefix.",
@@ -3620,15 +3717,6 @@
               "$ref": "#/components/schemas/PathMap"
             },
             "type": "array"
-          },
-          "pi": {
-            "allOf": [
-              {
-                "$ref": "#/components/schemas/RuntimePi"
-              }
-            ],
-            "default": "host",
-            "description": "Where pi runs for an agent in this runtime."
           },
           "podman": {
             "$ref": "#/components/schemas/Podman"
@@ -3656,6 +3744,9 @@
           "kind": {
             "$ref": "#/components/schemas/RuntimeKind"
           },
+          "koa": {
+            "$ref": "#/components/schemas/RuntimeKoa"
+          },
           "name": {
             "$ref": "#/components/schemas/RuntimeName"
           },
@@ -3670,9 +3761,6 @@
               "$ref": "#/components/schemas/PathMap"
             },
             "type": "array"
-          },
-          "pi": {
-            "$ref": "#/components/schemas/RuntimePi"
           },
           "socket": {
             "description": "The path of the runtime's listener on the host, bound while the link is up.",
@@ -3693,7 +3781,7 @@
           "panes",
           "socket",
           "paths",
-          "pi"
+          "koa"
         ],
         "type": "object"
       },
@@ -3706,13 +3794,8 @@
         ],
         "type": "string"
       },
-      "RuntimeName": {
-        "description": "One to 32 bytes of a to z, 0 to 9 and -. host is not a runtime name.",
-        "pattern": "^[a-z0-9-]{1,32}$",
-        "type": "string"
-      },
-      "RuntimePi": {
-        "description": "Where an agent's pi runs when it works in a runtime.",
+      "RuntimeKoa": {
+        "description": "Where an agent's koa runs when it works in a runtime.",
         "oneOf": [
           {
             "const": "host",
@@ -3725,6 +3808,11 @@
             "type": "string"
           }
         ]
+      },
+      "RuntimeName": {
+        "description": "One to 32 bytes of a to z, 0 to 9 and -. host is not a runtime name.",
+        "pattern": "^[a-z0-9-]{1,32}$",
+        "type": "string"
       },
       "RuntimeSource": {
         "oneOf": [
@@ -3939,7 +4027,7 @@
         "type": "object"
       },
       "Sender": {
-        "description": "The sender of a message, as the server knows it. The session and the name are those of a\npane that has a pi root.",
+        "description": "The sender of a message, as the server knows it. The session and the name are those of a\npane that has a koa root.",
         "oneOf": [
           {
             "properties": {
@@ -6402,7 +6490,7 @@
             }
           },
           {
-            "example": "pi.session",
+            "example": "koa.session",
             "in": "path",
             "name": "name",
             "required": true,
@@ -6466,7 +6554,7 @@
             }
           },
           {
-            "example": "pi.session",
+            "example": "koa.session",
             "in": "path",
             "name": "name",
             "required": true,

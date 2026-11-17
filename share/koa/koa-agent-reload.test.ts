@@ -44,7 +44,7 @@ test("a job that ends between instances is announced at adopt, before the startu
     await pollUntil(() => job.state.type === "ended");
     assert.equal(endedState(job).announced, false);
     assert.deepEqual(notices(first), []);
-    fx.setPanes([selfPane({ vars: { "pi.session": "old-holder", "koa.task": { text: "startup-task", from: { session: "peer-session", name: "peer" } } } })]);
+    fx.setPanes([selfPane({ vars: { "koa.session": "old-holder", "koa.task": { text: "startup-task", from: { session: "peer-session", name: "peer" } } } })]);
     const factory = await freshExtension();
     const order: string[] = [];
     const second = await startSession(fx, {
@@ -52,7 +52,7 @@ test("a job that ends between instances is announced at adopt, before the startu
         factory(pi);
         const sendMessage = pi.sendMessage;
         pi.sendMessage = (message, opts) => {
-          if (message.customType === "ko-notice") assert.equal(fx.row("pane_1")?.vars?.["pi.session"], "self-session");
+          if (message.customType === "ko-notice") assert.equal(fx.row("pane_1")?.vars?.["koa.session"], "self-session");
           order.push(message.customType);
           sendMessage(message, opts);
         };
@@ -61,7 +61,7 @@ test("a job that ends between instances is announced at adopt, before the startu
     assert.equal(notices(second).length, 1);
     assert.match(at(notices(second), 0), /gap-output/);
     assert.deepEqual(order, ["ko-notice", "ko-message"]);
-    assert.equal(fx.row("pane_1")?.vars?.["pi.session"], "self-session");
+    assert.equal(fx.row("pane_1")?.vars?.["koa.session"], "self-session");
   } finally { await fx.restore(); }
 });
 

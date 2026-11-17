@@ -79,13 +79,13 @@ test("list_agents lists the scope with each relationship, depth and the own suba
 test("runtime agent placement uses the row before routed pi variables", async () => {
   const fx = makeFixture();
   try {
-    const row = agentPane({ pane: "pane_2", session: "runtime-session", name: "runtime-pi", cwd: "/runtime/work", vars: { "pi.runtime": { name: "wrong", cwd: "/wrong" } } });
+    const row = agentPane({ pane: "pane_2", session: "runtime-session", name: "runtime-pi", cwd: "/runtime/work", vars: { "koa.runtime": { name: "wrong", cwd: "/wrong" } } });
     row.runtime = "actual";
-    row.status = { kind: { type: "runtime", pane: { type: "pi_agent", session: "classified-session", status: { since: 0, state: { type: "idle" } } } } };
-    const host = agentPane({ pane: "pane_3", session: "host-session", name: "host-pi", cwd: "/host", vars: { "pi.runtime": { name: "route", cwd: "/routed" } } });
-    const shell = agentPane({ pane: "pane_4", session: "stale-session", name: "stale-shell", vars: { "pi.runtime": { name: "wrong", cwd: "/wrong" } } });
+    row.status = { kind: { type: "runtime", pane: { type: "koa_agent", session: "classified-session", status: { since: 0, state: { type: "idle" } } } } };
+    const host = agentPane({ pane: "pane_3", session: "host-session", name: "host-pi", cwd: "/host", vars: { "koa.runtime": { name: "route", cwd: "/routed" } } });
+    const shell = agentPane({ pane: "pane_4", session: "stale-session", name: "stale-shell", vars: { "koa.runtime": { name: "wrong", cwd: "/wrong" } } });
     shell.status = { kind: { type: "host", pane: { type: "terminal", phase: { type: "idle" } } } };
-    const ssh = agentPane({ pane: "pane_5", session: "ssh-session", name: "ssh-agent", vars: { "pi.runtime": { name: "wrong", cwd: "/wrong" } } });
+    const ssh = agentPane({ pane: "pane_5", session: "ssh-session", name: "ssh-agent", vars: { "koa.runtime": { name: "wrong", cwd: "/wrong" } } });
     ssh.status = { kind: { type: "ssh", destination: "host", pane: { type: "agent", name: "pi", status: { since: 0, state: { type: "idle" } } } } };
     fx.setPanes([selfPane(), row, host, shell, ssh]);
     const s = await startSession(fx);

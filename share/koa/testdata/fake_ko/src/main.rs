@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::{Duration, Instant};
 
-use ko_config::runtime::RuntimePi;
+use ko_config::runtime::RuntimeKoa;
 use ko_pane_wire::frame;
 use ko_sys::fd::Want;
 use ko_sys::pid::Waited;
@@ -139,9 +139,9 @@ fn listing(row: &Value) -> Listing {
     let identity = !gate.is_empty() && Path::new(&gate).exists() && row["fake_session"].is_string();
     let mut vars = row.get("vars").cloned().unwrap_or(json!({}));
     let kind = if identity {
-        vars["pi.session"] = row["fake_session"].clone();
+        vars["koa.session"] = row["fake_session"].clone();
         Some(Live::Host {
-            pane: Local::PiAgent {
+            pane: Local::KoaAgent {
                 session: text(row, "fake_session"),
                 status: Agent {
                     since: 0,
@@ -470,28 +470,20 @@ fn new_pane(body: &str) -> ExitCode {
             "parent": request.pane.parent,
         });
         if !env("KO_FAKE_PEER_IDENTITY_GATE").is_empty() {
-            let argv = match &request.pane.command {
-                Some(Command::Argv { argv }) => argv.as_slice(),
-                _ => &[],
-            };
-            let saved = argv
-                .iter()
-                .position(|arg| arg == "--session")
-                .and_then(|at| argv.get(at + 1))
-                .and_then(|file| {
-                    std::path::Path::new(file)
+            let id = match &request.pane.command {
+                Some(Command::Koa { start, .. }) => match start {
+                    KoaStart::New { session_id } | KoaStart::Fork { session_id, .. } => {
+                        session_id.clone()
+                    }
+                    KoaStart::Resume { session } => std::path::Path::new(session.as_str())
                         .file_stem()
                         .and_then(|stem| stem.to_str())
                         .and_then(|stem| stem.rsplit('_').next())
-                        .map(str::to_owned)
-                });
-            row["fake_session"] = argv
-                .iter()
-                .position(|arg| arg == "--session-id")
-                .and_then(|at| argv.get(at + 1).cloned())
-                .or(saved)
-                .map(|id| json!(id))
-                .unwrap_or(Value::Null);
+                        .map(str::to_owned),
+                },
+                _ => None,
+            };
+            row["fake_session"] = id.map(|id| json!(id)).unwrap_or(Value::Null);
         }
         if let Some(fields) = row.as_object_mut() {
             fields.retain(|_, value| !value.is_null());
@@ -643,7 +635,7 @@ fn set_var(pane: &str, name: &str, value: Option<Value>) {
 
 fn put_var(pane: &str, name: &str, body: &str) -> ExitCode {
     let fail = env("KO_FAKE_VAR_FAIL");
-    if name == "pi.name" && !fail.is_empty() && fs::remove_file(&fail).is_ok() {
+    if name == "koa.name" && !fail.is_empty() && fs::remove_file(&fail).is_ok() {
         return http_error(503, ErrorKind::Unavailable, "injected var failure");
     }
     let Ok(value) = protocol::decode::<Value>(body.as_bytes()) else {
@@ -893,7 +885,7 @@ fn runtime_info(name: &str, entry: &Value) -> RuntimeInfo {
         socket: text(entry, "socket"),
         paths: entry.get("paths").map(fixture).unwrap_or_default(),
         cwd: entry.get("cwd").map(fixture).unwrap_or(None),
-        pi: entry.get("pi").map(fixture).unwrap_or(RuntimePi::Host),
+        koa: entry.get("koa").map(fixture).unwrap_or(RuntimeKoa::Host),
     }
 }
 

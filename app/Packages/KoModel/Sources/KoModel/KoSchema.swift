@@ -310,12 +310,14 @@ public enum KoSchema {
     public enum Command: Codable, Equatable, Sendable {
         case argv(CommandArgv)
         case shell(CommandShell)
+        case koa(CommandKoa)
         private enum Tag: String, CodingKey { case type = "type" }
         public init(from decoder: Decoder) throws {
             let container = try decoder.container(keyedBy: Tag.self)
             switch try container.decode(String.self, forKey: .type) {
             case "argv": self = .argv(try CommandArgv(from: decoder))
             case "shell": self = .shell(try CommandShell(from: decoder))
+            case "koa": self = .koa(try CommandKoa(from: decoder))
             case let other: throw DecodingError.dataCorruptedError(forKey: .type, in: container, debugDescription: "unknown Command \(other)")
             }
         }
@@ -327,6 +329,9 @@ public enum KoSchema {
                 try value.encode(to: encoder)
             case .shell(let value):
                 try container.encode("shell", forKey: .type)
+                try value.encode(to: encoder)
+            case .koa(let value):
+                try container.encode("koa", forKey: .type)
                 try value.encode(to: encoder)
             }
         }
@@ -364,6 +369,19 @@ public enum KoSchema {
             case command
             case endedAt = "ended_at"
             case startedAt = "started_at"
+        }
+    }
+
+    public struct CommandKoa: Codable, Equatable, Sendable {
+        public var browser: Bool?
+        public var model: String?
+        public var name: String?
+        public var start: KoaStart
+        public init(browser: Bool? = nil, model: String? = nil, name: String? = nil, start: KoaStart) {
+            self.browser = browser
+            self.model = model
+            self.name = name
+            self.start = start
         }
     }
 
@@ -1066,6 +1084,66 @@ public enum KoSchema {
         }
     }
 
+    public enum KoaStart: Codable, Equatable, Sendable {
+        case new(KoaStartNew)
+        case resume(KoaStartResume)
+        case fork(KoaStartFork)
+        private enum Tag: String, CodingKey { case type = "type" }
+        public init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: Tag.self)
+            switch try container.decode(String.self, forKey: .type) {
+            case "new": self = .new(try KoaStartNew(from: decoder))
+            case "resume": self = .resume(try KoaStartResume(from: decoder))
+            case "fork": self = .fork(try KoaStartFork(from: decoder))
+            case let other: throw DecodingError.dataCorruptedError(forKey: .type, in: container, debugDescription: "unknown KoaStart \(other)")
+            }
+        }
+        public func encode(to encoder: Encoder) throws {
+            var container = encoder.container(keyedBy: Tag.self)
+            switch self {
+            case .new(let value):
+                try container.encode("new", forKey: .type)
+                try value.encode(to: encoder)
+            case .resume(let value):
+                try container.encode("resume", forKey: .type)
+                try value.encode(to: encoder)
+            case .fork(let value):
+                try container.encode("fork", forKey: .type)
+                try value.encode(to: encoder)
+            }
+        }
+    }
+
+    public struct KoaStartFork: Codable, Equatable, Sendable {
+        public var session: AbsPath
+        public var sessionId: String?
+        public init(session: AbsPath, sessionId: String? = nil) {
+            self.session = session
+            self.sessionId = sessionId
+        }
+        private enum CodingKeys: String, CodingKey {
+            case session
+            case sessionId = "session_id"
+        }
+    }
+
+    public struct KoaStartNew: Codable, Equatable, Sendable {
+        public var sessionId: String?
+        public init(sessionId: String? = nil) {
+            self.sessionId = sessionId
+        }
+        private enum CodingKeys: String, CodingKey {
+            case sessionId = "session_id"
+        }
+    }
+
+    public struct KoaStartResume: Codable, Equatable, Sendable {
+        public var session: AbsPath
+        public init(session: AbsPath) {
+            self.session = session
+        }
+    }
+
     public struct Layout: Codable, Equatable, Sendable {
         public var sessions: [Session]
         public init(sessions: [Session]) {
@@ -1216,14 +1294,14 @@ public enum KoSchema {
     public enum Local: Codable, Equatable, Sendable {
         case terminal(Shell)
         case someAgent(LocalSomeAgent)
-        case piAgent(LocalPiAgent)
+        case koaAgent(LocalKoaAgent)
         private enum Tag: String, CodingKey { case type = "type" }
         public init(from decoder: Decoder) throws {
             let container = try decoder.container(keyedBy: Tag.self)
             switch try container.decode(String.self, forKey: .type) {
             case "terminal": self = .terminal(try Shell(from: decoder))
             case "some_agent": self = .someAgent(try LocalSomeAgent(from: decoder))
-            case "pi_agent": self = .piAgent(try LocalPiAgent(from: decoder))
+            case "koa_agent": self = .koaAgent(try LocalKoaAgent(from: decoder))
             case let other: throw DecodingError.dataCorruptedError(forKey: .type, in: container, debugDescription: "unknown Local \(other)")
             }
         }
@@ -1236,14 +1314,14 @@ public enum KoSchema {
             case .someAgent(let value):
                 try container.encode("some_agent", forKey: .type)
                 try value.encode(to: encoder)
-            case .piAgent(let value):
-                try container.encode("pi_agent", forKey: .type)
+            case .koaAgent(let value):
+                try container.encode("koa_agent", forKey: .type)
                 try value.encode(to: encoder)
             }
         }
     }
 
-    public struct LocalPiAgent: Codable, Equatable, Sendable {
+    public struct LocalKoaAgent: Codable, Equatable, Sendable {
         public var session: String
         public var status: Agent
         public init(session: String, status: Agent) {

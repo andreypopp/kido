@@ -6,7 +6,7 @@ use std::process::ExitCode;
 use clap::{ArgGroup, Args, Subcommand};
 use clap_complete::engine::ArgValueCompleter;
 use ko_config::runtime::{
-    self, Access, Engine, Kind, Ko, PathMap, Runtime, RuntimePi, Source, SshAgent, Volume,
+    self, Access, Engine, Kind, Ko, PathMap, Runtime, RuntimeKoa, Source, SshAgent, Volume,
 };
 use ko_config::values::{
     AbsPath, Argv, ConnectionArgs, Destination, Env, Init, MountDir, Operand, Prefix, Program,
@@ -106,9 +106,9 @@ struct Shared {
     /// longest matching host prefix.
     #[arg(verbatim_doc_comment, long = "path", value_parser = path_map)]
     paths: Vec<PathMap>,
-    /// Where pi runs for an agent in this runtime.
-    #[arg(verbatim_doc_comment, long, default_value = "host", value_parser = |s: &str| ko_wire::protocol::decode::<RuntimePi>(ko_wire::protocol::json(&s).as_bytes()).map_err(|error| error.to_string()))]
-    pi: RuntimePi,
+    /// Where koa runs for an agent in this runtime.
+    #[arg(verbatim_doc_comment, long, default_value = "host", value_parser = |s: &str| ko_wire::protocol::decode::<RuntimeKoa>(ko_wire::protocol::json(&s).as_bytes()).map_err(|error| error.to_string()))]
+    koa: RuntimeKoa,
     /// How clients draw the runtime. Default: a colour that each client derives from the name.
     #[arg(verbatim_doc_comment, long, value_parser = |s: &str| RuntimeColor::try_from(s.to_owned()))]
     color: Option<RuntimeColor>,
@@ -270,7 +270,7 @@ impl RunArgsCli {
             )?,
             cwd: shared.cwd,
             paths: shared.paths,
-            pi: shared.pi,
+            koa: shared.koa,
             color: shared.color,
             kind,
         };
@@ -371,7 +371,7 @@ mod tests {
                 let id = arg.get_id().as_str();
                 let field = match id {
                     "name" | "server" | "help" | "command" => continue,
-                    "env" | "cwd" | "paths" | "pi" | "color" => &defs["Runtime"]["properties"][id],
+                    "env" | "cwd" | "paths" | "koa" | "color" => &defs["Runtime"]["properties"][id],
                     "from_image" => &defs["Source"]["oneOf"][0],
                     "from_container" => &defs["Source"]["oneOf"][1],
                     "volumes" => &defs["Volume"],

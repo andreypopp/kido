@@ -149,8 +149,10 @@ overrides `ssh` to add the same integration on the remote side.
 
 ## Agents
 
-The OSC 7501 root app `pi` or `claude-code` identifies agent panes. pi
-and Claude Code show native running, waiting, done and idle status.
+The OSC 7501 root app `koa` or `claude-code` identifies agent panes.
+koa and Claude Code show native running, waiting, done and idle
+status. A plain `pi` is a terminal that shows pi's status as a
+program's report.
 Claude Code runs unmodified, without a shim or settings.
 `CLAUDE_CODE_DISABLE_TERMINAL_TITLE=1` also disables its native
 status.

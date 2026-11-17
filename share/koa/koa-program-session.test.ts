@@ -315,3 +315,19 @@ test("@ completion lists the named running agents of this ko session, not koa's 
   await pollUntil(async () => (await labels()).length > 0, 5000, "agent discovery");
   assert.deepEqual(await labels(), ["@alpha"]);
 });
+
+test("a resumed or forked session runs in the launch directory, not the directory that the file recorded", { timeout: 30000 }, async t => {
+  for (const flag of ["--session", "--fork"]) {
+    let launched = "";
+    const app = await realFixture(t, {
+      replies: [],
+      setup: async ({ dir, cwd, sessions }) => {
+        launched = cwd;
+        const recorded = join(dir, `recorded${flag}`);
+        await mkdir(recorded);
+        return [flag, await writeSession(recorded, sessions, 1, "moved")];
+      },
+    });
+    assert.equal(state(app).cwd, launched, flag);
+  }
+});

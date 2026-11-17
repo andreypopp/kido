@@ -634,29 +634,29 @@ fn foreground_on_events() {
 }
 
 #[test]
-fn pi_variables_gate() {
+fn koa_variables_gate_and_a_bare_pi_root_is_a_terminal() {
     let s = start(&[]);
     let pane = s.echo_pane();
     let mut probe = Probe::new(&s, pane.clone());
     for (name, value) in [
-        ("pi.session", "s1"),
-        ("pi.name", "Worker"),
-        ("pi.activity", "checking"),
+        ("koa.session", "s1"),
+        ("koa.name", "Worker"),
+        ("koa.activity", "checking"),
     ] {
         s.set_var(&pane, name, &json!(value));
     }
     let status = s.wait_row(&pane, "the variables", |row| {
-        row["vars"]["pi.activity"] == "checking"
+        row["vars"]["koa.activity"] == "checking"
     })["status"]
         .clone();
     assert_eq!(status["kind"]["pane"]["type"], "terminal");
     assert_ne!(
         status["title"], "Worker",
-        "options need a pi root: {status}"
+        "options need a koa root: {status}"
     );
 
-    let status = probe.osc("state=idle:app=pi");
-    assert_eq!(status["kind"]["pane"]["type"], "pi_agent");
+    let status = probe.osc("state=idle:app=koa");
+    assert_eq!(status["kind"]["pane"]["type"], "koa_agent");
     assert_eq!(status["kind"]["pane"]["session"], "s1");
     assert_eq!(status["title"], "Worker");
     assert_eq!(status["message"], "checking");
@@ -664,4 +664,8 @@ fn pi_variables_gate() {
     let status = probe.osc("state=clear");
     assert_eq!(status["kind"]["pane"]["type"], "terminal");
     assert_ne!(status["title"], "Worker");
+
+    let status = probe.osc("state=working:app=pi");
+    assert_eq!(status["kind"]["pane"]["type"], "terminal");
+    assert_eq!(status["program_status"]["records"][0]["app"], "pi");
 }

@@ -774,6 +774,19 @@ export interface components {
             command: string;
             /** @constant */
             type: "shell";
+        } | {
+            /**
+             * @description Render the agent in a webview page instead of the terminal.
+             * @default false
+             */
+            browser?: boolean;
+            /** @description The model, as provider/model-id with an optional :thinking level. */
+            model?: string;
+            /** @description The agent's display name. */
+            name?: string;
+            start: components["schemas"]["KoaStart"];
+            /** @constant */
+            type: "koa";
         };
         Command2: {
             /**
@@ -1102,6 +1115,21 @@ export interface components {
         Ko: "shipped" | "path" | {
             mount: components["schemas"]["MountDir"];
         };
+        /** @description Which session a Koa agent starts with. */
+        KoaStart: {
+            session_id?: string;
+            /** @constant */
+            type: "new";
+        } | {
+            session: components["schemas"]["AbsPath"];
+            /** @constant */
+            type: "resume";
+        } | {
+            session: components["schemas"]["AbsPath"];
+            session_id?: string;
+            /** @constant */
+            type: "fork";
+        };
         Layout: {
             sessions: components["schemas"]["Session"][];
         };
@@ -1192,7 +1220,7 @@ export interface components {
             session: string;
             status: components["schemas"]["Agent"];
             /** @constant */
-            type: "pi_agent";
+            type: "koa_agent";
         };
         Marked: {
             marker: components["schemas"]["Marker"];
@@ -1502,16 +1530,16 @@ export interface components {
              */
             env?: components["schemas"]["Env"];
             /**
+             * @description Where koa runs for an agent in this runtime.
+             * @default host
+             */
+            koa?: components["schemas"]["RuntimeKoa"];
+            /**
              * @description A host directory that a host caller names as cwd maps to the runtime directory of the
              *     longest matching host prefix.
              * @default []
              */
             paths?: components["schemas"]["PathMap"][];
-            /**
-             * @description Where pi runs for an agent in this runtime.
-             * @default host
-             */
-            pi?: components["schemas"]["RuntimePi"];
             podman?: components["schemas"]["Podman"];
             ssh?: components["schemas"]["Ssh"];
         } & ({
@@ -1530,12 +1558,12 @@ export interface components {
             color?: components["schemas"]["RuntimeColor"];
             cwd?: components["schemas"]["AbsPath"];
             kind: components["schemas"]["RuntimeKind"];
+            koa: components["schemas"]["RuntimeKoa"];
             name: components["schemas"]["RuntimeName"];
             /** @description The panes of the document that the runtime runs, dead ones included. */
             panes: number;
             /** @description The effective host-to-runtime prefix list that maps a host cwd. */
             paths: components["schemas"]["PathMap"][];
-            pi: components["schemas"]["RuntimePi"];
             /** @description The path of the runtime's listener on the host, bound while the link is up. */
             socket: string;
             source: components["schemas"]["RuntimeSource"];
@@ -1543,10 +1571,10 @@ export interface components {
         };
         /** @enum {string} */
         RuntimeKind: "ssh" | "command" | "container" | "podman";
+        /** @description Where an agent's koa runs when it works in a runtime. */
+        RuntimeKoa: "host" | "runtime";
         /** @description One to 32 bytes of a to z, 0 to 9 and -. host is not a runtime name. */
         RuntimeName: string;
-        /** @description Where an agent's pi runs when it works in a runtime. */
-        RuntimePi: "host" | "runtime";
         RuntimeSource: {
             /** @constant */
             type: "config";
@@ -1607,7 +1635,7 @@ export interface components {
         };
         /**
          * @description The sender of a message, as the server knows it. The session and the name are those of a
-         *     pane that has a pi root.
+         *     pane that has a koa root.
          */
         Sender: {
             name?: string;
@@ -2695,7 +2723,7 @@ export interface operations {
             path: {
                 /** @example pane_1 */
                 id: components["schemas"]["PaneId"];
-                /** @example pi.session */
+                /** @example koa.session */
                 name: components["schemas"]["VarName"];
             };
             cookie?: never;
@@ -2738,7 +2766,7 @@ export interface operations {
             path: {
                 /** @example pane_1 */
                 id: components["schemas"]["PaneId"];
-                /** @example pi.session */
+                /** @example koa.session */
                 name: components["schemas"]["VarName"];
             };
             cookie?: never;

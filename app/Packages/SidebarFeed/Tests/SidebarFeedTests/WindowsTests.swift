@@ -46,7 +46,7 @@ private func windowsFixture(_ state: KoSchema.AgentState = waiting(), mark: KoSc
 }
 
 @Test func tabLabelsShareSidebarMessageableRule() throws {
-    let cases: [(Lifecycle, Bool)] = [(piAgent(idle()), true),
+    let cases: [(Lifecycle, Bool)] = [(koaAgent(idle()), true),
         (agent(idle()), false),
         (remote(.agent(.init(name: "pi", status: report(idle())))), false),
         (terminal(), false)]

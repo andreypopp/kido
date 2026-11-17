@@ -14,10 +14,10 @@ pub struct PathMap {
     pub runtime: AbsPath,
 }
 
-/// Where an agent's pi runs when it works in a runtime.
+/// Where an agent's koa runs when it works in a runtime.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
-pub enum RuntimePi {
+pub enum RuntimeKoa {
     /// On the host. Its built-in tools and `!` commands run in the runtime through exec sessions.
     #[default]
     Host,
@@ -39,9 +39,9 @@ struct RawRuntime {
     /// longest matching host prefix.
     #[serde(default)]
     paths: Vec<PathMap>,
-    /// Where pi runs for an agent in this runtime.
+    /// Where koa runs for an agent in this runtime.
     #[serde(default)]
-    pi: RuntimePi,
+    koa: RuntimeKoa,
     /// How clients draw the runtime. Default: a colour that each client derives from the name.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     color: Option<RuntimeColor>,
@@ -67,7 +67,7 @@ pub struct Runtime {
     pub env: Env,
     pub cwd: Option<AbsPath>,
     pub paths: Vec<PathMap>,
-    pub pi: RuntimePi,
+    pub koa: RuntimeKoa,
     pub color: Option<RuntimeColor>,
     pub kind: Kind,
 }
@@ -121,7 +121,7 @@ impl TryFrom<RawRuntime> for Runtime {
             env: raw.env,
             cwd: raw.cwd,
             paths: raw.paths,
-            pi: raw.pi,
+            koa: raw.koa,
             color: raw.color,
             kind,
         })
@@ -141,7 +141,7 @@ impl From<Runtime> for RawRuntime {
             env: runtime.env,
             cwd: runtime.cwd,
             paths: runtime.paths,
-            pi: runtime.pi,
+            koa: runtime.koa,
             color: runtime.color,
             ssh,
             container,

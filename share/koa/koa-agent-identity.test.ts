@@ -42,15 +42,15 @@ test("a root session writes its pane variables; quitting deletes them", async ()
     const puts = fx.apiCalls().filter((call) => call.method === "PUT");
     assert.deepEqual(
       puts.map((call) => [call.path, JSON.parse(call.body)]),
-      [["/panes/pane_1/vars/pi.session", "self-session"], ["/panes/pane_1/vars/pi.name", "Self"]],
+      [["/panes/pane_1/vars/koa.session", "self-session"], ["/panes/pane_1/vars/koa.name", "Self"]],
     );
 
     await s.emit("session_shutdown", { reason: "quit" });
     const deletes = fx.apiCalls().filter((call) => call.method === "DELETE");
     assert.deepEqual(deletes.map((call) => [call.path, JSON.parse(call.body)]), [
-      ["/panes/pane_1/vars", { names: ["pi.session", "pi.name", "pi.activity"], if: { name: "pi.session", value: "self-session" } }],
+      ["/panes/pane_1/vars", { names: ["koa.session", "koa.name", "koa.activity"], if: { name: "koa.session", value: "self-session" } }],
     ]);
-    assert.equal(fx.row("pane_1")?.vars?.["pi.session"], undefined, "the conditional delete took effect");
+    assert.equal(fx.row("pane_1")?.vars?.["koa.session"], undefined, "the conditional delete took effect");
   } finally {
     await fx.restore();
   }

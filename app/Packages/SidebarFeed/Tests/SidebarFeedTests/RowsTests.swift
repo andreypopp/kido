@@ -209,7 +209,7 @@ private func fixture(client: Int = 0, sessions: [Int] = [0], grouped: Bool = fal
         return pane(id, window: window, title: "pane-\(id)", lifecycle: lifecycle,
                     records: id == 0 ? records : [], serial: serial, children: children)
     }
-    let children = [item(1, 1, tail: "working", lifecycle: piAgent(working(), msg: "working"),
+    let children = [item(1, 1, tail: "working", lifecycle: koaAgent(working(), msg: "working"),
                          children: [item(2, 2, lifecycle: terminal(running(), report: report(waiting())))]),
                     item(3, 3, lifecycle: terminal(running())),
                     item(4, 4, lifecycle: terminal(running()))]
@@ -329,7 +329,7 @@ func heightAndPaddingMatrix(_ nested: Bool, _ multi: Bool) throws {
 
 @Test func agentWeightAndDisplayOnlyPrefix() throws {
     let cases: [(Lifecycle, String, String, String, Bool)] = [
-        (piAgent(idle()), "Ada", "@Ada", "Ada", true),
+        (koaAgent(idle()), "Ada", "@Ada", "Ada", true),
         (agent(idle()), "Ada", "Ada", "Ada", true),
         (agent(), "@Ada", "@Ada", "@Ada", true),
         (remote(.agent(.init(name: "pi", status: report(idle())))), "Ada", "Ada", "Ada", true),
@@ -503,7 +503,7 @@ func heightAndPaddingMatrix(_ nested: Bool, _ multi: Bool) throws {
     #expect(rows.last?.runtime?.state == .starting)
 }
 
-private func recordRows(_ records: [KoSchema.ProgramRecord], client: Int, lifecycle: Lifecycle = piAgent()) -> [SidebarRow] {
+private func recordRows(_ records: [KoSchema.ProgramRecord], client: Int, lifecycle: Lifecycle = koaAgent()) -> [SidebarRow] {
     sidebarRows(makeSnapshot([pane(0, lifecycle: lifecycle, records: records)], client: client)).filter { $0.target != nil || programs([$0]) != [] }
 }
 
@@ -519,7 +519,7 @@ private func recordRows(_ records: [KoSchema.ProgramRecord], client: Int, lifecy
     let own = recordRows(shown, client: 0)
     #expect(own[0].rootPick == .init(pane: own[0].target!, record: ""))
     #expect(own[0].pick == nil)
-    let other = sidebarRows(makeSnapshot([pane(0, lifecycle: piAgent(), records: shown), pane(1)], client: 1)).filter { $0.target != nil }
+    let other = sidebarRows(makeSnapshot([pane(0, lifecycle: koaAgent(), records: shown), pane(1)], client: 1)).filter { $0.target != nil }
     #expect(other[0].rootPick == .init(pane: other[0].target!, record: ""))
     #expect(recordRows([.idle(.init(id: "b", selection: .offered))], client: 0)[0].rootPick == nil)
     #expect(recordRows(shown, client: 0, lifecycle: agent())[0].rootPick == nil)

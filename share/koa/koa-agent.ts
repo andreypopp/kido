@@ -46,7 +46,7 @@ import { fileURLToPath } from "node:url";
 import { Type } from "typebox";
 import type { components } from "./ko-api.d.ts";
 import { isAgentFailure, jobEndText, type RestartState, type InProcessMessage, type AgentEnd, type Relation, type AgentRef, type AgentOutcome, type MessageDetails, type SteerDetails, type NoticeDetails, type StreamDetails, type JobRef, type JobEnd, type JobPlace, type JobSnapshot } from "./records.ts";
-import { reconnectBackoff, parsePanes, placesOf, piAgent, peerPanes, runningRows, MIN_ID_PREFIX, VAR_SESSION, VAR_NAME, VAR_ACTIVITY, VAR_TASK, VAR_RUNTIME, type PaneInfo, type AgentRow, type Where } from "./agents.ts";
+import { reconnectBackoff, parsePanes, placesOf, koaAgent, peerPanes, runningRows, MIN_ID_PREFIX, VAR_SESSION, VAR_NAME, VAR_ACTIVITY, VAR_TASK, VAR_RUNTIME, type PaneInfo, type AgentRow, type Where } from "./agents.ts";
 
 type Api = components["schemas"];
 
@@ -90,7 +90,7 @@ const apiError = (reply: Reply): { kind: Api["Error"]["kind"]; message: string }
 };
 
 function isRuntimeInfo(value: unknown): value is Api["RuntimeInfo"] {
-  return isRecord(value) && typeof value.name === "string" && Array.isArray(value.paths) && (value.pi === "host" || value.pi === "runtime") && isRecord(value.state);
+  return isRecord(value) && typeof value.name === "string" && Array.isArray(value.paths) && (value.koa === "host" || value.koa === "runtime") && isRecord(value.state);
 }
 
 async function fetchRuntime(name: string): Promise<Api["RuntimeInfo"] | { error: string }> {
@@ -1217,7 +1217,7 @@ export const agentExtension = (host: AgentHost) => (pi: ExtensionAPI): void => {
 
   const varKeys = (): string[] => (routed && !("refusal" in routed) ? [...VAR_KEYS, VAR_RUNTIME, VAR_KO_RUNTIME] : VAR_KEYS);
 
-  // The server deletes the names only while pi.session still holds this
+  // The server deletes the names only while koa.session still holds this
   // session's id (412 otherwise), so a new owner of the pane keeps its variables.
   const unsetVarsBody = (): Api["DeleteVars"] => ({ names: varKeys(), if: { name: VAR_SESSION, value: ownSessionId } });
 
@@ -1311,7 +1311,7 @@ export const agentExtension = (host: AgentHost) => (pi: ExtensionAPI): void => {
         if (!me) return;
         const recorded = new Map(peers().map((peer) => [peer.session, peer]));
         for (const p of peerPanes(panes, me)) {
-          const id = piAgent(p.kind)?.session;
+          const id = koaAgent(p.kind)?.session;
           if (p.parent || p.dead || !id || id === ownSessionId) continue;
           const facts: PeerData = { role: "peer", name: p.name || p.title, session: id, cwd: p.cwd };
           const previous = recorded.get(id);
@@ -1437,7 +1437,7 @@ export const agentExtension = (host: AgentHost) => (pi: ExtensionAPI): void => {
     const pending = new Map<string, PeerData>();
     for (const [id, paneId] of pendingPeers) {
       const row = byPane.get(paneId);
-      if (!row || row.dead || piAgent(row.kind)?.session === id) pendingPeers.delete(id);
+      if (!row || row.dead || koaAgent(row.kind)?.session === id) pendingPeers.delete(id);
       else {
         const peer = registryPeers.find((peer) => peer.session === id);
         if (peer) pending.set(paneId, peer);
@@ -1486,7 +1486,7 @@ export const agentExtension = (host: AgentHost) => (pi: ExtensionAPI): void => {
     for (const { pane: p, row: running } of runningRows(panes, me)) {
       if (p.pane === pane) continue;
       const peer = pending.get(p.pane);
-      const agent = piAgent(p.kind);
+      const agent = koaAgent(p.kind);
       if (!(agent || peer) || p.parent) continue;
       const row: AgentRow = {
         ...running,
@@ -1967,22 +1967,15 @@ export const agentExtension = (host: AgentHost) => (pi: ExtensionAPI): void => {
   };
 
   const createPane = async (plan: Plan): Promise<{ placement: Api["Placement"] } | { error: string }> => {
-    const inside = plan.runtime?.mode === "inside";
     if (!ko) return { error: "ko is not on PATH" };
-    const argv = [
-      inside ? "ko" : ko, "shell", "--", "koa",
-      ...(host.browser ? ["--browser"] : []),
-      ...(plan.runtime?.mode === "routed" ? ["--runtime", plan.runtime.name] : []),
-      ...(plan.mode.kind === "continue" ? ["--session", plan.mode.file] : ["--session-id", plan.session]),
-      ...(plan.name && plan.mode.kind !== "continue" ? ["--name", plan.name] : []),
-      "--model", plan.model,
-      ...(plan.mode.kind === "copy" ? ["--fork", plan.mode.file] : []),
-    ];
+    const start: Api["KoaStart"] = plan.mode.kind === "continue" ? { type: "resume", session: plan.mode.file }
+      : plan.mode.kind === "copy" ? { type: "fork", session: plan.mode.file, session_id: plan.session }
+      : { type: "new", session_id: plan.session };
     const body: Api["NewWindow"] = {
       ...(plan.name ? { name: plan.name } : {}),
       cwd: plan.cwd,
-      ...(inside && plan.runtime ? { runtime: plan.runtime.name } : {}),
-      command: { type: "argv", argv },
+      ...(plan.runtime ? { runtime: plan.runtime.name } : {}),
+      command: { type: "koa", start, ...(plan.name && plan.mode.kind !== "continue" ? { name: plan.name } : {}), model: plan.model, browser: host.browser },
       session: plan.koSession,
       ...(plan.task ? { vars: { [VAR_TASK]: taskVar(plan.task) } } : {}),
     };
@@ -2269,13 +2262,13 @@ export const agentExtension = (host: AgentHost) => (pi: ExtensionAPI): void => {
         const info = await fetchRuntime(params.runtime);
         if ("error" in info) return refuse(info.error);
         runtimeInfo = info;
-        childRuntime = { name: info.name, mode: info.pi === "runtime" ? "inside" : "routed" };
-        if (childRuntime.mode === "inside" && !params.toplevel) return refuse(`runtime ${info.name} runs pi inside it: a subagent of this agent cannot go there; use toplevel: true`);
+        childRuntime = { name: info.name, mode: info.koa === "runtime" ? "inside" : "routed" };
+        if (childRuntime.mode === "inside" && !params.toplevel) return refuse(`runtime ${info.name} runs koa inside it: a subagent of this agent cannot go there; use toplevel: true`);
       } else if (routed) {
         if ("refusal" in routed) return refuse(routed.refusal);
         childRuntime = { name: routed.name, mode: "routed" };
       }
-      if (childRuntime?.mode === "inside" && (params.resume_from || params.fork)) return refuse("a saved session is a file of this filesystem: resume_from and fork need a runtime whose pi runs on the host");
+      if (childRuntime?.mode === "inside" && (params.resume_from || params.fork)) return refuse("a saved session is a file of this filesystem: resume_from and fork need a runtime whose koa runs on the host");
       const modelError = validateModel(params.model, ctx.modelRegistry);
       if (modelError) return refuse(modelError);
       let source: { id: string; path: string; cwd: string; model: string | undefined; name: string | undefined } | undefined;
@@ -2581,7 +2574,7 @@ export const agentExtension = (host: AgentHost) => (pi: ExtensionAPI): void => {
     if (!ko) return refuse(`runtime ${name}: ko is not on PATH`);
     const info = await fetchRuntime(name);
     if ("error" in info) return refuse(info.error);
-    if (info.pi === "runtime") return refuse(`runtime ${name} runs pi inside it: start koa in a pane of that runtime`);
+    if (info.koa === "runtime") return refuse(`runtime ${name} runs koa inside it: start koa in a pane of that runtime`);
     const found = mapHostPath(info.paths, ctx.cwd) ?? info.cwd;
     const program = ko;
     let facts: Promise<Facts> | undefined;

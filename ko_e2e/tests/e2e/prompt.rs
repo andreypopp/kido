@@ -11,11 +11,11 @@ use crate::messages::{ack, answer, open, received};
 use crate::panes::as_pane;
 
 const AGENT_LOOP: &str =
-    "printf '\\033]7501;state=idle:app=pi\\007'; while read line; do echo \"got: $line\"; done";
-const PI_ROOT: &str = "printf '\\033]7501;state=idle:app=pi\\007'";
+    "printf '\\033]7501;state=idle:app=koa\\007'; while read line; do echo \"got: $line\"; done";
+const PI_ROOT: &str = "printf '\\033]7501;state=idle:app=koa\\007'";
 
 fn pi_vars(name: &str) -> Value {
-    json!({"pi.session": format!("session-{name}"), "pi.name": name})
+    json!({"koa.session": format!("session-{name}"), "koa.name": name})
 }
 
 fn program(command: &str, vars: Value) -> Value {
@@ -212,7 +212,7 @@ fn a_prompt_goes_to_the_one_live_agent_of_the_callers_window() {
     ran(&s, &shell, 5);
     s.text(
         &shell,
-        "printf '\\033]7501;state=done:app=pi\\007\\033]133;A\\007'\r",
+        "printf '\\033]7501;state=done:app=koa\\007\\033]133;A\\007'\r",
     );
     s.text(&shell, &format!("{nvim}\r"));
     foreground(&s, &shell, "nvim");

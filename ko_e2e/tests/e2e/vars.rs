@@ -256,8 +256,8 @@ fn a_conditional_delete_removes_its_names_together_and_changes_nothing_when_the_
     s.screen_has(&pane, "READY");
     let (mut watcher, _) = s.client(None);
     for (name, value) in [
-        ("pi.session", "\"mine\""),
-        ("pi.name", "\"N\""),
+        ("koa.session", "\"mine\""),
+        ("koa.name", "\"N\""),
         ("keep", "1"),
     ] {
         let route = format!("/panes/{pane}/vars/{name}");
@@ -267,12 +267,13 @@ fn a_conditional_delete_removes_its_names_together_and_changes_nothing_when_the_
     let route = format!("/panes/{pane}/vars");
     let delete = |body: &str| s.ko(&["api", "-X", "DELETE", "--input", "-", &route], body);
     let all = || s.row(&pane)["vars"].clone();
-    let before = json!({"keep": 1, "pi.name": "N", "pi.session": "mine"});
+    let before = json!({"keep": 1, "koa.name": "N", "koa.session": "mine"});
     assert_eq!(all(), before);
 
-    let refused =
-        delete(r#"{"names":["pi.session","pi.name"],"if":{"name":"pi.session","value":"theirs"}}"#)
-            .http_error(412);
+    let refused = delete(
+        r#"{"names":["koa.session","koa.name"],"if":{"name":"koa.session","value":"theirs"}}"#,
+    )
+    .http_error(412);
     assert_eq!(
         serde_json::from_str::<Value>(&refused).unwrap()["kind"],
         json!("precondition_failed")
@@ -282,7 +283,7 @@ fn a_conditional_delete_removes_its_names_together_and_changes_nothing_when_the_
 
     assert_eq!(
         delete(
-            r#"{"names":["pi.session","never-set","pi.name"],"if":{"name":"pi.session","value":"mine"}}"#
+            r#"{"names":["koa.session","never-set","koa.name"],"if":{"name":"koa.session","value":"mine"}}"#
         )
         .ok(),
         "{}"
@@ -295,7 +296,7 @@ fn a_conditional_delete_removes_its_names_together_and_changes_nothing_when_the_
         .collect();
     assert_eq!(
         deleted,
-        [json!("pi.session"), json!("pi.name"), json!("keep")],
+        [json!("koa.session"), json!("koa.name"), json!("keep")],
         "one event for each name that existed, in order; none for the refused delete or an absent name"
     );
 

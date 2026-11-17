@@ -446,7 +446,7 @@
       "command" : [
         "\/bin\/sh",
         "-c",
-        "printf '\\033]7501;state=working:app=pi\\007'; stty raw -echo; exec cat"
+        "printf '\\033]7501;state=working:app=koa\\007'; stty raw -echo; exec cat"
       ],
       "cwd" : "\/",
       "foreground" : {
@@ -469,7 +469,7 @@
                 "type" : "running"
               }
             },
-            "type" : "pi_agent"
+            "type" : "koa_agent"
           },
           "type" : "host"
         },
@@ -488,8 +488,8 @@
       },
       "title" : "",
       "vars" : {
-        "pi.name" : "Worker",
-        "pi.session" : "s1"
+        "koa.name" : "Worker",
+        "koa.session" : "s1"
       }
     },
     {

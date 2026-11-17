@@ -10,7 +10,7 @@ let fixtureHome = "/Users/dev"
 let fixtureSince = 1_791_131_000_000_000_000
 
 func piLifecycle(_ state: KoSchema.AgentState = .idle(.init()), msg: String? = nil, session: String = "session") -> Lifecycle {
-    .live(.host(.init(pane: .piAgent(.init(session: session, status: .init(msg: msg, since: fixtureSince, state: state))))))
+    .live(.host(.init(pane: .koaAgent(.init(session: session, status: .init(msg: msg, since: fixtureSince, state: state))))))
 }
 
 func agentLifecycle(_ state: KoSchema.AgentState, msg: String? = nil, name: String = "claude-code") -> Lifecycle {
@@ -54,7 +54,7 @@ func fixtureItem(_ id: UInt32, window: UInt32? = nil, parent: UInt32? = nil, cwd
     case .ended(let cause): live = nil; dead = .init(at: 0, cause: cause); close = nil
     case .lingering(let cause): live = nil; dead = .init(at: 0, cause: cause); close = .onExit
     }
-    let pi = if let live, case .piAgent = live.local { true } else { false }
+    let pi = if let live, case .koaAgent = live.local { true } else { false }
     return Item(pane: .init(close: close, command: [], cwd: cwd, dead: dead, id: PaneID(number: id), inbox: pi,
                            label: title, mark: mark, parent: parent.map(PaneID.init(number:)), recordsSeen: false, started: 0,
                            status: live.map { .init(kind: $0, programStatus: .init(records: records, serial: serial), since: 0, title: title) },
@@ -125,7 +125,7 @@ func sidebarFixture(_ edit: (inout Snapshot) -> Void = { _ in }) -> Snapshot {
     edit(&snapshot)
     snapshot.fillCwds()
     snapshot.mapItems { item in
-        item.pane.inbox = if case .live(let kind) = item.lifecycle, case .piAgent = kind.local { true } else { false }
+        item.pane.inbox = if case .live(let kind) = item.lifecycle, case .koaAgent = kind.local { true } else { false }
     }
     return snapshot
 }

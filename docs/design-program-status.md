@@ -1,7 +1,6 @@
 # Program status
 
-ko identifies each pane as a terminal, an agent or a pi agent with
-ko's harness, and the state of each pane. The server computes one
+ko identifies each pane as a terminal, an agent or a koa agent, and the state of each pane. The server computes one
 `status` for each pane (`PaneStatus` in `ko_wire/src/protocol.rs`)
 and announces a change as a `status` event. Each client controls
 glyphs, labels, captions and seen outcomes.
@@ -16,8 +15,8 @@ The sources:
   - The foreground process of the pty and the active screen.
 - The status route `POST /panes/pane_N/status` (protocol.md,
   section 6), the second edge of the OSC 7501 record set.
-- The pane variables `pi.session`, `pi.name` and
-  `pi.activity` of pi's harness, only for local pi agents.
+- The pane variables `koa.session`, `koa.name` and
+  `koa.activity` of koa, only for koa agents.
 - The pane variables `ssh.dest` and `ssh.args`, set by `ko ssh`.
 
 Every time is a nanosecond of the server's monotonic clock. There is
@@ -26,9 +25,10 @@ no whole-second tie and no polling: a report is an event.
 ## Sources
 
 Two programs identify agent panes through OSC 7501 root records:
-`pi` (design.md, "The harness extension") and `claude-code`. The
-`pi` root comes from koa, which writes it for its session, or from a
-plain pi's own interactive mode. Claude
+`koa` (design.md, "The harness extension") and `claude-code`. koa
+writes the `koa` root for its session. A plain pi's own interactive
+mode writes a root `app=pi`, which identifies no agent: the pane is a
+`Terminal`, and its records show as the report of a program. Claude
 Code 2.1.295 queries OSC 7501. Then it emits a root `app=claude-code`
 record: idle, working, done, or blocked with permission/question kind
 and a base64 message. Escape on a permission dialog emits idle
@@ -96,7 +96,7 @@ The records supply:
 
 - `app` of the root record: the program that owns the pane. A record
   without an app takes the app of its nearest ancestor by `/`, else
-  the root's. If the root app is `pi` or `claude-code`, the pane is an
+  the root's. If the root app is `koa` or `claude-code`, the pane is an
   agent.
 - `state`: idle, working, blocked (with an optional kind: permission,
   question or auth), or the final states done and error. Done and
@@ -148,7 +148,7 @@ is when the model first observed the current state, or the current
 outcome at idle.
 
 Tracking resets when an agent's root app changes, appears or clears,
-when its `pi.session` changes, or when the ssh destination changes. A
+when its `koa.session` changes, or when the ssh destination changes. A
 terminal report's app change or removal does not reset tracking, so its
 outcome remains after the program exits and clears its records, until
 a command is promoted to running or a new report episode begins.
@@ -200,7 +200,7 @@ the case that matters is covered.
 ### The pane title
 
 The pane title is OSC 0/2 as the terminal holds it. An agent row uses
-it unchanged for `SomeAgent`, and for `PiAgent` without a name. A
+it unchanged for `SomeAgent`, and for `KoaAgent` without a name. A
 `Terminal` row does not use it. Claude Code sets `Claude Code` at
 startup, then a session summary.
 
@@ -209,10 +209,10 @@ A pane's `fixed_title`, which its creator sets (protocol.md, section
 show it, and the row's second line names the foreground program
 instead, as koa's editor float shows "nvim" under "Draft for @ko".
 
-A local pi that runs ko's harness (koa) owns the `pi.*` variables,
-through its agent extension (`share/koa/koa-agent.ts`). The server reads only `pi.session`,
-`pi.name` and `pi.activity`, and trusts them only while the pane has
-an OSC 7501 root with `app=pi`. ko stores nothing for a pi session.
+koa owns the `koa.*` variables, through its agent extension
+(`share/koa/koa-agent.ts`). The server reads only `koa.session`,
+`koa.name` and `koa.activity`, and trusts them only while the pane has
+an OSC 7501 root with `app=koa`. ko stores nothing for a koa session.
 
 ### The ssh mark
 
@@ -261,23 +261,24 @@ order. A variable that is not a JSON string counts as absent.
    (design-runtimes.md, "Status").
 2. `ssh.dest` is a non-empty string and the foreground process is
    `ssh`: `Ssh`. Its `pane` is `RemoteKind::Agent` when the root record's
-   app is `pi` or `claude-code`, else `RemoteKind::Terminal`.
-3. The root app is `pi` and `pi.session` is a non-empty string:
-   `PiAgent`, with its name and activity from `pi.name` and
-   `pi.activity`.
-4. The root app is `claude-code`, or `pi` without the session
+   app is `koa` or `claude-code`, else `RemoteKind::Terminal`.
+3. The root app is `koa` and `koa.session` is a non-empty string:
+   `KoaAgent`, with its name and activity from `koa.name` and
+   `koa.activity`.
+4. The root app is `claude-code`, or `koa` without the session
    variable: `SomeAgent` with the app as its name.
 5. Anything else: `Terminal`.
 
 "The root app" is the app of the root record while its foreground
 binding holds ("The record set").
 
-On the host, steps 3 to 5 give `Host`. A routed pi (`koa
+On the host, steps 3 to 5 give `Host`. A routed koa (`koa
 --runtime`) runs on the host, so it is a `Host` pane. A plain `pi`
-(not koa) has the root without `pi.session`, so it is a `SomeAgent`.
+has the root `app=pi`, so it is a `Terminal`, on the host, in a
+runtime and over ssh.
 
 The trust rule is the gate above and nothing else: a stale
-`pi.session` on a shell pane is no agent; a stale `ssh.dest` after ssh
+`koa.session` on a shell pane is no agent; a stale `ssh.dest` after ssh
 exits is no `Ssh`.
 
 ## The matrix
@@ -286,7 +287,7 @@ exits is no `Ssh`.
 |------------------|---------------------|------------------------|--------------------------------------|
 | shell            | `Host { Terminal }` | `Runtime { Terminal }` | `Ssh { pane: RemoteKind::Terminal }` |
 | some agent       | `Host { SomeAgent }` | `Runtime { SomeAgent }` | `Ssh { pane: RemoteKind::Agent }`   |
-| koa              | `Host { PiAgent }`  | `Runtime { PiAgent }`  |                                      |
+| koa              | `Host { KoaAgent }`  | `Runtime { KoaAgent }`  |                                      |
 
 The sections below describe a `LocalKind`; it has the same rules on
 the host and in a runtime, except that a runtime pane's row title
@@ -304,19 +305,19 @@ no runtime name: the row's `runtime` is the one source of it.
 
 ### `SomeAgent`
 
-- Detected: the root record's app: Claude Code (`claude-code`), or pi
-  without ko's harness (`pi`, no `pi.session`).
+- Detected: the root record's app: Claude Code (`claude-code`), or a
+  koa root without `koa.session` (`koa`).
 - Row title: the pane title, or the app name when that is empty.
 - Status: the records' reduction.
 - Supports: `ko prompt`, by paste, when it is the only agent of the
   caller's window.
 
-### `PiAgent`
+### `KoaAgent`
 
-- Detected: root app `pi` and `pi.session`.
-- Row title: `pi.name` when set, else the pane title.
-- Status: as `SomeAgent`, from the pi root. A message that repeats the
-  title is dropped; without a message, `pi.activity` supplies it.
+- Detected: root app `koa` and `koa.session`.
+- Row title: `koa.name` when set, else the pane title.
+- Status: as `SomeAgent`, from the koa root. A message that repeats the
+  title is dropped; without a message, `koa.activity` supplies it.
 - Supports: everything in design.md and design-subagents.md: the
   message stream for `ko prompt` and `message_agent`, name addressing,
   `list_agents`, parent links.
@@ -355,7 +356,7 @@ and the title; Kido.app shows the caption and the child rows too.
 - While present, a terminal report has precedence over its shell phase
   for the indicator and the message. A prompt start clears the
   non-final records.
-- For `PiAgent`, `pi.session` and `pi.name` give identity and name.
+- For `KoaAgent`, `koa.session` and `koa.name` give identity and name.
   OSC 7501 gives status.
 - A pane's kind determines only its row and `ko prompt` scope. The
   harness's messaging and control between panes use the message

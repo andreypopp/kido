@@ -55,20 +55,20 @@ three pane variables, written with `ko api` (protocol.md, section 7):
 
 | variable | value | ko reads it for |
 |---|---|---|
-| `pi.session` | the pi session id | `PiAgent`, the status identity, a message's `from` |
-| `pi.name` | the session name | the row title of a local pi, a message's `from` |
-| `pi.activity` | the agent's activity text, one line | the caption fallback |
+| `koa.session` | the koa session id | `KoaAgent`, the status identity, a message's `from` |
+| `koa.name` | the session name | the row title of a koa agent, a message's `from` |
+| `koa.activity` | the agent's activity text, one line | the caption fallback |
 
-A routed pi (design-runtimes.md, "Agents in a runtime") also writes
-`pi.runtime`, its runtime and the directory there, which only the
+A routed koa (design-runtimes.md, "Agents in a runtime") also writes
+`koa.runtime`, its runtime and the directory there, which only the
 harness reads, under the same trust rule, and the generic
 `ko.runtime`, the name of the runtime where the pane's program sends
 its work, which any program may set for clients.
 
-ko trusts them only while the pane has an OSC 7501 root with `app=pi`,
+ko trusts them only while the pane has an OSC 7501 root with `app=koa`,
 as it trusts `ssh.dest` only while the foreground is `ssh`. The
 server drops the records on pane death, a shell prompt (non-final
-records) and RIS, so a crashed pi's variables are stale but not
+records) and RIS, so a crashed koa's variables are stale but not
 believed. Only the root agent of a koa pane writes them; a subagent
 has none. A `toplevel` spawn also sets `koa.task` on its new pane; the
 new koa deletes it after it delivers the task, and ko never reads it.
@@ -93,7 +93,7 @@ extension. koa gives each session it makes the factory
 `agentExtension(host)` as an inline extension (design-koa.md, "The
 host"), so the extension is koa's and takes its pane, its ko
 executable, browser mode and the state that outlives a reload from
-its host. koa writes the pane's OSC 7501 root with `app=pi` and its
+its host. koa writes the pane's OSC 7501 root with `app=koa` and its
 OSC 0 title, because pi reports neither outside its TUI
 (design-koa.md, "Status and title").
 
@@ -101,10 +101,10 @@ A bare `pi` in a pane is plain pi, not Kido's harness. Its
 interactive mode natively emits OSC 7501 root records with `app=pi`
 after terminal feature detection (working, blocked, done, idle and
 error; `PI_PROGRAM_STATUS=0` disables them, `=1` forces them) and
-sets the title to "π - <session name> - <cwd basename>". It has no
-Kido agent tools, no message stream and no `pi.session`, so its pane is a
-`SomeAgent` (design-program-status.md): it has status and a title,
-and `ko prompt` reaches it by paste.
+sets the title to "π - <session name> - <cwd basename>". Only the
+root apps `koa` and `claude-code` identify agents, so its pane is a
+`Terminal` (design-program-status.md): its records show as the report
+of a program, and `ko prompt` does not reach it.
 
 The extension uses only these interfaces of ko:
 
@@ -134,15 +134,15 @@ session id writes no variable and opens no message stream. A headless
 `pi --print` has its own session id, so it cannot act as the agent of
 the pane that it runs in.
 
-**The variables.** The root's extension writes `pi.session` and
-`pi.name` at `session_start`, and `pi.name` again on
-`session_info_changed`. It writes no `pi.activity` value,
+**The variables.** The root's extension writes `koa.session` and
+`koa.name` at `session_start`, and `koa.name` again on
+`session_info_changed`. It writes no `koa.activity` value,
 but ko reads that variable and the extension deletes it with the
-others. Without `$KO_PANE`, nothing is written. A routed pi writes
-`pi.runtime` and `ko.runtime` too. At shutdown it
+others. Without `$KO_PANE`, nothing is written. A routed koa writes
+`koa.runtime` and `ko.runtime` too. At shutdown it
 deletes them all with one conditional `DELETE` whose condition is
-`pi.session` equal to its own session, so it never removes another
-pi's variables: the pane can have a new owner before the old one
+`koa.session` equal to its own session, so it never removes another
+koa's variables: the pane can have a new owner before the old one
 cleans up. An uncaught crash exits through `process.exit`, so a
 synchronous `exit` handler sends the same delete. The handler stays
 across `/reload` until the next `session_start` replaces it. Only a
@@ -150,15 +150,15 @@ process that ends without cleanup, such as with SIGKILL, leaves them;
 the trust rule makes them harmless for identity.
 
 **The trust rule.** The extension's own discovery uses ko's rule
-through the row's status: a pane is a pi agent only when its kind is
-a `pi_agent`, on the host or in a runtime, and the agent's id is that
-kind's `session`. Discovery and addressing apply it. `pi.runtime`
-places only a host pi agent; a runtime pane's row `runtime` and `cwd`
+through the row's status: a pane is a koa agent only when its kind is
+a `koa_agent`, on the host or in a runtime, and the agent's id is that
+kind's `session`. Discovery and addressing apply it. `koa.runtime`
+places only a host koa agent; a runtime pane's row `runtime` and `cwd`
 win. A stale variable on a
 shell pane is no agent. Liveness of a known session is the exception,
 because the root can be absent while the agent's pane lives: a resume
-refuses a session that a live pane holds in `pi.session`, with or
-without a pi root. Thus, an agent without a root is not listed and
+refuses a session that a live pane holds in `koa.session`, with or
+without a koa root. Thus, an agent without a root is not listed and
 cannot be addressed by name.
 
 **Project trust.** A subagent's host gives it as trusted the one
@@ -384,9 +384,10 @@ last list without waiting for discovery. If the list is older than
 (design-subagents.md, "Spawning"), or with `toplevel: true` a
 top-level agent with one `POST /panes` (design-subagents.md, "A
 top-level agent"). The top-level window goes after the caller's
-window; no client switches to it. Its koa runs under `ko shell --`
-("The login environment", below). The request carries the cwd,
-because a new pane gets the server's environment, not the caller's.
+window; no client switches to it. The request's command is a `koa`
+command ("Starting a koa agent", below), with the caller's runtime
+as its `runtime`. The request carries the cwd, because a new pane
+gets the server's environment, not the caller's.
 
 The task is never a command-line argument. A model writes text of any
 form, and pi's parser reads an argument that starts with `@` as a
@@ -400,15 +401,39 @@ one over 64 bytes, one with a control character or `/`, and `.` and
 over 64 bytes or with a control character. The name never reaches a
 shell.
 
+### Starting a koa agent
+
+A koa agent starts in one of two ways, and both give the same
+`koa_agent` row: the user types `koa` in a pane, or a client sends
+`POST /panes` (or a new pane of `PUT /layout`) with the `koa` case of
+`Command` (`ko_wire/src/protocol.rs`), whose fields are typed. The
+server alone turns it into koa's
+flags (`koa_args` in `ko_server/src/panes.rs`), so no client builds
+koa's argv. The task is not part of it: a spawner gives it as the
+pane variable `koa.task`.
+
+On the host, the server runs its own koa, the `koa` of its bin
+directory ("The bin directory"), never a `koa` from PATH, through
+`ko shell --` ("The login environment"). When that file is not an
+executable, the server execs its path directly, so the start fails:
+the pane dies with cause `failed`, and its row stays as any start
+failure does ("Window lifecycle"). The row's `command` is koa's path
+and its flags, without the shell.
+
+The request's `cwd` is koa's launch directory, and koa takes it as
+the session's directory, also for a resumed session or an existing
+session id. A `runtime` places the pane by the runtime's `koa`
+setting (design-runtimes.md, "A koa command in a runtime"), which
+also says what the cwd is there.
+
 ### The login environment
 
 The server starts a pane's argv directly, with only the server's
-environment and the request's. A pi that the user starts in a pane
-runs under `ko shell`, which read the user's dotfiles: EDITOR, PATH
-additions, API keys, LANG. So that every agent gets the same
-environment, the extension starts each top-level koa, new or
-restarted, as `<its ko path> shell -- koa ...` (with `--browser`
-when its host is in browser mode, design-koa.md). A subagent shares
+environment and the request's. A koa that the user starts in a pane
+runs under the user's shell, which read the user's dotfiles: EDITOR,
+PATH additions (node), API keys, LANG. So that every agent gets the
+same environment, the server starts a `koa` command ("Starting a koa
+agent") as `<its ko> shell -- <its koa> ...`. A subagent shares
 its koa's environment. A job runs its
 command through pi's shell configuration, as pi's `bash` does,
 because its command is not an agent.
@@ -421,9 +446,9 @@ runs `exec "$@"`. It names only ko's own directory, and the argv
 passes as positional parameters, so no shell parses model text. The
 shell is interactive, because EDITOR often lives in `.zshrc`. The
 shell integration is not installed, and no prompt runs before the
-exec, so the pane gets no OSC 133 marks from ko, and pi's OSC 7501
-root classifies it. Because the shell execs, pi keeps the pane's
-process: the pane's death is pi's. If the exec fails, the shell exits
+exec, so the pane gets no OSC 133 marks from ko, and koa's OSC 7501
+root classifies it. Because the shell execs, koa keeps the pane's
+process: the pane's death is koa's. If the exec fails, the shell exits
 127 (126 for permission). Another shell, such as fish, has no `"$@"`
 semantics: ko execs CMD directly, and the user's dotfiles do not run.
 
@@ -925,6 +950,21 @@ file.
 
 Each decision names its date. The code states the rest.
 
+2026-11-17, a typed koa command:
+
+- One typed way starts a koa agent through the API, the `koa` case of
+  `Command`; typing `koa` in a pane stays the other way, and both
+  give the same `koa_agent` row. A client builds no koa argv.
+- The agent kind, its evidence and its variables are koa's names:
+  `koa_agent`, the root `app=koa`, `koa.*` and the runtime setting
+  `koa`. Only `koa` and `claude-code` identify agents; a bare pi is
+  a terminal with a program's report.
+- The server runs only its own koa on the host, and a missing one is
+  a start failure with cause `failed`, not an exit 127 of a shell.
+- The runtime is the request's `runtime` and the directory is the
+  request's `cwd`, not fields of the command, so a koa pane is placed
+  as any pane is, except that `koa: host` keeps it on the host.
+
 2026-11-13, in-process subagents:
 
 - Every agent of a koa pane, the root included, is an
@@ -964,15 +1004,15 @@ Each decision names its date. The code states the rest.
   (`share/koa/koa-agent.ts`), loaded only into koa's own sessions. The
   `ko-pi` command, pi's terminal UI with the harness and every code
   path that exists only for that UI go. A plain `pi` is a
-  `SomeAgent`.
+  `Terminal`.
 - No terminal harness: `ko_tui` and a terminal view of a remote
   server show a koa pane as a webview placeholder; the page needs
   Kido.app or `koa --browser`. A terminal rendering of koa would be
   the UI that this decision abandons.
 - Browser mode reaches the extension as a field of its host, not an
   environment variable, which would leak into every job.
-- The inside runtime mode stays, as `ko shell -- koa`, so its image
-  needs Node 24 and pi.
+- The inside runtime mode stays, as a `koa` command inside the
+  runtime, so its image needs Node 24 and pi.
 - `share/pi/` is dissolved into `share/koa/`: one package, one
   lockfile, one tsconfig, one suite, one installed directory.
 - The names in session files and variables are `koa.*`, with no

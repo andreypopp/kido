@@ -131,7 +131,7 @@ private func items(_ snapshot: Snapshot) -> [PaneID: Item] {
     #expect(item.agent != nil)
     #expect(item.shell == nil)
     #expect(item.rowTitle == "@Worker")
-    #expect(item.lifecycle == .live(.runtime(.init(pane: .piAgent(.init(session: "s1", status: try #require(item.agent)))))))
+    #expect(item.lifecycle == .live(.runtime(.init(pane: .koaAgent(.init(session: "s1", status: try #require(item.agent)))))))
 }
 
 @Test func statusesAndEndedPanesKeepTheirMeaning() throws {
@@ -151,7 +151,7 @@ private func items(_ snapshot: Snapshot) -> [PaneID: Item] {
     let failed = try item(4)
     guard case .idle(let idle)? = failed.shell?.phase, let last = idle.last else { Issue.record("not idle after a command"); return }
     #expect(last.code == 1 && last.command == "false")
-    #expect(try item(5).lifecycle == .live(.host(.init(pane: .piAgent(.init(session: "s1", status: try #require(item(5).agent)))))))
+    #expect(try item(5).lifecycle == .live(.host(.init(pane: .koaAgent(.init(session: "s1", status: try #require(item(5).agent)))))))
     #expect(try item(5).pane.label == "Worker")
     #expect(try item(6).shell?.phase == .unknown)
     let child = try item(7)

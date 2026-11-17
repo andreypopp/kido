@@ -128,14 +128,14 @@ extension KoSchema.ProgramRecord {
 extension Item {
     var isAgent: Bool { agent != nil }
     var isMessageable: Bool {
-        if case .live(let kind) = lifecycle, case .piAgent = kind.local { pane.inbox == true } else { false }
+        if case .live(let kind) = lifecycle, case .koaAgent = kind.local { pane.inbox == true } else { false }
     }
     var agent: KoSchema.Agent? {
         guard case .live(let kind) = lifecycle else { return nil }
         if case .ssh(let ssh) = kind, case .agent(let agent) = ssh.pane { return agent.status }
         switch kind.local {
         case .someAgent(let agent): return agent.status
-        case .piAgent(let agent): return agent.status
+        case .koaAgent(let agent): return agent.status
         default: return nil
         }
     }

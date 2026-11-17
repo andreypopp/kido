@@ -205,8 +205,8 @@ runtimes:
                 "runtimes: dev: command: up: must start with an absolute program path at line 3 column 19",
             ),
             (
-                "runtimes:\n  dev:\n    pi: [x]\n    command: {}\n",
-                "runtimes: dev: pi: invalid type: sequence, expected an enum at line 3 column 9",
+                "runtimes:\n  dev:\n    koa: [x]\n    command: {}\n",
+                "runtimes: dev: koa: invalid type: sequence, expected an enum at line 3 column 10",
             ),
             (
                 "runtimes:\n  dev:\n    container: {from: {image: x}, init: []}\n",

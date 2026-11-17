@@ -45,7 +45,7 @@ impl Waits {
 
 fn stamp(id: PaneId, pane: Option<&Pane>) -> Sender {
     match pane.map(pane_kind::of_pane).as_ref().and_then(Kind::local) {
-        Some(LocalKind::PiAgent { session, name, .. }) => Sender::Pane {
+        Some(LocalKind::KoaAgent { session, name, .. }) => Sender::Pane {
             pane: id,
             session: Some(session.clone()),
             name: Some(name.clone()).filter(|name| !name.is_empty()),

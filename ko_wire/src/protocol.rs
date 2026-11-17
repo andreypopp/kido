@@ -82,7 +82,7 @@ use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 use std::num::{NonZeroU16, NonZeroU64, NonZeroUsize};
 
-use ko_config::runtime::{PathMap, RuntimePi};
+use ko_config::runtime::{PathMap, RuntimeKoa};
 use ko_config::values::{AbsPath, RuntimeColor, RuntimeName, env_valid};
 use ko_pane_wire::frame::{
     self, CellPx, Dim, History, KeyAction, KeyCode, MouseAction, MouseButton,
@@ -642,20 +642,20 @@ pub enum Remote {
 pub enum Local {
     Terminal(Shell),
     SomeAgent { name: String, status: Agent },
-    PiAgent { session: String, status: Agent },
+    KoaAgent { session: String, status: Agent },
 }
 
 impl Local {
     fn shell(&self) -> Option<&Shell> {
         match self {
             Self::Terminal(shell) => Some(shell),
-            Self::SomeAgent { .. } | Self::PiAgent { .. } => None,
+            Self::SomeAgent { .. } | Self::KoaAgent { .. } => None,
         }
     }
 
     fn agent(&self) -> Option<&Agent> {
         match self {
-            Self::SomeAgent { status, .. } | Self::PiAgent { status, .. } => Some(status),
+            Self::SomeAgent { status, .. } | Self::KoaAgent { status, .. } => Some(status),
             Self::Terminal(_) => None,
         }
     }
@@ -939,8 +939,45 @@ pub enum Input {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Command {
-    Argv { argv: Vec<String> },
-    Shell { command: String },
+    Argv {
+        argv: Vec<String>,
+    },
+    Shell {
+        command: String,
+    },
+    /// A Koa agent, started through ko's own koa. A runtime's `koa` setting decides whether it runs
+    /// on the host for the runtime or inside it.
+    Koa {
+        start: KoaStart,
+        /// The agent's display name.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        name: Option<String>,
+        /// The model, as provider/model-id with an optional :thinking level.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        model: Option<String>,
+        /// Render the agent in a webview page instead of the terminal.
+        #[serde(default)]
+        browser: bool,
+    },
+}
+
+/// Which session a Koa agent starts with.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum KoaStart {
+    /// A new session, with the given id or a fresh one.
+    New {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        session_id: Option<String>,
+    },
+    /// The saved session file, continued in place.
+    Resume { session: AbsPath },
+    /// A copy of the saved session file, with the given id or a fresh one.
+    Fork {
+        session: AbsPath,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        session_id: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -1231,7 +1268,7 @@ pub struct LayoutPanes {
 #[serde(untagged)]
 pub enum PaneRef {
     Existing(PaneId),
-    New { new: CreatePane },
+    New { new: Box<CreatePane> },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -1336,7 +1373,7 @@ impl DraftWindow {
     pub fn single(request: &CreatePane) -> DraftWindow {
         Self::leaf(DraftLeaf {
             pane: PaneRef::New {
-                new: request.clone(),
+                new: Box::new(request.clone()),
             },
             cols: None,
             rows: None,
@@ -2397,7 +2434,7 @@ pub struct SendMessage {
 }
 
 /// The sender of a message, as the server knows it. The session and the name are those of a
-/// pane that has a pi root.
+/// pane that has a koa root.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Sender {
@@ -2535,9 +2572,9 @@ mod tests {
         ] {
             assert!(StatusId::try_from(id).is_err());
         }
-        let body = serde_json::json!({"type":"set", "id":"", "state":"blocked", "progress":100, "app":"pi", "title":"λ".repeat(96), "msg":"λ".repeat(1024)});
+        let body = serde_json::json!({"type":"set", "id":"", "state":"blocked", "progress":100, "app":"koa", "title":"λ".repeat(96), "msg":"λ".repeat(1024)});
         let valid = decode::<StatusReport>(&serde_json::to_vec(&body).unwrap()).unwrap();
-        assert_eq!(serde_json::to_value(valid).unwrap()["app"], "pi");
+        assert_eq!(serde_json::to_value(valid).unwrap()["app"], "koa");
         for (key, value) in [
             ("title", serde_json::json!("λ".repeat(97))),
             ("msg", serde_json::json!("λ".repeat(1025))),
@@ -2597,8 +2634,8 @@ mod tests {
             same::<Error>(json);
         }
         for json in [
-            r#"{"names":["pi.session","pi.name"]}"#,
-            r#"{"names":["pi.session"],"if":{"name":"pi.session","value":"abc"}}"#,
+            r#"{"names":["koa.session","koa.name"]}"#,
+            r#"{"names":["koa.session"],"if":{"name":"koa.session","value":"abc"}}"#,
         ] {
             same::<DeleteVars>(json);
         }
@@ -2611,20 +2648,20 @@ mod tests {
             same::<Row>(json);
         }
         same::<Row>(
-            r#"{"id":"pane_4","started":0,"pid":1,"command":["/bin/sh"],"cwd":"/","title":"","dead":null,"foreground":{"pid":77,"name":"sleep"},"status":{"kind":{"type":"host","pane":{"type":"terminal","phase":{"type":"running","origin":{"type":"command","command":"sleep 2","started_at":5},"fullscreen":false},"report":{"since":4,"msg":"m","state":{"type":"waiting","kind":"question","progress":42}}}},"program_status":{"serial":3,"records":[{"id":"","state":"blocked","kind":"question","progress":42,"app":"pi","title":"t","msg":"m"},{"id":"a/b","state":"working"},{"id":"c","state":"done"}]},"title":"sleep 2","message":"m","progress":42,"since":6},"progress":{"state":"set","progress":50}}"#,
+            r#"{"id":"pane_4","started":0,"pid":1,"command":["/bin/sh"],"cwd":"/","title":"","dead":null,"foreground":{"pid":77,"name":"sleep"},"status":{"kind":{"type":"host","pane":{"type":"terminal","phase":{"type":"running","origin":{"type":"command","command":"sleep 2","started_at":5},"fullscreen":false},"report":{"since":4,"msg":"m","state":{"type":"waiting","kind":"question","progress":42}}}},"program_status":{"serial":3,"records":[{"id":"","state":"blocked","kind":"question","progress":42,"app":"koa","title":"t","msg":"m"},{"id":"a/b","state":"working"},{"id":"c","state":"done"}]},"title":"sleep 2","message":"m","progress":42,"since":6},"progress":{"state":"set","progress":50}}"#,
         );
         for json in [
             r#"{"type":"host","pane":{"type":"some_agent","name":"claude-code","status":{"since":1,"state":{"type":"idle","outcome":{"serial":2,"result":"success"}}}}}"#,
-            r#"{"type":"host","pane":{"type":"pi_agent","session":"s","status":{"since":1,"state":{"type":"running"}}}}"#,
+            r#"{"type":"host","pane":{"type":"koa_agent","session":"s","status":{"since":1,"state":{"type":"running"}}}}"#,
             r#"{"type":"ssh","destination":"deploy@h","pane":{"type":"terminal","interactive":true,"status":{"phase":{"type":"idle","last":{"code":1,"command":"false","started_at":1,"ended_at":2}}}}}"#,
-            r#"{"type":"ssh","destination":"h","pane":{"type":"agent","name":"pi","status":{"since":0,"state":{"type":"idle"}}}}"#,
+            r#"{"type":"ssh","destination":"h","pane":{"type":"agent","name":"koa","status":{"since":0,"state":{"type":"idle"}}}}"#,
             r#"{"type":"host","pane":{"type":"terminal","phase":{"type":"running","origin":{"type":"unknown"},"fullscreen":true}}}"#,
             r#"{"type":"host","pane":{"type":"terminal","phase":{"type":"unknown"}}}"#,
         ] {
             same::<Live>(json);
         }
         same::<Listing>(
-            r#"{"id":"pane_4","started":0,"pid":1,"command":["/bin/sh"],"cwd":"/","title":"","dead":null,"vars":{"n":[1,{"a":null}],"pi.name":"Worker"}}"#,
+            r#"{"id":"pane_4","started":0,"pid":1,"command":["/bin/sh"],"cwd":"/","title":"","dead":null,"vars":{"koa.name":"Worker","n":[1,{"a":null}]}}"#,
         );
         for json in [
             r#"{"pasted":true,"unsafe":false}"#,
@@ -2702,7 +2739,7 @@ mod tests {
             r#"{"env":[]}"#,
             r#"{"cwd":"/tmp","command":{"type":"argv","argv":["/bin/sh","-c","x"]},"env":[{"name":"X","value":"y"}]}"#,
             r#"{"command":{"type":"shell","command":"exec cat"},"env":[]}"#,
-            r#"{"env":[],"vars":{"n":[1,{"a":null}],"pi.name":"Worker"}}"#,
+            r#"{"env":[],"vars":{"koa.name":"Worker","n":[1,{"a":null}]}}"#,
         ] {
             same::<CreatePane>(json);
         }
@@ -3115,7 +3152,7 @@ pub struct RuntimeInfo {
     /// The configured directory inside the runtime for a pane whose cwd does not map.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub cwd: Option<AbsPath>,
-    pub pi: RuntimePi,
+    pub koa: RuntimeKoa,
 }
 
 /// The state of a runtime when its wait ends.

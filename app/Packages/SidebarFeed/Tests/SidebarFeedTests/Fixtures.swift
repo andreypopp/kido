@@ -15,8 +15,8 @@ func report(_ state: KoSchema.AgentState, msg: String? = nil) -> KoSchema.Agent 
 func agent(_ state: KoSchema.AgentState = idle(), msg: String? = nil, name: String = "claude-code") -> Lifecycle {
     .live(.host(.init(pane: .someAgent(.init(name: name, status: report(state, msg: msg))))))
 }
-func piAgent(_ state: KoSchema.AgentState = idle(), msg: String? = nil) -> Lifecycle {
-    .live(.host(.init(pane: .piAgent(.init(session: "pi-session", status: report(state, msg: msg))))))
+func koaAgent(_ state: KoSchema.AgentState = idle(), msg: String? = nil) -> Lifecycle {
+    .live(.host(.init(pane: .koaAgent(.init(session: "pi-session", status: report(state, msg: msg))))))
 }
 
 func shell(_ phase: KoSchema.Phase = .idle(.init()), report: KoSchema.Agent? = nil) -> KoSchema.Shell { .init(phase: phase, report: report) }
@@ -41,7 +41,7 @@ func pane(_ id: Int, window: Int? = nil, parent: Int? = nil, title: String = "",
     case .ended(let cause): live = nil; dead = .init(at: 0, cause: cause); close = nil
     case .lingering(let cause): live = nil; dead = .init(at: 0, cause: cause); close = .onExit
     }
-    let pi = if case .host(let host) = live, case .piAgent = host.pane { true } else { false }
+    let pi = if case .host(let host) = live, case .koaAgent = host.pane { true } else { false }
     return .item(Item(pane: .init(close: close, command: [], cwd: cwd, dead: dead, id: PaneID(number: UInt32(id)), inbox: pi,
                                  label: title, mark: mark, parent: parent.map { PaneID(number: UInt32($0)) }, recordsSeen: recordsSeen, started: 0,
                                  status: live.map { .init(kind: $0, programStatus: .init(records: records, serial: serial), since: 0, title: title) },

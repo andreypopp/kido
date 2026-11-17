@@ -455,7 +455,7 @@ these names:
 
 | variable | writer | trust rule |
 |---|---|---|
-| `pi.session`, `pi.name`, `pi.activity` | the pi harness through `ko api` | believed only while the pane's root OSC 7501 app is `pi` |
+| `koa.session`, `koa.name`, `koa.activity` | koa through `ko api` | believed only while the pane's root OSC 7501 app is `koa` |
 | `ssh.dest`, `ssh.args` | `ko ssh` before it execs ssh | believed only while the pane's foreground process is `ssh` |
 
 Session and window variables live inside the layout document.

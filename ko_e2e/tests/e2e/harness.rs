@@ -809,6 +809,7 @@ pub(crate) fn start(args: &[&str]) -> Server {
 }
 
 fn spawn_server(
+    exe: &Path,
     dir: &Path,
     log: &Path,
     shell: &Path,
@@ -825,7 +826,7 @@ fn spawn_server(
         server_env.push(format!("{name}={value}").into_bytes());
     }
     Child::spawn(
-        &ko(),
+        exe,
         &argv,
         &server_env,
         &[(null.as_fd(), 0), (output.as_fd(), 1), (output.as_fd(), 2)],
@@ -853,9 +854,20 @@ pub(crate) fn start_serving(settings: &str) -> Server {
 }
 
 pub(crate) fn start_in(dir: Dir, shell: &Path, env: &[(&str, &str)], args: &[&str]) -> Server {
+    start_exe(&ko(), dir, shell, env, args)
+}
+
+// A server started through another path to ko, such as a private installed prefix.
+pub(crate) fn start_exe(
+    exe: &Path,
+    dir: Dir,
+    shell: &Path,
+    env: &[(&str, &str)],
+    args: &[&str],
+) -> Server {
     std::fs::write(dir.join(".zshrc"), "").unwrap();
     let log = PathBuf::from(format!("{}.log", dir.display()));
-    let child = spawn_server(&dir, &log, shell, env, args);
+    let child = spawn_server(exe, &dir, &log, shell, env, args);
     let mut server = Server {
         dir,
         scratch: Dir::new("ko-run-"),
@@ -910,7 +922,7 @@ impl Server {
             self.child.wait(Duration::from_secs(3)).is_some(),
             "the old server is still running"
         );
-        self.child = spawn_server(&self.dir, &self.log, Path::new("/bin/sh"), env, &[]);
+        self.child = spawn_server(&ko(), &self.dir, &self.log, Path::new("/bin/sh"), env, &[]);
         self.wait_listening();
     }
 
