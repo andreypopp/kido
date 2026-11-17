@@ -105,7 +105,15 @@ handles the driver's timers, a stream that the peer does not read
 beside one that completes, and a datagram kept whole across a
 `WouldBlock` that a test-only switch forces: a UDP receiver drops
 datagrams and gives the sender no back-pressure, so a real full
-buffer cannot be made.
+buffer cannot be made. The HTTP/3 tests (`wire/quic/tests/h3.rs`)
+run a `quiche` HTTP/3 server in the process and drive the owner only
+through the loop's events: a stream whose mailbox nobody reads
+beside one that completes, then resumes at its exact offset; every
+handle failed on `H3_NO_ERROR`, a paused one included; a cancel
+during the join; a refused admission. The I/O thread's in-process
+cases (`ffi/tests/quic.rs`, without the variable below) show that a
+reset ends only its own view, and the Caddy test that a refused
+admission ends only its own view.
 
 `ko_pane/tests/pane.rs` drives the `ko-pane` binary over a socketpair
 and a ring. The `Server` SIGTERM test starts the `ko-pane` that `make
@@ -189,7 +197,31 @@ the test's pid, so the container `ko-<name>` is its own, and a drop
 guard deletes that container on every exit; it never touches another
 container and pulls no image. It needs `make build-linux` first; with
 the variable set, a missing layout or `container` CLI is a failure.
-CI does not set it. The podman test (also in `container.rs`) runs
+CI does not set it.
+
+The HTTP/3 tests against a real Caddy (`ko_client/src/ffi/tests/quic.rs`)
+run under the same variable, with the same rules: their own
+container name, a drop guard that deletes only it, no pull, and a
+failure for a missing `container` CLI, image or layout. They live in
+`ko_client`, not in `ko_e2e`, because the CLI has no TLS endpoint
+and the I/O thread that owns the QUIC connection is private to
+`ko_client`; the test never runs `ko` on the host. Their image,
+`ko-quic-test:debian13` (`debian:trixie` with Caddy from Caddy's
+Debian repository and `supervisor`), is built once by
+`scripts/build-quic-test-image.sh`, the only step that downloads.
+Inside, supervisor runs the repository's static aarch64 ko, mounted
+read-only from `build/ko/share/ko/linux/aarch64`, and Caddy with the
+client authentication of `deploy/` and `protocols h1 h2 h3`; the
+test restarts or stops either one through `container exec
+supervisorctl`. A test-only endpoint (`Endpoint::Fixed`) gives every
+dial, the reconnects included, the container's address with the
+server name of the test's certificate. They cover the TLS cases of
+the TCP tests over HTTP/3, a refusal without `Ko-Protocol` and
+`Ko-Vt` (426), 502 while ko is stopped, a revocation by restart, one
+signature for each connection, and two views that resume at their
+exact offsets, with no new snapshot, after a restart of Caddy.
+`KO_E2E_CONTAINER=1 make cargo ARGS='test -p ko_client --features
+tls quic'` runs them after `make build-linux`. The podman test (also in `container.rs`) runs
 only with `KO_E2E_PODMAN=1`, on a Linux host with podman and the
 image `docker.io/library/debian:trixie`: it drives a `podman` runtime
 through one server with the host's static ko, under the same naming,

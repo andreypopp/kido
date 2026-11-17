@@ -1,0 +1,844 @@
+use super::*;
+use crate::endpoint::{Dial, HostName, quic::Quic};
+use crate::wire::tests::tls::{Fixtures, Key};
+use boring::pkey::PKey;
+use boring::ssl::{SslContextBuilder, SslMethod};
+use boring::x509::X509;
+use ko_sys::pid::{Exit, Waited};
+use ko_sys::spawn::{self, Env};
+use std::cell::Cell;
+use std::fs::File;
+use std::io;
+use std::net::{IpAddr, SocketAddr};
+use std::os::fd::AsFd;
+use std::os::unix::ffi::OsStrExt;
+use std::sync::atomic::AtomicUsize;
+
+const DEADLINE: Duration = Duration::from_secs(5);
+const IMAGE: &str = "ko-quic-test:debian13";
+
+#[derive(Debug)]
+struct Run {
+    exit: Exit,
+    stdout: String,
+    stderr: String,
+}
+#[derive(Debug)]
+struct Container {
+    cli: PathBuf,
+    dir: PathBuf,
+    name: String,
+    env: Vec<Vec<u8>>,
+    command: Cell<u64>,
+}
+impl Container {
+    fn run(&self, args: &[&str]) -> io::Result<Run> {
+        let number = self.command.get();
+        self.command.set(number + 1);
+        let output = self.dir.join(format!("command-{number}.out"));
+        let errors = self.dir.join(format!("command-{number}.err"));
+        let input = File::open("/dev/null")?;
+        let stdout = File::create(&output)?;
+        let stderr = File::create(&errors)?;
+        let pid = spawn::program(
+            &self.cli,
+            args,
+            &[(input.as_fd(), 0), (stdout.as_fd(), 1), (stderr.as_fd(), 2)],
+            Env::Only(&self.env),
+            None,
+        )?;
+        let (send, receive) = channel();
+        std::thread::spawn(move || {
+            let _ = send.send(pid.wait());
+        });
+        let status = receive.recv_timeout(DEADLINE).map_err(io::Error::other)??;
+        let Waited::Ended(exit) = status else {
+            return Err(io::Error::other("container command was not reaped"));
+        };
+        Ok(Run {
+            exit,
+            stdout: std::fs::read_to_string(output)?,
+            stderr: std::fs::read_to_string(errors)?,
+        })
+    }
+    fn ok(&self, args: &[&str]) -> String {
+        let run = self.run(args).unwrap();
+        assert_eq!(
+            run.exit,
+            Exit::Exited(0),
+            "{args:?}: stdout={} stderr={}",
+            run.stdout,
+            run.stderr
+        );
+        run.stdout
+    }
+    fn control(&self, verb: &str, program: &str) {
+        self.ok(&[
+            "exec",
+            &self.name,
+            "supervisorctl",
+            "-c",
+            "/fixtures/supervisord.conf",
+            verb,
+            program,
+        ]);
+    }
+    fn start(cli: PathBuf, path: Vec<u8>, certs: &Fixtures) -> (Self, SocketAddr) {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let name = format!("ko-quic-test-{}-{nonce}", std::process::id());
+        let dir = PathBuf::from("/tmp").join(&name);
+        std::fs::create_dir(&dir).unwrap();
+        let home = dir.join("home");
+        std::fs::create_dir(&home).unwrap();
+        let env = vec![
+            [b"PATH=".as_slice(), path.as_slice()].concat(),
+            [b"HOME=".as_slice(), home.as_os_str().as_bytes()].concat(),
+        ];
+        let container = Self {
+            cli,
+            dir,
+            name,
+            env,
+            command: Cell::new(0),
+        };
+        container.ok(&["image", "inspect", IMAGE]);
+        let root = Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+        let layout = root
+            .join("build/ko/share/ko/linux/aarch64")
+            .canonicalize()
+            .expect("KO_E2E_CONTAINER needs make build-linux");
+        for binary in ["ko", "ko-pane"] {
+            assert!(
+                layout.join("bin").join(binary).is_file(),
+                "missing static {binary}"
+            );
+        }
+        let pem = |der: &[u8]| X509::from_der(der).unwrap().to_pem().unwrap();
+        std::fs::write(container.dir.join("server.pem"), pem(&certs.server.der)).unwrap();
+        std::fs::write(
+            container.dir.join("server.key"),
+            PKey::private_key_from_der(&certs.server.key)
+                .unwrap()
+                .private_key_to_pem_pkcs8()
+                .unwrap(),
+        )
+        .unwrap();
+        let devices = container.dir.join("devices");
+        std::fs::create_dir(&devices).unwrap();
+        std::fs::write(devices.join("paired.pem"), pem(&certs.client.der)).unwrap();
+        let template = include_str!("../../../../deploy/files/Caddyfile");
+        let global = template.split("@ENROLL@").next().unwrap();
+        let host = template.split("@HOST@").nth(1).unwrap();
+        let config = format!("{global}localhost{host}").replace(
+            "\ttls {",
+            "\ttls /fixtures/server.pem /fixtures/server.key {",
+        );
+        std::fs::write(container.dir.join("Caddyfile"), config).unwrap();
+        std::fs::write(container.dir.join("supervisord.conf"),"[unix_http_server]\nfile=/run/supervisor.sock\n[supervisord]\nnodaemon=true\nlogfile=/fixtures/supervisor.log\npidfile=/run/supervisord.pid\n[rpcinterface:supervisor]\nsupervisor.rpcinterface_factory=supervisor.rpcinterface:make_main_rpcinterface\n[supervisorctl]\nserverurl=unix:///run/supervisor.sock\n[program:ko]\ncommand=/opt/ko/bin/ko --server /var/lib/ko server\nenvironment=HOME=\"/tmp\"\nstartsecs=0\nstopwaitsecs=1\nautorestart=false\nstdout_logfile=/fixtures/ko.log\nstdout_logfile_maxbytes=0\nredirect_stderr=true\n[program:caddy]\ncommand=/usr/bin/caddy run --config /fixtures/Caddyfile --adapter caddyfile\nstartsecs=0\nstopwaitsecs=4\nautorestart=false\nstdout_logfile=/fixtures/caddy.log\nstdout_logfile_maxbytes=0\nredirect_stderr=true\n").unwrap();
+        let mounted_layout = format!("{}:/opt/ko:ro", layout.display());
+        let mounted_fixture = format!("{}:/fixtures", container.dir.display());
+        let mounted_devices = format!("{}:/var/lib/ko-devices:ro", devices.display());
+        container.ok(&[
+            "run",
+            "--detach",
+            "--name",
+            &container.name,
+            "--cpus",
+            "1",
+            "--memory",
+            "256M",
+            "--volume",
+            &mounted_layout,
+            "--volume",
+            &mounted_fixture,
+            "--volume",
+            &mounted_devices,
+            IMAGE,
+        ]);
+        let ready = Instant::now() + DEADLINE;
+        loop {
+            let run = container
+                .run(&[
+                    "exec",
+                    &container.name,
+                    "/bin/sh",
+                    "-c",
+                    "test -S /var/lib/ko/socket && test -S /run/caddy/admin.sock",
+                ])
+                .unwrap();
+            if run.exit == Exit::Exited(0) {
+                break;
+            }
+            assert!(
+                Instant::now() < ready,
+                "ko and Caddy did not start: {run:?}"
+            );
+        }
+        #[derive(Debug, serde::Deserialize)]
+        struct Info {
+            status: Status,
+        }
+        #[derive(Debug, serde::Deserialize)]
+        struct Status {
+            networks: Vec<Network>,
+        }
+        #[derive(Debug, serde::Deserialize)]
+        struct Network {
+            #[serde(rename = "ipv4Address")]
+            address: String,
+        }
+        let text = container.ok(&["inspect", &container.name]);
+        let inspected: Vec<Info> =
+            serde_json::from_str(&text).unwrap_or_else(|error| panic!("{error}: {text}"));
+        let address = inspected
+            .first()
+            .and_then(|info| info.status.networks.first())
+            .expect("container has no network")
+            .address
+            .split('/')
+            .next()
+            .unwrap()
+            .parse::<IpAddr>()
+            .unwrap();
+        (container, SocketAddr::new(address, 443))
+    }
+}
+impl Drop for Container {
+    fn drop(&mut self) {
+        if std::thread::panicking() {
+            for file in ["supervisor.log", "caddy.log", "ko.log"] {
+                let text = std::fs::read_to_string(self.dir.join(file)).unwrap_or_default();
+                let _ = writeln!(std::io::stderr().lock(), "{} {file}:\n{text}", self.name);
+            }
+        }
+        let result = self.run(&["delete", "--force", &self.name]);
+        if !std::thread::panicking() {
+            assert!(
+                result.as_ref().is_ok_and(|run| run.exit == Exit::Exited(0)),
+                "container cleanup failed: {result:?}"
+            );
+        }
+        let _ = std::fs::remove_dir_all(&self.dir);
+    }
+}
+#[derive(Debug)]
+struct ClientGuard(*mut Client);
+impl Drop for ClientGuard {
+    fn drop(&mut self) {
+        close(self.0);
+    }
+}
+#[derive(Debug)]
+struct ViewGuard(*mut ViewHandle);
+impl Drop for ViewGuard {
+    fn drop(&mut self) {
+        close_view(self.0);
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum Case {
+    Accepted,
+    UnknownIdentity,
+    NoIdentity,
+    WrongRoot,
+    WrongName,
+}
+fn endpoint(
+    certs: &Fixtures,
+    peer: SocketAddr,
+    case: Case,
+    signatures: Arc<AtomicUsize>,
+) -> Endpoint {
+    let mut context = SslContextBuilder::new(SslMethod::tls()).unwrap();
+    crate::endpoint::tls::configure(
+        &mut context,
+        vec![if matches!(case, Case::WrongRoot) {
+            certs.other_root.der.clone()
+        } else {
+            certs.root.der.clone()
+        }],
+    )
+    .unwrap();
+    if !matches!(case, Case::NoIdentity) {
+        let identity = if matches!(case, Case::UnknownIdentity) {
+            &certs.other_client
+        } else {
+            &certs.client
+        };
+        context
+            .set_certificate(&X509::from_der(&identity.der).unwrap())
+            .unwrap();
+        context.set_private_key_method(Key {
+            key: PKey::private_key_from_der(&identity.key).unwrap(),
+            signatures,
+        });
+    }
+    let host = HostName::try_from(
+        if matches!(case, Case::WrongName) {
+            "wrong.example"
+        } else {
+            "localhost"
+        }
+        .to_owned(),
+    )
+    .unwrap();
+    let target = Arc::new(Quic::new(host, peer.port(), context).unwrap());
+    Endpoint::Fixed(Dial::Quic {
+        target,
+        addresses: Arc::from([peer]),
+    })
+}
+fn connect(fixture: &Fixture, endpoint: Endpoint) -> ClientGuard {
+    let handle = start(
+        endpoint,
+        Greeting {
+            name: "quic-test".to_owned(),
+            webview: false,
+            focused: false,
+            sizing: protocol::Sizing::Disabled,
+        },
+        Arc::clone(&fixture.queue),
+        record,
+        User(std::ptr::from_ref(fixture.probe).cast_mut().cast()),
+        crate::wire::WATCHDOG,
+    )
+    .unwrap();
+    fixture.probe.client.store(handle, Ordering::SeqCst);
+    ClientGuard(handle)
+}
+fn seen(fixture: &Fixture, predicate: impl Fn(&Seen) -> bool) -> Seen {
+    let deadline = Instant::now() + DEADLINE;
+    loop {
+        let event = fixture
+            .events
+            .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+            .unwrap()
+            .seen;
+        if predicate(&event) {
+            return event;
+        }
+        assert!(Instant::now() < deadline, "missing event; last: {event:?}");
+    }
+}
+fn access(guard: &ClientGuard) -> Arc<crate::endpoint::Resolved> {
+    locked(&client(guard.0).unwrap().shared.resolved)
+        .clone()
+        .unwrap()
+}
+fn bytes(decoder: &Decoder, want: &[u8]) -> u64 {
+    let deadline = Instant::now() + DEADLINE;
+    let mut received = Vec::new();
+    let mut first = None;
+    while received.len() < want.len() {
+        match locked(&decoder.feeds)
+            .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+            .unwrap()
+        {
+            Fed::Bytes(offset, bytes) => {
+                let start = *first.get_or_insert(offset);
+                assert_eq!(offset, start + received.len() as u64);
+                received.extend(bytes);
+            }
+            Fed::Resize(..) => {}
+            event => panic!("unexpected feed: {event:?}"),
+        }
+    }
+    assert_eq!(received, want);
+    first.unwrap()
+}
+
+#[test]
+fn an_h3_reset_during_view_connect_keeps_the_client_and_other_view() {
+    use ko_sys::event::{Mode, Poll};
+    use quiche::h3::NameValue;
+    use tungstenite::protocol::{WebSocketConfig, WebSocketContext};
+    #[derive(Debug, Default)]
+    struct BytesIo {
+        input: VecDeque<u8>,
+        output: VecDeque<u8>,
+    }
+    impl Read for BytesIo {
+        fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
+            let count = bytes.len().min(self.input.len());
+            if count == 0 {
+                return Err(io::ErrorKind::WouldBlock.into());
+            }
+            for byte in bytes.iter_mut().take(count) {
+                *byte = self.input.pop_front().unwrap();
+            }
+            Ok(count)
+        }
+    }
+    impl Write for BytesIo {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            self.output.extend(bytes);
+            Ok(bytes.len())
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+    #[derive(Debug, Clone, Copy)]
+    enum Side {
+        Client,
+        View,
+    }
+    #[derive(Debug)]
+    struct Served {
+        id: u64,
+        side: Side,
+        context: WebSocketContext,
+        bytes: BytesIo,
+    }
+    impl Served {
+        fn send(&mut self, message: Message) {
+            self.context.write(&mut self.bytes, message).unwrap();
+            self.context.flush(&mut self.bytes).unwrap();
+        }
+    }
+    let certs = Fixtures::new();
+    let mut server = SslContextBuilder::new(SslMethod::tls()).unwrap();
+    crate::wire::tests::tls::configure_server(&mut server, &certs);
+    let mut poll = Poll::new();
+    let mut peer = crate::wire::quic::tests::Peer::new(server, &mut poll);
+    let address = peer.socket.local_addr().unwrap();
+    let stop = Arc::new(AtomicBool::new(false));
+    let stopping = Arc::clone(&stop);
+    let worker = std::thread::spawn(move || {
+        let mut http = None;
+        let mut served = Vec::<Served>::new();
+        let mut hellos = 0;
+        let mut first_views = 0;
+        let deadline = Instant::now() + DEADLINE;
+        while !stopping.load(Ordering::SeqCst) {
+            assert!(Instant::now() < deadline, "scripted HTTP/3 server deadline");
+            peer.receive();
+            if let Some(transport) = &mut peer.connection {
+                if transport.is_established() && http.is_none() {
+                    let mut config = quiche::h3::Config::new().unwrap();
+                    config.enable_extended_connect(true);
+                    http =
+                        Some(quiche::h3::Connection::with_transport(transport, &config).unwrap());
+                }
+                if let Some(http) = &mut http {
+                    while let Ok((id, event)) = http.poll(transport) {
+                        if let quiche::h3::Event::Headers { list, .. } = event {
+                            for (name, value) in [
+                                (b":method".as_slice(), b"CONNECT".as_slice()),
+                                (b":protocol", b"websocket"),
+                                (b"sec-websocket-version", b"13"),
+                            ] {
+                                assert_eq!(
+                                    list.iter()
+                                        .find(|header| header.name() == name)
+                                        .unwrap()
+                                        .value(),
+                                    value
+                                );
+                            }
+                            let path = std::str::from_utf8(
+                                list.iter()
+                                    .find(|header| header.name() == b":path")
+                                    .unwrap()
+                                    .value(),
+                            )
+                            .unwrap();
+                            let (side, data) = match ko_wire::api::Route::of_request("GET", path)
+                                .unwrap()
+                            {
+                                ko_wire::api::Route::Client {} => (Side::Client, None),
+                                ko_wire::api::Route::View { id: pane, .. } => {
+                                    assert_eq!(
+                                        list.iter()
+                                            .find(|header| header.name() == b"ko-client")
+                                            .unwrap()
+                                            .value(),
+                                        b"client_7"
+                                    );
+                                    if pane == "pane_1".parse().unwrap() {
+                                        first_views += 1;
+                                        if first_views == 1 {
+                                            transport
+                                                .stream_shutdown(id, quiche::Shutdown::Write, 0x10c)
+                                                .unwrap();
+                                            continue;
+                                        }
+                                    }
+                                    (
+                                        Side::View,
+                                        Some(if pane == "pane_1".parse().unwrap() {
+                                            b"A".as_slice()
+                                        } else {
+                                            b"B".as_slice()
+                                        }),
+                                    )
+                                }
+                                route => panic!("unexpected route: {route:?}"),
+                            };
+                            http.send_response(
+                                transport,
+                                id,
+                                &[quiche::h3::Header::new(b":status", b"200")],
+                                false,
+                            )
+                            .unwrap();
+                            let mut stream = Served {
+                                id,
+                                side,
+                                context: WebSocketContext::new(
+                                    Role::Server,
+                                    Some(WebSocketConfig::default().write_buffer_size(0)),
+                                ),
+                                bytes: BytesIo::default(),
+                            };
+                            if let Some(data) = data {
+                                stream.send(Message::Binary(
+                                    slice_record(10, true, true, true, b"s").into(),
+                                ));
+                                stream.send(Message::Binary(output_record(10, data).into()));
+                            }
+                            served.push(stream);
+                        }
+                    }
+                    for stream in &mut served {
+                        let mut bytes = [0; 65536];
+                        loop {
+                            match http.recv_body(transport, stream.id, &mut bytes) {
+                                Ok(count) => stream.bytes.input.extend(&bytes[..count]),
+                                Err(quiche::h3::Error::Done) => break,
+                                Err(error) => panic!("{error}"),
+                            }
+                        }
+                        loop {
+                            match stream.context.read(&mut stream.bytes) {
+                                Ok(Message::Text(text)) => match stream.side {
+                                    Side::Client => {
+                                        assert!(matches!(
+                                            protocol::decode::<protocol::ClientRequest>(
+                                                text.as_bytes()
+                                            )
+                                            .unwrap(),
+                                            protocol::ClientRequest::Hello(_)
+                                        ));
+                                        hellos += 1;
+                                        for text in [
+                                            welcome(INSTANCE, 1),
+                                            layout(0),
+                                            "{\"type\":\"selected\"}".to_owned(),
+                                        ] {
+                                            stream.send(Message::text(text));
+                                        }
+                                    }
+                                    Side::View => panic!("unexpected view request: {text}"),
+                                },
+                                Ok(_) => {}
+                                Err(tungstenite::Error::Io(error))
+                                    if error.kind() == io::ErrorKind::WouldBlock =>
+                                {
+                                    break;
+                                }
+                                Err(error) => panic!("{error}"),
+                            }
+                        }
+                        if !stream.bytes.output.is_empty() {
+                            match http.send_body(
+                                transport,
+                                stream.id,
+                                stream.bytes.output.make_contiguous(),
+                                false,
+                            ) {
+                                Ok(count) => {
+                                    stream.bytes.output.drain(..count);
+                                }
+                                Err(quiche::h3::Error::Done | quiche::h3::Error::StreamBlocked) => {
+                                }
+                                Err(error) => panic!("{error}"),
+                            }
+                        }
+                    }
+                }
+            }
+            peer.flush();
+            let mut events = ko_sys::event::Events::default();
+            poll.turn(Mode::Peek, &mut events).unwrap();
+        }
+        (hellos, first_views)
+    });
+    let fixture = Fixture::new();
+    let signatures = Arc::new(AtomicUsize::new(0));
+    let main = connect(
+        &fixture,
+        endpoint(&certs, address, Case::Accepted, Arc::clone(&signatures)),
+    );
+    seen(&fixture, |event| matches!(event, Seen::Welcome(..)));
+    seen(&fixture, |event| matches!(event, Seen::Layout(..)));
+    let decoder = || {
+        Decoder::new(|snapshot| {
+            pull(snapshot, usize::MAX, 64).unwrap();
+            Restored::Ok
+        })
+    };
+    let first = decoder();
+    let second = decoder();
+    let a = ViewGuard(open_view_of(c"pane_1", main.0, first, true));
+    let b = ViewGuard(open_view_of(c"pane_2", main.0, second, true));
+    assert_eq!(bytes(first, b"A"), 10);
+    assert_eq!(bytes(second, b"B"), 10);
+    assert_eq!(signatures.load(Ordering::SeqCst), 1);
+    drop(a);
+    drop(b);
+    drop(main);
+    stop.store(true, Ordering::SeqCst);
+    assert_eq!(worker.join().unwrap(), (1, 2));
+}
+
+#[test]
+fn caddy_http3_authentication_refusals_and_exact_view_resume() {
+    if std::env::var_os("KO_E2E_CONTAINER").as_deref() != Some(std::ffi::OsStr::new("1")) {
+        return;
+    }
+    let path = std::env::var_os("PATH").unwrap();
+    let cli = std::env::split_paths(&path)
+        .map(|path| path.join("container"))
+        .find(|path| path.is_file())
+        .expect("KO_E2E_CONTAINER needs the container CLI");
+    let certs = Fixtures::new();
+    let (container, peer) = Container::start(cli, path.as_bytes().to_vec(), &certs);
+    let fixture = Fixture::new();
+    let signatures = Arc::new(AtomicUsize::new(0));
+    let main = connect(
+        &fixture,
+        endpoint(&certs, peer, Case::Accepted, Arc::clone(&signatures)),
+    );
+    let initial = seen(&fixture, |event| matches!(event, Seen::Welcome(..)));
+    let Seen::Welcome(_, instance, true) = initial else {
+        panic!("{initial:?}");
+    };
+    seen(&fixture, |event| matches!(event, Seen::Layout(..)));
+    let resolved = access(&main);
+    let (mismatch, _) = crate::api::version(&resolved, DEADLINE, None).unwrap();
+    assert_eq!(mismatch, None);
+    let crate::endpoint::Resolved::Quic(handles) = resolved.as_ref() else {
+        panic!("not QUIC");
+    };
+    let mut missing = handles
+        .open(crate::wire::exchange::RequestHead::WebSocket {
+            target: "/client".to_owned().try_into().unwrap(),
+            headers: vec![("sec-websocket-version".to_owned(), "13".to_owned())],
+        })
+        .unwrap();
+    let deadline = Instant::now() + DEADLINE;
+    let refusal = loop {
+        if let Some(head) = missing.response().unwrap() {
+            break head;
+        }
+        ko_sys::fd::wait(
+            missing.fd(),
+            ko_sys::fd::Want::Read,
+            None,
+            Some(deadline.saturating_duration_since(Instant::now())),
+        )
+        .unwrap();
+        assert!(Instant::now() < deadline);
+    };
+    assert_eq!(refusal.status, 426);
+    drop(missing);
+    let pane:protocol::NewWindow=protocol::decode(br#"{"command":{"type":"argv","argv":["/bin/sh","-c","stty -echo; printf READY; while IFS= read -r line; do printf '%s' \"$line\"; done"]},"cwd":"/tmp","close":"on_exit"}"#).unwrap();
+    let reply = crate::wire::request_within(
+        &resolved,
+        (None, None),
+        &ko_wire::api::Route::NewPane {},
+        protocol::json(&pane).as_bytes(),
+        (None, DEADLINE),
+    )
+    .unwrap();
+    let placement: protocol::Placement = protocol::decode(&reply).unwrap();
+    let started = Instant::now() + DEADLINE;
+    loop {
+        assert!(Instant::now() < started, "the pane did not print READY");
+        let screen = crate::wire::request_within(
+            &resolved,
+            (None, None),
+            &ko_wire::api::Route::Screen {
+                id: placement.pane,
+                format: ko_pane_wire::frame::ScreenFormat::Plain,
+                history: ko_pane_wire::frame::ScreenRows::Visible,
+            },
+            b"",
+            (None, started.saturating_duration_since(Instant::now())),
+        )
+        .unwrap();
+        if String::from_utf8(screen).unwrap().contains("READY") {
+            break;
+        }
+    }
+    let restores = Arc::new(AtomicU64::new(0));
+    let restored = Arc::clone(&restores);
+    let (ready, restoration) = channel();
+    let decoder = Decoder::new(move |snapshot| {
+        pull(snapshot, usize::MAX, 65536).unwrap();
+        restored.fetch_add(1, Ordering::SeqCst);
+        ready.send(()).unwrap();
+        Restored::Ok
+    });
+    let pane_name = CString::new(placement.pane.to_string()).unwrap();
+    let view = ViewGuard(open_view_of(&pane_name, main.0, decoder, true));
+    restoration.recv_timeout(DEADLINE).unwrap();
+    let second = Decoder::new(|snapshot| {
+        pull(snapshot, usize::MAX, 65536).unwrap();
+        Restored::Ok
+    });
+    let second_view = ViewGuard(open_view_of(&pane_name, main.0, second, true));
+    let input = |text: &[u8]| {
+        let body = protocol::Input::Text {
+            data: protocol::Text(text.to_vec()),
+        };
+        crate::wire::request_within(
+            &access(&main),
+            (None, None),
+            &ko_wire::api::Route::Input { id: placement.pane },
+            protocol::json(&body).as_bytes(),
+            (None, DEADLINE),
+        )
+        .unwrap();
+    };
+    input(b"one\n");
+    let first_offset = bytes(decoder, b"one") + 3;
+    assert_eq!(bytes(second, b"one") + 3, first_offset);
+    assert_eq!(signatures.load(Ordering::SeqCst), 1);
+    let mut held = Vec::new();
+    for _ in 0..256 {
+        match handles.open(crate::wire::exchange::RequestHead::Http {
+            method: protocol::Method::Get,
+            target: "/version".to_owned().try_into().unwrap(),
+            headers: Vec::new(),
+            length: 0,
+        }) {
+            Ok(handle) => held.push(handle),
+            Err(error) => {
+                assert!(matches!(
+                    error.get_ref().and_then(
+                        |error| error.downcast_ref::<crate::wire::quic::h3::StreamFailure>()
+                    ),
+                    Some(crate::wire::quic::h3::StreamFailure::Admission)
+                ));
+                break;
+            }
+        }
+    }
+    let full = Instant::now() + DEADLINE;
+    loop {
+        if held.iter_mut().any(|handle| {
+            handle.response().is_err_and(|error| {
+                matches!(
+                    error.get_ref().and_then(
+                        |error| error.downcast_ref::<crate::wire::quic::h3::StreamFailure>()
+                    ),
+                    Some(crate::wire::quic::h3::StreamFailure::Admission)
+                )
+            })
+        }) {
+            break;
+        }
+        assert!(
+            Instant::now() < full,
+            "stream admission did not report its bound"
+        );
+        std::thread::yield_now();
+    }
+    let rejected = ViewGuard(open_view_of(
+        &pane_name,
+        main.0,
+        Decoder::new(|_| Restored::Rejected),
+        true,
+    ));
+    assert!(matches!(
+        seen(&fixture, |event| matches!(event, Seen::Closed(..))),
+        Seen::Closed(Code::Io, _)
+    ));
+    drop(rejected);
+    let live = handle_of(view.0);
+    live.shared.command(Command::Input(
+        live.view.id,
+        protocol::Input::Text {
+            data: protocol::Text(b"cap\n".to_vec()),
+        },
+    ));
+    let offset = bytes(decoder, b"cap") + 3;
+    assert_eq!(bytes(second, b"cap") + 3, offset);
+    assert_eq!(offset, first_offset + 3);
+    assert_eq!(signatures.load(Ordering::SeqCst), 1);
+    drop(live);
+    drop(held);
+    container.control("restart", "caddy");
+    seen(&fixture, |event| {
+        matches!(event, Seen::Failed(Code::Closed, ..))
+    });
+    let resumed = seen(&fixture, |event| matches!(event, Seen::Welcome(..)));
+    assert!(matches!(resumed,Seen::Welcome(_,ref current,false) if current==&instance));
+    input(b"two\n");
+    assert_eq!(bytes(decoder, b"two"), offset);
+    assert_eq!(bytes(second, b"two"), offset);
+    assert_eq!(restores.load(Ordering::SeqCst), 1);
+    assert_eq!(signatures.load(Ordering::SeqCst), 2);
+    drop(second_view);
+    drop(view);
+    for (case, expected) in [
+        (Case::UnknownIdentity, Code::Identity),
+        (Case::WrongRoot, Code::Tls),
+        (Case::WrongName, Code::Tls),
+    ] {
+        let failed = Fixture::new();
+        let _client = connect(
+            &failed,
+            endpoint(&certs, peer, case, Arc::new(AtomicUsize::new(0))),
+        );
+        let event = seen(&failed, |event| matches!(event, Seen::Failed(..)));
+        assert!(
+            matches!(event,Seen::Failed(code,_) if code==expected),
+            "{case:?}: {event:?}"
+        );
+    }
+    let absent = Fixture::new();
+    let without = connect(
+        &absent,
+        endpoint(
+            &certs,
+            peer,
+            Case::NoIdentity,
+            Arc::new(AtomicUsize::new(0)),
+        ),
+    );
+    assert!(matches!(
+        seen(&absent, |event| matches!(event, Seen::Failed(..))),
+        Seen::Failed(Code::Tls | Code::Identity, _)
+    ));
+    drop(without);
+    drop(main);
+    container.control("stop", "ko");
+    let down = Fixture::new();
+    let no_server = connect(
+        &down,
+        endpoint(&certs, peer, Case::Accepted, Arc::new(AtomicUsize::new(0))),
+    );
+    assert!(matches!(
+        seen(&down, |event| matches!(event, Seen::Failed(..))),
+        Seen::Failed(Code::NoServer, _)
+    ));
+    drop(no_server);
+    std::fs::remove_file(container.dir.join("devices/paired.pem")).unwrap();
+    container.control("restart", "caddy");
+    let revoked = Fixture::new();
+    let _revoked = connect(
+        &revoked,
+        endpoint(&certs, peer, Case::Accepted, Arc::new(AtomicUsize::new(0))),
+    );
+    assert!(matches!(
+        seen(&revoked, |event| matches!(event, Seen::Failed(..))),
+        Seen::Failed(Code::Identity, _)
+    ));
+}

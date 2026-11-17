@@ -1,7 +1,7 @@
 use ko_wire::protocol::webview::FrameKind;
 
 use crate::endpoint::Resolved;
-use crate::wire::stream::Stream;
+use crate::wire::exchange::{Body, Destination, Request as ExchangeRequest, RequestKind};
 use std::io;
 use std::ops::Range;
 use std::os::fd::BorrowedFd;
@@ -9,12 +9,10 @@ use std::os::fd::BorrowedFd;
 use std::path::Path;
 use std::time::Instant;
 
-use ko_sys::event::{Events, Interest, Mode, Poll, Read, Reads, Token};
-use ko_sys::fd::Queue;
+use crate::wire::exchange::Exchange;
+use ko_sys::event::{Events, Interest, Mode, Poll, Token};
 use ko_wire::api::Route;
 use ko_wire::http::{self, response};
-#[cfg(all(target_vendor = "apple", feature = "tls"))]
-use ko_wire::ids::ClientId;
 use ko_wire::protocol::Method;
 use ko_wire::protocol::webview::{
     AbortReason, Data, Headers, MAX_IN_FLIGHT, ServeIn, ServeOut, Status,
@@ -26,13 +24,6 @@ use crate::api;
 use crate::wire::{Caller, Link, Next, READ_TIMEOUT, ReadError};
 
 #[derive(Debug, Clone, Copy)]
-pub(crate) enum Target {
-    #[cfg(all(target_vendor = "apple", feature = "tls"))]
-    Server(ClientId),
-    Program,
-}
-
-#[derive(Debug, Clone, Copy)]
 pub(crate) enum Kind {
     Http(Method),
     Upgrade,
@@ -40,15 +31,15 @@ pub(crate) enum Kind {
 
 #[derive(Debug)]
 enum Phase {
-    Closed,
+    Closed {
+        token: Token,
+    },
     Http {
-        stream: Stream,
-        reader: response::Reader,
-        upgrade: Option<String>,
-        eof: bool,
+        exchange: Exchange,
     },
     Socket {
         link: Box<Link>,
+        token: Token,
         phase: SocketPhase,
     },
 }
@@ -78,11 +69,7 @@ pub(crate) enum Event {
 
 #[derive(Debug)]
 pub(crate) struct Upstream {
-    token: Token,
     phase: Phase,
-    out: Queue,
-    deadline: Instant,
-    reads: Reads,
 }
 
 fn invalid(message: impl Into<String>) -> io::Error {
@@ -96,99 +83,91 @@ impl Upstream {
         kind: Kind,
         target: &ko_wire::protocol::RequestTarget,
         headers: &Headers,
-        destination: Target,
+        destination: Destination,
         body: &[u8],
     ) -> io::Result<Self> {
-        let stream = Stream::start(endpoint)?;
-        let token = poll.watch(stream.fd(), Interest::ReadWrite);
-        let client = match destination {
-            #[cfg(all(target_vendor = "apple", feature = "tls"))]
-            Target::Server(client) => Some(client),
-            Target::Program => None,
-        };
-        let length = if client.is_some() || matches!(kind, Kind::Upgrade) {
-            http::ForwardLength::Replace
-        } else {
-            http::ForwardLength::Keep
-        };
-        let identity = if client.is_some() {
-            http::ForwardIdentity::Remove
-        } else {
-            http::ForwardIdentity::Pane
-        };
-        let fields: Vec<_> = http::forwarded(headers.pairs(), length, identity).collect();
-        let (bytes, upgrade) = match kind {
-            Kind::Upgrade => {
-                let (bytes, key) =
-                    ko_wire::ws::upgrade_request(stream.host(), "GET", target, client, &fields);
-                (bytes, Some(key))
+        let (length, identity) = match destination {
+            Destination::Server { .. } => {
+                (http::ForwardLength::Replace, http::ForwardIdentity::Remove)
             }
-            Kind::Http(method) => {
-                let bytes = match destination {
-                    #[cfg(all(target_vendor = "apple", feature = "tls"))]
-                    Target::Server(client) => {
-                        let mut fields = fields;
-                        fields.push(("Connection", "close"));
-                        http::call(
-                            stream.host(),
-                            method.http(),
-                            target,
-                            Some(client),
-                            &fields,
-                            body,
-                        )
-                    }
-                    Target::Program => {
-                        http::program_call(stream.host(), method.http(), target, &fields, body)
-                    }
-                };
-                (bytes, None)
-            }
+            Destination::Program => (
+                if matches!(kind, Kind::Upgrade) {
+                    http::ForwardLength::Replace
+                } else {
+                    http::ForwardLength::Keep
+                },
+                http::ForwardIdentity::Pane,
+            ),
         };
-        Ok(Self {
-            token,
-            phase: Phase::Http {
-                stream,
-                reader: response::Reader::default(),
-                upgrade,
-                eof: false,
+        let mut headers: Vec<_> = http::forwarded(headers.pairs(), length, identity)
+            .map(|(name, value)| (name.to_owned(), value.to_owned()))
+            .collect();
+        if matches!(destination, Destination::Server { .. }) {
+            headers.push(("Connection".to_owned(), "close".to_owned()));
+        }
+        let kind = match kind {
+            Kind::Upgrade => RequestKind::WebSocket {
+                target: target.clone(),
+                headers,
             },
-            out: Queue::new(bytes),
-            deadline: Instant::now() + READ_TIMEOUT,
-            reads: Reads::new(),
+            Kind::Http(method) => RequestKind::Http {
+                method,
+                target: target.clone(),
+                headers,
+                body: match destination {
+                    Destination::Server { .. } => Body::Complete(body),
+                    Destination::Program => Body::Streaming(body),
+                },
+            },
+        };
+        let request = ExchangeRequest { kind, destination };
+        let exchange = Exchange::start(
+            poll,
+            endpoint,
+            request,
+            crate::wire::Limit::Deadline(Instant::now() + READ_TIMEOUT),
+        )?;
+        Ok(Self {
+            phase: Phase::Http { exchange },
         })
     }
 
     pub(crate) fn socket(poll: &mut Poll, mut link: Link) -> io::Result<Self> {
         let token = link.watch(poll)?;
         Ok(Self {
-            token,
             phase: Phase::Socket {
                 link: Box::new(link),
+                token,
                 phase: SocketPhase::Open,
             },
-            out: Queue::default(),
-            deadline: Instant::now() + READ_TIMEOUT,
-            reads: Reads::new(),
         })
     }
     #[cfg(all(target_vendor = "apple", feature = "tls"))]
     pub(crate) fn token(&self) -> Token {
-        self.token
+        match &self.phase {
+            Phase::Http { exchange, .. } => exchange.token(),
+            Phase::Socket { token, .. } | Phase::Closed { token } => *token,
+        }
     }
     pub(crate) fn dispose(self, poll: &mut Poll) {
-        poll.unwatch(self.token);
+        match self.phase {
+            Phase::Http { exchange, .. } => exchange.dispose(poll),
+            Phase::Socket { token, .. } | Phase::Closed { token } => poll.unwatch(token),
+        }
     }
     pub(crate) fn begin_turn(&mut self) {
-        self.reads = Reads::new();
-        if let Phase::Socket { link, .. } = &mut self.phase {
-            link.begin_turn();
+        match &mut self.phase {
+            Phase::Http { exchange, .. } => exchange.begin_turn(),
+            Phase::Socket { link, .. } => link.begin_turn(),
+            Phase::Closed { .. } => {}
         }
     }
     pub(crate) fn backed_up(&self) -> bool {
-        self.out.backed_up(http::MAX_BODY)
-            || matches!(&self.phase,Phase::Socket {link,..} if link.backed_up())
-            || matches!(&self.phase,Phase::Http {stream,..} if stream.pending_write())
+        match &self.phase {
+            Phase::Http { exchange, .. } => exchange.backed_up(),
+            Phase::Socket { link, .. } => link.backed_up(),
+            Phase::Closed { .. } => false,
+        }
     }
     fn is_socket(&self) -> bool {
         matches!(self.phase, Phase::Socket { .. })
@@ -213,27 +192,23 @@ impl Upstream {
     }
     pub(crate) fn drained(&self) -> bool {
         match &self.phase {
-            Phase::Closed => true,
-            Phase::Http { stream, .. } => self.out.is_empty() && !stream.pending_write(),
+            Phase::Closed { .. } => true,
+            Phase::Http { exchange, .. } => exchange.drained(),
             Phase::Socket { link, .. } => link.drained(),
         }
     }
     #[cfg(all(target_vendor = "apple", feature = "tls"))]
     pub(crate) fn written(&self) -> u64 {
         match &self.phase {
-            Phase::Closed => self.out.written(),
-            Phase::Http { .. } => self.out.written(),
+            Phase::Closed { .. } => 0,
+            Phase::Http { exchange, .. } => exchange.written(),
             Phase::Socket { link, .. } => link.written(),
         }
     }
     pub(crate) fn deadline(&self) -> Option<Instant> {
         match &self.phase {
-            Phase::Closed => None,
-            Phase::Http { stream, reader, .. } => (!reader.started()).then(|| {
-                stream
-                    .deadline()
-                    .map_or(self.deadline, |deadline| deadline.min(self.deadline))
-            }),
+            Phase::Closed { .. } => None,
+            Phase::Http { exchange, .. } => (!exchange.started()).then(|| exchange.deadline()),
             Phase::Socket {
                 phase: SocketPhase::Closing(deadline) | SocketPhase::Finishing(deadline),
                 ..
@@ -244,82 +219,49 @@ impl Upstream {
             } => None,
         }
     }
-    fn retry(&mut self, poll: &mut Poll, error: io::Error) -> io::Result<()> {
-        let Phase::Http { stream, .. } = &mut self.phase else {
-            return Err(error);
-        };
-        if self.out.written() != 0 {
-            return Err(error);
-        }
-        let mut ready = ko_sys::event::Ready {
-            token: self.token,
-            read: false,
-            write: false,
-        };
-        stream.retry_watched(poll, &mut ready, error)?;
-        self.token = ready.token;
-        self.reads = Reads::new();
-        Ok(())
-    }
-
     pub(crate) fn expired(&mut self, poll: &mut Poll, now: Instant) -> io::Result<bool> {
-        if let Phase::Http { stream, reader, .. } = &self.phase {
-            if !reader.started() && now >= self.deadline {
-                return Ok(true);
-            }
-            if stream.deadline().is_some_and(|deadline| now >= deadline) {
-                self.retry(poll, io::ErrorKind::TimedOut.into())?;
-                return Ok(false);
-            }
+        if let Phase::Http { exchange, .. } = &mut self.phase {
+            return if exchange.started() {
+                Ok(false)
+            } else {
+                exchange.expired(poll, now)
+            };
         }
         Ok(self.deadline().is_some_and(|deadline| now >= deadline))
     }
 
     pub(crate) fn interest(&self, poll: &mut Poll, read: bool) {
         match &self.phase {
-            Phase::Closed => {}
-            Phase::Http { stream, eof, .. } => {
-                stream.watch_interest(poll, self.token, read && !*eof, !self.out.is_empty())
-            }
-            Phase::Socket { link, phase } => {
+            Phase::Closed { .. } => {}
+            Phase::Http { exchange, .. } => exchange.interest(poll, read),
+            Phase::Socket { link, phase, .. } => {
                 link.interest(poll, read && !matches!(phase, SocketPhase::Finishing(_)))
             }
         }
     }
     #[cfg(all(target_vendor = "apple", feature = "tls"))]
     pub(crate) fn writable(&mut self, poll: &mut Poll) -> io::Result<()> {
-        let result = match &mut self.phase {
-            Phase::Http { stream, .. } => stream.writable(),
+        match &mut self.phase {
+            Phase::Http { exchange, .. } => exchange.writable(poll),
             _ => Ok(()),
-        };
-        match result {
-            Ok(()) => Ok(()),
-            Err(error) => self.retry(poll, error),
         }
     }
 
     pub(crate) fn flush(&mut self, poll: &mut Poll) -> io::Result<()> {
-        let result = match &mut self.phase {
-            Phase::Closed => Ok(()),
-            Phase::Http { stream, .. } => {
-                stream.flush_ready(poll, self.token, &mut self.reads, &mut self.out)
-            }
+        match &mut self.phase {
+            Phase::Closed { .. } => Ok(()),
+            Phase::Http { exchange, .. } => exchange.flush(poll),
             Phase::Socket { link, .. } => link.settle(poll),
-        };
-        match result {
-            Ok(()) => Ok(()),
-            Err(error) => self.retry(poll, error),
         }
     }
     fn body(&mut self, bytes: &[u8]) -> io::Result<()> {
-        if !matches!(self.phase, Phase::Http { upgrade: None, .. }) {
+        let Phase::Http { exchange } = &mut self.phase else {
             return Err(invalid("body for a WebSocket"));
-        }
-        self.out.extend(bytes);
-        Ok(())
+        };
+        exchange.body(bytes)
     }
     pub(crate) fn send(&mut self, message: Message) -> io::Result<Option<Range<u64>>> {
-        let Phase::Socket { link, phase } = &mut self.phase else {
+        let Phase::Socket { link, phase, .. } = &mut self.phase else {
             return Err(invalid("frame before WebSocket upgrade"));
         };
         if !matches!(phase, SocketPhase::Open) {
@@ -331,6 +273,7 @@ impl Upstream {
         if let Phase::Socket {
             link,
             phase: phase @ SocketPhase::Open,
+            ..
         } = &mut self.phase
         {
             link.close(code, reason)?;
@@ -339,115 +282,89 @@ impl Upstream {
         Ok(())
     }
     pub(crate) fn next(&mut self, poll: &mut Poll) -> Result<Option<Event>, response::Error> {
-        loop {
-            match &mut self.phase {
-                Phase::Closed => return Ok(None),
-                Phase::Http {
-                    stream,
-                    reader,
-                    upgrade,
-                    eof,
-                } => {
-                    if let Some(event) = reader.next(*eof)? {
-                        return Ok(Some(match event {
-                            response::Event::Upgrade(head) => {
-                                let key = upgrade
-                                    .as_ref()
-                                    .ok_or_else(|| invalid("unexpected WebSocket upgrade"))?;
-                                ko_wire::ws::accepted(&head, key)?;
-                                let rest = reader.take_rest();
-                                let Phase::Http { stream, .. } =
-                                    std::mem::replace(&mut self.phase, Phase::Closed)
-                                else {
-                                    return Err(invalid("upgrade outside HTTP").into());
-                                };
-                                let link = Link::of_stream(stream, rest, protocol::Upgrade::Page);
-                                poll.unwatch(self.token);
-                                *self = Self::socket(poll, link)?;
-                                Event::Upgraded(response::metadata(head))
-                            }
-                            response::Event::Head(head) => {
-                                response::identity(&head)?;
-                                Event::Response(head)
-                            }
-                            response::Event::Body(bytes) => Event::Body(bytes),
-                            response::Event::End => Event::End,
-                        }));
-                    }
-                    let result =
-                        stream.read_ready(poll, self.token, reader.read_buffer(), &mut self.reads);
-                    let count = match &result {
-                        Ok(Some(Read::Data(count))) => *count,
-                        _ => 0,
-                    };
-                    reader.commit_read(count);
-                    match result {
-                        Ok(Some(Read::Data(_))) => {}
-                        Ok(Some(Read::End)) => *eof = true,
-                        Ok(None) => return Ok(None),
-                        Err(error) => {
-                            self.retry(poll, error)?;
-                            return Ok(None);
+        match &mut self.phase {
+            Phase::Closed { .. } => Ok(None),
+            Phase::Http { exchange } => {
+                if let Some(event) = exchange.next(poll)? {
+                    return Ok(Some(match event {
+                        response::Event::Upgrade(head) => {
+                            exchange.accepted(&head)?;
+                            let token = exchange.token();
+                            let Phase::Http { exchange, .. } =
+                                std::mem::replace(&mut self.phase, Phase::Closed { token })
+                            else {
+                                return Err(invalid("upgrade outside HTTP").into());
+                            };
+                            let (stream, rest, token) = exchange.into_stream();
+                            poll.unwatch(token);
+                            let link = Link::of_stream(stream, rest, protocol::Upgrade::Page);
+                            *self = Self::socket(poll, link)?;
+                            Event::Upgraded(response::metadata(head))
                         }
-                    }
-                }
-                Phase::Socket { link, phase } => {
-                    if matches!(phase, SocketPhase::Finishing(_)) {
-                        return Ok(None);
-                    }
-                    let (code, reason, result) = match link.next_message(poll, Instant::now()) {
-                        Ok(Next::Wait) => return Ok(None),
-                        Ok(Next::Text(text)) => {
-                            return Ok(Some(Event::Message {
-                                data: text.into(),
-                                binary: FrameKind::Text,
-                            }));
+                        response::Event::Head(head) => {
+                            response::identity(&head)?;
+                            Event::Response(head)
                         }
-                        Ok(Next::Binary(data)) => {
-                            return Ok(Some(Event::Message {
-                                data,
-                                binary: FrameKind::Binary,
-                            }));
-                        }
-                        Ok(Next::Shutdown | Next::Closed | Next::Gone) => {
-                            let (code, reason) = link
-                                .close_frame()
-                                .map(|(code, reason)| {
-                                    CloseReason::try_from(reason.clone())
-                                        .map(|reason| (*code, reason))
-                                })
-                                .transpose()
-                                .map_err(invalid)?
-                                .unwrap_or((CloseCode::NORMAL, CloseReason::EMPTY));
-                            (code, reason, Ok(()))
-                        }
-                        Err(error) => {
-                            let (code, reason) = link
-                                .close_frame()
-                                .map(|(code, reason)| {
-                                    CloseReason::try_from(reason.clone())
-                                        .map(|reason| (*code, reason))
-                                })
-                                .transpose()
-                                .map_err(invalid)?
-                                .unwrap_or({
-                                    if matches!(error, ReadError::TooLarge) {
-                                        (CloseCode::SIZE, CloseReason::SIZE)
-                                    } else {
-                                        (CloseCode::INTERNAL, CloseReason::PROGRAM_CLOSED)
-                                    }
-                                });
-                            let _ = link.close(code, reason.clone());
-                            (code, reason, Err(error.into()))
-                        }
-                    };
-                    *phase = SocketPhase::Finishing(Instant::now() + READ_TIMEOUT);
-                    return Ok(Some(Event::Closed {
-                        code,
-                        reason,
-                        result,
+                        response::Event::Body(bytes) => Event::Body(bytes),
+                        response::Event::End => Event::End,
                     }));
                 }
+                Ok(None)
+            }
+            Phase::Socket { link, phase, .. } => {
+                if matches!(phase, SocketPhase::Finishing(_)) {
+                    return Ok(None);
+                }
+                let (code, reason, result) = match link.next_message(poll, Instant::now()) {
+                    Ok(Next::Wait) => return Ok(None),
+                    Ok(Next::Text(text)) => {
+                        return Ok(Some(Event::Message {
+                            data: text.into(),
+                            binary: FrameKind::Text,
+                        }));
+                    }
+                    Ok(Next::Binary(data)) => {
+                        return Ok(Some(Event::Message {
+                            data,
+                            binary: FrameKind::Binary,
+                        }));
+                    }
+                    Ok(Next::Shutdown | Next::Closed | Next::Gone) => {
+                        let (code, reason) = link
+                            .close_frame()
+                            .map(|(code, reason)| {
+                                CloseReason::try_from(reason.clone()).map(|reason| (*code, reason))
+                            })
+                            .transpose()
+                            .map_err(invalid)?
+                            .unwrap_or((CloseCode::NORMAL, CloseReason::EMPTY));
+                        (code, reason, Ok(()))
+                    }
+                    Err(error) => {
+                        let (code, reason) = link
+                            .close_frame()
+                            .map(|(code, reason)| {
+                                CloseReason::try_from(reason.clone()).map(|reason| (*code, reason))
+                            })
+                            .transpose()
+                            .map_err(invalid)?
+                            .unwrap_or({
+                                if matches!(error, ReadError::TooLarge) {
+                                    (CloseCode::SIZE, CloseReason::SIZE)
+                                } else {
+                                    (CloseCode::INTERNAL, CloseReason::PROGRAM_CLOSED)
+                                }
+                            });
+                        let _ = link.close(code, reason.clone());
+                        (code, reason, Err(error.into()))
+                    }
+                };
+                *phase = SocketPhase::Finishing(Instant::now() + READ_TIMEOUT);
+                Ok(Some(Event::Closed {
+                    code,
+                    reason,
+                    result,
+                }))
             }
         }
     }
@@ -462,7 +379,7 @@ struct Request {
 fn failed(server: &mut Link, request: &Request, reason: AbortReason) -> io::Result<()> {
     let req = request.req;
     let message = match &request.upstream.phase {
-        Phase::Closed | Phase::Http { .. } => ServeIn::Abort { req, reason },
+        Phase::Closed { .. } | Phase::Http { .. } => ServeIn::Abort { req, reason },
         Phase::Socket {
             phase: SocketPhase::Finishing(_),
             ..
@@ -552,7 +469,7 @@ fn command(
         kind,
         &target,
         &headers,
-        Target::Program,
+        Destination::Program,
         b"",
     ) {
         Ok(upstream) => requests.push(Request { req, upstream }),

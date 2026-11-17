@@ -249,8 +249,16 @@ impl Mirror {
             images: OPTIONS.images,
             offset: resume.and_then(Offset::new),
         };
-        let link = Connecting::start(socket, client, &route, None).map_err(text)?;
-        let token = link.watch(poll);
+        let link = Connecting::start(
+            socket,
+            Some(client),
+            &route,
+            None,
+            ko_client::wire::READ_TIMEOUT,
+            poll,
+        )
+        .map_err(text)?;
+        let token = link.token();
         Ok(Connection::Connecting {
             link,
             token,

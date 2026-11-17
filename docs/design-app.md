@@ -72,7 +72,9 @@ model; the layout editor still gets every layout revision. The owner's link is
 Webview calls (`ko_client_webview_fetch`, `ko_client_webview_ws_open`) are
 also one connection each, but the core's I/O thread owns them and
 their callbacks stream on the caller's serial queue; the header comment
-of `ko_client.h` gives their contract.
+of `ko_client.h` gives their contract. Over HTTP/3, each of them is
+a request stream of the client's one QUIC connection, which the I/O
+thread owns (design-ko.md, section 5).
 
 **The C ABI.** `ko_client::ffi` builds only for `target_vendor =
 "apple"` with the feature `tls`; no other crate uses it,
@@ -1384,7 +1386,8 @@ Promised files never paste temporary paths, even in Local panes.
 
 A copy is one request of ko's drop route for each file, in order,
 through the window's own ko client (`ko_client_upload`), on the local
-host, an SSH remote and a TLS server alike. The pane decides where the
+host, an SSH remote and a TLS server alike, over HTTP/1.1 only
+(design-ko.md, section 5). The pane decides where the
 file lands: on the server's host, or inside the pane's runtime, whose
 path the reply carries; the app never names a folder
 (design-runtimes.md, "A drop"). The client pulls the file through a

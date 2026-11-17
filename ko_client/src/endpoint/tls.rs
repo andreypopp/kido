@@ -1,7 +1,7 @@
 use std::fmt;
 use std::sync::{Arc, Mutex, OnceLock};
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) enum Failure {
     Tls(String),
     Identity(String),

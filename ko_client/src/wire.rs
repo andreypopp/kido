@@ -1,7 +1,8 @@
+pub(crate) mod exchange;
 pub(crate) mod stream;
 
-#[cfg(all(feature = "tls", test))]
-mod quic;
+#[cfg(all(feature = "tls", any(target_vendor = "apple", test)))]
+pub(crate) mod quic;
 mod upgrade;
 pub use upgrade::{Connecting, UpgradeStep};
 
@@ -18,7 +19,7 @@ use stream::Stream;
 use ko_sys::event::{Poll, Read as PollData, Reads, Ready, Token, Wake};
 use ko_sys::fd::{self, Queue, Waited, Want};
 use ko_wire::api::Route;
-use ko_wire::http::{self, Response, Upgrade, call};
+use ko_wire::http::{self, Response, Upgrade};
 use ko_wire::ids::{ClientId, PaneId, PaneToken};
 use ko_wire::protocol;
 use ko_wire::ws::{accepted, refused, upgrade_request};
@@ -189,25 +190,6 @@ fn borrowed<'a>(headers: &'a [(&'static str, String)]) -> Vec<(&'static str, &'a
         .collect()
 }
 
-fn open(
-    socket: &Resolved,
-    (client, caller): Who,
-    (method, target): (&str, &protocol::RequestTarget),
-    headers: &[(&str, &str)],
-    body: &[u8],
-    within: Limit,
-    cancel: Option<&Wake>,
-) -> io::Result<Stream> {
-    let mut stream = Stream::open(socket, within, cancel)?;
-    let identity = identity(caller.as_ref());
-    let mut extra = vec![("Connection", "keep-alive")];
-    extra.extend_from_slice(headers);
-    extra.extend(borrowed(&identity));
-    let request = call(stream.host(), method, target, client, &extra, body);
-    write_until(&mut stream, &request, cancel, within)?;
-    Ok(stream)
-}
-
 pub(crate) fn exchange(
     socket: &Resolved,
     who: Who,
@@ -217,25 +199,136 @@ pub(crate) fn exchange(
     within: Limit,
     cancel: Option<&Wake>,
 ) -> io::Result<Response> {
-    let mut stream = open(socket, who, target, headers, body, within, cancel)?;
-    let mut reader = Interruptible {
-        stream: &mut stream,
-        cancel,
-        within,
-    };
     let mut answer = Vec::new();
-    let mut response = http::read_response_with(&mut reader, |head, piece| {
-        if answer.is_empty() {
-            let length = head
-                .header(http::CONTENT_LENGTH_HEADER)
-                .and_then(|length| length.parse().ok());
-            answer.reserve(length.unwrap_or(0).min(MAX_RESERVE));
-        }
-        answer.extend_from_slice(piece);
-        Ok(())
+    let mut response = exchange_with(
+        socket,
+        who,
+        target,
+        headers,
+        body,
+        (within, cancel),
+        |head, piece| {
+            if answer.is_empty() {
+                let length = head
+                    .header(http::CONTENT_LENGTH_HEADER)
+                    .and_then(|length| length.parse().ok());
+                answer.reserve(length.unwrap_or(0).min(MAX_RESERVE));
+            }
+            answer.extend_from_slice(piece);
+            Ok(())
+        },
+    )
+    .map_err(|error| match error {
+        ExchangeError::NotSent(error) | ExchangeError::Unanswered(error) => error,
     })?;
     response.body = answer;
     Ok(response)
+}
+
+#[derive(Debug)]
+enum ExchangeError {
+    NotSent(io::Error),
+    Unanswered(io::Error),
+}
+
+fn exchange_with(
+    socket: &Resolved,
+    who: Who,
+    target: (&str, &protocol::RequestTarget),
+    headers: &[(&str, &str)],
+    body: &[u8],
+    (within, cancel): (Limit, Option<&Wake>),
+    mut sink: impl FnMut(&Response, &[u8]) -> io::Result<()>,
+) -> Result<Response, ExchangeError> {
+    let method = match target.0 {
+        "GET" => protocol::Method::Get,
+        "PUT" => protocol::Method::Put,
+        "POST" => protocol::Method::Post,
+        "PATCH" => protocol::Method::Patch,
+        "DELETE" => protocol::Method::Delete,
+        _ => {
+            return Err(ExchangeError::NotSent(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "unsupported HTTP method",
+            )));
+        }
+    };
+    let request = exchange::Request {
+        kind: exchange::RequestKind::Http {
+            method,
+            target: target.1.clone(),
+            headers: headers
+                .iter()
+                .map(|(name, value)| ((*name).to_owned(), (*value).to_owned()))
+                .collect(),
+            body: exchange::Body::Complete(body),
+        },
+        destination: exchange::Destination::Server {
+            client: who.0,
+            caller: who.1,
+        },
+    };
+    let mut poll = Poll::new();
+    if let Some(cancel) = cancel {
+        poll.watch(cancel.fd(), ko_sys::event::Interest::Read);
+    }
+    let mut exchange = exchange::Exchange::start(&mut poll, socket, request, within)
+        .map_err(ExchangeError::NotSent)?;
+    let result = (|| {
+        let timer = poll.timer();
+        let mut events = ko_sys::event::Events::default();
+        let mut response: Option<Response> = None;
+        let mut writable = true;
+        loop {
+            if cancel.is_some_and(Wake::is_set) {
+                return Err(connect::cancelled_error());
+            }
+            if exchange.expired(&mut poll, Instant::now())? {
+                return Err(io::ErrorKind::TimedOut.into());
+            }
+            exchange.begin_turn();
+            if writable {
+                exchange.writable(&mut poll)?;
+            }
+            exchange.flush(&mut poll)?;
+            while let Some(event) = exchange.next(&mut poll).map_err(io::Error::from)? {
+                match event {
+                    http::response::Event::Head(head) => response = Some(head),
+                    http::response::Event::Body(bytes) => {
+                        if let Some(response) = &mut response {
+                            sink(response, &bytes)?;
+                        }
+                    }
+                    http::response::Event::Upgrade(head) => return Ok(head),
+                    http::response::Event::End => {
+                        return response.ok_or_else(|| {
+                            io::Error::new(io::ErrorKind::InvalidData, "missing HTTP response")
+                        });
+                    }
+                }
+            }
+            exchange.interest(&mut poll, true);
+            poll.start(
+                timer,
+                exchange
+                    .deadline()
+                    .saturating_duration_since(Instant::now()),
+                None,
+            )?;
+            poll.turn(ko_sys::event::Mode::Wait, &mut events)?;
+            writable = events.ready().iter().any(|ready| {
+                ready.token == exchange.token()
+                    && (poll.wants(*ready).write || poll.wants(*ready).read)
+            });
+        }
+    })();
+    result.map_err(|error| {
+        if !exchange.submitted() {
+            ExchangeError::NotSent(error)
+        } else {
+            ExchangeError::Unanswered(error)
+        }
+    })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -317,23 +410,27 @@ fn fetch(
     mut sink: impl FnMut(&[u8]) -> io::Result<()>,
 ) -> Result<(), Rejected> {
     let (method, target) = route.to_request();
-    let within = Limit::Idle(within);
-    let mut stream = open(socket, who, (method, &target), &[], body, within, cancel)?;
     let mut failure = Vec::new();
-    let mut reader = Interruptible {
-        stream: &mut stream,
-        cancel,
-        within,
-    };
-    let mut response = http::read_response_with(&mut reader, |head, piece| {
-        if head.status == 200 {
-            sink(piece)
-        } else {
-            failure.extend_from_slice(piece);
-            Ok(())
-        }
-    })
-    .map_err(Rejected::unanswered)?;
+    let mut response = exchange_with(
+        socket,
+        who,
+        (method, &target),
+        &[],
+        body,
+        (Limit::Idle(within), cancel),
+        |head, piece| {
+            if head.status == 200 {
+                sink(piece)
+            } else {
+                failure.extend_from_slice(piece);
+                Ok(())
+            }
+        },
+    )
+    .map_err(|error| match error {
+        ExchangeError::NotSent(error) => Rejected::from(error),
+        ExchangeError::Unanswered(error) => Rejected::unanswered(error),
+    })?;
     response.body = failure;
     succeeded(response).map(|_| ())
 }
@@ -415,26 +512,27 @@ fn upload_response(reader: &mut impl Read) -> io::Result<Response> {
 
 #[cfg(all(target_vendor = "apple", feature = "tls"))]
 pub(crate) fn upload(
-    socket: &Resolved,
+    socket: stream::DirectEndpoint<'_>,
     client: Option<ClientId>,
     route: &Route,
     size: u64,
     cancel: &Wake,
     read: impl FnMut(&mut [u8]) -> io::Result<usize>,
 ) -> Result<Vec<u8>, Rejected> {
-    let stream = Stream::open(socket, Limit::Idle(READ_TIMEOUT), Some(cancel))?;
+    let stream = stream::Direct::open(socket, Limit::Idle(READ_TIMEOUT), Some(cancel))?;
     upload_connected(stream, client, route, size, cancel, read)
 }
 
 #[cfg(all(target_vendor = "apple", feature = "tls"))]
 fn upload_connected(
-    mut stream: Stream,
+    stream: stream::Direct,
     client: Option<ClientId>,
     route: &Route,
     size: u64,
     cancel: &Wake,
     mut read: impl FnMut(&mut [u8]) -> io::Result<usize>,
 ) -> Result<Vec<u8>, Rejected> {
+    let mut stream = Stream::Direct(stream);
     let within = Limit::Idle(READ_TIMEOUT);
     let (method, target) = route.to_request();
     let head = http::call_head(
@@ -743,7 +841,13 @@ impl Link {
         route: &Route,
         cancel: Option<Arc<Wake>>,
     ) -> io::Result<Link> {
-        Link::upgrade_within(Stream::Unix(stream), client, route, cancel, READ_TIMEOUT)
+        Link::upgrade_within(
+            Stream::Direct(stream::Direct::Unix(stream)),
+            client,
+            route,
+            cancel,
+            READ_TIMEOUT,
+        )
     }
 
     fn upgrade_within(
@@ -816,7 +920,7 @@ impl Link {
     }
 
     pub fn of(stream: UnixStream, rest: Vec<u8>, limit: protocol::Upgrade) -> Link {
-        Self::of_stream(Stream::Unix(stream), rest, limit)
+        Self::of_stream(Stream::Direct(stream::Direct::Unix(stream)), rest, limit)
     }
 
     pub(crate) fn of_stream(stream: Stream, rest: Vec<u8>, limit: protocol::Upgrade) -> Link {
@@ -849,8 +953,46 @@ impl Link {
         cancel: Option<Arc<Wake>>,
         within: Duration,
     ) -> io::Result<Link> {
-        let stream = Stream::open(socket, Limit::Idle(within), cancel.as_deref())?;
-        Link::upgrade_within(stream, client, route, cancel, within)
+        let mut poll = Poll::new();
+        if let Some(cancel) = &cancel {
+            poll.watch(cancel.fd(), ko_sys::event::Interest::Read);
+        }
+        let mut connecting =
+            Connecting::start(socket, client, route, cancel.clone(), within, &mut poll)?;
+        let timer = poll.timer();
+        let mut events = ko_sys::event::Events::default();
+        let mut ready = buffered(connecting.token());
+        loop {
+            match connecting.advance(&mut poll, &mut ready)? {
+                UpgradeStep::Open(mut link) => {
+                    link.unwatch(&mut poll);
+                    link.within = within;
+                    return Ok(*link);
+                }
+                UpgradeStep::Refused(response) => return Err(refused(&response)),
+                UpgradeStep::Pending(pending) => connecting = pending,
+            }
+            poll.start(
+                timer,
+                connecting
+                    .deadline()
+                    .saturating_duration_since(Instant::now()),
+                None,
+            )?;
+            poll.turn(ko_sys::event::Mode::Wait, &mut events)?;
+            ready = Ready {
+                token: connecting.token(),
+                read: false,
+                write: false,
+            };
+            for event in events.ready() {
+                if event.token == ready.token {
+                    let event = poll.wants(*event);
+                    ready.read |= event.read;
+                    ready.write |= event.write;
+                }
+            }
+        }
     }
 
     pub fn watch(&mut self, poll: &mut Poll) -> io::Result<Token> {
@@ -887,6 +1029,7 @@ impl Link {
     }
 
     pub fn begin_turn(&mut self) {
+        self.stream.begin_turn();
         self.reads = Reads::new();
     }
 
@@ -1166,7 +1309,7 @@ pub(crate) mod tests {
             });
             let mut reads = 0;
             let outcome = upload(
-                &Resolved::Unix(socket),
+                stream::DirectEndpoint::Unix(&socket),
                 None,
                 &Route::UploadDrop {
                     id: "pane_1".parse().unwrap(),
@@ -1244,7 +1387,7 @@ pub(crate) mod tests {
         drop(peer);
         closed(&stream);
         let error = Link::handshake(
-            Stream::Unix(stream),
+            Stream::Direct(stream::Direct::Unix(stream)),
             (None, None),
             &Route::Client {},
             None,
@@ -1269,20 +1412,20 @@ pub(crate) mod tests {
         )
         .unwrap();
         drop(peer);
-        let mut transport = Stream::Unix(stream);
+        let mut transport = Stream::Direct(stream::Direct::Unix(stream));
         let upgrade = http::read_upgrade(&mut Interruptible {
             stream: &mut transport,
             cancel: None,
             within: Limit::Idle(Duration::from_secs(5)),
         })
         .unwrap();
-        let Stream::Unix(stream) = transport else {
+        let Stream::Direct(stream::Direct::Unix(stream)) = transport else {
             panic!("expected Unix stream");
         };
         closed(&stream);
         assert!(
             Link::upgraded(
-                Stream::Unix(stream),
+                Stream::Direct(stream::Direct::Unix(stream)),
                 upgrade,
                 key,
                 None,

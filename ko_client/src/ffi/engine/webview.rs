@@ -69,7 +69,7 @@ impl Engine<'_> {
             task.finish();
             return;
         }
-        let Some(client) = self.session.as_ref().map(|session| session.client) else {
+        let Some(client) = self.connection.session().map(|session| session.client) else {
             failed(self.shared, &task, Code::Closed, "client link is closed");
             task.finish();
             return;
@@ -91,7 +91,10 @@ impl Engine<'_> {
             kind,
             &target,
             &request.headers,
-            crate::webview::Target::Server(client),
+            crate::wire::exchange::Destination::Server {
+                client: Some(client),
+                caller: None,
+            },
             &request.body,
         ) {
             Ok(upstream) => self.webview.push(Open { task, upstream }),

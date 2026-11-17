@@ -1,9 +1,11 @@
+pub(crate) mod h3;
+
 use std::io;
 use std::net::{SocketAddr, UdpSocket};
 use std::os::fd::AsFd;
 use std::time::{Duration, Instant};
 
-use boring::ssl::{SslContextBuilder, SslRef};
+use boring::ssl::SslRef;
 #[cfg(target_vendor = "apple")]
 use ko_sys::event::Wake;
 use ko_sys::event::{Due, Interest, Poll, Ready, Timer, Token};
@@ -53,7 +55,7 @@ impl Driver {
     fn start(
         host: &HostName,
         peer: SocketAddr,
-        context: SslContextBuilder,
+        config: &std::sync::Mutex<quiche::Config>,
         poll: &mut Poll,
         keep_alive: Duration,
     ) -> io::Result<Self> {
@@ -72,29 +74,19 @@ impl Driver {
         let socket = UdpSocket::bind(SocketAddr::new(route.local_addr()?.ip(), 0))?;
         socket.set_nonblocking(true)?;
         let local = socket.local_addr()?;
-        let mut config =
-            quiche::Config::with_boring_ssl_ctx_builder(quiche::PROTOCOL_VERSION, context)
-                .map_err(io::Error::other)?;
-        config
-            .set_application_protos(quiche::h3::APPLICATION_PROTOCOL)
-            .map_err(io::Error::other)?;
-        config.set_initial_max_data(16 << 20);
-        config.set_initial_max_stream_data_bidi_local(1 << 20);
-        config.set_initial_max_stream_data_bidi_remote(1 << 20);
-        config.set_initial_max_stream_data_uni(1 << 20);
-        config.set_initial_max_streams_bidi(128);
-        config.set_initial_max_streams_uni(16);
-        config.set_active_connection_id_limit(4);
         let mut cid = [0; quiche::MAX_CONN_ID_LEN];
         boring::rand::rand_bytes(&mut cid).map_err(io::Error::other)?;
-        let mut connection = quiche::connect(
-            Some(host.as_str()),
-            &quiche::ConnectionId::from_ref(&cid),
-            local,
-            peer,
-            &mut config,
-        )
-        .map_err(io::Error::other)?;
+        let mut connection = {
+            let mut config = config.lock().unwrap_or_else(|error| error.into_inner());
+            quiche::connect(
+                Some(host.as_str()),
+                &quiche::ConnectionId::from_ref(&cid),
+                local,
+                peer,
+                &mut config,
+            )
+            .map_err(io::Error::other)?
+        };
         let state = tls::Connection::new(host.as_str())?;
         #[cfg(target_vendor = "apple")]
         let wake = state.wake();
@@ -131,7 +123,8 @@ impl Driver {
             .connection
             .peer_error()
             .filter(|error| !error.is_app)
-            .and_then(|error| error.error_code.checked_sub(0x100));
+            .and_then(|error| error.error_code.checked_sub(0x100))
+            .filter(|alert| u8::try_from(*alert).is_ok());
         let ssl: &mut SslRef = self.connection.as_mut();
         if let Ok(index) = tls::index()
             && let Some(state) = ssl.ex_data(index)
@@ -139,7 +132,7 @@ impl Driver {
         {
             return io::Error::other(failure);
         }
-        if matches!(error, quiche::Error::TlsFail) {
+        if matches!(error, quiche::Error::TlsFail) || alert.is_some() {
             return io::Error::other(tls::Failure::Tls(error.to_string()));
         }
         if self.connection.is_closed() || self.connection.is_draining() {
@@ -148,14 +141,14 @@ impl Driver {
         io::Error::other(error)
     }
 
-    fn ready(&mut self, poll: &mut Poll, ready: Ready) -> io::Result<()> {
+    fn ready(&mut self, poll: &mut Poll, ready: Ready) -> io::Result<bool> {
         #[cfg(target_vendor = "apple")]
         if ready.token == self.trust {
             self.wake.drain();
-            return self.flush(poll);
+            return self.flush(poll).map(|()| true);
         }
         if ready.token != self.token {
-            return Ok(());
+            return Ok(false);
         }
         if ready.read {
             let mut bytes = [0; 65535];
@@ -179,17 +172,17 @@ impl Driver {
                 }
             }
         }
-        self.flush(poll)
+        self.flush(poll).map(|()| true)
     }
 
-    fn due(&mut self, poll: &mut Poll, due: Due) -> io::Result<()> {
+    fn due(&mut self, poll: &mut Poll, due: Due) -> io::Result<bool> {
         if !poll.current(due) {
-            return Ok(());
+            return Ok(false);
         }
         if due.timer != self.timeout && due.timer != self.keep && due.timer != self.pacing {
-            return Ok(());
+            return Ok(false);
         }
-        self.flush(poll)
+        self.flush(poll).map(|()| true)
     }
 
     fn flush(&mut self, poll: &mut Poll) -> io::Result<()> {
@@ -308,4 +301,4 @@ impl Driver {
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;

@@ -11,7 +11,7 @@ pub const MAX_HEAD: usize = 16384;
 pub const MAX_BODY: usize = 1 << 20;
 const STACK_HEADERS: usize = 128;
 const HEAP_HEADERS: usize = 4096;
-const MAX_RESPONSE_HEAD: usize = 65536;
+pub const MAX_RESPONSE_HEAD: usize = 65536;
 
 pub const BAD_REQUEST: &[u8] = b"HTTP/1.1 400 Bad Request\r\n\r\n400";
 pub const LAST_CHUNK: &[u8] = b"0\r\n\r\n";
@@ -432,19 +432,44 @@ pub fn call_head(
     extra: &[(&str, &str)],
     length: u64,
 ) -> Vec<u8> {
-    let versions = version_headers();
-    let client = client.map(|client| client.to_string());
+    let fields = call_headers(method, target, client, extra);
     let length = length.to_string();
     let mut headers = vec![("Host", host)];
-    if (method, target.as_str()) != ("GET", "/version") {
-        headers.extend(versions.iter().map(|(name, value)| (*name, value.as_str())));
-    }
-    if let Some(client) = &client {
-        headers.push((crate::protocol::CLIENT_HEADER, client));
-    }
-    headers.extend_from_slice(extra);
+    headers.extend(
+        fields
+            .iter()
+            .map(|(name, value)| (name.as_str(), value.as_str())),
+    );
     headers.push(("Content-Length", &length));
     request(method, target, &headers, b"")
+}
+
+pub fn call_headers(
+    method: &str,
+    target: &crate::protocol::RequestTarget,
+    client: Option<ClientId>,
+    extra: &[(&str, &str)],
+) -> Vec<(String, String)> {
+    let mut headers = Vec::new();
+    if (method, target.as_str()) != ("GET", "/version") {
+        headers.extend(
+            version_headers()
+                .into_iter()
+                .map(|(name, value)| (name.to_owned(), value)),
+        );
+    }
+    if let Some(client) = client {
+        headers.push((
+            crate::protocol::CLIENT_HEADER.to_owned(),
+            client.to_string(),
+        ));
+    }
+    headers.extend(
+        extra
+            .iter()
+            .map(|(name, value)| ((*name).to_owned(), (*value).to_owned())),
+    );
+    headers
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

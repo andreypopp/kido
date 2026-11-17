@@ -4,6 +4,8 @@ use std::path::PathBuf;
 #[cfg(feature = "tls")]
 use std::sync::Arc;
 
+#[cfg(all(feature = "tls", any(target_vendor = "apple", test)))]
+pub(crate) mod quic;
 #[cfg(feature = "tls")]
 pub(crate) mod tls;
 #[cfg(all(feature = "tls", any(target_vendor = "apple", test)))]
@@ -15,6 +17,14 @@ pub(crate) enum Endpoint {
     Unix(PathBuf),
     #[cfg(feature = "tls")]
     Tls(Arc<Tls>),
+    #[cfg(feature = "tls")]
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "P5's transport choice constructs it")
+    )]
+    Quic(Arc<quic::Quic>),
+    #[cfg(test)]
+    Fixed(Dial),
 }
 
 #[cfg(feature = "tls")]
@@ -79,6 +89,29 @@ pub enum Resolved {
         target: Arc<Tls>,
         addresses: Arc<[SocketAddr]>,
     },
+    #[cfg(all(feature = "tls", any(target_vendor = "apple", test)))]
+    Quic(crate::wire::quic::h3::Access),
+}
+
+#[cfg(any(all(target_vendor = "apple", feature = "tls"), test))]
+#[derive(Debug, Clone)]
+pub(crate) enum Dial {
+    Unix(PathBuf),
+    Tls {
+        target: Arc<Tls>,
+        addresses: Arc<[SocketAddr]>,
+    },
+    Quic {
+        target: Arc<quic::Quic>,
+        addresses: Arc<[SocketAddr]>,
+    },
+}
+
+#[cfg(any(all(target_vendor = "apple", feature = "tls"), test))]
+#[derive(Debug, Clone)]
+enum Network {
+    Tls(Arc<Tls>),
+    Quic(Arc<quic::Quic>),
 }
 
 #[cfg(any(all(target_vendor = "apple", feature = "tls"), test))]
@@ -90,46 +123,133 @@ impl Endpoint {
         within: std::time::Duration,
     ) -> std::io::Result<Arc<Resolved>> {
         use ko_sys::fd::{self, Waited, Want};
-        use std::net::ToSocketAddrs;
-        match self {
-            Self::Unix(path) => Ok(Arc::new(Resolved::Unix(path.clone()))),
-            Self::Tls(target) => {
-                let host = target.host.0.clone();
-                let port = target.port;
-                let wake = Arc::new(ko_sys::event::Wake::new()?);
-                let worker = Arc::clone(&wake);
-                let (send, receive) = std::sync::mpsc::channel();
-                std::thread::Builder::new()
-                    .name("ko-resolve".to_owned())
-                    .spawn(move || {
-                        let addresses = (host.as_str(), port)
-                            .to_socket_addrs()
-                            .map(|addresses| addresses.collect::<Vec<_>>());
-                        let _ = send.send(addresses);
-                        worker.wake();
-                    })?;
-                match fd::wait(
-                    wake.fd(),
-                    Want::Read,
-                    cancel.map(ko_sys::event::Wake::fd),
-                    Some(within),
-                )? {
-                    Waited::Cancelled => Err(crate::connect::cancelled_error()),
-                    Waited::TimedOut => Err(std::io::ErrorKind::TimedOut.into()),
-                    Waited::Ready => {
-                        let addresses =
-                            receive.try_recv().map_err(std::io::Error::other)?.map_err(
-                                |error| std::io::Error::new(std::io::ErrorKind::NotFound, error),
-                            )?;
-                        if addresses.is_empty() {
-                            return Err(std::io::ErrorKind::NotFound.into());
-                        }
-                        Ok(Arc::new(Resolved::Tls {
-                            target: Arc::clone(target),
-                            addresses: addresses.into(),
-                        }))
+        let resolving = Resolving::start(self)?;
+        let deadline = std::time::Instant::now() + within;
+        loop {
+            if let Some(resolved) = resolving.take()? {
+                return match resolved {
+                    Dial::Unix(path) => Ok(Arc::new(Resolved::Unix(path))),
+                    Dial::Tls { target, addresses } => {
+                        Ok(Arc::new(Resolved::Tls { target, addresses }))
                     }
+                    Dial::Quic { .. } => Err(std::io::Error::new(
+                        std::io::ErrorKind::Unsupported,
+                        "QUIC endpoint requires an I/O owner",
+                    )),
+                };
+            }
+            let Some(remaining) = deadline.checked_duration_since(std::time::Instant::now()) else {
+                return Err(std::io::ErrorKind::TimedOut.into());
+            };
+            let descriptor = resolving
+                .fd()
+                .ok_or_else(|| std::io::Error::other("resolver wake missing"))?;
+            match fd::wait(
+                descriptor,
+                Want::Read,
+                cancel.map(ko_sys::event::Wake::fd),
+                Some(remaining),
+            )? {
+                Waited::Cancelled => return Err(crate::connect::cancelled_error()),
+                Waited::TimedOut => return Err(std::io::ErrorKind::TimedOut.into()),
+                Waited::Ready => {}
+            }
+        }
+    }
+}
+
+#[cfg(any(all(target_vendor = "apple", feature = "tls"), test))]
+#[derive(Debug)]
+pub(crate) struct Resolving(Resolution);
+
+#[cfg(any(all(target_vendor = "apple", feature = "tls"), test))]
+#[derive(Debug)]
+enum Resolution {
+    Ready(Dial),
+    Worker {
+        target: Network,
+        wake: Arc<ko_sys::event::Wake>,
+        receive: std::sync::mpsc::Receiver<std::io::Result<Vec<SocketAddr>>>,
+    },
+}
+
+#[cfg(any(all(target_vendor = "apple", feature = "tls"), test))]
+impl Resolving {
+    pub(crate) fn start(endpoint: &Endpoint) -> std::io::Result<Self> {
+        use std::net::ToSocketAddrs;
+        let (host, port, target) = match endpoint {
+            Endpoint::Unix(path) => {
+                return Ok(Self(Resolution::Ready(Dial::Unix(path.clone()))));
+            }
+            #[cfg(test)]
+            Endpoint::Fixed(dial) => return Ok(Self(Resolution::Ready(dial.clone()))),
+            Endpoint::Tls(target) => (
+                target.host.0.clone(),
+                target.port,
+                Network::Tls(Arc::clone(target)),
+            ),
+            Endpoint::Quic(target) => (
+                target.host.0.clone(),
+                target.port,
+                Network::Quic(Arc::clone(target)),
+            ),
+        };
+        {
+            let wake = Arc::new(ko_sys::event::Wake::new()?);
+            let worker = Arc::clone(&wake);
+            let (send, receive) = std::sync::mpsc::channel();
+            std::thread::Builder::new()
+                .name("ko-resolve".to_owned())
+                .spawn(move || {
+                    let addresses = (host.as_str(), port)
+                        .to_socket_addrs()
+                        .map(|addresses| addresses.collect());
+                    let _ = send.send(addresses);
+                    worker.wake();
+                })?;
+            Ok(Self(Resolution::Worker {
+                target,
+                wake,
+                receive,
+            }))
+        }
+    }
+
+    pub(crate) fn fd(&self) -> Option<std::os::fd::BorrowedFd<'_>> {
+        match &self.0 {
+            Resolution::Ready(_) => None,
+            Resolution::Worker { wake, .. } => Some(wake.fd()),
+        }
+    }
+    pub(crate) fn take(&self) -> std::io::Result<Option<Dial>> {
+        match &self.0 {
+            Resolution::Ready(resolved) => Ok(Some(resolved.clone())),
+            Resolution::Worker {
+                target,
+                wake,
+                receive,
+            } => {
+                wake.drain();
+                let addresses = match receive.try_recv() {
+                    Ok(result) => result.map_err(|error| {
+                        std::io::Error::new(std::io::ErrorKind::NotFound, error)
+                    })?,
+                    Err(std::sync::mpsc::TryRecvError::Empty) => return Ok(None),
+                    Err(error) => return Err(std::io::Error::other(error)),
+                };
+                if addresses.is_empty() {
+                    return Err(std::io::ErrorKind::NotFound.into());
                 }
+                Ok(Some(match target {
+                    Network::Tls(target) => Dial::Tls {
+                        target: Arc::clone(target),
+                        addresses: addresses.into(),
+                    },
+                    Network::Quic(target) => Dial::Quic {
+                        target: Arc::clone(target),
+                        addresses: addresses.into(),
+                    },
+                }))
             }
         }
     }
@@ -174,6 +294,31 @@ mod tests {
             addresses
                 .iter()
                 .all(|address| address.ip().is_loopback() && address.port() == 443)
+        );
+    }
+
+    #[test]
+    fn a_standalone_quic_resolve_requires_an_io_owner() {
+        let mut context =
+            boring::ssl::SslContextBuilder::new(boring::ssl::SslMethod::tls()).unwrap();
+        tls::configure(&mut context, Vec::new()).unwrap();
+        let endpoint = Endpoint::Quic(Arc::new(
+            quic::Quic::new(
+                HostName::try_from("localhost".to_owned()).unwrap(),
+                443,
+                context,
+            )
+            .unwrap(),
+        ));
+        let error = endpoint
+            .resolve(None, std::time::Duration::from_secs(5))
+            .unwrap_err();
+        assert_eq!(
+            (error.kind(), error.to_string()),
+            (
+                std::io::ErrorKind::Unsupported,
+                "QUIC endpoint requires an I/O owner".to_owned()
+            )
         );
     }
 

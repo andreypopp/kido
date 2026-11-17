@@ -175,34 +175,54 @@ pub enum JoinError {
     Protocol(String),
 }
 
+#[derive(Debug)]
+pub(crate) enum Greeting {
+    Welcome,
+    Layout(protocol::Welcome),
+    Selected(Model),
+}
+
+impl Greeting {
+    pub(crate) fn advance(&mut self, event: ClientEvent) -> Result<Option<Model>, JoinError> {
+        if let ClientEvent::Refused { message } = event {
+            return Err(JoinError::Refused(message));
+        }
+        match (std::mem::replace(self, Self::Welcome), event) {
+            (Self::Welcome, ClientEvent::Welcome(welcome)) => {
+                *self = Self::Layout(welcome);
+                Ok(None)
+            }
+            (Self::Layout(welcome), ClientEvent::Layout(layout)) => {
+                *self = Self::Selected(Model::new(welcome, layout));
+                Ok(None)
+            }
+            (Self::Selected(mut model), ClientEvent::Selected { selection, .. }) => {
+                model.selection = selection;
+                Ok(Some(model))
+            }
+            (Self::Welcome, _) => Err(JoinError::Protocol("welcome missing".to_owned())),
+            (Self::Layout(_), _) => Err(JoinError::Protocol("layout missing".to_owned())),
+            (Self::Selected(_), _) => Err(JoinError::Protocol("selection missing".to_owned())),
+        }
+    }
+}
+
 impl Model {
     pub fn join(link: &mut Link, hello: Hello) -> Result<Model, JoinError> {
         link.send(protocol::json(&ClientRequest::Hello(hello)))
             .and_then(|()| link.flush_blocking())
             .map_err(JoinError::Io)?;
-        let mut next = || match link.receive().map_err(JoinError::Io)? {
-            Next::Text(event) => {
-                match protocol::decode::<ClientEvent>(event.as_bytes())
-                    .map_err(|error| JoinError::Protocol(text(error)))?
-                {
-                    ClientEvent::Refused { message } => Err(JoinError::Refused(message)),
-                    event => Ok(event),
-                }
+        let mut greeting = Greeting::Welcome;
+        loop {
+            let Next::Text(event) = link.receive().map_err(JoinError::Io)? else {
+                return Err(JoinError::Protocol("client event missing".to_owned()));
+            };
+            let event = protocol::decode::<ClientEvent>(event.as_bytes())
+                .map_err(|error| JoinError::Protocol(text(error)))?;
+            if let Some(model) = greeting.advance(event)? {
+                return Ok(model);
             }
-            _ => Err(JoinError::Protocol("client event missing".to_owned())),
-        };
-        let ClientEvent::Welcome(welcome) = next()? else {
-            return Err(JoinError::Protocol("welcome missing".to_owned()));
-        };
-        let ClientEvent::Layout(layout) = next()? else {
-            return Err(JoinError::Protocol("layout missing".to_owned()));
-        };
-        let ClientEvent::Selected { selection, .. } = next()? else {
-            return Err(JoinError::Protocol("selection missing".to_owned()));
-        };
-        let mut model = Model::new(welcome, layout);
-        model.selection = selection;
-        Ok(model)
+        }
     }
 
     fn new(welcome: protocol::Welcome, announced: LayoutPanes) -> Model {

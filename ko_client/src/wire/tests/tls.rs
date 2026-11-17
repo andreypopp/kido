@@ -204,7 +204,12 @@ fn an_upload_ignores_post_handshake_tickets_before_its_http_answer() {
         Ok(())
     });
     let cancel = Wake::new().unwrap();
-    let stream = Stream::open(&endpoint, Limit::Idle(WITHIN), Some(&cancel)).unwrap();
+    let stream = stream::Direct::open(
+        (&endpoint).try_into().unwrap(),
+        Limit::Idle(WITHIN),
+        Some(&cancel),
+    )
+    .unwrap();
     let observed = stream.fd().try_clone_to_owned().unwrap();
     let mut reads = 0;
     let outcome = upload_connected(
@@ -283,7 +288,8 @@ fn a_request_and_an_upgrade_cross_tls() {
 #[cfg(target_vendor = "apple")]
 #[test]
 fn webview_http_and_upgrade_drive_tls_only_from_socket_readiness() {
-    use crate::webview::{Event, Kind, Target, Upstream};
+    use crate::webview::{Event, Kind, Upstream};
+    use crate::wire::exchange::Destination;
     use ko_wire::protocol::webview::Headers;
     let fixtures = Fixtures::new();
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
@@ -345,7 +351,10 @@ fn webview_http_and_upgrade_drive_tls_only_from_socket_readiness() {
             kind,
             &"/version".to_owned().try_into().unwrap(),
             &Headers::try_from(Vec::new()).unwrap(),
-            Target::Server("client_7".parse().unwrap()),
+            Destination::Server {
+                client: Some("client_7".parse().unwrap()),
+                caller: None,
+            },
             b"",
         )
         .unwrap();
@@ -436,12 +445,14 @@ fn a_nonblocking_tls_upgrade_tries_the_next_resolved_address() {
     let mut events = ko_sys::event::Events::default();
     let mut connecting = Connecting::start(
         &endpoint,
-        "client_7".parse().unwrap(),
+        Some("client_7".parse().unwrap()),
         &Route::Client {},
         None,
+        WITHIN,
+        &mut poll,
     )
     .unwrap();
-    let mut token = connecting.watch(&mut poll);
+    let mut token = connecting.token();
     let timer = poll.timer();
     poll.start(timer, WITHIN, None).unwrap();
     let deadline = Instant::now() + WITHIN;
@@ -669,12 +680,14 @@ fn a_held_tls_handshake_waits_for_reads_instead_of_spinning() {
     let mut events = ko_sys::event::Events::default();
     let mut connecting = Connecting::start(
         &endpoint,
-        "client_7".parse().unwrap(),
+        Some("client_7".parse().unwrap()),
         &Route::Client {},
         None,
+        WITHIN,
+        &mut poll,
     )
     .unwrap();
-    let token = connecting.watch(&mut poll);
+    let token = connecting.token();
     let deadline = poll.timer();
     poll.start(deadline, WITHIN, None).unwrap();
     poll.turn(ko_sys::event::Mode::Wait, &mut events).unwrap();

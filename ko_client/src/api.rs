@@ -90,6 +90,10 @@ pub fn version(
         wire::Limit::Idle(within),
         cancel,
     )?;
+    version_response(&response)
+}
+
+pub(crate) fn version_response(response: &Response) -> io::Result<(Option<ErrorKind>, Version)> {
     if response.status == 502 {
         return Err(io::ErrorKind::ConnectionRefused.into());
     }

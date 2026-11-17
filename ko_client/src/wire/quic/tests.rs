@@ -1,4 +1,5 @@
 use super::*;
+mod h3;
 use boring::pkey::PKey;
 use boring::ssl::{SslContextBuilder, SslMethod};
 use boring::x509::X509;
@@ -10,14 +11,47 @@ use std::sync::{
 
 use crate::wire::tests::tls::{Fixtures, Key};
 
-struct Peer {
-    socket: UdpSocket,
+pub(crate) struct Peer {
+    pub(crate) socket: UdpSocket,
     config: quiche::Config,
-    connection: Option<quiche::Connection>,
+    pub(crate) connection: Option<quiche::Connection>,
     token: Token,
 }
+impl std::fmt::Debug for Peer {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("Peer")
+            .field("socket", &self.socket)
+            .field("connected", &self.connection.is_some())
+            .finish_non_exhaustive()
+    }
+}
 impl Peer {
-    fn receive(&mut self) {
+    pub(crate) fn new(server: SslContextBuilder, poll: &mut Poll) -> Self {
+        let mut config =
+            quiche::Config::with_boring_ssl_ctx_builder(quiche::PROTOCOL_VERSION, server).unwrap();
+        config
+            .set_application_protos(quiche::h3::APPLICATION_PROTOCOL)
+            .unwrap();
+        config.set_initial_max_data(4 << 20);
+        config.set_initial_max_stream_data_bidi_local(65536);
+        config.set_initial_max_stream_data_bidi_remote(65536);
+        config.set_initial_max_streams_bidi(16);
+        config.set_initial_max_streams_uni(16);
+        config.set_initial_max_stream_data_uni(65536);
+        config.set_active_connection_id_limit(4);
+        config.enable_pacing(false);
+        let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
+        socket.set_nonblocking(true).unwrap();
+        let token = poll.watch(socket.as_fd(), Interest::Read);
+        Peer {
+            socket,
+            config,
+            connection: None,
+            token,
+        }
+    }
+    pub(crate) fn receive(&mut self) {
         let mut bytes = [0; 65535];
         for _ in 0..32 {
             let (count, from) = match self.socket.recv_from(&mut bytes) {
@@ -49,10 +83,13 @@ impl Peer {
             );
         }
     }
-    fn flush(&mut self) {
+    pub(crate) fn flush(&mut self) {
         let Some(connection) = &mut self.connection else {
             return;
         };
+        if connection.timeout().is_some_and(|left| left.is_zero()) {
+            connection.on_timeout();
+        }
         let mut bytes = [0; 1350];
         for _ in 0..64 {
             match connection.send(&mut bytes) {
@@ -75,33 +112,21 @@ enum Scenario {
     Refused,
     WrongRoot,
     WrongName,
+    SniRefused,
 }
 
 fn setup(scenario: Scenario) -> (Poll, Driver, Peer, Arc<AtomicUsize>) {
     let fixtures = Fixtures::new();
     let mut server = SslContextBuilder::new(SslMethod::tls()).unwrap();
     crate::wire::tests::tls::configure_server(&mut server, &fixtures);
-    let mut config =
-        quiche::Config::with_boring_ssl_ctx_builder(quiche::PROTOCOL_VERSION, server).unwrap();
-    config
-        .set_application_protos(quiche::h3::APPLICATION_PROTOCOL)
-        .unwrap();
-    config.set_initial_max_data(4 << 20);
-    config.set_initial_max_stream_data_bidi_local(65536);
-    config.set_initial_max_stream_data_bidi_remote(65536);
-    config.set_initial_max_streams_bidi(16);
-    config.set_active_connection_id_limit(4);
-    config.enable_pacing(false);
-    let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
-    socket.set_nonblocking(true).unwrap();
+    if scenario == Scenario::SniRefused {
+        server.set_servername_callback(|_, alert| {
+            *alert = boring::ssl::SslAlert::UNRECOGNIZED_NAME;
+            Err(boring::ssl::SniError::ALERT_FATAL)
+        });
+    }
     let mut poll = Poll::new();
-    let token = poll.watch(socket.as_fd(), Interest::Read);
-    let peer = Peer {
-        socket,
-        config,
-        connection: None,
-        token,
-    };
+    let peer = Peer::new(server, &mut poll);
     let mut context = SslContextBuilder::new(SslMethod::tls()).unwrap();
     tls::configure(
         &mut context,
@@ -125,8 +150,8 @@ fn setup(scenario: Scenario) -> (Poll, Driver, Peer, Arc<AtomicUsize>) {
         key: PKey::private_key_from_der(&client.key).unwrap(),
         signatures: Arc::clone(&signatures),
     });
-    let driver = Driver::start(
-        &HostName::try_from(
+    let target = crate::endpoint::quic::Quic::new(
+        HostName::try_from(
             if scenario == Scenario::WrongName {
                 "wrong.example"
             } else {
@@ -135,8 +160,14 @@ fn setup(scenario: Scenario) -> (Poll, Driver, Peer, Arc<AtomicUsize>) {
             .to_owned(),
         )
         .unwrap(),
-        peer.socket.local_addr().unwrap(),
+        peer.socket.local_addr().unwrap().port(),
         context,
+    )
+    .unwrap();
+    let driver = Driver::start(
+        &target.host,
+        peer.socket.local_addr().unwrap(),
+        &target.config,
         &mut poll,
         Duration::from_secs(15),
     )
@@ -435,6 +466,23 @@ fn quic_refused_certificate_is_identity_and_wrong_trust_is_tls() {
         );
         driver.detach(&mut poll);
     }
+}
+
+#[test]
+fn quic_sni_refusal_before_client_signing_is_tls() {
+    let (mut poll, mut driver, mut peer, signatures) = setup(Scenario::SniRefused);
+    let error = until(&mut poll, &mut driver, &mut peer, |_, _| false).unwrap_err();
+    assert!(
+        matches!(
+            error
+                .get_ref()
+                .and_then(|error| error.downcast_ref::<tls::Failure>()),
+            Some(tls::Failure::Tls(_))
+        ),
+        "{error:?}"
+    );
+    assert_eq!(signatures.load(Ordering::SeqCst), 0);
+    driver.detach(&mut poll);
 }
 
 #[cfg(target_vendor = "apple")]

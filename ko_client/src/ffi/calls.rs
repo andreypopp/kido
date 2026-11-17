@@ -66,7 +66,10 @@ pub unsafe extern "C" fn ko_client_upload(
     let mut cancelled = false;
     let (code, bytes) = call(&client, |socket, id, cancel| {
         let body = wire::upload(
-            socket,
+            socket
+                .try_into()
+                .map_err(wire::Rejected::from)
+                .map_err(upload_rejected)?,
             id,
             &Route::UploadDrop { id: pane, name },
             size,

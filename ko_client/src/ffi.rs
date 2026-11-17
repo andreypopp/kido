@@ -949,7 +949,20 @@ fn start(
     };
     let resolved = match &endpoint {
         Endpoint::Unix(path) => Some(Arc::new(crate::endpoint::Resolved::Unix(path.clone()))),
-        Endpoint::Tls(_) => None,
+        Endpoint::Tls(_) | Endpoint::Quic(_) => None,
+        #[cfg(test)]
+        Endpoint::Fixed(crate::endpoint::Dial::Unix(path)) => {
+            Some(Arc::new(crate::endpoint::Resolved::Unix(path.clone())))
+        }
+        #[cfg(test)]
+        Endpoint::Fixed(crate::endpoint::Dial::Tls { target, addresses }) => {
+            Some(Arc::new(crate::endpoint::Resolved::Tls {
+                target: Arc::clone(target),
+                addresses: Arc::clone(addresses),
+            }))
+        }
+        #[cfg(test)]
+        Endpoint::Fixed(crate::endpoint::Dial::Quic { .. }) => None,
     };
     let shared = Arc::new(Shared {
         queue,
@@ -1622,6 +1635,7 @@ mod tests {
     type Plain = Arc<dyn Fn(&Request) -> Option<(u16, String)> + Send + Sync>;
     type Raw = Arc<dyn Fn(&Request, &mut UnixStream) -> bool + Send + Sync>;
 
+    mod quic;
     mod tls;
     mod webview;
 
@@ -2936,6 +2950,85 @@ mod tests {
         assert!(started.elapsed() < Duration::from_secs(5));
         hangup.recv_timeout(WAIT).unwrap();
         assert_eq!(fixture.quiet(), []);
+    }
+
+    #[test]
+    fn a_view_opened_before_the_first_greeting_gets_its_snapshot() {
+        let (release, held) = channel();
+        let server = serve(
+            "held-first-greeting-view",
+            client_script(move |socket, _| {
+                held.recv_timeout(Duration::from_secs(5)).unwrap();
+                welcomed(socket);
+                wait_for_hangup(socket);
+            })
+            .view(|socket, _| {
+                send_binary(socket, slice_record(10, true, true, true, b"s"));
+                wait_for_hangup(socket);
+            }),
+        );
+        let fixture = Fixture::new();
+        let client = fixture.connect(&server);
+        let view = open_view(
+            client,
+            Decoder::new(|snapshot| {
+                pull(snapshot, usize::MAX, 64).unwrap();
+                Restored::Ok
+            }),
+            true,
+        );
+        let barrier = open_view(client, Decoder::new(|_| Restored::Ok), true);
+        let entry = view_handle(barrier).unwrap();
+        let pending = Arc::downgrade(&entry.view);
+        drop(entry);
+        close_view(barrier);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while pending.strong_count() != 0 {
+            assert!(Instant::now() < deadline);
+            std::thread::yield_now();
+        }
+        release.send(()).unwrap();
+        let next = || {
+            fixture
+                .events
+                .recv_timeout(Duration::from_secs(5))
+                .unwrap()
+                .seen
+        };
+        assert!(matches!(next(), Seen::Welcome(..)));
+        assert!(matches!(next(), Seen::Layout(..)));
+        assert_eq!(next(), Seen::Restored(1, Restored::Ok));
+        close_view(view);
+        close(client);
+    }
+
+    #[test]
+    fn a_view_can_close_while_the_join_waits_for_welcome() {
+        let (accepting, accepted) = channel();
+        let server = serve(
+            "held-welcome-view-close",
+            client_script(move |socket, _| {
+                accepting.send(()).unwrap();
+                wait_for_hangup(socket);
+            }),
+        );
+        let fixture = Fixture::new();
+        let client = fixture.connect(&server);
+        accepted.recv_timeout(Duration::from_secs(5)).unwrap();
+        let handle = open_view(client, Decoder::new(|_| Restored::Ok), true);
+        let entry = view_handle(handle).unwrap();
+        let view = Arc::downgrade(&entry.view);
+        drop(entry);
+        close_view(handle);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while view.strong_count() != 0 {
+            assert!(
+                Instant::now() < deadline,
+                "the join blocked the view close command"
+            );
+            std::thread::yield_now();
+        }
+        close(client);
     }
 
     #[test]

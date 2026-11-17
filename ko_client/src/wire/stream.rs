@@ -16,16 +16,48 @@ mod tls;
 #[cfg(feature = "tls")]
 use tls::Secured;
 
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum DirectEndpoint<'a> {
+    Unix(&'a std::path::Path),
+    #[cfg(feature = "tls")]
+    Tls {
+        target: &'a std::sync::Arc<crate::endpoint::Tls>,
+        addresses: &'a [std::net::SocketAddr],
+    },
+}
+
+impl<'a> TryFrom<&'a Resolved> for DirectEndpoint<'a> {
+    type Error = io::Error;
+
+    fn try_from(endpoint: &'a Resolved) -> io::Result<Self> {
+        match endpoint {
+            Resolved::Unix(path) => Ok(Self::Unix(path)),
+            #[cfg(feature = "tls")]
+            Resolved::Tls { target, addresses } => Ok(Self::Tls { target, addresses }),
+            #[cfg(all(feature = "tls", any(target_vendor = "apple", test)))]
+            Resolved::Quic(_) => Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "a direct endpoint is required",
+            )),
+        }
+    }
+}
+
 #[derive(Debug)]
-pub(crate) enum Stream {
+pub(crate) enum Direct {
     Unix(UnixStream),
     #[cfg(feature = "tls")]
     Tls(Box<Secured>),
 }
 
-impl Stream {
+impl Direct {
     pub(crate) fn start(endpoint: &Resolved) -> io::Result<Self> {
         match endpoint {
+            #[cfg(all(feature = "tls", any(target_vendor = "apple", test)))]
+            Resolved::Quic(_) => Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "QUIC requires a typed request",
+            )),
             Resolved::Unix(path) => Ok(Self::Unix(UnixStream::from(
                 ko_sys::sock::connect_nonblocking(path)?,
             ))),
@@ -38,12 +70,12 @@ impl Stream {
     }
 
     pub(crate) fn open(
-        endpoint: &Resolved,
+        endpoint: DirectEndpoint<'_>,
         within: Limit,
         cancel: Option<&Wake>,
     ) -> io::Result<Self> {
         match endpoint {
-            Resolved::Unix(path) => {
+            DirectEndpoint::Unix(path) => {
                 let stream = match within {
                     Limit::Idle(_) => {
                         crate::connect::connect(path, crate::connect::PATIENCE, cancel)?
@@ -62,8 +94,11 @@ impl Stream {
                 Ok(Self::Unix(stream))
             }
             #[cfg(feature = "tls")]
-            Resolved::Tls { .. } => {
-                let mut stream = Self::start(endpoint)?;
+            DirectEndpoint::Tls { target, addresses } => {
+                let mut stream = Self::Tls(Box::new(Secured::start(
+                    std::sync::Arc::clone(target),
+                    addresses.iter().copied().collect(),
+                )?));
                 stream.finish_open(within, cancel)?;
                 Ok(stream)
             }
@@ -116,7 +151,7 @@ impl Stream {
         }
     }
 
-    pub(crate) fn retry(&mut self, error: io::Error) -> io::Result<()> {
+    fn retry(&mut self, error: io::Error) -> io::Result<()> {
         match self {
             #[cfg(feature = "tls")]
             Self::Tls(secured)
@@ -137,7 +172,7 @@ impl Stream {
         error: io::Error,
     ) -> io::Result<()> {
         self.retry(error)?;
-        self.watch_interest(poll, ready.token, true, true);
+        poll.retarget(ready.token, self.fd(), self.interest(true, true));
         ready.read = false;
         ready.write = false;
         Ok(())
@@ -157,7 +192,7 @@ impl Stream {
             Self::Tls(secured) => secured.writable(),
         }
     }
-    pub(crate) fn progress(&mut self) -> io::Result<()> {
+    fn progress(&mut self) -> io::Result<()> {
         match self {
             Self::Unix(_) => Ok(()),
             #[cfg(feature = "tls")]
@@ -165,7 +200,7 @@ impl Stream {
         }
     }
     #[cfg(feature = "tls")]
-    pub(crate) fn ready(&self) -> bool {
+    fn ready(&self) -> bool {
         match self {
             Self::Unix(_) => true,
             #[cfg(feature = "tls")]
@@ -186,7 +221,7 @@ impl Stream {
             Self::Tls(secured) => secured.fd(),
         }
     }
-    pub(crate) fn buffered(&mut self, bytes: &mut [u8]) -> Option<io::Result<usize>> {
+    fn buffered(&mut self, bytes: &mut [u8]) -> Option<io::Result<usize>> {
         match self {
             Self::Unix(_) => {
                 let _ = bytes;
@@ -196,7 +231,7 @@ impl Stream {
             Self::Tls(secured) => Some(secured.buffered(bytes)),
         }
     }
-    pub(crate) fn receive(&mut self) -> io::Result<()> {
+    fn receive(&mut self) -> io::Result<()> {
         match self {
             Self::Unix(_) => Ok(()),
             #[cfg(feature = "tls")]
@@ -204,7 +239,7 @@ impl Stream {
         }
     }
 
-    pub(crate) fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
+    fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
         match self {
             Self::Unix(stream) => fd::read(stream.as_fd(), bytes),
             #[cfg(feature = "tls")]
@@ -217,7 +252,7 @@ impl Stream {
             },
         }
     }
-    pub(crate) fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
         self.progress()?;
         match self {
             Self::Unix(stream) => fd::write(stream.as_fd(), bytes),
@@ -238,7 +273,7 @@ impl Stream {
             Self::Tls(secured) => secured.read_ready(poll, token, bytes, reads),
         }
     }
-    pub(crate) fn flush(&mut self, queue: &mut Queue) -> io::Result<()> {
+    fn flush(&mut self, queue: &mut Queue) -> io::Result<()> {
         queue.flush_with(|bytes| self.write(bytes))?;
         self.progress()
     }
@@ -266,6 +301,7 @@ impl Stream {
             Self::Tls(secured) => std::mem::take(&mut secured.received),
         }
     }
+
     pub(crate) fn pending_write(&self) -> bool {
         match self {
             Self::Unix(_) => false,
@@ -273,14 +309,14 @@ impl Stream {
             Self::Tls(secured) => secured.pending_write(),
         }
     }
-    pub(crate) fn pending_read(&self) -> bool {
+    fn pending_read(&self) -> bool {
         match self {
             Self::Unix(_) => false,
             #[cfg(feature = "tls")]
             Self::Tls(secured) => !secured.plaintext.is_empty(),
         }
     }
-    pub(crate) fn wait(&self, fallback: Want) -> Want {
+    fn wait(&self, fallback: Want) -> Want {
         match self {
             Self::Unix(_) => fallback,
             #[cfg(feature = "tls")]
@@ -294,10 +330,7 @@ impl Stream {
             Self::Tls(secured) => secured.interest(read, write),
         }
     }
-    pub(crate) fn watch_interest(&self, poll: &mut Poll, token: Token, read: bool, write: bool) {
-        poll.retarget(token, self.fd(), self.interest(read, write));
-    }
-    pub(crate) fn set_nonblocking(&mut self, nonblocking: bool) -> io::Result<()> {
+    fn set_nonblocking(&mut self, nonblocking: bool) -> io::Result<()> {
         match self {
             Self::Unix(stream) => stream.set_nonblocking(nonblocking),
             #[cfg(feature = "tls")]
@@ -317,5 +350,174 @@ pub(crate) fn terminal(error: &io::Error) -> bool {
     {
         let _ = error;
         false
+    }
+}
+
+#[derive(Debug)]
+pub(crate) enum Stream {
+    Direct(Direct),
+    #[cfg(all(feature = "tls", any(target_vendor = "apple", test)))]
+    Quic(super::quic::h3::StreamHandle),
+}
+impl Stream {
+    pub(crate) fn open(
+        endpoint: &Resolved,
+        within: Limit,
+        cancel: Option<&Wake>,
+    ) -> io::Result<Self> {
+        Direct::open(endpoint.try_into()?, within, cancel).map(Self::Direct)
+    }
+    pub(crate) fn progress(&mut self) -> io::Result<()> {
+        match self {
+            Self::Direct(stream) => stream.progress(),
+            #[cfg(all(feature = "tls", any(target_vendor = "apple", test)))]
+            Self::Quic(handle) => handle.progress(),
+        }
+    }
+    pub(crate) fn host(&self) -> &str {
+        match self {
+            Self::Direct(stream) => stream.host(),
+            #[cfg(all(feature = "tls", any(target_vendor = "apple", test)))]
+            Self::Quic(handle) => handle.host(),
+        }
+    }
+    pub(crate) fn fd(&self) -> BorrowedFd<'_> {
+        match self {
+            Self::Direct(stream) => stream.fd(),
+            #[cfg(all(feature = "tls", any(target_vendor = "apple", test)))]
+            Self::Quic(handle) => handle.fd(),
+        }
+    }
+    pub(crate) fn buffered(&mut self, bytes: &mut [u8]) -> Option<io::Result<usize>> {
+        match self {
+            Self::Direct(stream) => stream.buffered(bytes),
+            #[cfg(all(feature = "tls", any(target_vendor = "apple", test)))]
+            Self::Quic(handle) => Some(handle.read(bytes)),
+        }
+    }
+    pub(crate) fn receive(&mut self) -> io::Result<()> {
+        match self {
+            Self::Direct(stream) => stream.receive(),
+            #[cfg(all(feature = "tls", any(target_vendor = "apple", test)))]
+            Self::Quic(handle) => handle.progress(),
+        }
+    }
+    pub(crate) fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
+        match self {
+            Self::Direct(stream) => stream.read(bytes),
+            #[cfg(all(feature = "tls", any(target_vendor = "apple", test)))]
+            Self::Quic(handle) => handle.read(bytes),
+        }
+    }
+    pub(crate) fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        match self {
+            Self::Direct(stream) => stream.write(bytes),
+            #[cfg(all(feature = "tls", any(target_vendor = "apple", test)))]
+            Self::Quic(handle) => handle.write(bytes),
+        }
+    }
+    pub(crate) fn read_ready(
+        &mut self,
+        poll: &mut Poll,
+        token: Token,
+        bytes: &mut [u8],
+        reads: &mut Reads,
+    ) -> io::Result<Option<Read>> {
+        match self {
+            Self::Direct(stream) => stream.read_ready(poll, token, bytes, reads),
+            #[cfg(all(feature = "tls", any(target_vendor = "apple", test)))]
+            Self::Quic(handle) => handle.read_ready(bytes),
+        }
+    }
+    pub(crate) fn flush(&mut self, queue: &mut Queue) -> io::Result<()> {
+        match self {
+            Self::Direct(stream) => stream.flush(queue),
+            #[cfg(all(feature = "tls", any(target_vendor = "apple", test)))]
+            Self::Quic(handle) => queue
+                .flush_with(|bytes| handle.write(bytes))
+                .and_then(|()| handle.progress()),
+        }
+    }
+    pub(crate) fn flush_ready(
+        &mut self,
+        poll: &mut Poll,
+        token: Token,
+        reads: &mut Reads,
+        queue: &mut Queue,
+    ) -> io::Result<()> {
+        match self {
+            Self::Direct(stream) => stream.flush_ready(poll, token, reads, queue),
+            #[cfg(all(feature = "tls", any(target_vendor = "apple", test)))]
+            Self::Quic(handle) => queue
+                .flush_with(|bytes| handle.write(bytes))
+                .and_then(|()| handle.progress()),
+        }
+    }
+    pub(crate) fn take_read(&mut self) -> bool {
+        match self {
+            Self::Direct(stream) => stream.take_read(),
+            #[cfg(all(feature = "tls", any(target_vendor = "apple", test)))]
+            Self::Quic(handle) => handle.take_read(),
+        }
+    }
+    pub(crate) fn pending_write(&self) -> bool {
+        match self {
+            Self::Direct(stream) => stream.pending_write(),
+            #[cfg(all(feature = "tls", any(target_vendor = "apple", test)))]
+            Self::Quic(handle) => handle.pending_write(),
+        }
+    }
+    pub(crate) fn pending_read(&self) -> bool {
+        match self {
+            Self::Direct(stream) => stream.pending_read(),
+            #[cfg(all(feature = "tls", any(target_vendor = "apple", test)))]
+            Self::Quic(handle) => handle.pending_read(),
+        }
+    }
+    pub(crate) fn wait(&self, fallback: Want) -> Want {
+        match self {
+            Self::Direct(stream) => stream.wait(fallback),
+            #[cfg(all(feature = "tls", any(target_vendor = "apple", test)))]
+            Self::Quic(handle) => {
+                handle.interest(match fallback {
+                    Want::Read => Interest::Read,
+                    Want::Write => Interest::Write,
+                });
+                Want::Read
+            }
+        }
+    }
+    pub(crate) fn interest(&self, read: bool, write: bool) -> Interest {
+        match self {
+            Self::Direct(stream) => stream.interest(read, write),
+            #[cfg(all(feature = "tls", any(target_vendor = "apple", test)))]
+            Self::Quic(handle) => {
+                handle.interest(Interest::of(read, write));
+                if read || write {
+                    Interest::Read
+                } else {
+                    Interest::Idle
+                }
+            }
+        }
+    }
+    pub(crate) fn set_nonblocking(&mut self, nonblocking: bool) -> io::Result<()> {
+        match self {
+            Self::Direct(stream) => stream.set_nonblocking(nonblocking),
+            #[cfg(all(feature = "tls", any(target_vendor = "apple", test)))]
+            Self::Quic(handle) => {
+                let _ = handle;
+                Ok(())
+            }
+        }
+    }
+    pub(crate) fn begin_turn(&mut self) {
+        #[cfg(all(feature = "tls", any(target_vendor = "apple", test)))]
+        if let Self::Quic(handle) = self {
+            handle.begin_turn();
+        }
+    }
+    pub(crate) fn watch_interest(&self, poll: &mut Poll, token: Token, read: bool, write: bool) {
+        poll.retarget(token, self.fd(), self.interest(read, write));
     }
 }

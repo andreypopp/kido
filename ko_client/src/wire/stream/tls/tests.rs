@@ -1,6 +1,6 @@
 use super::*;
 use crate::wire::Limit;
-use crate::wire::stream::Stream;
+use crate::wire::stream::Direct as Stream;
 use crate::wire::tests::tls::{Fixtures, accept, server, target};
 use ko_sys::event::{Events, Mode};
 use std::io::Write as _;
@@ -32,7 +32,12 @@ fn a_link_drains_plaintext_produced_by_settlement_before_waiting_again() {
         socket.flush().unwrap();
         gate.recv_timeout(Duration::from_secs(5)).unwrap();
     });
-    let mut stream = Stream::open(&endpoint, Limit::Idle(Duration::from_secs(5)), None).unwrap();
+    let mut stream = Stream::open(
+        (&endpoint).try_into().unwrap(),
+        Limit::Idle(Duration::from_secs(5)),
+        None,
+    )
+    .unwrap();
     assert_eq!(stream.write(b"start").unwrap(), 5);
     let Stream::Tls(secured) = &mut stream else {
         panic!("TLS");
@@ -43,8 +48,11 @@ fn a_link_drains_plaintext_produced_by_settlement_before_waiting_again() {
     );
     secured.receive().unwrap();
     secured.read_retry = Some(Want::Write);
-    let mut link =
-        crate::wire::Link::of_stream(stream, Vec::new(), ko_wire::protocol::Upgrade::Control);
+    let mut link = crate::wire::Link::of_stream(
+        crate::wire::stream::Stream::Direct(stream),
+        Vec::new(),
+        ko_wire::protocol::Upgrade::Control,
+    );
     let mut poll = Poll::new();
     link.watch(&mut poll).unwrap();
     assert_eq!(
@@ -76,7 +84,12 @@ fn crossed_wait_directions_feed_ciphertext_and_keep_plaintext_until_the_reader_r
         socket.flush().unwrap();
         gate.recv_timeout(Duration::from_secs(5)).unwrap();
     });
-    let mut stream = Stream::open(&endpoint, Limit::Idle(Duration::from_secs(5)), None).unwrap();
+    let mut stream = Stream::open(
+        (&endpoint).try_into().unwrap(),
+        Limit::Idle(Duration::from_secs(5)),
+        None,
+    )
+    .unwrap();
     assert_eq!(stream.write(b"start").unwrap(), 5);
     let Stream::Tls(secured) = &mut stream else {
         panic!("TLS");
@@ -192,7 +205,7 @@ fn trust_workers_wake_without_socket_input_and_do_not_hold_other_dials_or_close(
                         .unwrap();
                 }
             }
-            stream.watch_interest(&mut poll, token, true, true);
+            poll.retarget(token, stream.fd(), stream.interest(true, true));
         }
         waiting.recv_timeout(Duration::from_secs(5)).unwrap();
         assert_eq!(stream.fd().as_raw_fd(), wake.fd().as_raw_fd());
@@ -228,7 +241,7 @@ fn trust_workers_wake_without_socket_input_and_do_not_hold_other_dials_or_close(
                             .unwrap();
                     }
                 }
-                other.watch_interest(&mut poll, other_token, true, true);
+                poll.retarget(other_token, other.fd(), other.interest(true, true));
             }
             poll.unwatch(other_token);
             assert_eq!(other.write(&[7]).unwrap(), 1);

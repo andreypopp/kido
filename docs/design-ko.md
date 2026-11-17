@@ -1177,18 +1177,49 @@ waits on the resolver. Requests and views use the latest resolved
 addresses, also during an outage, so a request dials as it does on a
 unix socket; only a TLS endpoint before its first resolution answers
 no server. A dial tries each
-address for 5 s within the request's own limit. The `/client` handshake
-runs inside the join, which blocks the I/O thread but ends on cancel
-or its deadline, as on an SSH forward; a view's runs inside its
-non-blocking upgrade step. A server certificate that is not valid
+address for 5 s within the request's own limit. The I/O thread's
+join does not block it: resolving, the `/client` upgrade, the
+greeting (welcome, layout and selected, which `model.rs` gathers for
+the blocking client and the I/O thread alike), the version probe
+after a refused upgrade, and the established link are the steps of
+one state on its loop, beside the views, the requests and the QUIC
+connection. The upgrade and the greeting share one join deadline;
+the probe has its own limit. A view's handshake runs
+inside its own non-blocking upgrade step. Every HTTP exchange, a
+blocking request, a webview's upstream and the version probe, goes
+through `ko_client/src/wire/exchange.rs`, which chooses HTTP/1.1 or
+HTTP/3 before it encodes the request. The one exception is the
+streamed upload (`wire::upload`), which takes only a direct endpoint
+(`DirectEndpoint`: a unix socket or TCP TLS) and writes HTTP/1.1, so
+an HTTP/1.1 body can never reach a QUIC stream; an upload to a QUIC
+endpoint is refused before it reads the file. A server certificate that is not valid
 and a refusal of the client's certificate are final: the client
 stops and does not reconnect. A proxy's 502 is no server.
 
 HTTP/3 (plans/remote-mtls.md, section 5) runs on one QUIC connection
 for each client, driven by `ko_client/src/wire/quic.rs` on the same
-loop as every other descriptor: `quiche` holds the QUIC state, and
-ko owns only the driver. It has no production caller yet; the
-HTTP/3 stream case gives it one. The QUIC TLS context comes from the
+loop as every other descriptor: `quiche` holds the QUIC and HTTP/3
+state, and ko owns only the driver and one owner of the HTTP/3
+connection (`ko_client/src/wire/quic/h3.rs`) on the I/O thread.
+Every request and every view is one HTTP/3 request stream of that
+connection. A WebSocket is an RFC 9220 extended CONNECT with
+`:protocol: websocket`, `Ko-Protocol` and `Ko-Vt`, sent only after
+the peer's SETTINGS allow it, and answered by 200; above that,
+ko's WebSocket framing is the same as on TCP. A stream's handle
+(`Stream::Quic`) holds no `quiche` state: it has a bounded mailbox
+in each direction and a `Wake`, so a blocking caller on another
+thread waits on its handle with its own cancel and deadline and
+never drives the connection, and a handle that nobody reads stops
+only its own stream's credit. A reset of one stream or a refusal to
+admit one ends or retries only that view or request. The end of the
+connection, also Caddy's `H3_NO_ERROR` at a restart, which sends no
+WebSocket close, fails every handle at once, and is a lost link. A
+request whose headers were sent before the loss is unanswered, as a
+TCP request whose write was sent. `Endpoint::Quic` is the endpoint
+of this case; until the transport choice (plans/remote-mtls.md, P5)
+constructs it, the app's TLS endpoints stay on TCP, and a blocking
+probe of a QUIC endpoint, which has no owner of the connection,
+answers unsupported. The QUIC TLS context comes from the
 same setup as TCP (`configure` in `endpoint/tls.rs`), with the same
 signer, verifier and failure kinds, and ALPN `h3`; SecTrust's pause
 is BoringSSL's verify retry inside `quiche`, and the trust `Wake` is
@@ -1202,7 +1233,8 @@ timer, not a writable wait. One window per stream and a larger one
 for the connection keep a stream that the peer does not read from
 stopping another. Caddy's QUIC idle timeout is 30 s and its server
 sends no keep-alive, so the client sends an ack-eliciting packet at
-an interval below that, which its caller chooses. The driver keeps
+an interval below that: the I/O thread's is 15 s, until the droplet
+session (plans/remote-mtls.md, P7) fixes it. The driver keeps
 `quiche`'s spare source connection ids full (limit 4) for migration.
 A close or a drain of the connection is a lost link.
 

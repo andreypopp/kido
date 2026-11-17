@@ -9,11 +9,11 @@ use std::time::{Duration, Instant};
 
 use ko_pane_wire::frame::Limits;
 use ko_pane_wire::ring::Slice as Header;
-use ko_sys::event::{Events, Interest, Mode, Poll, Ready, Timer, Token};
+use ko_sys::event::{Due, Events, Interest, Mode, Poll, Ready, Timer, Token};
 use ko_wire::api::{Offset, Route};
 use ko_wire::ids::ClientId;
 use ko_wire::protocol::{
-    self, ClientEvent, ClientRequest, Hello, Version, ViewEvent as Wire, ViewRequest, json,
+    self, ClientEvent, ClientRequest, Hello, ViewEvent as Wire, ViewRequest, json,
 };
 use ko_wire::ws::{Parsed, parse_record};
 use tungstenite::Bytes;
@@ -21,16 +21,103 @@ use tungstenite::Bytes;
 use super::view::{Feed, Slice, View};
 use super::{Code, Command, Posted, Shared, ViewEvent, layout_of, locked, post, string};
 use crate::connect::{self, BACKOFF_FIRST, backoff_after};
-use crate::model::{Applied, JoinError, Model, Rejoin};
+use crate::endpoint::{Dial, Resolving};
+use crate::model::{Applied, Greeting, JoinError, Model, Rejoin};
+use crate::wire::quic::h3::{Connection as Quic, StreamFailure};
 use crate::wire::{Connecting, Link, Next, READ_TIMEOUT, UpgradeStep, buffered, silent, text};
 
 const WATCH: Duration = Duration::from_secs(2);
+const KEEP_ALIVE: Duration = Duration::from_secs(15);
 
+#[derive(Debug)]
+enum Transport {
+    Direct,
+    QuicDialing {
+        owner: Quic,
+        target: Arc<crate::endpoint::quic::Quic>,
+        remaining: std::collections::VecDeque<std::net::SocketAddr>,
+        deadline: Instant,
+    },
+    Quic {
+        owner: Quic,
+    },
+}
+impl Transport {
+    fn dispose(self, poll: &mut Poll, error: io::Error) {
+        match self {
+            Self::Direct => {}
+            Self::QuicDialing { owner, .. } | Self::Quic { owner } => owner.detach(poll, error),
+        }
+    }
+}
+#[derive(Debug, Clone, Copy)]
+enum QuicEvent {
+    Ready(Ready),
+    Due(Due),
+    FinishTurn,
+}
+
+#[derive(Debug)]
 struct Session {
     link: Link,
     token: Token,
     client: ClientId,
     limits: Limits,
+}
+
+#[derive(Debug)]
+enum Connection {
+    Idle,
+    Resolving {
+        resolver: Resolving,
+        token: Token,
+    },
+    Upgrading {
+        link: Connecting,
+    },
+    Greeting {
+        link: Box<Link>,
+        token: Token,
+        greeting: Greeting,
+    },
+    Probing {
+        exchange: crate::wire::exchange::Exchange,
+        response: Option<ko_wire::http::Response>,
+        failed: Failed,
+    },
+    Established(Session),
+}
+
+impl Connection {
+    fn session(&self) -> Option<&Session> {
+        match self {
+            Self::Established(session) => Some(session),
+            _ => None,
+        }
+    }
+
+    fn session_mut(&mut self) -> Option<&mut Session> {
+        match self {
+            Self::Established(session) => Some(session),
+            _ => None,
+        }
+    }
+
+    fn token(&self) -> Option<Token> {
+        match self {
+            Self::Idle => None,
+            Self::Resolving { token, .. } | Self::Greeting { token, .. } => Some(*token),
+            Self::Upgrading { link } => Some(link.token()),
+            Self::Probing { exchange, .. } => Some(exchange.token()),
+            Self::Established(session) => Some(session.token),
+        }
+    }
+
+    fn dispose(self, poll: &mut Poll) {
+        if let Some(token) = self.token() {
+            poll.unwatch(token);
+        }
+    }
 }
 
 struct Conn {
@@ -61,7 +148,11 @@ struct Engine<'a> {
     webview_due: Option<Instant>,
     backoff: Duration,
     reported: Option<Code>,
-    session: Option<Session>,
+    connection: Connection,
+    transport: Transport,
+    dial: Timer,
+    joining: Timer,
+    join_due: Instant,
     views: Vec<Open>,
     webview: Vec<webview::Open>,
 }
@@ -115,7 +206,6 @@ pub(super) fn run(shared: &Arc<Shared>) {
     let (retry, watch, webview_deadline) = (poll.timer(), poll.timer(), poll.timer());
     let mut engine = Engine {
         shared,
-        poll,
         events: Events::default(),
         wake,
         retry,
@@ -124,13 +214,21 @@ pub(super) fn run(shared: &Arc<Shared>) {
         webview_due: None,
         backoff: BACKOFF_FIRST,
         reported: None,
-        session: None,
+        connection: Connection::Idle,
+        transport: Transport::Direct,
+        dial: poll.timer(),
+        joining: poll.timer(),
+        join_due: Instant::now(),
         views: Vec::new(),
         webview: Vec::new(),
+        poll,
     };
     engine.serve();
     shared.up.store(false, Ordering::SeqCst);
     engine.webview_shutdown();
+    std::mem::replace(&mut engine.connection, Connection::Idle).dispose(&mut engine.poll);
+    std::mem::replace(&mut engine.transport, Transport::Direct)
+        .dispose(&mut engine.poll, io::ErrorKind::Interrupted.into());
 }
 
 impl Engine<'_> {
@@ -153,8 +251,13 @@ impl Engine<'_> {
                 if !self.poll.current(due) {
                     continue;
                 }
+                if self.drive_quic(QuicEvent::Due(due)) {
+                    continue;
+                }
                 if due.timer == self.retry {
                     self.connect();
+                } else if due.timer == self.joining {
+                    self.join_ready(buffered(self.connection.token().unwrap_or(self.wake)));
                 } else if due.timer == self.watch {
                     self.watchdog();
                 } else if due.timer == self.webview_deadline {
@@ -176,62 +279,306 @@ impl Engine<'_> {
                     );
                 }
             }
+            self.drive_quic(QuicEvent::FinishTurn);
         }
     }
 
     fn connect(&mut self) {
-        let Err((code, message)) = self.join() else {
+        if !matches!(self.connection, Connection::Idle) {
             return;
-        };
+        }
+        let started = Resolving::start(&self.shared.endpoint);
+        self.join_due = Instant::now() + READ_TIMEOUT;
+        let _ = self.poll.start(self.joining, READ_TIMEOUT, None);
+        let result = started.and_then(|resolver| match resolver.take()? {
+            Some(endpoint) => self.dial(endpoint),
+            None => {
+                let descriptor = resolver
+                    .fd()
+                    .ok_or_else(|| io::Error::other("resolver wake missing"))?;
+                let token = self.poll.watch(descriptor, Interest::Read);
+                self.connection = Connection::Resolving { resolver, token };
+                Ok(())
+            }
+        });
+        if let Err(error) = result {
+            self.join_failed(failure(&error));
+        }
+    }
+
+    fn join_failed(&mut self, (code, message): Failed) {
+        std::mem::replace(&mut self.connection, Connection::Idle).dispose(&mut self.poll);
+        self.poll.stop(self.joining);
         if self.shared.cancel.is_set() {
             return;
         }
-        if code.terminal() {
+        if code.terminal() || code == Code::NoServer {
             self.lose(code, &message);
-        } else if code != Code::NoServer
-            && let Some((code, server)) = self.mismatch()
-        {
-            self.shared.up.store(false, Ordering::SeqCst);
-            post(self.shared, Posted::Mismatch(code, server));
         } else {
-            self.lose(code, &message);
+            let endpoint = locked(&self.shared.resolved).clone();
+            let started = endpoint
+                .ok_or_else(|| io::Error::from(io::ErrorKind::NotConnected))
+                .and_then(|endpoint| {
+                    let (_, target) = Route::Version {}.to_request();
+                    let request = crate::wire::exchange::Request {
+                        kind: crate::wire::exchange::RequestKind::Http {
+                            method: protocol::Method::Get,
+                            target,
+                            headers: vec![("Connection".to_owned(), "close".to_owned())],
+                            body: crate::wire::exchange::Body::Complete(b""),
+                        },
+                        destination: crate::wire::exchange::Destination::Server {
+                            client: None,
+                            caller: None,
+                        },
+                    };
+                    crate::wire::exchange::Exchange::start(
+                        &mut self.poll,
+                        &endpoint,
+                        request,
+                        crate::wire::Limit::Deadline(Instant::now() + READ_TIMEOUT),
+                    )
+                });
+            match started {
+                Ok(exchange) => {
+                    let _ = self.poll.start(
+                        self.joining,
+                        exchange
+                            .deadline()
+                            .saturating_duration_since(Instant::now()),
+                        None,
+                    );
+                    self.connection = Connection::Probing {
+                        exchange,
+                        response: None,
+                        failed: (code, message),
+                    };
+                }
+                Err(_) => self.lose(code, &message),
+            }
         }
     }
 
-    fn mismatch(&self) -> Option<(Code, Version)> {
-        let shared = self.shared;
-        let endpoint = locked(&shared.resolved).clone()?;
-        let (mismatch, server) =
-            crate::api::version(&endpoint, READ_TIMEOUT, Some(&shared.cancel)).ok()?;
-        mismatch.map(|kind| (Code::of(&kind), server))
+    fn probe_ready(&mut self, ready: Ready) {
+        let Connection::Probing {
+            mut exchange,
+            mut response,
+            failed,
+        } = std::mem::replace(&mut self.connection, Connection::Idle)
+        else {
+            return;
+        };
+        let result: io::Result<bool> = (|| {
+            if exchange.expired(&mut self.poll, Instant::now())? {
+                return Err(io::ErrorKind::TimedOut.into());
+            }
+            exchange.begin_turn();
+            if ready.write {
+                exchange.writable(&mut self.poll)?;
+            }
+            exchange.flush(&mut self.poll)?;
+            while let Some(event) = exchange.next(&mut self.poll).map_err(io::Error::from)? {
+                match event {
+                    ko_wire::http::response::Event::Head(head) => response = Some(head),
+                    ko_wire::http::response::Event::Body(bytes) => {
+                        if let Some(response) = &mut response {
+                            response.body.extend(bytes);
+                        }
+                    }
+                    ko_wire::http::response::Event::End
+                    | ko_wire::http::response::Event::Upgrade(_) => return Ok(true),
+                }
+            }
+            exchange.interest(&mut self.poll, true);
+            Ok(false)
+        })();
+        match result {
+            Ok(false) => {
+                let _ = self.poll.start(
+                    self.joining,
+                    exchange
+                        .deadline()
+                        .saturating_duration_since(Instant::now()),
+                    None,
+                );
+                self.connection = Connection::Probing {
+                    exchange,
+                    response,
+                    failed,
+                };
+            }
+            _ => {
+                exchange.dispose(&mut self.poll);
+                self.poll.stop(self.joining);
+                let mismatch = result
+                    .ok()
+                    .and(response.as_ref())
+                    .and_then(|response| crate::api::version_response(response).ok())
+                    .and_then(|(kind, version)| kind.map(|kind| (Code::of(&kind), version)));
+                if let Some((code, server)) = mismatch {
+                    self.poll.stop(self.retry);
+                    self.poll.stop(self.dial);
+                    std::mem::replace(&mut self.transport, Transport::Direct).dispose(
+                        &mut self.poll,
+                        io::Error::new(io::ErrorKind::InvalidData, "server version mismatch"),
+                    );
+                    self.shared.up.store(false, Ordering::SeqCst);
+                    post(self.shared, Posted::Mismatch(code, server));
+                } else {
+                    self.lose(failed.0, &failed.1);
+                }
+            }
+        }
     }
 
-    fn join(&mut self) -> Result<(), Failed> {
-        let shared = self.shared;
-        let socket = shared
-            .endpoint
-            .resolve(Some(&shared.cancel), READ_TIMEOUT)
-            .map_err(|error| failure(&error))?;
-        *locked(&shared.resolved) = Some(Arc::clone(&socket));
-        let mut link = Link::connect_within(
-            &socket,
+    fn dial(&mut self, dial: Dial) -> io::Result<()> {
+        match dial {
+            Dial::Unix(path) => self.upgrade(Arc::new(crate::endpoint::Resolved::Unix(path))),
+            Dial::Tls { target, addresses } => {
+                self.upgrade(Arc::new(crate::endpoint::Resolved::Tls {
+                    target,
+                    addresses,
+                }))
+            }
+            Dial::Quic { target, addresses } => {
+                self.start_quic(target, addresses.iter().copied().collect())
+            }
+        }
+    }
+
+    fn start_quic(
+        &mut self,
+        target: Arc<crate::endpoint::quic::Quic>,
+        mut addresses: std::collections::VecDeque<std::net::SocketAddr>,
+    ) -> io::Result<()> {
+        let mut error = io::Error::from(io::ErrorKind::AddrNotAvailable);
+        while let Some(peer) = addresses.pop_front() {
+            if Instant::now() >= self.join_due {
+                return Err(io::ErrorKind::TimedOut.into());
+            }
+            match Quic::start(&target, peer, &mut self.poll, KEEP_ALIVE) {
+                Ok((owner, access)) => {
+                    let deadline = (Instant::now() + Duration::from_secs(5)).min(self.join_due);
+                    if let Err(error) = self.poll.start(
+                        self.dial,
+                        deadline.saturating_duration_since(Instant::now()),
+                        None,
+                    ) {
+                        owner.detach(
+                            &mut self.poll,
+                            io::Error::new(error.kind(), error.to_string()),
+                        );
+                        return Err(error);
+                    }
+                    self.transport = Transport::QuicDialing {
+                        owner,
+                        target,
+                        remaining: addresses,
+                        deadline,
+                    };
+                    return self.upgrade(Arc::new(crate::endpoint::Resolved::Quic(access)));
+                }
+                Err(failed) => {
+                    if crate::wire::stream::terminal(&failed) {
+                        return Err(failed);
+                    }
+                    error = failed;
+                }
+            }
+        }
+        Err(error)
+    }
+
+    fn drive_quic(&mut self, event: QuicEvent) -> bool {
+        let transport = std::mem::replace(&mut self.transport, Transport::Direct);
+        let (mut owner, dial) = match transport {
+            Transport::Direct => return false,
+            Transport::Quic { owner } => (owner, None),
+            Transport::QuicDialing {
+                owner,
+                target,
+                remaining,
+                deadline,
+            } => (owner, Some((target, remaining, deadline))),
+        };
+        let result = match event {
+            QuicEvent::Ready(ready) => owner.ready(&mut self.poll, ready),
+            QuicEvent::Due(due) if due.timer == self.dial => Ok(true),
+            QuicEvent::Due(due) => owner.due(&mut self.poll, due),
+            QuicEvent::FinishTurn => owner.finish_turn(&mut self.poll),
+        };
+        let established = owner.established();
+        let result = result.and_then(|handled| {
+            if !established
+                && dial
+                    .as_ref()
+                    .is_some_and(|(_, _, deadline)| Instant::now() >= *deadline)
+            {
+                Err(io::ErrorKind::TimedOut.into())
+            } else {
+                Ok(handled)
+            }
+        });
+        match result {
+            Ok(handled) => {
+                self.transport = match dial {
+                    Some((target, remaining, deadline)) if !established => Transport::QuicDialing {
+                        owner,
+                        target,
+                        remaining,
+                        deadline,
+                    },
+                    _ => {
+                        self.poll.stop(self.dial);
+                        Transport::Quic { owner }
+                    }
+                };
+                handled
+            }
+            Err(error) => {
+                let failed = failure(&error);
+                owner.detach(&mut self.poll, error);
+                self.poll.stop(self.dial);
+                std::mem::replace(&mut self.connection, Connection::Idle).dispose(&mut self.poll);
+                if let Some((target, remaining, _)) = dial
+                    && !established
+                    && !failed.0.terminal()
+                {
+                    if let Err(error) = self.start_quic(target, remaining) {
+                        self.join_failed(failure(&error));
+                    }
+                } else {
+                    self.lose(failed.0, &failed.1);
+                }
+                true
+            }
+        }
+    }
+
+    fn upgrade(&mut self, endpoint: Arc<crate::endpoint::Resolved>) -> io::Result<()> {
+        *locked(&self.shared.resolved) = Some(Arc::clone(&endpoint));
+        let link = Connecting::start(
+            &endpoint,
             None,
             &Route::Client {},
-            Some(Arc::clone(&shared.cancel)),
-            READ_TIMEOUT,
-        )
-        .map_err(|error| {
-            let (code, message) = failure(&error);
-            (
-                if code == Code::Closed {
-                    Code::NoServer
-                } else {
-                    code
-                },
-                message,
-            )
-        })?;
-        let hello = {
+            Some(Arc::clone(&self.shared.cancel)),
+            self.join_due.saturating_duration_since(Instant::now()),
+            &mut self.poll,
+        )?;
+        let _ = self.poll.start(
+            self.joining,
+            link.deadline()
+                .min(self.join_due)
+                .saturating_duration_since(Instant::now()),
+            None,
+        );
+        self.connection = Connection::Upgrading { link };
+        Ok(())
+    }
+
+    fn hello(&self) -> Hello {
+        let shared = self.shared;
+        {
             let greeting = locked(&shared.hello);
             Hello {
                 name: greeting.name.clone(),
@@ -243,25 +590,148 @@ impl Engine<'_> {
                     .map(|model| model.selection)
                     .unwrap_or_default(),
             }
-        };
-        let joined = Model::join(&mut link, hello).map_err(|error| match error {
-            JoinError::Refused(message) => (Code::Refused, message),
-            JoinError::Protocol(message) => protocol_error(message),
-            JoinError::Io(error) => failure(&error),
-        })?;
-        let rejoin = match locked(&shared.model).as_mut() {
-            Some(earlier) => earlier.gate(joined),
-            None => Rejoin::Fresh(joined),
+        }
+    }
+
+    fn join_ready(&mut self, mut ready: Ready) {
+        if matches!(self.connection, Connection::Probing { .. }) {
+            self.probe_ready(ready);
+            return;
+        }
+        let token = ready.token;
+        let result = self.advance_join(&mut ready);
+        if let Err(error) = result {
+            self.poll.unwatch(token);
+            self.join_failed(error);
+        }
+    }
+
+    fn advance_join(&mut self, ready: &mut Ready) -> Result<(), Failed> {
+        if Instant::now() >= self.join_due {
+            return Err(failure(&io::ErrorKind::TimedOut.into()));
+        }
+        let state = std::mem::replace(&mut self.connection, Connection::Idle);
+        match state {
+            Connection::Resolving { resolver, token } => {
+                match resolver.take().map_err(|error| failure(&error))? {
+                    Some(endpoint) => {
+                        self.poll.unwatch(token);
+                        self.dial(endpoint).map_err(|error| failure(&error))?;
+                    }
+                    None => self.connection = Connection::Resolving { resolver, token },
+                }
+                Ok(())
+            }
+            Connection::Upgrading { link } => {
+                match link.advance(&mut self.poll, ready).map_err(|error| {
+                    let (code, message) = failure(&error);
+                    (
+                        if code == Code::Closed {
+                            Code::NoServer
+                        } else {
+                            code
+                        },
+                        message,
+                    )
+                })? {
+                    UpgradeStep::Pending(link) => {
+                        let _ = self.poll.start(
+                            self.joining,
+                            link.deadline()
+                                .min(self.join_due)
+                                .saturating_duration_since(Instant::now()),
+                            None,
+                        );
+                        self.connection = Connection::Upgrading { link };
+                        Ok(())
+                    }
+                    UpgradeStep::Refused(response) => Err(if response.status == 502 {
+                        (Code::NoServer, "proxy cannot reach server".to_owned())
+                    } else {
+                        protocol_error(format!("HTTP {} {}", response.status, response.reason))
+                    }),
+                    UpgradeStep::Open(mut link) => {
+                        let token = ready.token;
+                        link.send(json(&ClientRequest::Hello(self.hello())))
+                            .and_then(|()| link.settle(&mut self.poll))
+                            .map_err(|error| failure(&error))?;
+                        let _ = self.poll.start(
+                            self.joining,
+                            self.join_due.saturating_duration_since(Instant::now()),
+                            None,
+                        );
+                        self.connection = Connection::Greeting {
+                            link,
+                            token,
+                            greeting: Greeting::Welcome,
+                        };
+                        self.advance_join(&mut buffered(token))
+                    }
+                }
+            }
+            Connection::Greeting {
+                mut link,
+                token,
+                mut greeting,
+            } => {
+                link.begin_turn();
+                if ready.write || (ready.read && !link.drained()) {
+                    link.settle(&mut self.poll)
+                        .map_err(|error| failure(&error))?;
+                }
+                loop {
+                    match link
+                        .next(&mut self.poll, Instant::now())
+                        .map_err(|error| failure(&error))?
+                    {
+                        Next::Wait => {
+                            self.connection = Connection::Greeting {
+                                link,
+                                token,
+                                greeting,
+                            };
+                            return Ok(());
+                        }
+                        Next::Text(event) => {
+                            let event = protocol::decode::<ClientEvent>(event.as_bytes())
+                                .map_err(|error| protocol_error(text(error)))?;
+                            if let Some(model) =
+                                greeting.advance(event).map_err(|error| match error {
+                                    JoinError::Refused(message) => (Code::Refused, message),
+                                    JoinError::Protocol(message) => protocol_error(message),
+                                    JoinError::Io(error) => failure(&error),
+                                })?
+                            {
+                                return self.joined(link, token, model);
+                            }
+                        }
+                        _ => return Err(protocol_error("client event missing".to_owned())),
+                    }
+                    if Instant::now() >= self.join_due {
+                        return Err(failure(&io::ErrorKind::TimedOut.into()));
+                    }
+                }
+            }
+            state => {
+                self.connection = state;
+                Ok(())
+            }
+        }
+    }
+
+    fn joined(&mut self, link: Box<Link>, token: Token, joined: Model) -> Result<(), Failed> {
+        let shared = self.shared;
+        self.poll.stop(self.joining);
+        let (rejoin, first) = match locked(&shared.model).as_mut() {
+            Some(earlier) => (earlier.gate(joined), false),
+            None => (Rejoin::Fresh(joined), true),
         };
         let (model, fresh) = match rejoin {
             Rejoin::Resume(model) => (model, false),
             Rejoin::Fresh(model) => (model, true),
         };
-        let token = link
-            .watch(&mut self.poll)
-            .map_err(|error| failure(&error))?;
         let session = Session {
-            link,
+            link: *link,
             token,
             client: model.client,
             limits: model.limits,
@@ -274,7 +744,7 @@ impl Engine<'_> {
         };
         let layout = Posted::Layout(layout_of(&model));
         *locked(&shared.model) = Some(model);
-        self.session = Some(session);
+        self.connection = Connection::Established(session);
         shared.up.store(true, Ordering::SeqCst);
         post(shared, welcome);
         post(shared, layout);
@@ -282,7 +752,7 @@ impl Engine<'_> {
         self.reported = None;
         let watch = WATCH.min(shared.watchdog);
         let _ = self.poll.start(self.watch, watch, Some(watch));
-        if fresh {
+        if fresh && !first {
             for open in std::mem::take(&mut self.views) {
                 self.close_view(open, Code::Closed, "the server restarted");
             }
@@ -298,7 +768,7 @@ impl Engine<'_> {
                             .as_ref()
                             .is_some_and(|model| model.locate(open.view.pane).is_some())
                     });
-                if present {
+                if first || present {
                     self.open_link(id);
                 } else {
                     self.end_view(id, Code::Closed, "the pane is gone");
@@ -319,9 +789,13 @@ impl Engine<'_> {
             self.reported = Some(code);
             post(self.shared, Posted::Failed(code, string(message)));
         }
-        if let Some(mut session) = self.session.take() {
-            session.link.unwatch(&mut self.poll);
-        }
+        std::mem::replace(&mut self.connection, Connection::Idle).dispose(&mut self.poll);
+        std::mem::replace(&mut self.transport, Transport::Direct).dispose(
+            &mut self.poll,
+            io::Error::new(io::ErrorKind::ConnectionReset, message.to_owned()),
+        );
+        self.poll.stop(self.dial);
+        self.poll.stop(self.joining);
         self.shared.up.store(false, Ordering::SeqCst);
         locked(&self.shared.commands).retain(|command| !matches!(command, Command::Size(_)));
         self.poll.stop(self.watch);
@@ -346,8 +820,8 @@ impl Engine<'_> {
         let now = Instant::now();
 
         let silent_client = self
-            .session
-            .as_ref()
+            .connection
+            .session()
             .is_some_and(|session| silent(session.link.received(), now, self.shared.watchdog));
         if silent_client {
             self.lose(Code::Closed, "the server went silent");
@@ -369,6 +843,9 @@ impl Engine<'_> {
     }
 
     fn ready(&mut self, ready: Ready) {
+        if self.drive_quic(QuicEvent::Ready(ready)) {
+            return;
+        }
         if !(ready.read || ready.write) {
             return;
         }
@@ -376,11 +853,11 @@ impl Engine<'_> {
             self.shared.wake.drain();
             self.commands();
             self.resume();
-        } else if self
-            .session
-            .as_ref()
-            .is_some_and(|session| session.token == ready.token)
-        {
+        } else if self.connection.token() == Some(ready.token) {
+            if !matches!(self.connection, Connection::Established(_)) {
+                self.join_ready(ready);
+                return;
+            }
             if let Err((code, message)) = self.client_ready(ready) {
                 self.lose(code, &message);
             }
@@ -400,7 +877,7 @@ impl Engine<'_> {
     }
 
     fn client_ready(&mut self, ready: Ready) -> Result<(), Failed> {
-        let Some(session) = self.session.as_mut() else {
+        let Some(session) = self.connection.session_mut() else {
             return Ok(());
         };
         session.link.begin_turn();
@@ -412,7 +889,7 @@ impl Engine<'_> {
         }
         let now = Instant::now();
         loop {
-            let Some(session) = self.session.as_mut() else {
+            let Some(session) = self.connection.session_mut() else {
                 return Ok(());
             };
             match session
@@ -487,7 +964,7 @@ impl Engine<'_> {
                         conn: None,
                         deadline: self.poll.timer(),
                     });
-                    if self.session.is_some() {
+                    if self.connection.session().is_some() {
                         self.open_link(id);
                     }
                 }
@@ -507,7 +984,7 @@ impl Engine<'_> {
     }
 
     fn request(&mut self, request: &ClientRequest) {
-        let Some(session) = self.session.as_mut() else {
+        let Some(session) = self.connection.session_mut() else {
             return;
         };
         let sent = session
@@ -544,7 +1021,7 @@ impl Engine<'_> {
     }
 
     fn open_link(&mut self, id: u64) {
-        let Some(session) = self.session.as_ref() else {
+        let Some(session) = self.connection.session() else {
             return;
         };
         let (client, shared) = (session.client, self.shared);
@@ -564,10 +1041,17 @@ impl Engine<'_> {
         let Some(endpoint) = locked(&shared.resolved).clone() else {
             return;
         };
-        let linked = Connecting::start(&endpoint, client, &route, Some(Arc::clone(&shared.cancel)));
+        let linked = Connecting::start(
+            &endpoint,
+            Some(client),
+            &route,
+            Some(Arc::clone(&shared.cancel)),
+            READ_TIMEOUT,
+            &mut self.poll,
+        );
         match linked {
             Ok(link) => {
-                let token = link.watch(&mut self.poll);
+                let token = link.token();
                 let _ = self.poll.start(
                     open.deadline,
                     link.deadline().saturating_duration_since(Instant::now()),
@@ -578,10 +1062,21 @@ impl Engine<'_> {
                     state: ViewLink::Connecting { link },
                 });
             }
-            Err(error) => {
-                let (code, message) = failure(&error);
-                self.lose(code, &message);
-            }
+            Err(error) => self.view_connect_failed(id, error),
+        }
+    }
+
+    fn view_connect_failed(&mut self, id: u64, error: io::Error) {
+        let (code, message) = failure(&error);
+        match error
+            .get_ref()
+            .and_then(|error| error.downcast_ref::<StreamFailure>())
+        {
+            Some(StreamFailure::Admission) => self.end_view(id, code, &message),
+            Some(
+                StreamFailure::Reset { .. } | StreamFailure::Protocol(_) | StreamFailure::Io(_),
+            ) => self.reopen_view(id, code, &message),
+            None => self.lose(code, &message),
         }
     }
 
@@ -643,8 +1138,8 @@ impl Engine<'_> {
 
     fn view_ready(&mut self, at: usize, mut ready: Ready) {
         let continuation = self
-            .session
-            .as_ref()
+            .connection
+            .session()
             .map_or(0, |session| session.limits.continuation_max_bytes);
         let Some(open) = self.views.get_mut(at) else {
             return;
@@ -690,8 +1185,7 @@ impl Engine<'_> {
                 Err(error) => {
                     self.poll.stop(open.deadline);
                     self.poll.unwatch(conn.token);
-                    let (code, message) = failure(&error);
-                    self.lose(code, &message);
+                    self.view_connect_failed(id, error);
                     return;
                 }
             },
