@@ -44,9 +44,8 @@ fn io_failure(message: String) -> (Code, Vec<u8>) {
 
 pub(super) fn rejected(rejected: wire::Rejected) -> (Code, Vec<u8>) {
     match rejected {
-        wire::Rejected::Tls(message) | wire::Rejected::Identity(message) => {
-            (Code::Refused, message.into_bytes())
-        }
+        wire::Rejected::Tls(message) => (Code::Tls, message.into_bytes()),
+        wire::Rejected::Identity(message) => (Code::Identity, message.into_bytes()),
         wire::Rejected::Io(message) | wire::Rejected::Unanswered(message) => io_failure(message),
         wire::Rejected::Status {
             status: 502,
@@ -438,22 +437,34 @@ pub unsafe extern "C" fn ko_client_runtime_down(
 
 /// # Safety
 ///
-/// `socket` is a NUL-terminated string. `out` is writable for one `ko_buffer`.
+/// `endpoint` follows ko_client.h. `out` is writable for one `ko_buffer`.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn ko_client_probe(
-    socket: *const c_char,
+    endpoint: *const super::identity::Endpoint,
     within_ms: u32,
     out: *mut Buffer,
 ) -> Code {
-    let scope = ();
-    // SAFETY: ko_client.h requires these inputs to remain readable for this call.
-    let socket_text = unsafe { text_of(socket, &scope) };
-
-    let Some(socket) = socket_text.filter(|_| !out.is_null()) else {
-        return Code::Argument;
+    // SAFETY: ko_client.h requires the endpoint to remain readable for this call.
+    let endpoint = match unsafe { super::identity::endpoint(endpoint, Vec::new()) } {
+        Ok(endpoint) => endpoint,
+        Err(code) => return code,
     };
+    // SAFETY: out is writable by contract.
+    unsafe { probe(endpoint, within_ms, out) }
+}
+
+pub(super) unsafe fn probe(
+    endpoint: crate::endpoint::Endpoint,
+    within_ms: u32,
+    out: *mut Buffer,
+) -> Code {
+    if out.is_null() {
+        return Code::Argument;
+    }
     let within = Duration::from_millis(u64::from(within_ms));
-    let (code, bytes) = match crate::api::version(&Resolved::Unix(socket.into()), within, None)
+    let (code, bytes) = match endpoint
+        .resolve(None, within)
+        .and_then(|resolved| crate::api::version(&resolved, within, None))
         .map_err(|error| failure(&error))
     {
         Ok((mismatch, server)) => (

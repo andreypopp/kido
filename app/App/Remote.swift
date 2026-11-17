@@ -45,7 +45,7 @@ extension SSH {
         mark("query")
         publishAgent(drain: drain)
         let socket = directory + "/socket"
-        let probe = await Task.detached { KoClient.probe(socket: socket, within: 20) }.value
+        let probe = await Task.detached { KoClient.probe(endpoint: .unix(socket), within: 20) }.value
         mark("probe")
         switch probe {
         case .compatible: return (identity, socket)

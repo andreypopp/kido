@@ -167,21 +167,25 @@ private final class ClientHandle: @unchecked Sendable {
     public let rendersWebview: Bool
     private var user: Unmanaged<KoClient>?
     private var closed = false
+    private var identitySigner: IdentitySigner?
 
-    public init(socket: String, hello: KoHello = KoHello(), fetches: Int = 8, sink: @escaping (KoEvent) -> Void) throws {
+    public init(endpoint: KoEndpoint, hello: KoHello = KoHello(), fetches: Int = 8, sink: @escaping (KoEvent) -> Void) throws {
         self.sink = sink
         rendersWebview = hello.webview
         imageFetches.maxConcurrentOperationCount = fetches
         imageFetches.qualityOfService = .utility
         let user = Unmanaged.passRetained(self)
         var pointer: OpaquePointer?
-        let code = hello.name.withCString { name in
-            var hello = ko_hello(cols: UInt16(hello.viewport?.cols ?? 80), rows: UInt16(hello.viewport?.rows ?? 24), focused: hello.focused, sizes_windows: hello.viewport != nil, webview: hello.webview, name: name)
-            return ko_client_connect(socket, .main, { user, event in
-                let client = Unmanaged<KoClient>.fromOpaque(user!).takeUnretainedValue()
-                let event = event!.pointee
-                MainActor.assumeIsolated { client.deliver(event) }
-            }, user.toOpaque(), &hello, &pointer)
+        let signer = endpoint.signer
+        let code = endpoint.withEndpoint(signer: signer) { endpoint in
+            hello.name.withCString { name in
+                var hello = ko_hello(cols: UInt16(hello.viewport?.cols ?? 80), rows: UInt16(hello.viewport?.rows ?? 24), focused: hello.focused, sizes_windows: hello.viewport != nil, webview: hello.webview, name: name)
+                return ko_client_connect(endpoint, .main, { user, event in
+                    let client = Unmanaged<KoClient>.fromOpaque(user!).takeUnretainedValue()
+                    let event = event!.pointee
+                    MainActor.assumeIsolated { client.deliver(event) }
+                }, user.toOpaque(), &hello, &pointer)
+            }
         }
         handle.set(pointer)
         guard code == KO_OK else {
@@ -189,6 +193,7 @@ private final class ClientHandle: @unchecked Sendable {
             throw KoError(code: code)
         }
         self.user = user
+        identitySigner = signer
     }
 
     public func withHandle<T>(_ body: (OpaquePointer) throws -> T) throws -> T { try handle.call(body) }
@@ -199,10 +204,13 @@ private final class ClientHandle: @unchecked Sendable {
         guard !closed else { return }
         closed = true
         let handle = handle
+        let signer = identitySigner
+        identitySigner = nil
         let user = user
         self.user = nil
         DispatchQueue.global(qos: .utility).async {
             if let pointer = handle.take() { ko_client_close(pointer) }
+            withExtendedLifetime(signer) {}
             DispatchQueue.main.async {
                 user?.release()
                 done?()
@@ -308,9 +316,12 @@ private final class ClientHandle: @unchecked Sendable {
         case unreachable(code: ko_code, detail: String)
     }
 
-    nonisolated public static func probe(socket: String, within: TimeInterval) -> Probe {
+    nonisolated public static func probe(endpoint: KoEndpoint, within: TimeInterval) -> Probe {
         var buffer = ko_buffer()
-        let code = ko_client_probe(socket, UInt32(within * 1000), &buffer)
+        let signer = endpoint.signer
+        let code = withExtendedLifetime(signer) {
+            endpoint.withEndpoint(signer: signer) { ko_client_probe($0, UInt32(within * 1000), &buffer) }
+        }
         let text = String(decoding: owned(&buffer), as: UTF8.self)
         switch code {
         case KO_OK, KO_ERR_PROTOCOL_MISMATCH, KO_ERR_VT_MISMATCH:

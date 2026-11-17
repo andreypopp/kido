@@ -679,7 +679,7 @@ impl Link {
         self.received
     }
 
-    #[cfg(target_vendor = "apple")]
+    #[cfg(all(target_vendor = "apple", feature = "platform-verifier"))]
     pub(crate) fn reset_received(&mut self, now: Instant) {
         self.received = now;
     }
@@ -855,7 +855,7 @@ impl Link {
         }
     }
 
-    #[cfg(target_vendor = "apple")]
+    #[cfg(all(target_vendor = "apple", feature = "platform-verifier"))]
     pub(crate) fn written(&self) -> u64 {
         self.stream.flushed(self.out.written())
     }

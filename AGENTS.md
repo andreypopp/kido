@@ -242,7 +242,8 @@ Conventions:
   every field has a meaningful default, and `Hash` only for a map key.
 - **Unsafe.** `unsafe` is permitted in `ko_sys`, `ko_vt_sys`, `ko_vt`,
   `ko_pane_wire::ring::mapping` and `ring::model`, `ko_client::ffi`
-  with `ffi::engine` and `ffi::view`, and `ko_bench/src/alloc.rs`.
+  with `ffi::engine`, `ffi::view` and `ffi::identity`, and
+  `ko_bench/src/alloc.rs`.
   Every other crate and module denies it. Each block has a
   `// SAFETY:` line that names the invariant. A safe wrapper takes
   typed arguments and returns `Result`. Descriptors are `OwnedFd` and
@@ -320,7 +321,7 @@ Conventions:
   `Phase::Handling` with a waiter in `State` and a timer of the loop,
   never a thread (docs/design-ko.md, "The loop rule").
 - **The C ABI.** `ko_client::ffi` builds only for `target_vendor =
-  "apple"`. The header comment of `ko_client/include/ko_client.h` is
+  "apple"` with `ko_client`'s feature `platform-verifier`. The header comment of `ko_client/include/ko_client.h` is
   the contract. A new exported function goes into `ko_client.h`,
   `ffi.rs` and `exports.txt` together (docs/build.md, "The ko_client
   xcframework").

@@ -44,8 +44,8 @@ private func check(_ code: ko_code) throws {
 }
 
 extension KoClient {
-    static func connect(socket: String, hello: KoHello = KoHello(), fetches: Int = 8, sink: @escaping (KoEvent) -> Void) throws -> KoClient {
-        try KoClient(socket: socket, hello: hello, fetches: fetches) { event in
+    static func connect(endpoint: KoEndpoint, hello: KoHello = KoHello(), fetches: Int = 8, sink: @escaping (KoEvent) -> Void) throws -> KoClient {
+        try KoClient(endpoint: endpoint, hello: hello, fetches: fetches) { event in
             switch event {
             case .viewRestored(let view, let generation, let result):
                 KoView.of(view).sink(.restored(generation: generation, result: ghosttyResult(result)))

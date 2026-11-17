@@ -40,18 +40,20 @@ extern "C" {
  * callback on it. Every ko_callback runs on the dispatch queue that the
  * caller passed to ko_client_connect (pass dispatch_get_main_queue() for
  * the main queue). Events of one client arrive in order. The queue must be
- * serial. A ko_restore_fn and a ko_feed_fn run on the decoder thread of their
- * view: one thread for each view, which is neither the queue nor the core's
- * I/O thread. The thread runs one of them at a time, in the order of the
- * server's stream, so a restore and the bytes after it never overlap and the
- * bytes of an older snapshot never follow a newer restore. The surface may
- * be fed from that thread only; the caller's queue plays no part in it. The
- * calls that return a ko_buffer (ko_client_put_layout, ko_client_prompt,
- * ko_client_select_record, ko_client_close_record, ko_client_prompt_resolve, ko_client_delete,
- * ko_client_runtime_up, ko_client_runtime_down,
- * ko_client_edit, ko_client_image),
- * ko_client_launch, ko_client_stop_server and ko_client_probe block until the
- * server answered: call them off the main queue.
+ * serial. A ko_sign_fn runs on the I/O thread or on the thread of a
+ * blocking call, also on two threads at once. A ko_restore_fn and a
+ * ko_feed_fn run on the decoder thread of their view: one thread for each
+ * view, which is neither the queue nor the core's I/O thread. The thread
+ * runs one of them at a time, in the order of the server's stream, so a
+ * restore and the bytes after it never overlap and the bytes of an older
+ * snapshot never follow a newer restore. The surface may be fed from that
+ * thread only; the caller's queue plays no part in it. The calls that
+ * return a ko_buffer (ko_client_put_layout, ko_client_prompt,
+ * ko_client_select_record, ko_client_close_record,
+ * ko_client_prompt_resolve, ko_client_delete, ko_client_runtime_up,
+ * ko_client_runtime_down, ko_client_edit, ko_client_image),
+ * ko_client_launch, ko_client_stop_server and ko_client_probe block until
+ * the server answered: call them off the main queue.
  *
  * Close. After ko_client_close or ko_view_close returns, no callback of that
  * handle starts, and a callback on another thread has ended. Events that were
@@ -66,19 +68,20 @@ extern "C" {
  *
  * Reconnect. The core connects again by itself after the connection ended,
  * with a delay that grows to two seconds, except after KO_EVENT_MISMATCH or
- * a KO_EVENT_FAILED with KO_ERR_REFUSED. A refusal before Welcome carries the
- * server's text and stops reconnect attempts. KO_EVENT_FAILED reports the first
- * failure of an outage, and reports once more if a later attempt first finds
- * no server (KO_ERR_NO_SERVER): no socket, nothing listens, or the peer
- * closes before it answers the upgrade, as a forward with no server behind it
- * does. A new KO_EVENT_WELCOME ends the outage. Its
- * `fresh` is true when the server is another process than the one before
- * (another `instance`): every view is then closed with KO_EVENT_VIEW_CLOSED,
- * and the caller reads the model and opens the views again. Otherwise the
- * views open again by themselves at the offset of the last bytes that were
- * delivered, and the caller's surfaces stay valid. The hello of a reconnect
- * names the selection that the model had, and the server answers each hello
- * with its `selected`, so a reconnect does not move the selection.
+ * a KO_EVENT_FAILED with KO_ERR_REFUSED, KO_ERR_TLS or KO_ERR_IDENTITY. A
+ * refusal before Welcome carries the server's text and stops reconnect
+ * attempts. KO_EVENT_FAILED reports the first failure of an outage, and
+ * reports once more if a later attempt first finds no server
+ * (KO_ERR_NO_SERVER): no socket, nothing listens, or the peer closes before
+ * it answers the upgrade, as a forward with no server behind it does. A new
+ * KO_EVENT_WELCOME ends the outage. Its `fresh` is true when the server is
+ * another process than the one before (another `instance`): every view is
+ * then closed with KO_EVENT_VIEW_CLOSED, and the caller reads the model and
+ * opens the views again. Otherwise the views open again by themselves at
+ * the offset of the last bytes that were delivered, and the caller's
+ * surfaces stay valid. The hello of a reconnect names the selection that
+ * the model had, and the server answers each hello with its `selected`, so
+ * a reconnect does not move the selection.
  *
  * Navigation. Select and switch require a writable request pointer. The core
  * writes a nonzero request id before it queues the request, so the id is
@@ -126,7 +129,53 @@ typedef enum ko_code {
                           * ko_client_prompt that may have reached its agent */
     KO_ERR_PROTOCOL_MISMATCH = 12,
     KO_ERR_VT_MISMATCH = 13,
+    /* The TLS connection failed: the server's certificate is not valid,
+     * or the handshake failed. */
+    KO_ERR_TLS = 14,
+    /* The client's identity failed: the server refused its certificate,
+     * or the sign function failed. */
+    KO_ERR_IDENTITY = 15,
 } ko_code;
+
+enum { KO_ENDPOINT_UNIX = 1, KO_ENDPOINT_TLS = 2 };
+
+/* Signs `message` with the P-256 key of the certificate: ECDSA over
+ * SHA-256(message), as an ASN.1 DER signature of at most 72 bytes into
+ * `signature`. Returns its length, or 0 on a failure. A return of 0 fails the
+ * connection with KO_ERR_IDENTITY. The core calls it on its I/O thread and on
+ * the thread of a blocking call, also on two threads at once. It must not call
+ * ko_client and must not block on the main queue. */
+typedef size_t (*ko_sign_fn)(void *user, const uint8_t *message,
+                             size_t message_len, uint8_t *signature,
+                             size_t capacity);
+
+typedef struct ko_identity {
+    const uint8_t *certificate;   /* DER; copied before the call returns */
+    size_t certificate_len;
+    ko_sign_fn sign;
+    void *user;                   /* kept: valid until ko_client_close returns,
+                                     or until ko_client_probe returns */
+} ko_identity;
+
+typedef struct ko_endpoint {
+    int kind;                     /* KO_ENDPOINT_UNIX, KO_ENDPOINT_TLS */
+    const char *socket;           /* unix */
+    const char *host;             /* tls */
+    uint16_t port;
+    const ko_identity *identity;  /* tls */
+} ko_endpoint;
+
+/*
+ * The endpoint and its active fields must be readable until the call returns.
+ * A unix endpoint needs a nonempty NUL-terminated socket path. A TLS endpoint
+ * needs a NUL-terminated DNS host name without a port or path, a nonzero port,
+ * and an identity with a certificate and a sign function. The fields of the
+ * other kind are ignored. A field that is not valid gives KO_ERR_ARGUMENT. The
+ * sign function writes at most `capacity` bytes and keeps neither buffer. If
+ * ko_client_connect fails, the core keeps no identity pointer after it returns.
+ * The core does not parse the certificate: a server refuses a malformed one,
+ * which gives KO_ERR_IDENTITY.
+ */
 
 /* The result of a restore. */
 typedef enum __attribute__((enum_extensibility(closed))) ko_restore_result {
@@ -382,15 +431,15 @@ typedef struct ko_feed {
 typedef void (*ko_feed_fn)(void *user, const ko_feed *feed);
 
 /*
- * Starts a connection to the ko server at `socket` (the path of its unix
- * socket) and returns at once. The core joins as an app client and delivers
- * KO_EVENT_WELCOME, KO_EVENT_LAYOUT, and then one event for every change of
- * the model. A layout event also reports a change of a window's focus: the
- * revision is then the same as before. It does not start a server. `hello` may
- * be NULL: 80 by 24, no focus, no part in sizing. On a code other than KO_OK,
- * `*out` is NULL and nothing runs.
+ * Starts a connection to the ko server at `endpoint` and returns at once.
+ * The core joins as an app client and delivers KO_EVENT_WELCOME,
+ * KO_EVENT_LAYOUT, and then one event for every change of the model. A
+ * layout event also reports a change of a window's focus: the revision is
+ * then the same as before. It does not start a server. `hello` may be NULL:
+ * 80 by 24, no focus, no part in sizing. On a code other than KO_OK, `*out`
+ * is NULL and nothing runs.
  */
-ko_code ko_client_connect(const char *socket,
+ko_code ko_client_connect(const ko_endpoint *endpoint,
                           dispatch_queue_t queue,
                           ko_callback callback,
                           void *user,
@@ -431,15 +480,22 @@ ko_code ko_client_stop_server(const char *dir, ko_buffer *error);
 ko_code ko_client_version(ko_version *out);
 
 /*
- * Asks the server at the unix socket `socket` for its version (GET /version) and waits up to
- * `within_ms` milliseconds for each read. `out` holds the server's version as JSON
- * ({"protocol", "vt", "build"}) on KO_OK, KO_ERR_PROTOCOL_MISMATCH and KO_ERR_VT_MISMATCH,
- * and the text of the error on any other code: KO_ERR_NO_SERVER (no socket, or nothing listens),
- * KO_ERR_CLOSED (the connection ended before the answer: a forward whose remote socket does not
- * exist), KO_ERR_IO, KO_ERR_PROTOCOL (an answer that is not a version). It never connects as a
- * client and starts nothing. It blocks: call it off the main queue.
+ * Asks the server at `endpoint` for its version (GET /version).
+ * Name resolution and each read are limited by `within_ms` milliseconds.
+ * `out` holds the server's version as JSON ({"protocol", "vt", "build"}) on
+ * KO_OK, KO_ERR_PROTOCOL_MISMATCH and KO_ERR_VT_MISMATCH, and the text of the
+ * error on any other code: KO_ERR_NO_SERVER (no socket, or nothing listens),
+ * KO_ERR_CLOSED (the connection ended before the answer: a forward whose
+ * remote socket does not exist), KO_ERR_IO, KO_ERR_PROTOCOL (an answer that
+ * is not a version). It never connects as a client and starts nothing. It
+ * blocks: call it off the main queue.
+ * KO_ERR_TLS: the TLS connection failed: the server's certificate is not
+ * valid, or the handshake failed.
+ * KO_ERR_IDENTITY: the client's identity failed: the server refused its
+ * certificate, or the sign function failed.
  */
-ko_code ko_client_probe(const char *socket, uint32_t within_ms, ko_buffer *out);
+ko_code ko_client_probe(const ko_endpoint *endpoint, uint32_t within_ms,
+                        ko_buffer *out);
 
 /*
  * What a finished ssh command printed and how it ended: `status` is the exit status, or the

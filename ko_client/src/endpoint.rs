@@ -7,15 +7,15 @@ use rustls::pki_types::CertificateDer;
 #[cfg(all(feature = "platform-verifier", any(target_vendor = "apple", test)))]
 use rustls::sign::{CertifiedKey, SingleCertAndKey};
 
-#[cfg(any(target_vendor = "apple", test))]
+#[cfg(any(all(target_vendor = "apple", feature = "platform-verifier"), test))]
 #[derive(Debug, Clone)]
-pub enum Endpoint {
+pub(crate) enum Endpoint {
     Unix(PathBuf),
     Tls(Arc<Tls>),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct HostName(String);
+pub(crate) struct HostName(String);
 
 impl TryFrom<String> for HostName {
     type Error = &'static str;
@@ -49,20 +49,20 @@ impl TryFrom<String> for HostName {
 #[derive(Debug)]
 pub struct Tls {
     pub(crate) host: HostName,
-    #[cfg(any(target_vendor = "apple", test))]
+    #[cfg(any(all(target_vendor = "apple", feature = "platform-verifier"), test))]
     pub(crate) port: u16,
     pub(crate) config: Arc<rustls::ClientConfig>,
 }
 
 impl Tls {
-    #[cfg(any(target_vendor = "apple", test))]
-    pub fn new(host: HostName, port: u16, config: Arc<rustls::ClientConfig>) -> Self {
+    #[cfg(any(all(target_vendor = "apple", feature = "platform-verifier"), test))]
+    pub(crate) fn new(host: HostName, port: u16, config: Arc<rustls::ClientConfig>) -> Self {
         Self { host, port, config }
     }
 }
 
 #[cfg(all(feature = "platform-verifier", any(target_vendor = "apple", test)))]
-pub fn config(
+pub(crate) fn config(
     identity: Arc<CertifiedKey>,
     roots: Vec<CertificateDer<'static>>,
 ) -> Result<Arc<rustls::ClientConfig>, rustls::Error> {
@@ -104,9 +104,9 @@ pub enum Resolved {
     },
 }
 
-#[cfg(any(target_vendor = "apple", test))]
+#[cfg(any(all(target_vendor = "apple", feature = "platform-verifier"), test))]
 impl Endpoint {
-    #[cfg(any(target_vendor = "apple", test))]
+    #[cfg(any(all(target_vendor = "apple", feature = "platform-verifier"), test))]
     pub(crate) fn resolve(
         &self,
         cancel: Option<&ko_sys::event::Wake>,

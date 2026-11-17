@@ -339,7 +339,7 @@ import KoModel
         try Self.imageProgram.write(toFile: script, atomically: true, encoding: .utf8)
         _ = try await KoServer.launch(dir: dir)
         try await koMain(dir, pane: koPane("exec /usr/bin/python3 -I \(script)"))
-        let client = try KoClient.connect(socket: dir + "/socket") { _ in }
+        let client = try KoClient.connect(endpoint: .unix(dir + "/socket")) { _ in }
         addTeardownBlock { @MainActor in client.close() }
         try await wait("the pane's layout") { (try? client.model())?.panes.count == 1 }
         let window = try XCTUnwrap(try client.model().layout.layout.windows.first)

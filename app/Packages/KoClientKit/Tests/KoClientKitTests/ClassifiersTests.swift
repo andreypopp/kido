@@ -13,7 +13,7 @@ final class ClassifiersTests: XCTestCase {
         XCTAssertEqual(classify(9, signaled: true).failure?.code, KO_ERR_INVALID)
         XCTAssertEqual(KoClient.unreachable(host: "devbox", remoteAnswers: true).code, KO_ERR_REFUSED)
         XCTAssertEqual(KoClient.unreachable(host: "devbox", remoteAnswers: false).detail, "the ko server on devbox did not answer through the forward; reconnect")
-        guard case .unreachable(let code, _) = KoClient.probe(socket: "/tmp/ko-kr-none/socket", within: 1) else { return XCTFail("a probe of no socket") }
+        guard case .unreachable(let code, _) = KoClient.probe(endpoint: .unix("/tmp/ko-kr-none/socket"), within: 1) else { return XCTFail("a probe of no socket") }
         XCTAssertEqual(code, KO_ERR_NO_SERVER)
     }
 }

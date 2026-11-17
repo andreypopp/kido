@@ -13,7 +13,7 @@ use ko_sys::event::{Events, Interest, Mode, Poll, Read, Reads, Token};
 use ko_sys::fd::Queue;
 use ko_wire::api::Route;
 use ko_wire::http::{self, response};
-#[cfg(target_vendor = "apple")]
+#[cfg(all(target_vendor = "apple", feature = "platform-verifier"))]
 use ko_wire::ids::ClientId;
 use ko_wire::protocol::Method;
 use ko_wire::protocol::webview::{
@@ -27,7 +27,7 @@ use crate::wire::{Caller, Link, Next, READ_TIMEOUT, ReadError};
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum Target {
-    #[cfg(target_vendor = "apple")]
+    #[cfg(all(target_vendor = "apple", feature = "platform-verifier"))]
     Server(ClientId),
     Program,
 }
@@ -102,7 +102,7 @@ impl Upstream {
         let stream = Stream::start(endpoint)?;
         let token = poll.watch(stream.fd(), Interest::ReadWrite);
         let client = match destination {
-            #[cfg(target_vendor = "apple")]
+            #[cfg(all(target_vendor = "apple", feature = "platform-verifier"))]
             Target::Server(client) => Some(client),
             Target::Program => None,
         };
@@ -125,7 +125,7 @@ impl Upstream {
             }
             Kind::Http(method) => {
                 let bytes = match destination {
-                    #[cfg(target_vendor = "apple")]
+                    #[cfg(all(target_vendor = "apple", feature = "platform-verifier"))]
                     Target::Server(client) => {
                         let mut fields = fields;
                         fields.push(("Connection", "close"));
@@ -172,7 +172,7 @@ impl Upstream {
             reads: Reads::new(),
         })
     }
-    #[cfg(target_vendor = "apple")]
+    #[cfg(all(target_vendor = "apple", feature = "platform-verifier"))]
     pub(crate) fn token(&self) -> Token {
         self.token
     }
@@ -218,7 +218,7 @@ impl Upstream {
             Phase::Socket { link, .. } => link.drained(),
         }
     }
-    #[cfg(target_vendor = "apple")]
+    #[cfg(all(target_vendor = "apple", feature = "platform-verifier"))]
     pub(crate) fn written(&self) -> u64 {
         match &self.phase {
             Phase::Closed => self.out.written(),
@@ -287,7 +287,7 @@ impl Upstream {
             }
         }
     }
-    #[cfg(target_vendor = "apple")]
+    #[cfg(all(target_vendor = "apple", feature = "platform-verifier"))]
     pub(crate) fn writable(&mut self, poll: &mut Poll) -> io::Result<()> {
         let result = match &mut self.phase {
             Phase::Http { stream, .. } => stream.writable(),

@@ -69,8 +69,14 @@ struct Engine<'a> {
 type Failed = (Code, String);
 
 pub(super) fn failure(error: &io::Error) -> Failed {
-    let code = if crate::wire::stream::terminal(error) {
-        Code::Refused
+    let code = if let Some(failure) = error
+        .get_ref()
+        .and_then(|error| error.downcast_ref::<crate::wire::stream::Failure>())
+    {
+        match failure {
+            crate::wire::stream::Failure::Tls(_) => Code::Tls,
+            crate::wire::stream::Failure::Identity(_) => Code::Identity,
+        }
     } else if connect::absent(error)
         || matches!(
             error.kind(),
@@ -180,7 +186,7 @@ impl Engine<'_> {
         if self.shared.cancel.is_set() {
             return;
         }
-        if code == Code::Refused {
+        if code.terminal() {
             self.lose(code, &message);
         } else if code != Code::NoServer
             && let Some((code, server)) = self.mismatch()
@@ -306,7 +312,7 @@ impl Engine<'_> {
         while !self.webview.is_empty() {
             self.end_webview(0, code, message);
         }
-        if code == Code::Refused
+        if code.terminal()
             || self.reported.is_none()
             || (code == Code::NoServer && self.reported != Some(Code::NoServer))
         {
@@ -319,7 +325,7 @@ impl Engine<'_> {
         self.shared.up.store(false, Ordering::SeqCst);
         locked(&self.shared.commands).retain(|command| !matches!(command, Command::Size(_)));
         self.poll.stop(self.watch);
-        if code == Code::Refused {
+        if code.terminal() {
             self.poll.stop(self.retry);
             for open in std::mem::take(&mut self.views) {
                 self.close_view(open, code, message);
@@ -747,7 +753,7 @@ impl Engine<'_> {
         }
         match outcome {
             Err(End::Gone) => self.end_view(id, Code::Closed, "pane view closed"),
-            Err(End::Outage((Code::Refused, message))) => self.lose(Code::Refused, &message),
+            Err(End::Outage((code, message))) if code.terminal() => self.lose(code, &message),
             Err(End::Outage((code, message))) => self.reopen_view(id, code, &message),
             Ok(()) if pause.load(Ordering::SeqCst) => {
                 *paused = true;

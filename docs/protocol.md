@@ -149,7 +149,10 @@ HTTP/1.1 and WebSockets over TLS; the `Host` header is the endpoint's
 host name, where a unix socket sends `localhost`. Each connection is
 one TCP connection with a full handshake, as each connection on the
 socket is one socket connection. A proxy answers 502 while no server
-runs, which the client treats as no server.
+runs, which the client treats as no server. A server certificate that
+is not valid, and a client certificate that the proxy refuses, end the
+client's reconnect attempts, as a refused hello does: the next dial
+would fail in the same way.
 
 A request without identity headers is the user, who may do
 everything. A request that acts as a pane sends `Ko-Pane: pane_N` and

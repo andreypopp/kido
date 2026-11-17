@@ -987,7 +987,7 @@ private class AlertEscape: NSView {
         let view = makeSessionView()
         do {
             let hello = KoHello(name: ownerID, viewport: KoSize(cols: 80, rows: 24, cell: nil), webview: runtime.values.webview.enabled)
-            let client = try KoClient.connect(socket: socket, hello: hello, fetches: host.imageFetches) { [weak self] event in
+            let client = try KoClient.connect(endpoint: .unix(socket), hello: hello, fetches: host.imageFetches) { [weak self] event in
                 guard let self, accepts(generation) else { return }
                 handle(event)
             }

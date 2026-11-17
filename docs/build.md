@@ -149,9 +149,10 @@ no `addclosefrom_np`: `ko_sys::spawn` adds a close for each entry of
 `/proc/self/fd` there, behind `cfg(target_env)`. Outside `ko_sys`,
 only these branch on the platform: the C++ runtime that
 `ko_vt_sys/build.rs` and `build-bench` link (`c++` on macOS and musl,
-`stdc++` on glibc); `ko_client::ffi` (code that only the ffi uses
-lives in it; an item that needs another module's private fields, as
-`Model::json`, carries `cfg(target_vendor = "apple")` on itself and on
+`stdc++` on glibc); `ko_client::ffi`, which also needs the feature
+`platform-verifier` (code that only the ffi uses lives in it; an item
+that needs another module's private fields, as `Model::json`, carries
+`cfg(all(target_vendor = "apple", feature = "platform-verifier"))` on itself and on
 the imports that only it uses, never an `#[allow(dead_code)]`); the
 podman kind's refusal (design-runtimes.md, "The podman kind"); and
 tests that pin a platform's behaviour. On Linux, a read of a unix
@@ -219,7 +220,8 @@ Swift package `app/Packages/KoClientKit` consumes it: a binary target
 (`app/Makefile`'s `ko-client` target builds it there), a C target
 `KoClient` whose `include/ko_client.h` is a symlink to
 `ko_client/include/ko_client.h`, so SwiftPM generates the module, and
-the Swift target `KoClientKit`. SwiftPM resolves the binary target
+the Swift target `KoClientKit`, which links `c++`, Security.framework
+and CoreFoundation for the slices, so that every consumer gets them. SwiftPM resolves the binary target
 when xcodebuild opens the project, so `make -C app project` builds the
 xcframework first, on every app build; an Xcode build alone does not
 refresh it. The macOS slice needs

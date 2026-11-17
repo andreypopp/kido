@@ -73,7 +73,8 @@ their callbacks stream on the caller's serial queue; the header comment
 of `ko_client.h` gives their contract.
 
 **The C ABI.** `ko_client::ffi` builds only for `target_vendor =
-"apple"`; no other crate uses it, and the Linux build has none of it.
+"apple"` with the feature `platform-verifier`; no other crate uses it,
+and the Linux build has none of it.
 The header comment of `ko_client/include/ko_client.h` is the
 contract: handles, memory, threads, close and reconnect. The ffi
 lives in the app's process, so it has threads: one I/O thread
@@ -86,6 +87,19 @@ calls (`ko_sys::fd::wait` with a cancel descriptor). Events reach
 the app only through `dispatch_async_f` on the caller's serial queue.
 KoClientKit turns each into a `KoEvent`, the view events included; the
 app's `KoClient.connect` gives the view events to their `KoView`.
+
+**The endpoint and the identity.** `ko_client_connect` and
+`ko_client_probe` take an endpoint (`KoEndpoint`): a unix socket, or a
+TLS host and port with an identity (`KoIdentity`): the certificate's
+DER and a sign closure. The private key never enters the core:
+rustls asks for each handshake signature through the C callback
+`ko_sign_fn` (`ffi::identity`), and KoClientKit calls the closure. The
+closure can run on the core's I/O thread and on the thread of a
+blocking call, also on two threads at once, never on the main queue.
+KoClientKit keeps the closure until `ko_client_close` has returned, or
+until the probe returns. A closure that fails (the key is gone) fails
+the dial with `KO_ERR_IDENTITY`; that code, as `KO_ERR_TLS` and
+`KO_ERR_REFUSED`, stops the reconnect.
 `ko_client_put_layout` is conditional on the document's revision:
 when the layout changed, it returns `KO_ERR_CONFLICT` with the newer
 document in its buffer, and the caller applies its edit to that

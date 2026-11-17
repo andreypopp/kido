@@ -3,6 +3,7 @@
 mod calls;
 mod config;
 mod engine;
+mod identity;
 mod images;
 #[cfg(not(target_os = "ios"))]
 pub use launch::*;
@@ -23,7 +24,9 @@ use std::cell::Cell;
 use std::collections::{BTreeMap, VecDeque};
 use std::ffi::{CStr, CString, c_char, c_int, c_void};
 use std::num::NonZeroU16;
+#[cfg(test)]
 use std::os::unix::ffi::OsStrExt;
+#[cfg(test)]
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
@@ -72,9 +75,15 @@ pub enum Code {
     Unknown = 11,
     ProtocolMismatch = 12,
     VtMismatch = 13,
+    Tls = 14,
+    Identity = 15,
 }
 
 impl Code {
+    fn terminal(self) -> bool {
+        matches!(self, Self::Refused | Self::Tls | Self::Identity)
+    }
+
     fn of(kind: &ErrorKind) -> Code {
         match kind {
             ErrorKind::Invalid => Code::Invalid,
@@ -807,12 +816,33 @@ fn request(client: &Client, command: Command) -> Code {
 
 /// # Safety
 ///
-/// `socket` is null or a NUL-terminated string. `queue` is null or a dispatch
+/// `endpoint` is null or readable as required by ko_client.h. `queue` is null or a dispatch
 /// queue. `callback` and `user` follow `ko_client.h`. `hello` is null or points
 /// to a `ko_hello`. `out` is null or points to writable storage for one pointer.
 #[unsafe(no_mangle)]
 pub unsafe extern "C" fn ko_client_connect(
-    socket: *const c_char,
+    endpoint: *const identity::Endpoint,
+    queue: *mut c_void,
+    callback: Option<Callback>,
+    user: *mut c_void,
+    hello: *const HelloIn,
+    out: *mut *mut Client,
+) -> Code {
+    if !out.is_null() {
+        // SAFETY: out is writable by contract.
+        unsafe { *out = std::ptr::null_mut() };
+    }
+    // SAFETY: the endpoint follows ko_client.h for this call.
+    let endpoint = match unsafe { identity::endpoint(endpoint, Vec::new()) } {
+        Ok(endpoint) => endpoint,
+        Err(code) => return code,
+    };
+    // SAFETY: the remaining arguments follow the same contract.
+    unsafe { connect(endpoint, queue, callback, user, hello, out) }
+}
+
+unsafe fn connect(
+    endpoint: Endpoint,
     queue: *mut c_void,
     callback: Option<Callback>,
     user: *mut c_void,
@@ -824,17 +854,17 @@ pub unsafe extern "C" fn ko_client_connect(
     }
     // SAFETY: out is non-null and writable by contract.
     unsafe { *out = std::ptr::null_mut() };
-    let (false, Some(callback)) = (socket.is_null() || queue.is_null(), callback) else {
+    let (false, Some(callback)) = (queue.is_null(), callback) else {
         return Code::Argument;
     };
     let scope = ();
-    // SAFETY: ko_client.h requires socket, hello and its name to remain readable for this call.
-    let (socket, hello, name) = unsafe {
+    // SAFETY: ko_client.h requires hello and its name to remain readable for this call.
+    let (hello, name) = unsafe {
         let hello = hello.as_ref().copied();
         let name = hello
             .filter(|hello| !hello.name.is_null())
             .map(|hello| text_of(hello.name, &scope));
-        (CStr::from_ptr(socket), hello, name)
+        (hello, name)
     };
     let hello = hello.unwrap_or(HelloIn {
         cols: 80,
@@ -844,10 +874,6 @@ pub unsafe extern "C" fn ko_client_connect(
         webview: false,
         name: std::ptr::null(),
     });
-    let socket = PathBuf::from(std::ffi::OsStr::from_bytes(socket.to_bytes()));
-    if socket.as_os_str().is_empty() {
-        return Code::Argument;
-    }
     let (Some(cols), Some(rows)) = (frame::Dim::new(hello.cols), frame::Dim::new(hello.rows))
     else {
         return Code::Argument;
@@ -878,7 +904,7 @@ pub unsafe extern "C" fn ko_client_connect(
         },
     };
     match start(
-        Endpoint::Unix(socket),
+        endpoint,
         hello,
         Arc::new(Queue(queue)),
         callback,
@@ -1528,6 +1554,8 @@ pub extern "C" fn ko_code_message(code: c_int) -> *const c_char {
         c if c == Code::NotFound as c_int => c"not found",
         c if c == Code::Invalid as c_int => c"the server refused the request as invalid",
         c if c == Code::Refused as c_int => c"the server refused the request",
+        c if c == Code::Tls as c_int => c"the TLS connection failed: the server's certificate is not valid, or the handshake failed",
+        c if c == Code::Identity as c_int => c"the client's identity failed: the server refused its certificate, or the sign function failed",
         c if c == Code::Gone as c_int => c"the target is gone",
         c if c == Code::Unknown as c_int => c"the server answered with an unknown error",
         c if c == Code::ProtocolMismatch as c_int => c"the server speaks another protocol major",
@@ -4329,7 +4357,7 @@ mod tests {
             let socket = CString::new(socket).unwrap();
             let mut out = empty_buffer();
             // SAFETY: the string is valid and out is writable.
-            let code = unsafe { ko_client_probe(socket.as_ptr(), 5_000, &mut out) };
+            let code = unsafe { ko_client_probe(&unix_endpoint(socket.as_ptr()), 5_000, &mut out) };
             // SAFETY: this core buffer remains allocated through this read.
             let text = unsafe { contents(&out) };
             // SAFETY: out owns a core allocation that is not freed yet.
@@ -4665,6 +4693,16 @@ mod tests {
         assert!(emptied(&out));
     }
 
+    fn unix_endpoint(socket: *const c_char) -> identity::Endpoint {
+        identity::Endpoint {
+            kind: 1,
+            socket,
+            host: std::ptr::null(),
+            port: 0,
+            identity: std::ptr::null(),
+        }
+    }
+
     #[test]
     fn bad_arguments_return_a_code_and_leave_the_out_pointer_null() {
         let fixture = Fixture::new();
@@ -4675,7 +4713,16 @@ mod tests {
                        callback: Option<Callback>,
                        out: *mut *mut Client| {
             // SAFETY: each argument is null or valid; the call rejects null ones.
-            unsafe { ko_client_connect(socket, queue, callback, user, std::ptr::null(), out) }
+            unsafe {
+                ko_client_connect(
+                    &unix_endpoint(socket),
+                    queue,
+                    callback,
+                    user,
+                    std::ptr::null(),
+                    out,
+                )
+            }
         };
         let mut out = std::ptr::dangling_mut::<Client>();
         let cases = [
@@ -4706,7 +4753,7 @@ mod tests {
         // SAFETY: the socket, the queue and the hello are valid, and out is writable.
         let code = unsafe {
             ko_client_connect(
-                path.as_ptr(),
+                &unix_endpoint(path.as_ptr()),
                 fixture.queue.0,
                 Some(record),
                 user,
@@ -4865,7 +4912,7 @@ mod tests {
 
     #[test]
     fn every_code_has_its_own_static_message() {
-        let messages: Vec<String> = (0..=14)
+        let messages: Vec<String> = (0..=16)
             .map(|code| {
                 // SAFETY: the function returns a static NUL-terminated string.
                 unsafe { CStr::from_ptr(ko_code_message(code)) }
@@ -4876,7 +4923,7 @@ mod tests {
         let mut unique = messages.clone();
         unique.sort();
         unique.dedup();
-        assert_eq!((unique.len(), messages[14].as_str()), (15, "unknown code"));
+        assert_eq!((unique.len(), messages[16].as_str()), (17, "unknown code"));
     }
 
     fn logged(log: &Arc<Mutex<Vec<String>>>, line: impl Into<String>) {

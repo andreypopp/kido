@@ -151,7 +151,7 @@ final class Recorder {
 
     // Connects and waits until the model holds `panes` panes.
     func connect(_ dir: String, hello: KoHello = KoHello(), panes: Int = 1, sink: @escaping (KoEvent) -> Void) throws -> KoClient {
-        let connection = try KoClient.connect(socket: dir + "/socket", hello: hello, sink: sink)
+        let connection = try KoClient.connect(endpoint: .unix(dir + "/socket"), hello: hello, sink: sink)
         addTeardownBlock { @MainActor in connection.close() }
         wait("the model with \(panes) panes") { (try? connection.model())?.panes.count == panes }
         return connection

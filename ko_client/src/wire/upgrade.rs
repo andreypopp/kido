@@ -75,7 +75,7 @@ impl Connecting {
         poll.watch(self.stream.fd(), self.stream.interest(true, true))
     }
 
-    #[cfg(target_vendor = "apple")]
+    #[cfg(all(target_vendor = "apple", feature = "platform-verifier"))]
     pub(crate) fn deadline(&self) -> Instant {
         self.stream
             .deadline()

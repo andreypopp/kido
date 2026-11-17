@@ -152,7 +152,7 @@ import XCTest
         window.contentView = session
         _ = try await KoServer.launch(dir: directory.path)
         try await koPut(directory.path, #"[{"name":"visual","windows":\#(windows ?? #"[{"name":"zsh","tree":\#(koPane(pane))}]"#)}]"#)
-        let client = try KoClient.connect(socket: directory.path + "/socket", hello: KoHello(name: "visual", viewport: KoSize(cols: 80, rows: 24, cell: nil), webview: runtime.values.webview.enabled)) { [weak self] event in
+        let client = try KoClient.connect(endpoint: .unix(directory.path + "/socket"), hello: KoHello(name: "visual", viewport: KoSize(cols: 80, rows: 24, cell: nil), webview: runtime.values.webview.enabled)) { [weak self] event in
             self?.handle(event)
         }
         self.client = client

@@ -9,7 +9,7 @@ let package = Package(
     targets: [
         .binaryTarget(name: "KoClientCore", path: "build/ko_client.xcframework"),
         .target(name: "KoClient", dependencies: ["KoClientCore"]),
-        .target(name: "KoClientKit", dependencies: ["KoClient", "KoModel"], linkerSettings: [.linkedLibrary("c++")]),
+        .target(name: "KoClientKit", dependencies: ["KoClient", "KoModel"], linkerSettings: [.linkedLibrary("c++"), .linkedFramework("Security"), .linkedFramework("CoreFoundation")]),
         .testTarget(name: "KoClientKitTests", dependencies: ["KoClientKit"]),
     ]
 )

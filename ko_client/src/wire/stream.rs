@@ -27,8 +27,22 @@ impl fmt::Display for Failure {
 }
 impl std::error::Error for Failure {}
 
+#[derive(Debug)]
+pub(crate) struct IdentitySigningFailed;
+
+impl fmt::Display for IdentitySigningFailed {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str("identity signing failed")
+    }
+}
+
+impl std::error::Error for IdentitySigningFailed {}
+
 pub(crate) fn failure(error: rustls::Error) -> io::Error {
     let kind = match error {
+        rustls::Error::Other(ref cause) if cause.0.is::<IdentitySigningFailed>() => {
+            Failure::Identity(error)
+        }
         rustls::Error::AlertReceived(
             rustls::AlertDescription::BadCertificate
             | rustls::AlertDescription::CertificateRequired
