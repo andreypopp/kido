@@ -520,7 +520,7 @@ test server closes `/client` with 1001 and stays up; the engine
 reports an outage, then a welcome that is not fresh). The rule for
 the docs: on a TLS endpoint, 1001 is a lost link, because a proxy
 can send it; the reconnect learns whether the server ended. A
-terminal client for TLS (Q2) must follow the same rule (Q10).
+terminal client for TLS (Q2) must follow the same rule (Q9).
 
 **Crates** (for approval):
 
@@ -540,8 +540,9 @@ with no duplicate symbol beside Zig's libghostty-vt, and that the
 export checks pass. Two build changes are part of unit 4: for the
 musl targets, `ring`'s `cc` build adds `--target=<arch>-unknown-linux-musl`,
 which overrides zig's target, so the Makefile's zig compiler wrapper
-drops that argument; and the iOS builds need `DEVELOPER_DIR`
-exported. The unit confirms the export check again with the
+drops that argument, and the archiver for those targets is `zig ar`
+(spike 3: the host's `ar` indexes the ELF objects wrongly); and the
+iOS builds need `DEVELOPER_DIR` exported. The unit confirms the export check again with the
 Security crates of the platform verifier. `aws-lc-rs` needs cmake; a pure-Rust provider
 is not production quality. Hand-written TLS is not an option.
 
@@ -834,76 +835,63 @@ What this fixes in the rest of the plan:
 
 ## 5. Phase 2: HTTP/3 and roaming
 
-**What is known** (research; nothing here was run):
+**Decision (the user's).** Phase 2 is HTTP/3 through Caddy. ko gets
+no relay and no second TLS terminator. Spike 3 (section 6) showed
+that this path works end to end.
 
-- quic-go, which Caddy uses (v0.63 on Caddy's main branch), handles a
-  NAT rebinding on the server by itself: a packet of a known
-  connection from a new address makes it probe the path. A client
-  starts every migration (RFC 9000). Its documented migration API is
-  the client's.
-- Caddy's `reverse_proxy` has code for a "websocket over http2 or
-  http3" extended CONNECT (`streaming.go`), which it turns into an
-  upgrade toward the upstream. So ko needs no change.
-- The async Rust stacks are excluded by AGENTS.md (`quinn` and the
-  `h3` crate need a runtime and futures). The table compares the
-  client candidates. The s2n-quic column is from memory of its
-  layout and is not checked against its source; spike 3 checks it.
+**The rule.** One QUIC connection of a client carries each ko
+connection (a request or a WebSocket) as one HTTP/3 request stream
+with its own flow control. That keeps the rule "a flood on one never
+delays another" and makes one handshake and one signature for a
+window. A WebSocket is an RFC 9220 extended CONNECT, which Caddy
+turns into an HTTP/1.1 upgrade toward ko's socket. ko does not
+change.
 
-| | `quinn-proto` 0.11 | `quiche` 0.30 | `s2n-quic` |
-|---|---|---|---|
-| Sans-IO fit | Yes, by design: the caller gives datagrams and times and gets transmits and timeouts. It fits the loop of `ko_sys::event`. | Yes, by design. | No public sans-IO API. The public API is async (streams are awaited), and its IO provider starts the endpoint as a future, with tokio by default. The state machine is in `s2n-quic-transport` and `s2n-quic-core`, which are internal crates with no stable interface. To drive them from ko's loop means a hand-written executor or a fork. |
-| rustls and an external key | rustls is its TLS; the `SigningKey` of 4.7 applies unchanged. | BoringSSL (C, cmake); a second TLS stack; no clear way to sign with an external key. | s2n-tls (C) by default; a rustls provider exists. If it takes a `rustls::ClientConfig`, 4.7 applies. |
-| Client migration | To check: the call for a new local socket. | Has a path API for the client. | To check: its docs describe the server's handling of a client's migration; an active migration by its client is not known to exist. |
-| HTTP/3 without async | None; hand-written subset. | Its own `h3` module, sans-IO, with extended CONNECT. | None of its own; its HTTP/3 goes through the async `h3` crate. |
-| Weight | Small: `bytes`, `rand`, `slab`, `rustc-hash`, `tinyvec`, and rustls with ring (phase 1 has them). | Large: BoringSSL built with cmake for macOS, iOS and musl. | Large: many crates, s2n-tls or rustls, a runtime in practice. |
+**The client.** `quinn-proto` 0.11.19 is the QUIC state machine: it
+has no runtime, and it uses rustls 0.23.46, the version of phase 1,
+so the client configuration and the sign callback of 4.7 apply
+unchanged (`QuicClientConfig::try_from`). ko writes the driver on
+`ko_sys::event` and a client subset of HTTP/3: the control stream,
+SETTINGS, HEADERS and DATA frames, QPACK with the static table and
+literals (dynamic table size 0), Huffman decode, and the CONNECT of
+RFC 9220. The spike's working sketch has 132 lines for the driver,
+115 for the HTTP/3 frames and control stream, 504 for QPACK (370 of
+them tables), 37 for RFC 9220 and 85 for the TLS adapter. The
+estimate for production code stays 1500 to 2500 lines: strict
+parsers, stream and frame state errors, limits, cancellation and
+write back-pressure are not in the sketch.
 
-  The expected result: `quinn-proto` is the one candidate that fits
-  the loop rule and the sign callback together. `quiche` is the
-  comparison if the hand-written HTTP/3 subset is too large.
-  `s2n-quic` fits neither rule, unless spike 3 finds a supported way
-  to drive it without futures. With `quinn-proto` and HTTP/3
-  through Caddy, ko writes a client subset of HTTP/3: the control
-  stream, SETTINGS, HEADERS and DATA frames, QPACK with the static
-  table and literals (dynamic table size 0), Huffman decode for the
-  server's literals, and the extended CONNECT of RFC 9220. Estimate
-  1500 to 2500 lines with the UDP driver.
-- One QUIC connection carries each ko stream as one request stream
-  with its own flow control. That keeps the rule "a flood on one
-  never delays another" and makes one handshake and one signature
-  for a window.
-- QUIC does not remove the reconnect: a sleep longer than the idle
-  timeout ends the connection. It helps for a path change while
-  awake.
-- Client authentication disables tickets, so there is no 0-RTT.
+The candidates that were not chosen: `quiche` 0.30.1 has its own
+HTTP/3 with extended CONNECT, and an external key is possible
+(`boring`'s `set_private_key_method`), but it needs cmake and
+BoringSSL, a second TLS stack. `s2n-quic` 1.92 has no supported way
+to drive it from a loop without futures.
 
-**Option B: a ko tunnel in place of HTTP/3** (an evaluation, not a
-decision). `ko_client` opens one QUIC connection with its own ALPN
-and the same device certificate to a small relay on the droplet.
-Each ko connection (a request or a WebSocket, HTTP/1.1 as today) is
-one bidirectional QUIC stream, which the relay joins to ko's
-socket. The relay would be a third Rust program of the repository
-(`ko-relay`, one thread on `ko_sys::event`, `quinn-proto` as the
-server), with its own uid, which `--allow-uid` then names.
+**The facts that the units build on** (spike 3):
 
-| | A: HTTP/3 through Caddy | B: a ko tunnel |
-|---|---|---|
-| Client work | The QUIC driver and the HTTP/3 subset with QPACK and RFC 9220 (1500 to 2500 lines). | The QUIC driver only (about 600 to 900 lines). The HTTP and WebSocket code of phase 1 runs unchanged on a stream. |
-| Server work | A Caddy option and UDP 443. | The relay: a QUIC server on `quinn-proto`, the leaf pinning as a rustls client verifier that reads the folder, the splice to ko's socket, backpressure for each stream, a systemd unit and sandbox (about 800 to 1200 lines, and a fuzz target for its edge). |
-| Risk | Depends on three things that ko does not own: Caddy's RFC 9220 path, its translation to an upgrade, and quic-go's migration. A fault there has no fix in ko. | Both ends are ko's and are one library, so the behaviour is testable in process (client and relay in one test, with a scripted path change). The risk is that ko now owns an internet-facing TLS terminator: its faults are ko's too. |
-| Roaming control | quic-go's defaults and what Caddy exposes: the idle timeout, the keep-alive and the path validation are not ko's to set. | Full: the idle timeout, the keep-alive, the migration and the connection id count are ko's settings on both ends. |
-| Pinning and revocation | The folder and a Caddy restart, as in phase 1. | The relay reads the folder at each handshake, so a pairing needs no restart, and a revocation closes only the connections of that certificate. Phase 1's TCP path through Caddy still needs its restart while it exists. |
-| Server certificate | Caddy's ACME certificate. | A second terminator needs one: Caddy's certificate files (the relay must read them and follow renewals), or the relay's own key, pinned through the QR payload (Q1). The pin is simpler and removes the public CAs. |
-| What stays in Caddy | Everything. | The enrollment host, and the ko host on TCP as the fallback where UDP is blocked. Caddy's HTTP/3 stays off, because the relay owns UDP 443. If the TCP fallback is dropped later, Caddy serves only the enrollment. |
-| Cost against the goals | Keeps "Caddy has no plugin; ko changes little". | Adds a server component and a second mTLS terminator, against the first design goal; in return it removes the HTTP/3 layer and the dependence on Caddy for roaming. |
-
-Spike 3 gives the numbers for this choice (its points 1, 3 and 8).
-The view at this time: B is less client code and gives control of
-the one thing that phase 2 is for; A adds no trusted component. If
-spike 3 shows that Caddy's RFC 9220 path and quic-go's migration
-work as needed, A is enough. If either does not, B is the way, not
-a Caddy plugin.
-
-**What only spike 3 can settle** is in section 6.
+- Caddy needs `protocols h1 h2 h3` and UDP 443. `grace_period 3s`
+  stays: the default grace has no limit, and an open HTTP/3 request
+  then holds Caddy's shutdown.
+- The CONNECT carries `Ko-Protocol` and `Ko-Vt`, as on TCP; without
+  them ko answers 426.
+- Client authentication is the same as on TCP: the same refusals,
+  and revocation by restart. There are no tickets, so no resumption
+  and no 0-RTT.
+- A Caddy restart ends an HTTP/3 connection with `H3_NO_ERROR` and
+  no WebSocket close frame (TCP gets 1001). The client treats the
+  end of the QUIC connection as a lost link (4.5, "Close code 1001").
+  ko's own stop still arrives as 1001.
+- Caddy's QUIC idle timeout is 30 s and its server sends no
+  keep-alive. ko's WebSocket ping every 30 s races that timeout, so
+  the client sends a QUIC keep-alive well under 30 s; the droplet
+  session chooses the value. A path that is silent for more than
+  30 s (a sleep) ends the connection, and the reconnect of phase 1
+  stays the answer.
+- Only the client migrates. After a new local socket, the driver
+  calls `Connection::local_address_changed()`; quic-go validates the
+  new path. Both sides announce `active_connection_id_limit` 4, and
+  Caddy has no option for migration. A NAT rebinding needs nothing
+  from the client.
 
 ## 6. Spikes, before any unit
 
@@ -1013,7 +1001,7 @@ risk, about 3 hours).
 7. The `SecKey` path was not needed.
 
 **Spike 3: WebSockets over HTTP/3 through Caddy, migration, the
-client** (high risk, about 1 day; can run after phase 1 starts).
+client** (done but for point 7; the results are below).
 
 1. Does Caddy announce `SETTINGS_ENABLE_CONNECT_PROTOCOL` on HTTP/3,
    and does an RFC 9220 CONNECT with `:protocol: websocket` reach a
@@ -1040,17 +1028,84 @@ client** (high risk, about 1 day; can run after phase 1 starts).
    plain loop without futures, does its rustls provider take a
    client config with an external signing key, and does its client
    migrate? One hour at most; stop at the first "no".
-9. Option B of section 5: a client and a relay on `quinn-proto` in
-   one process, one stream joined to a unix socket, a path change in
-   the middle; the line count of each side.
+9. A ko tunnel in place of HTTP/3 (a client and a relay on
+   `quinn-proto`). Dropped by the user's decision.
 
-**Where the spikes run** (a proposal; section 9, Q6). Spike 1 and
-the HTTP/3 parts of spike 3 run in a Debian 13 container through
+**Where the spikes run** (section 9, Q6). Spike 1 and the HTTP/3
+parts of spike 3 ran in a Debian 13 container through
 Apple's `container`, so nothing is installed on the Mac (podman does
 not exist on macOS). Spike 2 ran on the macOS host and in the
 visual-test VM. Real roaming (spike 3, points 3, 4 and 7) and
 ACME (spike 1, point 7) need a test droplet that lives for a short
 time, with the Mac changing networks; the user runs that step.
+
+**Spike 3: results** (done but for point 7; evidence in
+`/tmp/spike3-caddy/REPORT.md` and
+`/tmp/spike3-rust-evidence/RESULTS.md`; all numbers are from
+loopback).
+
+1. Pass. Caddy 2.11.9 (quic-go 0.63.0) with `protocols h1 h2 h3`
+   announces `SETTINGS_ENABLE_CONNECT_PROTOCOL`. An RFC 9220 CONNECT
+   reaches ko's unix socket as `GET /client` with an HTTP/1.1
+   upgrade; the client gets 200. Messages pass in both directions,
+   also a client message of 524 381 bytes and a server message of
+   4 000 626 bytes. ko's stop arrives as close 1001. A Caddy restart
+   ends the connection with `H3_NO_ERROR` and no close frame; with
+   `grace_period 3s` it took 3.04 s.
+2. Pass. No certificate gets `certificate required`, an unpinned
+   certificate `bad certificate`, a pinned one 200. After a removal
+   and a restart the certificate is refused. No connection was
+   resumed and none used 0-RTT (`connpolicy.go:423` disables the
+   tickets). SETTINGS can arrive before the TLS refusal, so they do
+   not mean that the certificate was accepted.
+3. Pass. The same `/client` WebSocket continues after the client
+   moves from 127.0.0.1 to 127.0.0.2 (the path probe took 0.2 ms),
+   and after a relay changes the source port without the client's
+   knowledge. The server cannot start a migration.
+4. Caddy's idle timeout is 30 s, and its server keep-alive is off.
+   Without a client keep-alive a bare HTTP/3 connection closes after
+   30.1 s; with one of 5 s it lives. A path that is dead for 10 s
+   recovers; one that is dead for 60 s is closed after 30 s, with or
+   without keep-alive. ko's WebSocket ping (30 s) and pong limit are
+   a second clock: a QUIC ping does not answer them. The 10 min case
+   was not run, because 30 s already decides it.
+5. Pass. `quinn-proto` 0.11.19 builds on the repository's toolchain
+   with no runtime and resolves rustls 0.23.46. The driver sketch on
+   a plain UDP socket is 132 lines, without write back-pressure. A
+   migration is a new socket and `Connection::local_address_changed()`.
+   A custom `SigningKey` worked in the handshake with Caddy, with
+   one signature (a software key; the enclave callback is spike 2).
+6. Pass. The Rust sketch got 200 for the CONNECT from Caddy, decoded
+   Huffman header values, and kept its stream across a new local
+   address and port (the pong came 335 µs after the change). The
+   first run got 426, because `Ko-Protocol` and `Ko-Vt` were absent.
+   The line counts are in section 5. `quiche` did not build on the
+   host (no cmake); its external-key call exists in the source and
+   was not run.
+7. Not run. It is the droplet session, below.
+8. `s2n-quic` 1.92: stopped at the first "no". Its client needs a
+   future and a task context; its core crates are documented as
+   internal.
+9. Dropped: the user chose HTTP/3 through Caddy.
+
+One build fact for 4.5: the cross-build of `ring` for musl needs
+`zig ar` as the archiver, because the host's `ar` indexes the ELF
+objects wrongly.
+
+**The droplet session** (run by the user, with a short-lived
+droplet; it closes spike 3's point 7 and spike 1's point 7):
+
+- UDP 443 from the user's networks (home Wi-Fi, a phone hotspot, an
+  office or a café), and the time of the fall back to TCP where UDP
+  is blocked.
+- A real switch between Wi-Fi and cellular in the middle of a view,
+  with the Rust client and the quic-go client: the time to resume,
+  and that the stream is intact.
+- A NAT rebinding on a real NAT, and the expiry of a NAT binding
+  with a keep-alive of 10, 15 and 25 s.
+- A sleep of the Mac for 10 s, 60 s and 10 min, and the wake.
+- MTU and loss: path MTU discovery on cellular.
+- ACME TLS-ALPN-01 with client authentication and port 80 closed.
 
 ## 7. The units, in order
 
@@ -1069,7 +1124,7 @@ with reviews, not calendar time.
 | 5 | Identity ABI | `ko_endpoint`, `ko_identity`, the signer, KoClientKit (4.7) | 4, S2, unsafe approval | medium | 4 h |
 | 6 | Kido.app | The `Host` case, the identity store, pairing, connect, sheets, snapshots (4.8, 4.9) | 5, the request shape of 4.3 | high | 12 h |
 | 7 | Measurement | The numbers of 4.6 in the docs; the decision on `ko_client_reconnect` and the request pool | 3, 6 | low | 3 h, and the user switches networks |
-| S3 | Spike 3 | Section 6 answers; the choice of section 5 (A or B); the phase 2 plan | | high | 10 h, and a droplet session with the user |
+| S3 | Spike 3 | Done but for the droplet session: results in section 6 | | | a droplet session with the user |
 
 Units 1, 2 and 4 are independent and can run at the same time. Unit
 4 is the one that can break what works: it changes the wire layer
@@ -1090,6 +1145,25 @@ docs/verification.md (the TLS test server, `deploy/test.sh`);
 AGENTS.md (the unsafe list). When unit 7 is complete, this plan
 becomes `docs/design-remote-tls.md` and is deleted.
 
+### Phase 2 units (a draft)
+
+Phase 2 starts after unit 7. Each unit adds a case and breaks
+nothing: TCP stays the transport until unit P5.
+
+| # | Unit | Scope | Test | Risk | Time |
+|---|---|---|---|---|---|
+| P1 | Caddy HTTP/3 in `deploy/` | `protocols h1 h2 h3`; UDP 443 in the cloud firewall and nftables; `grace_period` stays | `smoke.sh`: `curl --http3` with the paired certificate gets 200, without one it fails, after `ko-revoke` it fails; the scan allows UDP 443 | low | 2 h |
+| P2 | The QUIC driver | `quinn-proto` on `ko_sys::event` in `ko_client`: the UDP socket, the timers, write back-pressure, the keep-alive, the same `ClientConfig` and signer as TCP | In process, against a `quinn-proto` server in the test: a handshake with a client certificate and one signature; a refused certificate gives the `identity` kind; a stream that the peer does not read does not stall another | high | 10 h |
+| P3 | The HTTP/3 subset | Frames, the control stream, SETTINGS, QPACK with Huffman decode, the RFC 9220 CONNECT; readers of untrusted bytes, with the lints of AGENTS.md | Unit tests on the vectors of RFC 9204 and on bytes captured from Caddy; a fuzz target for the parsers with its corpus replay test | high | 10 h |
+| P4 | The third stream case | `Stream` gets a QUIC case: one connection for each client carries every request and WebSocket; `Ko-Protocol` and `Ko-Vt` on the CONNECT; ko's WebSocket framing on the stream; the end of the connection is a lost link | The TLS cases of 4.5 again over HTTP/3, against a real Caddy in the Debian container (a gate as `KO_E2E_CONTAINER`): a view resumes at its offset after a Caddy restart | high | 12 h |
+| P5 | Transport choice | QUIC first, TCP when no QUIC handshake completes within a limit; the result is kept for the endpoint while the process runs | UDP dropped in the test: the client is on TCP within the limit; UDP open: no TCP connection is made | medium | 6 h |
+| P6 | Migration | The app's `NWPathMonitor` tells the core of a path change (one new exported function); the driver opens a new socket and calls `local_address_changed()`; a connection that is already dead goes to the reconnect | In process, two loopback addresses: a view continues with no new upgrade and no gap in its offsets | medium | 6 h |
+| P7 | The app and the numbers | What a window shows for its transport, by `@kido-app-design`; the droplet session's numbers in the docs; the keep-alive value | Snapshots for each state that the design names | low | 4 h, and the droplet session |
+
+P6's function replaces the `ko_client_reconnect` idea of 4.6 if
+unit 7 did not already add it. A terminal client is not in this
+list (Q2).
+
 ## 8. Approvals that the units need
 
 - **Crates** (unit 4): `rustls`, `ring`, `rustls-webpki`,
@@ -1101,7 +1175,11 @@ becomes `docs/design-remote-tls.md` and is deleted.
 - **Unsafe:** the block of 4.7 (unit 5).
 - **Routes:** none. ko gets no route.
 - **Swift packages:** `swift-certificates`, `swift-crypto` (approved).
-- **Spikes:** the environments of Q6; a droplet for unit 3.
+- **Phase 2:** the crate `quinn-proto` with its dependencies (unit
+  P2; `bytes`, `rand`, `slab`, `rustc-hash`, `tinyvec` and the
+  rustls crates of phase 1; the unit reports the exact list); one
+  exported function for the path change (unit P6).
+- **Spikes:** a droplet for unit 3 and the droplet session.
 
 ## 9. Open questions
 
@@ -1135,18 +1213,14 @@ Each has a recommendation; the plan above assumes it.
    destroys. Spike 2 is done. Two checks stay with the user, on real
    Macs: a signature while the screen is locked, and that a copied
    blob fails on another Mac.
-7. **Phase 2: HTTP/3 through Caddy, or a ko tunnel** (section 5,
-   option B). *Recommend no decision before spike 3;* the spike
-   tests both. The lean is to the tunnel if Caddy or quic-go fails
-   one point, because the other fix would be a Caddy plugin.
-8. **Paste only on macOS, and no `kido-app://enroll` link** (from
+7. **Paste only on macOS, and no `kido-app://enroll` link** (from
     `@kido-app-design`). *Recommend yes to both.*
-9. **The directory rule changes for every ko** (4.1): a state
+8. **The directory rule changes for every ko** (4.1): a state
     directory of mode 0710 passes, on macOS too. *Recommend yes:*
     one rule with no link to the flag. The alternative keeps 0700
     for all and accepts 0710 only in a server with `--allow-uid`;
     then each `ko` command in a pane needs a second way to know it.
-10. **Close code 1001 behind a proxy** (4.5). *Recommend:* on a TLS
+9. **Close code 1001 behind a proxy** (4.5). *Recommend:* on a TLS
     endpoint, 1001 is a lost link, and the reconnect finds out
     whether the server ended (a 502, or a welcome with another
     `instance`). Kido.app's engine already does this, so phase 1
