@@ -1064,7 +1064,8 @@ import PaneGeometry
         let fixture = try PromptFixture(self)
         let (app, owner) = (fixture.app, fixture.owner)
         defer { fixture.close() }
-        _ = try await fixture.startServer(self, [koPane("printf '\\033]7501;state=working:app=claude-code\\007'; exec /bin/cat")])
+        let agent = "stty raw -echo; printf '\\033]7501;state=working:app=claude-code\\007'; " + rawEchoScript
+        _ = try await fixture.startServer(self, [koPane("exec /bin/zsh -f -c " + SSH.quote(agent))])
         owner.start()
         try await wait("live agent") { owner.canPrompt && PaneView.owner(owner.window.firstResponder) != nil }
         let pane = try XCTUnwrap(PaneView.owner(owner.window.firstResponder))
@@ -1102,12 +1103,19 @@ import PaneGeometry
         ready.textView.setSelectedRange(NSRange(location: 0, length: ready.textView.string.utf16.count))
         ready.type(raw)
         var sent: String?
+        var reply: Result<WindowOwner.PromptReply, Error>?
         owner.testPrompt = { value, done in
             if case .send(_, _, let text) = value { sent = text }
-            fixture.real(value, done)
+            fixture.real(value) { result in reply = result; done(result) }
         }
-        try sendKey(panel, "\r", code: 36)
-        try await wait("real server accepts raw markdown") { app.palettePanel == nil }
+        do { try sendKey(panel, "\r", code: 36) }
+        catch { return XCTFail("sendKey: \(String(reflecting: type(of: error))): \(error)") }
+        do { try await wait("real server answers the paste") { reply != nil } }
+        catch { return XCTFail("wait for paste reply: \(String(reflecting: type(of: error))): \(error)") }
+        do {
+            guard case .sent = try XCTUnwrap(reply).get() else { return XCTFail("The paste did not return sent") }
+        } catch { return XCTFail("reply.get(): \(String(reflecting: type(of: error))): \(error)") }
+        XCTAssertNil(app.palettePanel)
         XCTAssertEqual(sent, raw, "the real prompt RPC receives the field's exact raw markdown")
     }
 

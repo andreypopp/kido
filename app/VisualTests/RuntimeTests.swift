@@ -24,10 +24,9 @@ extension VisualTestCase {
         addTeardownBlock { @MainActor in try? FileManager.default.removeItem(at: file) }
     }
 
-    // A pane that prints `text`, then runs `cat` in raw mode, in the runtime when one is named.
     func runtimePane(_ runtime: String?, _ text: String, vars: String = "{}", status: String = "", cwd: String? = nil) -> String {
-        let script = "printf '\(text)'; \(status)stty raw -echo; printf '\\033]2;raw-ready\\007'; exec /bin/cat"
-        let command = try! String(decoding: JSONSerialization.data(withJSONObject: ["type": "shell", "command": script]), as: UTF8.self)
+        let script = "stty raw -echo; printf '\(text)'; \(status)printf '\\033]2;raw-ready\\007'; " + rawEchoScript
+        let command = try! String(decoding: JSONSerialization.data(withJSONObject: ["type": "shell", "command": "exec /bin/zsh -f -c " + SSH.quote(script)]), as: UTF8.self)
         return #"{"pane":{"new":{\#(runtime.map { #""runtime":"\#($0)","# } ?? "")\#(cwd.map { #""cwd":"\#($0)","# } ?? "")"vars":\#(vars),"command":\#(command)}}}"#
     }
 }
@@ -221,11 +220,8 @@ private func runtimeMark(_ name: String, _ state: KoSchema.LinkState = .up, kind
             owner.shutDownRuntime(.init(name: "deb", source: .config))
             let alert = try XCTUnwrap(owner.preparedAlert?.alert)
             alert.window.appearance = NSAppearance(named: appearance)
-            try await wait("the confirmation sheet") { owner.window.attachedSheet === alert.window }
-            await mainQueueFence()
-            alert.layout()
-            let view = try XCTUnwrap(alert.window.contentView?.superview)
-            checkSnapshot { verifySnapshot(of: view, as: .pixels, named: name, record: $0, testName: "runtimeShutdownConfirmation") }
+            let image = try await sheetImage(alert, attachedTo: owner.window)
+            checkSnapshot { verifySnapshot(of: image, as: .pixels, named: name, record: $0, testName: "runtimeShutdownConfirmation") }
             owner.respondToAlert(.alertSecondButtonReturn)
             try await wait("the confirmation closes") { owner.window.attachedSheet == nil }
         }

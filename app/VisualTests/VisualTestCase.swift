@@ -9,15 +9,26 @@ import XCTest
 import WebKit
 @testable import Kido
 
-// Compares the decoded pixel values and ignores the embedded colour profile, which follows the display.
+private func imagePixels(_ image: CGImage) -> (width: Int, height: Int, channels: [UInt8])? {
+    let space = CGColorSpaceCreateDeviceRGB()
+    guard let source = image.copy(colorSpace: space),
+          let context = CGContext(data: nil, width: image.width, height: image.height, bitsPerComponent: 8,
+                                  bytesPerRow: image.width * 4, space: space,
+                                  bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue | CGBitmapInfo.byteOrder32Big.rawValue),
+          let bytes = context.data?.assumingMemoryBound(to: UInt8.self) else { return nil }
+    context.draw(source, in: CGRect(x: 0, y: 0, width: image.width, height: image.height))
+    return (image.width, image.height, Array(UnsafeBufferPointer(start: bytes, count: image.width * image.height * 4)))
+}
+
 private func pixelsDiffing() -> Diffing<NSImage> {
     let reference = Diffing<NSImage>.image
     return .init(toData: reference.toData, fromData: reference.fromData) { old, new in
-        func raw(_ image: NSImage) -> (Int, Int, [UInt8])? {
-            guard let rep = image.representations.lazy.compactMap({ $0 as? NSBitmapImageRep }).first, let bytes = rep.bitmapData else { return nil }
-            return (rep.pixelsWide, rep.pixelsHigh, Array(UnsafeBufferPointer(start: bytes, count: rep.bytesPerRow * rep.pixelsHigh)))
+        if let old = old.cgImage(forProposedRect: nil, context: nil, hints: nil).flatMap(imagePixels),
+           let new = new.cgImage(forProposedRect: nil, context: nil, hints: nil).flatMap(imagePixels),
+           old.width == new.width, old.height == new.height {
+            if old.channels == new.channels { return nil }
+            if zip(old.channels, new.channels).allSatisfy({ abs(Int($0) - Int($1)) <= 1 }) { return nil }
         }
-        if let old = raw(old), let new = raw(new), old.0 == new.0, old.1 == new.1, old.2 == new.2 { return nil }
         return reference.diff(old, new)
     }
 }
@@ -113,6 +124,7 @@ extension Snapshotting where Value == NSView, Format == NSImage {
 
 // A pane that runs `cat` in raw mode, so what a test writes to it comes back as output.
 let rawScript = "stty raw -echo; printf '\\033]2;raw-ready\\007'; exec /bin/cat"
+let rawEchoScript = "while IFS= read -r -k 1 -u 0 byte; do printf '%s' \"$byte\"; done"
 
 let koaIdle = "!document.querySelector('#field').inert&&document.querySelector('#items [aria-label=working]')===null"
 let koaWorking = "document.querySelector('#items [aria-label=working]')!==null"
@@ -203,6 +215,35 @@ let koaWorking = "document.querySelector('#items [aria-label=working]')!==null"
 
     func mainQueueFence() async {
         await withCheckedContinuation { continuation in DispatchQueue.main.async { continuation.resume() } }
+    }
+
+    func sheetImage(_ alert: NSAlert, attachedTo parent: NSWindow) async throws -> NSImage {
+        let sheet = alert.window
+        try await wait("the sheet", within: 5) { parent.attachedSheet === sheet }
+        await mainQueueFence()
+        alert.layout()
+        let view = try XCTUnwrap(sheet.contentView?.superview)
+        view.layoutSubtreeIfNeeded()
+        let cached = try XCTUnwrap(view.bitmapImageRepForCachingDisplay(in: view.bounds))
+        sheet.effectiveAppearance.performAsCurrentDrawingAppearance { view.cacheDisplay(in: view.bounds, to: cached) }
+        let captured = try XCTUnwrap(cached.cgImage)
+        let context = try XCTUnwrap(CGContext(data: nil, width: captured.width, height: captured.height, bitsPerComponent: 8,
+                                             bytesPerRow: captured.width * 4, space: CGColorSpaceCreateDeviceRGB(),
+                                             bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue | CGBitmapInfo.byteOrder32Big.rawValue))
+        let rect = CGRect(x: 0, y: 0, width: captured.width, height: captured.height)
+        sheet.effectiveAppearance.performAsCurrentDrawingAppearance { context.setFillColor(NSColor.windowBackgroundColor.cgColor) }
+        context.fill(rect)
+        let bytes = try XCTUnwrap(context.data?.assumingMemoryBound(to: UInt8.self))
+        let count = captured.width * captured.height * 4
+        let fill = Array(UnsafeBufferPointer(start: bytes, count: count))
+        context.draw(captured, in: rect)
+        let pixels = Array(UnsafeBufferPointer(start: bytes, count: count))
+        XCTAssertTrue(pixels != fill, "The alert capture contains only its background fill")
+        XCTAssertTrue(stride(from: 3, to: count, by: 4).allSatisfy { pixels[$0] == 255 }, "The alert capture must be opaque")
+        let bitmap = NSBitmapImageRep(cgImage: try XCTUnwrap(context.makeImage()))
+        let image = NSImage(size: bitmap.size)
+        image.addRepresentation(bitmap)
+        return image
     }
 
     func drain(_ runtime: GhosttyRuntime) async throws {

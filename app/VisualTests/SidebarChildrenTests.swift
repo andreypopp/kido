@@ -299,6 +299,14 @@ import XCTest
         try await wait("fresh server root restored") {
             owner.snapshot?.serverInstance != instance && owner.testModel?.selection.pane == root && owner.testSession?.pane(root) != nil
         }
+        guard owner.snapshot?.serverInstance != instance, owner.testModel?.selection.pane == root,
+              owner.testSession?.pane(root) != nil else {
+            let log = fixture.dir + "/log"
+            let output = (try? String(contentsOfFile: log, encoding: .utf8)) ?? "No server log"
+            let appServer = ProcessInfo.processInfo.environment["KIDO_APP_SERVER"] ?? "unset"
+            XCTFail("Restart did not restore the root: dir=\(fixture.dir) socket=\(fixture.dir)/socket appServer=\(appServer) banner=\(owner.testBanner.testText) launchPending=\(owner.testConnection != nil) stderr=\(log)\n\(output)")
+            return
+        }
         XCTAssertFalse(owner.testSession?.pane(root) === old)
         for index in 0..<3 {
             let input = fixture.dir + "/restart-child-\(index).json"

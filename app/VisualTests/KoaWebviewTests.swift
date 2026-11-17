@@ -293,13 +293,12 @@ import SidebarFeed
           const history=Array.from({length:400},(_,i)=>({kind:'assistant',seq:i,revision:0,at:Date.now(),final:true,blocks:[{type:'text',text:'Row '+i+' '+sentence.repeat(4)}],stop:'stop',error:''}));
           push(view(root,[root]));push({type:'reset',epoch:'jump',more:false,items:history});
           await until(()=>gap()<=1&&document.querySelector('#items [data-seq="399"]'));
-          await wait(300);
+          await new Promise((resolve,reject)=>{let previous='',stable=0,frame;const timer=setTimeout(()=>{cancelAnimationFrame(frame);reject(Error('History geometry did not settle'))},5000);function sample(){const current=JSON.stringify([s.scrollHeight,s.scrollTop,s.clientHeight,document.querySelector('#items').getBoundingClientRect().height]);stable=current===previous&&s.scrollTop>20*s.clientHeight&&gap()<=1?stable+1:0;previous=current;if(stable>=2){clearTimeout(timer);resolve()}else frame=requestAnimationFrame(sample)}frame=requestAnimationFrame(sample)});
           const rows=()=>document.querySelectorAll('#items > [data-seq]').length;
           const usable=()=>{const box=s.getBoundingClientRect(),limit=dock.getBoundingClientRect().top;return [...document.querySelectorAll('#items > [data-seq]')].some(row=>{const rect=row.getBoundingClientRect();return rect.height>0&&rect.bottom>box.top&&rect.top<limit&&row.textContent.startsWith('Row ')})};
           const start=s.scrollTop,viewport=s.clientHeight,atEnd=rows();
           moveTo(Math.max(0,start-40*viewport));
-          await until(usable,20000);
-          await wait(500);
+          await until(()=>usable()&&s.scrollTop<start-20*viewport,20000);
           return {atEnd,rows:rows(),usable:usable(),start,top:s.scrollTop,viewport};
         })()
         """#, within: 60)

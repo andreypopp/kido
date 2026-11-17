@@ -20,6 +20,8 @@ import KoModel
     }
 
     func testKoaEditorFloatTakesFocusAndReturnsTheEditedText() async throws {
+        WebviewPaneView.visualInitialScript = "document.hasFocus=()=>true;"
+        defer { WebviewPaneView.visualInitialScript = nil }
         let gate = directory.appendingPathComponent("gate"), editor = directory.appendingPathComponent("editor.sh")
         try "#!/bin/sh\nwhile [ ! -e \(SSH.quote(gate.path)) ]; do sleep 0.05; done\nprintf 'edited by editor' > \"$1\"\n".write(to: editor, atomically: true, encoding: .utf8)
         try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: editor.path)
@@ -33,7 +35,8 @@ import KoModel
         view.visualAttended = true
         try await webviewUntil(web, "window.composer&&\(koaIdle)&&document.querySelector('#model-name').textContent!==''")
         _ = try await webviewJS(web, "(()=>{composer.setText('draft');composer.focus();return true})()")
-        _ = try await webviewJS(web, "(()=>{document.querySelector('.cm-content').dispatchEvent(new KeyboardEvent('keydown',{key:'g',ctrlKey:true,bubbles:true,cancelable:true}));return true})()")
+        let handled = try await webviewJS(web, "(()=>{const event=new KeyboardEvent('keydown',{key:'g',ctrlKey:true,bubbles:true,cancelable:true});document.querySelector('.cm-content').dispatchEvent(event);return event.defaultPrevented})()")
+        XCTAssertEqual(handled, "true")
         let floats = { owner.testModel?.layout.layout.windows.flatMap(\.floats).map(\.pane) ?? [] }
         try await wait("the editor float", within: 15) { !floats().isEmpty }
         let float = try XCTUnwrap(floats().first)

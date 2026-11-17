@@ -30,11 +30,8 @@ import SnapshotTesting
                                   ("forget", AppDelegate.forgetAlert(host, identities: store))] {
                 owner.prepareAlert(alert) { _ in }
                 alert.window.appearance = NSAppearance(named: appearance)
-                try await wait("the sheet") { owner.window.attachedSheet === alert.window }
-                await mainQueueFence()
-                alert.layout()
-                let view = try XCTUnwrap(alert.window.contentView?.superview)
-                checkSnapshot { verifySnapshot(of: view, as: .pixels, named: "\(theme)-\(name)", record: $0, testName: "testPairingMockupStates") }
+                let image = try await sheetImage(alert, attachedTo: owner.window)
+                checkSnapshot { verifySnapshot(of: image, as: .pixels, named: "\(theme)-\(name)", record: $0, testName: "testPairingMockupStates") }
                 owner.respondToAlert(.alertSecondButtonReturn)
                 try await wait("the sheet closes") { owner.window.attachedSheet == nil }
             }
@@ -90,8 +87,12 @@ import SnapshotTesting
                 }
             }
             enter()
+            panel.makeFirstResponder(palette.field)
+            await mainQueueFence()
+            (palette.field.currentEditor() as? NSTextView)?.insertionPointColor = .clear
             image(palette, "\(theme)-empty")
             query(code)
+            await mainQueueFence()
             image(palette, "\(theme)-payload")
             panel.makeFirstResponder(palette.pair?.nameField)
             await mainQueueFence()
