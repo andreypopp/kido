@@ -271,7 +271,7 @@ pub(crate) fn fail_before_program(
 pub(crate) fn keep_failed_pane(socket: &std::path::Path, caller: Option<&Caller>) {
     if let Some(caller) = caller {
         let _ = api::patch_pane(
-            socket,
+            &ko_client::endpoint::Endpoint::Unix(socket.to_owned()),
             caller.clone(),
             &protocol::PanePatch {
                 close: Some(protocol::Close::Keep),

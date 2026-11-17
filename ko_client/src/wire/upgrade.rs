@@ -1,10 +1,12 @@
+use super::stream::Stream;
+use crate::endpoint::Endpoint;
 use std::io::{self, Read};
+#[cfg(test)]
 use std::os::fd::AsFd;
 use std::os::unix::net::UnixStream;
-use std::path::Path;
 use std::sync::Arc;
 
-use ko_sys::event::{Interest, Poll, PollRead, Reads, Ready, Token, Wake};
+use ko_sys::event::{Poll, Read as PollData, Reads, Ready, Token, Wake};
 use ko_sys::fd::Queue;
 use ko_wire::api::Route;
 use ko_wire::http::{self, Response};
@@ -30,7 +32,7 @@ impl Read for Buffered<'_> {
 
 #[derive(Debug)]
 pub struct Connecting {
-    stream: UnixStream,
+    stream: Stream,
     request: Queue,
     response: Vec<u8>,
     key: String,
@@ -46,14 +48,15 @@ pub enum UpgradeStep {
 
 impl Connecting {
     pub fn start(
-        socket: &Path,
+        socket: &Endpoint,
         client: ClientId,
         route: &Route,
         cancel: Option<Arc<Wake>>,
     ) -> io::Result<Connecting> {
-        let stream = UnixStream::from(ko_sys::sock::connect_nonblocking(socket)?);
+        let Endpoint::Unix(socket) = socket;
+        let stream = Stream::Unix(UnixStream::from(ko_sys::sock::connect_nonblocking(socket)?));
         let (method, target) = route.to_request();
-        let (request, key) = upgrade_request(method, &target, Some(client), &[]);
+        let (request, key) = upgrade_request("localhost", method, &target, Some(client), &[]);
         let mut queued = Queue::default();
         queued.bytes = request;
         Ok(Connecting {
@@ -66,30 +69,35 @@ impl Connecting {
     }
 
     pub fn watch(&self, poll: &mut Poll) -> Token {
-        poll.watch(self.stream.as_fd(), Interest::of(true, true))
+        poll.watch(self.stream.fd(), self.stream.interest(true, true))
     }
 
     pub fn advance(mut self, poll: &mut Poll, ready: Ready) -> io::Result<UpgradeStep> {
         if ready.write {
-            self.request.flush(self.stream.as_fd())?;
+            self.stream.flush(&mut self.request)?;
         }
-        poll.interest(ready.token, Interest::of(true, !self.request.is_empty()));
+        poll.interest(
+            ready.token,
+            self.stream.interest(true, !self.request.is_empty()),
+        );
         if !ready.read {
             return Ok(UpgradeStep::Pending(self));
         }
         let mut reads = Reads::new();
-        let mut source = PollRead::new(poll, ready.token, self.stream.as_fd(), &mut reads);
+
         let mut eof = false;
         loop {
             let mut buffer = [0; 4096];
-            let count = match source.read(&mut buffer) {
-                Ok(0) => {
+            let count = match self
+                .stream
+                .read_ready(poll, ready.token, &mut buffer, &mut reads)?
+            {
+                Some(PollData::End) => {
                     eof = true;
                     0
                 }
-                Ok(count) => count,
-                Err(error) if error.kind() == io::ErrorKind::WouldBlock => break,
-                Err(error) => return Err(error),
+                Some(PollData::Data(count)) => count,
+                None => break,
             };
             self.response.extend_from_slice(&buffer[..count]);
             match http::read_upgrade(&mut Buffered {
@@ -134,7 +142,7 @@ mod tests {
         let (ours, mut server) = UnixStream::pair().unwrap();
         fd::set_nonblocking(ours.as_fd()).unwrap();
         let connecting = Connecting {
-            stream: ours,
+            stream: Stream::Unix(ours),
             request: Queue::default(),
             response: Vec::new(),
             key: "test-key".to_owned(),
@@ -173,7 +181,7 @@ mod tests {
         let (ours, mut server) = UnixStream::pair().unwrap();
         fd::set_nonblocking(ours.as_fd()).unwrap();
         let mut connecting = Connecting {
-            stream: ours,
+            stream: Stream::Unix(ours),
             request: Queue::default(),
             response: Vec::new(),
             key: "test-key".to_owned(),

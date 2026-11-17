@@ -18,6 +18,7 @@ pub use images::*;
 pub use remote::*;
 pub use webview::*;
 
+use crate::endpoint::Endpoint;
 use std::cell::Cell;
 use std::collections::{BTreeMap, VecDeque};
 use std::ffi::{CStr, CString, c_char, c_int, c_void};
@@ -377,7 +378,7 @@ struct Shared {
     queue: Arc<Queue>,
     callback: Callback,
     user: User,
-    socket: PathBuf,
+    endpoint: Endpoint,
     cancel: Arc<Wake>,
     wake: Wake,
     commands: Mutex<VecDeque<Command>>,
@@ -876,7 +877,7 @@ pub unsafe extern "C" fn ko_client_connect(
         },
     };
     match start(
-        socket,
+        Endpoint::Unix(socket),
         hello,
         Arc::new(Queue(queue)),
         callback,
@@ -893,7 +894,7 @@ pub unsafe extern "C" fn ko_client_connect(
 }
 
 fn start(
-    socket: PathBuf,
+    endpoint: Endpoint,
     hello: Greeting,
     queue: Arc<Queue>,
     callback: Callback,
@@ -910,7 +911,7 @@ fn start(
         queue,
         callback,
         user,
-        socket,
+        endpoint,
         cancel: Arc::new(cancel),
         wake,
         commands: Mutex::new(VecDeque::new()),
@@ -1862,7 +1863,7 @@ mod tests {
                 sizing: protocol::Sizing::Disabled,
             });
             let handle = start(
-                socket.dir.join("socket"),
+                Endpoint::Unix(socket.dir.join("socket")),
                 hello,
                 Arc::clone(&self.queue),
                 record,

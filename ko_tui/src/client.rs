@@ -1,3 +1,4 @@
+use ko_client::endpoint::Endpoint;
 use std::collections::BTreeMap;
 use std::fs::OpenOptions;
 use std::io::Write;
@@ -370,7 +371,7 @@ struct Client {
     link: Link,
     link_token: Token,
     model: Model,
-    socket: PathBuf,
+    socket: Endpoint,
     pager_command: String,
     pager: Option<Running>,
     output: String,
@@ -405,7 +406,7 @@ struct Client {
 
 impl Client {
     fn start(
-        socket: PathBuf,
+        socket: Endpoint,
         mut link: Link,
         pager: String,
         signals: Signals,
@@ -2169,8 +2170,12 @@ fn serve(mut client: Client) -> Result<(), String> {
 }
 
 fn mismatch(dir: &std::path::Path, host: Option<&str>) -> Option<String> {
-    let (mismatch, server) =
-        ko_client::api::version(&dir.join("socket"), wire::READ_TIMEOUT, None).ok()?;
+    let (mismatch, server) = ko_client::api::version(
+        &Endpoint::Unix(dir.join("socket")),
+        wire::READ_TIMEOUT,
+        None,
+    )
+    .ok()?;
     mismatch?;
     let own = protocol::version();
     let command = match host {
@@ -2192,7 +2197,7 @@ pub fn run(dir: &std::path::Path, executable: &std::path::Path, pager: &str) -> 
         .map_err(|error| mismatch(dir, None).unwrap_or_else(|| error.to_string()))?;
     let signals = Signals::install(&SIGNALS).map_err(text)?;
     serve(Client::start(
-        socket,
+        Endpoint::Unix(socket),
         link,
         pager.to_owned(),
         signals,
@@ -2215,7 +2220,7 @@ pub fn run_remote(
             mismatch(remote.dir(), Some(host)).unwrap_or_else(|| remote.unreachable().to_string())
         })?;
     serve(Client::start(
-        socket,
+        Endpoint::Unix(socket),
         link,
         pager.to_owned(),
         signals,

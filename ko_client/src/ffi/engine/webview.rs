@@ -48,7 +48,7 @@ impl Engine<'_> {
         };
         match Upstream::open(
             &mut self.poll,
-            &self.shared.socket,
+            &self.shared.endpoint,
             kind,
             &target,
             &request.headers,

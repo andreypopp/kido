@@ -1,5 +1,5 @@
+use crate::endpoint::Endpoint;
 use std::ffi::{c_char, c_int};
-use std::path::Path;
 
 use ko_sys::event::Wake;
 use ko_wire::api::Route;
@@ -31,7 +31,7 @@ pub struct Image {
 }
 
 fn request(
-    socket: &Path,
+    socket: &Endpoint,
     client: Option<ClientId>,
     route: &Route,
     accept_shm: bool,

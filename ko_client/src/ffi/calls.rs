@@ -1,7 +1,7 @@
 // The calls that block until the server answered: the caller runs them off the main queue.
 
+use crate::endpoint::Endpoint;
 use std::ffi::{c_char, c_int};
-use std::path::Path;
 use std::time::Duration;
 
 use ko_sys::event::Wake;
@@ -17,11 +17,11 @@ use crate::wire;
 
 pub(super) fn call(
     client: &Client,
-    work: impl FnOnce(&Path, Option<ClientId>, &Wake) -> Result<Vec<u8>, (Code, Vec<u8>)>,
+    work: impl FnOnce(&Endpoint, Option<ClientId>, &Wake) -> Result<Vec<u8>, (Code, Vec<u8>)>,
 ) -> (Code, Vec<u8>) {
     let shared = &client.shared;
     let id = *locked(&shared.client);
-    let result = work(&shared.socket, id, &shared.cancel);
+    let result = work(&shared.endpoint, id, &shared.cancel);
     match result {
         Ok(bytes) => (Code::Ok, bytes),
         Err((code, bytes)) => (
@@ -442,7 +442,7 @@ pub unsafe extern "C" fn ko_client_probe(
         return Code::Argument;
     };
     let within = Duration::from_millis(u64::from(within_ms));
-    let (code, bytes) = match crate::api::version(Path::new(socket), within, None)
+    let (code, bytes) = match crate::api::version(&Endpoint::Unix(socket.into()), within, None)
         .map_err(|error| failure(&error))
     {
         Ok((mismatch, server)) => (

@@ -52,6 +52,7 @@ pub fn parse_record(payload: &[u8]) -> Result<Parsed<'_>, BadRecord> {
 }
 
 pub fn upgrade_request(
+    host: &str,
     method: &str,
     target: &RequestTarget,
     client: Option<ClientId>,
@@ -65,7 +66,7 @@ pub fn upgrade_request(
         ("Sec-WebSocket-Key", key.as_str()),
     ];
     extra.extend_from_slice(headers);
-    (http::call(method, target, client, &extra, b""), key)
+    (http::call(host, method, target, client, &extra, b""), key)
 }
 
 pub fn accepted(response: &http::Response, key: &str) -> io::Result<()> {

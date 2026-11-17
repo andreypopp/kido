@@ -1,8 +1,10 @@
 use ko_wire::protocol::webview::FrameKind;
 
+use crate::endpoint::Endpoint;
+use crate::wire::stream::Stream;
 use std::io;
 use std::ops::Range;
-use std::os::fd::{AsFd, BorrowedFd};
+use std::os::fd::BorrowedFd;
 use std::os::unix::net::UnixStream;
 use std::path::Path;
 use std::time::Instant;
@@ -38,8 +40,9 @@ pub(crate) enum Kind {
 
 #[derive(Debug)]
 enum Phase {
+    Closed,
     Http {
-        stream: UnixStream,
+        stream: Stream,
         reader: response::Reader,
         upgrade: Option<String>,
         eof: bool,
@@ -89,15 +92,16 @@ fn invalid(message: impl Into<String>) -> io::Error {
 impl Upstream {
     pub(crate) fn open(
         poll: &mut Poll,
-        path: &Path,
+        endpoint: &Endpoint,
         kind: Kind,
         target: &ko_wire::protocol::RequestTarget,
         headers: &Headers,
         destination: Target,
         body: &[u8],
     ) -> io::Result<Self> {
-        let stream = UnixStream::from(ko_sys::sock::connect_nonblocking(path)?);
-        let token = poll.watch(stream.as_fd(), Interest::ReadWrite);
+        let Endpoint::Unix(path) = endpoint;
+        let stream = Stream::Unix(UnixStream::from(ko_sys::sock::connect_nonblocking(path)?));
+        let token = poll.watch(stream.fd(), Interest::ReadWrite);
         let client = match destination {
             #[cfg(target_vendor = "apple")]
             Target::Server(client) => Some(client),
@@ -116,7 +120,8 @@ impl Upstream {
         let fields: Vec<_> = http::forwarded(headers.pairs(), length, identity).collect();
         let (bytes, upgrade) = match kind {
             Kind::Upgrade => {
-                let (bytes, key) = ko_wire::ws::upgrade_request("GET", target, client, &fields);
+                let (bytes, key) =
+                    ko_wire::ws::upgrade_request("localhost", "GET", target, client, &fields);
                 (bytes, Some(key))
             }
             Kind::Http(method) => {
@@ -125,9 +130,18 @@ impl Upstream {
                     Target::Server(client) => {
                         let mut fields = fields;
                         fields.push(("Connection", "close"));
-                        http::call(method.http(), target, Some(client), &fields, body)
+                        http::call(
+                            "localhost",
+                            method.http(),
+                            target,
+                            Some(client),
+                            &fields,
+                            body,
+                        )
                     }
-                    Target::Program => http::program_call(method.http(), target, &fields, body),
+                    Target::Program => {
+                        http::program_call("localhost", method.http(), target, &fields, body)
+                    }
                 };
                 (bytes, None)
             }
@@ -199,6 +213,7 @@ impl Upstream {
     }
     pub(crate) fn drained(&self) -> bool {
         match &self.phase {
+            Phase::Closed => true,
             Phase::Http { .. } => self.out.is_empty(),
             Phase::Socket { link, .. } => link.drained(),
         }
@@ -206,12 +221,13 @@ impl Upstream {
     #[cfg(target_vendor = "apple")]
     pub(crate) fn written(&self) -> u64 {
         match &self.phase {
-            Phase::Http { .. } => self.out.written(),
+            Phase::Closed | Phase::Http { .. } => self.out.written(),
             Phase::Socket { link, .. } => link.output().written(),
         }
     }
     pub(crate) fn deadline(&self) -> Option<Instant> {
         match &self.phase {
+            Phase::Closed => None,
             Phase::Http { reader, .. } => (!reader.started()).then_some(self.deadline),
             Phase::Socket {
                 phase: SocketPhase::Closing(deadline) | SocketPhase::Finishing(deadline),
@@ -225,9 +241,10 @@ impl Upstream {
     }
     pub(crate) fn interest(&self, poll: &mut Poll, read: bool) {
         match &self.phase {
-            Phase::Http { eof, .. } => poll.interest(
+            Phase::Closed => {}
+            Phase::Http { stream, eof, .. } => poll.interest(
                 self.token,
-                Interest::of(read && !*eof, !self.out.is_empty()),
+                stream.interest(read && !*eof, !self.out.is_empty()),
             ),
             Phase::Socket { link, phase } => {
                 link.interest(poll, read && !matches!(phase, SocketPhase::Finishing(_)))
@@ -236,11 +253,12 @@ impl Upstream {
     }
     pub(crate) fn flush(&mut self, poll: &mut Poll) -> io::Result<()> {
         match &mut self.phase {
+            Phase::Closed => Ok(()),
             Phase::Http { stream, .. } => {
                 if let Some(error) = stream.take_error()? {
                     return Err(error);
                 }
-                self.out.flush(stream.as_fd())
+                stream.flush(&mut self.out)
             }
             Phase::Socket { link, .. } => link.settle(poll),
         }
@@ -275,6 +293,7 @@ impl Upstream {
     pub(crate) fn next(&mut self, poll: &mut Poll) -> Result<Option<Event>, response::Error> {
         loop {
             match &mut self.phase {
+                Phase::Closed => return Ok(None),
                 Phase::Http {
                     stream,
                     reader,
@@ -288,11 +307,13 @@ impl Upstream {
                                     .as_ref()
                                     .ok_or_else(|| invalid("unexpected WebSocket upgrade"))?;
                                 ko_wire::ws::accepted(&head, key)?;
-                                let link = Link::of(
-                                    stream.try_clone()?,
-                                    reader.take_rest(),
-                                    protocol::Upgrade::Page,
-                                );
+                                let rest = reader.take_rest();
+                                let Phase::Http { stream, .. } =
+                                    std::mem::replace(&mut self.phase, Phase::Closed)
+                                else {
+                                    return Err(invalid("upgrade outside HTTP").into());
+                                };
+                                let link = Link::of_stream(stream, rest, protocol::Upgrade::Page);
                                 poll.unwatch(self.token);
                                 *self = Self::socket(poll, link)?;
                                 Event::Upgraded(response::metadata(head))
@@ -305,12 +326,8 @@ impl Upstream {
                             response::Event::End => Event::End,
                         }));
                     }
-                    let result = poll.read(
-                        self.token,
-                        stream.as_fd(),
-                        reader.read_buffer(),
-                        &mut self.reads,
-                    );
+                    let result =
+                        stream.read_ready(poll, self.token, reader.read_buffer(), &mut self.reads);
                     let count = match &result {
                         Ok(Some(Read::Data(count))) => *count,
                         _ => 0,
@@ -393,7 +410,7 @@ struct Request {
 fn failed(server: &mut Link, request: &Request, reason: AbortReason) -> io::Result<()> {
     let req = request.req;
     let message = match &request.upstream.phase {
-        Phase::Http { .. } => ServeIn::Abort { req, reason },
+        Phase::Closed | Phase::Http { .. } => ServeIn::Abort { req, reason },
         Phase::Socket {
             phase: SocketPhase::Finishing(_),
             ..
@@ -477,7 +494,15 @@ fn command(
             reason: AbortReason::Program,
         }));
     }
-    match Upstream::open(poll, path, kind, &target, &headers, Target::Program, b"") {
+    match Upstream::open(
+        poll,
+        &Endpoint::Unix(path.to_owned()),
+        kind,
+        &target,
+        &headers,
+        Target::Program,
+        b"",
+    ) {
         Ok(upstream) => requests.push(Request { req, upstream }),
         Err(_) => server.send(protocol::json(&ServeIn::Abort {
             req,

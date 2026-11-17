@@ -394,13 +394,14 @@ pub fn request(
 }
 
 pub fn program_call(
+    host: &str,
     method: &str,
     target: &crate::protocol::RequestTarget,
     extra: &[(&str, &str)],
     body: &[u8],
 ) -> Vec<u8> {
     let mut headers = extra.to_vec();
-    headers.extend([("Host", "localhost"), ("Connection", "close")]);
+    headers.extend([("Host", host), ("Connection", "close")]);
     if !headers
         .iter()
         .any(|(name, _)| name.eq_ignore_ascii_case(CONTENT_LENGTH_HEADER))
@@ -411,6 +412,7 @@ pub fn program_call(
 }
 
 pub fn call(
+    host: &str,
     method: &str,
     target: &crate::protocol::RequestTarget,
     client: Option<ClientId>,
@@ -420,7 +422,7 @@ pub fn call(
     let versions = version_headers();
     let client = client.map(|client| client.to_string());
     let length = body.len().to_string();
-    let mut headers = vec![("Host", "localhost")];
+    let mut headers = vec![("Host", host)];
     if (method, target.as_str()) != ("GET", "/version") {
         headers.extend(versions.iter().map(|(name, value)| (*name, value.as_str())));
     }

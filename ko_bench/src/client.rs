@@ -15,7 +15,7 @@ use ko_wire::ws::{Parsed, accepted, masked, parse_frame, parse_record, upgrade_r
 
 fn send(stream: &mut UnixStream, route: &Route, body: &[u8]) -> io::Result<()> {
     let (method, target) = route.to_request();
-    stream.write_all(&call(method, &target, None, &[], body))
+    stream.write_all(&call("localhost", method, &target, None, &[], body))
 }
 
 pub(crate) fn exchange(socket: &Path, route: &Route, body: &str) -> io::Result<Response> {
@@ -26,7 +26,7 @@ pub(crate) fn exchange(socket: &Path, route: &Route, body: &str) -> io::Result<R
 
 pub(crate) fn create_pane(socket: &Path, argv: &[String]) -> io::Result<PaneId> {
     ko_client::layout::add_session(
-        socket,
+        &ko_client::endpoint::Endpoint::Unix(socket.to_owned()),
         (None, None),
         &CreatePane {
             cwd: AbsPath::try_from("/".to_owned()).ok().map(Cwd::Path),
@@ -105,7 +105,7 @@ pub(crate) struct Socket {
 pub(crate) fn upgrade(socket: &Path, route: &Route) -> io::Result<Socket> {
     let mut stream = UnixStream::connect(socket)?;
     let (method, target) = route.to_request();
-    let (request, key) = upgrade_request(method, &target, None, &[]);
+    let (request, key) = upgrade_request("localhost", method, &target, None, &[]);
     stream.write_all(&request)?;
     let Upgrade::Accepted(response, rest) = read_upgrade(&mut stream)? else {
         return Err(io::Error::other("WebSocket upgrade refused"));

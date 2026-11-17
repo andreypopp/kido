@@ -1,15 +1,18 @@
+pub(crate) mod stream;
 mod upgrade;
 pub use upgrade::{Connecting, UpgradeStep};
 
+use crate::endpoint::Endpoint;
 use std::fmt::Display;
 use std::io::{self, Read, Write};
+#[cfg(test)]
 use std::os::fd::AsFd;
 use std::os::unix::net::UnixStream;
-use std::path::Path;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use stream::Stream;
 
-use ko_sys::event::{Interest, Poll, PollRead, Reads, Ready, Token, Wake};
+use ko_sys::event::{Poll, Read as PollData, Reads, Ready, Token, Wake};
 use ko_sys::fd::{self, Queue, Waited, Want};
 use ko_wire::api::Route;
 use ko_wire::http::{self, Response, Upgrade, call};
@@ -64,7 +67,7 @@ impl Limit {
 }
 
 struct Interruptible<'a> {
-    stream: &'a UnixStream,
+    stream: &'a mut Stream,
     cancel: Option<&'a Wake>,
     within: Limit,
 }
@@ -72,12 +75,12 @@ struct Interruptible<'a> {
 impl Read for Interruptible<'_> {
     fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
         match fd::wait(
-            self.stream.as_fd(),
+            self.stream.fd(),
             Want::Read,
             self.cancel.map(Wake::fd),
             Some(self.within.remaining()?),
         )? {
-            Waited::Ready => fd::read(self.stream.as_fd(), buffer),
+            Waited::Ready => self.stream.read(buffer),
             Waited::Cancelled => Err(connect::cancelled_error()),
             Waited::TimedOut => Err(io::ErrorKind::TimedOut.into()),
         }
@@ -85,7 +88,7 @@ impl Read for Interruptible<'_> {
 }
 
 fn write_until(
-    stream: &UnixStream,
+    stream: &mut Stream,
     mut bytes: &[u8],
     cancel: Option<&Wake>,
     within: Limit,
@@ -93,12 +96,12 @@ fn write_until(
     stream.set_nonblocking(true)?;
     while !bytes.is_empty() {
         let _ = within.remaining()?;
-        match fd::write(stream.as_fd(), bytes) {
+        match stream.write(bytes) {
             Ok(0) => return Err(io::ErrorKind::WriteZero.into()),
             Ok(count) => bytes = bytes.get(count..).unwrap_or_default(),
             Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
                 match fd::wait(
-                    stream.as_fd(),
+                    stream.fd(),
                     Want::Write,
                     cancel.map(Wake::fd),
                     Some(within.remaining()?),
@@ -115,7 +118,7 @@ fn write_until(
 }
 
 fn flush_until(
-    stream: &UnixStream,
+    stream: &mut Stream,
     out: &mut Queue,
     cancel: Option<&Wake>,
     within: Duration,
@@ -150,15 +153,16 @@ fn borrowed<'a>(headers: &'a [(&'static str, String)]) -> Vec<(&'static str, &'a
 }
 
 fn open(
-    socket: &Path,
+    socket: &Endpoint,
     (client, caller): Who,
     (method, target): (&str, &protocol::RequestTarget),
     headers: &[(&str, &str)],
     body: &[u8],
     within: Limit,
     cancel: Option<&Wake>,
-) -> io::Result<UnixStream> {
-    let stream = match within {
+) -> io::Result<Stream> {
+    let Endpoint::Unix(socket) = socket;
+    let mut stream = Stream::Unix(match within {
         Limit::Idle(_) => connect::connect(socket, PATIENCE, cancel)?,
         Limit::Deadline(_) => loop {
             let remaining = within.remaining()?;
@@ -170,14 +174,14 @@ fn open(
                 Err(error) => return Err(error),
             }
         },
-    };
+    });
     let identity = identity(caller.as_ref());
     let mut extra = vec![("Connection", "keep-alive")];
     extra.extend_from_slice(headers);
     extra.extend(borrowed(&identity));
     write_until(
-        &stream,
-        &call(method, target, client, &extra, body),
+        &mut stream,
+        &call("localhost", method, target, client, &extra, body),
         cancel,
         within,
     )?;
@@ -185,7 +189,7 @@ fn open(
 }
 
 pub(crate) fn exchange(
-    socket: &Path,
+    socket: &Endpoint,
     who: Who,
     target: (&str, &protocol::RequestTarget),
     headers: &[(&str, &str)],
@@ -193,9 +197,9 @@ pub(crate) fn exchange(
     within: Limit,
     cancel: Option<&Wake>,
 ) -> io::Result<Response> {
-    let stream = open(socket, who, target, headers, body, within, cancel)?;
+    let mut stream = open(socket, who, target, headers, body, within, cancel)?;
     let mut reader = Interruptible {
-        stream: &stream,
+        stream: &mut stream,
         cancel,
         within,
     };
@@ -256,7 +260,7 @@ impl From<Rejected> for String {
 }
 
 fn fetch(
-    socket: &Path,
+    socket: &Endpoint,
     who: Who,
     route: &Route,
     body: &[u8],
@@ -265,10 +269,10 @@ fn fetch(
 ) -> Result<(), Rejected> {
     let (method, target) = route.to_request();
     let within = Limit::Idle(within);
-    let stream = open(socket, who, (method, &target), &[], body, within, cancel)?;
+    let mut stream = open(socket, who, (method, &target), &[], body, within, cancel)?;
     let mut failure = Vec::new();
     let mut reader = Interruptible {
-        stream: &stream,
+        stream: &mut stream,
         cancel,
         within,
     };
@@ -300,7 +304,7 @@ pub(crate) fn succeeded(response: Response) -> Result<Response, Rejected> {
 pub type Who = (Option<ClientId>, Option<Caller>);
 
 pub fn request(
-    socket: &Path,
+    socket: &Endpoint,
     who: Who,
     route: &Route,
     body: &[u8],
@@ -310,7 +314,7 @@ pub fn request(
 }
 
 pub fn request_within(
-    socket: &Path,
+    socket: &Endpoint,
     who: Who,
     route: &Route,
     body: &[u8],
@@ -325,7 +329,7 @@ pub fn request_within(
 }
 
 pub fn download(
-    socket: &Path,
+    socket: &Endpoint,
     client: ClientId,
     route: &Route,
     file: &mut impl Write,
@@ -406,7 +410,7 @@ impl Display for ReadError {
 
 #[derive(Debug)]
 pub struct Link {
-    stream: UnixStream,
+    stream: Stream,
     ctx: WebSocketContext,
     out: Queue,
     reads: Reads,
@@ -418,8 +422,8 @@ pub struct Link {
 }
 
 struct Io<'a> {
-    stream: &'a UnixStream,
-    source: Option<(PollRead<'a>, Instant)>,
+    stream: &'a mut Stream,
+    source: Option<(&'a mut Poll, Token, &'a mut Reads, Instant)>,
     out: &'a mut Queue,
     cancel: Option<&'a Wake>,
     received: &'a mut Instant,
@@ -438,13 +442,19 @@ impl Read for Io<'_> {
                 }
                 .read(buffer)
             }
-            Some((source, _)) => source.read(buffer),
+            Some((poll, token, reads, _)) => {
+                match self.stream.read_ready(poll, *token, buffer, reads)? {
+                    Some(PollData::Data(count)) => Ok(count),
+                    Some(PollData::End) => Ok(0),
+                    None => Err(io::ErrorKind::WouldBlock.into()),
+                }
+            }
         }?;
         if count > 0 {
             *self.received = self
                 .source
                 .as_ref()
-                .map_or_else(Instant::now, |(_, now)| *now);
+                .map_or_else(Instant::now, |(_, _, _, now)| *now);
         }
         Ok(count)
     }
@@ -462,7 +472,7 @@ impl Write for Io<'_> {
 }
 
 fn writer<'a>(
-    stream: &'a UnixStream,
+    stream: &'a mut Stream,
     out: &'a mut Queue,
     received: &'a mut Instant,
     within: Duration,
@@ -491,11 +501,11 @@ impl Link {
         route: &Route,
         cancel: Option<Arc<Wake>>,
     ) -> io::Result<Link> {
-        Link::upgrade_within(stream, client, route, cancel, READ_TIMEOUT)
+        Link::upgrade_within(Stream::Unix(stream), client, route, cancel, READ_TIMEOUT)
     }
 
-    pub fn upgrade_within(
-        stream: UnixStream,
+    fn upgrade_within(
+        stream: Stream,
         client: Option<ClientId>,
         route: &Route,
         cancel: Option<Arc<Wake>>,
@@ -513,7 +523,7 @@ impl Link {
     }
 
     pub(crate) fn handshake(
-        stream: UnixStream,
+        mut stream: Stream,
         (client, caller): Who,
         route: &Route,
         cancel: Option<Arc<Wake>>,
@@ -522,10 +532,16 @@ impl Link {
     ) -> io::Result<Result<Link, Response>> {
         let (method, target) = route.to_request();
         let identity = identity(caller.as_ref());
-        let (request, key) = upgrade_request(method, &target, client, &borrowed(&identity));
-        write_until(&stream, &request, cancel.as_deref(), Limit::Idle(within))?;
+        let (request, key) =
+            upgrade_request("localhost", method, &target, client, &borrowed(&identity));
+        write_until(
+            &mut stream,
+            &request,
+            cancel.as_deref(),
+            Limit::Idle(within),
+        )?;
         let upgrade = http::read_upgrade(&mut Interruptible {
-            stream: &stream,
+            stream: &mut stream,
             cancel: cancel.as_deref(),
             within: Limit::Idle(within),
         })?;
@@ -537,7 +553,7 @@ impl Link {
     }
 
     pub(crate) fn upgraded(
-        stream: UnixStream,
+        stream: Stream,
         upgrade: Upgrade,
         key: &str,
         cancel: Option<Arc<Wake>>,
@@ -550,14 +566,18 @@ impl Link {
         };
         accepted(&response, key)?;
         // macOS can return EINVAL for this tuning when the peer has closed.
-        let _ = ko_sys::sock::set_receive_buffer(stream.as_fd(), RECEIVE_BUFFER);
-        let mut link = Link::of(stream, rest, limit);
+        let _ = ko_sys::sock::set_receive_buffer(stream.fd(), RECEIVE_BUFFER);
+        let mut link = Link::of_stream(stream, rest, limit);
         link.cancel = cancel;
         link.token = token;
         Ok(Ok(link))
     }
 
     pub fn of(stream: UnixStream, rest: Vec<u8>, limit: protocol::Upgrade) -> Link {
+        Self::of_stream(Stream::Unix(stream), rest, limit)
+    }
+
+    pub(crate) fn of_stream(stream: Stream, rest: Vec<u8>, limit: protocol::Upgrade) -> Link {
         let max_message = match limit {
             protocol::Upgrade::Control => MAX_MESSAGE,
             protocol::Upgrade::Page => protocol::EXEC_CHUNK,
@@ -581,21 +601,22 @@ impl Link {
     }
 
     pub fn connect_within(
-        socket: &Path,
+        socket: &Endpoint,
         client: Option<ClientId>,
         route: &Route,
         cancel: Option<Arc<Wake>>,
         within: Duration,
     ) -> io::Result<Link> {
-        let stream = connect::connect(socket, PATIENCE, cancel.as_deref())?;
+        let Endpoint::Unix(socket) = socket;
+        let stream = Stream::Unix(connect::connect(socket, PATIENCE, cancel.as_deref())?);
         Link::upgrade_within(stream, client, route, cancel, within)
     }
 
     pub fn watch(&mut self, poll: &mut Poll) -> io::Result<Token> {
-        fd::set_nonblocking(self.stream.as_fd())?;
+        fd::set_nonblocking(self.stream.fd())?;
         let token = poll.watch(
-            self.stream.as_fd(),
-            Interest::of(true, !self.out.is_empty()),
+            self.stream.fd(),
+            self.stream.interest(true, !self.out.is_empty()),
         );
         self.token = Some(token);
         Ok(token)
@@ -640,12 +661,12 @@ impl Link {
         let Some(token) = self.token else {
             return Ok(Next::Closed);
         };
-        let source = PollRead::new(poll, token, self.stream.as_fd(), &mut self.reads);
+
         let next = Link::pump(
             &mut self.ctx,
             &mut Io {
-                stream: &self.stream,
-                source: Some((source, now)),
+                stream: &mut self.stream,
+                source: Some((poll, token, &mut self.reads, now)),
                 out: &mut self.out,
                 cancel: None,
                 received: &mut self.received,
@@ -654,7 +675,7 @@ impl Link {
             &mut self.closing,
         )?;
         if matches!(next, Next::Shutdown | Next::Closed | Next::Gone) {
-            let _ = self.out.flush(self.stream.as_fd());
+            let _ = self.stream.flush(&mut self.out);
         } else {
             self.settle(poll)?;
         }
@@ -665,7 +686,7 @@ impl Link {
         let next = Link::pump(
             &mut self.ctx,
             &mut Io {
-                stream: &self.stream,
+                stream: &mut self.stream,
                 source: None,
                 out: &mut self.out,
                 cancel: self.cancel.as_deref(),
@@ -737,7 +758,7 @@ impl Link {
         let len = message.len() as u64;
         self.ctx
             .flush(&mut writer(
-                &self.stream,
+                &mut self.stream,
                 &mut self.out,
                 &mut self.received,
                 self.within,
@@ -745,7 +766,12 @@ impl Link {
             .map_err(failed)?;
         self.ctx
             .write(
-                &mut writer(&self.stream, &mut self.out, &mut self.received, self.within),
+                &mut writer(
+                    &mut self.stream,
+                    &mut self.out,
+                    &mut self.received,
+                    self.within,
+                ),
                 message,
             )
             .map_err(failed)?;
@@ -760,7 +786,12 @@ impl Link {
     ) -> io::Result<()> {
         self.ctx
             .close(
-                &mut writer(&self.stream, &mut self.out, &mut self.received, self.within),
+                &mut writer(
+                    &mut self.stream,
+                    &mut self.out,
+                    &mut self.received,
+                    self.within,
+                ),
                 Some(tungstenite::protocol::CloseFrame {
                     code: code.into(),
                     reason: String::from(reason).into(),
@@ -779,7 +810,7 @@ impl Link {
 
     pub(crate) fn interest(&self, poll: &mut Poll, read: bool) {
         if let Some(token) = self.token {
-            poll.interest(token, Interest::of(read, !self.out.is_empty()));
+            poll.interest(token, self.stream.interest(read, !self.out.is_empty()));
         }
     }
 
@@ -789,7 +820,7 @@ impl Link {
     }
 
     fn flush(&mut self) -> io::Result<()> {
-        let result = self.out.flush(self.stream.as_fd());
+        let result = self.stream.flush(&mut self.out);
         if self.out.sent_past_half() {
             self.out.compact();
         }
@@ -798,7 +829,7 @@ impl Link {
 
     pub fn flush_blocking(&mut self) -> io::Result<()> {
         flush_until(
-            &self.stream,
+            &mut self.stream,
             &mut self.out,
             self.cancel.as_deref(),
             self.within,
@@ -808,7 +839,7 @@ impl Link {
     pub fn settle(&mut self, poll: &mut Poll) -> io::Result<()> {
         self.flush()?;
         if let Some(token) = self.token {
-            poll.interest(token, Interest::of(true, !self.out.is_empty()));
+            poll.interest(token, self.stream.interest(true, !self.out.is_empty()));
         }
         Ok(())
     }
@@ -862,7 +893,7 @@ mod tests {
         drop(peer);
         closed(&stream);
         let error = Link::handshake(
-            stream,
+            Stream::Unix(stream),
             (None, None),
             &Route::Client {},
             None,
@@ -887,17 +918,26 @@ mod tests {
         )
         .unwrap();
         drop(peer);
+        let mut transport = Stream::Unix(stream);
         let upgrade = http::read_upgrade(&mut Interruptible {
-            stream: &stream,
+            stream: &mut transport,
             cancel: None,
             within: Limit::Idle(Duration::from_secs(5)),
         })
         .unwrap();
+        let Stream::Unix(stream) = transport;
         closed(&stream);
         assert!(
-            Link::upgraded(stream, upgrade, key, None, None, protocol::Upgrade::Control)
-                .unwrap()
-                .is_ok()
+            Link::upgraded(
+                Stream::Unix(stream),
+                upgrade,
+                key,
+                None,
+                None,
+                protocol::Upgrade::Control
+            )
+            .unwrap()
+            .is_ok()
         );
     }
 
@@ -956,7 +996,7 @@ mod tests {
         assert_eq!(
             link.ctx
                 .read(&mut writer(
-                    &link.stream,
+                    &mut link.stream,
                     &mut link.out,
                     &mut link.received,
                     link.within

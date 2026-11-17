@@ -1,4 +1,4 @@
-use std::path::Path;
+use ko_client::endpoint::Endpoint;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -237,7 +237,7 @@ pub(crate) struct Mirror {
 
 impl Mirror {
     fn connect(
-        socket: &Path,
+        socket: &Endpoint,
         client: ClientId,
         pane: PaneId,
         resume: Option<u64>,
@@ -259,7 +259,7 @@ impl Mirror {
     }
 
     pub(crate) fn open(
-        socket: &Path,
+        socket: &Endpoint,
         client: ClientId,
         pane: PaneId,
         limits: Limits,
@@ -885,7 +885,7 @@ impl Mirror {
     pub(crate) fn reopen(
         &mut self,
         cause: String,
-        socket: &Path,
+        socket: &Endpoint,
         client: ClientId,
         pane: PaneId,
         poll: &mut Poll,
@@ -898,7 +898,7 @@ impl Mirror {
 
     pub(crate) fn relink(
         &mut self,
-        socket: &Path,
+        socket: &Endpoint,
         client: ClientId,
         pane: PaneId,
         poll: &mut Poll,
@@ -967,7 +967,14 @@ mod tests {
         let mut poll = Poll::new();
         let client = "client_1".parse().unwrap();
         let pane = "pane_1".parse().unwrap();
-        let mut mirror = Mirror::open(&path, client, pane, default_limits(), &mut poll).unwrap();
+        let mut mirror = Mirror::open(
+            &Endpoint::Unix(path.clone()),
+            client,
+            pane,
+            default_limits(),
+            &mut poll,
+        )
+        .unwrap();
         let (mut held, _) = listener.accept().unwrap();
         std::fs::remove_file(&path).unwrap();
         let token = mirror.token().unwrap();
@@ -1038,7 +1045,7 @@ mod tests {
         let listener = UnixListener::bind(&path).unwrap();
         mirror
             .relink(
-                &path,
+                &Endpoint::Unix(path.clone()),
                 "client_1".parse().unwrap(),
                 "pane_1".parse().unwrap(),
                 &mut poll,

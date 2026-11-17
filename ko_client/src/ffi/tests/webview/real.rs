@@ -53,7 +53,7 @@ fn webview_ffi_uses_the_real_proxy_and_cancels_the_program_request() {
     started.recv_timeout(WAIT).unwrap();
     let call = |method: &str, target: &str, body: &[u8]| {
         crate::wire::exchange(
-            &server.dir.join("socket"),
+            &crate::endpoint::Endpoint::Unix(server.dir.join("socket")),
             (None, None),
             (method, &target.to_owned().try_into().unwrap()),
             &[],
@@ -88,6 +88,7 @@ fn webview_ffi_uses_the_real_proxy_and_cancels_the_program_request() {
     stream.set_read_timeout(Some(WAIT)).unwrap();
     stream.set_write_timeout(Some(WAIT)).unwrap();
     let (request, key) = ko_wire::ws::upgrade_request(
+        "localhost",
         "GET",
         &format!("/panes/{pane}/webview_serve").try_into().unwrap(),
         None,

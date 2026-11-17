@@ -1,7 +1,9 @@
+use crate::endpoint::Endpoint;
+use crate::wire::stream::Stream;
 use std::fmt;
 use std::io;
 use std::os::fd::BorrowedFd;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::{Duration, Instant};
 
 use ko_sys::event::{Events, Interest, Mode, Poll, Wake};
@@ -74,7 +76,7 @@ pub(crate) fn response_error(response: &Response) -> ReplyError {
 }
 
 pub fn version(
-    socket: &Path,
+    socket: &Endpoint,
     within: Duration,
     cancel: Option<&Wake>,
 ) -> io::Result<(Option<ErrorKind>, Version)> {
@@ -118,7 +120,7 @@ pub enum Error {
     Server(Failure),
 }
 
-fn socket(dir: &Path, caller: Option<&Caller>) -> Result<PathBuf, Failure> {
+fn socket(dir: &Path, caller: Option<&Caller>) -> Result<Endpoint, Failure> {
     if let Err(error) = dir.symlink_metadata()
         && connect::absent(&error)
     {
@@ -129,7 +131,9 @@ fn socket(dir: &Path, caller: Option<&Caller>) -> Result<PathBuf, Failure> {
     } else {
         Dir::Existing
     };
-    local::socket(mode, dir).map_err(Failure::Failed)
+    local::socket(mode, dir)
+        .map(Endpoint::Unix)
+        .map_err(Failure::Failed)
 }
 
 pub(crate) fn exchange(
@@ -217,7 +221,11 @@ pub fn stream(
     let route = Route::of_request("GET", path).map_err(|_| Error::NotWebsocket)?;
     let limit = route.upgrade().ok_or(Error::NotWebsocket)?;
     let stream = socket(dir, caller.as_ref())
-        .and_then(|socket| connect::connect(&socket, connect::PATIENCE, None).map_err(failure))
+        .and_then(|Endpoint::Unix(socket)| {
+            connect::connect(&socket, connect::PATIENCE, None)
+                .map(Stream::Unix)
+                .map_err(failure)
+        })
         .map_err(Error::Server)?;
     Link::handshake(
         stream,
@@ -231,7 +239,7 @@ pub fn stream(
 }
 
 pub fn patch_pane(
-    socket: &Path,
+    socket: &Endpoint,
     caller: Caller,
     body: &protocol::PanePatch,
 ) -> Result<(), Failure> {

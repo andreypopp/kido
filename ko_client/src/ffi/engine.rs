@@ -173,14 +173,13 @@ impl Engine<'_> {
     fn mismatch(&self) -> Option<(Code, Version)> {
         let shared = self.shared;
         let (mismatch, server) =
-            crate::api::version(shared.socket.as_path(), READ_TIMEOUT, Some(&shared.cancel))
-                .ok()?;
+            crate::api::version(&shared.endpoint, READ_TIMEOUT, Some(&shared.cancel)).ok()?;
         mismatch.map(|kind| (Code::of(&kind), server))
     }
 
     fn join(&mut self) -> Result<(), Failed> {
         let shared = self.shared;
-        let socket = shared.socket.as_path();
+        let socket = &shared.endpoint;
         let mut link = Link::connect_within(
             socket,
             None,
@@ -531,7 +530,7 @@ impl Engine<'_> {
             offset: open.view.resume_offset().and_then(Offset::new),
         };
         let linked = Connecting::start(
-            shared.socket.as_path(),
+            &shared.endpoint,
             client,
             &route,
             Some(Arc::clone(&shared.cancel)),

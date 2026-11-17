@@ -1,6 +1,7 @@
 pub mod api;
 pub mod connect;
 pub mod edit;
+pub mod endpoint;
 #[cfg(target_vendor = "apple")]
 pub mod ffi;
 #[cfg(not(target_os = "ios"))]
