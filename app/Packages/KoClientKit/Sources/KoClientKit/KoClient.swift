@@ -469,6 +469,13 @@ private final class UploadReader: @unchecked Sendable {
         try handle.call { try check(ko_client_focus($0, focused)) }
     }
 
+    /// Tells the core that the network path changed (`ko_client_path_changed`): a QUIC connection
+    /// migrates, and a remote client that waits to retry connects at once. `PathMonitor` calls it.
+    /// An iOS app also calls it when it becomes active. A closed client ignores it.
+    public func pathChanged() {
+        _ = try? handle.call { ko_client_path_changed($0) }
+    }
+
     public func observe(_ panes: [PaneID], attending: Bool) throws {
         let pointers: [UnsafePointer<CChar>?] = panes.map { UnsafePointer(strdup($0.description)) }
         defer { pointers.forEach { $0.map { free(UnsafeMutablePointer(mutating: $0)) } } }

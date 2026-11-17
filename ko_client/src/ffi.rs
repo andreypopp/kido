@@ -334,6 +334,7 @@ enum Command {
     WebviewStop(u64),
     WebviewResume(u64),
     WebviewWrite(u64, webview::Write),
+    PathChanged,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1044,6 +1045,21 @@ pub extern "C" fn ko_client_cancel(client_: *const Client) -> Code {
         return Code::Closed;
     }
     client.shared.cancel.wake();
+    Code::Ok
+}
+
+#[unsafe(no_mangle)]
+pub extern "C" fn ko_client_path_changed(client_: *const Client) -> Code {
+    let client = client_call!(client_);
+    let mut commands = locked(&client.shared.commands);
+    if !commands
+        .iter()
+        .any(|command| matches!(command, Command::PathChanged))
+    {
+        commands.push_back(Command::PathChanged);
+    }
+    drop(commands);
+    client.shared.wake.wake();
     Code::Ok
 }
 
@@ -3210,8 +3226,13 @@ mod tests {
         let view = open_view(client, decoder, true);
         assert_eq!(fixture.next(), Seen::Restored(1, Restored::Ok));
         decoder.expect_bytes(100, b"abcde");
+        assert_eq!(ko_client_path_changed(std::ptr::null()), Code::Argument);
+        assert_eq!(ko_client_path_changed(client), Code::Ok);
         drop_first.send(()).unwrap();
-        assert!(matches!(fixture.next(), Seen::Failed(Code::Closed, _)));
+        assert_eq!(
+            fixture.next(),
+            Seen::Failed(Code::Closed, "server closed".to_owned())
+        );
         assert!(matches!(fixture.next(), Seen::Welcome(_, _, false)));
         assert!(matches!(fixture.next(), Seen::Layout(2, ..)));
         assert_eq!(decoder.next_feed(), Fed::Bytes(105, b"f".to_vec()));

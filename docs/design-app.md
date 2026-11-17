@@ -98,6 +98,18 @@ the app only through `dispatch_async_f` on the caller's serial queue.
 KoClientKit turns each into a `KoEvent`, the view events included; the
 app's `KoClient.connect` gives the view events to their `KoView`.
 
+**The network path.** `PathMonitor` in KoClientKit wraps
+`NWPathMonitor` for every app that uses the package: its first update
+is the baseline, and each later update whose status is satisfied calls
+`KoClient.pathChanged()` (`ko_client_path_changed`) on the clients
+that the app registers, which it holds weakly; an unsatisfied update
+does nothing, so a short loss of the path leaves the links to the
+lost-link rule. Kido.app's `AppDelegate` owns one monitor for the
+process, and each `WindowOwner` registers its connected client. The
+core decides what a hint does (design-ko.md, section 5, "Migration").
+An iOS app also calls `pathChanged()` when it becomes active, because
+its sockets were suspended.
+
 **The endpoint and the identity.** `ko_client_connect` and
 `ko_client_probe` take an endpoint (`KoEndpoint`): a unix socket, or a
 TLS host and port with an identity (`KoIdentity`): the certificate's

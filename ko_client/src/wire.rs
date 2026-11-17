@@ -1129,6 +1129,18 @@ impl Link {
             .map_err(failed)
     }
 
+    #[cfg(all(feature = "tls", target_vendor = "apple"))]
+    pub(crate) fn route_moved(&self) -> bool {
+        let Stream::Direct(stream::Direct::Tls(secured)) = &self.stream else {
+            return false;
+        };
+        let socket = secured.socket();
+        match (socket.local_addr(), socket.peer_addr()) {
+            (Ok(local), Ok(peer)) => !quic::route(peer).is_ok_and(|ip| ip == local.ip()),
+            _ => true,
+        }
+    }
+
     pub(crate) fn drained(&self) -> bool {
         self.out.is_empty() && !self.stream.pending_write()
     }

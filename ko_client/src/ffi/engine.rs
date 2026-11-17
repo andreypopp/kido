@@ -21,8 +21,9 @@ use tungstenite::Bytes;
 use super::view::{Feed, Slice, View};
 use super::{Code, Command, Posted, Shared, ViewEvent, layout_of, locked, post, string};
 use crate::connect::{self, BACKOFF_FIRST, backoff_after};
-use crate::endpoint::{Dial, Resolving};
+use crate::endpoint::{Dial, Endpoint, Resolving};
 use crate::model::{Applied, Greeting, JoinError, Model, Rejoin};
+use crate::wire::quic::Migration;
 use crate::wire::quic::h3::{Connection as Quic, StreamFailure};
 use crate::wire::{Connecting, Link, Next, READ_TIMEOUT, UpgradeStep, buffered, silent, text};
 
@@ -71,6 +72,7 @@ struct Session {
 #[derive(Debug)]
 enum Connection {
     Idle,
+    Stopped,
     Resolving {
         resolver: Resolving,
         token: Token,
@@ -108,7 +110,7 @@ impl Connection {
 
     fn token(&self) -> Option<Token> {
         match self {
-            Self::Idle => None,
+            Self::Idle | Self::Stopped => None,
             Self::Resolving { token, .. } | Self::Greeting { token, .. } => Some(*token),
             Self::Upgrading { link } => Some(link.token()),
             Self::Probing { exchange, .. } => Some(exchange.token()),
@@ -419,6 +421,7 @@ impl Engine<'_> {
                     .and_then(|response| crate::api::version_response(response).ok())
                     .and_then(|(kind, version)| kind.map(|kind| (Code::of(&kind), version)));
                 if let Some((code, server)) = mismatch {
+                    self.connection = Connection::Stopped;
                     self.poll.stop(self.retry);
                     self.poll.stop(self.dial);
                     std::mem::replace(&mut self.transport, Transport::Direct).dispose(
@@ -570,11 +573,16 @@ impl Engine<'_> {
             }
             Err(error) => {
                 let failed = failure(&error);
+                let idle = error
+                    .get_ref()
+                    .is_some_and(|error| error.is::<crate::wire::quic::IdleTimeout>());
                 std::mem::replace(&mut self.connection, Connection::Idle).dispose(&mut self.poll);
                 owner.detach(&mut self.poll, error);
                 self.poll.stop(self.dial);
                 *locked(&self.shared.resolved) = None;
-                if let Some((target, addresses, remaining, deadline, _)) = dial
+                if idle {
+                    self.rejoin();
+                } else if let Some((target, addresses, remaining, deadline, _)) = dial
                     && !established
                     && !failed.0.terminal()
                 {
@@ -823,17 +831,9 @@ impl Engine<'_> {
             self.reported = Some(code);
             post(self.shared, Posted::Failed(code, string(message)));
         }
-        std::mem::replace(&mut self.connection, Connection::Idle).dispose(&mut self.poll);
-        std::mem::replace(&mut self.transport, Transport::Direct).dispose(
-            &mut self.poll,
-            io::Error::new(io::ErrorKind::ConnectionReset, message.to_owned()),
-        );
-        self.poll.stop(self.dial);
-        self.poll.stop(self.joining);
-        self.shared.up.store(false, Ordering::SeqCst);
-        locked(&self.shared.commands).retain(|command| !matches!(command, Command::Size(_)));
-        self.poll.stop(self.watch);
+        self.release(message);
         if code.terminal() {
+            self.connection = Connection::Stopped;
             self.poll.stop(self.retry);
             for open in std::mem::take(&mut self.views) {
                 self.close_view(open, code, message);
@@ -848,6 +848,33 @@ impl Engine<'_> {
         }
         let _ = self.poll.start(self.retry, self.backoff, None);
         self.backoff = backoff_after(self.backoff);
+    }
+
+    fn release(&mut self, message: &str) {
+        std::mem::replace(&mut self.connection, Connection::Idle).dispose(&mut self.poll);
+        std::mem::replace(&mut self.transport, Transport::Direct).dispose(
+            &mut self.poll,
+            io::Error::new(io::ErrorKind::ConnectionReset, message.to_owned()),
+        );
+        self.poll.stop(self.dial);
+        self.poll.stop(self.joining);
+        self.shared.up.store(false, Ordering::SeqCst);
+        locked(&self.shared.commands).retain(|command| !matches!(command, Command::Size(_)));
+        self.poll.stop(self.watch);
+    }
+
+    fn rejoin(&mut self) {
+        const MOVED: &str = "the network path changed";
+        while !self.webview.is_empty() {
+            self.end_webview(0, Code::Closed, MOVED);
+        }
+        self.release(MOVED);
+        for open in &mut self.views {
+            open.drop_conn(&mut self.poll);
+        }
+        *locked(&self.shared.resolved) = None;
+        self.poll.stop(self.retry);
+        self.connect();
     }
 
     fn watchdog(&mut self) {
@@ -1013,6 +1040,37 @@ impl Engine<'_> {
                     self.send_view(id, &ViewRequest::Resync(options));
                 }
                 Command::Input(id, input) => self.send_view(id, &ViewRequest::Input { input }),
+                Command::PathChanged => self.path_changed(),
+            }
+        }
+    }
+
+    fn path_changed(&mut self) {
+        let migration = match (&mut self.transport, &self.connection) {
+            (_, Connection::Stopped) => return,
+            (Transport::Quic { owner } | Transport::QuicDialing { owner, .. }, _) => {
+                owner.path_changed(&mut self.poll)
+            }
+            (Transport::Direct, Connection::Idle) => match &self.shared.endpoint {
+                Endpoint::Unix(_) => return,
+                Endpoint::Remote(_) => Ok(Migration::Rejoin),
+                #[cfg(test)]
+                Endpoint::Fixed(Dial::Unix(_)) => return,
+                #[cfg(test)]
+                Endpoint::Fixed(Dial::Remote { .. }) => Ok(Migration::Rejoin),
+            },
+            (Transport::Direct, Connection::Established(session)) if session.link.route_moved() => {
+                Ok(Migration::Rejoin)
+            }
+            (Transport::Direct, _) => return,
+        };
+        match migration {
+            Ok(Migration::Moved) => {}
+            Ok(Migration::Rejoin) => self.rejoin(),
+            Err(error) => {
+                let (code, message) = failure(&error);
+                *locked(&self.shared.resolved) = None;
+                self.lose(code, &message);
             }
         }
     }

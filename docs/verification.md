@@ -120,8 +120,19 @@ ends only its own view, and the transport choice: a UDP socket that
 drops every datagram puts the client on TCP within the limit and a
 reconnect does not try UDP again, an open UDP path makes no TCP
 connection, and a refused certificate over QUIC makes no TCP
-connection. The Caddy test shows that a refused admission ends only
-its own view.
+connection. The migration cases use two ports on 127.0.0.1, because
+macOS has no 127.0.0.2 without an alias: a view goes on across three
+migrations with one CONNECT, one signature and its offsets in order,
+and the fourth hint rejoins with no failure; a hint during the QUIC
+handshake restarts it, a hint during a retry wait connects at once,
+long before the pending retry (the test first lets the backoff grow),
+a hint on TCP with the same local address does nothing, and a stopped client and a unix endpoint ignore hints; after
+the I/O thread stalled past the idle timeout (the test holds its
+command lock) and the server forgot the connection, the client
+rejoins at once, with a hint or without one, and the view resumes at
+its offset. A TCP hint with another local address is not tested,
+because macOS cannot bind a second loopback address. The Caddy test
+shows that a refused admission ends only its own view.
 
 `ko_pane/tests/pane.rs` drives the `ko-pane` binary over a socketpair
 and a ring. The `Server` SIGTERM test starts the `ko-pane` that `make
@@ -230,7 +241,7 @@ signature for each connection, and two views that resume at their
 exact offsets, with no new snapshot, after a restart of Caddy; an
 upload over HTTP/3, byte for byte, an early refusal (Caddy stops the
 request direction with `H3_NO_ERROR` and still sends the 404), and a
-cancel.
+cancel; and one migration of a view before the restart.
 `KO_E2E_CONTAINER=1 make cargo ARGS='test -p ko_client --features
 tls quic'` runs them after `make build-linux`. The podman test (also in `container.rs`) runs
 only with `KO_E2E_PODMAN=1`, on a Linux host with podman and the

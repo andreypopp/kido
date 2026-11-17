@@ -1259,6 +1259,31 @@ session (plans/remote-mtls.md, P7) fixes it. The driver keeps
 `quiche`'s spare source connection ids full (limit 4) for migration.
 A close or a drain of the connection is a lost link.
 
+Migration: only the client migrates, and only when the app reports a
+change of the network path (`ko_client_path_changed`; design-app.md,
+"One ko client"); a NAT rebinding needs nothing from the client. On a
+hint, an established QUIC connection always moves to a new socket,
+bound to the local address that the route to the server now chooses,
+with a new port also when that address is the same, and the old
+socket is closed at once, because its route may be gone; QUIC
+retransmits what it carried, so a view goes on with no new upgrade
+and no gap. The client probes the new path, and the server's answer
+validates it; a failed validation, or none within 5 s (provisional until the droplet session,
+plans/remote-mtls.md, P7), is a lost link. `quiche` keeps every old
+path of a client and gives the server's new connection ids back to
+them, so one connection migrates at most three times; the next hint
+finds no spare id and rejoins. A TCP link rejoins on a hint only when
+the route's local address for the server changed; a QUIC connection
+that is still in its handshake or already closing, and a client that
+waits to retry, rejoin at once. A rejoin is a reconnect without the
+retry delay that reports no failure to the app: the views open again
+at their offsets, as after any reconnect. A client that stopped
+(`Stopped`: a refused certificate, a mismatch) ignores hints, and so
+does a unix endpoint. An app that was suspended finds, when it
+resumes, that its connection's idle timer has passed (the server's
+also, 30 s on Caddy); the expired timer rejoins at once, with no
+failure reported.
+
 Reconnect: a lost link starts attempts with a backoff of 100 ms to
 2 s under one outage deadline of 60 s. The local terminal client
 uses the same attempts (section 4.11). An attempt sends a new hello,

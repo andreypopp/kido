@@ -124,6 +124,8 @@ private class AlertEscape: NSView {
     private var banner: Banner!
     private var session: SessionView?
     private var link = Link.down { didSet {
+        if case .connected(let client) = oldValue { paths?.unregister(client) }
+        if case .connected(let client) = link { paths?.register(client) }
         sidebar.tabs.needsDisplay = true
         sidebar.refreshHistory()
     } }
@@ -283,6 +285,7 @@ private class AlertEscape: NSView {
 
     private let openBrowser: (URL) -> Void
     private let identities: IdentityStore?
+    private let paths: PathMonitor?
     private var hostTitle: String { identity ?? host.label }
     private let probeTLS: @Sendable (KoEndpoint, TimeInterval) async -> KoClient.Probe
 
@@ -303,9 +306,10 @@ private class AlertEscape: NSView {
         openBrowser(url)
     }
 
-    init(host: Host, runtime: GhosttyRuntime, start: Bool = true, cause: DialCause = .launch, preferences: UserDefaults? = background ? nil : .standard, identities: IdentityStore? = nil, probeTLS: @escaping @Sendable (KoEndpoint, TimeInterval) async -> KoClient.Probe = { endpoint, timeout in await Task.detached { KoClient.probe(endpoint: endpoint, within: timeout) }.value }, openBrowser: @escaping (URL) -> Void = { if !background { NSWorkspace.shared.open($0) } }) {
+    init(host: Host, runtime: GhosttyRuntime, start: Bool = true, cause: DialCause = .launch, preferences: UserDefaults? = background ? nil : .standard, identities: IdentityStore? = nil, paths: PathMonitor? = nil, probeTLS: @escaping @Sendable (KoEndpoint, TimeInterval) async -> KoClient.Probe = { endpoint, timeout in await Task.detached { KoClient.probe(endpoint: endpoint, within: timeout) }.value }, openBrowser: @escaping (URL) -> Void = { if !background { NSWorkspace.shared.open($0) } }) {
         self.preferences = preferences
         self.identities = identities
+        self.paths = paths
         self.probeTLS = probeTLS
         self.openBrowser = openBrowser
         self.host = host

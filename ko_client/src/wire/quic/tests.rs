@@ -13,7 +13,7 @@ use crate::wire::tests::tls::{Fixtures, Key};
 
 pub(crate) struct Peer {
     pub(crate) socket: UdpSocket,
-    config: quiche::Config,
+    pub(crate) config: quiche::Config,
     pub(crate) connection: Option<quiche::Connection>,
     token: Token,
 }
@@ -59,10 +59,16 @@ impl Peer {
                 Err(error) if error.kind() == io::ErrorKind::WouldBlock => break,
                 Err(error) => panic!("{error}"),
             };
-            if self.connection.is_none() {
-                let header =
-                    quiche::Header::from_slice(&mut bytes[..count], quiche::MAX_CONN_ID_LEN)
-                        .unwrap();
+            let Ok(header) =
+                quiche::Header::from_slice(&mut bytes[..count], quiche::MAX_CONN_ID_LEN)
+            else {
+                continue;
+            };
+            let fresh = self
+                .connection
+                .as_ref()
+                .is_none_or(|connection| connection.is_closed() || connection.is_established());
+            if fresh && header.ty == quiche::Type::Initial {
                 self.connection = Some(
                     quiche::accept(
                         &header.dcid,
@@ -74,7 +80,10 @@ impl Peer {
                     .unwrap(),
                 );
             }
-            let _ = self.connection.as_mut().unwrap().recv(
+            let Some(connection) = &mut self.connection else {
+                continue;
+            };
+            let _ = connection.recv(
                 &mut bytes[..count],
                 quiche::RecvInfo {
                     from,
@@ -90,6 +99,14 @@ impl Peer {
         if connection.timeout().is_some_and(|left| left.is_zero()) {
             connection.on_timeout();
         }
+        while connection.is_established() && connection.scids_left() > 0 {
+            let mut cid = vec![0; connection.source_id().len()];
+            boring::rand::rand_bytes(&mut cid).unwrap();
+            connection
+                .new_scid(&quiche::ConnectionId::from_vec(cid), 0, false)
+                .unwrap();
+        }
+        while connection.path_event_next().is_some() {}
         let mut bytes = [0; 1350];
         for _ in 0..64 {
             match connection.send(&mut bytes) {
@@ -554,5 +571,91 @@ fn quic_async_trust_retry_resumes_from_wake() {
     assert!(driver.connection().is_established());
     poll.free(deadline);
     assert_eq!(signatures.load(Ordering::SeqCst), 1);
+    driver.detach(&mut poll);
+}
+
+#[test]
+fn quic_migrates_three_times_and_then_runs_out_of_ids() {
+    let (mut poll, mut driver, mut peer, _) = setup(Scenario::Accepted);
+    until(&mut poll, &mut driver, &mut peer, |driver, peer| {
+        driver.connection().available_dcids() == 3
+            && peer
+                .connection
+                .as_ref()
+                .is_some_and(quiche::Connection::is_established)
+    })
+    .unwrap();
+    for round in 0..3u8 {
+        let old = driver.local;
+        assert_eq!(
+            driver.migrate(&mut poll).unwrap(),
+            Migration::Moved,
+            "round {round}"
+        );
+        assert_ne!(driver.local, old);
+        let stream = u64::from(round) * 4;
+        driver
+            .connection()
+            .stream_send(stream, &[round], true)
+            .unwrap();
+        until(&mut poll, &mut driver, &mut peer, |driver, peer| {
+            let mut bytes = [0; 4];
+            driver
+                .connection
+                .is_path_validated(driver.local, driver.peer)
+                == Ok(true)
+                && peer
+                    .connection
+                    .as_mut()
+                    .and_then(|connection| connection.stream_recv(stream, &mut bytes).ok())
+                    .is_some_and(|(count, _)| bytes[..count] == [round])
+        })
+        .unwrap();
+        assert!(!poll.is_active(driver.validation));
+    }
+    let local = driver.local;
+    assert_eq!(driver.migrate(&mut poll).unwrap(), Migration::Rejoin);
+    assert_eq!(driver.local, local);
+    driver.detach(&mut poll);
+}
+
+#[test]
+fn quic_migration_discards_a_retained_datagram_and_bounds_validation() {
+    let (mut poll, mut driver, mut peer, _) = setup(Scenario::Accepted);
+    until(&mut poll, &mut driver, &mut peer, |driver, peer| {
+        driver.connection().available_dcids() > 0
+            && peer
+                .connection
+                .as_ref()
+                .is_some_and(quiche::Connection::is_established)
+    })
+    .unwrap();
+    driver.block_send = true;
+    driver.connection().stream_send(0, b"moved", true).unwrap();
+    driver.flush(&mut poll).unwrap();
+    let old = driver.local;
+    assert_eq!(driver.pending.as_ref().unwrap().info.from, old);
+    assert_eq!(driver.migrate(&mut poll).unwrap(), Migration::Moved);
+    assert_eq!(driver.pending.as_ref().unwrap().info.from, driver.local);
+    assert_ne!(driver.local, old);
+    driver.block_send = false;
+    until(&mut poll, &mut driver, &mut peer, |driver, peer| {
+        let mut bytes = [0; 8];
+        driver
+            .connection
+            .is_path_validated(driver.local, driver.peer)
+            == Ok(true)
+            && peer
+                .connection
+                .as_mut()
+                .and_then(|connection| connection.stream_recv(0, &mut bytes).ok())
+                .is_some_and(|(count, fin)| &bytes[..count] == b"moved" && fin)
+    })
+    .unwrap();
+    assert_eq!(driver.migrate(&mut poll).unwrap(), Migration::Moved);
+    poll.unwatch(peer.token);
+    poll.start(driver.validation, Duration::ZERO, None).unwrap();
+    let error = until(&mut poll, &mut driver, &mut peer, |_, _| false).unwrap_err();
+    assert_eq!(error.to_string(), "QUIC path validation failed");
     driver.detach(&mut poll);
 }

@@ -28,6 +28,7 @@ import SidebarFeed
     let routes: WindowRoutes
     private(set) var identities = IdentityStore(root: FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("Kido"))
     private var sentPairingTokens: Set<Data> = []
+    private let paths = PathMonitor()
 
     override init() {
         routes = WindowRoutes()
@@ -106,6 +107,7 @@ import SidebarFeed
     func applicationDidFinishLaunching(_ notification: Notification) {
         let isDefaultLaunch = notification.userInfo?[NSApplication.launchIsDefaultUserInfoKey] as? Bool
         NSApp.applicationIconImage = NSImage(named: "AppIcon")
+        paths.start()
         // AppKit marks a windowless app as terminated by TAL; no Dock reopen reached such a process (pid log, 2026-10-25).
         ProcessInfo.processInfo.disableAutomaticTermination("a Dock reopen with no window opens a Local window")
         for signal in [SIGTERM, SIGINT, SIGHUP] {
@@ -154,7 +156,7 @@ import SidebarFeed
 
     @discardableResult func open(_ host: Host, start: Bool = true, cause: WindowOwner.DialCause = .launch) -> WindowOwner? {
         guard let runtime else { return nil }
-        let owner = WindowOwner(host: host, runtime: runtime, start: start, cause: cause, identities: identities)
+        let owner = WindowOwner(host: host, runtime: runtime, start: start, cause: cause, identities: identities, paths: paths)
         owners.append(owner)
         owner.becameKey = { [weak self, weak owner] in self?.lastKeyOwner = owner }
         if owner.isKeyHost { lastKeyOwner = owner }

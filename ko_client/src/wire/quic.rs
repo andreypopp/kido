@@ -1,7 +1,7 @@
 pub(crate) mod h3;
 
 use std::io;
-use std::net::{SocketAddr, UdpSocket};
+use std::net::{IpAddr, SocketAddr, UdpSocket};
 use std::os::fd::AsFd;
 use std::time::{Duration, Instant};
 
@@ -14,6 +14,33 @@ use std::sync::Arc;
 
 use crate::endpoint::{HostName, tls};
 
+const VALIDATION: Duration = Duration::from_secs(5);
+
+fn validation_failed() -> io::Error {
+    io::Error::new(
+        io::ErrorKind::ConnectionReset,
+        "QUIC path validation failed",
+    )
+}
+
+#[cfg(any(target_vendor = "apple", test))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Migration {
+    Moved,
+    Rejoin,
+}
+
+#[derive(Debug)]
+pub(crate) struct IdleTimeout;
+
+impl std::fmt::Display for IdleTimeout {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str("QUIC idle timeout")
+    }
+}
+
+impl std::error::Error for IdleTimeout {}
+
 #[derive(Debug)]
 struct Datagram {
     count: usize,
@@ -24,11 +51,13 @@ struct Driver {
     connection: quiche::Connection,
     socket: UdpSocket,
     local: SocketAddr,
+    peer: SocketAddr,
     output: [u8; 1350],
     token: Token,
     timeout: Timer,
     pacing: Timer,
     keep: Timer,
+    validation: Timer,
     keep_alive: Duration,
     keep_due: Option<Instant>,
     pending: Option<Datagram>,
@@ -38,6 +67,23 @@ struct Driver {
     wake: Arc<Wake>,
     #[cfg(target_vendor = "apple")]
     trust: Token,
+}
+
+pub(crate) fn route(peer: SocketAddr) -> io::Result<IpAddr> {
+    let probe = UdpSocket::bind(if peer.is_ipv4() {
+        "0.0.0.0:0"
+    } else {
+        "[::]:0"
+    })?;
+    probe.connect(peer)?;
+    Ok(probe.local_addr()?.ip())
+}
+
+fn bind(peer: SocketAddr) -> io::Result<(UdpSocket, SocketAddr)> {
+    let socket = UdpSocket::bind(SocketAddr::new(route(peer)?, 0))?;
+    socket.set_nonblocking(true)?;
+    let local = socket.local_addr()?;
+    Ok((socket, local))
 }
 
 impl std::fmt::Debug for Driver {
@@ -65,15 +111,7 @@ impl Driver {
                 "zero QUIC keep-alive",
             ));
         }
-        let route = UdpSocket::bind(if peer.is_ipv4() {
-            "0.0.0.0:0"
-        } else {
-            "[::]:0"
-        })?;
-        route.connect(peer)?;
-        let socket = UdpSocket::bind(SocketAddr::new(route.local_addr()?.ip(), 0))?;
-        socket.set_nonblocking(true)?;
-        let local = socket.local_addr()?;
+        let (socket, local) = bind(peer)?;
         let mut cid = [0; quiche::MAX_CONN_ID_LEN];
         boring::rand::rand_bytes(&mut cid).map_err(io::Error::other)?;
         let mut connection = {
@@ -97,10 +135,12 @@ impl Driver {
             token: poll.watch(socket.as_fd(), Interest::Read),
             socket,
             local,
+            peer,
             output: [0; 1350],
             timeout: poll.timer(),
             pacing: poll.timer(),
             keep: poll.timer(),
+            validation: poll.timer(),
             keep_alive,
             keep_due: None,
             pending: None,
@@ -116,6 +156,51 @@ impl Driver {
             return Err(error);
         }
         Ok(driver)
+    }
+
+    #[cfg(any(target_vendor = "apple", test))]
+    fn migrate(&mut self, poll: &mut Poll) -> io::Result<Migration> {
+        if self.connection.timeout().is_some_and(|left| left.is_zero()) {
+            self.connection.on_timeout();
+        }
+        if !self.connection.is_established()
+            || self.connection.is_closed()
+            || self.connection.is_draining()
+        {
+            return Ok(Migration::Rejoin);
+        }
+        let (socket, local) = bind(self.peer)?;
+        match self
+            .connection
+            .migrate(local, self.peer)
+            .and_then(|_| self.connection.probe_path(local, self.peer))
+        {
+            Ok(_) => {}
+            Err(quiche::Error::OutOfIdentifiers) => return Ok(Migration::Rejoin),
+            Err(error) => return Err(self.error(error)),
+        }
+        poll.unwatch(self.token);
+        self.token = poll.watch(socket.as_fd(), Interest::Read);
+        self.socket = socket;
+        self.local = local;
+        self.pending = None;
+        poll.start(self.validation, VALIDATION, None)?;
+        self.flush(poll).map(|()| Migration::Moved)
+    }
+
+    fn paths(&mut self, poll: &mut Poll) -> io::Result<()> {
+        while let Some(event) = self.connection.path_event_next() {
+            match event {
+                quiche::PathEvent::FailedValidation(local, _) if local == self.local => {
+                    return Err(validation_failed());
+                }
+                quiche::PathEvent::Validated(local, _) if local == self.local => {
+                    poll.stop(self.validation);
+                }
+                _ => {}
+            }
+        }
+        Ok(())
     }
 
     fn error(&mut self, error: quiche::Error) -> io::Error {
@@ -134,6 +219,9 @@ impl Driver {
         }
         if matches!(error, quiche::Error::TlsFail) || alert.is_some() {
             return io::Error::other(tls::Failure::Tls(error.to_string()));
+        }
+        if self.connection.is_established() && self.connection.is_timed_out() {
+            return io::Error::new(io::ErrorKind::TimedOut, IdleTimeout);
         }
         if self.connection.is_closed() || self.connection.is_draining() {
             return io::ErrorKind::ConnectionReset.into();
@@ -179,6 +267,9 @@ impl Driver {
         if !poll.current(due) {
             return Ok(false);
         }
+        if due.timer == self.validation {
+            return Err(validation_failed());
+        }
         if due.timer != self.timeout && due.timer != self.keep && due.timer != self.pacing {
             return Ok(false);
         }
@@ -193,6 +284,7 @@ impl Driver {
             self.pending = None;
             return Err(self.error(quiche::Error::Done));
         }
+        self.paths(poll)?;
         if self.connection.is_established() {
             let now = Instant::now();
             if self.keep_due.is_some_and(|due| due <= now) {
@@ -210,7 +302,11 @@ impl Driver {
         let mut exhausted = true;
         for _ in 0..32 {
             if self.pending.is_none() {
-                match self.connection.send(&mut self.output) {
+                match self.connection.send_on_path(
+                    &mut self.output,
+                    Some(self.local),
+                    Some(self.peer),
+                ) {
                     Ok((count, info)) => {
                         self.pending = Some(Datagram { count, info });
                     }
@@ -294,7 +390,7 @@ impl Driver {
         poll.unwatch(self.token);
         #[cfg(target_vendor = "apple")]
         poll.unwatch(self.trust);
-        for timer in [self.timeout, self.pacing, self.keep] {
+        for timer in [self.timeout, self.pacing, self.keep, self.validation] {
             poll.free(timer);
         }
     }

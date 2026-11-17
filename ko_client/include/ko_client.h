@@ -459,6 +459,24 @@ ko_code ko_client_connect(const ko_endpoint *endpoint,
  * calls to return before close. No callback barrier is complete until close returns. */
 ko_code ko_client_cancel(const ko_client *client);
 
+/*
+ * Reports a change of the network path. It returns at once and never waits
+ * for network I/O. An established QUIC connection migrates to a new socket,
+ * with no new upgrade and no gap in a view. A TCP connection reconnects at
+ * once when the route to the server now uses another local address. A QUIC
+ * connection that is still in its handshake or already closing, and a client
+ * that waits to retry, reconnect at once, without the retry delay. TCP stays
+ * TCP. A failed migration or path validation is a lost link and takes the
+ * normal reconnect. A unix endpoint, an SSH forward included, ignores it. A
+ * client that stopped its reconnect attempts (see Reconnect above: a
+ * mismatch, a refused certificate) stays stopped. Reports that are queued and not yet handled count as one. It may
+ * run on any thread, under the handle and close rules above. KO_OK: the core
+ * accepted the report, which does not mean that a migration succeeded.
+ * KO_ERR_ARGUMENT: `client` is not a live handle. KO_ERR_CLOSED: the client
+ * was cancelled.
+ */
+ko_code ko_client_path_changed(const ko_client *client);
+
 ko_code ko_client_close(ko_client *client);
 
 #if !TARGET_OS_IPHONE

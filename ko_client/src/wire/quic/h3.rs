@@ -691,6 +691,12 @@ impl Connection {
         self.pending |= handled;
         Ok(handled)
     }
+    #[cfg(target_vendor = "apple")]
+    pub(crate) fn path_changed(&mut self, poll: &mut Poll) -> io::Result<super::Migration> {
+        let migration = self.driver.migrate(poll)?;
+        self.pending |= migration == super::Migration::Moved;
+        Ok(migration)
+    }
     pub(crate) fn finish_turn(&mut self, poll: &mut Poll) -> io::Result<bool> {
         if !std::mem::take(&mut self.pending) {
             return Ok(false);

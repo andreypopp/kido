@@ -393,7 +393,14 @@ fn dropped_quic_udp_falls_back_to_tcp_within_one_budget() {
     };
     let remote = Arc::clone(remote);
     let client = connect(&fixture, target);
+    _dropped.set_read_timeout(Some(DEADLINE)).unwrap();
+    let (_, first) = _dropped.recv_from(&mut [0; 2048]).unwrap();
+    assert_eq!(ko_client_path_changed(client.0), Code::Ok);
     let began = Instant::now();
+    let deadline = began + DEADLINE;
+    while _dropped.recv_from(&mut [0; 2048]).unwrap().1 == first {
+        assert!(Instant::now() < deadline);
+    }
     assert_eq!(
         ko_sys::fd::wait(
             tcp.as_fd(),
@@ -423,19 +430,39 @@ fn dropped_quic_udp_falls_back_to_tcp_within_one_budget() {
     while _dropped.recv(&mut [0; 2048]).is_ok() {
         assert!(Instant::now() < drained);
     }
+    assert_eq!(ko_client_path_changed(client.0), Code::Ok);
     socket.close(None).unwrap();
     drop(socket);
-    seen(&fixture, |event| matches!(event, Seen::Failed(..)));
+    assert_eq!(
+        seen(&fixture, |event| matches!(event, Seen::Failed(..))),
+        Seen::Failed(Code::Closed, "server closed".to_owned())
+    );
+    drop(tcp);
+    assert!(matches!(
+        seen(&fixture, |event| matches!(event, Seen::Failed(..))),
+        Seen::Failed(Code::NoServer, _)
+    ));
+    std::thread::sleep(Duration::from_millis(1500));
+    let tcp = TcpListener::bind(address).unwrap();
+    let hinted = Instant::now();
+    assert_eq!(ko_client_path_changed(client.0), Code::Ok);
     assert_eq!(
         ko_sys::fd::wait(
             tcp.as_fd(),
             ko_sys::fd::Want::Read,
             None,
-            Some(Duration::from_secs(1))
+            Some(Duration::from_millis(500))
         )
         .unwrap(),
-        ko_sys::fd::Waited::Ready
+        ko_sys::fd::Waited::Ready,
+        "the retry after the grown backoff is due about 1.5 s later; only the hint connects now"
     );
+    writeln!(
+        std::io::stderr().lock(),
+        "a hint during a retry wait connected after {:?}",
+        hinted.elapsed()
+    )
+    .unwrap();
     let mut socket = tungstenite::accept(crate::wire::tests::tls::accept(&tcp, config)).unwrap();
     assert!(socket.read().unwrap().is_text());
     for message in [
@@ -491,6 +518,10 @@ fn quic_authentication_failures_do_not_try_tcp() {
             "{event:?}"
         );
         assert_ne!(remote.choice(), crate::endpoint::Choice::Tcp);
+        assert_eq!(ko_client_path_changed(client.0), Code::Ok);
+        if matches!(case, Case::WrongRoot) {
+            assert_eq!(fixture.quiet_for(Duration::from_millis(500)), []);
+        }
         assert_eq!(
             ko_sys::fd::wait(
                 tcp.as_fd(),
@@ -507,61 +538,290 @@ fn quic_authentication_failures_do_not_try_tcp() {
     }
 }
 
+#[derive(Debug, Default)]
+struct BytesIo {
+    input: VecDeque<u8>,
+    output: VecDeque<u8>,
+}
+impl Read for BytesIo {
+    fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
+        let count = bytes.len().min(self.input.len());
+        if count == 0 {
+            return Err(io::ErrorKind::WouldBlock.into());
+        }
+        for byte in bytes.iter_mut().take(count) {
+            *byte = self.input.pop_front().unwrap();
+        }
+        Ok(count)
+    }
+}
+impl Write for BytesIo {
+    fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+        self.output.extend(bytes);
+        Ok(bytes.len())
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        Ok(())
+    }
+}
+#[derive(Debug, Clone, Copy)]
+enum Side {
+    Client,
+    View,
+}
+#[derive(Debug)]
+struct Served {
+    id: u64,
+    side: Side,
+    context: tungstenite::protocol::WebSocketContext,
+    bytes: BytesIo,
+}
+impl Served {
+    fn send(&mut self, message: Message) {
+        self.context.write(&mut self.bytes, message).unwrap();
+        self.context.flush(&mut self.bytes).unwrap();
+    }
+}
+struct Scripted {
+    peer: crate::wire::quic::tests::Peer,
+    http: Option<quiche::h3::Connection>,
+    served: Vec<Served>,
+    hellos: usize,
+    views: usize,
+    reset: Option<PaneId>,
+    pending: Vec<(u64, &'static [u8])>,
+    trace: Option<String>,
+    timeout: ko_sys::event::Timer,
+}
+impl std::fmt::Debug for Scripted {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("Scripted")
+            .field("peer", &self.peer)
+            .field("served", &self.served)
+            .finish_non_exhaustive()
+    }
+}
+impl Scripted {
+    fn new(certs: &Fixtures, poll: &mut ko_sys::event::Poll) -> Self {
+        let mut server = SslContextBuilder::new(SslMethod::tls()).unwrap();
+        crate::wire::tests::tls::configure_server(&mut server, certs);
+        Self {
+            peer: crate::wire::quic::tests::Peer::new(server, poll),
+            http: None,
+            served: Vec::new(),
+            hellos: 0,
+            views: 0,
+            reset: None,
+            pending: Vec::new(),
+            trace: None,
+            timeout: poll.timer(),
+        }
+    }
+    fn client(&self) -> Option<SocketAddr> {
+        self.peer
+            .connection
+            .as_ref()?
+            .path_stats()
+            .find(|path| path.active)
+            .map(|path| path.peer_addr)
+    }
+    fn wait(&mut self, poll: &mut ko_sys::event::Poll, nudge: &Wake, deadline: Instant) {
+        self.peer.flush();
+        let left = deadline.saturating_duration_since(Instant::now());
+        let due = self
+            .peer
+            .connection
+            .as_ref()
+            .and_then(quiche::Connection::timeout)
+            .map_or(left, |timeout| timeout.min(left));
+        poll.start(self.timeout, due, None).unwrap();
+        let mut events = ko_sys::event::Events::default();
+        poll.turn(ko_sys::event::Mode::Wait, &mut events).unwrap();
+        nudge.drain();
+    }
+    fn turn(&mut self) {
+        use quiche::h3::NameValue;
+        self.peer.receive();
+        let trace = self
+            .peer
+            .connection
+            .as_ref()
+            .map(quiche::Connection::trace_id);
+        if trace != self.trace.as_deref() {
+            self.trace = trace.map(str::to_owned);
+            self.http = None;
+            self.served.clear();
+        }
+        let Some(transport) = &mut self.peer.connection else {
+            return;
+        };
+        if transport.is_established() && self.http.is_none() {
+            let mut config = quiche::h3::Config::new().unwrap();
+            config.enable_extended_connect(true);
+            self.http = Some(quiche::h3::Connection::with_transport(transport, &config).unwrap());
+        }
+        let Some(http) = &mut self.http else {
+            return;
+        };
+        while let Ok((id, event)) = http.poll(transport) {
+            let quiche::h3::Event::Headers { list, .. } = event else {
+                continue;
+            };
+            for (name, value) in [
+                (b":method".as_slice(), b"CONNECT".as_slice()),
+                (b":protocol", b"websocket"),
+                (b"sec-websocket-version", b"13"),
+            ] {
+                assert_eq!(
+                    list.iter()
+                        .find(|header| header.name() == name)
+                        .unwrap()
+                        .value(),
+                    value
+                );
+            }
+            let path = std::str::from_utf8(
+                list.iter()
+                    .find(|header| header.name() == b":path")
+                    .unwrap()
+                    .value(),
+            )
+            .unwrap();
+            let (side, data) = match Route::of_request("GET", path).unwrap() {
+                Route::Client {} => (Side::Client, None),
+                Route::View {
+                    id: pane, offset, ..
+                } => {
+                    assert_eq!(
+                        list.iter()
+                            .find(|header| header.name() == b"ko-client")
+                            .unwrap()
+                            .value(),
+                        b"client_7"
+                    );
+                    self.views += 1;
+                    if self.reset == Some(pane) {
+                        self.reset = None;
+                        transport
+                            .stream_shutdown(id, quiche::Shutdown::Write, 0x10c)
+                            .unwrap();
+                        continue;
+                    }
+                    (
+                        Side::View,
+                        offset
+                            .is_none()
+                            .then_some(if pane == "pane_1".parse().unwrap() {
+                                b"A".as_slice()
+                            } else {
+                                b"B".as_slice()
+                            }),
+                    )
+                }
+                route => panic!("unexpected route: {route:?}"),
+            };
+            http.send_response(
+                transport,
+                id,
+                &[quiche::h3::Header::new(b":status", b"200")],
+                false,
+            )
+            .unwrap();
+            let mut stream = Served {
+                id,
+                side,
+                context: tungstenite::protocol::WebSocketContext::new(
+                    Role::Server,
+                    Some(tungstenite::protocol::WebSocketConfig::default().write_buffer_size(0)),
+                ),
+                bytes: BytesIo::default(),
+            };
+            if let Some(data) = data {
+                stream.send(Message::Binary(
+                    slice_record(10, true, true, true, b"s").into(),
+                ));
+                stream.send(Message::Binary(output_record(10, data).into()));
+            }
+            self.served.push(stream);
+        }
+        if self
+            .served
+            .iter()
+            .any(|stream| matches!(stream.side, Side::View))
+        {
+            for (offset, data) in std::mem::take(&mut self.pending) {
+                for stream in &mut self.served {
+                    if matches!(stream.side, Side::View) {
+                        stream.send(Message::Binary(output_record(offset, data).into()));
+                    }
+                }
+            }
+        }
+        for stream in &mut self.served {
+            let mut bytes = [0; 65536];
+            loop {
+                match http.recv_body(transport, stream.id, &mut bytes) {
+                    Ok(count) => stream.bytes.input.extend(&bytes[..count]),
+                    Err(quiche::h3::Error::Done) => break,
+                    Err(error) => panic!("{error}"),
+                }
+            }
+            loop {
+                match stream.context.read(&mut stream.bytes) {
+                    Ok(Message::Text(text)) => match stream.side {
+                        Side::Client => {
+                            assert!(matches!(
+                                protocol::decode::<protocol::ClientRequest>(text.as_bytes())
+                                    .unwrap(),
+                                protocol::ClientRequest::Hello(_)
+                            ));
+                            self.hellos += 1;
+                            for text in [
+                                welcome(INSTANCE, 1),
+                                layout(0),
+                                "{\"type\":\"selected\"}".to_owned(),
+                            ] {
+                                stream.send(Message::text(text));
+                            }
+                        }
+                        Side::View => panic!("unexpected view request: {text}"),
+                    },
+                    Ok(_) => {}
+                    Err(tungstenite::Error::Io(error))
+                        if error.kind() == io::ErrorKind::WouldBlock =>
+                    {
+                        break;
+                    }
+                    Err(error) => panic!("{error}"),
+                }
+            }
+            if !stream.bytes.output.is_empty() {
+                match http.send_body(
+                    transport,
+                    stream.id,
+                    stream.bytes.output.make_contiguous(),
+                    false,
+                ) {
+                    Ok(count) => {
+                        stream.bytes.output.drain(..count);
+                    }
+                    Err(quiche::h3::Error::Done | quiche::h3::Error::StreamBlocked) => {}
+                    Err(error) => panic!("{error}"),
+                }
+            }
+        }
+    }
+}
+
 #[test]
 fn quic_address_selection_view_reset_and_cached_tcp_reconnect() {
     use ko_sys::event::{Mode, Poll};
-    use quiche::h3::NameValue;
-    use tungstenite::protocol::{WebSocketConfig, WebSocketContext};
-    #[derive(Debug, Default)]
-    struct BytesIo {
-        input: VecDeque<u8>,
-        output: VecDeque<u8>,
-    }
-    impl Read for BytesIo {
-        fn read(&mut self, bytes: &mut [u8]) -> io::Result<usize> {
-            let count = bytes.len().min(self.input.len());
-            if count == 0 {
-                return Err(io::ErrorKind::WouldBlock.into());
-            }
-            for byte in bytes.iter_mut().take(count) {
-                *byte = self.input.pop_front().unwrap();
-            }
-            Ok(count)
-        }
-    }
-    impl Write for BytesIo {
-        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-            self.output.extend(bytes);
-            Ok(bytes.len())
-        }
-        fn flush(&mut self) -> io::Result<()> {
-            Ok(())
-        }
-    }
-    #[derive(Debug, Clone, Copy)]
-    enum Side {
-        Client,
-        View,
-    }
-    #[derive(Debug)]
-    struct Served {
-        id: u64,
-        side: Side,
-        context: WebSocketContext,
-        bytes: BytesIo,
-    }
-    impl Served {
-        fn send(&mut self, message: Message) {
-            self.context.write(&mut self.bytes, message).unwrap();
-            self.context.flush(&mut self.bytes).unwrap();
-        }
-    }
     let certs = Fixtures::new();
-    let mut server = SslContextBuilder::new(SslMethod::tls()).unwrap();
-    crate::wire::tests::tls::configure_server(&mut server, &certs);
     let mut poll = Poll::new();
-    let mut peer = crate::wire::quic::tests::Peer::new(server, &mut poll);
-    let address = peer.socket.local_addr().unwrap();
+    let mut scripted = Scripted::new(&certs, &mut poll);
+    scripted.reset = Some("pane_1".parse().unwrap());
+    let address = scripted.peer.socket.local_addr().unwrap();
     let tcp = std::net::TcpListener::bind(address).unwrap();
     let silent = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
     let (drop_udp, commands) = channel();
@@ -570,14 +830,11 @@ fn quic_address_selection_view_reset_and_cached_tcp_reconnect() {
     let stop = Arc::new(AtomicBool::new(false));
     let stopping = Arc::clone(&stop);
     let worker = std::thread::spawn(move || {
-        let mut http = None;
-        let mut served = Vec::<Served>::new();
-        let mut hellos = 0;
-        let mut first_views = 0;
         let deadline = Instant::now() + DEADLINE;
         while !stopping.load(Ordering::SeqCst) {
             assert!(Instant::now() < deadline, "scripted HTTP/3 server deadline");
             if commands.try_recv().is_ok() {
+                let peer = &mut scripted.peer;
                 peer.connection
                     .as_mut()
                     .unwrap()
@@ -598,157 +855,12 @@ fn quic_address_selection_view_reset_and_cached_tcp_reconnect() {
                 }
                 break;
             }
-            peer.receive();
-            if let Some(transport) = &mut peer.connection {
-                if transport.is_established() && http.is_none() {
-                    let mut config = quiche::h3::Config::new().unwrap();
-                    config.enable_extended_connect(true);
-                    http =
-                        Some(quiche::h3::Connection::with_transport(transport, &config).unwrap());
-                }
-                if let Some(http) = &mut http {
-                    while let Ok((id, event)) = http.poll(transport) {
-                        if let quiche::h3::Event::Headers { list, .. } = event {
-                            for (name, value) in [
-                                (b":method".as_slice(), b"CONNECT".as_slice()),
-                                (b":protocol", b"websocket"),
-                                (b"sec-websocket-version", b"13"),
-                            ] {
-                                assert_eq!(
-                                    list.iter()
-                                        .find(|header| header.name() == name)
-                                        .unwrap()
-                                        .value(),
-                                    value
-                                );
-                            }
-                            let path = std::str::from_utf8(
-                                list.iter()
-                                    .find(|header| header.name() == b":path")
-                                    .unwrap()
-                                    .value(),
-                            )
-                            .unwrap();
-                            let (side, data) = match ko_wire::api::Route::of_request("GET", path)
-                                .unwrap()
-                            {
-                                ko_wire::api::Route::Client {} => (Side::Client, None),
-                                ko_wire::api::Route::View { id: pane, .. } => {
-                                    assert_eq!(
-                                        list.iter()
-                                            .find(|header| header.name() == b"ko-client")
-                                            .unwrap()
-                                            .value(),
-                                        b"client_7"
-                                    );
-                                    if pane == "pane_1".parse().unwrap() {
-                                        first_views += 1;
-                                        if first_views == 1 {
-                                            transport
-                                                .stream_shutdown(id, quiche::Shutdown::Write, 0x10c)
-                                                .unwrap();
-                                            continue;
-                                        }
-                                    }
-                                    (
-                                        Side::View,
-                                        Some(if pane == "pane_1".parse().unwrap() {
-                                            b"A".as_slice()
-                                        } else {
-                                            b"B".as_slice()
-                                        }),
-                                    )
-                                }
-                                route => panic!("unexpected route: {route:?}"),
-                            };
-                            http.send_response(
-                                transport,
-                                id,
-                                &[quiche::h3::Header::new(b":status", b"200")],
-                                false,
-                            )
-                            .unwrap();
-                            let mut stream = Served {
-                                id,
-                                side,
-                                context: WebSocketContext::new(
-                                    Role::Server,
-                                    Some(WebSocketConfig::default().write_buffer_size(0)),
-                                ),
-                                bytes: BytesIo::default(),
-                            };
-                            if let Some(data) = data {
-                                stream.send(Message::Binary(
-                                    slice_record(10, true, true, true, b"s").into(),
-                                ));
-                                stream.send(Message::Binary(output_record(10, data).into()));
-                            }
-                            served.push(stream);
-                        }
-                    }
-                    for stream in &mut served {
-                        let mut bytes = [0; 65536];
-                        loop {
-                            match http.recv_body(transport, stream.id, &mut bytes) {
-                                Ok(count) => stream.bytes.input.extend(&bytes[..count]),
-                                Err(quiche::h3::Error::Done) => break,
-                                Err(error) => panic!("{error}"),
-                            }
-                        }
-                        loop {
-                            match stream.context.read(&mut stream.bytes) {
-                                Ok(Message::Text(text)) => match stream.side {
-                                    Side::Client => {
-                                        assert!(matches!(
-                                            protocol::decode::<protocol::ClientRequest>(
-                                                text.as_bytes()
-                                            )
-                                            .unwrap(),
-                                            protocol::ClientRequest::Hello(_)
-                                        ));
-                                        hellos += 1;
-                                        for text in [
-                                            welcome(INSTANCE, 1),
-                                            layout(0),
-                                            "{\"type\":\"selected\"}".to_owned(),
-                                        ] {
-                                            stream.send(Message::text(text));
-                                        }
-                                    }
-                                    Side::View => panic!("unexpected view request: {text}"),
-                                },
-                                Ok(_) => {}
-                                Err(tungstenite::Error::Io(error))
-                                    if error.kind() == io::ErrorKind::WouldBlock =>
-                                {
-                                    break;
-                                }
-                                Err(error) => panic!("{error}"),
-                            }
-                        }
-                        if !stream.bytes.output.is_empty() {
-                            match http.send_body(
-                                transport,
-                                stream.id,
-                                stream.bytes.output.make_contiguous(),
-                                false,
-                            ) {
-                                Ok(count) => {
-                                    stream.bytes.output.drain(..count);
-                                }
-                                Err(quiche::h3::Error::Done | quiche::h3::Error::StreamBlocked) => {
-                                }
-                                Err(error) => panic!("{error}"),
-                            }
-                        }
-                    }
-                }
-            }
-            peer.flush();
+            scripted.turn();
+            scripted.peer.flush();
             let mut events = ko_sys::event::Events::default();
             poll.turn(Mode::Peek, &mut events).unwrap();
         }
-        (hellos, first_views)
+        (scripted.hellos, scripted.views)
     });
     let fixture = Fixture::new();
     let signatures = Arc::new(AtomicUsize::new(0));
@@ -847,7 +959,184 @@ fn quic_address_selection_view_reset_and_cached_tcp_reconnect() {
     assert_eq!(dropped.load(Ordering::SeqCst), count);
     drop(main);
     stop.store(true, Ordering::SeqCst);
-    assert_eq!(worker.join().unwrap(), (1, 2));
+    assert_eq!(worker.join().unwrap(), (1, 3));
+}
+
+#[test]
+fn a_path_change_migrates_quic_under_an_open_view() {
+    use ko_sys::event::Poll;
+    let certs = Fixtures::new();
+    let mut poll = Poll::new();
+    let mut scripted = Scripted::new(&certs, &mut poll);
+    let address = scripted.peer.socket.local_addr().unwrap();
+    let (output, outputs) = channel::<(u64, &'static [u8])>();
+    let (moved, paths) = channel();
+    let stop = Arc::new(AtomicBool::new(false));
+    let stopping = Arc::clone(&stop);
+    let nudge = Arc::new(Wake::new().unwrap());
+    let nudged = Arc::clone(&nudge);
+    poll.watch(nudge.fd(), ko_sys::event::Interest::Read);
+    let worker = std::thread::spawn(move || {
+        let deadline = Instant::now() + DEADLINE;
+        let mut client = None;
+        while !stopping.load(Ordering::SeqCst) {
+            assert!(Instant::now() < deadline, "scripted HTTP/3 server deadline");
+            scripted.pending.extend(outputs.try_iter());
+            scripted.turn();
+            let current = scripted.client();
+            if current != client {
+                client = current;
+                moved.send(client.unwrap()).unwrap();
+            }
+            scripted.wait(&mut poll, &nudged, deadline);
+        }
+        (scripted.hellos, scripted.views)
+    });
+    let fixture = Fixture::new();
+    let signatures = Arc::new(AtomicUsize::new(0));
+    let main = connect(
+        &fixture,
+        endpoint(&certs, address, Case::Accepted, Arc::clone(&signatures)),
+    );
+    seen(&fixture, |event| matches!(event, Seen::Welcome(..)));
+    let mut client = paths.recv_timeout(DEADLINE).unwrap();
+    let decoder = Decoder::new(|snapshot| {
+        pull(snapshot, usize::MAX, 64).unwrap();
+        Restored::Ok
+    });
+    let view = ViewGuard(open_view_of(c"pane_2", main.0, decoder, true));
+    assert_eq!(bytes(decoder, b"B"), 10);
+    for (offset, data) in [(11, b"C"), (12, b"D"), (13, b"E")] {
+        assert_eq!(ko_client_path_changed(main.0), Code::Ok);
+        let moved = paths.recv_timeout(DEADLINE).unwrap();
+        assert_ne!(moved, client);
+        assert_eq!(moved.ip(), client.ip());
+        client = moved;
+        output.send((offset, data)).unwrap();
+        nudge.wake();
+        assert_eq!(bytes(decoder, data), offset);
+    }
+    assert!(!fixture.quiet().iter().any(|event| matches!(
+        event,
+        Seen::Welcome(..) | Seen::Failed(..) | Seen::Closed(..)
+    )));
+    assert_eq!(signatures.load(Ordering::SeqCst), 1);
+    let began = Instant::now();
+    assert_eq!(ko_client_path_changed(main.0), Code::Ok);
+    assert!(matches!(
+        seen(&fixture, |event| matches!(
+            event,
+            Seen::Welcome(..) | Seen::Failed(..)
+        )),
+        Seen::Welcome(_, _, false)
+    ));
+    output.send((14, b"F")).unwrap();
+    nudge.wake();
+    assert_eq!(bytes(decoder, b"F"), 14);
+    writeln!(
+        std::io::stderr().lock(),
+        "a refused fourth migration resumed the view in {:?}",
+        began.elapsed()
+    )
+    .unwrap();
+    assert!(
+        !fixture
+            .quiet()
+            .iter()
+            .any(|event| matches!(event, Seen::Failed(..) | Seen::Closed(..)))
+    );
+    assert_eq!(signatures.load(Ordering::SeqCst), 2);
+    drop(view);
+    drop(main);
+    stop.store(true, Ordering::SeqCst);
+    nudge.wake();
+    assert_eq!(worker.join().unwrap(), (2, 2));
+}
+
+#[test]
+fn an_idle_expiry_during_a_stall_rejoins_at_once_and_resumes_the_view() {
+    use ko_sys::event::Poll;
+    const IDLE: Duration = Duration::from_millis(500);
+    let certs = Fixtures::new();
+    let mut poll = Poll::new();
+    let mut scripted = Scripted::new(&certs, &mut poll);
+    scripted
+        .peer
+        .config
+        .set_max_idle_timeout(u64::try_from(IDLE.as_millis()).unwrap());
+    let address = scripted.peer.socket.local_addr().unwrap();
+    let (output, outputs) = channel::<(u64, &'static [u8])>();
+    let stop = Arc::new(AtomicBool::new(false));
+    let stopping = Arc::clone(&stop);
+    let nudge = Arc::new(Wake::new().unwrap());
+    let nudged = Arc::clone(&nudge);
+    poll.watch(nudge.fd(), ko_sys::event::Interest::Read);
+    let worker = std::thread::spawn(move || {
+        let deadline = Instant::now() + DEADLINE * 2;
+        while !stopping.load(Ordering::SeqCst) {
+            assert!(Instant::now() < deadline, "scripted HTTP/3 server deadline");
+            scripted.pending.extend(outputs.try_iter());
+            scripted.turn();
+            scripted.wait(&mut poll, &nudged, deadline);
+        }
+        (scripted.hellos, scripted.views)
+    });
+    let fixture = Fixture::new();
+    let main = connect(
+        &fixture,
+        endpoint(
+            &certs,
+            address,
+            Case::Accepted,
+            Arc::new(AtomicUsize::new(0)),
+        ),
+    );
+    seen(&fixture, |event| matches!(event, Seen::Welcome(..)));
+    let decoder = Decoder::new(|snapshot| {
+        pull(snapshot, usize::MAX, 64).unwrap();
+        Restored::Ok
+    });
+    let view = ViewGuard(open_view_of(c"pane_2", main.0, decoder, true));
+    assert_eq!(bytes(decoder, b"B"), 10);
+    let shared = Arc::clone(&client(main.0).unwrap().shared);
+    for (hint, offset, data) in [(true, 11, b"C"), (false, 12, b"D")] {
+        let mut commands = locked(&shared.commands);
+        shared.wake.wake();
+        std::thread::sleep(IDLE * 2);
+        if hint {
+            commands.push_back(Command::PathChanged);
+        }
+        drop(commands);
+        let resumed = Instant::now();
+        assert!(matches!(
+            seen(&fixture, |event| matches!(
+                event,
+                Seen::Welcome(..) | Seen::Failed(..)
+            )),
+            Seen::Welcome(_, _, false)
+        ));
+        output.send((offset, data)).unwrap();
+        nudge.wake();
+        assert_eq!(bytes(decoder, data), offset);
+        writeln!(
+            std::io::stderr().lock(),
+            "a stall past the idle timeout (hint: {hint}) resumed the view in {:?}",
+            resumed.elapsed()
+        )
+        .unwrap();
+        assert!(resumed.elapsed() < IDLE);
+    }
+    assert!(
+        !fixture
+            .quiet()
+            .iter()
+            .any(|event| matches!(event, Seen::Failed(..) | Seen::Closed(..)))
+    );
+    drop(view);
+    drop(main);
+    stop.store(true, Ordering::SeqCst);
+    nudge.wake();
+    assert_eq!(worker.join().unwrap(), (3, 3));
 }
 
 #[test]
@@ -1149,6 +1438,27 @@ fn caddy_http3_authentication_refusals_and_exact_view_resume() {
     assert_eq!(signatures.load(Ordering::SeqCst), 1);
     drop(live);
     drop(held);
+    assert_eq!(ko_client_path_changed(main.0), Code::Ok);
+    let began = Instant::now();
+    input(b"moved\n");
+    let moved = std::panic::catch_unwind(|| bytes(decoder, b"moved"));
+    let mut events = fixture.quiet();
+    let offset = moved.unwrap_or_else(|_| panic!("no bytes after the migration: {events:?}")) + 5;
+    writeln!(
+        std::io::stderr().lock(),
+        "Caddy kept the view across a migration; bytes after {:?}",
+        began.elapsed()
+    )
+    .unwrap();
+    assert_eq!(bytes(second, b"moved") + 5, offset);
+    assert_eq!(signatures.load(Ordering::SeqCst), 1);
+    events.extend(fixture.quiet());
+    assert!(
+        !events
+            .iter()
+            .any(|event| matches!(event, Seen::Welcome(..) | Seen::Failed(..))),
+        "{events:?}"
+    );
     container.control("restart", "caddy");
     seen(&fixture, |event| {
         matches!(event, Seen::Failed(Code::Closed, ..))

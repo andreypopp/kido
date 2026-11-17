@@ -115,7 +115,7 @@ impl Secured {
         }
         Err(last)
     }
-    pub(super) fn socket(&self) -> &TcpStream {
+    pub(crate) fn socket(&self) -> &TcpStream {
         &self.stream.get_ref().socket
     }
     pub(super) fn fd(&self) -> BorrowedFd<'_> {
