@@ -1386,7 +1386,7 @@ Promised files never paste temporary paths, even in Local panes.
 
 A copy is one request of ko's drop route for each file, in order,
 through the window's own ko client (`ko_client_upload`), on the local
-host, an SSH remote and a TLS server alike, over HTTP/1.1 only
+host, an SSH remote and a TLS server alike, over HTTP/1.1 or HTTP/3
 (design-ko.md, section 5). The pane decides where the
 file lands: on the server's host, or inside the pane's runtime, whose
 path the reply carries; the app never names a folder

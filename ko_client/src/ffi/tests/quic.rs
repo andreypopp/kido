@@ -6,6 +6,7 @@ use boring::ssl::{SslContextBuilder, SslMethod};
 use boring::x509::X509;
 use ko_sys::pid::{Exit, Waited};
 use ko_sys::spawn::{self, Env};
+use ko_wire::api::Route;
 use std::cell::Cell;
 use std::fs::File;
 use std::io;
@@ -286,8 +287,30 @@ fn endpoint(
         .to_owned(),
     )
     .unwrap();
-    let target = Arc::new(Quic::new(host, peer.port(), context).unwrap());
-    Endpoint::Fixed(Dial::Quic {
+    let mut tcp = crate::endpoint::config(vec![if matches!(case, Case::WrongRoot) {
+        certs.other_root.der.clone()
+    } else {
+        certs.root.der.clone()
+    }])
+    .unwrap();
+    if !matches!(case, Case::NoIdentity) {
+        let identity = if matches!(case, Case::UnknownIdentity) {
+            &certs.other_client
+        } else {
+            &certs.client
+        };
+        tcp.set_certificate(&X509::from_der(&identity.der).unwrap())
+            .unwrap();
+        tcp.set_private_key_method(Key {
+            key: PKey::private_key_from_der(&identity.key).unwrap(),
+            signatures: Arc::new(AtomicUsize::new(0)),
+        });
+    }
+    let target = Arc::new(crate::endpoint::Remote::new(
+        Arc::new(crate::endpoint::Tls::new(host, peer.port(), tcp.build())),
+        Quic::new(context).unwrap(),
+    ));
+    Endpoint::Fixed(Dial::Remote {
         target,
         addresses: Arc::from([peer]),
     })
@@ -352,7 +375,140 @@ fn bytes(decoder: &Decoder, want: &[u8]) -> u64 {
 }
 
 #[test]
-fn an_h3_reset_during_view_connect_keeps_the_client_and_other_view() {
+fn dropped_quic_udp_falls_back_to_tcp_within_one_budget() {
+    use std::net::{TcpListener, UdpSocket};
+    let certs = Fixtures::new();
+    let tcp = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = tcp.local_addr().unwrap();
+    let _dropped = UdpSocket::bind(address).unwrap();
+    let fixture = Fixture::new();
+    let target = endpoint(
+        &certs,
+        address,
+        Case::Accepted,
+        Arc::new(AtomicUsize::new(0)),
+    );
+    let Endpoint::Fixed(Dial::Remote { target: remote, .. }) = &target else {
+        panic!("remote")
+    };
+    let remote = Arc::clone(remote);
+    let client = connect(&fixture, target);
+    let began = Instant::now();
+    assert_eq!(
+        ko_sys::fd::wait(
+            tcp.as_fd(),
+            ko_sys::fd::Want::Read,
+            None,
+            Some(Duration::from_secs(3))
+        )
+        .unwrap(),
+        ko_sys::fd::Waited::Ready
+    );
+    assert!(began.elapsed() < Duration::from_secs(3));
+    let config = crate::wire::tests::tls::server(&certs);
+    let mut socket =
+        tungstenite::accept(crate::wire::tests::tls::accept(&tcp, Arc::clone(&config))).unwrap();
+    assert!(socket.read().unwrap().is_text());
+    for message in [
+        welcome(INSTANCE, 1),
+        layout(0),
+        r#"{"type":"selected"}"#.to_owned(),
+    ] {
+        socket.send(Message::text(message)).unwrap();
+    }
+    seen(&fixture, |event| matches!(event, Seen::Welcome(..)));
+    assert_eq!(remote.choice(), crate::endpoint::Choice::Tcp);
+    _dropped.set_nonblocking(true).unwrap();
+    let drained = Instant::now() + DEADLINE;
+    while _dropped.recv(&mut [0; 2048]).is_ok() {
+        assert!(Instant::now() < drained);
+    }
+    socket.close(None).unwrap();
+    drop(socket);
+    seen(&fixture, |event| matches!(event, Seen::Failed(..)));
+    assert_eq!(
+        ko_sys::fd::wait(
+            tcp.as_fd(),
+            ko_sys::fd::Want::Read,
+            None,
+            Some(Duration::from_secs(1))
+        )
+        .unwrap(),
+        ko_sys::fd::Waited::Ready
+    );
+    let mut socket = tungstenite::accept(crate::wire::tests::tls::accept(&tcp, config)).unwrap();
+    assert!(socket.read().unwrap().is_text());
+    for message in [
+        welcome(INSTANCE, 1),
+        layout(0),
+        r#"{"type":"selected"}"#.to_owned(),
+    ] {
+        socket.send(Message::text(message)).unwrap();
+    }
+    seen(&fixture, |event| matches!(event, Seen::Welcome(..)));
+    assert_eq!(remote.choice(), crate::endpoint::Choice::Tcp);
+    assert_eq!(
+        _dropped.recv(&mut [0; 2048]).unwrap_err().kind(),
+        io::ErrorKind::WouldBlock
+    );
+    drop(client);
+}
+
+#[test]
+fn quic_authentication_failures_do_not_try_tcp() {
+    for (case, expected) in [
+        (Case::WrongRoot, Code::Tls),
+        (Case::UnknownIdentity, Code::Identity),
+    ] {
+        let certs = Fixtures::new();
+        let mut server = SslContextBuilder::new(SslMethod::tls()).unwrap();
+        crate::wire::tests::tls::configure_server(&mut server, &certs);
+        let mut poll = ko_sys::event::Poll::new();
+        let mut peer = crate::wire::quic::tests::Peer::new(server, &mut poll);
+        let address = peer.socket.local_addr().unwrap();
+        let tcp = std::net::TcpListener::bind(address).unwrap();
+        let stop = Arc::new(AtomicBool::new(false));
+        let stopping = Arc::clone(&stop);
+        let worker = std::thread::spawn(move || {
+            let deadline = Instant::now() + DEADLINE;
+            while !stopping.load(Ordering::SeqCst) {
+                assert!(Instant::now() < deadline);
+                peer.receive();
+                peer.flush();
+                std::thread::yield_now();
+            }
+        });
+        let fixture = Fixture::new();
+        let target = endpoint(&certs, address, case, Arc::new(AtomicUsize::new(0)));
+        let Endpoint::Fixed(Dial::Remote { target: remote, .. }) = &target else {
+            panic!("remote")
+        };
+        let remote = Arc::clone(remote);
+        let client = connect(&fixture, target);
+        let event = seen(&fixture, |event| matches!(event, Seen::Failed(..)));
+        assert!(
+            matches!(event, Seen::Failed(code, _) if code == expected),
+            "{event:?}"
+        );
+        assert_ne!(remote.choice(), crate::endpoint::Choice::Tcp);
+        assert_eq!(
+            ko_sys::fd::wait(
+                tcp.as_fd(),
+                ko_sys::fd::Want::Read,
+                None,
+                Some(Duration::ZERO)
+            )
+            .unwrap(),
+            ko_sys::fd::Waited::TimedOut
+        );
+        drop(client);
+        stop.store(true, Ordering::SeqCst);
+        worker.join().unwrap();
+    }
+}
+
+#[test]
+fn quic_address_selection_view_reset_and_cached_tcp_reconnect() {
     use ko_sys::event::{Mode, Poll};
     use quiche::h3::NameValue;
     use tungstenite::protocol::{WebSocketConfig, WebSocketContext};
@@ -406,6 +562,11 @@ fn an_h3_reset_during_view_connect_keeps_the_client_and_other_view() {
     let mut poll = Poll::new();
     let mut peer = crate::wire::quic::tests::Peer::new(server, &mut poll);
     let address = peer.socket.local_addr().unwrap();
+    let tcp = std::net::TcpListener::bind(address).unwrap();
+    let silent = std::net::UdpSocket::bind("127.0.0.1:0").unwrap();
+    let (drop_udp, commands) = channel();
+    let dropped = Arc::new(AtomicUsize::new(0));
+    let datagrams = Arc::clone(&dropped);
     let stop = Arc::new(AtomicBool::new(false));
     let stopping = Arc::clone(&stop);
     let worker = std::thread::spawn(move || {
@@ -416,6 +577,27 @@ fn an_h3_reset_during_view_connect_keeps_the_client_and_other_view() {
         let deadline = Instant::now() + DEADLINE;
         while !stopping.load(Ordering::SeqCst) {
             assert!(Instant::now() < deadline, "scripted HTTP/3 server deadline");
+            if commands.try_recv().is_ok() {
+                peer.connection
+                    .as_mut()
+                    .unwrap()
+                    .close(true, 0x100, b"reconnect with UDP dropped")
+                    .unwrap();
+                peer.flush();
+                while !stopping.load(Ordering::SeqCst) {
+                    assert!(Instant::now() < deadline, "dropped UDP server deadline");
+                    match peer.socket.recv_from(&mut [0; 2048]) {
+                        Ok(_) => {
+                            datagrams.fetch_add(1, Ordering::SeqCst);
+                        }
+                        Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                            std::thread::yield_now()
+                        }
+                        Err(error) => panic!("{error}"),
+                    }
+                }
+                break;
+            }
             peer.receive();
             if let Some(transport) = &mut peer.connection {
                 if transport.is_established() && http.is_none() {
@@ -570,12 +752,30 @@ fn an_h3_reset_during_view_connect_keeps_the_client_and_other_view() {
     });
     let fixture = Fixture::new();
     let signatures = Arc::new(AtomicUsize::new(0));
-    let main = connect(
-        &fixture,
-        endpoint(&certs, address, Case::Accepted, Arc::clone(&signatures)),
-    );
+    let mut target = endpoint(&certs, address, Case::Accepted, Arc::clone(&signatures));
+    let Endpoint::Fixed(Dial::Remote {
+        target: remote,
+        addresses,
+    }) = &mut target
+    else {
+        panic!("remote")
+    };
+    *addresses = Arc::from([silent.local_addr().unwrap(), address]);
+    let remote = Arc::clone(remote);
+    let main = connect(&fixture, target);
     seen(&fixture, |event| matches!(event, Seen::Welcome(..)));
     seen(&fixture, |event| matches!(event, Seen::Layout(..)));
+    assert_eq!(remote.choice(), crate::endpoint::Choice::Quic);
+    assert_eq!(
+        ko_sys::fd::wait(
+            tcp.as_fd(),
+            ko_sys::fd::Want::Read,
+            None,
+            Some(Duration::ZERO)
+        )
+        .unwrap(),
+        ko_sys::fd::Waited::TimedOut
+    );
     let decoder = || {
         Decoder::new(|snapshot| {
             pull(snapshot, usize::MAX, 64).unwrap();
@@ -591,6 +791,60 @@ fn an_h3_reset_during_view_connect_keeps_the_client_and_other_view() {
     assert_eq!(signatures.load(Ordering::SeqCst), 1);
     drop(a);
     drop(b);
+    drop_udp.send(()).unwrap();
+    seen(&fixture, |event| matches!(event, Seen::Failed(..)));
+    let began = Instant::now();
+    assert_eq!(
+        ko_sys::fd::wait(
+            tcp.as_fd(),
+            ko_sys::fd::Want::Read,
+            None,
+            Some(Duration::from_secs(3))
+        )
+        .unwrap(),
+        ko_sys::fd::Waited::Ready
+    );
+    assert!(began.elapsed() < Duration::from_secs(3));
+    let config = crate::wire::tests::tls::server(&certs);
+    let mut socket =
+        tungstenite::accept(crate::wire::tests::tls::accept(&tcp, Arc::clone(&config))).unwrap();
+    assert!(socket.read().unwrap().is_text());
+    for text in [
+        welcome(INSTANCE, 1),
+        layout(0),
+        "{\"type\":\"selected\"}".to_owned(),
+    ] {
+        socket.send(Message::text(text)).unwrap();
+    }
+    seen(&fixture, |event| matches!(event, Seen::Welcome(..)));
+    assert_eq!(remote.choice(), crate::endpoint::Choice::Tcp);
+    let count = dropped.load(Ordering::SeqCst);
+    assert!(count > 0);
+    socket.close(None).unwrap();
+    drop(socket);
+    seen(&fixture, |event| matches!(event, Seen::Failed(..)));
+    assert_eq!(
+        ko_sys::fd::wait(
+            tcp.as_fd(),
+            ko_sys::fd::Want::Read,
+            None,
+            Some(Duration::from_secs(1))
+        )
+        .unwrap(),
+        ko_sys::fd::Waited::Ready
+    );
+    let mut socket = tungstenite::accept(crate::wire::tests::tls::accept(&tcp, config)).unwrap();
+    assert!(socket.read().unwrap().is_text());
+    for text in [
+        welcome(INSTANCE, 1),
+        layout(0),
+        "{\"type\":\"selected\"}".to_owned(),
+    ] {
+        socket.send(Message::text(text)).unwrap();
+    }
+    seen(&fixture, |event| matches!(event, Seen::Welcome(..)));
+    assert_eq!(remote.choice(), crate::endpoint::Choice::Tcp);
+    assert_eq!(dropped.load(Ordering::SeqCst), count);
     drop(main);
     stop.store(true, Ordering::SeqCst);
     assert_eq!(worker.join().unwrap(), (1, 2));
@@ -608,6 +862,8 @@ fn caddy_http3_authentication_refusals_and_exact_view_resume() {
         .expect("KO_E2E_CONTAINER needs the container CLI");
     let certs = Fixtures::new();
     let (container, peer) = Container::start(cli, path.as_bytes().to_vec(), &certs);
+    let caddy = container.ok(&["exec", &container.name, "caddy", "version"]);
+    assert!(caddy.starts_with("v2.11.9"), "{caddy}");
     let fixture = Fixture::new();
     let signatures = Arc::new(AtomicUsize::new(0));
     let main = connect(
@@ -657,6 +913,125 @@ fn caddy_http3_authentication_refusals_and_exact_view_resume() {
     )
     .unwrap();
     let placement: protocol::Placement = protocol::decode(&reply).unwrap();
+    let cancel = Wake::new().unwrap();
+    let upload_route = Route::UploadDrop {
+        id: placement.pane,
+        name: "h3-file".to_owned().try_into().unwrap(),
+    };
+    let payload = vec![b'u'; 150000];
+    let mut reader = io::Cursor::new(payload.clone());
+    let uploaded = crate::wire::upload(
+        &resolved,
+        None,
+        &upload_route,
+        payload.len() as u64,
+        &cancel,
+        |buffer| reader.read(buffer),
+    )
+    .unwrap();
+    let dropped: protocol::Dropped = protocol::decode(&uploaded).unwrap();
+    assert_eq!(
+        container
+            .ok(&["exec", &container.name, "cat", dropped.path.as_str()])
+            .as_bytes(),
+        payload
+    );
+    let mut pulls = 0;
+    let refused_route = Route::UploadDrop {
+        id: "pane_999999".parse().unwrap(),
+        name: "refused".to_owned().try_into().unwrap(),
+    };
+    let refused = crate::wire::upload(
+        &resolved,
+        None,
+        &refused_route,
+        8 << 20,
+        &cancel,
+        |buffer| {
+            pulls += 1;
+            buffer.fill(b'x');
+            Ok(buffer.len())
+        },
+    )
+    .unwrap_err();
+    let crate::wire::Rejected::Status { status, body, .. } = refused else {
+        panic!("{refused}")
+    };
+    assert_eq!(status, 404);
+    let refusal: protocol::Error = protocol::decode(&body).unwrap();
+    assert_eq!(refusal.message, "pane not found");
+    assert!(pulls < 128);
+    let mut reads = 0;
+    let cancelled =
+        crate::wire::upload(&resolved, None, &upload_route, 8 << 20, &cancel, |buffer| {
+            reads += 1;
+            if reads == 1 {
+                return Ok(4096);
+            }
+            cancel.wake();
+            Ok(buffer.len())
+        })
+        .unwrap_err();
+    assert!(cancelled.to_string().contains("cancel"), "{cancelled}");
+    assert_eq!(reads, 2);
+    let mut refused = handles
+        .open(crate::wire::exchange::RequestHead::Http {
+            method: protocol::Method::Post,
+            target: refused_route.to_request().1,
+            headers: protocol::version_headers()
+                .into_iter()
+                .map(|(name, value)| (name.to_owned(), value))
+                .collect(),
+            length: 8 << 20,
+        })
+        .unwrap();
+    assert_eq!(refused.write(&[b'x'; 65536]).unwrap(), 65536);
+    let deadline = Instant::now() + DEADLINE;
+    let mut status = None;
+    let mut answer = Vec::new();
+    loop {
+        assert!(
+            Instant::now() < deadline,
+            "Caddy upload refusal did not finish"
+        );
+        if let Some(head) = refused.response().unwrap() {
+            status = Some(head.status);
+        }
+        let mut bytes = [0; 1024];
+        match refused.read(&mut bytes) {
+            Ok(0) => break,
+            Ok(count) => answer.extend_from_slice(&bytes[..count]),
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                std::thread::yield_now();
+            }
+            Err(error) => panic!("Caddy reset the response direction: {error}"),
+        }
+    }
+    assert_eq!(status, Some(404));
+    let refusal: protocol::Error = protocol::decode(&answer).unwrap();
+    assert_eq!(refusal.message, "pane not found");
+    let outcome = loop {
+        assert!(
+            Instant::now() < deadline,
+            "Caddy request direction did not settle"
+        );
+        match refused.write(&[b'x'; 65536]) {
+            Err(error) if error.kind() != io::ErrorKind::WouldBlock => break error.to_string(),
+            _ => std::thread::yield_now(),
+        }
+    };
+    writeln!(
+        std::io::stderr().lock(),
+        "Caddy {} early upload refusal: {outcome}",
+        caddy.trim()
+    )
+    .unwrap();
+    assert!(outcome.contains("request stopped"), "{outcome}");
+    drop(refused);
+    assert_eq!(
+        crate::api::version(&resolved, DEADLINE, None).unwrap().0,
+        None
+    );
     let started = Instant::now() + DEADLINE;
     loop {
         assert!(Instant::now() < started, "the pane did not print READY");

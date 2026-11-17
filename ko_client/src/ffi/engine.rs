@@ -28,15 +28,18 @@ use crate::wire::{Connecting, Link, Next, READ_TIMEOUT, UpgradeStep, buffered, s
 
 const WATCH: Duration = Duration::from_secs(2);
 const KEEP_ALIVE: Duration = Duration::from_secs(15);
+const QUIC_HANDSHAKE_LIMIT: Duration = Duration::from_secs(2);
 
 #[derive(Debug)]
 enum Transport {
     Direct,
     QuicDialing {
         owner: Quic,
-        target: Arc<crate::endpoint::quic::Quic>,
+        target: Arc<crate::endpoint::Remote>,
+        addresses: Arc<[std::net::SocketAddr]>,
         remaining: std::collections::VecDeque<std::net::SocketAddr>,
         deadline: Instant,
+        attempt_due: Instant,
     },
     Quic {
         owner: Quic,
@@ -434,34 +437,45 @@ impl Engine<'_> {
     fn dial(&mut self, dial: Dial) -> io::Result<()> {
         match dial {
             Dial::Unix(path) => self.upgrade(Arc::new(crate::endpoint::Resolved::Unix(path))),
-            Dial::Tls { target, addresses } => {
-                self.upgrade(Arc::new(crate::endpoint::Resolved::Tls {
-                    target,
-                    addresses,
-                }))
-            }
-            Dial::Quic { target, addresses } => {
-                self.start_quic(target, addresses.iter().copied().collect())
+            Dial::Remote { target, addresses } => {
+                if target.choice() == crate::endpoint::Choice::Tcp {
+                    self.upgrade(Arc::new(crate::endpoint::Resolved::Tls {
+                        target: Arc::clone(&target.tcp),
+                        addresses,
+                    }))
+                } else {
+                    let remaining = addresses.iter().copied().collect();
+                    self.start_quic(
+                        target,
+                        addresses,
+                        remaining,
+                        (Instant::now() + QUIC_HANDSHAKE_LIMIT).min(self.join_due),
+                    )
+                }
             }
         }
     }
 
     fn start_quic(
         &mut self,
-        target: Arc<crate::endpoint::quic::Quic>,
-        mut addresses: std::collections::VecDeque<std::net::SocketAddr>,
+        target: Arc<crate::endpoint::Remote>,
+        addresses: Arc<[std::net::SocketAddr]>,
+        mut remaining: std::collections::VecDeque<std::net::SocketAddr>,
+        deadline: Instant,
     ) -> io::Result<()> {
-        let mut error = io::Error::from(io::ErrorKind::AddrNotAvailable);
-        while let Some(peer) = addresses.pop_front() {
-            if Instant::now() >= self.join_due {
-                return Err(io::ErrorKind::TimedOut.into());
-            }
+        while Instant::now() < deadline {
+            let now = Instant::now();
+            let share = deadline.saturating_duration_since(now)
+                / u32::try_from(remaining.len()).unwrap_or(u32::MAX).max(1);
+            let attempt_due = now + share;
+            let Some(peer) = remaining.pop_front() else {
+                break;
+            };
             match Quic::start(&target, peer, &mut self.poll, KEEP_ALIVE) {
                 Ok((owner, access)) => {
-                    let deadline = (Instant::now() + Duration::from_secs(5)).min(self.join_due);
                     if let Err(error) = self.poll.start(
                         self.dial,
-                        deadline.saturating_duration_since(Instant::now()),
+                        attempt_due.saturating_duration_since(Instant::now()),
                         None,
                     ) {
                         owner.detach(
@@ -473,8 +487,10 @@ impl Engine<'_> {
                     self.transport = Transport::QuicDialing {
                         owner,
                         target,
-                        remaining: addresses,
+                        addresses,
+                        remaining,
                         deadline,
+                        attempt_due,
                     };
                     return self.upgrade(Arc::new(crate::endpoint::Resolved::Quic(access)));
                 }
@@ -482,11 +498,15 @@ impl Engine<'_> {
                     if crate::wire::stream::terminal(&failed) {
                         return Err(failed);
                     }
-                    error = failed;
                 }
             }
         }
-        Err(error)
+        *locked(&self.shared.resolved) = None;
+        target.choose(crate::endpoint::Choice::Tcp);
+        self.upgrade(Arc::new(crate::endpoint::Resolved::Tls {
+            target: Arc::clone(&target.tcp),
+            addresses,
+        }))
     }
 
     fn drive_quic(&mut self, event: QuicEvent) -> bool {
@@ -497,9 +517,14 @@ impl Engine<'_> {
             Transport::QuicDialing {
                 owner,
                 target,
+                addresses,
                 remaining,
                 deadline,
-            } => (owner, Some((target, remaining, deadline))),
+                attempt_due,
+            } => (
+                owner,
+                Some((target, addresses, remaining, deadline, attempt_due)),
+            ),
         };
         let result = match event {
             QuicEvent::Ready(ready) => owner.ready(&mut self.poll, ready),
@@ -508,11 +533,15 @@ impl Engine<'_> {
             QuicEvent::FinishTurn => owner.finish_turn(&mut self.poll),
         };
         let established = owner.established();
+        if established && let Some((target, ..)) = &dial {
+            target.choose(crate::endpoint::Choice::Quic);
+            self.poll.stop(self.dial);
+        }
         let result = result.and_then(|handled| {
             if !established
                 && dial
                     .as_ref()
-                    .is_some_and(|(_, _, deadline)| Instant::now() >= *deadline)
+                    .is_some_and(|(_, _, _, _, attempt_due)| Instant::now() >= *attempt_due)
             {
                 Err(io::ErrorKind::TimedOut.into())
             } else {
@@ -522,12 +551,16 @@ impl Engine<'_> {
         match result {
             Ok(handled) => {
                 self.transport = match dial {
-                    Some((target, remaining, deadline)) if !established => Transport::QuicDialing {
-                        owner,
-                        target,
-                        remaining,
-                        deadline,
-                    },
+                    Some((target, addresses, remaining, deadline, attempt_due)) if !established => {
+                        Transport::QuicDialing {
+                            owner,
+                            target,
+                            addresses,
+                            remaining,
+                            deadline,
+                            attempt_due,
+                        }
+                    }
                     _ => {
                         self.poll.stop(self.dial);
                         Transport::Quic { owner }
@@ -537,14 +570,15 @@ impl Engine<'_> {
             }
             Err(error) => {
                 let failed = failure(&error);
+                std::mem::replace(&mut self.connection, Connection::Idle).dispose(&mut self.poll);
                 owner.detach(&mut self.poll, error);
                 self.poll.stop(self.dial);
-                std::mem::replace(&mut self.connection, Connection::Idle).dispose(&mut self.poll);
-                if let Some((target, remaining, _)) = dial
+                *locked(&self.shared.resolved) = None;
+                if let Some((target, addresses, remaining, deadline, _)) = dial
                     && !established
                     && !failed.0.terminal()
                 {
-                    if let Err(error) = self.start_quic(target, remaining) {
+                    if let Err(error) = self.start_quic(target, addresses, remaining, deadline) {
                         self.join_failed(failure(&error));
                     }
                 } else {

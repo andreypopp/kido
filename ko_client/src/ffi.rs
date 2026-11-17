@@ -949,20 +949,13 @@ fn start(
     };
     let resolved = match &endpoint {
         Endpoint::Unix(path) => Some(Arc::new(crate::endpoint::Resolved::Unix(path.clone()))),
-        Endpoint::Tls(_) | Endpoint::Quic(_) => None,
+        Endpoint::Remote(_) => None,
         #[cfg(test)]
         Endpoint::Fixed(crate::endpoint::Dial::Unix(path)) => {
             Some(Arc::new(crate::endpoint::Resolved::Unix(path.clone())))
         }
         #[cfg(test)]
-        Endpoint::Fixed(crate::endpoint::Dial::Tls { target, addresses }) => {
-            Some(Arc::new(crate::endpoint::Resolved::Tls {
-                target: Arc::clone(target),
-                addresses: Arc::clone(addresses),
-            }))
-        }
-        #[cfg(test)]
-        Endpoint::Fixed(crate::endpoint::Dial::Quic { .. }) => None,
+        Endpoint::Fixed(crate::endpoint::Dial::Remote { .. }) => None,
     };
     let shared = Arc::new(Shared {
         queue,

@@ -150,22 +150,18 @@ fn setup(scenario: Scenario) -> (Poll, Driver, Peer, Arc<AtomicUsize>) {
         key: PKey::private_key_from_der(&client.key).unwrap(),
         signatures: Arc::clone(&signatures),
     });
-    let target = crate::endpoint::quic::Quic::new(
-        HostName::try_from(
-            if scenario == Scenario::WrongName {
-                "wrong.example"
-            } else {
-                "localhost"
-            }
-            .to_owned(),
-        )
-        .unwrap(),
-        peer.socket.local_addr().unwrap().port(),
-        context,
+    let host = HostName::try_from(
+        if scenario == Scenario::WrongName {
+            "wrong.example"
+        } else {
+            "localhost"
+        }
+        .to_owned(),
     )
     .unwrap();
+    let target = crate::endpoint::quic::Quic::new(context).unwrap();
     let driver = Driver::start(
-        &target.host,
+        &host,
         peer.socket.local_addr().unwrap(),
         &target.config,
         &mut poll,

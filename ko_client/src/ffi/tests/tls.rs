@@ -215,8 +215,15 @@ fn abi_tls_probe_returns_the_server_version() {
 }
 
 fn tls_client(fixture: &Fixture, target: Arc<crate::endpoint::Tls>) -> *mut Client {
+    let mut context = boring::ssl::SslContextBuilder::new(boring::ssl::SslMethod::tls()).unwrap();
+    crate::endpoint::tls::configure(&mut context, Vec::new()).unwrap();
+    let remote = Arc::new(crate::endpoint::Remote::new(
+        target,
+        crate::endpoint::quic::Quic::new(context).unwrap(),
+    ));
+    remote.choose(crate::endpoint::Choice::Tcp);
     let client = start(
-        Endpoint::Tls(target),
+        Endpoint::Remote(remote),
         Greeting {
             name: "tls".to_owned(),
             webview: false,

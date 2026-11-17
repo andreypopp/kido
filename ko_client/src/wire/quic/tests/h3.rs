@@ -42,7 +42,16 @@ impl HttpPeer {
                         .find(|header| header.name() == b":path")
                         .unwrap()
                         .value();
-                    if path == b"/upload" {
+                    if path == b"/upload" || path.starts_with(b"/panes/") {
+                        if path.ends_with(b"name=file") {
+                            assert_eq!(
+                                list.iter()
+                                    .find(|header| header.name() == b"content-length")
+                                    .unwrap()
+                                    .value(),
+                                b"150000"
+                            );
+                        }
                         self.upload = Some((id, Vec::new()));
                         continue;
                     }
@@ -176,6 +185,18 @@ impl HttpPeer {
                         Err(quiche::h3::Error::Done) => break,
                         Err(error) => panic!("{error}"),
                     }
+                }
+                if body.len() == 150000 {
+                    assert_eq!(*body, vec![b'u'; 150000]);
+                    http.send_response(
+                        transport,
+                        *id,
+                        &[quiche::h3::Header::new(b":status", b"200")],
+                        false,
+                    )
+                    .unwrap();
+                    self.sending.push((*id, b"done".to_vec(), 0));
+                    self.read_upload = false;
                 }
             }
             for (id, bytes, at) in &mut self.sending {
@@ -602,6 +623,168 @@ fn a_flow_blocked_h3_upload_does_not_stop_another_stream_and_resumes_exactly() {
     owner.detach(&mut poll, io::ErrorKind::ConnectionReset.into());
 }
 
+#[cfg(all(target_vendor = "apple", feature = "tls"))]
+#[test]
+fn an_h3_upload_uses_the_declared_length_and_callback_bytes() {
+    let (mut poll, driver, peer, _) = setup(Scenario::Accepted);
+    let (mut owner, access) = Connection::new(driver, &mut poll, "localhost".to_owned()).unwrap();
+    let mut peer = HttpPeer::new(peer);
+    peer.read_upload = true;
+    let (send, receive) = std::sync::mpsc::channel();
+    let worker = std::thread::spawn(move || {
+        let endpoint = crate::endpoint::Resolved::Quic(access);
+        let cancel = Wake::new().unwrap();
+        let mut body = std::io::Cursor::new(vec![b'u'; 150000]);
+        let result = crate::wire::upload(
+            &endpoint,
+            None,
+            &ko_wire::api::Route::UploadDrop {
+                id: "pane_1".parse().unwrap(),
+                name: "file".to_owned().try_into().unwrap(),
+            },
+            150000,
+            &cancel,
+            |buffer| std::io::Read::read(&mut body, buffer),
+        );
+        assert_eq!(result.unwrap(), b"done");
+        for oversized in [false, true] {
+            let error = crate::wire::upload(
+                &endpoint,
+                None,
+                &ko_wire::api::Route::UploadDrop {
+                    id: "pane_1".parse().unwrap(),
+                    name: "short".to_owned().try_into().unwrap(),
+                },
+                4,
+                &cancel,
+                |buffer| Ok(if oversized { buffer.len() + 1 } else { 0 }),
+            )
+            .unwrap_err();
+            assert!(error.to_string().contains("declared bytes"), "{error}");
+        }
+        let mut reads = 0;
+        let error = crate::wire::upload(
+            &endpoint,
+            None,
+            &ko_wire::api::Route::UploadDrop {
+                id: "pane_1".parse().unwrap(),
+                name: "cancel".to_owned().try_into().unwrap(),
+            },
+            8 << 20,
+            &cancel,
+            |buffer| {
+                reads += 1;
+                if reads == 1 {
+                    return Ok(4096);
+                }
+                cancel.wake();
+                Ok(buffer.len())
+            },
+        )
+        .unwrap_err();
+        assert!(error.to_string().contains("cancel"), "{error}");
+        assert_eq!(reads, 2);
+        send.send(()).unwrap();
+    });
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        turn(&mut poll, &mut owner, &mut peer, deadline).unwrap();
+        if receive.try_recv().is_ok() {
+            break;
+        }
+    }
+    worker.join().unwrap();
+    owner.detach(&mut poll, io::ErrorKind::ConnectionReset.into());
+}
+
+#[test]
+fn an_h3_send_stop_preserves_a_later_refusal_and_sibling() {
+    let (mut poll, driver, peer, _) = setup(Scenario::Accepted);
+    let (mut owner, access) = Connection::new(driver, &mut poll, "localhost".to_owned()).unwrap();
+    let mut peer = HttpPeer::new(peer);
+    let mut upload = access
+        .open(Request::Http {
+            method: Method::Post,
+            target: "/upload".to_owned().try_into().unwrap(),
+            headers: Vec::new(),
+            length: 8 << 20,
+        })
+        .unwrap();
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while peer.upload.is_none() {
+        turn(&mut poll, &mut owner, &mut peer, deadline).unwrap();
+    }
+    let mut written = 0;
+    loop {
+        turn(&mut poll, &mut owner, &mut peer, deadline).unwrap();
+        match upload.write(&[b'u'; 65536]) {
+            Ok(count) => written += count,
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {
+                if written > 65536 {
+                    break;
+                }
+            }
+            Err(error) => panic!("{error}"),
+        }
+    }
+    assert!(upload.pending_write());
+    let id = peer.upload.as_ref().unwrap().0;
+    peer.peer
+        .connection
+        .as_mut()
+        .unwrap()
+        .stream_shutdown(id, quiche::Shutdown::Read, 0x10c)
+        .unwrap();
+    peer.peer.flush();
+    loop {
+        turn(&mut poll, &mut owner, &mut peer, deadline).unwrap();
+        match upload.write(&[b'u'; 65536]) {
+            Ok(_) => {}
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {}
+            Err(error) => {
+                assert_eq!(error.kind(), io::ErrorKind::BrokenPipe);
+                break;
+            }
+        }
+    }
+    upload.progress().unwrap();
+    assert!(!upload.drained());
+    assert!(upload.response().unwrap().is_none());
+    peer.http
+        .as_mut()
+        .unwrap()
+        .send_response(
+            peer.peer.connection.as_mut().unwrap(),
+            id,
+            &[quiche::h3::Header::new(b":status", b"403")],
+            false,
+        )
+        .unwrap();
+    peer.sending.push((id, b"upload refused".to_vec(), 0));
+    let mut sibling = access.open(request("/small")).unwrap();
+    let mut answer = Vec::new();
+    let mut status = None;
+    let mut small = Vec::new();
+    while answer.len() < 14 || small.len() < 4 {
+        turn(&mut poll, &mut owner, &mut peer, deadline).unwrap();
+        if let Some(head) = upload.response().unwrap() {
+            status = Some(head.status);
+        }
+        for (stream, body) in [(&mut upload, &mut answer), (&mut sibling, &mut small)] {
+            let mut bytes = [0; 64];
+            match stream.read(&mut bytes) {
+                Ok(count) => body.extend_from_slice(&bytes[..count]),
+                Err(error) if error.kind() == io::ErrorKind::WouldBlock => {}
+                Err(error) => panic!("{error}"),
+            }
+        }
+    }
+    assert_eq!(status, Some(403));
+    assert_eq!(answer, b"upload refused");
+    assert_eq!(small, b"done");
+    owner.detach(&mut poll, io::ErrorKind::ConnectionReset.into());
+}
+
 #[test]
 fn h3_connection_loss_fails_every_handle_and_queued_open() {
     let (mut poll, driver, peer, _) = setup(Scenario::Accepted);
@@ -612,7 +795,7 @@ fn h3_connection_loss_fails_every_handle_and_queued_open() {
     while !peer.blocked {
         turn(&mut poll, &mut owner, &mut peer, deadline).unwrap();
     }
-    paused.interest(Interest::Idle);
+    paused.interest(crate::wire::quic::h3::Demand::Idle);
     let paused_token = poll.watch(paused.fd(), Interest::Read);
     let mut queued = access
         .open(Request::Http {

@@ -204,16 +204,9 @@ fn an_upload_ignores_post_handshake_tickets_before_its_http_answer() {
         Ok(())
     });
     let cancel = Wake::new().unwrap();
-    let stream = stream::Direct::open(
-        (&endpoint).try_into().unwrap(),
-        Limit::Idle(WITHIN),
-        Some(&cancel),
-    )
-    .unwrap();
-    let observed = stream.fd().try_clone_to_owned().unwrap();
     let mut reads = 0;
-    let outcome = upload_connected(
-        stream,
+    let outcome = upload(
+        &endpoint,
         None,
         &Route::UploadDrop {
             id: "pane_1".parse().unwrap(),
@@ -225,10 +218,6 @@ fn an_upload_ignores_post_handshake_tickets_before_its_http_answer() {
             if reads == 0 {
                 release.send(()).unwrap();
                 ready.recv_timeout(WITHIN).unwrap();
-                assert_eq!(
-                    fd::wait(observed.as_fd(), Want::Read, None, Some(WITHIN)).unwrap(),
-                    Waited::Ready
-                );
             }
             reads += 1;
             bytes[0] = b'x';
@@ -237,6 +226,7 @@ fn an_upload_ignores_post_handshake_tickets_before_its_http_answer() {
     );
     let server_result = peer.join().unwrap();
     assert_eq!(outcome, Ok(expected));
+    assert_eq!(reads, 2);
     server_result.unwrap();
 }
 

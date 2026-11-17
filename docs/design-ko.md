@@ -1188,11 +1188,15 @@ the probe has its own limit. A view's handshake runs
 inside its own non-blocking upgrade step. Every HTTP exchange, a
 blocking request, a webview's upstream and the version probe, goes
 through `ko_client/src/wire/exchange.rs`, which chooses HTTP/1.1 or
-HTTP/3 before it encodes the request. The one exception is the
-streamed upload (`wire::upload`), which takes only a direct endpoint
-(`DirectEndpoint`: a unix socket or TCP TLS) and writes HTTP/1.1, so
-an HTTP/1.1 body can never reach a QUIC stream; an upload to a QUIC
-endpoint is refused before it reads the file. A server certificate that is not valid
+HTTP/3 before it encodes the request. The streamed upload
+(`wire::upload`) is one more exchange, with a declared length: it
+reads the file only while the stream takes more, and it reads the
+server's answer before each chunk, so a refusal while the body is
+still being sent is the upload's result. On TCP the server lingers
+for up to 2 s after such an answer so that the client can read it;
+on HTTP/3, Caddy stops the request direction (`STOP_SENDING` with
+`H3_NO_ERROR`) and completes the response, so the client stops
+sending and still reads the answer. A server certificate that is not valid
 and a refusal of the client's certificate are final: the client
 stops and does not reconnect. A proxy's 502 is no server.
 
@@ -1215,11 +1219,28 @@ admit one ends or retries only that view or request. The end of the
 connection, also Caddy's `H3_NO_ERROR` at a restart, which sends no
 WebSocket close, fails every handle at once, and is a lost link. A
 request whose headers were sent before the loss is unanswered, as a
-TCP request whose write was sent. `Endpoint::Quic` is the endpoint
-of this case; until the transport choice (plans/remote-mtls.md, P5)
-constructs it, the app's TLS endpoints stay on TCP, and a blocking
-probe of a QUIC endpoint, which has no owner of the connection,
-answers unsupported. The QUIC TLS context comes from the
+TCP request whose write was sent.
+
+The transport choice: a remote endpoint (`Endpoint::Remote`) holds
+both the TCP TLS target and the QUIC configuration, and the choice
+that the I/O thread keeps for it while the endpoint lives (a client's
+reconnects keep it; a new endpoint starts without one). A join
+tries QUIC first, over all the resolved addresses within 2 s
+(`QUIC_HANDSHAKE_LIMIT`, inside the join deadline), each address
+with an equal share of what is left, so a silent first address does
+not use the whole limit, and keeps QUIC
+when a handshake completes. When none completes, it discards the
+QUIC attempt and every handle on it, keeps TCP and dials TCP; a kept
+TCP skips QUIC at every later join of that endpoint, so a network
+that drops UDP pays the limit once for each client. A refusal of the server's or the
+client's certificate over QUIC is final, as on TCP: it is not a
+reason to try TCP. Only the handshake decides: a failure after it
+(the SETTINGS, the CONNECT, the greeting) is a lost link. Requests,
+views and uploads use the transport of the current join and never
+choose one themselves. The standalone probe (`ko_client_probe`),
+which has no I/O thread, always uses TCP and does not change the
+kept choice. The limit is provisional until the droplet session
+(plans/remote-mtls.md, P7). The QUIC TLS context comes from the
 same setup as TCP (`configure` in `endpoint/tls.rs`), with the same
 signer, verifier and failure kinds, and ALPN `h3`; SecTrust's pause
 is BoringSSL's verify retry inside `quiche`, and the trust `Wake` is

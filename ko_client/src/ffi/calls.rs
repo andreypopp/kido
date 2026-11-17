@@ -66,10 +66,7 @@ pub unsafe extern "C" fn ko_client_upload(
     let mut cancelled = false;
     let (code, bytes) = call(&client, |socket, id, cancel| {
         let body = wire::upload(
-            socket
-                .try_into()
-                .map_err(wire::Rejected::from)
-                .map_err(upload_rejected)?,
+            socket,
             id,
             &Route::UploadDrop { id: pane, name },
             size,
@@ -541,9 +538,16 @@ pub(super) unsafe fn probe(
         return Code::Argument;
     }
     let within = Duration::from_millis(u64::from(within_ms));
+    let deadline = std::time::Instant::now() + within;
     let (code, bytes) = match endpoint
-        .resolve(None, within)
-        .and_then(|resolved| crate::api::version(&resolved, within, None))
+        .resolve_probe_tcp(None, deadline)
+        .and_then(|resolved| {
+            crate::api::version(
+                &resolved,
+                deadline.saturating_duration_since(std::time::Instant::now()),
+                None,
+            )
+        })
         .map_err(|error| failure(&error))
     {
         Ok((mismatch, server)) => (

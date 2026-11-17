@@ -40,6 +40,10 @@ pub(crate) enum Destination {
 pub(crate) enum Body<'a> {
     Complete(&'a [u8]),
     Streaming(&'a [u8]),
+    #[cfg(all(target_vendor = "apple", feature = "tls"))]
+    Declared {
+        length: u64,
+    },
 }
 #[derive(Debug)]
 pub(crate) enum RequestKind<'a> {
@@ -105,7 +109,11 @@ impl Transport {
             Self::Http1 { stream, .. } => stream.interest(read, write),
             #[cfg(all(feature = "tls", any(target_vendor = "apple", test)))]
             Self::Http3 { handle, .. } => {
-                handle.interest(Interest::of(read, write));
+                handle.interest(if read && !write && handle.pending_write() {
+                    super::quic::h3::Demand::ReadWrite(super::quic::h3::WriteInterest::Drained)
+                } else {
+                    Interest::of(read, write).into()
+                });
                 if read || write {
                     Interest::Read
                 } else {
@@ -196,6 +204,27 @@ impl Exchange {
                     body,
                     Reply::Http,
                 ),
+                #[cfg(all(target_vendor = "apple", feature = "tls"))]
+                RequestKind::Http {
+                    method,
+                    target,
+                    headers,
+                    body: Body::Declared { length },
+                } => (
+                    RequestHead::Http {
+                        method,
+                        target,
+                        headers,
+                        length: usize::try_from(length).map_err(|_| {
+                            io::Error::new(
+                                io::ErrorKind::InvalidInput,
+                                "upload length exceeds platform range",
+                            )
+                        })?,
+                    },
+                    b"".as_slice(),
+                    Reply::Http,
+                ),
                 RequestKind::Http {
                     body: Body::Streaming(_),
                     ..
@@ -237,17 +266,33 @@ impl Exchange {
                 (bytes, Http1Reply::WebSocket { key })
             }
             RequestKind::Http { method, body, .. } => {
-                let body = match body {
-                    Body::Complete(bytes) | Body::Streaming(bytes) => *bytes,
+                let (length, initial) = match body {
+                    Body::Complete(bytes) => (Some(bytes.len() as u64), *bytes),
+                    Body::Streaming(bytes) => (None, *bytes),
+                    #[cfg(all(target_vendor = "apple", feature = "tls"))]
+                    Body::Declared { length } => (Some(*length), b"".as_slice()),
                 };
-                let bytes = match request.destination {
-                    Destination::Server { .. } => {
-                        http::call(stream.host(), method.http(), target, client, &fields, body)
-                    }
+                let mut bytes = match request.destination {
+                    Destination::Server { .. } => http::call_head(
+                        stream.host(),
+                        method.http(),
+                        target,
+                        client,
+                        &fields,
+                        length.unwrap_or(initial.len() as u64),
+                    ),
                     Destination::Program => {
-                        http::program_call(stream.host(), method.http(), target, &fields, body)
+                        let length = length.map(|length| length.to_string());
+                        if let Some(length) = &length {
+                            fields.retain(|(name, _)| {
+                                !name.eq_ignore_ascii_case(http::CONTENT_LENGTH_HEADER)
+                            });
+                            fields.push((http::CONTENT_LENGTH_HEADER, length));
+                        }
+                        http::program_call(stream.host(), method.http(), target, &fields, b"")
                     }
                 };
+                bytes.extend_from_slice(initial);
                 (bytes, Http1Reply::Http)
             }
         };
@@ -302,11 +347,20 @@ impl Exchange {
         self.out.backed_up(http::MAX_BODY) || self.transport.pending_write()
     }
     pub(crate) fn drained(&self) -> bool {
-        self.out.is_empty() && !self.transport.pending_write()
+        self.out.is_empty()
+            && match &self.transport {
+                Transport::Http1 { stream, .. } => !stream.pending_write(),
+                #[cfg(all(feature = "tls", any(target_vendor = "apple", test)))]
+                Transport::Http3 { handle, .. } => handle.drained(),
+            }
     }
     #[cfg(all(target_vendor = "apple", feature = "tls"))]
     pub(crate) fn written(&self) -> u64 {
         self.out.written()
+    }
+    #[cfg(all(target_vendor = "apple", feature = "tls"))]
+    pub(crate) fn stop_body(&mut self) {
+        self.out = Queue::new(Vec::new());
     }
     pub(crate) fn body(&mut self, bytes: &[u8]) -> io::Result<()> {
         match &self.transport {
@@ -586,6 +640,60 @@ mod tests {
     use std::io::Write;
     use std::os::fd::AsFd;
     use std::os::unix::net::UnixStream;
+
+    #[cfg(all(target_vendor = "apple", feature = "tls"))]
+    #[test]
+    fn a_declared_program_body_keeps_program_headers() {
+        use std::io::Read;
+        let dir = std::path::PathBuf::from("/tmp").join(format!(
+            "ko-declared-body-{}",
+            ko_sys::entropy::hex(8).unwrap()
+        ));
+        std::fs::create_dir(&dir).unwrap();
+        let path = dir.join("socket");
+        let listener = std::os::unix::net::UnixListener::bind(&path).unwrap();
+        let mut poll = Poll::new();
+        let mut exchange = Exchange::start(
+            &mut poll,
+            &Resolved::Unix(path),
+            Request {
+                kind: RequestKind::Http {
+                    method: Method::Post,
+                    target: "/program".to_owned().try_into().unwrap(),
+                    headers: vec![
+                        ("Content-Length".to_owned(), "999".to_owned()),
+                        ("X-Program".to_owned(), "kept".to_owned()),
+                    ],
+                    body: Body::Declared { length: 7 },
+                },
+                destination: Destination::Program,
+            },
+            Limit::Deadline(Instant::now() + std::time::Duration::from_secs(5)),
+        )
+        .unwrap();
+        exchange.flush(&mut poll).unwrap();
+        let (mut peer, _) = listener.accept().unwrap();
+        peer.set_read_timeout(Some(std::time::Duration::from_secs(5)))
+            .unwrap();
+        let mut bytes = Vec::new();
+        let deadline = Instant::now() + std::time::Duration::from_secs(5);
+        while !bytes.ends_with(b"\r\n\r\n") {
+            assert!(Instant::now() < deadline);
+            let mut buffer = [0; 1024];
+            let count = peer.read(&mut buffer).unwrap();
+            assert_ne!(count, 0);
+            bytes.extend_from_slice(&buffer[..count]);
+        }
+        let http::Parsed::Complete { head, .. } = http::parse_head(&bytes, &mut 0) else {
+            panic!("incomplete head")
+        };
+        assert_eq!(head.header("Ko-Protocol"), None);
+        assert_eq!(head.header("Ko-Vt"), None);
+        assert_eq!(head.header("Content-Length"), Some("7"));
+        assert_eq!(head.header("X-Program"), Some("kept"));
+        exchange.dispose(&mut poll);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
 
     fn upgrade(poll: &mut Poll, ours: UnixStream) -> Exchange {
         fd::set_nonblocking(ours.as_fd()).unwrap();

@@ -110,10 +110,18 @@ run a `quiche` HTTP/3 server in the process and drive the owner only
 through the loop's events: a stream whose mailbox nobody reads
 beside one that completes, then resumes at its exact offset; every
 handle failed on `H3_NO_ERROR`, a paused one included; a cancel
-during the join; a refused admission. The I/O thread's in-process
-cases (`ffi/tests/quic.rs`, without the variable below) show that a
-reset ends only its own view, and the Caddy test that a refused
-admission ends only its own view.
+during the join; a refused admission; an upload with its declared
+length, a reader that gives too few or too many bytes, a cancel after
+the first chunk, and a `STOP_SENDING` while the body is blocked by
+flow control, after which the response still arrives and a sibling
+stream completes. The I/O thread's in-process cases
+(`ffi/tests/quic.rs`, without the variable below) show that a reset
+ends only its own view, and the transport choice: a UDP socket that
+drops every datagram puts the client on TCP within the limit and a
+reconnect does not try UDP again, an open UDP path makes no TCP
+connection, and a refused certificate over QUIC makes no TCP
+connection. The Caddy test shows that a refused admission ends only
+its own view.
 
 `ko_pane/tests/pane.rs` drives the `ko-pane` binary over a socketpair
 and a ring. The `Server` SIGTERM test starts the `ko-pane` that `make
@@ -219,7 +227,10 @@ server name of the test's certificate. They cover the TLS cases of
 the TCP tests over HTTP/3, a refusal without `Ko-Protocol` and
 `Ko-Vt` (426), 502 while ko is stopped, a revocation by restart, one
 signature for each connection, and two views that resume at their
-exact offsets, with no new snapshot, after a restart of Caddy.
+exact offsets, with no new snapshot, after a restart of Caddy; an
+upload over HTTP/3, byte for byte, an early refusal (Caddy stops the
+request direction with `H3_NO_ERROR` and still sends the 404), and a
+cancel.
 `KO_E2E_CONTAINER=1 make cargo ARGS='test -p ko_client --features
 tls quic'` runs them after `make build-linux`. The podman test (also in `container.rs`) runs
 only with `KO_E2E_PODMAN=1`, on a Linux host with podman and the

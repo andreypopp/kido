@@ -138,6 +138,17 @@ pub(super) unsafe fn endpoint(
                     .ok_or(Code::Argument)?
                     .to_vec();
             let certificate = X509::from_der(&certificate).map_err(|_| Code::Argument)?;
+            let mut context = boring::ssl::SslContextBuilder::new(boring::ssl::SslMethod::tls())
+                .map_err(|_| Code::Argument)?;
+            endpoint::tls::configure(&mut context, roots.clone()).map_err(|_| Code::Argument)?;
+            context
+                .set_certificate(&certificate)
+                .map_err(|_| Code::Argument)?;
+            context.set_private_key_method(External {
+                user: identity.user,
+                sign,
+            });
+            let quic = endpoint::quic::Quic::new(context).map_err(|_| Code::Argument)?;
             let mut config = endpoint::config(roots).map_err(|_| Code::Argument)?;
             config
                 .set_certificate(&certificate)
@@ -147,8 +158,9 @@ pub(super) unsafe fn endpoint(
                 sign,
             });
             let config = config.build();
-            Ok(endpoint::Endpoint::Tls(Arc::new(Tls::new(
-                host, raw.port, config,
+            Ok(endpoint::Endpoint::Remote(Arc::new(endpoint::Remote::new(
+                Arc::new(Tls::new(host, raw.port, config)),
+                quic,
             ))))
         }
         _ => Err(Code::Argument),

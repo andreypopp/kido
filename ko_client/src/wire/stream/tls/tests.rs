@@ -32,12 +32,7 @@ fn a_link_drains_plaintext_produced_by_settlement_before_waiting_again() {
         socket.flush().unwrap();
         gate.recv_timeout(Duration::from_secs(5)).unwrap();
     });
-    let mut stream = Stream::open(
-        (&endpoint).try_into().unwrap(),
-        Limit::Idle(Duration::from_secs(5)),
-        None,
-    )
-    .unwrap();
+    let mut stream = Stream::open(&endpoint, Limit::Idle(Duration::from_secs(5)), None).unwrap();
     assert_eq!(stream.write(b"start").unwrap(), 5);
     let Stream::Tls(secured) = &mut stream else {
         panic!("TLS");
@@ -84,12 +79,7 @@ fn crossed_wait_directions_feed_ciphertext_and_keep_plaintext_until_the_reader_r
         socket.flush().unwrap();
         gate.recv_timeout(Duration::from_secs(5)).unwrap();
     });
-    let mut stream = Stream::open(
-        (&endpoint).try_into().unwrap(),
-        Limit::Idle(Duration::from_secs(5)),
-        None,
-    )
-    .unwrap();
+    let mut stream = Stream::open(&endpoint, Limit::Idle(Duration::from_secs(5)), None).unwrap();
     assert_eq!(stream.write(b"start").unwrap(), 5);
     let Stream::Tls(secured) = &mut stream else {
         panic!("TLS");

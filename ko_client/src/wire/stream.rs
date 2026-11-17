@@ -16,33 +16,6 @@ mod tls;
 #[cfg(feature = "tls")]
 use tls::Secured;
 
-#[derive(Debug, Clone, Copy)]
-pub(crate) enum DirectEndpoint<'a> {
-    Unix(&'a std::path::Path),
-    #[cfg(feature = "tls")]
-    Tls {
-        target: &'a std::sync::Arc<crate::endpoint::Tls>,
-        addresses: &'a [std::net::SocketAddr],
-    },
-}
-
-impl<'a> TryFrom<&'a Resolved> for DirectEndpoint<'a> {
-    type Error = io::Error;
-
-    fn try_from(endpoint: &'a Resolved) -> io::Result<Self> {
-        match endpoint {
-            Resolved::Unix(path) => Ok(Self::Unix(path)),
-            #[cfg(feature = "tls")]
-            Resolved::Tls { target, addresses } => Ok(Self::Tls { target, addresses }),
-            #[cfg(all(feature = "tls", any(target_vendor = "apple", test)))]
-            Resolved::Quic(_) => Err(io::Error::new(
-                io::ErrorKind::InvalidInput,
-                "a direct endpoint is required",
-            )),
-        }
-    }
-}
-
 #[derive(Debug)]
 pub(crate) enum Direct {
     Unix(UnixStream),
@@ -70,12 +43,17 @@ impl Direct {
     }
 
     pub(crate) fn open(
-        endpoint: DirectEndpoint<'_>,
+        endpoint: &Resolved,
         within: Limit,
         cancel: Option<&Wake>,
     ) -> io::Result<Self> {
         match endpoint {
-            DirectEndpoint::Unix(path) => {
+            #[cfg(all(feature = "tls", any(target_vendor = "apple", test)))]
+            Resolved::Quic(_) => Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "QUIC requires a typed request",
+            )),
+            Resolved::Unix(path) => {
                 let stream = match within {
                     Limit::Idle(_) => {
                         crate::connect::connect(path, crate::connect::PATIENCE, cancel)?
@@ -94,7 +72,7 @@ impl Direct {
                 Ok(Self::Unix(stream))
             }
             #[cfg(feature = "tls")]
-            DirectEndpoint::Tls { target, addresses } => {
+            Resolved::Tls { target, addresses } => {
                 let mut stream = Self::Tls(Box::new(Secured::start(
                     std::sync::Arc::clone(target),
                     addresses.iter().copied().collect(),
@@ -365,7 +343,7 @@ impl Stream {
         within: Limit,
         cancel: Option<&Wake>,
     ) -> io::Result<Self> {
-        Direct::open(endpoint.try_into()?, within, cancel).map(Self::Direct)
+        Direct::open(endpoint, within, cancel).map(Self::Direct)
     }
     pub(crate) fn progress(&mut self) -> io::Result<()> {
         match self {
@@ -480,8 +458,10 @@ impl Stream {
             #[cfg(all(feature = "tls", any(target_vendor = "apple", test)))]
             Self::Quic(handle) => {
                 handle.interest(match fallback {
-                    Want::Read => Interest::Read,
-                    Want::Write => Interest::Write,
+                    Want::Read => super::quic::h3::Demand::Read,
+                    Want::Write => {
+                        super::quic::h3::Demand::Write(super::quic::h3::WriteInterest::Capacity)
+                    }
                 });
                 Want::Read
             }
@@ -492,7 +472,7 @@ impl Stream {
             Self::Direct(stream) => stream.interest(read, write),
             #[cfg(all(feature = "tls", any(target_vendor = "apple", test)))]
             Self::Quic(handle) => {
-                handle.interest(Interest::of(read, write));
+                handle.interest(Interest::of(read, write).into());
                 if read || write {
                     Interest::Read
                 } else {

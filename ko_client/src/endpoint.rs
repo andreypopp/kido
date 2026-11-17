@@ -16,13 +16,7 @@ pub(crate) use tls::config;
 pub(crate) enum Endpoint {
     Unix(PathBuf),
     #[cfg(feature = "tls")]
-    Tls(Arc<Tls>),
-    #[cfg(feature = "tls")]
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "P5's transport choice constructs it")
-    )]
-    Quic(Arc<quic::Quic>),
+    Remote(Arc<Remote>),
     #[cfg(test)]
     Fixed(Dial),
 }
@@ -97,45 +91,69 @@ pub enum Resolved {
 #[derive(Debug, Clone)]
 pub(crate) enum Dial {
     Unix(PathBuf),
-    Tls {
-        target: Arc<Tls>,
-        addresses: Arc<[SocketAddr]>,
-    },
-    Quic {
-        target: Arc<quic::Quic>,
+    Remote {
+        target: Arc<Remote>,
         addresses: Arc<[SocketAddr]>,
     },
 }
 
-#[cfg(any(all(target_vendor = "apple", feature = "tls"), test))]
-#[derive(Debug, Clone)]
-enum Network {
-    Tls(Arc<Tls>),
-    Quic(Arc<quic::Quic>),
+#[cfg(all(feature = "tls", any(target_vendor = "apple", test)))]
+#[derive(Debug)]
+pub(crate) struct Remote {
+    pub(crate) tcp: Arc<Tls>,
+    pub(crate) quic: quic::Quic,
+    choice: std::sync::Mutex<Choice>,
+}
+
+#[cfg(all(feature = "tls", any(target_vendor = "apple", test)))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Choice {
+    Unknown,
+    Quic,
+    Tcp,
+}
+
+#[cfg(all(feature = "tls", any(target_vendor = "apple", test)))]
+impl Remote {
+    pub(crate) fn new(tcp: Arc<Tls>, quic: quic::Quic) -> Self {
+        Self {
+            tcp,
+            quic,
+            choice: std::sync::Mutex::new(Choice::Unknown),
+        }
+    }
+    pub(crate) fn choice(&self) -> Choice {
+        *self
+            .choice
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+    pub(crate) fn choose(&self, choice: Choice) {
+        *self
+            .choice
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = choice;
+    }
 }
 
 #[cfg(any(all(target_vendor = "apple", feature = "tls"), test))]
 impl Endpoint {
     #[cfg(any(all(target_vendor = "apple", feature = "tls"), test))]
-    pub(crate) fn resolve(
+    pub(crate) fn resolve_probe_tcp(
         &self,
         cancel: Option<&ko_sys::event::Wake>,
-        within: std::time::Duration,
+        deadline: std::time::Instant,
     ) -> std::io::Result<Arc<Resolved>> {
         use ko_sys::fd::{self, Waited, Want};
         let resolving = Resolving::start(self)?;
-        let deadline = std::time::Instant::now() + within;
         loop {
             if let Some(resolved) = resolving.take()? {
                 return match resolved {
                     Dial::Unix(path) => Ok(Arc::new(Resolved::Unix(path))),
-                    Dial::Tls { target, addresses } => {
-                        Ok(Arc::new(Resolved::Tls { target, addresses }))
-                    }
-                    Dial::Quic { .. } => Err(std::io::Error::new(
-                        std::io::ErrorKind::Unsupported,
-                        "QUIC endpoint requires an I/O owner",
-                    )),
+                    Dial::Remote { target, addresses } => Ok(Arc::new(Resolved::Tls {
+                        target: Arc::clone(&target.tcp),
+                        addresses,
+                    })),
                 };
             }
             let Some(remaining) = deadline.checked_duration_since(std::time::Instant::now()) else {
@@ -167,7 +185,7 @@ pub(crate) struct Resolving(Resolution);
 enum Resolution {
     Ready(Dial),
     Worker {
-        target: Network,
+        target: Arc<Remote>,
         wake: Arc<ko_sys::event::Wake>,
         receive: std::sync::mpsc::Receiver<std::io::Result<Vec<SocketAddr>>>,
     },
@@ -183,15 +201,10 @@ impl Resolving {
             }
             #[cfg(test)]
             Endpoint::Fixed(dial) => return Ok(Self(Resolution::Ready(dial.clone()))),
-            Endpoint::Tls(target) => (
-                target.host.0.clone(),
-                target.port,
-                Network::Tls(Arc::clone(target)),
-            ),
-            Endpoint::Quic(target) => (
-                target.host.0.clone(),
-                target.port,
-                Network::Quic(Arc::clone(target)),
+            Endpoint::Remote(target) => (
+                target.tcp.host.0.clone(),
+                target.tcp.port,
+                Arc::clone(target),
             ),
         };
         {
@@ -240,15 +253,9 @@ impl Resolving {
                 if addresses.is_empty() {
                     return Err(std::io::ErrorKind::NotFound.into());
                 }
-                Ok(Some(match target {
-                    Network::Tls(target) => Dial::Tls {
-                        target: Arc::clone(target),
-                        addresses: addresses.into(),
-                    },
-                    Network::Quic(target) => Dial::Quic {
-                        target: Arc::clone(target),
-                        addresses: addresses.into(),
-                    },
+                Ok(Some(Dial::Remote {
+                    target: Arc::clone(target),
+                    addresses: addresses.into(),
                 }))
             }
         }
@@ -268,10 +275,10 @@ mod tests {
 
     #[test]
     fn a_resolved_dial_keeps_its_target_and_addresses_together() {
-        let within = std::time::Duration::from_secs(5);
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
         let unix = Endpoint::Unix(PathBuf::from("/tmp/test-socket"));
         assert!(
-            matches!(unix.resolve(None, within).unwrap().as_ref(), Resolved::Unix(path) if path == &PathBuf::from("/tmp/test-socket"))
+            matches!(unix.resolve_probe_tcp(None, deadline).unwrap().as_ref(), Resolved::Unix(path) if path == &PathBuf::from("/tmp/test-socket"))
         );
         let fixtures = crate::wire::tests::tls::Fixtures::new();
         let Resolved::Tls { target, .. } =
@@ -279,8 +286,14 @@ mod tests {
         else {
             panic!("TLS target");
         };
-        let configured = Endpoint::Tls(Arc::clone(&target));
-        let resolved = configured.resolve(None, within).unwrap();
+        let mut context =
+            boring::ssl::SslContextBuilder::new(boring::ssl::SslMethod::tls()).unwrap();
+        tls::configure(&mut context, Vec::new()).unwrap();
+        let configured = Endpoint::Remote(Arc::new(Remote::new(
+            Arc::clone(&target),
+            quic::Quic::new(context).unwrap(),
+        )));
+        let resolved = configured.resolve_probe_tcp(None, deadline).unwrap();
         let Resolved::Tls {
             target: resolved_target,
             addresses,
@@ -294,31 +307,6 @@ mod tests {
             addresses
                 .iter()
                 .all(|address| address.ip().is_loopback() && address.port() == 443)
-        );
-    }
-
-    #[test]
-    fn a_standalone_quic_resolve_requires_an_io_owner() {
-        let mut context =
-            boring::ssl::SslContextBuilder::new(boring::ssl::SslMethod::tls()).unwrap();
-        tls::configure(&mut context, Vec::new()).unwrap();
-        let endpoint = Endpoint::Quic(Arc::new(
-            quic::Quic::new(
-                HostName::try_from("localhost".to_owned()).unwrap(),
-                443,
-                context,
-            )
-            .unwrap(),
-        ));
-        let error = endpoint
-            .resolve(None, std::time::Duration::from_secs(5))
-            .unwrap_err();
-        assert_eq!(
-            (error.kind(), error.to_string()),
-            (
-                std::io::ErrorKind::Unsupported,
-                "QUIC endpoint requires an I/O owner".to_owned()
-            )
         );
     }
 

@@ -134,23 +134,27 @@ enum Life {
 enum Output {
     Http { bytes: VecDeque<u8>, left: usize },
     WebSocket { bytes: VecDeque<u8> },
+    Stopped { code: u64 },
 }
 impl Output {
-    fn bytes(&self) -> &VecDeque<u8> {
+    fn bytes(&self) -> Option<&VecDeque<u8>> {
         match self {
-            Self::Http { bytes, .. } | Self::WebSocket { bytes } => bytes,
+            Self::Http { bytes, .. } | Self::WebSocket { bytes } => Some(bytes),
+            Self::Stopped { .. } => None,
         }
     }
-    fn bytes_mut(&mut self) -> &mut VecDeque<u8> {
+    fn bytes_mut(&mut self) -> Option<&mut VecDeque<u8>> {
         match self {
-            Self::Http { bytes, .. } | Self::WebSocket { bytes } => bytes,
+            Self::Http { bytes, .. } | Self::WebSocket { bytes } => Some(bytes),
+            Self::Stopped { .. } => None,
         }
     }
     fn capacity(&self) -> usize {
-        let space = CAPACITY.saturating_sub(self.bytes().len());
+        let space = CAPACITY.saturating_sub(self.bytes().map_or(0, VecDeque::len));
         match self {
             Self::Http { left, .. } => space.min(*left),
             Self::WebSocket { .. } => space,
+            Self::Stopped { .. } => 0,
         }
     }
 }
@@ -160,13 +164,37 @@ enum ResponseState {
     Ready(Response),
     Consumed,
 }
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum WriteInterest {
+    Capacity,
+    Drained,
+}
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum Demand {
+    Read,
+    Write(WriteInterest),
+    ReadWrite(WriteInterest),
+    Hangup,
+    Idle,
+}
+impl From<Interest> for Demand {
+    fn from(interest: Interest) -> Self {
+        match interest {
+            Interest::Read => Self::Read,
+            Interest::Write => Self::Write(WriteInterest::Capacity),
+            Interest::ReadWrite => Self::ReadWrite(WriteInterest::Capacity),
+            Interest::Hangup => Self::Hangup,
+            Interest::Idle => Self::Idle,
+        }
+    }
+}
 #[derive(Debug)]
 struct State {
     input: VecDeque<u8>,
     output: Output,
     head: ResponseState,
     life: Life,
-    interest: Interest,
+    interest: Demand,
     received: bool,
 }
 impl State {
@@ -183,7 +211,9 @@ impl State {
             submission: self.submission(),
         };
         self.input.clear();
-        self.output.bytes_mut().clear();
+        if let Some(bytes) = self.output.bytes_mut() {
+            bytes.clear();
+        }
     }
     fn headers(&mut self, list: Vec<quiche::h3::Header>) -> Result<(), StreamFailure> {
         let invalid = |message: &str| StreamFailure::Protocol(message.to_owned());
@@ -256,13 +286,20 @@ impl Shared {
             || matches!(state.head, ResponseState::Ready(_))
             || state.received
             || matches!(state.life, Life::Finished | Life::Failed { .. });
-        let write = state.output.capacity() > 0;
         let ready = match state.interest {
-            Interest::Read => read,
-            Interest::Write => write,
-            Interest::ReadWrite => read || write,
-            Interest::Hangup => matches!(state.life, Life::Finished | Life::Failed { .. }),
-            Interest::Idle => false,
+            Demand::Read => read,
+            Demand::Write(when) | Demand::ReadWrite(when) => {
+                let write = match when {
+                    WriteInterest::Capacity => {
+                        state.output.capacity() > 0
+                            || matches!(state.output, Output::Stopped { .. })
+                    }
+                    WriteInterest::Drained => state.output.bytes().is_none_or(VecDeque::is_empty),
+                };
+                write || (matches!(state.interest, Demand::ReadWrite(_)) && read)
+            }
+            Demand::Hangup => matches!(state.life, Life::Finished | Life::Failed { .. }),
+            Demand::Idle => false,
         };
         let notified = ready || matches!(state.life, Life::Failed { .. });
         if notified != self.wake.is_set() {
@@ -355,7 +392,7 @@ impl Access {
                 },
                 head: ResponseState::Pending,
                 life: Life::Opening,
-                interest: Interest::Read,
+                interest: Demand::Read,
                 received: false,
             }),
             wake: Wake::new()?,
@@ -395,7 +432,8 @@ impl StreamHandle {
     }
     pub(crate) fn progress(&self) -> io::Result<()> {
         self.access.check()?;
-        if let Life::Failed { error, .. } = &locked(&self.shared.state).life {
+        let state = locked(&self.shared.state);
+        if let Life::Failed { error, .. } = &state.life {
             return Err(error.error());
         }
         Ok(())
@@ -422,7 +460,7 @@ impl StreamHandle {
     pub(crate) fn fd(&self) -> BorrowedFd<'_> {
         self.shared.wake.fd()
     }
-    pub(crate) fn interest(&self, interest: Interest) {
+    pub(crate) fn interest(&self, interest: Demand) {
         let mut state = locked(&self.shared.state);
         state.interest = interest;
         self.shared.rearm(&mut state);
@@ -458,6 +496,12 @@ impl StreamHandle {
         if let Life::Failed { error, .. } = &state.life {
             return Err(error.error());
         }
+        if let Output::Stopped { code } = state.output {
+            return Err(io::Error::new(
+                io::ErrorKind::BrokenPipe,
+                format!("HTTP/3 request stopped {code}"),
+            ));
+        }
         if !bytes.is_empty() && matches!(state.output, Output::Http { left: 0, .. }) {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
@@ -468,11 +512,10 @@ impl StreamHandle {
         if count == 0 && !bytes.is_empty() {
             return Err(io::ErrorKind::WouldBlock.into());
         }
-        let empty = state.output.bytes().is_empty();
-        state
-            .output
-            .bytes_mut()
-            .extend(bytes.iter().take(count).copied());
+        let empty = state.output.bytes().is_none_or(VecDeque::is_empty);
+        if let Some(output) = state.output.bytes_mut() {
+            output.extend(bytes.iter().take(count).copied());
+        }
         if let Output::Http { left, .. } = &mut state.output {
             *left = left.saturating_sub(count);
         }
@@ -506,8 +549,16 @@ impl StreamHandle {
         self.shared.rearm(&mut state);
         Ok(head)
     }
+    pub(crate) fn drained(&self) -> bool {
+        let state = locked(&self.shared.state);
+        !matches!(state.life, Life::Failed { .. })
+            && state.output.bytes().is_some_and(VecDeque::is_empty)
+    }
     pub(crate) fn pending_write(&self) -> bool {
-        !locked(&self.shared.state).output.bytes().is_empty()
+        locked(&self.shared.state)
+            .output
+            .bytes()
+            .is_some_and(|bytes| !bytes.is_empty())
     }
     pub(crate) fn submitted(&self) -> bool {
         locked(&self.shared.state).submission() == Submission::Submitted
@@ -572,16 +623,22 @@ impl Connection {
     }
     #[cfg(any(target_vendor = "apple", test))]
     pub(crate) fn start(
-        target: &crate::endpoint::quic::Quic,
+        target: &crate::endpoint::Remote,
         peer: std::net::SocketAddr,
         poll: &mut Poll,
         keep_alive: std::time::Duration,
     ) -> io::Result<(Self, Access)> {
-        let driver = Driver::start(&target.host, peer, &target.config, poll, keep_alive)?;
-        let authority = if target.port == 443 {
-            target.host.as_str().to_owned()
+        let driver = Driver::start(
+            &target.tcp.host,
+            peer,
+            &target.quic.config,
+            poll,
+            keep_alive,
+        )?;
+        let authority = if target.tcp.port == 443 {
+            target.tcp.host.as_str().to_owned()
         } else {
-            format!("{}:{}", target.host.as_str(), target.port)
+            format!("{}:{}", target.tcp.host.as_str(), target.tcp.port)
         };
         Self::new(driver, poll, authority)
     }
@@ -772,16 +829,21 @@ impl Connection {
                 continue;
             }
             let fin = matches!(state.output, Output::Http { left: 0, .. });
-            if *send == Send::Open && (!state.output.bytes().is_empty() || fin) {
-                let bytes = state.output.bytes_mut().make_contiguous();
-                match http.send_body(transport, *id, bytes, fin) {
+            if *send == Send::Open
+                && let Some(bytes) = state.output.bytes_mut()
+                && (!bytes.is_empty() || fin)
+            {
+                match http.send_body(transport, *id, bytes.make_contiguous(), fin) {
                     Ok(count) => {
-                        state.output.bytes_mut().drain(..count);
-                        if fin && state.output.bytes().is_empty() {
+                        bytes.drain(..count);
+                        if fin && bytes.is_empty() {
                             *send = Send::Finished;
                         }
                     }
                     Err(quiche::h3::Error::Done | quiche::h3::Error::StreamBlocked) => {}
+                    Err(quiche::h3::Error::TransportError(quiche::Error::StreamStopped(code))) => {
+                        state.output = Output::Stopped { code };
+                    }
                     Err(error) => state.fail(Failure::Stream(StreamFailure::Io(error.to_string()))),
                 }
             }
