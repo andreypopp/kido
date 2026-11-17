@@ -107,12 +107,29 @@ the `--target=` that the `cc` crate adds, which would override zig's
 target.
 
 BoringSSL (the crate `boring-sys`) builds with cmake, a C and C++
-compiler, and libclang for its bindgen step. Only `ko_client`'s
-feature `tls` needs it, so only the xcframework and `ko_client`'s
-tests need these tools; `ko` and the static Linux `ko` link no
-BoringSSL. `make check-ko-tls`, which `scripts/lint.sh` runs, fails
-when `ko`'s normal or build graph, for any target, has `boring` or
-`boring-sys`. Xcode supplies the compilers and libclang on macOS;
+compiler, and libclang for its bindgen step. `quiche`, the QUIC and
+HTTP/3 implementation, uses that same BoringSSL through its feature
+`boringssl-boring-crate`. Only `ko_client`'s feature `tls` needs
+them, so only the xcframework and `ko_client`'s tests need these
+tools; `ko` and the static Linux `ko` link no BoringSSL and no
+`quiche`. `make check-ko-tls`, which `scripts/lint.sh` runs, fails
+when `ko`'s normal or build graph, for any target, has `boring`,
+`boring-sys` or `quiche`.
+
+`quiche` comes from ko's own fork, through `[patch.crates-io]` in
+the root `Cargo.toml`: the branch `kido-<version>` of
+`github.com/andreypopp/quiche` is the release tag plus one commit
+that deletes the `rustc-link-lib` lines for `ssl` and `crypto` from
+`quiche/src/build.rs`. Without it, `quiche` links BoringSSL a second
+time beside `boring-sys`, and the xcframework's `ld -r -all_load`
+fails on the duplicate symbols. A bump of `quiche` applies the commit
+again on the new tag and moves the `rev`. If the requirement in
+`ko_client/Cargo.toml` moves without the `rev`, cargo takes the
+unpatched crate from crates.io and only warns, so `scripts/lint.sh`
+fails unless `Cargo.lock` has one `quiche` whose source is the
+patch's `rev`. `quiche`'s workspace caps `libc` below 0.2.190 (an
+iOS break of `backtrace`, rust-lang/libc#5601), which holds the
+whole workspace's `libc` below that version while the cap exists. Xcode supplies the compilers and libclang on macOS;
 cmake comes from Homebrew there, and CI's macOS and app jobs install
 it when it is absent. The Ubuntu job and `scripts/ci-like/Dockerfile`
 install `cmake` and `libclang-dev`.
@@ -253,7 +270,10 @@ then `nm` must show exactly the names of that list. The reason:
 Rust's `compiler_builtins` and Zig's `compiler_rt` in the app's
 libghostty define the same symbols, and the app's link refuses the
 duplicates. The same step makes BoringSSL's C and C++ symbols
-local, so they cannot meet another copy in the app. Each cargo build
+local, so they cannot meet another copy in the app. The same rule
+also fails when a slice's private archive is larger than its budget
+in the Makefile: BoringSSL and `quiche` are most of the archive, and
+a budget makes a large growth a decision, not an accident. Each cargo build
 of a slice runs with `DEVELOPER_DIR`, as the `xcrun` steps do, so
 that the `cc` crate and BoringSSL's cmake find the slice's SDK, and
 with `ko_client`'s feature `tls`, which only this build and

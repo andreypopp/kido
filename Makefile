@@ -168,8 +168,8 @@ XCDEV := DEVELOPER_DIR=$${DEVELOPER_DIR:-/Applications/Xcode.app/Contents/Develo
 .PHONY: check-ko-tls
 check-ko-tls:
 	@set -e; tree=$$($(CARGO) tree --locked -p ko --target all -e normal,build --prefix none); \
-	! echo "$$tree" | grep -qE '^(boring|boring-sys) v' || \
-	{ echo "ko: BoringSSL is not permitted in the CLI dependency tree" >&2; exit 1; }
+	! echo "$$tree" | grep -qE '^(boring|boring-sys|quiche) v' || \
+	{ echo "ko: BoringSSL and quiche are not permitted in the CLI dependency tree" >&2; exit 1; }
 
 ko-client-xcframework: $(KO_CLIENT_XC)/Info.plist
 
@@ -192,6 +192,8 @@ target/%/release/libko_client_private.a: target/%/release/libko_client.a ko_clie
 	$(XCDEV) xcrun libtool -static -D -o $@.tmp $$r/ko_client.o; \
 	test "$$(nm -arch $$arch -g -U $@.tmp | awk 'NF==3 {print $$3}' | sort)" = "$$(grep -v '^[[:space:]]*$$' $$r/exports.txt | sort)" || \
 	{ echo "ko-client-xcframework: the $* slice does not export exactly $$r/exports.txt" >&2; exit 1; }; \
+	size=$$(wc -c < $@.tmp); test "$$size" -le 16500000 || \
+	{ echo "ko-client-xcframework: the $* slice is $$size bytes, above the 16500000-byte budget" >&2; exit 1; }; \
 	mv $@.tmp $@
 
 target/%/release/libko_client.a: build/.ko_client_deps FORCE

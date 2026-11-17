@@ -1,3 +1,7 @@
+// rustc omits unused crates; the QUIC driver will replace this link reference.
+#[cfg(feature = "tls")]
+extern crate quiche;
+
 pub mod api;
 pub mod connect;
 pub mod edit;

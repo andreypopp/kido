@@ -43,7 +43,18 @@ if f'.minimum_zig_version = "{zig}"' not in zon:
     print('scripts/install-zig.sh: zig release differs from third_party/ghostty minimum_zig_version')
     raise SystemExit(1)
 
-locked = {package['name'] for package in tomllib.loads(pathlib.Path('Cargo.lock').read_text())['package']}
+packages = tomllib.loads(pathlib.Path('Cargo.lock').read_text())['package']
+patch = tomllib.loads(pathlib.Path('Cargo.toml').read_text()).get('patch', {}).get('crates-io', {}).get('quiche', {})
+if not patch.get('git') or not patch.get('rev'):
+    print('Cargo.toml: the pinned quiche patch must specify git and rev')
+    raise SystemExit(1)
+quiche = [package for package in packages if package['name'] == 'quiche']
+rev = patch['rev']
+if len(quiche) != 1 or quiche[0].get('source') != f'git+{patch["git"]}?rev={rev}#{rev}':
+    print('Cargo.lock: quiche must use the pinned andreypopp/quiche patch exactly once')
+    raise SystemExit(1)
+
+locked = {package['name'] for package in packages}
 listed = set(pathlib.Path('scripts/crates.txt').read_text().split())
 for name in sorted(locked - listed):
     print(f'Cargo.lock: package {name} is not in scripts/crates.txt')

@@ -3,6 +3,9 @@ resolver = "3"
 members = ["fuzz", "share/koa/testdata/fake_ko", "ko", "ko_bench", "ko_client", "ko_config", "ko_e2e", "ko_pane", "ko_pane_wire", "ko_server", "ko_shell", "ko_sys", "ko_tui", "ko_vt", "ko_vt_sys", "ko_wire"]
 default-members = ["ko", "ko_bench", "ko_client", "ko_config", "ko_pane", "ko_pane_wire", "ko_server", "ko_shell", "ko_sys", "ko_tui", "ko_vt", "ko_vt_sys", "ko_wire"]
 
+[patch.crates-io]
+quiche = { git = "https://github.com/andreypopp/quiche", rev = "e961eeb12a535f45cdd54cddd1b053a0d32e8147" }
+
 [workspace.package]
 edition = "2024"
 publish = false

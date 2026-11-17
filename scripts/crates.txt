@@ -35,9 +35,11 @@ core_detect
 cpufeatures
 crypto-common
 data-encoding
+debug_panic
 digest
 dyn-clone
 either
+enum_dispatch
 equivalent
 errno
 fake_ko
@@ -59,6 +61,7 @@ http
 httparse
 hybrid-array
 indexmap
+intrusive-collections
 is_executable
 itertools
 itoa
@@ -81,6 +84,7 @@ lazy_static
 libc
 libfuzzer-sys
 libloading
+libm
 linux-raw-sys
 log
 loom
@@ -91,12 +95,14 @@ miniz_oxide
 nom
 nu-ansi-term
 num-traits
+octets
 once_cell
 openssl-macros
 pin-project-lite
 proc-macro-crate
 proc-macro2
 proptest
+quiche
 quick-error
 quote
 r-efi
@@ -126,6 +132,7 @@ serde_json
 sha1
 sharded-slab
 shlex
+slab
 smallvec
 syn
 synstructure
@@ -159,5 +166,14 @@ winapi-x86_64-pc-windows-gnu
 windows-link
 windows-result
 windows-sys
+windows-targets
+windows_aarch64_gnullvm
+windows_aarch64_msvc
+windows_i686_gnu
+windows_i686_gnullvm
+windows_i686_msvc
+windows_x86_64_gnu
+windows_x86_64_gnullvm
+windows_x86_64_msvc
 winnow
 zmij
