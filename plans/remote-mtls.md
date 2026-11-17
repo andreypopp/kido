@@ -1267,15 +1267,20 @@ rework of the landed units 4 and 5.
     `openssl-probe`.
   - The `quiche` build fix is ko's own (decided by the user: no
     pull request to `cloudflare/quiche`). The plan uses a pinned
-    fork, not a vendored copy: `[patch.crates-io]` names the fork's
-    git URL and one `rev`, which is the release tag of `quiche` plus
-    one commit with the two lines. This is the way the repository
-    already keeps its Ghostty changes, and it keeps the `quiche`
-    source out of the tree; `Cargo.lock` holds the revision. A bump
-    of `quiche` applies the commit again on the new tag and moves
-    the `rev`; unit P3 adds a lint that fails when the patch entry
-    and the `quiche` version in `Cargo.lock` do not agree. The
-    top-level session creates the fork.
+    fork, not a vendored copy. The fork is
+    `https://github.com/andreypopp/quiche`, branch `kido-0.30.1`:
+    the tag 0.30.1 plus the one commit
+    `e961eeb12a535f45cdd54cddd1b053a0d32e8147`, which deletes the two
+    `rustc-link-lib=static=ssl` and `=crypto` lines of
+    `quiche/src/build.rs`. `[patch.crates-io]` names that URL and
+    that `rev`. The version is 0.30.1, not the 0.30.0 that spike 4
+    built; 0.30.1 still has the two lines. This is the way the
+    repository already keeps its Ghostty changes, and it keeps the
+    `quiche` source out of the tree; `Cargo.lock` holds the
+    revision. A bump of `quiche` applies the commit again on the new
+    tag, as a new branch `kido-<version>`, and moves the `rev`; unit
+    P3 adds a lint that fails when the patch entry and the `quiche`
+    version in `Cargo.lock` do not agree.
   - One exported function for the path change (unit P6).
 - **Spikes:** a droplet for unit 3 and the droplet session.
 
