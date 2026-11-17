@@ -1,0 +1,35 @@
+#!/bin/bash
+set -euo pipefail
+. "$(dirname -- "$0")/deployment.sh"
+[[ $# == 1 ]] && valid_name "$1" || { echo 'usage: deploy/bin/new NAME (NAME: a DNS label of a-z, 0-9 and -)' >&2; exit 124; }
+name=$1
+folder=$deployments/$name
+[[ ! -e $folder ]] || { echo "$folder exists" >&2; exit 1; }
+mkdir -p -m 0700 "$deployments"
+work=$(mktemp -d "$deployments/.new-$name-XXXXXX")
+trap 'rm -rf "$work"' EXIT
+ssh-keygen -q -t ed25519 -N '' -C "ko-deploy-$name" -f "$work/id_ed25519"
+ssh-keygen -q -t ed25519 -N '' -C "$name" -f "$work/ssh_host_ed25519_key"
+read -r type key _ < "$work/ssh_host_ed25519_key.pub"
+printf '%s %s %s\n' "$name" "$type" "$key" > "$work/known_hosts"
+cat > "$work/ssh_config" <<CONFIG
+Host *
+    User me
+    IdentityFile "$folder/id_ed25519"
+    IdentitiesOnly yes
+    IdentityAgent none
+    ForwardAgent no
+    PasswordAuthentication no
+    KbdInteractiveAuthentication no
+    UserKnownHostsFile "$folder/known_hosts"
+    GlobalKnownHostsFile /dev/null
+    HostKeyAlias $name
+    HostKeyAlgorithms ssh-ed25519
+    StrictHostKeyChecking yes
+    CheckHostIP no
+    UpdateHostKeys no
+    VerifyHostKeyDNS no
+CONFIG
+chmod 0700 "$work"
+mv "$work" "$folder"
+printf 'Created %s\n' "$folder"

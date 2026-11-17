@@ -1,6 +1,10 @@
 #cloud-config
 disable_root: true
 ssh_pwauth: false
+ssh_deletekeys: true
+ssh_keys:
+  ed25519_private: ${host_key}
+  ed25519_public: ${host_key_pub}
 packages: [rsync]
 users:
   - name: me

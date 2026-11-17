@@ -3,3 +3,4 @@ scripts/openapi/node_modules/
 share/koa/.copy-*/
 /build/
 /target/
+/deploy/deployments/

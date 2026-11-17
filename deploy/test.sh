@@ -65,7 +65,7 @@ with (folder / "restarts").open("a") as stream:
         local = {**env, "KO_PAIR_SECONDS": seconds}
         output = root / f"out-{serial}"
         errors = root / f"err-{serial}"
-        args = [str(base / "ko-pair"), "ko.example.test", "enroll.example.test", str(port)]
+        args = [str(base / "ko-pair"), "ko.example.test", str(port)]
         if fixed_token_run:
             args[1:1] = ["--name", "Test Server"]
             args = ["python3", "-c", 'import runpy,secrets,sys; secrets.token_bytes=lambda n: bytes(range(n)); sys.argv=sys.argv[1:]; runpy.run_path(sys.argv[0],run_name="__main__")', *args]
@@ -125,7 +125,7 @@ with (folder / "restarts").open("a") as stream:
     print("PASS pairing, single use, modes, logs, list, revoke, restart ordering", flush=True)
 
     for name in ("", "x" * 65, "bad\nname", "bad\x85name"):
-        result = subprocess.run([str(base / "ko-pair"), "--name", name, "ko.example.test", "enroll.example.test", "1"], env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=5)
+        result = subprocess.run([str(base / "ko-pair"), "--name", name, "ko.example.test", "1"], env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=5)
         assert result.returncode == 2 and b"usage:" in result.stderr and not result.stdout
     state = start(seconds="60")
     assert state[1]["name"] == socket.gethostname()

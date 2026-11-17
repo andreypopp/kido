@@ -1,6 +1,6 @@
 #!/bin/bash
 set -euo pipefail
-[[ $# == 1 || $# == 2 ]] || { echo 'usage: deploy/smoke.sh HOST [ADDRESS]' >&2; exit 1; }
+[[ $# == 2 || $# == 3 ]] || { echo 'usage: deploy/smoke.sh SSH_CONFIG HOST [ADDRESS]' >&2; exit 1; }
 base=$(cd -- "$(dirname -- "$0")" && pwd)
 python3 - "$base" "$@" <<'PY'
 import errno
@@ -21,15 +21,15 @@ if b"HTTP3" not in subprocess.check_output(["curl", "-V"]).split():
     raise SystemExit("deploy/smoke.sh needs a curl with HTTP/3")
 
 base = Path(sys.argv[1])
-host = sys.argv[2]
-address = sys.argv[3] if len(sys.argv) == 4 else host
-ssh = shlex.split(os.environ.get("KO_SMOKE_SSH", "ssh"))
+host = sys.argv[3]
+address = sys.argv[4] if len(sys.argv) == 5 else host
+ssh = ["ssh", "-F", sys.argv[2], "-o", "BatchMode=yes"]
 
 def run(*args, **kwargs):
     return subprocess.run(args, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=kwargs.pop("timeout", 20), **kwargs).stdout
 
 def remote(command):
-    return run(*ssh, "-o", "BatchMode=yes", "me@" + address, command)
+    return run(*ssh, address, command)
 
 with tempfile.TemporaryDirectory(prefix="ko-smoke-") as temporary:
     root = Path(temporary)
@@ -53,7 +53,7 @@ with tempfile.TemporaryDirectory(prefix="ko-smoke-") as temporary:
     print("PASS no certificate and unpaired certificate refused, HTTP/3 without certificate refused", flush=True)
     errors = root / "pair-errors"
     with errors.open("wb") as stream:
-        process = subprocess.Popen([*ssh, "-o", "BatchMode=yes", "me@" + address, "sudo ko-pair"], stdout=subprocess.PIPE, stderr=stream)
+        process = subprocess.Popen([*ssh, address, "sudo ko-pair"], stdout=subprocess.PIPE, stderr=stream)
     selector = selectors.DefaultSelector()
     selector.register(process.stdout, selectors.EVENT_READ)
     if not selector.select(10):
@@ -170,7 +170,7 @@ with tempfile.TemporaryDirectory(prefix="ko-smoke-") as temporary:
             remote("sudo ko-revoke " + enrolled)
         if process.poll() is None:
             abort = json.dumps({"token": payload["token"], "name": "smoke cleanup", "certificate": "!", "signature": "!"}).encode()
-            subprocess.run([*ssh, "-o", "BatchMode=yes", "me@" + address,
+            subprocess.run([*ssh, address,
                 '''curl --silent --max-time 5 --data-binary @- "http://127.0.0.1:$(python3 -c 'import json; print(json.load(open("/etc/ko-pair.json"))["port"])')/v1/enroll"'''], input=abort, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10)
             process.wait(timeout=10)
         reader.join(timeout=1)
@@ -252,7 +252,7 @@ with selectors.DefaultSelector() as selector:
             print(json.dumps(sorted(ports)), flush=True)
             sys.exit(0)
 '''
-    process = subprocess.Popen([*ssh, "-o", "BatchMode=yes", "me@" + address,
+    process = subprocess.Popen([*ssh, address,
                                 "sudo python3 -c " + shlex.quote(catcher) + " " + nonce.hex()],
                                stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     try:

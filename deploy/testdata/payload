@@ -1,1 +1,1 @@
-kido-pair: {"v":1,"enroll":"https://enroll.example.test/v1/enroll","host":"ko.example.test","name":"Test Server","token":"AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8"}
+kido-pair: {"v":1,"enroll":"https://enroll.ko.example.test/v1/enroll","host":"ko.example.test","name":"Test Server","token":"AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8"}

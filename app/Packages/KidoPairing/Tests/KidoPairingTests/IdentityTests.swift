@@ -11,7 +11,7 @@ final class IdentityTests: XCTestCase {
         let expectedURL = try XCTUnwrap(bundle.url(forResource: "message", withExtension: "hex", subdirectory: "testdata"))
         let code = try PairingCode(String(contentsOf: payloadURL, encoding: .utf8))
         XCTAssertEqual(code.host.value, "ko.example.test")
-        XCTAssertEqual(code.enroll.absoluteString, "https://enroll.example.test/v1/enroll")
+        XCTAssertEqual(code.enroll.absoluteString, "https://enroll.ko.example.test/v1/enroll")
         XCTAssertEqual(code.name.value, "Test Server")
         XCTAssertEqual(code.token, Data(0..<32))
         let certificate = try Certificate(pemEncoded: String(contentsOf: pemURL, encoding: .utf8))

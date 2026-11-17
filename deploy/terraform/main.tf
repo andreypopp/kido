@@ -1,17 +1,12 @@
 locals {
-  ssh_key = trimspace(var.ssh_public_key != null ? var.ssh_public_key : file(pathexpand(var.ssh_public_key_path)))
-  names   = { ko = "${var.ko_label}.${var.zone_name}", enroll = "enroll.${var.zone_name}" }
+  ssh_key = trimspace(file("${var.deployment}/id_ed25519.pub"))
+  ko_host = "${var.ko_label}.${var.zone_name}"
+  names   = { ko = local.ko_host, enroll = "enroll.${local.ko_host}" }
 }
 
 resource "digitalocean_ssh_key" "operator" {
   name       = local.names.ko
   public_key = local.ssh_key
-  lifecycle {
-    precondition {
-      condition     = (var.ssh_public_key != null) != (var.ssh_public_key_path != null)
-      error_message = "Supply exactly one SSH public key text or path."
-    }
-  }
 }
 
 resource "digitalocean_droplet" "ko" {
@@ -23,7 +18,11 @@ resource "digitalocean_droplet" "ko" {
   monitoring    = false
   droplet_agent = false
   ssh_keys      = [digitalocean_ssh_key.operator.fingerprint]
-  user_data     = templatefile("${path.module}/cloud-init.yaml", { ssh_key = jsonencode(local.ssh_key) })
+  user_data = templatefile("${path.module}/cloud-init.yaml", {
+    ssh_key      = jsonencode(local.ssh_key)
+    host_key     = jsonencode(file("${var.deployment}/ssh_host_ed25519_key"))
+    host_key_pub = jsonencode(trimspace(file("${var.deployment}/ssh_host_ed25519_key.pub")))
+  })
 }
 
 resource "digitalocean_firewall" "ko" {

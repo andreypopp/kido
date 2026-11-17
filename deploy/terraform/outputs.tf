@@ -7,9 +7,6 @@ output "ipv6" {
 output "ko_host" {
   value = local.names.ko
 }
-output "enroll_host" {
-  value = local.names.enroll
-}
 output "ssh_cidrs" {
   value = var.ssh_cidrs
 }

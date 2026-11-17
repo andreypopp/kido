@@ -102,13 +102,13 @@ def valid_name(name):
     return isinstance(name, str) and 1 <= len(name) <= 64 and not any(ord(c) < 32 or 127 <= ord(c) <= 159 for c in name)
 
 
-def pair(host, enroll, port, name):
+def pair(host, port, name):
     seconds = float(os.environ.get("KO_PAIR_SECONDS", "120"))
     if not 0 < seconds <= 120:
         raise ValueError("KO_PAIR_SECONDS must be greater than zero and at most 120")
     token = secrets.token_bytes(32)
     token_hash = hashlib.sha256(token).digest()
-    payload = {"v": 1, "enroll": f"https://{enroll}/v1/enroll", "host": host, "name": name,
+    payload = {"v": 1, "enroll": f"https://enroll.{host}/v1/enroll", "host": host, "name": name,
                "token": base64.urlsafe_b64encode(token).decode().rstrip("=")}
     text = "kido-pair: " + json.dumps(payload, separators=(",", ":"))
     deadline = time.monotonic() + seconds
@@ -257,25 +257,22 @@ def main():
     if command == "ko-pair":
         parser = argparse.ArgumentParser(prog=command)
         parser.add_argument("--name", default=socket.gethostname())
-        parser.add_argument("server", nargs="*", metavar="HOST ENROLL PORT")
+        parser.add_argument("server", nargs="*", metavar="HOST PORT")
         args = parser.parse_args()
         if not valid_name(args.name):
             parser.error("use a name of 1 to 64 characters, without control characters")
-        if len(args.server) not in (0, 3):
-            parser.error("use HOST ENROLL PORT, or no server arguments")
+        if len(args.server) not in (0, 2):
+            parser.error("use HOST PORT, or no server arguments")
         if not args.server:
             settings = json.loads(Path("/etc/ko-pair.json").read_text())
-            names = [settings["host"], settings["enroll"]]
-            port = settings["port"]
+            host, port = settings["host"], settings["port"]
         else:
-            names = args.server[:2]
-            port = int(args.server[2])
+            host, port = args.server[0], int(args.server[1])
         if not isinstance(port, int) or not 1 <= port <= 65535:
             raise ValueError("invalid port")
-        for name in names:
-            if len(name) > 253 or not re.fullmatch(r"[a-z0-9][a-z0-9.-]*[a-z0-9]", name):
-                raise ValueError("invalid host name")
-        return pair(*names, port, args.name)
+        if len("enroll." + host) > 253 or not re.fullmatch(r"[a-z0-9][a-z0-9.-]*[a-z0-9]", host):
+            raise ValueError("invalid host name")
+        return pair(host, port, args.name)
     if command == "ko-revoke" and len(sys.argv) == 2:
         prefix = sys.argv[1]
         if not re.fullmatch(r"[0-9a-f]{8,64}", prefix):
@@ -300,7 +297,7 @@ def main():
                 data = json.loads(pem.with_suffix(".json").read_text())
                 print(f"{data['name']}\t{pem.stem}\t{data['enrolled']}")
         return 0
-    raise ValueError("usage: ko-pair [--name NAME] [HOST ENROLL PORT] | ko-revoke FP | ko-devices")
+    raise ValueError("usage: ko-pair [--name NAME] [HOST PORT] | ko-revoke FP | ko-devices")
 
 
 if __name__ == "__main__":

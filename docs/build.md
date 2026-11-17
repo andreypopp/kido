@@ -357,22 +357,26 @@ What the setup does, and why:
 systemd, for a rehearsal of `deploy/` before a droplet
 (`deploy/README.md`, "Rehearse in a local VM").
 `app/vm/Sources/kido-vm/linux.swift` defines it. Its state is in
-`~/.local/state/kido-vm-linux/`, with its own disk, locks, MAC address
-and SSH key, so it runs beside the macOS guest and never touches its
-state.
+`~/.local/state/kido-vm-linux/`, with its own disk, locks and MAC
+address, so it runs beside the macOS guest and never touches its
+state. Its keys are those of a deployment folder (deploy/README.md,
+"Deployments"), which `install --deployment DIR` records.
 
 `install` downloads Debian's `genericcloud` arm64 raw image and refuses
 it unless its SHA-512 matches Debian's `SHA512SUMS`. It grows the disk
 to 20 GB (cloud-init grows the partition) and writes a NoCloud seed
 ISO. The seed's user-data is `deploy/terraform/cloud-init.yaml`, the
-file that Terraform also renders, with the VM's own public key in place
-of `${ssh_key}`; so the VM and the droplet start from the same
-cloud-init. The seed's network config sets the DHCP identifier to the
+file that OpenTofu also renders, with the folder's client public key
+and SSH host key in place of `${ssh_key}`, `${host_key}` and
+`${host_key_pub}`; so the VM and the droplet start from the same
+cloud-init, and the seed holds the host private key. The seed's network config sets the DHCP identifier to the
 MAC address, because Debian's default DUID does not match the host's
 lease file, where `kido-vm` finds the guest's address. `run` boots the
 disk through EFI, with NAT networking and the serial console in
-`console.log`. `up` starts it and waits up to 300 s for SSH as `me`;
-`ssh` and `down` act as `me`.
+`console.log`. `up` starts it, waits up to 300 s for SSH as `me` through the
+folder's `ssh_config` (a pinned host key) and writes the guest's
+address to the folder's `address`; `ssh` and `down` act as `me`
+through the same configuration.
 
 ## The share tree and the scripts
 

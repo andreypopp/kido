@@ -292,7 +292,7 @@ client opens one connection for each view and each request.
 **The payload:**
 
 ```
-{ v: 1, enroll: "https://enroll.<domain>/v1/enroll",
+{ v: 1, enroll: "https://enroll.<ko host>/v1/enroll",
   host: "<ko host name>", name: "<server name>", token: base64url }
 ```
 
@@ -346,20 +346,25 @@ deploy/README.md       the operator's steps and the note of section 2
 a path without a row selects every check.
 
 **Terraform** (the providers `digitalocean` and `cloudflare`,
-versions pinned; state and `*.tfvars` are local and ignored by git).
+versions pinned; the state and the tfvars are in the deployment's
+folder `deploy/deployments/<name>/`, ignored by git, with the
+deployment's SSH key pair and host key; deploy/README.md).
 The inputs: `DIGITALOCEAN_TOKEN`; `CLOUDFLARE_API_TOKEN`, a token
 with only Zone, DNS, Edit on the one zone; the zone's id and name.
 
 - `digitalocean_droplet`: Debian 13 x64, region and size as
-  variables, the operator's SSH key, monitoring off, the droplet
+  variables, the deployment's own SSH key, monitoring off, the droplet
   agent removed (the web console is a second way in), `user_data`
-  that creates `me` with the key, locks root and installs `rsync`
+  that creates `me` with the key, installs the deployment's SSH host
+  key (so the first connection is already pinned), locks root and
+  installs `rsync`
   (the image has none, and `install.sh` needs it). A test VM gets its
   seed from the same user-data, so the two cannot differ.
-- `digitalocean_firewall`: in: 22/tcp from `ssh_cidrs`, 443/tcp and
-  443/udp from all. Port 80 by Q4. Out: all.
+- `digitalocean_firewall`: in: 22/tcp from `ssh_cidrs` (by default
+  all: SSH is key-only, and the key is the deployment's own), 443/tcp
+  and 443/udp from all. Port 80 by Q4. Out: all.
 - `cloudflare_dns_record`: A (and AAAA when the droplet has IPv6)
-  for `enroll.<domain>` and the ko host, each with `proxied =
+  for the ko host and `enroll.<ko host>`, each with `proxied =
   false` (DNS only). The reason: Cloudflare's proxy would end the
   TLS connection, so Caddy would never see the device certificate,
   and it would not pass the UDP of QUIC.
@@ -404,7 +409,7 @@ with only Zone, DNS, Edit on the one zone; the zone's id and name.
   auto_https disable_redirects        # port 80 is closed
   servers { protocols h1 h2 h3 }
   grace_period 3s }
-enroll.<domain> {
+enroll.<ko host> {
   @enroll { method POST; path /v1/enroll }
   request_body { max_size 16KB }
   reverse_proxy @enroll 127.0.0.1:<pair port>

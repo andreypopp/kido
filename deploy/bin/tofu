@@ -1,0 +1,21 @@
+#!/bin/bash
+set -euo pipefail
+bin=$(cd -- "$(dirname -- "$0")" && pwd)
+. "$bin/deployment.sh"
+[[ $# -ge 1 ]] && valid_name "$1" || { echo 'usage: deploy/bin/tofu NAME TOFU-ARGS...' >&2; exit 124; }
+folder=$deployments/$1
+[[ -d $folder ]] || "$bin/new" "$1"
+shift
+vars="-var-file='$folder/terraform.tfvars'"
+export TF_DATA_DIR=$folder/.terraform TF_VAR_deployment=$folder TF_WORKSPACE=default \
+    TF_CLI_ARGS_init="-backend-config='path=$folder/terraform.tfstate'" \
+    TF_CLI_ARGS_plan=$vars TF_CLI_ARGS_destroy=$vars \
+    TF_CLI_ARGS_import=$vars TF_CLI_ARGS_refresh=$vars TF_CLI_ARGS_console=$vars
+cd -- "$bin/../terraform"
+if [[ ${1:-} == apply ]]; then
+    for argument in "${@:2}"; do
+        [[ $argument == -* || ! -f $argument ]] || vars=
+    done
+    export TF_CLI_ARGS_apply=$vars
+fi
+exec tofu "$@"

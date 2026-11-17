@@ -6,7 +6,7 @@ if [[ ${1:-} == --tls-cert ]]; then
     certificate=("$2" "$3")
     shift 3
 fi
-[[ $EUID == 0 && $# -ge 3 ]] || { echo 'usage: sudo provision.sh [--tls-cert CERT KEY] KO_HOST ENROLL_HOST SSH_CIDR...' >&2; exit 1; }
+[[ $EUID == 0 && $# -ge 2 ]] || { echo 'usage: sudo provision.sh [--tls-cert CERT KEY] KO_HOST SSH_CIDR...' >&2; exit 1; }
 base=$(cd -- "$(dirname -- "$0")" && pwd)
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
@@ -29,7 +29,8 @@ import ipaddress
 from pathlib import Path
 import re
 import sys
-source, target, port, certificate, host, enroll, *cidrs = sys.argv[1:]
+source, target, port, certificate, host, *cidrs = sys.argv[1:]
+enroll = "enroll." + host
 for name in (host, enroll):
     if len(name) > 253 or not all(re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", label) for label in name.split(".")):
         raise SystemExit("invalid DNS name")
@@ -107,10 +108,10 @@ printf 'export KO_STATE_DIR=/var/lib/ko\nexport PATH=/opt/ko/bin:$PATH\n' > /etc
 install -m 0755 "$base/ko-devices" /usr/local/sbin/ko-devices
 ln -sfn ko-devices /usr/local/sbin/ko-revoke
 ln -sfn ko-devices /usr/local/sbin/ko-pair
-python3 - "$1" "$2" "$pair_port" > /etc/ko-pair.json <<'PY'
+python3 - "$1" "$pair_port" > /etc/ko-pair.json <<'PY'
 import json
 import sys
-print(json.dumps({"host": sys.argv[1], "enroll": sys.argv[2], "port": int(sys.argv[3])}))
+print(json.dumps({"host": sys.argv[1], "port": int(sys.argv[2])}))
 PY
 chmod 0644 /etc/ko-pair.json
 if [[ ${#certificate[@]} != 0 ]]; then

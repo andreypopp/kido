@@ -8,9 +8,18 @@ func linux(_ args: [String]) -> Never {
         case "install":
             var options = Array(args.dropFirst())
             let template = option("--cloud-init", in: &options) ?? "deploy/terraform/cloud-init.yaml"
-            guard options.isEmpty, !isRunning() else { fail("usage: kido-vm linux install [--cloud-init FILE] (VM must be stopped)") }
-            let userData = try String(contentsOfFile: template, encoding: .utf8)
-            guard userData.contains("${ssh_key}") else { fail("cloud-init template has no ${ssh_key} placeholder") }
+            guard let deployment = option("--deployment", in: &options).map({ URL(fileURLWithPath: $0).standardizedFileURL }), options.isEmpty, !isRunning() else {
+                fail("usage: kido-vm linux install --deployment DIR [--cloud-init FILE] (VM must be stopped)")
+            }
+            var userData = try String(contentsOfFile: template, encoding: .utf8)
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = .withoutEscapingSlashes
+            for (placeholder, file, trim) in [("ssh_key", "id_ed25519.pub", true), ("host_key", "ssh_host_ed25519_key", false), ("host_key_pub", "ssh_host_ed25519_key.pub", true)] {
+                guard userData.contains("${\(placeholder)}") else { fail("cloud-init template has no ${\(placeholder)} placeholder") }
+                let text = try String(contentsOf: deployment.appendingPathComponent(file), encoding: .utf8)
+                let value = trim ? text.trimmingCharacters(in: .whitespacesAndNewlines) : text
+                userData = userData.replacingOccurrences(of: "${\(placeholder)}", with: String(decoding: try encoder.encode(value), as: UTF8.self))
+            }
             guard lock("install", wait: false) != nil else { fail("Linux installation is already running") }
             guard !FileManager.default.fileExists(atPath: path("disk.img").path) else { fail("Linux disk already exists") }
             let base = URL(string: "https://cloud.debian.org/images/cloud/trixie/latest/")!
@@ -25,14 +34,16 @@ func linux(_ args: [String]) -> Never {
             let fd = open(path(image).path, O_RDWR)
             guard fd >= 0, ftruncate(fd, off_t(20) << 30) == 0 else { fail("cannot grow Linux disk") }
             close(fd)
-            guard execute("/usr/bin/ssh-keygen", ["-q", "-t", "ed25519", "-N", "", "-f", path("id_ed25519").path]) == 0 else { fail("ssh-keygen failed") }
-            let key = try String(contentsOf: path("id_ed25519.pub"), encoding: .utf8).trimmingCharacters(in: .whitespacesAndNewlines)
+            try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: state.path)
             let seed = path("seed")
             try FileManager.default.createDirectory(at: seed, withIntermediateDirectories: true)
-            try userData.replacingOccurrences(of: "${ssh_key}", with: String(decoding: try JSONEncoder().encode(key), as: UTF8.self)).write(to: seed.appendingPathComponent("user-data"), atomically: true, encoding: .utf8)
+            try userData.write(to: seed.appendingPathComponent("user-data"), atomically: true, encoding: .utf8)
+            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: seed.appendingPathComponent("user-data").path)
+            try deployment.path.write(to: path("deployment"), atomically: true, encoding: .utf8)
             try "instance-id: kido-debian-13\nlocal-hostname: kido-linux\n".write(to: seed.appendingPathComponent("meta-data"), atomically: true, encoding: .utf8)
             try "version: 2\nethernets:\n  all:\n    match:\n      name: 'en*'\n    dhcp4: true\n    dhcp-identifier: mac\n".write(to: seed.appendingPathComponent("network-config"), atomically: true, encoding: .utf8)
             guard execute("/usr/bin/hdiutil", ["makehybrid", "-iso", "-joliet", "-default-volume-name", "cidata", "-o", path("seed.iso").path, seed.path]) == 0 else { fail("cannot create NoCloud ISO") }
+            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: path("seed.iso").path)
             _ = try VZEFIVariableStore(creatingVariableStoreAt: path("efi"))
             _ = macAddress()
             try FileManager.default.moveItem(at: path(image), to: path("disk.img"))
@@ -87,7 +98,8 @@ func linux(_ args: [String]) -> Never {
             }
             let deadline = Date().addingTimeInterval(300)
             while true {
-                if let ip = guestIP(mac: macAddress()), execute("/usr/bin/ssh", sshArgs() + ["-o", "BatchMode=yes", "me@\(ip)", "true"]) == 0 {
+                if let ip = guestIP(mac: macAddress()), execute("/usr/bin/ssh", try linuxSSH() + ["-o", "BatchMode=yes", "-o", "ConnectTimeout=5", "me@\(ip)", "true"]) == 0 {
+                    try "\(ip)\n".write(to: try linuxDeployment().appendingPathComponent("address"), atomically: true, encoding: .utf8)
                     say("Linux SSH ready: \(ip)")
                     break
                 }
@@ -98,7 +110,7 @@ func linux(_ args: [String]) -> Never {
         case "ssh", "down":
             guard isRunning(), let ip = guestIP(mac: macAddress()) else { fail("Linux VM is not running or has no address") }
             let command = args.first == "down" ? ["sudo shutdown -h now"] : Array(args.dropFirst())
-            let status = execute("/usr/bin/ssh", sshArgs() + ["me@\(ip)"] + command)
+            let status = execute("/usr/bin/ssh", try linuxSSH() + ["me@\(ip)"] + command)
             if args.first == "ssh" { exit(status) }
             let deadline = Date().addingTimeInterval(60)
             while isRunning() {
@@ -109,4 +121,12 @@ func linux(_ args: [String]) -> Never {
         }
     } catch { fail("Linux: \(error)") }
     exit(0)
+}
+
+func linuxDeployment() throws -> URL {
+    URL(fileURLWithPath: try String(contentsOf: path("deployment"), encoding: .utf8))
+}
+
+func linuxSSH() throws -> [String] {
+    ["-F", try linuxDeployment().appendingPathComponent("ssh_config").path]
 }

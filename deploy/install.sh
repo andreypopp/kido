@@ -1,25 +1,24 @@
 #!/bin/bash
 set -euo pipefail
 cd -- "$(dirname -- "$0")/.."
+. deploy/bin/deployment.sh
+resolve 'deploy/install.sh [NAME]' "$@"
+shift "$consumed"
+[[ $# == 0 ]] || { echo 'usage: deploy/install.sh [NAME]' >&2; exit 124; }
+[[ -e $folder/terraform.tfstate ]] || { echo "$folder has no terraform.tfstate; run deploy/bin/tofu first" >&2; exit 1; }
 make build-linux LINUX_ARCHS=x86_64
-outputs=$(mktemp)
-trap 'rm -f "$outputs"' EXIT
-tofu -chdir=deploy/terraform output -json > "$outputs"
-readarray_compat=()
-while IFS= read -r value; do readarray_compat+=("$value"); done < <(python3 - "$outputs" <<'PY'
+host=$(address)
+arguments=$(python3 - "$folder/terraform.tfstate" <<'PY'
 import json
 import shlex
 import sys
 with open(sys.argv[1]) as stream:
-    data = json.load(stream)
-print(data["ipv4"]["value"])
-print(" ".join(shlex.quote(v) for v in [data["ko_host"]["value"], data["enroll_host"]["value"], *data["ssh_cidrs"]["value"]]))
+    data = json.load(stream)["outputs"]
+print(" ".join(shlex.quote(v) for v in [data["ko_host"]["value"], *data["ssh_cidrs"]["value"]]))
 PY
 )
-[[ ${#readarray_compat[@]} == 2 ]]
-host=${readarray_compat[0]}
-arguments=${readarray_compat[1]}
-ssh "me@$host" 'cloud-init status --wait >/dev/null && mkdir -p ~/ko-install/linux ~/ko-install/deploy'
-rsync -az --delete build/ko/share/ko/linux/x86_64/ "me@$host:ko-install/linux/"
-rsync -az --delete --exclude terraform --exclude __pycache__ deploy/ "me@$host:ko-install/deploy/"
-ssh -t "me@$host" "sudo /home/me/ko-install/deploy/provision.sh $arguments"
+ssh=(ssh -F "$folder/ssh_config")
+"${ssh[@]}" "$host" 'cloud-init status --wait >/dev/null && mkdir -p ~/ko-install/linux ~/ko-install/deploy'
+rsync -az --delete -e "ssh -F '$folder/ssh_config'" build/ko/share/ko/linux/x86_64/ "$host:ko-install/linux/"
+rsync -az --delete --exclude /terraform --exclude /deployments --exclude /bin --exclude __pycache__ -e "ssh -F '$folder/ssh_config'" deploy/ "$host:ko-install/deploy/"
+"${ssh[@]}" -t "$host" "sudo /home/me/ko-install/deploy/provision.sh $arguments"
