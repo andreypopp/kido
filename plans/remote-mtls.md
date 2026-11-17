@@ -847,28 +847,24 @@ window. A WebSocket is an RFC 9220 extended CONNECT, which Caddy
 turns into an HTTP/1.1 upgrade toward ko's socket. ko does not
 change.
 
-**The client.** `quinn-proto` 0.11.19 is the QUIC state machine: it
-has no runtime, and it uses rustls 0.23.46, the version of phase 1,
-so the client configuration and the sign callback of 4.7 apply
-unchanged (`QuicClientConfig::try_from`). ko writes the driver on
-`ko_sys::event` and a client subset of HTTP/3: the control stream,
-SETTINGS, HEADERS and DATA frames, QPACK with the static table and
-literals (dynamic table size 0), Huffman decode, and the CONNECT of
-RFC 9220. The spike's working sketch has 132 lines for the driver,
-115 for the HTTP/3 frames and control stream, 504 for QPACK (370 of
-them tables), 37 for RFC 9220 and 85 for the TLS adapter. The
-estimate for production code stays 1500 to 2500 lines: strict
-parsers, stream and frame state errors, limits, cancellation and
-write back-pressure are not in the sketch.
+**The client (the user's decision, after spike 4).** `quiche` is the
+QUIC and HTTP/3 implementation, with BoringSSL (the `boring` crate)
+as its TLS. It has no runtime: ko writes the driver on
+`ko_sys::event` and no frame, QPACK or QUIC state code of its own.
+BoringSSL becomes ko's one TLS stack, for TCP too: phase 1's rustls
+code moves to it (unit P2a), with the sign callback of 4.7 as
+`boring`'s `PrivateKeyMethod` and the trust check as `SecTrust` on
+Apple and BoringSSL's `X509_STORE` on Linux. All of it is behind
+the xcframework feature of `ko_client`, so `ko` and the static ko
+link no BoringSSL and need no cmake.
 
-The other candidates. `quiche` has its own HTTP/3 with extended
-CONNECT and takes an external key; spike 4 showed that it builds
-for every target and works through Caddy, at the cost of cmake and
-BoringSSL. Whether it replaces `quinn-proto` and the hand-written
-subset is open (Q10); section 7 has both unit lists. `s2n-quic` 1.92
-has no supported way to drive it from a loop without futures.
+The candidates that were not chosen: `quinn-proto` 0.11.19 with a
+hand-written HTTP/3 subset (spike 3 showed that it works; it adds no
+C, but ko would own 1500 to 2500 lines of QUIC driver state, HTTP/3
+and QPACK parsers); `s2n-quic` 1.92, which has no supported way to
+drive it from a loop without futures.
 
-**The facts that the units build on** (spike 3):
+**The facts that the units build on** (spikes 3 and 4):
 
 - Caddy needs `protocols h1 h2 h3` and UDP 443. `grace_period 3s`
   stays: the default grace has no limit, and an open HTTP/3 request
@@ -889,8 +885,8 @@ has no supported way to drive it from a loop without futures.
   30 s (a sleep) ends the connection, and the reconnect of phase 1
   stays the answer.
 - Only the client migrates. After a new local socket, the driver
-  calls `Connection::local_address_changed()`; quic-go validates the
-  new path. Both sides announce `active_connection_id_limit` 4, and
+  calls `conn.migrate()`, with spare source connection ids given
+  before (spike 4); quic-go validates the new path. Both sides announce `active_connection_id_limit` 4, and
   Caddy has no option for migration. A NAT rebinding needs nothing
   from the client.
 
@@ -1211,53 +1207,30 @@ docs/verification.md (the TLS test server, `deploy/test.sh`);
 AGENTS.md (the unsafe list). When unit 7 is complete, this plan
 becomes `docs/design-remote-tls.md` and is deleted.
 
-### Phase 2 units (a draft)
+### Phase 2 units
 
-Phase 2 starts after unit 7. Each unit adds a case and breaks
-nothing: TCP stays the transport until unit P5.
+Phase 2 starts after unit 7. TCP stays the transport until unit P5.
 
 | # | Unit | Scope | Test | Risk | Time |
 |---|---|---|---|---|---|
 | P1 | Caddy HTTP/3 in `deploy/` | `protocols h1 h2 h3`; UDP 443 in the cloud firewall and nftables; `grace_period` stays | `smoke.sh`: `curl --http3` with the paired certificate gets 200, without one it fails, after `ko-revoke` it fails; the scan allows UDP 443 | low | 2 h |
-| P2 | The QUIC driver | `quinn-proto` on `ko_sys::event` in `ko_client`: the UDP socket, the timers, write back-pressure, the keep-alive, the same `ClientConfig` and signer as TCP | In process, against a `quinn-proto` server in the test: a handshake with a client certificate and one signature; a refused certificate gives the `identity` kind; a stream that the peer does not read does not stall another | high | 10 h |
-| P3 | The HTTP/3 subset | Frames, the control stream, SETTINGS, QPACK with Huffman decode, the RFC 9220 CONNECT; readers of untrusted bytes, with the lints of AGENTS.md | Unit tests on the vectors of RFC 9204 and on bytes captured from Caddy; a fuzz target for the parsers with its corpus replay test | high | 10 h |
-| P4 | The third stream case | `Stream` gets a QUIC case: one connection for each client carries every request and WebSocket; `Ko-Protocol` and `Ko-Vt` on the CONNECT; ko's WebSocket framing on the stream; the end of the connection is a lost link | The TLS cases of 4.5 again over HTTP/3, against a real Caddy in the Debian container (a gate as `KO_E2E_CONTAINER`): a view resumes at its offset after a Caddy restart | high | 12 h |
+| P2a | One TLS stack | Phase 1's TLS moves from rustls to `boring`, behind the xcframework feature of `ko_client`: `endpoint.rs`, `wire/stream.rs`, the signer of `ffi/identity.rs`, the verifier (`SecTrust` on Apple, `X509_STORE` on Linux, with a stated policy for `SecTrust`'s network work), `tls_certs.rs` and the TLS test server. rustls, `ring` and the rest of section 8's list leave | The TLS tests of 4.5, unchanged in what they assert, with a live handshake through the `SecTrust` verifier; `ko` and the static ko link no BoringSSL (a lint on the dependency graph) | high: it reworks units 4 and 5 | 12 h |
+| P3 | `quiche` in the build | The patched `quiche` from the pinned fork (section 8); cmake, a C++ toolchain and libclang in the Makefile and on both CI runners; the zig wrapper and the CMake toolchain files for musl; the size budget of the xcframework | The export check and the merge with GhosttyKit; `check-static`; CI green on both runners | medium | 6 h |
+| P2 | The QUIC driver | `quiche` on `ko_sys::event` in `ko_client`: the UDP socket, the timers, write back-pressure, the keep-alive, spare connection ids, the same signer and verifier as TCP | In process, against a `quiche` server in the test: a handshake with a client certificate and one signature; a refused certificate gives the `identity` kind; a stream that the peer does not read does not stall another | medium | 8 h |
+| P4 | The third stream case | `Stream` gets a QUIC case on `quiche`'s HTTP/3: one connection for each client carries every request and WebSocket; `Ko-Protocol` and `Ko-Vt` on the CONNECT; ko's WebSocket framing on the stream; the end of the connection is a lost link. ko has no HTTP/3 parser of its own, so no fuzz target | The TLS cases of 4.5 again over HTTP/3, against a real Caddy in the Debian container (a gate as `KO_E2E_CONTAINER`): a view resumes at its offset after a Caddy restart | medium | 8 h |
 | P5 | Transport choice | QUIC first, TCP when no QUIC handshake completes within a limit; the result is kept for the endpoint while the process runs | UDP dropped in the test: the client is on TCP within the limit; UDP open: no TCP connection is made | medium | 6 h |
-| P6 | Migration | The app's `NWPathMonitor` tells the core of a path change (one new exported function); the driver opens a new socket and calls `local_address_changed()`; a connection that is already dead goes to the reconnect | In process, two loopback addresses: a view continues with no new upgrade and no gap in its offsets | medium | 6 h |
+| P6 | Migration | The app's `NWPathMonitor` tells the core of a path change (one new exported function); the driver opens a new socket and calls `conn.migrate()`; a connection that is already dead goes to the reconnect | In process, two loopback addresses: a view continues with no new upgrade and no gap in its offsets | medium | 6 h |
 | P7 | The app and the numbers | What a window shows for its transport, by `@kido-app-design`; the droplet session's numbers in the docs; the keep-alive value | Snapshots for each state that the design names | low | 4 h, and the droplet session |
 
-P6's function replaces the `ko_client_reconnect` idea of 4.6 if
-unit 7 did not already add it. A terminal client is not in this
-list (Q2).
+P2a and P3 come first and can run at the same time. P6's function
+replaces the `ko_client_reconnect` idea of 4.6 if unit 7 did not
+already add it. A terminal client is not in this list (Q2).
 
-### Phase 2 units with `quiche` (the proposal after spike 4)
-
-A decision for the user (Q10). Spike 4's manager recommends it; the
-table above is the alternative that keeps the landed code.
-
-| # | Unit | Scope | Test | Risk | Time |
-|---|---|---|---|---|---|
-| P1 | Caddy HTTP/3 in `deploy/` | as above | as above | low | 2 h |
-| P2a | One TLS stack | Phase 1's TLS moves from rustls to `boring`, behind the xcframework feature: `endpoint.rs`, `wire/stream.rs`, the signer of `ffi/identity.rs`, the verifier (`SecTrust` on Apple, `X509_STORE` on Linux), `tls_certs.rs` and the TLS test server. rustls and `ring` leave | The TLS tests of 4.5, unchanged in what they assert, with a live handshake through the `SecTrust` verifier; `ko` and the static ko link no BoringSSL (a lint on the dependency graph) | high: it reworks units 4 and 5 | 12 h |
-| P3 | `quiche` in the build | The patched `quiche`; cmake and a C++ toolchain in the Makefile and on both CI runners; the zig wrapper and toolchain changes; the size budget of the xcframework | The export check and the merge with GhosttyKit; `check-static`; CI green on both runners | medium | 6 h |
-| P2 | The QUIC driver | `quiche` on `ko_sys::event`: the UDP socket, the timers, write back-pressure, the keep-alive, spare connection ids | As P2 above, against a `quiche` server in the test | medium | 8 h |
-| P4 | The third stream case | As above, on `quiche`'s HTTP/3; no parser of ko's own, so no fuzz target | as above | medium | 8 h |
-| P5–P7 | Transport choice, migration, the app | as above (`conn.migrate()` in place of `local_address_changed()`) | as above | | |
-
-The costs, plainly:
-
-- cmake, a C++ toolchain and libclang in the xcframework build and
-  in CI.
-- A patched `quiche` until its build script is fixed upstream; a
-  pull request there is the user's decision.
-- About 4.9 MB for each Apple slice.
-- Rework of the landed units 4 and 5 (unit P2a). Without P2a, rustls
-  stays for TCP and the app has two TLS stacks.
-
-What it buys: ko writes no QPACK, no HTTP/3 parser and no QUIC
-state handling, which are the highest-risk hand-written parts of the
-`quinn-proto` path (about 650 of the sketch's lines, and most of the
-1500 to 2500 of the estimate).
+The accepted costs: cmake, a C++ toolchain and libclang in the
+xcframework build and in CI; a patched `quiche` from ko's own
+pinned fork, applied again at each bump; about 4.9 MB for each
+Apple slice; the
+rework of the landed units 4 and 5.
 
 ## 8. Approvals that the units need
 
@@ -1270,14 +1243,30 @@ state handling, which are the highest-risk hand-written parts of the
 - **Unsafe:** the block of 4.7 (unit 5).
 - **Routes:** none. ko gets no route.
 - **Swift packages:** `swift-certificates`, `swift-crypto` (approved).
-- **Phase 2:** one exported function for the path change (unit
-  P6), and by Q10 one of:
-  - the crate `quinn-proto` with its dependencies (`bytes`, `rand`,
-    `slab`, `rustc-hash`, `tinyvec`; the unit reports the exact
-    list);
-  - the crates `quiche` (patched), `boring` and `boring-sys` with
-    their dependencies, `security-framework` as a direct dependency,
-    and cmake, a C++ toolchain and libclang as build tools.
+- **Phase 2** (decided by the user, Q10):
+  - New crates: `quiche` with its two-line patch
+    (`[patch.crates-io]`), `boring`, `boring-sys` and their
+    dependencies; `security-framework` as a direct dependency, on
+    Apple and behind the xcframework feature. Units P2a and P3
+    report the exact lists.
+  - Build tools: cmake, a C++ toolchain and libclang, in the
+    xcframework build and on both CI runners.
+  - Crates that leave in unit P2a: `rustls`,
+    `rustls-platform-verifier`, `rustls-webpki`, `rustls-pki-types`,
+    `ring`, `untrusted`, `subtle`, `zeroize`, `rustls-native-certs`,
+    `openssl-probe`.
+  - The `quiche` build fix is ko's own (decided by the user: no
+    pull request to `cloudflare/quiche`). The plan uses a pinned
+    fork, not a vendored copy: `[patch.crates-io]` names the fork's
+    git URL and one `rev`, which is the release tag of `quiche` plus
+    one commit with the two lines. This is the way the repository
+    already keeps its Ghostty changes, and it keeps the `quiche`
+    source out of the tree; `Cargo.lock` holds the revision. A bump
+    of `quiche` applies the commit again on the new tag and moves
+    the `rev`; unit P3 adds a lint that fails when the patch entry
+    and the `quiche` version in `Cargo.lock` do not agree. The
+    top-level session creates the fork.
+  - One exported function for the path change (unit P6).
 - **Spikes:** a droplet for unit 3 and the droplet session.
 
 ## 9. Open questions
@@ -1327,15 +1316,7 @@ Each has a recommendation; the plan above assumes it.
     "server stops" event on `/client` before the close, is a wire
     change for every client and is not needed until a terminal
     client has a TLS endpoint.
-10. **The QUIC client: `quinn-proto` with ko's own HTTP/3, or
-    `quiche` with one TLS stack** (section 7, the two phase 2
-    tables; spike 4). The recommendation of spike 4's manager is
-    `quiche` with BoringSSL as the one stack, behind the xcframework
-    feature: it removes the hand-written QPACK, HTTP/3 parsers and
-    QUIC state, and one stack avoids two TLS implementations in the
-    app. The price is cmake in the build, a patched crate for now,
-    about 4.9 MB for each Apple slice, and the rework of units 4 and
-    5. The alternative keeps the landed code and adds no C and no
-    cmake: `quinn-proto` and ko's own subset, as first planned. A
-    middle way, `quiche` for QUIC with rustls kept for TCP, has two
-    TLS stacks and is not recommended by either side.
+10. **The QUIC client.** Decided by the user: `quiche`, with
+    BoringSSL as the one TLS stack, for TCP too (section 5; units
+    P2a to P4). The `quinn-proto` path with ko's own HTTP/3 and the
+    middle way with two TLS stacks are not taken.
