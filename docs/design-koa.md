@@ -1157,7 +1157,12 @@ the command first ("`!` commands" below).
   The composer takes the focus at start, when pi's
   readiness makes it available, and when the pane gets focus, each
   only while the document has focus and no dialog, picker or control
-  of the page holds it. A printable key typed outside a field goes to
+  of the page holds it. The pane gets focus when its page's window
+  gets the `focus` event, which WebKit sends when Kido.app makes
+  the web view first responder of the key window; every native path
+  that focuses the pane does that (design-app.md, "Focus and keys"),
+  so the return from a popup, a palette or another pane refocuses the
+  composer. A printable key typed outside a field goes to
   the composer; a selection in the transcript stays.
 - **The focus border.** The composer's focus border shows where keys
   go, not the DOM focus: it is on while the document has focus, the

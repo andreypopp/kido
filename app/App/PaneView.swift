@@ -1459,6 +1459,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
     }
 
     override func becomeFirstResponder() -> Bool {
+        if let webviewView { return window?.makeFirstResponder(webviewView) == true }
         let result = super.becomeFirstResponder()
         if result {
             note("pane \(pane) became first responder")

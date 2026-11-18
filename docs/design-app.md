@@ -1825,7 +1825,12 @@ pane's left-mouse-down monitor and makes the web view first responder.
 pane, the focus treatment and the surface's focus report (the program
 gets focus in and out) treat the page as the pane's input.
 `PaneView.inputResponder` is the web view while a page is shown, and
-every path that focuses a pane uses it. While the page has focus,
+every path that focuses a pane uses it. A path that makes the
+`PaneView` itself first responder (a responder that a popup saved,
+such as the prompt of "Prompt with Selection…", or a click on the
+pane's band) gets the web view too: `PaneView.becomeFirstResponder`
+passes the focus to it, so the hidden terminal never takes the keys of
+a page. While the page has focus,
 `OwnerWindow.performKeyEquivalent` offers a Command key to the main menu
 before WebKit sees it, so Kido's menu keys win; every other key, Escape
 included, goes to the page. A key, text or paste that the page does not
