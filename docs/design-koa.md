@@ -1189,8 +1189,16 @@ the command first ("`!` commands" below).
   padding at the dock's height. WebKit's private system glass needs a
   private preference, and WebKit's snapshot does not show it, so no
   test could check it.
-- **Bottom-following.** One owner in `page.ts` decides the scroll,
-  for the transcript and the job view alike. Its state is
+- **Bottom-following.** One owner decides the scroll, for the
+  transcript and the job view alike: the state machine of
+  `page/scroll.ts` (`scrollUpdate`). It reads no DOM. `page.ts`
+  turns the page's events into its events, measures the geometry in
+  one function after layout (from the `ResizeObserver` delivery and
+  from the frame), passes the events and the measurement in, and
+  applies the decision that comes back: the scroll to write, the
+  slide's offset, the divider, the capsule, the window's target and
+  a row to mount or a page to load. Each rule below is a sequence of
+  events in `koa-scroll.test.ts`. Its state is
   `following`, `reader` with an anchor (an item, a message's
   sequence number or a job row's byte offset, and the item's top
   relative to the viewport), or `restoring` a saved view. While the
@@ -1200,15 +1208,13 @@ the command first ("`!` commands" below).
   dock and each mounted row and content block calls the correction,
   on every delivery. A row mounted at its estimate gets its real
   height in that delivery. While following, each delivery also asks
-  for one correction in the next frame, which reads the geometry
-  again: a change that the depth rule defers still reaches the
-  bottom, at most one frame late. A frame corrects otherwise only
-  when its own work asks for it (a restored view, an image that
-  loaded or failed); its other writes reach the observer before the
-  paint.
-  The observer, the scroll event and the focus keep the last scroll
-  geometry that they read after layout, and a frame starts from it,
-  so a frame does not force a layout to learn the scroll. A `ResizeObserver` callback runs
+  for one correction in the next frame, which measures before the
+  frame's writes: a change that the depth rule defers still reaches
+  the bottom, at most one frame late. A frame that only animates
+  (the slide, the travel) measures nothing: it reuses the last
+  measured geometry with the frame's time. A layout that a frame
+  writes is measured by the observer's delivery, so no read follows
+  a write in a frame. A `ResizeObserver` callback runs
   after layout and before paint, so the painted position is always
   the bottom of the painted layout and streaming never steps back.
   In `reader`, the correction keeps the anchor item at its offset,
@@ -1216,7 +1222,11 @@ the command first ("`!` commands" below).
   moves the scroll by its delta; when the item is gone the anchor
   moves to the next item below, or the page goes to the bottom. An
   anchor whose item is loaded but not mounted asks the window step
-  to mount it. A scroll that lands in the padding (a scrollbar jump)
+  to mount it. The window step asks the owner for its target
+  (`scrollWindow`) in the table's coordinates, from the state and
+  the current table, before it mounts, so an anchor that an Older
+  page moved is mounted where it now is; the anchor's correction
+  uses the mounted rows' rects. A scroll that lands in the padding (a scrollbar jump)
   takes its anchor from the table, and the window mounts the rows
   there; as they measure, the anchor holds and the scrollbar's
   thumb moves by the estimate's error.
@@ -1225,7 +1235,7 @@ the command first ("`!` commands" below).
   animated scroll is "↓ Latest": about 250 ms, ease-out, re-targeted
   each frame to the moving bottom; the state stays `reader` until
   it arrives, and reader input, a view switch or a hidden page
-  cancels it. Under Reduce Motion the click follows at once.
+  cancels it at the position that it reached. Under Reduce Motion the click follows at once.
 - **The follow slide.** The glide that a following reader sees is a
   transform, not a scroll (app/design/koa/NOTES.md, "The follow
   slide"). The scroll stays exact at the bottom in every frame; the
@@ -1239,8 +1249,9 @@ the command first ("`!` commands" below).
   repeated delivery adds nothing and every cause (a slice, the grow's
   frames, the dots, an image, the dock's padding) is one path. Each
   change adds its height to the offset from where the content is
-  now, clamps it to one viewport and restarts the 180 ms CSS
-  `ease-out` curve. The frame loop writes the offset after its
+  now, clamps it to one viewport and restarts a 180 ms curve, CSS's
+  `ease-out`, which the owner evaluates at each frame from the
+  measurement's time. The frame loop writes the offset after its
   reads; the owner keeps the value that it wrote, so an anchor read
   subtracts it from a row's rect without reading styles.
   `#transcript-clip` around it clips the overflow, because a
@@ -1253,36 +1264,46 @@ the command first ("`!` commands" below).
   the scroller's own size) only moves the baseline; the user's send
   slides by the bottom's change when the reader followed, and by the
   sent row's height after an instant jump when the reader was up.
-  The first measurement is a baseline. Reader input, `reader`,
+  An instant cause holds for its whole render: the observer can
+  deliver its layout in several callbacks, and none of them slides,
+  until a frame finds the layout settled. The first measurement is
+  a baseline. Reader input, `reader`,
   travel, a blur, a hidden page and Reduce Motion end the slide at
   0. A change of the dock's height slides; a resize of the window
   does not.
-- **Reader input and clamps.** Only the reader leaves following. An
-  upward wheel, a downward touch drag and the keys Up, Page Up, Home
-  and Shift-Space outside a control set `reader` with the current
-  anchor before the browser moves. A scrollbar drag has no input
-  event of its own, and a browser dispatches a scroll event at the
-  next frame, after later layout. So the page keeps the position
-  that it last wrote or read, records the clamped result of each
-  write, and compares the position with it at each scroll event and
-  at the start of each correction. A move under 1 px is not a move.
-  A move down to a smaller maximum is a clamp: content shrank (a
-  reveal that rebuilds its blocks, a cleared composer), and it is
-  never the reader. Every other
-  move is the reader's: within 1 px of the bottom it resumes
-  following, else it sets `reader` at the new anchor. Nothing else
-  resumes following except the user's send and "↓ Latest".
+- **Reader input and clamps.** Only the reader leaves following.
+  The page turns input into a direction: an upward wheel, a downward
+  touch drag and the keys Up, Page Up, Home and Shift-Space outside
+  a control are up; the opposite ones are down. Up sets `reader` with
+  the current anchor before the browser moves; any input cancels a
+  travel at the current anchor. A find navigation sets `reader` at
+  its match. A scroll event alone never leaves following: a browser
+  dispatches it at the next frame, after later layout, so its
+  position cannot tell a clamp (content that shrank: a reveal that
+  rebuilds its blocks, a cleared composer) from the reader. While
+  following, a position off the bottom is a clamp, and the owner
+  writes the bottom again. The one exception is a primary pointer
+  held down in the scroller, which a scrollbar drag is: then a move
+  up of 1 px or more sets `reader`. In `reader`, each scroll event
+  that moved the position 1 px or more from the one that the owner
+  last wrote or accepted takes the new anchor, and within 1 px of
+  the bottom resumes following; a smaller move is the owner's own
+  write. Nothing else resumes following except the user's send and
+  "↓ Latest".
   `overflow-anchor: none` keeps the browser's scroll anchoring out:
   it selects no anchor at offset zero (older history loads there),
   the dock's padding change suppresses it, and it does not follow
   the bottom, so a second owner would only conflict with the page.
 - **The user's send** sets `following`, clears the divider and the
-  count and writes the bottom at the submit, focused or not. The
-  page remembers the send's view and session, and the first user
-  item that then appends in them writes the bottom again, also in
-  an unfocused pane, so the sent block is visible in the frame that
-  it appears. A failed send, a command that the page handles and a
-  view switch forget it. Another user item (a delivered steer, a
+  count and writes the bottom at the submit, focused or not, and
+  again when pi answers `started` or `queued`. The owner remembers
+  the pending send, and the first user item that then appends in
+  the same view sets `following` from any state and writes the
+  bottom, also in an unfocused pane, so the sent block is visible
+  in the frame that it appears. pi's answer names no item, so the
+  first user item is the match. A failed send, a command that the
+  page handles and a view switch forget it; an answer that arrives
+  after a view switch is dropped. Another user item (a delivered steer, a
   queued follow-up) is a new item under the normal rule. Restoring
   a view shows its items without entry animations.
 - **Focus, new items and "↓ Latest".** The look and the rules are in

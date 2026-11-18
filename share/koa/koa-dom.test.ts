@@ -10,6 +10,7 @@ import { promptHistory } from './page/history.ts';
 import { ATTACHMENT_LIMITS, isAttachment, pathArg } from "./koa-records.ts";
 import { jobEndText } from "./records.ts";
 import type { PromptMode } from "./koa-records.ts";
+import { scrollInitial, scrollUpdate, scrollWindow } from "./page/scroll.ts";
 
 async function page() {
   const source = stripTypeScriptTypes(await readFile(new URL("page/page.ts", import.meta.url), "utf8"));
@@ -95,7 +96,7 @@ async function page() {
       placeholder(text: string) { content.placeholder = text; },
     };
   };
-  const context = { ResizeObserver, matchMedia: () => ({ matches: false }), Date: class extends Date { constructor(value: string | number = 1700000012000) { super(value); } static now() { return 1700000012000; } }, getComputedStyle: (node?: { tagName?: string }) => ({ display: 'block', lineHeight: '20px', marginBottom: node?.tagName === 'P' ? '10px' : '0px' }), composer, bashCommand, ATTACHMENT_LIMITS, isAttachment, pathArg, jobEndText, AbortController, AbortSignal, CustomEvent: class { type: string; detail?: unknown; constructor(type: string, options?: { detail?: unknown }) { this.type = type; this.detail = options?.detail; } }, Node, Element: Node, HTMLElement: class { static [Symbol.hasInstance](value: unknown) { return value instanceof Node && value.tagName !== '#text'; } }, HTMLButtonElement: Node, HTMLImageElement: Node, markdown, markdownLine, document, window: { ko: {}, addEventListener(type: string, handler: (event?: unknown) => void) { windowListeners.set(type, handler); } }, innerWidth: 980, innerHeight: 560, Event: class { type: string; constructor(type: string) { this.type = type; } }, console, setInterval() {}, clearInterval() {}, setTimeout, clearTimeout, requestAnimationFrame() {}, cancelAnimationFrame() {}, performance: { now: () => 0 }, fetch: async () => ({ ok: true, json: async () => ({}) }) };
+  const context = { ResizeObserver, matchMedia: () => ({ matches: false, addEventListener() {} }), Date: class extends Date { constructor(value: string | number = 1700000012000) { super(value); } static now() { return 1700000012000; } }, getComputedStyle: (node?: { tagName?: string }) => ({ display: 'block', lineHeight: '20px', marginBottom: node?.tagName === 'P' ? '10px' : '0px' }), composer, bashCommand, ATTACHMENT_LIMITS, isAttachment, pathArg, jobEndText, AbortController, AbortSignal, CustomEvent: class { type: string; detail?: unknown; constructor(type: string, options?: { detail?: unknown }) { this.type = type; this.detail = options?.detail; } }, Node, Element: Node, HTMLElement: class { static [Symbol.hasInstance](value: unknown) { return value instanceof Node && value.tagName !== '#text'; } }, HTMLButtonElement: Node, HTMLImageElement: Node, markdown, markdownLine, document, window: { ko: {}, addEventListener(type: string, handler: (event?: unknown) => void) { windowListeners.set(type, handler); } }, innerWidth: 980, innerHeight: 560, Event: class { type: string; constructor(type: string) { this.type = type; } }, console, setInterval() {}, clearInterval() {}, setTimeout, clearTimeout, requestAnimationFrame() {}, cancelAnimationFrame() {}, performance: { now: () => 0 }, fetch: async () => ({ ok: true, json: async () => ({}) }) };
   const answersSource = stripTypeScriptTypes(await readFile(new URL('page/answers.ts', import.meta.url), 'utf8')).replace(/^export /gm, '');
   const annotationsSource = stripTypeScriptTypes(await readFile(new URL('page/annotations.ts', import.meta.url), 'utf8')).replace(/^import .*;\n/gm, '').replace(/^export /gm, '');
   Object.assign(context, runInNewContext(answersSource + '\n' + annotationsSource + '\n({annotations,update})', context));
@@ -119,6 +120,7 @@ async function page() {
   Object.assign(context, { markdownPlain }, runInNewContext(findSource + '\n({findSegments,matchesIn})', context));
   const workingSource = stripTypeScriptTypes(readFileSync(new URL('page/working.ts', import.meta.url), 'utf8')).replace(/^export /gm, '');
   Object.assign(context, runInNewContext(workingSource + '\n({dots})', context));
+  Object.assign(context, { scrollInitial, scrollUpdate, scrollWindow });
   const body = source.replace(/^import .*;\n/gm, "").replace(/^setInterval\([\s\S]*$/m, "") + "\nfunction put(item) { accept(item); renderDirty(); return views.get(item.seq)?.view; }";
   return { observers, repl: (): ((code: string) => unknown) => runInNewContext("(() => {\n" + body + "\nreturn code => eval(code);\n})()", context), context, elements, listeners, windowListeners, completionResets: () => completionResets, handlers: () => handlers, prompt: () => prompt, text: () => text(), run: (code: string) => runInNewContext("{\n" + body + "\n" + code + "\n}", context) };
 }
@@ -1650,7 +1652,7 @@ async function latestPage() {
   const text = (seq: number) => ({ seq, revision: 0, kind: 'assistant', final: true, blocks: [{ type: 'text', text: 'reply ' + seq }] });
   const own = (seq: number) => ({ seq, revision: 0, at: 1, kind: 'user', text: 'mine', images: [], attachments: [] });
   const add = (item: object) => { evaluate(`apply({type:'item',item:${JSON.stringify(item)}})`); fixture.step(0); };
-  const scroll = (top: number, height = 1000) => { evaluate(`Object.assign(element('scroll'),{scrollHeight:${height},clientHeight:100,scrollTop:${top === 900 ? 899 : 900}});element('scroll').onscroll();element('scroll').scrollTop=${top};element('scroll').onscroll()`); };
+  const scroll = (top: number, height = 1000) => { evaluate(`Object.assign(element('scroll'),{scrollHeight:${height},clientHeight:100});decide({type:'input',direction:${top}<element('scroll').scrollHeight-element('scroll').clientHeight?'up':'down'});element('scroll').scrollTop=${top};element('scroll').onscroll()`); };
   const dividers = () => String(evaluate("element('items').children.map(node => node.className === 'newmsgs' ? 'divider' : node.dataset.seq).join()"));
   const latest = () => String(evaluate("[element('latest').textContent, element('latest').classList.contains('show')].join()"));
   const focus = (value: boolean) => { doc.hasFocus = () => value; app.windowListeners.get(value ? 'focus' : 'blur')?.(); };
@@ -1660,19 +1662,6 @@ async function latestPage() {
   return { ...fixture, text, own, add, scroll, dividers, latest, focus, go, doc };
 }
 
-test('a reader who scrolled up gets one divider above the first new item and a count of the new items below the view', async () => {
-  const page = await latestPage();
-  page.add(page.text(0)); page.add(page.own(1));
-  page.scroll(0);
-  assert.equal(page.dividers(), '0,1');
-  page.add(page.text(2)); page.add(page.text(3)); page.add(page.text(4));
-  assert.equal(page.dividers(), '0,1,divider,2,3,4');
-  assert.equal(page.latest(), '↓ 3 new,true');
-  page.add({ ...page.text(3), revision: 1 });
-  assert.equal(page.latest(), '↓ 3 new,true');
-  page.evaluate("element('scroll').scrollTop=140;element('scroll').onscroll()");
-  assert.equal(page.latest(), '↓ 1 new,true');
-});
 
 const think = (seq: number, text = 'hmm') => ({ seq, revision: 0, kind: 'assistant', final: false, blocks: [{ type: 'thinking', text, redacted: false }] });
 
@@ -1786,160 +1775,17 @@ test('an item that owns no shown step is not new, and the item that takes over t
   assert.equal(page.latest(), '↓ 1 new,true');
 });
 
-test('the Latest threshold has hysteresis without changing reader mode', async () => {
-  const page = await latestPage();
-  page.scroll(880);
-  assert.equal(page.latest(), '↓ Latest,false');
-  assert.equal(page.evaluate('scrolling.kind'), 'reader');
-  const move = (top: number) => page.evaluate(`element('scroll').scrollTop=${top};element('scroll').onscroll()`);
-  move(866);
-  assert.equal(page.latest(), '↓ Latest,true');
-  move(870);
-  assert.equal(page.latest(), '↓ Latest,true');
-  move(876);
-  assert.equal(page.latest(), '↓ Latest,false');
-  page.evaluate("element('scroll').clientHeight=60;element('scroll').scrollTop=916;element('scroll').onscroll()");
-  assert.equal(page.latest(), '↓ Latest,true');
-  page.evaluate("element('scroll').clientHeight=120;element('scroll').scrollTop=856;element('scroll').onscroll()");
-  assert.equal(page.latest(), '↓ Latest,false');
-  move(878);
-  assert.equal(page.evaluate('scrolling.kind'), 'reader');
-  move(880);
-  assert.equal(page.evaluate('scrolling.kind'), 'following');
-});
 
-test('unread messages show the capsule below the Latest threshold', async () => {
-  const page = await latestPage();
-  for (let seq = 0; seq < 60; seq++) page.add(page.own(seq));
-  page.scroll(880);
-  page.add(page.text(60));
-  assert.equal(page.latest(), '↓ 1 new,true');
-  assert.equal(page.evaluate('scrolling.kind'), 'reader');
-  assert.ok(Number(page.evaluate("element('scroll').scrollTop")) <= 880);
-});
 
-test('the capsule reads Latest while nothing is new and hides at the bottom', async () => {
-  const page = await latestPage();
-  page.add(page.text(0));
-  page.scroll(0);
-  assert.equal(page.latest(), '↓ Latest,true');
-  page.scroll(900);
-  assert.equal(page.latest(), '↓ Latest,false');
-});
 
-test('the own message never makes a divider, and a send removes the divider', async () => {
-  const page = await latestPage();
-  page.add(page.text(0));
-  page.scroll(0);
-  page.add(page.own(1));
-  assert.equal(page.dividers(), '0,1');
-  page.add(page.text(2));
-  assert.equal(page.dividers(), '0,1,divider,2');
-  page.evaluate("fetchJSON = async () => ({ disposition: 'started' }); editor.setText('go'); state = {...state, life:{type: 'ready'}}");
-  void page.evaluate("send()");
-  await new Promise(resolve => setImmediate(resolve));
-  assert.equal(page.dividers(), '0,1,2');
-});
 
-test('while the pane is unfocused nothing scrolls, also at the bottom, and the divider waits for the reader', async () => {
-  const page = await latestPage();
-  page.add(page.text(0));
-  page.evaluate("views.get(0).view.offsetHeight=1000;extents.set(0,{kind:'estimated',px:1000});table=undefined");
-  page.scroll(900);
-  page.focus(false);
-  page.add(page.text(1));
-  page.step(16); page.step(16);
-  assert.equal(page.evaluate("element('scroll').scrollTop"), 900);
-  assert.equal(page.dividers(), '0,divider,1');
-  page.evaluate("element('scroll').scrollHeight=1100");
-  page.focus(true);
-  assert.equal(page.dividers(), '0,divider,1');
-  page.add(page.text(2));
-  page.step(16); page.step(16);
-  assert.equal(page.evaluate("element('scroll').scrollTop"), 900);
-  page.evaluate("element('scroll').scrollTop=1000;element('scroll').onscroll()");
-  assert.equal(page.dividers(), '0,1,2');
-});
 
-test('a view that is focused and at the bottom follows and gets no divider', async () => {
-  const page = await latestPage();
-  page.add(page.text(0)); page.add(page.text(1));
-  assert.equal(page.dividers(), '0,1');
-});
 
-test('a session switch removes the divider', async () => {
-  const page = await latestPage();
-  page.add(page.text(0));
-  page.scroll(0);
-  page.add(page.text(1));
-  assert.equal(page.dividers(), '0,divider,1');
-  page.evaluate(`apply({type:'reset',epoch:'b',more:false,items:[${JSON.stringify(page.text(0))}]})`);
-  page.step(0);
-  assert.equal(page.dividers(), '0');
-  assert.equal(page.latest().split(',')[0], '↓ Latest');
-});
 
-test('the capsule scrolls to the bottom through the scheduler, resumes following and removes the divider', async () => {
-  const page = await latestPage();
-  page.add(page.text(0));
-  page.scroll(0);
-  page.add(page.text(1));
-  page.evaluate("element('scroll').scrollTop=0");
-  page.evaluate("element('latest').onclick()");
-  for (let frame = 0; frame < 40; frame++) page.step(16);
-  assert.ok(Number(page.evaluate("element('scroll').scrollTop")) > 899);
-  page.evaluate("element('scroll').onscroll()");
-  assert.equal(page.dividers(), '0,1');
-  assert.equal(page.evaluate("scrolling.kind"), 'following');
-  assert.equal(page.latest().split(',')[1], 'false');
-});
 
-test('blur stops every automatic scroll, also a patch to a streaming reply and a dock resize', async () => {
-  const page = await latestPage();
-  page.put('Intro.\n\nwaiting tail');
-  page.scroll(900);
-  page.focus(false);
-  page.patch(1, '\n\nsecond block\n\nthird');
-  page.evaluate("element('scroll').scrollHeight=1100;dockResized(200)");
-  for (let frame = 0; frame < 5; frame++) page.step(16);
-  assert.equal(page.evaluate("element('scroll').scrollTop"), 900);
-  assert.equal(page.latest().split(',')[0], '↓ Latest');
-});
 
-test('only an assistant message counts as new: an agent message, a job event and a ! output add nothing', async () => {
-  const page = await latestPage();
-  page.add(page.text(0));
-  page.scroll(0);
-  page.add({ seq: 1, revision: 0, at: 1, final: true, kind: 'agent', direction: 'in', from: { name: 'boss', session: 'b', pane: 'pane_2' }, text: { text: 'hi', cut: 0 }, inbound: { form: 'message', relation: 'parent' } });
-  page.add({ seq: 2, revision: 0, at: 1, final: true, kind: 'job', job: { id: 'j1', name: 'build', service: false, log: '/l', command: 'make', startedAt: 1, place: { type: 'mac' } }, event: { type: 'stream', batch: { text: 'x', cut: 0 }, omitted: 0, cut: false } });
-  page.evaluate("state={...state,bash:[{id:'r',phase:'running',command:'ls',excludeFromContext:false,started:1,output:{text:'a',cut:0}}]};refreshBash()");
-  page.add({ seq: 3, revision: 0, at: 1, final: true, kind: 'bash', command: 'ls', excludeFromContext: false, result: { output: { text: 'a', cut: 0 }, exit: 0, cancelled: false, truncated: false } });
-  assert.equal(page.evaluate("element('items').children.includes(divider)"), false);
-  assert.equal(page.latest().split(',')[0], '↓ Latest');
-  page.add(page.text(4));
-  assert.equal(page.latest().split(',')[0], '↓ 1 new');
-});
 
-test('the capsule snaps at once under reduced motion', async () => {
-  const page = await latestPage();
-  page.add(page.text(0));
-  page.scroll(0);
-  Object.assign(page.app.context, { matchMedia: () => ({ matches: true }) });
-  page.evaluate("element('latest').onclick()");
-  page.step(16);
-  assert.equal(page.evaluate("element('scroll').scrollTop"), 900);
-});
 
-test('a focus event on a pane that never lost the focus keeps following while an item grows', async () => {
-  const page = await latestPage();
-  page.add(page.text(0));
-  page.scroll(900);
-  page.add(page.text(1));
-  page.evaluate("element('scroll').scrollHeight=1100;layoutChanged()");
-  page.app.windowListeners.get('focus')?.();
-  page.step(16);
-  assert.equal(page.evaluate("element('scroll').scrollTop"), 1000);
-});
 
 async function blockPage(position: number) {
   const page = await latestPage(), rounds = { count: 0, relevant: false, real: 600, late: 0 };
@@ -1996,217 +1842,19 @@ test('a delivery of only a reveal child still scrolls a following pane to the gr
   assert.equal(page.evaluate("element('scroll').scrollTop"), 1100);
 });
 
-test('reader input during a follow slide captures an untransformed anchor and holds it', async () => {
-  const page = await latestPage();
-  for (let seq = 0; seq < 4; seq++) page.add(page.text(seq));
-  page.evaluate("element('scroll').scrollHeight=350;follow();layoutChanged();clearSlide();element('scroll').scrollHeight=390;layoutChanged()");
-  assert.equal(page.evaluate('slide.offset'), 40);
-  page.evaluate('readerInput()');
-  assert.equal(page.evaluate('scrolling.anchor.item.seq'), 3);
-  assert.equal(page.evaluate('scrolling.anchor.offset'), 10);
-  assert.equal(page.evaluate("element('transcript').style.transform"), '');
-  page.evaluate("element('items').prepend(document.createElement('div'));element('scroll').scrollHeight=490;layoutChanged()");
-  assert.equal(page.evaluate("views.get(3).view.getBoundingClientRect().top"), 10);
-  assert.equal(page.evaluate('scrolling.anchor.item.seq'), 3);
-});
 
-test('follow slide covers grow deliveries, dots, dock, resize, and image load', async () => {
-  const page = await latestPage();
-  page.scroll(900); page.evaluate('layoutChanged();clearSlide()');
-  const deliver = (height: number) => page.evaluate(`element('scroll').scrollHeight=${height};resized([{target:element('items'),borderBoxSize:[{blockSize:0}]}])`);
-  page.evaluate("observed.set(element('items'),{type:'block'})");
-  deliver(1040);
-  assert.equal(page.evaluate('slide.offset'), 40);
-  page.step(60);
-  const current = Number(page.evaluate('slide.offset'));
-  deliver(1060);
-  assert.ok(Math.abs(Number(page.evaluate('slide.offset')) - current - 20) < .01, 'grow frames retarget from the current offset');
-  page.step(180);
-  for (const [working, height, offset] of [[true, 1080, 20], [false, 1060, -20]] as const) {
-    page.evaluate(`state={...state,working:${working},since:1};reconcileWorking()`);
-    deliver(height);
-    assert.equal(page.evaluate('slide.offset'), offset, 'dots entering and leaving use signed bottom deltas');
-    page.step(180);
-  }
-  page.evaluate("resized([{target:element('dock'),borderBoxSize:[{blockSize:180}]}])");
-  deliver(1110);
-  assert.equal(page.evaluate('slide.offset'), 50, 'dock padding growth slides');
-  page.step(180);
-  page.evaluate("element('scroll').clientWidth=400;element('scroll').scrollHeight=1160;resized([{target:element('scroll'),borderBoxSize:[{blockSize:100}]}])");
-  assert.equal(page.evaluate("element('transcript').style.transform"), '', 'window resize is instant');
-  page.step(0);
-  page.evaluate("var picture=thumbnails([{id:'0.0',revision:0,mimeType:'image/png',bytes:10}],()=>new Map());picture.load();element('items').append(picture.view);element('scroll').scrollHeight=1190;picture.view.firstElementChild.firstElementChild.onload()");
-  page.step(0);
-  assert.equal(page.evaluate('slide.offset'), 30, 'image load slides by its layout delta');
-});
 
-test('follow slide distinguishes following sends, unfocused sends, and handled commands', async () => {
-  const page = await latestPage();
-  page.scroll(900); page.evaluate('layoutChanged();clearSlide()');
-  await page.evaluate("editor.setText('one');fetchJSON=async()=>({disposition:'sent'});send()");
-  page.evaluate("element('scroll').scrollHeight=1050"); page.add(page.own(0));
-  assert.equal(page.evaluate('slide.offset'), 50, 'following sends use the bottom delta');
-  page.step(180); page.focus(false);
-  await page.evaluate("editor.setText('two');send()");
-  page.evaluate("element('scroll').scrollHeight=1100"); page.add(page.own(1));
-  assert.equal(page.evaluate("element('transcript').style.transform"), '', 'unfocused sends keep instant positioning');
-  page.focus(true); page.evaluate("follow();element('scroll').scrollHeight=1150;layoutChanged()");
-  assert.equal(page.evaluate('slide.offset'), 50);
-  await page.evaluate("editor.setText('/help');fetchJSON=async()=>({disposition:'handled'});send()");
-  assert.equal(page.evaluate("element('transcript').style.transform"), '', 'handled commands clear active motion');
-});
 
-test('follow slide stays zero for first paint, view and session switches, restore, and history insertion', async () => {
-  const page = await latestPage();
-  page.evaluate(`apply({type:'reset',epoch:'first',more:false,items:[${JSON.stringify(page.text(0))}]});element('scroll').scrollHeight=1000`);
-  page.step(0); page.step(0);
-  assert.equal(page.evaluate("element('transcript').style.transform"), '', 'first transcript paint');
-  for (const [name, action] of [
-    ['view switch', () => page.go('child')],
-    ['session switch', () => page.go('child', 'other')],
-    ['restore', () => page.evaluate("scrolling={kind:'restoring',target:{sessionId:state.sessionId,anchor:{item:{kind:'message',seq:0},offset:0},last:0}};restore(scrolling)")],
-  ] as const) {
-    page.evaluate('follow();clearSlide()');
-    await action();
-    page.evaluate("element('scroll').scrollHeight+=30");
-    page.step(0); page.step(0);
-    assert.equal(page.evaluate("element('transcript').style.transform"), '', name);
-  }
-  page.evaluate("follow();first=1;more=true;fetch=async()=>({ok:true,json:async()=>({type:'reset',epoch,more:false,items:[{seq:-1,revision:0,kind:'assistant',final:true,blocks:[{type:'text',text:'history'}]}]})})");
-  const history = page.evaluate('older()');
-  await Promise.resolve(); await Promise.resolve(); await Promise.resolve();
-  page.evaluate("element('scroll').scrollHeight+=100");
-  page.step(0); page.step(0);
-  await history;
-  assert.equal(page.evaluate("element('transcript').style.transform"), '', 'history inserts without a slide');
-});
 
-test('follow slide accumulates bottom deltas without moving the exact bottom', async () => {
-  const page = await latestPage();
-  page.scroll(900);
-  page.evaluate("layoutChanged();element('scroll').scrollHeight=1100;layoutChanged()");
-  assert.equal(page.evaluate("element('transcript').style.transform"), 'translateY(100px)');
-  page.evaluate('layoutChanged()');
-  assert.equal(page.evaluate("element('transcript').style.transform"), 'translateY(100px)');
-  page.step(90);
-  const middle = Number(page.evaluate('slide.offset'));
-  assert.ok(middle > 0 && middle < 50);
-  page.evaluate("element('scroll').scrollHeight=1120;layoutChanged()");
-  assert.ok(Math.abs(Number(page.evaluate('slide.offset')) - middle - 20) < .01);
-  assert.equal(page.evaluate("element('scroll').scrollTop"), 1020);
-  const offset = page.evaluate("element('transcript').style.transform");
-  page.evaluate('layoutChanged();layoutChanged()');
-  assert.equal(page.evaluate("element('transcript').style.transform"), offset);
-  page.step(180);
-  assert.equal(page.evaluate("element('transcript').style.transform"), '');
-});
 
-test('follow slide clears on live Reduce Motion, blur, and a viewport resize', async () => {
-  const page = await latestPage();
-  page.scroll(900);
-  page.evaluate("layoutChanged();element('scroll').scrollHeight=1100;layoutChanged()");
-  Object.assign(page.app.context, { matchMedia: () => ({ matches: true }) });
-  page.step(16);
-  assert.equal(page.evaluate("element('transcript').style.transform"), '');
-  Object.assign(page.app.context, { matchMedia: () => ({ matches: false }) });
-  page.evaluate("element('scroll').scrollHeight=1200;layoutChanged()");
-  page.focus(false);
-  assert.equal(page.evaluate("element('transcript').style.transform"), '');
-  page.focus(true);
-  page.evaluate("element('scroll').clientWidth=400;element('scroll').scrollHeight=1300;layoutChanged()");
-  assert.equal(page.evaluate("element('transcript').style.transform"), '');
-});
 
-test('follow slide uses only the sent row height for a reader send', async () => {
-  const page = await latestPage();
-  page.scroll(0);
-  page.evaluate('layoutChanged()');
-  await page.evaluate("editor.setText('hello'); fetchJSON=async()=>({disposition:'sent'}); send()");
-  page.evaluate("element('scroll').scrollHeight=1200");
-  page.add(page.own(0));
-  assert.equal(page.evaluate("element('transcript').style.transform"), 'translateY(20px)');
-  assert.equal(page.evaluate("element('scroll').scrollTop"), 1100);
-});
 
-test('follow slide keeps a reset instant across a queued correction but not a later append', async () => {
-  const page = await latestPage();
-  page.scroll(900);
-  page.evaluate("layoutChanged();requestCorrection();apply({type:'reset',epoch:'b',more:false,items:[]});element('scroll').scrollHeight=1200");
-  page.step(0);
-  assert.equal(page.evaluate("element('transcript').style.transform"), '');
-  page.step(0);
-  assert.equal(page.evaluate("element('transcript').style.transform"), '');
-  page.evaluate("apply({type:'reset',epoch:'c',more:false,items:[]})");
-  page.step(0); page.step(0);
-  page.evaluate("element('scroll').scrollHeight=1250;layoutChanged()");
-  assert.equal(page.evaluate("element('transcript').style.transform"), 'translateY(50px)');
-});
 
-test('follow slide keeps an instant cause through two observer deliveries before correction', async () => {
-  const page = await latestPage();
-  page.scroll(900);
-  page.evaluate("layoutChanged();requestCorrection({kind:'instant'});resized([{target:element('dock'),borderBoxSize:[{blockSize:200}]}]);element('scroll').scrollHeight=1200;resized([{target:element('items'),borderBoxSize:[{blockSize:0}]}])");
-  assert.equal(page.evaluate("element('transcript').style.transform"), '');
-  page.step(0);
-  assert.equal(page.evaluate("element('transcript').style.transform"), '');
-  page.evaluate("element('scroll').scrollHeight=1250;layoutChanged()");
-  assert.equal(page.evaluate("element('transcript').style.transform"), 'translateY(50px)');
-});
 
-test('follow slide suppresses a transcript reset and begins Latest arrival at zero', async () => {
-  const page = await latestPage();
-  page.scroll(900);
-  page.evaluate("layoutChanged();element('scroll').scrollHeight=1100;layoutChanged()");
-  page.evaluate("apply({type:'reset',epoch:'b',more:false,items:[]});element('scroll').scrollHeight=1300");
-  page.step(0);
-  assert.equal(page.evaluate("element('transcript').style.transform"), '');
-  page.scroll(100, 1300);
-  page.evaluate('toLatest()');
-  page.step(250);
-  assert.equal(page.evaluate("element('transcript').style.transform"), '');
-  assert.equal(page.evaluate('scrolling.kind'), 'following');
-});
 
-test('follow slide clamps both directions and clears for reader input', async () => {
-  const page = await latestPage();
-  page.scroll(900);
-  page.evaluate("layoutChanged();element('scroll').scrollHeight=3000;layoutChanged()");
-  assert.equal(page.evaluate("element('transcript').style.transform"), 'translateY(100px)');
-  page.step(180);
-  page.evaluate("element('scroll').scrollHeight=1000;layoutChanged()");
-  assert.equal(page.evaluate("element('transcript').style.transform"), 'translateY(-100px)');
-  page.evaluate('readerInput()');
-  assert.equal(page.evaluate("element('transcript').style.transform"), '');
-});
 
-test('a layout growth under a following pane keeps following', async () => {
-  const page = await latestPage();
-  page.scroll(900);
-  page.evaluate("element('scroll').scrollHeight=1200;layoutChanged()");
-  page.step(16);
-  assert.equal(page.evaluate("element('scroll').scrollTop"), 1100);
-  assert.equal(page.evaluate('scrolling.kind'), 'following');
-});
 
-test('sending resumes following a scrolled-up transcript', async () => {
-  const page = await latestPage();
-  page.scroll(0);
-  await page.evaluate("editor.setText('hello'); fetchJSON=async()=>({disposition:'sent'}); send()");
-  assert.equal(page.evaluate('scrolling.kind'), 'following');
-  page.evaluate("element('scroll').scrollHeight=1200");
-  page.step(16);
-  assert.equal(page.evaluate("element('scroll').scrollTop"), 1100);
-  assert.equal(page.latest().split(',')[1], 'false');
-});
 
-test('an unfocused view load does not move the transcript', async () => {
-  const page = await latestPage();
-  page.scroll(900);
-  page.focus(false);
-  page.evaluate("element('scroll').scrollHeight=1200;scrolling={kind:'following',motion:{kind:'snap',reason:'layout'}};schedule(true)");
-  page.step(16);
-  assert.equal(page.evaluate("element('scroll').scrollTop"), 900);
-});
 
 async function flowPage(margin = 0) {
   const page = await latestPage(), { app, evaluate, layout } = page, doc = app.context.document;
@@ -2255,7 +1903,7 @@ async function flowPage(margin = 0) {
   const top = () => Number(evaluate("element('scroll').scrollTop"));
   const bottom = () => Number(evaluate("element('scroll').scrollHeight - element('scroll').clientHeight"));
   const settle = (frames = 120) => { for (let frame = 0; frame < frames; frame++) page.step(16); };
-  const reader = (value: number) => evaluate(`element('scroll').scrollTop=${value};element('scroll').onscroll()`);
+  const reader = (value: number) => evaluate(`decide({type:'input',direction:${value}<element('scroll').scrollHeight-element('scroll').clientHeight?'up':'down'});element('scroll').scrollTop=${value};element('scroll').onscroll()`);
   const offset = (seq: number) => Number(evaluate(`views.get(${seq}).view.getBoundingClientRect().top`));
   const open = (items: object[], more = false) => { evaluate(`apply({type:'reset',epoch:'a',more:${more},items:${JSON.stringify(items)}})`); page.step(0); };
   const gate = (items: object[]) => { let release = () => {}; Object.assign(app.context, { fetch: () => new Promise(resolve => { release = () => resolve({ ok: true, json: async () => ({ type: 'reset', epoch: 'a', more: false, items }) }); }) }); return () => release(); };
@@ -2309,14 +1957,19 @@ test('a reveal that replaces its streaming tail never paints the following pane 
 test('an older page keeps the reader where they are now, also after they moved while it loaded', async () => {
   const page = await flowPage();
   page.open([10, 11, 12, 13, 14].map(page.text), true);
+  const diagnostic = () => String(page.evaluate("JSON.stringify({kind:scrolling.kind,anchor:scrolling.anchor,top:element('scroll').scrollTop,max:element('scroll').scrollHeight-element('scroll').clientHeight,rows:[...views.keys()]})"));
+  const states = [diagnostic()];
   page.reader(200);
+  states.push(diagnostic());
   const release = page.gate([5, 6, 7, 8, 9].map(page.text));
   void page.evaluate('older()');
   page.reader(300);
+  states.push(diagnostic());
   release();
   await page.settled();
   page.step(16);
-  assert.equal(page.offset(10), 500 - 800);
+  assert.equal(page.offset(10), -300, [...states, diagnostic()].join('\n'));
+  assert.equal(page.offset(13), 0);
 });
 
 test('a restored position survives the entry animation of an unfinished reply and an image that decodes above it', async () => {
@@ -2372,27 +2025,7 @@ test('a patch that changes nothing visible does not scroll a reader who is near 
   assert.equal(page.top(), before);
 });
 
-test('a reader who moves up by half pixels leaves following once the sum passes the threshold', async () => {
-  const page = await flowPage();
-  page.pad.value = 900;
-  page.deliver({ type: 'item', item: page.text(0) });
-  page.settle();
-  const end = page.top();
-  for (let step = 1; step <= 130; step++) page.reader(end - step * .5);
-  page.deliver({ type: 'item', item: page.text(1) });
-  page.settle();
-  assert.equal(page.top(), end - 65);
-});
 
-test('a reset followed by the view change opens an unfocused page at the end', async () => {
-  const page = await flowPage();
-  page.focus(false);
-  page.pad.value = 900;
-  page.evaluate(`apply({type:'reset',epoch:'b',more:false,items:${JSON.stringify([0, 1, 2].map(page.text))}})`);
-  page.go('r');
-  page.settle();
-  assert.equal(page.top(), page.bottom());
-});
 
 const views = `const root={id:'r',name:'ko'},a={id:'a',name:'reviewer'},b={id:'b',name:'checker'};
   element('transcript').getBoundingClientRect=()=>({left:130,width:720});
@@ -2452,7 +2085,7 @@ test('a view change keeps each view its own draft and closes what belongs to the
   const result = JSON.parse(await app.run(`(async()=>{${views}
     const file={id:'f',name:'note',path:'/tmp/note',size:1,origin:'upload',kind:'file'};
     show(root);
-    editor.setText('root draft');draft.restore([file]);scrolling={kind:'reader',anchor:undefined};
+    editor.setText('root draft');draft.restore([file]);decide({type:'input',direction:'up'});
     element('picker').hidden=false;element('error').textContent='old error';
     show(root,a);
     const child=[editor.text(),draft.count,element('picker').hidden,element('error').textContent,scrolling.kind==='following'];
@@ -2468,25 +2101,6 @@ test('a view change keeps each view its own draft and closes what belongs to the
   assert.deepEqual(result.again, ['child draft', 0]);
 });
 
-async function viewScrollPage() {
-  const page = await latestPage(), create = page.app.context.document.createElement;
-  page.app.context.document.createElement = (tag: string) => {
-    const node = create(tag), own = node.getBoundingClientRect.bind(node);
-    return Object.assign(node, { getBoundingClientRect: () => {
-      const seq = Reflect.get(Reflect.get(node, 'dataset') ?? {}, 'seq');
-      if (seq === undefined) return own();
-      const top = Number(seq) * 100 - Number(page.evaluate("element('scroll').scrollTop"));
-      return { left: 0, top, bottom: top + 100, height: 100 };
-    } });
-  };
-  page.evaluate("element('scroll').getBoundingClientRect=()=>({top:0})");
-  const open = (seqs: number[], more = false) => { page.evaluate(`apply({type:'reset',epoch:'a',more:${more},items:${JSON.stringify(seqs.map(seq => page.text(seq)))}})`); page.step(16); };
-  const at = (top: number) => page.evaluate(`Object.assign(element('scroll'),{scrollHeight:1000,clientHeight:100,scrollTop:${top}});element('scroll').onscroll()`);
-  const state = () => String(page.evaluate("[element('scroll').scrollTop, scrolling.kind==='following'].join()"));
-  const { go } = page;
-  go('r'); open([0, 1, 2, 3, 4]);
-  return { ...page, open, at, state };
-}
 
 test('a following pane is at the bottom after every frame of a new reply, with no frame above where it was', async () => {
   const page = await streamingPage(), pre = page.top();
@@ -2528,165 +2142,106 @@ test('a reveal moves a following pane to the bottom in its first frame and never
   fixture.put('Intro.\n\nwaiting tail');
   fixture.step(16);
   assert.equal(fixture.evaluate("element('scroll').scrollTop"), 800);
-  fixture.evaluate("element('scroll').scrollTop=100;element('scroll').onscroll()");
+  fixture.evaluate("decide({type:'input',direction:'up'});element('scroll').scrollTop=100;element('scroll').onscroll()");
   fixture.patch(1, '\n\nsecond block\n\nthird');
   fixture.step(16); fixture.step(16);
   assert.equal(fixture.evaluate("element('scroll').scrollTop"), 100);
   assert.equal(fixture.evaluate("scrolling.kind"), 'reader');
 });
 
-test('a reader who scrolled up by a few pixels is not pulled back by the stream', async () => {
-  const page = await streamingPage(), pre = page.top();
-  page.pad.value = 0; page.extra.set(0, 600);
-  page.wheel(-30);
-  page.reader(pre - 30);
-  page.deliver(page.suffix(0, 1, '\n\nsecond block\n\nthird'));
-  page.settle(30);
-  assert.deepEqual([page.top(), page.evaluate('scrolling.kind'), page.latest().split(',')[1]], [pre - 30, 'reader', 'true']);
-});
 
-test('a reader keeps their anchor through a shrink that clamps the position and the regrowth after it', async () => {
+
+
+
+test('scroll inputs translate keys, wheel and touch without reading scroll mode in the adapter', async () => {
   const page = await flowPage();
-  page.open([0, 1, 2, 3, 4, 5].map(page.text));
-  page.settle(3);
-  page.reader(250);
-  page.settle(3);
-  const anchor = page.offset(2);
-  page.extra.set(5, -300);
-  page.step(16);
-  page.extra.set(5, 0);
-  page.settle(3);
-  assert.deepEqual([page.offset(2), page.evaluate('scrolling.kind')], [anchor, 'reader']);
+  page.pad.value = 900;
+  for (let seq = 0; seq < 4; seq++) page.deliver({ type: 'item', item: page.text(seq) });
+  page.settle();
+  page.evaluate("globalThis.inputs=[];{const original=decide;decide=(event,...rest)=>{if(event?.type==='input')globalThis.inputs.push(event.direction);return original(event,...rest)}}");
+  const key = (key: string, shiftKey = false) => page.app.listeners.get('keydown')?.({ key, shiftKey, target: page.doc.body, preventDefault() {} });
+  key('ArrowUp');
+  page.evaluate("element('scroll').scrollTop=100;element('scroll').onscroll()");
+  key('ArrowDown');
+  page.evaluate("element('scroll').scrollTop=200;element('scroll').onscroll()");
+  assert.equal(page.evaluate('scrolling.anchor.item.seq'), 2);
+  key('End');
+  page.evaluate("element('scroll').scrollTop=element('scroll').scrollHeight-element('scroll').clientHeight;element('scroll').onscroll()");
+  assert.equal(page.evaluate('scrolling.kind'), 'following');
+  page.wheel(-30); page.wheel(30);
+  page.evaluate("element('scroll').handlers.get('touchstart')({touches:[{clientY:100}]});element('scroll').handlers.get('touchmove')({touches:[{clientY:120}]});element('scroll').handlers.get('touchmove')({touches:[{clientY:90}]})");
+  assert.equal(page.evaluate('globalThis.inputs.join()'), 'up,down,down,up,down,up,down');
 });
 
-test('Latest stops at once under a reader input and the pane stays where they moved it', async () => {
+test('a pointer on any scroller descendant permits reader scroll, and following without a pointer rejects displacement', async () => {
   const page = await flowPage();
   page.pad.value = 900;
   page.deliver({ type: 'item', item: page.text(0) });
   page.settle();
-  page.reader(0);
-  page.evaluate("element('latest').onclick()");
-  page.step(16); page.step(16); page.step(16);
-  const mid = page.top();
-  assert.ok(mid > 0 && mid < page.bottom(), String(mid));
-  page.wheel(-40);
-  page.reader(mid - 20);
-  page.settle(30);
-  assert.deepEqual([page.top(), page.evaluate('scrolling.kind')], [mid - 20, 'reader']);
+  const bottom = page.bottom();
+  page.evaluate("globalThis.scrollChild=document.createElement('div');element('scroll').append(globalThis.scrollChild)");
+  page.evaluate(`element('scroll').scrollTop=${bottom - 100};element('scroll').onscroll()`);
+  assert.deepEqual([page.top(), page.evaluate('scrolling.kind')], [bottom, 'following']);
+  page.evaluate(`element('scroll').handlers.get('pointerdown')({button:0,target:globalThis.scrollChild});element('scroll').scrollTop=${bottom - 100};element('scroll').onscroll()`);
+  assert.equal(page.evaluate('scrolling.kind'), 'reader');
+  page.app.listeners.get('pointerup')?.({});
+  assert.equal(page.evaluate('scrolling.pointer'), false);
+  page.evaluate("element('scroll').handlers.get('pointerdown')({button:0,target:globalThis.scrollChild})");
+  page.app.listeners.get('pointercancel')?.({});
+  assert.equal(page.evaluate('scrolling.pointer'), false);
 });
 
-test('the pane that comes back from the background keeps a reader with the divider but no pill below the threshold', async () => {
+test('the pane focus override includes visibility for an off-screen webview', async () => {
   const page = await flowPage();
   page.pad.value = 900;
   page.deliver({ type: 'item', item: page.text(0) });
   page.settle();
-  page.focus(false);
+  page.evaluate("window.koaFocused=true;document.hidden=true;document.visibilityState='hidden'");
   page.deliver({ type: 'item', item: page.text(1) });
-  page.settle(3);
-  page.focus(true);
-  page.settle(3);
-  assert.deepEqual([page.dividers(), page.evaluate('scrolling.kind'), page.latest().split(',')[1]], ['divider,1', 'reader', 'false']);
-  const before = page.top();
-  page.deliver({ type: 'item', item: page.text(2) });
-  page.settle(3);
-  assert.equal(page.top(), before);
+  page.settle(5);
+  assert.deepEqual([page.evaluate('scrolling.kind'), page.top() - page.bottom(), page.dividers()], ['following', 0, '0,1']);
 });
 
-test('a send from an unfocused pane follows the frame in which the sent block appends', async () => {
+test('Enter follows after unfocused growth changes following to reader before the user item', async () => {
   const page = await flowPage();
   page.pad.value = 900;
   page.deliver({ type: 'item', item: page.text(0) });
   page.settle();
-  page.reader(0);
-  page.focus(false);
-  page.evaluate("fetchJSON=async()=>({disposition:'sent'});editor.setText('go');state={...state,life:{type:'ready'}}");
+  page.evaluate("fetchJSON=async()=>({disposition:'started'});editor.setText('go');state={...state,life:{type:'ready'}}");
   await page.evaluate('send()');
+  page.focus(false);
+  page.pad.value += 100;
+  page.deliver({ type: 'item', item: { ...page.text(0), revision: 1 } });
   page.settle(3);
+  assert.equal(page.evaluate('scrolling.kind'), 'reader');
   page.pad.value += 200;
-  page.deliver({ type: 'item', item: { seq: 1, revision: 0, at: 1, kind: 'user', text: 'go', images: [], attachments: [] } });
-  page.step(16);
-  assert.deepEqual([page.top() - page.bottom(), page.evaluate('scrolling.kind'), page.latest().split(',')[1]], [0, 'following', 'false']);
+  page.deliver({ type: 'item', item: page.own(1) });
+  page.settle(3);
+  assert.equal(page.top() - page.bottom(), 0);
 });
 
-test('a view that was left scrolled up opens at the same place, and a view that was followed opens at the end', async () => {
-  const page = await viewScrollPage();
-  page.at(250);
-  page.go('a'); page.open([10]);
-  assert.equal(page.state().split(',')[1], 'true');
-  page.at(900);
-  page.go('r'); page.open([0, 1, 2, 3, 4]);
-  page.step(16);
-  assert.equal(page.state(), '250,false');
-  assert.equal(page.dividers(), '1,2,3,4');
-  page.go('a'); page.open([10]);
-  page.step(16);
-  assert.equal(page.state(), '900,true');
-  assert.equal(page.dividers(), '10');
+test('Enter follows after composer shrink clamps and a delayed scroll arrives after the user item', async () => {
+  const page = await flowPage();
+  page.pad.value = 900;
+  page.deliver({ type: 'item', item: page.text(0) });
+  page.settle();
+  page.evaluate("fetchJSON=async()=>({disposition:'started'});editor.setText('go');state={...state,life:{type:'ready'}}");
+  await page.evaluate('send()');
+  page.pad.value -= 100;
+  page.evaluate("element('scroll').scrollTop=element('scroll').scrollHeight-element('scroll').clientHeight");
+  page.pad.value += 200;
+  page.deliver({ type: 'item', item: page.own(1) });
+  page.evaluate("element('scroll').onscroll()");
+  page.settle(3);
+  assert.equal(page.top() - page.bottom(), 0);
 });
 
-test('items that arrived while away get the divider and the count when the view was left scrolled up', async () => {
-  const page = await viewScrollPage();
-  page.at(250);
-  page.go('a'); page.open([10]);
-  page.go('r'); page.open([0, 1, 2, 3, 4, 5, 6]);
-  page.step(16);
-  assert.equal(page.dividers(), '1,2,3,4,divider,5');
-  assert.equal(page.state(), '250,false');
-  assert.match(page.latest(), /^↓ \d+ new,true$/);
-});
 
-test('an anchor older than the loaded tail loads older pages first, and a missing anchor opens at the end', async () => {
-  const page = await viewScrollPage();
-  page.at(50);
-  page.go('a'); page.open([10]);
-  const urls: string[] = [];
-  Object.assign(page.app.context, { fetch: async (url: string) => { urls.push(url); return { ok: true, json: async () => ({ type: 'reset', epoch: 'a', more: false, items: [0, 1, 2].map(page.text) }) }; } });
-  page.go('r'); page.open([3, 4], true);
-  await new Promise(resolve => setImmediate(resolve));
-  page.step(16);
-  await new Promise(resolve => setImmediate(resolve));
-  page.step(16);
-  assert.deepEqual(urls.map(url => url.replace(/\?.*before=/, '?before=').replace(/&.*/, '')), ['/items?before=3']);
-  assert.equal(page.state(), '50,false');
-  page.go('a'); page.open([10]);
-  page.go('r'); page.open([7, 8], false);
-  page.step(16);
-  assert.equal(page.state().split(',')[1], 'true');
-});
 
-test('a session switch opens every view at the end', async () => {
-  const page = await viewScrollPage();
-  page.at(250);
-  page.go('a'); page.open([10]);
-  page.go('r', 'other'); page.open([0, 1, 2, 3, 4]);
-  page.step(16);
-  assert.equal(page.state(), '900,true');
-});
 
-test('a restore that waits for older items is dropped when the view is left and entered again', async () => {
-  const page = await viewScrollPage();
-  page.at(50);
-  page.go('a'); page.open([10]);
-  const held: (() => void)[] = [];
-  Object.assign(page.app.context, { fetch: () => new Promise(resolve => held.push(() => resolve({ ok: true, json: async () => ({ type: 'reset', epoch: 'a', more: false, items: [0, 1, 2].map(page.text) }) }))) });
-  page.go('r'); page.open([3, 4], true);
-  page.go('a'); page.open([10]);
-  page.go('r'); page.open([3, 4], false);
-  page.evaluate("element('scroll').scrollTop=0");
-  held[0]?.();
-  await new Promise(resolve => setImmediate(resolve));
-  assert.equal(held.length, 1);
-  assert.equal(page.state().split(',')[0], '0');
-});
 
-test('a position saved under one session is not restored when the view returns under another', async () => {
-  const page = await viewScrollPage();
-  page.at(250);
-  page.go('a'); page.open([10]);
-  page.go('r', 'resumed'); page.open([0, 1, 2, 3, 4]);
-  page.step(16);
-  assert.equal(page.state(), '900,true');
-});
+
+
 
 test('a name link opens the view of its agent, and a pane link still focuses the pane', async () => {
   const app = await page();
@@ -2828,7 +2383,7 @@ test('a job reader keeps their line when earlier output prepends, and a followed
   f.append('j1', 114, 'next\n');
   f.step(16);
   assert.deepEqual([f.evaluate("element('scroll').scrollTop"), f.evaluate('scrolling.kind')], [1000, 'following']);
-  f.evaluate("element('scroll').scrollTop=100;element('scroll').onscroll()");
+  f.evaluate("decide({type:'input',direction:'up'});element('scroll').scrollTop=100;element('scroll').onscroll()");
   assert.equal(f.evaluate("scrolling.anchor.item.byte"), 109);
   f.evaluate("element('jobv').children[0].onclick()");
   f.held[0]?.({ start: 89, end: 100, data: f.b64('tail\nolder\n') });
@@ -2842,11 +2397,13 @@ test('a job restore whose older request fails ends in the fallback after one req
   const f = await jobPage();
   let earlier = 0;
   Object.assign(f.app.context, { fetch: async (path: string) => { if (path === '/job/earlier') { earlier++; return { ok: false, status: 500, json: async () => ({ error: 'broken' }) }; } return { ok: true, json: async () => ({}) }; } });
-  f.evaluate("positions.set('j1',{sessionId:'s',anchor:{item:{kind:'job',byte:50},offset:0},last:0})");
+  f.evaluate("scrolling.saved.set('j1',{scope:{view:'j1',sessionId:'s'},anchor:{item:{kind:'job',byte:50},offset:0},last:0})");
   f.open('j1');
   assert.equal(f.evaluate('scrolling.kind'), 'restoring');
   f.reset('j1', 'cut\nlive\n', 100);
+  f.step(16);
   await f.flush(); await f.flush();
+  f.step(16);
   assert.deepEqual([earlier, f.evaluate('scrolling.kind')], [1, 'following']);
 });
 
@@ -3398,7 +2955,7 @@ test('new items below the dock are counted without DOM rows', async () => {
   assert.equal(page.latest(), '↓ 4 new,true');
   const toward = (top: number) => { page.reader(top); page.settle(8); };
   toward(page.bottom() - 60);
-  const fresh: number[] = JSON.parse(String(page.evaluate("JSON.stringify([...fresh])"))), below = fresh.filter(seq => page.seqs().includes(seq) && page.offset(seq) >= 4).length;
+  const fresh: number[] = JSON.parse(String(page.evaluate("JSON.stringify([...scrolling.candidates].filter(([,candidate])=>candidate.unread).map(([seq])=>seq))"))), below = fresh.filter(seq => page.seqs().includes(seq) && page.offset(seq) >= 4).length;
   assert.equal(page.latest().split(',')[0], below ? '↓ ' + below + ' new' : '↓ Latest');
   assert.ok(below < 4, 'scrolling toward the new items counted some of them as seen');
 });
@@ -3514,7 +3071,7 @@ test('a job view that is idle schedules no frame', async () => {
   const page = await windowPage();
   page.open(page.rows(0, 20));
   page.settle(4);
-  page.evaluate("state={...state,view:{...state.view,type:'job'}};windowDirty=true;schedule()");
+  page.evaluate("apply({...state,type:'state',view:{...state.view,type:'job',id:'job',job:{name:'build',command:'make',service:false,startedAt:1,place:{type:'mac'},log:'/tmp/job',state:{type:'running'}}}})");
   page.step(16); page.step(16);
   assert.deepEqual([page.queued.size, page.timers.size], [0, 0]);
 });

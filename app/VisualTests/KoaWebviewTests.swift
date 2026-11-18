@@ -55,86 +55,13 @@ import SidebarFeed
     }
     private static let followHelpers = #"""
         const s=document.querySelector('#scroll'),dock=document.querySelector('#dock'),wait=ms=>new Promise(resolve=>setTimeout(resolve,ms));
-        let seq=100;
         const push=record=>scrollSource.dispatchEvent(new MessageEvent('message',{data:JSON.stringify(record)}));
-        const paragraph=i=>'Streaming paragraph '+i+' with enough words to wrap onto more than one line in a narrow pane';
         const gap=()=>s.scrollHeight-s.scrollTop-s.clientHeight;
-        const lastAbove=()=>document.querySelector('#items').lastElementChild.getBoundingClientRect().bottom<=dock.getBoundingClientRect().top+1;
         const until=async(test,ms=60000)=>{const end=performance.now()+ms;while(!test()&&performance.now()<end)await wait(50)};
-        const settled=async()=>{await until(()=>gap()<=1&&lastAbove());return {gap:gap(),above:lastAbove()}};
-        const moveTo=value=>{s.scrollTop=value;s.dispatchEvent(new Event('scroll'))};
-        const probe=selector=>{const top=s.getBoundingClientRect().top;for(const row of document.querySelectorAll(selector)){const rect=row.getBoundingClientRect();if(rect.bottom>top)return [row.dataset.seq??row.dataset.byte,Math.round(rect.top-top)]}};
-        const offsetOf=(selector,key)=>{const row=[...document.querySelectorAll(selector)].find(row=>(row.dataset.seq??row.dataset.byte)===key);return row&&Math.round(row.getBoundingClientRect().top-s.getBoundingClientRect().top)};
+        const moveTo=value=>{s.dispatchEvent(new WheelEvent('wheel',{deltaY:value<s.scrollTop?-1:1,bubbles:true}));s.scrollTop=value;s.dispatchEvent(new Event('scroll'))};
         const root={id:'s1',name:'ko',type:'agent'};
         const view=(node,path,extra={})=>({type:'state',view:{id:node.id,path,type:node.type},agents:[],bash:[],compaction:'idle',life:{type:'ready'},working:false,aborted:false,name:'t',levels:[],cwd:'/w',home:'/h',statuses:{},queue:{steering:[],followUp:[]},dialogs:[],sessionId:'s1',...extra});
-        const rootItems=[{kind:'user',seq:0,revision:0,at:Date.now(),final:true,text:Array(80).fill('Earlier message').join('\n\n'),images:[],attachments:[]},{kind:'assistant',seq:1,revision:0,at:Date.now(),final:true,blocks:[{type:'text',text:Array(40).fill('Earlier reply').join('\n\n')}],stop:'stop',error:''}];
-        const stream=async()=>{
-          const id=seq++;
-          push({type:'item',item:{kind:'assistant',seq:id,revision:0,at:Date.now(),final:false,blocks:[{type:'text',text:paragraph(0)}],stop:'',error:''}});
-          for(let i=1;i<=8;i++){await wait(60);push({type:'patch',seq:id,baseRevision:i-1,revision:i,final:i===8,stop:i===8?'stop':'',error:'',blocks:[{index:0,suffix:'\n\n'+paragraph(i)}]})}
-        };
         """#
-    func testKoaWebviewSubmitFollowsClampedBottom() async throws {
-        let web = try await scrollPage(module: "submit", ready: "document.querySelector('.ann-opt')&&")
-        let result = try await webviewJS(web, #"""
-        (async()=>{
-          const s=document.querySelector('#scroll'),dock=document.querySelector('#dock'),results=[],originalFetch=window.fetch,raf=window.requestAnimationFrame;
-          const tick=()=>new Promise(resolve=>setTimeout(resolve,100));let seq=100;
-          for(const mode of ['composer','chip','up']){
-            if(mode==='chip')document.querySelector('.ann-opt').click();else composer.setText(Array(20).fill('Submitted paragraph').join('\n\n'));
-            await tick();s.scrollTop=mode==='up'?200:s.scrollHeight;s.dispatchEvent(new Event('scroll'));await tick();
-            const frames=[],before=s.scrollTop;let pending,clamped;
-            window.requestAnimationFrame=callback=>(frames.push(callback),frames.length);
-            window.fetch=async(path,options)=>{if(path!=='/prompt')return originalFetch(path,options);pending=JSON.parse(options.body).text;return {ok:true,json:async()=>({})}};
-            await new Promise((resolve,reject)=>{const timer=setTimeout(()=>{observer.disconnect();reject(Error('No dock clamp'))},10000);const observer=new ResizeObserver(()=>{if(pending===undefined||composer.text()||dock.getBoundingClientRect().height>100)return;void s.scrollHeight;clamped=s.scrollTop;if(mode!=='up'&&clamped>=before){observer.disconnect();clearTimeout(timer);reject(Error('Expected the dock shrink to clamp scrollTop'));return}scrollSource.dispatchEvent(new MessageEvent('message',{data:JSON.stringify({type:'item',item:{kind:'user',seq:seq++,revision:0,at:Date.now(),final:true,text:pending,images:[],attachments:[]}})}));pending=undefined;observer.disconnect();clearTimeout(timer);resolve()});observer.observe(dock);document.querySelector('#prompt .cm-content').dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',keyCode:13,bubbles:true,cancelable:true}));});
-            s.dispatchEvent(new Event('scroll'));window.requestAnimationFrame=raf;for(const callback of frames)callback(performance.now());await tick();
-            window.fetch=originalFetch;results.push({mode,before,clamped,top:s.scrollTop,distance:s.scrollHeight-s.scrollTop-s.clientHeight,bottom:s.scrollHeight-s.scrollTop-s.clientHeight<1&&document.querySelector('.user:last-child').getBoundingClientRect().bottom<=dock.getBoundingClientRect().top,stationary:s.scrollTop===200});
-          }
-          s.scrollTop=s.scrollHeight;s.dispatchEvent(new Event('scroll'));await tick();
-          const bottom=s.scrollTop;s.scrollTop=bottom-.5;
-          if(s.scrollTop===bottom-.5){
-            for(let i=1;i<=130;i++){s.scrollTop=bottom-i*.5;s.dispatchEvent(new Event('scroll'))}
-            const top=s.scrollTop;
-            scrollSource.dispatchEvent(new MessageEvent('message',{data:JSON.stringify({type:'item',item:{kind:'user',seq:seq++,revision:0,at:Date.now(),final:true,text:'After fractional scroll up',images:[],attachments:[]}})}));await tick();
-            results.push({mode:'fractional-up',stationary:s.scrollTop===top});
-            const end=s.scrollHeight-s.clientHeight;
-            for(let next=s.scrollTop;next<end;next+=.5){s.scrollTop=next;s.dispatchEvent(new Event('scroll'))}
-            s.scrollTop=end;s.dispatchEvent(new Event('scroll'));
-            scrollSource.dispatchEvent(new MessageEvent('message',{data:JSON.stringify({type:'item',item:{kind:'user',seq:seq++,revision:0,at:Date.now(),final:true,text:'After fractional scroll down',images:[],attachments:[]}})}));await tick();
-            results.push({mode:'fractional-down',bottom:s.scrollHeight-s.scrollTop-s.clientHeight<1});
-          }else results.push({mode:'fractional-unsupported'});
-          return results;
-        })()
-        """#, within: 30)
-        let results = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(result.utf8)) as? [[String: Any]])
-        for result in results {
-            let mode = result["mode"] as? String
-            if mode == "fractional-unsupported" { NSLog("WK rounds scrollTop; skip the sub-pixel case"); continue }
-            XCTAssertEqual(result[mode == "fractional-up" ? "stationary" : "bottom"] as? Bool, true, String(describing: result))
-        }
-    }
-    func testKoaWebviewRevealKeepsFollowing() async throws {
-        let web = try await scrollPage(module: "scroll-follow")
-        let result = try await webviewJS(web, "(async()=>{" + Self.followHelpers + #"""
-          moveTo(s.scrollHeight);
-          await stream();
-          const first=await settled();
-          await stream();
-          const second=await settled();
-          moveTo(200);
-          await stream();
-          await wait(1000);
-          return {first,second,reader:s.scrollTop};
-        })()
-        """#, within: 150)
-        let value = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(result.utf8)) as? [String: Any])
-        for key in ["first", "second"] {
-            let state = try XCTUnwrap(value[key] as? [String: Any])
-            XCTAssertLessThanOrEqual(try XCTUnwrap(state["gap"] as? Double), 1, "\(key): \(result)")
-            XCTAssertEqual(state["above"] as? Bool, true, "\(key): \(result)")
-        }
-        XCTAssertEqual(value["reader"] as? Double, 200, result)
-    }
     func koaMeasured(_ web: WKWebView, _ selector: String, within seconds: Double = 5) async throws {
         _ = try await webviewJS(web, "new Promise((resolve,reject)=>{const targets=[...document.querySelectorAll(\(String(reflecting: selector)))];if(!targets.length){reject(Error('Koa measurement target missing: '+\(String(reflecting: selector))));return}const timer=setTimeout(()=>{observer.disconnect();reject(Error('Koa measurement deadline: '+\(String(reflecting: selector))))},\(seconds * 1000));const observer=new ResizeObserver(()=>{clearTimeout(timer);observer.disconnect();resolve(true)});targets.forEach(target=>observer.observe(target))})", within: seconds)
     }
@@ -202,89 +129,6 @@ import SidebarFeed
         pane.webviewView?.updateTheme()
         try await webviewUntil(web, "getComputedStyle(document.body).getPropertyValue('--ko-appearance').trim()==='dark'")
         try await appearance("dark", from: 2)
-    }
-    func testKoaWebviewStreamingNeverStepsUp() async throws {
-        let web = try await scrollPage(module: "scroll-follow")
-        let result = try await webviewJS(web, "(async()=>{" + Self.followHelpers + #"""
-          moveTo(s.scrollHeight);
-          await until(()=>gap()<=1);
-          const frames=[];
-          const observer=new ResizeObserver(()=>frames.push([s.scrollTop,s.scrollHeight-s.clientHeight]));
-          observer.observe(document.querySelector('#items'));observer.observe(dock);
-          for(let round=0;round<3;round++){await stream();await settled()}
-          const id=seq++;
-          push({type:'item',item:{kind:'assistant',seq:id,revision:0,at:Date.now(),final:false,blocks:[{type:'text',text:paragraph(0)}],stop:'',error:''}});
-          await wait(1500);
-          push({type:'patch',seq:id,baseRevision:0,revision:1,final:true,stop:'stop',error:'',blocks:[{index:0,suffix:''}]});
-          await wait(500);await settled();
-          observer.disconnect();
-          let worst=0,ups=0;
-          for(let i=0;i<frames.length;i++){
-            worst=Math.max(worst,frames[i][1]-frames[i][0]);
-            if(i&&frames[i][0]<frames[i-1][0]-.5&&frames[i][1]>=frames[i-1][1])ups++;
-          }
-          return {samples:frames.length,worst,ups,gap:gap(),above:lastAbove(),dots:document.querySelectorAll('.dots').length};
-        })()
-        """#, within: 150)
-        let value = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(result.utf8)) as? [String: Any])
-        XCTAssertGreaterThan(try XCTUnwrap(value["samples"] as? Double), 3, result)
-        XCTAssertLessThanOrEqual(try XCTUnwrap(value["worst"] as? Double), 1, result)
-        XCTAssertEqual(value["ups"] as? Double, 0, result)
-        XCTAssertEqual(value["above"] as? Bool, true, result)
-        XCTAssertEqual(value["dots"] as? Double, 0, result)
-    }
-    func testKoaWebviewSendKeepsFollowing() async throws {
-        let web = try await scrollPage(module: "scroll-follow")
-        let result = try await webviewJS(web, "(async()=>{" + Self.followHelpers + #"""
-          const original=window.fetch;
-          const send=async(text,order)=>{
-            composer.setText(Array(12).fill(text).join('\n\n'));await wait(100);
-            moveTo(200);await wait(100);
-            let release;const gate=new Promise(resolve=>release=resolve);
-            window.fetch=async(path,options)=>{const response=await original(path,options);if(path==='/prompt')await gate;return response};
-            document.querySelector('#prompt .cm-content').dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',keyCode:13,bubbles:true,cancelable:true}));
-            await wait(100);
-            const immediate=gap();
-            const item={type:'item',item:{kind:'user',seq:seq++,revision:0,at:Date.now(),final:true,text,images:[],attachments:[]}};
-            if(order==='item-first'){push(item);await wait(100)}
-            release();
-            await until(()=>composer.text()==='',5000);
-            await wait(100);
-            if(order==='clamp-first')push(item);
-            window.fetch=original;
-            return {immediate,...await settled()};
-          };
-          moveTo(s.scrollHeight);
-          const itemFirst=await send('alpha','item-first');
-          const clampFirst=await send('beta','clamp-first');
-          await stream();
-          const after=await settled();
-          return {itemFirst,clampFirst,after};
-        })()
-        """#, within: 150)
-        let value = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(result.utf8)) as? [String: Any])
-        for key in ["itemFirst", "clampFirst", "after"] {
-            let state = try XCTUnwrap(value[key] as? [String: Any])
-            XCTAssertLessThanOrEqual(try XCTUnwrap(state["gap"] as? Double), 1, "\(key): \(result)")
-            XCTAssertEqual(state["above"] as? Bool, true, "\(key): \(result)")
-            if key != "after" { XCTAssertLessThanOrEqual(try XCTUnwrap(state["immediate"] as? Double), 1, "\(key) at the send: \(result)") }
-        }
-    }
-    func testKoaWebviewOlderHistoryKeepsTheReaderAnchor() async throws {
-        let web = try await scrollPage(module: "scroll-follow")
-        let result = try await webviewJS(web, "(async()=>{" + Self.followHelpers + #"""
-          moveTo(300);await wait(100);
-          const before=probe('#items > [data-seq]');
-          moveTo(60);const anchored=probe('#items > [data-seq]');
-          await until(()=>document.querySelector('#items [data-seq="9"]'),20000);
-          await wait(300);
-          return {anchored,after:offsetOf('#items > [data-seq]',anchored[0]),older:!!document.querySelector('#items [data-seq="9"]'),before};
-        })()
-        """#, within: 60)
-        let value = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(result.utf8)) as? [String: Any])
-        let anchored = try XCTUnwrap(value["anchored"] as? [Any])
-        XCTAssertEqual(value["older"] as? Bool, true, result)
-        XCTAssertEqual(try XCTUnwrap(value["after"] as? Double), try XCTUnwrap(anchored[1] as? Double), accuracy: 1, result)
     }
     func testKoaWebviewScrollbarJumpMountsHistory() async throws {
         let web = try await scrollPage(module: "scroll-follow")
@@ -402,41 +246,6 @@ import SidebarFeed
         find.search()
         try await shown("1 of 1")
         try await selection(nil, "a word half in bold text", word: "halfword")
-    }
-    func testKoaWebviewViewSwitchRestoresTheReaderAndJobViewFollows() async throws {
-        let web = try await scrollPage(module: "scroll-follow")
-        let result = try await webviewJS(web, "(async()=>{" + Self.followHelpers + #"""
-          const child={id:'v2',name:'sub',type:'agent'},job={id:'j1',name:'build',type:'job'};
-          const snapshot={name:'build',command:'make',service:false,startedAt:Date.now(),place:{type:'mac'},log:'/tmp/j1.log',state:{type:'running'}};
-          const lines=(from,to)=>Array.from({length:to-from},(_,i)=>'job line '+(from+i)+'\n').join('');
-          let end=0;
-          const open=text=>{push(view(job,[root,job],{view:{id:'j1',path:[root,job],type:'job',job:snapshot}}));end=text.length;push({type:'job-reset',view:'j1',epoch:'je',start:0,end,data:btoa(text)})};
-          const append=text=>{push({type:'job-append',view:'j1',epoch:'je',start:end,data:btoa(text)});end+=text.length};
-          moveTo(300);await wait(100);
-          const before=probe('#items > [data-seq]');
-          push(view(child,[root,child],{sessionId:'v2'}));push({type:'reset',epoch:'ev2',more:false,items:[rootItems[0]]});await wait(300);
-          push(view(root,[root]));push({type:'reset',epoch:'e1',more:false,items:rootItems});await wait(500);
-          const restored=offsetOf('#items > [data-seq]',before[0]);
-          open(lines(0,200));await wait(300);
-          const opened=gap();
-          for(let i=0;i<5;i++){append(lines(200+i*10,210+i*10));await wait(100)}
-          const followed=gap();
-          moveTo(400);await wait(100);
-          const reading=probe('#jobv .ln');
-          append(lines(250,300));await wait(300);
-          const stayed=offsetOf('#jobv .ln',reading[0]);
-          push(view(root,[root]));push({type:'reset',epoch:'e1',more:false,items:rootItems});await wait(300);
-          open(lines(0,300));await wait(500);
-          return {before,restored,opened,followed,reading,stayed,back:offsetOf('#jobv .ln',reading[0])};
-        })()
-        """#, within: 60)
-        let value = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(result.utf8)) as? [String: Any])
-        let before = try XCTUnwrap(value["before"] as? [Any]), reading = try XCTUnwrap(value["reading"] as? [Any])
-        XCTAssertEqual(try XCTUnwrap(value["restored"] as? Double), try XCTUnwrap(before[1] as? Double), accuracy: 1, result)
-        XCTAssertLessThanOrEqual(try XCTUnwrap(value["opened"] as? Double), 1, result)
-        XCTAssertLessThanOrEqual(try XCTUnwrap(value["followed"] as? Double), 1, result)
-        XCTAssertEqual(try XCTUnwrap(value["stayed"] as? Double), try XCTUnwrap(reading[1] as? Double), accuracy: 1, result)
-        XCTAssertEqual(try XCTUnwrap(value["back"] as? Double), try XCTUnwrap(reading[1] as? Double), accuracy: 1, result)
     }
     func testKoaWebviewBangCompletionWide() async throws {
         try await koaWebview(width: 980, height: 360, scenario: .bang, captures: ["bang-tab", "bang-tab-cap", "bang-tab-none", "bang-tab-pending"])
@@ -860,7 +669,7 @@ import SidebarFeed
             pane.webviewView?.layoutSubtreeIfNeeded()
             let viewportHeight = try await webviewJS(web, "innerHeight")
             XCTAssertEqual(viewportHeight, String(Int(web.bounds.height)), "The page fills the native webview at capture \(name)")
-            _ = try await webviewJS(web, "(()=>{if(\(name != "focus-border-transcript")&&!document.querySelector('.lightbox')&&!document.querySelector('.dialog')&&!document.querySelector('#exited:not([hidden])')&&document.querySelector('#picker').hidden)window.composer.focus();const scroll=document.querySelector('#scroll');scroll.scrollTop=\(top ? "0" : scenario == .latest ? "scroll.scrollTop" : aboveBottom ? "0" : "scroll.scrollHeight");if(\(ordered))document.querySelectorAll('.assistant')[1].scrollIntoView({block:'start'});return true})()")
+            _ = try await webviewJS(web, "(()=>{if(\(name != "focus-border-transcript")&&!document.querySelector('.lightbox')&&!document.querySelector('.dialog')&&!document.querySelector('#exited:not([hidden])')&&document.querySelector('#picker').hidden)window.composer.focus();const scroll=document.querySelector('#scroll');if(\(top || aboveBottom))scroll.dispatchEvent(new WheelEvent('wheel',{deltaY:-1,bubbles:true}));scroll.scrollTop=\(top ? "0" : scenario == .latest ? "scroll.scrollTop" : aboveBottom ? "0" : "scroll.scrollHeight");if(\(ordered))document.querySelectorAll('.assistant')[1].scrollIntoView({block:'start'});return true})()")
             try await webviewUntil(web, "(()=>{const dock=document.querySelector('#dock');return Number.parseFloat(getComputedStyle(document.body).getPropertyValue('--dock-h'))===dock.getBoundingClientRect().height})()")
             try await webviewUntil(web, "(()=>{const scroll=document.querySelector('#scroll');if(\(ordered)){document.querySelectorAll('.assistant')[1].scrollIntoView({block:'start'});return true}scroll.scrollTop=\(top || scenario == .latest && name.hasSuffix("new") ? "0" : scenario == .latest ? "document.querySelector('.newmsgs').offsetTop-300" : aboveBottom ? "0" : "scroll.scrollHeight");\(scenario == .latest || aboveBottom ? "scroll.dispatchEvent(new Event('scroll'));" : "")return \(top || scenario == .latest && name.hasSuffix("new") ? "scroll.scrollTop===0" : scenario == .latest ? "true" : aboveBottom ? "document.querySelector('#latest').classList.contains('show')" : "scroll.scrollHeight-scroll.scrollTop-scroll.clientHeight<1")})()&&\(scenario == .latest ? "document.querySelector('#latest').textContent==='\(latestText)'" : scenario == .jobs ? "document.querySelectorAll('#jobv .ln').length>0&&document.querySelector('#latest').textContent==='↓ Latest'" : "true")")
             let lastAboveDock = try await webviewJS(web, "(()=>{const last=document.querySelector('#items').lastElementChild;return !last||last.getBoundingClientRect().bottom<=document.querySelector('#dock').getBoundingClientRect().top})()")
@@ -1013,7 +822,7 @@ import SidebarFeed
         if scenario == .latest {
             let prefix = width < 600 ? "narrow-latest-" : "latest-"
             try await webviewUntil(web, "document.querySelectorAll('.assistant').length===6")
-            _ = try await webviewJS(web, "(()=>{const scroll=document.querySelector('#scroll');scroll.scrollTop=scroll.scrollHeight;scroll.dispatchEvent(new Event('scroll'));scroll.scrollTop=0;scroll.dispatchEvent(new Event('scroll'));return true})()")
+            _ = try await webviewJS(web, "(()=>{const scroll=document.querySelector('#scroll');scroll.scrollTop=scroll.scrollHeight;scroll.dispatchEvent(new Event('scroll'));scroll.dispatchEvent(new WheelEvent('wheel',{deltaY:-1,bubbles:true}));scroll.scrollTop=0;scroll.dispatchEvent(new Event('scroll'));return true})()")
             try await webviewUntil(web, "(()=>{const scroll=document.querySelector('#scroll');return scroll.scrollTop===0&&scroll.scrollHeight-scroll.clientHeight>1})()")
             try await advance()
             try await webviewUntil(web, "document.querySelectorAll('.assistant').length===9")
