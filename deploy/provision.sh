@@ -15,6 +15,7 @@ ko_changed=false
 caddy_changed=false
 nftables_changed=false
 ssh_changed=false
+resolved_changed=false
 install_changed() {
     local source=$1 target=$2 service=$3 mode=${4:-0644} temporary
     if ! cmp -s "$source" "$target"; then
@@ -138,6 +139,8 @@ fi
 install_changed "$work/caddy.apparmor" /etc/apparmor.d/caddy caddy
 apparmor_parser -r /etc/apparmor.d/caddy
 caddy validate --config /etc/caddy/Caddyfile
+install -d /etc/systemd/resolved.conf.d
+install_changed "$base/files/resolved.conf" /etc/systemd/resolved.conf.d/ko.conf resolved
 install_changed "$base/files/sshd.conf" /etc/ssh/sshd_config.d/00-ko.conf ssh
 sshd -t
 nft -c -f "$work/nftables.conf"
@@ -159,6 +162,7 @@ if ! systemctl is-active --quiet ssh; then
 elif "$ssh_changed"; then
     systemctl reload ssh
 fi
+"$resolved_changed" && systemctl try-restart systemd-resolved
 systemctl is-active --quiet ko caddy nftables
 runuser -u me -- env -i HOME=/home/me PATH=/usr/local/bin:/usr/bin:/bin "$base/me.sh"
 printf 'Provisioned %s; run deploy/smoke.sh before aa-enforce caddy.\n' "$1"
