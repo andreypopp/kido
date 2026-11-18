@@ -9,7 +9,7 @@ export PATH := $(if $(RUSTUP_BIN),$(RUSTUP_BIN):)$(PATH)
 # make 3.81 (macOS) execs a recipe line without shell syntax through its
 # own PATH, not the exported one.
 CARGO := $(if $(RUSTUP_BIN),$(RUSTUP_BIN)/)cargo
-export KO_BUILD_ID := $(shell git describe --always --dirty)
+export KO_BUILD_ID := $(shell git describe --always --dirty --exclude='*')
 export KO_VT := $(word 2,$(shell git ls-files -s third_party/ghostty))
 
 .DEFAULT_GOAL := build

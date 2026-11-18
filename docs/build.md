@@ -208,7 +208,9 @@ shared modules, `ko-api.d.ts`, the skills and the bundled page (in
 `ko_shell/src/bin_dir.rs` finds as installed.
 
 `ko version` prints the JSON of `protocol::version()`, with the build
-id from `git describe` at build time in `.build`. The Makefile reads
+id from `git describe` at build time in `.build`: the short commit
+hash, with `-dirty` for a changed tree. It ignores tags, so a release
+tag such as `ko/0.5.0` does not change it. The Makefile reads
 the build id and the ghostty pin of the index once and exports them
 to every cargo command as `KO_BUILD_ID` and `KO_VT`; `ko_wire/build.rs`
 runs no git and tracks only these two variables. A build script must
