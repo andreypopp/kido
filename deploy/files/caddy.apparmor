@@ -26,5 +26,6 @@ profile caddy /usr/bin/caddy flags=(complain) {
   /sys/devices/virtual/dmi/id/product_uuid r,
   @{PROC}/@{pid}/{cgroup,cpuset,mountinfo} r,
   @{PROC}/sys/net/core/somaxconn r,
-  /sys/fs/cgroup/{,**/}memory.max r,
+  /sys/fs/cgroup/{,**/}{memory,cpu}.max r,
+  /etc/mime.types r,
 }
