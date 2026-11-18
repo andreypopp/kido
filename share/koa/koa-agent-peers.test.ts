@@ -52,13 +52,14 @@ test("a restarted toplevel peer keeps its runtime", async () => {
   try {
     fx.setPanes([selfPane()]);
     fx.setRuntimes({ dev: { paths: [], koa: "host" } });
+    fx.setClientPanes([selfPane()]);
     const s = await startSession(fx);
+    await pollUntil(() => fx.clientLayouts().length > 0, 2000, "client snapshot before spawning the peer");
     assert.match(text(await s.tool("spawn_agent").execute("c", { name: "Routed", task: "go", toplevel: true, runtime: "dev" })), /^spawned/);
     const peer = entriesOf(s, "koa.agent").find((entry) => entry.role === "peer");
     assert.equal(typeof peer?.session, "string");
     const id = String(peer?.session);
     savedSession(join(fx.dir, "sessions", "peer"), process.cwd(), id);
-    await pollUntil(() => fx.clientLayouts().length > 0);
     fx.setClientPanes([selfPane(), agentPane({ pane: "pane_10", session: id, name: "Renamed", vars: { "koa.runtime": { name: "dev", cwd: process.cwd() } } })]);
     await pollUntil(() => entriesOf(s, "koa.agent").some((entry) => entry.session === id && entry.name === "Renamed"));
     fx.setClientPanes([selfPane()]);
