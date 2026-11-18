@@ -63,6 +63,28 @@ export function floatRect(window: Api["Window"], self: string): Rect {
 }
 
 
+export async function placeFloat(pane: Api["CreatePane"], self: string, valid: () => boolean = () => true): Promise<{ pane: string } | { error: string }> {
+  for (let attempt = 0; ; attempt++) {
+    const read = await apiCall("GET", "/layout");
+    if ("error" in read || read.status !== 200) return { error: "could not read the layout" };
+    if (!valid()) return { error: "the session changed" };
+    const snapshot: Api["LayoutPanes"] = JSON.parse(read.body);
+    const target = windowOf(snapshot.layout, self);
+    if (!target) return { error: "the pane is not in the layout" };
+    const known = new Set([...leaves(target.tree), ...target.floats.map(float => float.pane)]);
+    const float: Api["DraftFloat"] = { pane: { new: pane }, border: true, ...floatRect(target, self) };
+    const draft: Api["DraftLayout"] = { sessions: snapshot.layout.sessions.map(session => ({ id: session.id, name: session.name, vars: session.vars, windows: session.windows.map(one => draftWindow(one, one.id === target.id ? [float] : [])) })) };
+    const put = await apiCall("PUT", "/layout", { revision: snapshot.revision, layout: draft } satisfies Api["PutLayout"]);
+    if ("error" in put) return put;
+    if (put.status === 200) {
+      const placed: Api["Snapshot"] = JSON.parse(put.body);
+      const created = placed.layout.sessions.flatMap(session => session.windows).find(one => one.id === target.id)?.floats.find(float => !known.has(float.pane));
+      return created ? { pane: created.pane } : { error: "the layout has no new float" };
+    }
+    if (put.status !== 409 || attempt >= STALE_RETRIES) return { error: `the layout was refused (${put.status})` };
+  }
+}
+
 export function createFloat(options: { label: string; changed(): void; notify(text: string, level: NotifyLevel): void }) {
   let stage: Stage = { type: "idle" };
   const observe = (run: Run): Promise<{ child: ChildProcess; deaths: Map<string, Api["Cause"]>; seen: Set<string>; latest: Set<string> }> => new Promise((resolve, reject) => {
@@ -111,26 +133,6 @@ export function createFloat(options: { label: string; changed(): void; notify(te
     stage = { type: "closing", done };
     return done;
   };
-  const place = async (pane: Api["CreatePane"], self: string): Promise<{ pane: string } | { error: string }> => {
-    for (let attempt = 0; ; attempt++) {
-      const read = await apiCall("GET", "/layout");
-      if ("error" in read || read.status !== 200) return { error: "could not read the layout" };
-      const snapshot: Api["LayoutPanes"] = JSON.parse(read.body);
-      const target = windowOf(snapshot.layout, self);
-      if (!target) return { error: "the pane is not in the layout" };
-      const known = new Set([...leaves(target.tree), ...target.floats.map(float => float.pane)]);
-      const float: Api["DraftFloat"] = { pane: { new: pane }, border: true, ...floatRect(target, self) };
-      const draft: Api["DraftLayout"] = { sessions: snapshot.layout.sessions.map(session => ({ id: session.id, name: session.name, vars: session.vars, windows: session.windows.map(one => draftWindow(one, one.id === target.id ? [float] : [])) })) };
-      const put = await apiCall("PUT", "/layout", { revision: snapshot.revision, layout: draft } satisfies Api["PutLayout"]);
-      if ("error" in put) return put;
-      if (put.status === 200) {
-        const placed: Api["Snapshot"] = JSON.parse(put.body);
-        const created = placed.layout.sessions.flatMap(session => session.windows).find(one => one.id === target.id)?.floats.find(float => !known.has(float.pane));
-        return created ? { pane: created.pane } : { error: "the layout has no new float" };
-      }
-      if (put.status !== 409 || attempt >= STALE_RETRIES) return { error: `the layout was refused (${put.status})` };
-    }
-  };
   const start = async (run: Run, self: string, create: Api["CreatePane"], ended: Ended): Promise<{ pane: string } | { error: string }> => {
     let observer: ChildProcess | undefined, pane: string | undefined;
     const proceed = () => { if (run.cancelled) throw new Error(`The ${options.label.toLowerCase()} was cancelled`); if (run.lost) throw new Error(`${options.label} link lost`); };
@@ -139,7 +141,7 @@ export function createFloat(options: { label: string; changed(): void; notify(te
       const watch = await observe(run);
       observer = watch.child;
       proceed();
-      const placed = await place(create, self);
+      const placed = await placeFloat(create, self);
       if ("error" in placed) throw new Error(placed.error);
       pane = placed.pane;
       proceed();

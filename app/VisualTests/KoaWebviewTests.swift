@@ -8,7 +8,7 @@ import SidebarFeed
 @testable import Kido
 
 @MainActor final class KoaWebviewTests: AppWindowCase {
-    private enum KoaScenario: String { case transcript, dialogs, controls, exit, failed, completion, markdown, media, attachments, userMarkdown, thinkingMarkdown, reveal, preview, lightbox, agents, composer, questions, bang, commands, notices, latest, sessions, views, jobs }
+    private enum KoaScenario: String { case transcript, dialogs, controls, exit, failed, completion, markdown, media, attachments, userMarkdown, thinkingMarkdown, reveal, preview, lightbox, agents, composer, questions, bang, commands, notices, latest, sessions, views, jobs, paths }
     // The off-screen WKWebView reports no document focus. The page's pane-focus hook gives the pane focus; the composer ring keeps its real state.
     private static let paneFocus = "window.koaFocused=true;"
     private static let hideLatest = "document.addEventListener('DOMContentLoaded',()=>{const style=document.createElement('style');style.textContent='#latest{display:none!important}';document.head.append(style)});"
@@ -432,6 +432,14 @@ import SidebarFeed
         try await koaWebview(width: 980, height: 560, scenario: .lightbox, captures: ["media-lightbox"])
     }
 
+    func testKoaWebviewPathLinks() async throws {
+        try await koaWebview(width: 980, height: 400, scenario: .paths, captures: ["path-links"])
+    }
+
+    func testKoaWebviewPathWarning() async throws {
+        try await koaWebview(width: 980, height: 400, scenario: .paths, captures: ["path-warning"])
+    }
+
     func testKoaWebviewPreviewHover() async throws {
         try await koaWebview(width: 980, height: 400, scenario: .preview, captures: ["media-preview-hover"])
     }
@@ -560,7 +568,7 @@ import SidebarFeed
         let stamp = Int(try XCTUnwrap(Calendar.current.date(from: DateComponents(year: 2026, month: 11, day: mediaClock ? 10 : 8, hour: mediaClock ? 9 : 14, minute: mediaClock ? 12 : 32))).timeIntervalSince1970 * 1000)
         let measured: Bool
         switch scenario {
-        case .commands, .sessions, .questions, .completion, .attachments, .userMarkdown, .thinkingMarkdown, .exit, .lightbox: measured = true
+        case .commands, .sessions, .questions, .completion, .attachments, .userMarkdown, .thinkingMarkdown, .exit, .lightbox, .paths: measured = true
         default: measured = completionCaptures || captures.contains("focus-border-transcript")
         }
         let measurementClock = "const ClockDate=Date;window.Date=class extends ClockDate{constructor(...args){super(...(args.length?args:[\(stamp + 12000)]))}static now(){return \(stamp + 12000)}};"
@@ -1192,6 +1200,21 @@ import SidebarFeed
             size(300); try await openRuns(true); try await capture(prefix + "tools")
             return
         }
+        if scenario == .paths {
+            try await webviewUntil(web, "document.querySelectorAll('.path-open').length===2")
+            let tokens = try await webviewJS(web, "Array.from(document.querySelectorAll('.assistant code')).map(code=>code.classList.contains('path-open'))")
+            XCTAssertEqual(tokens, "[true,true,false]")
+            if captures.contains("path-warning") {
+                _ = try await webviewJS(web, "(()=>{const code=document.querySelector('.path-open');code.dispatchEvent(new MouseEvent('mousedown',{button:0,clientX:10,clientY:10,bubbles:true}));code.dispatchEvent(new MouseEvent('click',{button:0,clientX:10,clientY:10,bubbles:true}));return true})()")
+                try await webviewUntil(web, "document.querySelector('.nrow.warning')?.textContent.includes('koa/koa.ts:120: no such file')")
+                try await capture("path-warning")
+            } else {
+                _ = try await webviewJS(web, "(()=>{const rule=Array.from(document.styleSheets).flatMap(sheet=>Array.from(sheet.cssRules)).find(rule=>rule.selectorText==='.path-open:hover');if(!rule)throw Error('Missing path hover rule');const style=document.createElement('style');style.textContent=rule.cssText.replace(':hover','.snapshot-hover');document.head.append(style);document.querySelector('.path-open').classList.add('snapshot-hover');return true})()")
+                try await webviewUntil(web, "getComputedStyle(document.querySelector('.path-open')).textDecorationLine.includes('underline')")
+                try await capture("path-links")
+            }
+            return
+        }
         if scenario == .preview {
             try await webviewUntil(web, "document.querySelectorAll('.step').length===3")
             _ = try await webviewJS(web, "(()=>{document.querySelector('.run>.line').click();document.dispatchEvent(new KeyboardEvent('keydown',{key:'Meta',metaKey:true,shiftKey:true}));return true})()")
@@ -1601,7 +1624,7 @@ import SidebarFeed
             try await capture("times")
         }
         switch scenario {
-        case .transcript, .completion, .markdown, .media, .attachments, .userMarkdown, .thinkingMarkdown, .reveal, .preview, .lightbox, .agents, .composer, .questions, .bang, .commands, .notices, .latest, .sessions, .views, .jobs: break
+        case .transcript, .completion, .markdown, .media, .attachments, .userMarkdown, .thinkingMarkdown, .reveal, .preview, .lightbox, .agents, .composer, .questions, .bang, .commands, .notices, .latest, .sessions, .views, .jobs, .paths: break
         case .dialogs: try await dialogScenario()
         case .controls: try await controlsScenario()
         case .exit: try await exitScenario()

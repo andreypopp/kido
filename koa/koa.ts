@@ -25,7 +25,7 @@ import { attachments, stepFile, UPLOAD_IDLE_MS } from "./koa-attach.ts";
 import { commandCatalog, parseCommand, dispatchCommand, deferralText, type Deferral } from './koa-commands.ts';
 import { installedIdentity } from './koa-identity.ts';
 import { bashCommand } from "./prompt.ts";
-import { koaEditor } from "./koa-editor.ts";
+import { koaEditor, openPathEditor } from "./koa-editor.ts";
 import { findKo, apiArgs } from "./runtime-exec.ts";
 import { fileSource, jobView, liveSource } from "./koa-job-view.ts";
 import type { JobSnapshot } from "./records.ts";
@@ -247,8 +247,10 @@ Everything after -- is message text.
       const job: JobSnapshot = current.type === "job" ? agent.host.jobs.snapshot(current.job) : { name: current.ref.name, command: current.ref.command, service: current.ref.service, startedAt: current.ref.startedAt, place: current.ref.place, log: current.ref.log, state: { type: "cleared" } };
       return { id, path: [...path, { id, name: job.name, type: "job" }], type: "job", job };
     };
+    const pathEditor = !browser && !!process.env.KO_PANE && !process.env.KO_RUNTIME;
     const compose = (agent: Agent) => (own: Own): State => ({
       ...own, ...(agent === tree.selected() ? { edit: edits.view() } : {}),
+      pathEditor,
       view: agentViewOf(agent),
       agents: agentsFor(agent),
     });
@@ -627,6 +629,15 @@ Everything after -- is message text.
         const answer = dialogBody(value, dialog);
         if ("error" in answer) throw new Error(answer.error);
         agent.view.removeDialog(dialog.id, answer); respond(response, 200, "{}");
+      } },
+      "/editor/path": { method: "POST", access: "session", scope: "agent", handle: async (value, response, { agent, valid }) => {
+        if (!isRecord(value) || typeof value.text !== "string") { respond(response, 400, JSON.stringify({ error: "A path text is required" })); return; }
+        const self = process.env.KO_PANE;
+        if (!pathEditor || !self) { respond(response, 200, JSON.stringify({ type: "warning", text: `${value.text}: cannot open an editor here` })); return; }
+        const context = await agent.extension?.completionContext(AbortSignal.timeout(5000)) ?? { type: 'unavailable' as const };
+        if (!valid()) { respond(response, 409, JSON.stringify({ error: "the session changed" })); return; }
+        const result = await openPathEditor(value.text, context, agentDir, self, valid);
+        respond(response, 200, JSON.stringify(result));
       } },
       "/editor/open": { method: "POST", access: "session", scope: "agent", handle: async (value, response, { agent }) => {
         if (!isRecord(value) || typeof value.text !== "string") { respond(response, 400, JSON.stringify({ error: "A draft text is required" })); return; }

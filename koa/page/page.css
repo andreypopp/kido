@@ -140,6 +140,7 @@ body .cm-tooltip.cm-tooltip-autocomplete.koa-complete::after{flex-shrink:0;conte
 .who{font-weight:600;color:var(--ko-fg);cursor:pointer;border-bottom:1px solid transparent}
 .who:hover{color:var(--ko-color-4);border-bottom-color:color-mix(in srgb,var(--ko-color-4) 45%,transparent)}
 .who.gone,.who.gone:hover{color:var(--muted);cursor:default;border-bottom-color:transparent}
+.path-open{cursor:pointer}.path-open:hover{text-decoration:underline;text-decoration-thickness:1px;text-decoration-color:color-mix(in srgb,currentColor 50%,transparent);text-underline-offset:2px}
 .user a:not(.who){color:var(--ink);border-bottom-color:color-mix(in srgb,var(--ink) 50%,transparent)}.user a:not(.who):hover{border-bottom-color:var(--ink)}.user .who,.user .who:hover{color:var(--ink)}.user .who:hover{border-bottom-color:color-mix(in srgb,var(--ink) 50%,transparent)}
 @container style(--ko-appearance:dark){.user{--ink:#fff;background:color-mix(in srgb,var(--ko-color-4) 82%,var(--ko-bg))}}
 .job{margin:0 0 10px;font:.95em/1.5 var(--prose);color:var(--muted)}

@@ -1828,3 +1828,68 @@ the page mounts the row, WKWebView.find highlights it.
   anyway. No visible cue is needed because what the user gets is
   right. A drag selection that crosses unmounted rows (scrolling
   while dragging) mounts them as it goes, as the plan says.
+
+## Paths in the transcript open in the editor (2026-11-18, spec)
+
+The user: "sometimes I see references to files and want to open them
+in nvim to review." The simplest design: a path in a code span is a
+link to the editor float that Control-G already has.
+
+- **What counts.** Only the text of an inline code span, in
+  assistant and user blocks and in the opened bodies of agent lines:
+  one token of the form `path`, `path:line` or `path:line:col`,
+  where `path` is relative or absolute, has no spaces and at least
+  one `/` or a file extension (`koa.ts`, `koa/koa.ts:120`,
+  `/etc/hosts`, `~/x.md`). Bare prose is never a path: the model
+  writes paths in code spans, and prose has too many false hits
+  (`and/or`). A span with other text in it (`git add koa.ts`) is not
+  a path. No existence check at render: the page knows nothing of the
+  file system, and a check for each span would cost a request each;
+  the check happens on the click, below.
+- **Resolution.** A relative path is against the session's cwd of
+  the view (the directory the composer's foot shows); `~` is the
+  home; absolute as is. The same cwd whether the tools run on the
+  host or in a runtime: when the session's tools are routed, the
+  path is a runtime path, and koa resolves it with the routed cwd
+  that completion uses (`completionContext`).
+- **The gesture.** A plain click, as the page's links: the span gets
+  `cursor: pointer` and on hover a 1px underline at 50% of the
+  foreground (the links' underline of the solid user block), nothing
+  at rest, so a transcript does not fill with link colour. Cmd-click
+  is the same; no new modifier. A drag selection over the span does
+  not open it (the link rule).
+- **What opens.** koa's editor float, as Control-G opens it, with the
+  command pi's editor command and `+LINE` before the path when a
+  line is given (`nvim +120 koa/koa.ts`; `+LINE` is what vi, vim,
+  nvim, nano, emacs and micro take; an editor whose command is not
+  one of those gets the path alone), not read-only: the user edits
+  if they want, the editor saves to the real file, koa reads
+  nothing back. The float's `fixed_title` is the path as the span
+  shows it ("koa/koa.ts:120"); `close_confirm` stays `never`, as the
+  editor asks itself about unsaved changes. Every click opens a new
+  float (the user's decision): koa never closes or replaces an open
+  editor, and a float that the user does not close stays.
+- **On the click**, before the float: koa stats the resolved path
+  where it would open (the host, or the runtime through its exec
+  route). A file that is not there gets one warning note in the
+  transcript, "koa/koa.ts: no such file", under the row of the span,
+  as the unknown-@name warning; a directory opens the editor on the
+  directory (nvim's and emacs' browsers; nano says it cannot).
+- **Runtime.** A session whose tools are routed opens the editor in
+  the runtime: the float's command runs through the runtime's exec
+  route with the runtime's environment (`$EDITOR` there, else `vi`),
+  because that is where the file is; the host's editor cannot see a
+  runtime path. A refused or unready runtime gets the note "koa/x:
+  the runtime is not up".
+- **Remote and TLS.** The float is a pane of koa's server, so a koa
+  in a remote window opens its editor there, exactly as Control-G
+  does; nothing differs for the Mac.
+- **Browser mode.** No float can open (no ko pane from a browser):
+  the span is not a link; a click does nothing. The page gets the
+  `pointer` and the underline only when its host can open a float.
+- **Snapshots** (KoaWebviewTests, light and dark): a reply with
+  three code spans, one a path with a line, one a bare path, one a
+  command (`git add koa.ts`, no link), with the pointer over the
+  path (the underline); the warning note "no such file" under a
+  row; the editor float with the path title (the existing editor
+  float snapshot with a new title).

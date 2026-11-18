@@ -322,6 +322,7 @@ fn pane_row(table: &[Value], pane: &CreatePane, session: &str, window: &str) -> 
         "fixed_title": pane.fixed_title,
         "close_confirm": pane.close_confirm,
         "parent": pane.parent,
+        "runtime": pane.runtime,
     });
     if let Some(fields) = row.as_object_mut() {
         fields.retain(|_, value| !value.is_null());

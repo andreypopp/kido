@@ -1,5 +1,9 @@
 import { test, type TestContext } from "node:test";
 import assert from "node:assert/strict";
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
+import type { CompletionContext } from './completion-context.ts';
+import type { Routes } from './page/http.ts';
 import { appendFile, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -8,30 +12,88 @@ import { realFixture, linkFakeKo } from "./koa-program-fixture.ts";
 
 const f_notified = (app: Awaited<ReturnType<typeof realFixture>>, text: string) => app.until(ofType("item", record => record.item.kind === "notify" && record.item.text.text === text));
 
-async function editing(t: TestContext, env: NodeJS.ProcessEnv = {}) {
+async function editing(t: TestContext, env: NodeJS.ProcessEnv = {}, args: string[] = []) {
   const dir = await mkdtemp(join(tmpdir(), "koa-editor-test-"));
   t.after(() => rm(dir, { recursive: true, force: true }));
   const panes = join(dir, "panes.json"), feed = join(dir, "feed"), apiLog = join(dir, "api");
   await linkFakeKo(dir);
   await writeFile(panes, JSON.stringify([selfPane()]));
   await writeFile(feed, "");
-  const app = await realFixture(t, { replies: [], env: { KO_PANE: "pane_1", KO_SOCKET: "", KO_PANE_TOKEN: "", KO_RUNTIME: "", KO_FAKE_PANES: panes, KO_FAKE_CLIENT_FEED: feed, KO_FAKE_API_LOG: apiLog, KO_FAKE_INSTANCE: "a".repeat(32), KO_FAKE_CLIENT_DROP: join(dir, "client-drop"), KO_FAKE_PUT_STALE: join(dir, "stale"), ...(env.KO_FAKE_PUT_GATE === "gate" ? { KO_FAKE_PUT_GATE: join(dir, "put-gate") } : {}), VISUAL: "", EDITOR: "myeditor --flag", PATH: `${dir}:${process.env.PATH}`, ...env, ...(env.KO_FAKE_PUT_GATE === "gate" ? { KO_FAKE_PUT_GATE: join(dir, "put-gate") } : {}) } });
+  const app = await realFixture(t, { replies: [], args, env: { KO_PANE: "pane_1", KO_SOCKET: "", KO_PANE_TOKEN: "", KO_RUNTIME: "", KO_FAKE_PANES: panes, KO_FAKE_CLIENT_FEED: feed, KO_FAKE_API_LOG: apiLog, KO_FAKE_INSTANCE: "a".repeat(32), KO_FAKE_CLIENT_DROP: join(dir, "client-drop"), KO_FAKE_PUT_STALE: join(dir, "stale"), ...(env.KO_FAKE_PUT_GATE === "gate" ? { KO_FAKE_PUT_GATE: join(dir, "put-gate") } : {}), VISUAL: "", EDITOR: "myeditor --flag", PATH: `${dir}:${process.env.PATH}`, ...env, ...(env.KO_FAKE_PUT_GATE === "gate" ? { KO_FAKE_PUT_GATE: join(dir, "put-gate") } : {}) } });
   const api = async () => (await readFile(apiLog, "utf8").catch(() => "")).trim().split("\n").filter(Boolean).map(line => { const call: { method: string; path: string; body: string } = JSON.parse(line); return call; });
-  const rows = async (): Promise<{ id: string; command?: string[]; parent?: string; close?: string; fixed_title?: string; close_confirm?: string; float?: { cols: number; rows: number; x: number; y: number; border: boolean } }[]> => JSON.parse(await readFile(panes, "utf8"));
+  const rows = async (): Promise<{ id: string; command?: string[]; parent?: string; runtime?: string; cwd?: string; close?: string; fixed_title?: string; close_confirm?: string; float?: { cols: number; rows: number; x: number; y: number; border: boolean } }[]> => JSON.parse(await readFile(panes, "utf8"));
   const float = async () => {
     const row = (await rows()).find(row => row.float);
     assert.ok(row?.command);
     return { ...row, command: row.command, file: row.command.at(-1) ?? "" };
   };
   const open = async (text: string) => { const response = await app.post("editor/open", { text }); return { status: response.status, body: await response.json() }; };
+  const path = async (text: string, context: CompletionContext = { type: 'host', cwd: app.cwd }): Promise<Routes['/editor/path']['response']> => {
+    const { stdout } = await promisify(execFile)(process.execPath, ['--input-type=module', '-e', `import { openPathEditor } from ${JSON.stringify(new URL('./koa-editor.ts', import.meta.url).href)}; console.log(JSON.stringify(await openPathEditor(process.argv[1], JSON.parse(process.argv[2]), process.argv[3], 'pane_1', () => true)));`, text, JSON.stringify(context), app.agentDir], { env: { ...process.env, KO_PANE: 'pane_1', KO_SOCKET: '', KO_PANE_TOKEN: '', KO_RUNTIME: '', KO_FAKE_PANES: panes, KO_FAKE_API_LOG: apiLog, ...env, PATH: `${dir}:${process.env.PATH}`, VISUAL: '', EDITOR: 'myeditor --flag' }, timeout: 10000 });
+    return JSON.parse(stdout);
+  };
   const dead = (pane: string, cause: object) => appendFile(feed, JSON.stringify({ type: "dead", pane, dead: { at: 1, cause } }) + "\n");
   const closed = (pane: string) => pollUntil(async () => (await api()).some(call => call.method === "DELETE" && call.path === `/panes/${pane}`) && !(await rows()).some(row => row.id === pane), 5000, "the float is deleted");
   const sent = (method: string) => pollUntil(async () => (await api()).some(call => call.method === method), 5000, `a ${method} reaches ko`);
   const reopen = async (text: string) => { let last = await open(text); await pollUntil(async () => { if (last.body.error === "The editor is busy") last = await open(text); return last.body.error !== "The editor is busy"; }, 5000, "the editor is idle"); return last; };
   const notified = (text: string) => f_notified(app, text);
   const gone = (path: string) => pollUntil(() => stat(path).then(() => false, () => true), 5000, `${path} is removed`);
-  return { dir, app, api, rows, float, open, dead, closed, gone, sent, reopen, notified, panes, gate: join(dir, "put-gate") };
+  return { dir, app, api, rows, float, open, path, dead, closed, gone, sent, reopen, notified, panes, gate: join(dir, "put-gate") };
 }
+
+test('a routed path uses the runtime editor, home and cwd and opens a runtime pane', { timeout: 15000 }, async t => {
+  const dir = await mkdtemp(join(tmpdir(), 'koa-path-runtime-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const runtimes = join(dir, 'runtimes.json'), log = join(dir, 'exec-log');
+  await writeFile(join(dir, 'review.ts'), 'runtime');
+  await writeFile(runtimes, JSON.stringify({ dev: { cwd: dir, env: { HOME: dir, EDITOR: '/bin/nvim -u NONE' } } }));
+  const f = await editing(t, { KO_SOCKET: join(dir, 'socket'), KO_FAKE_RUNTIMES: runtimes, KO_FAKE_EXEC_LOG: log }, ['--runtime', 'dev']);
+  const result = await f.path('~/review.ts:12:3', { type: 'runtime', name: 'dev', cwd: dir });
+  assert.equal(result.type, 'opened', JSON.stringify({ result, calls: await f.api(), exec: await readFile(log, 'utf8').catch(() => '') }));
+  assert.equal(result.type, 'opened');
+  if (result.type !== 'opened') return;
+  const row = (await f.rows()).find(row => row.id === result.pane);
+  assert.equal(row?.runtime, 'dev');
+  assert.equal(row?.cwd, undefined);
+  assert.deepEqual(row?.command, ['sh', '-lc', 'cd -- "$1" || exit; shift; exec ${EDITOR:-vi} "$@"', 'sh', dir, '+12', join(dir, 'review.ts')]);
+  assert.equal(row?.fixed_title, '~/review.ts:12:3');
+  const execs: { request: { argv: string[] } }[] = (await readFile(log, 'utf8')).trim().split('\n').map(line => JSON.parse(line));
+  assert.equal(execs.filter(call => call.request.argv.includes('~/review.ts')).length, 1);
+  await writeFile(runtimes, JSON.stringify({ dev: { cwd: dir, state: { type: 'failed', message: 'offline' } } }));
+  const failed = await f.path('~/review.ts', { type: 'runtime', name: 'dev', cwd: dir });
+  assert.deepEqual(failed, { type: 'warning', text: '~/review.ts: the runtime is not up' });
+  assert.equal((await f.rows()).filter(row => row.float).length, 1);
+});
+
+test('each path click opens a new float beside the draft; missing paths warn and directories open', { timeout: 15000 }, async t => {
+  const f = await editing(t);
+  const file = join(f.app.cwd, 'review.ts');
+  await writeFile(file, 'review');
+  const open = f.path;
+  const browser = await f.app.post('editor/path', { text: 'review.ts' });
+  assert.deepEqual(await browser.json(), { type: 'warning', text: 'review.ts: cannot open an editor here' });
+  assert.equal((await f.rows()).filter(row => row.float).length, 0);
+  await f.open('draft stays');
+  const draft = await f.float();
+  const first = await open('review.ts:12:3'), second = await open('review.ts:12:3');
+  assert.equal(first.type, 'opened'); assert.equal(second.type, 'opened');
+  if (first.type !== 'opened' || second.type !== 'opened') return;
+  assert.notEqual(first.pane, second.pane);
+  for (const id of [first.pane, second.pane]) {
+    const row = (await f.rows()).find(row => row.id === id);
+    assert.deepEqual(row?.command, [join(f.dir, 'ko'), 'shell', '--', 'myeditor', '--flag', file]);
+    assert.equal(row?.fixed_title, 'review.ts:12:3');
+    assert.equal(row?.parent, 'pane_1'); assert.equal(row?.close, 'on_exit'); assert.equal(row?.close_confirm, 'never');
+  }
+  assert.ok((await f.rows()).some(row => row.id === draft.id));
+  assert.equal(await readFile(draft.file, 'utf8'), 'draft stays');
+  assert.deepEqual(await open('missing.ts'), { type: 'warning', text: 'missing.ts: no such file' });
+  assert.equal((await f.rows()).filter(row => row.float).length, 3);
+  const directory = await open('./');
+  assert.equal(directory.type, 'opened');
+  if (directory.type !== 'opened') return;
+  assert.equal((await f.rows()).find(row => row.id === directory.pane)?.command?.at(-1), f.app.cwd);
+});
 
 test("an edit with exit 0 replaces the draft, does not send it and leaves nothing behind", { timeout: 15000 }, async t => {
   const f = await editing(t);

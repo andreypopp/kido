@@ -1,5 +1,6 @@
 import { annotations, update } from './annotations.ts';
 import { scrollInitial, scrollStored, scrollUpdate, scrollWindow, type ItemId, type ScrollEvent, type Measure, type Decision, type Row, type Lookup } from './scroll.ts';
+import { pathToken } from '../path-token.ts';
 import { markdown, markdownLine, type Tail } from './markdown.ts';
 import { revealHeight, unitsOf, type Unit } from './reveal.ts';
 import { continuesRun, estimateExtent, groupAt, runStarts, windowOf, type SeqRange } from './extent.ts';
@@ -44,7 +45,7 @@ const node = <K extends keyof HTMLElementTagNameMap>(tag: K, text?: string, clas
 };
 const annotationItems = new Map<number, Map<number, Extract<WireItem, { kind: 'annotations' }>>>();
 const items = new Map<number, WireItem>();
-const views = new Map<number, { view: HTMLElement; item: WireItem; slots: Map<string, Slot> }>();
+const views = new Map<number, { view: HTMLElement; item: WireItem; warning?: string; slots: Map<string, Slot> }>();
 const openers = new Map<string, { view: HTMLElement; open: () => void }>(), fenceOpeners = new Map<string, { view: HTMLElement; open: () => void }>(), patched = new Set<number>(), live = new Set<number>(), order: number[] = [], extents = new Map<number, Extent>(), openFences = new Set<string>(), animating = new Map<HTMLElement, number>();
 type Extent = { kind: 'measured'; width: number; lh: number; px: number } | { kind: 'estimated'; px: number };
 type Group = SeqRange & ({ kind: 'run' } | { kind: 'job'; id: string });
@@ -56,7 +57,7 @@ const reducedMotion = () => matchMedia('(prefers-reduced-motion: reduce)').match
 const REVEAL = { cap: .4, wait: 1500, fold: 15, grow: 220 };
 type Reveal = { at: number; tail?: { block: Tail; view: HTMLElement; shown: number; units?: Unit[] } };
 type Watch = { type: 'reveal'; memo: TextMemo } | { type: 'hold' } | { type: 'block' } | { type: 'row' } | { type: 'fit'; row: HTMLElement; width: number };
-type TextMemo = { render: ReturnType<typeof markdown>; view: HTMLElement; blocks: { block: ReturnType<ReturnType<typeof markdown>>[number]; nodes: ChildNode[] }[]; final?: boolean; source?: string; annotationItem?: Extract<WireItem, { kind: 'annotations' }>; assistant: boolean; key?: string; reveal?: Reveal; grown: number };
+type TextMemo = { render: ReturnType<typeof markdown>; view: HTMLElement; blocks: { block: ReturnType<ReturnType<typeof markdown>>[number]; nodes: ChildNode[] }[]; final?: boolean; source?: string; annotationItem?: Extract<WireItem, { kind: 'annotations' }>; assistant: boolean; paths: boolean; key?: string; reveal?: Reveal; grown: number };
 const texts = new Map<string, TextMemo>();
 type StepMarks = { key: string; shape: string; child: HTMLElement; sum: HTMLElement; name?: HTMLElement; label: HTMLElement; after: HTMLElement; tail: HTMLElement[]; tailKey: string; result: HTMLElement; time: HTMLElement; detail: HTMLElement; current: Step; live: boolean; file?: string; images?: ReturnType<typeof thumbnails>; show?: () => void };
 type RunMarks = { key: string; summary: HTMLElement; names: HTMLElement; namesKey: string; time: HTMLElement; children: HTMLElement; steps: StepMarks[] };
@@ -71,7 +72,9 @@ const dirty = new Set<number>(), stale = new Set<string>(), waiters: (() => void
 const scrollEvents: ScrollEvent[] = [];
 let revealDirty = false, resetting = false, annotated = false;
 const growing: HTMLElement[] = [], observed = new Map<Element, Watch>(), measuredHolds = new Map<HTMLElement, number>(), fits = new Map<HTMLElement, boolean>();
-let state: State = { view: { id: '', path: [], type: 'agent' }, agents: [], bash: [], compaction: 'idle', life: { type: 'starting' }, working: false, aborted: false, name: '', levels: [], cwd: '', home: '', statuses: {}, queue: { steering: [], followUp: [] }, dialogs: [] };
+const pathWarnings = new Map<number, string>();
+let pathWarningEpoch = 0;
+let state: State = { pathEditor: false, view: { id: '', path: [], type: 'agent' }, agents: [], bash: [], compaction: 'idle', life: { type: 'starting' }, working: false, aborted: false, name: '', levels: [], cwd: '', home: '', statuses: {}, queue: { steering: [], followUp: [] }, dialogs: [] };
 let scrolling = scrollInitial({ view: '', sessionId: undefined });
 let scrollDecision: Decision = { glideOffset: 0, latest: { show: false, count: 0 }, windowTop: 0, frame: 'none' };
 let lastMeasurement: Measure | undefined;
@@ -143,7 +146,7 @@ function agentCard(card: AgentCard, at: number, key: string, slots: Map<string, 
   if (card.direction === 'in' && 'relation' in card.inbound && card.inbound.relation) lead.append(' ', node('span', relationWords[card.inbound.relation], 'rel'));
   const body = agentBody(card);
   header.append(lead, node('span', markdownLine(body), 'tx'), node('time', timestamp(at)));
-  const details = prose(undefined, body, true); details.className = 'bd prose';
+  const details = prose(undefined, body, true, undefined, 'agent'); details.className = 'bd prose';
   view.replaceChildren();
   fold(view, key, header, details);
   return view;
@@ -209,10 +212,35 @@ function timestamp(at: number, today = new Date(), kind: 'message' | 'session' =
   return (date.getFullYear() === today.getFullYear() ? '' : date.getFullYear() + ' ') + date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }) + (kind === 'session' ? '' : ' ' + time);
 }
 
-function prose(key: string | undefined, source: string, final: boolean, annotationItem?: Extract<WireItem, { kind: 'annotations' }>, kind: 'assistant' | 'user' | 'plain' = 'plain') {
+function decoratePaths(fragment: DocumentFragment) {
+  for (const code of fragment.querySelectorAll<HTMLElement>('code')) {
+    if (code.closest('pre, a') || !pathToken(code.textContent ?? '')) continue;
+    code.classList.add('path-open');
+    let press: { x: number; y: number } | undefined;
+    code.onmousedown = event => { press = event.button === 0 ? { x: event.clientX, y: event.clientY } : undefined; };
+    code.onclick = async event => {
+      const start = press; press = undefined;
+      if (!start || Math.hypot(event.clientX - start.x, event.clientY - start.y) >= 3 || window.getSelection()?.isCollapsed === false) return;
+      event.preventDefault(); event.stopPropagation();
+      const row = code.closest<HTMLElement>('[data-seq]'), seq = Number(row?.dataset.seq), origin = state.view.id, sessionId = state.sessionId, generation = pathWarningEpoch;
+      if (!row || !Number.isSafeInteger(seq)) return;
+      try {
+        const result = await fetchJSON('/editor/path', { sessionId, view: origin, text: code.textContent ?? '' });
+        if (state.view.id !== origin || state.sessionId !== sessionId || generation !== pathWarningEpoch) return;
+        if (result.type === 'opened') window.ko?.focus?.(result.pane);
+        else {
+          pathWarnings.set(seq, result.text);
+          dirty.add(seq); schedule();
+        }
+      } catch (error) { reportError(error); }
+    };
+  }
+}
+
+function prose(key: string | undefined, source: string, final: boolean, annotationItem?: Extract<WireItem, { kind: 'annotations' }>, kind: 'assistant' | 'user' | 'agent' | 'plain' = 'plain') {
   let memo = key === undefined ? undefined : texts.get(key);
   if (!memo) {
-    memo = { render: markdown(kind === 'user'), view: node('div', undefined, 'msg prose'), blocks: [], assistant: kind === 'assistant', key, reveal: kind === 'assistant' && !final ? { at: performance.now() } : undefined, grown: 0 };
+    memo = { render: markdown(kind === 'user'), view: node('div', undefined, 'msg prose'), blocks: [], assistant: kind === 'assistant', paths: kind !== 'plain', key, reveal: kind === 'assistant' && !final ? { at: performance.now() } : undefined, grown: 0 };
     if (key !== undefined) texts.set(key, memo);
   }
   if (memo.annotationItem === annotationItem && (memo.final && final || memo.source === source && memo.final === final)) return memo.view;
@@ -237,6 +265,7 @@ function show(memo: TextMemo, source: string, final: boolean, changed = 0) {
     const index = first + offset;
     template.innerHTML = linkNames(block.html ?? '');
     annotated?.decorate(template.content);
+    if (memo.paths && state.pathEditor) decoratePaths(template.content);
     const pres = [...template.content.querySelectorAll<HTMLElement>('pre')];
     pres.forEach((pre, ordinal) => {
       if (memo.assistant && memo.key !== undefined) foldFence(pre, memo.key + ':' + index + '.' + ordinal);
@@ -827,8 +856,8 @@ function accept(item: WireItem) {
   schedule();
 }
 function renderItem(item: WireItem) {
-  const previous = views.get(item.seq);
-  if (previous?.item === item) return;
+  const previous = views.get(item.seq), warning = pathWarnings.get(item.seq);
+  if (previous?.item === item && previous.warning === warning) return;
   const view = previous?.view ?? node('div');
   view.dataset.seq = String(item.seq);
   const refs = item.kind === 'user' ? item.images : item.kind === 'assistant' ? item.blocks.flatMap(block => block.type === 'tool' && 'result' in block.state ? block.state.result?.images ?? [] : []) : [];
@@ -871,9 +900,13 @@ function renderItem(item: WireItem) {
     else if (item.kind === 'bash') { view.className = ''; children.push(commandRun(item, 'bash:' + item.seq).view); }
     else { view.className = ''; children.push(noticeRow({ key: 'notice:' + item.seq, at: item.at, content: { type: 'lead', lead: item.source === 'branch' ? 'branch' : 'compacted', preview: ' · ' + item.text.split('\n')[0], body: paragraphs(item.text) } })); }
   }
+  if (warning) {
+    if (item.kind === 'user') { const user = node('div', undefined, 'msg user'); user.append(...children); children.splice(0, children.length, user); view.className = ''; }
+    children.push(noticeRow({ key: 'path:' + item.seq, at: item.at, level: 'warning', content: { type: 'text', text: warning } }));
+  }
   children.forEach((child, index) => { if (view.childNodes[index] !== child) view.insertBefore(child, view.childNodes[index] ?? null); });
   while (view.childNodes.length > children.length) { const extra = view.lastChild; if (extra) unwatch(extra); extra?.remove(); }
-  views.set(item.seq, { view, item, slots });
+  views.set(item.seq, { view, item, warning, slots });
   if (!previous) {
     observed.set(view, { type: 'row' }); layoutObserver.observe(view);
     const container = element('items'), next = [...views.keys()].filter(seq => seq > item.seq).sort((a, b) => a - b)[0];
@@ -1343,6 +1376,7 @@ function applyPatch(record: Patch, buffer: boolean) {
 }
 function apply(record: PageRecord) {
   if (record.type === 'reset') {
+    pathWarnings.clear(); pathWarningEpoch++;
     editor.resetCompletion();
     find = undefined; selected = undefined; segmentCache.clear(); owners.clear(); epoch = record.epoch; after = -1; first = undefined; items.clear(); order.length = 0; extents.clear(); live.clear(); dirty.clear(); stale.clear(); annotationItems.clear(); folds.clear(); jobOwners.clear(); historyRequest = undefined; more = record.more;
     enqueue({ type: 'reset' });
@@ -1364,6 +1398,7 @@ function apply(record: PageRecord) {
     const agentsChanged = JSON.stringify(state.agents) !== JSON.stringify(record.agents);
     const wasEditing = !!state.edit, viewChanged = state.view.id !== record.view.id;
     if (viewChanged) leaveView(record.view.id);
+    if (viewChanged || state.sessionId !== record.sessionId) { pathWarnings.clear(); pathWarningEpoch++; }
     if (viewChanged || state.sessionId !== record.sessionId) decide({ type: 'switch', scope: { view: record.view.id, sessionId: record.sessionId } });
     state = record; windowDirty = true; schedule(); if (agentsChanged || viewChanged) refreshAgentCards(); document.body.dataset.sessionId = state.sessionId ?? ''; element('items').hidden = state.life.type === 'switching';
     showJobView();

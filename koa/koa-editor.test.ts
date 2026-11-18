@@ -1,7 +1,21 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { pathEditorCommand, resolvePath } from './koa-editor.ts';
 import { floatRect } from "./koa-float.ts";
 import type { components } from "../webview/ko-api.d.ts";
+
+test('path resolution uses the view cwd and home', () => {
+  assert.equal(resolvePath('src/a.ts', '/project', '/home/me'), '/project/src/a.ts');
+  assert.equal(resolvePath('~', '/project', '/home/me'), '/home/me');
+  assert.equal(resolvePath('~/a.ts', '/project', '/home/me'), '/home/me/a.ts');
+  assert.equal(resolvePath('/etc/hosts', '/project', '/home/me'), '/etc/hosts');
+});
+
+test('only editors with a line argument receive +LINE before the path', () => {
+  for (const name of ['vi', 'vim', 'nvim', 'nano', 'emacs', 'micro']) assert.deepEqual(pathEditorCommand(['/bin/' + name, '-x'], '/a.ts', 12), ['/bin/' + name, '-x', '+12', '/a.ts']);
+  assert.deepEqual(pathEditorCommand(['code', '-w'], '/a.ts', 12), ['code', '-w', '/a.ts']);
+  assert.deepEqual(pathEditorCommand(['nvim'], '/a.ts'), ['nvim', '/a.ts']);
+});
 
 type Window = components["schemas"]["Window"];
 const leaf = (pane: string, cols: number, rows: number) => ({ pane, cols, rows });

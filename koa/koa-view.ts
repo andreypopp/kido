@@ -13,7 +13,7 @@ const FLUSH_MS = 50;
 
 type DialogAnswer = { cancelled: true } | { confirmed: boolean } | { value: string };
 type Root = { value: "idle" | "working" | "done" | "error"; message: string };
-export type Own = Omit<State, "view" | "agents" | "edit">;
+export type Own = Omit<State, "view" | "agents" | "edit" | "pathEditor">;
 type Replaced = "new" | "resume" | "fork" | undefined;
 
 type ViewOptions = {

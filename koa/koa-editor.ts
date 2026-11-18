@@ -1,10 +1,13 @@
 import { readFileSync } from "node:fs";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { basename, join } from "node:path";
+import { mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { homedir, tmpdir } from "node:os";
+import { basename, join, resolve } from "node:path";
 import type { NotifyLevel } from "./koa-records.ts";
-import { createFloat, type FloatEnd } from "./koa-float.ts";
-import { findKo } from "./runtime-exec.ts";
+import { createFloat, placeFloat, type FloatEnd } from "./koa-float.ts";
+import { findKo, KO_TIMEOUT_MS, runtimeExec } from "./runtime-exec.ts";
+import type { Routes } from "./page/http.ts";
+import type { CompletionContext } from "./completion-context.ts";
+import { pathToken } from "./path-token.ts";
 import { errorText, isRecord } from "./text.ts";
 
 type Open = { dir: string; file: string; text: string; session: string | undefined; editor: string };
@@ -23,6 +26,55 @@ function setting(path: string): string | undefined {
 export function editorCommand(agentDir: string, cwd: string, env: NodeJS.ProcessEnv): string[] {
   const command = setting(join(cwd, ".pi", "settings.json")) ?? setting(join(agentDir, "settings.json")) ?? (env.VISUAL || env.EDITOR || "nano");
   return command.split(" ");
+}
+
+export function resolvePath(path: string, cwd: string, home: string): string {
+  return path === '~' ? home : path.startsWith('~/') ? resolve(home, path.slice(2)) : resolve(cwd, path);
+}
+
+export function pathEditorCommand(argv: string[], path: string, line?: number): string[] {
+  return [...argv, ...line !== undefined && ['vi', 'vim', 'nvim', 'nano', 'emacs', 'micro'].includes(basename(argv[0] ?? '')) ? ['+' + line] : [], path];
+}
+
+export async function openPathEditor(text: string, context: CompletionContext, agentDir: string, self: string, valid: () => boolean): Promise<Routes['/editor/path']['response']> {
+  const warn = (reason: string) => ({ type: 'warning' as const, text: `${text}: ${reason}` });
+  const token = pathToken(text), ko = findKo();
+  if (!token || !ko) return warn('cannot open the editor');
+  let argv: string[], cwd: string, runtime: string | undefined;
+  switch (context.type) {
+    case 'unavailable': return warn('the runtime is not up');
+    case 'host': {
+      cwd = context.cwd;
+      const path = resolvePath(token.path, cwd, homedir());
+      try { await stat(path); } catch (error) { return warn(isRecord(error) && error.code === 'ENOENT' ? 'no such file' : errorText(error)); }
+      if (!valid()) return warn('the session changed');
+      argv = [ko, 'shell', '--', ...pathEditorCommand(editorCommand(agentDir, cwd, process.env), path, token.line)];
+      break;
+    }
+    case 'runtime': {
+      cwd = context.cwd; runtime = context.name;
+      const chunks: Buffer[] = [], stop = new AbortController();
+      let bytes = 0;
+      try {
+        const result = await runtimeExec(ko, runtime, {
+          argv: ['sh', '-lc', 'cd -- "$2" || exit 2; p=$1; case "$p" in "~") p=$HOME;; "~/"*) p=$HOME/${p#??};; esac; case "$p" in /*) ;; *) p=$PWD/$p;; esac; printf "%s\\000%s\\000" "${EDITOR:-vi}" "$p"; test -e "$p"', 'sh', token.path, cwd],
+          signal: AbortSignal.any([AbortSignal.timeout(KO_TIMEOUT_MS), stop.signal]),
+          onStdout(data) { bytes += data.length; if (bytes > 65536) stop.abort(); else chunks.push(data); },
+        });
+        if (!valid()) return warn('the session changed');
+        if (result.end.type !== 'exit' || ![0, 1].includes(result.end.code)) return warn('the runtime is not up');
+        if (result.end.code === 1) return warn('no such file');
+        const [editor, path] = Buffer.concat(chunks).toString('utf8').split('\0');
+        if (!editor || !path) return warn('the runtime is not up');
+        const command = editor.split(' ');
+        argv = ['sh', '-lc', 'cd -- "$1" || exit; shift; exec ${EDITOR:-vi} "$@"', 'sh', cwd, ...pathEditorCommand(command, path, token.line).slice(command.length)];
+      } catch { return warn('the runtime is not up'); }
+      break;
+    }
+  }
+  if (!valid()) return warn('the session changed');
+  const placed = await placeFloat({ command: { type: 'argv', argv }, ...(runtime ? { runtime } : { cwd }), parent: self, close: 'on_exit', fixed_title: text, close_confirm: 'never' }, self, valid);
+  return 'error' in placed ? warn(placed.error) : { type: 'opened', pane: placed.pane };
 }
 
 const clean = (text: string) => text.replace(/^\uFEFF/, "").replace(/\n$/, "");

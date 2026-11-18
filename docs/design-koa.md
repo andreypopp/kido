@@ -1536,6 +1536,47 @@ composer's text; koa never sends it.
   `window.ko.focus`, and its press does not move the page's focus. A page without a ko pane (`--browser`) shows
   "C-g needs a ko pane" for 4 s.
 
+## Paths in the transcript
+
+A path in an inline code span of an assistant block, a user block or
+the opened body of an agent line opens in the user's editor, in a new
+float of koa's pane (design: `app/design/koa/NOTES.md`, "Paths in the
+transcript open in the editor").
+
+- **The token** (`path-token.ts`, shared by the page and koa): the
+  span's whole text is one path, with an optional `:LINE[:COL]`, and
+  has a `/` or a file extension. Prose is never a path. The page
+  decides nothing beyond the token: koa parses the span's text again
+  for `POST /editor/path` (`page/http.ts`), a koa page route, not a
+  ko route.
+- **Where.** The page links spans only while the state's
+  `pathEditor` is set: koa runs in a ko pane, not in a runtime and not
+  in browser mode, because only there can it add a float. The route
+  refuses on the same fact.
+- **Resolution and the check** follow `completionContext`, as `!`
+  completion does. On the host, a relative path resolves against the
+  session's cwd, `~` against the home, and koa stats it. A routed
+  session resolves and tests the path in the runtime by one exec,
+  which also reads the runtime's `$EDITOR` (else `vi`); the path is
+  an argv word, never script text. A missing path, an unready runtime
+  or a refusal answers a warning, which the page shows under the
+  span's row, page-local and not in the transcript record. A
+  directory opens.
+- **The float.** Each click adds one new float through the same
+  placement as Control-G's (`placeFloat` in `koa-float.ts`): a child
+  of koa's pane with `close: on_exit`, `fixed_title` the span's text
+  and `close_confirm: never`. Nothing observes it and koa reads
+  nothing back: the editor saves to the real file, and the server
+  removes the float with koa's pane. There is no limit of one float
+  and no check for unsaved changes (the user's decision); the
+  Control-G draft float is separate. On the host the command is
+  Control-G's editor command under `ko shell --`; in a routed session
+  the float is a pane born in the runtime (`runtime` of the pane
+  body), so the editor has a real pty there, which the exec session
+  has not. Its command changes to the routed cwd itself, because the
+  server reads a host caller's `cwd` as a host path. `+LINE` comes
+  before the path only for vi, vim, nvim, nano, emacs and micro.
+
 ## The job view
 
 A background job is a view of the page, as a subagent is ("Views").

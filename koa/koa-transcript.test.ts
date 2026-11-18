@@ -363,7 +363,7 @@ test("identical image partials emit no patch and changed bytes advance the wire 
 
 test("rebuild sends reset then exactly one caller-supplied state and keeps the epoch format", t => {
   const view = transcript({ dir: directory(t), flushMs: 1000 });
-  const state = { agents: [], bash: [], compaction: 'idle' as const, working: false, name: "before", model: { provider: "test", id: "test" }, aborted: false, levels: [], cwd: "/tmp", home: "/tmp", dialogs: [], statuses: {}, queue: { steering: [], followUp: [] }, view: { id: "root", path: [{ id: "root", name: "pi", type: "agent" as const }], type: "agent" as const }, life: { type: "ready" as const } };
+  const state = { agents: [], bash: [], pathEditor: false, compaction: 'idle' as const, working: false, name: "before", model: { provider: "test", id: "test" }, aborted: false, levels: [], cwd: "/tmp", home: "/tmp", dialogs: [], statuses: {}, queue: { steering: [], followUp: [] }, view: { id: "root", path: [{ id: "root", name: "pi", type: "agent" as const }], type: "agent" as const }, life: { type: "ready" as const } };
   view.state(state);
   const lines = request(view, "/events");
   const firstEpoch = record(lines[0]).epoch;
@@ -459,7 +459,7 @@ test("an aborted turn shows no provider error text and a real error still shows"
 
 test("show moves the open pages to this feed, sends its state before the reset under a fresh epoch", t => {
   const before = transcript({ dir: directory(t), flushMs: 1000 }), after = transcript({ dir: directory(t), flushMs: 1000 });
-  const state = { agents: [], bash: [], compaction: 'idle' as const, working: false, name: "a", aborted: false, levels: [], cwd: "/tmp", home: "/tmp", dialogs: [], statuses: {}, queue: { steering: [], followUp: [] }, view: { id: "a", path: [{ id: "a", name: "a", type: "agent" as const }], type: "agent" as const }, life: { type: "ready" as const } };
+  const state = { agents: [], bash: [], pathEditor: false, compaction: 'idle' as const, working: false, name: "a", aborted: false, levels: [], cwd: "/tmp", home: "/tmp", dialogs: [], statuses: {}, queue: { steering: [], followUp: [] }, view: { id: "a", path: [{ id: "a", name: "a", type: "agent" as const }], type: "agent" as const }, life: { type: "ready" as const } };
   before.state(state);
   after.state({ ...state, name: "b", view: { id: "b", path: [{ id: "a", name: "a", type: "agent" as const }, { id: "b", name: "b", type: "agent" as const }], type: "agent" as const } });
   after.message(assistant("from b"), "end");

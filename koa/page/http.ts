@@ -16,6 +16,7 @@ export type Routes = {
   '/thinking': { request: Session & { level: ThinkingLevel }; response: Empty };
   '/abort': { request: Session; response: Empty };
   '/dialog': { request: Session & { id: string } & ({ cancelled: true } | { confirmed: true } | { value: string | undefined }); response: Empty };
+  '/editor/path': { request: Session & { text: string }; response: { type: 'opened'; pane: string } | { type: 'warning'; text: string } };
   '/editor/open': { request: Session & { text: string }; response: { pane: string } };
   '/editor/ack': { request: Session & { id: string }; response: Empty };
   '/queue/clear': { request: Session; response: { steering: QueuedPrompt[]; followUp: QueuedPrompt[] } };
