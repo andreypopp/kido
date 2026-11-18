@@ -104,6 +104,7 @@ export type AgentHost = {
   readonly self: Agent;
   readonly facts: HostFacts;
   readonly browser: boolean;
+  readonly pathEditor: boolean;
   readonly trusted: string | undefined;
   readonly records: Records;
   readonly jobs: Jobs;
@@ -146,6 +147,7 @@ type TreeOptions = {
   cwd: string;
   agentDir: string;
   browser: boolean;
+  pathEditor: boolean;
   jobOutput(job: BackgroundJob): void;
   jobWatched(job: BackgroundJob): boolean;
   jobChanged(agent: Agent, job: BackgroundJob): void;
@@ -400,7 +402,7 @@ export function createTree(options: TreeOptions): Tree {
   const makeHost = (agent: () => Agent, trusted: string | undefined): AgentHost => {
     const host: AgentHost = {
       get self() { return agent(); },
-      facts, browser: options.browser, trusted, records, jobs: createJobs({ records, path: () => jobsPath(agent()), sink: () => host.extension, place: facts.place, view: {
+      facts, browser: options.browser, pathEditor: options.pathEditor, trusted, records, jobs: createJobs({ records, path: () => jobsPath(agent()), sink: () => host.extension, place: facts.place, view: {
         viewed: () => { const current = view(); return current.type === "job" && current.agent === agent() ? current.job : undefined; },
         watched: job => options.jobWatched(job),
         output: job => options.jobOutput(job),

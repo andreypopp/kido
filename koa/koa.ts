@@ -247,7 +247,8 @@ Everything after -- is message text.
       const job: JobSnapshot = current.type === "job" ? agent.host.jobs.snapshot(current.job) : { name: current.ref.name, command: current.ref.command, service: current.ref.service, startedAt: current.ref.startedAt, place: current.ref.place, log: current.ref.log, state: { type: "cleared" } };
       return { id, path: [...path, { id, name: job.name, type: "job" }], type: "job", job };
     };
-    const pathEditor = !browser && !!process.env.KO_PANE && !process.env.KO_RUNTIME;
+    const facts = koaAgents.hostFacts(process.env);
+    const pathEditor = !!facts.pane && !browser && !facts.runtime;
     const compose = (agent: Agent) => (own: Own): State => ({
       ...own, ...(agent === tree.selected() ? { edit: edits.view() } : {}),
       pathEditor,
@@ -317,7 +318,7 @@ Everything after -- is message text.
       for (const agent of new Set([previous.agent, next.agent])) agent.host.jobs.viewChanged();
     };
     const tree: Tree = koaAgents.createTree({
-      sdk, args: sdk.pi.parseArgs(restartArgs(parsed, undefined)), cwd: process.cwd(), agentDir, facts: koaAgents.hostFacts(process.env), browser, makeView,
+      sdk, args: sdk.pi.parseArgs(restartArgs(parsed, undefined)), cwd: process.cwd(), agentDir, facts, browser, pathEditor, makeView,
       jobOutput: job => feeds.get(job.id)?.feed.output(),
       jobWatched: job => feeds.get(job.id)?.feed.subscribed() ?? false,
       jobChanged: (agent, job) => { if (feeds.has(job.id)) agent.view.publish(); },

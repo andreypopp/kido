@@ -1868,7 +1868,10 @@ link to the editor float that Control-G already has.
   shows it ("koa/koa.ts:120"); `close_confirm` stays `never`, as the
   editor asks itself about unsaved changes. Every click opens a new
   float (the user's decision): koa never closes or replaces an open
-  editor, and a float that the user does not close stays.
+  editor, and a float that the user does not close stays. Quitting
+  the editor closes its float at once (the default `close: exit`;
+  a start failure of the pane, cause `failed`, stays, so its error
+  shows).
 - **On the click**, before the float: koa stats the resolved path
   where it would open (the host, or the runtime through its exec
   route). A file that is not there gets one warning note in the

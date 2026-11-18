@@ -466,8 +466,8 @@ answers `io`.
 
 ## Window lifecycle
 
-A pane with a `parent` and `close: on_exit` is a child pane, such as
-koa's editor float. ko has no other lifecycle object: a pane's row is
+A pane with a `parent` is a child pane, such as koa's editor
+floats. ko has no other lifecycle object: a pane's row is
 the whole record, and ko keeps nothing after the pane goes. A
 subagent is no pane, so none of this applies to it.
 
@@ -1104,8 +1104,8 @@ Each decision names its date. The code states the rest.
 - `exit` is the default `close`, so every pane that a client creates
   without `close` (a new tab, split or session, `POST /panes`, a new
   pane of `PUT /layout`) goes when its program ends, with no linger
-  and no focus guard. Children keep `on_exit`, because their parent
-  reads the lingering screen for the ending notice.
+  and no focus guard. A child whose parent reads the lingering screen
+  for the ending notice keeps `on_exit`.
 - A start failure keeps its pane, because the error is the one thing
   that the user must read. ko's wrappers set their own pane to
   `keep` before they exit with an error, because their exit is an

@@ -189,6 +189,9 @@ type ChildData = {
 const NEVER_SLEEP_RULE =
   "Never run `sleep` in bash to wait for anything - an async job, a subagent, a message, or another agent's work settling. What you are waiting for arrives as a notice or message that wakes you after you end your turn; if a build breaks because of another agent's half-done work, report that rather than sleeping until it clears. Ending your turn while you wait is always safe: a running async job or subagent of yours keeps you alive, and its notice starts your next turn.";
 
+const PATH_LINK_RULE =
+  "When you name a file or directory, write its path relative to the working directory, or absolute, as one inline code span, with `:LINE` for a line, e.g. `koa/page/page.ts:120`; never a bare file name that depends on a heading. A name without a `/` or an extension starts with `./`, e.g. `./Makefile`. The user clicks such a span to open it in an editor.";
+
 const NOT_THE_USER_RULE =
   "A notice is information, not the user speaking: act on it, do not thank or answer it. A message from another agent says in its first line who sent it and how they stand to you.";
 
@@ -2547,6 +2550,7 @@ export const agentExtension = (host: AgentHost) => (pi: ExtensionAPI): void => {
 
   pi.on("before_agent_start", async (event) => {
     event.systemPromptOptions.promptGuidelines.push(NEVER_SLEEP_RULE);
+    if (host.pathEditor) event.systemPromptOptions.promptGuidelines.push(PATH_LINK_RULE);
     if (offersSkill()) event.systemPromptOptions.promptGuidelines.push(KO_SKILL_RULE);
     if (host.self.parent) event.systemPromptOptions.promptGuidelines.push(SUBAGENT_INSTRUCTION);
     if (!routed || "refusal" in routed) return;

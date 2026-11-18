@@ -83,7 +83,7 @@ test('each path click opens a new float beside the draft; missing paths warn and
     const row = (await f.rows()).find(row => row.id === id);
     assert.deepEqual(row?.command, [join(f.dir, 'ko'), 'shell', '--', 'myeditor', '--flag', file]);
     assert.equal(row?.fixed_title, 'review.ts:12:3');
-    assert.equal(row?.parent, 'pane_1'); assert.equal(row?.close, 'on_exit'); assert.equal(row?.close_confirm, 'never');
+    assert.equal(row?.parent, 'pane_1'); assert.equal(row?.close, 'exit'); assert.equal(row?.close_confirm, 'never');
   }
   assert.ok((await f.rows()).some(row => row.id === draft.id));
   assert.equal(await readFile(draft.file, 'utf8'), 'draft stays');

@@ -34,6 +34,25 @@ test("the ko skill and its guideline are available only inside ko", async () => 
   }
 });
 
+test("path guidelines follow the host's path editor availability", async () => {
+  const fx = makeFixture();
+  try {
+    const channel = createChannel();
+    const { pi, emit } = createFakePi(undefined, [], channel);
+    koaExtension(pi);
+    const rules = async () => {
+      const event: { systemPromptOptions: { promptGuidelines: string[] } } = { systemPromptOptions: { promptGuidelines: [] } };
+      await emit("before_agent_start", event);
+      return event.systemPromptOptions.promptGuidelines.filter(rule => rule.includes("The user clicks such a span"));
+    };
+    assert.equal((await rules()).length, 1);
+    Object.assign(channel.host, { browser: true, pathEditor: false });
+    assert.deepEqual(await rules(), []);
+  } finally {
+    await fx.restore();
+  }
+});
+
 test("a root session writes its pane variables; quitting deletes them", async () => {
   const fx = makeFixture();
   try {

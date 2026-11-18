@@ -73,7 +73,7 @@ export async function openPathEditor(text: string, context: CompletionContext, a
     }
   }
   if (!valid()) return warn('the session changed');
-  const placed = await placeFloat({ command: { type: 'argv', argv }, ...(runtime ? { runtime } : { cwd }), parent: self, close: 'on_exit', fixed_title: text, close_confirm: 'never' }, self, valid);
+  const placed = await placeFloat({ command: { type: 'argv', argv }, ...(runtime ? { runtime } : { cwd }), parent: self, fixed_title: text, close_confirm: 'never' }, self, valid);
   return 'error' in placed ? warn(placed.error) : { type: 'opened', pane: placed.pane };
 }
 

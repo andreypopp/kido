@@ -1552,7 +1552,11 @@ transcript open in the editor").
 - **Where.** The page links spans only while the state's
   `pathEditor` is set: koa runs in a ko pane, not in a runtime and not
   in browser mode, because only there can it add a float. The route
-  refuses on the same fact.
+  refuses on the same fact, and on it the agent extension adds a
+  prompt guideline: the model writes each path as one code span,
+  relative to the working directory or absolute, never a bare file
+  name under a heading that names its directory, because a span
+  resolves against the session's cwd alone.
 - **Resolution and the check** follow `completionContext`, as `!`
   completion does. On the host, a relative path resolves against the
   session's cwd, `~` against the home, and koa stats it. A routed
@@ -1564,10 +1568,14 @@ transcript open in the editor").
   directory opens.
 - **The float.** Each click adds one new float through the same
   placement as Control-G's (`placeFloat` in `koa-float.ts`): a child
-  of koa's pane with `close: on_exit`, `fixed_title` the span's text
-  and `close_confirm: never`. Nothing observes it and koa reads
-  nothing back: the editor saves to the real file, and the server
-  removes the float with koa's pane. There is no limit of one float
+  of koa's pane with the default `close: exit`, `fixed_title` the
+  span's text and `close_confirm: never`. Nothing observes it and koa
+  reads nothing back: the editor saves to the real file. The server
+  removes the float when the editor exits, because no one reads its
+  lingering screen (Control-G's float keeps `on_exit` for its ending
+  notice), and with koa's pane. A start failure of `ko-pane` (cause
+  `failed`) stays; an editor that fails after `ko shell` has run
+  closes its float, as any exit does. There is no limit of one float
   and no check for unsaved changes (the user's decision); the
   Control-G draft float is separate. On the host the command is
   Control-G's editor command under `ko shell --`; in a routed session

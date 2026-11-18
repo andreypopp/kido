@@ -453,8 +453,9 @@ breaks most easily:
   or dead (the linger collection waits while a focused client shows
   the pane). Every removal takes the pane's descendants in the same
   change; the server owns that cascade. A helper pane that a program
-  creates over itself, such as koa's editor float, gets `close:
-  on_exit` and the program's pane as `parent`. A floating child pane
+  creates over itself gets the program's pane as `parent`, and
+  `close: on_exit` only when the program reads its dead screen, such
+  as koa's Control-G editor float. A floating child pane
   lives only in its parent's window; a tiled child may be in any
   window, which is then an ordinary window of its session.
 - A message (`/panes/{id}/messages`) is enqueued once for each
