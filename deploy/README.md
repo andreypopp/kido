@@ -68,7 +68,8 @@ optional when only one deployment exists.
    ```
 
    `deploy/bin/tofu` runs `tofu` on `deploy/terraform` with the
-   folder's state and tfvars, in the default workspace only. The install copies the x86_64 build as `me` and runs
+   folder's state and tfvars, in the default workspace only. The install
+   builds ko for x86_64 and koa, copies both as `me`, and runs
    provisioning with sudo. You can run it again. Wait for DNS and for
    Caddy to obtain both server certificates. Port 80 stays closed;
    ACME must use TLS-ALPN-01 on port 443.
@@ -103,6 +104,10 @@ optional when only one deployment exists.
 
 Provisioning gives `me` what a Koa pane needs, and no credentials:
 
+- koa from `build/koa`, installed in `/opt/koa`, separate from ko.
+  Provisioning replaces it when the build changes. The service and
+  login PATH include its `bin` directory, after `~/.local/bin`.
+  A koa update applies to new panes without a ko restart.
 - Node 24 from NodeSource's apt repository (Debian 13 has Node 20;
   koa needs 24). `deploy/files/nodesource.asc` is the repository's
   key, so apt checks it, and updates come through apt.
@@ -144,7 +149,7 @@ Caddy and restart it before you trust the result.
 
 The device folder is `/var/lib/ko-devices`. The server state is
 `/var/lib/ko`. The build is in `/opt/ko`. Login shells set `KO_STATE_DIR`
-and add `/opt/ko/bin` to PATH. The ko host is in
+and add the ko and koa commands to PATH. The ko host is in
 `/etc/ko-pair.json`, with the pairing port; `ko-pair` derives the
 enrollment host from it. The pairing listener uses
 loopback port 8791 only.
@@ -227,13 +232,15 @@ option, the sites use ACME. Make one self-signed certificate with
 
 ```sh
 make -C app vm && make build-linux LINUX_ARCHS=aarch64
+make -C koa build
 deploy/bin/new vm
 app/vm/.build/out/Products/Release/kido-vm linux install --deployment deploy/deployments/vm
 app/vm/.build/out/Products/Release/kido-vm linux up   # writes deploy/deployments/vm/address
 deploy/bin/ssh vm true                                 # pins the host key; no prompt
 ```
 
-Copy `build/ko/share/ko/linux/aarch64/`, `deploy/` (without
+Copy `build/ko/share/ko/linux/aarch64/` to `~/ko-install/linux/`,
+`build/koa/` to `~/ko-install/koa/`, and `deploy/` (without
 `deployments/`) and the certificate to `~/ko-install` with rsync as
 `install.sh` does (`-e "ssh -F deploy/deployments/vm/ssh_config"`),
 then run `sudo provision.sh --tls-cert ... ko.vm.test 192.168.64.0/24

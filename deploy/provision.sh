@@ -87,6 +87,7 @@ install -d -o caddy -g caddy -m 0750 /var/log/caddy
 [[ -d /etc/caddy/sites.d ]] || install -d -o root -g root -m 0755 /etc/caddy/sites.d
 install -d /opt/ko/bin /opt/ko/share /etc/systemd/system/caddy.service.d
 [[ -x $base/../linux/bin/ko && -x $base/../linux/bin/ko-pane ]] || { echo 'copy the Linux build beside deploy as linux/ first' >&2; exit 1; }
+[[ -x $base/../koa/bin/koa ]] || { echo 'copy build/koa beside deploy as koa/ first' >&2; exit 1; }
 for binary in ko ko-pane; do
     install_changed "$base/../linux/bin/$binary" "/opt/ko/bin/$binary" ko 0755
 done
@@ -99,6 +100,16 @@ if ! diff -qr "$base/../linux/share" /opt/ko/share >/dev/null; then
     rm -rf "$share.old"
     ko_changed=true
 fi
+if [[ ! -d /opt/koa ]] || ! diff -qr "$base/../koa" /opt/koa >/dev/null; then
+    koa=$(mktemp -d /opt/.koa-XXXXXX)
+    cp -a "$base/../koa/." "$koa/"
+    chown -R root:root "$koa"
+    find "$koa" -type d -exec chmod 0755 {} +
+    chmod -R a+rX "$koa"
+    [[ ! -e /opt/koa ]] || mv /opt/koa "$koa.old"
+    mv "$koa" /opt/koa
+    rm -rf "$koa.old"
+fi
 /opt/ko/bin/ko server --help | grep -q -- '--allow-uid'
 install_changed "$base/files/ko-tmpfiles.conf" /etc/tmpfiles.d/ko.conf ko
 systemd-tmpfiles --create /etc/tmpfiles.d/ko.conf
@@ -108,7 +119,7 @@ import sys
 print(Path(sys.argv[1]).read_text().replace("@CADDY_UID@", sys.argv[2]), end="")
 PY
 install_changed "$work/ko.service" /etc/systemd/system/ko.service ko
-printf 'export KO_STATE_DIR=/var/lib/ko\nexport PATH=/opt/ko/bin:$PATH\n' > /etc/profile.d/ko.sh
+printf 'export KO_STATE_DIR=/var/lib/ko\nexport PATH=/opt/ko/bin:/opt/koa/bin:$PATH\n' > /etc/profile.d/ko.sh
 install -m 0755 "$base/ko-devices" /usr/local/sbin/ko-devices
 ln -sfn ko-devices /usr/local/sbin/ko-revoke
 ln -sfn ko-devices /usr/local/sbin/ko-pair
