@@ -11,7 +11,7 @@ import { pollUntil, sse, ofType } from "./koa-agent-fixture.ts";
 import { realPi, realPiPackage, stopChild, writeSession } from "./koa-program-fixture.ts";
 import { writeAgentDir } from "./koa-fake-provider.ts";
 
-const koa = resolve("../build/ko/share/ko/koa/koa.ts");
+const koa = resolve("../build/koa/share/koa/koa/koa.ts");
 
 test("resume selects before the browser, cancels, and reports a broken picker", { timeout: 80000 }, async t => {
   const dir = await mkdtemp("/tmp/koa-resume-");

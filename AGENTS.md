@@ -885,18 +885,19 @@ delegates as its brief says and does not write code.
 
 ## Releasing
 
-ko and Kido.app ship from `main`. ko has no release version and no
-tags: the `ko` formula in `andreypopp/homebrew-tap` pins a revision
-with a manually increased version. Only `kido-app/N.N.N` tags mark
-Kido.app releases. `/release` (`.pi/prompts/release.md`) is the whole
+ko, koa and Kido.app ship from `main`, each with its own formula in
+`andreypopp/homebrew-tap`. The `ko` formula pins a revision with a
+manually increased version; `ko/<version>` tags mark ko releases, whose
+GitHub release holds the `ko-bin` tarballs. `koa/N.N.N` tags mark koa
+releases, whose formula installs the tag's tarball, and
+`kido-app/N.N.N` tags mark Kido.app releases. ko, ko-bin and Kido.app
+do not ship koa. `/release` (`.pi/prompts/release.md`) is the whole
 sequence for an agent: Kido.app first when the schemas or the Ghostty
-pin changed, then ko. After the change is on `main`, run
-`scripts/release.sh VERSION`; `--dry-run` inspects its actions. It
-requires HEAD equal to origin/main and green CI, and a removed or
-renamed command or tool requires a minor bump. It never runs `brew
-upgrade`. The user's agents run the `koa` that Kido.app bundles, so
-a harness change reaches them only through a Kido.app release
-(docs/release.md).
+pin changed, then ko, and koa when it changed. After the change is on
+`main`, run `scripts/release.sh ko|koa VERSION`; `--dry-run` inspects
+its actions. It requires HEAD equal to origin/main and green CI, and
+a removed or renamed command (ko) or tool (koa) requires a minor
+bump. It never runs `brew upgrade` (docs/release.md).
 
 ## Commit style
 

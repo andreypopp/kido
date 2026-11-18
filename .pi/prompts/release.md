@@ -1,7 +1,7 @@
 ---
-description: Release Kido.app and ko together, Kido.app first
+description: Release Kido.app, ko and koa, Kido.app first
 ---
-Release ko, and Kido.app with it. $ARGUMENTS can name the commit to
+Release ko, and Kido.app and koa with it when they changed. $ARGUMENTS can name the commit to
 release. If it does not, release origin/main. The user approved the release
 when they typed this command. Each step needs the result of the step before
 it.
@@ -23,9 +23,13 @@ it.
      `third_party/ghostty` pin. Kido.app releases first only when one
      of them changed: a schema change needs a Kido.app change, and a
      pin change moves `Ko-Vt`, which the app's bundled ko must match.
-   - koa and its agent extension: the user's agents run the koa that Kido.app bundles,
-     because the Kido.app shim is first on PATH. Thus, a harness change
-     reaches them only through a Kido.app release.
+   - koa: the tap formula `homebrew-tap/Formula/koa.rb` records its
+     `version`, and the tag `koa/<version>` marks it. koa releases when
+     `git log koa/<version>..<commit> -- koa webview` is not empty, or
+     when there is no koa formula yet. koa also releases when
+     `webview/ko-api.d.ts` differs between that tag and the commit, and
+     the notes say to upgrade ko and koa together. Its version: a patch,
+     unless a tool is removed or renamed; then a minor bump.
 3. When Kido.app must release first, send @kido-app (message_agent) the commit, the
    changes since the last release, and whether the schemas or the pin
    changed. Ask it to run its checks on that commit of main (make test, the
@@ -37,17 +41,26 @@ it.
    scripts/release.sh does itself:
    - `git -C homebrew-tap pull --ff-only`. The tap head must be
      kido-app's tap commit, else origin/main.
-   - `scripts/release.sh --dry-run VERSION`. If it reports a removed
-     command or tool that the version does not allow, or CI is not
-     green, stop and report.
-   - `scripts/release.sh VERSION`.
+   - `scripts/release.sh --dry-run ko VERSION`. If it reports a removed
+     command that the version does not allow, or CI is not green, stop
+     and report.
+   - `scripts/release.sh ko VERSION`. It needs an arm64 Mac: it tags
+     `ko/VERSION`, uploads the three `ko-bin` tarballs and updates
+     `Formula/ko.rb` and `Formula/ko-bin.rb`.
+   - When koa releases: `scripts/release.sh --dry-run koa VERSION`, with
+     the same stop rule for a removed tool, then `scripts/release.sh
+     koa VERSION`. It tags `koa/VERSION`, uploads the tarball and
+     writes `Formula/koa.rb`. A koa release needs no ko or Kido.app
+     release.
    - Do not run `brew upgrade`.
 5. Tell @kido-app the ko version and tap commit when it released.
    Tell the user:
-   - the two versions and the tap commits
+   - the versions and the tap commits
    - to run `brew upgrade ko` and update Kido.app
-   - to restart the koa agents when koa or its agent extension changed (/reload is not
-     sufficient after a release that removes tools)
+   - after a koa release, to run `brew upgrade koa` (`brew install
+     andreypopp/tap/koa` the first time) and `/reload` in a koa pane
+   - to restart the koa agents after a koa release that removes tools
+     (/reload is not sufficient then)
    - to restart the ko server (`ko kill-server`, then `ko`) when the
      server changed: until upgrade in place (plans/ko-upgrade.md), a
      restart ends its panes

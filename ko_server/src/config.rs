@@ -10,7 +10,7 @@ use ko_config::config::LoadError;
 use ko_config::server::{Scrollback as Kept, Server};
 use ko_pane_wire::frame::{Limits, Medium, Scrollback};
 
-use ko_sys::file::is_executable;
+use ko_sys::file::{env_path, is_executable, look_path};
 use ko_wire::local::{Dir, dir, home, set, socket};
 use ko_wire::protocol::BUILD;
 
@@ -272,18 +272,9 @@ impl Config {
     }
 
     pub(crate) fn koa(&self) -> PathBuf {
-        match &self.bin_dir {
-            Some(dir) => dir.join("koa"),
-            None => {
-                let candidates = installed(&self.exe, "share/ko/bin/koa");
-                candidates
-                    .iter()
-                    .find(|path| path.exists())
-                    .or(candidates.first())
-                    .cloned()
-                    .unwrap_or_else(|| self.exe.with_file_name("koa"))
-            }
-        }
+        look_path(&String::from_utf8_lossy(env_path(&self.env)), "koa")
+            .map(|path| self.cwd.join(path))
+            .unwrap_or_else(|| self.exe.with_file_name("koa"))
     }
 
     pub(crate) fn linger(&self) -> Duration {

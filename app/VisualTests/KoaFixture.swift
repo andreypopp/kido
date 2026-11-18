@@ -61,7 +61,7 @@ import XCTest
     arguments += ["--no-skills", "--no-prompt-templates"]
     if let session { arguments += ["--session", session] } else { arguments += ["--session-id", "00000000-0000-7000-8000-0000000000ff"] }
     arguments += args
-    return "cd \(SSH.quote(cwd.path)); export \(exports); \(exec ? "exec " : "")\(SSH.quote(tools.prefix + "/share/ko/bin/koa")) \(arguments.map(SSH.quote).joined(separator: " "))" + (stderr.map { " 2>\(SSH.quote($0.path))" } ?? "")
+    return "cd \(SSH.quote(cwd.path)); export \(exports); \(exec ? "exec " : "")\(SSH.quote(test.checkoutRoot.appendingPathComponent("build/koa/bin/koa").path)) \(arguments.map(SSH.quote).joined(separator: " "))" + (stderr.map { " 2>\(SSH.quote($0.path))" } ?? "")
 }
 
 nonisolated(unsafe) let koaModels: [[String: Any]] = [

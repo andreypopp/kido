@@ -74,6 +74,7 @@ visual-fast: VISUAL_FLAG = skip
 visual-slow: VISUAL_FLAG = only
 visual visual-fast visual-slow: DERIVED = build/xcode.noindex/derived-visual
 visual visual-fast visual-slow: project vm
+	$(MAKE) -C ../koa build
 	mkdir -p build/bundle/visual/{home,state}
 	clang -dynamiclib -Werror -Wno-deprecated-declarations scripts/renderer-probes.c -framework CoreVideo -o build/bundle/visual/renderer-probes.dylib
 	@set -eo pipefail; select=''; \

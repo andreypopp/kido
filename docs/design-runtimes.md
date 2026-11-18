@@ -1209,7 +1209,10 @@ through `ko enter`, with `KO_RUNTIME` in their environment, and the
 harness routes nothing. The image therefore needs node 24 and pi,
 which koa's shim checks; koa's page reaches the client through the
 pane's webview serve stream (design-webview.md, "Remote servers and
-runtimes"). Its session is a file of the runtime, so a spawner
+runtimes"). ko's static Linux layout brings no koa: the image or the
+host installs koa itself, as it installs node and pi, from koa's
+release tarball unpacked into a prefix on PATH (docs/release.md,
+"koa"). Its session is a file of the runtime, so a spawner
 refuses `resume_from` and `fork` into such a runtime.
 
 **Spawning.** A subagent is a session of its spawner's koa
@@ -1236,7 +1239,7 @@ runtime's `koa` (`Destination` in `ko_server/src/state/runtime_ops.rs`);
 every other command is inside:
 
 - `koa: host`: routed. The pane is a host pane (no row `runtime`),
-  and the server runs its own koa with `--runtime NAME`. The `cwd` is
+  and the server runs the koa of its PATH with `--runtime NAME`. The `cwd` is
   a host path, as for a host pane; a `{pane}` cwd of a runtime pane
   maps its OSC 7 directory back to the host through the runtime's
   `paths`. koa maps its host directory into the runtime for its tools.

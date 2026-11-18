@@ -169,7 +169,7 @@ the grant (design-subagents.md, "Spawning").
 **The ko skill.** Inside ko, the extension answers pi's
 `resources_discover` with the `skills` directory beside its own file,
 which holds the skill `ko` (`koa/skills/ko/SKILL.md`, installed
-as `share/ko/koa/skills/ko/SKILL.md`). pi puts only the skill's name,
+as `share/koa/koa/skills/ko/SKILL.md` under koa's prefix). pi puts only the skill's name,
 description and path in the system prompt, and the model reads the
 file when a task needs it. Inside ko, `before_agent_start`
 also adds one guideline: the user runs ko, and the model reads the
@@ -177,8 +177,8 @@ skill when the user talks about windows, tabs, panes, sessions,
 splits, floats or the sidebar. A routed pi gets neither: its `read`
 and `bash` run in the runtime, where the skill's host path does not
 exist and `ko` does not reach the user's server. The skill is text
-only: it adds no tool and no route. `make preview-pi` previews the
-skill directory with `koa-agent.ts`.
+only: it adds no tool and no route. `make -C koa install PREFIX=DIR`
+installs it with `koa-agent.ts`.
 
 **One instance for each load.** pi runs the factory once for each
 session and again at `/reload` and on a switch. The state that must
@@ -414,13 +414,18 @@ value that starts with `-`, such as a name `--browser`, stays a value
 for koa's strict parser. The task is not part of it: a spawner gives it as the
 pane variable `koa.task`.
 
-On the host, the server runs its own koa, the `koa` of its bin
-directory ("The bin directory"), never a `koa` from PATH, through
-`ko shell --` ("The login environment"). When that file is not an
-executable, the server execs its path directly, so the start fails:
-the pane dies with cause `failed`, and its row stays as any start
-failure does ("Window lifecycle"). The row's `command` is koa's path
-and its flags, without the shell.
+On the host, the server runs the first executable `koa` of its own
+PATH (`Config::koa` in `ko_server/src/config.rs`), looked up for each
+request, so an install of koa needs no server restart. It runs it
+through `ko shell --` ("The login environment"). When the PATH has no
+koa, the server runs the path `koa` beside its own executable. That
+file does not exist in an install of ko, so the start fails: the pane
+dies with cause `failed`, its row stays as any start failure does
+("Window lifecycle"), and the pane's screen names the path that it
+tried. The row's `command` is koa's path and its flags, without the
+shell. The server's PATH is the PATH of what started it: the `ko`
+launcher passes its own environment, and Kido.app the login PATH that
+it reads, else its own (design-app.md).
 
 The request's `cwd` is koa's launch directory, and koa takes it as
 the session's directory, also for a resumed session or an existing
@@ -847,17 +852,18 @@ has no `ko`, Tab completes nothing for `ko`.
 
 ## The bin directory
 
-ko ships three `sh` shims in `<prefix>/share/ko/bin`: `ko`, `ssh` and
-`koa`. Their source is `share/ko/bin`; the shared helper is
+ko ships two `sh` shims in `<prefix>/share/ko/bin`: `ko` and `ssh`.
+Their source is `share/ko/bin`; the shared helper is
 `share/ko/shim.sh`. Inside a pane, those names resolve to these shims:
 
 - `ko` execs `<prefix>/bin/ko` relative to its shim. Pane commands use
   this prefix's binary, not another installation on PATH.
 - `ssh` runs `ko ssh "$@"`. `ko ssh` finds the real ssh after the bin
   directory (`look_path_past` in `ko_shell/src/bin_dir.rs`).
-- `koa` checks for Node 24 and `pi` and runs `share/ko/koa/koa.ts`
-  (design-koa.md, "The host's needs"). It writes nothing to
-  `~/.pi/agent/extensions`.
+
+`koa` is not ko's: it is its own package with its own shim
+(design-koa.md, "Where koa lives"), so `koa` in a pane is the first
+`koa` of the user's PATH.
 
 A shim never embeds an installed path. It calculates every location
 from `$0`. For user-installed programs, the shim selects the first
@@ -888,8 +894,8 @@ order.
 
 **Install layout.** `make build` lays out `build/ko/` as installed:
 `bin/ko`, `bin/ko-pane` and `share/ko` with `bin/`, `shim.sh`,
-`koa/` (koa, its page, the agent extension, the shared modules
-and the skills), `webview/` (the SDK and `ko-api.d.ts`) and the terminfo. `make
+`webview/` (the SDK and `ko-api.d.ts`) and the terminfo; koa has its
+own layout (design-koa.md, "Where koa lives"). `make
 install` copies it under
 `PREFIX`, default `~/.local`. This is Homebrew's `pkgshare` layout.
 
@@ -952,6 +958,16 @@ file.
 
 Each decision names its date. The code states the rest.
 
+2026-11-18, koa is its own package:
+
+- koa has its own Homebrew formula and release cadence; ko, ko-bin
+  and Kido.app no longer ship it. The server runs the `koa` of its
+  own PATH, not a koa of its bin directory: this replaces the
+  2026-11-17 rule "the server runs only its own koa on the host". No
+  shim and no configuration key choose it.
+- A missing koa stays a failed start, and the pane's screen names the
+  path that the server tried; the server adds no install hint.
+
 2026-11-17, a typed koa command:
 
 - One typed way starts a koa agent through the API, the `koa` case of
@@ -961,8 +977,8 @@ Each decision names its date. The code states the rest.
   `koa_agent`, the root `app=koa`, `koa.*` and the runtime setting
   `koa`. Only `koa` and `claude-code` identify agents; a bare pi is
   a terminal with a program's report.
-- The server runs only its own koa on the host, and a missing one is
-  a start failure with cause `failed`, not an exit 127 of a shell.
+- A missing koa is a start failure with cause `failed`, not an
+  exit 127 of a shell.
 - The runtime is the request's `runtime` and the directory is the
   request's `cwd`, not fields of the command, so a koa pane is placed
   as any pane is, except that `koa: host` keeps it on the host.

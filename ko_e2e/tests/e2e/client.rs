@@ -741,12 +741,15 @@ fn client_can_view_a_failed_start_and_switch_to_a_live_pane() {
     let s = start(&[]);
     let failed =
         s.new_pane(json!({"command": {"type": "argv", "argv": ["/no/such/kido-command"]}}));
-    s.screen_has(&failed, "ko: exec: No such file or directory");
+    s.screen_has(
+        &failed,
+        "ko: exec /no/such/kido-command: No such file or directory",
+    );
     s.new_pane(json!({"command": {"type": "argv", "argv": ["/bin/sh"]}, "env": [{"name": "PS1", "value": "LIVE> "}]}));
     let o = Outer::new(&s.dir, Keys::Extended);
     o.attach("cat");
     o.contains("[failed: exec: No such file or directory (os error 2)");
-    o.contains("ko: exec: No such file or directory");
+    o.contains("ko: exec /no/such/kido-command: No such file or directory");
     o.prefix("n");
     o.contains("LIVE>");
     o.line("printf 'SEC%s\\n' OND");

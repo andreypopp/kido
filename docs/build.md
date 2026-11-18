@@ -200,11 +200,9 @@ was overwritten in place after an earlier run (`Killed: 9`). `make
 install PREFIX=<prefix>` copies that layout under `<prefix>/bin` and
 `<prefix>/share/ko` (default `~/.local`), Homebrew's `pkgshare` layout.
 
-`make build` installs `share/ko/bin` (the `ko`, `ssh` and `koa`
-shims), `share/ko/shim.sh`, koa's program, the agent extension, the
-shared modules, the skills and the bundled page (in
-`share/ko/koa/`, the files of `KOA_SRC` in the Makefile), and the SDK `webview/`
-with `ko-api.d.ts` (in `share/ko/webview/`) beside `bin/ko` in `build/ko/`, the layout that
+`make build` installs `share/ko/bin` (the `ko` and `ssh` shims),
+`share/ko/shim.sh` and the SDK `webview/` with `ko-api.d.ts` (in
+`share/ko/webview/`) beside `bin/ko` in `build/ko/`, the layout that
 `ko_shell/src/bin_dir.rs` finds as installed.
 
 `ko version` prints the JSON of `protocol::version()`, with the build
@@ -222,8 +220,8 @@ make, which would rebuild `ko_wire` and every crate above it.
 `make build-linux` builds the static Linux ko for each architecture
 of `LINUX_ARCHS` (`aarch64`, `x86_64`; by default the host's alone)
 into `build/ko/share/ko/linux/<arch>/`: `bin/ko`, `bin/ko-pane` and
-`share/ko` with the shims, `shim.sh`, the pi extension, the webview
-SDK and the terminfo. A runtime uses only `ko`; `ko-pane` is there
+`share/ko` with the shims, `shim.sh`, the webview SDK and the
+terminfo; no koa (design-runtimes.md, "Inside"). A runtime uses only `ko`; `ko-pane` is there
 for a ko server on a Linux host, such as a droplet that gets the
 layout whole. Linux CI runs the e2e suite against the glibc build,
 not the musl build; the musl server passed the suite once, in the `ci-like` container on
@@ -383,7 +381,7 @@ configuration.
 ## The source trees and the scripts
 
     share/ko/           the source of share/ko as installed:
-      bin/              the bin directory's sh shims (ko, ssh, koa)
+      bin/              the bin directory's sh shims (ko, ssh)
       shim.sh           their shared helper
       bash/, zsh/       the OSC 133 integrations every primed shell sources
       openapi.json, client-model.json, config-schema.json   the generated schemas (make schemas)
@@ -392,12 +390,14 @@ configuration.
                         koa loads into its pi; their suites, the fake ko of
                         testdata/fake_ko/, the prompt snapshot, the ko skill
                         and the shared modules (design-koa.md, "Where koa
-                        lives", names each file); installed as share/ko/koa
+                        lives", names each file); its own Makefile and
+                        shim bin/koa build it into build/koa
     webview/            @kido/webview, the Node SDK for webview pages
                         (index.ts, README.md) and ko-api.d.ts (generated
                         from openapi.json), installed as share/ko/webview
+                        and copied by koa's build as share/koa/webview
     .pi/prompts/        gh-watch.md, /gh-watch: starts scripts/main-watch.sh streamed;
-                        release.md, /release: Kido.app first, then ko
+                        release.md, /release: Kido.app first, then ko and koa
     .pi/extensions/     no-git-writes, the spawned agent's bash-tool guard
     .pi/tests/          no-git-writes.test.ts, the guard's suite, which
                         scripts/test-ts.sh runs with koa's suite
@@ -407,7 +407,7 @@ configuration.
                         from koa's TypeScript 7
     scripts/            verify.sh, scrubbed verification; checks.sh, the
                         checks of a unit's changed paths; release.sh, the
-                        Homebrew tap release; lint.sh, code hygiene, signal
+                        Homebrew tap releases of ko and koa; lint.sh, code hygiene, signal
                         calls, doc references, schemas and prompt snapshots;
                         test-ts.sh; dump-prompts.ts, every prompt text pi
                         registers; main-watch.sh, CI for each observed main

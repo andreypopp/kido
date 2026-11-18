@@ -23,6 +23,12 @@ Kido.app, the macOS client:
 brew install --cask andreypopp/tap/kido-app
 ```
 
+koa, the pi harness, is a separate package; it also installs pi:
+
+```sh
+brew install andreypopp/tap/koa
+```
+
 Every shell that ko starts (a Kido.app pane, `ko shell`, a runtime
 pane, `ko ssh` to a host with ko) completes `ko` in zsh and bash, with
 the live pane ids, runtime names and `ko api` paths, and needs no
@@ -165,8 +171,10 @@ and `message_agent` work in it, and a subagent starts as `koa` in
 its parent's mode. A terminal client, such as `ko` itself, shows a
 koa pane as a webview placeholder. A pi that you start as plain `pi`
 has none of this: it shows its status, as Claude Code does. koa runs where its pane's program runs, so that host
-(the Mac, a server of `ko HOST`, or a runtime) needs Node 24 or newer
-and `pi` on PATH (docs/design-koa.md).
+(the Mac, a server of `ko HOST`, or a runtime) needs koa, Node 24 or
+newer and `pi` on PATH (docs/design-koa.md). New Agent and the `koa`
+command run the first `koa` of the server's PATH; without one, the
+pane shows the failed start with the path that ko tried.
 
 `ko prompt` sends
 text from stdin to the one other agent in your window, over its
@@ -188,9 +196,9 @@ ko is a Rust cargo workspace. It needs:
   `rust-toolchain.toml`). The Makefile finds that cargo itself.
 - zig at the release of `scripts/install-zig.sh`, on PATH
 - make and `tic`; a C compiler only for `make build-bench`
-- Node 24 or newer and npm: `make build` bundles koa's page with
-  the esbuild of `koa/package.json`, and the TypeScript tests
-  need it
+- Node 24 or newer and npm, only for koa (`make -C koa` bundles its
+  page with the esbuild of `koa/package.json`), the TypeScript tests
+  and lint
 
 ```sh
 git clone --recurse-submodules https://github.com/andreypopp/kido.git && cd kido
@@ -211,8 +219,9 @@ The other targets:
     make fmt     cargo fmt on the workspace
     make lint    cargo fmt --check, clippy and scripts/lint.sh
     make build-fake-ko  the fake ko of the TypeScript suite
-    make koa-page  koa's page bundle in build/ko/share/ko/koa/ (npm ci when the lockfile changed); make build runs it
-    make koa-watch  rebuild koa's page on each source change, for ⌘R in a webview pane of a koa started with KOA_PAGE_RELOAD=1
+    make -C koa  koa's own build in build/koa/ (npm ci when the lockfile changed)
+    make -C koa watch  rebuild koa's page on each source change, for ⌘R in a webview pane of a koa started with KOA_PAGE_RELOAD=1
+    make -C koa install PREFIX=DIR  install koa as DIR/bin/koa and DIR/share/koa (default ~/.local)
     make bindgen  regenerate ko_vt_sys/src/bindings.rs
     make probe BYTES=N  ko-bench throughput: the server's ring reader under ko-pane, N bytes of bench/streams (default 1 GiB); not part of verify
     make build-bench  the C helpers of bench/ in build/bench/, after build
@@ -222,7 +231,6 @@ The other targets:
     make fuzz TARGET=ring TIME=600  one time-boxed fuzz run; no TARGET lists the targets
     make miri    Miri on ko's modules without sockets or FFI (scripts/miri.sh)
     make ci-like ARGS=...  a CPU/memory-capped Linux container (docs/verification.md, "Reproducing a CI-only failure")
-    make preview-pi  replace the installed share/ko/koa and share/ko/webview files with the checkout's; unpreview-pi restores them
     make website the website's dev server at http://localhost:4321 (website/README.md)
 
 docs/build.md describes the build and the layout; docs/verification.md

@@ -198,7 +198,7 @@ jobs:
 
       - name: Install
         timeout-minutes: 10
-        run: make install PREFIX=$HOME/ko-install && $HOME/ko-install/bin/ko version && test -x $HOME/ko-install/share/ko/bin/ko
+        run: make install PREFIX=$HOME/ko-install && $HOME/ko-install/bin/ko version && test -x $HOME/ko-install/share/ko/bin/ko && make -C koa install PREFIX=$HOME/koa-install && $HOME/koa-install/bin/koa --help --pi /nonexistent
 
   # Visual snapshots depend on the display and backing scale, so they stay local.
   app:

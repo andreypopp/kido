@@ -2944,7 +2944,7 @@ runtimes:
 }
 
 #[test]
-fn a_koa_command_runs_the_shipped_koa_on_the_host_routed_for_or_inside_a_runtime() {
+fn a_koa_command_runs_the_path_koa_on_the_host_routed_for_or_inside_a_runtime() {
     let (prefix, log) = (Dir::new("ko-prefix-"), Dir::new("ko-koa-log-"));
     let build = crate::harness::ko();
     let build = build.parent().unwrap().parent().unwrap();
@@ -2958,7 +2958,9 @@ fn a_koa_command_runs_the_shipped_koa_on_the_host_routed_for_or_inside_a_runtime
         fs::create_dir_all(at.parent().unwrap()).unwrap();
         std::os::unix::fs::symlink(build.join(path), at).unwrap();
     }
-    let shipped = prefix.join("share/ko/bin/koa");
+    let elsewhere = Dir::new("ko-koa-path-");
+    let path = format!("{}:/usr/bin:/bin", elsewhere.display());
+    let shipped = elsewhere.join("koa");
     fs::write(
         &shipped,
         format!(
@@ -2984,10 +2986,6 @@ fn a_koa_command_runs_the_shipped_koa_on_the_host_routed_for_or_inside_a_runtime
         fs::create_dir_all(host.join(dir)).unwrap();
         fs::create_dir_all(inner.join(dir)).unwrap();
     }
-    let elsewhere = Dir::new("ko-koa-path-");
-    let stray = elsewhere.join("koa");
-    fs::write(&stray, "#!/bin/sh\necho stray > \"$0.ran\"\n").unwrap();
-    fs::set_permissions(&stray, fs::Permissions::from_mode(0o755)).unwrap();
     let paths = format!(
         "    paths:\n      - host: {}\n        runtime: {}\n",
         host.display(),
@@ -2997,16 +2995,15 @@ fn a_koa_command_runs_the_shipped_koa_on_the_host_routed_for_or_inside_a_runtime
     let file = config.join("config.yaml");
     fs::write(
         &file,
-        format!("runtimes:\n  routed:\n    command: {{}}\n{paths}  inside:\n    command: {{}}\n    koa: runtime\n{paths}"),
+        format!("runtimes:\n  routed:\n    command: {{}}\n{paths}  inside:\n    command: {{}}\n    koa: runtime\n    env:\n      PATH: {path}\n{paths}"),
     )
     .unwrap();
-    let path = format!(
-        "{}:{}",
-        elsewhere.display(),
-        std::env::var("PATH").unwrap_or_default()
-    );
     let dir = Dir::new("ko-");
-    fs::write(dir.join(".profile"), "export KOA_LOGIN=yes\n").unwrap();
+    fs::write(
+        dir.join(".profile"),
+        format!("export KOA_LOGIN=yes\nexport PATH={}\n", quote(&path)),
+    )
+    .unwrap();
     let s = crate::harness::start_exe(
         &prefix.join("bin/ko"),
         dir,
@@ -3150,17 +3147,21 @@ fn a_koa_command_runs_the_shipped_koa_on_the_host_routed_for_or_inside_a_runtime
         "runtime routed runs koa on the host",
     );
 
+    let script = fs::read(&shipped).unwrap();
     fs::remove_file(&shipped).unwrap();
     let missing = koa(json!({"type": "new"}), json!({}));
     let row = dead(&s, &missing);
     assert_eq!(row["dead"]["cause"]["type"], "failed");
-    assert_eq!(row["command"][0], text_of(&shipped));
+    let absent = prefix.join("bin/koa");
+    assert_eq!(row["command"][0], text_of(&absent));
+    s.screen_has(&missing, &format!("ko: exec {}:", absent.display()));
     assert!(
         s.has_pane(&missing),
         "a koa that fails to start keeps its row"
     );
-    assert!(
-        !elsewhere.join("koa.ran").exists(),
-        "the server never runs a koa from PATH"
-    );
+    fs::write(&shipped, script).unwrap();
+    fs::set_permissions(&shipped, fs::Permissions::from_mode(0o755)).unwrap();
+    let restored = koa(json!({"type": "new"}), json!({}));
+    assert_eq!(args(&launched(&restored)), Vec::<String>::new());
+    assert_eq!(s.row(&restored)["command"][0], text_of(&shipped));
 }

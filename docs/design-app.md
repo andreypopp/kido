@@ -2414,9 +2414,10 @@ client can move the document's focus. File → New Agent
 window with `koa` in place of the shell (`NewPaneProgram` in
 `app/App/Ko/LayoutEditor.swift`); the buttons look the same. The
 request's command is the typed `koa` command with a new session and
-nothing else, so the window's server finds its own `koa`, in a
-runtime as the runtime's setting says, and a missing `koa` is a
-failed start whose row stays. The server names the window "koa".
+nothing else, so the window's server runs the `koa` of its PATH, in
+a runtime as the runtime's setting says, and a missing `koa` is a
+failed start whose row stays and whose screen names the path tried.
+Kido.app does not bundle koa. The server names the window "koa".
 The row's title comes from the pane's foreground ("ko", then the
 login shell) until the `koa` shim sets the OSC title "koa" before it
 starts node; then it reads "koa", regular, idle, until koa names

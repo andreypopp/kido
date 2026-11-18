@@ -53,7 +53,8 @@ push and PR: one `make verify` with the default stages, under
 `KO_VERUS_REQUIRED=1`, `KO_E2E_HOST_SSH=1` and `E2E_THREADS=16`, then
 the installed layout check (`make install PREFIX=$HOME/ko-install`,
 `ko version` from it, and the `ko` shim executable under its
-`share/ko/bin`). Its `app` job builds Kido.app and runs the app's
+`share/ko/bin`), and koa's own install (`make -C koa install
+PREFIX=$HOME/koa-install`, then its `koa --help --pi /nonexistent`). Its `app` job builds Kido.app and runs the app's
 `make test` and `make ko-test` (design-app.md, "Testing"), not `make
 visual` (known-issues-app.md, "Visual tests do not run in CI"). Visual
 snapshots are recorded and checked only in the guest, never on the host:

@@ -793,7 +793,7 @@ fn default_panes_close_at_exit_even_with_a_focused_view() {
     assert!(
         crate::harness::decode(&snapshot, false)
             .screen
-            .contains("ko: exec: No such file or directory")
+            .contains("ko: exec /no/such/kido-command: No such file or directory")
     );
     let pane = new_pane(
         &s,

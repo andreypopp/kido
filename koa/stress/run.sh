@@ -14,7 +14,7 @@ else
   echo "koa stress run: $KOA_STRESS_OUTPUT"
 fi
 status=0
-case "$mode" in table|kido) ;; *) make -s -C "$root" koa-page || exit 1 ;; esac
+case "$mode" in table|kido) ;; *) make -s -C "$root/koa" build || exit 1 ;; esac
 case "$mode" in
   table) ;;
   page) shift; node "$root/koa/stress/run.ts" "$@" || status=$? ;;

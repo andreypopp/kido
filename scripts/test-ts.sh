@@ -35,14 +35,14 @@ fi
 
 cd "$(dirname "$0")/../koa"
 repo=$(cd .. && pwd)
-make --no-print-directory -C "$repo" koa/node_modules/.package-lock.json
+make --no-print-directory -C "$repo/koa" node_modules/.package-lock.json
 if [ "${1:-}" = lint ]; then
 	exec ../scripts/lint.sh
 fi
 make --no-print-directory -C "$repo" build-fake-ko
 KO_FAKE_KO="$repo/target/debug/fake_ko"
 export KO_FAKE_KO
-make -C .. koa-page
+make --no-print-directory build
 ./node_modules/.bin/tsc -p page
 ./node_modules/.bin/tsc -p .
 ./node_modules/.bin/tsc --ignoreConfig --strict --noEmit --module NodeNext --moduleResolution NodeNext \

@@ -454,7 +454,17 @@ impl Pane {
                         (Some(program), life)
                     }
                     Err(failed) => {
-                        let message = format!("\x1b[31mko: {failed}\x1b[0m\r\n");
+                        let message = match failed.step() {
+                            pty::Step::Exec => format!(
+                                "\x1b[31mko: exec {}: {}\x1b[0m\r\n",
+                                String::from_utf8_lossy(
+                                    init.argv.first().map_or(&[], Vec::as_slice)
+                                )
+                                .escape_debug(),
+                                std::io::Error::from_raw_os_error(failed.errno())
+                            ),
+                            _ => format!("\x1b[31mko: {failed}\x1b[0m\r\n"),
+                        };
                         vt.write(message.as_bytes());
                         self.io.out.put(RecordKind::Bytes, message.as_bytes());
                         (None, Life::Exited(DeathCause::Failed(failed)))

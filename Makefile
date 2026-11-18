@@ -16,7 +16,7 @@ export KO_VT := $(word 2,$(shell git ls-files -s third_party/ghostty))
 # The Linux architectures that build-linux, check-static and install handle: the host's alone by
 # default; make build-linux LINUX_ARCHS="aarch64 x86_64" builds both.
 LINUX_ARCHS ?= $(patsubst arm64,aarch64,$(shell uname -m))
-.PHONY: build build-linux check-static build-fake-ko ko-client-xcframework build-bench test cargo fmt lint-rs lint probe bindgen fuzz miri nightly-has nightly-cargo verus e2e verify checks install ci-like preview-pi unpreview-pi release prompts schemas api-docs website
+.PHONY: build build-linux check-static build-fake-ko ko-client-xcframework build-bench test cargo fmt lint-rs lint probe bindgen fuzz miri nightly-has nightly-cargo verus e2e verify checks install ci-like release prompts schemas api-docs website
 
 # The installed layout is build/ko: bin/ko, bin/ko-pane and share/ko. rm -f first:
 # macOS kills (Killed: 9) a process whose executable was overwritten in place.
@@ -66,25 +66,8 @@ nightly-cargo:
 miri:
 	bash scripts/miri.sh
 
-preview-pi: koa-page
-preview-pi unpreview-pi:
-	@set -eu; prefix="$${KO_PREVIEW_PREFIX:-$$(brew --prefix ko)}"; dir=$$(cd "$$prefix/share/ko" && pwd -P); \
-	for file in koa/skills webview $(addprefix koa/,$(KOA_FILES)); do \
-	  dst="$$dir/$$file"; \
-	  if test '$@' = preview-pi; then mkdir -p "$$(dirname "$$dst")"; \
-	    if ! test -e "$$dst.orig" && ! test -e "$$dst.orig.absent"; then \
-	      if test -e "$$dst"; then cp -Rp "$$dst" "$$dst.orig"; else touch "$$dst.orig.absent"; fi; \
-	    fi; case "$$file" in koa/*) src="$(KO)/share/ko/$$file" ;; *) src="share/$$file" ;; esac;  \
-	  elif test -e "$$dst.orig.absent"; then rm -rf "$$dst" "$$dst.orig.absent"; rmdir "$$(dirname "$$dst")" 2>/dev/null || true; continue; \
-	  elif test -e "$$dst.orig"; then src="$$dst.orig"; \
-	  else continue; fi; \
-	  tmp=$$(mktemp -d "$$dir/.preview.XXXXXX"); cp -Rp "$$src" "$$tmp/item"; \
-	  rm -rf "$$dst"; mv "$$tmp/item" "$$dst"; rmdir "$$tmp"; \
-	  if test '$@' = unpreview-pi; then rm -rf "$$dst.orig"; fi; \
-	done; echo 'Run /reload in the panes'
-
 release:
-	bash scripts/release.sh '$(VERSION)' $(ARGS)
+	bash scripts/release.sh '$(PRODUCT)' '$(VERSION)' $(ARGS)
 
 website:
 	cd website && npm ci && npm run dev
@@ -93,30 +76,14 @@ website:
 # source by terminfo.zig; tic writes x/ or 78/ by platform, and both are shipped.
 # zig keeps its caches in the KO_ZIG_CACHE of .cargo/config.toml.
 KO := build/ko
-SHARE := bin webview koa shim.sh terminfo
-KOA_SRC := koa-timer.ts koa-editor.ts koa-float.ts koa-feed.ts koa-job-log.ts koa-job-view.ts koa-records.ts koa-transcript.ts koa-image.ts koa-http.ts koa.ts koa-attach.ts koa-queue.ts koa-complete.ts koa-shell.ts koa-shell.sh koa-child.ts koa-sdk.ts koa-resume.ts koa-agents.ts koa-view.ts koa-inbox.ts koa-args.ts koa-commands.ts koa-session-dir.ts koa-identity.ts koa-assemble.ts koa-agent.ts text.ts agents.ts token.ts records.ts completion-context.ts runtime-exec.ts prompt.ts package.json
-KOA_FILES := $(KOA_SRC) page.html page.css page.js
-KOA_ESBUILD = koa/node_modules/.bin/esbuild koa/page/page.ts koa/page/page.css koa/page/page.html --loader:.html=copy --bundle --format=esm --platform=browser --target=safari26 --outdir=$(KO)/share/ko/koa
-
-.PHONY: koa-page koa-watch
+SHARE := bin webview shim.sh terminfo
 %/node_modules/.package-lock.json: %/package-lock.json %/package.json
 	cd $* && npm ci --silent
 	@touch $@
 
-koa-page: $(KO)/share/ko/koa/page.js
-
-$(KO)/share/ko/koa/page.js: $(wildcard koa/page/* koa/skills/*/*) $(addprefix koa/,$(KOA_SRC)) koa/node_modules/.package-lock.json
-	rm -rf $(KO)/share/ko/koa
-	mkdir -p $(KO)/share/ko/koa
-	$(KOA_ESBUILD)
-	cp $(addprefix koa/,$(KOA_SRC)) $(KO)/share/ko/koa/
-	cp -R koa/skills $(KO)/share/ko/koa/skills
-
-koa-watch: koa-page
-	$(KOA_ESBUILD) --watch
 ZIG_CACHE := $(CURDIR)/target/zig-cache
 TERMINFO := $(KO)/share/ko/terminfo
-build: $(TERMINFO)/x/xterm-ghostty koa-page
+build: $(TERMINFO)/x/xterm-ghostty
 	$(CARGO) build --locked --release --bin ko --bin ko-pane
 	rm -f $(KO)/bin/ko $(KO)/bin/ko-pane
 	cp target/release/ko target/release/ko-pane $(KO)/bin/

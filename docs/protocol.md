@@ -721,7 +721,7 @@ invariants.
   `invalid` with the document unchanged. A pane without `command` runs
   `ko shell`. A `command` (`Command`) is an `argv` with an absolute
   executable, a `shell` command line, or `koa`, which starts the
-  server's own koa (design.md, "Starting a koa agent"); with a
+  `koa` of the server's PATH (design.md, "Starting a koa agent"); with a
   `runtime`, the runtime's `koa` setting places a `koa` pane
   (design-runtimes.md, "A koa command in a runtime"). `parent` and `close` are the pane's for its life, and
   its row carries them from the layout event that adds it. `parent`

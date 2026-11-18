@@ -83,7 +83,7 @@ extension's routed commands and koa's shell completion). The records of koa and 
 The files of `koa/`: `koa.ts`, the program; `page/`, the
 TypeScript sources of its page (`page.ts`, `markdown.ts`, the
 streaming markdown over marked and remend, `page.html`, `page.css`),
-which `make koa-page` bundles with esbuild into one unminified
+which `make -C koa` bundles with esbuild into one unminified
 `page.js`; `package.json` and its lockfile pin esbuild, TypeScript 7
 (the one type checker of every TypeScript in the repository), the
 page's npm packages and the development packages of the extension and
@@ -115,31 +115,42 @@ scenario types (`testdata/scenario.ts`), their shared records
 scenarios share) and the scenarios
 (`testdata/scenarios/`), none of them installed ("Tests").
 
-`make build` installs the program, the extension, the shared
-modules, the skill and the built page in
-`share/ko/koa/`, and the shim `share/ko/bin/koa`. koa takes ko's
+koa builds on its own: `koa/Makefile` (`make -C koa`, no cargo and
+no git) writes `build/koa/`, which is also the layout of `make -C koa
+install PREFIX=DIR` and of koa's release tarball: `bin/koa`, the
+shim `koa/bin/koa`, and `share/koa/` with `koa/` (the program, the
+extension, the shared modules, the skill and the built page, the
+files of `KOA_SRC` in `koa/Makefile`) and `webview/`, koa's copy of
+the SDK. The shim checks the host and runs
+`${0%/*}/../share/koa/koa/koa.ts`, so a Homebrew symlink of `bin/koa`
+finds the linked `share/koa`, and a `brew upgrade koa` replaces the
+files under a running koa as an install does (`koa-identity.ts` then
+makes `/reload` restart it). ko does not ship koa: the server runs
+the `koa` of its PATH (design.md, "Starting a koa agent"). koa needs
+only a `ko` on PATH at runtime, which every pane has, and it finds it
+there, so it always talks to the ko that runs its pane. koa takes ko's
 API types from `../webview/ko-api.d.ts`, with type-only imports. The
 checkout and every installed layout keep `koa/` and `webview/` as
 siblings, so koa's relative imports of `../webview/` resolve
-the same way in the checkout and in every installed layout: `make
-install` and the Homebrew formula, Kido.app's bundle and the static
-Linux layout that runtimes and containers use.
+the same way in the checkout and in every installed layout: ko's
+`share/ko` keeps its SDK, and koa's `share/koa` its copy.
 
 **The host's needs.** koa runs where its pane's program runs: the
 Mac, a remote server (`ko HOST`), or a runtime or container. That
 host needs Node 24 or later and `pi` on PATH; the page's client needs
 nothing. The shim checks both before any JavaScript runs, so a
-missing one shows as one line in the pane. koa installs everywhere ko
-installs, because remote use needs it on the server.
+missing one shows as one line in the pane. A remote server or a
+runtime image installs koa beside ko from koa's release tarball
+(docs/release.md, "koa").
 
 **The page is built, not committed.** The page is TypeScript in
 `koa/page/`, which esbuild bundles with CodeMirror, `marked`
 and `remend` from `koa/package.json` into one unminified
-`page.js` at `make build` (`make koa-page`; `make koa-watch` rebuilds
+`page.js` at koa's build (`make -C koa`; `make -C koa watch` rebuilds
 on each save). The user decided this: vendored files needed a rewriter
 of their imports, and a committed bundle is a large generated diff in
-every page commit that no reviewer reads. The cost is that `make
-build` needs Node and npm. The bundle is not minified, so it is
+every page commit that no reviewer reads. The cost is that koa's
+build needs Node and npm. The bundle is not minified, so it is
 readable in WebKit's inspector; the bridge does not compress, so the
 plain size is the wire size. The program itself is not bundled: Node
 runs `koa.ts` and the agent extension as they are. koa turns on Node's
@@ -154,10 +165,10 @@ into one document for `/` (`koa-assemble.ts`). koa assembles it once
 at startup and serves that copy for its whole life, and it reads
 `koa-shell.sh` at startup too: a running koa always serves the page of
 its own code, so an install that replaces the files under it (a
-Kido.app update) cannot give an old koa a new page that expects state
+`brew upgrade koa`) cannot give an old koa a new page that expects state
 it does not send. A page file that is missing at startup stops koa.
 For development, `KOA_PAGE_RELOAD=1` assembles the page again for each
-load, so `make koa-watch` and ⌘R show a change. A new page reaches a
+load, so `make -C koa watch` and ⌘R show a change. A new page reaches a
 running pane only through `/reload`, which replaces koa itself
 when its files changed ("`/reload` reloads pi" below), or `/restart`.
 
@@ -505,8 +516,8 @@ Node, its script path as the shim gave it, and its parsed options,
 koa's own included, by the rule of "Start again" (`restartArgs`), each
 valued option as one `--name=VALUE` argument: the same pid
 in the same pane, so the pane's row and children stay, and the script
-path resolves to the files that a Kido.app update installed, pi's SDK
-included. `KOA_RELOAD` in the new process holds the number of
+path resolves to the files that a koa upgrade installed; pi's SDK
+loads again from the installed pi, so a pi upgrade also takes effect. `KOA_RELOAD` in the new process holds the number of
 in-process subagents, at every depth, that the restart ended. koa
 reads and removes it at start; it skips the `--resume` picker and the
 positional messages and adds one note once the session is ready:
@@ -2121,7 +2132,7 @@ against `testdata/replay.ts`, not koa, so a host change moves no
 page snapshot. A snapshot moves only when the page's code or the
 page-record format changes. The replay server is a test program, not
 a mode of koa, so the product has no test path. It serves the page
-that `assemblePage` builds from the built `share/ko/koa/` (the one
+that `assemblePage` builds from the built `build/koa/share/koa/koa/` (the one
 source of the page and its `koa-instance` meta for koa and the
 replay), runs in a pane through the webview SDK as koa does, and
 loads no pi.

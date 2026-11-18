@@ -22,7 +22,7 @@ if (!build) throw Error(`${module} has no scenario ${method}`);
 const { open, steps, files } = build(dir);
 
 const instance = randomUUID();
-const page = await assemblePage(new URL("../../build/ko/share/ko/koa/koa.ts", import.meta.url), instance);
+const page = await assemblePage(new URL("../../build/koa/share/koa/koa/koa.ts", import.meta.url), instance);
 const store = mkdtempSync(join(tmpdir(), `koa-replay-${process.pid}-`));
 const attached = attachments(store);
 const view = await webview({ target: browser ? "browser" : "pane", ...(browser ? {} : { ko: findKo() ?? undefined }) });

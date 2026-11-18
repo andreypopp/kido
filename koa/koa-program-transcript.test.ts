@@ -47,9 +47,9 @@ test('completion limits active searches and kills expired children', { timeout: 
 test("document loads read the current page files and recover after a failed read", { timeout: 10000 }, async t => {
   const dir = await mkdtemp(join(tmpdir(), "koa-page-reload-"));
   t.after(() => rm(dir, { recursive: true, force: true }));
-  await cp(resolve("../build/ko/share/ko/koa"), dir, { recursive: true });
+  await cp(resolve("../build/koa/share/koa/koa"), dir, { recursive: true });
   const program = join(dir, "koa.ts");
-  await writeFile(program, `import ${JSON.stringify(resolve('../build/ko/share/ko/koa/koa.ts'))};`);
+  await writeFile(program, `import ${JSON.stringify(resolve('../build/koa/share/koa/koa/koa.ts'))};`);
   const app = await realFixture(t, {replies: [], env: { KOA_PAGE_RELOAD: '1' }, program });
   for (const name of ["page.html", "page.css", "page.js"]) {
     const file = join(dir, name), marker = `reload-${name}`;
@@ -102,7 +102,7 @@ test("metrics are opt-in and record frame samples with stream counters", { timeo
 
 test("metrics mode is explicit and requires metrics", { timeout: 10000 }, async () => {
   for (const args of [["--metrics-mode", "frame"], ["--metrics-mode", "invalid"]]) {
-    const child = spawn(process.execPath, [resolve('../build/ko/share/ko/koa/koa.ts'), ...args], { env: { ...process.env, PATH: '' }, timeout: 5000 });
+    const child = spawn(process.execPath, [resolve('../build/koa/share/koa/koa/koa.ts'), ...args], { env: { ...process.env, PATH: '' }, timeout: 5000 });
     let error = "";
     child.stderr.on("data", bytes => { error += bytes; });
     const [code] = await once(child, "close");

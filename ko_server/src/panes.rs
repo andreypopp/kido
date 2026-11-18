@@ -946,6 +946,15 @@ mod tests {
 
     #[test]
     fn koa_option_values_are_single_arguments() {
+        let dir = PathBuf::from(format!("/tmp/ko-koa-{}", ko_sys::entropy::hex(8).unwrap()));
+        std::fs::create_dir(&dir).unwrap();
+        let koa = dir.join("koa");
+        std::os::unix::fs::symlink("/bin/sh", &koa).unwrap();
+        let mut config = config();
+        config
+            .env
+            .push(format!("PATH={}", dir.display()).into_bytes());
+        config.bin_dir = Some(PathBuf::from("/ignored"));
         for name in ["--browser", "--help"] {
             let request = CreatePane {
                 command: Some(Command::Koa {
@@ -966,8 +975,36 @@ mod tests {
                 runtime: None,
             };
             let wrap = |inner: Option<&[Vec<u8>]>| inner.unwrap_or_default().to_vec();
+            let host = program(
+                &config,
+                Path::new("/bin/sh"),
+                &request,
+                Start::Host {
+                    cwd: None,
+                    routed: None,
+                },
+            )
+            .unwrap();
+            let mut expected = vec![koa.as_os_str().as_encoded_bytes().to_vec()];
+            expected.extend(
+                ["--session-id=-id", &format!("--name={name}"), "--model=-x"]
+                    .map(|arg| arg.as_bytes().to_vec()),
+            );
+            assert_eq!(host.record, expected);
+            assert_eq!(
+                host.argv,
+                [
+                    vec![
+                        config.exe.as_os_str().as_encoded_bytes().to_vec(),
+                        b"shell".to_vec(),
+                        b"--".to_vec()
+                    ],
+                    expected
+                ]
+                .concat()
+            );
             let made = program(
-                &config(),
+                &config,
                 Path::new("/bin/sh"),
                 &request,
                 Start::Runtime(&wrap),
@@ -984,6 +1021,7 @@ mod tests {
                 .map(|arg| arg.as_bytes().to_vec())
             );
         }
+        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]
