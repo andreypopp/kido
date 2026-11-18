@@ -28,6 +28,7 @@ fn main() {
             .arg("-Dcpu=native");
     }
     let status = zig
+        .current_dir(&ghostty)
         .arg("--build-file")
         .arg(ghostty.join("build.zig"))
         .args([
