@@ -1,3 +1,4 @@
+import { enableCompileCache } from "node:module";
 import { spawnSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { appendFile, writeFile } from "node:fs/promises";
@@ -32,6 +33,8 @@ import type { Agent, Selection, Tree } from "./koa-agents.ts";
 import { createView, type AgentView, type Own } from "./koa-view.ts";
 import { agentCompletionItems, type AgentRow } from "./agents.ts";
 import { ATTACHMENT_LIMITS, type ViewGone, type PromptMode, type PageRecord, type State, type ThinkingLevel, type Dialog, type CompletionCommand, type CompletionQuery, type SessionStats, type Bash, type View, metricsRequest } from "./koa-records.ts";
+
+enableCompileCache();
 
 function completeBody(value: unknown): CompletionQuery | { error: string } {
   return isRecord(value) && typeof value.text === "string" && typeof value.pos === "number" && Number.isSafeInteger(value.pos) && value.pos >= 0 && value.pos <= value.text.length ? { text: value.text, pos: value.pos } : { error: "Completion requires text and a cursor offset in that text" };

@@ -141,7 +141,11 @@ every page commit that no reviewer reads. The cost is that `make
 build` needs Node and npm. The bundle is not minified, so it is
 readable in WebKit's inspector; the bridge does not compress, so the
 plain size is the wire size. The program itself is not bundled: Node
-runs `koa.ts` and the agent extension as they are.
+runs `koa.ts` and the agent extension as they are. koa turns on Node's
+compile cache before it loads pi's SDK, so a start after the first
+skips compiling the SDK again; most of a start is that compilation
+and pi's loading of the extensions, which jiti transforms itself and
+Node's cache does not cover.
 
 **One response for the page.** A remote server costs one round trip
 for each asset, so koa inlines `page.html`, `page.css` and `page.js`
