@@ -109,6 +109,8 @@ Provisioning gives `me` what a Koa pane needs, and no credentials:
   npm checks every package against the lockfile's hash; Claude Code's
   native binary is one of those packages. A changed lockfile installs
   again on the next run.
+- Debian's `fd-find`, linked as `fd` in `~/.local/bin` (Debian names
+  it `fdfind`), for Koa's @-file completion and pi's find tool.
 - `~/.pi/agent/settings.json` from `deploy/files/pi-settings.json`,
   only when the file does not exist: later runs never touch it. It
   names the pi packages, each pinned to a commit or a version; pi

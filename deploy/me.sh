@@ -13,6 +13,7 @@ if ! cmp -s "$base/tools/package-lock.json" "$tools/installed-lock.json"; then
 fi
 ln -sfn "$tools/node_modules/.bin/pi" "$HOME/.local/bin/pi"
 ln -sfn "$tools/node_modules/.bin/claude" "$HOME/.local/bin/claude"
+ln -sfn /usr/bin/fdfind "$HOME/.local/bin/fd"
 if [[ ! -e $HOME/.pi/agent/settings.json ]]; then
     install -D -m 0644 "$base/files/pi-settings.json" "$HOME/.pi/agent/settings.json"
 fi

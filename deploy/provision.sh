@@ -65,7 +65,7 @@ install -m 0644 "$base/files/nodesource.asc" /usr/share/keyrings/nodesource.asc
 printf 'deb [signed-by=/usr/share/keyrings/nodesource.asc] https://deb.nodesource.com/node_24.x nodistro main\n' > /etc/apt/sources.list.d/nodesource.list
 old_caddy=$(dpkg-query -W -f='${Version}' caddy 2>/dev/null || true)
 apt-get update
-apt-get install -y ca-certificates curl caddy nftables unattended-upgrades apparmor-utils python3-cryptography qrencode openssh-server sudo nodejs git
+apt-get install -y ca-certificates curl caddy nftables unattended-upgrades apparmor-utils python3-cryptography qrencode openssh-server sudo nodejs git fd-find
 [[ $old_caddy == "$(dpkg-query -W -f='${Version}' caddy)" ]] || caddy_changed=true
 version=$(caddy version | awk '{print $1}')
 dpkg --compare-versions "${version#v}" ge 2.11.4 || { echo 'Caddy 2.11.4 or later is required' >&2; exit 1; }
