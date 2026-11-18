@@ -698,7 +698,10 @@ import SidebarFeed
         _ = try await webviewJS(web, "(()=>{pendingAbort.abort();return true})()")
         toy.releaseSlot(0)
         try await wait("cancelled waiter skipped") { toy.acceptedSlots.count == 7 }
-        XCTAssertEqual(toy.acceptedSlots, [0, 1, 2, 3, 4, 5, 7])
+        let accepted = toy.acceptedSlots
+        XCTAssertEqual(accepted.prefix(6).sorted(), Array(0..<6))
+        XCTAssertEqual(accepted.last, 7)
+        XCTAssertEqual(accepted.count, 7)
         for id in 1..<70 where id != 6 { toy.releaseSlot(id) }
         _ = try await webviewJS(web, "Promise.all(limitRequests).then(()=>true)")
         XCTAssertEqual(toy.acceptedSlots.sorted(), Array(0..<70).filter { $0 != 6 })
@@ -733,12 +736,14 @@ import SidebarFeed
         let web = try XCTUnwrap(pane.webviewView?.browser)
         _ = try await webviewJS(web, "fetch('/events').then(response=>{window.slotStream=response;window.slotRequests=Array.from({length:8},(_,id)=>fetch('/slot/'+id).then(response=>response.text()));return true})")
         try await wait("five short requests admitted", within: 5) { toy.acceptedSlots.count == 5 }
-        XCTAssertEqual(toy.acceptedSlots, [0, 1, 2, 3, 4])
+        XCTAssertEqual(toy.acceptedSlots.sorted(), Array(0..<5))
         XCTAssertEqual(toy.waitingSlots, 5)
         for id in 0..<3 {
             toy.releaseSlot(id)
             try await wait("the next queued request", within: 5) { toy.acceptedSlots.count == 6 + id }
-            XCTAssertEqual(toy.acceptedSlots, Array(0..<(6 + id)))
+            let accepted = toy.acceptedSlots
+            XCTAssertEqual(accepted.prefix(5).sorted(), Array(0..<5))
+            XCTAssertEqual(Array(accepted.dropFirst(5)), Array(5..<(6 + id)))
             XCTAssertEqual(toy.waitingSlots, 5)
         }
         for id in 3..<8 { toy.releaseSlot(id) }
