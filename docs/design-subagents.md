@@ -30,7 +30,7 @@ socket.
 
 ## The tree
 
-`share/koa/koa-agents.ts` owns the tree: the root, each agent's
+`koa/koa-agents.ts` owns the tree: the root, each agent's
 children, the one `ModelRuntime` of the process (one `auth.json` for
 every agent), the pane's message stream ("The pane's queue") and the
 one queue of status records ("In the sidebar"). Each agent has its own
@@ -72,7 +72,7 @@ the session, not the address under which the parent registered it.
 
 ## The tools, and what they call
 
-The eight tools are in `share/koa/koa-agent.ts`. No tool has a ko
+The eight tools are in `koa/koa-agent.ts`. No tool has a ko
 subcommand of its own.
 
 | tool | what it uses |
@@ -726,7 +726,7 @@ A stop sends `SIGTERM`, then `SIGKILL` after `KO_JOB_KILL_MS` (5000)
 when the job still runs. The host's one `process.on("exit")` handler
 sends `SIGKILL` through `signalJob` to every local group of every
 agent that still runs at koa's exit. `scripts/lint.sh` refuses
-`process.kill(` in `share/koa/` outside `signalJob`.
+`process.kill(` in `koa/` outside `signalJob`.
 
 **Known limit: an orphan after `SIGKILL`.** A pane's hangup sends
 `SIGHUP` to koa's group and `SIGKILL` 250 ms later. koa's `SIGHUP`

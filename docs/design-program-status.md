@@ -210,7 +210,7 @@ show it, and the row's second line names the foreground program
 instead, as koa's editor float shows "nvim" under "Draft for @ko".
 
 koa owns the `koa.*` variables, through its agent extension
-(`share/koa/koa-agent.ts`). The server reads only `koa.session`,
+(`koa/koa-agent.ts`). The server reads only `koa.session`,
 `koa.name` and `koa.activity`, and trusts them only while the pane has
 an OSC 7501 root with `app=koa`. ko stores nothing for a koa session.
 

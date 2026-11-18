@@ -58,8 +58,8 @@ work=$(mktemp -d /tmp/ko-release-XXXXXX)
 trap 'rm -rf "$work"' EXIT
 "$old_ko" --help > "$work/old.help"
 build/ko/bin/ko --help > "$work/new.help"
-git show "$old:share/koa/testdata/ko-prompts.txt" > "$work/old.prompts"
-cp share/koa/testdata/ko-prompts.txt "$work/new.prompts"
+git show "$old:koa/testdata/ko-prompts.txt" > "$work/old.prompts"
+cp koa/testdata/ko-prompts.txt "$work/new.prompts"
 python3 - "$work" "$previous" "$version" <<'PY'
 import re,sys,pathlib
 root,previous,version=sys.argv[1:]

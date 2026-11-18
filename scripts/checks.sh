@@ -80,11 +80,11 @@ ko_pane_wire/* ko_server/* ko_wire/*|build lint unit e2e verus app ko-test
 ko_client/* share/ko/*.json|build lint unit e2e app ko-test
 ko_sys/* ko_vt_sys/*|build build-linux lint unit e2e
 ko/* ko_*/* fuzz/* share/ko/*|build lint unit e2e
-share/koa/page/*|page
-share/koa/testdata/replay.ts share/koa/testdata/scenario.ts share/koa/testdata/scenario-parts.ts share/koa/testdata/scenarios/*|replay
-share/koa/testdata/visual-ext.ts|host
-share/koa/testdata/stress-ext.ts|stress
-share/koa/* share/webview/* .pi/* scripts/test-ts.sh|build lint ts
+koa/page/*|page
+koa/testdata/replay.ts koa/testdata/scenario.ts koa/testdata/scenario-parts.ts koa/testdata/scenarios/*|replay
+koa/testdata/visual-ext.ts|host
+koa/testdata/stress-ext.ts|stress
+koa/* webview/* .pi/* scripts/test-ts.sh|build lint ts
 app/VisualTests/__Snapshots__/*/*|snapshot
 app/VisualTests/*.swift|swift
 app/VisualTests/*|visual

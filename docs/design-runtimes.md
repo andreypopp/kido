@@ -1107,7 +1107,7 @@ no master outlives a down.
 ## Agents in a runtime
 
 An agent works in a runtime in one of two modes, by the runtime's
-`koa`. The harness side is `share/koa/koa-agent.ts`; ko's part of either
+`koa`. The harness side is `koa/koa-agent.ts`; ko's part of either
 mode is the configuration's `koa`, the `cwd` and `koa` of `GET
 /runtimes/NAME`, the exec session, the `runtime` body field and the
 placement of a `koa` command ("A koa command in a runtime", below). The
@@ -1524,6 +1524,6 @@ scheduled.
   vsock only in the VM's owner process; Apple's `container` is that
   owner with a CLI, which is why it is the macOS kind.
 - **`@` completion from the runtime.** A routed koa's `@` lists host
-  files (`share/koa/koa-complete.ts` runs the host's `fd`). A later
+  files (`koa/koa-complete.ts` runs the host's `fd`). A later
   change can run that walk as an exec of `fd` or `find` in the
   runtime, at a round trip for each keystroke.

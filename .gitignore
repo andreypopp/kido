@@ -1,6 +1,6 @@
-share/koa/node_modules/
+koa/node_modules/
 scripts/openapi/node_modules/
-share/koa/.copy-*/
+koa/.copy-*/
 /build/
 /target/
 /deploy/deployments/

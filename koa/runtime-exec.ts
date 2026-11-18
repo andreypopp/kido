@@ -3,7 +3,7 @@ import { accessSync, constants } from "node:fs";
 import os from "node:os";
 import { delimiter, join } from "node:path";
 import { errorText, isRecord, isString } from "./text.ts";
-import type { components } from "./ko-api.d.ts";
+import type { components } from "../webview/ko-api.d.ts";
 import type { JobEnd } from "./records.ts";
 type Api = components["schemas"];
 export const KO_TIMEOUT_MS = 5000;

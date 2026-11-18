@@ -1,4 +1,4 @@
-import type { components } from "./ko-api.d.ts";
+import type { components } from "../webview/ko-api.d.ts";
 
 export type Relation = components["schemas"]["Relation"];
 const relations = new Set<string>(["parent", "child", "sibling", "descendant", "sibling_descendant"] satisfies Relation[]);

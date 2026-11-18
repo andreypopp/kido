@@ -11,7 +11,7 @@ import { pollUntil } from "./koa-agent-fixture.ts";
 import { realFixture, realPi, stopChild } from "./koa-program-fixture.ts";
 import { userParts } from "./koa-fake-provider.ts";
 
-const koa = resolve("../../build/ko/share/ko/koa/koa.ts");
+const koa = resolve("../build/ko/share/ko/koa/koa.ts");
 const send = (app: { post(path: string, body?: object): Promise<Response> }, text: string) => app.post("prompt", { text, mode: "prompt", attachments: [] });
 
 test("--help prints usage without starting pi or a webview", { timeout: 5000 }, async () => {

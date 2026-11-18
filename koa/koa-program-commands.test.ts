@@ -13,7 +13,7 @@ test('startup failures release the view before exiting', { timeout: 5000 }, asyn
   t.after(() => rm(dir, { recursive: true, force: true }));
   await symlink(process.execPath, join(dir, 'node'));
   for (const args of [[], ['--pi', realPi, '--metrics', '/does-not-exist/metrics']]) {
-    const child = spawn(process.execPath, [resolve('../../build/ko/share/ko/koa/koa.ts'), '--browser', ...args], { env: { ...process.env, PATH: dir, ...(args.length ? {} : { KOA_UPLOAD_IDLE_MS: 'bad' }) }, stdio: 'pipe' });
+    const child = spawn(process.execPath, [resolve('../build/ko/share/ko/koa/koa.ts'), '--browser', ...args], { env: { ...process.env, PATH: dir, ...(args.length ? {} : { KOA_UPLOAD_IDLE_MS: 'bad' }) }, stdio: 'pipe' });
     const close = once(child, 'close'); t.after(() => { if (child.exitCode === null) child.kill('SIGTERM'); });
     let stderr = ''; child.stderr.on('data', bytes => { stderr += bytes; });
     const [code] = await close; assert.equal(code, 1); assert.match(stderr, args.length ? /ENOENT/ : /KOA_UPLOAD_IDLE_MS/);
@@ -38,7 +38,7 @@ test('page assets stay with the running program', { timeout: 10000 }, async t =>
 
 test('a listen failure closes the acquired view and pi', { timeout: 5000 }, async t => {
   const dir = await mkdtemp('/tmp/koa-listen-failure-'); t.after(() => rm(dir, { recursive: true, force: true }));
-  await cp(resolve('../../build/ko/share/ko/koa'), join(dir, 'koa'), { recursive: true });
+  await cp(resolve('../build/ko/share/ko/koa'), join(dir, 'koa'), { recursive: true });
   await mkdir(join(dir, 'webview'));
   const marker = join(dir, 'socket');
   await writeFile(join(dir, 'webview/index.ts'), `import {webview as real} from ${JSON.stringify(new URL('../webview/index.ts', import.meta.url).href)};import {writeFileSync} from 'node:fs';export async function webview(options){const view=await real(options);writeFileSync(${JSON.stringify(marker)},view.socketPath);writeFileSync(view.socketPath,'occupied');return view;}`);

@@ -2,7 +2,7 @@
 
 This file describes the build of ko: the crates and their layout,
 the toolchain, the platforms, the installed layout under `build/ko/`,
-the static Linux ko, the `ko_client` xcframework and the share tree.
+the static Linux ko, the `ko_client` xcframework and the source trees.
 AGENTS.md, "Rust", holds the rules that a change can break;
 design-ko.md, "Crates", maps the coordinator's modules.
 [verification.md](verification.md) describes the checks.
@@ -57,7 +57,7 @@ directory, with the underscore.
   runs it.
 - `ko_e2e/` is the e2e suite, a workspace member outside
   `default-members` (verification.md, "The e2e suite").
-- `share/koa/testdata/fake_ko/` is the crate `fake_ko`, the fake `ko`
+- `koa/testdata/fake_ko/` is the crate `fake_ko`, the fake `ko`
   of the TypeScript suite, a workspace member outside
   `default-members` that `make build-fake-ko` builds for
   `scripts/test-ts.sh`. It reads and writes ko's wire only through
@@ -202,9 +202,9 @@ install PREFIX=<prefix>` copies that layout under `<prefix>/bin` and
 
 `make build` installs `share/ko/bin` (the `ko`, `ssh` and `koa`
 shims), `share/ko/shim.sh`, koa's program, the agent extension, the
-shared modules, `ko-api.d.ts`, the skills and the bundled page (in
-`share/ko/koa/`, the files of `KOA_SRC` in the Makefile), and the SDK `share/webview/` (in
-`share/ko/webview/`) beside `bin/ko` in `build/ko/`, the layout that
+shared modules, the skills and the bundled page (in
+`share/ko/koa/`, the files of `KOA_SRC` in the Makefile), and the SDK `webview/`
+with `ko-api.d.ts` (in `share/ko/webview/`) beside `bin/ko` in `build/ko/`, the layout that
 `ko_shell/src/bin_dir.rs` finds as installed.
 
 `ko version` prints the JSON of `protocol::version()`, with the build
@@ -380,22 +380,22 @@ first connection, and writes the guest's address to the folder's
 `address`; `ssh` and `down` act as `me` through the same
 configuration.
 
-## The share tree and the scripts
+## The source trees and the scripts
 
     share/ko/           the source of share/ko as installed:
       bin/              the bin directory's sh shims (ko, ssh, koa)
       shim.sh           their shared helper
       bash/, zsh/       the OSC 133 integrations every primed shell sources
       openapi.json, client-model.json, config-schema.json   the generated schemas (make schemas)
-    share/koa/          koa, the pi harness that renders through a
+    koa/                koa, the pi harness that renders through a
                         webview, and koa-agent.ts, the agent extension that
                         koa loads into its pi; their suites, the fake ko of
-                        testdata/fake_ko/, the prompt snapshot, the ko skill,
-                        ko-api.d.ts (generated from openapi.json) and the
-                        shared modules (design-koa.md, "Where koa lives",
-                        names each file)
-    share/webview/      @kido/webview, the Node SDK for webview pages
-                        (index.ts, README.md), installed as share/ko/webview
+                        testdata/fake_ko/, the prompt snapshot, the ko skill
+                        and the shared modules (design-koa.md, "Where koa
+                        lives", names each file); installed as share/ko/koa
+    webview/            @kido/webview, the Node SDK for webview pages
+                        (index.ts, README.md) and ko-api.d.ts (generated
+                        from openapi.json), installed as share/ko/webview
     .pi/prompts/        gh-watch.md, /gh-watch: starts scripts/main-watch.sh streamed;
                         release.md, /release: Kido.app first, then ko
     .pi/extensions/     no-git-writes, the spawned agent's bash-tool guard
@@ -404,7 +404,7 @@ configuration.
     scripts/openapi/    package.json and its lockfile: openapi-typescript and
                         redocly, the generators of ko-api.d.ts and of make
                         api-docs, with the TypeScript 5 that they need, apart
-                        from share/koa's TypeScript 7
+                        from koa's TypeScript 7
     scripts/            verify.sh, scrubbed verification; checks.sh, the
                         checks of a unit's changed paths; release.sh, the
                         Homebrew tap release; lint.sh, code hygiene, signal

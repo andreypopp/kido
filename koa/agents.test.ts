@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import type { components } from "./ko-api.d.ts";
+import type { components } from "../webview/ko-api.d.ts";
 import { agentCompletionItems, parsePanes, relationships, type AgentCompletionRow, type PaneInfo } from "./agents.ts";
 
 test("completion ranks names before words and inserts unique session prefixes", () => {

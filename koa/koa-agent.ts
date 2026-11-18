@@ -44,7 +44,7 @@ import { contentText, mintId, utf8Prefix, utf8Suffix, errorText, cleanLine, isRe
 import { dirname, delimiter, extname, join, posix, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Type } from "typebox";
-import type { components } from "./ko-api.d.ts";
+import type { components } from "../webview/ko-api.d.ts";
 import { isAgentFailure, jobEndText, type RestartState, type InProcessMessage, type AgentEnd, type Relation, type AgentRef, type AgentOutcome, type MessageDetails, type SteerDetails, type NoticeDetails, type StreamDetails, type JobRef, type JobEnd, type JobPlace, type JobSnapshot } from "./records.ts";
 import { reconnectBackoff, parsePanes, placesOf, koaAgent, peerPanes, runningRows, MIN_ID_PREFIX, VAR_SESSION, VAR_NAME, VAR_ACTIVITY, VAR_TASK, VAR_RUNTIME, type PaneInfo, type AgentRow, type Where } from "./agents.ts";
 

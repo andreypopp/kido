@@ -74,5 +74,5 @@ only your server, through `fetch` and `WebSocket`. Send a request body
 as a string or bytes. A `Blob` or `FormData` body reaches your server
 empty, because WebKit does not pass it to the app.
 
-The SDK tests are in `share/koa/koa-webview-sdk.test.ts`. Run them with
+The SDK tests are in `koa/koa-webview-sdk.test.ts`. Run them with
 `scripts/test-ts.sh koa-webview-sdk.test.ts`.

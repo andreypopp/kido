@@ -11,7 +11,7 @@ have their own plan, plans/koa-questions.md.
    `/items`) lowers it. Off the screen, one page of eight in the
    many-panes workload had a footprint of about 320 MiB, against
    about 100 MiB for the others. The result is a budget in
-   `share/koa/stress/report.ts` and, if windowing helps, a page change.
+   `koa/stress/report.ts` and, if windowing helps, a page change.
 2. **Session trees.** `/tree`, forks and clones from the page. pi's
    RPC has `fork`, `clone` and `switch_session`, which koa already
    follows with a rebuild; the page has no view to start them. Needs a

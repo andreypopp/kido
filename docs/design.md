@@ -20,7 +20,7 @@ The **harness** is everything that only an agent has: the pi session,
 the tools, the task, the report and the names. It is koa
 (design-koa.md), which runs pi's session in its own process through
 pi's SDK with one inline pi extension, the agent extension
-`share/koa/koa-agent.ts`, and renders the session through a webview
+`koa/koa-agent.ts`, and renders the session through a webview
 page. The two
 parts talk only through `ko api` on ko's routes and streams, and
 the `@kido/webview` SDK (`ko webview serve`, `enter` and `leave`) for
@@ -168,7 +168,7 @@ the grant (design-subagents.md, "Spawning").
 
 **The ko skill.** Inside ko, the extension answers pi's
 `resources_discover` with the `skills` directory beside its own file,
-which holds the skill `ko` (`share/koa/skills/ko/SKILL.md`, installed
+which holds the skill `ko` (`koa/skills/ko/SKILL.md`, installed
 as `share/ko/koa/skills/ko/SKILL.md`). pi puts only the skill's name,
 description and path in the system prompt, and the model reads the
 file when a task needs it. Inside ko, `before_agent_start`
@@ -888,8 +888,8 @@ order.
 
 **Install layout.** `make build` lays out `build/ko/` as installed:
 `bin/ko`, `bin/ko-pane` and `share/ko` with `bin/`, `shim.sh`,
-`koa/` (koa, its page, the agent extension, the shared modules,
-`ko-api.d.ts` and the skills), `webview/` (the SDK) and the terminfo. `make
+`koa/` (koa, its page, the agent extension, the shared modules
+and the skills), `webview/` (the SDK and `ko-api.d.ts`) and the terminfo. `make
 install` copies it under
 `PREFIX`, default `~/.local`. This is Homebrew's `pkgshare` layout.
 
@@ -1003,7 +1003,7 @@ Each decision names its date. The code states the rest.
 2026-11-12, koa is the one harness:
 
 - koa is Kido's one pi harness, and the agent extension is koa's
-  (`share/koa/koa-agent.ts`), loaded only into koa's own sessions. The
+  (`koa/koa-agent.ts`), loaded only into koa's own sessions. The
   `ko-pi` command, pi's terminal UI with the harness and every code
   path that exists only for that UI go. A plain `pi` is a
   `Terminal`.
@@ -1015,7 +1015,7 @@ Each decision names its date. The code states the rest.
   environment variable, which would leak into every job.
 - The inside runtime mode stays, as a `koa` command inside the
   runtime, so its image needs Node 24 and pi.
-- `share/pi/` is dissolved into `share/koa/`: one package, one
+- `share/pi/` is dissolved into `koa/`: one package, one
   lockfile, one tsconfig, one suite, one installed directory.
 - The names in session files and variables are `koa.*`, with no
   migration: a session written before the rename loses its recorded

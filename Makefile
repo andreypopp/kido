@@ -94,9 +94,9 @@ website:
 # zig keeps its caches in the KO_ZIG_CACHE of .cargo/config.toml.
 KO := build/ko
 SHARE := bin webview koa shim.sh terminfo
-KOA_SRC := koa-timer.ts koa-editor.ts koa-float.ts koa-feed.ts koa-job-log.ts koa-job-view.ts koa-records.ts koa-transcript.ts koa-image.ts koa-http.ts koa.ts koa-attach.ts koa-queue.ts koa-complete.ts koa-shell.ts koa-shell.sh koa-child.ts koa-sdk.ts koa-resume.ts koa-agents.ts koa-view.ts koa-inbox.ts koa-args.ts koa-commands.ts koa-session-dir.ts koa-identity.ts koa-assemble.ts koa-agent.ts text.ts agents.ts token.ts records.ts completion-context.ts runtime-exec.ts ko-api.d.ts prompt.ts package.json
+KOA_SRC := koa-timer.ts koa-editor.ts koa-float.ts koa-feed.ts koa-job-log.ts koa-job-view.ts koa-records.ts koa-transcript.ts koa-image.ts koa-http.ts koa.ts koa-attach.ts koa-queue.ts koa-complete.ts koa-shell.ts koa-shell.sh koa-child.ts koa-sdk.ts koa-resume.ts koa-agents.ts koa-view.ts koa-inbox.ts koa-args.ts koa-commands.ts koa-session-dir.ts koa-identity.ts koa-assemble.ts koa-agent.ts text.ts agents.ts token.ts records.ts completion-context.ts runtime-exec.ts prompt.ts package.json
 KOA_FILES := $(KOA_SRC) page.html page.css page.js
-KOA_ESBUILD = share/koa/node_modules/.bin/esbuild share/koa/page/page.ts share/koa/page/page.css share/koa/page/page.html --loader:.html=copy --bundle --format=esm --platform=browser --target=safari26 --outdir=$(KO)/share/ko/koa
+KOA_ESBUILD = koa/node_modules/.bin/esbuild koa/page/page.ts koa/page/page.css koa/page/page.html --loader:.html=copy --bundle --format=esm --platform=browser --target=safari26 --outdir=$(KO)/share/ko/koa
 
 .PHONY: koa-page koa-watch
 %/node_modules/.package-lock.json: %/package-lock.json %/package.json
@@ -105,12 +105,12 @@ KOA_ESBUILD = share/koa/node_modules/.bin/esbuild share/koa/page/page.ts share/k
 
 koa-page: $(KO)/share/ko/koa/page.js
 
-$(KO)/share/ko/koa/page.js: $(wildcard share/koa/page/* share/koa/skills/*/*) $(addprefix share/koa/,$(KOA_SRC)) share/koa/node_modules/.package-lock.json
+$(KO)/share/ko/koa/page.js: $(wildcard koa/page/* koa/skills/*/*) $(addprefix koa/,$(KOA_SRC)) koa/node_modules/.package-lock.json
 	rm -rf $(KO)/share/ko/koa
 	mkdir -p $(KO)/share/ko/koa
 	$(KOA_ESBUILD)
-	cp $(addprefix share/koa/,$(KOA_SRC)) $(KO)/share/ko/koa/
-	cp -R share/koa/skills $(KO)/share/ko/koa/skills
+	cp $(addprefix koa/,$(KOA_SRC)) $(KO)/share/ko/koa/
+	cp -R koa/skills $(KO)/share/ko/koa/skills
 
 koa-watch: koa-page
 	$(KOA_ESBUILD) --watch
@@ -122,7 +122,7 @@ build: $(TERMINFO)/x/xterm-ghostty koa-page
 	cp target/release/ko target/release/ko-pane $(KO)/bin/
 	rm -rf $(KO)/share/ko/bin $(KO)/share/ko/webview
 	cp -R share/ko/bin $(KO)/share/ko/bin
-	cp -R share/webview $(KO)/share/ko/webview
+	cp -R webview $(KO)/share/ko/webview
 	cp share/ko/shim.sh $(KO)/share/ko/shim.sh
 
 # Static Linux runtimes and host servers: bin/ko, bin/ko-pane and share/ko
@@ -219,7 +219,7 @@ test:
 	KO_PANE_EXE=$(CURDIR)/target/debug/ko-pane $(CARGO) test --locked
 	RUSTFLAGS='--cfg loom' $(CARGO) test --locked --release -p ko_pane_wire --target-dir target/loom ring::model
 
-# The fake ko of the TypeScript suite (share/koa/testdata/fake_ko).
+# The fake ko of the TypeScript suite (koa/testdata/fake_ko).
 build-fake-ko:
 	$(CARGO) build --locked -p fake_ko
 

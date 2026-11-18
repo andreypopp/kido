@@ -13,8 +13,8 @@ const urls = (app: App) => (app.stderr().match(/koa: http:\/\/127\.0\.0\.1:\d+\/
 async function install(t: TestContext) {
   const dir = await mkdtemp("/tmp/koa-reload-");
   t.after(() => rm(dir, { recursive: true, force: true }));
-  await cp(resolve("../../build/ko/share/ko/koa"), join(dir, "koa"), { recursive: true });
-  await symlink(resolve("../../build/ko/share/ko/webview"), join(dir, "webview"));
+  await cp(resolve("../build/ko/share/ko/koa"), join(dir, "koa"), { recursive: true });
+  await symlink(resolve("../build/ko/share/ko/webview"), join(dir, "webview"));
   return dir;
 }
 const update = async (dir: string) => writeFile(join(dir, "koa/page.html"), (await readFile(join(dir, "koa/page.html"), "utf8")).replace("<title>koa</title>", "<title>RELOADED-MARKER</title>"));

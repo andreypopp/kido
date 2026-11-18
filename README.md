@@ -189,7 +189,7 @@ ko is a Rust cargo workspace. It needs:
 - zig at the release of `scripts/install-zig.sh`, on PATH
 - make and `tic`; a C compiler only for `make build-bench`
 - Node 24 or newer and npm: `make build` bundles koa's page with
-  the esbuild of `share/koa/package.json`, and the TypeScript tests
+  the esbuild of `koa/package.json`, and the TypeScript tests
   need it
 
 ```sh
@@ -217,7 +217,7 @@ The other targets:
     make probe BYTES=N  ko-bench throughput: the server's ring reader under ko-pane, N bytes of bench/streams (default 1 GiB); not part of verify
     make build-bench  the C helpers of bench/ in build/bench/, after build
     make prompts regenerate the prompt fixture through scripts/lint.sh --update-prompts
-    make schemas regenerate share/ko/openapi.json, share/ko/client-model.json, share/ko/config-schema.json and share/koa/ko-api.d.ts through scripts/lint.sh --update-schemas
+    make schemas regenerate share/ko/openapi.json, share/ko/client-model.json, share/ko/config-schema.json and webview/ko-api.d.ts through scripts/lint.sh --update-schemas
     make api-docs  one static HTML page of share/ko/openapi.json (Redocly) in build/ko-api.html; not part of verify
     make fuzz TARGET=ring TIME=600  one time-boxed fuzz run; no TARGET lists the targets
     make miri    Miri on ko's modules without sockets or FFI (scripts/miri.sh)

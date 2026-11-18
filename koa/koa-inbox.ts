@@ -1,5 +1,5 @@
 import type { ChildProcess } from "node:child_process";
-import type { components } from "./ko-api.d.ts";
+import type { components } from "../webview/ko-api.d.ts";
 import { isRelation, type AgentRef, type InProcessMessage } from "./records.ts";
 import { reconnectBackoff } from "./agents.ts";
 import { lineReader, openStream } from "./runtime-exec.ts";

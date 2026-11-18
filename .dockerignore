@@ -1,6 +1,6 @@
 .git
 build
-share/koa/node_modules
+koa/node_modules
 scripts/openapi/node_modules
 app
 third_party/ghostty

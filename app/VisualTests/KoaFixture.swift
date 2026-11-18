@@ -4,7 +4,7 @@ import XCTest
 @testable import Kido
 
 // koa hosts the pi that is installed on PATH. A test gives it a private agent directory that points to
-// one fake provider (share/koa/koa-fake-provider.ts); the extension share/koa/testdata/visual-ext.ts registers its models.
+// one fake provider (koa/koa-fake-provider.ts); the extension koa/testdata/visual-ext.ts registers its models.
 @MainActor final class KoaProvider {
     private(set) var baseUrl = ""
     private let child: Child
@@ -16,7 +16,7 @@ import XCTest
         let output = Pipe(), input = Pipe()
         let json = { (value: Any) in String(decoding: try JSONSerialization.data(withJSONObject: value), as: UTF8.self) }
         let errors = directory.appendingPathComponent("provider.stderr")
-        let child = try Child("/bin/sh", ["-c", "exec \"$@\" 2>\"$0\"", errors.path, "/usr/bin/env", "node", test.checkoutRoot.appendingPathComponent("share/koa/koa-fake-provider.ts").path, "@" + scriptFile.path, directory.appendingPathComponent("agent").path, try json(settings), try json(models)] + (extensionModels ? ["extension"] : []), env: ["PATH": koaPath(test)], stdin: input, stdout: output)
+        let child = try Child("/bin/sh", ["-c", "exec \"$@\" 2>\"$0\"", errors.path, "/usr/bin/env", "node", test.checkoutRoot.appendingPathComponent("koa/koa-fake-provider.ts").path, "@" + scriptFile.path, directory.appendingPathComponent("agent").path, try json(settings), try json(models)] + (extensionModels ? ["extension"] : []), env: ["PATH": koaPath(test)], stdin: input, stdout: output)
         let provider = KoaProvider(child: child, input: input)
         test.addTeardownBlock { @MainActor in provider.stop() }
         nonisolated(unsafe) var seen = ""
@@ -45,7 +45,7 @@ import XCTest
 }
 
 @MainActor func koaPath(_ test: VisualTestCase) -> String {
-    [test.checkoutRoot.appendingPathComponent("share/koa/node_modules/.bin").path, tools.prefix + "/bin", "/opt/homebrew/bin", ProcessInfo.processInfo.environment["PATH"] ?? "/usr/bin:/bin"].joined(separator: ":")
+    [test.checkoutRoot.appendingPathComponent("koa/node_modules/.bin").path, tools.prefix + "/bin", "/opt/homebrew/bin", ProcessInfo.processInfo.environment["PATH"] ?? "/usr/bin:/bin"].joined(separator: ":")
 }
 
 // The shell command that starts koa in a pane. `visual` is the models file of visual-ext.ts.
@@ -57,7 +57,7 @@ import XCTest
     if let visual { variables["KOA_VISUAL"] = visual.path }
     variables.merge(env) { _, new in new }
     let exports = variables.sorted { $0.key < $1.key }.map { "\($0.key)=\(SSH.quote($0.value))" }.joined(separator: " ")
-    var arguments = ["--no-extensions", "--extension", test.checkoutRoot.appendingPathComponent("share/koa/testdata/" + extensionFile).path, "--no-context-files", "--session-dir", directory.appendingPathComponent("home/sessions").path]
+    var arguments = ["--no-extensions", "--extension", test.checkoutRoot.appendingPathComponent("koa/testdata/" + extensionFile).path, "--no-context-files", "--session-dir", directory.appendingPathComponent("home/sessions").path]
     arguments += ["--no-skills", "--no-prompt-templates"]
     if let session { arguments += ["--session", session] } else { arguments += ["--session-id", "00000000-0000-7000-8000-0000000000ff"] }
     arguments += args

@@ -1,4 +1,4 @@
-import type { components } from "./ko-api.d.ts";
+import type { components } from "../webview/ko-api.d.ts";
 import { isRecord, str } from "./text.ts";
 type Api = components["schemas"];
 type Dead = Api["Dead"];

@@ -17,8 +17,8 @@ assert.ok(ids.every(id => pageWorkloads.includes(id) || streaming.includes(id)),
 await writeFile(join(output, 'page-manifest.json'), JSON.stringify({ target: 'page', ids }), { flag: 'wx' });
 const work = join(output, 'work');
 await scripts(join(output, 'scripts'), work);
-const root = resolve(new URL('../../..', import.meta.url).pathname);
-const koaRoot = join(root, 'share/koa');
+const root = resolve(new URL('../..', import.meta.url).pathname);
+const koaRoot = join(root, 'koa');
 type Layer = { layerId: string; backendNodeId?: number };
 type Reply = { id?: number; method?: string; params?: { chunk?: string; layers?: Layer[] }; error?: unknown; result?: { result?: { value?: unknown }; exceptionDetails?: unknown; usedSize?: number; metrics?: { name: string; value: number }[]; root?: { nodeId: number }; nodeId?: number; node?: { backendNodeId: number; children?: { backendNodeId: number }[] } } };
 const SAMPLE_MS = 1000, KEY_MS = 250, PROGRESS_MS = 10000;

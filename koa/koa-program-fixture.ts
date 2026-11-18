@@ -102,7 +102,7 @@ export async function realFixture(t: TestContext, options: Real) {
     await writeFile(join(dir, "acks.jsonl"), "");
   }
   const ko = options.panes ? { KO_PANE: "pane_1", KO_SOCKET: "/tmp/koa-agent-test/socket", KO_PANE_TOKEN: "", KO_FAKE_PANES: join(dir, "panes.json"), KO_FAKE_API_LOG: join(dir, "api-log"), KO_FAKE_FEED: join(dir, "feed.jsonl"), KO_FAKE_ACKS: join(dir, "acks.jsonl") } : {};
-  const app = await launch(scope, dir, cwd, { PI_CODING_AGENT_DIR: agentDir, PI_OFFLINE: "1", PI_SKIP_VERSION_CHECK: "1", ...ko, ...options.env }, realPi, [...(options.discover ? [] : ["--no-extensions"]), ...(options.resources ? [] : ["--no-skills", "--no-prompt-templates"]), "--no-context-files", "--session-dir", sessions, ...extensions.flat(), ...extra, ...options.args ?? []], options.program ?? resolve("../../build/ko/share/ko/koa/koa.ts"));
+  const app = await launch(scope, dir, cwd, { PI_CODING_AGENT_DIR: agentDir, PI_OFFLINE: "1", PI_SKIP_VERSION_CHECK: "1", ...ko, ...options.env }, realPi, [...(options.discover ? [] : ["--no-extensions"]), ...(options.resources ? [] : ["--no-skills", "--no-prompt-templates"]), "--no-context-files", "--session-dir", sessions, ...extensions.flat(), ...extra, ...options.args ?? []], options.program ?? resolve("../build/ko/share/ko/koa/koa.ts"));
   if (options.start !== false) await app.until(ofType("state", record => record.life?.type === "ready"));
   let seq = 0;
   const feed = (message: { id: string; kind: string; text?: string; data?: unknown; from?: object; relation?: string }) => {

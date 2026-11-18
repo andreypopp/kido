@@ -1,5 +1,5 @@
 import type { ChildProcess } from "node:child_process";
-import type { components } from "./ko-api.d.ts";
+import type { components } from "../webview/ko-api.d.ts";
 import type { NotifyLevel } from "./koa-records.ts";
 import { apiCall, KO_TIMEOUT_MS, lineReader, openStream } from "./runtime-exec.ts";
 import { errorText } from "./text.ts";

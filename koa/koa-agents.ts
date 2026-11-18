@@ -3,7 +3,7 @@ import { hostname } from "node:os";
 import { join, resolve } from "node:path";
 import type { ImageContent } from "@earendil-works/pi-ai";
 import type { AgentSession, AgentSessionRuntime, Args, ExtensionUIContext, SessionManager, SettingsManager } from "@earendil-works/pi-coding-agent";
-import type { components } from "./ko-api.d.ts";
+import type { components } from "../webview/ko-api.d.ts";
 import type { Sdk } from "./koa-sdk.ts";
 import { agentExtension, createJobs, type BackgroundJob, type Jobs, type JobSink } from "./koa-agent.ts";
 import { sessionDir } from "./koa-session-dir.ts";

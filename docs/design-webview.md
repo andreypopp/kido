@@ -141,14 +141,14 @@ connection with its waiter in the pane's record, under the loop rule
 
 ## The SDK, `@kido/webview`
 
-`share/webview/` is a Node package, `@kido/webview`, with no
+`webview/` is a Node package, `@kido/webview`, with no
 dependencies, in TypeScript that Node 24 runs as is (erasable syntax
 only). It is not published yet; `make build` installs it as
 `share/ko/webview/`. Its README gives the interface. It takes the
-shape of the `supported` line from the generated `ko-api.d.ts`, which
-`make build` installs as `share/ko/koa/ko-api.d.ts`, through a type-only
-import of `../pi/ko-api.d.ts`; Node's type stripping removes the
-import, so the SDK runs without the file.
+shape of the `supported` line from the generated `ko-api.d.ts`, ko's
+API for TypeScript, which lives in the package and installs with it,
+through a type-only import of `./ko-api.d.ts`; Node's type stripping
+removes the import, so the SDK runs without the file.
 
 The decision is that a page's program is a plain `node:http` server.
 The SDK does not take a handler and does not listen: `webview()`
@@ -327,7 +327,7 @@ reloadable: its state is its program's.
 
 ## koa
 
-koa (`share/koa/`), pi's session under a page, is the largest page
+koa (`koa/`), pi's session under a page, is the largest page
 and the stress test of this feature: its stress runs found WebKit's
 fetch-body bug above and showed that Kido needs no limit on the
 number of webviews. [design-koa.md](design-koa.md) gives its design.

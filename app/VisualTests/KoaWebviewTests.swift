@@ -28,7 +28,7 @@ import SidebarFeed
     }
     private func replayCommand(module: String, assets: URL) -> String {
         let method = testMethod
-        return "export PATH=\(SSH.quote(koaPath(self))); exec node \(SSH.quote(checkoutRoot.appendingPathComponent("share/koa/testdata/replay.ts").path)) \(module) \(method) \(SSH.quote(assets.path))"
+        return "export PATH=\(SSH.quote(koaPath(self))); exec node \(SSH.quote(checkoutRoot.appendingPathComponent("koa/testdata/replay.ts").path)) \(module) \(method) \(SSH.quote(assets.path))"
     }
     private func assertReplayRan(_ web: WKWebView) {
         addTeardownBlock { @MainActor in

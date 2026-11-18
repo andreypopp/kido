@@ -33,22 +33,22 @@ process.exit(maj >= 24 ? 0 : 1);
 	fail_or_skip "node $(node --version) is too old to run this suite (need >=24)"
 fi
 
-cd "$(dirname "$0")/../share/koa"
-repo=$(cd ../.. && pwd)
-make --no-print-directory -C "$repo" share/koa/node_modules/.package-lock.json
+cd "$(dirname "$0")/../koa"
+repo=$(cd .. && pwd)
+make --no-print-directory -C "$repo" koa/node_modules/.package-lock.json
 if [ "${1:-}" = lint ]; then
-	exec ../../scripts/lint.sh
+	exec ../scripts/lint.sh
 fi
 make --no-print-directory -C "$repo" build-fake-ko
 KO_FAKE_KO="$repo/target/debug/fake_ko"
 export KO_FAKE_KO
-make -C ../.. koa-page
+make -C .. koa-page
 ./node_modules/.bin/tsc -p page
 ./node_modules/.bin/tsc -p .
 ./node_modules/.bin/tsc --ignoreConfig --strict --noEmit --module NodeNext --moduleResolution NodeNext \
 	--target ES2024 --allowImportingTsExtensions --erasableSyntaxOnly --skipLibCheck \
-	--typeRoots ./node_modules/@types --types node ../../.pi/tests/no-git-writes.test.ts
+	--typeRoots ./node_modules/@types --types node ../.pi/tests/no-git-writes.test.ts
 if [ "$#" -gt 0 ]; then
-	exec ../../scripts/quiet-limit 180 -- node --test --test-timeout=60000 --test-concurrency=4 --test-reporter=spec --test-reporter-destination=stdout --test-reporter=./testdata/start-reporter.mjs --test-reporter-destination=stdout "$@"
+	exec ../scripts/quiet-limit 180 -- node --test --test-timeout=60000 --test-concurrency=4 --test-reporter=spec --test-reporter-destination=stdout --test-reporter=./testdata/start-reporter.mjs --test-reporter-destination=stdout "$@"
 fi
-exec ../../scripts/quiet-limit 180 -- node --test --test-timeout=60000 --test-concurrency=4 --test-reporter=spec --test-reporter-destination=stdout --test-reporter=./testdata/start-reporter.mjs --test-reporter-destination=stdout koa-*.test.ts agents.test.ts ../../.pi/tests/no-git-writes.test.ts
+exec ../scripts/quiet-limit 180 -- node --test --test-timeout=60000 --test-concurrency=4 --test-reporter=spec --test-reporter-destination=stdout --test-reporter=./testdata/start-reporter.mjs --test-reporter-destination=stdout koa-*.test.ts agents.test.ts ../.pi/tests/no-git-writes.test.ts

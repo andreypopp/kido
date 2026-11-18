@@ -15,7 +15,7 @@ import KoModel
         _ = try await KoServer.launch(dir: directory.path)
         let assets = directory.appendingPathComponent("assets")
         try FileManager.default.createDirectory(at: assets, withIntermediateDirectories: true)
-        let command = "printf '\\033]7501;state=working:app=koa\\007'; export PATH=\(SSH.quote(koaPath(self))); exec node \(SSH.quote(checkoutRoot.appendingPathComponent("share/koa/testdata/replay.ts").path)) transcript testKoaWebviewComposerFocus \(SSH.quote(assets.path))"
+        let command = "printf '\\033]7501;state=working:app=koa\\007'; export PATH=\(SSH.quote(koaPath(self))); exec node \(SSH.quote(checkoutRoot.appendingPathComponent("koa/testdata/replay.ts").path)) transcript testKoaWebviewComposerFocus \(SSH.quote(assets.path))"
         try await koPut(directory.path, #"[{"name":"visual","windows":[{"name":"koa","tree":\#(koPane(command))}]}]"#)
         let app = AppDelegate(runtime: runtime)
         let owner = try XCTUnwrap(app.open(.local, start: false))

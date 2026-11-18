@@ -24,7 +24,7 @@ import { join, delimiter } from "node:path";
 import { SessionManager, initTheme } from "@earendil-works/pi-coding-agent";
 
 import { agentExtension, createJobs, isBackgroundJob, type BackgroundJob, type Job, type JobRegistry, type Jobs } from "./koa-agent.ts";
-import type { components } from "./ko-api.d.ts";
+import type { components } from "../webview/ko-api.d.ts";
 import { isRecord } from "./text.ts";
 
 initTheme("dark");

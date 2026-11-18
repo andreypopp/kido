@@ -20,7 +20,7 @@ repeat them.
   renders through a page.
 - [docs/design-app.md](docs/design-app.md): Kido.app.
 - [docs/build.md](docs/build.md): the crates, the toolchain, the
-  platforms, the installed layout and the share tree.
+  platforms, the installed layout and the source trees.
 - [docs/verification.md](docs/verification.md): `make verify`, the
   e2e harness, loom, Verus, fuzzing, Miri, CI and ci-like.
 - [docs/release.md](docs/release.md): the release mechanics.
@@ -178,7 +178,7 @@ platforms and the installed layout. These requirements are fixed:
   `print_stderr` are denied: the CLI writes through `writeln!` on a
   locked stream; only `ko_bench` and the fake ko allow the macros.
 - **The command line is a contract** with `ko_e2e/`, `bench/`,
-  `share/` and Kido.app. A long option is `--name`. clap's derive
+  `share/`, `koa/`, `webview/` and Kido.app. A long option is `--name`. clap's derive
   generates `--help` and the usage errors: the doc comment on each
   command and argument is its help text. A usage error exits 124.
   `ko api`'s flags, exit codes and output are the contract with the
@@ -274,7 +274,7 @@ Conventions:
   exhaustively. To add a route: add its block with its `///` doc, add
   the arm in `router.rs`, then run `make schemas`; lint fails when a
   generated file differs. The agent extension takes its shapes from
-  `ko-api.d.ts` and writes none by hand.
+  `webview/ko-api.d.ts` and writes none by hand.
 - **HTTP.** `ko_wire::http` is the only code that reads or writes
   HTTP framing, for the server and for the client.
 - **The view write path.** Only `ko_server::conn` writes a
@@ -293,11 +293,11 @@ Conventions:
   returned: it owns the child, is not `Copy`, and its reap consumes
   it, so no group signal follows the reap. `ESRCH` is not an error,
   and neither is `EPERM` on a group signal. `bench/client.py` signals
-  only through `signal_child`. `share/koa/koa-agent.ts` signals only the
+  only through `signal_child`. `koa/koa-agent.ts` signals only the
   groups of the jobs it spawned, through `signalJob`, which takes a
   record of its registry; koa only the children it spawned, through
-  `signalChild` in `share/koa/koa-child.ts`; lint refuses
-  `process.kill(` elsewhere in `share/` (docs/design-subagents.md,
+  `signalChild` in `koa/koa-child.ts`; lint refuses
+  `process.kill(` elsewhere in `koa/` and `webview/` (docs/design-subagents.md,
   "Stopping a job"). Elsewhere a child gets a signal only through its
   own `ChildProcess.kill`. `ko_e2e` signals a process that it spawned
   through its `Pid`, and any other only through
@@ -361,10 +361,10 @@ Conventions:
   `fuzz/Cargo.toml` enables. A model in a target never reuses the
   formula of the code under test. Only `fuzz/` reads `KO_FUZZ_*`.
 
-**koa is the one harness.** koa (`share/koa/`) is Kido's one pi
+**koa is the one harness.** koa (`koa/`) is Kido's one pi
 harness, and no other program loads its agent extension: there is no
 terminal harness. A plain `pi` is not Kido's
-harness. The agent extension, `share/koa/koa-agent.ts`, runs as an
+harness. The agent extension, `koa/koa-agent.ts`, runs as an
 inline extension of the pi sessions that koa runs in its own process
 through pi's SDK, and holds every agent tool. Nothing
 in it exists only for pi's terminal UI: no widgets, renderers,
@@ -372,7 +372,7 @@ terminal input or autocomplete providers. It takes browser mode, its
 pane and its ko executable from its host (`AgentHost` in
 `koa-agents.ts`), which koa fills at its edge, never from pi's mode
 or the environment. It calls only `ko api` (docs/design.md,
-"The harness extension", lists the routes). Of `share/koa/` it
+"The harness extension", lists the routes). Of `koa/` it
 imports only the modules that koa also uses: `text.ts`, `agents.ts`,
 `records.ts`, `completion-context.ts` and `runtime-exec.ts`, and,
 with `import type`, its host (`AgentHost` and the types it names) from
@@ -495,7 +495,7 @@ docs/verification.md describes every check. The targets agents run:
     make e2e E2E=name  the e2e suite against build/ko/bin/ko
     make cargo ARGS='test -p ko_server'  one cargo command, for iterating on one package
     make lint    cargo fmt --check, clippy and scripts/lint.sh
-    make schemas regenerate the schemas and share/koa/ko-api.d.ts
+    make schemas regenerate the schemas and webview/ko-api.d.ts
     make prompts regenerate the prompt fixture
     make fuzz TARGET=ring TIME=600  one time-boxed fuzz run, only when the user asks
     make ci-like ARGS=...  a CPU/memory-capped Linux container
@@ -554,7 +554,7 @@ PASS/FAIL line. A change that makes a stage slower needs a reason.
   cases that need the same setup in one test, on one server.
 - Test pure logic in a unit test, not through a server.
 - In the TypeScript suite, the fake `ko` is the Rust binary
-  `share/koa/testdata/fake_ko`. A Node process start costs about
+  `koa/testdata/fake_ko`. A Node process start costs about
   70 ms. A fake delay is a `KO_FAKE_*` gate that the test releases,
   not a delay that the test waits out. A test that reads only the
   registered tools needs no fixture.

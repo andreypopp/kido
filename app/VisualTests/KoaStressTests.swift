@@ -27,7 +27,7 @@ import XCTest
         if !FileManager.default.fileExists(atPath: output.appendingPathComponent("scripts/13.json").path) {
             var env = ProcessInfo.processInfo.environment
             env["PATH"] = path
-            let generated = try await Child.run("/usr/bin/env", ["node", checkoutRoot.appendingPathComponent("share/koa/stress/workloads.ts").path, output.appendingPathComponent("scripts").path, output.appendingPathComponent("work").path], env: env)
+            let generated = try await Child.run("/usr/bin/env", ["node", checkoutRoot.appendingPathComponent("koa/stress/workloads.ts").path, output.appendingPathComponent("scripts").path, output.appendingPathComponent("work").path], env: env)
             XCTAssertEqual(generated.status, 0, generated.err)
         }
         let manifest = output.appendingPathComponent("kido-manifest.json")

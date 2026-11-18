@@ -43,7 +43,7 @@ the first failing stage. `KO_CHECKS_VISUAL` (test names as
 `VISUAL_ONLY` takes them) replaces the computed visual selection.
 
 koa's stress runs are manual and never in verify:
-`share/koa/stress/run.sh` (headless Chrome) and `make -C app
+`koa/stress/run.sh` (headless Chrome) and `make -C app
 koa-stress` (off-screen Kido); no window shows on the screen.
 
 ## CI
@@ -148,13 +148,13 @@ the pane's terminal. It runs 20 random cases under `cargo test`;
 ## The TypeScript suite
 
 `scripts/test-ts.sh` runs `koa-*.test.ts` and `agents.test.ts` of
-`share/koa/` and the `.pi/tests/` guard under Node's native TypeScript support. koa's
+`koa/` and the `.pi/tests/` guard under Node's native TypeScript support. koa's
 own tests run koa with the pinned real pi against the scripted model
 provider of `koa-fake-provider.ts` (design-koa.md, "Tests"). The
 agent extension's tests (`koa-agent-*.test.ts`, over
 `koa-agent-fixture.ts`) run it in a fake pi with a fake host on the
 fake `ko` of
-`share/koa/testdata/fake_ko/`, a Rust binary that `make
+`koa/testdata/fake_ko/`, a Rust binary that `make
 build-fake-ko` builds. The fake answers the routes that the extension
 calls with the real server's shapes: it decodes and encodes every
 wire message through `ko_wire::protocol`'s types, so a change of a
@@ -166,7 +166,7 @@ that a test writes. It serves a runtime's exec session by running the
 argv on the host with only the requested environment; one test drives
 the same exec client against a real `ko server` with a `command`
 runtime. A fake delay is a `KO_FAKE_*` gate that a test releases.
-`share/koa/testdata/ko-prompts.txt` is the snapshot of every prompt
+`koa/testdata/ko-prompts.txt` is the snapshot of every prompt
 text that the extension registers (`make prompts` regenerates it).
 `koa-replay.test.ts` runs the replay server of the page tests
 (design-koa.md, "Tests") in browser mode on the scenarios of
@@ -520,7 +520,7 @@ the Dockerfile, `install-zig.sh` and `rust-toolchain.toml`, so a
 change of one rebuilds it. `target/` and `build/` are the named
 volumes `ko-ci-like-target` and `ko-ci-like-build` over the bind
 mount, so a Linux build never overwrites the host's macOS outputs.
-`share/koa/node_modules` and `scripts/openapi/node_modules` are the
+`koa/node_modules` and `scripts/openapi/node_modules` are the
 named volumes `ko-ci-like-koa-node-modules` and
 `ko-ci-like-openapi-node-modules`, so the container's `npm ci` installs
 Linux packages and the ts stage runs there. The container

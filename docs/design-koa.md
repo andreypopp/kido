@@ -61,14 +61,14 @@ Non-goals:
 
 ## Where koa lives
 
-`share/koa/` holds the program (`koa.ts` and its `koa-*.ts` modules),
+`koa/` holds the program (`koa.ts` and its `koa-*.ts` modules),
 the page's sources (`page/`), the fake model provider of the tests
 (`koa-fake-provider.ts`), the suite (`koa-*.test.ts`) and the stress runner
 (`stress/`). It also holds the agent extension (`koa-agent.ts`), its
 suite (`koa-agent-*.test.ts` over `koa-agent-fixture.ts`, on the fake
 ko of `testdata/fake_ko/`), the prompt snapshot
-`testdata/ko-prompts.txt`, the ko skill (`skills/ko/SKILL.md`),
-`ko-api.d.ts`, and the modules that the extension, koa and the page
+`testdata/ko-prompts.txt`, the ko skill (`skills/ko/SKILL.md`)
+and the modules that the extension, koa and the page
 share: `records.ts` (the
 facts that the extension writes into its messages' details, with
 their guards), `agents.ts`, `token.ts` (the token grammar: the
@@ -78,9 +78,9 @@ which the extension answers through its host; "Shell
 completion") and
 `runtime-exec.ts` (the client of a runtime's exec route, the
 extension's routed commands and koa's shell completion). The records of koa and its page are
-`share/koa/koa-records.ts`.
+`koa/koa-records.ts`.
 
-The files of `share/koa/`: `koa.ts`, the program; `page/`, the
+The files of `koa/`: `koa.ts`, the program; `page/`, the
 TypeScript sources of its page (`page.ts`, `markdown.ts`, the
 streaming markdown over marked and remend, `page.html`, `page.css`),
 which `make koa-page` bundles with esbuild into one unminified
@@ -116,10 +116,11 @@ scenarios share) and the scenarios
 (`testdata/scenarios/`), none of them installed ("Tests").
 
 `make build` installs the program, the extension, the shared
-modules, `ko-api.d.ts`, the skill and the built page in
-`share/ko/koa/`, and the shim `share/ko/bin/koa`. The installed
-layout keeps `share/koa/` and `share/webview/` as siblings (`koa/`
-and `webview/`), so koa's relative imports of `../webview/` resolve
+modules, the skill and the built page in
+`share/ko/koa/`, and the shim `share/ko/bin/koa`. koa takes ko's
+API types from `../webview/ko-api.d.ts`, with type-only imports. The
+checkout and every installed layout keep `koa/` and `webview/` as
+siblings, so koa's relative imports of `../webview/` resolve
 the same way in the checkout and in every installed layout: `make
 install` and the Homebrew formula, Kido.app's bundle and the static
 Linux layout that runtimes and containers use.
@@ -132,8 +133,8 @@ missing one shows as one line in the pane. koa installs everywhere ko
 installs, because remote use needs it on the server.
 
 **The page is built, not committed.** The page is TypeScript in
-`share/koa/page/`, which esbuild bundles with CodeMirror, `marked`
-and `remend` from `share/koa/package.json` into one unminified
+`koa/page/`, which esbuild bundles with CodeMirror, `marked`
+and `remend` from `koa/package.json` into one unminified
 `page.js` at `make build` (`make koa-page`; `make koa-watch` rebuilds
 on each save). The user decided this: vendored files needed a rewriter
 of their imports, and a committed bundle is a large generated diff in
@@ -177,16 +178,16 @@ also not when the page comes back from the back/forward cache,
 because a reconnect gets the same record and throws again, over state
 that is partly applied. Only a transport error reconnects.
 
-**Type checks.** TypeScript 7 from `share/koa/package.json` is the one
-type checker of the repository. `share/koa/tsconfig.json` checks the
-Node side, koa and the agent extension included; `share/koa/page/tsconfig.json` checks the
+**Type checks.** TypeScript 7 from `koa/package.json` is the one
+type checker of the repository. `koa/tsconfig.json` checks the
+Node side, koa and the agent extension included; `koa/page/tsconfig.json` checks the
 page against the DOM alone. The record modules import nothing from
 pi, because pi's declarations pull Node's globals into the page's
 check. Where `koa-records.ts` names a closed set that pi also defines
 (the thinking levels, the dialog methods, the command sources),
 `koa.ts` proves at compile time that the two sets are equal, so pi
 stays the source and a change in pi fails the check. The relations
-of `records.ts` derive from ko's schema (`ko-api.d.ts`).
+of `records.ts` derive from ko's schema (`webview/ko-api.d.ts`).
 
 ## The process
 
@@ -1368,7 +1369,7 @@ modules. So koa copies pi's rules (`koa-complete.ts`), behind its own
   no plain-path completion in a prompt (the user's decision).
 - In `!` mode, `/` and `@` offer nothing, and nothing completes as
   the user types: only Tab completes, from bash ("Shell completion").
-- The token rules are one copy in `share/koa/token.ts`, which koa
+- The token rules are one copy in `koa/token.ts`, which koa
   and the page import, so the page asks only in a context and the
   two sides agree on where a token starts. koa computes the prefix,
   the options, their insert text and the matched letters; the page
@@ -1378,7 +1379,7 @@ modules. So koa copies pi's rules (`koa-complete.ts`), behind its own
   deadline and caps. A request that the page aborts ends its `fd`.
 - `@name` agents are the viewed agent's scope from the tree
   (design-subagents.md, "The tools, and what they call"), with the
-  shared rules in `share/koa/agents.ts`; only the pane peers come from
+  shared rules in `koa/agents.ts`; only the pane peers come from
   `ko api GET /layout`. A completed `@name (session <prefix>)` reaches
   the model as typed, and the extension's tools resolve it.
 - No completion inside a code span or a fence: the source checks the
@@ -1400,7 +1401,7 @@ completion source for each mode.
   and checks a routed runtime itself, and a pane variable cannot say
   that a runtime is still starting or was refused. So koa asks the
   extension (`host.extension.completionContext`), which answers
-  through the resolver of its current session (`share/koa/completion-context.ts` holds the
+  through the resolver of its current session (`koa/completion-context.ts` holds the
   type): the host with the session's
   cwd, a runtime with the cwd that `user_bash` would give the routed
   command, or `unavailable`. A refused or unready runtime, or no
@@ -1410,7 +1411,7 @@ completion source for each mode.
 - **How.** One exec of `koa-shell.sh` for each Tab, never pi's
   `executeBash` (it would enter the transcript) and no persistent shell. On
   the host it runs in koa's environment; in a runtime it runs through
-  the runtime's exec route (`share/koa/runtime-exec.ts`, the
+  the runtime's exec route (`koa/runtime-exec.ts`, the
   extension's client) with no environment from the host, in the login
   shell that the extension's routed commands use (`bash -lc`, else `sh -lc`), and then
   changes to the resolved cwd, because a profile can change it. The
@@ -1845,7 +1846,7 @@ notices, and it ships with koa, so it writes the facts that the page
 needs
 into each message's `details` (and into the `details` of the
 `spawn_agent`, `message_agent` and `async_bash` results), typed by
-`share/koa/records.ts`. The transcript reads `details` only, never the
+`koa/records.ts`. The transcript reads `details` only, never the
 header lines, which stay in the text for the model.
 `details` is also in the session file, so a rebuild shows the same
 lines. A custom message without these details (another extension's,
@@ -2015,7 +2016,7 @@ so a theme change needs no code in the page.
 
 ## Measurement
 
-`share/koa/stress/` runs scripted workloads (`workloads.ts`) through
+`koa/stress/` runs scripted workloads (`workloads.ts`) through
 the scripted pi in headless Chrome (`run.sh`) and in off-screen Kido
 windows (`make -C app koa-stress`), and prints one report
 (`report.ts`), which fails a page above its memory budget. With
@@ -2083,7 +2084,7 @@ keep up.
 ## Tests
 
 The TypeScript suite runs koa with the pinned real pi of
-`share/koa/package.json` and the fake ko. pi's session runs in koa's
+`koa/package.json` and the fake ko. pi's session runs in koa's
 process, so no pi can be scripted; the suite scripts the model
 instead. `koa-fake-provider.ts` is a local HTTP server that speaks
 the OpenAI chat completions stream: each test gives its replies
