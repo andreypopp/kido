@@ -172,7 +172,7 @@ const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout
 
 type ChildRuntime = { name: string; mode: "routed" | "inside" };
 
-type PeerData = { role: "peer"; name: string; session: string; cwd: string };
+type PeerData = { role: "peer"; name: string; session: string; cwd: string; runtime?: { name: string } };
 type AgentData = ChildData | PeerData;
 
 type ChildData = {
@@ -1258,12 +1258,13 @@ export const agentExtension = (host: AgentHost) => (pi: ExtensionAPI): void => {
   const agentOf = (data: Record<string, unknown>): AgentData | undefined => {
     const { name, session: id, cwd } = data;
     if (typeof name !== "string" || typeof id !== "string" || typeof cwd !== "string") return undefined;
+    const recorded = data.runtime;
+    const runtime = isRecord(recorded) && typeof recorded.name === "string" ? { runtime: { name: recorded.name } } : {};
     switch (data.role) {
-      case "peer": return { role: "peer", name, session: id, cwd };
+      case "peer": return { role: "peer", name, session: id, cwd, ...runtime };
       case "subagent": {
-        const { model, runtime: recorded } = data;
+        const { model } = data;
         if (typeof model !== "string") return undefined;
-        const runtime = isRecord(recorded) && typeof recorded.name === "string" ? { runtime: { name: recorded.name } } : {};
         return { role: "subagent", owner: ownSessionId ?? "", name, session: id, model, fork: data.fork === true, cwd, ...runtime };
       }
       default: return undefined;
@@ -1313,9 +1314,9 @@ export const agentExtension = (host: AgentHost) => (pi: ExtensionAPI): void => {
         for (const p of peerPanes(panes, me)) {
           const id = koaAgent(p.kind)?.session;
           if (p.parent || p.dead || !id || id === ownSessionId) continue;
-          const facts: PeerData = { role: "peer", name: p.name || p.title, session: id, cwd: p.cwd };
+          const facts: PeerData = { role: "peer", name: p.name || p.title, session: id, cwd: p.cwd, ...(p.kind?.type === "host" && p.runtime ? { runtime: { name: p.runtime } } : {}) };
           const previous = recorded.get(id);
-          if (previous?.name === facts.name && previous.cwd === facts.cwd) continue;
+          if (previous?.name === facts.name && previous.cwd === facts.cwd && previous.runtime?.name === facts.runtime?.name) continue;
           append(ENTRY_AGENT, facts);
         }
       };
@@ -1986,7 +1987,7 @@ export const agentExtension = (host: AgentHost) => (pi: ExtensionAPI): void => {
 
   const recordPeer = (plan: Plan, placement: Api["Placement"]): void => {
     if (!recordsPeers) return;
-    append(ENTRY_AGENT, { role: "peer", name: plan.name ?? "", session: plan.session, cwd: plan.cwd });
+    append(ENTRY_AGENT, { role: "peer", name: plan.name ?? "", session: plan.session, cwd: plan.cwd, ...(plan.runtime?.mode === "routed" ? { runtime: { name: plan.runtime.name } } : {}) });
     pendingPeers.set(plan.session, placement.pane);
   };
 
@@ -2019,7 +2020,7 @@ export const agentExtension = (host: AgentHost) => (pi: ExtensionAPI): void => {
       if ("error" in saved) return saved;
       const model = saved.model ?? callerModel(session);
       if (!model) return { error: "caller has no model; specify model" };
-      const plan: Plan = { name: saved.name, session: peer.session, cwd: saved.cwd, model, task, mode: { kind: "continue", file: file.path }, koSession: snapshot.me?.session ?? "" };
+      const plan: Plan = { name: saved.name, session: peer.session, cwd: saved.cwd, runtime: peer.runtime ? { name: peer.runtime.name, mode: "routed" } : undefined, model, task, mode: { kind: "continue", file: file.path }, koSession: snapshot.me?.session ?? "" };
       const made = await createPane(plan);
       if ("error" in made) return made;
       recordPeer(plan, made.placement);
@@ -2253,22 +2254,6 @@ export const agentExtension = (host: AgentHost) => (pi: ExtensionAPI): void => {
       if (nameError) return refuse(nameError);
       const task = params.task.trim().length > 0 ? params.task : "";
       if (!task && (!params.resume_from || params.fork)) return refuse("task is required unless resuming without fork");
-      let childRuntime: ChildRuntime | undefined;
-      let runtimeInfo: Api["RuntimeInfo"] | undefined;
-      if (params.runtime && host.facts.runtime) {
-        if (params.runtime !== host.facts.runtime) return refuse(`this agent runs inside runtime ${host.facts.runtime}; its children run there too`);
-      } else if (params.runtime) {
-        if (!ko) return refuse("ko is not on PATH");
-        const info = await fetchRuntime(params.runtime);
-        if ("error" in info) return refuse(info.error);
-        runtimeInfo = info;
-        childRuntime = { name: info.name, mode: info.koa === "runtime" ? "inside" : "routed" };
-        if (childRuntime.mode === "inside" && !params.toplevel) return refuse(`runtime ${info.name} runs koa inside it: a subagent of this agent cannot go there; use toplevel: true`);
-      } else if (routed) {
-        if ("refusal" in routed) return refuse(routed.refusal);
-        childRuntime = { name: routed.name, mode: "routed" };
-      }
-      if (childRuntime?.mode === "inside" && (params.resume_from || params.fork)) return refuse("a saved session is a file of this filesystem: resume_from and fork need a runtime whose koa runs on the host");
       const modelError = validateModel(params.model, ctx.modelRegistry);
       if (modelError) return refuse(modelError);
       let source: { id: string; path: string; cwd: string; model: string | undefined; name: string | undefined } | undefined;
@@ -2294,6 +2279,23 @@ export const agentExtension = (host: AgentHost) => (pi: ExtensionAPI): void => {
       const mode: Plan["mode"] = forkFile ? { kind: "copy", file: forkFile } : source ? { kind: "continue", file: source.path } : { kind: "fresh" };
       const recordedPeer = mode.kind === "continue" && source ? peers().find((p) => p.session === source.id) : undefined;
       const toplevel = !!params.toplevel || !!recordedPeer;
+      const runtime = params.runtime ?? recordedPeer?.runtime?.name;
+      let childRuntime: ChildRuntime | undefined;
+      let runtimeInfo: Api["RuntimeInfo"] | undefined;
+      if (runtime && host.facts.runtime) {
+        if (runtime !== host.facts.runtime) return refuse(`this agent runs inside runtime ${host.facts.runtime}; its children run there too`);
+      } else if (runtime) {
+        if (!ko) return refuse("ko is not on PATH");
+        const info = await fetchRuntime(runtime);
+        if ("error" in info) return refuse(info.error);
+        runtimeInfo = info;
+        childRuntime = { name: info.name, mode: info.koa === "runtime" ? "inside" : "routed" };
+        if (childRuntime.mode === "inside" && !toplevel) return refuse(`runtime ${info.name} runs koa inside it: a subagent of this agent cannot go there; use toplevel: true`);
+      } else if (routed) {
+        if ("refusal" in routed) return refuse(routed.refusal);
+        childRuntime = { name: routed.name, mode: "routed" };
+      }
+      if (childRuntime?.mode === "inside" && (params.resume_from || params.fork)) return refuse("a saved session is a file of this filesystem: resume_from and fork need a runtime whose koa runs on the host");
       const cwd = resolve(ctx.cwd, params.cwd ?? source?.cwd ?? ctx.cwd);
       if (mode.kind === "continue" && source && cwd !== resolve(source.cwd)) return refuse(`a continued session runs in its recorded directory ${source.cwd}; fork copies it into another`);
       let directoryExists = false;

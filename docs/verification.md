@@ -32,8 +32,8 @@ own pane does not enter the tests. The build, lint and ts stages need
 Node 24 or newer; `KO_TS_TEST_REQUIRED=1`, which verify sets itself,
 makes a missing node a failure.
 
-`scripts/checks.sh` (`make checks`; `DRY=1` prints only the plan,
-`BASE=ref` sets the base) reads the paths that the unit changed (`git
+`scripts/checks.sh` (`make checks`; `make checks DRY=1` or `--dry-run`
+prints only the plan, `BASE=ref` sets the base) reads the paths that the unit changed (`git
 diff --name-only` against the merge-base with the upstream branch or
 `origin/main`, and the untracked files), finds the checks of each
 path in the one table of the script, prints the plan and runs the

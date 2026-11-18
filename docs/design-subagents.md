@@ -145,7 +145,7 @@ In the parent:
 | entry | when | data |
 |---|---|---|
 | `koa.agent`, role `subagent` | at each spawn and resume | `name`, `session`, `model`, `fork`, `cwd`, the `runtime`'s name; the last entry of a name is current |
-| `koa.agent`, role `peer` | when the `/client` stream shows a peer whose facts differ from its last entry, and at a top-level spawn or a peer restart (a root only) | `name`, `session`, `cwd`; the last entry of a session is current |
+| `koa.agent`, role `peer` | when the `/client` stream shows a peer whose facts differ from its last entry, and at a top-level spawn or a peer restart (a root only) | `name`, `session`, `cwd`, and `runtime` for a host koa whose tools are routed (a koa inside a runtime records none); the last entry of a session is current |
 | `koa.work` | when the child's turn takes a user message or a message with `details.work`, and before the parent sends its own child work | `child` |
 | `koa.report` | when the child reports, before the notice | `child`, `name`, `text` |
 | `koa.ended` | when the child is stopped or its session ends on an error | `child`, `cause` |
@@ -304,7 +304,7 @@ A subagent records no peers.
 hello that shows no window, is not focused and takes no part in
 sizing (protocol.md, section 3). It keeps the rows of the stream's
 layout and events, and after each change it appends a peer entry for
-each peer whose name, session or cwd differs from its last entry, so
+each peer whose name, session, cwd or runtime differs from its last entry, so
 a reconnect or a restart appends nothing for a peer that did not
 change. A stream that ends without a `refused` event connects again
 with a backoff that resets at the next `Welcome`; a `refused` before
@@ -324,7 +324,8 @@ peer. A recorded peer does not reserve its name for `spawn_agent`.
 **Restart and stop.** `message_agent` in `message` mode to an ended
 peer restarts it as a top-level pane ("Restarting through a
 message"), and `spawn_agent(name, resume_from)` of a recorded peer
-continues it as a peer. A continued peer keeps the name that its
+continues it as a peer, routed into its recorded runtime unless
+`runtime` names another. A continued peer keeps the name that its
 own session file holds: its start passes no `--name`, which would
 append a new session name, and its window and its starting pane take
 the file's name. The recorded name and the `name` of `spawn_agent`
@@ -515,7 +516,8 @@ koa starts only the root, every registry child lists as ended with
 
 A peer restarts as a top-level agent ("A top-level agent") with
 `--session <file>` in the directory of the file's header, on the
-file's last model, and the message as `koa.task`. It is refused
+file's last model, in the recorded runtime, which routes its tools
+there again, and the message as `koa.task`. It is refused
 without a session file. A peer entry has no pane, so the extension
 keeps the new pane in memory as the peer's starting pane until it
 publishes `koa.session` or ends; a second message in that time goes
@@ -877,7 +879,6 @@ message or a notice.
   koa does not run, is never recorded.
 - A koa inside a runtime records no peers: the runtime gate refuses
   `/client` (design-runtimes.md, "Identity on a runtime connection").
-- A routed peer restarts as a host koa: a peer entry holds no runtime.
 - Two roots that record one peer can both restart it at the same
   time, because each restart lock is in its own process. Then two
   processes write one session file.

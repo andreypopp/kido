@@ -162,7 +162,7 @@ pub(crate) fn program(
                 argv.push(b"--browser".to_vec());
             }
             let mut flag = |flag: &str, value: &str| {
-                argv.extend([flag.as_bytes().to_vec(), value.as_bytes().to_vec()]);
+                argv.push(format!("{flag}={value}").into_bytes());
             };
             if let Some(runtime) = routed {
                 flag("--runtime", runtime.as_str());
@@ -942,6 +942,48 @@ mod tests {
         let spawned = add(&mut panes, &mut io, ("/", &request(None, &[])));
         assert!(matches!(spawned, Err(AddError::Io(_))));
         assert!(panes.iter().next().is_none());
+    }
+
+    #[test]
+    fn koa_option_values_are_single_arguments() {
+        for name in ["--browser", "--help"] {
+            let request = CreatePane {
+                command: Some(Command::Koa {
+                    start: KoaStart::New {
+                        session_id: Some("-id".to_owned()),
+                    },
+                    name: Some(name.to_owned()),
+                    model: Some("-x".to_owned()),
+                    browser: false,
+                }),
+                cwd: None,
+                env: Vec::new(),
+                vars: Default::default(),
+                parent: None,
+                close: Default::default(),
+                fixed_title: None,
+                close_confirm: Default::default(),
+                runtime: None,
+            };
+            let wrap = |inner: Option<&[Vec<u8>]>| inner.unwrap_or_default().to_vec();
+            let made = program(
+                &config(),
+                Path::new("/bin/sh"),
+                &request,
+                Start::Runtime(&wrap),
+            )
+            .unwrap();
+            assert_eq!(
+                made.record,
+                [
+                    "koa",
+                    "--session-id=-id",
+                    &format!("--name={name}"),
+                    "--model=-x"
+                ]
+                .map(|arg| arg.as_bytes().to_vec())
+            );
+        }
     }
 
     #[test]

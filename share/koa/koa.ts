@@ -18,7 +18,7 @@ import { assemblePage } from "./koa-assemble.ts";
 import { complete, findFd } from "./koa-complete.ts";
 import { pickSession, piPackage } from "./koa-child.ts";
 import { loadSdk } from "./koa-sdk.ts";
-import { restartArgs, startupResult } from "./koa-args.ts";
+import { parseKoaArgs, restartArgs, startupResult } from "./koa-args.ts";
 import { shellComplete } from "./koa-shell.ts";
 import { attachments, stepFile, UPLOAD_IDLE_MS } from "./koa-attach.ts";
 import { commandCatalog, parseCommand, dispatchCommand, deferralText, type Deferral } from './koa-commands.ts';
@@ -31,7 +31,7 @@ import type { JobSnapshot } from "./records.ts";
 import type { Agent, Selection, Tree } from "./koa-agents.ts";
 import { createView, type AgentView, type Own } from "./koa-view.ts";
 import { agentCompletionItems, type AgentRow } from "./agents.ts";
-import { ATTACHMENT_LIMITS, type ViewGone, type PromptMode, type PageRecord, type State, type ThinkingLevel, type Dialog, type CompletionCommand, type CompletionQuery, type SessionStats, type Bash, type View, type MetricsMode, metricsRequest } from "./koa-records.ts";
+import { ATTACHMENT_LIMITS, type ViewGone, type PromptMode, type PageRecord, type State, type ThinkingLevel, type Dialog, type CompletionCommand, type CompletionQuery, type SessionStats, type Bash, type View, metricsRequest } from "./koa-records.ts";
 
 function completeBody(value: unknown): CompletionQuery | { error: string } {
   return isRecord(value) && typeof value.text === "string" && typeof value.pos === "number" && Number.isSafeInteger(value.pos) && value.pos >= 0 && value.pos <= value.text.length ? { text: value.text, pos: value.pos } : { error: "Completion requires text and a cursor offset in that text" };
@@ -100,37 +100,68 @@ async function main(): Promise<void> {
   const reloaded = process.env.KOA_RELOAD === undefined ? undefined : Number(process.env.KOA_RELOAD);
   delete process.env.KOA_RELOAD;
   const location = pathToFileURL(process.argv[1] ?? "");
-  const args = process.argv.slice(2);
-  const endOptions = args.indexOf('--');
-  const options = args.slice(0, endOptions < 0 ? args.length : endOptions);
-  if (options.some(arg => arg === '--help' || arg === '-h')) {
-    process.stdout.write("Usage: koa [options] [pi arguments]\n\nOptions:\n  --help                 Show this help\n  --browser              Open the page in a browser\n  --pi PATH              Use this pi executable\n  --metrics PATH         Write rendering metrics\n  --metrics-mode MODE    Select applied, frame or probe metrics\n\nOther arguments go to pi.\n");
+  const parsed = parseKoaArgs(process.argv.slice(2));
+  if (parsed.values.help) {
+    process.stdout.write(`Usage: koa [options] [messages...]
+
+Session:
+  --continue, -c         Continue the latest session
+  --resume, -r           Select a session
+  --session FILE         Resume a session file
+  --session-id ID        Set a new session id
+  --fork FILE            Fork a session file
+  --no-session           Do not save the session
+  --session-dir DIR      Set the session directory
+
+Model:
+  --name, -n NAME        Set the agent name
+  --model MODEL          Select a model
+  --provider PROVIDER    Select a provider
+  --thinking LEVEL       Set the thinking level
+  --models MODELS        Set the model scope
+
+Tools and context:
+  --tools, -t TOOLS      Select tools
+  --exclude-tools TOOLS  Exclude tools
+  --no-tools             Disable tools
+  --no-builtin-tools     Disable built-in tools
+  --extension, -e PATH   Load an extension (repeatable)
+  --no-extensions        Disable extension discovery
+  --skill PATH           Load skills (repeatable)
+  --no-skills            Disable skill discovery
+  --prompt-template PATH Load prompt templates (repeatable)
+  --no-prompt-templates  Disable prompt template discovery
+  --no-context-files     Disable context files
+  --no-mcp               Disable MCP
+  --system-prompt TEXT   Set the system prompt
+  --append-system-prompt TEXT
+                        Append to the system prompt (repeatable)
+
+Trust and network:
+  --approve, -a          Approve the project
+  --no-approve           Do not approve the project
+  --offline              Disable network access
+
+Koa:
+  --help, -h             Show this help
+  --browser              Open the page in a browser
+  --pi PATH              Use this pi executable
+  --metrics PATH         Write rendering metrics
+  --metrics-mode MODE    Select applied, frame or probe metrics
+  --runtime NAME         Route tools to a runtime
+
+Use --option=value for a value that starts with -.
+Everything after -- is message text.
+`);
     return;
   }
-  let browser = false;
-  let metricsFile: string | undefined;
-  let metricsMode: MetricsMode | undefined;
-  let executable = "pi";
-  const pass: string[] = [], own: string[] = [];
-  for (let i = 0; i < args.length; i++) {
-    const arg = args[i], first = i;
-    if (arg === '--') { pass.push(...args.slice(i)); break; }
-    if (arg === "--browser") browser = true;
-    else if (arg === "--metrics") {
-      metricsFile = args[++i];
-      if (!metricsFile) throw new Error("--metrics requires a path");
-    } else if (arg === "--metrics-mode") {
-      const mode = args[++i];
-      if (mode !== "applied" && mode !== "frame" && mode !== "probe") throw new Error("--metrics-mode requires applied, frame or probe");
-      metricsMode = mode;
-    } else if (arg === "--pi") {
-      const path = args[++i];
-      if (!path) throw new Error("--pi requires a path");
-      executable = path;
-    } else if (arg !== undefined) { pass.push(arg); continue; }
-    own.push(...args.slice(first, i + 1));
-  }
+  const browser = !!parsed.values.browser;
+  const metricsFile = parsed.values.metrics;
+  const metricsMode = parsed.values['metrics-mode'];
+  if (metricsMode !== undefined && metricsMode !== 'applied' && metricsMode !== 'frame' && metricsMode !== 'probe') throw new Error("--metrics-mode requires applied, frame or probe");
   if (metricsMode && !metricsFile) throw new Error("--metrics-mode requires --metrics");
+  const executable = parsed.values.pi ?? "pi";
+  const pass = restartArgs(parsed, undefined);
   const reloadPage = process.env.KOA_PAGE_RELOAD === '1';
   const instance = randomUUID();
   const metrics = metricsFile ? metricsMode ?? "frame" : undefined;
@@ -154,8 +185,7 @@ async function main(): Promise<void> {
     const result = await pickSession(executable, pass, fileURLToPath(new URL("./koa-resume.ts", location)), readyMs);
     if (result.type === "cancel") { process.stderr.write("No session selected\n"); return; }
     if (result.type === "selected") {
-      const end = pass.indexOf("--");
-      pass.splice(end < 0 ? pass.length : end, 0, "--session", result.path);
+      parsed.values.session = result.path;
     }
   }
   if (metricsFile) await writeFile(metricsFile, "");
@@ -282,7 +312,7 @@ async function main(): Promise<void> {
       for (const agent of new Set([previous.agent, next.agent])) agent.host.jobs.viewChanged();
     };
     const tree: Tree = koaAgents.createTree({
-      sdk, args: sdk.pi.parseArgs(restartArgs(pass, undefined)), cwd: process.cwd(), agentDir, facts: koaAgents.hostFacts(process.env), browser, makeView,
+      sdk, args: sdk.pi.parseArgs(restartArgs(parsed, undefined)), cwd: process.cwd(), agentDir, facts: koaAgents.hostFacts(process.env), browser, makeView,
       jobOutput: job => feeds.get(job.id)?.feed.output(),
       jobWatched: job => feeds.get(job.id)?.feed.subscribed() ?? false,
       jobChanged: (agent, job) => { if (feeds.has(job.id)) agent.view.publish(); },
@@ -328,7 +358,7 @@ async function main(): Promise<void> {
         if (reloading) return;
         reloading = true;
         const ended = tree.all().filter(agent => agent.parent).length;
-        void shutdown().then(() => Promise.all([process.stdout, process.stderr].map(stream => new Promise<void>(resolve => { const timer = later(resolve, QUIT_REPLY_MS); stream.write("", () => { clearTimeout(timer); resolve(); }); })))).then(() => { if (!process.execve) throw Error("this node has no process.execve"); process.execve(process.execPath, [process.execPath, ...process.execArgv, process.argv[1] ?? "", ...own, ...restartArgs(pass, root().view.state.sessionFile)], { ...process.env, KOA_RELOAD: String(ended) }); }).catch(error => { process.stderr.write(`koa: reload: ${errorText(error)}\n`); process.exitCode = 1; });
+        void shutdown().then(() => Promise.all([process.stdout, process.stderr].map(stream => new Promise<void>(resolve => { const timer = later(resolve, QUIT_REPLY_MS); stream.write("", () => { clearTimeout(timer); resolve(); }); })))).then(() => { if (!process.execve) throw Error("this node has no process.execve"); process.execve(process.execPath, [process.execPath, ...process.execArgv, process.argv[1] ?? "", ...restartArgs(parsed, root().view.state.sessionFile, true)], { ...process.env, KOA_RELOAD: String(ended) }); }).catch(error => { process.stderr.write(`koa: reload: ${errorText(error)}\n`); process.exitCode = 1; });
       };
       afterReply(response, QUIT_REPLY_MS, restart);
       respond(response, 200, JSON.stringify({ disposition: "handled", action: { type: "reload" } }));
@@ -342,7 +372,7 @@ async function main(): Promise<void> {
       const v = root().view;
       v.life = { type: "starting" }; v.resetSession(); v.newSessionScope(); v.publish(true);
       try {
-        await tree.start(sdk.pi.parseArgs(restartArgs(pass, v.state.sessionFile)));
+        await tree.start(sdk.pi.parseArgs(restartArgs(parsed, v.state.sessionFile)));
         v.refresh();
         if (tree.view().type !== "agent") switchView({ type: "agent", agent: root() }); else tree.select({ type: "agent", agent: root() });
         refreshRows(root());

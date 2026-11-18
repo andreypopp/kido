@@ -1,35 +1,47 @@
-import type { parseArgs } from '@earendil-works/pi-coding-agent';
+import { parseArgs, type ParseArgsConfig } from 'node:util';
+import type { Args } from '@earendil-works/pi-coding-agent';
 
-export function restartArgs(pass: readonly string[], sessionFile: string | undefined): string[] {
+const options = {
+  continue: { type: 'boolean', short: 'c' }, resume: { type: 'boolean', short: 'r' },
+  session: { type: 'string' }, 'session-id': { type: 'string' }, fork: { type: 'string' },
+  'no-session': { type: 'boolean' }, 'session-dir': { type: 'string' },
+  name: { type: 'string', short: 'n' }, model: { type: 'string' }, provider: { type: 'string' },
+  thinking: { type: 'string' }, models: { type: 'string' },
+  tools: { type: 'string', short: 't' }, 'exclude-tools': { type: 'string' },
+  'no-tools': { type: 'boolean' }, 'no-builtin-tools': { type: 'boolean' },
+  extension: { type: 'string', short: 'e', multiple: true }, 'no-extensions': { type: 'boolean' },
+  skill: { type: 'string', multiple: true }, 'no-skills': { type: 'boolean' },
+  'prompt-template': { type: 'string', multiple: true }, 'no-prompt-templates': { type: 'boolean' },
+  'no-context-files': { type: 'boolean' }, 'no-mcp': { type: 'boolean' },
+  'system-prompt': { type: 'string' }, 'append-system-prompt': { type: 'string', multiple: true },
+  approve: { type: 'boolean', short: 'a' }, 'no-approve': { type: 'boolean' }, offline: { type: 'boolean' },
+  help: { type: 'boolean', short: 'h' }, browser: { type: 'boolean' }, pi: { type: 'string' },
+  metrics: { type: 'string' }, 'metrics-mode': { type: 'string' }, runtime: { type: 'string' },
+} as const satisfies NonNullable<ParseArgsConfig['options']>;
+
+export function parseKoaArgs(args: string[]) {
+  const parsed = parseArgs({ args, options, strict: true, allowPositionals: true });
+  if (parsed.values.approve && parsed.values['no-approve']) throw new Error('--approve and --no-approve conflict');
+  return parsed;
+}
+
+export function restartArgs(parsed: ReturnType<typeof parseKoaArgs>, sessionFile: string | undefined, includeOwn = false): string[] {
   const args: string[] = [];
-  for (let i = 0; i < pass.length; i++) {
-    const arg = pass[i];
-    if (arg === '--') { args.push(...pass.slice(i)); break; }
-    if (sessionFile && ['--session', '--session-id', '--fork', '--provider', '--model', '--thinking'].includes(arg ?? '')) { i++; continue; }
-    if (sessionFile && ['--continue', '-c', '--no-session'].includes(arg ?? '')) continue;
-    if (arg !== undefined) args.push(arg);
+  for (const [name, value] of Object.entries(parsed.values)) {
+    if (!includeOwn && ['help', 'browser', 'pi', 'metrics', 'metrics-mode'].includes(name)) continue;
+    if (sessionFile && ['session', 'session-id', 'fork', 'continue', 'no-session', 'provider', 'model', 'thinking'].includes(name)) continue;
+    for (const item of Array.isArray(value) ? value : [value]) {
+      if (item === true) args.push(`--${name}`);
+      else if (typeof item === 'string') args.push(...(includeOwn || name === 'runtime' ? [`--${name}=${item}`] : [`--${name}`, item]));
+    }
   }
-  if (sessionFile) {
-    const end = args.indexOf('--');
-    args.splice(end < 0 ? args.length : end, 0, '--session', sessionFile);
-  }
+  if (sessionFile) args.push(...(includeOwn ? [`--session=${sessionFile}`] : ['--session', sessionFile]));
+  if (parsed.positionals.length) args.push('--', ...parsed.positionals);
   return args;
 }
 
-export function startupResult(args: ReturnType<typeof parseArgs>): { error: string } | { messages: string[]; resume: boolean } {
-  const refused: [string, boolean, string][] = [
-    ['--mode', (args.mode ?? args.unknownFlags.get('mode') ?? 'rpc') !== 'rpc', 'requires rpc'],
-    ['--print', !!args.print, 'use the page to send prompts'],
-    ['--export', args.export !== undefined, 'use /export in the page'],
-    ['--list-models', args.listModels !== undefined, 'use /model in the page'],
-    ['--version', !!args.version, 'run pi --version'],
-    ['--tui-mode', args.tuiMode !== undefined, 'not available in koa'],
-    ['--theme', args.themes !== undefined, 'koa uses the page theme'],
-    ['--use-theme', args.useTheme !== undefined, 'koa uses the page theme'],
-    ['--no-themes', !!args.noThemes, 'koa uses the page theme'],
-  ];
-  const refusal = refused.find(([flag, active]) => active || flag !== '--mode' && args.unknownFlags.has(flag.slice(2)));
+export function startupResult(args: Args): { error: string } | { messages: string[]; resume: boolean } {
   const diagnostic = args.diagnostics.find(value => value.type === 'error');
-  const error = refusal ? `${refusal[0]}: ${refusal[2]}` : diagnostic ? diagnostic.message : args.fileArgs.length ? '@file: use the page\'s attachments' : undefined;
+  const error = diagnostic ? diagnostic.message : args.fileArgs.length ? '@file: use the page\'s attachments' : undefined;
   return error ? { error } : { messages: args.messages, resume: !!args.resume };
 }

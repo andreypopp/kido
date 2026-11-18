@@ -527,8 +527,8 @@ back in one batch, and the unit records again only the tests that
 batch changes.
 
 **Which verification.** Agents verify a unit with `scripts/checks.sh`
-(`make checks`; `DRY=1` prints only the plan, `BASE=ref` sets the
-base). It reads the paths that the unit changed, finds the checks of
+(`make checks`; `make checks DRY=1` or `--dry-run` prints only the
+plan, `BASE=ref` sets the base). It reads the paths that the unit changed, finds the checks of
 each path in the one table of the script, prints the plan and runs
 the checks through `scripts/verify.sh`. A path that the table does
 not name selects every check. It stops at the first failing stage. A

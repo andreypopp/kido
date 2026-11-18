@@ -408,8 +408,10 @@ A koa agent starts in one of two ways, and both give the same
 `POST /panes` (or a new pane of `PUT /layout`) with the `koa` case of
 `Command` (`ko_wire/src/protocol.rs`), whose fields are typed. The
 server alone turns it into koa's
-flags (`koa_args` in `ko_server/src/panes.rs`), so no client builds
-koa's argv. The task is not part of it: a spawner gives it as the
+flags (`program` in `ko_server/src/panes.rs`), so no client builds
+koa's argv. Each valued flag is one argument, `--name=VALUE`, so a
+value that starts with `-`, such as a name `--browser`, stays a value
+for koa's strict parser. The task is not part of it: a spawner gives it as the
 pane variable `koa.task`.
 
 On the host, the server runs its own koa, the `koa` of its bin

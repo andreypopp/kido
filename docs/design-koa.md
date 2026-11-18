@@ -297,16 +297,27 @@ completion, the attachment routes and the dialog answer work while
 the session starts, because a `session_start` handler can wait for a
 dialog's answer.
 
-**The command line is checked before the webview.** koa parses pi's
-arguments with pi's exported `parseArgs`, so koa has no copy of pi's
-flag table, and `koa-args.ts` decides from the parsed value. koa
-refuses, with `koa: <flag>: <reason>` and exit code 1, the flags that
-end or bypass the session: `--mode` other than `rpc`, `--print`,
-`--export`, `--list-models`, `--version`, `--tui-mode`, `--theme`,
-`--use-theme` and `--no-themes` (the page has its own theme), and
-every error of pi's parser. An `@file` argument is refused too: an
-attachment is not pi's inline file expansion, so the page's
-attachments are the way. koa sends pi's positional messages as pi's
+**The command line is checked before the webview.** koa parses its
+whole command line once, with Node's strict `util.parseArgs`, against
+the one table of the options that it accepts (`koa-args.ts`): pi's
+session, model, tool, context and trust options, and koa's own
+`--browser`, `--pi`, `--metrics`, `--metrics-mode` and `--runtime`.
+Every other option is an error, with `koa: <message>`: pi's flags
+that end or bypass the session (`--mode`, `--print`, `--export`,
+`--list-models`, `--version`, the theme flags) and pi's keys and
+logging are not koa's options. One table means that koa's own options
+and pi's values cannot be confused: a value that starts with `-` is
+written `--name=VALUE`, which the parser refuses as ambiguous in two
+words. `util.parseArgs` takes only one-character short names, so pi's
+`-xt`, `-nt`, `-nbt`, `-ne`, `-ns`, `-np`, `-nc` and `-na` have only
+their long forms in koa. koa then builds pi's arguments from the
+parsed values (`restartArgs`) and passes them to pi's exported
+`parseArgs`, so pi still decides what each flag means; pi's errors
+and an `@file` argument, also after `--`, are refused with exit code
+1. An attachment is not pi's inline file expansion, so the page's
+attachments are the way. `--approve` and `--no-approve` together are
+refused, because the parsed values do not keep their order. The other
+positionals are messages; `--` ends the options. koa sends pi's positional messages as pi's
 interactive mode does: one by one, each after the previous run
 settles, once after the session is ready, not when a page connects.
 
@@ -391,9 +402,9 @@ fails after pi tore the old one down), koa goes to `failed`: the
 transcript stays, and the failed card above the field shows pi's
 error and "Start again"; the foot has no state. "Start again"
 (`/agent/start`) makes the session again from the arguments of a
-restart (`restartArgs` in `koa-args.ts`: `--session` of the last
-session file, without the session, provider, model and thinking
-flags, because the session file holds the pickers' changes). A torn
+restart (`restartArgs` in `koa-args.ts`, from the parsed values:
+`--session` of the last session file, without the session, provider,
+model and thinking flags, because the session file holds the pickers' changes). A torn
 down session is never used again, also when the next one has the
 same id. A subagent whose extensions fail to bind shows the same card
 in its view; "Start again" there makes only that child again, from
@@ -485,8 +496,9 @@ has two layers (the user's decision):
 The restart answers the page, runs koa's one shutdown, except that
 the SDK's `close(false)` keeps the pane in webview mode, waits for
 its own stdout and stderr to drain, and calls `process.execve` with
-Node, its script path as the shim gave it, its own flags and pi's
-arguments by the rule of "Start again" (`restartArgs`): the same pid
+Node, its script path as the shim gave it, and its parsed options,
+koa's own included, by the rule of "Start again" (`restartArgs`), each
+valued option as one `--name=VALUE` argument: the same pid
 in the same pane, so the pane's row and children stay, and the script
 path resolves to the files that a Kido.app update installed, pi's SDK
 included. `KOA_RELOAD` in the new process holds the number of

@@ -3053,12 +3053,9 @@ fn a_koa_command_runs_the_shipped_koa_on_the_host_routed_for_or_inside_a_runtime
         args(&ran),
         [
             "--browser",
-            "--session-id",
-            "s-new",
-            "--name",
-            "Ag 'ent",
-            "--model",
-            "p/m:high"
+            "--session-id=s-new",
+            "--name=Ag 'ent",
+            "--model=p/m:high"
         ]
     );
     assert_eq!(
@@ -3077,14 +3074,14 @@ fn a_koa_command_runs_the_shipped_koa_on_the_host_routed_for_or_inside_a_runtime
     assert_eq!(row["command"][0], text_of(&shipped));
     assert!(row["runtime"].is_null());
     let resume = koa(json!({"type": "resume", "session": saved}), json!({}));
-    assert_eq!(args(&launched(&resume)), ["--session", saved]);
+    assert_eq!(args(&launched(&resume)), [format!("--session={saved}")]);
     let fork = koa(
         json!({"type": "fork", "session": saved, "session_id": "s-fork"}),
         json!({}),
     );
     assert_eq!(
         args(&launched(&fork)),
-        ["--fork", saved, "--session-id", "s-fork"]
+        [format!("--fork={saved}"), "--session-id=s-fork".to_owned()]
     );
 
     let routed = koa(
@@ -3092,7 +3089,7 @@ fn a_koa_command_runs_the_shipped_koa_on_the_host_routed_for_or_inside_a_runtime
         json!({"runtime": "routed", "cwd": text_of(&host.join("sub"))}),
     );
     let ran = launched(&routed);
-    assert_eq!(args(&ran), ["--runtime", "routed"]);
+    assert_eq!(args(&ran), ["--runtime=routed"]);
     assert_eq!(
         (field(&ran, "cwd"), field(&ran, "runtime")),
         (text_of(&host.join("sub")).to_owned(), String::new()),

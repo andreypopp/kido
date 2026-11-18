@@ -47,6 +47,63 @@ test("peers observed only on /client can end and resume as independent peers", a
   } finally { await fx.restore(); }
 });
 
+test("a restarted toplevel peer keeps its runtime", async () => {
+  const fx = makeFixture();
+  try {
+    fx.setPanes([selfPane()]);
+    fx.setRuntimes({ dev: { paths: [], koa: "host" } });
+    const s = await startSession(fx);
+    assert.match(text(await s.tool("spawn_agent").execute("c", { name: "Routed", task: "go", toplevel: true, runtime: "dev" })), /^spawned/);
+    const peer = entriesOf(s, "koa.agent").find((entry) => entry.role === "peer");
+    assert.equal(typeof peer?.session, "string");
+    const id = String(peer?.session);
+    savedSession(join(fx.dir, "sessions", "peer"), process.cwd(), id);
+    await pollUntil(() => fx.clientLayouts().length > 0);
+    fx.setClientPanes([selfPane(), agentPane({ pane: "pane_10", session: id, name: "Renamed", vars: { "koa.runtime": { name: "dev", cwd: process.cwd() } } })]);
+    await pollUntil(() => entriesOf(s, "koa.agent").some((entry) => entry.session === id && entry.name === "Renamed"));
+    fx.setClientPanes([selfPane()]);
+    fx.setPanes([selfPane()]);
+    assert.match(text(await s.tool("message_agent").execute("c", { to: id, message: "continue" })), /restarted/);
+    assert.equal(at(fx.posts("/panes"), 1).runtime, "dev");
+  } finally { await fx.restore(); }
+});
+
+test("spawn_agent resumes a recorded peer in its runtime unless explicitly changed", async () => {
+  const fx = makeFixture();
+  try {
+    fx.setPanes([selfPane()]);
+    fx.setRuntimes({ dev: { paths: [], koa: "host" }, other: { paths: [], koa: "host" } });
+    const s = await startSession(fx);
+    assert.match(text(await s.tool("spawn_agent").execute("c", { name: "Routed", task: "go", toplevel: true, runtime: "dev" })), /^spawned/);
+    const id = String(entriesOf(s, "koa.agent").find((entry) => entry.role === "peer")?.session);
+    savedSession(join(fx.dir, "sessions", "peer"), process.cwd(), id);
+    for (const runtime of [undefined, "other"]) {
+      fx.setPanes([selfPane()]);
+      assert.match(text(await s.tool("spawn_agent").execute("c", { name: "Routed", resume_from: id, task: "continue", ...(runtime ? { runtime } : {}) })), /^spawned/);
+    }
+    assert.deepEqual(fx.posts("/panes").map((body) => body.runtime), ["dev", "dev", "other"]);
+  } finally { await fx.restore(); }
+});
+
+test("an observed inside-runtime peer has no recorded tool route", async () => {
+  const fx = makeFixture();
+  try {
+    fx.setPanes([selfPane()]);
+    const s = await startSession(fx);
+    const id = "88888888abcdef08";
+    savedSession(join(fx.dir, "sessions", "peer"), process.cwd(), id);
+    const inside = agentPane({ pane: "pane_2", session: id, name: "Inside" });
+    inside.runtime = "dev";
+    inside.status = { kind: { type: "runtime", pane: { type: "koa_agent", session: id, status: { since: 0, state: { type: "idle" } } } } };
+    fx.setClientPanes([selfPane(), inside]);
+    await pollUntil(() => entriesOf(s, "koa.agent").some((entry) => entry.session === id));
+    assert.equal(entriesOf(s, "koa.agent").find((entry) => entry.session === id)?.runtime, undefined);
+    fx.setClientPanes([selfPane()]);
+    assert.match(text(await s.tool("message_agent").execute("c", { to: id, message: "continue" })), /restarted/);
+    assert.equal(at(fx.posts("/panes"), 0).runtime, undefined);
+  } finally { await fx.restore(); }
+});
+
 test("ended peers use session ids when names collide and omit missing files", async () => {
   const fx = makeFixture();
   try {
