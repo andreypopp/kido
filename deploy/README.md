@@ -150,6 +150,16 @@ enrollment host from it. The pairing listener uses
 loopback port 8791 only.
 The Caddy admin socket is `/run/caddy/admin.sock`, mode 0600.
 
+The server's own sites go in `/etc/caddy/sites.d/NAME.caddy`, root-owned
+files written with sudo; `install.sh` never changes that folder. A
+site uses a name under `*.<ko host>`, which DNS already points at the
+server, and keeps its files under `/etc/caddy`: Caddy's AppArmor
+profile lets it read there, but not in `/srv` or a home folder. A
+site that does not validate stops the next `install.sh` at its
+`caddy validate`. Such a site is public unless it adds
+`tls { client_auth ... }` like the ko host. `sudo systemctl reload
+caddy` applies it.
+
 ## Threat model
 
 The design is in `plans/remote-mtls.md`, section 2. The facts that

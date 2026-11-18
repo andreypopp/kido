@@ -34,3 +34,4 @@
 		flush_interval -1
 	}
 }
+import /etc/caddy/sites.d/*.caddy

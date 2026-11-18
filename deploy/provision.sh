@@ -83,6 +83,7 @@ if ! id -nG caddy | tr ' ' '\n' | grep -qx ko-socket; then
 fi
 install -d -o root -g caddy -m 0750 /var/lib/ko-devices
 install -d -o caddy -g caddy -m 0750 /var/log/caddy
+[[ -d /etc/caddy/sites.d ]] || install -d -o root -g root -m 0755 /etc/caddy/sites.d
 install -d /opt/ko/bin /opt/ko/share /etc/systemd/system/caddy.service.d
 [[ -x $base/../linux/bin/ko && -x $base/../linux/bin/ko-pane ]] || { echo 'copy the Linux build beside deploy as linux/ first' >&2; exit 1; }
 for binary in ko ko-pane; do
