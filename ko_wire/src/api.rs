@@ -175,6 +175,8 @@ impl JsonSchema for Generation {
 pub struct DropName(String);
 
 impl DropName {
+    pub const MAX_BYTES: usize = 255;
+
     pub fn as_str(&self) -> &str {
         &self.0
     }
@@ -185,7 +187,7 @@ impl TryFrom<String> for DropName {
 
     fn try_from(value: String) -> Result<Self, Self::Error> {
         if value.is_empty()
-            || value.len() > 255
+            || value.len() > Self::MAX_BYTES
             || value.starts_with('.')
             || value.chars().any(|c| c == '/' || c.is_control())
         {
@@ -208,7 +210,7 @@ impl JsonSchema for DropName {
     }
 
     fn json_schema(_: &mut SchemaGenerator) -> Schema {
-        json_schema!({"type":"string","minLength":1,"maxLength":255,"pattern":"^[^./\\p{Cc}][^/\\p{Cc}]*$","description":"A file name of at most 255 UTF-8 bytes, without a leading dot, slash or control character."})
+        json_schema!({"type":"string","minLength":1,"maxLength":DropName::MAX_BYTES,"pattern":"^[^./\\p{Cc}][^/\\p{Cc}]*$","description":"A file name of at most 255 UTF-8 bytes, without a leading dot, slash or control character."})
     }
 }
 
@@ -261,6 +263,22 @@ fn natural(value: &str, max: u64) -> Result<u64, Invalid> {
         .ok()
         .filter(|&number| number <= max)
         .ok_or_else(|| Invalid::message("invalid number"))
+}
+
+impl Param for u32 {
+    const EXAMPLE: &'static str = "4242";
+
+    fn parse(value: &str) -> Result<u32, Invalid> {
+        natural(value, u32::MAX.into()).map(|number| u32::try_from(number).unwrap_or(u32::MAX))
+    }
+
+    fn render(&self) -> String {
+        self.to_string()
+    }
+
+    fn schema(generator: &mut SchemaGenerator) -> Schema {
+        generator.subschema_for::<u32>()
+    }
 }
 
 fn percent_decode(value: &str) -> Option<String> {
@@ -597,7 +615,9 @@ routes! {
     Version { method: GET, path: /version, reply: ServerVersion }
 
     /// Store one file in a live pane's host or runtime from a streamed body with Content-Length.
-    UploadDrop { method: POST, path: /panes/{id: PaneId}/drops, query: { name: DropName }, body: StreamBody, caller: optional, reply: crate::protocol::Dropped }
+    /// In a pane that runs ko ssh, the file goes to the ssh target over the recorded connection,
+    /// and `ssh` must be the pid of the pane's ssh foreground; otherwise it is refused with 409.
+    UploadDrop { method: POST, path: /panes/{id: PaneId}/drops, query: { name: DropName, ssh: Option<u32> }, body: StreamBody, caller: optional, reply: crate::protocol::Dropped }
     /// Every pane, with its status and variables.
     ListPanes { method: GET, path: /panes, reply: Vec<Listing> }
     /// One pane, with its status and variables.

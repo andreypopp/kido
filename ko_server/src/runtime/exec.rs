@@ -619,9 +619,16 @@ pub(crate) enum Target {
 }
 
 #[derive(Debug)]
+pub(crate) struct SshHop {
+    pub(crate) foreground: u32,
+    pub(crate) args: Vec<String>,
+}
+
+#[derive(Debug)]
 pub(crate) enum Purpose {
     Command,
     Drop {
+        ssh: Option<SshHop>,
         pane: ko_wire::ids::PaneId,
         visit: Option<Token>,
         remaining: usize,

@@ -1400,8 +1400,9 @@ A copy is one request of ko's drop route for each file, in order,
 through the window's own ko client (`ko_client_upload`), on the local
 host, an SSH remote and a TLS server alike, over HTTP/1.1 or HTTP/3
 (design-ko.md, section 5). The pane decides where the
-file lands: on the server's host, or inside the pane's runtime, whose
-path the reply carries; the app never names a folder
+file lands: on the server's host, inside the pane's runtime, or on the
+target of a `ko ssh` in the pane, whose path the reply carries; the
+app never names a folder
 (design-runtimes.md, "A drop"). The client pulls the file through a
 reader in bounded chunks, so a dropped or promised file is never held
 in memory; a clipboard image is in memory already and is sent from
@@ -1414,11 +1415,15 @@ A remote host asks for consent once per connection, or always allows
 after "Always allow"; the local host never asks, also for a runtime
 that is an ssh host, because the user chose where that pane runs.
 
-The one copy without a reachable ko is an ssh session inside a Local
-pane: there the transfer script runs over the session's recorded
-`ssh` arguments into `${XDG_STATE_HOME:-~/.local/state}/kido-app/drops`
-on that host, after a confirmation, with its own seven-day cleanup.
-Text and web links without files or promises are refused.
+A pane whose row is a `ko ssh` session (`.live(.ssh)`) asks before
+every drop, in every window type, and the prompt names the target
+and the destination; this prompt replaces the per-connection consent.
+The app sends the foreground pid of the row that the prompt showed,
+and the server refuses the drop when the pane's ssh session is no
+longer that one; the server copies the file onward over ssh
+(design-runtimes.md, "A drop"). A plain `ssh` is not detected, and
+its drop lands on the server's host. Text and web links without files
+or promises are refused.
 
 Surfaces are kept per window, for the most recently shown windows of
 any session while their retained panes total at most 32; the rest have

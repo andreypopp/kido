@@ -282,7 +282,12 @@ pub(crate) fn handle(state: &mut State, poll: &mut Poll, index: usize, incoming:
     };
     let origin = state.conns[index].origin.clone();
     match request {
-        Request::UploadDrop { id, name, body: _ } => {
+        Request::UploadDrop {
+            id,
+            name,
+            ssh,
+            body: _,
+        } => {
             let Payload::Stream(length) = payload else {
                 return error(
                     &mut state.conns[index],
@@ -291,7 +296,7 @@ pub(crate) fn handle(state: &mut State, poll: &mut Poll, index: usize, incoming:
                 );
             };
             let admitted = acts_as(caller, id, "upload only to itself")
-                .and_then(|()| state.begin_upload(poll, index, id, name, length));
+                .and_then(|()| state.begin_upload(poll, index, id, name, ssh, length));
             if let Err(failure) = admitted {
                 error(&mut state.conns[index], failure.kind, failure.message);
             }

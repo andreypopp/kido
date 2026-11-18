@@ -69,7 +69,7 @@ import KoModel
         (shell(report: report(waiting())), .waiting, true),
     ]
     for (status, mark, ask) in cases {
-        for kind in [KoSchema.Live.host(.init(pane: .terminal(status))), .runtime(.init(pane: .terminal(status))), .ssh(.init(destination: "host", pane: .terminal(.init(interactive: true, status: status))))] {
+        for kind in [KoSchema.Live.host(.init(pane: .terminal(status))), .runtime(.init(pane: .terminal(status))), .ssh(.init(destination: "host", foreground: 1, pane: .terminal(.init(interactive: true, status: status))))] {
             let node = pane(0, lifecycle: .live(kind), mark: mark)
             #expect(closeScope(PaneProjection(makeSnapshot([node])), target: .pane(PaneID(number: 0))).ask == ask)
             if case .pending = status.phase, case .item(let item) = node {
@@ -78,7 +78,7 @@ import KoModel
             }
         }
     }
-    for kind in [KoSchema.Live.ssh(.init(destination: "host", pane: .terminal(.init(interactive: false, status: shell())))), .host(.init(pane: .someAgent(.init(name: "pi", status: report(idle()))))), .runtime(.init(pane: .koaAgent(.init(session: "s", status: report(idle())))))] {
+    for kind in [KoSchema.Live.ssh(.init(destination: "host", foreground: 1, pane: .terminal(.init(interactive: false, status: shell())))), .host(.init(pane: .someAgent(.init(name: "pi", status: report(idle()))))), .runtime(.init(pane: .koaAgent(.init(session: "s", status: report(idle())))))] {
         #expect(closeScope(PaneProjection(makeSnapshot([pane(0, lifecycle: .live(kind))])), target: .pane(PaneID(number: 0))).ask)
     }
 }

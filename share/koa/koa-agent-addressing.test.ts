@@ -86,7 +86,7 @@ test("runtime agent placement uses the row before routed pi variables", async ()
     const shell = agentPane({ pane: "pane_4", session: "stale-session", name: "stale-shell", vars: { "koa.runtime": { name: "wrong", cwd: "/wrong" } } });
     shell.status = { kind: { type: "host", pane: { type: "terminal", phase: { type: "idle" } } } };
     const ssh = agentPane({ pane: "pane_5", session: "ssh-session", name: "ssh-agent", vars: { "koa.runtime": { name: "wrong", cwd: "/wrong" } } });
-    ssh.status = { kind: { type: "ssh", destination: "host", pane: { type: "agent", name: "pi", status: { since: 0, state: { type: "idle" } } } } };
+    ssh.status = { kind: { type: "ssh", destination: "host", foreground: 1, pane: { type: "agent", name: "pi", status: { since: 0, state: { type: "idle" } } } } };
     fx.setPanes([selfPane(), row, host, shell, ssh]);
     const s = await startSession(fx);
     const rows = jsonRows(await s.tool("list_agents").execute("c", {}));

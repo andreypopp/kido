@@ -799,7 +799,11 @@ ko_code ko_webview_ws_close(const ko_webview_ws *socket, uint16_t code, const ch
 size_t ko_webview_ws_buffered_amount(const ko_webview_ws *socket);
 ko_code ko_webview_ws_cancel(ko_webview_ws *socket);
 
-/* Uploads exactly size bytes to a live pane. Blocks until the server answered:
+/* Uploads exactly size bytes to a live pane. ssh is NULL, or points to the pid of
+ * the pane's ssh foreground that the user confirmed: the server then forwards the
+ * file to the target of the pane's ko ssh session, and refuses the upload when
+ * the pane's ssh foreground is another process. Without ssh, the server refuses
+ * an upload to a pane that runs ko ssh. Blocks until the server answered:
  * call off the main queue. read receives bounded writable chunks; false cancels,
  * and count 0 before size bytes is an error. reader remains valid until return.
  * read runs on this call's thread. A caller's cancellation flag is observed only
@@ -811,7 +815,7 @@ ko_code ko_webview_ws_cancel(ko_webview_ws *socket);
  * KO_ERR_PROTOCOL. A server error answer returns KO_ERR_REFUSED with its
  * unmodified message in out. Transport failures keep their I/O, TLS or identity code. */
 ko_code ko_client_upload(const ko_client *client, const char *pane,
-                         const char *name, uint64_t size, ko_read_fn read,
+                         const char *name, const uint32_t *ssh, uint64_t size, ko_read_fn read,
                          void *reader, ko_buffer *out);
 
 /*

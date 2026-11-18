@@ -413,31 +413,6 @@ private final class PromisedFile: NSFilePromiseReceiver, @unchecked Sendable {
         XCTAssertEqual(String(decoding: input.data, as: UTF8.self), Array(repeating: plain, count: 16).joined(separator: " "))
     }
 
-    func testRecordedSSHCommandComputesItsBaseOnTheFarSideUnderAnyLoginShell() async throws {
-        let root = "/tmp/ku-far-" + UUID().uuidString.prefix(8)
-        try FileManager.default.createDirectory(atPath: root + "/home", withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
-        addTeardownBlock { try? FileManager.default.removeItem(atPath: root) }
-        let png = pngData(width: 2, height: 2), plan = try await Upload(image: png)
-        let shells = ["/bin/sh", "/bin/tcsh", "/bin/zsh", "/bin/bash", "/opt/homebrew/bin/fish", "/usr/local/bin/fish", "/usr/bin/fish"].filter(FileManager.default.isExecutableFile)
-        XCTAssertTrue(shells.contains("/bin/tcsh"))
-        for shell in shells {
-            for (environment, base) in [(["HOME": root + "/home"], root + "/home/.local/state/kido-app"),
-                                        (["HOME": root + "/home", "XDG_STATE_HOME": root + "/xdg"], root + "/xdg/kido-app")] {
-                let id = UUID().uuidString.lowercased()
-                let command = try XCTUnwrap(SSH.recorded(["localhost"], plan.arguments(id: id)).arguments.last)
-                XCTAssertFalse(command.contains("\n"))
-                let run = try await Child.run(shell, ["-c", command], env: environment.merging(["PATH": "/usr/bin:/bin"]) { $1 }, input: plan.send)
-                XCTAssertEqual(run.status, 0, shell + ": " + run.err)
-                XCTAssertEqual(run.out, base + "/drops/" + id, shell)
-                XCTAssertEqual(try? Data(contentsOf: URL(fileURLWithPath: run.out + "/" + plan.sources[0].name)), png, shell)
-            }
-        }
-        let multiline = "exec " + (["/bin/sh", "-c", Upload.script, "kido-drop", "id"]).map(SSH.quote).joined(separator: " ")
-        let old = try await Child.run("/bin/tcsh", ["-c", multiline], env: ["HOME": root + "/home", "PATH": "/usr/bin:/bin"])
-        XCTAssertNotEqual(old.status, 0, "negative control: the script quoted across lines fails under tcsh")
-        XCTAssertTrue(old.err.contains("Unmatched"), old.err)
-    }
-
     func testEscapeAndGenerationChangeDuringActiveRouteTransfersPasteNothing() async throws {
         for close in [false, true] {
             let (owner, pane, _, input, root) = try await localPane(connection: .host)

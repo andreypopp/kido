@@ -119,7 +119,7 @@ import XCTest
                         snapshot = fixtureSnapshot(window: 101, pane: 101, [("main", [fixtureNode(100, "Root", piLifecycle(), children: [fixtureNode(101, "Ancestor", piLifecycle(), children: snapshot.sessions[0].nodes)])])])
                     }
                 case .directories:
-                    let ssh = Lifecycle.live(.ssh(.init(destination: "dev@devbox", pane: .terminal(.init(interactive: true, status: .init(phase: .idle(.init())))))))
+                    let ssh = Lifecycle.live(.ssh(.init(destination: "dev@devbox", foreground: 1, pane: .terminal(.init(interactive: true, status: .init(phase: .idle(.init())))))))
                     snapshot = fixtureSnapshot(window: 99, pane: 99, [("main", [
                         .item(fixtureItem(1, cwd: "/Users/dev/Workspace/kido", "Terminal", shellLifecycle())),
                         .item(fixtureItem(2, cwd: "/Users/dev/Documents", "Idle agent", piLifecycle(), mark: .none_)),

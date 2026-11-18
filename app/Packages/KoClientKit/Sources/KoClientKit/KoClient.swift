@@ -500,21 +500,21 @@ private final class UploadReader: @unchecked Sendable {
         })
     }
 
-    nonisolated public func upload(pane: PaneID, name: String, size: UInt64, read: @escaping @Sendable (UnsafeMutableRawBufferPointer) -> Int?) async throws -> String {
+    nonisolated public func upload(pane: PaneID, name: String, ssh: UInt32? = nil, size: UInt64, read: @escaping @Sendable (UnsafeMutableRawBufferPointer) -> Int?) async throws -> String {
         let reader = UploadReader(read)
         return try await withTaskCancellationHandler {
             try Task.checkCancellation()
             return try await Task.detached(priority: .utility) { [handle] in
                 var out = ko_buffer()
-                let bytes = try handle.call { client in
-                    try take(ko_client_upload(client, pane.description, name, size, { context, buffer, capacity, count in
+                let bytes = try withUnsafePointer(to: ssh ?? 0) { pid in try handle.call { client in
+                    try take(ko_client_upload(client, pane.description, name, ssh == nil ? nil : pid, size, { context, buffer, capacity, count in
                         guard let context, let count else { return false }
                         let reader = Unmanaged<UploadReader>.fromOpaque(context).takeUnretainedValue()
                         guard let received = reader.next(UnsafeMutableRawBufferPointer(start: buffer, count: capacity)), received >= 0 else { return false }
                         count.pointee = received
                         return true
                     }, Unmanaged.passUnretained(reader).toOpaque(), &out), &out)
-                }
+                } }
                 return String(decoding: bytes, as: UTF8.self)
             }.value
         } onCancel: { reader.cancel() }

@@ -18,14 +18,14 @@ struct Upload: Sendable {
         return paths.count == sources.count ? paths : nil
     }
 
-    func upload(_ client: KoClient, pane: PaneID) async throws -> [String] {
+    func upload(_ client: KoClient, pane: PaneID, ssh: UInt32?) async throws -> [String] {
         if let source = sources.first(where: { $0.size > Self.fileLimit }) { throw Failure(message: "\(source.name) is larger than 64 MiB.") }
         guard size <= Self.totalLimit else { throw Failure(message: "Kido uploads at most 256 MiB at once.") }
         var paths: [String] = []
         for source in sources {
             try Task.checkCancellation()
             let reader = SourceReader(source.bytes)
-            paths.append(try await client.upload(pane: pane, name: source.name, size: UInt64(source.size), read: reader.read))
+            paths.append(try await client.upload(pane: pane, name: source.name, ssh: ssh, size: UInt64(source.size), read: reader.read))
         }
         return paths
     }
@@ -204,60 +204,6 @@ struct Upload: Sendable {
         }
         guard let png, png.count <= Self.fileLimit else { throw Failure(message: "Kido could not convert the clipboard image to a PNG of at most 64 MiB within 10 seconds.") }
         sources = [Source(name: "clipboard-\(UUID().uuidString.prefix(8).lowercased()).png", size: png.count, bytes: .data(png))]
-    }
-
-    // The directory under the state home that holds the drops when the caller gives no base.
-
-    static let script = """
-    base=${XDG_STATE_HOME:-$HOME/.local/state}/kido-app; id=$1; shift
-    refuse() { printf '%s\\n' "kido-drop: $1" >&2; exit 1; }
-    me=$(id -u)
-    check() { case $(uname -s) in
-      Darwin) m=$(stat -f '%u:%Lp' "$1") ;; Linux) m=$(stat -c '%u:%a' "$1") ;; *) refuse platform ;; esac
-      [ -d "$1" ] && [ ! -L "$1" ] && [ "$m" = "$me:700" ] || refuse "unsafe $1"; }
-    umask 077
-    [ -e "$base" ] || mkdir -p "$base" || refuse mkdir
-    check "$base"
-    mkdir -p "$base/drops" || refuse mkdir
-    check "$base/drops"
-    find "$base/drops" -mindepth 1 -maxdepth 1 -type d \\( -name '[0-9a-f]*-*' -o -name '.[0-9a-f]*-*' \\) -mtime +7 -exec rm -rf {} +
-    [ "$(du -sk "$base/drops" | cut -f1)" -le 2097152 ] || refuse "more than 2 GiB of uploads are kept in $base/drops"
-    stage=$base/drops/.$id
-    [ ! -e "$base/drops/$id" ] && mkdir "$stage" || refuse exists
-    cat > "$stage/.stream" || refuse write
-    offset=1
-    while [ $# -gt 0 ]; do
-      name=$1; size=$2; shift 2
-      if [ "$size" -eq 0 ]; then : > "$stage/$name" || refuse write
-      else tail -c "+$offset" "$stage/.stream" | head -c "$size" > "$stage/$name" || refuse write; fi
-      got=$(wc -c < "$stage/$name" | tr -d ' ')
-      [ "$got" -eq "$size" ] || refuse "short $name"
-      offset=$((offset + size))
-    done
-    got=$(wc -c < "$stage/.stream" | tr -d ' ')
-    [ "$got" -eq $((offset - 1)) ] || refuse "long stream"
-    rm "$stage/.stream" && mv "$stage" "$base/drops/$id" || refuse publish
-    printf '%s\\n' "$base/drops/$id"
-    """
-
-    func arguments(id: String) -> [String] {
-        // tcsh, as a remote login shell, rejects a newline inside single quotes.
-        ["/bin/sh", "-c", "eval \"$(printf %s \(Data(Self.script.utf8).base64EncodedString()) | base64 -d)\"", "kido-drop", id] + sources.flatMap { [$0.name, String($0.size)] }
-    }
-
-    func send(_ pipe: FileHandle) {
-        for source in sources {
-            switch source.bytes {
-            case .data(let data): guard (try? pipe.write(contentsOf: data)) != nil else { return }
-            case .file(let file, _):
-                var left = source.size
-                while left > 0, let chunk = try? file.read(upToCount: min(left, 1 << 20)), !chunk.isEmpty {
-                    guard (try? pipe.write(contentsOf: chunk)) != nil else { return }
-                    left -= chunk.count
-                }
-                if left > 0 { return }
-            }
-        }
     }
 
     static func text(_ paths: [String]) -> String? {

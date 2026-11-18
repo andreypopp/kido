@@ -650,14 +650,24 @@ program sees it and answers its path; Kido.app pastes that path into
 the pane. The pane decides the place: a pane with no runtime (its
 `Pane::runtime()`, which also covers a visit) gets the file on the
 server host, a pane in a runtime gets it inside that runtime, and the
-path is the runtime's own path. `koa.runtime` plays no part. The user
+path is the runtime's own path. A `ko ssh` pane (kind `Ssh`,
+design-program-status.md, "Pane kinds") gets it on the ssh target,
+and the path is the target's own path. `koa.runtime` plays no part;
+neither does a plain `ssh`, which ko does not detect, so its drop
+lands on the server host. The upload records its place at its start:
+the exec session's target, and for a `ko ssh` pane the ssh hop of
+`Purpose::Drop` (`ko_server/src/runtime/exec.rs`), with the confirmed
+foreground pid and the recorded arguments. A change of the pane's
+place (another runtime, the end of ssh, another ssh session or other
+arguments) cancels the upload. The user
 may upload into any live pane, a pane caller on the host socket only
 into its own pane, and a runtime connection not at all, as for the
 exec session.
 
 **One writer.** `ko drop` (`ko_shell/src/drops.rs`) is the only code
-that writes a drop, on the host and in every runtime, so one set of
-rules holds in both places. The server never writes a drop file: it
+that writes a drop, on the host, in every runtime and, through its
+remote script, on an ssh target, so one set of rules holds in every
+place. The server never writes a drop file: it
 runs `ko drop` as an exec session whose stdin is the request's body.
 For a runtime pane the session is the runtime's own, with its
 launch, its slot cap, its start and its down; for a host pane it is
@@ -668,7 +678,7 @@ executable, so no `PATH` inside the runtime chooses which ko writes.
 The host passes its state directory as `--base`; inside a runtime
 the base is `$XDG_STATE_HOME/ko`, else `$HOME/.local/state/ko`, never
 the socket's `io/` or `/run/ko`, which are mounts for the link and
-not storage. `ko drop --name NAME --size N [--base DIR]` reads exactly
+not storage. `ko drop --name NAME --size N [--base DIR | -- SSHARGS]` reads exactly
 `N` bytes and then the end of its input, and prints one JSON line with
 the path. It exits 0 on success; 1 on an I/O error, the quota, input
 that is short or too long, a cancel signal, or 60 s without input;
@@ -714,6 +724,40 @@ connection before the whole body, 60 s without body bytes (a timer
 of the loop), the pane's death and the end of the pane's visit
 cancel the session as a closed exec session is cancelled, and
 `ko drop` removes its partial on the cancel signal.
+
+**The ssh hop.** The client must name the session that the user
+confirmed: the request carries `ssh=PID`, the foreground pid of the
+pane row that the prompt showed. The server compares it only with
+its own foreground record, never signals it and never looks it up.
+It refuses (`refused`) a `ko ssh` pane without `ssh`, a pid that is
+not the pane's current ssh foreground, `ssh` for a pane that is not
+a `ko ssh` pane, and a `ko ssh` pane without a recorded `ssh.args`.
+Then it runs `ko drop -- ARGS` on the host, with the recorded
+arguments as argv, never through a shell. `ko drop` refuses arguments
+that `ko ssh` would not record, then runs `/usr/bin/ssh` with its own
+`-o` settings first (design-program-status.md, "The ssh mark"):
+`BatchMode=yes`, `ControlMaster=no`, no forwarding, no tty, no remote
+command from the configuration, a connect timeout and server-alive
+probes, so a lost link ends the upload instead of holding it
+(`ko_shell/src/drops.rs`). The remote command is the script `REMOTE`
+of the same file, sent as base64 and run by `/bin/sh`, so the login
+shell of the target sees only base64 characters; the name, the id and
+the size travel inside the payload. Each file is one ssh connection,
+because the route takes one file for each request; a master that the
+user's configuration keeps open makes the later ones cheap. It writes the drop with the
+layout, the limits and the cleanup above into `$XDG_STATE_HOME/ko`,
+else `$HOME/.local/state/ko`, and checks only that `drops` belongs to
+the user with mode `0700`. ssh's process is in the exec session's
+group, so a cancel stops it like any `ko drop`.
+
+The hop runs with the server's environment: its `SSH_AUTH_SOCK`, its
+`~/.ssh/config`, and a master that the configuration's `ControlPath`
+already opened, which `ControlMaster=no` reuses but never starts.
+Nothing prompts: without an agent, a master or a key without a
+passphrase, ssh fails at once, and the upload ends with ssh's
+message, as any failure of `ko drop`. The server's environment is not
+the pane's: a server that an SSH-attached window started has the
+environment of that ssh login, which may hold no agent.
 
 ## The container kind
 

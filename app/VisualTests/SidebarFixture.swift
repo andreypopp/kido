@@ -222,7 +222,7 @@ func sidebarChildrenFixture(records: Bool = false) -> Snapshot {
     snapshot.sessions[1].nodes = [
         .window(.init(id: .init(number: 2000), children: [
             fixtureItem(2001, window: 2000, "cargo build --release", shellLifecycle(.unknown), mark: .failed),
-            fixtureItem(2002, window: 2000, "ssh devbox: tail -f /var/log/system.log", .live(.ssh(.init(destination: "devbox", pane: .terminal(.init(interactive: true, status: .init(phase: .running(.init(fullscreen: false, origin: .command(.init(command: "tail -f /var/log/system.log", startedAt: 0)))))))))), mark: .running),
+            fixtureItem(2002, window: 2000, "ssh devbox: tail -f /var/log/system.log", .live(.ssh(.init(destination: "devbox", foreground: 1, pane: .terminal(.init(interactive: true, status: .init(phase: .running(.init(fullscreen: false, origin: .command(.init(command: "tail -f /var/log/system.log", startedAt: 0)))))))))), mark: .running),
         ])),
         .item(fixtureItem(2003, "pi-review on devbox", agentLifecycle(.running(.init()), msg: "Reviewing the remote checkout", name: "pi"), mark: .running)),
         .item(fixtureItem(2004, "review the sidebar implementation and accessibility changes", piLifecycle(.waiting(.init()), msg: "Needs your review before continuing"), mark: .waiting)),

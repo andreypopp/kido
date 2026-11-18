@@ -211,6 +211,7 @@ fn an_upload_ignores_post_handshake_tickets_before_its_http_answer() {
         &Route::UploadDrop {
             id: "pane_1".parse().unwrap(),
             name: "ticket".to_owned().try_into().unwrap(),
+            ssh: None,
         },
         2,
         &cancel,

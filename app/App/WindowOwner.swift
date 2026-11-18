@@ -877,15 +877,23 @@ private class AlertEscape: NSView {
         if !files.isEmpty || refused { page.drop(files: files, refused: refused) }
     }
 
-    func sshDestination(_ pane: PaneView) -> String? {
-        guard host == .local, let item = projection.items[pane.pane]?.item, case .live(.ssh(let ssh)) = item.lifecycle else { return nil }
-        return ssh.destination
+    func sshTarget(_ pane: PaneView) -> KoSchema.LiveSsh? {
+        guard let item = projection.items[pane.pane]?.item, case .live(.ssh(let ssh)) = item.lifecycle else { return nil }
+        return ssh
     }
 
     func upload(_ planned: Result<Upload, Failure>, to pane: PaneView) {
         let plan: Upload
         do { plan = try planned.get() } catch { return notice("Kido did not upload", error.message) }
-        if let destination = sshDestination(pane) { return uploadOverSSH(plan, destination, to: pane) }
+        if let target = sshTarget(pane) {
+            guard admitsUpload() else { return }
+            let pid = UInt32(exactly: target.foreground)
+            return askUpload(plan, to: target.destination, "The program in this pane runs over ssh on \(target.destination). Nested ssh sessions are not detected.",
+                             ["Upload", "Cancel"]) { [weak self, weak pane] response in
+                guard let self, response == .alertFirstButtonReturn, let pane else { return }
+                transfer(plan, to: pane, ssh: pid)
+            }
+        }
         if host == .local, pane.runtimeMark == nil, let paths = plan.originals { return insert(paths, into: pane) }
         guard case .connected = link else { return notice("Kido did not upload", "\(host.label) is not connected.") }
         guard admitsUpload() else { return }
@@ -905,26 +913,6 @@ private class AlertEscape: NSView {
             guard uploadPermission == .allow, let pane else { return }
             transfer(plan, to: pane)
         }
-    }
-
-    private func uploadOverSSH(_ plan: Upload, _ destination: String, to pane: PaneView, confirmed: [String]? = nil) {
-        guard admitsUpload() else { return }
-        let refusal = confirmed == nil ? "Kido can't tell where this ssh session connects; nothing was uploaded."
-            : "The ssh session in this pane changed after you confirmed; nothing was uploaded."
-        guard case .array(let values)? = koModel?.pane(pane.pane)?.vars["ssh.args"] else {
-            return notice("Kido did not upload", refusal)
-        }
-        let recorded: [String] = values.compactMap { if case .string(let text) = $0 { text } else { nil } }
-        guard let target = recorded.last, sshDestination(pane) == destination else { return notice("Kido did not upload", refusal) }
-        guard let confirmed else {
-            return askUpload(plan, to: target, "The program in this pane runs over ssh on \(target) (\(destination)). Nested ssh sessions are not detected.",
-                             ["Upload", "Cancel"]) { [weak self, weak pane] response in
-                guard let self, response == .alertFirstButtonReturn, let pane else { return }
-                uploadOverSSH(plan, destination, to: pane, confirmed: recorded)
-            }
-        }
-        guard recorded == confirmed else { return notice("Kido did not upload", refusal) }
-        transferOverSSH(plan, to: pane, over: recorded)
     }
 
     private func askUpload(_ plan: Upload, to label: String, _ detail: String, _ buttons: [String], then answered: @escaping (NSApplication.ModalResponse) -> Void) {
@@ -981,12 +969,12 @@ private class AlertEscape: NSView {
         cancelClipboardAlert(alert)
     }
 
-    private func transfer(_ plan: Upload, to pane: PaneView) {
+    private func transfer(_ plan: Upload, to pane: PaneView, ssh: UInt32? = nil) {
         guard case .connected(let client) = link else { return notice("Kido did not upload", "\(host.label) is not connected.") }
         let id = UUID().uuidString.lowercased(), generation = generation, runtime = pane.runtimeMark?.name
         uploads[id] = (pane, Task { [weak self] in
             let result: Result<[String], Error>
-            do { result = .success(try await plan.upload(client, pane: pane.pane)) }
+            do { result = .success(try await plan.upload(client, pane: pane.pane, ssh: ssh)) }
             catch { result = .failure(error) }
             guard let self, accepts(generation), uploads.removeValue(forKey: id) != nil, !Task.isCancelled else { return }
             switch result {
@@ -1004,26 +992,6 @@ private class AlertEscape: NSView {
                 notice("Kido did not upload", message)
             }
         })
-    }
-
-    private func transferOverSSH(_ plan: Upload, to pane: PaneView, over recorded: [String]) {
-        let id = UUID().uuidString.lowercased(), generation = generation, drain = drain, arguments = plan.arguments(id: id)
-        let label = recorded.last ?? host.label
-        let launch = SSH.recorded(recorded, arguments)
-        let task = Task { [weak self] in
-            guard !Task.isCancelled else { return }
-            let result: Result<Child.Finished, Failure>
-            do throws(Failure) { result = .success(try await Child.run(launch, deadline: 60 + Double(plan.size >> 20), drain: drain, input: plan.send)) }
-            catch { result = .failure(error) }
-            guard let self, accepts(generation), uploads.removeValue(forKey: id) != nil else { return }
-            switch result {
-            case .failure(let error): notice("Upload to \(label) failed", error.message)
-            case .success(let run) where run.status != 0 || !(run.out.hasPrefix("/") && run.out.hasSuffix("/drops/" + id)):
-                notice("Upload to \(label) failed", run.err.isEmpty ? "The upload exited \(run.status)." : run.err)
-            case .success(let run): insert(plan.sources.map { run.out + "/" + $0.name }, into: pane)
-            }
-        }
-        uploads[id] = (pane, task)
     }
 
     func uploading(_ pane: PaneView) -> Bool { uploads.values.contains { $0.pane === pane } }

@@ -5,9 +5,10 @@ use ko_sys::signal::Signal;
 
 use super::*;
 use crate::conn::{Close, Handling};
+use crate::pane_kind::{self, Kind};
 use crate::runtime::exec::{
     Admit, Chunk, Launch, Limiter, MAX_SESSIONS, Mode, Purpose, Request, Retry, Running, Session,
-    Source, Stage, Stream, Target, spawn,
+    Source, SshHop, Stage, Stream, Target, spawn,
 };
 use crate::runtime::{Ending, RuntimeKey, Wait, Who};
 use ko_wire::exec_wire::{Command, Start, ToKo};
@@ -18,6 +19,39 @@ use ko_wire::protocol::{
 const FRAMING: usize = 80;
 const READS_PER_TURN: usize = 16;
 const UPLOAD_REPLY: usize = 16 << 10;
+const CHANGED: &str = "the ssh session in this pane changed";
+fn drop_hop(pane: &Pane, ssh: Option<u32>) -> Result<Option<SshHop>, protocol::Error> {
+    let refused = |message: String| protocol::Error::new(protocol::ErrorKind::Refused, message);
+    match (pane_kind::of_pane(pane), ssh) {
+        (Kind::Host { .. } | Kind::Runtime { .. }, None) => Ok(None),
+        (Kind::Host { .. } | Kind::Runtime { .. }, Some(_)) => Err(refused(CHANGED.to_owned())),
+        (Kind::Ssh { destination, .. }, None) => Err(refused(format!(
+            "the pane runs ko ssh to {destination}; confirm the target"
+        ))),
+        (Kind::Ssh { foreground, .. }, Some(pid)) if foreground != pid => {
+            Err(refused(CHANGED.to_owned()))
+        }
+        (
+            Kind::Ssh {
+                destination,
+                foreground,
+                ..
+            },
+            Some(_),
+        ) => pane_kind::ssh_args(pane)
+            .and_then(|args| {
+                args.iter()
+                    .map(|arg| arg.as_str().map(str::to_owned))
+                    .collect::<Option<Vec<_>>>()
+            })
+            .map(|args| Some(SshHop { foreground, args }))
+            .ok_or_else(|| {
+                refused(format!(
+                    "ko ssh did not record how it connects to {destination}"
+                ))
+            }),
+    }
+}
 
 #[derive(Debug)]
 pub(super) struct Execs {
@@ -146,10 +180,10 @@ impl State {
                         protocol::decode::<protocol::Dropped>(stdout).map_err(std::io::Error::other)
                     } else {
                         let message = String::from_utf8_lossy(stderr).trim().to_owned();
-                        Err(std::io::Error::other(if message.is_empty() {
-                            format!("ko drop ended: {ended:?}")
-                        } else {
-                            message
+                        Err(std::io::Error::other(match ended {
+                            _ if !message.is_empty() => message,
+                            Ended::Status { status } => format!("ko drop exited {status}"),
+                            Ended::Signal { .. } => "ko drop ended by a signal".to_owned(),
                         }))
                     },
                     *remaining,
@@ -225,9 +259,11 @@ impl State {
         index: usize,
         pane: PaneId,
         name: ko_wire::api::DropName,
+        ssh: Option<u32>,
         length: usize,
     ) -> Result<(), protocol::Error> {
         let target = self.live(pane)?;
+        let ssh = drop_hop(target, ssh)?;
         let runtime = target
             .runtime()
             .cloned()
@@ -238,15 +274,26 @@ impl State {
             format!("--name={}", name.as_str()),
             format!("--size={length}"),
         ];
-        if runtime == Target::Host {
-            let base = self.config.dir.to_str().ok_or_else(|| {
-                protocol::Error::new(protocol::ErrorKind::Invalid, "state directory is not UTF-8")
-            })?;
-            args.push(format!("--base={base}"));
+        match (&ssh, &runtime) {
+            (Some(hop), _) => {
+                args.push("--".to_owned());
+                args.extend(hop.args.iter().cloned());
+            }
+            (None, Target::Host) => {
+                let base = self.config.dir.to_str().ok_or_else(|| {
+                    protocol::Error::new(
+                        protocol::ErrorKind::Invalid,
+                        "state directory is not UTF-8",
+                    )
+                })?;
+                args.push(format!("--base={base}"));
+            }
+            (None, Target::Runtime(_)) => {}
         }
         let session = Session {
             runtime,
             purpose: Purpose::Drop {
+                ssh,
                 pane,
                 visit,
                 remaining: length,
@@ -290,7 +337,10 @@ impl State {
             .enumerate()
             .filter_map(|(index, conn)| {
                 let session = conn.exec()?;
-                let Purpose::Drop { pane, visit, .. } = &session.purpose else {
+                let Purpose::Drop {
+                    ssh, pane, visit, ..
+                } = &session.purpose
+                else {
                     return None;
                 };
                 let live = self.panes.find(*pane).is_some_and(|pane| {
@@ -301,6 +351,17 @@ impl State {
                             .cloned()
                             .map_or(Target::Host, Target::Runtime)
                             == session.runtime
+                        && ssh.as_ref().is_none_or(|hop| {
+                            pane.telemetry()
+                                .foreground
+                                .as_ref()
+                                .is_some_and(|foreground| foreground.pid == hop.foreground)
+                                && pane_kind::ssh_args(pane).is_some_and(|args| {
+                                    args.iter()
+                                        .map(serde_json::Value::as_str)
+                                        .eq(hop.args.iter().map(|arg| Some(arg.as_str())))
+                                })
+                        })
                 });
                 (!live).then_some(index)
             })

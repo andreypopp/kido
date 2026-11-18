@@ -232,7 +232,8 @@ failed or refused write never stops ssh:
 
 The variables stay after ssh exits. The server trusts them only while
 the pane's foreground process is `ssh`. The next `ko ssh` in the pane
-replaces them.
+replaces them. The server reads `ssh.args` to copy a drop onward to
+the target (design-runtimes.md, "A drop").
 
 `ko_config/src/ssh_args.rs` classes each option letter: an option that
 names the connection target (port, jump hosts, configuration,

@@ -664,9 +664,18 @@ impl Local {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Live {
-    Host { pane: Local },
-    Runtime { pane: Local },
-    Ssh { destination: String, pane: Remote },
+    Host {
+        pane: Local,
+    },
+    Runtime {
+        pane: Local,
+    },
+    Ssh {
+        destination: String,
+        /// The pid of the pane's ssh foreground, which an upload to the ssh target names.
+        foreground: u32,
+        pane: Remote,
+    },
 }
 
 impl Live {
@@ -2653,8 +2662,8 @@ mod tests {
         for json in [
             r#"{"type":"host","pane":{"type":"some_agent","name":"claude-code","status":{"since":1,"state":{"type":"idle","outcome":{"serial":2,"result":"success"}}}}}"#,
             r#"{"type":"host","pane":{"type":"koa_agent","session":"s","status":{"since":1,"state":{"type":"running"}}}}"#,
-            r#"{"type":"ssh","destination":"deploy@h","pane":{"type":"terminal","interactive":true,"status":{"phase":{"type":"idle","last":{"code":1,"command":"false","started_at":1,"ended_at":2}}}}}"#,
-            r#"{"type":"ssh","destination":"h","pane":{"type":"agent","name":"koa","status":{"since":0,"state":{"type":"idle"}}}}"#,
+            r#"{"type":"ssh","destination":"deploy@h","foreground":42,"pane":{"type":"terminal","interactive":true,"status":{"phase":{"type":"idle","last":{"code":1,"command":"false","started_at":1,"ended_at":2}}}}}"#,
+            r#"{"type":"ssh","destination":"h","foreground":7,"pane":{"type":"agent","name":"koa","status":{"since":0,"state":{"type":"idle"}}}}"#,
             r#"{"type":"host","pane":{"type":"terminal","phase":{"type":"running","origin":{"type":"unknown"},"fullscreen":true}}}"#,
             r#"{"type":"host","pane":{"type":"terminal","phase":{"type":"unknown"}}}"#,
         ] {

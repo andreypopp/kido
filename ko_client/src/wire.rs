@@ -1267,6 +1267,7 @@ pub(crate) mod tests {
                 &Route::UploadDrop {
                     id: "pane_1".parse().unwrap(),
                     name: "quota".to_owned().try_into().unwrap(),
+                    ssh: None,
                 },
                 2147483649,
                 &Wake::new().unwrap(),

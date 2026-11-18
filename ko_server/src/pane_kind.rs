@@ -5,6 +5,7 @@ use ko_wire::protocol::Foreground;
 use ko_wire::vars::Vars;
 
 const SSH_DEST: VarName = VarName::known("ssh.dest");
+const SSH_ARGS: VarName = VarName::known("ssh.args");
 const KOA_SESSION: VarName = VarName::known("koa.session");
 const KOA_NAME: VarName = VarName::known("koa.name");
 const KOA_ACTIVITY: VarName = VarName::known("koa.activity");
@@ -38,6 +39,7 @@ pub(crate) enum Kind {
     },
     Ssh {
         destination: String,
+        foreground: u32,
         pane: RemoteKind,
     },
 }
@@ -62,6 +64,14 @@ impl Kind {
             Self::Ssh { .. } => None,
         }
     }
+}
+
+pub(crate) fn ssh_args(pane: &Pane) -> Option<&[serde_json::Value]> {
+    pane.vars()
+        .get(&SSH_ARGS)
+        .and_then(serde_json::Value::as_array)
+        .map(Vec::as_slice)
+        .filter(|args| !args.is_empty())
 }
 
 fn destination(vars: &Vars) -> Option<String> {
@@ -102,17 +112,20 @@ pub(crate) fn classify(
         Some(_) => Kind::Runtime { pane: local() },
         None => {
             let ssh = foreground
-                .is_some_and(|foreground| foreground.name == "ssh")
-                .then(|| destination(vars))
-                .flatten();
-            if let Some(destination) = ssh {
+                .filter(|foreground| foreground.name == "ssh")
+                .and_then(|foreground| Some((destination(vars)?, foreground.pid)));
+            if let Some((destination, foreground)) = ssh {
                 let pane = match root_app {
                     Some(name @ ("koa" | "claude-code")) => RemoteKind::Agent {
                         name: name.to_owned(),
                     },
                     _ => RemoteKind::Terminal,
                 };
-                return Kind::Ssh { destination, pane };
+                return Kind::Ssh {
+                    destination,
+                    foreground,
+                    pane,
+                };
             }
             Kind::Host { pane: local() }
         }
@@ -262,6 +275,7 @@ mod tests {
             ssh,
             Kind::Ssh {
                 destination: "deploy@realm@next.test".to_owned(),
+                foreground: 1,
                 pane: RemoteKind::Agent {
                     name: "claude-code".to_owned()
                 }
@@ -271,6 +285,7 @@ mod tests {
             telemetry("ssh", &vars).kind(Some("pi")),
             Kind::Ssh {
                 destination: "deploy@realm@next.test".to_owned(),
+                foreground: 1,
                 pane: RemoteKind::Terminal
             }
         );

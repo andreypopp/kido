@@ -102,7 +102,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** @description Store one file in a live pane's host or runtime from a streamed body with Content-Length. */
+        /** @description Store one file in a live pane's host or runtime from a streamed body with Content-Length. In a pane that runs ko ssh, the file goes to the ssh target over the recorded connection, and `ssh` must be the pid of the pane's ssh foreground; otherwise it is refused with 409. */
         post: operations["UploadDrop"];
         delete?: never;
         options?: never;
@@ -1204,6 +1204,8 @@ export interface components {
             type: "runtime";
         } | {
             destination: string;
+            /** @description The pid of the pane's ssh foreground, which an upload to the ssh target names. */
+            foreground: number;
             pane: components["schemas"]["Remote"];
             /** @constant */
             type: "ssh";
@@ -2318,6 +2320,8 @@ export interface operations {
             query: {
                 /** @example image.png */
                 name: components["schemas"]["DropName"];
+                /** @example 4242 */
+                ssh?: number;
             };
             header?: {
                 /** @example pane_1 */

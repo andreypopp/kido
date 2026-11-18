@@ -28,7 +28,7 @@ func running(_ command: String? = "make", fullscreen: Bool = false) -> KoSchema.
     .running(.init(fullscreen: fullscreen, origin: command.map { .command(.init(command: $0, startedAt: since)) } ?? .unknown))
 }
 func remote(_ pane: KoSchema.Remote, user: String = "alice", host: String = "devbox") -> Lifecycle {
-    .live(.ssh(.init(destination: user.isEmpty ? host : user + "@" + host, pane: pane)))
+    .live(.ssh(.init(destination: user.isEmpty ? host : user + "@" + host, foreground: 1, pane: pane)))
 }
 
 func pane(_ id: Int, window: Int? = nil, parent: Int? = nil, title: String = "", cwd: String = "", lifecycle: Lifecycle = terminal(),

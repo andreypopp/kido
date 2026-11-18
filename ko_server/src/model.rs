@@ -67,6 +67,7 @@ fn row_title(kind: &Kind, live: &Live, pane_title: &str, label: String) -> Strin
             Kind::Ssh {
                 destination,
                 pane: RemoteKind::Terminal,
+                ..
             },
             Live::Ssh {
                 pane: ko_wire::protocol::Remote::Terminal { interactive, .. },

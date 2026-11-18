@@ -322,13 +322,6 @@ that prints text on a noninteractive start gives a reply that is not a
 socket path, and the window shows "Kido could not find the ko socket on
 HOST" with the text. `ko HOST` has the same limit. Status: accepted.
 
-## Upload drops keep the kido-app name
-
-Uploads go to `${XDG_STATE_HOME:-~/.local/state}/kido-app/drops` on both
-hosts. The app's own paths and knobs keep the Kido name: the server and
-its code are `ko`, the app is Kido.app (docs/design-ko.md, "Decisions",
-2026-11-03). Status: accepted.
-
 ## The remote restore and echo are not measured
 
 `make rtt` (`app/scripts/rtt.py`) is measured only as a 2000-row smoke on

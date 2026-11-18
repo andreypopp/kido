@@ -1414,7 +1414,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
         if urls.isEmpty, let promises = sender.draggingPasteboard.readObjects(forClasses: [NSFilePromiseReceiver.self]) as? [NSFilePromiseReceiver], !promises.isEmpty {
             owner.uploadPromises(promises, to: self)
         } else {
-            owner.upload(Result { () throws(Failure) in try Upload(files: urls, copying: host != .local || owner.sshDestination(self) != nil) }, to: self)
+            owner.upload(Result { () throws(Failure) in try Upload(files: urls, copying: host != .local || owner.sshTarget(self) != nil) }, to: self)
         }
         return true
     }

@@ -46,6 +46,7 @@ pub unsafe extern "C" fn ko_client_upload(
     client_: *const Client,
     pane: *const c_char,
     name: *const c_char,
+    ssh: Option<&u32>,
     size: u64,
     read: Option<unsafe extern "C" fn(*mut c_void, *mut u8, usize, *mut usize) -> bool>,
     reader: *mut c_void,
@@ -68,7 +69,11 @@ pub unsafe extern "C" fn ko_client_upload(
         let body = wire::upload(
             socket,
             id,
-            &Route::UploadDrop { id: pane, name },
+            &Route::UploadDrop {
+                id: pane,
+                name,
+                ssh: ssh.copied(),
+            },
             size,
             cancel,
             |buffer| {

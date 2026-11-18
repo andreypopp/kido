@@ -2500,6 +2500,11 @@
               "destination": {
                 "type": "string"
               },
+              "foreground": {
+                "description": "The pid of the pane's ssh foreground, which an upload to the ssh target names.",
+                "minimum": 0,
+                "type": "integer"
+              },
               "pane": {
                 "$ref": "#/components/schemas/Remote"
               },
@@ -2511,6 +2516,7 @@
             "required": [
               "type",
               "destination",
+              "foreground",
               "pane"
             ],
             "type": "object"
@@ -5820,7 +5826,7 @@
     },
     "/panes/{id}/drops": {
       "post": {
-        "description": "Store one file in a live pane's host or runtime from a streamed body with Content-Length.",
+        "description": "Store one file in a live pane's host or runtime from a streamed body with Content-Length. In a pane that runs ko ssh, the file goes to the ssh target over the recorded connection, and `ssh` must be the pid of the pane's ssh foreground; otherwise it is refused with 409.",
         "operationId": "UploadDrop",
         "parameters": [
           {
@@ -5839,6 +5845,17 @@
             "required": true,
             "schema": {
               "$ref": "#/components/schemas/DropName"
+            }
+          },
+          {
+            "example": "4242",
+            "in": "query",
+            "name": "ssh",
+            "required": false,
+            "schema": {
+              "format": "uint32",
+              "minimum": 0,
+              "type": "integer"
             }
           },
           {

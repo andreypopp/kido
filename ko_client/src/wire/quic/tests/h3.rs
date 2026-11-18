@@ -641,6 +641,7 @@ fn an_h3_upload_uses_the_declared_length_and_callback_bytes() {
             &ko_wire::api::Route::UploadDrop {
                 id: "pane_1".parse().unwrap(),
                 name: "file".to_owned().try_into().unwrap(),
+                ssh: None,
             },
             150000,
             &cancel,
@@ -654,6 +655,7 @@ fn an_h3_upload_uses_the_declared_length_and_callback_bytes() {
                 &ko_wire::api::Route::UploadDrop {
                     id: "pane_1".parse().unwrap(),
                     name: "short".to_owned().try_into().unwrap(),
+                    ssh: None,
                 },
                 4,
                 &cancel,
@@ -669,6 +671,7 @@ fn an_h3_upload_uses_the_declared_length_and_callback_bytes() {
             &ko_wire::api::Route::UploadDrop {
                 id: "pane_1".parse().unwrap(),
                 name: "cancel".to_owned().try_into().unwrap(),
+                ssh: None,
             },
             8 << 20,
             &cancel,

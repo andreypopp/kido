@@ -103,8 +103,7 @@ ko_plain() {
   exec "$ko_shell"
 }
 ko_decode() {
-  printf %s "$1" | base64 -d > "$2" 2>/dev/null ||
-    printf %s "$1" | base64 -D > "$2" 2>/dev/null
+  @DECODE@ > "$2"
 }
 ko_terminfo() {
   infocmp xterm-ghostty >/dev/null 2>&1 && return 0
@@ -293,9 +292,18 @@ pub(crate) fn local_mode(dotdir: &Path, path: &Path) -> Mode {
     }
 }
 
+// A remote command carries its payload as base64: tcsh, as a login shell, refuses a newline inside
+// single quotes, and fish and csh read other quoting. macOS before 13 decodes only with -D.
+pub(crate) fn base64_decode(word: &str) -> String {
+    format!(
+        "{{ printf %s {word} | base64 -d 2>/dev/null || printf %s {word} | base64 -D 2>/dev/null; }}"
+    )
+}
+
 pub(crate) fn ssh_bootstrap(terminfo: Option<&[u8]>) -> String {
     let args = |mode| shell_args(mode).join(" ");
     BOOTSTRAP
+        .replace("@DECODE@", &base64_decode("\"$1\""))
         .replace(
             "@TERMINFO_B64@",
             &base64_encode(terminfo.unwrap_or_default()),

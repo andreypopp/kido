@@ -314,7 +314,9 @@ fn identity(kind: &Kind) -> Identity {
                 (Root::Agent("koa".to_owned()), Some(session.clone()), None)
             }
         },
-        Kind::Ssh { destination, pane } => (
+        Kind::Ssh {
+            destination, pane, ..
+        } => (
             match pane {
                 RemoteKind::Terminal => Root::Program,
                 RemoteKind::Agent { name } => Root::Agent(name.clone()),
@@ -413,9 +415,11 @@ pub(crate) fn observe(
         }
         Kind::Ssh {
             destination,
+            foreground,
             pane: RemoteKind::Agent { name },
         } => Live::Ssh {
             destination: destination.clone(),
+            foreground: *foreground,
             pane: Remote::Agent {
                 name: name.clone(),
                 status: agent(&mut t, false, None),
@@ -423,6 +427,7 @@ pub(crate) fn observe(
         },
         Kind::Ssh {
             destination,
+            foreground,
             pane: RemoteKind::Terminal,
         } => {
             t.interactive |= match (telemetry.last_prompt, &telemetry.command) {
@@ -441,6 +446,7 @@ pub(crate) fn observe(
             t = next;
             Live::Ssh {
                 destination: destination.clone(),
+                foreground: *foreground,
                 pane: Remote::Terminal {
                     interactive,
                     status,
@@ -1028,6 +1034,7 @@ mod tests {
         step("claude again", &claude, 6, done("claude-code"));
         let ssh = |destination: &str| Kind::Ssh {
             destination: destination.to_owned(),
+            foreground: 1,
             pane: RemoteKind::Agent {
                 name: "koa".to_owned(),
             },

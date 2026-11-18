@@ -336,7 +336,7 @@ func heightAndPaddingMatrix(_ nested: Bool, _ multi: Bool) throws {
         (.ended(.exited(.init(code: 0))), "Ada", "Ada", "Ada", false),
         (terminal(.unknown), "zsh", "zsh", "zsh", false),
         (remote(.terminal(.init(interactive: true, status: shell()))), "ssh", "ssh alice@devbox", "ssh alice@devbox", false),
-        (.live(.ssh(.init(destination: "@host", pane: .terminal(.init(interactive: true, status: shell()))))), "ssh", "ssh @host", "ssh @host", false),
+        (.live(.ssh(.init(destination: "@host", foreground: 1, pane: .terminal(.init(interactive: true, status: shell()))))), "ssh", "ssh @host", "ssh @host", false),
         (.ended(.exited(.init(code: 2))), "monitor", "monitor", "monitor", false)
     ]
     for (lifecycle, title, expected, tab, agent) in cases {

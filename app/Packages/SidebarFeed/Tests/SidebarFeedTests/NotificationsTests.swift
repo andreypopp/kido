@@ -207,7 +207,7 @@ func notificationReportsFollowIndicator(phaseName: String) throws {
                  pane(3, title: "raw", lifecycle: terminal(exited(2)), mark: .failed),
                  pane(4, title: "remote worker", lifecycle: remote(.agent(.init(name: "pi", status: report(waiting())))), mark: .waiting),
                  pane(5, title: "raw", lifecycle: remote(.terminal(.init(interactive: true, status: shell(exited(1))))), mark: .failed),
-                 pane(6, title: "remote agent", lifecycle: .live(.ssh(.init(destination: "@host", pane: .agent(.init(name: "pi", status: report(waiting())))))), mark: .waiting)]
+                 pane(6, title: "remote agent", lifecycle: .live(.ssh(.init(destination: "@host", foreground: 1, pane: .agent(.init(name: "pi", status: report(waiting())))))), mark: .waiting)]
     let posts = try step(&state, nodes).post
     #expect(posts.map(\.title) == ["@worker", "@named", "Terminal", "remote worker", "ssh alice@devbox", "remote agent"])
     #expect(posts[0].body == "Waiting: Allow access")

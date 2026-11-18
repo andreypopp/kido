@@ -1481,10 +1481,15 @@ ended ends with `exit` and the signal's name on every kind. One runtime
 runs at most 32 sessions; later ones wait in order. The user and host
 pane identities may open a session; a runtime connection may not.
 
-**A drop**, `POST /panes/{id}/drops?name=NAME`, stores the body as one
-file where the pane's program sees it: on the server host for a pane
-with no runtime, inside the runtime for a pane in one. The reply is
-the file's absolute path in that place. `NAME` is a file name of at
+**A drop**, `POST /panes/{id}/drops?name=NAME[&ssh=PID]`, stores the
+body as one file where the pane's program sees it: on the server host
+for a pane with no runtime, inside the runtime for a pane in one, and
+on the ssh target for a `ko ssh` pane. The reply is the file's
+absolute path in that place. `PID` is the foreground pid of the `ko
+ssh` session that the user confirmed; a `ko ssh` pane requires it,
+any other pane refuses it, and a pid that is not the pane's current
+ssh foreground is refused (`refused`), so a drop never goes to a
+session that the user did not see (design-runtimes.md, "A drop"). `NAME` is a file name of at
 most 255 bytes with no leading dot, no slash and no control
 character. The body needs `Content-Length`; it may be larger than the
 1 MiB of other bodies, because it flows to the writer as it arrives,

@@ -1284,10 +1284,24 @@ public enum KoSchema {
 
     public struct LiveSsh: Codable, Equatable, Sendable {
         public var destination: String
+        public var foreground: Int
         public var pane: Remote
-        public init(destination: String, pane: Remote) {
+        public init(destination: String, foreground: Int, pane: Remote) {
             self.destination = destination
+            self.foreground = foreground
             self.pane = pane
+        }
+        public init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            self.destination = try container.decode(String.self, forKey: .destination)
+            self.foreground = try container.decode(Int.self, forKey: .foreground)
+            self.pane = try container.decode(Remote.self, forKey: .pane)
+            guard 0 <= self.foreground else { throw DecodingError.dataCorruptedError(forKey: .foreground, in: container, debugDescription: "foreground is at least 0, not \(self.foreground)") }
+        }
+        private enum CodingKeys: String, CodingKey {
+            case destination
+            case foreground
+            case pane
         }
     }
 

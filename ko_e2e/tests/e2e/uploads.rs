@@ -349,3 +349,160 @@ fn uploads_stream_files_and_remove_partial_drops() {
             .any(|entry| entry.unwrap().path().join("gated-short").exists())
     );
 }
+
+#[test]
+fn ko_drop_takes_a_base_or_ssh_arguments_and_refuses_both() {
+    let scratch = Dir::new("ko-drop-cli-");
+    let env = crate::harness::test_env(&scratch);
+    let both = crate::harness::run_ko(
+        &scratch,
+        &env,
+        &["drop", "--name=x", "--size=0", "--base=/tmp", "--", "host"],
+        "",
+    );
+    assert_eq!(both.exit, ko_sys::pid::Exit::Exited(124), "{both:?}");
+    let command = crate::harness::run_ko(
+        &scratch,
+        &env,
+        &["drop", "--name=x", "--size=0", "--", "-N", "host"],
+        "",
+    );
+    assert_eq!(command.exit, ko_sys::pid::Exit::Exited(1), "{command:?}");
+    assert_eq!(
+        command.stderr,
+        "ko drop: the ssh arguments are not a connection\n"
+    );
+}
+
+#[test]
+fn uploads_to_a_ko_ssh_pane_go_to_its_target_only_for_the_confirmed_session() {
+    use crate::sshd::{HOST, Remote};
+
+    if !crate::harness::enabled("KO_E2E_HOST_SSH") {
+        return;
+    }
+    let s = crate::harness::start(&[]);
+    let remote = Remote::with_ko(&s.dir);
+    let config = remote.dir.join("ssh_config");
+    let gate = fifo(&remote.dir, "gate");
+    let pane = s.pane(&format!(
+        "set -m; {} ssh -F {} {HOST} {}; printf 'ssh ended\\n'; exec cat",
+        quote(crate::harness::text_of(&crate::harness::ko())),
+        quote(crate::harness::text_of(&config)),
+        quote(&format!(
+            "read x < {}",
+            quote(crate::harness::text_of(&gate))
+        )),
+    ));
+    let row = s.wait_row(&pane, "the ssh pane", |row| {
+        row["status"]["kind"]["type"] == "ssh"
+            && row["vars"]["ssh.args"] == json!(["-F", crate::harness::text_of(&config), HOST])
+    });
+    let pid = row["foreground"]["pid"].as_u64().unwrap();
+    let upload = |pane: &str, query: &str, body: &[u8]| {
+        let (status, reply) = s.exchange(
+            "POST",
+            &format!("/panes/{pane}/drops?name=notes.txt{query}"),
+            &s.headers(),
+            body,
+        );
+        let reply: serde_json::Value = serde_json::from_slice(&reply).unwrap();
+        (status, reply)
+    };
+    let changed = json!("the ssh session in this pane changed");
+    let (status, reply) = upload(&pane, "", b"x");
+    assert_eq!(
+        (status, &reply["message"]),
+        (
+            409,
+            &json!(format!(
+                "the pane runs ko ssh to {HOST}; confirm the target"
+            ))
+        )
+    );
+    let (status, reply) = upload(&pane, &format!("&ssh={}", pid + 1), b"x");
+    assert_eq!((status, &reply["message"]), (409, &changed));
+    let host = s.pane("exec cat");
+    let (status, reply) = upload(&host, &format!("&ssh={pid}"), b"x");
+    assert_eq!((status, &reply["message"]), (409, &changed));
+
+    let bytes: Vec<u8> = (0..(1 << 20)).map(|i| (i % 251) as u8).collect();
+    let (status, reply) = upload(&pane, &format!("&ssh={pid}"), &bytes);
+    assert_eq!(status, 200, "{reply}");
+    let path = Path::new(reply["path"].as_str().unwrap());
+    assert!(path.starts_with(remote.dir.join("ko/drops")), "{reply}");
+    assert!(path.ends_with("notes.txt"), "{reply}");
+    assert_eq!(fs::read(path).unwrap(), bytes);
+    assert_eq!(
+        fs::metadata(path.parent().unwrap())
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777,
+        0o700
+    );
+
+    let (status, _) = s.exchange(
+        "PUT",
+        &format!("/panes/{pane}/vars/ssh.args"),
+        &s.headers(),
+        json!([
+            "-F",
+            crate::harness::text_of(&config),
+            "-o",
+            "User=ko-nobody",
+            HOST
+        ])
+        .to_string()
+        .as_bytes(),
+    );
+    assert_eq!(status, 200);
+    let (status, reply) = upload(&pane, &format!("&ssh={pid}"), b"x");
+    assert_eq!(status, 500, "{reply}");
+    assert!(
+        reply["message"]
+            .as_str()
+            .unwrap()
+            .contains("Permission denied"),
+        "{reply}"
+    );
+
+    let (status, _) = s.exchange(
+        "PUT",
+        &format!("/panes/{pane}/vars/ssh.args"),
+        &s.headers(),
+        json!(["-F", crate::harness::text_of(&config), HOST])
+            .to_string()
+            .as_bytes(),
+    );
+    assert_eq!(status, 200);
+    let headers: String = s
+        .headers()
+        .iter()
+        .map(|(key, value)| format!("{key}: {value}\r\n"))
+        .collect();
+    let mut uploading = s.dial().unwrap();
+    uploading.write_all(format!("POST /panes/{pane}/drops?name=cut&ssh={pid} HTTP/1.1\r\nHost: ko\r\n{headers}Content-Length: 100\r\n\r\nx").as_bytes()).unwrap();
+    let remote_partial = || {
+        fs::read_dir(remote.dir.join("ko/drops"))
+            .unwrap()
+            .any(|entry| {
+                entry
+                    .unwrap()
+                    .file_name()
+                    .as_encoded_bytes()
+                    .starts_with(b".")
+            })
+    };
+    poll("the transfer reached the target", remote_partial);
+    release(&remote.dir, &gate, "go");
+    let (status, reply) = s.read_reply(uploading);
+    assert_eq!(status, 500, "{}", String::from_utf8_lossy(&reply));
+    poll("the target removed the partial drop", || !remote_partial());
+    s.wait_row(&pane, "ssh ended", |row| {
+        row["status"]["kind"]["type"] == "host"
+    });
+    let (status, reply) = upload(&pane, &format!("&ssh={pid}"), b"x");
+    assert_eq!((status, &reply["message"]), (409, &changed));
+    assert!(!s.dir.join("drops").exists());
+}

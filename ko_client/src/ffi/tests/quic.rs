@@ -1206,6 +1206,7 @@ fn caddy_http3_authentication_refusals_and_exact_view_resume() {
     let upload_route = Route::UploadDrop {
         id: placement.pane,
         name: "h3-file".to_owned().try_into().unwrap(),
+        ssh: None,
     };
     let payload = vec![b'u'; 150000];
     let mut reader = io::Cursor::new(payload.clone());
@@ -1229,6 +1230,7 @@ fn caddy_http3_authentication_refusals_and_exact_view_resume() {
     let refused_route = Route::UploadDrop {
         id: "pane_999999".parse().unwrap(),
         name: "refused".to_owned().try_into().unwrap(),
+        ssh: None,
     };
     let refused = crate::wire::upload(
         &resolved,

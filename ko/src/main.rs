@@ -92,8 +92,9 @@ enum Command {
     /// not 2xx.
     Api(ApiArgs),
     /// Read exactly N bytes then EOF, publish a drop, and print one JSON line with its path.
-    /// Exit 0 on success, 1 on I/O, quota, short or extra input, or 60 seconds without input,
-    /// and 124 on a usage error.
+    /// With ssh arguments after --, publish it on that ssh target instead, through ssh in batch
+    /// mode. Exit 0 on success, 1 on I/O, ssh, quota, short or extra input, and 124 on a usage
+    /// error. Without ssh arguments, 60 seconds without input are also an error.
     Drop {
         /// The file name, without a leading dot, slash or control character (at most 255 bytes).
         #[arg(long, value_parser = |text: &str| ko_wire::api::DropName::try_from(text.to_owned()))]
@@ -102,8 +103,11 @@ enum Command {
         #[arg(long)]
         size: u64,
         /// The absolute state directory; otherwise use XDG_STATE_HOME/ko or HOME/.local/state/ko.
-        #[arg(long)]
+        #[arg(long, conflicts_with = "ssh")]
         base: Option<PathBuf>,
+        /// The connection arguments that ko ssh recorded, the destination last.
+        #[arg(last = true, num_args = 1..)]
+        ssh: Option<Vec<String>>,
     },
     /// Exec the primed login shell, or run a command through an interactive login shell.
     ///
@@ -766,8 +770,16 @@ fn main() -> ExitCode {
             Err(message) => fail("api-schema", message),
         },
         Command::Api(args) => api(args, cli.server),
-        Command::Drop { name, size, base } => {
+        Command::Drop {
+            name,
+            size,
+            base,
+            ssh,
+        } => {
             let result = (|| -> io::Result<_> {
+                if let Some(args) = ssh {
+                    return ko_shell::drops::forward(&args, &name, size);
+                }
                 let base = base
                     .or_else(|| {
                         std::env::var_os("XDG_STATE_HOME")
