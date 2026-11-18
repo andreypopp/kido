@@ -191,3 +191,43 @@ far from the float, and a five-line title (the editor's temp path).
   while editing, and one info row says "editor closed · the draft is
   as before". A normal editor exit returns the text as today. Every
   other float with a running program asks, as above.
+
+## C · The toolbar button: Float Pane / Dock Pane (2026-11-18, spec)
+
+The user wants the ⌥⌘F toggle of section A as a button on the pane,
+so a float docks and a tiled pane pops out without the menu.
+
+- **Which toolbar.** The pane's hover toolbar (design/pane/NOTES.md,
+  "Hover toolbar"), on tiled panes and floats alike: the one capsule
+  gets one more button, between Zoom and the separator. The capsule
+  is 171pt wide (was 145): buttons at x 3, 29, 55, 81, 107, the
+  separator at 137, Close at 142, all at y 3; the frame still ends
+  8pt from the pane's right edge, the hot zone follows. The find
+  rule (the toolbar at y 48 while find is open) is unchanged.
+- **The glyphs.** `pip.enter` for Float Pane on a tiled pane and
+  `pip.exit` for Dock Pane on a float: the picture-in-picture pair
+  is the pop-out and the return. The same size and colours as the
+  other toolbar symbols. Accessibility labels "Float pane" and "Dock
+  pane"; no tooltips, as the other toolbar buttons have none.
+- **What it does.** Exactly the menu item: Float Pane sends
+  `Edit::Float` without geometry; Dock Pane sends `Edit::Unfloat`
+  with the dock rule of section A (the window's last-focused tiled
+  pane, else the first; a child float beside its parent when the
+  parent is tiled in that window). "Pop out" is a float, and with
+  section B every float is a child window, so there is no second
+  kind; nothing new to choose.
+- **Disabled, not hidden**, so the toolbar's geometry never shifts:
+  at 35% opacity like the grip, while the pane is zoomed and on a
+  window's sole tiled pane (section A: a window needs a tiled pane).
+  Never hidden. ko_tui gets nothing: its toggle is `*`.
+- **Focus after.** As the menu: the new float is the active pane; a
+  docked pane stays the active pane. The toolbar of the pane that
+  moved shows only if the pointer is over its new hot zone, else it
+  is gone with the old frame; no toolbar is shown on the pane that
+  took the place.
+- **Snapshots** (light and dark, PaneChrome's toolbar states): the
+  toolbar on a tiled pane of a two-pane window (Float enabled); on a
+  float (Dock); on a window's sole pane (Float disabled); while
+  zoomed (Float disabled, with the grip); the toolbar at its new
+  width under an open find bar. The existing toolbar snapshots are
+  re-recorded at 171pt.
