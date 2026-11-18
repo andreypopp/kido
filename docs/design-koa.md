@@ -1217,9 +1217,13 @@ the command first ("`!` commands" below).
   a write in a frame. A `ResizeObserver` callback runs
   after layout and before paint, so the painted position is always
   the bottom of the painted layout and streaming never steps back.
-  In `reader`, the correction keeps the anchor item at its offset,
-  so content above it (older history, a fold, an image, a reveal)
-  moves the scroll by its delta; when the item is gone the anchor
+  In `reader`, only a layout change or an instant cause corrects,
+  never the reader's own scroll: the correction keeps the anchor item at its offset,
+  after it adds the reader's move since the last decision to the
+  offset, so content above it (older history, a fold, an image, a
+  reveal) moves the scroll by its delta and a move made between the
+  measurement and the write is kept. A correction under 1 px writes
+  nothing; when the item is gone the anchor
   moves to the next item below, or the page goes to the bottom. An
   anchor whose item is loaded but not mounted asks the window step
   to mount it. The window step asks the owner for its target
@@ -1275,21 +1279,24 @@ the command first ("`!` commands" below).
   The page turns input into a direction: an upward wheel, a downward
   touch drag and the keys Up, Page Up, Home and Shift-Space outside
   a control are up; the opposite ones are down. Up sets `reader` with
-  the current anchor before the browser moves; any input cancels a
-  travel at the current anchor. A find navigation sets `reader` at
-  its match. A scroll event alone never leaves following: a browser
-  dispatches it at the next frame, after later layout, so its
-  position cannot tell a clamp (content that shrank: a reveal that
-  rebuilds its blocks, a cleared composer) from the reader. While
-  following, a position off the bottom is a clamp, and the owner
-  writes the bottom again. The one exception is a primary pointer
-  held down in the scroller, which a scrollbar drag is: then a move
-  up of 1 px or more sets `reader`. In `reader`, each scroll event
-  that moved the position 1 px or more from the one that the owner
-  last wrote or accepted takes the new anchor, and within 1 px of
-  the bottom resumes following; a smaller move is the owner's own
-  write. Nothing else resumes following except the user's send and
-  "↓ Latest".
+  the current anchor; any input cancels a travel. A find navigation
+  sets `reader` at its match. Every scroll event is the reader's
+  position, at any size, except two: the echo of the page's own
+  write (the owner keeps the value that it read back after the
+  write, and ignores the next scroll event at exactly that value)
+  and a clamp (the position is within 1 px of a maximum that shrank
+  below the previous position: a reveal that rebuilds its blocks, a cleared
+  composer). While following, a scroll event below both the last
+  written position and the previous maximum is the reader, which a
+  scrollbar drag is, and sets `reader`; a clamp stays following. In
+  `reader`, a scroll event only takes the anchor from the current
+  position and never writes, so a slow trackpad's sub-pixel moves add
+  up and momentum is not interrupted; in a batch with a layout
+  change it takes no anchor, and the correction keeps its move. A
+  move down to within 1 px of
+  the bottom resumes following. A scroll event below the last frame
+  of a travel cancels it. Nothing else resumes following except the
+  user's send and "↓ Latest".
   `overflow-anchor: none` keeps the browser's scroll anchoring out:
   it selects no anchor at offset zero (older history loads there),
   the dock's padding change suppresses it, and it does not follow

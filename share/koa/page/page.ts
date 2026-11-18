@@ -1,5 +1,5 @@
 import { annotations, update } from './annotations.ts';
-import { scrollInitial, scrollUpdate, scrollWindow, type ItemId, type ScrollEvent, type Measure, type Decision, type Row, type Lookup } from './scroll.ts';
+import { scrollInitial, scrollStored, scrollUpdate, scrollWindow, type ItemId, type ScrollEvent, type Measure, type Decision, type Row, type Lookup } from './scroll.ts';
 import { markdown, markdownLine, type Tail } from './markdown.ts';
 import { revealHeight, unitsOf, type Unit } from './reveal.ts';
 import { continuesRun, estimateExtent, groupAt, runStarts, windowOf, type SeqRange } from './extent.ts';
@@ -425,7 +425,12 @@ function measure(): Measure {
   };
 }
 function applyScroll(decision: Decision) {
-  if (decision.scrollTop !== undefined) element('scroll').scrollTop = decision.scrollTop;
+  let stored: number | undefined;
+  if (decision.scrollTop !== undefined) {
+    const scroll = element('scroll');
+    scroll.scrollTop = decision.scrollTop;
+    stored = scroll.scrollTop;
+  }
   const transcript = element('transcript');
   transcript.style.transform = decision.glideOffset ? `translateY(${decision.glideOffset}px)` : '';
   transcript.style.willChange = decision.glideOffset ? 'transform' : '';
@@ -441,6 +446,7 @@ function applyScroll(decision: Decision) {
   if (decision.request?.type === 'mount') windowDirty = true;
   else if (decision.request?.type === 'load') void loadAnchor(decision.request.item, decision.request.generation);
   if (decision.frame !== 'none') schedule();
+  return stored;
 }
 function decide(event?: ScrollEvent, measurement = measure()) {
   if (event) scrollEvents.push(event);
@@ -449,7 +455,8 @@ function decide(event?: ScrollEvent, measurement = measure()) {
   scrolling = result.state; scrollDecision = result.decision;
   if (previousTop !== scrollDecision.windowTop) windowDirty = true;
   if (previousDivider !== scrollDecision.dividerBefore) { table = undefined; dividerPx = undefined; windowDirty = true; }
-  applyScroll(scrollDecision);
+  const stored = applyScroll(scrollDecision);
+  if (stored !== undefined) scrolling = scrollStored(scrolling, stored);
 }
 function enqueue(event: ScrollEvent) { scrollEvents.push(event); schedule(); }
 const joins = (seq: number) => continuesRun(items.get(seq - 1));
@@ -1911,11 +1918,6 @@ element('scroll').addEventListener('touchmove', event => {
   if (y !== touchY) decide({ type: 'input', direction: y > touchY ? 'up' : 'down' });
   touchY = y;
 }, { passive: true });
-element('scroll').addEventListener('pointerdown', event => {
-  if (event.button === 0 && event.target instanceof Node && element('scroll').contains(event.target)) decide({ type: 'pointer', held: true });
-});
-document.addEventListener('pointerup', () => decide({ type: 'pointer', held: false }));
-document.addEventListener('pointercancel', () => decide({ type: 'pointer', held: false }));
 element('latest').onmousedown = event => event.preventDefault();
 element('latest').onclick = () => decide({ type: 'latest' });
 const layoutObserver = new ResizeObserver(entries => probe ? probe.within('ResizeObserver', () => resized(entries)) : resized(entries));

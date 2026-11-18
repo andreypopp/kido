@@ -11,9 +11,9 @@ type Candidate = { visible: boolean; unread: boolean };
 type Common = {
   scope: Scope;
   last?: Geometry;
+  written?: { top: number; echo: boolean };
   pendingSend?: { mode: 'following' | 'reader' };
   forceItem?: { seq: number; mode: 'following' | 'reader' };
-  pointer: boolean;
   saved: Map<string, Saved>;
   candidates: Map<number, Candidate>;
   threshold: boolean;
@@ -29,7 +29,6 @@ export type State = Common & (
 type Cause = 'layout' | 'instant';
 export type ScrollEvent =
   | { type: 'input'; direction: 'up' | 'down' }
-  | { type: 'pointer'; held: boolean }
   | { type: 'scroll' }
   | { type: 'layout'; cause: Cause }
   | { type: 'submit' }
@@ -69,7 +68,6 @@ export function scrollInitial(scope: Scope): State {
   return {
     kind: 'following',
     scope,
-    pointer: false,
     saved: new Map(),
     candidates: new Map(),
     threshold: false,
@@ -105,6 +103,9 @@ function offset(glide: Glide | undefined, now: number) {
   const t = (low + high) / 2;
   return glide.from * (1 - (3 * t * t - 2 * t ** 3));
 }
+export function scrollStored(state: State, top: number): State {
+  return { ...state, written: { top, echo: true }, last: state.last && { ...state.last, top } };
+}
 export function scrollUpdate(previous: State, events: readonly ScrollEvent[], m: Measure): { state: State; decision: Decision } {
   let state: State = { ...previous };
   const wasSettling = previous.settling;
@@ -130,6 +131,8 @@ export function scrollUpdate(previous: State, events: readonly ScrollEvent[], m:
     clear();
     force = true;
   };
+  const clamp = !!state.last && state.last.top > m.top && state.last.max > m.max && Math.abs(m.max - m.top) < 1;
+  if (state.kind === 'reader' && state.anchor && !state.travel && state.last && !clamp) state.anchor = { ...state.anchor, offset: state.anchor.offset - m.top + state.last.top };
   const reader = (anchor = m.anchor) => {
     state = { ...common(state), kind: 'reader', anchor };
   };
@@ -145,14 +148,16 @@ export function scrollUpdate(previous: State, events: readonly ScrollEvent[], m:
           reader();
         }
         break;
-      case 'pointer': state.pointer = event.held; break;
       case 'scroll': {
-        const delta = m.top - (state.last?.top ?? m.top);
-        if (state.kind === 'following' && state.pointer && delta <= -1) reader();
-        else if (state.kind === 'reader' && !state.travel && Math.abs(delta) >= 1) {
-          if (m.max - m.top <= 1) follow();
-          else state = { ...state, anchor: m.anchor };
-        }
+        const written = state.written;
+        if (written) state.written = { ...written, echo: false };
+        if (written?.echo && m.top === written.top || !state.last || clamp) break;
+        const last = state.last;
+        if (state.kind === 'following') { if (!force && m.top < Math.min(written?.top ?? last.max, last.max)) reader(); }
+        else if (state.kind !== 'reader') break;
+        else if (state.travel) { if (written && m.top < written.top) reader(); }
+        else if (m.top > last.top && m.max - m.top <= 1) follow();
+        else if (!events.some(other => other.type === 'layout' || other.type === 'history' || other.type === 'resize')) reader();
         break;
       }
       case 'submit':
@@ -193,8 +198,8 @@ export function scrollUpdate(previous: State, events: readonly ScrollEvent[], m:
         state.scope = event.scope;
         state.pendingSend = undefined;
         state.forceItem = undefined;
-        state.pointer = false;
         state.last = undefined;
+        state.written = undefined;
         state.lastSeq = -1;
         state.generation++;
         state.candidates = new Map();
@@ -210,7 +215,7 @@ export function scrollUpdate(previous: State, events: readonly ScrollEvent[], m:
         state.pendingSend = undefined;
         state.forceItem = undefined;
         state.last = undefined;
-        state.pointer = false;
+        state.written = undefined;
         state.candidates = new Map();
         clear();
         instant = true;
@@ -290,11 +295,12 @@ export function scrollUpdate(previous: State, events: readonly ScrollEvent[], m:
         follow();
         scrollTop = m.max;
       } else scrollTop = state.travel.from + (m.max - state.travel.from) * (1 - (1 - progress) ** 3);
-    } else if (state.anchor) {
+    } else if (state.anchor && (instant || events.some(event => event.type === 'layout'))) {
       const anchor = state.anchor;
       const found = m.lookup(anchor.item);
       if (found.kind === 'mounted' || found.kind === 'unmounted') {
-        scrollTop = found.row.top - anchor.offset;
+        const target = Math.max(0, Math.min(m.max, found.row.top - anchor.offset));
+        if (Math.abs(target - m.top) >= 1) scrollTop = target;
         if (found.kind === 'unmounted') request = { type: 'mount', item: anchor.item };
       } else if (found.kind === 'unloaded') request = { type: 'load', item: anchor.item, generation: state.generation };
       else if (found.next) state = { ...state, anchor: { item: found.next.item, offset: found.next.top - m.top } };

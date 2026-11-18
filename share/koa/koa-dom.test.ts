@@ -10,7 +10,7 @@ import { promptHistory } from './page/history.ts';
 import { ATTACHMENT_LIMITS, isAttachment, pathArg } from "./koa-records.ts";
 import { jobEndText } from "./records.ts";
 import type { PromptMode } from "./koa-records.ts";
-import { scrollInitial, scrollUpdate, scrollWindow } from "./page/scroll.ts";
+import { scrollInitial, scrollStored, scrollUpdate, scrollWindow } from "./page/scroll.ts";
 
 async function page() {
   const source = stripTypeScriptTypes(await readFile(new URL("page/page.ts", import.meta.url), "utf8"));
@@ -120,7 +120,7 @@ async function page() {
   Object.assign(context, { markdownPlain }, runInNewContext(findSource + '\n({findSegments,matchesIn})', context));
   const workingSource = stripTypeScriptTypes(readFileSync(new URL('page/working.ts', import.meta.url), 'utf8')).replace(/^export /gm, '');
   Object.assign(context, runInNewContext(workingSource + '\n({dots})', context));
-  Object.assign(context, { scrollInitial, scrollUpdate, scrollWindow });
+  Object.assign(context, { scrollInitial, scrollStored, scrollUpdate, scrollWindow });
   const body = source.replace(/^import .*;\n/gm, "").replace(/^setInterval\([\s\S]*$/m, "") + "\nfunction put(item) { accept(item); renderDirty(); return views.get(item.seq)?.view; }";
   return { observers, repl: (): ((code: string) => unknown) => runInNewContext("(() => {\n" + body + "\nreturn code => eval(code);\n})()", context), context, elements, listeners, windowListeners, completionResets: () => completionResets, handlers: () => handlers, prompt: () => prompt, text: () => text(), run: (code: string) => runInNewContext("{\n" + body + "\n" + code + "\n}", context) };
 }
@@ -1086,7 +1086,7 @@ test("thinking and aborted steps use live times without inventing replay times",
 async function revealPage(clientHeight = 100) {
   const app = await page(), html: string[] = [], bars: InstanceType<typeof app.context.Node>[] = [], pres: InstanceType<typeof app.context.Node>[] = [], queued = new Map<number, () => void>(), timers = new Map<number, { at: number; callback: () => void }>();
   let clock = 0, id = 0;
-  const hooks: { read?: (name: string, self: { className?: string }) => void; layout?: () => void; delivered?: () => void } = {};
+  const hooks: { read?: (name: string, self: { className?: string }) => void; layout?: () => void; wrote?: () => void; delivered?: () => void } = {};
   const create = app.context.document.createElement;
   const rects = (count: number) => Array.from({ length: count }, (_, line) => ({ top: line * 20 + 2, bottom: line * 20 + 18 }));
   app.context.document.createElement = (tag: string) => {
@@ -1116,7 +1116,7 @@ async function revealPage(clientHeight = 100) {
   const total = () => layout.height?.() ?? height;
   layout.flush = () => { const next = Math.min(Math.max(0, total() - client), top); if (next !== top) { top = next; moved = true; } };
   Object.defineProperties(box, {
-    scrollTop: { get: () => (hooks.read?.('scrollTop', box), layout.flush(), top), set: (value: number) => { layout.flush(); const before = top; top = Math.max(0, Number(value)); layout.flush(); if (top !== before) moved = true; } },
+    scrollTop: { get: () => (hooks.read?.('scrollTop', box), layout.flush(), top), set: (value: number) => { layout.flush(); const before = top; top = Math.max(0, Number(value)); layout.flush(); hooks.wrote?.(); if (top !== before) moved = true; } },
     scrollHeight: { get: () => (hooks.read?.('scrollHeight', box), layout.flush(), total()), set: (value: number) => { layout.flush(); height = value; layout.flush(); } },
     clientHeight: { get: () => (hooks.read?.('clientHeight', box), client), set: (value: number) => { client = value; layout.flush(); } },
   });
@@ -1829,9 +1829,9 @@ test('a correction frame writes the bottom that the layout has now, not the one 
 });
 
 test('a block that grows below a reader leaves the reader where they are', async () => {
-  const page = await blockPage(300);
+  const page = await blockPage(10);
   page.add(page.text(1));
-  assert.equal(page.evaluate("[element('scroll').scrollTop, scrolling.kind].join()"), '300,reader');
+  assert.equal(page.evaluate("[element('scroll').scrollTop, scrolling.kind].join()"), '10,reader');
 });
 
 test('a delivery of only a reveal child still scrolls a following pane to the grown bottom', async () => {
@@ -2173,22 +2173,36 @@ test('scroll inputs translate keys, wheel and touch without reading scroll mode 
   assert.equal(page.evaluate('globalThis.inputs.join()'), 'up,down,down,up,down,up,down');
 });
 
-test('a pointer on any scroller descendant permits reader scroll, and following without a pointer rejects displacement', async () => {
+test('a reader sub-pixel scroll through the page is never written back', async () => {
   const page = await flowPage();
-  page.pad.value = 900;
-  page.deliver({ type: 'item', item: page.text(0) });
+  page.open([0, 1, 2, 3, 4, 5, 6, 7, 8, 9].map(page.text));
   page.settle();
-  const bottom = page.bottom();
-  page.evaluate("globalThis.scrollChild=document.createElement('div');element('scroll').append(globalThis.scrollChild)");
-  page.evaluate(`element('scroll').scrollTop=${bottom - 100};element('scroll').onscroll()`);
-  assert.deepEqual([page.top(), page.evaluate('scrolling.kind')], [bottom, 'following']);
-  page.evaluate(`element('scroll').handlers.get('pointerdown')({button:0,target:globalThis.scrollChild});element('scroll').scrollTop=${bottom - 100};element('scroll').onscroll()`);
-  assert.equal(page.evaluate('scrolling.kind'), 'reader');
-  page.app.listeners.get('pointerup')?.({});
-  assert.equal(page.evaluate('scrolling.pointer'), false);
-  page.evaluate("element('scroll').handlers.get('pointerdown')({button:0,target:globalThis.scrollChild})");
-  page.app.listeners.get('pointercancel')?.({});
-  assert.equal(page.evaluate('scrolling.pointer'), false);
+  page.reader(300);
+  const tops: number[] = [];
+  let writes = 0;
+  for (const top of [300.4, 300.8, 301.2, 301.6, 302]) {
+    page.evaluate(`element('scroll').scrollTop=${top}`);
+    page.hooks.wrote = () => { writes++; };
+    page.evaluate("element('scroll').onscroll()");
+    page.step(16);
+    page.hooks.wrote = undefined;
+    tops.push(page.top());
+  }
+  assert.deepEqual([writes, tops], [0, [300.4, 300.8, 301.2, 301.6, 302]]);
+});
+
+test('a slow wheel up from the bottom leaves following and never snaps back', async () => {
+  const page = await flowPage();
+  page.open([0, 1, 2, 3, 4, 5, 6, 7, 8, 9].map(page.text));
+  page.settle();
+  const bottom = page.bottom(), tops: number[] = [];
+  for (const step of [1, 2, 3, 4, 5]) {
+    page.wheel(-0.5);
+    page.evaluate(`element('scroll').scrollTop=${bottom - step * 0.4};element('scroll').onscroll()`);
+    page.step(16);
+    tops.push(page.top());
+  }
+  assert.deepEqual([page.evaluate('scrolling.kind'), tops], ['reader', [1, 2, 3, 4, 5].map(step => bottom - step * 0.4)]);
 });
 
 test('the pane focus override includes visibility for an off-screen webview', async () => {
@@ -2687,11 +2701,15 @@ function frameWatch(page: Awaited<ReturnType<typeof latestPage>>) {
   write('replaceChildren', self => kids(self));
   for (const name of ['append', 'prepend', 'before']) write(name, moved);
   write('insertBefore', movedFirst);
+  const text = Reflect.getOwnPropertyDescriptor(proto, 'textContent');
+  Reflect.defineProperty(proto, 'textContent', { ...text, set(this: unknown, value: unknown) { dirty ||= inFrame; text?.set?.call(this, value); } });
   page.hooks.read = () => {
     if (dirty) counts.reads++;
     dirty = false;
   };
   page.hooks.layout = () => { dirty = false; };
+  // WebKit's Element::setScrollTop updates the layout before it scrolls, so a read after the write forces no layout.
+  page.hooks.wrote = () => { dirty = false; };
   return { counts, frame: (ms = 16) => { counts.reads = 0; dirty = false; inFrame = true; try { page.step(ms); } finally { inFrame = false; } } };
 }
 
