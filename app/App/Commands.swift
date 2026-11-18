@@ -4,6 +4,24 @@ enum Side {
     case left, up, right, down
 }
 
+enum PaneFloatState {
+    case float, dock, cannotFloat, cannotDock
+
+    var isEnabled: Bool {
+        switch self {
+        case .float, .dock: true
+        case .cannotFloat, .cannotDock: false
+        }
+    }
+
+    var title: String {
+        switch self {
+        case .float, .cannotFloat: "Float Pane"
+        case .dock, .cannotDock: "Dock Pane"
+        }
+    }
+}
+
 enum PaneCommand {
     case split(Side)
     case select(Side)

@@ -57,7 +57,7 @@ final class PaneChrome: NSView {
     var runtimeMark: RuntimeMark? { didSet { if runtimeMark != oldValue { needsDisplay = true } } }
     var runtimeFocused = true { didSet { if runtimeFocused != oldValue { needsDisplay = true } } }
     var toolbarFrame: CGRect {
-        NSRect(x: max(0, bounds.width - 153), y: subviews.contains { $0 is PaneFind } ? 48 : 8, width: min(145, bounds.width), height: 32)
+        NSRect(x: max(0, bounds.width - 179), y: subviews.contains { $0 is PaneFind } ? 48 : 8, width: min(171, bounds.width), height: 32)
     }
     var hotZone: CGRect {
         CGRect(x: toolbarFrame.minX - 24, y: toolbarFrame.minY,
@@ -288,27 +288,36 @@ final class PaneToolbar: PaneCapsule {
     private let zoom = IconButton("arrow.up.left.and.arrow.down.right", "Zoom pane", size: 15)
     private let right = IconButton("rectangle.split.2x1", "Split right", size: 15)
     private let down = IconButton("rectangle.split.1x2", "Split down", size: 15)
+    private let float = IconButton("pip.enter", "Float pane", size: 15)
     private let close = IconButton("xmark", "Close pane", size: 15)
     private var zoomed: Bool?
     #if KIDO_VISUAL
     var visualAnimationsEnded = 0
     #endif
+    private static let floatImages = ["pip.enter", "pip.exit"].map {
+        NSImage(systemSymbolName: $0, accessibilityDescription: nil)?.withSymbolConfiguration(.init(pointSize: 15, weight: .regular))
+    }
     private static let zoomImages = ["arrow.up.left.and.arrow.down.right", "arrow.down.right.and.arrow.up.left"].map {
         NSImage(systemSymbolName: $0, accessibilityDescription: nil)?.withSymbolConfiguration(.init(pointSize: 15, weight: .regular))
     }
 
     init(runtime: GhosttyRuntime) {
         super.init(runtime: runtime, radius: 12, separators: 1)
-        for (button, x) in [(grip, 3.0), (right, 29.0), (down, 55.0), (zoom, 81.0), (close, 116.0)] {
+        for (button, x) in [(grip, 3.0), (right, 29.0), (down, 55.0), (zoom, 81.0), (float, 107.0), (close, 142.0)] {
             button.frame = NSRect(x: x, y: 3, width: 26, height: 26)
             button.acceptsFirstClick = false
             addSubview(button)
         }
-        separatorX = [111]
+        separatorX = [137]
+        float.toolTip = nil
         alphaValue = 0
     }
     required init?(coder: NSCoder) { fatalError("init(coder:) is not supported") }
-    func update(command: @escaping (PaneCommand) -> Void, zoomed: Bool, drag: @escaping (NSEvent) -> Void) {
+    func update(command: @escaping (PaneCommand) -> Void, zoomed: Bool, floatState: PaneFloatState?, drag: @escaping (NSEvent) -> Void) {
+        float.isEnabled = floatState?.isEnabled == true
+        float.image = Self.floatImages[floatState == .dock || floatState == .cannotDock ? 1 : 0]
+        float.setAccessibilityLabel(floatState == .dock || floatState == .cannotDock ? "Dock pane" : "Float pane")
+        float.invoke = { if floatState?.isEnabled == true { command(.float) } }
         grip.isEnabled = !zoomed
         grip.press = zoomed ? nil : drag
         right.invoke = { command(.split(.right)) }

@@ -29,7 +29,7 @@ Both controls are one capsule style. "Background" and "foreground" are the pane'
 
 ### Hover toolbar
 
-Frame x = paneWidth − 8 − 145, y = 8, width 145, height 32 (as today). Content unchanged: Drag pane `line.3.horizontal`, Split right `rectangle.split.2x1`, Split down `rectangle.split.1x2`, Zoom pane `arrow.up.left.and.arrow.down.right` / Unzoom pane `arrow.down.right.and.arrow.up.left`, buttons at x = 3, 29, 55, 81, then the separator at x = 111, then Close pane `xmark` at x = 116; all at y = 3. Hot zone: the frame extended 24pt left and 24pt down, clipped to the pane; fade in on entry, visible while over the zone or the toolbar. Drag pane disabled while zoomed.
+Frame x = paneWidth − 8 − 171, y = 8, width 171, height 32. Content: Drag pane `line.3.horizontal`, Split right `rectangle.split.2x1`, Split down `rectangle.split.1x2`, Zoom pane `arrow.up.left.and.arrow.down.right` / Unzoom pane `arrow.down.right.and.arrow.up.left`, Float pane `pip.enter` / Dock pane `pip.exit` (app/design/floats/NOTES.md, the toolbar button), buttons at x = 3, 29, 55, 81, 107, then the separator at x = 137, then Close pane `xmark` at x = 142; all at y = 3. Hot zone: the frame extended 24pt left and 24pt down, clipped to the pane; fade in on entry, visible while over the zone or the toolbar. Drag pane disabled while zoomed.
 
 While the pane's find bar is open: frame y = 48 (8 + 32 + 8), same x and width. The hot zone follows the frame. The find capsule is not part of the zone, so hovering find does not summon the toolbar.
 
@@ -73,4 +73,4 @@ Open questions:
 
 ## Measurements from the code
 
-Toolbar frame and hot zone from `App/PaneChrome.swift:33` (x = max(0, paneWidth − 153), y = 8, width min(145, paneWidth), height 32; zone = frame + 24pt left and down, intersected with the pane). Float frame, radius and shadow in the preview are illustrative; match highlight colors (yellow, orange for the current match) are illustrative and the app's highlights are unchanged.
+Toolbar frame and hot zone from `App/PaneChrome.swift` `toolbarFrame` (x = max(0, paneWidth − 179), y = 8, width min(171, paneWidth), height 32; zone = frame + 24pt left and down, intersected with the pane). Float frame, radius and shadow in the preview are illustrative; match highlight colors (yellow, orange for the current match) are illustrative and the app's highlights are unchanged.

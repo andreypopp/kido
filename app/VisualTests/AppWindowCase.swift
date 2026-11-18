@@ -164,6 +164,7 @@ import XCTest
         session.webview = { [weak self] in self?.koModel?.pane($0)?.webview }
         session.edit = { edit, key in editor.submit(edit, key: key) }
         session.editing = { editor.holding }
+        session.floatState = { [weak self] pane in self?.koModel?.layout.layout.locate(pane)?.window.floatState(pane) }
         session.selectPane = { pane in try? client.select(KO_SELECT_PANE, pane) }
         session.sizeClient = { [weak self] viewport, windows in
             self?.sentSizes.append("\(viewport.cols)x\(viewport.rows)")
@@ -222,6 +223,17 @@ import XCTest
             guard let toolbar = chrome.subviews.compactMap({ $0 as? PaneToolbar }).first else { return true }
             return toolbar.visualAnimationsEnded > ended && (inside ? toolbar.alphaValue == 1 : toolbar.alphaValue == 0)
         }
+    }
+
+    func assertFloatButton(_ pane: PaneView, enabled: Bool, label: String, file: StaticString = #filePath, line: UInt = #line) throws {
+        let chrome = try XCTUnwrap(terminal?.visualChromes.first { $0.pane == pane.pane }, file: file, line: line)
+        let toolbar = try XCTUnwrap(chrome.subviews.compactMap { $0 as? PaneToolbar }.first, file: file, line: line)
+        let button = try XCTUnwrap(toolbar.subviews.compactMap { $0 as? IconButton }.first {
+            ["Float pane", "Dock pane"].contains($0.accessibilityLabel() ?? "")
+        }, file: file, line: line)
+        XCTAssertEqual(button.isEnabled, enabled, file: file, line: line)
+        XCTAssertEqual(button.accessibilityLabel(), label, file: file, line: line)
+        XCTAssertEqual(toolbar.alphaValue, 1, file: file, line: line)
     }
 
     func darken(_ appearance: NSAppearance.Name = .darkAqua) async throws {

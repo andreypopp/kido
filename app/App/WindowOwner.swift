@@ -1112,7 +1112,7 @@ private class AlertEscape: NSView {
         view.reorder = reorder
         view.edit = { [weak self] edit, key in self?.editor?.submit(edit, key: key) }
         view.editSelecting = { [weak self] in self?.submitSelecting($0) }
-        view.floatTitle = { [weak self] in self?.floatTitle($0) }
+        view.floatState = { [weak self] in self?.floatState($0) }
         view.editing = { [weak self] in self?.editor?.holding == true }
         view.selectPane = { [weak self] pane in
             guard let self, accepts(generation), case .connected(let client) = link else { return }
@@ -1589,10 +1589,8 @@ private class AlertEscape: NSView {
         }
     }
 
-    func floatTitle(_ pane: PaneID) -> String? {
-        guard let window = koModel?.layout.layout.locate(pane)?.window, let edit = window.floatEdit(pane) else { return nil }
-        if case .unfloat = edit { return "Dock Pane" }
-        return "Float Pane"
+    func floatState(_ pane: PaneID) -> PaneFloatState? {
+        koModel?.layout.layout.locate(pane)?.window.floatState(pane)
     }
 
     func paneCommand(_ command: PaneCommand, _ pane: PaneID, _ runtime: NewPaneRuntime = .inherit) {

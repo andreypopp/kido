@@ -127,11 +127,25 @@ import XCTest
         return try XCTUnwrap(menu.items.first { if case .float? = $0.representedObject as? PaneCommand { true } else { false } })
     }
 
-    func testFloatPaneFloatsATiledPaneAndDockPaneDocksItNextToTheFirstTiledPane() throws {
+    private func toolbarButton(_ session: SessionView, _ pane: PaneID) throws -> IconButton {
+        let terminal = try XCTUnwrap(session.windows.values.first { !$0.isHidden })
+        let chrome = try XCTUnwrap(terminal.visualChromes.first { $0.pane == pane })
+        let window = try XCTUnwrap(chrome.window)
+        let point = NSPoint(x: chrome.toolbarFrame.midX, y: chrome.toolbarFrame.midY)
+        chrome.mouseMoved(with: try XCTUnwrap(NSEvent.mouseEvent(with: .mouseMoved, location: chrome.convert(point, to: nil),
+            modifierFlags: [], timestamp: 0, windowNumber: window.windowNumber, context: nil, eventNumber: 0, clickCount: 0, pressure: 0)))
+        let toolbar = try XCTUnwrap(chrome.subviews.compactMap { $0 as? PaneToolbar }.first)
+        return try XCTUnwrap(toolbar.subviews.compactMap { $0 as? IconButton }.first {
+            ["Float pane", "Dock pane"].contains($0.accessibilityLabel() ?? "")
+        })
+    }
+
+    func testToolbarFloatAndDockUseTheMenuCommand() throws {
         let (owner, client) = try shown(#"[{"name":"s","windows":[{"name":"w","tree":{"split":"h","children":[\#(sleep),\#(sleep)]}}]}]"#)
         let session = try XCTUnwrap(owner.testSession)
         let first = PaneID(number: 1), second = PaneID(number: 2)
         let item = try floatItem()
+        let button = try toolbarButton(session, second)
         XCTAssertEqual(item.keyEquivalent, "f")
         XCTAssertEqual(item.keyEquivalentModifierMask, [.command, .option])
         let view = try XCTUnwrap(session.pane(second))
@@ -139,13 +153,25 @@ import XCTest
         XCTAssertEqual(item.title, "Float Pane")
         XCTAssertEqual(try XCTUnwrap(windows(client).first).floatEdit(second), .float(KoSchema.EditFloat(pane: second)))
 
-        session.paneCommand(.float, second)
+        XCTAssertTrue(button.isEnabled)
+        XCTAssertNil(button.toolTip)
+        button.invoke()
         wait("the pane floats, placed by the server") { self.windows(client).first?.floats.map(\.pane) == [second] }
         wait("the float is the active pane") { (try? client.model())?.selection.pane == second }
         wait("the item offers Dock Pane") { view.canPerformMenuItem(item) && item.title == "Dock Pane" }
         XCTAssertEqual(try XCTUnwrap(windows(client).first).floatEdit(second), .unfloat(KoSchema.EditUnfloat(edge: .right, pane: second, target: first)))
 
-        session.paneCommand(.float, second)
+        wait("the attached button now offers Dock") { button.accessibilityLabel() == "Dock pane" && button.isEnabled }
+        XCTAssertTrue(try toolbarButton(session, second) === button)
+        session.paneCommand(.zoom, second)
+        wait("the zoomed float keeps its Dock button disabled") {
+            owner.testModel?.layout.layout.windows.first?.zoom == second && !button.isEnabled && button.accessibilityLabel() == "Dock pane"
+        }
+        XCTAssertFalse(view.canPerformMenuItem(item))
+        session.paneCommand(.zoom, second)
+        wait("the float can dock after unzoom") { button.isEnabled && view.canPerformMenuItem(item) }
+        XCTAssertTrue(try toolbarButton(session, second) === button)
+        button.invoke()
         wait("the float docks to the right of the first tiled pane") {
             let panes = self.panes(client)
             return self.windows(client).first?.floats.isEmpty == true && panes.map(\.id) == [first, second]
@@ -195,7 +221,7 @@ import XCTest
         try put(#"{"revision":\#(revision),"layout":{"sessions":[{"name":"s","windows":[{"name":"a","tree":{"pane":"pane_1"}},{"name":"b","tree":{"pane":"pane_2"},"floats":[{"pane":"pane_3","x":2,"y":2,"cols":20,"rows":6}]}]}]}}"#, dir: dir)
         let owner = try owner(dir)
         wait("the owner shows both windows") { owner.testModel?.layout.layout.locate(PaneID(number: 3))?.window.floats.count == 1 }
-        XCTAssertEqual(owner.floatTitle(PaneID(number: 3)), "Dock Pane", "a child window's float docks beside its pane like any other float")
+        XCTAssertEqual(owner.floatState(PaneID(number: 3)), .dock, "a child window's float docks beside its pane like any other float")
     }
 
     func testDockPaneDocksNextToTheLastFocusedTiledPaneElseTheFirst() throws {
@@ -221,12 +247,15 @@ import XCTest
         wait("with its record gone the float docks right of the first tiled pane") { self.panes(client).map(\.id) == [two, one, three] }
     }
 
-    func testFloatPaneIsOffForTheLastTiledPaneAndWhileZoomed() throws {
+    func testToolbarFloatIsDisabledForTheLastTiledPaneAndWhileZoomed() throws {
         let (owner, client) = try shown(#"[{"name":"s","windows":[{"name":"w","tree":\#(sleep)}]}]"#)
         let session = try XCTUnwrap(owner.testSession)
         let item = try floatItem()
         wait("the owner installed the first pane") { session.pane(PaneID(number: 1)) != nil }
         let view = try XCTUnwrap(session.pane(PaneID(number: 1)))
+        let button = try toolbarButton(session, view.pane)
+        XCTAssertFalse(button.isEnabled)
+        XCTAssertEqual(button.alphaValue, 0.35)
         XCTAssertFalse(view.canPerformMenuItem(item), "a window needs a tiled pane")
         XCTAssertNil(try XCTUnwrap(windows(client).first).floatEdit(PaneID(number: 1)))
 
@@ -235,9 +264,13 @@ import XCTest
         wait("the owner installed the second pane") { session.pane(PaneID(number: 2)) != nil }
         let second = try XCTUnwrap(session.pane(PaneID(number: 2)))
         wait("the second pane can float") { second.canPerformMenuItem(item) }
+        let secondButton = try toolbarButton(session, second.pane)
+        XCTAssertTrue(secondButton.isEnabled)
         session.paneCommand(.zoom, PaneID(number: 2))
         wait("the zoom") { self.windows(client).first?.zoom == PaneID(number: 2) }
         wait("the owner's layout shows the zoom") { owner.testModel?.layout.layout.windows.first?.zoom == PaneID(number: 2) }
+        wait("the attached Float button is disabled while zoomed") { !secondButton.isEnabled }
+        XCTAssertEqual(secondButton.accessibilityLabel(), "Float pane")
         XCTAssertFalse(second.canPerformMenuItem(item), "disabled while zoomed")
         XCTAssertNil(try XCTUnwrap(windows(client).first).floatEdit(PaneID(number: 2)))
     }

@@ -40,7 +40,7 @@ final class SessionView: NSView {
     var hostWindows: [FloatWindow] { (Array(windows.values) + Array(others.values)).flatMap(\.hostWindows) }
     var edit: (KoSchema.Edit, LayoutEditor.Key?) -> Void = { _, _ in }
     var editSelecting: (KoSchema.Edit) -> Void = { _ in }
-    var floatTitle: (PaneID) -> String? = { _ in nil }
+    var floatState: (PaneID) -> PaneFloatState? = { _ in nil }
     var editing: () -> Bool = { false }
     var selectPane: (PaneID) -> Void = { _ in }
     var paneCommand: (PaneCommand, PaneID) -> Void = { _, _ in }

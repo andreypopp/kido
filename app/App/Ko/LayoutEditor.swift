@@ -139,6 +139,12 @@ extension KoModel {
 }
 
 extension KoSchema.Window {
+    func floatState(_ pane: PaneID) -> PaneFloatState {
+        let floating = floats.contains { $0.pane == pane }
+        if floatEdit(pane) == nil { return floating ? .cannotDock : .cannotFloat }
+        return floating ? .dock : .float
+    }
+
     // The edit of the float command on `pane`: a float docks right of `last` if that is a tiled pane, else of the first
     // tiled pane; a tiled pane floats where the server places it. nil while zoomed, and for the last tiled pane.
     func floatEdit(_ pane: PaneID, last: PaneID? = nil) -> KoSchema.Edit? {

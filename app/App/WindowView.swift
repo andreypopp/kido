@@ -368,6 +368,9 @@ final class WindowView: NSView {
         session?.updateWebview()
         invalidateCursorRects()
         needsReconcile = false
+        if let chrome = toolbar?.superview as? PaneChrome {
+            hover(chrome, chrome.isHidden ? nil : chrome.window.map { chrome.convert($0.mouseLocationOutsideOfEventStream, from: nil) })
+        }
         sizeClient()
         #if KIDO_VISUAL
         session?.visualReconciled(self)
@@ -485,7 +488,11 @@ final class WindowView: NSView {
         if chrome.treatment == .edge { chrome.needsDisplay = true }
         if backings[chrome.pane]?.frame != frame { backings[chrome.pane]?.frame = frame }
         for overlay in view.chromeViews where overlay.superview !== chrome { chrome.addSubview(overlay); view.needsLayout = true }
-        if toolbar?.superview === chrome, toolbar?.frame != chrome.toolbarFrame { toolbar?.frame = chrome.toolbarFrame }
+        if let toolbar, toolbar.superview === chrome {
+            if toolbar.frame != chrome.toolbarFrame { toolbar.frame = chrome.toolbarFrame }
+            toolbar.update(command: { view.onSelect(); view.onCommand($0) }, zoomed: zoomed, floatState: view.floatState(),
+                           drag: { [weak self, pane = chrome.pane] in self?.beginDrag(pane, $0, from: .grip) })
+        }
         view.renderInsets = insets
         if view.frame != content { view.frame = content }
         chrome.content = content.offsetBy(dx: -frame.minX, dy: -frame.minY)
@@ -523,7 +530,7 @@ final class WindowView: NSView {
                 chrome.addSubview(toolbar, positioned: find == nil ? .above : .below, relativeTo: find)
             }
             toolbar.frame = chrome.toolbarFrame
-            toolbar.update(command: { view.onSelect(); view.onCommand($0) }, zoomed: zoomed, drag: { [weak self, pane = chrome.pane] in self?.beginDrag(pane, $0, from: .grip) })
+            toolbar.update(command: { view.onSelect(); view.onCommand($0) }, zoomed: zoomed, floatState: view.floatState(), drag: { [weak self, pane = chrome.pane] in self?.beginDrag(pane, $0, from: .grip) })
         }
         guard let toolbar, toolbar.superview === chrome else { return }
         NSAnimationContext.runAnimationGroup { context in
@@ -562,7 +569,7 @@ final class WindowView: NSView {
         }
         view.cursorHost = self
         view.onCommand = { [weak self] command in self?.session?.paneCommand(command, id) }
-        view.floatTitle = { [weak self] in self?.session?.floatTitle(id) }
+        view.floatState = { [weak self] in self?.session?.floatState(id) }
         view.onAlternateChange = { [weak self] in self?.place() }
         view.onFindChange = { [weak self] in self?.place(); self?.invalidateCursorRects() }
         view.onCellChange = { [weak self] in self?.session?.cellChanged() }
@@ -925,7 +932,7 @@ final class WindowView: NSView {
             let geometry = wire(frame, pane.id, placement)
             host.position = .dragging(frame: frame, sent: sent)
             placeFloat(pane.id, placement)
-            var target: (zone: DropZone, rect: CGRect)? = if case .dock = gesture, windowID != nil, session?.floatTitle(pane.id) != nil { dropTarget(at: viewPoint(input.point), source: pane.id) } else { nil }
+            var target: (zone: DropZone, rect: CGRect)? = if case .dock = gesture, windowID != nil, session?.floatState(pane.id)?.isEnabled == true { dropTarget(at: viewPoint(input.point), source: pane.id) } else { nil }
             if case .centre? = target?.zone { target = nil }
             preview.rect = target?.rect
             if let target, let windowID, input.up {

@@ -390,7 +390,7 @@ import XCTest
     func testTheHandlesHitInPrecedenceOutsideIn() {
         let r = CGRect(x: 27, y: 27, width: 300, height: 200)
         let grid = CGRect(x: r.minX + 4, y: r.minY + 10, width: r.width - 8, height: r.height - 14)
-        let toolbar = CGRect(x: r.maxX - 150, y: r.minY + 8, width: 145, height: 32)
+        let toolbar = CGRect(x: r.maxX - 176, y: r.minY + 8, width: 171, height: 32)
         func zone(_ x: CGFloat, _ y: CGFloat, toolbar: CGRect? = nil) -> FloatContent.Zone? { FloatContent.zone(at: CGPoint(x: x, y: y), in: r, grid: grid, toolbar: toolbar) }
         XCTAssertEqual(zone(r.maxX + 7, r.maxY + 7), .resize(.bottomRight), "the bottom-right corner reaches 8pt out")
         XCTAssertEqual(zone(r.maxX - 3, r.maxY - 3), .resize(.bottomRight), "and 12pt in, outside the grid")

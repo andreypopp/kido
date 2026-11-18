@@ -22,7 +22,10 @@ import XCTest
             try "app: {theme: kido-dark}\n".write(toFile: try XCTUnwrap(config), atomically: true, encoding: .utf8)
         }
         try await start(configFile: config, windows: windows)
-        if dark { window.appearance = NSAppearance(named: .darkAqua) }
+        if dark {
+            window.appearance = NSAppearance(named: .darkAqua)
+            session.hostWindows.forEach { $0.appearance = window.appearance }
+        }
     }
 
     // Replaces what a pane of a runtime shows: the wrapper of the runtime clears the screen as the pane starts.
@@ -71,6 +74,7 @@ import XCTest
             pane.showFind(nil)
             try await wait("the find capsule") { pane.find != nil }
             try await hover(first)
+            try assertFloatButton(pane, enabled: true, label: "Float pane")
             try await runtimeSnapshot(dark, "label-find")
             pane.find?.close()
             try await wait("the find capsule closed") { pane.find == nil }
@@ -78,6 +82,7 @@ import XCTest
         }
         try await runtimeSnapshot(dark, "window")
         try await hover(first)
+        try assertFloatButton(try XCTUnwrap(terminal?.displayedPanes.first { $0.pane == first }), enabled: true, label: "Float pane")
         try await runtimeSnapshot(dark, "window-hover")
         try await hover(first, entering: false)
         try await toggleZoom(1)
@@ -129,6 +134,9 @@ import XCTest
         try await fill(pane, "py311 /work\r\n$ pytest -x")
         try await settle()
         try await runtimeSnapshot(dark, "float")
+        try await hover(try XCTUnwrap(terminal?.displayedPanes.first { $0.pane == pane }), true)
+        try assertFloatButton(try XCTUnwrap(terminal?.displayedPanes.first { $0.pane == pane }), enabled: true, label: "Dock pane")
+        try await runtimeSnapshot(dark, "float-toolbar")
     }
 
     // The hover marks of a float: over the move band the pill and the corner mark, over the grid the corner mark alone.
@@ -173,6 +181,23 @@ import XCTest
         try await settle()
         try await runtimeSnapshot(dark, configured ? "colour-config" : "colour-hash")
     }
+
+    private func toolbarStates(dark: Bool) async throws {
+        let tree = splitTree("h", [runtimePane(nil, "left\\r\\n"), runtimePane(nil, "right\\r\\n")])
+        try await startThemed(dark, windows: #"[{"name":"w","tree":\#(tree)}]"#)
+        try await hover(PaneID(number: 1))
+        try assertFloatButton(try XCTUnwrap(terminal?.displayedPanes.first { $0.pane == PaneID(number: 1) }), enabled: true, label: "Float pane")
+        try await runtimeSnapshot(dark, "tiled-toolbar")
+        try await hover(PaneID(number: 1), entering: false)
+        try await toggleZoom(1)
+        try await wait("the pane is zoomed") { self.terminal?.displayedPanes.filter { !$0.isHidden }.count == 1 }
+        try await hover(PaneID(number: 1))
+        try assertFloatButton(try XCTUnwrap(terminal?.displayedPanes.first { $0.pane == PaneID(number: 1) }), enabled: false, label: "Float pane")
+        try await runtimeSnapshot(dark, "zoomed-toolbar")
+    }
+
+    func testPaneToolbarLight() async throws { try await toolbarStates(dark: false) }
+    func testPaneToolbarDark() async throws { try await toolbarStates(dark: true) }
 
     func testRuntimeWindowLight() async throws { try await runtimeWindowStates(dark: false) }
     func testRuntimeWindowDark() async throws { try await runtimeWindowStates(dark: true) }
