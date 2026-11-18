@@ -1,7 +1,11 @@
 locals {
   ssh_key = trimspace(file("${var.deployment}/id_ed25519.pub"))
   ko_host = "${var.ko_label}.${var.zone_name}"
-  names   = { ko = local.ko_host, enroll = "enroll.${local.ko_host}" }
+  names = {
+    ko       = local.ko_host
+    enroll   = "enroll.${local.ko_host}"
+    wildcard = "*.${local.ko_host}"
+  }
 }
 
 resource "digitalocean_ssh_key" "operator" {

@@ -3,7 +3,10 @@
 Use a Debian 13 x64 DigitalOcean droplet and a Cloudflare DNS zone.
 The Mac needs OpenTofu, Python 3, rsync, OpenSSH and OpenSSL. The
 build needs the tools in `docs/build.md`. Use a dedicated DNS zone or
-label set: this setup owns the ko host and `enroll.<ko host>`.
+label set: this setup owns the ko host, `enroll.<ko host>` and the
+wildcard `*.<ko host>`, each an A and an AAAA record of the droplet,
+not proxied. Caddy serves only the ko host and the enrollment host:
+another name under the wildcard gets no certificate and fails TLS.
 
 ## Deployments
 
