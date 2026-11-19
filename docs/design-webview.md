@@ -151,10 +151,14 @@ through a type-only import of `./ko-api.d.ts`; Node's type stripping
 removes the import, so the SDK runs without the file.
 
 The decision is that a page's program is a plain `node:http` server.
-The SDK does not take a handler and does not listen: `webview()`
-returns a socket path, the program calls `server.listen(socketPath)`
-itself, and Express, `ws` and every other `node:http` stack work
-unchanged, WebSocket upgrades included.
+The SDK does not take a handler: the program gives `webview(server)`
+its `node:http` server, so Express, `ws` and every other `node:http`
+stack work unchanged, WebSocket upgrades included. The SDK listens
+with that server on its private socket and starts the bridge only
+after the listen completes. The bridge's serve stream sets the row's
+`serving`, and the app loads the page at once, so a bridge before the
+listen gives the page a `502` as its document. The SDK owns the listen
+and its close, so no program can start them in the wrong order.
 
 The SDK has two targets, and the program's code is the same for both.
 The pane target, the default, shows the page in the program's Kido
@@ -167,7 +171,7 @@ code, which a program can expose as its own flag (koa's
 The README gives the calls; the rules that it does not state:
 
 - ko alone decides whether the program runs in a pane. The SDK reads
-  no environment: `webview()` returns `null` when the bridge exits 6
+  no environment: `webview(server)` returns `null` when the bridge exits 6
   (no pane identity) or when no `ko` executable exists.
 - `supported` comes only from the bridge's stdout. A bridge that exits
   makes `supported` false, and the SDK starts it again until `close`.

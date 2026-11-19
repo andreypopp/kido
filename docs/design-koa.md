@@ -289,7 +289,7 @@ their meaning, and with the command context actions of RPC mode
 are notice items: a fault of one extension handler does not stop the
 session.
 
-**The binding order.** koa listens before it binds: the HTTP server
+**The binding order.** koa creates its HTTP server before it binds: the HTTP server
 exists, then the session's subscription, then `bindExtensions`,
 because a `session_start` handler can ask a dialog or start a turn,
 and both must reach the page. `setRebindSession` runs the same
@@ -525,7 +525,11 @@ positional messages and adds one note once the session is ready:
 when none ended. A crash adds no note.
 While the restart runs, the page shows "Reloading…" in its error line
 and blocks the composer; during the gap the app shows its "The
-program is not serving", and the new serve stream loads the new page
+program is not serving", and the new serve stream loads the new page.
+The new koa calls the SDK only when its HTTP server exists, at the end
+of its start, so the new serve stream exists only when the new koa
+answers. A new koa that fails before that leaves "The program is not
+serving", and a failed page load shows the app's error with Retry
 (the user's design, never a fall back to the terminal). Attachments
 in the composer and the scroll position go with the page. In browser
 mode, the new koa listens on a new port and opens a new tab.

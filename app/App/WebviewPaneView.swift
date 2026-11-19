@@ -52,7 +52,20 @@ final class WebviewPaneView: NSView, WKNavigationDelegate, WKUIDelegate {
     private weak var client: KoClient?
     let browser: WKWebView
     private let bridge: WebviewBridge
-    private let unavailable = NSTextField(labelWithString: "The program is not serving")
+    private let unavailable = NSTextField(wrappingLabelWithString: "The program is not serving")
+    private let retry = NSButton(title: "Retry", target: nil, action: nil)
+    private struct PendingDocument {
+        let navigation: WKNavigation
+        let generation: String
+    }
+    private enum Document { case waiting, loading(URL, PendingDocument?), loaded(WKNavigation), failed(String) }
+    private enum DocumentError: CustomNSError {
+        case http(Int)
+        static var errorDomain: String { "KidoWebview" }
+        var errorCode: Int { switch self { case .http(let status): status } }
+        var errorUserInfo: [String: Any] { [NSLocalizedDescriptionKey: "HTTP \(errorCode)."] }
+    }
+    private var document = Document.waiting { didSet { renderDocument() } }
     private var page: String?
     private var serving = false
     private var ready = false
@@ -61,7 +74,12 @@ final class WebviewPaneView: NSView, WKNavigationDelegate, WKUIDelegate {
     private var pending: [ObjectIdentifier] = []
     private var sockets: [Int: KoWebviewSocket] = [:]
     private var generation = UUID().uuidString
-    private var pendingDocument: (navigation: WKNavigation, generation: String)?
+    private var pendingDocument: PendingDocument? {
+        if case .loading(_, let pending) = document { pending } else { nil }
+    }
+    private var ownsFocus: Bool {
+        pane?.webviewFocused == true || window?.firstResponder === self || window?.firstResponder === retry
+    }
     private var theme = ""
     private enum Reshow { case shown, unhidden, covered(DispatchWorkItem) }
     private var reshow = Reshow.shown
@@ -138,6 +156,10 @@ final class WebviewPaneView: NSView, WKNavigationDelegate, WKUIDelegate {
         unavailable.alignment = .center
         unavailable.isHidden = true
         addSubview(unavailable)
+        retry.target = self
+        retry.action = #selector(retryDocument)
+        retry.isHidden = true
+        addSubview(retry)
         theme = themeScript()
         installScripts()
         updateTheme()
@@ -149,9 +171,7 @@ final class WebviewPaneView: NSView, WKNavigationDelegate, WKUIDelegate {
             Self.ruleWaiters.append { [weak self] list in
                 guard let self, !stopped else { return }
                 guard let list else {
-                    unavailable.stringValue = "webview could not start"
-                    unavailable.isHidden = false
-                    browser.isHidden = true
+                    document = .failed("The page could not start.")
                     return
                 }
                 config.userContentController.add(list)
@@ -179,7 +199,12 @@ final class WebviewPaneView: NSView, WKNavigationDelegate, WKUIDelegate {
     }
     override var isFlipped: Bool { true }
     override var acceptsFirstResponder: Bool { true }
-    override func becomeFirstResponder() -> Bool { serving ? window?.makeFirstResponder(browser) == true : super.becomeFirstResponder() }
+    override func becomeFirstResponder() -> Bool {
+        switch document {
+        case .loading, .loaded: return window?.makeFirstResponder(browser) == true
+        case .waiting, .failed: return super.becomeFirstResponder()
+        }
+    }
     override func viewDidUnhide() {
         super.viewDidUnhide()
         if case .shown = reshow { reshow = .unhidden }
@@ -212,7 +237,9 @@ final class WebviewPaneView: NSView, WKNavigationDelegate, WKUIDelegate {
             if serving, resized { cover() }
             else if case .unhidden = reshow { reshow = .shown }
         }
-        unavailable.frame = NSRect(x: 8, y: bounds.midY - 12, width: max(0, bounds.width - 16), height: 24)
+        unavailable.frame = NSRect(x: 16, y: bounds.midY - 40, width: max(0, bounds.width - 32), height: 56)
+        retry.sizeToFit()
+        retry.frame.origin = NSPoint(x: bounds.midX - retry.frame.width / 2, y: bounds.midY + 20)
     }
 
     private func cover() {
@@ -231,20 +258,51 @@ final class WebviewPaneView: NSView, WKNavigationDelegate, WKUIDelegate {
 
     func update(path: String, serving: Bool) {
         let changed = page != path || self.serving != serving
-        let transferFocus = self.serving != serving && pane?.webviewFocused == true
+        let transferFocus = self.serving != serving && ownsFocus
         page = path
         self.serving = serving
         if transferFocus && !serving { window?.makeFirstResponder(self) }
-        unavailable.isHidden = serving
-        browser.isHidden = !serving
-        if transferFocus && serving { window?.makeFirstResponder(browser) }
-        if changed { load() }
+        if changed {
+            document = .waiting
+            browser.stopLoading()
+            load()
+        }
+        if transferFocus && serving { _ = becomeFirstResponder() }
     }
 
     private func load() {
         guard ready, !stopped, serving, let pane, let page,
               let url = URL(string: "ko://\(pane.pane)\(page)") else { return }
         browser.load(URLRequest(url: url))
+    }
+
+    @objc private func retryDocument() { load() }
+
+    private func renderDocument() {
+        let focused = ownsFocus
+        switch document {
+        case .waiting:
+            unavailable.stringValue = "The program is not serving"
+            unavailable.isHidden = false
+            retry.isHidden = true
+            browser.isHidden = true
+        case .loading, .loaded:
+            unavailable.isHidden = true
+            retry.isHidden = true
+            browser.isHidden = false
+        case .failed(let message):
+            unavailable.stringValue = message
+            unavailable.isHidden = false
+            retry.isHidden = false
+            browser.isHidden = true
+            if focused { window?.makeFirstResponder(retry) }
+        }
+        needsLayout = true
+    }
+
+    private func failDocument(_ message: String) {
+        document = .failed(message)
+        installScripts()
     }
 
     func close() {
@@ -347,6 +405,11 @@ final class WebviewPaneView: NSView, WKNavigationDelegate, WKUIDelegate {
                     guard let self, let fetch, tasks[id] === fetch else { return }
                     switch fetch.target {
                     case .page(let task):
+                        // WebKit gives navigation policy a URLResponse without the custom scheme's HTTP status.
+                        if case .loading(let url, _) = document, task.request.url == url, !(200..<300).contains(status) {
+                            finish(fetch, .failure(DocumentError.http(Int(status))))
+                            return
+                        }
                         task.didReceive(HTTPURLResponse(url: task.request.url!, statusCode: Int(status), httpVersion: "HTTP/1.1", headerFields: headers)!)
                     case .drop:
                         guard status == 200 else { finish(fetch, .failure(URLError(.badServerResponse))); return }
@@ -393,12 +456,15 @@ final class WebviewPaneView: NSView, WKNavigationDelegate, WKUIDelegate {
     }
 
     #if KIDO_VISUAL
-    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) { visualDocuments += 1 }
+    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        guard case .loaded(let active) = document, active === navigation else { return }
+        visualDocuments += 1
+    }
     #endif
 
     func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
-        guard let navigation else { return }
-        pendingDocument = (navigation, UUID().uuidString)
+        guard let navigation, serving, !stopped, case .loading(let url, nil) = document else { return }
+        document = .loading(url, PendingDocument(navigation: navigation, generation: UUID().uuidString))
         var cancelled: [Drop] = []
         for (id, fetch) in tasks {
             if case .page = fetch.target { continue }
@@ -413,19 +479,34 @@ final class WebviewPaneView: NSView, WKNavigationDelegate, WKUIDelegate {
     func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
         guard let pendingDocument, pendingDocument.navigation === navigation else { return }
         generation = pendingDocument.generation
-        self.pendingDocument = nil
+        document = .loaded(pendingDocument.navigation)
+        if ownsFocus { window?.makeFirstResponder(browser) }
         for socket in sockets.values { socket.cancel() }
         sockets = [:]
     }
 
     func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!, withError error: Error) {
-        guard pendingDocument?.navigation === navigation else { return }
-        pendingDocument = nil
-        installScripts()
+        navigationFailed(navigation, error: error)
+    }
+
+    func webView(_ webView: WKWebView, didFail navigation: WKNavigation!, withError error: Error) {
+        navigationFailed(navigation, error: error)
+    }
+
+    private func navigationFailed(_ navigation: WKNavigation?, error: Error) {
+        switch document {
+        case .loading:
+            guard pendingDocument?.navigation === navigation else { return }
+        case .loaded(let active):
+            guard active === navigation else { return }
+        case .waiting, .failed: return
+        }
+        failDocument("The page could not be loaded. \(error.localizedDescription)")
     }
 
     func webView(_ webView: WKWebView, decidePolicyFor action: WKNavigationAction, decisionHandler: @escaping @MainActor @Sendable (WKNavigationActionPolicy) -> Void) {
         if allowed(action.request.url), action.targetFrame != nil, !action.shouldPerformDownload {
+            if action.targetFrame?.isMainFrame == true, let url = action.request.url { document = .loading(url, nil) }
             decisionHandler(.allow)
         } else {
             #if KIDO_VISUAL
@@ -441,8 +522,7 @@ final class WebviewPaneView: NSView, WKNavigationDelegate, WKUIDelegate {
     func webView(_ webView: WKWebView, decidePolicyFor response: WKNavigationResponse, decisionHandler: @escaping @MainActor @Sendable (WKNavigationResponsePolicy) -> Void) {
         let accepted = allowed(response.response.url) && response.canShowMIMEType
         if !accepted, response.isForMainFrame {
-            pendingDocument = nil
-            installScripts()
+            failDocument("The page could not be displayed.")
             #if KIDO_VISUAL
             visualRejectedNavigations += 1
             #endif

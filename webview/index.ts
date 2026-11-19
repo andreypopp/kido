@@ -4,7 +4,7 @@ import { mkdtempSync, chmodSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
-import { createServer, request, STATUS_CODES, type IncomingMessage, type ServerResponse } from "node:http";
+import { createServer, request, STATUS_CODES, type IncomingMessage, type ServerResponse, type Server } from "node:http";
 import type { Socket } from "node:net";
 import type { components } from "./ko-api.d.ts";
 
@@ -12,7 +12,6 @@ type SupportedLine = Extract<components["schemas"]["ServeOut"], { type: "support
 type Options = { ko?: string; target?: "pane" | "browser"; timeoutMs?: number };
 
 export type Webview = {
-  readonly socketPath: string;
   readonly url?: string;
   readonly supported: boolean;
   readonly shown: boolean;
@@ -29,14 +28,22 @@ function stderrTail(child: ChildProcess): () => string {
   return () => text;
 }
 
-export function webview(options: Options & { target: "browser" }): Promise<Webview>;
-export function webview(options?: Options): Promise<Webview | null>;
-export async function webview(options: Options = {}): Promise<Webview | null> {
+export function webview(server: Server, options: Options & { target: "browser" }): Promise<Webview>;
+export function webview(server: Server, options?: Options): Promise<Webview | null>;
+export async function webview(server: Server, options: Options = {}): Promise<Webview | null> {
   const timeoutMs = options.timeoutMs === undefined ? 5000 : options.timeoutMs;
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0 || timeoutMs > 2147483647) throw new Error("timeoutMs must be a positive timer duration");
   const dir = mkdtempSync(join(tmpdir(), "kido-webview-"));
   chmodSync(dir, 0o700);
   const socketPath = join(dir, "webview.sock");
+  const sockets = new Set<Socket>();
+  const track = (socket: Socket) => { sockets.add(socket); socket.once("close", () => sockets.delete(socket)); };
+  server.on("connection", track);
+  const closeServer = () => new Promise<void>(resolve => {
+    const timer = setTimeout(() => { for (const socket of sockets) socket.destroy(); resolve(); }, Math.min(timeoutMs, 1000));
+    server.close(() => { clearTimeout(timer); resolve(); });
+    server.closeIdleConnections();
+  });
   const events = new EventEmitter();
   const children = new Map<ChildProcess, { kind: "command" | "bridge"; cancel(): void; stopping?: Promise<void> }>();
   const stop = (child: ChildProcess): Promise<void> => {
@@ -102,10 +109,22 @@ export async function webview(options: Options = {}): Promise<Webview | null> {
       for (const socket of transport.sockets) socket.destroy();
     } else if (transport.restart) clearTimeout(transport.restart);
     for (const record of children.values()) record.cancel();
+    server.close();
+    for (const socket of sockets) socket.destroy();
+    server.off("connection", track);
     rmSync(dir, { recursive: true, force: true });
     events.removeAllListeners(); process.off("exit", cleanup);
   };
   process.once("exit", cleanup);
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const fail = (error: Error) => { cancelDeadline(); server.off("error", fail); reject(error); };
+      const cancelDeadline = deadline(timeoutMs, () => fail(new Error("webview listener readiness timed out")));
+      server.once("error", fail);
+      try { server.listen(socketPath, () => { cancelDeadline(); server.off("error", fail); resolve(); }); }
+      catch (error) { fail(error as Error); }
+    });
+  } catch (error) { await closeServer(); cleanup(); throw error; }
   if (transport.kind === "browser") {
     const { listener, sockets } = transport;
     let port: number;
@@ -174,7 +193,7 @@ export async function webview(options: Options = {}): Promise<Webview | null> {
       const address = listener.address();
       if (!address || typeof address === "string") throw new Error("missing browser listener address");
       port = address.port; transport.url = `http://127.0.0.1:${port}/`;
-    } catch (error) { cleanup(); throw error; }
+    } catch (error) { await closeServer(); cleanup(); throw error; }
   } else {
     const pane = transport;
     const start = (initial: boolean) => new Promise<boolean>((resolve, reject) => {
@@ -193,7 +212,6 @@ export async function webview(options: Options = {}): Promise<Webview | null> {
         if (ended) return;
         ended = true; cancelDeadline(); lines.close(); setSupported(false);
         if (!ready && initial) {
-          cleanup();
           if (code === 6 || error?.code === "ENOENT") resolve(false);
           else reject(new Error(failure?.message || stderr() || error?.message || "ko webview serve exited before supported"));
         } else {
@@ -210,10 +228,11 @@ export async function webview(options: Options = {}): Promise<Webview | null> {
       });
       bridge.once("error", error => end(null, error)); bridge.once("close", code => end(code));
     });
-    if (!await start(true)) return null;
+    try {
+      if (!await start(true)) { await closeServer(); cleanup(); return null; }
+    } catch (error) { await closeServer(); cleanup(); throw error; }
   }
   return {
-    socketPath,
     get url() { return transport.kind === "browser" ? transport.url : undefined; },
     get supported() { return supported; },
     get shown() { return shown !== undefined; },
@@ -273,7 +292,7 @@ export async function webview(options: Options = {}): Promise<Webview | null> {
           }
         } finally {
           shown = undefined;
-          await Promise.all([...children.keys()].map(stop)); expire(); cleanup();
+          await Promise.all([...children.keys()].map(stop)); expire(); await closeServer(); cleanup();
         }
       })();
       return closing;

@@ -1718,6 +1718,15 @@ stream itself the page's fetch fails. A row with
 `serving: false` shows "The program is not serving" in place of the
 page; the row is the one source of that state, so a fetch's status
 does not change it. A change of the path or of `serving` loads the page again.
+The document's state is one value (`Document` in
+`WebviewPaneView.swift`). A main-frame load that fails, or whose response is not `2xx`,
+shows a readable error with Retry in place of the page, never the
+response body. WebKit gives the navigation response of a custom scheme
+as a plain `URLResponse` without the status, so the scheme handler
+fails the task of the loading URL when its status is not `2xx`. A
+fetch of the old page for the same URL during that load is also
+refused; that window is accepted. Retry, a script's reload and a
+change of `serving` load again.
 
 WebKit gives a scheme handler a request body only as `httpBody`, never
 as `httpBodyStream`, and a `fetch` whose body is a `Blob` or a

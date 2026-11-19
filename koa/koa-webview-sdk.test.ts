@@ -21,7 +21,7 @@ test("bridge readiness expires and removes its directory", { timeout: 5000 }, as
   const ko = join(dir, "ko");
   writeFileSync(ko, `#!/bin/sh\nprintf '%s' "$4" > '${dir}/socket'\nexec /bin/cat\n`, { mode: 0o700 });
   try {
-    await assert.rejects(webview({ ko, timeoutMs: 1000 }), /timed out/);
+    await assert.rejects(webview(createServer(), { ko, timeoutMs: 1000 }), /timed out/);
     const socket = readFileSync(join(dir, "socket"), "utf8");
     assert.equal(existsSync(dirname(socket)), false);
   } finally { rmSync(dir, { recursive: true, force: true }); }
@@ -34,12 +34,14 @@ test("close bounds a stuck leave and ends its bridge", { timeout: 5000 }, async 
   const tty = process.stdout.isTTY;
   try {
     process.stdout.isTTY = true;
-    const view = await webview({ ko, timeoutMs: 1000 }); assert.ok(view);
+    const app = createServer();
+    const view = await webview(app, { ko, timeoutMs: 1000 }); assert.ok(view);
+    const socketPath = app.address(); assert.ok(typeof socketPath === "string");
     await view.show(); assert.equal(view.shown, true);
     const started = Date.now();
     const first = view.close(); assert.equal(view.close(), first); await first;
     assert.ok(Date.now() - started < 2800);
-    assert.equal(existsSync(dirname(view.socketPath)), false);
+    assert.equal(existsSync(dirname(socketPath)), false);
   } finally { process.stdout.isTTY = tty; rmSync(dir, { recursive: true, force: true }); }
 });
 
@@ -53,22 +55,23 @@ test("close cancels a stuck enter and queued actions", { timeout: 5000 }, async 
   let view: Webview | null = null;
   try {
     process.stdout.isTTY = true;
-    view = await webview({ ko, timeoutMs: 1000 }); assert.ok(view);
+    const app = createServer();
+    view = await webview(app, { ko, timeoutMs: 1000 }); assert.ok(view);
+    const socketPath = app.address(); assert.ok(typeof socketPath === "string");
     const first = assert.rejects(view.show('/first'), /closed/), queued = assert.rejects(view.show('/queued'), /closed/);
     const socket = await started;
     const disconnected = new Promise<void>(resolve => socket.once('close', resolve)); socket.resume();
     await view.close(); await Promise.all([first, queued, disconnected]);
     assert.equal(readFileSync(join(dir, 'actions'), 'utf8'), 'enter\n');
-    assert.equal(existsSync(dirname(view.socketPath)), false);
+    assert.equal(existsSync(dirname(socketPath)), false);
   } finally { process.stdout.isTTY = tty; await view?.close(); await new Promise<void>(resolve => server.close(() => resolve())); rmSync(dir, { recursive: true, force: true }); }
 });
 
 test("browser checks every request origin", { timeout: 5000 }, async () => {
-  const view = await webview({ target: "browser" });
   let calls = 0;
   const app = createServer((_req, res) => { calls++; res.end("ok"); });
   app.on("upgrade", (_req, socket) => { calls++; socket.destroy(); });
-  await new Promise<void>(resolve => app.listen(view.socketPath, resolve));
+  const view = await webview(app, { target: "browser" });
   const url = new URL(urlOf(view));
   const raw = (request: string) => new Promise<string>((resolve, reject) => {
     const socket = net.connect(Number(url.port), "127.0.0.1", () => socket.end(request));
@@ -88,12 +91,10 @@ test("browser checks every request origin", { timeout: 5000 }, async () => {
     assert.equal((await fetch(urlOf(view), { headers: { Origin: url.origin } })).status, 200);
     assert.equal((await fetch(urlOf(view))).status, 200);
     assert.equal(calls, 3);
-  } finally { await view.close(); app.closeAllConnections(); await new Promise<void>(resolve => app.close(() => resolve())); }
+  } finally { await view.close(); }
 });
 
 test("browser Host guard and show/hide rules", { timeout: 15000 }, async () => {
-  const wv = await webview({ target: "browser" });
-  assert.ok(wv);
   let requests = 0;
   let finishStream: (() => void) | undefined;
   const server = createServer((req, res) => {
@@ -125,7 +126,8 @@ test("browser Host guard and show/hide rules", { timeout: 15000 }, async () => {
     socket.on("error", () => socket.destroy());
     socket.on("end", () => socket.destroy());
   });
-  await new Promise<void>(resolve => server.listen(wv.socketPath, resolve));
+  const wv = await webview(server, { target: "browser" });
+  const socketPath = server.address(); assert.ok(typeof socketPath === "string");
   try {
     const url = new URL(urlOf(wv));
     const response = await new Promise<string>((resolve, reject) => {
@@ -176,16 +178,16 @@ test("browser Host guard and show/hide rules", { timeout: 15000 }, async () => {
     });
   } finally {
     await wv.close();
-    await new Promise<void>(resolve => server.close(() => resolve()));
   }
-  assert.equal(existsSync(dirname(wv.socketPath)), false);
+  assert.equal(existsSync(dirname(socketPath)), false);
   await assert.rejects(fetch(urlOf(wv)));
   const dir = mkdtempSync(join(tmpdir(), "webview-open-"));
   const log = join(dir, "urls");
   writeFileSync(join(dir, process.platform === "darwin" ? "open" : "xdg-open"), '#!/bin/sh\nprintf "%s\\n" "$1" >> "$OPEN_LOG"\n', { mode: 0o700 });
   try {
     const script = `import { webview } from ${JSON.stringify(new URL("../webview/index.ts", import.meta.url).href)};
-      const wv = await webview({ target: "browser" });
+      const app = (await import("node:http")).createServer();
+      const wv = await webview(app, { target: "browser" });
       const assert = (await import("node:assert/strict")).default;
       try {
         await assert.rejects(wv.show("page"), /must start/);
@@ -208,16 +210,15 @@ test("browser Host guard and show/hide rules", { timeout: 15000 }, async () => {
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
 test("browser preserves a write-side EOF and handles an absent app", { timeout: 15000 }, async () => {
-  const wv = await webview({ target: "browser" });
-  const url = new URL(urlOf(wv));
-  const expected = `POST /eof HTTP/1.1\r\nHost: 127.0.0.1:${url.port}\r\nContent-Length: 4\r\n\r\nbody`;
   let received = "";
   const app = createServer((request, response) => {
     request.on("data", bytes => { received += bytes; });
     request.on("end", () => response.end("after EOF ok"));
   });
+  const wv = await webview(app, { target: "browser" });
+  const url = new URL(urlOf(wv));
+  const expected = `POST /eof HTTP/1.1\r\nHost: 127.0.0.1:${url.port}\r\nContent-Length: 4\r\n\r\nbody`;
   try {
-    await new Promise<void>(resolve => app.listen(wv.socketPath, resolve));
     const response = await new Promise<string>((resolve, reject) => {
       const socket = net.connect(Number(url.port), "127.0.0.1", () => socket.end(expected));
       let bytes = "";
@@ -241,29 +242,25 @@ test("browser preserves a write-side EOF and handles an absent app", { timeout: 
 });
 
 test("browser forwards a complete large Connection close response", { timeout: 5000 }, async () => {
-  const wv = await webview({ target: "browser" });
   const body = "0123456789abcdef".repeat(256 * 1024);
   const server = createServer((_req, response) => {
     response.writeHead(200, { "Connection": "close", "Content-Length": Buffer.byteLength(body) });
     response.end(body);
   });
-  await new Promise<void>(resolve => server.listen(wv.socketPath, resolve));
+  const wv = await webview(server, { target: "browser" });
   try {
     assert.equal(await (await fetch(urlOf(wv))).text(), body);
   } finally {
     await wv.close();
-    server.closeAllConnections();
-    await new Promise<void>(resolve => server.close(() => resolve()));
   }
 });
 
 test("browser close drains an in-flight response to a slow reader", { timeout: 5000 }, async () => {
-  const wv = await webview({ target: "browser" });
   const body = "0123456789abcdef".repeat(256 * 1024);
   let started: () => void = () => {};
   const requested = new Promise<void>(resolve => { started = resolve; });
   const server = createServer((_req, response) => { response.end(body); started(); });
-  await new Promise<void>(resolve => server.listen(wv.socketPath, resolve));
+  const wv = await webview(server, { target: "browser" });
   const url = new URL(urlOf(wv));
   const socket = net.connect(Number(url.port), "127.0.0.1", () => socket.write(`GET / HTTP/1.1\r\nHost: localhost:${url.port}\r\n\r\n`));
   socket.pause();
@@ -284,38 +281,35 @@ test("browser close drains an in-flight response to a slow reader", { timeout: 5
   } finally {
     socket.destroy();
     await wv.close();
-    server.closeAllConnections();
-    await new Promise<void>(resolve => server.close(() => resolve()));
   }
 });
 
 test("browser close ends an unresponsive forward at its deadline", { timeout: 4000 }, async () => {
-  const wv = await webview({ target: "browser" });
   let requested: () => void = () => {};
   const ready = new Promise<void>(resolve => { requested = resolve; });
-  let eof = false;
   const peers = new Set<import("node:net").Socket>();
-  const server = net.createServer({ allowHalfOpen: true }, socket => {
+  const server = createServer();
+  server.on("request", () => requested());
+  server.on("connection", socket => {
     peers.add(socket);
-    socket.on("data", requested);
-    socket.on("end", () => { eof = true; });
     socket.on("close", () => peers.delete(socket));
   });
-  await new Promise<void>(resolve => server.listen(wv.socketPath, resolve));
+  const wv = await webview(server, { target: "browser" });
   const url = new URL(urlOf(wv));
   const socket = net.connect(Number(url.port), "127.0.0.1", () => socket.write(`GET / HTTP/1.1\r\nHost: localhost:${url.port}\r\n\r\n`));
   const closed = new Promise<void>(resolve => { socket.on("close", resolve); socket.on("error", () => {}); });
   try {
     await ready;
+    const disconnected = Promise.all([...peers].map(peer => new Promise<void>(resolve => peer.once("close", () => resolve()))));
     await wv.close();
-    await closed;
-    assert.equal(eof, true);
+    await Promise.all([closed, disconnected]);
+    assert.equal(server.listening, false);
+    assert.equal(peers.size, 0);
     await assert.rejects(fetch(urlOf(wv)));
   } finally {
     socket.destroy();
     for (const peer of peers) peer.destroy();
     await wv.close();
-    await new Promise<void>(resolve => server.close(() => resolve()));
   }
 });
 
@@ -332,7 +326,9 @@ test("browser close does not wait for an opener", { timeout: 15000 }, async () =
     const gate = createServer();
     await new Promise(resolve => gate.listen(process.env.OPEN_GATE, resolve));
     const started = new Promise(resolve => gate.once("connection", resolve));
-    const wv = await webview({ target: "browser" });
+    const app = (await import("node:http")).createServer();
+    const wv = await webview(app, { target: "browser" });
+    const socketPath = app.address();
     const port = Number(new URL(wv.url).port);
     const forwarded = connect(port, "127.0.0.1");
     await new Promise(resolve => forwarded.once("connect", resolve));
@@ -342,7 +338,7 @@ test("browser close does not wait for an opener", { timeout: 15000 }, async () =
     try {
       await wv.close();
       await disconnected;
-      assert.equal(existsSync(dirname(wv.socketPath)), false);
+      assert.equal(existsSync(dirname(socketPath)), false);
       await assert.rejects(fetch(wv.url));
       assert.equal(wv.shown, false);
     } finally { opener.end("release"); }
@@ -366,19 +362,21 @@ test("webview SDK support events, TTY, arguments, restart and close", async () =
   const fx = makeFixture();
   const tty = process.stdout.isTTY;
   let wv: Webview | null = null;
+  const app = createServer();
   try {
     delete process.env.KO_PANE;
-    assert.equal(await webview(), null);
+    assert.equal(await webview(app), null);
     assert.match(readFileSync(join(fx.dir, "ko.jsonl"), "utf8"), /"webview","serve","--socket"/);
     process.env.KO_PANE = "pane_1";
-    assert.equal(await webview({ ko: join(fx.dir, "missing") }), null);
+    assert.equal(await webview(app, { ko: join(fx.dir, "missing") }), null);
     const refused = join(fx.dir, "refused");
     writeFileSync(refused, "#!/bin/sh\nprintf 'bridge refused\\n' >&2\nexit 1\n", { mode: 0o700 });
-    await assert.rejects(webview({ ko: refused }), /bridge refused/);
-    wv = await webview({ ko: join(fx.binDir, "ko") });
+    await assert.rejects(webview(app, { ko: refused }), /bridge refused/);
+    wv = await webview(app, { ko: join(fx.binDir, "ko") });
     assert.ok(wv);
     assert.equal(wv.supported, false);
-    assert.equal(statSync(dirname(wv.socketPath)).mode & 0o777, 0o700);
+    const privateSocket = app.address(); assert.ok(typeof privateSocket === "string");
+    assert.equal(statSync(dirname(privateSocket)).mode & 0o777, 0o700);
     const changes: boolean[] = [];
     const listener = (value: boolean) => { changes.push(value); };
     wv.on("supported", listener);
@@ -419,13 +417,13 @@ test("webview SDK support events, TTY, arguments, restart and close", async () =
     await wv.close();
     assert.equal(shutdownNotifications, 0);
     assert.equal(wv.shown, false);
-    wv = await webview({ ko: join(fx.binDir, "ko") });
+    wv = await webview(app, { ko: join(fx.binDir, "ko") });
     assert.ok(wv);
     wv.on("supported", listener);
     changes.length = 0;
     writeFileSync(process.env.KO_FAKE_SERVE_DROP, "");
     await pollUntil(() => changes.includes(false) && changes.at(-1) === true);
-    const socket = wv.socketPath;
+    const socket = app.address(); assert.ok(typeof socket === "string");
     wv.off("supported", listener);
     await wv.close();
     assert.equal(existsSync(dirname(socket)), false);

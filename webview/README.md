@@ -13,20 +13,22 @@ You can also import `index.ts` from that directory by its absolute path.
 import http from "node:http";
 import { webview } from "@kido/webview";
 
-const wv = await webview();
+const server = http.createServer((_req, res) => res.end("Hello"));
+const wv = await webview(server);
 if (wv) {
-  const server = http.createServer((_req, res) => res.end("Hello"));
-  server.listen(wv.socketPath);
   wv.on("supported", supported => {
     if (supported) void wv.show();
     else void wv.hide();
   });
   if (wv.supported) await wv.show();
-  // Before exit: await wv.close(); server.close();
+  // Before exit: await wv.close();
 }
 ```
 
-`webview()` returns `null` when ko reports no pane identity or the ko executable is not found. The SDK starts the bridge
+`webview(server)` listens with `server` on a private socket, and
+starts the bridge only when the server listens, so a page never
+reaches a program that does not answer yet. `close()` also closes the
+server. `webview(server)` returns `null` when ko reports no pane identity or the ko executable is not found. The SDK starts the bridge
 and restarts it after an unexpected exit. `show(path?)` needs a TTY on
 stdout; while a page is shown, a different path replaces it and the
 same path does nothing. `hide()` shows the terminal and does nothing
@@ -40,7 +42,7 @@ and serves again. Use `off` to remove a
 `hide`, and `close`; a step that passes it rejects, and the SDK ends
 its child.
 
-For development, `webview({ target: "browser" })` serves the same
+For development, `webview(server, { target: "browser" })` serves the same
 server on a free port of `127.0.0.1` and shows the page in your
 browser, in a Kido pane or not; it never returns `null` and needs no
 ko. `url` is the page's address, `show(path)` opens it once for each

@@ -36,12 +36,12 @@ test('page assets stay with the running program', { timeout: 10000 }, async t =>
   assert.equal(await (await fetch(app.base)).text(), original);
 });
 
-test('a listen failure closes the acquired view and pi', { timeout: 5000 }, async t => {
+test('a listener startup failure closes pi', { timeout: 5000 }, async t => {
   const dir = await mkdtemp('/tmp/koa-listen-failure-'); t.after(() => rm(dir, { recursive: true, force: true }));
   await cp(resolve('../build/koa/share/koa/koa'), join(dir, 'koa'), { recursive: true });
   await mkdir(join(dir, 'webview'));
   const marker = join(dir, 'socket');
-  await writeFile(join(dir, 'webview/index.ts'), `import {webview as real} from ${JSON.stringify(new URL('../webview/index.ts', import.meta.url).href)};import {writeFileSync} from 'node:fs';export async function webview(options){const view=await real(options);writeFileSync(${JSON.stringify(marker)},view.socketPath);writeFileSync(view.socketPath,'occupied');return view;}`);
+  await writeFile(join(dir, 'webview/index.ts'), `import {webview as real} from ${JSON.stringify(new URL('../webview/index.ts', import.meta.url).href)};import {writeFileSync} from 'node:fs';export async function webview(server,options){const listen=server.listen;server.listen=function(path,...args){writeFileSync(${JSON.stringify(marker)},path);writeFileSync(path,'occupied');return listen.call(this,path,...args)};return real(server,options);}`);
   const child = spawn(process.execPath, [join(dir, 'koa/koa.ts'), '--browser', '--pi', realPi], { env: { ...process.env }, stdio: 'pipe' });
   t.after(() => { if (child.exitCode === null) child.kill('SIGTERM'); });
   let stderr = ''; child.stderr.on('data', bytes => { stderr += bytes; });

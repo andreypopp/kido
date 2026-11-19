@@ -25,8 +25,6 @@ const instance = randomUUID();
 const page = await assemblePage(new URL("../../build/koa/share/koa/koa/koa.ts", import.meta.url), instance);
 const store = mkdtempSync(join(tmpdir(), `koa-replay-${process.pid}-`));
 const attached = attachments(store);
-const view = await webview({ target: browser ? "browser" : "pane", ...(browser ? {} : { ko: findKo() ?? undefined }) });
-if (!view) throw Error("replay requires a Kido pane or --browser");
 
 let index = 0, mismatches = 0, last: string | undefined;
 const waiting = new Set<() => void>();
@@ -163,12 +161,13 @@ const handle = async (request: IncomingMessage, response: ServerResponse) => {
 };
 
 const server = createServer((request, response) => { handle(request, response).catch(error => { process.stderr.write(`replay: ${errorText(error)}\n`); if (!response.headersSent) respond(response, 500, JSON.stringify({ error: errorText(error) })); }); });
+const view = await webview(server, { target: browser ? "browser" : "pane", ...(browser ? {} : { ko: findKo() ?? undefined }) });
+if (!view) throw Error("replay requires a Kido pane or --browser");
 const quit = () => {
-  server.close(); server.closeAllConnections(); attached.close();
+  attached.close();
   void view.close(true).catch(() => {}).finally(() => { rmSync(store, { recursive: true, force: true }); process.exit(0); });
 };
 for (const signal of ["SIGTERM", "SIGINT", "SIGHUP"] as const) process.on(signal, quit);
-await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(view.socketPath, resolve); });
 const show = (supported: boolean) => { if (supported) void view.show(); };
 view.on("supported", show); show(view.supported);
 if (view.url) process.stderr.write(`replay: ${view.url}\n`);

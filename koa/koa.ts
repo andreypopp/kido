@@ -192,10 +192,8 @@ Everything after -- is message text.
     }
   }
   if (metricsFile) await writeFile(metricsFile, "");
-  const view = await webview({ target: browser ? "browser" : "pane" });
-  if (!view) throw new Error("koa requires a Kido pane or --browser");
   let reloading = false;
-  const teardown: (() => void | Promise<void>)[] = [() => view.close(!reloading).catch(error => { process.stderr.write(`koa: close: ${errorText(error)}\n`); })];
+  const teardown: (() => void | Promise<void>)[] = [];
   let shutdownPromise: Promise<void> | undefined;
   let stopHost: (() => Promise<void>) | undefined;
   const shutdown = () => shutdownPromise ??= (async () => {
@@ -729,12 +727,13 @@ Everything after -- is message text.
       } catch (error) { respond(response, 409, JSON.stringify({ error: errorText(error) })); }
     };
     const server = createServer((request, response) => { background(handle(request, response)); });
-    teardown.push(() => { server.close(); server.closeAllConnections(); });
     const onSignal = () => background(quit());
     process.stdout.on("error", onSignal);
     teardown.push(() => { for (const signal of ["SIGTERM", "SIGINT", "SIGHUP"] as const) process.off(signal, onSignal); });
     for (const signal of ["SIGTERM", "SIGINT", "SIGHUP"] as const) process.on(signal, onSignal);
-    await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(view.socketPath, resolve); });
+    const view = await webview(server, { target: browser ? "browser" : "pane" });
+    if (!view) throw new Error("koa requires a Kido pane or --browser");
+    teardown.push(() => view.close(!reloading).catch(error => { process.stderr.write(`koa: close: ${errorText(error)}\n`); }));
     if (!stopping) {
       root().view.status("idle", rootName());
       background((async () => {
