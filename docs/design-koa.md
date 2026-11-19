@@ -1302,7 +1302,18 @@ the command first ("`!` commands" below).
   An instant cause holds for its whole render: the observer can
   deliver its layout in several callbacks, and none of them slides,
   until a frame finds the layout settled. The first measurement is
-  a baseline. Reader input, `reader`,
+  a baseline. A toggle (a click or Enter/Space on the header of a
+  fold: an agent card or report, a job card, a step, a run, a
+  notice, a command's output, a folded fence) is its own cause with
+  an anchor: the page reads the header's top, applies the change,
+  measures, and gives the reducer the anchor that keeps that header
+  at the same screen position, so only the content below it moves.
+  The anchor is exact, with no 1 px dead band. A toggle ends the
+  slide, a travel and a pending forced item, and sets `reader` at
+  the anchor; it resumes `following` only when the held position is
+  the bottom. A position past the top or the bottom clamps. A toggle
+  adds no unread item, so it places no divider. A find's open of a
+  fold is not a toggle. Reader input, `reader`,
   travel, a blur, a hidden page and Reduce Motion end the slide at
   0. A change of the dock's height slides; a resize of the window
   does not.

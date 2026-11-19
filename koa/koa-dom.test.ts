@@ -2246,6 +2246,70 @@ async function flowPage(margin = 0) {
   return { ...page, pad, extra, origin, seqs, reveal, suffix, top, bottom, settle, reader, wheel, offset, open, gate, settled, trace };
 }
 
+test('every transcript fold holds the clicked header in following and reader windows', async () => {
+  const cards = [
+    `agentCard({direction:'out',to:{name:'worker'},text:{text:'task',cut:0},call:{tool:'spawn',fork:false}},0,'toggle',new Map())`,
+    ...['message', 'report'].map(form => `agentCard({direction:'in',from:{name:'worker'},inbound:{form:'${form}',relation:'child'},text:{text:'reply',cut:0}},0,'toggle',new Map())`),
+    `noticeRow({key:'toggle',at:0,content:{type:'text',text:'head\\nbody'}})`,
+    `commandRun({command:'echo ok',result:{output:{text:'ok',cut:0},exit:0}},'toggle').view`,
+    `jobCard({seq:0,at:0,job:{name:'job'},event:{type:'start',command:'echo ok'}},new Map()).view`,
+    ...['step', 'run'].map(kind => `(()=>{const block={type:'tool',id:'read',name:'read',args:{text:'{}'},state:{type:'done',error:false,result:{text:'output',images:[]}}};const step={key:'toggle',block,item:{seq:0,at:0,final:true,blocks:[block]},index:0,slots:new Map()};return ${kind === 'step' ? 'stepMarks(step).child' : 'run([step])'}})()`),
+  ];
+  for (const card of cards) for (const mode of ['following', 'reader', 'overscan', 'glide', 'keyboard']) {
+    const page = await flowPage();
+    page.open(Array.from({ length: 30 }, (_, seq) => page.text(seq)));
+    page.settle();
+    if (mode === 'reader' || mode === 'overscan') { page.reader(mode === 'overscan' ? 1200 : page.bottom() - 30); page.step(0); }
+    const seq = mode === 'overscan' ? page.seqs().find(seq => page.offset(seq) >= 100) : page.seqs().at(-1);
+    assert.ok(seq !== undefined);
+    page.evaluate(`globalThis.toggleCard=${card};globalThis.toggleRow=views.get(${seq}).view;toggleRow.append(toggleCard);globalThis.rowRect=toggleRow.getBoundingClientRect;toggleRow.getBoundingClientRect=()=>{const rect=rowRect();return {...rect,top:rect.top+scrollDecision.glideOffset,bottom:rect.bottom+scrollDecision.glideOffset}};globalThis.toggleHeader=toggleCard.children[0];toggleHeader.getBoundingClientRect=()=>({top:toggleRow.getBoundingClientRect().top+20})`);
+    const get = page.extra.get.bind(page.extra);
+    page.extra.get = key => (get(key) ?? 0) + (key === seq && page.evaluate("toggleCard.classList.contains('open')") ? 200 : 0);
+    page.layout.flush();
+    page.step(0); page.settle();
+    if (mode === 'glide') {
+      page.pad.value += 40;
+      page.evaluate("decide({type:'layout',cause:'layout'})");
+      assert.notEqual(page.evaluate('scrollDecision.glideOffset'), 0);
+    }
+    const before = page.evaluate('toggleHeader.getBoundingClientRect().top');
+    page.evaluate(mode === 'keyboard' ? "toggleHeader.onkeydown({key:'Enter',preventDefault(){}})" : 'toggleHeader.onclick({})');
+    page.layout.flush(); page.step(0);
+    assert.equal(page.evaluate('toggleHeader.getBoundingClientRect().top'), before, card + ' ' + mode + ' expand');
+    assert.equal(page.evaluate('scrollDecision.glideOffset'), 0);
+    assert.equal(page.evaluate('scrolling.kind'), 'reader');
+    assert.equal(page.evaluate('scrollDecision.dividerBefore'), undefined);
+    page.evaluate('toggleHeader.onclick({})');
+    page.layout.flush(); page.step(0);
+    assert.equal(page.evaluate('toggleHeader.getBoundingClientRect().top'), before, card + ' ' + mode + ' collapse');
+    assert.equal(page.evaluate('scrolling.kind'), mode === 'following' || mode === 'keyboard' ? 'following' : 'reader');
+    assert.equal(page.evaluate('scrollDecision.dividerBefore'), undefined);
+  }
+});
+
+test('a folded fence expands at its clicked bar without following or a divider', async () => {
+  for (const reader of [false, true]) {
+    const page = await flowPage();
+    page.open(Array.from({ length: 30 }, (_, seq) => page.text(seq)));
+    page.settle();
+    if (reader) page.reader(page.bottom() - 30);
+    const seq = page.seqs().at(-1);
+    assert.ok(seq !== undefined);
+    page.evaluate(`globalThis.fence=node('pre');fence.textContent=Array(20).fill('line').join('\\n');views.get(${seq}).view.append(fence);fence.after=bar=>{globalThis.fenceBar=bar;views.get(${seq}).view.append(bar)};foldFence(fence,'toggle');fenceBar.getBoundingClientRect=()=>({top:views.get(${seq}).view.getBoundingClientRect().top+20})`);
+    const get = page.extra.get.bind(page.extra);
+    page.extra.get = key => (get(key) ?? 0) + (key === seq && page.evaluate("openFences.has('toggle')") ? 200 : 0);
+    const before = page.evaluate('fenceBar.getBoundingClientRect().top');
+    page.evaluate('fenceBar.onclick()');
+    page.step(0);
+    assert.equal(page.evaluate('fenceBar.getBoundingClientRect().top'), before);
+    assert.equal(page.evaluate("fence.classList.contains('folded')"), false);
+    assert.equal(page.evaluate("element('items').contains(fenceBar)"), false);
+    assert.equal(page.evaluate('scrolling.kind'), 'reader');
+    assert.equal(page.evaluate('scrollDecision.glideOffset'), 0);
+    assert.equal(page.evaluate('scrollDecision.dividerBefore'), undefined);
+  }
+});
+
 test('a visible reply that shrinks and regrows under a following pane keeps following', async () => {
   const page = await flowPage();
   page.evaluate("element('scroll').clientHeight=200");

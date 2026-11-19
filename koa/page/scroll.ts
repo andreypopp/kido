@@ -31,6 +31,7 @@ export type ScrollEvent =
   | { type: 'input'; direction: 'up' | 'down' }
   | { type: 'scroll' }
   | { type: 'layout'; cause: Cause }
+  | { type: 'layout'; cause: 'toggle'; anchor: Anchor }
   | { type: 'submit' }
   | { type: 'send-result'; result: PromptResult['disposition'] | 'failed' }
   | { type: 'item'; seq: number; kind: 'user' | 'assistant' | 'other'; visible: boolean; appended: boolean }
@@ -244,7 +245,16 @@ export function scrollUpdate(previous: State, events: readonly ScrollEvent[], m:
         instant = true;
         break;
       case 'history': case 'resize': instant = true; break;
-      case 'layout': instant ||= event.cause === 'instant'; break;
+      case 'layout':
+        if (event.cause === 'toggle') {
+          state.forceItem = undefined;
+          force = false;
+          reader(event.anchor);
+          instant = true;
+          const found = m.lookup(event.anchor.item);
+          if ((found.kind === 'mounted' || found.kind === 'unmounted') && found.row.top - event.anchor.offset >= m.max) follow();
+        } else instant ||= event.cause === 'instant';
+        break;
       case 'visibility':
         if (!m.visible && state.kind === 'reader' && state.travel) reader();
         break;
@@ -300,7 +310,7 @@ export function scrollUpdate(previous: State, events: readonly ScrollEvent[], m:
       const found = m.lookup(anchor.item);
       if (found.kind === 'mounted' || found.kind === 'unmounted') {
         const target = Math.max(0, Math.min(m.max, found.row.top - anchor.offset));
-        if (Math.abs(target - m.top) >= 1) scrollTop = target;
+        if (target !== m.top && (events.some(event => event.type === 'layout' && event.cause === 'toggle') || Math.abs(target - m.top) >= 1)) scrollTop = target;
         if (found.kind === 'unmounted') request = { type: 'mount', item: anchor.item };
       } else if (found.kind === 'unloaded') request = { type: 'load', item: anchor.item, generation: state.generation };
       else if (found.next) state = { ...state, anchor: { item: found.next.item, offset: found.next.top - m.top } };

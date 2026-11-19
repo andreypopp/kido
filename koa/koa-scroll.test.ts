@@ -30,6 +30,32 @@ function fixture() {
   step();
   return { step, state: () => state, store: (top: number) => { state = scrollStored(state, top); measurement.top = top; } };
 }
+test('a toggle holds its anchor, cancels travel and glide, and follows only at the bottom', () => {
+  for (const mode of ['following', 'glide', 'reader', 'travel'] as const) {
+    const f = fixture();
+    if (mode === 'glide') { f.step([layout], { max: 1000 }); f.store(900); }
+    if (mode === 'reader' || mode === 'travel') f.step([intent]);
+    if (mode === 'travel') f.step([{ type: 'latest' }]);
+    const result = f.step([{ type: 'layout', cause: 'toggle', anchor: { item: { kind: 'message', seq: 1 }, offset: -800 } }], { max: 1200 });
+    assert.equal(result.decision.scrollTop ?? 900, 900);
+    assert.equal(result.state.kind, 'reader');
+    assert.equal(result.decision.glideOffset, 0);
+    assert.equal(result.decision.dividerBefore, undefined);
+    assert.equal(f.step([{ type: 'frame' }], { now: 1100 }).decision.scrollTop, undefined);
+  }
+  const clamped = fixture().step([{ type: 'layout', cause: 'toggle', anchor: { item: { kind: 'message', seq: 1 }, offset: 200 } }]);
+  assert.equal(clamped.decision.scrollTop, 0);
+  const fractional = fixture();
+  const held = fractional.step([{ type: 'layout', cause: 'toggle', anchor: { item: { kind: 'message', seq: 1 }, offset: -799.5 } }]);
+  assert.equal(held.decision.scrollTop, 899.5);
+  assert.equal(held.state.kind, 'reader');
+  const f = fixture();
+  const result = f.step([{ type: 'layout', cause: 'toggle', anchor: { item: { kind: 'message', seq: 1 }, offset: -800 } }], { max: 800, top: 800 });
+  assert.equal(result.state.kind, 'following');
+  assert.equal(result.decision.scrollTop, 800);
+  assert.equal(result.decision.glideOffset, 0);
+});
+
 const layout: ScrollEvent = { type: 'layout', cause: 'layout' };
 const intent: ScrollEvent = { type: 'input', direction: 'up' };
 const scroll: ScrollEvent = { type: 'scroll' };

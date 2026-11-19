@@ -470,7 +470,7 @@ function foldFence(pre: HTMLElement, key: string) {
   pre.classList.add('folded');
   pre.style.setProperty('--fold', String(REVEAL.fold));
   const expand = () => { openFences.add(key); pre.classList.remove('folded'); bar.remove(); };
-  bar.onclick = expand;
+  bar.onclick = () => toggleAt(bar, expand);
   fenceOpeners.set(key, { view: pre, open: () => { if (pre.classList.contains('folded')) expand(); } });
   pre.after(bar);
 }
@@ -712,14 +712,28 @@ function thumbnails(refs: ImageRef[], owner: () => Map<string, Slot>, name?: str
 
 function displayPath(value: string) { return state.home && (value === state.home || value.startsWith(state.home + '/')) ? '~' + value.slice(state.home.length) : value; }
 const duration = (ms: number | undefined, separator = '') => ms === undefined ? '' : ms < 100 && !separator ? Math.round(ms) + 'ms' : ms >= 60000 ? Math.floor(ms / 60000) + 'm' + separator + String(Math.floor(ms / 1000) % 60).padStart(2, '0') + 's' : Number((ms / 1000).toFixed(1)) + 's';
+function toggleAt(line: HTMLElement, change: () => void) {
+  const row = Array.from(messageRows()).find(row => row.contains(line));
+  const item = itemOf(row);
+  if (!row || !item) { change(); return; }
+  const before = line.getBoundingClientRect().top;
+  const rowBefore = row.getBoundingClientRect().top;
+  change();
+  const measurement = measure();
+  const found = measurement.lookup(item);
+  if (found.kind !== 'mounted') return;
+  const delta = row.contains(line) ? line.getBoundingClientRect().top - before : row.getBoundingClientRect().top - rowBefore;
+  const top = measurement.top + delta - scrollDecision.glideOffset;
+  decide({ type: 'layout', cause: 'toggle', anchor: { item, offset: found.row.top - top } }, measurement);
+}
 function fold(view: HTMLElement, key: string, line: HTMLElement, details: HTMLElement, show?: () => void, className = 'open', changed?: () => void) {
   view.classList.toggle(className, folds.get(key) === true);
   line.setAttribute('role', 'button'); line.tabIndex = -1;
   line.setAttribute('aria-expanded', String(folds.get(key) === true));
   const toggle = () => { const open = !view.classList.contains(className); folds.set(key, open); view.classList.toggle(className, open); line.setAttribute('aria-expanded', String(open)); if (open) show?.(); changed?.(); };
   openers.set(key, { view, open: () => { if (!view.classList.contains(className)) toggle(); } });
-  line.onclick = event => { if (!(event?.target instanceof Element && event.target.closest('a'))) toggle(); };
-  line.onkeydown = event => { if (!(event.target instanceof Element && event.target.closest('a')) && !event.metaKey && !event.ctrlKey && (event.key === 'Enter' || event.key === ' ')) { event.preventDefault(); toggle(); } };
+  line.onclick = event => { if (!(event?.target instanceof Element && event.target.closest('a'))) toggleAt(line, toggle); };
+  line.onkeydown = event => { if (!(event.target instanceof Element && event.target.closest('a')) && !event.metaKey && !event.ctrlKey && (event.key === 'Enter' || event.key === ' ')) { event.preventDefault(); toggleAt(line, toggle); } };
   if (view !== line) view.append(line);
   view.append(details);
   if (folds.get(key)) show?.();
