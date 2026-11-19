@@ -295,7 +295,9 @@ names, which measures a reference build (design-ko.md,
 
 Kido.app's visual snapshots are recorded and checked only in one guest
 VM. The host's macOS and the host's GPU are not a reference, so a host
-update never changes a snapshot. `app/vm/` is a Swift package without
+update never changes a snapshot. Locally, every test that starts
+Kido.app or a test host also runs there, so a test run never opens a
+window or takes focus on the developer's Mac. `app/vm/` is a Swift package without
 dependencies. `make -C app vm` builds `kido-vm` and signs it ad hoc with
 the `com.apple.security.virtualization` entitlement. Its state is in
 `~/.local/state/kido-vm/`, outside the repository: the sparse disk, the
@@ -309,12 +311,25 @@ run again. `down` stops the guest. `exec --dir PATH -- CMD` runs a
 command in the guest in the same absolute path. PATH must be under
 `~/Workspace` or `/tmp`: the guest shares only those two, and `exec`
 refuses other paths. `exec` runs one command at a time; a second one
-prints that it waits for the VM and then goes on. `make visual`,
-`visual-fast` and `visual-slow` build for testing on the host, with the
-existing derived data, and run `test-without-building` in the guest
-through `exec`. `ONLY=` and `RECORD=1` work as before. `ko-test` and the
-app's unit tests stay on the host. `make vm-up` and `make vm-down` start
-and stop the guest.
+prints that it waits for the VM and then goes on, so the units that
+share the VM run their tests one after the other.
+
+The app's test targets build on the host and run only the test step in
+the guest, through `exec` and the one runner
+`app/scripts/guest-test.sh`: `visual`, `visual-fast` and `visual-slow`
+and `ko-test` (`xcodebuild build-for-testing` on the host,
+`test-without-building` in the guest), `test` (the package tests:
+`swift build --build-tests` on the host, `swift test --skip-build` in the
+guest, because `PromptMarkdownTests` uses AppKit text views), `stress`,
+`tsan-stress`, `asan-stress` and `rtt` (the app build on the host, the
+script that launches it in the guest). Each target prints
+`TARGET: PHASE XmYs` lines for the build, the VM wait, the tests and
+the total. `GUEST=0` runs the same runner on the host instead; CI sets
+it, because the GitHub runners have no VM. The guest reaches only paths
+under `~/Workspace` and `/tmp`, so `rtt`'s ssh mode needs a config, keys
+and a host that the guest can reach. `demo` and `run` stay on the host:
+they exist to show the app. `make vm-up` and `make vm-down` start and
+stop the guest.
 
 The guest is macOS 27.2.1, build 26B131. `pinnedGuestBuild` in `main.swift`
 is that build, and every `exec` prints the guest's macOS version and
@@ -337,7 +352,7 @@ What the setup does, and why:
   guest keeps a stale view of a directory that the host deleted and
   created again (`xcodegen` does this to `Kido.xcodeproj`). A new mount
   makes the first run of each binary on a share slow (about 6 s for
-  `python3` and `node`), so `app/scripts/visual-guest.sh` runs both once
+  `python3` and `node`), so `app/scripts/guest-test.sh` runs both once
   before the tests.
 - The guest installs no updates: the `AutomaticCheckEnabled`,
   `AutomaticDownload`, `AutomaticallyInstallMacOSUpdates`,

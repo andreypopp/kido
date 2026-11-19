@@ -4,6 +4,13 @@ export MACOSX_DEPLOYMENT_TARGET := 27.0
 KO_CHECKOUT ?= ..
 KO_ABS = $(abspath $(KO_CHECKOUT))
 VM_BIN = vm/.build/out/Products/Release/kido-vm
+GUEST ?= 1
+GUEST_EXEC = $(if $(filter 1,$(GUEST)),$(VM_BIN) exec --dir $(CURDIR) $(GUEST_LINK) --) env KO_CHECKOUT=$(KO_ABS) $(foreach v,$(filter TEST_RUNNER_%,$(.VARIABLES)),'$(v)=$(subst ','"'"',$($(v)))') scripts/guest-test.sh
+GUEST_VM = $(if $(filter 1,$(GUEST)),vm)
+PACKAGES = KoModel KoClientKit KidoPairing PaneGeometry SidebarFeed PromptMarkdown
+TIME_BUILD = t1=$$(date +%s); fmt build $$((t1 - t0))
+TIME_START = fmt() { echo "$@: $$1 $$(($$2 / 60))m$$(($$2 % 60))s" >&2; }; t0=$$(date +%s)
+TIME_END = while IFS= read -r line; do if test "$$line" = guest-test-start; then fmt 'vm wait' $$(($$(date +%s) - t1)); else printf '%s\n' "$$line"; fi; done; fmt total $$(($$(date +%s) - t0))
 
 # xcodebuild prints one unindented line for each task and each test case and indents the command lines
 # that follow; the filter keeps the progress and drops the commands.
@@ -61,10 +68,12 @@ tsan-stress: SANITIZER = Thread
 asan-stress: SANITIZER = Address
 tsan-stress asan-stress: STRESS_OPTIMIZE = GHOSTTY_OPTIMIZE=ReleaseSafe
 tsan-stress asan-stress: STRESS_SANITIZE = -enable$(SANITIZER)Sanitizer YES
-stress tsan-stress asan-stress:
-	$(MAKE) all DERIVED=$(STRESS_DERIVED) $(STRESS_OPTIMIZE) SANITIZE="$(STRESS_SANITIZE) KIDO_STRESS_CONDITION=KIDO_STRESS"
-	KIDO_STRESS_TARGET=$@ scripts/stress.py --app $(STRESS_DERIVED)/Build/Products/Debug/Kido.app/Contents/MacOS/Kido --ko $(abspath $(STRESS_DERIVED)/Build/Products/Debug/Kido.app/Contents/Resources/ko/bin/ko) \
-		--seed $(SEED) --duration $(DURATION) --find $(FIND) --out build/bundle/stress/$@-$(SEED)
+stress tsan-stress asan-stress: $(GUEST_VM)
+	@set -eo pipefail; $(TIME_START); \
+	$(MAKE) all DERIVED=$(STRESS_DERIVED) $(STRESS_OPTIMIZE) SANITIZE="$(STRESS_SANITIZE) KIDO_STRESS_CONDITION=KIDO_STRESS"; \
+	$(TIME_BUILD); \
+	$(GUEST_EXEC) $@ env KIDO_STRESS_TARGET=$@ scripts/stress.py --app $(STRESS_DERIVED)/Build/Products/Debug/Kido.app/Contents/MacOS/Kido --ko $(abspath $(STRESS_DERIVED)/Build/Products/Debug/Kido.app/Contents/Resources/ko/bin/ko) \
+		--seed $(SEED) --duration $(DURATION) --find $(FIND) --out build/bundle/stress/$@-$(SEED) | $(TIME_END)
 
 RECORD ?= 0
 KOA_STRESS_OUTPUT ?= /tmp/koa-stress
@@ -73,7 +82,8 @@ visual: VISUAL_FLAG =
 visual-fast: VISUAL_FLAG = skip
 visual-slow: VISUAL_FLAG = only
 visual visual-fast visual-slow: DERIVED = build/xcode.noindex/derived-visual
-visual visual-fast visual-slow: project vm
+visual visual-fast visual-slow: GUEST_LINK = $(if $(filter 1,$(KOA_STRESS)),--link $(KOA_STRESS_OUTPUT))
+visual visual-fast visual-slow: project $(GUEST_VM)
 	$(MAKE) -C ../koa build
 	mkdir -p build/bundle/visual/{home,state}
 	clang -dynamiclib -Werror -Wno-deprecated-declarations scripts/renderer-probes.c -framework CoreVideo -o build/bundle/visual/renderer-probes.dylib
@@ -91,16 +101,11 @@ visual visual-fast visual-slow: project vm
 	fi; \
 	settings="KIDO_VISUAL_SERVER=/tmp/ka-visual-vm KO_CHECKOUT=$(KO_ABS) KIDO_VISUAL_CONDITION=KIDO_VISUAL KIDO_VISUAL_RECORD=$(RECORD) KOA_STRESS=$(KOA_STRESS) KOA_STRESS_VISIBLE=$(KOA_STRESS_VISIBLE) KOA_STRESS_OUTPUT=$(KOA_STRESS_OUTPUT)"; \
 	only='$(foreach test,$(ONLY),-only-testing:VisualTests/$(test)) '"$$select"; \
-	fmt() { echo "visual: $$1 $$(($$2 / 60))m$$(($$2 % 60))s" >&2; }; \
-	t0=$$(date +%s); \
+	$(TIME_START); \
 	xcodebuild -project Kido.xcodeproj -scheme Visual -configuration Debug -destination platform=macOS -derivedDataPath $(DERIVED) \
 		$$settings KOA_STRESS_TESTS="$(ONLY)" $$only build-for-testing 2>&1 | $(XCODE_PROGRESS); \
-	t1=$$(date +%s); fmt build $$((t1 - t0)); \
-	$(VM_BIN) exec --dir $(CURDIR) $(if $(filter 1,$(KOA_STRESS)),--link $(KOA_STRESS_OUTPUT)) -- scripts/visual-guest.sh "$$settings" "$(ONLY)" $$only | \
-		while IFS= read -r line; do \
-			if test "$$line" = visual-guest-start; then fmt 'vm wait' $$(($$(date +%s) - t1)); else printf '%s\n' "$$line"; fi; \
-		done; \
-	fmt total $$(($$(date +%s) - t0))
+	$(TIME_BUILD); \
+	$(GUEST_EXEC) visual Visual $(DERIVED) /tmp/ka-visual-vm "$$settings" "$(ONLY)" $$only | $(XCODE_PROGRESS) | $(TIME_END)
 
 .PHONY: koa-stress koa-stress-root
 koa-stress-root:
@@ -114,15 +119,17 @@ koa-stress:
 	$(MAKE) visual ONLY="$(ONLY)" KOA_STRESS=1 KOA_STRESS_OUTPUT="$$run"
 
 ko-test: DERIVED = build/xcode.noindex/derived-$@
-ko-test: project
+ko-test: project $(GUEST_VM)
 	$(MAKE) -C $(KO_ABS) cargo ARGS='build -p ko_e2e --bin ko-fake'
 	mkdir -p build/bundle/ko-tests/home build/bundle/ko-tests/state
-	@set -eo pipefail; server=$$(mktemp -d /tmp/ko-test-XXXXXX) || exit 1; \
-	trap '$(KO_ABS)/build/ko/bin/ko kill-server --server "$$server" 2>/dev/null || true; rm -rf "$$server"' EXIT; \
-	status=0; xcodebuild -project Kido.xcodeproj -scheme Ko -configuration Debug -destination platform=macOS \
-		-derivedDataPath $(DERIVED) KO_CHECKOUT=$(KO_ABS) KIDO_APP_SERVER="$$server" KIDO_VISUAL_CONDITION=KIDO_VISUAL \
-		$(if $(KO_RECORD_FIXTURES),KO_RECORD_FIXTURES=$(KO_RECORD_FIXTURES)) $(if $(ONLY),-only-testing:KoTests/$(ONLY)) test 2>&1 | $(XCODE_PROGRESS) || status=$$?; \
-	python3 scripts/ko-test-leak-check.py "$$server" || status=1; exit $$status
+	@set -eo pipefail; $(TIME_START); \
+	server=/tmp/ko-test-$$(uuidgen); \
+	settings="KO_CHECKOUT=$(KO_ABS) KIDO_APP_SERVER=$$server KIDO_VISUAL_CONDITION=KIDO_VISUAL $(if $(KO_RECORD_FIXTURES),KO_RECORD_FIXTURES=$(KO_RECORD_FIXTURES))"; \
+	only='$(foreach test,$(ONLY),-only-testing:KoTests/$(test))'; \
+	xcodebuild -project Kido.xcodeproj -scheme Ko -configuration Debug -destination platform=macOS \
+		-derivedDataPath $(DERIVED) $$settings $$only build-for-testing 2>&1 | $(XCODE_PROGRESS); \
+	$(TIME_BUILD); \
+	$(GUEST_EXEC) ko-test Ko $(DERIVED) "$$server" "$$settings" '' $$only | $(XCODE_PROGRESS) | $(TIME_END)
 
 ko-model:
 	python3 scripts/gen-ko-model.py $(KO_ABS)/share/ko/openapi.json $(KO_ABS)/share/ko/client-model.json $(KO_ABS)/share/ko/config-schema.json Packages/KoModel/Sources/KoModel/KoSchema.swift
@@ -138,9 +145,11 @@ RTT_ARGS ?=
 # The remote RTT row (docs/design-app.md): the app builds with KIDO_VISUAL for KIDO_APP_CONNECT and the key driver.
 # RTT_ARGS is for scripts/rtt.py: --rtt MS --bw MBIT --proxy rtt_proxy.py, or --ssh-config FILE --host ALIAS.
 rtt: DERIVED = build/xcode.noindex/derived-rtt
-rtt:
-	$(MAKE) all DERIVED=$(DERIVED) XCODE_SETTINGS="KIDO_VISUAL_CONDITION=KIDO_VISUAL"
-	scripts/rtt.py --app $(DERIVED)/Build/Products/$(CONFIG)/Kido.app/Contents/MacOS/Kido --ko $(KO_ABS)/build/ko/bin/ko $(RTT_ARGS)
+rtt: $(GUEST_VM)
+	@set -eo pipefail; $(TIME_START); \
+	$(MAKE) all DERIVED=$(DERIVED) XCODE_SETTINGS="KIDO_VISUAL_CONDITION=KIDO_VISUAL"; \
+	$(TIME_BUILD); \
+	$(GUEST_EXEC) rtt scripts/rtt.py --app $(DERIVED)/Build/Products/$(CONFIG)/Kido.app/Contents/MacOS/Kido --ko $(KO_ABS)/build/ko/bin/ko $(RTT_ARGS) | $(TIME_END)
 
 run: all
 	open -W $(APP)
@@ -159,13 +168,16 @@ demo demo-debug:
 demo-stop:
 	$(DEMO) scripts/demo.sh stop $(DERIVED)/Build/Products/Release/KidoDev.app/Contents/MacOS/KidoDev
 
-test:
+test: $(GUEST_VM)
 	$(if $(ONLY),$(error test: ONLY selects nothing here; use ko-test ONLY=<Class>[/<test>] for KoTests, visual ONLY=... for VisualTests, or swift test --filter in app/Packages/<package>))
 	scripts/lint.sh
-	$(MAKE) all
-	@set -eo pipefail; for package in KoModel KoClientKit KidoPairing PaneGeometry SidebarFeed PromptMarkdown; do \
-		(cd Packages/$$package && swift test 2>&1 | $(SWIFT_PROGRESS)); \
-	done
+	@set -eo pipefail; $(TIME_START); \
+	$(MAKE) all; \
+	for package in $(PACKAGES); do \
+		(cd Packages/$$package && swift build --build-tests 2>&1 | $(SWIFT_PROGRESS)); \
+	done; \
+	$(TIME_BUILD); \
+	$(GUEST_EXEC) app $(PACKAGES) | $(SWIFT_PROGRESS) | $(TIME_END)
 
 clean:
 	rm -rf build/xcode.noindex/derived build/xcode.noindex/derived-demo build/xcode.noindex/derived-tsan build/xcode.noindex/derived-asan build/xcode.noindex/derived-stress build/xcode.noindex/derived-tsan-stress build/xcode.noindex/derived-asan-stress

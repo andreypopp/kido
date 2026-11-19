@@ -302,8 +302,8 @@ jobs:
 
       - name: Test app
         timeout-minutes: 15
-        run: make -C app test
+        run: make -C app test GUEST=0
 
       - name: Test ko integration
         timeout-minutes: 15
-        run: make -C app ko-test
+        run: make -C app ko-test GUEST=0

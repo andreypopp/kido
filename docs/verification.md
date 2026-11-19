@@ -18,12 +18,18 @@ cargo tests (unit), ko's e2e (e2e), the TypeScript suite (ts), and
 e2e stage to the tests whose names contain the text (a cargo test
 filter). The stages `lint-sh` (`scripts/lint.sh` only), `app` (the
 app's `make test`), `ko-test` and `visual` (the app's `make visual`,
-which runs in the guest VM of docs/build.md, "The visual-test VM",
 limited by `VISUAL_ONLY`) are not in the default list;
 `scripts/checks.sh` selects them. Every selected stage runs even after
 a failure and prints PASS/FAIL/SKIP with its time, unless
 `KO_FAIL_FAST=1`: then the first FAIL stops the loop and each
 remaining stage prints SKIP.
+
+Locally, a test that starts Kido.app or an XCTest host runs only in the
+guest VM of docs/build.md, "The visual-test VM": the stages `app`,
+`ko-test` and `visual` build on the host and run their tests there, so
+verification never opens a window or takes focus on the developer's
+Mac. The VM runs one test command at a time for all units. `GUEST=0`
+on the app's make targets runs the tests on the host; only CI sets it.
 
 `scripts/verify.sh` scrubs the environment: it unsets `KO_STATE_DIR`,
 `KO_PANE`, `KO_SOCKET`, `KO_PANE_TOKEN` and every `KO_AGENT_*`, and
@@ -55,12 +61,13 @@ the installed layout check (`make install PREFIX=$HOME/ko-install`,
 `ko version` from it, and the `ko` shim executable under its
 `share/ko/bin`), and koa's own install (`make -C koa install
 PREFIX=$HOME/koa-install`, then its `koa --help --pi /nonexistent`). Its `app` job builds Kido.app and runs the app's
-`make test` and `make ko-test` (design-app.md, "Testing"), not `make
+`make test GUEST=0` and `make ko-test GUEST=0` on the runner (design-app.md, "Testing"), not `make
 visual` (known-issues-app.md, "Visual tests do not run in CI"). Visual
 snapshots are recorded and checked only in the guest, never on the host:
 the host's macOS build is not the reference. `make visual` prints one
 `visual: PHASE XmYs` line to stderr for the build, the VM wait, the
-tests, the quit check and the total.
+tests, the quit check and the total; `test` and `ko-test` print the
+same lines without the quit check.
 `scripts/main-watch.sh` watches main and reports each observed head's
 CI. `/gh-watch` starts it through streamed `async_bash`.
 

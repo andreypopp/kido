@@ -510,6 +510,15 @@ selects them. `scripts/verify.sh` scrubs `KO_STATE_DIR`, `KO_PANE`,
 the tests. Kido.app has its own checks in `app/` (docs/design-app.md,
 "Testing").
 
+**GUI test hosts run only in the VM.** Locally, nothing in a check
+starts Kido.app or an XCTest host on the user's Mac: it would open
+windows and take focus. The app's test targets (`test`, `ko-test`,
+`visual*`, the stress targets, `rtt`) build on the host and run their
+tests in the visual-test VM through `app/scripts/guest-test.sh`
+(docs/build.md, "The visual-test VM"). Only CI passes `GUEST=0`; an
+agent never does. A new target that launches the app uses the same
+runner.
+
 **Visual snapshots belong to the guest.** `make -C app visual` builds
 on the host and runs in the visual-test VM on one pinned macOS build
 (docs/build.md, "The visual-test VM"). Never record snapshots on the
