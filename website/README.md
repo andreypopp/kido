@@ -27,16 +27,28 @@ source, custom domain `kido.tools`). It builds on pushes to main touching
 the website, or on manual dispatch, then deploys `dist/`. The CNAME is
 copied into the output.
 
-## Media
+## Design
 
-Put recordings in `public/media/`:
+The page is one composition in the style of Kandinsky's geometric
+works. `src/components/Canvas.astro` draws it over the whole page at a
+fixed width of 1440 units; `src/lib/art.ts` holds its drawing helpers,
+and `src/components/Symbols.astro` holds the logo, the status marks and
+the section drawings. From 1100 px the text blocks sit at fixed
+positions on that canvas (`--x`, `--y`, `--w` on each `.b` block);
+below 1100 px the page is one column with one drawing for each section.
+The texture is two tiled SVG noise layers in `src/styles/site.css`:
+the grain and the pigment clouds, with their sizes and strengths as
+custom properties on `:root`. The font is Jost, from
+`@fontsource-variable/jost`.
 
-- `tmux.mp4`, `tmux.webm`, `tmux.jpg`
-- `subagents.mp4`, `subagents.webm`, `subagents.jpg`
-- `async.mp4`, `async.webm`, `async.jpg`
+The documentation is the markdown pages in `src/pages/docs/`, in the
+layout `src/layouts/Docs.astro`: the sidebar at the left, the page in
+the middle and the headings of the page at the right. A page names its
+`title`, its `group` and its `order` in its frontmatter;
+`src/lib/docs.ts` holds the groups and builds the sidebar from the
+pages. `src/styles/base.css` holds what the landing page and the
+documentation share: the colours, the font and the texture.
 
-Each recording also has `-mobile` MP4, WebM, and JPG variants. Desktop
-recordings are 5:3; mobile recordings are 4:5. Media paths live in
-`src/lib/site.ts`. Videos are muted and looping, have a pause control,
-and don't autoplay for reduced motion. Feature videos start near the viewport.
-The `demo/` directory is managed separately by the recording workstream.
+`brand/kandinsky/` holds the proposed app icon in this style. The
+recordings in `public/media/` and the `demo/` directory belong to the
+recording workstream; the page does not use them.

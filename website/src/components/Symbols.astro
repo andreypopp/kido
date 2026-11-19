@@ -1,0 +1,18 @@
+---
+import { checks, planet, taper, target } from '../lib/art';
+const hero = `<path d="M640 70 930 470 690 770Z" fill="var(--plane)"/><path d="M300 200 980 90" fill="none" stroke="var(--line)" stroke-width="1.5"/>
+<path d="M740 520 1180 850H1010Z" fill="var(--red)"/>
+${taper([382.5, 815], [1105, 102.5], 10, 10)}<circle cx="1105" cy="102.5" r="32" fill="var(--orange)"/><path d="M1074 62 1136 143" stroke="var(--ink)" stroke-width="13"/><path d="M1079 69 1131 136" stroke="var(--paper)" stroke-width="5" stroke-dasharray="6 9"/>
+<path d="M662 110h56l14 640h-52Z" fill="var(--ink)"/>
+<path d="M330 600 540 500 590 590 420 770Z" fill="var(--brown)"/><g stroke="var(--ink)" stroke-width="9"><path d="M560 420 654 380M566 450 656 410M572 480 658 440"/></g>
+${target(430, 300)}${planet(450, 150, 56)}${checks(1210, 190, -28)}
+<circle cx="300" cy="470" r="14" fill="var(--green)"/><circle cx="1230" cy="700" r="22" fill="var(--yellow)"/><circle cx="1230" cy="700" r="36" fill="none" stroke="var(--line)" stroke-width="2"/>`;
+---
+<svg width="0" height="0" style="position:absolute" aria-hidden="true"><defs>
+  <symbol id="mark" viewBox="0 0 64 64"><circle cx="52" cy="10" r="7" fill="var(--orange)"/><path d="M11 6h10l2 52H13Z" fill="var(--ink)"/><path d="M6 50 58 4" stroke="var(--ink)" stroke-width="3.2"/><path d="M26 31 60 58H42Z" fill="var(--red)"/><circle cx="46" cy="32" r="6.5" fill="var(--blue)"/></symbol>
+  <symbol id="s-run" viewBox="0 0 22 22"><circle cx="11" cy="11" r="8" fill="var(--blue)"/></symbol>
+  <symbol id="s-wait" viewBox="0 0 22 22"><path d="M11 2 21 20H1Z" fill="var(--yellow)"/></symbol>
+  <symbol id="s-ok" viewBox="0 0 22 22"><circle cx="11" cy="11" r="7" fill="none" stroke="var(--green)" stroke-width="4"/></symbol>
+  <symbol id="s-fail" viewBox="0 0 22 22"><rect x="3" y="3" width="16" height="16" fill="var(--red)"/></symbol>
+  <symbol id="hero-art" viewBox="250 50 1100 830" overflow="visible" set:html={hero} />
+</defs></svg>

@@ -1,28 +1,11 @@
 ---
-import Demo from '../components/Demo.astro';
-import Brand from '../components/Brand.astro';
-import Install from '../components/Install.astro';
-import InstallCommand from '../components/InstallCommand.astro';
-import { description, github, mediaLabels, socialImage, title, url } from '../lib/site';
-import '../styles/landing.css';
+import Canvas, { height } from '../components/Canvas.astro';
+import Symbols from '../components/Symbols.astro';
+import { description, github, install, title, url } from '../lib/site';
+import '@fontsource-variable/jost';
+import '../styles/base.css';
+import '../styles/site.css';
 const canonical = new URL(url(), Astro.site);
-const keyGroups = [
-  { caption: 'By default the following keys are bound:', rows: [
-    ['`prefix` `K`', 'show the sidebar with keyboard focus, or hide it'],
-    ['`prefix` `k`', 'toggle keyboard focus between the sidebar and the pane'],
-    ['`C-s`', 'with the sidebar hidden, open the picker in a popup; with it shown, toggle keyboard focus'],
-    ["drag the sidebar's edge", 'resize it'],
-    ['`S-Up` / `S-Down`', 'switch the client to the previous / next window (works with the sidebar unfocused too)'],
-  ] },
-  { caption: 'While the sidebar is focused:', rows: [
-    ['`j` / `k`, `C-j` / `C-k`, `C-n` / `C-p`', 'move between panes'],
-    ['`gg` / `G`', 'first / last pane'],
-    ['`/`', 'fuzzy-filter by session name, agent title, or ssh destination; `Esc` cancels'],
-    ['`Esc` / `C-c`', 'clear the filter, or close the picker'],
-    ['`Enter` / click', 'jump to the pane, then close the picker'],
-    ['`q`', 'close the picker'],
-  ] },
-];
 ---
 <!doctype html>
 <html lang="en">
@@ -30,200 +13,117 @@ const keyGroups = [
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="description" content={description} />
-    <meta name="theme-color" content="#0a0f0d" />
+    <meta name="theme-color" content="#EEF0E6" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#262421" media="(prefers-color-scheme: dark)" />
     <meta property="og:title" content={title} />
     <meta property="og:description" content={description} />
     <meta property="og:type" content="website" />
     <meta property="og:url" content={canonical} />
-    <meta property="og:image" content={socialImage} />
-    <meta name="twitter:card" content="summary_large_image" />
     <meta name="twitter:title" content={title} />
     <meta name="twitter:description" content={description} />
-    <meta name="twitter:image" content={socialImage} />
     <link rel="canonical" href={canonical} />
     <link rel="icon" type="image/svg+xml" href={url('favicon.svg')} />
     <title>{title}</title>
-    <script is:inline>
-      if ('IntersectionObserver' in window) document.documentElement.classList.add('scroll-nav');
-    </script>
   </head>
   <body>
-    <a class="skip-link" href="#main">Skip to content</a>
-    <header class="topbar">
-      <nav aria-label="Main navigation">
-        <a class="wordmark" href={url()} aria-label="kido home"><Brand /></a>
-        <div class="nav-links">
-          <a href="#overview" aria-current="page">Overview</a>
-          <a href={github}>GitHub</a>
-          <InstallCommand id="nav-install" compact />
-        </div>
-      </nav>
-    </header>
-    <main id="main">
-      <section class="hero" id="overview">
-        <Install id="hero-install" />
-      </section>
-
-      <section class="feature">
-        <div class="section-copy reveal">
-          <h2>Interactive sidebar.<br /><span>An overview for your tmux sessions.</span></h2>
-          <p class="subhead">Sidebar shows all your tmux sessions, windows, panes. It tracks shell and agents (pi and Claude Code) status: idle, running, error, success. Shell integration works over ssh too.</p>
-        </div>
-        <Demo name="tmux" label={mediaLabels.tmux} />
-      </section>
-
-      <section class="feature" id="subagents">
-        <div class="section-copy reveal">
-          <h2>Subagents.<br /><span>Orchestration and collaboration.</span></h2>
-          <p class="subhead">An extension to pi to spawn subagents and surface them as tmux windows. Allows subagents to communicate and collaborate.</p>
-        </div>
-        <Demo name="subagents" label={mediaLabels.subagents} />
-      </section>
-
-      <section class="feature" id="async">
-        <div class="section-copy reveal">
-          <h2>Async bash / Monitors.<br /><span>Spawn async processes.</span></h2>
-          <p class="subhead">An extension to pi to spawn async bash processes and monitors. Follow execution status and react in real time.</p>
-        </div>
-        <Demo name="async" label={mediaLabels.async} />
-      </section>
-
-      <section class="feature usage" id="usage">
-        <div class="section-copy reveal">
-          <h2>How to use.<br /><span>It's just tmux!</span></h2>
-        </div>
-        <div class="usage-body">
-          <p>Install kido with Homebrew:</p>
-          <InstallCommand id="usage-install" />
-          <p>This puts the <code>kido</code> command on your PATH. Run it to start the kido server, or to attach to it if it is already running. kido runs its own tmux server, separate from your regular one, so you can use both side by side.</p>
-          <p>The configuration file is <code>~/.config/ko/config.yaml</code>; its settings are defined in the <a href="https://raw.githubusercontent.com/andreypopp/kido/main/share/ko/config-schema.json">configuration schema</a>.</p>
-        </div>
-      </section>
-
-      <section class="feature keys" id="keys">
-        <div class="keys-content">
-          <div class="section-copy reveal">
-            <h2>Keyboard bindings.<br /><span>Default ones.</span></h2>
-            <p class="subhead">These are the default keyboard bindings.</p>
-          </div>
-          {keyGroups.map(({ caption, rows }) => (
-            <table>
-              <caption>{caption}</caption>
-              <thead><tr><th scope="col">key</th><th scope="col">action</th></tr></thead>
-              <tbody>{rows.map((row) => (
-                <tr>{row.map((cell) => (
-                  <td>{cell.split(/(`[^`]+`)/g).map((part) => part.startsWith('`') ? <kbd>{part.slice(1, -1)}</kbd> : part)}</td>
-                ))}</tr>
-              ))}</tbody>
-            </table>
-          ))}
-        </div>
-      </section>
-
-      <section class="get-started" id="install">
-        <Install heading="h2" id="footer-install" />
-      </section>
-    </main>
-    <footer><a class="wordmark" href={url()} aria-label="kido home"><Brand /></a><p>Made in Leipzig, Germany.</p><div><a href={github}>GitHub</a></div></footer>
+    <Symbols />
+    <div class="page" style={`--h:${height}`}>
+      <Canvas />
+      <svg class="threads" preserveAspectRatio="none" viewBox="0 0 100 100" aria-hidden="true"><g fill="none" stroke="var(--line)" vector-effect="non-scaling-stroke"><path d="M96 2 2 30 98 55 2 78 50 96" stroke-width="1.5" vector-effect="non-scaling-stroke" opacity=".3"/><path d="M0 12 100 22M100 36 0 44M0 62 100 70M100 84 0 90" stroke-width="1" vector-effect="non-scaling-stroke" opacity=".18"/></g></svg>
+<main>
+<section id="overview">
+  <div class="art-m"><svg viewBox="0 0 1100 830" role="img" aria-label="An abstract composition of lines, circles and triangles that forms the letter K"><use href="#hero-art"/></svg></div>
+  <h1 class="sr-only">Kido</h1>
+  <div class="b figure" style="--x:880;--y:400;--w:440">
+    <p><b>Kido</b> is</p>
+    <ul>
+      <li>an <b>integrated development environment</b>,</li>
+      <li>which takes a <b>terminal-first</b> approach,</li>
+      <li>provides a native <b>macOS app</b> <small>(iOS coming soon)</small>,</li>
+      <li>and a rich UI for the <b>pi coding agent</b>!</li>
+    </ul>
+    <button type="button" class="brew" data-copy={install} aria-label="Copy the install command of Kido.app"><code>{install}</code></button>
+    <p class="links"><a href={url('docs/')}>Documentation</a><a href={github}>GitHub</a></p>
+  </div>
+</section>
+<section id="ko">
+  <div class="b part" style="--x:200;--y:985;--w:450">
+    <svg viewBox="0 0 72 72"><rect x="6" y="6" width="60" height="60" fill="var(--red)"/><rect x="24" y="24" width="24" height="24" fill="var(--paper)"/></svg>
+    <h2>Terminal multiplexer</h2>
+    <p>
+    A terminal multiplexer, called <b>ko</b>, runs either locally or on a remote devbox.
+    It supervises your running processes and agents.
+    It is a <b>replacement for tmux</b>.
+    </p>
+    <p>
+    It uses the <b>HTTP</b> and <b>WebSocket</b> protocols.
+    This makes it trivial to build new clients for ko and to expose it over the internet. Just put it behind a reverse proxy and stick your favourite authorization method on it.
+    </p>
+    <p>Under the hood, ko uses <b>libghostty</b> for interacting with the terminal. This makes it possible to support modern terminal features &mdash; clipboard, images, status reporting and many more!</p>
+  </div>
+</section>
+<section id="kido-app">
+  <div class="b part" style="--x:810;--y:1670;--w:450">
+    <svg viewBox="0 0 72 72"><circle cx="36" cy="36" r="30" fill="var(--blue)"/><circle cx="36" cy="36" r="12" fill="var(--paper)"/></svg>
+    <h2>macOS app</h2>
+    <p>
+    A native macOS app, <b>Kido.app</b>, works as a client for ko.
+    It provides sessions, windows, splits and floating windows.</p>
+    <p>
+    The <b>sidebar</b> on the left shows an overview of all running processes.
+    It can be extended by applications running in panes.
+    </p>
+    <p>
+    Powered by <b>libghostty</b> for the terminal and the display, it provides all the modern terminal features, such as clipboard, images, drag and drop and many more.
+    </p>
+    <p>
+    On top, Kido.app provides <b>webview mode</b>, so programs running in the terminal can render rich UIs.
+    </p>
+  </div>
+</section>
+<section id="koa">
+  <div class="b part" style="--x:200;--y:2250;--w:500">
+    <svg viewBox="0 0 72 72"><path d="M36 6 68 66H4Z" fill="var(--yellow)"/><path d="M36 34 47 54H25Z" fill="var(--paper)"/></svg>
+    <h2>Agent harness</h2>
+    <p>
+    A <b>pi</b>-based agent harness, called <b>koa</b>, implements a webview to
+    render long agent sessions efficiently and concisely.
+    </p>
+    <p>
+    It also provides <b>subagent</b> and <b>async bash</b> tools, which integrate nicely with the sidebar.
+    </p>
+  </div>
+</section>
+<section id="remote">
+  <div class="b part" style="--x:760;--y:2860;--w:450">
+    <svg viewBox="0 0 72 72"><path d="M36 4 68 36 36 68 4 36Z" fill="var(--brown)"/><path d="M36 24 48 36 36 48 24 36Z" fill="var(--paper)"/></svg>
+    <h2>Remote ready</h2>
+    <p>
+    You can run ko <b>remotely</b> and connect using <b>Kido.app</b> or the upcoming <b>iOS</b> client.
+    </p>
+    <p>
+    We provide an example deployment to a DigitalOcean droplet,
+    exposed via Caddy &mdash; with <b>HTTP/3 and QUIC</b> for roaming &mdash; and with <b>mTLS</b> authentication.
+    </p>
+    <p>
+    Alternatively, ko can run purely via <b>SSH</b> by forwarding a Unix socket back to a local machine.
+    </p>
+  </div>
+</section>
+<section class="dome">
+  <div class="dome-grain"></div>
+  <footer class="b" style="--x:150;--y:3580;--w:1140"><a class="wordmark" href={url()} aria-label="Kido home"><svg><use href="#mark"/></svg>kido</a><span>Made in Leipzig, Germany.</span><span class="links"><a href={url('docs/')}>Documentation</a><a href={github}>GitHub</a></span></footer>
+</section>
+</main>
+    </div>
     <script>
-      const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)');
-      const topbar = document.querySelector<HTMLElement>('.topbar')!;
-      const heroInstall = document.querySelector('#overview .install-box')!;
-      if ('IntersectionObserver' in window) {
-        topbar.inert = true;
-        const navObserver = new IntersectionObserver(([entry]) => {
-          const visible = !entry.isIntersecting && entry.boundingClientRect.bottom <= 0;
-          topbar.inert = !visible;
-          topbar.classList.toggle('visible', visible);
-        });
-        navObserver.observe(heroInstall);
-      }
-      if (!reducedMotion.matches && 'IntersectionObserver' in window) {
-        const observer = new IntersectionObserver((entries) => {
-          entries.forEach((entry) => {
-            if (entry.isIntersecting) {
-              entry.target.classList.add('visible');
-              observer.unobserve(entry.target);
-            }
-          });
-        }, { threshold: 0.08 });
-        document.querySelectorAll('.reveal').forEach((element) => {
-          element.classList.add('animate');
-          observer.observe(element);
-        });
-        reducedMotion.addEventListener('change', () => {
-          if (reducedMotion.matches) document.querySelectorAll('.reveal').forEach((element) => element.classList.add('visible'));
-        });
-      }
-      document.querySelectorAll<HTMLButtonElement>('[data-copy]').forEach((button) => {
-        const announcement = button.closest('.install-box')!.querySelector('.copy-announcement')!;
-        const original = button.innerHTML;
-        let reset: ReturnType<typeof setTimeout>;
+      document.querySelectorAll('[data-copy]').forEach((button) => {
         button.addEventListener('click', async () => {
-          try {
-            await navigator.clipboard.writeText(button.dataset.copy!);
-            announcement.textContent = 'Copied to clipboard.';
-            button.innerHTML = '<svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6" aria-hidden="true"><path d="m5 12 4 4 10-10" /></svg>';
-            clearTimeout(reset);
-            reset = setTimeout(() => { button.innerHTML = original; announcement.textContent = ''; }, 1500);
-          } catch {
-            announcement.textContent = 'Select the command to copy it.';
-          }
+          await navigator.clipboard.writeText(button.dataset.copy);
+          button.dataset.copied = '';
+          setTimeout(() => delete button.dataset.copied, 1200);
         });
-      });
-      document.querySelectorAll<HTMLVideoElement>('video').forEach((video) => {
-        const figure = video.closest('figure')!;
-        const toggle = figure.querySelector<HTMLButtonElement>('.video-toggle')!;
-        const update = () => { toggle.textContent = video.paused ? 'Play' : 'Pause'; toggle.setAttribute('aria-label', video.paused ? 'Play video' : 'Pause video'); };
-        const fallback = () => { video.hidden = true; toggle.hidden = true; };
-        video.addEventListener('play', update);
-        video.addEventListener('pause', update);
-        video.addEventListener('error', fallback);
-        video.querySelectorAll('source').forEach((source) => source.addEventListener('error', () => {
-          if (video.networkState === HTMLMediaElement.NETWORK_NO_SOURCE) fallback();
-        }));
-        video.addEventListener('loadeddata', () => {
-          video.hidden = false;
-          toggle.hidden = false;
-          update();
-        });
-        let pausedByUser = false;
-        const loader = new IntersectionObserver((entries) => {
-          if (entries.some((entry) => entry.isIntersecting) && !reducedMotion.matches) {
-            video.preload = 'auto';
-            video.load();
-            loader.disconnect();
-          }
-        }, { rootMargin: `${window.innerHeight}px 0px`, threshold: 0.05 });
-        loader.observe(video);
-        const observer = new IntersectionObserver(([entry]) => {
-          if (entry.isIntersecting && !reducedMotion.matches && !pausedByUser) video.play().catch(fallback);
-          else video.pause();
-        });
-        observer.observe(video);
-        reducedMotion.addEventListener('change', () => { if (reducedMotion.matches) { video.pause(); update(); } });
-        toggle.addEventListener('click', () => { pausedByUser = !video.paused; if (video.paused) video.play().catch(fallback); else video.pause(); update(); });
-        update();
       });
     </script>
   </body>
 </html>
-
-<style>
-  .keys-content { max-width: 960px; margin: auto; }
-  .keys table { width: 100%; border-collapse: collapse; font-size: 14px; }
-  .keys caption { text-align: left; font-weight: 600; margin: 32px 0 12px; }
-  .keys th { text-align: left; color: var(--muted); font-weight: 400; font-size: 13px; }
-  .keys th, .keys td { padding: 10px 0; border-bottom: 1px solid var(--border); vertical-align: top; }
-  .keys th:first-child, .keys td:first-child { width: 36%; padding-right: 24px; }
-  .keys kbd { display: inline-block; font: 12px/1.5 var(--font-mono); color: var(--mint); border: 1px solid var(--border); border-bottom-width: 2px; border-radius: 4px; padding: 0 5px; }
-  .usage-body { width: min(960px, 100%); margin: 28px auto 0; }
-  .usage-body p { max-width: 640px; }
-  .usage-body .install-box { margin: 16px 0 24px; }
-  .feature p code { font: .875em var(--font-mono); color: #dfe8e3; background: #101714; border: 1px solid var(--border); border-radius: 4px; padding: 1px 5px; white-space: nowrap; }
-  @media (max-width: 700px) {
-    .keys thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); }
-    .keys tr { display: grid; border-bottom: 1px solid var(--border); padding: 10px 0; gap: 6px; }
-    .keys td, .keys td:first-child { width: auto; padding: 0; border: 0; }
-  }
-</style>

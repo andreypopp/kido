@@ -1,0 +1,37 @@
+---
+import { checks, planet, taper, target } from '../lib/art';
+export const height = 3680;
+const X1 = [40, 1034.5], X2 = [1371, 2417], X3 = [92.5, 2903], END = [720, 3330];
+const art = `
+<g fill="none" stroke="var(--line)" stroke-width="1.5"><path d="M700 850 1900 1093"/><path d="M-460 1527 520 1640"/><path d="M1900 1990 980 2290"/><path d="M-460 2614 520 2840"/></g>
+${taper([262.5, 815], [20, 1054], 10, 3)}
+${taper(X1, [1440, 2488.7], 3, 8)}
+${taper([1440, 2390.8], [0, 2938.2], 8, 3)}
+${taper([0, 2840], END, 3, 8)}
+<use href="#hero-art" x="130" y="50" width="1100" height="830"/>
+<circle cx="${X1[0]}" cy="${X1[1]}" r="32" fill="none" stroke="var(--line)" stroke-width="2"/><circle cx="${X1[0]}" cy="${X1[1]}" r="15" fill="var(--yellow)"/>
+${checks(1180, 860, -18)}
+
+<path d="M1010 1090 1230 1050 1270 1270 1050 1310Z" fill="var(--red)"/>
+<g stroke="var(--ink)" stroke-width="9"><path d="M1290 1120 1380 1084M1296 1150 1382 1114M1302 1180 1384 1144"/></g>
+<circle cx="930" cy="1400" r="14" fill="var(--green)"/>
+
+<circle cx="330" cy="1810" r="130" fill="var(--blue)"/><circle cx="290" cy="1770" r="12" fill="var(--yellow)"/><circle cx="380" cy="1850" r="9" fill="var(--paper)"/>
+${target(800, 2330, 0.8)}
+
+<circle cx="${X2[0]}" cy="${X2[1]}" r="30" fill="var(--orange)"/>
+<path d="M1400 2372 1342 2462" stroke="var(--ink)" stroke-width="11"/><path d="M1396 2378 1346 2456" stroke="var(--paper)" stroke-width="4" stroke-dasharray="5 7"/>
+<path d="M1100 2460 1270 2770 930 2770Z" fill="var(--yellow)"/>
+<circle cx="880" cy="2480" r="20" fill="var(--red)"/>
+${checks(250, 2640, 14)}
+${planet(X3[0], X3[1], 36)}
+<circle cx="1330" cy="3180" r="22" fill="var(--yellow)"/><circle cx="1330" cy="3180" r="36" fill="none" stroke="var(--line)" stroke-width="2"/>
+<circle cx="720" cy="4330" r="1000" fill="var(--ink)"/>
+<circle cx="${END[0]}" cy="${END[1]}" r="32" fill="var(--orange)"/>
+`;
+---
+<svg class="canvas" viewBox={`0 0 1440 ${height}`} aria-hidden="true" set:html={art} />
+<svg class="canvas flat" viewBox={`0 0 1440 ${height}`} aria-hidden="true">
+  <path d="M210 600 420 500 470 590 300 770Z" fill="var(--brown)"/>
+  <path d="M380 2900 570 2840 610 2980 430 3030Z" fill="var(--brown)"/>
+</svg>

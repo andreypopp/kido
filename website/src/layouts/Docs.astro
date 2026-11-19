@@ -1,0 +1,83 @@
+---
+import type { MarkdownHeading } from 'astro';
+import Symbols from '../components/Symbols.astro';
+import { groups, loadPages, type Frontmatter } from '../lib/docs';
+import { github, url } from '../lib/site';
+import '@fontsource-variable/jost';
+import '../styles/base.css';
+import '../styles/docs.css';
+type Props = { frontmatter: Frontmatter; headings: MarkdownHeading[] };
+const { frontmatter, headings } = Astro.props;
+const pages = await loadPages();
+const here = pages.findIndex((page) => page.href === url(Astro.url.pathname.slice(import.meta.env.BASE_URL.length)));
+const group = groups.find((g) => g.name === frontmatter.group)!;
+const toc = headings.filter((h) => h.depth === 2 || h.depth === 3);
+---
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="theme-color" content="#EEF0E6" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#262421" media="(prefers-color-scheme: dark)" />
+    <link rel="canonical" href={new URL(Astro.url.pathname, Astro.site)} />
+    <link rel="icon" type="image/svg+xml" href={url('favicon.svg')} />
+    <title>{frontmatter.title} — Kido</title>
+  </head>
+  <body>
+    <Symbols />
+    <header class="bar">
+      <a class="wordmark" href={url()} aria-label="Kido home"><svg><use href="#mark"/></svg>kido</a>
+      <span class="bar-here">Documentation</span>
+      <a href={github}>GitHub</a>
+    </header>
+    <div class="rule"></div>
+    <div class="shell">
+      <details class="side" open>
+        <summary>Menu</summary>
+        <nav aria-label="Documentation">
+          {groups.map((g) => (
+            <section>
+              <h2>{g.name}</h2>
+              <ul>
+                {pages.filter((page) => page.group === g.name).map((page) => (
+                  <li><a href={page.href} aria-current={page === pages[here] ? 'page' : undefined}>{page.title}</a></li>
+                ))}
+              </ul>
+            </section>
+          ))}
+        </nav>
+      </details>
+      <main class="doc">
+        <p class="crumb"><svg><use href={`#${group.mark}`}/></svg>{group.name}</p>
+        <h1>{frontmatter.title}</h1>
+        <slot />
+        <nav class="pager" aria-label="Pages">
+          {pages[here - 1] ? <a rel="prev" href={pages[here - 1].href}><small>Previous</small>{pages[here - 1].title}</a> : <span />}
+          {pages[here + 1] && <a rel="next" href={pages[here + 1].href}><small>Next</small>{pages[here + 1].title}</a>}
+        </nav>
+      </main>
+      {toc.length > 0 && (
+        <nav class="toc" aria-label="On this page">
+          <h2>On this page</h2>
+          <ul>{toc.map((h) => <li class={`d${h.depth}`}><a href={`#${h.slug}`}>{h.text}</a></li>)}</ul>
+        </nav>
+      )}
+    </div>
+    <script>
+      const side = document.querySelector<HTMLDetailsElement>('.side')!;
+      const wide = matchMedia('(min-width:900px)');
+      const fit = () => { side.open = wide.matches; };
+      fit();
+      wide.addEventListener('change', fit);
+      const links = new Map([...document.querySelectorAll<HTMLAnchorElement>('.toc a')].map((a) => [decodeURIComponent(a.hash.slice(1)), a]));
+      const heads = [...document.querySelectorAll<HTMLElement>('.doc :is(h2,h3)[id]')];
+      const mark = () => {
+        const current = heads.filter((h) => h.getBoundingClientRect().top < 140).at(-1) ?? heads[0];
+        links.forEach((a, id) => a.toggleAttribute('data-here', id === current?.id));
+      };
+      addEventListener('scroll', mark, { passive: true });
+      mark();
+    </script>
+  </body>
+</html>
