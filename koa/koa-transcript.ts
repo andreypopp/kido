@@ -6,13 +6,13 @@ import { existsSync, mkdirSync, renameSync, rmSync, writeFileSync } from "node:f
 import { join } from "node:path";
 import { imageInfo, imageExtensions } from "./koa-image.ts";
 import { pathArg, type Annotation } from "./koa-records.ts";
-import { isRelation, isAgentFailure } from "./records.ts";
-import { promptText } from "./prompt.ts";
-import type { Text, Block, Item, Assistant, WireItem, State, PageRecord, ImageRef, Attachment, AgentCall, NotifyLevel, CommandResult, BashResult } from "./koa-records.ts";
+import { isRelation, isAgentFailure, parseThreadName, type ThreadName } from "./records.ts";
+import { decodePrompt } from "./prompt.ts";
+import type { Thread, Text, Block, Item, Assistant, WireItem, State, PageRecord, ImageRef, Attachment, AgentCall, NotifyLevel, CommandResult, BashResult } from "./koa-records.ts";
 import { send, forget, follow, take, expire, type ViewAddress } from "./koa-feed.ts";
 import type { WireJob } from "./koa-records.ts";
 import type { JobPlace, AgentRef, AgentOutcome, JobRef, JobEnd, Inbound, AgentDetails, NoticeDetails, StreamDetails } from "./records.ts";
-import { mintId, contentText, utf8Prefix, isRecord, errorText, type Content } from "./text.ts";
+import { mintId, contentText, utf8Prefix, isRecord, errorText, threadSections, type Content } from "./text.ts";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { SessionEntry } from "@earendil-works/pi-coding-agent";
 
@@ -139,7 +139,7 @@ function notRun(item: Assistant): void {
   for (const block of item.blocks) if (block.type === "tool" && block.state.type === "pending") block.state = { type: "not_run" };
 }
 
-export function transcript({ dir, flushMs, metrics = false }: { dir: string; flushMs: number; metrics?: boolean }) {
+export function transcript({ dir, flushMs, metrics = false, kind = 'subagent', changed }: { dir: string; flushMs: number; metrics?: boolean; kind?: 'root' | 'subagent'; changed?(): void }) {
   const imageDir = join(dir, "images");
   mkdirSync(imageDir, { recursive: true, mode: 0o700 });
   const images = new Map<string, { ref: ImageRef; path: string; digest: string }>();
@@ -172,6 +172,54 @@ export function transcript({ dir, flushMs, metrics = false }: { dir: string; flu
   const pending = new Map<number, { message: Extract<AgentMessage, { role: "assistant" }>; phase: "update" | "end" }>();
   const pendingTools = new Map<string, { type: "running"; content: Content } | { type: "done"; content: Content; error: boolean; at?: number; durationMs?: number; structuredContent?: unknown; details?: unknown }>();
   let flushTimer: NodeJS.Timeout | null = null;
+  const sources = new Map<number, { seed?: ThreadName; blocks: { source: number; start: number; end: number; length: number }[] }>();
+  const labels = new Map<number, ThreadName[]>();
+  const indexed: ThreadName[] = [];
+  const lastSections = new Map<ThreadName, NonNullable<Thread['last']>>();
+  let provisional: ThreadName[] = [];
+  const sectionFacts = (sections: ReturnType<typeof threadSections>, at: number, seed?: ThreadName): ThreadName | undefined => {
+    if (kind !== 'root') return;
+    provisional = [];
+    let thread = seed ?? sections.find(section => section.thread)?.thread;
+    for (const section of sections) {
+      if (section.thread) {
+        thread = section.thread;
+        if (!provisional.includes(thread)) provisional.push(thread);
+      }
+      if (thread) lastSections.set(thread, { summary: utf8Prefix(section.text.split(/\r?\n/)[0], MAX_WEBVIEW_RESULT_BYTES), at });
+    }
+    return thread ?? seed;
+  };
+  const indexThread = (entry: SessionEntry): boolean => {
+    if (kind !== 'root' || entry.type !== 'custom' || entry.customType !== 'koa.thread') return false;
+    const name = isRecord(entry.data) ? parseThreadName(entry.data.name) : undefined;
+    if (name && !indexed.includes(name)) indexed.push(name);
+    return true;
+  };
+  let currentThread: ThreadName | undefined;
+  let implicitUser: number | undefined;
+  let replyNames: ThreadName[] = [];
+  let unlabelled: number[] = [];
+  let delivery: { type: 'live' } | { type: 'replay'; labels: Map<number, { names: ThreadName[]; at: number }> } = { type: 'live' };
+  const emitLabel = (target: number, names: ThreadName[], at: number): void => {
+    const item: Item = { kind: 'threads', target, threads: [...names], seq: items.length, revision: 0, at, final: true };
+    items.push(item); dirty.add(item.seq);
+  };
+  const flushLabels = (): void => {
+    if (delivery.type !== 'replay') return;
+    for (const [target, { names, at }] of delivery.labels) emitLabel(target, names, at);
+    delivery.labels.clear();
+  };
+  const label = (target: number, names: ThreadName[], at: number): void => {
+    const previous = labels.get(target);
+    if (previous?.length === names.length && previous.every((name, index) => name === names[index])) return;
+    labels.set(target, [...names]);
+    if (delivery.type === 'replay') delivery.labels.set(target, { names: [...names], at });
+    else emitLabel(target, names, at);
+  };
+  const boundary = (thread: ThreadName | undefined): void => {
+    currentThread = thread; implicitUser = undefined; replyNames = []; unlabelled = [];
+  };
 
   const frame = (json: string): string => "data: " + json + "\n\n";
   const body = (req: ServerResponse, text: string, more = false): void => send(req, text, more, counters);
@@ -180,7 +228,30 @@ export function transcript({ dir, flushMs, metrics = false }: { dir: string; flu
     for (const req of subscribers) body(req, line, true);
   };
   const flushRecord = (bytes: number, id: number): Extract<PageRecord, { type: "flush" }> => ({ type: "flush", id, t: Date.now(), bytes });
-  const window = (before: number): string => {
+  const window = (before: number, thread?: ThreadName): string => {
+    if (thread) {
+      const matches = (item: Item): boolean => item.kind === 'assistant' ? item.blocks.some(block => (block.thread ?? labels.get(item.seq)?.[0]) === thread) : item.kind === 'user' || item.kind === 'agent' || item.kind === 'job' ? item.thread === thread || labels.get(item.seq)?.includes(thread) === true : false;
+      const dependencies = new Map<number, Map<string, Item>>();
+      for (const extra of items) {
+        if (extra.kind !== 'threads' && extra.kind !== 'annotations') continue;
+        const target = extra.kind === 'threads' ? extra.target : extra.reply.seq;
+        let entries = dependencies.get(target);
+        if (!entries) { entries = new Map(); dependencies.set(target, entries); }
+        entries.set(extra.kind === 'threads' ? 'threads' : 'annotation:' + extra.reply.block, extra);
+      }
+      const selected: { seq: number; json: string }[] = [];
+      let bytes = 0, more = false;
+      for (let index = Math.min(before, items.length) - 1; index >= 0; index--) {
+        const item = items[index];
+        if (!matches(item)) continue;
+        if (selected.length >= MAX_WEBVIEW_WINDOW_ITEMS || bytes >= MAX_WEBVIEW_WINDOW_BYTES) { more = true; break; }
+        const bundle = [item, ...(dependencies.get(item.seq)?.values() ?? [])].map(entry => ({ seq: entry.seq, json: JSON.stringify(wireItem(entry)) }));
+        const size = bundle.reduce((sum, entry) => sum + Buffer.byteLength(entry.json), 0);
+        if (selected.length && (selected.length + bundle.length > MAX_WEBVIEW_WINDOW_ITEMS || bytes + size > MAX_WEBVIEW_WINDOW_BYTES)) { more = true; break; }
+        selected.push(...bundle); bytes += size;
+      }
+      return '"items":[' + selected.sort((a, b) => a.seq - b.seq).map(entry => entry.json).join(',') + '],"more":' + more;
+    }
     let start = Math.min(before, items.length);
     const strings: string[] = [];
     let bytes = 0;
@@ -202,20 +273,56 @@ export function transcript({ dir, flushMs, metrics = false }: { dir: string; flu
   };
   const publish = (item: Item): void => { dirty.add(item.seq); };
   const applyAssistant = (item: Assistant, message: Extract<AgentMessage, { role: "assistant" }>, ended: boolean): void => {
+    const source = sources.get(item.seq) ?? { seed: currentThread, blocks: [] };
+    const parsed = message.content.map((block): { length: number; sections: ReturnType<typeof threadSections> } | undefined => {
+      if (block.type !== 'text') return;
+      const length = Array.from(block.text).length;
+      return { length, sections: kind === 'root' ? threadSections(block.text, ended) : [{ text: block.text, start: 0, end: length }] };
+    });
+    const sections = parsed.flatMap(part => part?.sections ?? []);
+    sectionFacts(sections, message.timestamp, source.seed);
+    sources.set(item.seq, source);
+    const previousBlocks = item.blocks;
+    const mapped: typeof source.blocks = [];
+    let thread = source.seed;
+    const first = sections.find(section => section.thread)?.thread;
+    if (kind === 'root' && first && !thread) {
+      thread = first;
+      for (const seq of unlabelled) if (seq !== item.seq) label(seq, [first], message.timestamp);
+      unlabelled = [];
+    }
     item.blocks = message.content.flatMap((block, index): Block[] => {
-      if (block.type === "text") return [{ type: "text", text: block.text }];
+      if (block.type === "text") {
+        const part = parsed[index];
+        return (part?.sections ?? []).map(section => {
+          if (section.thread) {
+            thread = section.thread;
+            if (!replyNames.includes(thread)) replyNames.push(thread);
+          }
+          mapped.push({ source: index, start: section.start, end: section.end, length: part?.length ?? 0 });
+          return { type: 'text', text: section.text, ...(thread ? { thread } : {}) };
+        });
+      }
+      mapped.push({ source: index, start: 0, end: 0, length: 0 });
       if (block.type === "thinking") {
-        const previous = item.blocks[index];
-        return [{ type: "thinking", text: block.thinking, redacted: !!block.redacted, ...(previous?.type === "thinking" ? { started: previous.started, ended: previous.ended } : {}) }];
+        const previousIndex = source.blocks.findIndex(part => part.source === index);
+        const previous = previousBlocks[previousIndex];
+        return [{ type: "thinking", text: block.thinking, ...(thread ? { thread } : {}), redacted: !!block.redacted, ...(previous?.type === "thinking" ? { started: previous.started, ended: previous.ended } : {}) }];
       }
       if (block.type !== "toolCall") return [];
       const existing = tools.get(block.id)?.block;
-      const next: Extract<Block, { type: "tool" }> = { ...existing, type: "tool", id: block.id, name: block.name, args: existing && existing.state.type !== "pending" ? existing.args : cap(JSON.stringify(block.arguments), MAX_WEBVIEW_ARGS_BYTES), state: existing?.state ?? { type: "pending" } };
+      const next: Extract<Block, { type: "tool" }> = { ...existing, ...(thread ? { thread } : {}), type: "tool", id: block.id, name: block.name, args: existing && existing.state.type !== "pending" ? existing.args : cap(JSON.stringify(block.arguments), MAX_WEBVIEW_ARGS_BYTES), state: existing?.state ?? { type: "pending" } };
       const card = existing && existing.state.type !== 'pending' ? existing.agent : agentCall(block.name, block.arguments);
       if (card) next.agent = sameAgent(existing?.agent, card) ? existing?.agent : card;
       tools.set(block.id, { item, block: next });
       return [next];
     });
+    source.blocks = mapped;
+    if (kind === 'root') {
+      currentThread = thread;
+      if (ended && !thread && item.blocks.length && item.blocks.every(block => block.type !== 'text') && !unlabelled.includes(item.seq)) unlabelled.push(item.seq);
+      if (implicitUser !== undefined && replyNames.length) label(implicitUser, replyNames, message.timestamp);
+    }
     item.stop = message.stopReason;
     item.error = message.stopReason === "aborted" ? "" : message.errorMessage ?? "";
     item.lifecycle = ended ? "ended" : "streaming";
@@ -225,7 +332,7 @@ export function transcript({ dir, flushMs, metrics = false }: { dir: string; flu
     publish(item);
   };
   const sameBlock = (a: Block, b: Block): boolean => {
-    if (a.type !== b.type) return false;
+    if (a.type !== b.type || a.thread !== b.thread) return false;
     if (a.type !== "tool" && b.type !== "tool") return a.text === b.text && a.redacted === b.redacted && (a.type !== "thinking" || sameTiming(a, b));
     if (a.type !== "tool" || b.type !== "tool") return false;
     const left = "result" in a.state ? a.state.result?.images : undefined, right = "result" in b.state ? b.state.result?.images : undefined;
@@ -261,6 +368,8 @@ export function transcript({ dir, flushMs, metrics = false }: { dir: string; flu
         }
         if (held.type === 'done') {
           const details = isRecord(held.details) ? held.details : undefined;
+          const thread = kind === 'root' ? parseThreadName(details?.thread) : undefined;
+          if (thread) found.block.thread = thread;
           const done = outcome(details?.outcome), card = found.block.agent;
           if (card && done) {
             const to = card.call.tool === 'spawn' ? agentRef(details) ?? card.to : { ...card.to, ...(typeof details?.to === 'string' ? { name: details.to } : {}) };
@@ -269,7 +378,9 @@ export function transcript({ dir, flushMs, metrics = false }: { dir: string; flu
           if ((found.block.name === 'async_bash' || found.block.name === 'bash') && details) { const job = jobRef(details.job); if (job) found.block.job = job; }
         }
         const previous = "result" in found.block.state ? found.block.state.result?.images : undefined;
-        const result = { ...cap(text, MAX_WEBVIEW_RESULT_BYTES), images: saveImages(found.item.seq + "." + found.item.blocks.indexOf(found.block), held.content, previous) };
+        const index = found.item.blocks.indexOf(found.block);
+        const source = sources.get(found.item.seq)?.blocks[index]?.source ?? index;
+        const result = { ...cap(text, MAX_WEBVIEW_RESULT_BYTES), images: saveImages(found.item.seq + "." + source, held.content, previous) };
         found.block.state = held.type === "done" ? { type: "done", result, error: held.error } : { type: "running", result };
         if (held.type === "done") {
           if (held.at !== undefined) found.block.ended = held.at;
@@ -287,7 +398,7 @@ export function transcript({ dir, flushMs, metrics = false }: { dir: string; flu
         const blocks = item.blocks.flatMap<{ index: number; suffix: string } | { index: number; block: Block }>((block, index) => {
           const old = previous.blocks[index];
           if (sameBlock(block, old)) return [];
-          if (block.type !== "tool" && old.type === block.type && block.redacted === old.redacted && (block.type !== "thinking" || sameTiming(block, old)) && block.text.startsWith(old.text)) return [{ index, suffix: block.text.slice(old.text.length) }];
+          if (block.type !== "tool" && old.type === block.type && block.thread === old.thread && block.redacted === old.redacted && (block.type !== "thinking" || sameTiming(block, old)) && block.text.startsWith(old.text)) return [{ index, suffix: block.text.slice(old.text.length) }];
           return [{ index, block }];
         });
         if (blocks.length || item.final !== previous.final || item.stop !== previous.stop || item.error !== previous.error || item.ended !== previous.ended) {
@@ -299,7 +410,9 @@ export function transcript({ dir, flushMs, metrics = false }: { dir: string; flu
       else sent.delete(seq);
     }
     if (counters && dirty.size) { counters.flushes++; broadcast(flushRecord(counters.bytes, counters.flushes)); }
+    const updated = dirty.size > 0;
     dirty.clear();
+    if (updated) changed?.();
   };
   const applyMessage = (message: AgentMessage, phase: "start" | "update" | "end" | "branch", ended?: number, attachments: Attachment[] = []): void => {
     const branch = phase === "branch";
@@ -327,21 +440,28 @@ export function transcript({ dir, flushMs, metrics = false }: { dir: string; flu
       return;
     }
     if (phase !== "end" && !branch) return;
+    if (!branch) flush();
+    else if (kind === 'root' && (message.role === 'user' || message.role === 'custom' && message.display && (agentDetails(message.details) || noticeDetails(message.details) || streamDetails(message.details)))) flushLabels();
     const seq = items.length;
     let item: Item;
     switch (message.role) {
       case "user": {
         const files = phase === "branch" ? [] : attachments;
-        item = { seq, revision: 0, at: message.timestamp, final: true, kind: "user", text: promptText(contentText(message.content), files), images: saveImages(String(seq), message.content), attachments: files }; break;
+        const decoded = decodePrompt(contentText(message.content), files, kind);
+        const { thread } = decoded;
+        if (kind === 'root') { boundary(thread); if (!thread) implicitUser = seq; }
+        item = { seq, revision: 0, at: message.timestamp, final: true, kind: "user", ...decoded, images: saveImages(String(seq), message.content), attachments: files }; break;
       }
       case 'custom': {
         if (!message.display) return;
         const details = isRecord(message.details) ? message.details : undefined;
+        const thread = kind === 'root' ? parseThreadName(details?.thread) : undefined;
         const agent = agentDetails(details), notice = agent ? undefined : noticeDetails(details), stream = agent || notice ? undefined : streamDetails(details);
-        if (agent) item = { seq, revision: 0, at: message.timestamp, final: true, kind: 'agent', direction: 'in', from: agent.agent, text: cap(agent.body, MAX_WEBVIEW_RESULT_BYTES), inbound: agent.inbound };
-        else if (notice) { const { end, ...job } = notice.job; item = { seq, revision: 0, at: message.timestamp, final: true, kind: 'job', job, event: { type: 'ended', end, tail: cap(notice.tail, MAX_WEBVIEW_RESULT_BYTES) } }; }
-        else if (stream) item = { seq, revision: 0, at: message.timestamp, final: true, kind: 'job', job: stream.job, event: { type: 'stream', batch: cap(stream.batch, MAX_WEBVIEW_RESULT_BYTES), omitted: stream.omitted, cut: stream.cut } };
+        if (agent) item = { seq, revision: 0, at: message.timestamp, final: true, kind: 'agent', ...(thread ? { thread } : {}), direction: 'in', from: agent.agent, text: cap(agent.body, MAX_WEBVIEW_RESULT_BYTES), inbound: agent.inbound };
+        else if (notice) { const { end, ...job } = notice.job; item = { seq, revision: 0, at: message.timestamp, final: true, kind: 'job', ...(thread ? { thread } : {}), job, event: { type: 'ended', end, tail: cap(notice.tail, MAX_WEBVIEW_RESULT_BYTES) } }; }
+        else if (stream) item = { seq, revision: 0, at: message.timestamp, final: true, kind: 'job', ...(thread ? { thread } : {}), job: stream.job, event: { type: 'stream', batch: cap(stream.batch, MAX_WEBVIEW_RESULT_BYTES), omitted: stream.omitted, cut: stream.cut } };
         else item = { seq, revision: 0, at: message.timestamp, final: true, kind: 'notice', customType: message.customType, from: typeof details?.from === 'string' ? details.from : '', text: contentText(message.content) };
+        if (kind === 'root' && (agent || notice || stream)) boundary(thread);
         break;
       }
       case "bashExecution": item = { seq, revision: 0, at: message.timestamp, final: true, kind: "bash", command: message.command, excludeFromContext: message.excludeFromContext ?? false, result: bashResult(message) }; break;
@@ -352,13 +472,16 @@ export function transcript({ dir, flushMs, metrics = false }: { dir: string; flu
     if (!branch) { publish(item); flush(); }
   };
   const annotation = (entry: SessionEntry, notify = true): void => {
+    if (indexThread(entry)) return;
     const decoded = decodeAnnotation(entry);
     if (!decoded) return;
     flush(notify);
     const { reply, at } = decoded;
     const target = items.findLast(item => item.kind === 'assistant' && item.at === reply.at);
-    const block = target?.kind === 'assistant' ? target.blocks[reply.block] : undefined;
-    if (!target || block?.type !== 'text' || Array.from(block.text).length !== reply.length) return;
+    if (target?.kind !== 'assistant') return;
+    const mapping = sources.get(target.seq)?.blocks;
+    const source = mapping?.find(part => part.source === reply.block);
+    if (!source || source.length !== reply.length || target.blocks[mapping?.indexOf(source) ?? -1]?.type !== 'text') return;
     const span = (value: unknown, start: number, end: number): value is [number, number] => Array.isArray(value) && value.length === 2 && value.every(Number.isSafeInteger) && value[0] >= start && value[0] < value[1] && value[1] <= end;
     const disjoint = <T>(spans: T[], range: (value: T) => [number, number]): T[] => {
       let end = 0;
@@ -380,9 +503,19 @@ export function transcript({ dir, flushMs, metrics = false }: { dir: string; flu
       }
     }), value => value.range);
     if (!annotations.length) return;
-    const item: Item = { kind: 'annotations', seq: items.length, revision: 0, at, final: true, reply: { seq: target.seq, block: reply.block }, annotations };
-    items.push(item);
-    if (notify) { publish(item); flush(); }
+    for (const [index, part] of (mapping ?? []).entries()) {
+      if (part.source !== reply.block) continue;
+      const remapped = annotations.flatMap((annotation): Annotation[] => {
+        if (annotation.range[0] < part.start || annotation.range[1] > part.end) return [];
+        const shift = (range: [number, number]): [number, number] => [range[0] - part.start, range[1] - part.start];
+        return [{ ...annotation, range: shift(annotation.range), ...(annotation.kind === 'choice' ? { options: annotation.options.map(shift) } : {}) }];
+      });
+      if (!remapped.length) continue;
+      const item: Item = { kind: 'annotations', seq: items.length, revision: 0, at, final: true, reply: { seq: target.seq, block: index }, annotations: remapped };
+      items.push(item);
+      if (notify) publish(item);
+    }
+    if (notify) flush();
   };
   const rebuild = (messages: readonly AgentMessage[] = [], nextSession?: string, entries: readonly SessionEntry[] = [], leafId: string | null = null): void => {
     const notices = session.type === 'unbound' || session.id === nextSession ? items.filter(item => item.kind === 'notify' || item.kind === 'command').sort((a, b) => a.at - b.at) : [];
@@ -395,10 +528,21 @@ export function transcript({ dir, flushMs, metrics = false }: { dir: string; flu
     dirty.clear();
     pending.clear();
     pendingTools.clear();
-    tools.clear();
+    tools.clear(); sources.clear(); labels.clear(); boundary(undefined);
     const byId = new Map(entries.map(entry => [entry.id, entry]));
     const active: SessionEntry[] = [];
     for (let entry = leafId === null ? undefined : byId.get(leafId); entry; entry = entry.parentId === null ? undefined : byId.get(entry.parentId)) { active.push(entry); byId.delete(entry.id); }
+    indexed.length = 0; lastSections.clear(); provisional = [];
+    let historicalThread: ThreadName | undefined;
+    for (const entry of [...active].reverse()) {
+      indexThread(entry);
+      if (entry.type !== 'message') continue;
+      const message = entry.message;
+      if (message.role === 'assistant') historicalThread = sectionFacts(message.content.flatMap(block => block.type === 'text' ? threadSections(block.text, true) : []), message.timestamp, historicalThread);
+      else if (message.role === 'user') historicalThread = decodePrompt(contentText(message.content), [], kind).thread;
+      else if (message.role === 'custom' && message.display && isRecord(message.details) && (agentDetails(message.details) || noticeDetails(message.details) || streamDetails(message.details))) historicalThread = parseThreadName(message.details.thread);
+    }
+    provisional = [];
     const extra = [
       ...notices.map(notice => ({ type: 'notice' as const, at: notice.at, notice })),
       ...active.reverse().flatMap(entry => { const decoded = decodeAnnotation(entry); return decoded ? [{ type: 'annotation' as const, at: decoded.at, entry }] : []; }),
@@ -410,13 +554,17 @@ export function transcript({ dir, flushMs, metrics = false }: { dir: string; flu
       return [...extra.slice(start, next), { type: 'message' as const, message }];
     });
     replay.push(...extra.slice(next));
-    for (const event of replay) {
-      switch (event.type) {
-        case 'message': applyMessage(event.message, 'branch'); break;
-        case 'notice': items.push({ ...event.notice, seq: items.length, revision: 0 }); break;
-        case 'annotation': annotation(event.entry, false); break;
+    delivery = { type: 'replay', labels: new Map() };
+    try {
+      for (const event of replay) {
+        switch (event.type) {
+          case 'message': applyMessage(event.message, 'branch'); break;
+          case 'notice': items.push({ ...event.notice, seq: items.length, revision: 0 }); break;
+          case 'annotation': annotation(event.entry, false); break;
+        }
       }
-    }
+      flushLabels();
+    } finally { delivery = { type: 'live' }; }
     flush(false);
     for (const item of items) if (item.kind === "assistant") notRun(item);
     sent.clear();
@@ -436,7 +584,7 @@ export function transcript({ dir, flushMs, metrics = false }: { dir: string; flu
   const thinking = (index: number, edge: "started" | "ended", at: number): void => {
     flush();
     const item = assistant === undefined ? undefined : items[assistant];
-    const block = item?.kind === "assistant" ? item.blocks[index] : undefined;
+    const block = item?.kind === "assistant" ? item.blocks[sources.get(item.seq)?.blocks.findIndex(part => part.source === index) ?? index] : undefined;
     if (block?.type === "thinking" && item) { block[edge] = at; publish(item); schedule(); }
   };
   const append = (value: { kind: 'notify'; level: NotifyLevel; text: Text } | { kind: 'command'; result: CommandResult }): void => {
@@ -480,8 +628,10 @@ export function transcript({ dir, flushMs, metrics = false }: { dir: string; flu
     } else if (request.method === "GET" && url.pathname === "/items") {
       flush();
       const before = Number(url.searchParams.get("before"));
-      if (!Number.isSafeInteger(before) || before < 0) respond(req, 400, "{}");
-      else respond(req, 200, '{"epoch":' + JSON.stringify(epoch) + ',' + window(before) + '}');
+      const rawThread = url.searchParams.get('thread');
+      const thread = parseThreadName(rawThread);
+      if (!Number.isSafeInteger(before) || before < 0 || rawThread !== null && (kind !== 'root' || !thread)) respond(req, 400, "{}");
+      else respond(req, 200, '{"epoch":' + JSON.stringify(epoch) + ',' + window(before, thread) + '}');
     } else if (request.method === "GET" && url.pathname === "/events") {
       if (counters) counters.opens++;
       req.once("close", () => forget(req));
@@ -520,5 +670,5 @@ export function transcript({ dir, flushMs, metrics = false }: { dir: string; flu
       if (item.kind === 'assistant') for (const block of item.blocks) if (block.type === 'tool' && block.job?.id === id) return block.job;
     }
   };
-  return { command, jobFacts, itemFile, release, show, expire: (parent: string) => expire(subscribers, parent), message, thinking, annotation, rebuild, toolRunning, toolPartial, toolDone, state, notify, handle, close, get metrics() { return counters && { ...counters, subscribers: subscribers.size }; } };
+  return { threads: (): Thread[] => [...new Set([...indexed, ...provisional])].map(name => ({ name, ...(lastSections.has(name) ? { last: lastSections.get(name) } : {}) })), command, jobFacts, itemFile, release, show, expire: (parent: string) => expire(subscribers, parent), message, thinking, annotation, rebuild, toolRunning, toolPartial, toolDone, state, notify, handle, close, get metrics() { return counters && { ...counters, subscribers: subscribers.size }; } };
 }

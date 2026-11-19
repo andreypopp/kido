@@ -421,7 +421,9 @@ test("a runtime that is missing or runs pi itself refuses every routed tool and 
       const event: PromptEvent = { systemPromptOptions: { promptGuidelines: [], sections: {}, contextFiles: [], cwd: "/host" } };
       await s.emit("before_agent_start", event);
       assert.ok(!event.systemPromptOptions.promptGuidelines.some((rule) => rule.includes("read the ko skill first")));
-      assert.deepEqual(event.systemPromptOptions, { promptGuidelines: [event.systemPromptOptions.promptGuidelines[0], event.systemPromptOptions.promptGuidelines[1]], sections: {}, contextFiles: [], cwd: "/host" });
+      const { promptGuidelines: _guidelines, sections, ...options } = event.systemPromptOptions;
+      assert.equal(sections.runtime, undefined);
+      assert.deepEqual(options, { contextFiles: [], cwd: "/host" });
     }
     assert.equal(fx.apiCalls().filter((call) => call.path.endsWith("/exec")).length, 0);
   } finally {

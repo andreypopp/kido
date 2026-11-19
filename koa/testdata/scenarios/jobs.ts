@@ -52,12 +52,15 @@ const service = [
   `${esc("2", "14:56:03")} main at e192f5f1 · 0 behind`,
 ].join("\n") + "\n";
 
-const job = (dir: string, owners: { id: string; name: string }[], id: string, snapshot: JobSnapshot): PageRecord => ({
-  ...stateIdle(dir),
+const job = (dir: string, owners: { id: string; name: string }[], id: string, snapshot: JobSnapshot): PageRecord => {
+  const { threads: _threads, view: _view, ...state } = stateIdle(dir);
+  return {
+  ...state,
   view: { id, path: [...owners.map(owner => ({ ...owner, type: "agent" as const })), { id, name: snapshot.name, type: "job" }], type: "job", job: snapshot },
   sessionId: owners.at(-1)?.id,
   type: "state",
-});
+  };
+};
 const open = (view: string, text: string, start = 0): PageRecord => ({ type: "job-reset", view, epoch: "job-epoch", start, end: start + Buffer.byteLength(text), data: base64(text) });
 
 const runningScenario = (dir: string): Scenario => ({

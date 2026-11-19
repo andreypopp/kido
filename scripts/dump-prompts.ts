@@ -13,7 +13,7 @@
 
 import { fileURLToPath } from "node:url";
 
-const { createFakePi, createChannel, stubAgent, withEnv, koaExtension } = await import("../koa/koa-agent-fixture.ts");
+const { createFakePi, createChannel, stubAgent, withEnv, koaExtension, getRecord, getStr } = await import("../koa/koa-agent-fixture.ts");
 
 type Schema = { type?: string; items?: Schema; anyOf?: Schema[]; description?: string };
 const typeName = (schema: Schema): string =>
@@ -74,6 +74,21 @@ for (const t of tools) {
   out.push("");
 }
 
+const root = createFakePi(undefined, [], createChannel());
+koaExtension(root.pi);
+const rootGuidelines: string[] = [], rootSections: Record<string, string> = {};
+await root.emit('before_agent_start', { systemPromptOptions: { promptGuidelines: rootGuidelines, sections: rootSections } });
+out.push('## Root agent additions', '', 'Guidelines:', '', '```', ...rootGuidelines.filter(rule => !event.systemPromptOptions.promptGuidelines.includes(rule)), '```', '', 'Sections:', '', '```', ...Object.values(rootSections), '```', '');
+await root.emit('agent_start', {});
+await root.emit('agent_end', { messages: [{ role: 'assistant', content: [{ type: 'text', text: 'A reply without a marker.' }], stopReason: 'stop' }] });
+await root.emit('agent_settled', {}, { isIdle: () => true });
+const threadReminder = root.messages.find(({ message }) => message.customType === 'koa.thread-reminder');
+if (!threadReminder) throw Error('Root did not produce its thread reminder');
+for (const name of ['spawn_agent', 'async_bash']) {
+  const schema = getRecord(root.tool(name), 'parameters', 'properties', 'thread');
+  out.push(`### ${name}`, '', `- \`thread\` (${getStr(schema, 'type')}): ${getStr(schema, 'description')}`, '');
+}
+
 out.push("## Messages the extension injects at runtime", "");
 out.push(`Built inside koa/koa-agent.ts's closures. \`<from>\` is the sender's name, else its session id, else its pane, else "another agent".`, "");
 const relations = Object.entries(RELATION_TEXT).map(([relation, text]) => `${relation}: (${text}):`).join("\n");
@@ -83,6 +98,7 @@ const injected: Array<[string, string, string]> = [
   ["a message from another agent", `${senderHeader("<name>", "parent")}\n<text> verbatim, as a custom message of type ko-message; the header's relation text by relation:\n${relations}`, "followUp"],
   ["a message with no calling agent", "the text verbatim, unlabelled: no agent is the user speaking", "followUp"],
   ["a user prompt (ko prompt)", "the text verbatim, as the user's own message", "followUp"],
+  ['a root reply without a thread marker', threadReminder.message.content, 'hidden; triggerTurn: false'],
   ["a steer", "<from> is redirecting this work: <text>", "steer"],
   ["a notice (deliverNotice)", `${noticeHeader("<from>")}\n<text> verbatim, as a custom message of type ko-notice`, "steer"],
   ["a stream batch (sendStream)", "job \"<name>\" output (job <id>)\n<the last lines, capped>; when a held line is cut: \"... long lines were truncated (the log has them)\"; with lines dropped: \"... N lines omitted (the log has them)\" first; after the budget is spent: \"... output budget spent; the log has the rest: <log>\"", "steer; starts a turn"],

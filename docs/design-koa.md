@@ -2058,6 +2058,151 @@ shows as before. A routed runtime's pi runs on the host with the
 host's extensions; only a `koa: runtime` runtime and a remote host need
 the producer where pi runs, and koa does not supply it.
 
+## Threads
+
+A thread is a named workstream of one root session. One orchestrator
+agent works on several workstreams at once; threads let the user tell
+which line of the transcript belongs to which, and filter the
+transcript to one. The user decided (2026-11-18): the agent knows the
+threads and labels its own text, a reply about several threads is
+split by section, a thread has no status, and the sidebar does not
+group by thread.
+
+**Only the root has threads.** A subagent has one task. Its extension
+installs no thread rule, tool parameter or handler, its transcript
+keeps a marker line as text, its state has no `threads`, and its view
+refuses a `thread` in a request. Each side selects this once: the
+extension at its construction, from its host's parent, and koa where
+it creates the agent's view. The wire says it in its types: `View` has
+the cases `root`, `subagent` and `job`, and only the root's `State`
+has `threads` (`koa-records.ts`).
+
+**The agent labels its own text, and the structure labels the rest.**
+No second model classifies anything. The label of a section is its
+marker in the message text, and nothing stores a label beside it, so a
+rebuild, a fork, a resume and a `/tree` change need no second store.
+
+**The marker** is a line of its own, `[thread: NAME]`. It starts a
+section that ends at the next marker or at the end of the message. A
+marker inside a code fence is text, and so is a line of the marker's
+form with an invalid name. `ThreadName` (`records.ts`) is the one
+parser of a name, and `threadSections` (`text.ts`) the one scanner of
+markers, for the extension and the transcript. The page never sees
+the syntax.
+
+**Where each label comes from:**
+
+| transcript line | its thread |
+|---|---|
+| A section of an assistant text | The marker above it |
+| A tool or thinking block | The last marker before it in the turn |
+| A spawn, a message to or from an agent, a report, a job notice, a stream batch | The `thread` in the line's `details` |
+| A user message sent with a filter active | The marker that koa put at its start |
+| Any other user message | Each thread that the reply to it names |
+| Everything else | None |
+
+A turn starts in the thread of the event that started it: the
+`details.thread` of an agent message or a job notice, or the marker of
+a user message. The reply to a user message is the assistant text from
+that message to the next event that enters the turn (an agent
+message, a job notice or another user message), so a steer takes the
+text after it and a follow-up the next turn. The user message belongs
+to every thread that this text names and is not split. A line with no
+thread is a real case: it shows only in the unfiltered transcript.
+
+The tool block of a `spawn_agent`, `message_agent` or `async_bash`
+call without a `thread` in its details is a tool block as any other:
+it takes the last marker before it.
+
+**The extension** (design-subagents.md, "The registry"). The root's
+`spawn_agent` and `async_bash` take an optional `thread`. The root
+records it in its own `koa.agent` entry or job record and writes it
+into the `details` of each line that names that agent or job; the
+child never learns it, and no marker goes into a child's task. The
+root's system prompt has its own section, "Threads", with the rule:
+every reply starts with a marker, with no exception; an existing
+thread is reused for what relates to its subject; a part about the
+session as a whole goes into the thread `general`, which is a thread
+as any other. The user decided this after real sessions: as one
+guideline bullet that said the session "can hold" threads, the rule
+gave replies with no marker, and without the reuse rule the model
+named a new thread after each subagent. Because the rule has no
+exception, a turn that settles with assistant text and no marker is
+a fault that the extension sees: it gives the model one hidden
+message that starts no turn and says so, which arrives with the next
+run. At the end of
+each assistant message, and at each accepted `thread` parameter, the
+extension appends `koa.thread` for a name that has no entry on the
+branch. The entry is an index of names in order of first use; it never
+says which section belongs to which thread. It has no `owner` check,
+because a fork copies the transcript with its markers and so keeps
+its threads; in a subagent's session a copied entry is inert. After a
+compaction the extension gives the model the names in one hidden
+custom message that starts no turn, not in the system prompt, so a
+new thread does not invalidate the prompt cache. pi delivers that
+message with the next run, so the retry of an overflow compaction
+does not see it.
+
+**The transcript** splits an assistant text block at its markers into
+blocks without marker text, each with its thread. It keeps, for each
+assistant item, the map from pi's content index and code points to
+the projected blocks, and addresses images, step files, thinking
+times and reply annotations through it, so a producer still addresses
+pi's raw content. An annotation whose span crosses a section is
+dropped. While a reply streams, a last line that can still become a
+marker is held back, and a change of the block count sends the whole
+item, not a suffix.
+
+**A late label.** An implicit user message, and an assistant message
+of only tool and thinking blocks that ends before the turn's first
+marker, are final before their thread is known, and a final item
+never changes. Their label is an item of its own kind, `threads`,
+with the target's `seq`, as a reply annotation is; the page uses the
+newest one of a target. While a reply streams, each new thread that
+it names appends an item with the grown set. A rebuild emits one item
+for each target with the final set: the same labels, not the same
+items.
+
+**The state.** The root's `threads` is derived at each publication:
+the names of the `koa.thread` entries in their order, then the names
+of the current reply that have no entry yet, in marker order, which is
+the order in which the extension appends them. So a thread's position
+never changes. Each has its last assistant section as one optional
+record, the raw first line and the time of its message; a thread that
+only a `thread` parameter named has none. The page removes the
+Markdown syntax of the line, as for an agent line.
+
+**The colour** of a thread is not stored or sent: the page maps the
+thread's position to its palette, modulo the palette's size.
+
+**The look** is the mockup `threads.html` (app/design/koa/NOTES.md,
+"Threads: the widget, the marks and the filter"): a capsule outside
+the scroll that names the newest threads, a panel of all threads, a
+mark `# name` where the thread changes, and an edge in the thread's
+colour beside each section. The user decided against a status dot:
+`# name` in the thread's colour is the one sign of a thread. The
+panel's order is the page's: newest first by the time of the last
+section, a thread with no section before them; the colour stays the
+position in the state.
+
+**The filter** is the page's own state for the root's view, as fold
+state is; a page load starts without one. The event stream is not
+filtered: the page hides the live items of other threads. A pending
+implicit user message shows under every filter, with the line
+"waiting for its thread": it has no label yet, nothing entered the
+turn after it, and the agent still works. When the turn settles with
+no label, the message has no thread and is hidden. `/items?before` takes `thread`, because a thread can be
+sparse: koa filters the items first and then applies the window's
+limits, returns each match whole with its `threads` and `annotations`
+items, and `more` means that an older match exists. With a filter
+active, the prompt request carries the thread and koa puts the marker
+at the start of the text that pi gets, also for a steer, a follow-up
+and a requeued prompt. A prompt that starts with a slash gets none:
+pi expands a skill or a template only at the start of the text and
+has no hook after the expansion, so that message is implicit. A
+queued prompt shows without its marker, and a take-back puts the text
+without it into the composer.
+
 ## Browser mode and its origin rule
 
 `koa --browser` uses the SDK's browser target: the same program and

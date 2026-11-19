@@ -24,11 +24,11 @@ import { shellComplete } from "./koa-shell.ts";
 import { attachments, stepFile, UPLOAD_IDLE_MS } from "./koa-attach.ts";
 import { commandCatalog, parseCommand, dispatchCommand, deferralText, type Deferral } from './koa-commands.ts';
 import { installedIdentity } from './koa-identity.ts';
-import { bashCommand } from "./prompt.ts";
+import { bashCommand, threadPrompt } from "./prompt.ts";
 import { koaEditor, openPathEditor } from "./koa-editor.ts";
 import { findKo, apiArgs } from "./runtime-exec.ts";
 import { fileSource, jobView, liveSource } from "./koa-job-view.ts";
-import type { JobSnapshot } from "./records.ts";
+import { parseThreadName, type ThreadName, type JobSnapshot } from "./records.ts";
 import type { Agent, Selection, Tree } from "./koa-agents.ts";
 import { createView, type AgentView, type Own } from "./koa-view.ts";
 import { agentCompletionItems, type AgentRow } from "./agents.ts";
@@ -63,8 +63,8 @@ function dialogBody(value: unknown, dialog: Dialog): DialogAnswer | { error: str
   return { error: "A valid dialog answer is required" };
 }
 
-function promptBody(value: unknown): { text: string; mode: PromptMode | "steer"; attachments: string[] } | { error: string } {
-  if (isRecord(value) && typeof value.text === "string" && Array.isArray(value.attachments) && value.attachments.length <= ATTACHMENT_LIMITS.files && value.attachments.every(id => typeof id === "string") && (value.text.trim() || value.attachments.length) && (value.mode === "prompt" || value.mode === "steer" || value.mode === "follow_up")) return { text: value.text, mode: value.mode, attachments: value.attachments };
+function promptBody(value: unknown): { text: string; thread?: ThreadName; mode: PromptMode | "steer"; attachments: string[] } | { error: string } {
+  if (isRecord(value) && (value.thread === undefined || parseThreadName(value.thread)) && typeof value.text === "string" && Array.isArray(value.attachments) && value.attachments.length <= ATTACHMENT_LIMITS.files && value.attachments.every(id => typeof id === "string") && (value.text.trim() || value.attachments.length) && (value.mode === "prompt" || value.mode === "steer" || value.mode === "follow_up")) return { text: value.text, ...(value.thread === undefined ? {} : { thread: parseThreadName(value.thread) }), mode: value.mode, attachments: value.attachments };
   return { error: "Text or attachments and prompt, steer or follow_up mode are required" };
 }
 
@@ -241,28 +241,27 @@ Everything after -- is message text.
       agent.view.publish();
     })());
     const agentsFor = (agent: Agent): State["agents"] => (rowsOf.get(agent) ?? []).map(row => ({ name: row.name, target: row.where.type === "process" ? { type: "view" as const, id: row.id } : { type: "pane" as const, pane: row.where.pane } }));
-    const agentViewOf = (agent: Agent): View => ({ id: agent.id, path: chain(agent).map(member => ({ id: member.id, name: nameOf(member), type: "agent" as const })), type: "agent" });
-    const jobViewOf = (current: Viewed, path: View["path"]): View => {
+    const agentViewOf = (agent: Agent) => ({ id: agent.id, path: chain(agent).map(member => ({ id: member.id, name: nameOf(member), type: "agent" as const })), type: agent.parent ? 'subagent' as const : 'root' as const });
+    const jobViewOf = (current: Viewed, path: View["path"]): Extract<View, { type: 'job' }> => {
       const { agent } = current, id = viewedId(current);
       const job: JobSnapshot = current.type === "job" ? agent.host.jobs.snapshot(current.job) : { name: current.ref.name, command: current.ref.command, service: current.ref.service, startedAt: current.ref.startedAt, place: current.ref.place, log: current.ref.log, state: { type: "cleared" } };
       return { id, path: [...path, { id, name: job.name, type: "job" }], type: "job", job };
     };
     const facts = koaAgents.hostFacts(process.env);
     const pathEditor = !!facts.pane && !browser && !facts.runtime;
-    const compose = (agent: Agent) => (own: Own): State => ({
-      ...own, ...(agent === tree.selected() ? { edit: edits.view() } : {}),
-      pathEditor,
-      view: agentViewOf(agent),
-      agents: agentsFor(agent),
-    });
+    const compose = (agent: Agent) => (own: Own): State => {
+      const view = agentViewOf(agent);
+      const common = { ...own, pathEditor, ...(agent === tree.selected() ? { edit: edits.view() } : {}), agents: agentsFor(agent) };
+      return view.type === 'root' ? { ...common, view: { ...view, type: 'root' }, threads: agent.view.feed.threads() } : { ...common, view: { ...view, type: 'subagent' } };
+    };
     const makeView = (agentRef: () => Agent, parent: Agent | undefined, name: string | undefined, cwd: string): AgentView => {
       const first = !parent;
       return createView({
-        dir: join(dir, randomUUID()), metrics: metricsFile !== undefined, attached, name, cwd: first ? process.cwd() : cwd, home: homedir(),
+        dir: join(dir, randomUUID()), kind: first ? 'root' : 'subagent', metrics: metricsFile !== undefined, attached, name, cwd: first ? process.cwd() : cwd, home: homedir(),
         agent: () => { const agent = agentRef(); if (!agent.runtime) throw new Error("the agent is not started"); return { session: agent.runtime.session, runtime: agent.runtime }; },
         compose: own => {
           const agent = agentRef(), state = compose(agent)(own);
-          for (const open of feeds.values()) if (open.selection.agent === agent) open.feed.state({ ...state, view: jobViewOf(open.selection, state.view.path), type: "state" });
+          for (const open of feeds.values()) if (open.selection.agent === agent) open.feed.state({ ...own, pathEditor: state.pathEditor, agents: state.agents, view: jobViewOf(open.selection, state.view.path), type: "state" });
           return state;
         },
         status: (value, message, dialog) => {
@@ -416,9 +415,9 @@ Everything after -- is message text.
       answer();
     };
     const owned = ({ agent, valid }: Req, owner: AgentSession) => { if (agent.session !== owner || agent.torn.has(owner) || !valid()) throw new Error("pi session changed"); };
-    const queuePrompt = async (agent: Agent, session: AgentSession, text: string, requested: PromptMode | "steer", files: Awaited<ReturnType<AgentView["attached"]["prepare"]>>) => {
+    const queuePrompt = async (agent: Agent, session: AgentSession, text: string, requested: PromptMode | "steer", files: Awaited<ReturnType<AgentView["attached"]["prepare"]>>, thread?: ThreadName) => {
       const v = agent.view;
-      const message = [text, ...files.paths].filter(Boolean).join("\n");
+      const message = [text.startsWith('/') ? text : threadPrompt(text, thread), ...files.paths].filter(Boolean).join("\n");
       const typed = unknownMentions(text, agentsFor(agent).map(row => row.name), path => existsSync(resolve(v.state.cwd, path)));
       const discovered = typed.length ? (await agent.extension?.scope(0, true) ?? []).map(row => row.name) : [];
       const unknown = typed.filter(name => !discovered.includes(name));
@@ -505,6 +504,7 @@ Everything after -- is message text.
         const builtin = isRecord(value) && typeof value.text === 'string' ? parseCommand(value.text, catalog) : undefined;
         const prompt = promptBody(builtin && isRecord(value) ? { ...value, attachments: [] } : value);
         if ("error" in prompt) { respond(response, 400, JSON.stringify(prompt)); return; }
+        if (agent.parent && prompt.thread) { respond(response, 400, JSON.stringify({ error: 'threads belong only to a root agent' })); return; }
         const bash = bashCommand(prompt.text);
         if (bash) {
           const refusal = prompt.attachments.length ? 'a command takes no attachments' : v.state.bash.some(item => item.phase !== 'completed') ? 'a command is already running' : v.state.bash.length >= MAX_PENDING_BASH ? 'too many commands wait for the turn to end' : !bash.command.trim() ? 'a command is required' : undefined;
@@ -555,7 +555,7 @@ Everything after -- is message text.
         }
         const owner = agent.session;
         const files = await v.attached.prepare(prompt.attachments);
-        const { entry, disposition } = await v.serial(async () => { owned(req, owner); return queuePrompt(agent, owner, prompt.text, prompt.mode, files); });
+        const { entry, disposition } = await v.serial(async () => { owned(req, owner); return queuePrompt(agent, owner, prompt.text, prompt.mode, files, prompt.thread); });
         if (disposition === 'handled') { v.prompts.reject(entry); respond(response, 200, JSON.stringify({ disposition: 'handled', action: { type: 'none' } })); return; }
         v.attached.consume(prompt.attachments, disposition === "queued" ? "queued" : "used");
         respond(response, 200, JSON.stringify({ disposition }));
@@ -580,22 +580,24 @@ Everything after -- is message text.
         owned(req, owner);
         if (!isRecord(value) || value.kind !== "steer" && value.kind !== "follow-up" || typeof value.index !== "number" || !Number.isSafeInteger(value.index) || value.index < 0 || typeof value.text !== "string") { respond(response, 400, JSON.stringify({ error: "A queue kind, index and text are required" })); return; }
         const { kind, index, text } = value;
+        const thread = parseThreadName(value.thread);
+        if (value.thread !== undefined && (!thread || agent.parent)) { respond(response, 400, '{}'); return; }
         const shown = v.prompts.view();
-        if ((kind === "steer" ? shown.steering : shown.followUp)[index]?.text !== text) { respond(response, 409, JSON.stringify({ error: "The queue changed" })); return; }
+        if ((kind === "steer" ? shown.steering : shown.followUp)[index]?.text !== text || (kind === 'steer' ? shown.steering : shown.followUp)[index]?.thread !== thread) { respond(response, 409, JSON.stringify({ error: "The queue changed" })); return; }
         v.prompts.beginClear();
         try {
           const restored = v.prompts.takeBack(owner.clearQueue());
           const all = [...restored.steering.map(entry => ({ entry, behavior: "steer" as const })), ...restored.followUp.map(entry => ({ entry, behavior: "follow_up" as const }))];
           v.attached.restore(all.flatMap(({ entry }) => entry.attachments.map(file => file.id)));
           const list = kind === "steer" ? restored.steering : restored.followUp;
-          const stale = list[index]?.text !== text;
+          const stale = list[index]?.text !== text || list[index]?.thread !== thread;
           const keep = all.filter(({ entry }) => stale || entry !== list[index]);
           for (const [done, { entry, behavior }] of keep.entries()) {
             const ids = entry.attachments.map(file => file.id);
             let failure: string | undefined;
             try {
               owned(req, owner);
-              const sent = await queuePrompt(agent, owner, entry.text, behavior, await v.attached.prepare(ids));
+              const sent = await queuePrompt(agent, owner, entry.text, behavior, await v.attached.prepare(ids), entry.thread);
               if (sent.disposition === "handled") v.prompts.reject(sent.entry); else v.attached.consume(ids, "queued");
             } catch (error) { failure = errorText(error); }
             if (failure !== undefined) {

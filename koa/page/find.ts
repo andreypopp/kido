@@ -1,4 +1,4 @@
-import { continuesRun, isStep } from './extent.ts';
+import { continuesRun, isStep, joinsRun } from './extent.ts';
 import { markdownPlain } from './markdown.ts';
 import { agentBody, stepInfo, stepParts, toolArgs } from './steps.ts';
 import type { WireItem } from '../koa-records.ts';
@@ -19,9 +19,10 @@ function trailingRun(context: FindContext, seq: number): string {
   const item = context.items(seq);
   let result = '';
   if (item?.kind === 'assistant' && item.blocks.length && isStep(item.blocks[item.blocks.length - 1])) {
-    let at = item.blocks.length;
-    while (at > 0 && isStep(item.blocks[at - 1])) at--;
-    result = at === 0 && continuesRun(context.items(seq - 1)) ? trailingRun(context, seq - 1) : 'run:' + seq + ':' + at;
+    let at = item.blocks.length - 1;
+    while (at > 0 && joinsRun(item.blocks[at - 1], item.blocks[at])) at--;
+    const previous = context.items(seq - 1);
+    result = at === 0 && previous?.kind === 'assistant' && continuesRun(previous) && joinsRun(previous.blocks.at(-1), item.blocks[0]) ? trailingRun(context, seq - 1) : 'run:' + seq + ':' + at;
   }
   context.owners.set(key, result);
   return result;
@@ -29,8 +30,9 @@ function trailingRun(context: FindContext, seq: number): string {
 
 function runOf(context: FindContext, seq: number, index: number, blocks: readonly Parameters<typeof isStep>[0][]) {
   let at = index;
-  while (at > 0 && isStep(blocks[at - 1])) at--;
-  return at === 0 && continuesRun(context.items(seq - 1)) ? trailingRun(context, seq - 1) : 'run:' + seq + ':' + at;
+  while (at > 0 && joinsRun(blocks[at - 1], blocks[at])) at--;
+  const previous = context.items(seq - 1);
+  return at === 0 && previous?.kind === 'assistant' && continuesRun(previous) && joinsRun(previous.blocks.at(-1), blocks[0]) ? trailingRun(context, seq - 1) : 'run:' + seq + ':' + at;
 }
 
 function jobFirst(context: FindContext, seq: number): number {
@@ -63,7 +65,7 @@ function blockSegments(item: Extract<WireItem, { kind: 'assistant' }>, index: nu
 export function findSegments(item: WireItem, context: FindContext): Segment[] {
   switch (item.kind) {
     case 'user': return proseSegments(context, item.text, item.seq + ':user', [], true);
-    case 'annotations': return [];
+    case 'annotations': case 'threads': return [];
     case 'assistant': return [...item.blocks.flatMap((_, index) => blockSegments(item, index, context)), ...plainSegments(item.error)];
     case 'agent': return plainSegments(agentBody(item), 'agent:' + item.seq);
     case 'job': return [...plainSegments(item.job.name), ...plainSegments(item.event.type === 'stream' ? item.event.batch.text : item.event.tail.text, 'job:' + jobFirst(context, item.seq))];

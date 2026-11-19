@@ -1896,3 +1896,126 @@ link to the editor float that Control-G already has.
   path (the underline); the warning note "no such file" under a
   row; the editor float with the path title (the existing editor
   float snapshot with a new title).
+
+## Threads: the widget, the marks and the filter (threads.html; approved 2026-11-18)
+
+docs/design-koa.md, "Threads". The agent labels its sections with `[thread:
+name]` lines; the transcript turns them into marks; the page lists
+the threads and filters to one. States `two`, `many`, `many-narrow`,
+`marks`, `marks-narrow`, `filter`, `filter-panel`, `filter-narrow`,
+light and dark in the gallery.
+
+- **The widget** is a capsule of the view bar's family (fill the
+  background mixed 8% toward the foreground, a 0.5pt edge at 16% /
+  14% dark, the contact shadow, 22pt high, 8pt radius, 8pt side
+  padding, .85em prose) at the top left of the pane, outside the
+  scroll, at 8pt from the top and the left. Threads exist only in
+  the root agent's view (user, 2026-11-18): a subagent's view has no
+  widget, no marks and no filter, and the view bar shows only there,
+  so the two never share the corner. While the capsule shows, the
+  transcript's top padding is 44pt (the view bar's rule). It does
+  not show for a session with no thread. Threads have no status and
+  no dot or circle anywhere (user, 2026-11-18): koa sends a name, a
+  position, a summary and the time of the last section, and "#
+  name" in the thread's colour is the lead, in the widget as in the
+  transcript. Content (user, 2026-11-18: show more while the width
+  allows, collapse only on overflow): as many threads as fit, newest
+  first, each as "# name" ("#" at 55% of the colour, the name at 600
+  in it), "·" at 35% between, then "+N" muted for the ones that do
+  not fit, then a "▾" in
+  the faint colour; a click opens the panel, a second click, Escape
+  or a click outside closes it; the pointer is a hand. The fit rule,
+  the same at every width: the capsule is at most the pane's width
+  minus 16pt; names are added in newest-first order while the whole
+  capsule with its tail ("·", "+N" and "▾", or "▾" alone when all
+  fit) stays within that; a name is never cut and has no maximum of
+  its own (32 characters at most), except the first, which always
+  shows and ellipsizes when it alone does not fit. Re-fitted on each
+  state update and resize.
+- **The panel**, under the capsule (top 36pt, the capsule's left):
+  the completion popup's style (the background, a 1px edge at 18%,
+  9pt radius, the 8/28 shadow at 14%, 6pt padding, .88em prose),
+  300pt to 420pt wide, never wider than the pane minus 16pt, its
+  bottom at most at 60% of the pane's height (so its height is at
+  most 60% minus its 36pt top) and then scrolling. One row for each
+  thread, newest first by the last section's time, a thread with no
+  section yet before them, 28pt, 4/8pt padding, 6pt radius, hover the
+  well: "# name" in the thread's colour (the name at 600, ellipsized
+  at 160pt), the summary
+  muted and ellipsized to the row's end, the age of the last section
+  at the right in the faint colour at .9em: "now" under a minute,
+  then "Nm" to 59m, "Nh" to 23h, then "Nd"; computed when the panel
+  opens and at each state update, no timer. A click on
+  a row sets the filter and closes the panel. With a filter active,
+  the current row has the well2 fill and a last row "All threads",
+  separated by a hairline, clears the filter.
+- **The mark** is a label line above the section or line it starts:
+  .8em prose at line-height 1.35 (a 14pt line box at the 13px base;
+  no fixed height), "#" at 55% of the thread's colour, a 6px gap, then the name
+  in the colour at 600, 12pt above and 3pt below (10pt above inside
+  a reply; none above a reply's first section). The mark is a
+  control (user, 2026-11-18): a click sets the filter to its thread,
+  like a panel row; the pointer a hand over the label's own box
+  (`width: fit-content`, not the whole line); hover underlines the
+  name 1px in the colour at 50%, 2pt under the baseline, pressed at
+  100%; nothing at rest, so the transcript keeps its quiet labels;
+  the pending line is not a control. A mark shows only where the
+  thread differs from the last mark above; a line with no thread shows no
+  mark and does not reset the last one. A reply about two threads
+  has a mark above each section; a run, agent or job line gets one
+  when its thread differs. A user message never carries a mark: its
+  threads are the ones its reply names, and the reply's marks stand
+  right under it. Nothing says "new" for a thread's first mark.
+- **The filter.** The capsule becomes the thread: "# name" in its
+  colour and an × (14pt, the muted colour, hover the well2) that
+  clears it; a click on the name opens the panel. The transcript
+  shows the thread's items only, without marks and without the
+  sections' colour edges (one thread needs no telling apart; the
+  mockup's filter states draw none), plus a pending user
+  message, one whose reply the agent is still working on and that
+  has no label yet, with the mark line "waiting for its thread" in
+  the faint colour, italic, above it (only in a filtered view; never
+  above an old unlabelled message, which has no thread and shows
+  only unfiltered). The composer's placeholder keeps the page's verb rule
+  with the thread added: "Steer @ko in #sidebar…" while the agent
+  works, "Message @ko in #sidebar…" when it is idle (the view's
+  agent, the thread; the three filter states have a working agent,
+  so they show "Steer"), and the foot gets a
+  first cell before the model: "#" faint, the name at 600 in the
+  foreground, then the separator; at the narrow breakpoints the cell
+  stays and the model goes first. The prompt carries the thread and
+  koa writes the marker; the queue and steers the same.
+- **Narrow pane**: the page's existing narrow breakpoint (the
+  transcript's narrow padding rule), not a new one: the panel is the
+  pane's width minus 16pt and the section's edge sits 8pt left of
+  the text; the capsule follows its fit rule, which needs no rule of
+  its own; the mark and the foot cell unchanged.
+- **Colour** (user, 2026-11-18: "color code the different
+  threads"). A thread's colour is its index in the session's thread
+  list (order of first use, stable for the session's life; koa sends
+  the index) modulo six, in a palette of six hues that are none of
+  the sidebar's status green and orange, the error red or the accent
+  blue of the user block:
+
+      index  light     dark
+      0      #6a4fcf   #a99bff   violet
+      1      #11827e   #52d1c2   teal
+      2      #b42d7f   #f27bc0   magenta
+      3      #8c6a12   #d8b85a   ochre
+      4      #4b6a8a   #94b0cc   slate
+      5      #5e7a1e   #b3cf5a   olive
+
+  The light values read on `#FFF9EC` at 4.5:1 or better; the dark
+  on `#171717`. The colour shows on the name wherever the name is:
+  the mark ("#" at 55% of it, the name at 600 in it), the panel
+  row's name, the filtered capsule's name, the composer's foot cell;
+  and as a 2pt edge at the section's left, in the transcript's gutter
+  12pt left of the text (8pt in a narrow pane), 1pt radius, the
+  colour at 45%, one continuous line spanning the section (a reply
+  section, or a run, agent or job line and what follows it in the
+  same thread) to its last line. The summary stays muted; nothing fills, so the user
+  block's accent stays the one filled thing. A seventh thread shares
+  the first's hue: the name tells them apart, the colour is a scan
+  aid, not an identity.
+- **Snapshots** (KoaWebviewTests, light and dark): the eight states
+  above.

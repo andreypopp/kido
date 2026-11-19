@@ -3,7 +3,7 @@ import { scrollInitial, scrollStored, scrollUpdate, scrollWindow, type ItemId, t
 import { pathToken } from '../path-token.ts';
 import { markdown, markdownLine, type Tail } from './markdown.ts';
 import { revealHeight, unitsOf, type Unit } from './reveal.ts';
-import { continuesRun, estimateExtent, groupAt, runStarts, windowOf, type SeqRange } from './extent.ts';
+import { continuesRun, isStep, joinsRun, estimateExtent, groupAt, runStarts, windowOf, type SeqRange } from './extent.ts';
 import { composer } from './composer.ts';
 import { agentBody, stepInfo, stepParts, toolArgs, type AgentCard } from './steps.ts';
 import { exportText, findSegments, lowered, matchesIn, type Segment } from './find.ts';
@@ -15,7 +15,7 @@ import { dots } from './working.ts';
 import { install } from './metrics.ts';
 import { ATTACHMENT_LIMITS, pathArg } from '../koa-records.ts';
 import type { State, WireJob, WireItem, QueuedPrompt, WireAssistant, Block, Patch, PageRecord, MetricsSample, Stages, PromptMode, ImageRef, Bash, SessionRow, SessionScope, ThinkingLevel } from '../koa-records.ts';
-import type { AgentRef, Relation } from '../records.ts';
+import type { ThreadName, AgentRef, Relation } from '../records.ts';
 
 type Step = { block: Exclude<Block, { type: 'text' }>;  item: WireAssistant; index: number; key: string; slots: Map<string, Slot> };
 type JobItem = Extract<WireItem, { kind: 'job' }>;
@@ -43,9 +43,17 @@ const node = <K extends keyof HTMLElementTagNameMap>(tag: K, text?: string, clas
   if (className) result.className = className;
   return result;
 };
+const threadItems = new Map<number, Extract<WireItem, { kind: 'threads' }>>();
+const projections = new Map<number, WireItem | undefined>();
+const threadFilters = new Map<string, ThreadName>();
+const threadCell = Object.assign(node('span', undefined, 'thread-cell'), { id: 'thread-cell' });
+const threadFilter = (): ThreadName | undefined => state.view.type === 'root' ? threadFilters.get(filterKey()) : undefined;
+let historyBefore: number | undefined;
+let threadCapsule: { view: HTMLDivElement; names: ThreadName[]; selected?: ThreadName; width?: number } | undefined;
+
 const annotationItems = new Map<number, Map<number, Extract<WireItem, { kind: 'annotations' }>>>();
 const items = new Map<number, WireItem>();
-const views = new Map<number, { view: HTMLElement; item: WireItem; warning?: string; slots: Map<string, Slot> }>();
+const views = new Map<number, { view: HTMLElement; item: WireItem; warning?: string; slots: Map<string, Slot>; filter?: ThreadName; preceding?: ThreadName }>();
 const openers = new Map<string, { view: HTMLElement; open: () => void }>(), fenceOpeners = new Map<string, { view: HTMLElement; open: () => void }>(), patched = new Set<number>(), live = new Set<number>(), order: number[] = [], extents = new Map<number, Extent>(), openFences = new Set<string>(), animating = new Map<HTMLElement, number>();
 type Extent = { kind: 'measured'; width: number; lh: number; px: number } | { kind: 'estimated'; px: number };
 type Group = SeqRange & ({ kind: 'run' } | { kind: 'job'; id: string });
@@ -74,7 +82,144 @@ let revealDirty = false, resetting = false, annotated = false;
 const growing: HTMLElement[] = [], observed = new Map<Element, Watch>(), measuredHolds = new Map<HTMLElement, number>(), fits = new Map<HTMLElement, boolean>();
 const pathWarnings = new Map<number, string>();
 let pathWarningEpoch = 0;
-let state: State = { pathEditor: false, view: { id: '', path: [], type: 'agent' }, agents: [], bash: [], compaction: 'idle', life: { type: 'starting' }, working: false, aborted: false, name: '', levels: [], cwd: '', home: '', statuses: {}, queue: { steering: [], followUp: [] }, dialogs: [] };
+let state: State = { pathEditor: false, view: { id: '', path: [], type: 'root' }, threads: [], agents: [], bash: [], compaction: 'idle', life: { type: 'starting' }, working: false, aborted: false, name: '', levels: [], cwd: '', home: '', statuses: {}, queue: { steering: [], followUp: [] }, dialogs: [] };
+const filterKey = () => state.view.id + ':' + (state.sessionId ?? '');
+function latestThreadInput(): WireItem | undefined {
+  let latest: WireItem | undefined;
+  for (const item of items.values()) if ((item.kind === 'user' || item.kind === 'agent' || item.kind === 'job') && (!latest || item.seq > latest.seq)) latest = item;
+  return latest;
+}
+function waitingForThread(item: WireItem): boolean {
+  return state.view.type === 'root' && state.working && item.kind === 'user' && !item.thread && !threadItems.has(item.seq) && latestThreadInput()?.seq === item.seq;
+}
+function precedingThread(seq: number): ThreadName | undefined {
+  if (state.view.type !== 'root' || threadFilter()) return;
+  for (let index = orderIndex(seq) - 1; index >= 0; index--) {
+    const item = items.get(order[index]);
+    const name = item?.kind === 'assistant' ? item.blocks.findLast(block => (block.type !== 'text' || block.text) && block.thread)?.thread ?? threadItems.get(item.seq)?.threads[0] : item?.kind === 'agent' || item?.kind === 'job' ? item.thread : undefined;
+    if (name) return name;
+  }
+}
+function visible(seq: number): WireItem | undefined {
+  const item = items.get(seq), filter = threadFilter();
+  if (!item || item.kind === 'annotations' || item.kind === 'threads') return item;
+  if (projections.has(seq)) return projections.get(seq);
+  const names = threadItems.get(seq)?.threads ?? [];
+  let projected: WireItem | undefined;
+  if (!filter) {
+    if (item.kind !== 'assistant' || !names[0] || item.blocks.every(block => block.thread)) return item;
+    projected = { ...item, blocks: item.blocks.map(block => block.thread ? block : { ...block, thread: names[0] }) };
+  } else if (item.kind === 'assistant') {
+    const matches = (block: Block) => (block.thread ?? names[0]) === filter;
+    if (item.blocks.some(matches)) projected = { ...item, error: '', blocks: item.blocks.map(block => matches(block) ? block.thread ? block : { ...block, thread: names[0] } : { type: 'text', text: '' }) };
+  } else if ((item.kind === 'user' || item.kind === 'agent' || item.kind === 'job') && (item.thread ? item.thread === filter : names.includes(filter)) || waitingForThread(item)) projected = item;
+  projections.set(seq, projected);
+  return projected;
+}
+function refreshThreadItems() {
+  projections.clear(); segmentCache.clear(); owners.clear(); find = undefined; selected = undefined;
+  order.length = 0; extents.clear(); table = undefined;
+  for (const seq of items.keys()) { if (visible(seq)) order.splice(orderIndex(seq), 0, seq); dirty.add(seq); }
+  for (const seq of views.keys()) if (!visible(seq)) unmountRow(seq);
+  windowDirty = true; schedule();
+}
+function setThread(name: ThreadName | undefined) {
+  const next = threadFilter() === name ? undefined : name;
+  if (next) threadFilters.set(filterKey(), next); else threadFilters.delete(filterKey());
+  historyRequest = undefined; historyBefore = undefined;
+  closeThreads(); refreshThreadItems(); renderThreads(); refreshComposer();
+  enqueue({ type: 'reset' });
+  if (epoch) void reloadThread();
+}
+function threadColour(name: ThreadName): string {
+  const index = 'threads' in state ? state.threads.findIndex(thread => thread.name === name) : -1;
+  return `var(--thread-${Math.max(0, index) % 6})`;
+}
+function threadName(name: ThreadName) {
+  const label = node('span', undefined, 'thread-name'); label.dataset.thread = name;
+  label.style.setProperty('--thread-color', threadColour(name));
+  label.append(node('span', '#', 'thread-hash'), node('span', name));
+  return label;
+}
+function threadMark(name: ThreadName) {
+  const mark = node('div', undefined, 'thread-mark'); mark.dataset.thread = name;
+  mark.setAttribute('role', 'button'); mark.tabIndex = -1;
+  mark.setAttribute('aria-label', 'Filter to thread ' + name); mark.onclick = () => setThread(name);
+  mark.onkeydown = event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); event.stopPropagation(); setThread(name); } };
+  mark.append(threadName(name));
+  return mark;
+}
+function toggleThreads() {
+  const panel = element('threads').querySelector<HTMLElement>('.thread-panel');
+  if (panel) { const open = panel.hidden; renderThreads(); const current = element('threads').querySelector<HTMLElement>('.thread-panel'); if (current) current.hidden = !open; element('threads').querySelector('.thread-open')?.setAttribute('aria-expanded', String(open)); }
+}
+function closeThreads() {
+  const panel = element('threads').querySelector<HTMLElement>('.thread-panel');
+  if (panel) panel.hidden = true;
+  element('threads').querySelector('.thread-open')?.setAttribute('aria-expanded', 'false');
+}
+function threadAge(at: number, now: number): string {
+  const minutes = Math.max(0, Math.floor((now - at) / 60000));
+  return minutes < 1 ? 'now' : minutes < 60 ? minutes + 'm' : minutes < 1440 ? Math.floor(minutes / 60) + 'h' : Math.floor(minutes / 1440) + 'd';
+}
+function fitThreads(width = document.documentElement.clientWidth) {
+  const capsule = threadCapsule;
+  if (!capsule || capsule.selected || capsule.width === width) return;
+  const button = capsule.view.querySelector<HTMLElement>('.thread-open');
+  if (!button) return;
+  button.classList.remove('single');
+  for (let count = capsule.names.length; count >= 1; count--) {
+    const children: HTMLElement[] = [];
+    for (const name of capsule.names.slice(0, count)) { if (children.length) children.push(node('span', '·', 'thread-separator')); children.push(threadName(name)); }
+    if (count < capsule.names.length) children.push(node('span', '·', 'thread-separator'), node('span', '+' + (capsule.names.length - count), 'thread-more'));
+    children.push(node('span', '▾', 'thread-chevron')); button.replaceChildren(...children);
+    const measured = button.scrollWidth + capsule.view.getBoundingClientRect().width - button.getBoundingClientRect().width;
+    if (measured <= Math.max(0, width - 16) || count === 1) { button.classList.toggle('single', count === 1); break; }
+  }
+  capsule.width = width;
+}
+function renderThreads() {
+  const host = element('threads'), cell = threadCell, filter = threadFilter();
+  host.hidden = state.view.type !== 'root' || !('threads' in state) || !state.threads.length;
+  document.body.classList.toggle('with-threads', !host.hidden);
+  cell.remove(); cell.replaceChildren();
+  if (filter) { const model = element('model-cell'); model.parentNode?.insertBefore(cell, model); const separator = node('i', undefined, 'sep'); separator.setAttribute('aria-hidden', 'true'); cell.append(threadName(filter), separator); }
+  if (!('threads' in state) || host.hidden) { host.replaceChildren(); threadCapsule = undefined; return; }
+  const previousPanel = host.querySelector<HTMLElement>('.thread-panel'), open = previousPanel?.hidden === false;
+  const scrollTop = previousPanel?.scrollTop ?? 0;
+  const threads = state.threads.map((thread, index) => ({ ...thread, index })).sort((a, b) => a.last && b.last ? b.last.at - a.last.at || b.index - a.index : a.last ? 1 : b.last ? -1 : b.index - a.index);
+  const names = threads.map(thread => thread.name), changed = !threadCapsule || threadCapsule.selected !== filter || names.length !== threadCapsule.names.length || names.some((name, index) => name !== threadCapsule?.names[index]);
+  if (changed) {
+    const capsule = node('div', undefined, 'thread-capsule'), button = node('button', undefined, 'thread-open');
+    button.type = 'button'; button.setAttribute('aria-label', 'Threads'); button.onclick = toggleThreads;
+    if (filter) { button.classList.add('single'); button.append(threadName(filter)); }
+    capsule.append(button);
+    if (filter) { const clear = node('button', '×', 'thread-clear'); clear.type = 'button'; clear.setAttribute('aria-label', 'All threads'); clear.onclick = () => setThread(undefined); capsule.append(clear); }
+    threadCapsule = { view: capsule, names, selected: filter };
+  }
+  const capsule = threadCapsule?.view;
+  if (!capsule) return;
+  capsule.querySelector('.thread-open')?.setAttribute('aria-expanded', String(open));
+  const panel = node('div', undefined, 'thread-panel'); panel.hidden = !open; panel.setAttribute('aria-label', 'Choose thread');
+  for (const thread of threads) {
+    const entry = node('button', undefined, 'thread-entry'); entry.type = 'button'; entry.dataset.thread = thread.name;
+    entry.classList.toggle('current', thread.name === filter); entry.setAttribute('aria-pressed', String(thread.name === filter));
+    const label = threadName(thread.name); label.classList.add('thread-toggle'); entry.append(label);
+    if (thread.last) {
+      const time = node('time', threadAge(thread.last.at, Date.now())); time.dateTime = new Date(thread.last.at).toISOString();
+      entry.append(node('span', markdownLine(thread.last.summary), 'thread-summary'), time);
+    }
+    entry.onclick = () => setThread(thread.name); panel.append(entry);
+  }
+  if (filter) { const all = node('button', 'All threads', 'thread-entry thread-all'); all.type = 'button'; all.onclick = () => setThread(undefined); panel.append(all); }
+  host.replaceChildren(capsule, panel);
+  if (open) panel.scrollTop = scrollTop;
+  if (changed && !filter) fitThreads();
+  for (const mark of [...element('items').querySelectorAll<HTMLElement>('.thread-section,.thread-name'), ...host.querySelectorAll<HTMLElement>('.thread-name')]) {
+    const thread = state.threads.find(thread => thread.name === mark.dataset.thread);
+    if (thread) mark.style.setProperty('--thread-color', threadColour(thread.name));
+  }
+}
 let scrolling = scrollInitial({ view: '', sessionId: undefined });
 let scrollDecision: Decision = { glideOffset: 0, latest: { show: false, count: 0 }, windowTop: 0, frame: 'none' };
 let lastMeasurement: Measure | undefined;
@@ -83,7 +228,7 @@ let dockHeight = 0;
 let epoch = '', after = -1, first: number | undefined, more = false, delay = 200;
 let escaped = false, dialogId: string | undefined;
 let submitting = false, editorId: string | undefined, dialogTimer: number | undefined, shownExit: number | undefined, pickerButton: HTMLElement | undefined, shownQueue: string | undefined, shownStatuses: string | undefined;
-let historyRequest: { patches: Patch[]; done: Promise<void> } | undefined;
+let historyRequest: { before: number; thread?: ThreadName; patches: Patch[]; done: Promise<void> } | undefined;
 let editorOpening = false;
 const draft = attach(element('attachments'), () => refreshComposer(), displayPath, () => state.edit ? 'editing' : editor.bash() ? 'command' : undefined);
 const pendingBash = new Map<string, ReturnType<typeof commandRun>>();
@@ -179,12 +324,12 @@ function showJob(group: JobGroup) {
 }
 const jobOwners = new Map<number, JobGroup>();
 function reconcileJobs(seq: number) {
-  const current = items.get(seq); if (current?.kind !== 'job') return;
+  const current = visible(seq); if (current?.kind !== 'job') return;
   const previous = jobOwners.get(seq - 1);
   let group = previous && previous.first.job.id === current.job.id && previous.items.at(-1)?.event.type === 'stream' ? previous : jobOwners.get(seq);
-  if (!group) { const owner = views.get(seq); if (!owner) return; group = jobCard(current, owner.slots); owner.view.replaceChildren(group.view); }
+  if (!group) { const owner = views.get(seq); if (!owner) return; group = jobCard(current, owner.slots); }
   while (group.items.at(-1)?.event.type !== 'ended') {
-    const item = items.get(group.next), wrapper = views.get(group.next);
+    const item = visible(group.next), wrapper = views.get(group.next);
     if (item?.kind !== 'job' || item.job.id !== group.first.job.id || !wrapper) break;
     group.items.push(item); jobOwners.set(group.next, group);
     if (group.next !== group.first.seq) { clear(wrapper.view); wrapper.view.hidden = true; }
@@ -193,7 +338,10 @@ function reconcileJobs(seq: number) {
     else { group.view.classList.toggle('err', item.event.end.type === 'exit' ? item.event.end.code !== 0 : item.event.end.type !== 'stopped'); break; }
   }
   const owner = views.get(group.first.seq);
-  if (owner && owner.view.firstElementChild !== group.view) owner.view.replaceChildren(group.view);
+  if (owner) {
+    const parent = owner.view.querySelector<HTMLElement>('.thread-section') ?? owner.view;
+    if (group.view.parentNode !== parent) parent.append(group.view);
+  }
   group.kind.textContent = group.first.job.service ? 'service' : group.streams ? 'stream' : ''; group.kind.hidden = !group.kind.textContent;
   if (group.view.classList.contains('open')) showJob(group);
 }
@@ -488,8 +636,11 @@ function decide(event?: ScrollEvent, measurement = measure()) {
   if (stored !== undefined) scrolling = scrollStored(scrolling, stored);
 }
 function enqueue(event: ScrollEvent) { scrollEvents.push(event); schedule(); }
-const joins = (seq: number) => continuesRun(items.get(seq - 1));
-const shown = (seq: number) => { const item = items.get(seq); return item?.kind === 'assistant' && (item.blocks.some(block => block.type === 'text' && block.text.trim() !== '') || runStarts(item, joins(seq)) > 0); };
+const joins = (seq: number) => {
+  const previous = visible(seq - 1), current = visible(seq);
+  return previous?.kind === 'assistant' && current?.kind === 'assistant' && continuesRun(previous) && joinsRun(previous.blocks.at(-1), current.blocks[0]);
+};
+const shown = (seq: number) => { const item = visible(seq); return item?.kind === 'assistant' && (item.blocks.some(block => block.type === 'text' && block.text.trim() !== '') || runStarts(item, joins(seq)) > 0); };
 function changedItem(seq: number, appended: boolean) {
   const item = items.get(seq);
   if (item) enqueue({ type: 'item', seq, kind: item.kind === 'user' ? 'user' : item.kind === 'assistant' ? 'assistant' : 'other', visible: shown(seq), appended });
@@ -745,10 +896,10 @@ const runChanged = (marks: RunMarks, steps: Step[]) => marks.steps.length !== st
   return key !== step.key || current.block !== step.block || current.item.final !== step.item.final || current.item.stop !== step.item.stop || current.item.ended !== step.item.ended;
 });
 function reconcileRuns(seq: number, done = new Set<number>()) {
-  if (done.has(seq) || items.get(seq)?.kind !== 'assistant') return;
+  if (done.has(seq) || visible(seq)?.kind !== 'assistant') return;
   let start = seq, end = seq;
-  while (items.get(start - 1)?.kind === 'assistant') start--;
-  while (items.get(end + 1)?.kind === 'assistant') end++;
+  while (visible(start - 1)?.kind === 'assistant') start--;
+  while (visible(end + 1)?.kind === 'assistant') end++;
   for (let at = start; at <= end; at++) done.add(at);
   let steps: Step[] = [];
   const flush = () => {
@@ -772,12 +923,12 @@ function reconcileRuns(seq: number, done = new Set<number>()) {
     steps = [];
   };
   for (let current = start; current <= end; current++) {
-    const item = items.get(current), owner = views.get(current);
+    const item = visible(current), owner = views.get(current);
     if (item?.kind !== 'assistant') continue;
     if (!owner) { flush(); continue; }
     item.blocks.forEach((block, index) => {
-      if (block.type === 'text' || block.type === 'tool' && block.agent) flush();
-      else steps.push({ block, item, index, key: item.seq + ':' + index, slots: owner.slots });
+      if (!isStep(block)) flush();
+      else { if (steps.length && !joinsRun(steps.at(-1)?.block, block)) flush(); steps.push({ block, item, index, key: item.seq + ':' + index, slots: owner.slots }); }
     });
     if (item.error) flush();
   }
@@ -828,17 +979,37 @@ function commandNotice(item: Extract<WireItem, { kind: 'command' }>): NoticeRow 
   }
 }
 function accept(item: WireItem) {
-  const old = items.get(item.seq), appends = !old && table !== undefined && item.seq > (order.at(-1) ?? -1);
-  if (!old) orderAdd(item.seq);
+  const old = items.get(item.seq), previous = visible(item.seq);
+  const priorInput = !old && threadFilter() && (item.kind === 'user' || item.kind === 'agent' || item.kind === 'job') ? latestThreadInput() : undefined;
   items.set(item.seq, item);
+  if (old !== item) projections.delete(item.seq);
+  const shown = visible(item.seq), appends = !old && shown && table !== undefined && item.seq > (order.at(-1) ?? -1);
+  if (shown && !previous) order.splice(orderIndex(item.seq), 0, item.seq);
+  else if (!shown && previous) { const position = order.indexOf(item.seq); if (position >= 0) order.splice(position, 1); unmountRow(item.seq); }
   extents.delete(item.seq);
-  const same = old && table && old.kind === item.kind && continuesRun(old) === continuesRun(item) && (item.kind !== 'job' || old.kind === 'job' && old.job.id === item.job.id && old.event.type === item.event.type);
+  const before = visible(item.seq - 1), next = visible(item.seq + 1);
+  const sameJoins = previous?.kind !== 'assistant' || shown?.kind !== 'assistant' ||
+    ((!continuesRun(before) || before?.kind !== 'assistant' || joinsRun(before.blocks.at(-1), previous.blocks[0]) === joinsRun(before.blocks.at(-1), shown.blocks[0])) &&
+    (next?.kind !== 'assistant' || joinsRun(previous.blocks.at(-1), next.blocks[0]) === joinsRun(shown.blocks.at(-1), next.blocks[0])));
+  const same = previous && shown && table && sameJoins && previous.kind === shown.kind && continuesRun(previous) === continuesRun(shown) && (shown.kind !== 'job' || previous.kind === 'job' && previous.job.id === shown.job.id && previous.event.type === shown.event.type);
   if (appends && table) appendRow(table, item.seq);
   else if (same) patched.add(item.seq);
-  else { if (extents.get(item.seq + 1)?.kind === 'estimated') extents.delete(item.seq + 1); table = undefined; }
+  else if (previous || shown) { if (extents.get(item.seq + 1)?.kind === 'estimated') extents.delete(item.seq + 1); table = undefined; }
   windowDirty = true;
   if (item.kind === 'assistant' && !item.final || item.kind === 'command' && item.result.type === 'compaction' && item.result.state.type === 'running') live.add(item.seq); else live.delete(item.seq);
   first = first === undefined ? item.seq : Math.min(first, item.seq);
+  if (item.kind === 'threads') {
+    const previous = threadItems.get(item.target);
+    if (!previous || previous.seq < item.seq) {
+      visible(item.target);
+      threadItems.set(item.target, item);
+      const target = items.get(item.target);
+      if (target && (!previous || previous.threads.length !== item.threads.length || previous.threads.some((name, index) => name !== item.threads[index]))) {
+        owners.clear(); segmentCache.clear();
+        accept({ ...target }); changedItem(target.seq, false);
+      }
+    }
+  }
   if (item.kind === 'annotations') {
     let blocks = annotationItems.get(item.reply.seq);
     if (!blocks) { blocks = new Map(); annotationItems.set(item.reply.seq, blocks); }
@@ -851,36 +1022,64 @@ function accept(item: WireItem) {
     }
   }
   dirty.add(item.seq);
+  const threadChanged = !old || old.kind === 'assistant' && item.kind === 'assistant' && (old.blocks.length !== item.blocks.length || old.blocks.some((block, index) => block.thread !== item.blocks[index]?.thread));
+  for (const seq of views.keys()) {
+    if (seq > item.seq) dirty.add(seq);
+  }
+  if (old && threadChanged) { owners.clear(); segmentCache.clear(); }
+  if (priorInput?.kind === 'user' && priorInput.seq !== item.seq) accept({ ...priorInput });
   after = Math.max(after, first - 1);
   while (items.get(after + 1)?.final) after++;
   schedule();
 }
+function syncChildren(parent: HTMLElement, children: HTMLElement[]) {
+  children.forEach((child, index) => { if (parent.childNodes[index] !== child) parent.insertBefore(child, parent.childNodes[index] ?? null); });
+  while (parent.childNodes.length > children.length) { const extra = parent.lastChild; if (extra) unwatch(extra); extra?.remove(); }
+}
 function renderItem(item: WireItem) {
-  const previous = views.get(item.seq), warning = pathWarnings.get(item.seq);
-  if (previous?.item === item && previous.warning === warning) return;
+  const previous = views.get(item.seq), warning = pathWarnings.get(item.seq), preceding = precedingThread(item.seq), filter = threadFilter();
+  if (previous?.item === item && previous.warning === warning && previous.filter === filter && previous.preceding === preceding) return;
   const view = previous?.view ?? node('div');
   view.dataset.seq = String(item.seq);
   const refs = item.kind === 'user' ? item.images : item.kind === 'assistant' ? item.blocks.flatMap(block => block.type === 'tool' && 'result' in block.state ? block.state.result?.images ?? [] : []) : [];
   const ids = new Set(refs.map(ref => 'image:' + ref.id));
   const children: HTMLElement[] = [], slots = new Map([...previous?.slots ?? []].filter(([key]) => ids.has(key)));
-  let steps: Step[] = [];
+  let steps: Step[] = [], parts = children;
+  let section: HTMLElement | undefined, sectionThread: ThreadName | undefined, previousThread = preceding;
+  const finishSection = () => {
+    if (section) { syncChildren(section, parts); section.classList.toggle('thread-lines', !parts.some(part => part.classList.contains('msg'))); }
+    section = undefined; parts = children;
+  };
   const flush = () => {
     if (steps.length) {
       const key = steps[0].key, saved = previous?.slots.get(key);
       const slot: Slot = saved?.type === 'run' ? saved : { type: 'run', view: node('div') };
-      slots.set(key, slot); children.push(slot.view);
+      slots.set(key, slot); parts.push(slot.view);
     }
     steps = [];
+  };
+  const startSection = (name: ThreadName | undefined, index: number) => {
+    if (state.view.type !== 'root' || filter || !name) { if (section) { flush(); finishSection(); } sectionThread = undefined; return; }
+    if (section && sectionThread === name) return;
+    flush(); finishSection(); sectionThread = name;
+    section = [...previous?.view.children ?? []].find((child): child is HTMLElement => child instanceof HTMLElement && child.classList.contains('thread-section') && child.dataset.block === String(index));
+    section ??= node('div', undefined, 'thread-section'); section.dataset.block = String(index); section.dataset.thread = name;
+    section.style.setProperty('--thread-color', threadColour(name)); children.push(section); parts = [];
+    if (name !== previousThread) parts.push(threadMark(name)); previousThread = name;
   };
   if (item.kind === 'assistant') {
     view.className = 'assistant';
     item.blocks.forEach((block, index) => {
+      if (!isStep(block) || steps.length && !joinsRun(steps.at(-1)?.block, block)) flush();
+      if (block.type === 'text' && !block.text) return;
+      const thread = block.thread;
+      startSection(thread, index);
       const key = item.seq + ':' + index;
-      if (block.type === 'text') { flush(); if (block.text) children.push(prose(key, block.text, item.final || index < item.blocks.length - 1, annotationItems.get(item.seq)?.get(index), 'assistant')); }
-      else if (block.type === 'tool' && block.agent) { flush(); const saved = previous?.slots.get('agent:' + key); if (saved?.type === 'agent') slots.set('agent:' + key, saved); children.push(agentCard(block.agent, block.started ?? item.at, 'agent:' + key, slots)); }
+      if (block.type === 'text') { flush(); if (block.text) parts.push(prose(key, block.text, item.final || index < item.blocks.length - 1, annotationItems.get(item.seq)?.get(index), 'assistant')); }
+      else if (block.type === 'tool' && block.agent) { flush(); const saved = previous?.slots.get('agent:' + key); if (saved?.type === 'agent') slots.set('agent:' + key, saved); parts.push(agentCard(block.agent, block.started ?? item.at, 'agent:' + key, slots)); }
       else steps.push({ block, item, key, index, slots });
     });
-    flush();
+    flush(); finishSection();
     if (item.error) children.push(noticeRow({ key: item.seq + ':error', at: item.at, level: 'error', content: { type: 'text', text: item.error } }));
   } else {
     view.className = 'msg ' + item.kind;
@@ -890,23 +1089,26 @@ function renderItem(item: WireItem) {
       if (item.images.length) { const images = thumbnails(item.images, () => slots); images.load(); text.append(images.view); }
       const paths = item.attachments.filter(file => file.kind === 'file').map(file => file.path);
       if (paths.length) text.append(node('div', paths.join('\n'), 'paths'));
+      if (filter && waitingForThread(item)) { const waiting = node('div', 'waiting for its thread', 'thread-mark thread-waiting'); view.classList.add('thread-pending'); children.push(waiting); } else view.classList.remove('thread-pending');
       children.push(time, text);
     } else if (item.kind === 'notify') { view.className = ''; children.push(noticeRow({ key: 'notice:' + item.seq, at: item.at, level: item.level === 'info' ? undefined : item.level, content: { type: 'text', text: item.text.text } })); }
     else if (item.kind === 'command') { view.className = ''; children.push(noticeRow(commandNotice(item))); }
     else if (item.kind === 'agent') { view.className = ''; children.push(agentCard(item, item.at, 'agent:' + item.seq, slots)); }
-    else if (item.kind === 'annotations') { view.hidden = true; }
+    else if (item.kind === 'annotations' || item.kind === 'threads') { view.hidden = true; }
     else if (item.kind === 'job') { view.className = ''; const saved = previous?.slots.get('job'); if (saved?.type === 'job') slots.set('job', saved); }
     else if (item.kind === 'notice') { view.className = ''; children.push(noticeRow({ key: 'notice:' + item.seq, at: item.at, content: { type: 'markdown', text: item.text } })); }
     else if (item.kind === 'bash') { view.className = ''; children.push(commandRun(item, 'bash:' + item.seq).view); }
     else { view.className = ''; children.push(noticeRow({ key: 'notice:' + item.seq, at: item.at, content: { type: 'lead', lead: item.source === 'branch' ? 'branch' : 'compacted', preview: ' · ' + item.text.split('\n')[0], body: paragraphs(item.text) } })); }
   }
+  if (item.kind === 'agent' || item.kind === 'job') {
+    const content = children.splice(0); startSection(item.thread, 0); parts.push(...content); finishSection();
+  }
   if (warning) {
     if (item.kind === 'user') { const user = node('div', undefined, 'msg user'); user.append(...children); children.splice(0, children.length, user); view.className = ''; }
     children.push(noticeRow({ key: 'path:' + item.seq, at: item.at, level: 'warning', content: { type: 'text', text: warning } }));
   }
-  children.forEach((child, index) => { if (view.childNodes[index] !== child) view.insertBefore(child, view.childNodes[index] ?? null); });
-  while (view.childNodes.length > children.length) { const extra = view.lastChild; if (extra) unwatch(extra); extra?.remove(); }
-  views.set(item.seq, { view, item, warning, slots });
+  syncChildren(view, children);
+  views.set(item.seq, { view, item, warning, slots, filter, preceding });
   if (!previous) {
     observed.set(view, { type: 'row' }); layoutObserver.observe(view);
     const container = element('items'), next = [...views.keys()].filter(seq => seq > item.seq).sort((a, b) => a - b)[0];
@@ -914,26 +1116,26 @@ function renderItem(item: WireItem) {
   }
   return !!(slots.size || previous?.slots.size || !previous);
 }
-const ROW_BLOCKS = ':scope>:is(.msg,.aline,.nrow,.job,.cmdrun),:scope>div>.run';
+const ROW_BLOCKS = ':scope>:is(.msg,.aline,.nrow,.job,.cmdrun),:scope>div>.run,:scope>.thread-section>:is(.msg,.aline,.nrow,.job,.cmdrun),:scope>.thread-section>div>.run';
 function watchBlocks(row: HTMLElement) {
   for (const block of [...row.matches('.user') ? [row] : [], ...row.querySelectorAll(ROW_BLOCKS)]) if (!observed.has(block)) { observed.set(block, { type: 'block' }); layoutObserver.observe(block); }
 }
-function orderAdd(seq: number) {
+function orderIndex(seq: number) {
   let low = 0, high = order.length;
   while (low < high) { const middle = (low + high) >> 1; if (order[middle] < seq) low = middle + 1; else high = middle; }
-  order.splice(low, 0, seq);
+  return low;
 }
 const lineHeight = () => parseFloat(getComputedStyle(element('items')).lineHeight);
 function readMetrics() { measured = { width: element('items').clientWidth, lh: lineHeight() }; }
-const estimatedPx = (seq: number, followers: Set<number>) => { const item = items.get(seq); return followers.has(seq) || !item ? 0 : estimateExtent(item, measured.lh, joins(seq)); };
+const estimatedPx = (seq: number, followers: Set<number>) => { const item = visible(seq); return followers.has(seq) || !item ? 0 : estimateExtent(item, measured.lh, joins(seq)); };
 function extentOf(t: Table, seq: number) {
   let extent = extents.get(seq);
   if (!extent) { extent = { kind: 'estimated', px: estimatedPx(seq, t.followers) }; extents.set(seq, extent); }
   return extent.px + (t.divider?.before === seq ? t.divider.px : 0);
 }
 function groupsAfter(t: Table, seq: number) {
-  const item = items.get(seq), previous = items.get(seq - 1), last = t.groups.at(-1), open = last && last.to === seq - 1 ? last : undefined;
-  if (item?.kind === 'assistant' && previous?.kind === 'assistant' && continuesRun(previous)) {
+  const item = visible(seq), previous = visible(seq - 1), last = t.groups.at(-1), open = last && last.to === seq - 1 ? last : undefined;
+  if (item?.kind === 'assistant' && previous?.kind === 'assistant' && joins(seq)) {
     if (open?.kind === 'run') open.to = seq; else t.groups.push({ kind: 'run', from: seq - 1, to: seq });
   } else if (item?.kind === 'job' && previous?.kind === 'job' && previous.job.id === item.job.id && previous.event.type === 'stream') {
     t.followers.add(seq);
@@ -1021,7 +1223,7 @@ function windowStep(geo: Geo, rendered: { seq: number; runs: boolean }[]) {
   const mount = (index: number) => {
     const seq = order[index];
     if (views.has(seq)) return;
-    const item = items.get(seq), runs = item && renderItem(item);
+    const item = visible(seq), runs = item && renderItem(item);
     if (runs !== undefined) rendered.push({ seq, runs });
   };
   const bounds = (index: number): [number, number] => { const group = groupAt(t.groups, order[index]); return group ? [at(group.from) ?? index, at(group.to) ?? index] : [index, index]; };
@@ -1077,7 +1279,7 @@ function renderDirty(geo: Geo = geometry()) {
   const seqs = [...dirty].sort((a, b) => a - b), rendered: { seq: number; runs: boolean }[] = [];
   dirty.clear();
   if (windowDirty && state.view.type !== 'job') windowStep(geo, rendered);
-  for (const seq of seqs) { const item = items.get(seq), runs = item && views.has(seq) ? renderItem(item) : undefined; if (runs !== undefined) rendered.push({ seq, runs }); }
+  for (const seq of seqs) { const item = visible(seq), runs = item && views.has(seq) ? renderItem(item) : undefined; if (runs !== undefined) rendered.push({ seq, runs }); }
   const done = new Set<number>();
   for (const { seq, runs } of rendered) if (runs) reconcileRuns(seq, done);
   for (const { seq } of rendered) if (items.get(seq)?.kind === 'job') reconcileJobs(seq);
@@ -1088,6 +1290,25 @@ function renderDirty(geo: Geo = geometry()) {
   for (const { seq } of rendered) { const row = views.get(seq)?.view; if (row) watchBlocks(row); }
   const older = element('older');
   if (older.hidden === more) older.hidden = !more;
+  const sections: HTMLElement[] = [], edges: { view: HTMLElement; thread: string; top: number; bottom: number }[] = [];
+  let edge: typeof edges[number] | undefined;
+  for (const row of element('items').children) {
+    if (!(row instanceof HTMLElement) || row.hidden) continue;
+    if (row.classList.contains('gap')) { edge = undefined; continue; }
+    for (const child of row.children) {
+      if (!(child instanceof HTMLElement) || !child.classList.contains('thread-section') || !child.dataset.thread) { edge = undefined; continue; }
+      sections.push(child);
+      const rect = child.getBoundingClientRect();
+      if (edge?.thread === child.dataset.thread) edge.bottom = rect.bottom;
+      else { edge = { view: child, thread: child.dataset.thread, top: rect.top, bottom: rect.bottom }; edges.push(edge); }
+    }
+  }
+  const starts = new Set(edges.map(edge => edge.view));
+  for (const section of sections) section.classList.toggle('thread-edge', starts.has(section));
+  for (const edge of edges) {
+    const height = edge.bottom - edge.top + 'px';
+    if (edge.view.style.getPropertyValue('--thread-edge-height') !== height) edge.view.style.setProperty('--thread-edge-height', height);
+  }
   return reset;
 }
 
@@ -1149,7 +1370,9 @@ function refreshComposer() {
   editor.running(running);
   editor.readonly(editing());
   draft.refresh();
-  editor.placeholder(state.life.type === 'starting' ? 'Starting pi…' : state.life.type === 'switching' ? 'Loading…' : running ? 'running… ⎋ cancels' : draft.hover && !state.edit ? 'Drop to attach' : hasFailed() ? 'koa could not start the agent' : working && state.compaction !== 'running' ? 'Steer ' + viewedName() + '…' : 'Message ' + viewedName() + '…');
+  const thread = threadFilter();
+  const addressed = thread ? '@' + (state.name || 'koa') + ' in #' + thread : viewedName();
+  editor.placeholder(state.life.type === 'starting' ? 'Starting pi…' : state.life.type === 'switching' ? 'Loading…' : running ? 'running… ⎋ cancels' : draft.hover && !state.edit ? 'Drop to attach' : hasFailed() ? 'koa could not start the agent' : working && state.compaction !== 'running' ? 'Steer ' + addressed + '…' : 'Message ' + addressed + '…');
   if (state.edit) element('composer').setAttribute('title', 'Editing in ' + state.edit.editor); else element('composer').removeAttribute('title');
   element('model-name').textContent = state.model?.id ?? '';
   element('thinking').textContent = state.thinking ? '· ' + state.thinking : '';
@@ -1244,7 +1467,7 @@ function queue() {
     close.onclick = () => {
       close.disabled = true;
       const origin = state.sessionId;
-      fetchJSON('/queue/remove', { sessionId: origin, kind, index, text: entry.text }).catch(error => {
+      fetchJSON('/queue/remove', { sessionId: origin, kind, index, text: entry.text, ...(entry.thread ? { thread: entry.thread } : {}) }).catch(error => {
         const unsent = error?.body?.unsent;
         if (unsent && state.sessionId === origin) restoreQueued([...unsent.steering, ...unsent.followUp]);
         reportError(error); close.disabled = false;
@@ -1378,11 +1601,13 @@ function apply(record: PageRecord) {
   if (record.type === 'reset') {
     pathWarnings.clear(); pathWarningEpoch++;
     editor.resetCompletion();
-    find = undefined; selected = undefined; segmentCache.clear(); owners.clear(); epoch = record.epoch; after = -1; first = undefined; items.clear(); order.length = 0; extents.clear(); live.clear(); dirty.clear(); stale.clear(); annotationItems.clear(); folds.clear(); jobOwners.clear(); historyRequest = undefined; more = record.more;
+    find = undefined; selected = undefined; segmentCache.clear(); owners.clear(); epoch = record.epoch; after = -1; first = undefined; items.clear(); order.length = 0; extents.clear(); live.clear(); dirty.clear(); stale.clear(); annotationItems.clear(); threadItems.clear(); projections.clear(); folds.clear(); jobOwners.clear(); historyRequest = undefined; more = record.more;
     enqueue({ type: 'reset' });
     lastMeasurement = undefined;
     resetting = true;
     for (const item of record.items) { accept(item); changedItem(item.seq, false); }
+    historyBefore = record.items.filter(item => item.kind !== 'annotations' && item.kind !== 'threads').reduce((lowest, item) => Math.min(lowest, item.seq), Infinity);
+    if (threadFilter()) void reloadThread();
     schedule();
   } else if (record.type === 'item') {
     const current = items.get(record.item.seq);
@@ -1400,7 +1625,16 @@ function apply(record: PageRecord) {
     if (viewChanged) leaveView(record.view.id);
     if (viewChanged || state.sessionId !== record.sessionId) { pathWarnings.clear(); pathWarningEpoch++; }
     if (viewChanged || state.sessionId !== record.sessionId) decide({ type: 'switch', scope: { view: record.view.id, sessionId: record.sessionId } });
-    state = record; windowDirty = true; schedule(); if (agentsChanged || viewChanged) refreshAgentCards(); document.body.dataset.sessionId = state.sessionId ?? ''; element('items').hidden = state.life.type === 'switching';
+    const scopeChanged = viewChanged || state.sessionId !== record.sessionId, previousFilter = threadFilter(), priorInput = latestThreadInput();
+    if (previousFilter && priorInput?.kind === 'user') visible(priorInput.seq);
+    const workingChanged = state.working !== record.working;
+    state = record;
+    if (scopeChanged) { historyRequest = undefined; historyBefore = undefined; }
+    if ('threads' in record && !record.threads.some(thread => thread.name === threadFilter())) threadFilters.delete(filterKey());
+    renderThreads();
+    if (previousFilter !== threadFilter() || scopeChanged && threadFilter() !== undefined) { historyRequest = undefined; historyBefore = undefined; refreshThreadItems(); if (epoch && record.view.type === 'root') void reloadThread(); }
+    if (workingChanged && previousFilter === threadFilter() && threadFilter() && priorInput?.kind === 'user') accept({ ...priorInput });
+    windowDirty = true; schedule(); if (agentsChanged || viewChanged) refreshAgentCards(); document.body.dataset.sessionId = state.sessionId ?? ''; element('items').hidden = state.life.type === 'switching';
     showJobView();
     if (viewChanged) rescopeImages();
     renderBar(); refreshBash(); reconcileWorking(); refreshComposer(); dialogs(); queue(); exited();
@@ -1525,7 +1759,7 @@ type FindAnswer = { index: number; count: number; loading: boolean } | { cancell
 let find: Find | undefined;
 type Cached = { item: WireItem; previous: WireItem | undefined; segments: Segment[]; needle?: string; starts?: number[][] };
 const segmentCache = new Map<number, Cached>(), owners = new Map<string, string>();
-const findContext = () => ({ items: (at: number) => items.get(at), fold: REVEAL.fold, cwd: displayPath(state.cwd), owners });
+const findContext = () => ({ items: (at: number) => visible(at), fold: REVEAL.fold, cwd: displayPath(state.cwd), owners });
 let selected: { from: number; to: number } | undefined;
 function rowSeq(node: Node | null) {
   for (let at = node; at; at = at.parentNode) if (at.parentNode === element('items') && at instanceof HTMLElement && at.dataset.seq !== undefined) return Number(at.dataset.seq);
@@ -1553,10 +1787,10 @@ function pinnedRows() {
 }
 function transcriptText() {
   const context = findContext();
-  return order.flatMap(seq => { const item = items.get(seq), text = item ? exportText(item, context) : ''; return text ? [text] : []; }).join('\n\n');
+  return order.flatMap(seq => { const item = visible(seq), text = item ? exportText(item, context) : ''; return text ? [text] : []; }).join('\n\n');
 }
 function cached(seq: number) {
-  const item = items.get(seq), previous = items.get(seq - 1), entry = segmentCache.get(seq);
+  const item = visible(seq), previous = visible(seq - 1), entry = segmentCache.get(seq);
   if (!item) return undefined;
   if (entry?.item === item && entry.previous === previous) return entry;
   owners.delete('run:' + seq); owners.delete('job:' + seq);
@@ -1721,16 +1955,22 @@ window.addEventListener('pagehide', () => { closed = true; source?.close(); clea
 window.addEventListener('pageshow', event => { if (event.persisted && closed && !failed) { closed = false; connect(); } });
 function older() {
   if (state.view.type === 'job' || !more || first === undefined) return;
-  if (!historyRequest) { const request = historyRequest = { patches: [], done: Promise.resolve() }; request.done = loadOlder(request); }
+  if (!historyRequest) { const request = historyRequest = { before: historyBefore ?? first, ...(threadFilter() ? { thread: threadFilter() } : {}), patches: [], done: Promise.resolve() }; request.done = loadOlder(request); }
   return historyRequest.done;
+}
+async function reloadThread() {
+  const request = historyRequest = { before: Number.MAX_SAFE_INTEGER, ...(threadFilter() ? { thread: threadFilter() } : {}), patches: [], done: Promise.resolve() };
+  request.done = loadOlder(request);
+  return request.done;
 }
 async function loadOlder(mine: NonNullable<typeof historyRequest>) {
   try {
-    const response = await fetch(scoped('/items?before=' + first, state.sessionId)); if (!response.ok) throw Error('Could not load earlier messages');
+    const response = await fetch(scoped('/items?before=' + mine.before + (mine.thread ? '&thread=' + encodeURIComponent(mine.thread) : ''), state.sessionId)); if (!response.ok) throw Error('Could not load earlier messages');
     const result: Extract<PageRecord, { type: 'reset' }> = await response.json();
     if (historyRequest === mine && result.epoch === epoch) {
       enqueue({ type: 'history' });
       more = result.more;
+      historyBefore = result.items.filter(item => item.kind !== 'annotations' && item.kind !== 'threads').reduce((lowest, item) => Math.min(lowest, item.seq), mine.before);
       for (const item of result.items) if (!items.has(item.seq)) accept(item);
       for (const patch of mine.patches) { applyPatch(patch, false); if (historyRequest !== mine) return; }
       await rendered();
@@ -1871,7 +2111,7 @@ async function send(mode: PromptMode = 'prompt') {
   submitting = true;
   decide({ type: 'submit' });
   try {
-    const result = await fetchJSON('/prompt', { sessionId: sendingSession, text, mode, attachments: files.map(file => file.id) });
+    const result = await fetchJSON('/prompt', { sessionId: sendingSession, text, mode, attachments: files.map(file => file.id), ...(threadFilter() ? { thread: threadFilter() } : {}) });
     if (result.disposition !== 'handled') draft.sent(files);
     if (state.view.id !== origin) { if (drafts.get(origin) === text) drafts.delete(origin); return; }
     if (state.sessionId !== sendingSession || scrolling.generation !== generation) return;
@@ -1934,9 +2174,9 @@ document.addEventListener('keydown', event => {
       : ['ArrowDown', 'PageDown', 'End', ' '].includes(event.key) ? 'down' : undefined;
     if (direction) decide({ type: 'input', direction });
   }
-  previewHover(event); if (previewKey(event)) return; if (!barMenu.hidden && event.key === 'Escape') { event.preventDefault(); closeBarMenu(); return; } if (state.view.type === 'job') return; if (!event.defaultPrevented && event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey && !event.isComposing && event.key === 'g' && composerReceivesKeys() && !editing()) { event.preventDefault(); void openEditor(); return; } if (event.defaultPrevented || event.metaKey || event.ctrlKey || event.isComposing || state.dialogs.length || pickerButton || sessionPicker !== 'closed') return; if (event.key === 'Tab') { event.preventDefault(); if (!element('field').inert) editor.focus(); return; } if (composerReceivesKeys() && !event.altKey && event.key.length === 1 && !(event.key === ' ' && isControl(event.target)) && !isTextInput(event.target)) { event.preventDefault(); editor.focus(); editor.insert(event.key); return; } if (event.key === 'Enter' && hasFailed() && event.target === document.body) element('exited').querySelector('button')?.click(); if (event.key === 'Escape') { event.preventDefault(); if (editing()) return; if (state.bash.some(item => item.phase === 'running')) { escaped = false; void stop(); } else if (state.working) { escaped = true; void stop(); } else if (escaped) { editor.setText(''); } else { escaped = true; } } });
+  previewHover(event); if (previewKey(event)) return; if (event.key === 'Escape' && element('threads').querySelector<HTMLElement>('.thread-panel')?.hidden === false) { event.preventDefault(); closeThreads(); return; } if (!barMenu.hidden && event.key === 'Escape') { event.preventDefault(); closeBarMenu(); return; } if (state.view.type === 'job') return; if (!event.defaultPrevented && event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey && !event.isComposing && event.key === 'g' && composerReceivesKeys() && !editing()) { event.preventDefault(); void openEditor(); return; } if (event.defaultPrevented || event.metaKey || event.ctrlKey || event.isComposing || state.dialogs.length || pickerButton || sessionPicker !== 'closed') return; if (event.key === 'Tab') { event.preventDefault(); if (!element('field').inert) editor.focus(); return; } if (composerReceivesKeys() && !event.altKey && event.key.length === 1 && !(event.key === ' ' && isControl(event.target)) && !isTextInput(event.target)) { event.preventDefault(); editor.focus(); editor.insert(event.key); return; } if (event.key === 'Enter' && hasFailed() && event.target === document.body) element('exited').querySelector('button')?.click(); if (event.key === 'Escape') { event.preventDefault(); if (editing()) return; if (state.bash.some(item => item.phase === 'running')) { escaped = false; void stop(); } else if (state.working) { escaped = true; void stop(); } else if (escaped) { editor.setText(''); } else { escaped = true; } } });
 element('model').onclick = () => picker('model'); element('thinking').onclick = () => picker('thinking');
-document.addEventListener('pointerdown', event => { if (!barMenu.hidden && !barMenu.contains(event.target instanceof Node ? event.target : null) && !(event.target instanceof Element && event.target.closest('.ellipsis'))) closeBarMenu(); if (!element('picker').contains(event.target instanceof Node ? event.target : null) && !pickerButton?.contains(event.target instanceof Node ? event.target : null)) closePicker(); });
+document.addEventListener('pointerdown', event => { if (!element('threads').contains(event.target instanceof Node ? event.target : null)) closeThreads(); if (!barMenu.hidden && !barMenu.contains(event.target instanceof Node ? event.target : null) && !(event.target instanceof Element && event.target.closest('.ellipsis'))) closeBarMenu(); if (!element('picker').contains(event.target instanceof Node ? event.target : null) && !pickerButton?.contains(event.target instanceof Node ? event.target : null)) closePicker(); });
 element('scroll').onscroll = () => {
   decide({ type: 'scroll' });
   const geo = geometry(), top = geo.top - geo.origin, half = geo.viewport / 2, { total } = ensureTable();
@@ -1973,7 +2213,7 @@ function resized(entries: ResizeObserverEntry[]) {
   const column = entries.some(({ target }) => target === element('scroll')) && !bar.hidden ? element('transcript').getBoundingClientRect() : undefined;
   for (const { target, borderBoxSize } of entries) {
     if (target === element('dock')) dockResized(borderBoxSize[0].blockSize);
-    if (target === element('scroll') && column) layoutBar(column);
+    if (target === element('scroll')) { if (column) layoutBar(column); fitThreads(); }
   }
   decide({ type: 'layout', cause: 'layout' });
 }

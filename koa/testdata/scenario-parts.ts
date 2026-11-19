@@ -1,4 +1,4 @@
-import type { PageRecord, WireItem, Block, Text } from "../koa-records.ts";
+import type { RootState, PageRecord, WireItem, Block, Text } from "../koa-records.ts";
 import { next, expect, type Step } from "./scenario.ts";
 
 export const textImplementTheSidebar = "Implement the **sidebar** indicators with `SidebarRow.swift`; see [the reference](https://example.com/sidebar).\n\n- Keep the **status** at the right.\n- Update `SidebarView.swift`.\n\nRules from the approved mockup (app/design/sidebar/mockup.html, NOTES.md \"Indicator on the right\"):\n1. status and the hover-close × share one 12pt trailing slot centred 18pt from the row's right edge;\n2. title, activity and folded circles start at 12pt;\n3. nesting stays 15pt per level;\n4. the session + aligns with the rightmost indicator;\n5. idle indicators are muted gray at 50% on every row.\n\nAdd snapshot tests for every state of the mockup (light and dark, docked and floating). Run the app's make test; report the pre-fix failures and the diff summary. Do not commit.";
@@ -9,11 +9,11 @@ export const textBuiltTheRight = "Built the **right-side** indicators with `Side
 
 export const textReadAndChange = "Read and change the user's ko terminal layout - sessions, windows (tabs), panes, splits, floats, focus and the sidebar's pane rows (title, status, cwd, runtime, program) - with `ko api`. Use when the user talks about their windows, tabs, panes, sessions, splits, floats or the sidebar, asks what runs where, or asks to open, split, rename or close one.";
 
-export const stateIdle = (dir: string): Extract<PageRecord, { type: "state" }> => ({ pathEditor: true, view: { id: "00000000-0000-7000-8000-000000000001", path: [{ id: "00000000-0000-7000-8000-000000000001", name: "ko", type: "agent" }], type: "agent" }, agents: [], bash: [], compaction: "idle", working: false, aborted: false, name: "koa reference", levels: ["off", "minimal", "low", "medium", "high", "xhigh"], cwd: `${dir}/home/Workspace/kido`, home: `${dir}/home`, dialogs: [], statuses: {}, sessionId: "00000000-0000-7000-8000-000000000001", model: { provider: "anthropic", id: "claude-opus-5-5" }, thinking: "high", sessionFile: `${dir}/home/sessions/2026-11-10T09-00-00-000Z_00000000-0000-7000-8000-000000000001.jsonl`, context: { tokens: 84000, window: 200000, percent: 42 }, queue: { steering: [], followUp: [] }, life: { type: "ready" }, type: "state" });
+export const stateIdle = (dir: string): RootState & { type: "state" } => ({ pathEditor: true, view: { id: "00000000-0000-7000-8000-000000000001", path: [{ id: "00000000-0000-7000-8000-000000000001", name: "ko", type: "agent" }], type: 'root' }, threads: [], agents: [], bash: [], compaction: "idle", working: false, aborted: false, name: "koa reference", levels: ["off", "minimal", "low", "medium", "high", "xhigh"], cwd: `${dir}/home/Workspace/kido`, home: `${dir}/home`, dialogs: [], statuses: {}, sessionId: "00000000-0000-7000-8000-000000000001", model: { provider: "anthropic", id: "claude-opus-5-5" }, thinking: "high", sessionFile: `${dir}/home/sessions/2026-11-10T09-00-00-000Z_00000000-0000-7000-8000-000000000001.jsonl`, context: { tokens: 84000, window: 200000, percent: 42 }, queue: { steering: [], followUp: [] }, life: { type: "ready" }, type: "state" });
 
-export const stateIdleThird = (dir: string): Extract<PageRecord, { type: "state" }> => ({ ...stateIdle(dir), context: { tokens: 84006, window: 200000, percent: 42.003 } });
+export const stateIdleThird = (dir: string): RootState & { type: "state" } => ({ ...stateIdle(dir), context: { tokens: 84006, window: 200000, percent: 42.003 } });
 
-export const stateIdleFourth = (dir: string): Extract<PageRecord, { type: "state" }> => ({ ...stateIdle(dir), name: "sidebar-right" });
+export const stateIdleFourth = (dir: string): RootState & { type: "state" } => ({ ...stateIdle(dir), name: "sidebar-right" });
 
 export const assistantVerifiedEveryStageSeq1Rev0: WireItem = { seq: 1, revision: 0, at: 1794330720000, final: true, kind: "assistant", blocks: [{ type: "text", text: "Verified: every stage passes. The snapshots that changed are the twelve of SidebarTests." }], stop: "stop", error: "" };
 

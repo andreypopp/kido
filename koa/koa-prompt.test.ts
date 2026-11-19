@@ -1,7 +1,21 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { prompts } from './koa-queue.ts';
-import { bashCommand } from './prompt.ts';
+import { bashCommand, decodePrompt, threadPrompt } from './prompt.ts';
+import { parseThreadName } from './records.ts';
+
+test('thread prompts hide their marker and retain attachment identity in queues', () => {
+  const one = parseThreadName('one'); assert.ok(one);
+  const two = parseThreadName('two'); assert.ok(two);
+  assert.equal(threadPrompt('[thread: one]\nhello', two), '[thread: two]\nhello');
+  assert.deepEqual(decodePrompt('[thread: one]\nhello\n/tmp/a', [{ id: 'f', name: 'a', path: '/tmp/a', kind: 'file', origin: 'path', size: 1 }], 'root'), { text: 'hello', thread: one });
+  assert.deepEqual(decodePrompt('[thread: one]\nhello', [], 'subagent'), { text: '[thread: one]\nhello' });
+  const queue = prompts('root');
+  queue.add(threadPrompt('same', one), 'steer', []); queue.add(threadPrompt('same', two), 'steer', []);
+  queue.update({ steering: [threadPrompt('same', one), threadPrompt('same', two)], followUp: [] });
+  assert.deepEqual(queue.view().steering, [{ text: 'same', thread: one, attachments: [] }, { text: 'same', thread: two, attachments: [] }]);
+  assert.deepEqual(queue.takeBack({ steering: [threadPrompt('same', two)], followUp: [] }).steering, [{ text: 'same', thread: two, attachments: [] }]);
+});
 
 test('bang commands keep shell text and context choice', () => {
   assert.deepEqual(bashCommand('! echo hi'), { command: 'echo hi', excludeFromContext: false, prefixLength: 1 });

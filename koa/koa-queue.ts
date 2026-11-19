@@ -1,10 +1,10 @@
 import type { Attachment, QueuedPrompt } from './koa-records.ts';
-import { promptText } from './prompt.ts';
+import { decodePrompt } from './prompt.ts';
 
 type Sent = { text: string; mode: 'prompt' | 'steer' | 'followUp'; attachments: Attachment[]; warning?: string };
 type Queue = { steering: readonly string[]; followUp: readonly string[] };
 
-export function prompts() {
+export function prompts(kind: 'root' | 'subagent' = 'subagent') {
   const sent: Sent[] = [];
   let queue: Queue = { steering: [], followUp: [] };
   let next: { text: string; entry?: Sent } | undefined;
@@ -24,7 +24,7 @@ export function prompts() {
     return freshTexts(texts, mode).map(text => {
       const index = available.findIndex(entry => entry.text === text);
       const attachments = index < 0 ? [] : available.splice(index, 1)[0]?.attachments ?? [];
-      return { text: promptText(text, attachments), attachments };
+      return { ...decodePrompt(text, attachments, kind), attachments };
     }).filter(entry => entry.text !== '' || entry.attachments.length > 0);
   };
   return {

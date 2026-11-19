@@ -1,13 +1,15 @@
 import type { ViewRequest, LogChunk, CompletionQuery, CompletionResult, PromptMode, PromptResult, QueuedPrompt, SessionRow, SessionScope, ThinkingLevel, UploadProgress, WireItem } from '../koa-records.ts';
 
+import type { ThreadName } from '../records.ts';
+
 type Session = { sessionId: string | undefined } & ViewRequest;
 type Empty = Record<string, never>;
 
 export type Routes = {
-  '/prompt': { request: Session & { text: string; mode: PromptMode | 'steer'; attachments: string[] }; response: PromptResult };
+  '/prompt': { request: Session & { text: string; thread?: ThreadName; mode: PromptMode | 'steer'; attachments: string[] }; response: PromptResult };
   '/complete': { request: Session & CompletionQuery; response: CompletionResult };
   '/history': { request: undefined; response: { entries: string[] } };
-  '/items': { request: Session & { before: number }; response: { epoch: string; more: boolean; items: WireItem[] } };
+  '/items': { request: Session & { before: number; thread?: ThreadName }; response: { epoch: string; more: boolean; items: WireItem[] } };
   '/sessions/list': { request: Session & { scope: SessionScope }; response: { rows: SessionRow[] } };
   '/sessions/switch': { request: Session & { path: string }; response: { cancelled: boolean } };
   '/sessions/new': { request: Session; response: { cancelled: boolean } };
@@ -20,7 +22,7 @@ export type Routes = {
   '/editor/open': { request: Session & { text: string }; response: { pane: string } };
   '/editor/ack': { request: Session & { id: string }; response: Empty };
   '/queue/clear': { request: Session; response: { steering: QueuedPrompt[]; followUp: QueuedPrompt[] } };
-  '/queue/remove': { request: Session & { kind: 'steer' | 'follow-up'; index: number; text: string }; response: Empty };
+  '/queue/remove': { request: Session & { kind: 'steer' | 'follow-up'; index: number; text: string; thread?: ThreadName }; response: Empty };
   '/agent/start': { request: Session; response: Empty };
   '/quit': { request: Session; response: Empty };
   '/view': { request: Session & { id: string }; response: Empty };

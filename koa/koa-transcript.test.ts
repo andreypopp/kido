@@ -39,6 +39,96 @@ function assistant(text: string, stopReason: "stop" | "error" = "stop"): Extract
   return { role: "assistant", content: [{ type: "text", text }], api: "openai-responses", provider: "openai", model: "test", usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } }, stopReason, timestamp: 123 };
 }
 
+test('root thread projection splits sections, preserves tool indexes and remaps annotations', t => {
+  const view = transcript({ dir: directory(t), flushMs: 1, kind: 'root' }); t.after(() => view.close());
+  const text = '[thread: one]\n😀 Pick one?\n[thread: two]\nNext?';
+  const message = { ...assistant(text), content: [{ type: 'text' as const, text }, { type: 'toolCall' as const, id: 'read', name: 'read', arguments: { path: '/tmp/source' } }] };
+  view.rebuild([message]);
+  let items = JSON.parse(request(view, '/items?before=100').join('')).items;
+  assert.deepEqual(items[0].blocks.map((block: { type: string; thread?: string; text?: string }) => [block.type, block.thread, block.text]), [['text', 'one', '😀 Pick one?\n'], ['text', 'two', 'Next?'], ['tool', 'two', undefined]]);
+  assert.equal(view.itemFile(0, 2), '/tmp/source');
+  view.toolDone('read', [{ type: 'image', data: Buffer.from('image').toString('base64'), mimeType: 'image/png' }], false, 124);
+  const tool = JSON.parse(request(view, '/items?before=100').join('')).items[0].blocks[2];
+  assert.equal(tool.state.result.images[0].id, '0.1.0');
+  view.annotation({ type: 'custom', id: 'mark', parentId: null, timestamp: new Date(124).toISOString(), customType: 'reply-annotations', data: { reply: { at: 123, block: 0, length: Array.from(text).length }, annotations: [{ type: 'question', kind: 'choice', range: [16, 25], options: [[21, 24]] }, { type: 'question', kind: 'open', range: [16, 43] }] } });
+  items = JSON.parse(request(view, '/items?before=100').join('')).items;
+  assert.deepEqual(items[1].reply, { seq: 0, block: 0 });
+  assert.deepEqual(items[1].annotations, [{ type: 'question', kind: 'choice', range: [2, 11], options: [[7, 10]] }]);
+  const child = transcript({ dir: directory(t), flushMs: 1 }); t.after(() => child.close()); child.rebuild([assistant(text)]);
+  assert.equal(JSON.parse(request(child, '/items?before=100').join('')).items[0].blocks[0].text, text);
+});
+
+test('thread attribution labels final prefixes with metadata without changing them', t => {
+  const view = transcript({ dir: directory(t), flushMs: 1, kind: 'root' }); t.after(() => view.close());
+  const user = { role: 'user' as const, content: 'work', timestamp: 100 };
+  const prefix = { ...assistant(''), content: [{ type: 'thinking' as const, thinking: 'Plan' }] };
+  view.message(user, 'end'); view.message(prefix, 'end');
+  const before = JSON.parse(request(view, '/items?before=100').join('')).items;
+  view.message({ ...assistant('[thread: one]\nFirst\n[thread: two]\nSecond'), timestamp: 130 }, 'end');
+  const items = JSON.parse(request(view, '/items?before=100').join('')).items;
+  assert.deepEqual(items[1], before[1]); assert.equal(items[1].final, true);
+  assert.ok(items.some((item: { kind: string; target?: number; threads?: string[] }) => item.kind === 'threads' && item.target === 1 && item.threads?.join() === 'one'));
+  assert.deepEqual(items.filter((item: { kind: string; target?: number }) => item.kind === 'threads' && item.target === 0).at(-1).threads, ['one', 'two']);
+  const filtered = JSON.parse(request(view, '/items?before=100&thread=two').join(''));
+  assert.ok(filtered.items.some((item: { kind: string }) => item.kind === 'user'));
+  assert.equal(filtered.more, false);
+});
+
+test('streaming markers do not leak and explicit users stay in one thread', t => {
+  const view = transcript({ dir: directory(t), flushMs: 1, kind: 'root' }); t.after(() => view.close());
+  view.message({ role: 'user', content: '[thread: selected]\nwork', timestamp: 100 }, 'end');
+  view.message(assistant('[thread: one]\nBody\n[thre'), 'update');
+  let items = JSON.parse(request(view, '/items?before=100').join('')).items;
+  assert.equal(items[0].text, 'work'); assert.equal(items[0].thread, 'selected');
+  assert.deepEqual(items[1].blocks.map((block: { text: string }) => block.text), ['Body\n']);
+  view.message(assistant('[thread: one]\nBody\n[thread: two]\nOther'), 'end');
+  items = JSON.parse(request(view, '/items?before=100&thread=two').join('')).items;
+  assert.equal(items.some((item: { kind: string }) => item.kind === 'user'), false);
+});
+
+test('thread intervals follow inputs, tools inherit the turn thread and unmarked replies stay unlabelled', t => {
+  const view = transcript({ dir: directory(t), flushMs: 1, kind: 'root' }); t.after(() => view.close());
+  const inbound: AgentMessage = { role: 'custom', customType: 'agent-message', display: true, content: 'event', details: { thread: 'agent', agent: { name: 'worker' }, body: 'event', inbound: { form: 'message', relation: 'child' } }, timestamp: 100 };
+  const tool = { ...assistant(''), content: ['read', 'spawn_agent', 'message_agent', 'async_bash'].map(name => ({ type: 'toolCall' as const, id: name, name, arguments: { path: '/tmp/file' } })) };
+  const messages: AgentMessage[] = [
+    { role: 'user', content: 'first', timestamp: 90 }, assistant('[thread: first]\nFirst'),
+    inbound, tool,
+    { role: 'user', content: 'steer', timestamp: 140 }, { ...assistant('[thread: steer]\nSteered'), timestamp: 150 },
+    { role: 'user', content: 'follow-up', timestamp: 160 }, { ...assistant('No marker'), timestamp: 170 },
+  ];
+  view.rebuild(messages);
+  const items = JSON.parse(request(view, '/items?before=100').join('')).items;
+  assert.equal(items.find((item: { kind: string }) => item.kind === 'agent').thread, 'agent');
+  assert.deepEqual(items.find((item: { kind: string; blocks?: { type: string }[] }) => item.kind === 'assistant' && item.blocks?.[0].type === 'tool').blocks.map((block: { thread?: string }) => block.thread), ['agent', 'agent', 'agent', 'agent']);
+  const users = items.filter((item: { kind: string }) => item.kind === 'user');
+  const names = (seq: number) => items.filter((item: { kind: string; target?: number }) => item.kind === 'threads' && item.target === seq).at(-1)?.threads;
+  assert.deepEqual(names(users[0].seq), ['first']); assert.deepEqual(names(users[1].seq), ['steer']); assert.equal(names(users[2].seq), undefined);
+  const unmarked = items.filter((item: { kind: string }) => item.kind === 'assistant').at(-1);
+  assert.deepEqual(unmarked.blocks.map((block: { thread?: string }) => block.thread), [undefined]);
+});
+
+test('thread state keeps entry order, raw last section and source time through compaction', t => {
+  const view = transcript({ dir: directory(t), flushMs: 1, kind: 'root' }); t.after(() => view.close());
+  const historical = { type: 'message' as const, id: 'old', parentId: null, timestamp: new Date(123).toISOString(), message: assistant('[thread: old]\n**raw summary**\nBody') };
+  const entries = [historical, { type: 'custom' as const, id: 'empty', parentId: 'old', timestamp: new Date(124).toISOString(), customType: 'koa.thread', data: { name: 'empty', at: 124 } }, { type: 'custom' as const, id: 'index', parentId: 'empty', timestamp: new Date(125).toISOString(), customType: 'koa.thread', data: { name: 'old', at: 125 } }];
+  view.rebuild([], 'session', entries, 'index');
+  assert.deepEqual(view.threads(), [{ name: 'empty' }, { name: 'old', last: { summary: '**raw summary**', at: 123 } }]);
+  view.message({ ...assistant('[thread: fresh]\n# New'), timestamp: 200 }, 'update');
+  request(view, '/items?before=100');
+  assert.deepEqual(view.threads().at(-1), { name: 'fresh', last: { summary: '# New', at: 200 } });
+  view.annotation({ type: 'custom', id: 'promoted', parentId: 'index', timestamp: new Date(201).toISOString(), customType: 'koa.thread', data: { name: 'fresh', at: 200 } });
+  assert.deepEqual(view.threads().map(thread => thread.name), ['empty', 'old', 'fresh']);
+});
+
+test('thread rebuild emits one final label set per user across several assistant messages', t => {
+  const view = transcript({ dir: directory(t), flushMs: 1, kind: 'root' }); t.after(() => view.close());
+  view.rebuild([{ role: 'user', content: 'both', timestamp: 1 }, { ...assistant('[thread: one]\nOne'), timestamp: 2 }, { ...assistant('[thread: two]\nTwo'), timestamp: 3 }, { role: 'user', content: 'next', timestamp: 4 }]);
+  const items = JSON.parse(request(view, '/items?before=100').join('')).items;
+  const labels = items.filter((item: { kind: string; target?: number }) => item.kind === 'threads' && item.target === 0);
+  assert.equal(labels.length, 1); assert.deepEqual(labels[0].threads, ['one', 'two']);
+  assert.deepEqual(items.filter((item: { kind: string }) => item.kind === 'user').map((item: { text: string }) => item.text), ['both', 'next']);
+});
+
 test('live output bounds keep a UTF-8 tail and count omitted bytes', () => {
   assert.deepEqual(appendBashOutput({ text: 'first', cut: 4 }, '😀' + 'x'.repeat(16383)), { text: 'x'.repeat(16383), cut: 13 });
   assert.deepEqual(appendBashOutput({ text: '😀', cut: 0 }, 'x'.repeat(16380)), { text: '😀' + 'x'.repeat(16380), cut: 0 });
@@ -363,7 +453,7 @@ test("identical image partials emit no patch and changed bytes advance the wire 
 
 test("rebuild sends reset then exactly one caller-supplied state and keeps the epoch format", t => {
   const view = transcript({ dir: directory(t), flushMs: 1000 });
-  const state = { agents: [], bash: [], pathEditor: false, compaction: 'idle' as const, working: false, name: "before", model: { provider: "test", id: "test" }, aborted: false, levels: [], cwd: "/tmp", home: "/tmp", dialogs: [], statuses: {}, queue: { steering: [], followUp: [] }, view: { id: "root", path: [{ id: "root", name: "pi", type: "agent" as const }], type: "agent" as const }, life: { type: "ready" as const } };
+  const state = { pathEditor: false, agents: [], bash: [], compaction: 'idle' as const, working: false, name: "before", model: { provider: "test", id: "test" }, aborted: false, levels: [], cwd: "/tmp", home: "/tmp", dialogs: [], statuses: {}, queue: { steering: [], followUp: [] }, view: { id: "root", path: [{ id: "root", name: "pi", type: "agent" as const }], type: 'root' as const }, threads: [], life: { type: "ready" as const } };
   view.state(state);
   const lines = request(view, "/events");
   const firstEpoch = record(lines[0]).epoch;
@@ -459,9 +549,9 @@ test("an aborted turn shows no provider error text and a real error still shows"
 
 test("show moves the open pages to this feed, sends its state before the reset under a fresh epoch", t => {
   const before = transcript({ dir: directory(t), flushMs: 1000 }), after = transcript({ dir: directory(t), flushMs: 1000 });
-  const state = { agents: [], bash: [], pathEditor: false, compaction: 'idle' as const, working: false, name: "a", aborted: false, levels: [], cwd: "/tmp", home: "/tmp", dialogs: [], statuses: {}, queue: { steering: [], followUp: [] }, view: { id: "a", path: [{ id: "a", name: "a", type: "agent" as const }], type: "agent" as const }, life: { type: "ready" as const } };
+  const state = { pathEditor: false, agents: [], bash: [], compaction: 'idle' as const, working: false, name: "a", aborted: false, levels: [], cwd: "/tmp", home: "/tmp", dialogs: [], statuses: {}, queue: { steering: [], followUp: [] }, view: { id: "a", path: [{ id: "a", name: "a", type: "agent" as const }], type: 'root' as const }, threads: [], life: { type: "ready" as const } };
   before.state(state);
-  after.state({ ...state, name: "b", view: { id: "b", path: [{ id: "a", name: "a", type: "agent" as const }, { id: "b", name: "b", type: "agent" as const }], type: "agent" as const } });
+  after.state({ ...state, name: "b", view: { id: "b", path: [{ id: "a", name: "a", type: "agent" as const }, { id: "b", name: "b", type: "agent" as const }], type: 'root' as const }, threads: [] });
   after.message(assistant("from b"), "end");
   const lines = request(before, "/events");
   const firstEpoch = record(lines[0]).epoch;

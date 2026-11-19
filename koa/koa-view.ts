@@ -7,16 +7,17 @@ import { prompts } from "./koa-queue.ts";
 import { later } from "./koa-timer.ts";
 import { errorText, contentText } from "./text.ts";
 import type { Dialogs } from "./koa-agents.ts";
-import type { Life, State, Dialog, Bash, CommandResult, Attachment } from "./koa-records.ts";
+import type { Life, State, StateData, Dialog, Bash, CommandResult, Attachment, Thread } from "./koa-records.ts";
 
 const FLUSH_MS = 50;
 
 type DialogAnswer = { cancelled: true } | { confirmed: boolean } | { value: string };
 type Root = { value: "idle" | "working" | "done" | "error"; message: string };
-export type Own = Omit<State, "view" | "agents" | "edit" | "pathEditor">;
+export type Own = Omit<StateData, "agents" | "edit" | "pathEditor">;
 type Replaced = "new" | "resume" | "fork" | undefined;
 
 type ViewOptions = {
+  kind: 'root' | 'subagent';
   dir: string;
   metrics: boolean;
   attached: ReturnType<typeof attachments>;
@@ -36,9 +37,10 @@ type ViewOptions = {
 export type AgentView = ReturnType<typeof createView>;
 
 export function createView(options: ViewOptions) {
-  const feed = transcript({ dir: options.dir, flushMs: FLUSH_MS, metrics: options.metrics });
+  let publishedThreads: Thread[] | undefined;
+  const feed = transcript({ dir: options.dir, flushMs: FLUSH_MS, metrics: options.metrics, kind: options.kind, changed: () => publishThreads() });
   const { attached } = options;
-  const pendingPrompts = prompts();
+  const pendingPrompts = prompts(options.kind);
   let compaction: { root: Root; working: boolean; since?: number } | undefined;
   let compactRequest: { ended: boolean } | undefined;
   let life: Life = { type: "starting" };
@@ -48,7 +50,21 @@ export function createView(options: ViewOptions) {
   const own = (): Own => ({ ...state, queue: pendingPrompts.view(), life });
   let root: Root = { value: "idle", message: options.name ?? "pi" };
   let lastText = "";
-  const publish = (dialogsChanged = false) => { if (life.type !== "starting" || dialogsChanged) feed.state(options.compose(own())); };
+  const publish = (dialogsChanged = false) => {
+    if (life.type === 'starting' && !dialogsChanged) return;
+    const next = options.compose(own());
+    if ('threads' in next) publishedThreads = next.threads;
+    feed.state(next);
+  };
+  const publishThreads = () => {
+    if (options.kind !== 'root') return;
+    const next = feed.threads();
+    if (publishedThreads?.length === next.length && next.every((thread, index) => {
+      const previous = publishedThreads?.[index];
+      return previous?.name === thread.name && previous.last?.summary === thread.last?.summary && previous.last?.at === thread.last?.at;
+    })) return;
+    publish();
+  };
   const status = (value: Root["value"] | "clear", message = state.name) => {
     if (value !== "clear") root = { value, message };
     options.status(value, message, state.dialogs[0]?.title);
@@ -137,7 +153,7 @@ export function createView(options: ViewOptions) {
         }
         break;
       }
-      case "entry_appended": feed.annotation(event.entry); break;
+      case "entry_appended": feed.annotation(event.entry); publishThreads(); break;
       case "message_start": {
         if (event.message.role === "user") { const sent = pendingPrompts.start(contentText(event.message.content)); userAttachments = sent?.attachments ?? []; userWarning = sent?.warning; attached.consume(userAttachments.map(file => file.id), "used"); }
         feed.message(event.message, "start");

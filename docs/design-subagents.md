@@ -81,13 +81,14 @@ subcommand of its own.
 | `read_report(agent, which?)` | the own session's `koa.report` entries |
 | `list_async_bash()` | the caller's job registry |
 | `message_agent(to, message, mode?)` | the host for an agent of this process; `POST /panes/{t}/messages` for another pane; `POST /panes` to restart an ended peer |
-| `spawn_agent(task, name, model?, cwd?, resume_from?, fork?, toplevel?, runtime?)` | the host's spawn; pi's session directories; `GET /runtimes/NAME`; `POST /panes` for `toplevel` |
+| `spawn_agent(task, name, model?, cwd?, resume_from?, fork?, toplevel?, runtime?, thread?)` | the host's spawn; pi's session directories; `GET /runtimes/NAME`; `POST /panes` for `toplevel` |
 | `stop_agent(agent, force?)` | the host's stop; for another pane `POST /panes/{t}/messages` kind `stop`, then `POST /panes/{t}/stop` |
-| `async_bash(command, name, stream?)` | a child process of koa through pi's shell configuration (a routed agent: `ko api --stream /runtimes/NAME/exec`) |
+| `async_bash(command, name, stream?, service?, thread?)` | a child process of koa through pi's shell configuration (a routed agent: `ko api --stream /runtimes/NAME/exec`) |
 | `stop_async_bash(job)` | `signalJob` on the job's own process |
 
 A tool checks its own arguments and refuses them with a reason, which
-the model reads as the tool result.
+the model reads as the tool result. Only a root's `spawn_agent` and
+`async_bash` have `thread` (design-koa.md, "Threads").
 
 **Scope.** A caller's scope is its own tree by the rule of today's
 pane tree: its children, its siblings, each ancestor and that
@@ -144,11 +145,17 @@ In the parent:
 
 | entry | when | data |
 |---|---|---|
-| `koa.agent`, role `subagent` | at each spawn and resume | `name`, `session`, `model`, `fork`, `cwd`, the `runtime`'s name; the last entry of a name is current |
+| `koa.agent`, role `subagent` | at each spawn and resume | `name`, `session`, `model`, `fork`, `cwd`, the `runtime`'s name, the root's `thread` for it; the last entry of a name is current |
 | `koa.agent`, role `peer` | when the `/client` stream shows a peer whose facts differ from its last entry, and at a top-level spawn or a peer restart (a root only) | `name`, `session`, `cwd`, and `runtime` for a host koa whose tools are routed (a koa inside a runtime records none); the last entry of a session is current |
 | `koa.work` | when the child's turn takes a user message or a message with `details.work`, and before the parent sends its own child work | `child` |
 | `koa.report` | when the child reports, before the notice | `child`, `name`, `text` |
 | `koa.ended` | when the child is stopped or its session ends on an error | `child`, `cause` |
+
+A root also appends `koa.thread`, the index of its thread names
+(design-koa.md, "Threads"). It is the one entry without `owner`: a
+fork keeps its threads. A peer entry keeps the root's `thread` for
+that peer across a refresh, and a resume of a child or a peer keeps
+the recorded thread unless the call names another.
 
 In the child, one entry: `koa.edge { owner, at, parent }` at its
 creation, before its extensions bind. It is the child's own fact that

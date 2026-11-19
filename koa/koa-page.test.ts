@@ -288,7 +288,7 @@ test('incremental markdown matches a fresh render after random chunks, replaceme
   assert.equal(html(split(before + '\nE', false, [], before.length)), html(markdown()(before + '\nE')));
 });
 
-test('the composer foot starts with the model and has no agent status cell', async () => {
+test('the composer foot keeps the optional thread before the model and has no agent status cell', async () => {
   const html = await readFile(new URL('page/page.html', import.meta.url), 'utf8');
   const css = await readFile(new URL('page/page.css', import.meta.url), 'utf8');
   assert.match(html, /<div class="foot"><span id="model-cell"/);

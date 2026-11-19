@@ -8,7 +8,7 @@ import SidebarFeed
 @testable import Kido
 
 @MainActor final class KoaWebviewTests: AppWindowCase {
-    private enum KoaScenario: String { case transcript, dialogs, controls, exit, failed, completion, markdown, media, attachments, userMarkdown, thinkingMarkdown, reveal, preview, lightbox, agents, composer, questions, bang, commands, notices, latest, sessions, views, jobs, paths }
+    private enum KoaScenario: String { case transcript, dialogs, controls, exit, failed, completion, markdown, media, attachments, userMarkdown, thinkingMarkdown, reveal, preview, lightbox, agents, composer, questions, bang, commands, notices, latest, sessions, views, jobs, paths, threads }
     // The off-screen WKWebView reports no document focus. The page's pane-focus hook gives the pane focus; the composer ring keeps its real state.
     private static let paneFocus = "window.koaFocused=true;"
     private static let hideLatest = "document.addEventListener('DOMContentLoaded',()=>{const style=document.createElement('style');style.textContent='#latest{display:none!important}';document.head.append(style)});"
@@ -396,6 +396,30 @@ import SidebarFeed
         try await koaWebview(width: 470, height: 560, scenario: .failed, captures: ["narrow-exited"])
     }
 
+    func testKoaWebviewThreadsTwo() async throws {
+        try await koaWebview(width: 980, height: 560, scenario: .threads, captures: ["threads-two"])
+    }
+    func testKoaWebviewThreadsMany() async throws {
+        try await koaWebview(width: 980, height: 560, scenario: .threads, captures: ["threads-many"])
+    }
+    func testKoaWebviewThreadsManyNarrow() async throws {
+        try await koaWebview(width: 470, height: 560, scenario: .threads, captures: ["threads-many-narrow"])
+    }
+    func testKoaWebviewThreadsMarks() async throws {
+        try await koaWebview(width: 980, height: 560, scenario: .threads, captures: ["threads-marks"])
+    }
+    func testKoaWebviewThreadsMarksNarrow() async throws {
+        try await koaWebview(width: 470, height: 560, scenario: .threads, captures: ["threads-marks-narrow"])
+    }
+    func testKoaWebviewThreadsFilter() async throws {
+        try await koaWebview(width: 980, height: 560, scenario: .threads, captures: ["threads-filter"])
+    }
+    func testKoaWebviewThreadsFilterPanel() async throws {
+        try await koaWebview(width: 980, height: 560, scenario: .threads, captures: ["threads-filter-panel"])
+    }
+    func testKoaWebviewThreadsFilterNarrow() async throws {
+        try await koaWebview(width: 470, height: 560, scenario: .threads, captures: ["threads-filter-narrow"])
+    }
     func testKoaWebviewAgentsWide() async throws {
         try await koaWebview(width: 980, height: 560, scenario: .agents, captures: Set(["out", "failed", "in", "jobs", "fold-a", "fold-b", "tools"].map { "agents-" + $0 }))
     }
@@ -562,13 +586,13 @@ import SidebarFeed
         let completionCaptures = captures.contains { $0.contains("bang-tab") }
         let mediaClock: Bool
         switch scenario {
-        case .commands, .sessions, .media, .attachments, .preview, .lightbox, .agents, .composer, .views: mediaClock = true
+        case .commands, .sessions, .media, .attachments, .preview, .lightbox, .agents, .composer, .views, .threads: mediaClock = true
         default: mediaClock = completionCaptures
         }
-        let stamp = Int(try XCTUnwrap(Calendar.current.date(from: DateComponents(year: 2026, month: 11, day: mediaClock ? 10 : 8, hour: mediaClock ? 9 : 14, minute: mediaClock ? 12 : 32))).timeIntervalSince1970 * 1000)
+        let stamp = Int(try XCTUnwrap(Calendar.current.date(from: DateComponents(year: 2026, month: 11, day: mediaClock ? 10 : 8, hour: scenario == .threads ? 14 : mediaClock ? 9 : 14, minute: scenario == .threads ? 46 : mediaClock ? 12 : 32))).timeIntervalSince1970 * 1000)
         let measured: Bool
         switch scenario {
-        case .commands, .sessions, .questions, .completion, .attachments, .userMarkdown, .thinkingMarkdown, .exit, .lightbox, .paths: measured = true
+        case .commands, .sessions, .questions, .completion, .attachments, .userMarkdown, .thinkingMarkdown, .exit, .lightbox, .paths, .threads: measured = true
         default: measured = completionCaptures || captures.contains("focus-border-transcript")
         }
         let measurementClock = "const ClockDate=Date;window.Date=class extends ClockDate{constructor(...args){super(...(args.length?args:[\(stamp + 12000)]))}static now(){return \(stamp + 12000)}};"
@@ -656,6 +680,10 @@ import SidebarFeed
             _ = try await webviewJS(web, "new Promise((resolve,reject)=>{let previous,stable=0,frame;const timer=setTimeout(()=>{cancelAnimationFrame(frame);reject(Error('Koa capture did not settle'))},5000);function sample(){const cursor=document.querySelector('#prompt .cm-cursor')?.getBoundingClientRect();const state=JSON.stringify([document.querySelector('#scroll').scrollTop,document.querySelector('#dock').getBoundingClientRect().height,cursor?[cursor.x,cursor.y,cursor.width,cursor.height]:null]);stable=koaPendingFrames.size===0&&state===previous?stable+1:0;previous=state;if(stable>=2){clearTimeout(timer);resolve(true)}else frame=requestAnimationFrame(sample)}frame=requestAnimationFrame(sample)})")
         }
         func pageSnapshot(_ name: String, _ appearance: String) async throws {
+            if scenario == .threads {
+                let tail = name.contains("filter") ? "Also look at the Linux flake in the sweep test when you have a minute." : name.contains("marks") ? "A fix is in the test’s wait." : "Then the save step stays as mocked: four rows, the session row last."
+                try await webviewUntil(web, "document.querySelector('#items').textContent.includes(\(String(reflecting: tail)))")
+            }
             if name.hasPrefix("focus-border") {
                 try await webviewSnapshot(pane, name + appearance, testName: "testKoaWebviewMockupStates()")
             } else {
@@ -672,7 +700,7 @@ import SidebarFeed
             if scenario == .dialogs { try await webviewUntil(web, "document.querySelector('#tokens').textContent==='88k / 200k'&&document.querySelector('#percent').textContent==='44%'") }
             let ordered = name == "questions-ordered" || name == "narrow-questions-ordered"
             let aboveBottom = scenario == .jobs && name.contains("service")
-            let top = scenario == .questions || scenario == .media || scenario == .lightbox || scenario == .agents || scenario == .composer || scenario == .views
+            let top = scenario == .questions || scenario == .media || scenario == .lightbox || scenario == .agents || scenario == .composer || scenario == .views || scenario == .threads && (name == "threads-two" || name.contains("many"))
             window.contentView?.layoutSubtreeIfNeeded()
             pane.webviewView?.layoutSubtreeIfNeeded()
             let viewportHeight = try await webviewJS(web, "innerHeight")
@@ -710,6 +738,35 @@ import SidebarFeed
             try await webviewUntil(web, "\(koaIdle)&&document.querySelector('#model-name').textContent==='claude-opus-5-5'")
         }
         _ = try await webviewJS(web, "(()=>{const NativeDate=Date;window.Date=class extends NativeDate{constructor(...args){super(...(args.length?args:[\(stamp + 12000)]))}static now(){return \(stamp + 12000)}};const style=document.createElement('style');style.textContent='.caret,.dot.on,.cm-cursorLayer\(scenario == .reveal ? "" : ",.grow"){animation:none!important}\(scenario == .reveal ? ".grow{animation-play-state:paused!important;animation-delay:-110ms!important}" : "").info .chev,#latest{transition:none!important}#transcript{transform:none!important}';document.head.append(style);return true})()")
+        if scenario == .threads {
+            let name = try XCTUnwrap(captures.first)
+            try await webviewUntil(web, "!document.querySelector('#threads').hidden&&document.querySelector('.thread-capsule')!==null")
+            if name == "threads-many" || name == "threads-many-narrow" {
+                let expected = name == "threads-many" ? 9 : 4
+                try await webviewUntil(web, "(()=>{const capsule=document.querySelector('.thread-capsule');return capsule.querySelectorAll('.thread-open>.thread-name').length===\(expected)&&\(expected == 9 ? "capsule.querySelector('.thread-more')===null" : "capsule.querySelector('.thread-more')?.textContent==='+5'")})()")
+            }
+            if name.contains("marks") {
+                try await webviewUntil(web, "document.querySelector('.thread-mark:not(.thread-waiting) .thread-name')!==null")
+                let hitBox = try await webviewJS(web, "(()=>{const mark=document.querySelector('.thread-mark:not(.thread-waiting)'),label=mark?.querySelector('.thread-name');if(!mark||!label)throw Error('Missing thread mark');return Math.abs(mark.getBoundingClientRect().width-label.getBoundingClientRect().width)<1&&getComputedStyle(mark).cursor==='pointer'})()")
+                XCTAssertEqual(hitBox, "true", "Only the thread label is the mark's pointer target")
+            }
+            if name == "threads-marks-narrow" {
+                let wrapping = try await webviewJS(web, "(()=>{const host=document.querySelector('.assistant>.thread-section>.msg');if(!host)throw Error('Missing threaded prose');const token='identifier'.repeat(100),p=document.createElement('p'),pre=document.createElement('pre'),table=document.createElement('table');p.textContent=pre.textContent=token;table.innerHTML='<tr><td>'+token+'</td></tr>';host.append(p,pre,table);try{return [p.scrollWidth<=p.clientWidth,getComputedStyle(pre).overflowWrap,getComputedStyle(table).overflowWrap,pre.scrollWidth>pre.clientWidth]}finally{p.remove();pre.remove();table.remove()}})()")
+                XCTAssertEqual(wrapping, "[true,\"normal\",\"normal\",true]", "Threaded prose wraps an unbroken token; code and tables keep horizontal scrolling")
+            }
+            if name.contains("filter") {
+                _ = try await webviewJS(web, "(()=>{document.querySelector('.thread-open').click();document.querySelector('.thread-entry[data-thread=sidebar]').click();return true})()")
+                try await webviewUntil(web, "document.querySelector('.thread-clear')!==null&&document.querySelector('.thread-waiting')!==null&&\(koaIdle)")
+                let filtered = try await webviewJS(web, "document.querySelectorAll('#items .thread-mark:not(.thread-waiting),#items .thread-section').length===0&&document.querySelector('#thread-cell').textContent==='#sidebar'")
+                XCTAssertEqual(filtered, "true", "The filter names the thread in the capsule and foot, not on transcript sections")
+            }
+            if name == "threads-two" || name.contains("many") || name.hasSuffix("panel") {
+                _ = try await webviewJS(web, "(()=>{document.querySelector('.thread-open').click();return true})()")
+                try await webviewUntil(web, "!document.querySelector('.thread-panel').hidden")
+            }
+            try await capture(name)
+            return
+        }
         if scenario == .reveal {
             _ = try await webviewJS(web, "(()=>{koaStep(0);return true})()")
             try await webviewUntil(web, "document.querySelector('.more')?.textContent==='Show 5 more lines'")
@@ -1624,7 +1681,7 @@ import SidebarFeed
             try await capture("times")
         }
         switch scenario {
-        case .transcript, .completion, .markdown, .media, .attachments, .userMarkdown, .thinkingMarkdown, .reveal, .preview, .lightbox, .agents, .composer, .questions, .bang, .commands, .notices, .latest, .sessions, .views, .jobs, .paths: break
+        case .transcript, .completion, .markdown, .media, .attachments, .userMarkdown, .thinkingMarkdown, .reveal, .preview, .lightbox, .agents, .composer, .questions, .bang, .commands, .notices, .latest, .sessions, .views, .jobs, .paths, .threads: break
         case .dialogs: try await dialogScenario()
         case .controls: try await controlsScenario()
         case .exit: try await exitScenario()

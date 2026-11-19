@@ -1,6 +1,6 @@
 import { expect, next, same, type Scenario, type Scenarios, type Step } from "../scenario.ts";
 import { stateIdle } from "../scenario-parts.ts";
-import type { PageRecord, State, WireItem } from "../../koa-records.ts";
+import type { PageRecord, State, StateData, WireItem } from "../../koa-records.ts";
 
 type Node = { id: string; name: string };
 const at = 1794330720000;
@@ -18,11 +18,15 @@ const reviewerItems = [user(0, "Review the diff of the sidebar change and report
 const checkerItems = [user(0, "Measure the right column of the sidebar rows at 200pt"), assistant(1, "The right column is 22pt wide at 200pt and 18pt at 160pt.")];
 
 const links = (...nodes: Node[]): State["agents"] => nodes.map(node => ({ name: node.name, target: { type: "view", id: node.id } }));
-const viewState = (dir: string, path: Node[], extra: Partial<State> = {}): PageRecord => {
+const viewState = (dir: string, path: Node[], extra: Partial<StateData> = {}): PageRecord => {
   const viewed = path[path.length - 1];
-  return { ...stateIdle(dir), view: { id: viewed.id, path: path.map(node => ({ id: node.id, name: node.name, type: "agent" as const })), type: "agent" }, sessionId: viewed.id, name: viewed === root ? "koa reference" : viewed.name, ...extra, type: "state" };
+  const { threads: _threads, view: _view, ...base } = stateIdle(dir);
+  const common = { ...base, sessionId: viewed.id, name: viewed === root ? 'koa reference' : viewed.name, ...extra, type: 'state' as const };
+  const view = { id: viewed.id, path: path.map(node => ({ id: node.id, name: node.name, type: 'agent' as const })) };
+  if (viewed === root) return { ...common, view: { ...view, type: 'root' }, threads: [] };
+  return { ...common, view: { ...view, type: 'subagent' } };
 };
-const switchTo = (dir: string, from: Node, to: Node, path: Node[], epoch: string, items: WireItem[], extra: Partial<State> = {}): Step => expect({
+const switchTo = (dir: string, from: Node, to: Node, path: Node[], epoch: string, items: WireItem[], extra: Partial<StateData> = {}): Step => expect({
   on: { method: "POST", path: "/view", body: value => same(value, { sessionId: from.id, id: to.id }) },
   reply: { status: 200, json: {} },
   after: [viewState(dir, path, extra), reset(epoch, items)],

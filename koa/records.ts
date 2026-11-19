@@ -1,5 +1,12 @@
 import type { components } from "../webview/ko-api.d.ts";
 
+declare const threadName: unique symbol;
+export type ThreadName = string & { readonly [threadName]: true };
+export const THREAD_NAME_PATTERN = '^[a-z0-9-]{1,32}$';
+const threadNamePattern = new RegExp(THREAD_NAME_PATTERN);
+const isThreadName = (value: unknown): value is ThreadName => typeof value === 'string' && threadNamePattern.test(value);
+export const parseThreadName = (value: unknown): ThreadName | undefined => isThreadName(value) ? value : undefined;
+
 export type Relation = components["schemas"]["Relation"];
 const relations = new Set<string>(["parent", "child", "sibling", "descendant", "sibling_descendant"] satisfies Relation[]);
 export const isRelation = (value: unknown): value is Relation => typeof value === "string" && relations.has(value);
@@ -14,11 +21,11 @@ export type JobEnd = { type: 'exit'; code: number } | { type: 'signal'; signal: 
 export type JobPlace = { type: 'runtime'; name: string } | { type: 'mac' } | { type: 'machine' } | { type: 'remote'; host: string };
 export type JobSnapshot = { name: string; command: string; service: boolean; startedAt: number; place: JobPlace; log: string; state: { type: 'running' } | { type: 'ended'; end: JobEnd; at: number } | { type: 'cleared' } };
 export type JobRef = { id: string; name: string; service: boolean; log: string; command: string; startedAt: number; place: JobPlace };
-export type AgentDetails = { agent: AgentRef; body: string; inbound: Inbound };
+export type AgentDetails = { thread?: ThreadName; agent: AgentRef; body: string; inbound: Inbound };
 export type MessageDetails = AgentDetails & { from?: string; work?: boolean; inbound: Extract<Inbound, { form: 'message' }> };
 export type SteerDetails = AgentDetails & { from?: string; work?: boolean; inbound: Extract<Inbound, { form: 'steer' }> };
-export type NoticeDetails = ((AgentDetails & { inbound: Extract<Inbound, { form: 'notice' | 'report' }> }) | { kind: 'job'; job: JobRef & { end: JobEnd }; tail: string }) & { from?: string };
-export type StreamDetails = { from?: string; job: JobRef; batch: string; omitted: number; cut: boolean };
+export type NoticeDetails = ((AgentDetails & { inbound: Extract<Inbound, { form: 'notice' | 'report' }> }) | { kind: 'job'; thread?: ThreadName; job: JobRef & { end: JobEnd }; tail: string }) & { from?: string };
+export type StreamDetails = { thread?: ThreadName; from?: string; job: JobRef; batch: string; omitted: number; cut: boolean };
 export function jobEndText(end: JobEnd): string {
   switch (end.type) {
     case 'exit': return `exit ${end.code}`;

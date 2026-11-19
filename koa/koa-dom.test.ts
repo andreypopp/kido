@@ -37,7 +37,7 @@ async function page() {
     onclick?: () => void;
     onkeydown?: (event: unknown) => void;
     attributes = new Map<string, string>();
-    setAttribute(name: string, value: string) { this.attributes.set(name, value); } getAttribute(name: string) { return this.attributes.get(name) ?? null; } removeAttribute(name: string) { this.attributes.delete(name); } focus() { for (let node: Node | undefined = this; node; node = node.parent) if (node.inert) return; document.activeElement = this; } setSelectionRange() {} handlers = new Map<string, (event?: unknown) => void>(); addEventListener(type: string, handler: (event?: unknown) => void) { this.handlers.set(type, handler); } scrollIntoView() {} getBoundingClientRect(): { left?: number; top: number; bottom?: number; height?: number } { return { left: 0, top: 0 }; } getClientRects() { return this.rects; }
+    setAttribute(name: string, value: string) { this.attributes.set(name, value); } getAttribute(name: string) { return this.attributes.get(name) ?? null; } removeAttribute(name: string) { this.attributes.delete(name); } focus() { for (let node: Node | undefined = this; node; node = node.parent) if (node.inert) return; document.activeElement = this; } setSelectionRange() {} handlers = new Map<string, (event?: unknown) => void>(); addEventListener(type: string, handler: (event?: unknown) => void) { this.handlers.set(type, handler); } scrollIntoView() {} getBoundingClientRect(): { left?: number; top: number; bottom?: number; height?: number; width?: number } { return { left: 0, top: 0, width: this.classes.has('thread-capsule') || this.classes.has('thread-open') ? this.clientWidth : undefined }; } getClientRects() { return this.rects; }
     closest(selector: string): Node | null { if (selector === 'a') return this.tagName === 'A' ? this : this.parent?.closest(selector) ?? null; return ['INPUT', 'TEXTAREA', 'SELECT', ...(selector.includes('button') ? ['BUTTON'] : [])].includes(this.tagName) || (this.attributes.has('role') && selector.includes(`[role=${this.attributes.get('role')}]`)) ? this : null; }
     setRangeText(text: string) { this.value = this.value.slice(0, this.selectionStart) + text + this.value.slice(this.selectionEnd); }
     dispatchEvent() { this.oninput?.(); }
@@ -113,7 +113,7 @@ async function page() {
   const revealSource = stripTypeScriptTypes(readFileSync(new URL('page/reveal.ts', import.meta.url), 'utf8')).replace(/^import .*;\n/gm, '').replace(/^export /gm, '');
   Object.assign(context, runInNewContext(revealSource + '\n({revealHeight,unitsOf})', context));
   const extentSource = stripTypeScriptTypes(readFileSync(new URL('page/extent.ts', import.meta.url), 'utf8')).replace(/^import .*;\n/gm, '').replace(/^export /gm, '');
-  Object.assign(context, runInNewContext(extentSource + '\n({estimateExtent,windowOf,groupAt,continuesRun,runStarts,isStep})', context));
+  Object.assign(context, runInNewContext(extentSource + '\n({estimateExtent,windowOf,groupAt,continuesRun,joinsRun,runStarts,isStep})', context));
   const stepsSource = stripTypeScriptTypes(readFileSync(new URL('page/steps.ts', import.meta.url), 'utf8')).replace(/^import .*;\n/gm, '').replace(/^export /gm, '');
   Object.assign(context, runInNewContext(stepsSource + '\n({stepInfo,stepParts,toolArgs,agentBody})', context));
   const findSource = stripTypeScriptTypes(readFileSync(new URL('page/find.ts', import.meta.url), 'utf8')).replace(/^import .*;\n/gm, '').replace(/^export /gm, '');
@@ -430,6 +430,252 @@ test('busy confirmation submits once and cancelling a held abort prevents the se
   await new Promise<void>(resolve => setImmediate(resolve));
   assert.deepEqual(calls, ['/abort']); assert.equal(saved.closed(), true);
 });
+test('thread filters project blocks without changing their addresses and apply newest late labels', async () => {
+  const app = await page();
+  const result = app.run(`
+    state = {...state, view:{id:'root',path:[],type:'root'},sessionId:'session',threads:[{name:'one',last:{summary:'**First**',at:1}},{name:'two'}]};
+    renderThreads();
+    const user={kind:'user',seq:0,revision:1,at:1,final:true,text:'request',images:[],attachments:[]};
+    accept(user);
+    accept({kind:'assistant',seq:1,revision:1,at:2,final:true,blocks:[{type:'text',text:'visible one',thread:'one'},{type:'text',text:'hidden two',thread:'two'}],stop:'stop',error:''});
+    setThread('one');
+    const hiddenUser=!visible(0), indexes=visible(1).blocks.map(block=>block.text), copied=transcriptText();
+    accept({kind:'threads',target:0,threads:['one'],seq:2,revision:1,at:3,final:true});
+    const labelled=!!visible(0);
+    accept({kind:'threads',target:0,threads:['two'],seq:3,revision:1,at:4,final:true});
+    const newest=!visible(0), original=items.get(1).blocks[1].text;
+    const buttons=element('threads').children.length;
+    apply({...state,type:'state',threads:[{name:'two'}]});
+    const cleared=threadFilter()===undefined&&order.includes(0)&&visible(1).blocks[1].text==='hidden two';
+    [hiddenUser,indexes,copied,labelled,newest,original,buttons,cleared];
+  `);
+  assert.deepEqual(JSON.parse(JSON.stringify(result)), [true, ['visible one', ''], 'visible one', true, true, 'hidden two', 2, true]);
+});
+
+test('filtered run boundaries keep both tools reachable across hidden prose', async () => {
+  const app = await page();
+  const result = app.run(`
+    state={...state,sessionId:'s',view:{id:'root',path:[],type:'root'},threads:[{name:'one'},{name:'two'}]};
+    const tool=(id)=>({type:'tool',id,name:'bash',thread:'one',args:{text:'{"command":"'+id+'"}',cut:0},state:{type:'done',error:false,result:{text:id,cut:0,images:[]}}});
+    accept({kind:'assistant',seq:0,revision:1,at:1,final:true,stop:'stop',error:'',blocks:[tool('first'),{type:'text',thread:'two',text:'hidden'},tool('second')]});
+    setThread('one');renderItem(visible(0));reconcileRuns(0);
+    [...views.get(0).slots.values()].filter(slot=>slot.type==='run').flatMap(slot=>runMarks.get(slot.view.firstElementChild)?.steps.map(step=>step.key)??[]);
+  `);
+  assert.deepEqual(Array.from(result), ['0:0','0:2']);
+});
+
+test('find owns separate threaded runs and resolves late-label boundaries', async () => {
+  const app = await page();
+  const result = app.run(`
+    state={...state,sessionId:'s',view:{id:'root',path:[],type:'root'},threads:[{name:'one'},{name:'two'}]};
+    const tool=(id,thread)=>({type:'tool',id,name:'bash',...(thread?{thread}:{}),args:{text:'{}',cut:0},state:{type:'done',error:false,result:{text:id,cut:0,images:[]}}});
+    const reply=(seq,blocks)=>({kind:'assistant',seq,revision:1,at:1,final:true,stop:'stop',error:'',blocks});
+    accept(reply(0,[tool('first','one'),tool('second','two')]));
+    accept(reply(1,[tool('late')]));accept({kind:'threads',seq:2,revision:1,at:1,final:true,target:1,threads:['one']});
+    accept(reply(3,[tool('last','two')]));
+    const context={items:visible,fold:5,cwd:'',owners:new Map()};
+    const keys=[findSegments(visible(0),context).find(segment=>segment.text==='second').folds[0],findSegments(visible(1),context).find(segment=>segment.text==='late').folds[0],findSegments(visible(3),context).find(segment=>segment.text==='last').folds[0]];
+    renderItem(visible(0));renderItem(visible(1));reconcileRuns(0);
+    openers.get(keys[0]).open();
+    [...keys,openers.get('run:0:1').view.classList.contains('open'),openers.get('run:0:0').view.classList.contains('open')];
+  `);
+  assert.deepEqual(Array.from(result), ['run:0:1','run:1:0','run:3:0',true,false]);
+});
+
+test('an open thread panel keeps its scroll through state updates and closes by Escape or outside click', async () => {
+  const app = await page();
+  const ui = app.run(`
+    state={...state,sessionId:'s',view:{id:'root',path:[],type:'root'},threads:Array.from({length:20},(_,index)=>({name:'thread-'+index,last:{summary:'Before',at:1}}))};
+    renderThreads();toggleThreads();element('threads').querySelector('.thread-panel').scrollTop=80;
+    apply({...state,type:'state',threads:state.threads.map((thread,index)=>index===0?{...thread,last:{summary:'After',at:2}}:thread)});
+    ({values:[!element('threads').querySelector('.thread-panel').hidden,element('threads').querySelector('.thread-panel').scrollTop,element('threads').querySelector('.thread-summary').textContent],panel:()=>element('threads').querySelector('.thread-panel'),toggle:toggleThreads});
+  `);
+  assert.deepEqual(Array.from(ui.values), [true,80,'After']);
+  app.listeners.get('keydown')?.({ key:'Escape',target:app.context.document.body,preventDefault(){} });
+  assert.equal(ui.panel().hidden, true);
+  ui.toggle();
+  app.listeners.get('pointerdown')?.({ target:app.context.document.body });
+  assert.equal(ui.panel().hidden, true);
+});
+
+test('a transcript mark filters the capsule and prompt while the waiting line is not a control', async () => {
+  const app = await page();
+  const result = await app.run(`(async()=>{
+    state={...state,life:{type:'ready'},working:true,sessionId:'s',view:{id:'root',path:[],type:'root'},threads:[{name:'one'}]};
+    accept({kind:'user',seq:0,revision:1,at:1,final:true,text:'pending',images:[],attachments:[]});
+    const mark=threadMark('one'),clickable=typeof mark.onclick==='function';mark.onclick?.();renderItem(visible(0));
+    const waiting=views.get(0).view.querySelector('.thread-waiting');
+    const text=node=>node.textContent+node.children.map(text).join('');
+    const capsule=text(element('threads').querySelector('.thread-capsule'));
+    let sent;rendered=async()=>{};fetchJSON=async(path,body)=>{sent=body;return {disposition:'queued'}};
+    editor.setText('continue');await send();
+    return [mark.tagName,mark.getAttribute('role'),clickable,threadFilter(),capsule,sent.thread,waiting?.tagName,typeof waiting?.onclick==='function'];
+  })()`);
+  assert.deepEqual(Array.from(result),['DIV','button',true,'one','#one×','one','DIV',false]);
+});
+
+test('the capsule shows every name when all measured names fit', async () => {
+  const app = await page();
+  const result = app.run(`
+    state={...state,sessionId:'s',view:{id:'root',path:[],type:'root'},threads:['one','two','three'].map((name,index)=>({name,last:{summary:name,at:3-index}}))};
+    renderThreads();
+    element('threads').querySelector('.thread-open').children.filter(node=>node.classList.contains('thread-name')).map(node=>node.dataset.thread);
+  `);
+  assert.deepEqual(Array.from(result),['one','two','three']);
+});
+
+test('measured capsule overflow and resize keep whole names and skip unchanged streaming state', async () => {
+  const app = await page();
+  const result = app.run(`(()=>{
+    state={...state,sessionId:'s',view:{id:'root',path:[],type:'root'},threads:['one','two','three'].map((name,index)=>({name,last:{summary:name,at:3-index}}))};renderThreads();
+    const capsule=element('threads').querySelector('.thread-capsule'),button=capsule.querySelector('.thread-open');
+    capsule.getBoundingClientRect=()=>({width:100});button.getBoundingClientRect=()=>({width:80});
+    let reads=0;
+    Object.defineProperty(button,'scrollWidth',{get(){reads++;return button.children.reduce((sum,child)=>{let width;if(child.classList.contains('thread-name'))width={one:80,two:90,three:100}[child.dataset.thread];else if(child.classList.contains('thread-separator'))width=10;else if(child.classList.contains('thread-more'))width=25;else if(child.classList.contains('thread-chevron'))width=10;else throw Error('Unexpected capsule child');return sum+width;},5*(button.children.length-1))}});
+    const snapshot=()=>[button.children.filter(child=>child.classList.contains('thread-name')).map(child=>child.dataset.thread),button.querySelector('.thread-more')?.textContent??''];
+    fitThreads(500);const all=snapshot();
+    document.documentElement.clientWidth=300;resized([{target:element('scroll'),borderBoxSize:[{blockSize:560}]}]);const overflow=snapshot();
+    document.documentElement.clientWidth=200;resized([{target:element('scroll'),borderBoxSize:[{blockSize:560}]}]);const smaller=snapshot();
+    document.documentElement.clientWidth=400;resized([{target:element('scroll'),borderBoxSize:[{blockSize:560}]}]);const larger=snapshot();
+    const before=reads;apply({...state,type:'state',threads:state.threads.map(thread=>({...thread,last:{...thread.last,summary:'Streaming'}}))});const unchanged=reads===before;
+    document.documentElement.clientWidth=120;resized([{target:element('scroll'),borderBoxSize:[{blockSize:560}]}]);
+    return [all,overflow,smaller,larger,unchanged,snapshot(),button.classList.contains('single')];
+  })()`);
+  assert.deepEqual(JSON.parse(JSON.stringify(result)),[[['one','two','three'],''],[['one','two'],'+1'],[['one'],'+2'],[['one','two','three'],''],true,[['one'],'+2'],true]);
+  assert.equal(app.observers.length,1);
+});
+
+test('thread ages use now, minutes, hours and days', async () => {
+  const app = await page();
+  assert.deepEqual(Array.from(app.run(`[threadAge(0,59000),threadAge(0,60000),threadAge(0,3600000),threadAge(0,86400000)]`)), ['now','1m','1h','1d']);
+});
+
+test('thread capsules sort activity, keep palette identity and show the filter controls', async () => {
+  const app = await page();
+  const result = app.run(`
+    const text=node=>node.textContent+node.children.map(text).join('');
+    state={...state,name:'pi',life:{type:'ready'},view:{id:'root',path:[],type:'root'},sessionId:'s',threads:[{name:'one',last:{summary:'**First**',at:1}},{name:'two',last:{summary:'Second',at:2}}]};
+    renderThreads();const two=text(element('threads').querySelector('.thread-capsule'));
+    state={...state,threads:[state.threads[0]]};renderThreads();const one=text(element('threads').querySelector('.thread-capsule'));
+    state={...state,threads:['one','two','three','four','five','six','seven'].map((name,index)=>({name,last:{summary:name,at:index+1}}))};
+    renderThreads();const many=text(element('threads').querySelector('.thread-capsule'));
+    const colours=[threadColour('one'),threadColour('two'),threadColour('seven')];
+    state={...state,threads:[...state.threads,{name:'pending-old'},{name:'pending-new'}]};renderThreads();const pendingNames=element('threads').querySelector('.thread-open').children.filter(node=>node.classList.contains('thread-name')).slice(0,2).map(node=>node.dataset.thread);
+    setThread('two');renderThreads();refreshComposer();
+    const filtered=text(element('threads').querySelector('.thread-capsule')),foot=text(threadCell),placeholder=element('prompt').children[0].placeholder;
+    toggleThreads();const panel=!element('threads').querySelector('.thread-panel').hidden;
+    [one,two,many,colours,filtered,foot,placeholder,panel,pendingNames];
+  `);
+  assert.deepEqual(JSON.parse(JSON.stringify(result)), ['#one▾','#two·#one▾','#seven·#six·#five·#four·#three·#two·#one▾',['var(--thread-0)','var(--thread-1)','var(--thread-0)'],'#two×','#two','Message @pi in #two…',true,['pending-new','pending-old']]);
+});
+
+test('unfiltered roots keep the original foot and unthreaded reply DOM', async () => {
+  const app = await page();
+  const html = await readFile(new URL('page/page.html', import.meta.url), 'utf8');
+  const first = html.match(/<div class="foot"><span id="([^"]+)"/)?.[1];
+  assert.ok(first);
+  const result = app.run(`(()=>{
+    const foot=node('div'),model=element('model-cell'),initial=element(${JSON.stringify(first)});model.id='model-cell';initial.id=${JSON.stringify(first)};foot.append(initial);if(initial!==model)foot.append(model);
+    const cases=[];
+    for(const threads of [[],[{name:'work'}]]){
+      state={...state,life:{type:'ready'},view:{id:'root',path:[],type:'root'},sessionId:'old-dom',threads};renderThreads();
+      const item={kind:'assistant',seq:0,revision:1,at:1,final:true,blocks:[{type:'text',text:'plain reply'}],stop:'stop',error:''};accept(item);renderItem(visible(0));
+      const reply=views.get(0).view;cases.push([foot.children[0].id,foot.children.some(child=>child.className.includes('thread-')),reply.children.map(child=>child.className),reply.querySelectorAll('.thread-section,.thread-mark,.thread-name').length]);
+    }
+    return cases;
+  })()`);
+  assert.deepEqual(JSON.parse(JSON.stringify(result)), [['model-cell',false,['msg prose'],0],['model-cell',false,['msg prose'],0]]);
+});
+
+test('a filtered composer keeps the working and compaction verbs', async () => {
+  const app = await page();
+  const result = app.run(`(()=>{
+    state={...state,name:'ko',life:{type:'ready'},view:{id:'root',path:[],type:'root'},sessionId:'verb',threads:[{name:'work'}]};setThread('work');
+    const hints=[];
+    for(const [working,compaction] of [[true,'idle'],[true,'running'],[false,'idle']]){state={...state,working,compaction};refreshComposer();hints.push(element('prompt').children[0].placeholder)}
+    return hints;
+  })()`);
+  assert.deepEqual(Array.from(result), ['Steer @ko in #work…','Message @ko in #work…','Message @ko in #work…']);
+});
+
+test('one thread edge spans consecutive rows and stops at an unthreaded user', async () => {
+  const app = await page();
+  const result = app.run(`(()=>{
+    state={...state,life:{type:'ready'},view:{id:'root',path:[],type:'root'},sessionId:'edges',threads:[{name:'work'}]};
+    for(let seq=0;seq<3;seq++)accept({kind:'assistant',seq,revision:1,at:1,final:true,blocks:[{type:'text',text:'part',thread:'work'}],stop:'stop',error:''});
+    accept({kind:'user',seq:3,revision:1,at:1,final:true,text:'break',images:[],attachments:[]});
+    accept({kind:'assistant',seq:4,revision:1,at:1,final:true,blocks:[{type:'text',text:'after',thread:'work'}],stop:'stop',error:''});
+    renderDirty();
+    const sections=[0,1,2,4].map(seq=>views.get(seq).view.children[0]);
+    sections.forEach((section,index)=>section.getBoundingClientRect=()=>({top:[10,40,75,120][index],bottom:[30,60,100,150][index],height:30,width:100,left:0,right:100}));
+    renderDirty();
+    return sections.map(section=>[section.classList.contains('thread-edge'),section.style.getPropertyValue('--thread-edge-height')||null]);
+  })()`);
+  assert.deepEqual(JSON.parse(JSON.stringify(result)), [[true,'90px'],[false,null],[false,null],[true,'30px']]);
+});
+
+test('only pending implicit users wait under a filter and marks follow thread changes, never users', async () => {
+  const app = await page();
+  const result = app.run(`
+    state={...state,working:true,view:{id:'root',path:[],type:'root'},sessionId:'s',threads:[{name:'one'},{name:'two'}]};
+    const user=seq=>({kind:'user',seq,revision:1,at:1,final:true,text:'request',images:[],attachments:[]});
+    const reply=(seq,blocks)=>({kind:'assistant',seq,revision:1,at:2,final:true,blocks,stop:'stop',error:''});
+    accept(user(0));setThread('one');const waits=!!visible(0);
+    if(visible(0))renderItem(visible(0));const waiting=views.get(0)?.view.querySelector('.thread-waiting')?.textContent;
+    accept({kind:'threads',seq:1,revision:1,at:2,final:true,target:0,threads:['two']});const removed=!visible(0);
+    accept(user(2));accept({kind:'threads',seq:3,revision:1,at:2,final:true,target:2,threads:['one']});const stayed=!!visible(2);
+    accept(user(4));const waitingAgain=!!visible(4);apply({...state,type:'state',working:false});const settled=!visible(4);
+    setThread(undefined);
+    accept(reply(5,[{type:'text',thread:'one',text:'First'}]));
+    accept(user(6));accept(reply(7,[{type:'text',thread:'one',text:'Same'},{type:'text',text:'Unthreaded'},{type:'text',thread:'two',text:'Other'}]));
+    renderItem(visible(5));renderItem(visible(6));renderItem(visible(7));
+    const marks=seq=>views.get(seq).view.querySelectorAll('.thread-section>.thread-mark').map(mark=>mark.dataset.thread);
+    accept({kind:'agent',seq:8,revision:1,at:2,final:true,thread:'two',direction:'in',from:{name:'worker'},inbound:{form:'report',relation:'child'},text:{text:'done',cut:0}});renderItem(visible(8));renderItem(visible(7));
+    accept({kind:'job',seq:9,revision:1,at:2,final:true,thread:'one',job:{id:'j',name:'verify',service:false,command:'true',log:'/tmp/job',place:{type:'mac'},startedAt:1},event:{type:'ended',end:{type:'exit',code:0},tail:{text:'',cut:0}}});renderItem(visible(9));reconcileJobs(9);
+    [waits,waiting,removed,stayed,waitingAgain,settled,marks(5),marks(6),marks(7),marks(8),marks(9)];
+  `);
+  assert.deepEqual(JSON.parse(JSON.stringify(result)),[true,'waiting for its thread',true,true,true,true,['one'],[],['two'],[],['one']]);
+});
+
+test('a resumed reset before state clears the old filter and restores rows', async () => {
+  const app = await page();
+  const result = app.run(`
+    state={...state,sessionId:'old',view:{id:'root',path:[],type:'root'},threads:[{name:'one'}]};
+    fetch=async()=>({ok:true,json:async()=>({epoch:'new',more:false,items:[]})});
+    setThread('one');
+    apply({type:'reset',epoch:'new',more:false,items:[{kind:'user',seq:0,revision:1,at:1,final:true,thread:'two',text:'new session',images:[],attachments:[]}]});
+    const hidden=order.length===0;
+    apply({...state,type:'state',sessionId:'new',threads:[{name:'two'}]});
+    [hidden,order.includes(0),historyRequest?.thread===undefined];
+  `);
+  assert.deepEqual(Array.from(result), [true,true,true]);
+});
+
+test('thread changes discard in-flight history and composer sends only the active root filter', async () => {
+  const app = await page();
+  const result = await app.run(`(async()=>{
+    state={...state,sessionId:'s',view:{id:'root',path:[],type:'root'},life:{type:'ready'},threads:[{name:'one'},{name:'two'}]};
+    epoch='e';const held=[];rendered=async()=>{};fetch=async()=>new Promise(resolve=>{held.push(resolve)});
+    setThread('one');const previous=historyRequest;
+    setThread('two');const current=historyRequest;
+    held[1]({ok:true,json:async()=>({epoch:'e',more:false,items:[{kind:'user',seq:2,revision:1,at:1,final:true,thread:'two',text:'two',images:[],attachments:[]}]})});
+    await current.done;
+    held[0]({ok:true,json:async()=>({epoch:'e',more:false,items:[{kind:'user',seq:0,revision:1,at:1,final:true,thread:'one',text:'stale',images:[],attachments:[]}]})});
+    await previous.done;
+    const dropped=!items.has(0);
+    let sent;fetchJSON=async(path,body)=>{sent=body;return {disposition:'started'}};
+    editor.setText('hello');await send();
+    const two=sent.thread;
+    const {threads:unused,...childState}=state;
+    apply({...childState,type:'state',sessionId:'child',view:{id:'child',path:[],type:'subagent'}});
+    editor.setText('child');await send();
+    const child=sent.thread;
+    apply({...state,type:'state',sessionId:'s',view:{id:'root',path:[],type:'root'},threads:[{name:'one'},{name:'two'}]});
+    return [previous!==current,dropped,two,child===undefined,threadFilter(),historyBefore];
+  })()`);
+  assert.deepEqual(JSON.parse(JSON.stringify(result)), [true, true, 'two', true, 'two', null]);
+});
+
 test('annotation map attaches a late reply, hides items and re-renders final text only for a new annotation item', async () => {
   const fixture = await page();
   const result = fixture.run(`

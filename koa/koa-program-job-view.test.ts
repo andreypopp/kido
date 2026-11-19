@@ -55,7 +55,7 @@ test("selecting a job record shows the job: its state, then its tail, with no fl
   const before = f.app.count();
   await f.select(f.record);
   await f.select("");
-  await f.app.until(ofType("state", record => record.view.type === "agent" && f.app.records().indexOf(record) > f.app.records().indexOf(state)));
+  await f.app.until(ofType("state", record => record.view.type === "root" && f.app.records().indexOf(record) > f.app.records().indexOf(state)));
   assert.equal(f.app.records().slice(before).filter(isReset).length, 0);
 });
 
@@ -95,7 +95,7 @@ test("Stop ends the job in place and Clear leaves the view and removes the recor
   assert.equal((await f.app.post("job/stop", { id: f.id })).status, 200);
   await f.app.until(ofType("state", record => record.view.type === "job" && record.view.job.state.type === "ended" && record.view.job.state.end.type === "stopped"));
   assert.equal((await f.app.post("job/clear", { id: f.id })).status, 200);
-  await f.app.until(ofType("state", record => record.view.type === "agent" && f.states().filter(s => s.view.type === "job").length > 0));
+  await f.app.until(ofType("state", record => record.view.type === "root" && f.states().filter(s => s.view.type === "job").length > 0));
   await pollUntil(async () => (await f.app.apiCalls()).some(call => call.path === "/panes/pane_1/status" && call.body.includes('"clear"') && call.body.includes(f.id)), 5000, "the record is cleared");
 });
 
@@ -107,7 +107,7 @@ test("a job view takes no agent action: abort and prompts are refused, and a vie
   assert.equal((await f.app.post("prompt", { text: "hi", mode: "prompt", attachments: [] })).status, 409);
   const self = f.states().at(0)?.view.id ?? "";
   assert.equal((await f.app.post("view", { id: self })).status, 200);
-  await f.app.until(ofType("state", record => record.view.type === "agent" && f.app.records().indexOf(record) > f.app.records().findIndex(isReset)));
+  await f.app.until(ofType("state", record => record.view.type === "root" && f.app.records().indexOf(record) > f.app.records().findIndex(isReset)));
   assert.equal((await f.app.post("view", { id: f.id })).status, 200);
   await pollUntil(async () => f.app.records().filter(isReset).length === 2, 5000, "the job opens again");
 });
@@ -205,7 +205,7 @@ test("two named viewers of a job share its feed and keep its output across the p
   await f.app.until(ofType("state", record => record.view.type === "job"));
   const mark = f.app.count();
   await f.select("");
-  await f.app.until(ofType("state", record => record.view.type === "agent"), mark);
+  await f.app.until(ofType("state", record => record.view.type === "root"), mark);
   await f.release();
   await pollUntil(() => received(one.records()) === "hello\nbye\n" && received(two.records()) === "hello\nbye\n", 5000, "the rest arrives in both");
   assert.deepEqual([one.records().filter(isReset).length, two.records().filter(isReset).length], [1, 1]);

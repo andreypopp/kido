@@ -19,7 +19,7 @@ test("the ko skill and its guideline are available only inside ko", async () => 
     assert.deepEqual(await emit("resources_discover"), [{ skillPaths: [skills] }]);
     assert.ok(existsSync(join(skills, "ko/SKILL.md")));
     const guideline = "The user runs the ko terminal multiplexer, and this pi runs in one of its panes. When the user talks about windows, tabs, panes, sessions, splits, floats or the sidebar, read the ko skill first.";
-    const event = (): { systemPromptOptions: { promptGuidelines: string[] } } => ({ systemPromptOptions: { promptGuidelines: [] } });
+    const event = (): { systemPromptOptions: { promptGuidelines: string[]; sections: Record<string, string> } } => ({ systemPromptOptions: { promptGuidelines: [], sections: {} } });
     const inside = event();
     await emit("before_agent_start", inside);
     assert.ok(inside.systemPromptOptions.promptGuidelines.includes(guideline));
@@ -41,7 +41,7 @@ test("path guidelines follow the host's path editor availability", async () => {
     const { pi, emit } = createFakePi(undefined, [], channel);
     koaExtension(pi);
     const rules = async () => {
-      const event: { systemPromptOptions: { promptGuidelines: string[] } } = { systemPromptOptions: { promptGuidelines: [] } };
+      const event: { systemPromptOptions: { promptGuidelines: string[]; sections: Record<string, string> } } = { systemPromptOptions: { promptGuidelines: [], sections: {} } };
       await emit("before_agent_start", event);
       return event.systemPromptOptions.promptGuidelines.filter(rule => rule.includes("The user clicks such a span"));
     };

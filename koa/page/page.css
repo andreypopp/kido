@@ -192,8 +192,8 @@ body .cm-tooltip.cm-tooltip-autocomplete.koa-complete::after{flex-shrink:0;conte
 .nrow .kv b{color:var(--faint);font-weight:400}
 .nrow .kv span{overflow-wrap:anywhere}
 .nrow .kv .path{font:.92em var(--ko-font-family)}
-#items>.assistant>.msg{overflow-wrap:anywhere}
-#items>.assistant>.msg :is(pre,table){overflow-wrap:normal}
+#items>.assistant>.msg,#items>.assistant>.thread-section>.msg{overflow-wrap:anywhere}
+#items>.assistant>.msg :is(pre,table),#items>.assistant>.thread-section>.msg :is(pre,table){overflow-wrap:normal}
 .run.open>.steps>.step:last-child>.detail,.run.open>.steps>.step:last-child>.detail>:last-child,.cmdrun .ft,.cmdrun .out>pre:has(+.ft[hidden]),.aline .bd,.nrow .bd{margin-bottom:0}
 .qmsg.user{--ink:color-mix(in srgb,var(--ko-color-4) 55%,var(--ko-fg));display:flex;gap:14px;align-items:baseline;margin:0;font:1em/1.5 var(--prose);background:color-mix(in srgb,var(--ko-color-4) 14%,var(--ko-bg));box-shadow:0 1px 3px color-mix(in srgb,var(--ko-fg) 10%,transparent)}
 @container style(--ko-appearance:dark){.qmsg.user{--ink:color-mix(in srgb,var(--ko-color-4) 35%,var(--ko-fg));background:color-mix(in srgb,var(--ko-color-4) 22%,var(--ko-bg))}}
@@ -239,3 +239,27 @@ body .cm-tooltip.cm-tooltip-autocomplete.koa-complete::after{flex-shrink:0;conte
 .jfoot .gap{flex:1}
 .jfoot .jact{border:1px solid var(--hair2);background:none;border-radius:6px;padding:1px 9px;font:inherit;color:var(--ko-fg);cursor:pointer;flex-shrink:0}.jfoot .jact:hover{background:var(--well2)}.jfoot .jact.stop:hover{color:var(--ko-color-1);border-color:color-mix(in srgb,var(--ko-color-1) 45%,var(--ko-bg))}
 .dock .field.jfield{padding:9px 16px 8px}
+body{--thread-0:#6a4fcf;--thread-1:#11827e;--thread-2:#b42d7f;--thread-3:#8c6a12;--thread-4:#4b6a8a;--thread-5:#5e7a1e}
+@container style(--ko-appearance:dark){body{--thread-0:#a99bff;--thread-1:#52d1c2;--thread-2:#f27bc0;--thread-3:#d8b85a;--thread-4:#94b0cc;--thread-5:#b3cf5a}}
+#threads{position:absolute;top:8px;left:8px;z-index:6;max-width:calc(100% - 16px)}
+.with-threads #transcript{padding-top:44px}
+.thread-capsule{height:22px;display:inline-flex;align-items:center;gap:5px;padding:0 8px;border-radius:8px;font:.85em/1 var(--prose);color:var(--ko-fg);background:color-mix(in srgb,var(--ko-fg) 8%,var(--ko-bg));border:.5px solid color-mix(in srgb,var(--ko-fg) 16%,transparent);box-shadow:0 1px 2px rgba(0,0,0,.08);white-space:nowrap;max-width:100%}
+@container style(--ko-appearance:dark){.thread-capsule{border-color:color-mix(in srgb,var(--ko-fg) 14%,transparent);box-shadow:0 1px 3px rgba(0,0,0,.30)}}
+.thread-open{display:flex;align-items:center;gap:5px;border:0;background:none;padding:0;color:inherit;font:inherit;min-width:0;overflow:hidden;height:100%}
+.thread-open>.thread-name,.thread-open>.thread-separator,.thread-open>.thread-more,.thread-open>.thread-chevron{flex:none}.thread-open.single>.thread-name{flex:0 1 auto;overflow:hidden}
+.thread-name{display:inline-flex;align-items:baseline;font-weight:600;white-space:nowrap;color:var(--thread-color);min-width:0}
+.thread-name>span:last-child{overflow:hidden;text-overflow:ellipsis}.thread-hash{opacity:.55;font-weight:400;margin-right:3px;flex-shrink:0}
+.thread-separator{color:var(--faint)}.thread-more{color:var(--muted)}.thread-chevron{color:var(--faint);font-size:.8em;margin-left:1px}.thread-open[aria-expanded=true] .thread-chevron{transform:rotate(180deg)}
+.thread-clear{display:inline-flex;align-items:center;justify-content:center;width:14px;height:14px;padding:0;margin:0 -3px 0 1px;border:0;border-radius:4px;background:none;color:var(--muted);font:14px/1 var(--prose);flex-shrink:0}.thread-clear:hover{background:var(--well2);color:var(--ko-fg)}
+.thread-panel{position:fixed;top:36px;left:8px;z-index:40;min-width:min(300px,calc(100vw - 16px));width:max-content;max-width:min(420px,calc(100vw - 16px));max-height:calc(60dvh - 36px);overflow:auto;background:var(--ko-bg);border:1px solid var(--hair2);border-radius:9px;box-shadow:0 8px 28px color-mix(in srgb,var(--ko-fg) 14%,transparent);padding:6px;font:.88em/1.5 var(--prose)}
+.thread-entry{display:flex;align-items:center;gap:9px;padding:4px 8px;min-height:28px;width:100%;border:0;border-radius:6px;background:none;text-align:left;font:inherit;color:inherit;cursor:pointer}
+.thread-entry:hover{background:var(--well)}.thread-entry.current{background:var(--well2)}.thread-entry>.thread-name{flex-shrink:0;max-width:160px}.thread-summary{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--muted)}.thread-entry time{margin-left:auto;flex-shrink:0;font-size:.9em;color:var(--faint)}
+.thread-all{border-top:1px solid var(--hair);margin-top:4px;padding-top:6px;border-radius:0;color:var(--muted)}
+.thread-section{position:relative;display:flow-root;margin:0 0 14px}.thread-section.thread-edge::before{content:'';position:absolute;left:-12px;top:0;height:var(--thread-edge-height);width:2px;border-radius:1px;background:color-mix(in srgb,var(--thread-color) 45%,transparent);pointer-events:none}.thread-section>:last-child{margin-bottom:0}.thread-section>div:has(>.run):last-child>.run{margin-bottom:0}
+.thread-section:has(>.thread-mark){margin-top:12px}.assistant>.thread-section{margin-bottom:0}.assistant>.thread-section:last-child{margin-bottom:14px}.assistant>.thread-section+.thread-section{margin-top:10px}.assistant>.thread-section:first-child:has(>.thread-mark){margin-top:0}
+.thread-section.thread-lines,.assistant>.thread-section.thread-lines:last-child{margin-bottom:2px}
+.thread-mark{display:flex;align-items:center;margin:0 0 3px;font:.8em/1.35 var(--prose)}.thread-mark .thread-hash{margin-right:6px}
+.thread-mark:not(.thread-waiting){width:fit-content;padding:0;border:0;background:none;text-align:left;cursor:pointer}.thread-mark:is(:hover,:active) .thread-name>span:last-child{text-decoration:underline;text-decoration-thickness:1px;text-decoration-color:color-mix(in srgb,var(--thread-color) 50%,transparent);text-underline-offset:2px}.thread-mark:active .thread-name>span:last-child{text-decoration-color:var(--thread-color)}
+.thread-cell{display:flex;align-items:center;flex-shrink:0}.thread-cell .thread-name{gap:2px}
+.thread-waiting{color:var(--faint);font-weight:400;font-style:italic}.user.thread-pending{position:relative;margin-top:calc(1.08em + 15px)}.user>.thread-waiting{position:absolute;bottom:calc(100% + 3px);left:var(--pad);margin:0;white-space:nowrap}
+@media(max-width:750px){.thread-panel{width:calc(100vw - 16px);max-width:calc(100vw - 16px)}.thread-section.thread-edge::before{left:-8px}}

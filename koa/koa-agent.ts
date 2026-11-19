@@ -40,12 +40,12 @@ import os from "node:os";
 import type { CompletionContext } from "./completion-context.ts";
 import type { AgentHost, Agent, Extension, JobsView, Records, SpawnPlan } from "./koa-agents.ts";
 import { runtimeExec, lineReader, openStream, runCommand, apiCall, apiArgs, KO_TIMEOUT_MS, type Reply, type ExecOptions, type ExecResult } from "./runtime-exec.ts";
-import { contentText, mintId, utf8Prefix, utf8Suffix, errorText, cleanLine, isRecord, isString, str } from "./text.ts";
+import { contentText, mintId, utf8Prefix, utf8Suffix, errorText, cleanLine, isRecord, isString, str, threadSections } from "./text.ts";
 import { dirname, delimiter, extname, join, posix, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Type } from "typebox";
 import type { components } from "../webview/ko-api.d.ts";
-import { isAgentFailure, jobEndText, type RestartState, type InProcessMessage, type AgentEnd, type Relation, type AgentRef, type AgentOutcome, type MessageDetails, type SteerDetails, type NoticeDetails, type StreamDetails, type JobRef, type JobEnd, type JobPlace, type JobSnapshot } from "./records.ts";
+import { THREAD_NAME_PATTERN, parseThreadName, type ThreadName, isAgentFailure, jobEndText, type RestartState, type InProcessMessage, type AgentEnd, type Relation, type AgentRef, type AgentOutcome, type MessageDetails, type SteerDetails, type NoticeDetails, type StreamDetails, type JobRef, type JobEnd, type JobPlace, type JobSnapshot } from "./records.ts";
 import { reconnectBackoff, parsePanes, placesOf, koaAgent, peerPanes, runningRows, MIN_ID_PREFIX, VAR_SESSION, VAR_NAME, VAR_ACTIVITY, VAR_TASK, VAR_RUNTIME, type PaneInfo, type AgentRow, type Where } from "./agents.ts";
 
 type Api = components["schemas"];
@@ -172,10 +172,11 @@ const sleep = (ms: number): Promise<void> => new Promise((resolve) => setTimeout
 
 type ChildRuntime = { name: string; mode: "routed" | "inside" };
 
-type PeerData = { role: "peer"; name: string; session: string; cwd: string; runtime?: { name: string } };
+type PeerData = { thread?: ThreadName; role: "peer"; name: string; session: string; cwd: string; runtime?: { name: string } };
 type AgentData = ChildData | PeerData;
 
 type ChildData = {
+  thread?: ThreadName;
   role: "subagent";
   owner: string;
   name: string;
@@ -217,7 +218,7 @@ type JobCall = {
 type JobOutput = {
   type: "job";
   name: string;
-  origin: { type: "async_bash"; stream: boolean; service: boolean } | { type: "bash"; move: "timeout" | "reload" };
+  origin: { type: "async_bash"; thread?: ThreadName; stream: boolean; service: boolean } | { type: "bash"; move: "timeout" | "reload" };
   log: string;
   output: WriteStream;
   logClosed: Promise<void>;
@@ -449,7 +450,7 @@ export function createJobs(options: { records: Records; path: () => string; sink
     if (job.state.end.type !== "stopped") {
       if (streams(job)) flush(job);
       const tail = jobTail(job);
-      sink.jobNotice(`job ${quote(job.mode.name)} (${job.id}) ${jobEndText(job.state.end)}\n--- last ${TAIL_BYTES} bytes of its output ---\n${tail}\nlog: ${job.mode.log}`, { kind: "job", job: { ...jobReference(job, options.place), end: job.state.end }, tail });
+      sink.jobNotice(`job ${quote(job.mode.name)} (${job.id}) ${jobEndText(job.state.end)}\n--- last ${TAIL_BYTES} bytes of its output ---\n${tail}\nlog: ${job.mode.log}`, { kind: "job", ...(job.mode.origin.type === 'async_bash' && job.mode.origin.thread ? { thread: job.mode.origin.thread } : {}), job: { ...jobReference(job, options.place), end: job.state.end }, tail });
     }
     job.state.announced = true;
     pruneJobs(registry);
@@ -1169,6 +1170,50 @@ export const agentExtension = (host: AgentHost) => (pi: ExtensionAPI): void => {
   let ownSessionId: string | null = null;
   let pane: string | null = null;
   let active = false;
+  const threadSupport: { type: 'root' | 'subagent'; properties: Record<string, Type.TOptional<Type.TString>> } = host.self.parent ? { type: 'subagent' as const, properties: {} } : { type: 'root' as const, properties: { thread: Type.Optional(Type.String({ pattern: THREAD_NAME_PATTERN, description: 'The thread that this agent or job works for: an existing thread when one covers the work, not the name of the agent or job.' })) } };
+  const threadNames = (): ThreadName[] => [...new Set((session?.sessionManager.getBranch() ?? []).flatMap(entry => {
+    const name = entry.type === 'custom' && entry.customType === 'koa.thread' && isRecord(entry.data) ? parseThreadName(entry.data.name) : undefined;
+    return name ? [name] : [];
+  }))];
+  const indexThread = (name: ThreadName | undefined, at: number): void => {
+    if (threadSupport.type === 'root' && name && !threadNames().includes(name)) pi.appendEntry('koa.thread', { name, at });
+  };
+  const threadParameter = (params: unknown): { thread?: ThreadName } | { error: string } => {
+    const raw = isRecord(params) ? params.thread : undefined;
+    if (raw === undefined) return {};
+    if (threadSupport.type !== 'root') return { error: 'threads belong only to a root agent' };
+    const thread = parseThreadName(raw);
+    return thread ? { thread } : { error: 'thread must have 1 to 32 lowercase letters, digits or hyphens' };
+  };
+  if (threadSupport.type === 'root') {
+    let reminder: 'none' | 'pending' = 'none';
+    pi.on('agent_start', () => { reminder = 'none'; });
+    pi.on('agent_end', event => {
+      const assistants = (event?.messages ?? []).filter(message => message.role === 'assistant');
+      const texts = assistants.flatMap(message => message.content.flatMap(block => block.type === 'text' ? [block.text] : []));
+      reminder = assistants.at(-1)?.stopReason !== 'aborted' && texts.some(text => text.trim()) && !texts.some(text => threadSections(text, true).some(section => section.thread)) ? 'pending' : 'none';
+    });
+    pi.on('agent_settled', (event, ctx) => {
+      if (!ctx.isIdle()) return;
+      const send = reminder === 'pending' && !event?.aborted && !host.self.stopping;
+      reminder = 'none';
+      if (send) pi.sendMessage({ customType: 'koa.thread-reminder', content: 'Your last reply had no `[thread: name]` line. Start every reply with one.', display: false }, { triggerTurn: false });
+    });
+    pi.on('message_end', event => {
+      if (event.message.role !== 'assistant') return;
+      const names = new Set(threadNames());
+      for (const block of event.message.content) if (block.type === 'text') for (const { thread } of threadSections(block.text, true)) if (thread && !names.has(thread)) {
+        pi.appendEntry('koa.thread', { name: thread, at: event.message.timestamp }); names.add(thread);
+      }
+    });
+    pi.on('session_compact', () => {
+      const names = threadNames();
+      if (names.length) pi.sendMessage({ customType: 'koa.threads', content: 'Threads in this session: ' + names.join(', '), display: false }, { triggerTurn: false });
+    });
+    pi.on('before_agent_start', event => {
+      event.systemPromptOptions.sections.threads = "# Threads\n\nEvery reply in this session starts with a line `[thread: name]` on\nits own. This has no exception: the first reply of the session, a\nshort answer and a reply after tool calls all start with it. A\nthread is a workstream of this session, and name is the thread that\nthe reply is about.\n\n- Reuse an existing thread whenever the reply continues, extends or\n  relates to its subject: a follow-up, a deeper look or a subtask\n  belongs to the thread that it grew from.\n- Start a new thread only for a subject that no existing thread\n  covers. Name it by its broad subject, not by the current task, so\n  that later work fits it: a short name of lowercase letters, digits\n  and `-`.\n- A reply about several threads has one part for each, and each\n  part starts with its own line.\n- A part about the session as a whole, not about one workstream,\n  goes into the thread `general`.\n- Give `spawn_agent` and `async_bash` the `thread` that the agent or\n  job works for: a thread as above, not the agent's or the job's\n  name.\n- A user message that starts with such a line is about that thread.";
+    });
+  }
   let routed: Routed | { refusal: string } | null = null;
   const liveRunRule = (rule: string): string => rule + (host.self.parent ? SUBAGENT_RESULT_RULE : "");
 
@@ -1262,7 +1307,8 @@ export const agentExtension = (host: AgentHost) => (pi: ExtensionAPI): void => {
     const { name, session: id, cwd } = data;
     if (typeof name !== "string" || typeof id !== "string" || typeof cwd !== "string") return undefined;
     const recorded = data.runtime;
-    const runtime = isRecord(recorded) && typeof recorded.name === "string" ? { runtime: { name: recorded.name } } : {};
+    const thread = threadSupport.type === 'root' ? parseThreadName(data.thread) : undefined;
+    const runtime = { ...(isRecord(recorded) && typeof recorded.name === "string" ? { runtime: { name: recorded.name } } : {}), ...(thread ? { thread } : {}) };
     switch (data.role) {
       case "peer": return { role: "peer", name, session: id, cwd, ...runtime };
       case "subagent": {
@@ -1320,7 +1366,7 @@ export const agentExtension = (host: AgentHost) => (pi: ExtensionAPI): void => {
           const facts: PeerData = { role: "peer", name: p.name || p.title, session: id, cwd: p.cwd, ...(p.kind?.type === "host" && p.runtime ? { runtime: { name: p.runtime } } : {}) };
           const previous = recorded.get(id);
           if (previous?.name === facts.name && previous.cwd === facts.cwd && previous.runtime?.name === facts.runtime?.name) continue;
-          append(ENTRY_AGENT, facts);
+          append(ENTRY_AGENT, { ...facts, ...(previous?.thread ? { thread: previous.thread } : {}) });
         }
       };
       const receive = (event: Api["ClientEvent"]): void => {
@@ -1659,13 +1705,18 @@ export const agentExtension = (host: AgentHost) => (pi: ExtensionAPI): void => {
       customType: STREAM_CUSTOM_TYPE,
       content: `job ${JSON.stringify(job.mode.name)} output (job ${job.id})\n${body.content}`,
       display: true,
-      details: { from: job.mode.name, job: host.jobs.reference(job), batch: body.batch, omitted: body.omitted, cut: body.cut } satisfies StreamDetails,
+      details: { ...(job.mode.origin.type === 'async_bash' && job.mode.origin.thread ? { thread: job.mode.origin.thread } : {}), from: job.mode.name, job: host.jobs.reference(job), batch: body.batch, omitted: body.omitted, cut: body.cut } satisfies StreamDetails,
     }, { deliverAs: "steer", triggerTurn: true });
   };
 
+  const relationshipThread = (agent: AgentRef): { thread?: ThreadName } => {
+    if (threadSupport.type !== 'root') return {};
+    const thread = agents().find(known => known.session === agent.session)?.thread;
+    return thread ? { thread } : {};
+  };
   const deliverNotice = (text: string, details: NoticeDetails): void => {
     const from = 'job' in details ? details.job.name : details.agent.name;
-    pi.sendMessage({ customType: NOTICE_CUSTOM_TYPE, content: `${noticeHeader(from)}\n${text}`, display: true, details: { from, ...details } satisfies NoticeDetails }, { deliverAs: "steer", triggerTurn: true });
+    pi.sendMessage({ customType: NOTICE_CUSTOM_TYPE, content: `${noticeHeader(from)}\n${text}`, display: true, details: { ...('agent' in details ? relationshipThread(details.agent) : {}), from, ...details } satisfies NoticeDetails }, { deliverAs: "steer", triggerTurn: true });
   };
 
   const childRef = (child: { name: string; session: string }): AgentRef => ({ name: child.name, session: child.session });
@@ -1673,7 +1724,7 @@ export const agentExtension = (host: AgentHost) => (pi: ExtensionAPI): void => {
   const deliverAgentMessage = (agent: AgentRef, relation: Relation, text: string, work: boolean, runtime?: string, returnTo?: { session: string; pane: string }): void => {
     const from = agent.name, header = senderHeader(from, relation, runtime, returnTo);
     pi.sendMessage(
-      { customType: MESSAGE_CUSTOM_TYPE, content: `${header}\n${text}`, display: true, details: { from, work, agent, body: text, inbound: { form: 'message', relation, ...(runtime ? { runtime } : {}) } } satisfies MessageDetails },
+      { customType: MESSAGE_CUSTOM_TYPE, content: `${header}\n${text}`, display: true, details: { ...relationshipThread(agent), from, work, agent, body: text, inbound: { form: 'message', relation, ...(runtime ? { runtime } : {}) } } satisfies MessageDetails },
       { deliverAs: "followUp", triggerTurn: true },
     );
   };
@@ -1713,7 +1764,7 @@ export const agentExtension = (host: AgentHost) => (pi: ExtensionAPI): void => {
         workStarted();
         // pi drains followUp only once the agent has decided to stop; steer joins the run under way.
         pi.sendMessage(
-          { customType: STEER_CUSTOM_TYPE, content: steerHeader(from, m.returnTo, m.runtime) + m.text, display: true, details: { from, work: m.relation === "parent", agent: m.agent, body: m.text, inbound: { form: 'steer', ...(m.relation ? { relation: m.relation } : {}) } } satisfies SteerDetails },
+          { customType: STEER_CUSTOM_TYPE, content: steerHeader(from, m.returnTo, m.runtime) + m.text, display: true, details: { ...relationshipThread(m.agent), from, work: m.relation === "parent", agent: m.agent, body: m.text, inbound: { form: 'steer', ...(m.relation ? { relation: m.relation } : {}) } } satisfies SteerDetails },
           { deliverAs: "steer", triggerTurn: true },
         );
         return;
@@ -1903,6 +1954,7 @@ export const agentExtension = (host: AgentHost) => (pi: ExtensionAPI): void => {
 
   type Plan = {
     name?: string;
+    thread?: ThreadName;
     session: string;
     model: string;
     cwd: string;
@@ -1990,20 +2042,22 @@ export const agentExtension = (host: AgentHost) => (pi: ExtensionAPI): void => {
 
   const recordPeer = (plan: Plan, placement: Api["Placement"]): void => {
     if (!recordsPeers) return;
-    append(ENTRY_AGENT, { role: "peer", name: plan.name ?? "", session: plan.session, cwd: plan.cwd, ...(plan.runtime?.mode === "routed" ? { runtime: { name: plan.runtime.name } } : {}) });
+    append(ENTRY_AGENT, { role: "peer", ...(plan.thread ? { thread: plan.thread } : {}), name: plan.name ?? "", session: plan.session, cwd: plan.cwd, ...(plan.runtime?.mode === "routed" ? { runtime: { name: plan.runtime.name } } : {}) });
+    indexThread(plan.thread, Date.now());
     pendingPeers.set(plan.session, placement.pane);
   };
 
-  const recordChild = (plan: { name: string; session: string; model: string; cwd: string; runtime?: string; fork: boolean }): void => {
-    append(ENTRY_AGENT, { role: "subagent", name: plan.name, session: plan.session, model: plan.model, fork: plan.fork, cwd: plan.cwd, ...(plan.runtime ? { runtime: { name: plan.runtime } } : {}) });
+  const recordChild = (plan: { thread?: ThreadName; name: string; session: string; model: string; cwd: string; runtime?: string; fork: boolean }): void => {
+    append(ENTRY_AGENT, { role: "subagent", ...(plan.thread ? { thread: plan.thread } : {}), name: plan.name, session: plan.session, model: plan.model, fork: plan.fork, cwd: plan.cwd, ...(plan.runtime ? { runtime: { name: plan.runtime } } : {}) });
+    indexThread(plan.thread, Date.now());
   };
 
   // The in-process child of this agent: its registry entry follows the child's creation, its task follows both.
-  const startChild = async (plan: SpawnPlan & { fork: boolean }, task: string): Promise<Agent | { error: string }> => {
+  const startChild = async (plan: SpawnPlan & { fork: boolean; thread?: ThreadName }, task: string): Promise<Agent | { error: string }> => {
     const made = await host.spawn(plan);
     if ("error" in made) return made;
     if (!ownSessionId) return { error: "this session has no id" };
-    recordChild({ name: plan.name, session: plan.id, model: plan.model, cwd: plan.cwd, runtime: plan.runtime, fork: plan.fork });
+    recordChild({ thread: plan.thread, name: plan.name, session: plan.id, model: plan.model, cwd: plan.cwd, runtime: plan.runtime, fork: plan.fork });
     if (task) await made.extension?.receive({ kind: "user", text: task });
     return made;
   };
@@ -2023,7 +2077,7 @@ export const agentExtension = (host: AgentHost) => (pi: ExtensionAPI): void => {
       if ("error" in saved) return saved;
       const model = saved.model ?? callerModel(session);
       if (!model) return { error: "caller has no model; specify model" };
-      const plan: Plan = { name: saved.name, session: peer.session, cwd: saved.cwd, runtime: peer.runtime ? { name: peer.runtime.name, mode: "routed" } : undefined, model, task, mode: { kind: "continue", file: file.path }, koSession: snapshot.me?.session ?? "" };
+      const plan: Plan = { thread: peer.thread, name: saved.name, session: peer.session, cwd: saved.cwd, runtime: peer.runtime ? { name: peer.runtime.name, mode: "routed" } : undefined, model, task, mode: { kind: "continue", file: file.path }, koSession: snapshot.me?.session ?? "" };
       const made = await createPane(plan);
       if ("error" in made) return made;
       recordPeer(plan, made.placement);
@@ -2041,7 +2095,7 @@ export const agentExtension = (host: AgentHost) => (pi: ExtensionAPI): void => {
       const saved = file ? readSavedSession(file, session.modelRegistry) : undefined;
       if (saved && "error" in saved) return saved;
       const model = saved?.model ?? child.model;
-      return startChild({ id: child.session, name: child.name, cwd: child.cwd, model, runtime: child.runtime?.name, trusted: await trustedCwd(child.cwd), mode: file ? { kind: "continue", file: file.path } : { kind: "fresh" }, fork: false }, task);
+      return startChild({ thread: child.thread, id: child.session, name: child.name, cwd: child.cwd, model, runtime: child.runtime?.name, trusted: await trustedCwd(child.cwd), mode: file ? { kind: "continue", file: file.path } : { kind: "fresh" }, fork: false }, task);
     });
 
   // ---- the task and the endings that happened while this agent was away ----
@@ -2164,7 +2218,7 @@ export const agentExtension = (host: AgentHost) => (pi: ExtensionAPI): void => {
         const result = await sendIntent(explicit[1], kind, params.message, { data: sendData({ to: explicit[2] }) });
         const sent = deliveryText(params.to, mode, result);
         const outcome: AgentOutcome = sent.ok ? { ok: true } : { ok: false, failure: isAgentFailure(result.state) ? result.state : 'error', message: 'message' in result ? result.message : sent.text };
-        return reply(sent.ok ? sent.text : `could not message ${params.to}: ${sent.text}`, { to: params.to, outcome });
+        return reply(sent.ok ? sent.text : `could not message ${params.to}: ${sent.text}`, { ...relationshipThread({ name: params.to, session: explicit[2] }), to: params.to, outcome });
       }
       const snapshot = await discovery();
       const resolved = resolveIn(snapshot, normalizeAddress(params.to));
@@ -2173,18 +2227,19 @@ export const agentExtension = (host: AgentHost) => (pi: ExtensionAPI): void => {
       const name = agentName(target);
       if (target.self) return reply(`${name} is this agent`, { to: name, outcome: { ok: false, failure: 'error', message: `${name} is this agent` } satisfies AgentOutcome });
       const known = agents().find((c) => c.session === target.id);
+      const delivered = (text: string, details: Record<string, unknown>) => reply(text, { ...relationshipThread({ name, session: target.id }), ...details });
       if (target.state === "ended") {
         if (!known || mode !== "message") return refuse(`${name} is no longer running`, 'not_running', name);
         if (known.role === "peer") {
           const restarted = await restartPeer(known, params.message);
           if ("error" in restarted) return refuse(restarted.error, 'error', name);
-          if ("placement" in restarted) return reply(`restarted ${name} in pane ${restarted.placement.pane}; ${PEER_RESULT_RULE}`, { to: name, outcome: { ok: true } satisfies AgentOutcome });
+          if ("placement" in restarted) return delivered(`restarted ${name} in pane ${restarted.placement.pane}; ${PEER_RESULT_RULE}`, { to: name, outcome: { ok: true } satisfies AgentOutcome });
           target = restarted.running;
         } else {
           markChildWork(known);
           const resumed = await resumeChild(known, params.message);
           if ("error" in resumed) return refuse(resumed.error, 'error', name);
-          if (!("running" in resumed)) return reply(`restarted ${name} (session ${known.session}); ${liveRunRule(SPAWN_RESULT_RULE)}`, { to: name, outcome: { ok: true } satisfies AgentOutcome });
+          if (!("running" in resumed)) return delivered(`restarted ${name} (session ${known.session}); ${liveRunRule(SPAWN_RESULT_RULE)}`, { to: name, outcome: { ok: true } satisfies AgentOutcome });
           const live = (await discovery()).all.find((row) => row.id === known.session);
           if (!live) return refuse(`${name} is no longer running`, 'not_running', name);
           target = live;
@@ -2195,13 +2250,13 @@ export const agentExtension = (host: AgentHost) => (pi: ExtensionAPI): void => {
         if (!recipient?.extension) return refuse(`${name} is no longer running`, 'not_running', name);
         if (known?.role === "subagent") markChildWork(known);
         await recipient.extension.receive({ kind: delivery, text: params.message, agent: sender, relation: relationOf(host.self, recipient), ...(routed && !("refusal" in routed) ? { runtime: routed.name } : {}) });
-        return reply(`delivered to ${name}`, { to: name, outcome: { ok: true } satisfies AgentOutcome });
+        return delivered(`delivered to ${name}`, { to: name, outcome: { ok: true } satisfies AgentOutcome });
       }
       const data = sendData({});
       const result = await sendIntent(paneOf(target), kind, params.message, data === undefined ? {} : { data });
       const sent = deliveryText(name, mode, result, target.status === "working", true);
       const outcome: AgentOutcome = sent.ok ? { ok: true } : { ok: false, failure: isAgentFailure(result.state) ? result.state : 'error', message: 'message' in result ? result.message : sent.text };
-      return reply(sent.ok ? sent.text : `could not message ${params.to}: ${sent.text}`, { to: name, outcome });
+      return delivered(sent.ok ? sent.text : `could not message ${params.to}: ${sent.text}`, { to: name, outcome });
     },
   });
 
@@ -2219,6 +2274,7 @@ export const agentExtension = (host: AgentHost) => (pi: ExtensionAPI): void => {
     ],
     parameters: Type.Object(
       {
+        ...threadSupport.properties,
         task: Type.String({
           description:
             "First task. State the files, changes and required result. Empty only when resuming without fork: starts no turn and owes no report.",
@@ -2251,6 +2307,8 @@ export const agentExtension = (host: AgentHost) => (pi: ExtensionAPI): void => {
     async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
       const refuse = (text: string) => reply(`could not spawn agent: ${text}`, { outcome: { ok: false, failure: "error", message: text } satisfies AgentOutcome });
       if (!ownSessionId) return refuse("this session has no id");
+      const assignment = threadParameter(params);
+      if ('error' in assignment) return refuse(assignment.error);
       const name = params.name;
       if (!name) return refuse("name is required");
       const nameError = checkName(name);
@@ -2324,7 +2382,8 @@ export const agentExtension = (host: AgentHost) => (pi: ExtensionAPI): void => {
             if (!ko) return refuse("ko is not on PATH");
             if (!pane) return refuse("this session has no pane");
             if (!snapshot.me) return refuse("could not read the layout");
-            const plan: Plan = { name: mode.kind === "continue" ? source?.name : name, session: childSession, model, cwd, runtime: childRuntime, runtimeInfo, task, mode, koSession: snapshot.me.session };
+            const thread = assignment.thread ?? recordedPeer?.thread;
+            const plan: Plan = { thread, name: mode.kind === "continue" ? source?.name : name, session: childSession, model, cwd, runtime: childRuntime, runtimeInfo, task, mode, koSession: snapshot.me.session };
             if (taskTooLarge(task)) return refuse(`the task does not fit the ${MAX_TASK_BYTES} byte limit of a pane variable`);
             const made = await createPane(plan);
             if ("error" in made) return refuse(made.error);
@@ -2333,15 +2392,16 @@ export const agentExtension = (host: AgentHost) => (pi: ExtensionAPI): void => {
             const inRuntime = childRuntime?.name ?? host.facts.runtime;
             return reply(
               `spawned ${name} (session ${childSession}, window ${window}, pane ${childPane}${inRuntime ? `, in runtime ${inRuntime}` : ""})${mode.kind === "copy" ? `, forked from session ${source?.id ?? ownSessionId}` : ""}; session id is what resume_from takes later; ${PEER_RESULT_RULE}`,
-              { session: childSession, name, window, pane: childPane, fork: mode.kind === "copy", outcome: { ok: true } satisfies AgentOutcome },
+              { ...(thread ? { thread } : {}), session: childSession, name, window, pane: childPane, fork: mode.kind === "copy", outcome: { ok: true } satisfies AgentOutcome },
             );
           }
-          const made = await startChild({ id: childSession, name, cwd, model, runtime: childRuntime?.name, trusted: await trustedCwd(cwd), mode, fork: mode.kind === "copy" }, task);
+          const thread = assignment.thread ?? existing?.thread;
+          const made = await startChild({ thread, id: childSession, name, cwd, model, runtime: childRuntime?.name, trusted: await trustedCwd(cwd), mode, fork: mode.kind === "copy" }, task);
           if ("error" in made) return refuse(made.error);
           const inRuntime = childRuntime?.name ?? host.facts.runtime;
           return reply(
             `spawned ${name} (session ${childSession}${inRuntime ? `, in runtime ${inRuntime}` : ""})${mode.kind === "copy" ? `, forked from session ${source?.id ?? ownSessionId}` : ""}; session id is what resume_from takes later; ${task ? liveRunRule(SPAWN_RESULT_RULE) : SPAWN_RESULT_RULE}`,
-            { session: childSession, name, fork: mode.kind === "copy", outcome: { ok: true } satisfies AgentOutcome },
+            { ...(thread ? { thread } : {}), session: childSession, name, fork: mode.kind === "copy", outcome: { ok: true } satisfies AgentOutcome },
           );
         } finally { releaseName(name); }
       });
@@ -2426,6 +2486,7 @@ export const agentExtension = (host: AgentHost) => (pi: ExtensionAPI): void => {
     ],
     parameters: Type.Object(
       {
+        ...threadSupport.properties,
         command: Type.String({
           description:
             'The command to run in the background, as a shell command line (e.g. "make -j8 && ./run"), run through the configured pi shell.',
@@ -2442,6 +2503,8 @@ export const agentExtension = (host: AgentHost) => (pi: ExtensionAPI): void => {
       { additionalProperties: false },
     ),
     async execute(_toolCallId, params, _signal, _update, ctx) {
+      const assignment = threadParameter(params);
+      if ('error' in assignment) return { ...reply(assignment.error), isError: true };
       if (routed && "refusal" in routed) return reply(`could not start background command: ${routed.refusal}`);
       if (!params.name) return reply("could not start background command: --name is required");
       const nameError = checkName(params.name);
@@ -2468,7 +2531,8 @@ export const agentExtension = (host: AgentHost) => (pi: ExtensionAPI): void => {
             signal: controller.signal, onData: () => {},
             onStart(job) {
               cleanup();
-              resolve(promoteJob(jobRegistry(), job, { type: "async_bash", stream: !!params.stream, service: !!params.service }, params.name));
+              indexThread(assignment.thread, Date.now());
+              resolve(promoteJob(jobRegistry(), job, { type: "async_bash", ...assignment, stream: !!params.stream, service: !!params.service }, params.name));
             },
           }).catch(reject);
         });
@@ -2476,7 +2540,7 @@ export const agentExtension = (host: AgentHost) => (pi: ExtensionAPI): void => {
         const lifecycle = serviceJob(job)
           ? "it does not hold your report; a notice with its exit status still arrives when it ends"
           : liveRunRule("a notice with its exit status and an output tail arrives when it ends and starts your next turn; you stay alive while it runs, so ending your turn now is safe - do not sleep or poll for it, and end your turn if nothing else is left");
-        return reply(`started job ${job.id} (${job.mode.name}); list_async_bash lists it and stop_async_bash stops it; ${lifecycle}; ${progress}; log: ${job.mode.log}`, { job: host.jobs.reference(job), stream: !!params.stream });
+        return reply(`started job ${job.id} (${job.mode.name}); list_async_bash lists it and stop_async_bash stops it; ${lifecycle}; ${progress}; log: ${job.mode.log}`, { ...assignment, job: host.jobs.reference(job), stream: !!params.stream });
       } catch (error) {
         const message = controller.signal.aborted ? `start cancelled by ${errorText(controller.signal.reason)}; no job was started` : errorText(error);
         return { ...reply(`could not start background command: ${message}`), isError: true };
