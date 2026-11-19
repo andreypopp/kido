@@ -274,7 +274,7 @@ export function createTree(options: TreeOptions): Tree {
     const dialog = view.state.dialogs[0]?.title;
     const failed = view.life.type === "failed" ? view.life.message : undefined;
     const text = cleanLine(dialog ?? failed ?? view.root.message, 2048);
-    const common = { type: "set" as const, id: recordPath(agent), title: utf8Prefix(agent.name, 192), selection: selection?.type === "agent" && selection.agent === agent ? "selected" as const : "offered" as const, closeable: true, ...(text ? { msg: text } : {}) };
+    const common = { type: "set" as const, id: recordPath(agent), title: utf8Prefix(agent.name, 192), selection: selection?.type === "agent" && selection.agent === agent ? "selected" as const : "offered" as const, closeable: true, promptable: true, ...(text ? { msg: text } : {}) };
     records.write(dialog ? { ...common, state: "blocked", kind: "question" } : { ...common, state: failed === undefined ? view.root.value : "error" });
   };
   const view = (): Selection => selection ??= { type: "agent", agent: root };
@@ -538,13 +538,14 @@ export function createTree(options: TreeOptions): Tree {
     byRecord: id => all().find(agent => agent.parent && recordPath(agent) === id),
     openInbox: () => {
       if (!facts.pane || !facts.ko || !facts.insideKo) { ready(); return; }
+      const deliver = async (agent: Agent | undefined, message: InProcessMessage): Promise<"ack" | "refuse"> => {
+        if (!agent || agent.stopping || !agent.extension) return "refuse";
+        await agent.extension.receive(message);
+        return "ack";
+      };
       inbox = openInbox(facts.ko, facts.pane, {
-        message: async (target, message) => {
-          const agent = target === undefined ? root : find(target);
-          if (!agent || agent.stopping || !agent.extension) return "refuse";
-          await agent.extension.receive(message);
-          return "ack";
-        },
+        user: (record, text) => deliver(record === "" ? root : tree.byRecord(record), { kind: "user", text }),
+        message: (target, message) => deliver(target === undefined ? root : find(target), message),
         select: record => {
           const next = resolveView(record);
           if (next) options.select(next);

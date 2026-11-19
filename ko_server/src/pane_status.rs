@@ -509,6 +509,7 @@ mod tests {
             msg: msg.map(str::to_owned),
             selection: None,
             closeable: false,
+            promptable: false,
         }
     }
 

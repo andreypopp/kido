@@ -236,6 +236,10 @@ fn status_name(text: &str) -> bool {
 pub struct StatusId(String);
 
 impl StatusId {
+    pub fn root() -> StatusId {
+        StatusId(String::new())
+    }
+
     pub fn as_str(&self) -> &str {
         &self.0
     }

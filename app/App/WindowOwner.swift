@@ -1416,7 +1416,7 @@ private class AlertEscape: NSView {
 
     func promptDelivered(pane: PaneID) { session?.pane(pane)?.promptDelivered() }
 
-    func promptSource(_ position: Snapshot.Position, quote: String?, preselect: PaneID? = nil) -> PromptSource? {
+    func promptSource(_ position: Snapshot.Position, quote: String?, preselect: KoSchema.PromptTarget? = nil) -> PromptSource? {
         guard let snapshot else { return nil }
         return PromptSource(owner: self, instance: snapshot.serverInstance, session: position.session, window: position.window, pane: position.pane,
                             windowName: windowName(position.window), quote: quote, preselect: preselect)
@@ -1552,7 +1552,7 @@ private class AlertEscape: NSView {
 
     enum PromptRequest: Equatable {
         case resolve(from: PaneID)
-        case send(from: PaneID, to: PaneID, text: String)
+        case send(from: PaneID, to: KoSchema.PromptTarget, text: String)
     }
     enum PromptReply: Equatable {
         case candidates([KoSchema.Candidate])

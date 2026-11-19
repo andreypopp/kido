@@ -874,7 +874,8 @@ ko_code ko_client_edit(const ko_client *client,
                        ko_buffer *out);
 
 /*
- * The live agents of the session of the pane `from`: `out` holds the JSON array of Candidate.
+ * The live agents and their promptable records in the session of pane `from`:
+ * `out` holds the JSON array of Candidate.
  * The request carries no pane identity: it is the user's, who may name any pane.
  */
 ko_code ko_client_prompt_resolve(const ko_client *client,
@@ -882,8 +883,8 @@ ko_code ko_client_prompt_resolve(const ko_client *client,
                                  ko_buffer *out);
 
 /*
- * Sends `text` as the user, from the pane `from`, to the agent pane `target`, which must be one
- * of its candidates; `out` holds the JSON answer ({"via": ...}). The core mints the id of the
+ * Sends `text` as the user, from pane `from`, to `target` in pane_N or pane_N/record form,
+ * which must be a candidate; `out` holds the JSON answer ({"via": ...}). The core mints the id of the
  * message. KO_ERR_UNKNOWN: the send failed partway, or no answer came after the request was
  * written, so the text may have arrived.
  */

@@ -136,13 +136,13 @@ import XCTest
         owner.prompt(.resolve(from: PaneID(number: 1))) { candidates = try? $0.get() }
         wait("the candidates") { candidates != nil }
         guard case .candidates(let found)? = candidates else { return XCTFail("no candidates") }
-        XCTAssertEqual(found.map(\.pane), [PaneID(number: 2)])
+        XCTAssertEqual(found.map(\.target), [.init(pane: PaneID(number: 2), record: "")])
         var sent: Result<WindowOwner.PromptReply, Error>?
-        owner.prompt(.send(from: PaneID(number: 1), to: PaneID(number: 2), text: "hello")) { sent = $0 }
+        owner.prompt(.send(from: PaneID(number: 1), to: .init(pane: PaneID(number: 2), record: ""), text: "hello")) { sent = $0 }
         wait("the prompt is sent") { sent != nil }
         XCTAssertEqual(try sent?.get(), .sent)
         var refused: Result<WindowOwner.PromptReply, Error>?
-        owner.prompt(.send(from: PaneID(number: 2), to: PaneID(number: 1), text: "hello")) { refused = $0 }
+        owner.prompt(.send(from: PaneID(number: 2), to: .init(pane: PaneID(number: 1), record: ""), text: "hello")) { refused = $0 }
         wait("a pane that is no candidate") { refused != nil }
         XCTAssertThrowsError(try refused?.get()) { XCTAssertEqual(($0 as? KoError)?.code, KO_ERR_INVALID) }
     }

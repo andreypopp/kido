@@ -2848,7 +2848,8 @@ the field and the list; an edit clears it.
 Prompt mode shows one prompt at a time. Its source is a `PromptSource`: the
 owner, the server instance, the session, window and pane it was opened from,
 the window name at open, the selection of this open as the quote, and an
-optional preselected agent pane. The entry points are:
+optional preselected target: a pane and a record of it, as
+`POST /prompt` takes it (protocol.md, section 11). The entry points are:
 
 - ⌘O, "Prompt with Selection…" in a pane's context menu, and `p` in copy mode
   ([Panes](#panes)). The source is the focused pane, and the quote is its
@@ -2856,7 +2857,7 @@ optional preselected agent pane. The entry points are:
   to `AppDelegate.openPrompt`, which opens the palette over the pane's window
   with the pane as the focus to restore.
 - ⌘O in the root list. On a highlighted agent pane row,
-  the source is that agent's own pane, preselected, with no quote, from the
+  the source is that agent's own pane, preselected with its root record, with no quote, from the
   anchor, if the row's check still passes. On any
   other row, ⌘O acts as the Prompt… row. Only the highlighted agent row shows "⌘O prompt" in its
   shortcut column. In another mode, ⌘O does nothing.
@@ -2871,7 +2872,10 @@ when its snapshot has no agent. Only a resolve with no candidate shows the no-ag
 
 The card's head row has the mode chip and the target picker, "Prompt
 **@name** in this window ⌄" or "in window <name>", with the place in
-secondary colour. Under it are the field, a status line and the foot. The
+secondary colour. For a subagent target it is "Prompt **@reviewer** in
+@ko, this window ⌄" or "in @ko, window <name>": the record's title at
+weight 600, then the pane's agent and the place in the place colour.
+The user never sees a record id. Under it are the field, a status line and the foot. The
 head is 47pt and the foot 40pt. The field is a plain TextKit 1 `NSTextView`
 with 13pt text on 18pt lines, 9pt above and 12pt below, as the mockup render
 measures. It has no placeholder. It grows with its text up to 6 lines, then it
@@ -2923,7 +2927,10 @@ pending starts no other request. If no reply arrives in 5 s (`PalettePrompt.reso
 opens failed with "kido did not reply" and Retry. A palette close, a mode change, an owner close, a changed server
 instance or a source pane that is gone cancels the pending open. A reply after
 the cancel or the time limit does nothing. The chosen agent is the
-preselected pane if it is a candidate, else the source pane itself if it is
+preselected target if it is a candidate; else, among the candidates of the
+preselected pane, the one whose record is the longest `/`-prefix of the
+preselected record (the root is a prefix of every id), so a preselected job
+record chooses its owner agent; else the source pane itself if it is
 a candidate (⌘O in an agent's own pane), else the first candidate in the
 source pane's window, else the first candidate. A reply with no candidate (the
 agent ended after the check) disables the picker, the field and Send, and the
@@ -2933,9 +2940,14 @@ prompt.
 
 The picker is an `NSControl` that pops up a native `NSMenu`: "This window"
 with its agents, then "Session <name>" with the others and their window
-names, the chosen one checked. A section with no agent shows a disabled "No
+names, the chosen one checked. A subagent candidate is a row directly under
+its pane's row, in the same section, titled with its record's title and
+indented 16pt for each `/` level of its record under `agents`, at most the
+sidebar's depth; the indentation names its pane, so the row has no pane
+prefix. A section with no agent shows a disabled "No
 agents". A click or Space or Return on the focused picker opens the menu. Left
-and Right with the menu closed choose the previous or next candidate. A
+and Right with the menu closed choose the previous or next candidate, flat in
+resolve order: a pane, then its subagents, then the next pane. A
 choice in the `invalid` state returns to ready.
 
 Keys in the field go through the text view's `doCommandBy`: Return sends,
@@ -2951,8 +2963,8 @@ target itself when the source pane is gone. The text is the field's raw
 markdown. Send is enabled for any text that is not blank, a quote alone
 included. States:
 
-- Sending: a spinner and "Sending to @name…". The field, the picker and Send
-  are disabled.
+- Sending: a spinner and "Sending to @name…", with the record's title for a
+  subagent. The field, the picker and Send are disabled.
 - Delivered: the draft is removed, and the palette closes and restores the
   focus. Then, if the source pane still exists, its selection clears and copy
   mode exits.
@@ -2979,7 +2991,8 @@ states keep their own status. The candidates stay, and the palette does not reso
 send to a target that is gone fails as `invalid`.
 
 **Drafts.** `AppDelegate.promptDrafts` holds one draft per target agent, in
-memory only. The key is the host, the server instance and the agent's pane.
+memory only. The key is the host, the server instance and the target, pane
+and record, so a subagent's draft is apart from its pane's.
 The value is the text. Thus, ⌘O from a pane, ⌘O in the agent's
 own pane and root ⌘O on its row open the same draft. When the target becomes
 known, from the resolve reply or a picker change, the field shows that
@@ -2990,7 +3003,9 @@ removes the key. A delivery removes it. A picker change from A to B stores the
 field under A. If B has a draft, the field shows it. Else the field keeps its
 text, A's key is removed, and the content belongs to B. Each owner
 snapshot drops the drafts of that host whose instance differs or whose pane is
-not in the snapshot, and an owner close drops its host's drafts. A pane
+not in the snapshot, and an owner close drops its host's drafts. A draft whose
+record is gone stays until its pane goes: a subagent's record can clear and
+return across a `/reload`. A pane
 that stops being an agent for a while keeps its draft: pi clears its root
 while it runs an external editor or is suspended.
 

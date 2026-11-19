@@ -188,6 +188,7 @@ fn report_of(record: &frame::Record<'_>) -> Option<StatusReport> {
             msg: text(record.msg).map(TryInto::try_into).transpose().ok()?,
             selection: None,
             closeable: false,
+            promptable: false,
         },
     })
 }

@@ -210,7 +210,7 @@ test("a host with no viewer offers no selection and no close", async (t) => {
     plain.registry.owner.onStart({ ...job, id: "plain" });
     await pollUntil(() => reports().some(r => r.id === "jobs/plain"));
     const record = at(reports().filter(r => r.id === "jobs/plain"), 0);
-    assert.equal("selection" in record || "closeable" in record, false);
+    assert.equal("selection" in record || "closeable" in record || "promptable" in record, false);
     plain.clearRecords();
   } finally { await fx.restore(); }
 });

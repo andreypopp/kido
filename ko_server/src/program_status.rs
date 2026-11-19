@@ -1,5 +1,6 @@
 use ko_sys::clock::Mono;
 
+use ko_wire::ids::StatusId;
 use ko_wire::protocol::{Foreground, ProgramRecord, ProgramState, ProgramStatus, StatusReport};
 
 const MAX_RECORDS: usize = 64;
@@ -69,6 +70,7 @@ impl Set {
             started,
             selection: report.selection,
             closeable: report.closeable,
+            promptable: report.promptable,
         };
         if let Some(index) = stored {
             if self.records.get(index) == Some(&record) {
@@ -100,6 +102,12 @@ impl Set {
         self.remove(|_| false)
     }
 
+    pub(crate) fn promptable(&self, id: &StatusId) -> bool {
+        self.records
+            .iter()
+            .any(|record| &record.id == id && record.promptable)
+    }
+
     pub(crate) fn published(&self) -> ProgramStatus {
         let mut records: Vec<ProgramRecord> = self
             .records
@@ -114,6 +122,7 @@ impl Set {
                         msg: None,
                         selection: None,
                         closeable: false,
+                        promptable: false,
                         ..
                     } if u8::from(*progress) == 0
                 )
@@ -170,6 +179,7 @@ mod tests {
                 msg: None,
                 selection: None,
                 closeable: false,
+                promptable: false,
             },
         }
     }

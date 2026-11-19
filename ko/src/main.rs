@@ -147,9 +147,9 @@ enum Command {
     /// Send a prompt, read from stdin, to the one other agent in the caller's window.
     /// Exits 4 with no such agent and 5 with several.
     Prompt {
-        /// Send to this other live agent pane in the caller's session.
-        #[arg(long, value_name = "PANE", value_parser = |text: &str| PaneId::try_from(text.to_owned()).map_err(|error| error.to_string()))]
-        target: Option<PaneId>,
+        /// Send to this other live agent pane in the caller's session, or to its record (pane_3/agents/reviewer).
+        #[arg(long, value_name = "PANE[/RECORD]", value_parser = <protocol::PromptTarget as std::str::FromStr>::from_str)]
+        target: Option<protocol::PromptTarget>,
     },
     /// Show or serve a webview page in this pane.
     Webview(webview::WebviewArgs),

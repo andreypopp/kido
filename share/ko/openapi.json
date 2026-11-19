@@ -152,11 +152,11 @@
       },
       "Candidate": {
         "properties": {
-          "pane": {
-            "$ref": "#/components/schemas/PaneId"
-          },
           "session": {
             "$ref": "#/components/schemas/SessionId"
+          },
+          "target": {
+            "$ref": "#/components/schemas/PromptTarget"
           },
           "title": {
             "type": "string"
@@ -166,7 +166,7 @@
           }
         },
         "required": [
-          "pane",
+          "target",
           "session",
           "window",
           "title"
@@ -2771,7 +2771,7 @@
           {
             "allOf": [
               {
-                "$ref": "#/components/schemas/Payload"
+                "$ref": "#/components/schemas/UserPrompt"
               }
             ],
             "properties": {
@@ -3470,6 +3470,10 @@
           "msg": {
             "type": "string"
           },
+          "promptable": {
+            "description": "True: the program delivers a user message for this non-root record to its agent.",
+            "type": "boolean"
+          },
           "selection": {
             "$ref": "#/components/schemas/RecordSelection"
           },
@@ -3530,6 +3534,22 @@
           "pause"
         ],
         "type": "string"
+      },
+      "PromptTarget": {
+        "description": "A live agent pane and one of its records. The root record names the pane's own agent;\nanother record must be published as promptable by the pane's program.",
+        "properties": {
+          "pane": {
+            "$ref": "#/components/schemas/PaneId"
+          },
+          "record": {
+            "$ref": "#/components/schemas/StatusId"
+          }
+        },
+        "required": [
+          "pane",
+          "record"
+        ],
+        "type": "object"
       },
       "PutLayout": {
         "properties": {
@@ -4000,7 +4020,7 @@
         "type": "object"
       },
       "SendPrompt": {
-        "description": "A prompt for an agent. Without a target it goes to the one live agent of the window of `from`.\nA target must be a live agent of the session of `from`. The target can be `from` only for the user;\na pane caller never prompts itself.",
+        "description": "A prompt for an agent. Without a target it goes to the one live agent of the window of `from`.\nA target's pane must be a live agent of the session of `from`. It can be `from` only for the user;\na pane caller never prompts itself.",
         "properties": {
           "from": {
             "allOf": [
@@ -4019,7 +4039,7 @@
             "description": "The id of the message when the prompt goes through the agent's message stream."
           },
           "target": {
-            "$ref": "#/components/schemas/PaneId"
+            "$ref": "#/components/schemas/PromptTarget"
           },
           "text": {
             "type": "string"
@@ -4742,6 +4762,10 @@
               "msg": {
                 "$ref": "#/components/schemas/StatusText2048"
               },
+              "promptable": {
+                "description": "True: the program delivers a user message for this non-root record to its agent.",
+                "type": "boolean"
+              },
               "selection": {
                 "$ref": "#/components/schemas/RecordSelection"
               },
@@ -4890,6 +4914,26 @@
         "description": "a user name or id",
         "pattern": "^[^-\\u0000][^\\u0000]*$",
         "type": "string"
+      },
+      "UserPrompt": {
+        "properties": {
+          "record": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/StatusId"
+              }
+            ],
+            "description": "The record of the pane to prompt; the root record names the pane's own agent."
+          },
+          "text": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "text",
+          "record"
+        ],
+        "type": "object"
       },
       "VarCondition": {
         "properties": {
@@ -7212,7 +7256,7 @@
     },
     "/prompt": {
       "post": {
-        "description": "Sends a prompt to an agent.",
+        "description": "Sends a prompt to an agent pane or a promptable record of it.",
         "operationId": "SendPrompt",
         "parameters": [
           {
@@ -7270,7 +7314,7 @@
     },
     "/prompt/resolve": {
       "get": {
-        "description": "The live agents of the session of the pane `from`, for choosing a prompt target. A pane identity may name only itself.",
+        "description": "The live agents and their promptable records in the session of pane `from`. A pane identity may name only itself.",
         "operationId": "PromptResolve",
         "parameters": [
           {

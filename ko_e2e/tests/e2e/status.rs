@@ -201,10 +201,11 @@ fn status_route_shares_records_and_restricts_the_caller() {
         &s,
         None,
         &path,
-        &json!({"type":"set", "id":"agents/a-b", "state":"idle", "selection":"offered"}),
+        &json!({"type":"set", "id":"agents/a-b", "state":"idle", "selection":"offered", "promptable":true}),
     );
     let offered = probe.next();
     assert_eq!(record(&offered, "agents/a-b")["selection"], "offered");
+    assert_eq!(record(&offered, "agents/a-b")["promptable"], true);
     assert_eq!(record(&offered, "job/build").get("selection"), None);
     assert_eq!(
         s.row(&pane)["status"]["program_status"],

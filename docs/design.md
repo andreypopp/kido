@@ -227,7 +227,7 @@ kinds are the harness's vocabulary:
 
 | kind | the receiving extension |
 |---|---|
-| `user` | `sendUserMessage` as the user's own text (`ko prompt`) |
+| `user` | `sendUserMessage` as the user's own text (`ko prompt`), to the agent of its `record` |
 | `message` | a custom message with the sender header, `followUp`; `details.work` when the sender is the parent |
 | `steer` | a `ko-steer` custom message, `steer`; `details.work` when from the parent |
 | `interrupt` | holds the text, marks the turn ended by a control, calls `abort()`; delivers the text at the settle as a `message` |
@@ -314,9 +314,11 @@ mode.
 `ko prompt` reads its text from stdin and sends it to the server with
 its pane identity, its pane as `from` and an id that it mints. The
 server picks the one agent of the caller's window other than the
-caller, unless `--target PANE` names another live agent in the caller's
-session, and delivers (protocol.md, section 11). A pane whose message
-stream is open gets the text as a message of kind `user`. The CLI
+caller, unless `--target PANE[/RECORD]` names another live agent in
+the caller's session or a promptable record of it, such as a koa
+subagent, and delivers (protocol.md, section 11). A pane whose message
+stream is open, and every record target, gets the text as a message
+of kind `user` that names the target's record. The CLI
 sends once: a paste has no id, and a prompt that the user did not see
 arrive is the user's to send again.
 

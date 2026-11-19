@@ -351,7 +351,11 @@ name its target and its sender: `to`, the target's session id, and
 pane's root. The server stamps the pane sender and the relation as
 for every message and reads no `data`.
 
-- `user`, `message`, `steer`, `interrupt` and `notice`: absent `to` is
+- `user` carries no `data`: the server writes it for a prompt, with
+  the target's record. The empty record is the root; another goes to
+  the agent whose record it is. A record that names no live agent of
+  the tree is refused, so the prompt's sender sees `refused`.
+- `message`, `steer`, `interrupt` and `notice`: absent `to` is
   the root; a `to` that names no live agent of the tree is refused,
   so the sender's tool says "no longer running"; malformed `data` is
   refused. The message goes to that agent's extension, which delivers
@@ -548,7 +552,10 @@ message is the error's first line, else the first line of the last
 assistant text. `selection` is `selected` for the viewed agent and
 `offered` for every other; a click on the row in Kido.app sends the
 `select` message ("The pane's queue"). Every subagent record is
-`closeable`, and the row's × in Kido.app sends the `close` message. The root's own record stays
+`closeable`, and the row's × in Kido.app sends the `close` message.
+Every subagent record is also `promptable`, so `ko prompt --target
+pane_N/agents/<a>` and Kido.app's prompt picker reach that subagent;
+a job record is not. The root's own record stays
 koa's OSC 7501 root and names the root, whatever the page shows.
 
 No in-process agent or job outlives its koa process, so the tree's
@@ -861,7 +868,8 @@ A human uses ko's own commands, not the tools:
 
 - `ko prompt` sends text to the one other agent of its window as kind `user`,
   which the agent reads as the user's own words (design.md, "Delivery, and
-  when a paste is allowed").
+  when a paste is allowed"); `--target pane_N/agents/<a>` sends it to a
+  subagent of that pane.
 - `koa` in a pane starts a top-level agent.
 
 A shell has no message stream and no session. It cannot receive a

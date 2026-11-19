@@ -502,6 +502,9 @@ pub struct StatusRecord {
     /// False: the program offers no close of the record. True: the program acts on a `close`
     /// message of this record.
     pub closeable: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    /// True: the program delivers a user message for this non-root record to its agent.
+    pub promptable: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -526,6 +529,9 @@ pub struct ProgramRecord {
     /// False: the program offers no close of the record. True: the program acts on a `close`
     /// message of this record.
     pub closeable: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    /// True: the program delivers a user message for this non-root record to its agent.
+    pub promptable: bool,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
@@ -2304,16 +2310,54 @@ pub struct DeleteVars {
     pub condition: Option<VarCondition>,
 }
 
+/// A live agent pane and one of its records. The root record names the pane's own agent;
+/// another record must be published as promptable by the pane's program.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct PromptTarget {
+    pub pane: PaneId,
+    pub record: StatusId,
+}
+
+impl std::str::FromStr for PromptTarget {
+    type Err = String;
+
+    fn from_str(text: &str) -> Result<Self, Self::Err> {
+        let (pane, record) = match text.split_once('/') {
+            Some((_, "")) => return Err("empty prompt record".to_owned()),
+            Some(parts) => parts,
+            None => (text, ""),
+        };
+        Ok(Self {
+            pane: pane.parse::<PaneId>().map_err(|error| error.to_string())?,
+            record: if record.is_empty() {
+                StatusId::root()
+            } else {
+                StatusId::try_from(record.to_owned()).map_err(|error| error.to_string())?
+            },
+        })
+    }
+}
+
+impl std::fmt::Display for PromptTarget {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}", self.pane)?;
+        if !self.record.is_root() {
+            write!(f, "/{}", self.record.as_str())?;
+        }
+        Ok(())
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct Candidate {
-    pub pane: PaneId,
+    pub target: PromptTarget,
     pub session: SessionId,
     pub window: WindowId,
     pub title: String,
 }
 
 /// A prompt for an agent. Without a target it goes to the one live agent of the window of `from`.
-/// A target must be a live agent of the session of `from`. The target can be `from` only for the user;
+/// A target's pane must be a live agent of the session of `from`. It can be `from` only for the user;
 /// a pane caller never prompts itself.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct SendPrompt {
@@ -2322,7 +2366,7 @@ pub struct SendPrompt {
     /// The id of the message when the prompt goes through the agent's message stream.
     pub id: MessageId,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub target: Option<PaneId>,
+    pub target: Option<PromptTarget>,
     pub text: String,
 }
 
@@ -2475,7 +2519,14 @@ pub enum Content {
     Notice(Payload),
     Select(Payload),
     Close(Payload),
-    User(Payload),
+    User(UserPrompt),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+pub struct UserPrompt {
+    pub text: String,
+    /// The record of the pane to prompt; the root record names the pane's own agent.
+    pub record: StatusId,
 }
 
 impl Content {
@@ -2690,8 +2741,14 @@ mod tests {
         ] {
             same::<ClientRequest>(json);
         }
+        for text in ["pane_3", "pane_3/agents/a/agents/b"] {
+            assert_eq!(text.parse::<PromptTarget>().unwrap().to_string(), text);
+        }
+        for text in ["pane_3/", "3/x"] {
+            assert!(text.parse::<PromptTarget>().is_err());
+        }
         same::<SendPrompt>(
-            r#"{"from":"pane_1","id":"abcdefgh","target":"pane_2","text":"hi\nthere"}"#,
+            r#"{"from":"pane_1","id":"abcdefgh","target":{"pane":"pane_2","record":"agents/kid"},"text":"hi\nthere"}"#,
         );
         same::<Sent>(r#"{"via":{"type":"paste"}}"#);
         same::<Sent>(r#"{"via":{"type":"message","state":"acked","seq":3,"duplicate":true}}"#);
@@ -2702,7 +2759,7 @@ mod tests {
             r#"{"seq":1,"id":"abcdefgh","from":{"type":"pane","pane":"pane_3","name":"w"},"relation":"sibling_descendant","kind":"steer","text":"x"}"#,
         );
         same::<Message>(
-            r#"{"seq":2,"id":"abcdefgh","from":{"type":"user"},"kind":"user","text":"x"}"#,
+            r#"{"seq":2,"id":"abcdefgh","from":{"type":"user"},"kind":"user","text":"x","record":"agents/kid"}"#,
         );
         same::<StreamRequest>(r#"{"type":"ack","id":"abcdefgh"}"#);
         same::<StreamRequest>(r#"{"type":"refuse","id":"abcdefgh"}"#);
@@ -2742,7 +2799,7 @@ mod tests {
             assert!(decode::<StreamRequest>(bad.as_bytes()).is_err(), "{bad}");
         }
         same::<Candidate>(
-            r#"{"pane":"pane_2","session":"session_1","window":"window_3","title":"Worker"}"#,
+            r#"{"target":{"pane":"pane_2","record":""},"session":"session_1","window":"window_3","title":"Worker"}"#,
         );
         for json in [
             r#"{"env":[]}"#,

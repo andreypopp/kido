@@ -4073,7 +4073,7 @@ mod tests {
         let code =
             unsafe { ko_client_prompt_resolve(client, c"window_1".as_ptr(), &mut empty_buffer()) };
         assert_eq!(code, Code::Argument);
-        let (code, mut out) = prompt(c"pane_3", "hi\nthere \u{e9}".as_bytes());
+        let (code, mut out) = prompt(c"pane_3/agents/kid", "hi\nthere \u{e9}".as_bytes());
         assert_eq!(
             (
                 code,
@@ -4089,13 +4089,13 @@ mod tests {
         assert_eq!(
             (
                 sent["from"].as_str(),
-                sent["target"].as_str(),
+                sent["target"].clone(),
                 sent["text"].as_str(),
                 sent["id"].as_str().map(str::len)
             ),
             (
                 Some("pane_1"),
-                Some("pane_3"),
+                serde_json::json!({"pane":"pane_3","record":"agents/kid"}),
                 Some("hi\nthere é"),
                 Some(22)
             )
@@ -4148,6 +4148,7 @@ mod tests {
         }
         assert_eq!(prompt(c"pane_3", &[0xff, 0xfe]).0, Code::Argument);
         assert_eq!(prompt(c"nonsense", b"x").0, Code::Argument);
+        assert_eq!(prompt(c"pane_3/bad id", b"x").0, Code::Argument);
         let mut out = empty_buffer();
         // SAFETY: the client is live, the strings are valid and out is writable.
         let code = unsafe {

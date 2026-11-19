@@ -1879,7 +1879,7 @@ mod tests {
                 .as_array()
                 .unwrap()
                 .iter()
-                .any(|c| c["pane"] == pane)
+                .any(|c| c["target"]["pane"] == pane)
             {
                 return;
             }
@@ -1904,7 +1904,7 @@ mod tests {
             .as_array()
             .unwrap()
             .iter()
-            .map(|c| c["pane"].as_str().unwrap())
+            .map(|c| c["target"]["pane"].as_str().unwrap())
             .collect();
         assert_eq!(panes, [paste.as_str()], "pane_1 is a terminal");
         assert_eq!(candidates[0]["title"], "Paster");
@@ -1914,7 +1914,7 @@ mod tests {
             prompt_call(
                 server,
                 "POST /prompt",
-                &json!({"from": "pane_1", "id": "prompt-0001", "target": target, "text": text}),
+                &json!({"from": "pane_1", "id": "prompt-0001", "target": {"pane":target,"record":""}, "text": text}),
             )
         };
         assert_eq!(

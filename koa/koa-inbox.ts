@@ -11,6 +11,7 @@ type Api = components["schemas"];
 export type Inbox = { close(): void };
 
 type Dispatch = {
+  user(record: string, text: string): Promise<"ack" | "refuse">;
   message(target: string | undefined, message: InProcessMessage): Promise<"ack" | "refuse">;
   select(record: string): void;
   close(record: string): void;
@@ -28,7 +29,7 @@ const MESSAGE_KINDS = ["message", "steer", "interrupt", "stop", "notice", "selec
 function isMessage(value: unknown): value is Api["Message"] {
   if (!isRecord(value) || typeof value.seq !== "number" || !isString(value.id) || !isSender(value.from)) return false;
   if (value.from.type === "pane" && !isRelation(value.relation)) return false;
-  return isString(value.kind) && MESSAGE_KINDS.includes(value.kind) && isString(value.text);
+  return isString(value.kind) && MESSAGE_KINDS.includes(value.kind) && isString(value.text) && (value.kind !== "user" || isString(value.record));
 }
 
 type Data = { to?: string; from?: { session: string; name: string }; runtime?: string };
@@ -55,10 +56,10 @@ function senderOf(m: Api["Message"], data: Data): { agent: AgentRef; returnTo?: 
 }
 
 export async function handleMessage(m: Api["Message"], dispatch: Dispatch): Promise<"ack" | "refuse"> {
+  if (m.kind === "user") return typeof m.record === "string" ? dispatch.user(m.record, m.text) : "refuse";
   const data = decodeData(m.data);
   if (!data) return "refuse";
   switch (m.kind) {
-    case "user": return m.text ? dispatch.message(data.to, { kind: "user", text: m.text }) : "ack";
     case "message": case "steer": case "interrupt": {
       const sender = senderOf(m, data);
       const runtime = data.runtime;

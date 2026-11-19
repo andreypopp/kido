@@ -105,7 +105,7 @@ export async function realFixture(t: TestContext, options: Real) {
   const app = await launch(scope, dir, cwd, { PI_CODING_AGENT_DIR: agentDir, PI_OFFLINE: "1", PI_SKIP_VERSION_CHECK: "1", ...ko, ...options.env }, realPi, [...(options.discover ? [] : ["--no-extensions"]), ...(options.resources ? [] : ["--no-skills", "--no-prompt-templates"]), "--no-context-files", "--session-dir", sessions, ...extensions.flat(), ...extra, ...options.args ?? []], options.program ?? resolve("../build/koa/share/koa/koa/koa.ts"));
   if (options.start !== false) await app.until(ofType("state", record => record.life?.type === "ready"));
   let seq = 0;
-  const feed = (message: { id: string; kind: string; text?: string; data?: unknown; from?: object; relation?: string }) => {
+  const feed = (message: { id: string; kind: string; text?: string; record?: string; data?: unknown; from?: object; relation?: string }) => {
     const from = message.from ?? { type: "user" };
     return appendFile(join(dir, "feed.jsonl"), JSON.stringify({ seq: ++seq, text: "", ...("pane" in from ? { relation: message.relation ?? "sibling" } : {}), ...message, from }) + "\n");
   };

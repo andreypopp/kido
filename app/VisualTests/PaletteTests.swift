@@ -426,9 +426,9 @@ import PaneGeometry
         private let previousMenu: NSMenu?
         let snapshot: Snapshot
         var source: PromptSource
-        init(_ test: VisualTestCase) throws {
+        init(_ test: VisualTestCase, configFile: String? = nil) throws {
             previousMenu = NSApp.mainMenu
-            runtime = try XCTUnwrap(GhosttyRuntime(pasteboard: NSPasteboard(name: .init("prompt-" + UUID().uuidString))))
+            runtime = try XCTUnwrap(GhosttyRuntime(configFile: configFile, pasteboard: NSPasteboard(name: .init("prompt-" + UUID().uuidString))))
             app = AppDelegate(runtime: runtime)
             owner = try XCTUnwrap(app.open(.local, start: false))
             snapshot = sidebarFixture()
@@ -436,8 +436,8 @@ import PaneGeometry
             let session = try XCTUnwrap(snapshot.sessions.first)
             source = PromptSource(owner: owner, instance: snapshot.serverInstance, session: session.id, window: WindowID(number: 0), pane: PaneID(number: 0), windowName: "app")
             probe.candidates = [
-                KoSchema.Candidate(pane: PaneID(number: 0), session: session.id, title: "near", window: source.window),
-                KoSchema.Candidate(pane: PaneID(number: 502), session: session.id, title: "far", window: WindowID(number: 2)),
+                KoSchema.Candidate(session: session.id, target: .init(pane: PaneID(number: 0), record: ""), title: "near", window: source.window),
+                KoSchema.Candidate(session: session.id, target: .init(pane: PaneID(number: 502), record: ""), title: "far", window: WindowID(number: 2)),
             ]
             probe.install(owner)
             NSApp.mainMenu = app.mainMenu()
@@ -546,10 +546,10 @@ import PaneGeometry
             for _ in 0..<selectedAgent { _ = palette.control(palette.field, textView: NSTextView(), doCommandBy: #selector(NSResponder.moveDown(_:))) }
             image(palette, "\(theme)-root-agent")
             let probe = PromptProbe()
-            let near = KoSchema.Candidate(pane: PaneID(number: 0), session: session.id, title: "kido-app", window: WindowID(number: 0))
+            let near = KoSchema.Candidate(session: session.id, target: .init(pane: PaneID(number: 0), record: ""), title: "kido-app", window: WindowID(number: 0))
             probe.candidates = [near,
-                KoSchema.Candidate(pane: PaneID(number: 3), session: session.id, title: "sidebar-mockup", window: WindowID(number: 2)),
-                KoSchema.Candidate(pane: PaneID(number: 4), session: session.id, title: "pi-ui", window: WindowID(number: 3))]
+                KoSchema.Candidate(session: session.id, target: .init(pane: PaneID(number: 3), record: ""), title: "sidebar-mockup", window: WindowID(number: 2)),
+                KoSchema.Candidate(session: session.id, target: .init(pane: PaneID(number: 4), record: ""), title: "pi-ui", window: WindowID(number: 3))]
             probe.install(owner)
             let source = PromptSource(owner: owner, instance: try XCTUnwrap(owner.snapshot).serverInstance, session: session.id, window: near.window, pane: PaneID(number: 0), windowName: "app")
             let typed = "Look at the failing e2e test in the build log.\nIt reports failed where completed is expected.\nFind the cause and propose a fix."
@@ -560,7 +560,7 @@ import PaneGeometry
                 app.promptDrafts = [:]
                 var source = source
                 if state == "prompt-quote" { source.quote = q1 }
-                if state == "prompt-draft" { app.promptDrafts[PromptDraft.Key(host: owner.host, instance: source.instance, pane: near.pane)] = PromptDraft(text: typed) }
+                if state == "prompt-draft" { app.promptDrafts[PromptDraft.Key(host: owner.host, instance: source.instance, target: near.target)] = PromptDraft(text: typed) }
                 palette.enter(.prompt(source))
                 let prompt = try XCTUnwrap(palette.prompt)
                 XCTAssertNotNil(prompt.target, "the first visible prompt already has its resolved target")
@@ -596,6 +596,50 @@ import PaneGeometry
                 if case .command = row.entry.id { row.entry.title } else { nil }
             }, ["New Session", "Connect to Local Host", "Connect to Remote Host…", "Pair Server…", "Theme…"])
             image(noWindow.palette, "\(theme)-nowindow")
+        }
+    }
+
+    func testPromptRecordTargets() throws {
+        let config = FileManager.default.temporaryDirectory.appendingPathComponent("prompt-records-\(UUID().uuidString).yaml")
+        defer { try? FileManager.default.removeItem(at: config) }
+        for (theme, background, foreground) in [("light", "fff9ec", "424242"), ("dark", "171717", "c9c9c9")] {
+            try configYAML(at: config, background: background, foreground: foreground).write(to: config, atomically: true, encoding: .utf8)
+            let fixture = try PromptFixture(self, configFile: config.path)
+            defer { fixture.close() }
+            let root = fixture.probe.candidates[0]
+            let child = KoSchema.Candidate(session: root.session, target: .init(pane: root.target.pane, record: "agents/reviewer"), title: "reviewer", window: root.window)
+            let nested = KoSchema.Candidate(session: root.session, target: .init(pane: root.target.pane, record: "agents/reviewer/agents/impl"), title: "impl", window: root.window)
+            fixture.probe.candidates = [root, child, nested, fixture.probe.candidates[1]]
+            fixture.source.preselect = .init(pane: root.target.pane, record: "agents/reviewer/jobs/j1")
+            let prompt = try fixture.open()
+            let palette = try XCTUnwrap(fixture.app.palettePanel?.palette)
+            XCTAssertEqual(prompt.target, child)
+            XCTAssertEqual(prompt.targetButton.label.string, "Prompt @reviewer in @near, this window")
+            let items = try XCTUnwrap(prompt.targetButton.menu?.items)
+            XCTAssertEqual(items[2].title, "@reviewer")
+            XCTAssertEqual(items[2].indentationLevel, 1)
+            XCTAssertEqual(items[3].title, "@impl")
+            XCTAssertEqual(items[3].indentationLevel, 2)
+            XCTAssertEqual(items[2].state, .on)
+            fixture.app.palettePanel?.makeFirstResponder(prompt.targetButton)
+            image(palette, "\(theme)-subagent-picker")
+            prompt.type("Review the failing test.")
+            image(palette, "\(theme)-job-owner")
+            fixture.app.closePalette()
+            XCTAssertEqual(fixture.app.promptDrafts[PromptDraft.Key(host: fixture.owner.host, instance: fixture.source.instance, target: child.target)]?.text, "Review the failing test.")
+            XCTAssertNil(fixture.app.promptDrafts[PromptDraft.Key(host: fixture.owner.host, instance: fixture.source.instance, target: root.target)])
+            let restored = try fixture.open()
+            XCTAssertEqual(restored.target, child)
+            XCTAssertEqual(restored.textView.string, "Review the failing test.")
+            image(try XCTUnwrap(fixture.app.palettePanel?.palette), "\(theme)-subagent-draft")
+            fixture.probe.reply = .failure(KoError(code: KO_ERR_INVALID, detail: "record agents/reviewer of pane_0 accepts no prompt"))
+            restored.sendComposed()
+            XCTAssertEqual(restored.status.stringValue, "@reviewer is no longer running. Choose another agent.")
+            image(try XCTUnwrap(fixture.app.palettePanel?.palette), "\(theme)-subagent-invalid")
+            restored.type(" Retry")
+            fixture.probe.reply = .failure(KoError(code: KO_ERR_NO_SERVER, detail: "Server is not connected"))
+            restored.sendComposed()
+            XCTAssertEqual(restored.status.stringValue, "Server is not connected")
         }
     }
 
@@ -657,7 +701,7 @@ import PaneGeometry
         app.closePalette()
         prompt = try fixture.open()
         XCTAssertEqual(prompt.textView.string, twice)
-        let keyB = PromptDraft.Key(host: owner.host, instance: snapshot.serverInstance, pane: b.pane)
+        let keyB = PromptDraft.Key(host: owner.host, instance: snapshot.serverInstance, target: b.target)
         app.promptDrafts[keyB] = PromptDraft(text: "B's saved text\n\n> B quote")
         prompt.chooseTarget(0)
         XCTAssertEqual(prompt.textView.string, "B's saved text\n\n> B quote")
@@ -667,9 +711,9 @@ import PaneGeometry
         probe.reply = .success(.sent)
         let sending = try XCTUnwrap(app.palettePanel)
         try sendKey(sending, "\r", code: 36)
-        XCTAssertEqual(probe.sends.last, .send(from: fixture.source.pane, to: a.pane, text: twice))
+        XCTAssertEqual(probe.sends.last, .send(from: fixture.source.pane, to: a.target, text: twice))
         XCTAssertNil(app.palettePanel)
-        XCTAssertNil(app.promptDrafts[PromptDraft.Key(host: owner.host, instance: snapshot.serverInstance, pane: a.pane)])
+        XCTAssertNil(app.promptDrafts[PromptDraft.Key(host: owner.host, instance: snapshot.serverInstance, target: a.target)])
     }
 
     func testPromptFailuresNoCandidateAndSourceClosed() throws {
@@ -713,7 +757,7 @@ import PaneGeometry
         XCTAssertTrue(prompt.targetButton.label.string.contains("in window app (pane closed)"))
         probe.reply = .failure(KoError(code: KO_ERR_INVALID, detail: "Gone"))
         prompt.sendComposed()
-        XCTAssertEqual(probe.sends.last, .send(from: a.pane, to: a.pane, text: "Explain"))
+        XCTAssertEqual(probe.sends.last, .send(from: a.target.pane, to: a.target, text: "Explain"))
         app.closePalette()
         app.promptDrafts = [:]
         probe.candidates = []
@@ -988,7 +1032,7 @@ import PaneGeometry
         let result: Result<WindowOwner.PromptReply, Error> = .success(.candidates(candidates))
         var source = fixture.source
         source.quote = "selected text"
-        let draftKey = PromptDraft.Key(host: owner.host, instance: source.instance, pane: candidates[0].pane)
+        let draftKey = PromptDraft.Key(host: owner.host, instance: source.instance, target: candidates[0].target)
         app.promptDrafts[draftKey] = PromptDraft(text: "one\ntwo\nthree")
         app.togglePalette()
         var panel = try XCTUnwrap(app.palettePanel)
@@ -1092,7 +1136,7 @@ import PaneGeometry
         owner.testPrompt = nil
         app.togglePalette()
         let panel = try XCTUnwrap(app.palettePanel)
-        let index = try XCTUnwrap(panel.palette.shown.firstIndex { if case .pane(let position) = $0.entry.id { return position.pane == key.pane }; return false })
+        let index = try XCTUnwrap(panel.palette.shown.firstIndex { if case .pane(let position) = $0.entry.id { return position.pane == key.target.pane }; return false })
         for _ in 0..<index { _ = panel.palette.control(panel.palette.field, textView: NSTextView(), doCommandBy: #selector(NSResponder.moveDown(_:))) }
         try sendKey(panel, "o", code: 31, modifiers: .command)
         try await wait("same target ready") { panel.palette.prompt?.target != nil }
@@ -1138,8 +1182,8 @@ import PaneGeometry
         NSApp.delegate = app
         defer { app.closePalette(); NSApp.delegate = delegate }
         let session = try XCTUnwrap(owner.currentSession)
-        let near = KoSchema.Candidate(pane: PaneID(number: 2), session: session.id, title: "near", window: WindowID(number: 1))
-        let second = KoSchema.Candidate(pane: PaneID(number: 3), session: session.id, title: "second", window: near.window)
+        let near = KoSchema.Candidate(session: session.id, target: .init(pane: PaneID(number: 2), record: ""), title: "near", window: WindowID(number: 1))
+        let second = KoSchema.Candidate(session: session.id, target: .init(pane: PaneID(number: 3), record: ""), title: "second", window: near.window)
         probe.candidates = [near, second]; probe.install(owner)
         owner.window.makeFirstResponder(pane)
         app.updateMenu(owner, responder: pane)
@@ -1166,8 +1210,8 @@ import PaneGeometry
         XCTAssertEqual(promptItem.title, "Prompt with Selection…")
         prompt.type("draft")
         app.closePalette()
-        app.promptDrafts[PromptDraft.Key(host: owner.host, instance: try XCTUnwrap(owner.snapshot).serverInstance, pane: second.pane)] = PromptDraft(text: "second draft")
-        let agentPane = try XCTUnwrap(owner.testSession?.pane(second.pane))
+        app.promptDrafts[PromptDraft.Key(host: owner.host, instance: try XCTUnwrap(owner.snapshot).serverInstance, target: second.target)] = PromptDraft(text: "second draft")
+        let agentPane = try XCTUnwrap(owner.testSession?.pane(second.target.pane))
         owner.window.makeFirstResponder(agentPane)
         try commandO()
         XCTAssertEqual(app.palettePanel?.palette.prompt?.target, second, "an agent's own pane wins over an earlier agent in the same window")
@@ -1177,11 +1221,11 @@ import PaneGeometry
         app.togglePalette()
         let panel = try XCTUnwrap(app.palettePanel)
         let palette = panel.palette
-        palette.field.stringValue = try XCTUnwrap(palette.shown.first { if case .pane(let position) = $0.entry.id { position.pane == second.pane } else { false } }?.entry.title)
+        palette.field.stringValue = try XCTUnwrap(palette.shown.first { if case .pane(let position) = $0.entry.id { position.pane == second.target.pane } else { false } }?.entry.title)
         palette.controlTextDidChange(Notification(name: NSControl.textDidChangeNotification))
         try sendKey(panel, "o", code: 31, modifiers: .command)
         prompt = try XCTUnwrap(palette.prompt)
-        XCTAssertEqual(prompt.source.pane, second.pane)
+        XCTAssertEqual(prompt.source.pane, second.target.pane)
         XCTAssertEqual(prompt.target, second)
         XCTAssertEqual(prompt.textView.string, "second draft", "root ⌘O uses the same target draft")
         try sendKey(panel, "o", code: 31, modifiers: .command)
@@ -1259,7 +1303,7 @@ import PaneGeometry
         XCTAssertEqual(closingSource.status.stringValue, "Source pane closed; agents resolved earlier stay available.")
         XCTAssertTrue(closingSource.targetButton.label.string.contains("(pane closed)"))
         closingSource.sendComposed()
-        XCTAssertEqual(probe.sends.last, .send(from: near.pane, to: near.pane, text: "closed source"))
+        XCTAssertEqual(probe.sends.last, .send(from: near.target.pane, to: near.target, text: "closed source"))
 
         XCTAssertNil(app.palettePanel)
     }
@@ -1295,14 +1339,14 @@ import PaneGeometry
             snapshot.sessions[0].nodes[0].item.pane.mark = snapshot.sessions[0].nodes[1].group.children[1].pane.mark
         }
         owner.testReceive(editor)
-        XCTAssertFalse(editor.promptPanes.first { $0.pane == candidate.pane }!.agent)
+        XCTAssertFalse(editor.promptPanes.first { $0.pane == candidate.target.pane }!.agent)
         XCTAssertEqual(app.promptDrafts.count, 1, "an external editor keeps the draft while its pane exists")
         owner.testReceive(snapshot)
         prompt = try fixture.open()
         XCTAssertEqual(prompt.textView.string, "agent", "the draft returns when the same pane reports an agent again")
         app.closePalette()
         var removed = snapshot
-        removed.sessions[0].nodes.removeAll { if case .item(let item) = $0 { item.id == candidate.pane } else { false } }
+        removed.sessions[0].nodes.removeAll { if case .item(let item) = $0 { item.id == candidate.target.pane } else { false } }
         owner.testReceive(removed)
         XCTAssertTrue(app.promptDrafts.isEmpty, "a killed agent pane drops its draft")
         owner.testReceive(snapshot)

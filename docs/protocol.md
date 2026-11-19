@@ -872,6 +872,13 @@ stamps the sender, enforces the scope and carries the bytes.
   `close`, the record id as `text`, no `data`, sent as the user by
   `ko_client_close_record`. The receiver decides what a close is;
   a client sends it without a confirmation of its own.
+- **`user`.** Only the server writes this kind, for `POST /prompt`
+  (section 11); no sender can post it. It carries the prompt as
+  `text` and the target's `record` (the empty id is the root), and
+  no `data`: the record is a fact of the pane's record set, which
+  ko owns, while `data` is the harness's vocabulary, which the
+  server never composes. The receiver delivers it to the agent of
+  that record, or refuses it.
 
 - Only the pane itself (or the user) opens the stream, and a pane has
   at most one: a second upgrade is `refused`, "the pane already has a
@@ -1106,18 +1113,30 @@ the history at the time of the search, for display only; a client
 jumps to a match by taking a full snapshot and searching its mirror,
 since server rows move with output.
 
-`POST /prompt` (`SendPrompt`) sends text to an agent pane for its
+`POST /prompt` (`SendPrompt`) sends text to an agent for its
 `from` and reports how it went (`ko_server/src/state/prompt.rs`). A
 pane identity may name only itself as `from`; the user (`ko` outside
-a pane, Kido.app) names any pane. The target is an agent pane:
-`Kind::is_agent` and not dead (design-program-status.md, "Pane
-kinds"). The server picks and checks it in the turn that delivers:
+a pane, Kido.app) names any pane. A target (`PromptTarget`) is a
+pane and a record of it, the same address that `select` and `close`
+use; the root record is the pane's own agent, so one target has one
+spelling. The pane is an agent pane: `Kind::is_agent` and not dead
+(design-program-status.md, "Pane kinds"). A non-root record must be
+a published record of that pane with `promptable`: its program says
+that it delivers a prompt for that record to the agent the record
+stands for (koa sets it on its `agents/...` records, never on a job;
+an OSC record cannot set it). A record adds no authority: it is an
+address inside a pane the caller may already prompt. The text form
+`pane_N` or `pane_N/<record id>` is the CLI's `--target` and the C
+ABI's `target`. The server picks and checks the target in the turn
+that delivers:
 
 - With a `target`, that pane, which must be a live agent of `from`'s
   session; any other pane is invalid. A pane caller cannot prompt
-  itself, so for a pane identity the target is not `from`. For the
-  user, `from` only names the scope, so the target can be `from`:
-  the user can prompt the agent whose pane has the focus.
+  itself, so for a pane identity the pane is not `from`. For the
+  user, `from` only names the scope, so the pane can be `from`:
+  the user can prompt the agent whose pane has the focus. A non-root
+  record that is not promptable, or no longer published, is invalid
+  ("accepts no prompt").
 - Without one, the one agent in `from`'s window, `from` itself
   included for the user and excluded for a pane identity. None is
   `no_agent`, several are `multiple_agents`; the server never picks
@@ -1127,20 +1146,25 @@ kinds"). The server picks and checks it in the turn that delivers:
 The first that applies delivers:
 
 - A pane with an open message stream, or whose queue knows the
-  body's `id` (a repeat), gets the text as a message of
-  kind `user` with the body's `id` (section 7, "Messages"), stamped
-  with the caller's identity; the reply carries the message's state
-  and `seq`.
+  body's `id` (a repeat), and every non-root record target, gets the
+  text as a message of kind `user` with the body's `id` and the
+  target's record (section 7, "Messages"), stamped with the caller's
+  identity; the reply carries the message's state and `seq`. A record
+  target of a pane without a stream is queued, never pasted: a paste
+  types into the pane's foreground, which is the root agent.
 - Any other agent gets one `paste` input and one Enter key through
   its `ko-pane`; the pane's bracketed paste mode decides the wrapping.
   The server checks the target again before the Enter.
 
 `GET /prompt/resolve?from=pane_N` lists the agents of `from`'s
-session, `from`'s window first, for Kido.app's picker, which then
-sends with an explicit `target`.
+session, `from`'s window first, panes by id, for Kido.app's picker,
+which then sends with an explicit `target`. Each live agent pane
+gives its root candidate, then one candidate for each promptable
+record in published order (bytewise by id, so a child follows its
+parent), titled with the record's title, else its id.
 
 `ko prompt` sends its own pane as `from` and an id that it mints,
-once. With `--target PANE`, it sends that pane as `target`; without
+once. With `--target PANE[/RECORD]`, it sends that target; without
 that option, the server selects the agent of the caller's window. It exits with 0 sent (acked, delivered or queued), 1
 empty text or an error, 4 `no_agent`, 5 `multiple_agents`.
 

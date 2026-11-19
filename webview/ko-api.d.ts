@@ -329,7 +329,7 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** @description Sends a prompt to an agent. */
+        /** @description Sends a prompt to an agent pane or a promptable record of it. */
         post: operations["SendPrompt"];
         delete?: never;
         options?: never;
@@ -344,7 +344,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** @description The live agents of the session of the pane `from`, for choosing a prompt target. A pane identity may name only itself. */
+        /** @description The live agents and their promptable records in the session of pane `from`. A pane identity may name only itself. */
         get: operations["PromptResolve"];
         put?: never;
         post?: never;
@@ -571,8 +571,8 @@ export interface components {
             max_lines?: number;
         };
         Candidate: {
-            pane: components["schemas"]["PaneId"];
             session: components["schemas"]["SessionId"];
+            target: components["schemas"]["PromptTarget"];
             title: string;
             window: components["schemas"]["WindowId"];
         };
@@ -1271,7 +1271,7 @@ export interface components {
         } & components["schemas"]["Payload"]) | ({
             /** @constant */
             kind: "user";
-        } & components["schemas"]["Payload"]));
+        } & components["schemas"]["UserPrompt"]));
         /** @description The sender's id of a message: 8 to 64 characters of A-Z, a-z, 0-9, _ and -. */
         MessageId: string;
         /**
@@ -1454,6 +1454,8 @@ export interface components {
             closeable?: boolean;
             id: components["schemas"]["StatusId"];
             msg?: string;
+            /** @description True: the program delivers a user message for this non-root record to its agent. */
+            promptable?: boolean;
             selection?: components["schemas"]["RecordSelection"];
             /** @description The server's monotonic start time in nanoseconds for a child record; absent on the root. */
             started?: number;
@@ -1487,6 +1489,14 @@ export interface components {
         };
         /** @enum {string} */
         ProgressState: "set" | "error" | "indeterminate" | "pause";
+        /**
+         * @description A live agent pane and one of its records. The root record names the pane's own agent;
+         *     another record must be published as promptable by the pane's program.
+         */
+        PromptTarget: {
+            pane: components["schemas"]["PaneId"];
+            record: components["schemas"]["StatusId"];
+        };
         PutLayout: {
             layout: components["schemas"]["DraftLayout"];
             revision: number;
@@ -1624,7 +1634,7 @@ export interface components {
         };
         /**
          * @description A prompt for an agent. Without a target it goes to the one live agent of the window of `from`.
-         *     A target must be a live agent of the session of `from`. The target can be `from` only for the user;
+         *     A target's pane must be a live agent of the session of `from`. It can be `from` only for the user;
          *     a pane caller never prompts itself.
          */
         SendPrompt: {
@@ -1632,7 +1642,7 @@ export interface components {
             from: components["schemas"]["PaneId"];
             /** @description The id of the message when the prompt goes through the agent's message stream. */
             id: components["schemas"]["MessageId"];
-            target?: components["schemas"]["PaneId"];
+            target?: components["schemas"]["PromptTarget"];
             text: string;
         };
         /**
@@ -1799,6 +1809,8 @@ export interface components {
             closeable?: boolean;
             id: components["schemas"]["StatusId"];
             msg?: components["schemas"]["StatusText2048"];
+            /** @description True: the program delivers a user message for this non-root record to its agent. */
+            promptable?: boolean;
             selection?: components["schemas"]["RecordSelection"];
             title?: components["schemas"]["StatusText192"];
             /** @constant */
@@ -1863,6 +1875,11 @@ export interface components {
         };
         /** @description a user name or id */
         User: string;
+        UserPrompt: {
+            /** @description The record of the pane to prompt; the root record names the pane's own agent. */
+            record: components["schemas"]["StatusId"];
+            text: string;
+        };
         VarCondition: {
             name: components["schemas"]["VarName"];
             value: unknown;

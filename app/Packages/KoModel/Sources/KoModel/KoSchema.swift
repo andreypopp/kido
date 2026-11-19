@@ -163,13 +163,13 @@ public enum KoSchema {
     }
 
     public struct Candidate: Codable, Equatable, Sendable {
-        public var pane: PaneId
         public var session: SessionId
+        public var target: PromptTarget
         public var title: String
         public var window: WindowId
-        public init(pane: PaneId, session: SessionId, title: String, window: WindowId) {
-            self.pane = pane
+        public init(session: SessionId, target: PromptTarget, title: String, window: WindowId) {
             self.session = session
+            self.target = target
             self.title = title
             self.window = window
         }
@@ -1792,16 +1792,18 @@ public enum KoSchema {
         public var kind: ProgramKind?
         public var msg: String?
         public var progress: StatusProgress?
+        public var promptable: Bool?
         public var selection: RecordSelection?
         public var started: Int?
         public var title: String?
-        public init(app: String? = nil, closeable: Bool? = nil, id: StatusId, kind: ProgramKind? = nil, msg: String? = nil, progress: StatusProgress? = nil, selection: RecordSelection? = nil, started: Int? = nil, title: String? = nil) {
+        public init(app: String? = nil, closeable: Bool? = nil, id: StatusId, kind: ProgramKind? = nil, msg: String? = nil, progress: StatusProgress? = nil, promptable: Bool? = nil, selection: RecordSelection? = nil, started: Int? = nil, title: String? = nil) {
             self.app = app
             self.closeable = closeable
             self.id = id
             self.kind = kind
             self.msg = msg
             self.progress = progress
+            self.promptable = promptable
             self.selection = selection
             self.started = started
             self.title = title
@@ -1814,6 +1816,7 @@ public enum KoSchema {
             self.kind = try container.decodeIfPresent(ProgramKind.self, forKey: .kind)
             self.msg = try container.decodeIfPresent(String.self, forKey: .msg)
             self.progress = try container.decodeIfPresent(StatusProgress.self, forKey: .progress)
+            self.promptable = try container.decodeIfPresent(Bool.self, forKey: .promptable)
             self.selection = try container.decodeIfPresent(RecordSelection.self, forKey: .selection)
             self.started = try container.decodeIfPresent(Int.self, forKey: .started)
             self.title = try container.decodeIfPresent(String.self, forKey: .title)
@@ -1831,6 +1834,7 @@ public enum KoSchema {
             case kind
             case msg
             case progress
+            case promptable
             case selection
             case started
             case title
@@ -1842,14 +1846,16 @@ public enum KoSchema {
         public var closeable: Bool?
         public var id: StatusId
         public var msg: String?
+        public var promptable: Bool?
         public var selection: RecordSelection?
         public var started: Int?
         public var title: String?
-        public init(app: String? = nil, closeable: Bool? = nil, id: StatusId, msg: String? = nil, selection: RecordSelection? = nil, started: Int? = nil, title: String? = nil) {
+        public init(app: String? = nil, closeable: Bool? = nil, id: StatusId, msg: String? = nil, promptable: Bool? = nil, selection: RecordSelection? = nil, started: Int? = nil, title: String? = nil) {
             self.app = app
             self.closeable = closeable
             self.id = id
             self.msg = msg
+            self.promptable = promptable
             self.selection = selection
             self.started = started
             self.title = title
@@ -1860,6 +1866,7 @@ public enum KoSchema {
             self.closeable = try container.decodeIfPresent(Bool.self, forKey: .closeable)
             self.id = try container.decode(StatusId.self, forKey: .id)
             self.msg = try container.decodeIfPresent(String.self, forKey: .msg)
+            self.promptable = try container.decodeIfPresent(Bool.self, forKey: .promptable)
             self.selection = try container.decodeIfPresent(RecordSelection.self, forKey: .selection)
             self.started = try container.decodeIfPresent(Int.self, forKey: .started)
             self.title = try container.decodeIfPresent(String.self, forKey: .title)
@@ -1872,6 +1879,7 @@ public enum KoSchema {
             case closeable
             case id
             case msg
+            case promptable
             case selection
             case started
             case title
@@ -1883,14 +1891,16 @@ public enum KoSchema {
         public var closeable: Bool?
         public var id: StatusId
         public var msg: String?
+        public var promptable: Bool?
         public var selection: RecordSelection?
         public var started: Int?
         public var title: String?
-        public init(app: String? = nil, closeable: Bool? = nil, id: StatusId, msg: String? = nil, selection: RecordSelection? = nil, started: Int? = nil, title: String? = nil) {
+        public init(app: String? = nil, closeable: Bool? = nil, id: StatusId, msg: String? = nil, promptable: Bool? = nil, selection: RecordSelection? = nil, started: Int? = nil, title: String? = nil) {
             self.app = app
             self.closeable = closeable
             self.id = id
             self.msg = msg
+            self.promptable = promptable
             self.selection = selection
             self.started = started
             self.title = title
@@ -1901,6 +1911,7 @@ public enum KoSchema {
             self.closeable = try container.decodeIfPresent(Bool.self, forKey: .closeable)
             self.id = try container.decode(StatusId.self, forKey: .id)
             self.msg = try container.decodeIfPresent(String.self, forKey: .msg)
+            self.promptable = try container.decodeIfPresent(Bool.self, forKey: .promptable)
             self.selection = try container.decodeIfPresent(RecordSelection.self, forKey: .selection)
             self.started = try container.decodeIfPresent(Int.self, forKey: .started)
             self.title = try container.decodeIfPresent(String.self, forKey: .title)
@@ -1913,6 +1924,7 @@ public enum KoSchema {
             case closeable
             case id
             case msg
+            case promptable
             case selection
             case started
             case title
@@ -1924,14 +1936,16 @@ public enum KoSchema {
         public var closeable: Bool?
         public var id: StatusId
         public var msg: String?
+        public var promptable: Bool?
         public var selection: RecordSelection?
         public var started: Int?
         public var title: String?
-        public init(app: String? = nil, closeable: Bool? = nil, id: StatusId, msg: String? = nil, selection: RecordSelection? = nil, started: Int? = nil, title: String? = nil) {
+        public init(app: String? = nil, closeable: Bool? = nil, id: StatusId, msg: String? = nil, promptable: Bool? = nil, selection: RecordSelection? = nil, started: Int? = nil, title: String? = nil) {
             self.app = app
             self.closeable = closeable
             self.id = id
             self.msg = msg
+            self.promptable = promptable
             self.selection = selection
             self.started = started
             self.title = title
@@ -1942,6 +1956,7 @@ public enum KoSchema {
             self.closeable = try container.decodeIfPresent(Bool.self, forKey: .closeable)
             self.id = try container.decode(StatusId.self, forKey: .id)
             self.msg = try container.decodeIfPresent(String.self, forKey: .msg)
+            self.promptable = try container.decodeIfPresent(Bool.self, forKey: .promptable)
             self.selection = try container.decodeIfPresent(RecordSelection.self, forKey: .selection)
             self.started = try container.decodeIfPresent(Int.self, forKey: .started)
             self.title = try container.decodeIfPresent(String.self, forKey: .title)
@@ -1954,6 +1969,7 @@ public enum KoSchema {
             case closeable
             case id
             case msg
+            case promptable
             case selection
             case started
             case title
@@ -1966,15 +1982,17 @@ public enum KoSchema {
         public var id: StatusId
         public var msg: String?
         public var progress: StatusProgress?
+        public var promptable: Bool?
         public var selection: RecordSelection?
         public var started: Int?
         public var title: String?
-        public init(app: String? = nil, closeable: Bool? = nil, id: StatusId, msg: String? = nil, progress: StatusProgress? = nil, selection: RecordSelection? = nil, started: Int? = nil, title: String? = nil) {
+        public init(app: String? = nil, closeable: Bool? = nil, id: StatusId, msg: String? = nil, progress: StatusProgress? = nil, promptable: Bool? = nil, selection: RecordSelection? = nil, started: Int? = nil, title: String? = nil) {
             self.app = app
             self.closeable = closeable
             self.id = id
             self.msg = msg
             self.progress = progress
+            self.promptable = promptable
             self.selection = selection
             self.started = started
             self.title = title
@@ -1986,6 +2004,7 @@ public enum KoSchema {
             self.id = try container.decode(StatusId.self, forKey: .id)
             self.msg = try container.decodeIfPresent(String.self, forKey: .msg)
             self.progress = try container.decodeIfPresent(StatusProgress.self, forKey: .progress)
+            self.promptable = try container.decodeIfPresent(Bool.self, forKey: .promptable)
             self.selection = try container.decodeIfPresent(RecordSelection.self, forKey: .selection)
             self.started = try container.decodeIfPresent(Int.self, forKey: .started)
             self.title = try container.decodeIfPresent(String.self, forKey: .title)
@@ -2002,6 +2021,7 @@ public enum KoSchema {
             case id
             case msg
             case progress
+            case promptable
             case selection
             case started
             case title
@@ -2053,6 +2073,15 @@ public enum KoSchema {
         case error
         case indeterminate
         case pause
+    }
+
+    public struct PromptTarget: Codable, Equatable, Sendable {
+        public var pane: PaneId
+        public var record: StatusId
+        public init(pane: PaneId, record: StatusId) {
+            self.pane = pane
+            self.record = record
+        }
     }
 
     public enum RecordSelection: String, Codable, Equatable, Sendable {

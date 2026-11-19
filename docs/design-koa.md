@@ -385,7 +385,8 @@ jobs and records, the exit cleanup, because `session.reload()` runs
 the factory again. The root's `session_start` writes the `koa.*`
 variables and starts the peer client; a subagent's writes neither. A
 message on the pane's stream goes to the agent that its `data.to`
-names (design-subagents.md, "The pane's queue") and reaches koa as
+names, a `user` prompt to the agent of its `record`
+(design-subagents.md, "The pane's queue"), and reaches koa as
 that session's message events.
 
 **The queue patch.** pi's `clearQueue` drops queued custom messages
@@ -403,9 +404,10 @@ and `clear` when the session fails. With the extension's
 sets the pane title with OSC 0 from the root session's name and
 directory. Each subagent's status is a record of the pane
 (design-subagents.md, "In the sidebar"), by the same rule. The
-record is selectable and closeable: a `select` from the user switches
-the view, a `close` stops that subagent (design-subagents.md, "The
-pane's queue").
+record is selectable, closeable and promptable: a `select` from the
+user switches the view, a `close` stops that subagent, and a prompt
+for the record reaches that subagent as the user's text
+(design-subagents.md, "The pane's queue").
 
 **The session's directory** is the runtime's `cwd`, which pi sets
 from the session that it opened: a session of another directory runs

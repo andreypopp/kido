@@ -201,11 +201,14 @@ fn size(content: &Content) -> usize {
         | Content::Stop(payload)
         | Content::Notice(payload)
         | Content::Select(payload)
-        | Content::Close(payload)
-        | Content::User(payload) => payload
+        | Content::Close(payload) => payload
             .text
             .len()
             .saturating_add(payload.data.as_ref().map_or(0, Data::byte_len)),
+        Content::User(prompt) => prompt
+            .text
+            .len()
+            .saturating_add(prompt.record.as_str().len()),
     }
 }
 

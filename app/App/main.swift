@@ -477,7 +477,7 @@ import SidebarFeed
     private func keepPromptDraft(_ owner: WindowOwner) -> (PromptDraft.Key) -> Bool {
         let current = PromptSource.current(in: owner)
         let paneExists = PromptSource.paneExists(in: owner)
-        return { current($0.instance) && paneExists($0.pane) }
+        return { current($0.instance) && paneExists($0.target.pane) }
     }
 
     private func prunePromptDrafts(_ owner: WindowOwner) {
@@ -543,7 +543,7 @@ import SidebarFeed
             guard let self, let panel else { return }
             if let entry = panel.palette.selectedEntry, entry.promptable, entry.check() == nil, case .pane(let position) = entry.id,
                let owner = paletteFocus?.owner,
-               let source = owner.promptSource(position, quote: nil, preselect: position.pane) {
+               let source = owner.promptSource(position, quote: nil, preselect: .init(pane: position.pane, record: "")) {
                 panel.palette.enter(.prompt(source))
             } else if let pane = PaneView.owner(paletteFocus?.responder) {
                 pane.openPrompt()

@@ -105,7 +105,7 @@ fn runtime_kinds_select_agents_keep_sender_identity_and_hide_the_transport_title
             .as_array()
             .unwrap()
             .iter()
-            .map(|candidate| candidate["pane"].as_str().unwrap())
+            .map(|candidate| candidate["target"]["pane"].as_str().unwrap())
             .collect::<Vec<_>>(),
         [agent.as_str()]
     );
@@ -1271,7 +1271,7 @@ runtimes:
             .as_array()
             .unwrap()
             .iter()
-            .any(|c| c["pane"] == agent.as_str()),
+            .any(|c| c["target"]["pane"] == agent.as_str()),
         "the host agent is a candidate: {}",
         candidates.1
     );
@@ -1281,7 +1281,7 @@ runtimes:
             "dev",
             ("POST", "/prompt"),
             as_child,
-            &json!({"from": child, "id": "prompt-0001", "target": agent, "text": "hello"}),
+            &json!({"from": child, "id": "prompt-0001", "target": {"pane":agent,"record":""}, "text": "hello"}),
         ),
         "would get a paste",
     );

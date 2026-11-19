@@ -264,7 +264,7 @@ fn a_prompt_goes_to_the_one_live_agent_of_the_callers_window() {
     ] {
         let run = s.ko(
             &["api", "-X", "POST", "--input", "-", "/prompt"],
-            &json!({"from": from, "id": id, "target": target, "text": id}).to_string(),
+            &json!({"from": from, "id": id, "target": target.map(|pane| json!({"pane":pane,"record":""})), "text": id}).to_string(),
         );
         assert_eq!((code(&run), run.stderr.as_str()), (0, ""), "{id}");
         assert_eq!(
@@ -340,7 +340,7 @@ fn a_prompt_goes_through_the_message_queue_when_the_agent_has_a_stream() {
         "a queued prompt types nothing"
     );
 
-    let body = json!({"from": from, "id": "prompt-user-1", "target": pane, "text": "as the user"});
+    let body = json!({"from": from, "id": "prompt-user-1", "target": {"pane":pane,"record":""}, "text": "as the user"});
     let waiting = s.send_request("POST", "/prompt", &s.headers(), body.to_string().as_bytes());
     let message = next();
     assert_eq!(
@@ -354,7 +354,7 @@ fn a_prompt_goes_through_the_message_queue_when_the_agent_has_a_stream() {
     assert_eq!(message.get("relation"), None);
 
     let lost_body =
-        json!({"from": from, "id": "prompt-lost-1", "target": pane, "text": "lost reply"})
+        json!({"from": from, "id": "prompt-lost-1", "target": {"pane":pane,"record":""}, "text": "lost reply"})
             .to_string();
     let lost = s.send_request("POST", "/prompt", &s.headers(), lost_body.as_bytes());
     assert_eq!(received(&mut stream)["id"], "prompt-lost-1");
@@ -376,7 +376,7 @@ fn a_prompt_goes_through_the_message_queue_when_the_agent_has_a_stream() {
     let far = agent(&s, "far");
     let headers = as_pane(&s, &from);
     let send_as = |who: &crate::panes::Headers, from: &str, target: &str, text: &str| {
-        let body = json!({"from": from, "id": "prompt-0001", "target": target, "text": text});
+        let body = json!({"from": from, "id": "prompt-0001", "target": {"pane":target,"record":""}, "text": text});
         s.exchange("POST", "/prompt", who, body.to_string().as_bytes())
             .0
     };
@@ -389,7 +389,7 @@ fn a_prompt_goes_through_the_message_queue_when_the_agent_has_a_stream() {
     let panes: Vec<String> = serde_json::from_slice::<Vec<Value>>(&resolved.1)
         .unwrap()
         .iter()
-        .map(|candidate| candidate["pane"].as_str().unwrap().to_owned())
+        .map(|candidate| candidate["target"]["pane"].as_str().unwrap().to_owned())
         .collect();
     assert_eq!((resolved.0, panes), (200, vec![pane.clone(), far.clone()]));
     assert_eq!(
@@ -407,6 +407,114 @@ fn a_prompt_goes_through_the_message_queue_when_the_agent_has_a_stream() {
     shows(&s, &far, "got:explicit".to_owned());
     let missing = s.exchange("GET", "/prompt/resolve", &s.headers(), b"");
     assert_eq!(missing.0, 400, "no pane to prompt from");
+}
+
+#[test]
+fn a_prompt_targets_only_published_promptable_records() {
+    let s = start(&[]);
+    let from = remembered(&s, s.token_pane("exec cat"));
+    let pane = pane_in(&s, &from, program(AGENT_LOOP, pi_vars("records")));
+    rooted(&s, &pane);
+    let headers = as_pane(&s, &pane);
+    for record in [
+        json!({"type":"set", "id":"agents/kid", "state":"idle", "selection":"offered", "promptable":true}),
+        json!({"type":"set", "id":"agents/kid/jobs/j1", "state":"working", "selection":"offered"}),
+    ] {
+        assert_eq!(
+            s.exchange(
+                "POST",
+                &format!("/panes/{pane}/status"),
+                &headers,
+                record.to_string().as_bytes()
+            )
+            .0,
+            200
+        );
+    }
+    let resolved = s.exchange(
+        "GET",
+        &format!("/prompt/resolve?from={from}"),
+        &s.headers(),
+        b"",
+    );
+    let candidates: Vec<Value> = serde_json::from_slice(&resolved.1).unwrap();
+    assert_eq!(
+        candidates
+            .iter()
+            .map(|c| c["target"].clone())
+            .collect::<Vec<_>>(),
+        vec![
+            json!({"pane":pane,"record":""}),
+            json!({"pane":pane,"record":"agents/kid"})
+        ]
+    );
+    let mut stream = open(&s, &pane);
+    for (n, record) in [(1, "agents/kid"), (2, "")] {
+        let target = if record.is_empty() {
+            pane.clone()
+        } else {
+            format!("{pane}/{record}")
+        };
+        let (env, argv) = ko_command(&s, Some(&from), &["prompt", "--target", &target]);
+        let argv: Vec<&str> = argv.iter().map(String::as_str).collect();
+        let sent = thread::scope(|scope| {
+            let sending = scope.spawn(|| run_ko(&s.scratch, &env, &argv, "record prompt"));
+            let message = received(&mut stream);
+            assert_eq!(message["kind"], "user");
+            assert_eq!(message["record"], record);
+            assert_eq!(message["text"], "record prompt");
+            assert_eq!(message["from"]["pane"], from);
+            assert_eq!(message.get("data"), None);
+            ack(&mut stream, message["id"].as_str().unwrap());
+            sending.join().unwrap()
+        });
+        assert_eq!((code(&sent), sent.stderr.as_str()), (0, ""), "{n}");
+    }
+    let body = json!({"from":from,"id":"record-user-1","target":{"pane":pane,"record":"agents/kid"},"text":"as the user"});
+    let waiting = s.send_request("POST", "/prompt", &s.headers(), body.to_string().as_bytes());
+    let message = received(&mut stream);
+    assert_eq!(message["from"], json!({"type":"user"}));
+    assert_eq!(message["record"], "agents/kid");
+    assert_eq!(message.get("data"), None);
+    ack(&mut stream, message["id"].as_str().unwrap());
+    assert_eq!(answer(&s, waiting).0, 200);
+    let invalid = format!("{pane}/agents/kid/jobs/j1");
+    assert!(
+        prompt_to(&s, &from, 3, Some(&invalid))
+            .1
+            .contains("accepts no prompt")
+    );
+    drop(stream);
+    s.wait_row(&pane, "its stream to close", |row| {
+        row.get("inbox").is_none()
+    });
+    let body = json!({"from":from,"id":"record-queued-1","target":{"pane":pane,"record":"agents/kid"},"text":"never pasted"});
+    let queued = s.exchange("POST", "/prompt", &s.headers(), body.to_string().as_bytes());
+    assert_eq!(queued.0, 200);
+    assert_eq!(
+        serde_json::from_slice::<Value>(&queued.1).unwrap()["via"]["state"],
+        "queued"
+    );
+    assert!(!s.screen(&pane).contains("never pasted"));
+    assert_eq!(
+        s.exchange(
+            "POST",
+            &format!("/panes/{pane}/status"),
+            &headers,
+            br#"{"type":"clear","id":"agents"}"#
+        )
+        .0,
+        200
+    );
+    assert!(
+        prompt_to(&s, &from, 4, Some(&format!("{pane}/agents/kid")))
+            .1
+            .contains("accepts no prompt")
+    );
+    assert_eq!(
+        prompt_to(&s, &from, 5, Some("pane_x/not a status id")).0,
+        124
+    );
 }
 
 #[test]

@@ -6,7 +6,10 @@ use crate::pane_kind::{self, Kind};
 use crate::panes::{acts_as, is_descendant};
 use crate::server::Origin;
 use ko_wire::api::routes;
-use ko_wire::protocol::{Candidate, Content, Error, ErrorKind, Payload, SendPrompt, Sent, Via};
+use ko_wire::ids::StatusId;
+use ko_wire::protocol::{
+    Candidate, Content, Error, ErrorKind, PromptTarget, SendPrompt, Sent, UserPrompt, Via,
+};
 
 use super::messages::{Posting, Reply};
 
@@ -50,43 +53,80 @@ impl State {
             for id in ids {
                 if let Some((pane, kind)) = self.live_agent(id) {
                     found.push(Candidate {
-                        pane: id,
+                        target: PromptTarget {
+                            pane: id,
+                            record: StatusId::root(),
+                        },
                         session: session.id,
                         window: window.id,
                         title: pane_kind::title(&kind, &lossy(pane.proc().title()))
                             .unwrap_or_default(),
                     });
+                    for record in pane.telemetry().records.published().records {
+                        if !record.id.is_root() && record.promptable {
+                            found.push(Candidate {
+                                target: PromptTarget {
+                                    pane: id,
+                                    record: record.id.clone(),
+                                },
+                                session: session.id,
+                                window: window.id,
+                                title: record
+                                    .title
+                                    .unwrap_or_else(|| record.id.as_str().to_owned()),
+                            });
+                        }
+                    }
                 }
             }
         }
         Ok(found)
     }
 
-    fn prompt_target(&self, caller: Option<PaneId>, request: &SendPrompt) -> Result<PaneId, Error> {
+    fn prompt_target(
+        &self,
+        caller: Option<PaneId>,
+        request: &SendPrompt,
+    ) -> Result<PromptTarget, Error> {
         let from = request.from;
         acts_as(caller, from, "prompt only from itself")?;
         let layout = self.document.layout();
         let (session, window) = layout.locate(from).ok_or_else(|| not_found(from))?;
-        if let Some(target) = request.target {
-            let reachable = session.windows.iter().any(|window| window.has(target));
-            return if (caller.is_none() || target != from)
-                && reachable
-                && self.live_agent(target).is_some()
-            {
-                Ok(target)
-            } else {
-                Err(Error::new(
+        if let Some(target) = &request.target {
+            let reachable = session.windows.iter().any(|window| window.has(target.pane));
+            let agent = self
+                .live_agent(target.pane)
+                .filter(|_| (caller.is_none() || target.pane != from) && reachable);
+            let Some((pane, _)) = agent else {
+                return Err(Error::new(
                     ErrorKind::Invalid,
-                    format!("pane {target} is no live agent of the session of pane {from}"),
-                ))
+                    format!(
+                        "pane {} is no live agent of the session of pane {from}",
+                        target.pane
+                    ),
+                ));
             };
+            if !target.record.is_root() && !pane.telemetry().records.promptable(&target.record) {
+                return Err(Error::new(
+                    ErrorKind::Invalid,
+                    format!(
+                        "record {} of {} accepts no prompt",
+                        target.record.as_str(),
+                        target.pane
+                    ),
+                ));
+            }
+            return Ok(target.clone());
         }
         let mut agents = window
             .panes()
             .into_iter()
             .filter(|&id| (caller.is_none() || id != from) && self.live_agent(id).is_some());
         match (agents.next(), agents.next()) {
-            (Some(one), None) => Ok(one),
+            (Some(one), None) => Ok(PromptTarget {
+                pane: one,
+                record: StatusId::root(),
+            }),
             (None, _) => Err(Error::new(ErrorKind::NoAgent, "agent not found")),
             _ => Err(Error::new(
                 ErrorKind::MultipleAgents,
@@ -109,17 +149,18 @@ impl State {
             Ok(target) => target,
             Err(failure) => return Some(Err(failure)),
         };
-        let inbox = self.panes.find(target).is_some_and(|pane| {
-            pane.inbox().stream().is_some() || pane.inbox().seen(&request.id).is_some()
-        });
+        let inbox = !target.record.is_root()
+            || self.panes.find(target.pane).is_some_and(|pane| {
+                pane.inbox().stream().is_some() || pane.inbox().seen(&request.id).is_some()
+            });
         if inbox {
             let posting = Posting {
                 caller,
-                target,
+                target: target.pane,
                 id: request.id,
-                content: Content::User(Payload {
+                content: Content::User(UserPrompt {
                     text: request.text,
-                    data: None,
+                    record: target.record,
                 }),
                 reply: Reply::Prompt,
             };
@@ -127,10 +168,10 @@ impl State {
                 .submit(poll, index, posting, &self.edges())
                 .map(|result| result.map(Sent::from));
         }
-        if let Err(refused) = self.may_paste(caller, origin, target) {
+        if let Err(refused) = self.may_paste(caller, origin, target.pane) {
             return Some(Err(refused));
         }
-        self.paste_prompt(poll, index, target, &request.text)
+        self.paste_prompt(poll, index, target.pane, &request.text)
     }
 
     // A paste is input to the target's terminal, so a runtime connection may paste only where it

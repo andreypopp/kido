@@ -108,6 +108,11 @@ The records supply:
   that it shows now (protocol.md, section 6). The set stores it as
   any other field: a change of it alone is a change of the record.
   The reduction and the outcomes do not read it.
+- `promptable`: only from the route, and only on a non-root record.
+  The program delivers a prompt for the record to the agent that the
+  record stands for, so `POST /prompt` accepts the record as a target
+  (protocol.md, section 11). A record that is only promptable is
+  published. The reduction and the outcomes do not read it.
 
 Kido.app draws non-root records as child rows under the pane row,
 nested by id, in id order: a record nests under each ancestor id that

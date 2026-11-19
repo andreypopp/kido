@@ -492,7 +492,6 @@ private final class UploadReader: @unchecked Sendable {
         return try JSONDecoder().decode(KoSchema.Edited.self, from: document)
     }
 
-    // The live agents of the session of `from`.
     nonisolated public func promptCandidates(from: PaneID) throws -> [KoSchema.Candidate] {
         var buffer = ko_buffer()
         return try JSONDecoder().decode([KoSchema.Candidate].self, from: handle.call {
@@ -520,10 +519,11 @@ private final class UploadReader: @unchecked Sendable {
         } onCancel: { reader.cancel() }
     }
 
-    nonisolated public func prompt(from: PaneID, to target: PaneID, _ text: String) throws {
+    nonisolated public func prompt(from: PaneID, to target: KoSchema.PromptTarget, _ text: String) throws {
         var buffer = ko_buffer()
         let bytes = Array(text.utf8)
-        _ = try handle.call { try take(ko_client_prompt($0, from.description, target.description, bytes, bytes.count, &buffer), &buffer) }
+        let address = target.pane.description + (target.record.isEmpty ? "" : "/" + target.record)
+        _ = try handle.call { try take(ko_client_prompt($0, from.description, address, bytes, bytes.count, &buffer), &buffer) }
     }
 
     // Blocks until the server answered: run it off the main queue. Every answer but an error is done.

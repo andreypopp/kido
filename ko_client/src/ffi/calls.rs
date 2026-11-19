@@ -210,7 +210,7 @@ pub unsafe extern "C" fn ko_client_prompt(
     let (Some(client), Some(from), Some(target), Some(text)) = (
         (!out.is_null()).then_some(client),
         from_text.and_then(|from| from.parse::<PaneId>().ok()),
-        target_text.and_then(|target| target.parse().ok()),
+        target_text.and_then(|target| target.parse::<protocol::PromptTarget>().ok()),
         text_bytes.and_then(|text| std::str::from_utf8(text).ok()),
     ) else {
         return Code::Argument;

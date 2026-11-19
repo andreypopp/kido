@@ -16,7 +16,7 @@ function recorder() {
   let stops = 0;
   return {
     log, selects, closes, stops: () => stops,
-    dispatch: { message: async (to: string | undefined, m: InProcessMessage) => { log.push({ to, message: m }); return to === "gone" ? "refuse" as const : "ack" as const; }, select: (record: string) => { selects.push(record); }, close: (record: string) => { closes.push(record); }, stop: () => { stops++; } },
+    dispatch: { user: async (record: string, text: string) => { log.push({ to: record, message: { kind: "user", text } }); return "ack" as const; }, message: async (to: string | undefined, m: InProcessMessage) => { log.push({ to, message: m }); return to === "gone" ? "refuse" as const : "ack" as const; }, select: (record: string) => { selects.push(record); }, close: (record: string) => { closes.push(record); }, stop: () => { stops++; } },
   };
 }
 
@@ -35,8 +35,9 @@ test("data.to picks the agent, data.from names the sender with its return addres
 test("a user text is plain, a select and a close act only for the user, and a stop with a target is refused", async () => {
   const r = recorder();
   const user = { type: "user" } as const;
-  assert.equal(await handleMessage(api({ seq: 1, id: "user-id-0001", kind: "user", text: "typed", from: user }), r.dispatch), "ack");
-  assert.deepEqual(r.log[0]?.message, { kind: "user", text: "typed" });
+  assert.equal(await handleMessage(api({ seq: 1, id: "user-id-0001", kind: "user", text: "typed", record: "agents/kid", from: user }), r.dispatch), "ack");
+  assert.deepEqual(r.log[0], { to: "agents/kid", message: { kind: "user", text: "typed" } });
+  assert.equal(await handleMessage(api({ seq: 2, id: "user-no-record", kind: "user", text: "lost", from: user }), r.dispatch), "refuse");
   assert.equal(await handleMessage(api({ seq: 2, id: "select-id-01", kind: "select", text: "agents/kid", from: user }), r.dispatch), "ack");
   assert.equal(await handleMessage(api({ seq: 3, id: "select-id-02", kind: "select", text: "agents/kid", from: pane, relation: "sibling" }), r.dispatch), "ack");
   assert.deepEqual(r.selects, ["agents/kid"]);
@@ -56,7 +57,7 @@ test("the stream acks what it delivered once, acks a repeat without delivering i
     const r = recorder();
     const inbox = openInbox("ko", "pane_1", r.dispatch, async () => {});
     await pollUntil(() => fx.streamOpens("/panes/pane_1/messages") === 1, 2000, "the stream");
-    fx.feed({ id: "once-0001", kind: "user", text: "hello", from: { type: "user" } });
+    fx.feed({ id: "once-0001", kind: "user", text: "hello", record: "", from: { type: "user" } });
     await pollUntil(() => fx.acks().length === 1, 2000, "the ack");
     assert.deepEqual(fx.acks(), [{ type: "ack", id: "once-0001" }]);
     fx.feedRaw({ id: "weird-0001", kind: "weird", text: "?", relation: "sibling" });

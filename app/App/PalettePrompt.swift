@@ -16,7 +16,7 @@ struct PromptSource: Equatable {
     let pane: PaneID
     let windowName: String
     var quote: String?
-    var preselect: PaneID?
+    var preselect: KoSchema.PromptTarget?
     @MainActor var current: Bool { Self.current(in: owner)(instance) }
     @MainActor var paneExists: Bool { Self.paneExists(in: owner, session: session)(pane) }
     @MainActor var valid: Bool { current && paneExists }
@@ -40,7 +40,14 @@ struct PromptDraft {
     struct Key: Hashable {
         let host: Host
         let instance: ServerInstance
-        let pane: PaneID
+        let target: KoSchema.PromptTarget
+
+        func hash(into hasher: inout Hasher) {
+            hasher.combine(host)
+            hasher.combine(instance)
+            hasher.combine(target.pane)
+            hasher.combine(target.record)
+        }
     }
     var text: String
 }
@@ -118,7 +125,7 @@ final class PalettePrompt: NSView, NSTextViewDelegate {
     private var resolving: UUID?
     private var resolveTimer: DispatchWorkItem?
 
-    var key: PromptDraft.Key? { target.map { PromptDraft.Key(host: source.owner.host, instance: source.instance, pane: $0.pane) } }
+    var key: PromptDraft.Key? { target.map { PromptDraft.Key(host: source.owner.host, instance: source.instance, target: $0.target) } }
     private var statusHeight: CGFloat { status.isHidden ? 0 : 30 }
     var preferredHeight: CGFloat { 21 + textHeight + 1 + statusHeight + 40 }
     private var hasPrompt: Bool { !textView.string.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
@@ -211,6 +218,16 @@ final class PalettePrompt: NSView, NSTextViewDelegate {
         textView.setSelectedRange(NSRange(location: caret, length: 0))
     }
 
+    static func choice(_ list: [KoSchema.Candidate], preselect: KoSchema.PromptTarget?, pane: PaneID, window: WindowID) -> KoSchema.Candidate? {
+        if let preselect {
+            if let exact = list.first(where: { $0.target == preselect }) { return exact }
+            if let owner = list.filter({
+                $0.target.pane == preselect.pane && ($0.target.record.isEmpty || preselect.record.hasPrefix($0.target.record + "/"))
+            }).max(by: { $0.target.record.utf8.count < $1.target.record.utf8.count }) { return owner }
+        }
+        return list.first { $0.target.pane == pane } ?? list.first { $0.window == window } ?? list.first
+    }
+
     func resolve() {
         guard resolving == nil else { return }
         let id = UUID()
@@ -230,7 +247,7 @@ final class PalettePrompt: NSView, NSTextViewDelegate {
             switch result {
             case .success(.candidates(let list)):
                 candidates = list
-                target = list.first { $0.pane == source.preselect } ?? list.first { $0.pane == source.pane } ?? list.first { $0.window == source.window } ?? list.first
+                target = Self.choice(list, preselect: source.preselect, pane: source.pane, window: source.window)
                 restoreTarget(key.flatMap(load), selection: source.quote)
                 apply(list.isEmpty ? .noAgent : .ready)
             case .success(.sent): apply(.failed("Unexpected prompt reply"))
@@ -247,16 +264,19 @@ final class PalettePrompt: NSView, NSTextViewDelegate {
     }
 
     // A refusal leaves the prompt with the agent; an unknown result may have reached it.
-    private static func sendFailure(_ error: Error) -> State {
+    private static func sendFailure(_ error: Error, target: KoSchema.Candidate) -> State {
         switch (error as? KoError)?.code {
         case KO_ERR_REFUSED: .refused(failureText(error))
         case KO_ERR_UNKNOWN: .unknown(failureText(error))
+        case KO_ERR_INVALID where !target.target.record.isEmpty: .invalid("@\(target.title) is no longer running. Choose another agent.")
         default: .invalid(failureText(error))
         }
     }
 
     private func place(_ candidate: KoSchema.Candidate) -> String {
-        candidate.window == source.window ? (sourceGone ? "window \(source.windowName) (pane closed)" : "this window") : "window \(source.owner.windowName(candidate.window))"
+        let window = candidate.window == source.window ? (sourceGone ? "window \(source.windowName) (pane closed)" : "this window") : "window \(source.owner.windowName(candidate.window))"
+        guard !candidate.target.record.isEmpty, let root = candidates.first(where: { $0.target.pane == candidate.target.pane && $0.target.record.isEmpty }) else { return window }
+        return "@\(root.title), \(window)"
     }
 
     private func updatePicker() {
@@ -290,7 +310,11 @@ final class PalettePrompt: NSView, NSTextViewDelegate {
                 menu.addItem(none)
             }
             for (index, candidate) in list {
-                let item = NSMenuItem(title: "@\(candidate.title)  \(place(candidate))", action: #selector(Picker.pick(_:)), keyEquivalent: "")
+                let record = candidate.target.record
+                let item = NSMenuItem(title: record.isEmpty ? "@\(candidate.title)  \(place(candidate))" : "@\(candidate.title)", action: #selector(Picker.pick(_:)), keyEquivalent: "")
+                if !record.isEmpty {
+                    item.indentationLevel = candidates.filter { $0.target.pane == candidate.target.pane && ($0.target.record.isEmpty || record.hasPrefix($0.target.record + "/")) }.count
+                }
                 item.tag = index
                 item.target = targetButton
                 item.state = candidate == target ? .on : .off
@@ -332,14 +356,14 @@ final class PalettePrompt: NSView, NSTextViewDelegate {
             spinner.isHidden = false
             spinner.startAnimation(nil)
         case .refused(let message):
-            status.stringValue = message
+            status.stringValue = target.map { $0.target.record.isEmpty ? message : "@\($0.title): \(message)" } ?? message
             retry.isHidden = false
             textView.isEditable = true
             textView.textColor = Chrome.ink
             send.isEnabled = hasPrompt
             warning.isHidden = false
         case .unknown(let message):
-            status.stringValue = message + " It may have arrived; not resent."
+            status.stringValue = (target.map { $0.target.record.isEmpty ? message : "@\($0.title): \(message)" } ?? message) + " It may have arrived; not resent."
             copyPrompt.isHidden = false
             send.isHidden = true
             warning.isHidden = false
@@ -382,7 +406,7 @@ final class PalettePrompt: NSView, NSTextViewDelegate {
         guard let target, hasPrompt else { return }
         switch state { case .ready, .refused: break; default: return }
         apply(.sending)
-        source.owner.prompt(.send(from: sourceGone ? target.pane : source.pane, to: target.pane, text: textView.string)) { [weak self] result in
+        source.owner.prompt(.send(from: sourceGone ? target.target.pane : source.pane, to: target.target, text: textView.string)) { [weak self] result in
             guard let self, active() else { return }
             switch result {
             case .success(.sent):
@@ -390,7 +414,7 @@ final class PalettePrompt: NSView, NSTextViewDelegate {
                 textView.string = ""
                 delivered()
             case .success(.candidates): apply(.invalid("Unexpected prompt reply"))
-            case .failure(let error): apply(Self.sendFailure(error))
+            case .failure(let error): apply(Self.sendFailure(error, target: target))
             }
         }
     }

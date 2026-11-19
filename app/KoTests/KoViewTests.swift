@@ -199,7 +199,7 @@ final class Decoded: @unchecked Sendable {
         XCTAssertNil(offMain.error)
         wait("the model with the new name") { (try? connection.model()).map { $0.layout.layout.windows.map(\.name) } == ["renamed"] }
 
-        XCTAssertThrowsError(try connection.prompt(from: pane, to: pane, "hello")) { error in
+        XCTAssertThrowsError(try connection.prompt(from: pane, to: .init(pane: pane, record: ""), "hello")) { error in
             XCTAssertEqual((error as? KoError)?.code, KO_ERR_INVALID)
             XCTAssertFalse((error as? KoError)?.detail.isEmpty ?? true, "the server's refusal text")
         }

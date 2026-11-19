@@ -845,7 +845,7 @@ routes! {
     }
     /// Takes the runtime down, as down without force does, and removes its files except the empty io directory.
     DeleteRuntime { method: DELETE, path: /runtimes/{name: RuntimeName}, query: { session: Option<SessionId> }, reply: Empty }
-    /// The live agents of the session of the pane `from`, for choosing a prompt target. A pane identity may name only itself.
+    /// The live agents and their promptable records in the session of pane `from`. A pane identity may name only itself.
     PromptResolve {
         method: GET,
         path: /prompt/resolve,
@@ -853,7 +853,7 @@ routes! {
         caller: optional,
         reply: Vec<Candidate>,
     }
-    /// Sends a prompt to an agent.
+    /// Sends a prompt to an agent pane or a promptable record of it.
     SendPrompt {
         method: POST,
         path: /prompt,

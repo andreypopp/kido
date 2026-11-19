@@ -97,6 +97,7 @@ test("the pane's one queue reaches the agent that data.to names; a select switch
   await app.feed({ id: "select-user-1", kind: "select", text: "agents/kid" });
   await pollUntil(() => view() === kid, 5000, "the select of the kid");
   const posts = await statusPosts(app);
+  assert.equal(posts.findLast(post => post.id === "agents/kid" && post.type === "set")?.promptable, true);
   await app.feed({ id: "select-user-2", kind: "select", text: "" });
   await pollUntil(() => view() === rootId, 5000, "the select of the root");
   await pollUntil(async () => (await statusPosts(app)).slice(posts.length).some(post => post.id === "agents/kid" && post.selection === "offered"), 5000, "the former child record to be offered again");
@@ -105,7 +106,7 @@ test("the pane's one queue reaches the agent that data.to names; a select switch
   await pollUntil(async () => (await acked(app, "select-none-4")).length > 0, 5000, "the last select ack");
   assert.equal(view(), rootId);
   assert.deepEqual(await acked(app, "select-pane-3"), ["ack"]);
-  await app.feed({ id: "user-to-kid-5", kind: "user", text: "hello kid", data: { to: kid } });
+  await app.feed({ id: "user-to-kid-5", kind: "user", text: "hello kid", record: "agents/kid" });
   await app.feed({ id: "message-kid-6", kind: "message", text: "ping", data: { to: kid, from: { session: "0123456789abcdef", name: "external" } }, from: { type: "pane", pane: "pane_2", session: "other", name: "root-of-pane-2" } });
   await app.feed({ id: "unknown-to-7", kind: "message", text: "lost", data: { to: "no-such-session" }, from: { type: "pane", pane: "pane_2", session: "other", name: "x" } });
   await app.feed({ id: "stop-to-8", kind: "stop", text: "", data: { to: kid } });
@@ -117,6 +118,9 @@ test("the pane's one queue reaches the agent that data.to names; a select switch
   await pollUntil(() => headers().some(text => text.includes("message from @external")), 5000, "the message that names its sender");
   assert.ok(headers().some(text => text.includes("message from @external (session 0123456789abcdef in pane_2; another agent in this session, not the user):")), headers().join("\n"));
   assert.ok(!headers().some(text => text.includes("lost")));
+  const childPrompt = app.provider.requests.find(request => JSON.stringify(request.body.messages.at(-1)).includes("hello kid"));
+  assert.ok(childPrompt, "the child received the user's text");
+  assert.ok(!JSON.stringify(childPrompt.body.messages).includes("spawn one"), "the prompt did not reach the root's conversation");
 });
 
 test("a close of a record stops that subagent for the user only, with a notice to its parent", { timeout: 30000 }, async t => {
@@ -138,6 +142,9 @@ test("a close of a record stops that subagent for the user only, with a notice t
   await pollUntil(async () => (await statusPosts(app)).some(post => post.type === "clear" && post.id === "agents/kid"), 5000, "the clear of the kid's record");
   await pollUntil(() => app.provider.requests.some(request => JSON.stringify(request.body.messages.at(-1)).includes("the user stopped subagent @kid")), 10000, "the notice to the parent");
   assert.deepEqual(await acked(app, "close-user-4"), ["ack"]);
+  await app.feed({ id: "user-stopped-5", kind: "user", text: "lost", record: "agents/kid" });
+  await pollUntil(async () => (await acked(app, "user-stopped-5")).length > 0, 5000, "the stopped record refusal");
+  assert.deepEqual(await acked(app, "user-stopped-5"), ["refuse"]);
 });
 
 test("koa clears the agents and jobs records before it writes any of its own", { timeout: 30000 }, async t => {
@@ -205,7 +212,7 @@ test("a tree of three levels refuses a fourth, writes a record for each agent wi
   await app.feed({ id: "select-user-1", kind: "select", text: "agents/kid" });
   await pollUntil(() => state(app).view.id === kid, 5000, "the select");
   await pollUntil(async () => (await statusPosts(app)).slice(before).some(post => post.id === "agents/kid" && post.selection === "selected"), 5000, "the selected record");
-  await app.feed({ id: "user-stop-2", kind: "user", text: "stop it" });
+  await app.feed({ id: "user-stop-2", kind: "user", text: "stop it", record: "" });
   await pollUntil(() => state(app).view.path.length === 1 && !state(app).agents.some(agent => agent.name === "kid"), 10000, "the stop to select the root and drop the kid");
   await pollUntil(async () => (await statusPosts(app)).some(post => post.type === "clear" && post.id === "agents/kid"), 5000, "the subtree clear");
   await pollUntil(() => app.provider.requests.some(request => JSON.stringify(request.body.messages.at(-1)).includes("stopped kid")), 5000, "the stop_agent result to reach the model");
@@ -305,7 +312,7 @@ test("a creation that is pending while its parent is stopped does not survive th
   await pollUntil(() => app.provider.requests.some(request => JSON.stringify(request.body.messages.at(-1)).includes("spawned kid")), 10000, "the kid");
   const kidView = await app.subscribe(viewOf(await app.until(listed("kid")), "kid"));
   await pollUntil(() => existsSync(gate + ".held"), 10000, "the gated creation of gk");
-  await app.feed({ id: "user-stop-1", kind: "user", text: "stop it" });
+  await app.feed({ id: "user-stop-1", kind: "user", text: "stop it", record: "" });
   await kidView.until(ofType("view_gone"));
   await writeFile(gate, "");
   await pollUntil(() => app.provider.requests.some(request => JSON.stringify(request.body.messages.at(-1)).includes("stopped kid")), 15000, "the stop to finish");

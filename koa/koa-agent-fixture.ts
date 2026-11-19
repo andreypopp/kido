@@ -188,6 +188,7 @@ type FeedMessage = {
   id: string;
   kind: string;
   text?: string;
+  record?: string;
   data?: unknown;
   relation?: string;
   from?: unknown;

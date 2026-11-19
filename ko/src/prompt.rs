@@ -4,12 +4,12 @@ use std::process::ExitCode;
 
 use ko_client::api::ReplyError;
 use ko_client::prompt;
-use ko_wire::ids::{MessageId, PaneId};
-use ko_wire::protocol::{ErrorKind, SendPrompt};
+use ko_wire::ids::MessageId;
+use ko_wire::protocol::{ErrorKind, PromptTarget, SendPrompt};
 
-use crate::{Target, complain, fail, target};
+use crate::{Target, complain, fail};
 
-pub(crate) fn prompt(server: Option<PathBuf>, target_pane: Option<PaneId>) -> ExitCode {
+pub(crate) fn prompt(server: Option<PathBuf>, target: Option<PromptTarget>) -> ExitCode {
     let mut text = String::new();
     if let Err(error) = io::stdin().read_to_string(&mut text) {
         return fail("prompt", error);
@@ -19,7 +19,7 @@ pub(crate) fn prompt(server: Option<PathBuf>, target_pane: Option<PaneId>) -> Ex
         complain("no prompt given");
         return ExitCode::from(1);
     }
-    let Target { dir, caller } = target(server);
+    let Target { dir, caller } = crate::target(server);
     let Some(caller) = caller else {
         return fail("prompt", "pane \"\" not found");
     };
@@ -30,7 +30,7 @@ pub(crate) fn prompt(server: Option<PathBuf>, target_pane: Option<PaneId>) -> Ex
     let request = SendPrompt {
         from: caller.pane,
         id,
-        target: target_pane,
+        target,
         text,
     };
     let Err(failure) = prompt::send(&dir, Some(caller), &request) else {
