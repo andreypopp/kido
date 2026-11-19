@@ -2191,6 +2191,17 @@ test('a reader sub-pixel scroll through the page is never written back', async (
   assert.deepEqual([writes, tops], [0, [300.4, 300.8, 301.2, 301.6, 302]]);
 });
 
+test('wheel up without scroll range keeps following and adds no unread divider', async () => {
+  const page = await flowPage();
+  page.open([page.text(0)]);
+  page.settle();
+  assert.equal(page.bottom(), 0);
+  page.wheel(-1);
+  page.deliver({ type: 'item', item: page.text(1) });
+  page.settle();
+  assert.deepEqual([page.evaluate('scrolling.kind'), page.dividers()], ['following', '0,1']);
+});
+
 test('a slow wheel up from the bottom leaves following and never snaps back', async () => {
   const page = await flowPage();
   page.open([0, 1, 2, 3, 4, 5, 6, 7, 8, 9].map(page.text));

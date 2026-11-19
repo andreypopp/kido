@@ -1291,7 +1291,10 @@ the command first ("`!` commands" below).
   The page turns input into a direction: an upward wheel, a downward
   touch drag and the keys Up, Page Up, Home and Shift-Space outside
   a control are up; the opposite ones are down. Up sets `reader` with
-  the current anchor; any input cancels a travel. A find navigation
+  the current anchor, but only when the transcript can scroll (its
+  maximum exceeds 1 px): a short transcript has no position to
+  read, and a reader there would mark the next reply unread with
+  no way back to following. Any input cancels a travel. A find navigation
   sets `reader` at its match. Every scroll event is the reader's
   position, at any size, except two: the echo of the page's own
   write (the owner keeps the value that it read back after the

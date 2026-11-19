@@ -67,6 +67,14 @@ test('a reader sub-pixel scroll moves the anchor and is never written back', () 
   assert.equal(f.step([{ type: 'frame' }]).decision.scrollTop, undefined);
 });
 
+test('up input without scroll range keeps following and adds no unread divider', () => {
+  const f = fixture();
+  f.step([layout], { top: 0, max: 0 });
+  f.step([intent]);
+  const result = f.step([item(2)]);
+  assert.deepEqual([result.state.kind, result.decision.dividerBefore], ['following', undefined]);
+});
+
 test('a slow wheel up from the bottom leaves following, and its sub-pixel scrolls never snap back', () => {
   const f = fixture();
   f.step([intent]);

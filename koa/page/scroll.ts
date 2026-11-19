@@ -143,7 +143,7 @@ export function scrollUpdate(previous: State, events: readonly ScrollEvent[], m:
     } else if (event.type === 'layout' && state.settling === 'render') state.settling = 'delivery';
     switch (event.type) {
       case 'input':
-        if (state.kind === 'following' && event.direction === 'up' || state.kind === 'reader' && state.travel) {
+        if (state.kind === 'following' && event.direction === 'up' && m.max > 1 || state.kind === 'reader' && state.travel) {
           state.forceItem = undefined;
           reader();
         }
