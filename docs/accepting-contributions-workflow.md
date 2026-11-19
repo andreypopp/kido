@@ -15,7 +15,7 @@ They can run in parallel.
    Record the PR's base.
    Record how many commits the PR is behind main.
 
-2. Assign the review to Fable (`claude-bridge/claude-fable-5-1`).
+2. Assign the review to Fable (`claude-bridge/claude-fable-5-2`).
    Ask the reviewer to check correctness, style and functionality.
    Ask the reviewer to check the PR against the project values in
    AGENTS.md's "Code rules".

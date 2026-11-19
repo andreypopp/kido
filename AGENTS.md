@@ -675,7 +675,7 @@ delegates as its brief says and does not write code.
     `openai-codex/gpt-6-astra:medium`.
   - The planner of a unit runs on `openai-codex/gpt-6-astra`.
   - Design work (a plan in `plans/`, a design in `docs/`) runs on
-    `claude-bridge/claude-fable-5-1`, never on Sol. Fable also takes
+    `claude-bridge/claude-fable-5-2`, never on Sol. Fable also takes
     a complex task or review when the user asks for it.
 - **Size the process to what the change is for,** not to its line
   count. Local tooling (the pi extensions in `.pi/`, a script that
