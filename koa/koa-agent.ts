@@ -235,7 +235,7 @@ export type Job = {
   mode: { type: "foreground"; call: JobCall | null } | JobOutput;
   state: { type: "running" } | { type: "ended"; end: JobEnd; announced: boolean; at: number };
   deadline: NodeJS.Timeout | null;
-  stopping: { end: JobEnd; timer: NodeJS.Timeout } | null;
+  stopping: { end: JobEnd; timer: NodeJS.Timeout; discarded: boolean } | null;
   closed: Promise<void>;
 };
 export type BackgroundJob = Job & { mode: JobOutput };
@@ -277,7 +277,7 @@ function signalJob(job: Job, signal: NodeJS.Signals): boolean {
   if (!jobRunning(job) || !child.pid) return false;
   try {
     if (job.where.type === "local") process.kill(-child.pid, signal);
-    else child.kill();
+    else child.kill(signal);
     return true;
   } catch (error) {
     if (isRecord(error) && (error.code === "ESRCH" || (job.where.type === "local" && error.code === "EPERM"))) return false;
@@ -315,13 +315,29 @@ function stopJob(job: Job, end: JobEnd = { type: "stopped" }): void {
   if (job.deadline) clearTimeout(job.deadline);
   job.deadline = null;
   signalJob(job, "SIGTERM");
-  const timer = setTimeout(() => signalJob(job, "SIGKILL"), jobKillMs());
+  const closeReaders = (): void => {
+    if (!job.stopping) return;
+    for (const reader of [job.where.child.stdout, job.where.child.stderr]) {
+      if (reader && !reader.readableEnded && !reader.destroyed) {
+        job.stopping.discarded = true;
+        reader.destroy();
+      }
+    }
+  };
+  const timer = setTimeout(() => {
+    if (job.state.type === "ended") return;
+    if (jobRunning(job)) {
+      job.where.child.once("exit", closeReaders);
+      signalJob(job, "SIGKILL");
+    } else closeReaders();
+  }, jobKillMs());
   timer.unref();
-  job.stopping = { end, timer };
+  job.stopping = { end, timer, discarded: false };
 }
 
-async function waitJobs(jobs: Job[]): Promise<void> {
-  await Promise.race([Promise.all(jobs.map((job) => job.closed)), sleep(jobKillMs())]);
+async function waitJobs(jobs: Job[]): Promise<boolean> {
+  await Promise.race([Promise.all(jobs.map((job) => job.closed)), sleep(2 * jobKillMs())]);
+  return jobs.every((job) => job.state.type === "ended");
 }
 
 function pruneJobs(registry: JobRegistry): void {
@@ -359,6 +375,7 @@ export function createJobRegistry(session: string): JobRegistry {
 export type JobSink = {
   jobNotice(text: string, details: NoticeDetails): void;
   jobStream(job: BackgroundJob, body: ReturnType<typeof streamBatch>): void;
+  jobEnded(): void;
 };
 
 // The jobs of one agent live as long as the agent: a reload replaces the extension that delivers their notices, not them.
@@ -446,6 +463,7 @@ export function createJobs(options: { records: Records; path: () => string; sink
     options.view?.changed(job);
     detachJob(job);
     const sink = options.sink();
+    sink?.jobEnded();
     if (!sink || job.state.type !== "ended" || job.state.announced) return;
     if (job.state.end.type !== "stopped") {
       if (streams(job)) flush(job);
@@ -2561,8 +2579,8 @@ export const agentExtension = (host: AgentHost) => (pi: ExtensionAPI): void => {
       if (job.state.type === "ended") return reply(`job ${job.id} (${job.mode.name}) had already ended: ${jobEndText(job.state.end)}; log: ${job.mode.log}`);
       stopJob(job);
       detachJob(job);
-      await waitJobs([job]);
-      return reply(`stopped job ${job.id} (${job.mode.name}); log: ${job.mode.log}`);
+      if (!await waitJobs([job])) return reply(`stop requested for job ${job.id} (${job.mode.name}); it still runs; log: ${job.mode.log}`);
+      return reply(`stopped job ${job.id} (${job.mode.name});${job.stopping?.discarded ? " processes that left the job's process group may still run;" : ""} log: ${job.mode.log}`);
     },
   });
 
@@ -2764,14 +2782,10 @@ export const agentExtension = (host: AgentHost) => (pi: ExtensionAPI): void => {
           : { kind: "ended", text };
   });
 
-  pi.on("agent_settled", async (event: { aborted?: boolean }, ctx: { isIdle(): boolean }) => {
-    if (!ctx.isIdle()) return;
-    host.jobs.finishWorking();
-    settled = true;
-    for (const held of interrupted.splice(0)) deliverMessage(held);
+  const reportIfPending = async (): Promise<void> => {
+    if (!settled) return;
     const parent = host.self.parent?.extension;
     if (!parent || !ownSessionId || host.self.stopping) return;
-    if (event?.aborted) return;
     if (turnEndedByControl) return;
     if (ending.kind === "aborted") return;
     const self: AgentRef = { name: nameOfAgent(host.self), session: ownSessionId };
@@ -2790,6 +2804,15 @@ export const agentExtension = (host: AgentHost) => (pi: ExtensionAPI): void => {
     if (ownLiveWork()) return;
     if (turnEndedByControl || generation !== workGeneration || parent.childState(ownSessionId).text !== prior.text) return;
     parent.receiveReport({ session: ownSessionId, name: self.name }, text);
+  };
+
+  pi.on("agent_settled", async (event: { aborted?: boolean }, ctx: { isIdle(): boolean }) => {
+    if (!ctx.isIdle()) return;
+    host.jobs.finishWorking();
+    settled = true;
+    if (event?.aborted) ending = { kind: "aborted" };
+    for (const held of interrupted.splice(0)) deliverMessage(held);
+    await reportIfPending();
   });
 
   pi.on("session_shutdown", async (event?: { reason?: ShutdownReason }) => {
@@ -2822,6 +2845,7 @@ export const agentExtension = (host: AgentHost) => (pi: ExtensionAPI): void => {
   });
 
   host.extension = {
+    jobEnded: () => { void reportIfPending().catch((error: unknown) => session?.ui?.notify(errorText(error), "error")); },
     completionContext, restartState, receive, childState, scope: async (maxAgeMs, ended = false) => (await discovery(maxAgeMs, !ended)).rows, jobNotice: deliverNotice, jobStream,
     markWork: (child) => { const known = children().find((c) => c.session === child); if (known) markChildWork(known); },
     receiveReport: (child, text) => {

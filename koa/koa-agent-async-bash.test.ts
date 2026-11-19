@@ -239,6 +239,40 @@ test("stop by name and id stops owned groups, sends no notice, and handles ended
   } finally { await fx.restore(); }
 });
 
+for (const exited of [false, true]) test(`stop closes escaped descendant pipes when the shell ${exited ? "already exited" : "exits on stop"}`, async () => {
+  const fx = makeFixture();
+  const release = join(fx.dir, "escaped-release");
+  try {
+    fx.setPanes([selfPane()]);
+    const s = await startSession(fx);
+    const ready = join(fx.dir, "escaped-ready");
+    const command = `/usr/bin/perl -MPOSIX -e 'POSIX::setsid(); open(my $f, ">", "${ready}") or die $!; close($f); my $until = time() + 10; while (!-e "${release}" && time() < $until) { select(undef, undef, undef, 0.01); } open(my $done, ">", "${release}-done") or die $!; close($done);' & ${exited ? "exit 0" : "wait"}`;
+    const result = await s.tool("async_bash").execute("c", { command, name: "escaped" });
+    const job = backgroundJob(jobId(result));
+    await pollUntil(() => existsSync(ready) && (!exited || job.where.child.exitCode !== null));
+    const stopped = await s.tool("stop_async_bash").execute("s", { job: job.id });
+    assert.match(text(stopped), /stopped job/);
+    assert.equal(job.state.type, "ended");
+    assert.match(text(stopped), /processes that left the job's process group may still run/);
+    assert.equal(rowWhere(await list(s), "job", job.id).end, "stopped");
+  } finally { writeFileSync(release, ""); await pollUntil(() => existsSync(`${release}-done`)); await fx.restore(); }
+});
+
+test("stop preserves a SIGTERM trap's output without an escape warning", async () => {
+  const fx = makeFixture();
+  try {
+    fx.setPanes([selfPane()]);
+    const s = await startSession(fx);
+    const ready = join(fx.dir, "trap-ready");
+    const result = await s.tool("async_bash").execute("c", { command: `trap 'printf "trap finished\\n"; exit 0' TERM; printf ready > '${ready}'; while :; do :; done`, name: "trap" });
+    await pollUntil(() => existsSync(ready));
+    const stopped = await s.tool("stop_async_bash").execute("s", { job: jobId(result) });
+    assert.match(text(stopped), /stopped job/);
+    assert.doesNotMatch(text(stopped), /may still run/);
+    assert.match(readFileSync(jobLog(result), "utf8"), /trap finished\n/);
+  } finally { await fx.restore(); }
+});
+
 test("stop_async_bash refuses to signal an exited leader", async (t) => {
   const fx = makeFixture();
   try {
@@ -253,7 +287,7 @@ test("stop_async_bash refuses to signal an exited leader", async (t) => {
       job.state = { type: "running" };
       assert.equal(job.where.child.exitCode, 0);
       const stopped = await s.tool("stop_async_bash").execute("s", { job: jobId(result) });
-      assert.match(text(stopped), /stopped job/);
+      assert.match(text(stopped), /stop requested for job .*; it still runs; log:/);
       assert.equal(kill.mock.callCount(), 0);
     } finally {
       if (job.stopping) clearTimeout(job.stopping.timer);

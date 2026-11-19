@@ -83,7 +83,24 @@ test("a service does not hold the report; a non-service job does until it ends",
       await s.tool("stop_async_bash").execute("c", { job: jobId(build) });
       await pollUntil(async () => !jsonRows(await s.tool("list_async_bash").execute("l", {})).some((row) => row.job === jobId(build) && row.state !== "ended"));
       await idleTurn(s, "The real result.");
-      assert.deepEqual(ledger.reports, ["server ready", "The real result."]);
+      assert.deepEqual(ledger.reports, ["server ready", "Building.", "The real result."]);
+    });
+  } finally { await fx.restore(); }
+});
+
+test("a stopped job that ends after settle releases the pending report", async () => {
+  const fx = makeFixture();
+  try {
+    await child(fx, async (s, ledger, channel) => {
+      const result = await s.tool("async_bash").execute("c", { command: gatedCommand(`${fx.dir}/late-end`), name: "late" });
+      const job = channel.host.jobs.registry.jobs.get(jobId(result));
+      assert.ok(job);
+      const stopping = s.tool("stop_async_bash").execute("s", { job: job.id });
+      await idleTurn(s, "final report");
+      assert.deepEqual(ledger.reports, []);
+      await stopping;
+      await job.closed;
+      assert.deepEqual(ledger.reports, ["final report"]);
     });
   } finally { await fx.restore(); }
 });

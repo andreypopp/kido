@@ -418,7 +418,9 @@ only if all of these are true:
 5. No own job is running, except service jobs ("A job"), and no own
    live child owes a report. When the last one ends or reports, its
    notice wakes the child for a turn whose last message is the
-   report.
+   report. A job that a stop ended sends no notice, so the end of
+   any job of a settled child runs this check again on the last
+   settled turn, with all five conditions.
 
 The parent appends `koa.report` with the whole text, then its model
 gets a notice (`deliverAs: "steer"`, `triggerTurn: true`) of at most
@@ -622,7 +624,7 @@ resolve it.
 **A service.** `async_bash` with `service: true` starts a process that
 is meant to keep running, such as a server or a watcher, not a build
 or a test. A service is not the agent's own unfinished work: it does
-not hold a child's report ("Reporting", rule 6), so a child whose
+not hold a child's report ("Reporting", rule 5), so a child whose
 only running jobs are services reports when its turn settles.
 Everything else is as for any other job. Only `async_bash` sets the
 flag: a `bash` call that moves is never a service.
@@ -720,17 +722,31 @@ message or a tool parameter. A local job's signal goes to the group
 that its `detached` spawn created. The function refuses when the
 shell has exited: Node has reaped it, and the group id can be reused
 once its last member is gone. A job whose shell exited while a
-descendant holds its pipes waits for the pipes, and a stop sends
-nothing. An `ESRCH` or `EPERM` from a group signal means that no
+descendant holds its pipes waits for the pipes until a stop. An `ESRCH` or `EPERM` from a group signal means that no
 member can get it, not an error: macOS returns `EPERM` for a group
 whose members are all zombies, which occurs after the shell exits and
 before Node reaps it. A routed job's stop is `kill()` of its own `ko api` child:
 ko closes the exec session, and the inside ko signals the command's
 group (design-runtimes.md, "The exec session"). The extension sends no
-`signal` frame. A process that leaves its group (`setsid`) escapes.
+`signal` frame. A process that leaves its group (`setsid`, or GNU
+`timeout` without `--foreground`) escapes: no signal reaches it.
+The extension does not search for such a process; signalling
+descendants outside the job's group is a change of the signal rules
+and a decision for the user.
 
 A stop sends `SIGTERM`, then `SIGKILL` after `KO_JOB_KILL_MS` (5000)
-when the job still runs. The host's one `process.on("exit")` handler
+when the shell still runs. A stop ends the job when its shell has
+exited, even when an escaped process still holds its pipes: at the
+kill deadline, or when the shell exits after the `SIGKILL`, the
+extension closes the pipes that are still open. The log keeps what
+was read. The pipes close only then, not at the shell's exit, because
+Node reports the exit before the pipes drain, and a trap's last output
+would be lost. So an escaped process does not keep the job as the
+agent's live work. `stop_async_bash` waits for the end up to twice
+`KO_JOB_KILL_MS`. Its reply says `stopped` only when the job ended,
+and it adds that processes that left the job's process group may
+still run when it closed pipes that were still open. Otherwise it
+says that the stop was requested and the job still runs. The host's one `process.on("exit")` handler
 sends `SIGKILL` through `signalJob` to every local group of every
 agent that still runs at koa's exit. `scripts/lint.sh` refuses
 `process.kill(` in `koa/` outside `signalJob`.
