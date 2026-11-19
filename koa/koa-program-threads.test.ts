@@ -1,7 +1,23 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { realFixture } from './koa-program-fixture.ts';
-import { ofType } from './koa-agent-fixture.ts';
+import { ofType, pollUntil } from './koa-agent-fixture.ts';
+
+test('reply status skips thread markers and uses the first non-empty section', { timeout: 20000 }, async t => {
+  const app = await realFixture(t, { replies: [
+    { text: '[thread: x]\n\nHello there' },
+    { text: '[thread: x]\n\nFirst part\nMore text\n[thread: y]\nSecond part' },
+  ] });
+  for (const expected of ['Hello there', 'First part']) {
+    const before = app.count();
+    assert.equal((await app.post('prompt', { text: 'hello', mode: 'prompt', attachments: [] })).status, 200);
+    await app.until(ofType('state', record => record.working), before);
+    await app.until(ofType('state', record => !record.working), before);
+    await pollUntil(() => [...app.stdout().matchAll(/\x1b\]7501;state=done:app=koa:msg=([^\x1b]*)/g)].length === ['Hello there', 'First part'].indexOf(expected) + 1, 5000, 'the reply status');
+    const status = [...app.stdout().matchAll(/\x1b\]7501;state=done:app=koa:msg=([^\x1b]*)/g)].at(-1);
+    assert.equal(Buffer.from(status?.[1] ?? '', 'base64').toString('utf8'), expected);
+  }
+});
 
 test('threaded queues preserve full identity and slash commands dispatch unchanged', { timeout: 10000 }, async t => {
   const app = await realFixture(t, { replies: [{ text: '[thread: work]\nDone', gate: 'hold' }], extensions: { 'command.ts': `export default pi => pi.registerCommand('probe', {description:'probe',handler:(_args,ctx)=>ctx.ui.notify('command dispatched','info')});` } });

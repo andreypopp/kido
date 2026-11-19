@@ -5,7 +5,7 @@ import { transcript, appendBashOutput } from "./koa-transcript.ts";
 import { attachments } from "./koa-attach.ts";
 import { prompts } from "./koa-queue.ts";
 import { later } from "./koa-timer.ts";
-import { errorText, contentText } from "./text.ts";
+import { errorText, contentText, threadSections } from "./text.ts";
 import type { Dialogs } from "./koa-agents.ts";
 import type { Life, State, StateData, Dialog, Bash, CommandResult, Attachment, Thread } from "./koa-records.ts";
 
@@ -176,7 +176,7 @@ export function createView(options: ViewOptions) {
         }
         if (event.message.role === "assistant") {
           outcome = event.message.stopReason === "error" ? { type: "error", message: firstLine(event.message.errorMessage ?? "") } : { type: "done" };
-          lastText = firstLine(contentText(event.message.content));
+          lastText = firstLine(threadSections(contentText(event.message.content), true).find(section => section.text.trim())?.text ?? "");
         }
         break;
       case "tool_execution_start": feed.toolRunning(event.toolCallId, Date.now()); break;
