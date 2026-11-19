@@ -125,6 +125,17 @@ async function page() {
   return { observers, repl: (): ((code: string) => unknown) => runInNewContext("(() => {\n" + body + "\nreturn code => eval(code);\n})()", context), context, elements, listeners, windowListeners, completionResets: () => completionResets, handlers: () => handlers, prompt: () => prompt, text: () => text(), run: (code: string) => runInNewContext("{\n" + body + "\n" + code + "\n}", context) };
 }
 
+test('an open picker follows the field after the dock resizes', async () => {
+  const app = await page(), evaluate = app.repl();
+  evaluate("state={...state,life:{type:'ready'},levels:['off','low']};element('model-cell').offsetParent=null;element('field').getBoundingClientRect=()=>({left:20,top:300})");
+  await evaluate("picker('thinking')");
+  assert.equal(evaluate("element('picker').style.bottom"), '268px');
+  evaluate("element('field').getBoundingClientRect=()=>({left:30,top:400});resized([{target:element('dock'),borderBoxSize:[{blockSize:160}]}])");
+  assert.equal(evaluate("element('picker').style.bottom"), '168px');
+  assert.equal(evaluate("element('picker').style.left"), '24px');
+  assert.equal(evaluate("element('picker').style.maxHeight"), '384px');
+});
+
 test('Tab outside the composer returns focus without changing dialog keys', async () => {
   const app = await page();
   app.run("state={...state,life:{type:'ready'}};document.body.focus()");

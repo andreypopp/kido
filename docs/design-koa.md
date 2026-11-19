@@ -1679,7 +1679,8 @@ says nothing about Return and Escape.
   numbers, and the cwd is the pane's title.
 
 - **Pickers.** The model and level buttons open pickers above the
-  foot; a pick goes through `set_model` or `set_thinking_level`. No
+  foot; an open picker is placed again when the window or the dock
+  resizes, so it stays on its anchor. A pick goes through `set_model` or `set_thinking_level`. No
   key inside the field opens them: Control letters are Cocoa text
   bindings.
 - **Dialogs.** An extension's `select`, `confirm`, `input` or `editor`

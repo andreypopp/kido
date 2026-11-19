@@ -2212,7 +2212,7 @@ function resized(entries: ResizeObserverEntry[]) {
   if (tails.size || measuredHolds.size || fits.size) { revealDirty ||= tails.size > 0; schedule(); }
   const column = entries.some(({ target }) => target === element('scroll')) && !bar.hidden ? element('transcript').getBoundingClientRect() : undefined;
   for (const { target, borderBoxSize } of entries) {
-    if (target === element('dock')) dockResized(borderBoxSize[0].blockSize);
+    if (target === element('dock')) { dockResized(borderBoxSize[0].blockSize); positionPicker(); }
     if (target === element('scroll')) { if (column) layoutBar(column); fitThreads(); }
   }
   decide({ type: 'layout', cause: 'layout' });
