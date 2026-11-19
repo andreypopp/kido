@@ -418,7 +418,7 @@ test("bash exit codes come from structured results or the status footer", t => {
 test("delivered attachment paths are data and a rebuild never guesses them", t => {
   const view = transcript({ dir: directory(t), flushMs: 1 });
   const lines = request(view, "/events");
-  const file = { id: "upload", name: "data.txt", size: 4, path: "/tmp/copy/data.txt", origin: "upload" as const, kind: "file" as const };
+  const file = { id: "upload", name: "data.txt", size: 4, path: "/tmp/copy/data.txt", kind: "file" as const };
   const message = { role: "user" as const, timestamp: 1, content: "Inspect\n" + file.path };
   view.message(message, "start");
   view.message(message, "end", undefined, [file]);

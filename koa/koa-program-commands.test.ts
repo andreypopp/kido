@@ -49,16 +49,13 @@ test('a listener startup failure closes pi', { timeout: 5000 }, async t => {
   await assert.rejects(readFile(await readFile(marker, 'utf8')), { code: 'ENOENT' });
 });
 
-test('mutations refuse simple content types and browser path grants', { timeout: 10000 }, async t => {
+test('mutations refuse simple content types and path attachments', { timeout: 10000 }, async t => {
   const app = await realFixture(t, { replies: [] });
   const before = app.provider.requests.length;
   for (const path of ['abort', 'complete', 'attachments', 'attachments/absent/delete']) {
     assert.equal((await fetch(app.base + path, { method: 'POST', headers: { 'Content-Type': 'text/plain' }, body: '{}' })).status, 415);
   }
-  const grants: Record<string, string>[] = [{ 'Content-Type': 'application/json' }, { 'Content-Type': 'application/json', 'Kido-Native-Drop': '1' }];
-  for (const headers of grants) {
-    assert.equal((await fetch(app.url('attachments'), { method: 'POST', headers, body: JSON.stringify({ path: '/etc/passwd' }) })).status, 403);
-  }
+  assert.equal((await app.post('attachments', { path: '/etc/passwd' })).status, 400);
   assert.equal(app.provider.requests.length, before);
 });
 
@@ -77,12 +74,12 @@ test("attachments stream chunks into prompts", { timeout: 10000 }, async t => {
   assert.equal((await chunk(1, image.subarray(0, 10))).status, 409);
   assert.deepEqual(await (await chunk(0, image.subarray(0, 10))).json(), { received: 10 });
   const done = await (await chunk(10, image.subarray(10))).json();
-  assert.deepEqual(done, { received: image.length, attachment: { id, path: uploaded.path, origin: "upload", name: "pixel.png", size: image.length, kind: "image", mimeType: "image/png", width: 1, height: 1 } });
+  assert.deepEqual(done, { received: image.length, attachment: { id, path: uploaded.path, name: "pixel.png", size: image.length, kind: "image", mimeType: "image/png", width: 1, height: 1 } });
   const downloaded = await fetch(app.url(`attachments/${id}`));
   assert.equal(downloaded.headers.get("content-type"), "image/png");
   assert.match(downloaded.headers.get("content-disposition") ?? "", /pixel.png/);
   assert.deepEqual(Buffer.from(await downloaded.arrayBuffer()), image);
-  assert.equal((await app.post("attachments", { path: file })).status, 403);
+  assert.equal((await app.post("attachments", { path: file })).status, 400);
   assert.equal((await app.post("attachments", { name: "large", size: 64 * 1024 * 1024 + 1, type: "" })).status, 413);
   const copy = await (await app.post("attachments", { name: "copied.txt", type: "text/plain", size: 4 })).json();
   await fetch(app.url(`attachments/${copy.id}/0`), { method: "POST", headers: { 'Content-Type': 'application/octet-stream' }, body: new Uint8Array(Buffer.from("copy")) });
@@ -101,7 +98,7 @@ test("attachments stream chunks into prompts", { timeout: 10000 }, async t => {
   assert.equal((await fetch(app.url(`attachments/${extra.id}`))).status, 404);
   assert.equal(await readFile(file, 'utf8'), 'original');
   const link = join(dir, 'link'); await symlink(file, link);
-  assert.equal((await app.post('attachments', { path: link })).status, 403);
+  assert.equal((await app.post('attachments', { path: link })).status, 400);
   const unfinished: string[] = [];
   for (let i = 0; i < 16; i++) { const response = await app.post('attachments', { name: 'empty', type: '', size: 0 }); assert.equal(response.status, 200); unfinished.push((await response.json()).id); }
   assert.equal((await app.post('attachments', { name: 'seventeenth', type: '', size: 0 })).status, 409);

@@ -657,8 +657,10 @@ border, the dock's 72% glass fill, at most 320pt wide: a 20pt square
 (the image's thumbnail, cover-cropped, or a document glyph on
 `--well2` in the muted tone), the name (ellipsized), then the size in
 the faint terminal font at .85em, then × (16pt, faint, `--well2` on
-hover). A path chip shows the directory muted after the name instead
-of a size. An upload shows the run line's gray spinner in the 20pt
+hover). Every attachment, a Finder drop included, is an uploaded
+copy (2026-11-20: WebKit reads the dropped file and the page uploads it, since
+macOS TCC blocks koa from reading Desktop or Downloads as `ko`; the
+path chip is gone). An upload shows the run line's gray spinner in the 20pt
 square and "18 / 41 MB". A refused chip has its border tinted 45%
 `--err` and the reason in red prose in place of the size ("over 64
 MB", "too many", "not readable"). A click on the chip's body previews

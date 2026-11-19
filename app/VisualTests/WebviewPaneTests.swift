@@ -203,61 +203,28 @@ import SidebarFeed
         XCTAssertFalse(toy.previews.contains("/images/provisional"))
     }
 
-    func testWebviewNativeFileDrop() async throws {
+    func testWebviewFileDragReachesWebKit() async throws {
         let toy = try WebviewToy(path: directory.appendingPathComponent("webview.sock").path)
         _ = try await webviewStart(toy: toy)
         let owner = WindowOwner(host: .local, runtime: runtime, start: false)
         owner.testServerDir = directory.path
         addTeardownBlock { @MainActor in owner.close() }
         owner.start()
-        try await wait("native owner page loaded") { owner.testSession?.activePane?.webviewView?.browser.isLoading == false && owner.testSession?.activePane?.webviewView?.browser.url != nil }
+        try await wait("local owner page loaded") { owner.testSession?.activePane?.webviewView?.browser.isLoading == false && owner.testSession?.activePane?.webviewView?.browser.url != nil }
         let pane = try XCTUnwrap(owner.testSession?.activePane)
         let web = try XCTUnwrap(pane.webviewView?.browser)
-        try await webviewEqual(web, "window.ko.local===true", "true")
-        _ = try await webviewJS(web, "(()=>{window.drops=[];addEventListener('ko-drop',event=>drops.push(event.detail));return true})()")
-        try await webviewEqual(web, "fetch('/attachments',{method:'POST',headers:{'Content-Type':'application/json','kIdO-nAtIvE-dRoP':'1'},body:JSON.stringify({path:'/etc/passwd'})}).then(r=>r.status)", "403")
-        XCTAssertFalse(toy.attachmentRequests.last?.lowercased().contains("kido-native-drop") ?? true, toy.attachmentRequests.joined(separator: "\n"))
-        let file = directory.appendingPathComponent("original.txt"), folder = directory.appendingPathComponent("folder", isDirectory: true)
-        try "original".write(to: file, atomically: true, encoding: .utf8)
+        let file = directory.appendingPathComponent("file.txt"), folder = directory.appendingPathComponent("folder", isDirectory: true)
+        try "file bytes".write(to: file, atomically: true, encoding: .utf8)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: false)
         let board = NSPasteboard.withUniqueName()
         board.writeObjects([file as NSURL, folder as NSURL])
-        let drag = SyntheticDrag(board)
         owner.window.contentView?.layoutSubtreeIfNeeded()
         let content = try XCTUnwrap(owner.window.contentView)
         let point = content.convert(NSPoint(x: pane.bounds.midX, y: pane.bounds.midY), from: pane)
         var hit = content.hitTest(point)
         while let view = hit, !view.registeredDraggedTypes.contains(where: { board.types?.contains($0) == true }) { hit = view.superview }
         let destination = try XCTUnwrap(hit)
-        XCTAssertFalse(destination === pane, "The browser, not its covered parent, receives the drag")
-        XCTAssertEqual(destination.draggingEntered(drag), .copy)
-        XCTAssertTrue(destination.performDragOperation(drag))
-        try await wait("native attachment request: \(toy.attachmentRequests)") { toy.attachmentRequests.count == 2 }
-        try await webviewUntil(web, "drops.length===1")
-        let detail = try await webviewJS(web, "drops[0]")
-        let expected = String(data: try JSONSerialization.data(withJSONObject: ["files": [["id": "native", "path": file.path, "name": "original.txt", "origin": "path", "kind": "file", "size": 8]], "refused": true], options: [.sortedKeys]), encoding: .utf8)!
-        let actual = try XCTUnwrap(detail.data(using: .utf8))
-        XCTAssertEqual(try JSONSerialization.jsonObject(with: actual) as? NSDictionary, try JSONSerialization.jsonObject(with: Data(expected.utf8)) as? NSDictionary)
-        let link = directory.appendingPathComponent("link")
-        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: file)
-        board.clearContents(); board.writeObjects([link as NSURL])
-        XCTAssertTrue(destination.performDragOperation(SyntheticDrag(board)))
-        XCTAssertFalse(owner.notices.testTransients.entries.isEmpty)
-        try await webviewEqual(web, "drops.length", "1")
-        board.clearContents(); board.writeObjects([file as NSURL, link as NSURL])
-        XCTAssertTrue(destination.prepareForDragOperation(SyntheticDrag(board)))
-        XCTAssertTrue(destination.performDragOperation(SyntheticDrag(board)))
-        try await wait("second native attachment request") { toy.attachmentRequests.count == 3 }
-        try await webviewUntil(web, "drops.length===2")
-        try await webviewEqual(web, "[drops[1].files.length,drops[1].refused]", "[1,false]")
-        pane.runtimeMark = .unavailable(RuntimeKey(name: "box", source: .config), routed: true)
-        try await webviewEqual(web, "window.ko.local", "false")
-        XCTAssertEqual(pane.draggingEntered(drag), [])
-        XCTAssertFalse(pane.performDragOperation(drag))
-        pane.runtimeMark = nil
-        try await webviewEqual(web, "window.ko.local", "true")
-        board.clearContents(); board.setString("text", forType: .string)
-        XCTAssertEqual(pane.draggingEntered(SyntheticDrag(board)), [])
+        XCTAssertTrue(destination === web, "A file drag reaches WKWebView, not \(type(of: destination))")
     }
 
     func testWebviewLeaveRestoresNativeInput() async throws {

@@ -7,7 +7,7 @@ import { stripTypeScriptTypes } from "node:module";
 import { markdown, markdownLine, markdownPlain } from "./page/markdown.ts";
 import { bashCommand } from "./prompt.ts";
 import { promptHistory } from './page/history.ts';
-import { ATTACHMENT_LIMITS, isAttachment, pathArg } from "./koa-records.ts";
+import { ATTACHMENT_LIMITS, pathArg } from "./koa-records.ts";
 import { jobEndText } from "./records.ts";
 import type { PromptMode } from "./koa-records.ts";
 import { scrollInitial, scrollStored, scrollUpdate, scrollWindow } from "./page/scroll.ts";
@@ -96,7 +96,7 @@ async function page() {
       placeholder(text: string) { content.placeholder = text; },
     };
   };
-  const context = { ResizeObserver, matchMedia: () => ({ matches: false, addEventListener() {} }), Date: class extends Date { constructor(value: string | number = 1700000012000) { super(value); } static now() { return 1700000012000; } }, getComputedStyle: (node?: { tagName?: string }) => ({ display: 'block', lineHeight: '20px', marginBottom: node?.tagName === 'P' ? '10px' : '0px' }), composer, bashCommand, ATTACHMENT_LIMITS, isAttachment, pathArg, jobEndText, AbortController, AbortSignal, CustomEvent: class { type: string; detail?: unknown; constructor(type: string, options?: { detail?: unknown }) { this.type = type; this.detail = options?.detail; } }, Node, Element: Node, HTMLElement: class { static [Symbol.hasInstance](value: unknown) { return value instanceof Node && value.tagName !== '#text'; } }, HTMLButtonElement: Node, HTMLImageElement: Node, markdown, markdownLine, document, window: { ko: {}, getSelection: () => null, addEventListener(type: string, handler: (event?: unknown) => void) { windowListeners.set(type, handler); } }, innerWidth: 980, innerHeight: 560, Event: class { type: string; constructor(type: string) { this.type = type; } }, console, setInterval() {}, clearInterval() {}, setTimeout, clearTimeout, requestAnimationFrame() {}, cancelAnimationFrame() {}, performance: { now: () => 0 }, fetch: async () => ({ ok: true, json: async () => ({}) }) };
+  const context = { ResizeObserver, matchMedia: () => ({ matches: false, addEventListener() {} }), Date: class extends Date { constructor(value: string | number = 1700000012000) { super(value); } static now() { return 1700000012000; } }, getComputedStyle: (node?: { tagName?: string }) => ({ display: 'block', lineHeight: '20px', marginBottom: node?.tagName === 'P' ? '10px' : '0px' }), composer, bashCommand, ATTACHMENT_LIMITS, pathArg, jobEndText, AbortController, AbortSignal, CustomEvent: class { type: string; detail?: unknown; constructor(type: string, options?: { detail?: unknown }) { this.type = type; this.detail = options?.detail; } }, Node, Element: Node, HTMLElement: class { static [Symbol.hasInstance](value: unknown) { return value instanceof Node && value.tagName !== '#text'; } }, HTMLButtonElement: Node, HTMLImageElement: Node, markdown, markdownLine, document, window: { ko: {}, getSelection: () => null, addEventListener(type: string, handler: (event?: unknown) => void) { windowListeners.set(type, handler); } }, innerWidth: 980, innerHeight: 560, Event: class { type: string; constructor(type: string) { this.type = type; } }, console, setInterval() {}, clearInterval() {}, setTimeout, clearTimeout, requestAnimationFrame() {}, cancelAnimationFrame() {}, performance: { now: () => 0 }, fetch: async () => ({ ok: true, json: async () => ({}) }) };
   const answersSource = stripTypeScriptTypes(await readFile(new URL('page/answers.ts', import.meta.url), 'utf8')).replace(/^export /gm, '');
   const annotationsSource = stripTypeScriptTypes(await readFile(new URL('page/annotations.ts', import.meta.url), 'utf8')).replace(/^import .*;\n/gm, '').replace(/^export /gm, '');
   Object.assign(context, runInNewContext(answersSource + '\n' + annotationsSource + '\n({annotations,update,head,quote})', context));
@@ -286,7 +286,7 @@ test('bang attachments stay in the draft, turn red with a notice and new file dr
   const notice = 'a command takes no attachments';
   const leave = app.run(`
     state={...state,life:{type:'ready'}};
-    draft.restore([{id:'keep',name:'notes.md',path:'/tmp/notes.md',origin:'path',kind:'file',mimeType:'text/markdown',size:1}]);
+    draft.restore([{id:'keep',name:'notes.md',path:'/tmp/notes.md',kind:'file',mimeType:'text/markdown',size:1}]);
     const chips=element('attachments');
     if (chips.children[0].classList.contains('refused')) throw Error('chip refused outside a command');
     editor.setText('!echo hi');
@@ -333,7 +333,7 @@ test('built-in results keep attachments and open the requested picker', async ()
   const f = await page();
   const result = await f.run(`
     state={...state,life:{type:'ready'},levels:['low','high']};
-    draft.restore([{id:'file',name:'notes',path:'/tmp/notes',size:2,kind:'file',origin:'path'}]);
+    draft.restore([{id:'file',name:'notes',path:'/tmp/notes',size:2,kind:'file'}]);
     editor.setText('/thinking');
     fetchJSON=async()=>({disposition:'handled',action:{type:'picker',kind:'thinking',search:''}});
     send().then(()=>[draft.count,editor.text(),element('picker').hidden]);
@@ -383,7 +383,7 @@ test('an extension-handled prompt retains its attachments with a none action', a
   const f = await page();
   const result = await f.run(`
     state={...state,life:{type:'ready'}};
-    draft.restore([{id:'file',name:'notes',path:'/tmp/notes',size:2,kind:'file',origin:'path'}]);
+    draft.restore([{id:'file',name:'notes',path:'/tmp/notes',size:2,kind:'file'}]);
     editor.setText('/custom');fetchJSON=async()=>({disposition:'handled',action:{type:'none'}});
     send().then(()=>[draft.count,editor.text(),element('error').textContent]);
   `);
@@ -394,7 +394,7 @@ test('Return during compaction keeps the draft and attachments without a request
   const f = await page();
   const result = await f.run(`
     state={...state,life:{type:'ready'},working:true,compaction:'running'};
-    draft.restore([{id:'file',name:'notes',path:'/tmp/notes',size:2,kind:'file',origin:'path'}]);
+    draft.restore([{id:'file',name:'notes',path:'/tmp/notes',size:2,kind:'file'}]);
     editor.setText('keep this draft'); let calls=0;fetchJSON=async()=>{calls++;return {}};
     refreshComposer();send().then(()=>[calls,editor.text(),draft.count]);
   `);
@@ -457,7 +457,7 @@ test('resume consumes only command text and confirms before aborting a turn', as
   const app = await page();
   const requests: string[] = [];
   app.context.fetch = async (path?: string) => { requests.push(path ?? ''); return { ok: true, json: async () => path === '/prompt' ? { disposition: 'handled', action: { type: 'session', kind: 'resume' } } : path === '/sessions/list' ? { rows: [] } : {} }; };
-  const saved = app.run("state={...state,life:{type:'ready'},working:true};draft.restore([{id:'draft',name:'note',path:'/tmp/note',size:1,origin:'upload',kind:'file'}]);editor.setText('/resume');void send();({files:()=>draft.files})");
+  const saved = app.run("state={...state,life:{type:'ready'},working:true};draft.restore([{id:'draft',name:'note',path:'/tmp/note',size:1,kind:'file'}]);editor.setText('/resume');void send();({files:()=>draft.files})");
   await new Promise<void>(resolve => setImmediate(resolve));
   assert.equal(app.text(), '');
   assert.deepEqual(requests, ['/prompt']);
@@ -782,7 +782,7 @@ test('annotation map attaches a late reply, hides items and re-renders final tex
 test('/name keeps draft attachments for the next prompt', async () => {
   const app = await page(), requests: { text: string; attachments: string[] }[] = [];
   app.context.fetch = async (path?: string, options?: { body?: string }) => { assert.equal(path, '/prompt'); requests.push(JSON.parse(options?.body ?? '{}')); return { ok: true, json: async () => requests.length === 1 ? ({ disposition: 'handled', action: { type: 'none' } }) : ({ disposition: 'started' }) }; };
-  app.run("state={...state,life:{type:'ready'}};draft.restore([{id:'file',name:'note.txt',path:'/tmp/note.txt',origin:'path',kind:'file',size:4}]);editor.setText('/name saved')");
+  app.run("state={...state,life:{type:'ready'}};draft.restore([{id:'file',name:'note.txt',path:'/tmp/note.txt',kind:'file',size:4}]);editor.setText('/name saved')");
   app.handlers()?.send('prompt'); await new Promise<void>(resolve => setImmediate(resolve));
   assert.equal(app.elements.get('attachments')?.children.length, 2); assert.equal(app.text(), '');
   const prompt = app.prompt(); assert.ok(prompt); prompt.value = 'Review';
@@ -803,39 +803,6 @@ test('user messages use the shared Markdown HTML sink and keep plain paragraphs 
   });
 });
 
-test("native drops install ready records without path requests", async () => {
-  const app = await page();
-  Object.assign(app.context.window.ko, { local: true });
-  let expire: () => void = () => assert.fail('The folder notice needs an expiry');
-  Object.assign(app.context, { setTimeout(callback: () => void, delay: number) { assert.equal(delay, 4000); expire = callback; return 1; }, clearTimeout() {} });
-  const requests: string[] = [];
-  app.context.fetch = async (path?: string) => {
-    requests.push(path ?? '');
-    assert.equal(path, '/attachments/one/delete'); return { ok: true, json: async () => ({}) };
-  };
-  app.run("state={...state,life:{type:'ready'}};refreshComposer();editor.setText('draft')");
-  const drop = (detail: unknown) => app.windowListeners.get('ko-drop')?.(new app.context.CustomEvent('ko-drop', { detail }));
-  for (const files of [['relative'], ['/tmp/bad\nname'], Array(17).fill('/tmp/one.txt')]) drop({ files, refused: false });
-  assert.equal(requests.length, 0);
-  drop({ files: ['one', 'two'].map(id => ({ id, path: '/tmp/' + id + '.txt', origin: 'path', name: id + '.txt', kind: 'file', size: 4 })), refused: true });
-  await new Promise<void>(resolve => setImmediate(resolve));
-  assert.equal(requests.length, 0);
-  const host = app.elements.get('attachments'); assert.ok(host);
-  assert.equal(host.children.length, 3);
-  const notice = host.lastChild; assert.ok(notice);
-  assert.equal(notice.textContent, 'Folders are not attached'); assert.equal(notice.hidden, false);
-  expire(); assert.equal(notice.hidden, true);
-  drop({ files: [], refused: true }); assert.equal(notice.hidden, false);
-  let prevented = false;
-  app.listeners.get('drop')?.({ dataTransfer: { files: [new File(['x'], 'ignored.txt')], items: [] }, preventDefault() { prevented = true; } });
-  assert.equal(prevented, true); assert.equal(requests.length, 0); assert.equal(notice.hidden, false);
-  drop({ files: [], refused: false }); assert.equal(notice.hidden, true);
-  const close = host.children[0]?.children[1]; assert.ok(close);
-  assert.equal(typeof close.onclick, 'function'); close.onclick?.(); await new Promise<void>(resolve => setImmediate(resolve));
-  assert.equal(requests.at(-1), '/attachments/one/delete'); assert.equal(host.children.length, 2);
-  assert.equal(app.text(), 'draft');
-});
-
 test("file drops attach bytes without inserting text and send their ids", async () => {
   const app = await page();
   app.run("state={...state,life:{type:'ready'}};refreshComposer();editor.setText('draft')");
@@ -847,7 +814,7 @@ test("file drops attach bytes without inserting text and send their ids", async 
     const body = typeof options?.body === 'string' ? JSON.parse(options.body) : options?.body;
     requests.push({ path: path ?? '', body });
     if (path === '/attachments') { assert.deepEqual(body, { name: 'note.txt', type: 'text/plain', size: 4 }); return { ok: true, json: async () => ({ id: 'copy', path: '/tmp/attachments/copy/note.txt' }) }; }
-    if (path === '/attachments/copy/0') { assert.ok(ArrayBuffer.isView(body)); assert.equal(body.byteLength, 4); uploaded(); return { ok: true, json: async () => ({ received: 4, attachment: { id: 'copy', origin: 'upload', path: '/tmp/attachments/copy/note.txt', name: 'note.txt', size: 4, kind: 'file' } }) }; }
+    if (path === '/attachments/copy/0') { assert.ok(ArrayBuffer.isView(body)); assert.equal(Buffer.from(body.buffer, body.byteOffset, body.byteLength).toString(), 'note'); uploaded(); return { ok: true, json: async () => ({ received: 4, attachment: { id: 'copy', path: '/tmp/attachments/copy/note.txt', name: 'note.txt', size: 4, kind: 'file' } }) }; }
     assert.equal(path, '/prompt'); return { ok: true, json: async () => ({}) };
   };
   const file = new File(['note'], 'note.txt', { type: 'text/plain' });
@@ -1962,19 +1929,17 @@ test('while an editor is open the composer is dimmed, a click focuses the editor
   assert.deepEqual(focused, ['pane_10']);
 });
 
-test('while an editor is open a drop and a native drop attach nothing and show no drop target', async () => {
+test('while an editor is open a drop attaches nothing and shows no drop target', async () => {
   const app = await page(), requests: string[] = [];
   app.context.fetch = async (path?: string) => { requests.push(path ?? ''); return { ok: true, json: async () => ({}) }; };
-  app.context.window.ko = { local: true };
   app.run("state={...state,life:{type:'ready'},sessionId:'s1',edit:{pane:'pane_10',editor:'nano'}};refreshComposer()");
   let prevented = false;
   app.listeners.get('dragenter')?.({ dataTransfer: { types: ['Files'] } });
   assert.equal(app.elements.get('field')?.classList.contains('drop'), false);
   app.listeners.get('drop')?.({ dataTransfer: { files: [new File(['x'], 'a.txt')], items: [] }, preventDefault() { prevented = true; } });
-  app.windowListeners.get('ko-drop')?.(new app.context.CustomEvent('ko-drop', { detail: { files: [{ id: 'one', path: '/tmp/one.txt', origin: 'path', name: 'one.txt', kind: 'file', size: 4 }], refused: false } }));
   await new Promise<void>(resolve => setImmediate(resolve));
   assert.equal(prevented, true);
-  assert.deepEqual(requests, ['/attachments/one/delete']);
+  assert.deepEqual(requests, []);
   assert.equal(app.run('draft.count'), 0);
 });
 
@@ -2480,7 +2445,7 @@ test('a path with middle ancestors that does not fit shrinks to a menu of the hi
 test('a view change keeps each view its own draft and closes what belongs to the old one', async () => {
   const app = await page();
   const result = JSON.parse(await app.run(`(async()=>{${views}
-    const file={id:'f',name:'note',path:'/tmp/note',size:1,origin:'upload',kind:'file'};
+    const file={id:'f',name:'note',path:'/tmp/note',size:1,kind:'file'};
     show(root);
     editor.setText('root draft');draft.restore([file]);decide({type:'input',direction:'up'});
     element('picker').hidden=false;element('error').textContent='old error';

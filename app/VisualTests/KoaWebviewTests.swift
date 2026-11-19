@@ -860,9 +860,11 @@ import SidebarFeed
             _ = try await webviewJS(web, "(()=>{window.composer.setText('!!git status --short');return true})()")
             try await capture(prefix + "bang2")
             resize(300)
-            _ = try await webviewJS(web, "(()=>{window.composer.setText('');window.ko.local=true;window.dispatchEvent(new CustomEvent('ko-drop',{detail:{files:[{id:'bang-chip',name:'notes.md',path:'/tmp/notes.md',origin:'path',kind:'file',mimeType:'text/markdown',size:8192}],refused:false}}));window.composer.setText('!make checks DRY=1');return true})()")
+            _ = try await webviewJS(web, "(()=>{window.composer.setText('');const transfer=new DataTransfer();transfer.items.add(new File([new Uint8Array(8192)],'notes.md'));document.querySelector('.cm-content').dispatchEvent(new ClipboardEvent('paste',{bubbles:true,cancelable:true,clipboardData:transfer}));return true})()")
+            try await webviewUntil(web, "document.querySelectorAll('.attach-chip').length===1&&document.querySelectorAll('.attach-icon.pending').length===0")
+            _ = try await webviewJS(web, "(()=>{window.composer.setText('!make checks DRY=1');return true})()")
             try await capture(prefix + "bang-attachments")
-            _ = try await webviewJS(web, "(()=>{window.ko.local=true;window.dispatchEvent(new CustomEvent('ko-drop',{detail:{files:[{id:'refused-drop',name:'other.md',path:'/tmp/other.md',origin:'path',kind:'file',mimeType:'text/markdown',size:1}],refused:false}}));return true})()")
+            _ = try await webviewJS(web, "(()=>{const transfer=new DataTransfer();transfer.items.add(new File(['x'],'other.md'));document.querySelector('.cm-content').dispatchEvent(new DragEvent('drop',{bubbles:true,cancelable:true,dataTransfer:transfer}));return true})()")
             try await webviewUntil(web, "document.querySelector('.attach-notice').textContent==='a command takes no attachments'&&!document.querySelector('.attach-notice').hidden")
             try await capture(prefix + "bang-drop")
             _ = try await webviewJS(web, "(()=>{document.querySelector('.attach-remove').click();window.composer.setText('');return true})()")
@@ -1326,28 +1328,28 @@ import SidebarFeed
             let prefix = width < 750 ? "narrow-media-" : "media-"
             let shot = try Data(contentsOf: attachmentPaths.shot).base64EncodedString(), diagram = try Data(contentsOf: attachmentPaths.diagram).base64EncodedString()
             let source = String(decoding: try JSONSerialization.data(withJSONObject: attachmentPaths.source.path, options: .fragmentsAllowed), as: UTF8.self)
+            let sourceBytes = try Data(contentsOf: attachmentPaths.source).base64EncodedString()
             _ = try await webviewJS(web, #"""
             (()=>{
               const timeout=window.setTimeout.bind(window);window.setTimeout=(fn,delay,...args)=>timeout(fn,delay===4000?60000:delay,...args);
               const bytes=text=>Uint8Array.from(atob(text),character=>character.charCodeAt(0));
-              window.attachFiles={shot:new File([bytes('\#(shot)')],'Screenshot 2026-11-10 at 09.11.42.png',{type:'image/png'}),diagram:new File([bytes('\#(diagram)')],'diagram.png',{type:'image/png'}),notes:new File([new Uint8Array(8192)],'notes.md',{type:'text/plain'}),readme:new File([new Uint8Array(3072)],'README.md',{type:'text/plain'})};
+              window.attachFiles={shot:new File([bytes('\#(shot)')],'Screenshot 2026-11-10 at 09.11.42.png',{type:'image/png'}),diagram:new File([bytes('\#(diagram)')],'diagram.png',{type:'image/png'}),notes:new File([new Uint8Array(8192)],'notes.md',{type:'text/plain'}),readme:new File([new Uint8Array(3072)],'README.md',{type:'text/plain'}),source:new File([bytes('\#(sourceBytes)')],'SidebarRow.swift',{type:'text/plain'})};
               window.dropAttachments=files=>{const transfer=new DataTransfer();files.forEach(file=>transfer.items.add(file));document.querySelector('.cm-content').dispatchEvent(new DragEvent('drop',{bubbles:true,cancelable:true,dataTransfer:transfer}));return true};
               window.clearAttachments=()=>{document.querySelectorAll('.attach-remove').forEach(button=>button.click());window.composer.setText('');return true};
               const nativeFetch=window.fetch;window.fetch=async(url,options)=>{
                 if(window.progressId&&String(url).startsWith('/attachments/'+window.progressId+'/')&&Number(String(url).split('/').at(-1))>=18*1048576){await new Promise((resolve,reject)=>{window.releaseUpload=resolve;options.signal.addEventListener('abort',()=>reject(new DOMException('Removed','AbortError')),{once:true})})}
                 const response=await nativeFetch(url,options);
-                if(url==='/attachments'&&typeof options?.body==='string'){const name=JSON.parse(options.body).name;if(name==='kido-demo.mov'||name==='notes.md'){const result=await response.clone().json();if(name==='kido-demo.mov')window.progressId=result.id;else window.notesPath=result.path}}
+                if(url==='/attachments'&&typeof options?.body==='string'){const name=JSON.parse(options.body).name;if(name==='kido-demo.mov'||name==='notes.md'||name==='SidebarRow.swift'){const result=await response.clone().json();if(name==='kido-demo.mov')window.progressId=result.id;else if(name==='notes.md')window.notesPath=result.path;else {window.sourcePath=result.path;window.sourceId=result.id}}}
                 return response;
               };
               window.composer.setText('Attach these to the review');
               const clipboard=new DataTransfer();clipboard.items.add(attachFiles.shot);clipboard.items.add(attachFiles.notes);document.querySelector('.cm-content').dispatchEvent(new ClipboardEvent('paste',{bubbles:true,cancelable:true,clipboardData:clipboard}));
-              window.ko.local=true;
+              dropAttachments([attachFiles.source]);
               return true;
             })()
             """#)
-            pane.webviewView?.drop(files: [attachmentPaths.source.path], refused: false)
             try await webviewUntil(web, "document.querySelectorAll('.attach-chip').length===3&&document.querySelectorAll('.attach-icon.pending').length===0")
-            _ = try await webviewJS(web, "(()=>{window.ko.local=false;const large=new File([],'archive.tar.gz');Object.defineProperty(large,'size',{value:65*1048576});dropAttachments([new File([new Uint8Array(41*1048576)],'kido-demo.mov'),large]);return true})()")
+            _ = try await webviewJS(web, "(()=>{const large=new File([],'archive.tar.gz');Object.defineProperty(large,'size',{value:65*1048576});dropAttachments([new File([new Uint8Array(41*1048576)],'kido-demo.mov'),large]);return true})()")
             try await webviewUntil(web, "document.querySelectorAll('.attach-chip').length===5&&Array.from(document.querySelectorAll('.attach-detail')).some(node=>node.textContent==='18 / 41 MB')&&document.querySelectorAll('.attach-icon img').length===1")
             try await webviewUntil(web, "Array.from(document.querySelectorAll('.attach-icon img')).every(image=>image.complete&&image.naturalWidth>0)")
             _ = try await webviewJS(web, "Promise.all(Array.from(document.querySelectorAll('.attach-icon img'),image=>image.decode())).then(()=>true)")
@@ -1377,26 +1379,26 @@ import SidebarFeed
             _ = try await webviewJS(web, "(()=>{document.querySelector('.cm-content').dispatchEvent(new KeyboardEvent('keydown',{key:'ArrowUp',code:'ArrowUp',altKey:true,bubbles:true}));return true})()")
             try await advance()
             try await webviewUntil(web, "document.querySelectorAll('.attach-chip').length===2&&window.composer.text().includes('then compare')&&document.querySelectorAll('#items .msg').length===0")
-            let restored = try await webviewJS(web, "Array.from(document.querySelectorAll('.attach-detail')).every(node=>!node.classList.contains('path'))")
-            XCTAssertEqual(restored, "true", "Take-back restores upload chips, not path chips")
+            let restored = try await webviewJS(web, "Array.from(document.querySelectorAll('.attach-detail')).every(node=>node.textContent.endsWith('KB')||node.textContent.endsWith('MB'))")
+            XCTAssertEqual(restored, "true", "Take-back restores file sizes")
             _ = try await webviewJS(web, #"""
-            (()=>{clearAttachments();dropAttachments([attachFiles.shot,attachFiles.notes]);window.ko.local=true;window.composer.setText('Attach these to the review');return true})()
+            (()=>{clearAttachments();dropAttachments([attachFiles.shot,attachFiles.notes,attachFiles.source]);window.composer.setText('Attach these to the review');return true})()
             """#)
-            pane.webviewView?.drop(files: [attachmentPaths.source.path], refused: false)
             try await webviewUntil(web, "document.querySelectorAll('.attach-chip').length===3&&document.querySelectorAll('.attach-icon.pending').length===0&&!document.querySelector('#field').inert")
-            _ = try await webviewJS(web, "window.ko.local=false")
+            let uploaded = try await webviewJS(web, #"(async()=>window.sourcePath!==\#(source)&&await (await fetch('/attachments/'+window.sourceId)).text()==='row\n')()"#)
+            XCTAssertEqual(uploaded, "true", "A page drop stores a copy with the source bytes")
             _ = try await webviewJS(web, "(()=>{document.querySelector('.cm-content').dispatchEvent(new KeyboardEvent('keydown',{key:'Enter',code:'Enter',bubbles:true}));return true})()")
             try await webviewUntil(web, "document.querySelectorAll('.attach-chip').length===0&&document.querySelector('.user .paths')?.textContent.includes('SidebarRow.swift')&&document.querySelector('.user .thumb img')!==null&&\(koaWorking)")
             _ = try await webviewJS(web, "Promise.all(Array.from(document.querySelectorAll('.user .thumb img'),image=>image.decode())).then(()=>true)")
             let text = try await webviewJS(web, "document.querySelector('.user .t .prose').firstElementChild.textContent")
             XCTAssertEqual(text, "\"Attach these to the review\"", "The appended paths are separate data, not repeated prose")
-            let actualPaths = try await webviewJS(web, #"document.querySelector('.user .paths').textContent===window.notesPath+'\n'+\#(source)"#)
-            XCTAssertEqual(actualPaths, "true", "Sent paths identify the stored copy and the original file")
+            let actualPaths = try await webviewJS(web, #"document.querySelector('.user .paths').textContent===window.notesPath+'\n'+window.sourcePath"#)
+            XCTAssertEqual(actualPaths, "true", "Sent paths identify the stored copies")
             let pathStyle = try await webviewJS(web, "(()=>{const p=getComputedStyle(document.querySelector('.user .paths')),u=getComputedStyle(document.querySelector('.user'));return p.fontFamily===getComputedStyle(document.querySelector('#cwd')).fontFamily&&Math.abs(parseFloat(p.fontSize)/parseFloat(u.fontSize)-.92)<.001})()")
             XCTAssertEqual(pathStyle, "true", "Attachment paths use the terminal font at .92em")
             _ = try await webviewJS(web, "(()=>{document.querySelector('.user .paths').textContent='/Users/andrepopp/Desktop/notes.md\\n/Users/andrepopp/Workspace/kido/app/App/SidebarRow.swift';return true})()")
             try await capture(prefix + "sent")
-            XCTAssertEqual(try String(contentsOf: attachmentPaths.source, encoding: .utf8), "row\n", "Removing a path chip never deletes the original")
+            XCTAssertEqual(try String(contentsOf: attachmentPaths.source, encoding: .utf8), "row\n", "Removing an upload chip never deletes the original")
             return
         }
         if scenario == .media || scenario == .lightbox {

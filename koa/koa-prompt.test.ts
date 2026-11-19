@@ -8,7 +8,7 @@ test('thread prompts hide their marker and retain attachment identity in queues'
   const one = parseThreadName('one'); assert.ok(one);
   const two = parseThreadName('two'); assert.ok(two);
   assert.equal(threadPrompt('[thread: one]\nhello', two), '[thread: two]\nhello');
-  assert.deepEqual(decodePrompt('[thread: one]\nhello\n/tmp/a', [{ id: 'f', name: 'a', path: '/tmp/a', kind: 'file', origin: 'path', size: 1 }], 'root'), { text: 'hello', thread: one });
+  assert.deepEqual(decodePrompt('[thread: one]\nhello\n/tmp/a', [{ id: 'f', name: 'a', path: '/tmp/a', kind: 'file', size: 1 }], 'root'), { text: 'hello', thread: one });
   assert.deepEqual(decodePrompt('[thread: one]\nhello', [], 'subagent'), { text: '[thread: one]\nhello' });
   const queue = prompts('root');
   queue.add(threadPrompt('same', one), 'steer', []); queue.add(threadPrompt('same', two), 'steer', []);
@@ -25,7 +25,7 @@ test('bang commands keep shell text and context choice', () => {
 });
 import type { Attachment } from './koa-records.ts';
 
-const a: Attachment = { id: 'a', name: 'a.png', path: '/tmp/a.png', origin: 'upload', kind: 'image', mimeType: 'image/png', size: 1 };
+const a: Attachment = { id: 'a', name: 'a.png', path: '/tmp/a.png', kind: 'image', mimeType: 'image/png', size: 1 };
 const b: Attachment = { ...a, id: 'b', name: 'b.png', path: '/tmp/b.png' };
 
 test('equal prompt texts follow pi queue mode, not submission order', () => {

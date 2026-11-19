@@ -1,6 +1,6 @@
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import { mkdirSync, writeFileSync, rmSync } from 'node:fs';
-import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
 import { mintId, errorText } from './text.ts';
 import { readBody, respond, openFile, FileError, serveFile } from './koa-http.ts';
 import { later } from './koa-timer.ts';
@@ -23,17 +23,17 @@ export async function stepFile(request: IncomingMessage, response: ServerRespons
 
 export function attachments(dir: string, idleMs = UPLOAD_IDLE_MS) {
   const entries = new Map<string, Entry>();
-  const data = (entry: Entry) => entry.type === 'uploading' ? { path: entry.path, name: entry.name, size: entry.size, origin: 'upload' as const } : entry.info;
+  const data = (entry: Entry) => entry.type === 'uploading' ? { path: entry.path, name: entry.name, size: entry.size } : entry.info;
   const remove = (id: string) => {
     const entry = entries.get(id); if (!entry) return;
     entries.delete(id);
     if (entry.type === 'uploading') { clearTimeout(entry.timer); entry.request?.destroy(); }
     const file = data(entry);
-    if (file.origin === 'upload') rmSync(dirname(file.path), { recursive: true, force: true });
+    rmSync(dirname(file.path), { recursive: true, force: true });
   };
   const renew = (id: string, entry: Extract<Entry, { type: 'uploading' }>) => { clearTimeout(entry.timer); entry.timer = later(() => remove(id), idleMs).unref(); };
-  const info = (id: string, base: Pick<Attachment, 'name' | 'origin' | 'path'>, file: Awaited<ReturnType<typeof openFile>>): Attachment => {
-    const common = { id, name: base.name, path: base.path, origin: base.origin, size: file.size };
+  const info = (id: string, base: Pick<Attachment, 'name' | 'path'>, file: Awaited<ReturnType<typeof openFile>>): Attachment => {
+    const common = { id, name: base.name, path: base.path, size: file.size };
     return file.image ? { ...common, kind: 'image', ...file.image } : { ...common, kind: 'file' };
   };
   return {
@@ -50,33 +50,20 @@ export function attachments(dir: string, idleMs = UPLOAD_IDLE_MS) {
           let value: unknown;
           try { value = JSON.parse(bytes.toString('utf8')); } catch { return reply(400, { error: 'A JSON body is required' }); }
           if (!value || typeof value !== 'object') return reply(400, { error: 'An attachment is required' });
-          let entry: Entry;
           const id = mintId();
-          if ('path' in value) {
-            if (request.headers['kido-native-drop'] !== '1') return reply(403, { error: 'A native drop is required' });
-            if (typeof value.path !== 'string' || !isAbsolute(value.path) || /\p{Cc}/u.test(value.path)) return reply(400, { error: 'An absolute file path is required' });
-            const file = await openFile(value.path);
-            try { entry = { type: 'ready', info: info(id, { path: value.path, name: basename(value.path), origin: 'path' }, file) }; }
-            finally { await file.file.close(); }
-          } else {
-            if (!('name' in value) || typeof value.name !== 'string' || !('type' in value) || typeof value.type !== 'string' || !('size' in value) || typeof value.size !== 'number' || !Number.isSafeInteger(value.size) || value.size < 0) return reply(400, { error: 'A file name, type and size are required' });
-            if (value.size > ATTACHMENT_LIMITS.fileBytes) throw new FileError('too_large');
-            const name = value.name.replace(/[\/\\\p{Cc}]/gu, '_');
-            const safe = !name || name === '.' || name === '..' ? 'attachment' : name;
-            entry = { path: join(dir, id, safe), type: 'uploading', name: safe, size: value.size, received: 0, timer: later(() => remove(id), idleMs).unref() };
-          }
+          if (!('name' in value) || typeof value.name !== 'string' || !('type' in value) || typeof value.type !== 'string' || !('size' in value) || typeof value.size !== 'number' || !Number.isSafeInteger(value.size) || value.size < 0) return reply(400, { error: 'A file name, type and size are required' });
+          if (value.size > ATTACHMENT_LIMITS.fileBytes) throw new FileError('too_large');
+          const name = value.name.replace(/[\/\\\p{Cc}]/gu, '_');
+          const safe = !name || name === '.' || name === '..' ? 'attachment' : name;
+          const entry: Extract<Entry, { type: 'uploading' }> = { path: join(dir, id, safe), type: 'uploading', name: safe, size: value.size, received: 0, timer: later(() => remove(id), idleMs).unref() };
           const pending = [...entries.values()].filter(entry => entry.type === 'uploading' || entry.type === 'ready');
           if (pending.length >= ATTACHMENT_LIMITS.files || pending.reduce((total, item) => total + data(item).size, data(entry).size) > ATTACHMENT_LIMITS.pendingBytes) {
-            if (entry.type === 'uploading') clearTimeout(entry.timer);
+            clearTimeout(entry.timer);
             return reply(409, { error: pending.length >= ATTACHMENT_LIMITS.files ? 'too many' : 'over ' + ATTACHMENT_LIMITS.pendingBytes / 1048576 + ' MB pending' });
           }
-          if (entry.type === 'uploading') { mkdirSync(dirname(entry.path), { recursive: true, mode: 0o700 }); writeFileSync(entry.path, Buffer.alloc(0), { mode: 0o600 }); }
-          if (entry.type !== 'uploading' && entry.info.origin === 'path') {
-            if (response.destroyed) return true;
-            response.once('close', () => { if (!response.writableFinished) remove(id); });
-          }
+          mkdirSync(dirname(entry.path), { recursive: true, mode: 0o700 }); writeFileSync(entry.path, Buffer.alloc(0), { mode: 0o600 });
           entries.set(id, entry);
-          return reply(200, entry.type === 'uploading' ? { id, path: entry.path } : entry.info);
+          return reply(200, { id, path: entry.path });
         }
         const match = /^\/attachments\/([^/]+)(?:\/(delete|\d+))?$/.exec(url.pathname), id = match?.[1], operation = match?.[2];
         const entry = id ? entries.get(id) : undefined;

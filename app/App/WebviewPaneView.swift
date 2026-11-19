@@ -17,30 +17,6 @@ import SidebarFeed
 }
 
 private final class WebviewBrowser: WKWebView {
-    private func localDrop(_ sender: NSDraggingInfo) -> (PaneView, WindowOwner)? {
-        guard sender.draggingPasteboard.types?.contains(.fileURL) == true, let pane = (superview as? WebviewPaneView)?.pane,
-              let owner = pane.window?.delegate as? WindowOwner, owner.isLocalProgram(pane) else { return nil }
-        return (pane, owner)
-    }
-
-    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
-        guard let (pane, _) = localDrop(sender) else { return super.draggingEntered(sender) }
-        return pane.acceptingInput ? .copy : []
-    }
-
-    override func prepareForDragOperation(_ sender: NSDraggingInfo) -> Bool {
-        guard let (pane, _) = localDrop(sender) else { return super.prepareForDragOperation(sender) }
-        return pane.acceptingInput
-    }
-
-    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
-        guard let (pane, owner) = localDrop(sender) else { return super.performDragOperation(sender) }
-        guard pane.acceptingInput else { return false }
-        let urls = sender.draggingPasteboard.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL] ?? []
-        owner.dropFiles(urls, into: pane)
-        return true
-    }
-
     // Remove this override when the installed WebKit has https://bugs.webkit.org/show_bug.cgi?id=327446 fixed.
     @objc var allowsWritingToolsAffordance: Bool { false }
 }
@@ -108,16 +84,8 @@ final class WebviewPaneView: NSView, WKNavigationDelegate, WKUIDelegate {
         var file: File?
         init(url: URL, rect: NSRect) { self.url = url; self.rect = rect }
     }
-    private final class Drop {
-        let request: URLRequest
-        let generation: String
-        let done: ([String: Any]?) -> Void
-        var data = Data()
-        var timer: DispatchWorkItem?
-        init(request: URLRequest, generation: String, done: @escaping ([String: Any]?) -> Void) { self.request = request; self.generation = generation; self.done = done }
-    }
     private final class Fetch {
-        enum Target { case page(any WKURLSchemeTask), preview(Preview), drop(Drop) }
+        enum Target { case page(any WKURLSchemeTask), preview(Preview) }
         let target: Target
         var transfer: KoWebviewFetch?
         init(_ target: Target) { self.target = target }
@@ -128,7 +96,6 @@ final class WebviewPaneView: NSView, WKNavigationDelegate, WKUIDelegate {
                 for name in (request.allHTTPHeaderFields ?? [:]).keys where name.lowercased().hasPrefix("kido-") { request.setValue(nil, forHTTPHeaderField: name) }
                 return request
             case .preview(let preview): return URLRequest(url: preview.url)
-            case .drop(let drop): return drop.request
             }
         }
     }
@@ -316,11 +283,9 @@ final class WebviewPaneView: NSView, WKNavigationDelegate, WKUIDelegate {
         uncover()
         NotificationCenter.default.removeObserver(self, name: NSColor.systemColorsDidChangeNotification, object: nil)
         browser.stopLoading()
-        let cancelled = Array(tasks.values)
-        for fetch in cancelled { fetch.transfer?.cancel(); if case .drop(let drop) = fetch.target { drop.timer?.cancel() } }
+        for fetch in tasks.values { fetch.transfer?.cancel() }
         tasks = [:]
         pending = []
-        for fetch in cancelled { if case .drop(let drop) = fetch.target { drop.done(nil) } }
         for socket in sockets.values { socket.cancel() }
         sockets = [:]
         bridge.owner = nil
@@ -370,22 +335,13 @@ final class WebviewPaneView: NSView, WKNavigationDelegate, WKUIDelegate {
 
     private func finish(_ fetch: Fetch, _ result: Result<Void, Error>) {
         let id: ObjectIdentifier
-        switch fetch.target { case .page(let task): id = ObjectIdentifier(task); case .preview(let preview): id = ObjectIdentifier(preview); case .drop(let drop): id = ObjectIdentifier(drop) }
+        switch fetch.target { case .page(let task): id = ObjectIdentifier(task); case .preview(let preview): id = ObjectIdentifier(preview) }
         guard tasks.removeValue(forKey: id) != nil else { return }
         fetch.transfer?.cancel()
         pending.removeAll { $0 == id }
         switch fetch.target {
         case .page(let task):
             switch result { case .success: task.didFinish(); case .failure(let error): task.didFailWithError(error) }
-        case .drop(let drop):
-            drop.timer?.cancel()
-            let file = try? JSONSerialization.jsonObject(with: drop.data) as? [String: Any]
-            guard drop.generation == generation, pendingDocument == nil, !stopped else {
-                if let file { discardDrops([file]) }
-                drain(); return
-            }
-            if case .success = result, let file { drop.done(file) }
-            else { drop.done(nil) }
         case .preview(let preview):
             if case .success = result, let file = preview.file {
                 #if KIDO_VISUAL
@@ -417,8 +373,6 @@ final class WebviewPaneView: NSView, WKNavigationDelegate, WKUIDelegate {
                             return
                         }
                         task.didReceive(HTTPURLResponse(url: task.request.url!, statusCode: Int(status), httpVersion: "HTTP/1.1", headerFields: headers)!)
-                    case .drop:
-                        guard status == 200 else { finish(fetch, .failure(URLError(.badServerResponse))); return }
                     case .preview(let preview):
                         guard status == 200 else { finish(fetch, .failure(URLError(.badServerResponse))); return }
                         let disposition = headers.first { $0.key.lowercased() == "content-disposition" }?.value ?? ""
@@ -433,9 +387,6 @@ final class WebviewPaneView: NSView, WKNavigationDelegate, WKUIDelegate {
                         #if KIDO_VISUAL
                         if task.request.url?.path == visualFeedPath { visualFeedBytes += data.count }
                         #endif
-                    case .drop(let drop):
-                        guard data.count <= 65536 - drop.data.count else { finish(fetch, .failure(URLError(.dataLengthExceedsMaximum))); return }
-                        drop.data.append(data)
                     case .preview(let preview):
                         var limit = Upload.fileLimit
                         #if KIDO_VISUAL
@@ -454,7 +405,6 @@ final class WebviewPaneView: NSView, WKNavigationDelegate, WKUIDelegate {
                 switch fetch.target {
                 case .page(let task): task.didFailWithError(error)
                 case .preview: failPreview("The file could not be loaded.")
-                case .drop(let drop): drop.timer?.cancel(); drop.done(nil)
                 }
             }
         }
@@ -471,13 +421,10 @@ final class WebviewPaneView: NSView, WKNavigationDelegate, WKUIDelegate {
     func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
         guard let navigation, serving, !stopped, case .loading(let url, nil) = document else { return }
         document = .loading(url, PendingDocument(navigation: navigation, generation: UUID().uuidString))
-        var cancelled: [Drop] = []
         for (id, fetch) in tasks {
             if case .page = fetch.target { continue }
             tasks.removeValue(forKey: id); pending.removeAll { $0 == id }; fetch.transfer?.cancel()
-            if case .drop(let drop) = fetch.target { drop.timer?.cancel(); cancelled.append(drop) }
         }
-        for drop in cancelled { drop.done(nil) }
         installScripts()
         drain()
     }
@@ -625,63 +572,9 @@ final class WebviewPaneView: NSView, WKNavigationDelegate, WKUIDelegate {
                           "--ko-font-size": "\(pane.font)px", "--ko-cell-width": "\(pane.cell.width)px", "--ko-cell-height": "\(pane.cell.height)px",
                           "--ko-appearance": runtime.background.isDark ? "dark" : "light"]
         for (index, color) in colors.palette.enumerated() { properties["--ko-color-\(index)"] = rgb(color) }
-        let value: [String: Any] = ["pane": pane.pane.description, "local": (pane.window?.delegate as? WindowOwner)?.isLocalProgram(pane) == true, "theme": properties, "cell": ["width": pane.cell.width, "height": pane.cell.height]]
+        let value: [String: Any] = ["pane": pane.pane.description, "theme": properties, "cell": ["width": pane.cell.width, "height": pane.cell.height]]
         let json = String(data: try! JSONSerialization.data(withJSONObject: value, options: [.sortedKeys]), encoding: .utf8)!
         return "(()=>{const ko=\(json);ko.preview=(url,rect)=>window.__koPreview(new URL(url,location.href).href,rect);ko.focus=(pane)=>window.__koFocus(pane);window.ko=ko;const apply=()=>{for(const [k,v] of Object.entries(ko.theme))document.documentElement.style.setProperty(k,v)};if(document.documentElement)apply();else {const observer=new MutationObserver(()=>{if(document.documentElement){apply();observer.disconnect()}});observer.observe(document,{childList:true,subtree:true})}})()"
-    }
-
-    private func discardDrops(_ files: [[String: Any]]) {
-        guard let pane else { return }
-        for file in files {
-            guard let id = file["id"] as? String, let url = URL(string: "ko://\(pane.pane)/attachments/\(id)/delete") else { continue }
-            var request = URLRequest(url: url); request.httpMethod = "POST"; request.httpBody = Data("{}".utf8)
-            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-            let drop = Drop(request: request, generation: generation) { _ in }
-            let fetch = Fetch(.drop(drop)), key = ObjectIdentifier(drop)
-            tasks[key] = fetch; pending.append(key)
-        }
-        drain()
-    }
-
-    private static let maxDropFiles = 16
-
-    func drop(files: [String], refused: Bool) {
-        guard !stopped, pendingDocument == nil, let pane,
-              files.count <= Self.maxDropFiles, tasks.values.filter({ if case .drop = $0.target { true } else { false } }).count + files.count <= Self.maxDropFiles,
-              pending.count + files.count <= Self.maxPendingFetches else { return }
-        let document = generation
-        var remaining = files.count, records: [[String: Any]] = []
-        let deliver = { [weak self] in
-            guard let self else { return }
-            guard generation == document, pendingDocument == nil, !stopped,
-                  let data = try? JSONSerialization.data(withJSONObject: ["files": records, "refused": refused]), let json = String(data: data, encoding: .utf8) else { discardDrops(records); return }
-            browser.evaluateJavaScript("window.__koDrop('\(document)',\(json))") { [weak self] _, error in
-                if error != nil { self?.discardDrops(records) }
-            }
-        }
-        if files.isEmpty { deliver(); return }
-        var requests: [URLRequest] = []
-        for path in files {
-            guard let url = URL(string: "ko://\(pane.pane)/attachments"), let body = try? JSONSerialization.data(withJSONObject: ["path": path]) else { return }
-            var request = URLRequest(url: url)
-            request.httpMethod = "POST"; request.httpBody = body
-            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-            request.setValue("1", forHTTPHeaderField: "Kido-Native-Drop")
-            requests.append(request)
-        }
-        for request in requests {
-            let drop = Drop(request: request, generation: document) { [weak self] file in
-                if let file { records.append(file) }
-                else if let self, !stopped, generation == document, pendingDocument == nil { (self.pane?.window?.delegate as? WindowOwner)?.notices.show("Kido could not attach the file", "The file could not be loaded.") }
-                remaining -= 1
-                if remaining == 0 { deliver() }
-            }
-            let fetch = Fetch(.drop(drop)), id = ObjectIdentifier(drop)
-            tasks[id] = fetch; pending.append(id)
-            let timer = DispatchWorkItem { [weak self, weak fetch] in if let fetch { self?.finish(fetch, .failure(URLError(.timedOut))) } }
-            drop.timer = timer; DispatchQueue.main.asyncAfter(deadline: .now() + 5, execute: timer)
-        }
-        drain()
     }
 
     private func attended(_ window: NSWindow) -> Bool {
@@ -848,7 +741,6 @@ final class WebviewPaneView: NSView, WKNavigationDelegate, WKUIDelegate {
         _emit(event){this.dispatchEvent(event);const handler=this['on'+event.type];if(typeof handler==='function')handler.call(this,event)}
       }
       for(const name of ['open','message','close','error'])Socket.prototype['on'+name]=null;
-      window.__koDrop=(generation,detail)=>{if(generation===documentID)window.dispatchEvent(new CustomEvent('ko-drop',{detail}))};
       window.__koSocketEvent=(generation,id,e)=>{if(generation!==documentID)return;const s=sockets.get(id);if(!s)return;
         if(e.type==='open'){if(s._state===0){s._state=1;s._emit(new Event('open'))}}
         else if(e.type==='message'){const bytes=Uint8Array.from(atob(e.data),c=>c.charCodeAt(0));const data=e.binary?(s.binaryType==='blob'?new Blob([bytes]):bytes.buffer):new TextDecoder().decode(bytes);s._emit(new MessageEvent('message',{data,origin:location.origin}))}

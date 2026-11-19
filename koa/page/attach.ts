@@ -1,4 +1,4 @@
-import { ATTACHMENT_LIMITS, isAttachment } from '../koa-records.ts';
+import { ATTACHMENT_LIMITS } from '../koa-records.ts';
 import { fetchJSON } from './http.ts';
 import { preview } from './preview.ts';
 import { dots } from './working.ts';
@@ -9,7 +9,7 @@ const sizeLabel = (size: number) => size >= 1048576 ? (size / 1048576).toFixed(s
 
 const COMMAND_REFUSAL = 'a command takes no attachments';
 
-export function attach(host: HTMLElement, changed: () => void, displayPath: (value: string) => string, refusal: () => 'command' | 'editing' | undefined) {
+export function attach(host: HTMLElement, changed: () => void, refusal: () => 'command' | 'editing' | undefined) {
   const chips: Chip[] = [], saved = new Map<string, Chip[]>();
   let current: string | undefined;
   const notice = document.createElement('div'); notice.className = 'attach-notice'; notice.hidden = true; host.append(notice);
@@ -45,9 +45,8 @@ export function attach(host: HTMLElement, changed: () => void, displayPath: (val
     if (file?.kind === 'image') { const image = document.createElement('img'); image.src = '/attachments/' + file.id; image.alt = ''; chip.icon.replaceChildren(image); }
     else if (state.type === 'pending') { if (chip.icon.firstElementChild?.className !== 'dots') chip.icon.replaceChildren(dots()); }
     else chip.icon.innerHTML = '<svg viewBox="0 0 16 16"><path d="M4 1.5h5.5L13 5v9.5H4z"/><path d="M9.5 1.5V5H13"/></svg>';
-    chip.detail.classList.toggle('path', file?.origin === 'path');
     chip.detail.classList.toggle('reason', state.type === 'refused');
-    chip.detail.textContent = state.type === 'refused' ? state.reason : state.type === 'pending' ? (state.size >= 1048576 ? Math.floor(state.received / 1048576) + ' / ' + Math.ceil(state.size / 1048576) + ' MB' : sizeLabel(state.received) + ' / ' + sizeLabel(state.size)) : state.file.origin === 'path' ? displayPath(state.file.path.slice(0, state.file.path.lastIndexOf('/') + 1)) : sizeLabel(state.file.size);
+    chip.detail.textContent = state.type === 'refused' ? state.reason : state.type === 'pending' ? (state.size >= 1048576 ? Math.floor(state.received / 1048576) + ' / ' + Math.ceil(state.size / 1048576) + ' MB' : sizeLabel(state.received) + ' / ' + sizeLabel(state.size)) : sizeLabel(state.file.size);
     refresh();
   };
   const create = (state: Chip['state']) => {
@@ -95,7 +94,6 @@ export function attach(host: HTMLElement, changed: () => void, displayPath: (val
     if (!transfer.files.length && !Array.from(transfer.items).some(item => item.webkitGetAsEntry?.()?.isDirectory)) return false;
     event.preventDefault();
     if (refusal()) { beginDrop(); notify(); return true; }
-    if (window.ko?.local) { depth = 0; hovering(false); return true; }
     beginDrop();
     const files: File[] = []; let refused = false;
     const items = Array.from(transfer.items).filter(item => item.kind === 'file');
@@ -117,14 +115,6 @@ export function attach(host: HTMLElement, changed: () => void, displayPath: (val
   document.addEventListener('dragenter', event => { if (event.dataTransfer?.types.includes('Files')) { depth++; hovering(true); } });
   document.addEventListener('dragover', event => { if (event.dataTransfer?.types.includes('Files')) { event.preventDefault(); hovering(true); } });
   document.addEventListener('dragleave', () => { depth = Math.max(0, depth - 1); if (!depth) hovering(false); });
-  window.addEventListener('ko-drop', event => {
-    if (!window.ko?.local || !(event instanceof CustomEvent)) return;
-    const value: unknown = event.detail;
-    if (!value || typeof value !== 'object' || !('files' in value) || !Array.isArray(value.files) || value.files.length > ATTACHMENT_LIMITS.files || !value.files.every(file => isAttachment(file) && file.origin === 'path') || !('refused' in value) || typeof value.refused !== 'boolean') return;
-    beginDrop(); if (refusal()) { notify(); for (const file of value.files) deleteFile(file.id); return; }
-    if (value.refused) refuse('Folders are not attached');
-    for (const file of value.files) create({ type: 'ready', file });
-  });
   return {
     drop, paste, refresh: layout,
     view(id: string) {

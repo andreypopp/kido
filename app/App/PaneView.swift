@@ -1412,18 +1412,13 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
     }
 
     override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
-        guard acceptingInput, copyMode == nil else { return [] }
-        if webviewView != nil { return (window?.delegate as? WindowOwner)?.isLocalProgram(self) == true && sender.draggingPasteboard.types?.contains(.fileURL) == true ? .copy : [] }
+        guard acceptingInput, copyMode == nil, webviewView == nil else { return [] }
         return .copy
     }
 
     override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
-        guard acceptingInput, copyMode == nil, let owner = window?.delegate as? WindowOwner else { return false }
+        guard acceptingInput, copyMode == nil, webviewView == nil, let owner = window?.delegate as? WindowOwner else { return false }
         let urls = sender.draggingPasteboard.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL] ?? []
-        if webviewView != nil {
-            guard owner.isLocalProgram(self), !urls.isEmpty else { return false }
-            owner.dropFiles(urls, into: self); return true
-        }
         if urls.isEmpty, let promises = sender.draggingPasteboard.readObjects(forClasses: [NSFilePromiseReceiver.self]) as? [NSFilePromiseReceiver], !promises.isEmpty {
             owner.uploadPromises(promises, to: self)
         } else {

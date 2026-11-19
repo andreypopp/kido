@@ -859,24 +859,6 @@ private class AlertEscape: NSView {
     private var uploadPrompt: NSAlert?
     private var uploads: [String: (pane: PaneView, task: Task<Void, Never>)] = [:]
 
-    func isLocalProgram(_ pane: PaneView) -> Bool { host == .local && pane.runtimeMark == nil && pane.webviewView != nil }
-
-    func dropFiles(_ urls: [URL], into pane: PaneView) {
-        guard pane.acceptingInput, isLocalProgram(pane), let page = pane.webviewView else { return }
-        var files: [String] = [], refused = false
-        var failure: Failure?
-        for item in Upload.classify(urls) {
-            switch item {
-            case .folder: refused = true
-            case .refused(let error): failure = failure ?? error
-            case .file(let upload):
-                for source in upload.sources { if case .file(_, let path) = source.bytes { files.append(path) } }
-            }
-        }
-        if let failure { notice("Kido did not upload", failure.message) }
-        if !files.isEmpty || refused { page.drop(files: files, refused: refused) }
-    }
-
     func sshTarget(_ pane: PaneView) -> KoSchema.LiveSsh? {
         guard let item = projection.items[pane.pane]?.item, case .live(.ssh(let ssh)) = item.lifecycle else { return nil }
         return ssh

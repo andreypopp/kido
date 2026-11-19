@@ -285,7 +285,6 @@ html:not([data-dock=band]) .dock .queued-next{text-shadow:0 0 6px var(--ko-bg),0
 .chip .ic svg{width:13px;height:13px;fill:none;stroke:currentColor;stroke-width:1.5;stroke-linejoin:round}
 .chip .n{min-width:0;flex:0 1 auto;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .chip .m{color:var(--faint);font:.85em var(--mono);white-space:nowrap;flex-shrink:0}
-.chip .dir{color:var(--faint);font-size:.9em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;min-width:40px;flex:1 1 auto}
 .chip .x{width:16px;height:16px;border:0;background:none;padding:0;color:var(--faint);display:grid;place-items:center;border-radius:4px;margin-left:-1px;flex-shrink:0}
 .chip .x:hover{color:var(--fg);background:var(--well2)}
 .chip .x svg{width:9px;height:9px;stroke:currentColor;stroke-width:1.6;fill:none;stroke-linecap:round}
@@ -354,7 +353,7 @@ html[data-width=narrow] .foot .sep,.pane.narrow .foot .sep{margin:0 7px}
 </head>
 <body>
 <h1>koa — images, attachments and Quick Look</h1>
-<p class="lede">The visible parts of plans/koa.md, section 8, for units 12 to 14: images in the transcript (a <code>read</code> of an image, a user message with images, an image that is gone), attachment chips above the composer (an image, a file, a path, an upload, a refusal, the drop state, a refused folder, the queue, the sent message), and Quick Look (⇧⌘ over a step's file, the browser lightbox). Every value follows the approved language of mockup.html and blocks.html; the thumbnails are drawn placeholders. Nothing here is a product change yet.</p>
+<p class="lede">The visible parts of plans/koa.md, section 8, for units 12 to 14: images in the transcript (a <code>read</code> of an image, a user message with images, an image that is gone), attachment chips above the composer (an image, a file, an upload, a refusal, the drop state, a refused folder, the queue, the sent message), and Quick Look (⇧⌘ over a step's file, the browser lightbox). Every value follows the approved language of mockup.html and blocks.html; the thumbnails are drawn placeholders. Nothing here is a product change yet.</p>
 <div class="controls">
   <label>Theme <select id="theme"><option value="light">kido-light</option><option value="dark">kido-dark</option></select></label>
   <label>Pane width <select id="width"><option value="wide">wide (980pt)</option><option value="narrow">narrow (60 columns)</option></select></label>
@@ -374,7 +373,7 @@ html[data-width=narrow] .foot .sep,.pane.narrow .foot .sep{margin:0 7px}
 <div class="pane" data-state="image-gone"></div></section>
 
 <section><h2>13a · Chips above the field</h2>
-<p>Each attachment is a 28pt chip in the dock, above the field: a 20pt thumbnail or a document glyph, the name, then the size in the faint terminal font, and × at the end. A path chip (a local session's drop) shows the name and its directory muted, so the user sees that pi gets the original. An upload shows a spinner in the glyph's place and the bytes so far. A refused chip has a red-tinted edge and the reason in red in place of the size. A click on a chip's body previews it; × removes it.</p>
+<p>Each attachment is a 28pt chip in the dock, above the field: a 20pt thumbnail or a document glyph, the name, then the size in the faint terminal font, and × at the end. Every attachment, a Finder drop included, is an uploaded copy: the page uploads the dropped file's bytes, because macOS blocks koa from reading Desktop or Downloads, so pi gets a copy, never the original path. An upload shows a spinner in the glyph's place and the bytes so far. A refused chip has a red-tinted edge and the reason in red in place of the size. A click on a chip's body previews it; × removes it.</p>
 <div class="pane short" data-state="chips"></div></section>
 
 <section><h2>13b · Drop hover</h2>
@@ -421,7 +420,7 @@ const thumb=(src,sz,lg)=>`<button class="thumb${lg?' lg':''}" aria-label="Previe
 const thumbs=(items)=>`<div class="thumbs">${items.join('')}</div>`;
 const paths=(ps)=>`<div class="paths">${ps.map(esc).join('\n')}</div>`;
 function composer(o={}){const chips=o.chips?`<div class="chips">${o.chips}</div>`:'';const before=o.after||'';o.after='';const hint=o.working?`<span class="spin" style="border-color:var(--hair2);border-top-color:var(--muted);margin-right:5px;vertical-align:-1px"></span>working 3s · <kbd>⎋</kbd> abort`:(o.text?'<kbd>⇧↩</kbd> newline':'');return `<div class="composer">${before}${chips}<div class="field${o.drop?' drop':o.working?' working':' focus'}"><div class="text${o.text?'':' ph'}">${o.text?esc(o.text)+'<span class="caret"></span>':o.drop?'Drop to attach':o.working?'Steer koa…':'Message koa…'}</div>${shippedFoot({state:o.working?'working':'idle'})}</div>${o.after||''}</div>`}
-const chip=(o)=>`<span class="chip${o.cls||''}" role="button" tabindex="0"><span class="ic">${o.img?`<img src="${o.img}" alt="">`:o.cls===' up'?'':doc}</span><span class="n">${esc(o.name)}</span>${o.dir?`<span class="dir">${esc(o.dir)}</span>`:''}<span class="m">${o.meta||''}</span><button class="x" aria-label="Remove">${xx}</button></span>`;
+const chip=(o)=>`<span class="chip${o.cls||''}" role="button" tabindex="0"><span class="ic">${o.img?`<img src="${o.img}" alt="">`:o.cls===' up'?'':doc}</span><span class="n">${esc(o.name)}</span><span class="m">${o.meta||''}</span><button class="x" aria-label="Remove">${xx}</button></span>`;
 const run=(o)=>`<div class="run open"><div class="line"><span class="chev">›</span><span class="sum"><span class="names">${o.sum}</span></span><span class="time">${o.time}</span></div><div class="steps">${o.steps.join('')}</div></div>`;
 const step=(o)=>`<div class="step${o.open?' open':''}"><div class="line"><span class="chev">›</span><span class="sum"><span class="name">${o.name}</span> <span class="path file${o.hover?' hover':''}">${esc(o.path)}</span> <span class="delta">${o.delta||''}</span></span><span class="time">${o.time}</span></div><div class="detail">${o.detail||''}</div></div>`;
 const states={
@@ -432,7 +431,7 @@ const states={
   ]})+`<div class="msg assistant"><p>The light render has the kind tags; the dark one lost them to the ellipsis. Two things differ…</p></div>`)+composer()+status('idle'),
   'user-images':()=>transcript(userMsg('Make the sidebar look like this, and use the two files as the fixtures',thumbs([thumb(IMG3,'1200×500'),thumb(IMG2,'800×800')])+paths(['/Users/andrepopp/Desktop/layout-v4.json','~/Workspace/kido/app/design/sidebar/stress.json']))+`<div class="msg assistant"><p>Reading both fixtures.</p></div>`)+composer()+status('idle'),
   'image-gone':()=>transcript(userMsg('Compare with the earlier screenshot',thumbs([`<div class="thumb gone" role="img" aria-label="Image unavailable">Image unavailable</div>`,thumb(IMG1,'1440×900')]))+`<div class="msg assistant"><p>I can see the second one; the first is no longer available in this session.</p></div>`)+composer()+status('idle'),
-  chips:()=>transcript(userMsg('Here is what I have so far'))+composer({text:'Attach these to the review',chips:chip({img:IMG1,name:'Screenshot 2026-11-10 at 09.11.42.png',meta:'2.4 MB'})+chip({name:'notes.md',meta:'8 KB'})+chip({name:'SidebarRow.swift',dir:'~/Workspace/kido/app/App/',meta:''})+chip({cls:' up',name:'kido-demo.mov',meta:'18 / 41 MB'})+chip({cls:' bad',name:'archive.tar.gz',meta:'over 64 MB'})})+status('idle'),
+  chips:()=>transcript(userMsg('Here is what I have so far'))+composer({text:'Attach these to the review',chips:chip({img:IMG1,name:'Screenshot 2026-11-10 at 09.11.42.png',meta:'2.4 MB'})+chip({name:'notes.md',meta:'8 KB'})+chip({name:'SidebarRow.swift',meta:'9 KB'})+chip({cls:' up',name:'kido-demo.mov',meta:'18 / 41 MB'})+chip({cls:' bad',name:'archive.tar.gz',meta:'over 64 MB'})})+status('idle'),
   drop:()=>transcript(userMsg('Here is what I have so far'))+composer({drop:true})+status('idle'),
   folder:()=>transcript(userMsg('Here is what I have so far'))+composer({chips:chip({img:IMG2,name:'diagram.png',meta:'310 KB'})+chip({name:'README.md',meta:'3 KB'})+`<span class="line">Folders are not attached</span>`})+status('idle'),
   queue:()=>transcript(userMsg('Release 0.32')+run({sum:'bash',time:'1m02s',steps:[]}).replace('class="run open"','class="run"'))+composer({working:true,after:`<div class="queue"><div class="q"><span class="tag">steer</span><span class="t">skip the Linux check, I'll run it in CI</span></div><div class="q"><span class="tag">follow-up</span><span class="t">then compare with these two renders</span><span class="att">${clip}2</span></div><div class="take">2 queued<span class="sp" style="flex:1"></span><button class="btn">take back</button></div></div>`})+status('working'),

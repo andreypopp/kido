@@ -233,7 +233,7 @@ let escaped = false, dialogId: string | undefined;
 let submitting = false, editorId: string | undefined, dialogTimer: number | undefined, shownExit: number | undefined, pickerButton: HTMLElement | undefined, shownQueue: string | undefined, shownStatuses: string | undefined;
 let historyRequest: { before: number; thread?: ThreadName; patches: Patch[]; done: Promise<void> } | undefined;
 let editorOpening = false;
-const draft = attach(element('attachments'), () => refreshComposer(), displayPath, () => state.edit ? 'editing' : editor.bash() ? 'command' : undefined);
+const draft = attach(element('attachments'), () => refreshComposer(), () => state.edit ? 'editing' : editor.bash() ? 'command' : undefined);
 const pendingBash = new Map<string, ReturnType<typeof commandRun>>();
 const editor = composer(element('prompt'), {
   drop: draft.drop, paste: draft.paste,

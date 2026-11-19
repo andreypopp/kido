@@ -1841,20 +1841,14 @@ quote and `PromptTarget(pane, record)` as the preselect, which the
 palette resolves to the job's owner (the rules: app/design/koa/NOTES.md,
 "⌘O in a koa pane").
 
-**Drops on a page.** A Finder drop on a local program's page
-(`WindowOwner.isLocalProgram`) is the one grant of a host path to a
-page's program. The app posts each dropped path to `/attachments`
-through the page's own fetch path, with the header
-`Kido-Native-Drop: 1`, and gives the page only the attachment records
-of the answers, through `window.__koDrop` and the `ko-drop` event.
-The scheme handler removes every `Kido-` header from every request of
-the page (`setValue(nil, forHTTPHeaderField:)`; a filtered
-`allHTTPHeaderFields` keeps them), so the page cannot claim a drop. A
-drop has a cap of files (`maxDropFiles`), a cap of answer bytes and a
-deadline; a navigation cancels it, and the app deletes an
-attachment that it does not give to the page. `WebviewBrowser` takes
-`prepareForDragOperation` itself for such a drop, because WebKit's own
-handling of a file drop runs there.
+**Drops on a page.** The app does not take a Finder drop on a page:
+WebKit takes it, and the page receives the files as DOM `File`
+objects and uploads their bytes (design-koa.md, "Attachments"). The
+app never gives a page's program a host path. A local koa could not
+read it: koa runs under the ko server's launchd job, so macOS TCC
+attributes its reads to `ko`, which has no grant for the Desktop,
+Downloads or Documents, while WebKit reads the dropped file with
+Kido.app's grant of the user's drop.
 
 **Focus and keys.** A click in the page selects the pane through the
 pane's left-mouse-down monitor and makes the web view first responder.
@@ -3480,7 +3474,7 @@ dark against the replay server of koa's page
 of one scenario and answers the page's requests from its script
 (design-koa.md, "Tests"). The replay page is a real webview pane, so
 the scheme handler, `window.ko`, the theme properties,
-`visualInitialScript`, the native drop and Quick Look run the same
+`visualInitialScript` and Quick Look run the same
 code as with koa. A test advances its script through `/replay/next`
 and `/replay/release`, and its teardown asserts `/replay/status`.
 `KoaHostTests` runs the checkout's koa with the pinned pi against the

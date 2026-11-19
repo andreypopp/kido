@@ -679,8 +679,7 @@ session than the viewed agent's with 409, and checks again after the
 body has arrived and before it acts, so a request that a session
 switch or a view switch overtook never reaches the new session. The
 attachment routes are the host's, like `/events`: the store is one
-for the pane, because Kido.app's native drop posts a file without a
-session, and the send of the prompt is the gate.
+for the pane, and the send of the prompt is the gate.
 
 **pi's busy rule.** pi aborts a running turn or command on a switch
 and does not ask. The page asks first: while pi works or a `!` command
@@ -1854,32 +1853,19 @@ is disk under the temporary directory, rewritten at each rebuild.
 
 ## Attachments
 
-A file that the user drops or pastes reaches pi on the host where pi
-runs, as one of two kinds:
+A file that the user drops or pastes reaches pi as a copy of its
+bytes: the page uploads them in chunks below the bridge's body cap
+into koa's private directory, so the file exists where pi runs, and
+pi gets the copy's path. This is the one kind, for a local session,
+a remote session, a runtime and a browser alike.
 
-- **A local session: the original path.** The user decided that pi
-  edits the user's file, not a copy. A session is local when the
-  window's server is the Mac's and the pane has no runtime
-  (`WindowOwner.isLocalProgram`, given to the page as
-  `window.ko.local`). Kido.app takes a Finder drop on such a page
-  itself and posts each path to `/attachments` with the header
-  `Kido-Native-Drop: 1`.
-- **Every other case: the bytes.** A paste, and a drop in a remote
-  session, a runtime or a browser, upload the bytes in chunks below
-  the bridge's body cap into koa's private directory, so the file
-  exists where pi runs. A path on the page's machine means nothing to
-  a pi on another host.
-
-**The native drop is the one grant of a host path.** Only Kido.app
-can name a host path: koa refuses a path attachment without the
-header (403), and Kido.app's scheme handler and the SDK's browser
-target remove every `Kido-` header from a page's requests. Thus no
-page, local or foreign, can read a host file that the user did not
-drop. The app gives the page only the attachment records of koa's
-answers, through the `ko-drop` event; koa removes a path attachment
-whose answer did not reach the app, and the app removes one that it
-does not give to the page, so a cancelled drop holds nothing.
-design-app.md, "Drops on a page", gives the app's side.
+**No attachment names a host path.** koa reads no file that the page
+names, so no page can read a host file that the user did not drop.
+A local session does not attach the original path either: koa runs
+under the ko server's launchd job, so macOS TCC attributes its reads
+to `ko`, which has no grant for the Desktop, Downloads or Documents.
+WebKit reads a dropped file with Kido.app's grant of the user's drop,
+and the page uploads the bytes.
 
 - **Folders are not attached** (the user's decision), local or not,
   as the terminal's upload refuses them; the files of the same drop
@@ -1893,9 +1879,9 @@ design-app.md, "Drops on a page", gives the app's side.
   limits.
 - **Sending.** An image goes to pi as an image of the `prompt`
   command, in every mode; any other file as a path line after the
-  typed text, as pi's TUI pastes copied files. A local dropped image
-  goes only as an image, because pi's `read` of the path would send
-  the same pixels again. pi accepts an empty message with images.
+  typed text, as pi's TUI pastes copied files. An image goes only as
+  an image, because pi's `read` of the path would send the same
+  pixels again. pi accepts an empty message with images.
   The page does not resize: pi resizes to the model's limits, and a
   resize in the page would change what the session keeps.
 - **States.** An attachment is ready, queued (in a prompt that pi
@@ -2251,9 +2237,9 @@ forwarder refuses a foreign or null `Origin` and a foreign `Host`
 forwarder, so koa's typed-body rule makes a form post that arrives
 without one do nothing.
 The user decided that a local process may call koa's routes, so there
-is no token. A host path is never reachable from a browser page: the
-native-drop header comes only from Kido.app, and a step's file comes
-only from koa's own record.
+is no token. A host path is never reachable from a browser page: an
+attachment is always an upload, and a step's file comes only from
+koa's own record.
 
 In the browser, the page applies its fallback theme (the mockup's
 `:root`, after `prefers-color-scheme`); in Kido.app the `--ko-*`
