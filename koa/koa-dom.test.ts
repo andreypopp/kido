@@ -96,13 +96,13 @@ async function page() {
       placeholder(text: string) { content.placeholder = text; },
     };
   };
-  const context = { ResizeObserver, matchMedia: () => ({ matches: false, addEventListener() {} }), Date: class extends Date { constructor(value: string | number = 1700000012000) { super(value); } static now() { return 1700000012000; } }, getComputedStyle: (node?: { tagName?: string }) => ({ display: 'block', lineHeight: '20px', marginBottom: node?.tagName === 'P' ? '10px' : '0px' }), composer, bashCommand, ATTACHMENT_LIMITS, isAttachment, pathArg, jobEndText, AbortController, AbortSignal, CustomEvent: class { type: string; detail?: unknown; constructor(type: string, options?: { detail?: unknown }) { this.type = type; this.detail = options?.detail; } }, Node, Element: Node, HTMLElement: class { static [Symbol.hasInstance](value: unknown) { return value instanceof Node && value.tagName !== '#text'; } }, HTMLButtonElement: Node, HTMLImageElement: Node, markdown, markdownLine, document, window: { ko: {}, addEventListener(type: string, handler: (event?: unknown) => void) { windowListeners.set(type, handler); } }, innerWidth: 980, innerHeight: 560, Event: class { type: string; constructor(type: string) { this.type = type; } }, console, setInterval() {}, clearInterval() {}, setTimeout, clearTimeout, requestAnimationFrame() {}, cancelAnimationFrame() {}, performance: { now: () => 0 }, fetch: async () => ({ ok: true, json: async () => ({}) }) };
+  const context = { ResizeObserver, matchMedia: () => ({ matches: false, addEventListener() {} }), Date: class extends Date { constructor(value: string | number = 1700000012000) { super(value); } static now() { return 1700000012000; } }, getComputedStyle: (node?: { tagName?: string }) => ({ display: 'block', lineHeight: '20px', marginBottom: node?.tagName === 'P' ? '10px' : '0px' }), composer, bashCommand, ATTACHMENT_LIMITS, isAttachment, pathArg, jobEndText, AbortController, AbortSignal, CustomEvent: class { type: string; detail?: unknown; constructor(type: string, options?: { detail?: unknown }) { this.type = type; this.detail = options?.detail; } }, Node, Element: Node, HTMLElement: class { static [Symbol.hasInstance](value: unknown) { return value instanceof Node && value.tagName !== '#text'; } }, HTMLButtonElement: Node, HTMLImageElement: Node, markdown, markdownLine, document, window: { ko: {}, getSelection: () => null, addEventListener(type: string, handler: (event?: unknown) => void) { windowListeners.set(type, handler); } }, innerWidth: 980, innerHeight: 560, Event: class { type: string; constructor(type: string) { this.type = type; } }, console, setInterval() {}, clearInterval() {}, setTimeout, clearTimeout, requestAnimationFrame() {}, cancelAnimationFrame() {}, performance: { now: () => 0 }, fetch: async () => ({ ok: true, json: async () => ({}) }) };
   const answersSource = stripTypeScriptTypes(await readFile(new URL('page/answers.ts', import.meta.url), 'utf8')).replace(/^export /gm, '');
   const annotationsSource = stripTypeScriptTypes(await readFile(new URL('page/annotations.ts', import.meta.url), 'utf8')).replace(/^import .*;\n/gm, '').replace(/^export /gm, '');
-  Object.assign(context, runInNewContext(answersSource + '\n' + annotationsSource + '\n({annotations,update})', context));
+  Object.assign(context, runInNewContext(answersSource + '\n' + annotationsSource + '\n({annotations,update,head,quote})', context));
   document.getElementById('scroll').clientHeight = 100000;
   Object.assign(document, { createTreeWalker: () => ({ nextNode: () => false }), createRange: () => { let target: Node | undefined; return { selectNodeContents(node: Node) { target = node; }, getClientRects: () => target?.rects ?? [] }; } });
-  Object.assign(context, { NodeFilter: { SHOW_TEXT: 4 } });
+  Object.assign(context, { NodeFilter: { SHOW_TEXT: 4 }, getSelection: () => context.window.getSelection() });
   const attachSource = stripTypeScriptTypes(await readFile(new URL('page/attach.ts', import.meta.url), 'utf8')).replace(/^import .*;\n/gm, '').replace(/^export /gm, '');
   const httpSource = stripTypeScriptTypes(await readFile(new URL('page/http.ts', import.meta.url), 'utf8')).replace(/^import .*;\n/gm, '').replace(/^export /gm, '');
   const previewSource = stripTypeScriptTypes(await readFile(new URL('page/preview.ts', import.meta.url), 'utf8')).replace(/^export /gm, '');
@@ -124,6 +124,82 @@ async function page() {
   const body = source.replace(/^import .*;\n/gm, "").replace(/^setInterval\([\s\S]*$/m, "") + "\nfunction put(item) { accept(item); renderDirty(); return views.get(item.seq)?.view; }";
   return { observers, repl: (): ((code: string) => unknown) => runInNewContext("(() => {\n" + body + "\nreturn code => eval(code);\n})()", context), context, elements, listeners, windowListeners, completionResets: () => completionResets, handlers: () => handlers, prompt: () => prompt, text: () => text(), run: (code: string) => runInNewContext("{\n" + body + "\n" + code + "\n}", context) };
 }
+
+test('quoteSelection appends transcript quotes, preserves composer selections and follows the view', async () => {
+  const app = await page(), evaluate = app.repl();
+  evaluate(`state={...state,life:{type:'ready'}};
+    window.getSelection=()=>({anchorNode:element('items'),focusNode:element('items'),isCollapsed:false,toString:()=>'**First** line\\n\\n[Second](url)',removeAllRanges(){window.cleared=true}});`);
+  evaluate('window.__koComposer=value=>{window.composerState=value};reportComposer()');
+  assert.equal(evaluate('window.composerState.type'), 'quote');
+  evaluate('window.__koQuoteSelection()');
+  assert.equal(app.text(), '> First line\n> Second\n');
+  assert.equal(evaluate('window.cleared'), true);
+  assert.equal(app.context.document.activeElement, app.prompt());
+  for (const ending of ['Answer', 'Answer\n', 'Answer\n\n']) {
+    evaluate(`editor.setText(${JSON.stringify(ending)});quoteSelection()`);
+    assert.equal(app.text(), 'Answer\n\n> First line\n> Second\n');
+    assert.equal(app.prompt()?.selectionStart, app.text().length);
+  }
+  evaluate("window.getSelection=()=>null;document.activeElement=element('items');quoteSelection();reportComposer()");
+  assert.equal(evaluate('window.composerState.type'), 'focus');
+  assert.equal(app.context.document.activeElement, app.prompt());
+  const before = app.text();
+  evaluate("window.getSelection=()=>({anchorNode:element('prompt'),focusNode:element('prompt'),isCollapsed:false,toString:()=> 'selected draft'});quoteSelection()");
+  assert.equal(app.text(), before);
+  evaluate("state={...state,view:{type:'job',id:'job',path:[]}};document.activeElement=element('items');quoteSelection();reportComposer()");
+  assert.equal(evaluate('window.composerState.type'), 'prompt');
+  assert.equal(app.text(), before);
+  assert.notEqual(app.context.document.activeElement, app.prompt());
+  evaluate("state={...state,view:{type:'subagent',id:'child',path:[]}};editor.setText('Child draft');window.getSelection=()=>({anchorNode:element('items'),focusNode:element('items'),isCollapsed:false,toString:()=> 'Child quote',removeAllRanges(){}});quoteSelection()");
+  assert.equal(app.text(), 'Child draft\n\n> Child quote\n');
+  evaluate("leaveView('root');state={...state,view:{type:'root',id:'root',path:[]}};editor.setText('Root draft');leaveView('child');state={...state,view:{type:'subagent',id:'child',path:[]}}");
+  assert.equal(app.text(), 'Child draft\n\n> Child quote\n');
+  evaluate("leaveView('root')");
+  assert.equal(app.text(), 'Root draft');
+});
+
+test('job quoteSelection reports its record and returns the raw selection for the palette', async () => {
+  const app = await page(), evaluate = app.repl();
+  evaluate("state={...state,view:{type:'job',id:'j1',record:'agents/reviewer/jobs/j1',path:[]}};window.__koComposer=value=>{window.composerState=value};window.getSelection=()=>null;reportComposer()");
+  assert.equal(evaluate('JSON.stringify(window.composerState)'), '{"type":"prompt","record":"agents/reviewer/jobs/j1"}');
+  assert.equal(evaluate('JSON.stringify(window.__koQuoteSelection())'), '{"record":"agents/reviewer/jobs/j1"}');
+  evaluate("window.getSelection=()=>({anchorNode:element('jobv'),focusNode:element('jobv'),isCollapsed:false,toString:()=> '  error: **raw**\\nnext line'});reportComposer()");
+  assert.equal(evaluate('window.composerState.type'), 'prompt_quote');
+  assert.equal(evaluate('window.__koQuoteSelection().quote'), '  error: **raw**\nnext line');
+  evaluate('window.ko=undefined');
+  assert.equal(evaluate('quoteSelection()'), undefined);
+  assert.equal(app.text(), '');
+});
+
+test('quoteSelection restores composer focus from a collapsed composer caret', async () => {
+  const app = await page(), evaluate = app.repl();
+  evaluate("state={...state,life:{type:'ready'}};editor.setText('Keep the draft');window.getSelection=()=>({anchorNode:element('prompt'),focusNode:element('prompt'),isCollapsed:true});document.activeElement=element('model');quoteSelection()");
+  assert.equal(app.context.document.activeElement, app.prompt());
+  assert.equal(app.text(), 'Keep the draft');
+});
+
+test('a quote edit resets the Escape sequence like typing', async () => {
+  const app = await page(), evaluate = app.repl();
+  evaluate("state={...state,life:{type:'ready'}};editor.setText('Keep the draft');window.getSelection=()=>({anchorNode:element('items'),focusNode:element('items'),isCollapsed:false,toString:()=> 'Keep this quote',removeAllRanges(){}})");
+  const escape = () => app.listeners.get('keydown')?.({ key: 'Escape', target: app.prompt(), preventDefault() {} });
+  escape();
+  evaluate('quoteSelection()');
+  escape();
+  assert.equal(app.text(), 'Keep the draft\n\n> Keep this quote\n');
+});
+
+test('browser quote shortcut prevents the default on each modifier platform', async () => {
+  for (const platform of ['MacIntel', 'Linux x86_64']) {
+    const app = await page();
+    Object.assign(app.context, { navigator: { platform } });
+    const evaluate = app.repl();
+    evaluate("window.ko=undefined;window.getSelection=()=>null;state={...state,life:{type:'ready'}}");
+    let prevented = false;
+    app.listeners.get('keydown')?.({ key: 'o', metaKey: platform === 'MacIntel', ctrlKey: platform !== 'MacIntel', preventDefault() { prevented = true; } });
+    assert.equal(prevented, true);
+    assert.equal(app.context.document.activeElement, app.prompt());
+  }
+});
 
 test('an open picker follows the field after the dock resizes', async () => {
   const app = await page(), evaluate = app.repl();

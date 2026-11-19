@@ -2022,3 +2022,56 @@ light and dark in the gallery.
   aid, not an identity.
 - **Snapshots** (KoaWebviewTests, light and dark): the eight states
   above.
+
+## ⌘O in a koa pane: the selection goes into the composer (2026-11-19, spec)
+
+The user: "if I select some text and click ⌘O we open a prompt
+dialogue but I'd prefer koa to handle that and just put the selected
+text into own composer." So in a koa pane ⌘O is the page's, not the
+palette's. One page function does it, `quoteSelection()`, which the
+app calls for ⌘O (as it calls the page's find) and which the page
+binds itself in browser mode.
+
+- **A transcript selection.** The selected text, as `answers.ts`'s
+  `quote()` makes it (Markdown syntax removed, one line per line,
+  blank lines dropped), goes into the composer as `> ` lines in
+  koa's own quote format (`head()`): at the end of the draft; a
+  draft that is not empty and does not end with a blank line gets a
+  blank line first; then the quote lines; then a newline and the
+  caret on the empty line directly under the quote, where an answer
+  goes (the format of the reply annotations, so `current()` and
+  `answer()` read it). A second ⌘O appends the same way after the
+  text typed so far (a blank line, the quote, the caret line);
+  duplicates are not skipped. The composer takes the focus and
+  scrolls to the caret; the transcript's selection is cleared, as
+  the palette clears it on delivery. The dock grows as it does for
+  typing.
+- **No selection.** ⌘O focuses the composer, nothing more: in a koa
+  pane "prompt" is the composer. With the focus already there,
+  nothing happens; no beep.
+- **A selection inside the composer** is not a transcript selection:
+  ⌘O does nothing (the composer has the focus; the user can indent
+  with `> ` themselves).
+- **The menu item.** In a koa pane the Edit item reads "Quote
+  Selection" (⌘O) with a selection and "Focus Composer" (⌘O) without,
+  no ellipsis: no dialog opens. In a terminal pane it stays "Prompt
+  with Selection…" / "Prompt…" and opens the palette's Prompt mode as
+  today. The webview's context menu does not change.
+- **Views.** A subagent's view: the quote goes into that view's
+  composer, which targets the viewed agent, and into that view's
+  draft. The job view has no composer; ⌘O goes to the job's owner
+  through the terminal path, "Prompt with Selection…" / "Prompt…":
+  the palette's Prompt mode with the job view's selection as the
+  quote and the job's real owner, root agent or subagent,
+  preselected: the app preselects the job's record, and the palette
+  resolves it to its owner (the longest prefix among its candidates).
+  The menu item has the terminal titles there.
+- **Browser mode.** The page binds ⌘O (⌃O where ⌘ is not the
+  modifier) itself to `quoteSelection()` and prevents the browser's
+  default, so the behaviour is the same; the app's call and the key
+  share the one function. With no app there is no palette: in a
+  job view, ⌘O does nothing.
+- **Snapshots** (KoaWebviewTests, light and dark): a transcript
+  selection quoted into an empty composer with the caret line under
+  it; a second quote appended after typed text (blank line, quote,
+  caret).

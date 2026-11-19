@@ -221,6 +221,7 @@ export function createRecords(facts: HostFacts): Records {
 const childPath = (parent: Agent, name: string): string => `${recordPath(parent)}${parent.parent ? "/" : ""}agents/${name}`;
 const recordPath = (agent: Agent): string => agent.parent ? childPath(agent.parent, agent.name) : "";
 const jobsPath = (agent: Agent): string => `${recordPath(agent)}${agent.parent ? "/" : ""}jobs`;
+export const jobRecord = (agent: Agent, id: string): string => `${jobsPath(agent)}/${id}`;
 
 export function createTree(options: TreeOptions): Tree {
   const { sdk, facts } = options;

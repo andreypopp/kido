@@ -48,7 +48,11 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
 
     func canPerformMenuItem(_ item: NSMenuItem) -> Bool {
         switch item.action {
-        case #selector(promptSelectionItem(_:)): canPrompt()
+        case #selector(promptSelectionItem(_:)):
+            switch webviewView?.composerAction {
+            case .focus, .quote: true
+            case .prompt, .promptQuote, nil: canPrompt()
+            }
         case #selector(copySelectionItem(_:)), #selector(NSText.copy(_:)): hasSelection
         case #selector(NSText.selectAll(_:)), #selector(NSText.paste(_:)): copyMode == nil
         case #selector(reloadPage(_:)): webviewView != nil
@@ -92,7 +96,16 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
     var find: PaneFind? { didSet { needsLayout = true; onFindChange() } }
     var canPrompt: () -> Bool = { false }
     var selectionQuote: String? { hasSelection ? readSelection() : nil }
-    var onPrompt: (PaneView, String?) -> Void = { _, _ in }
+    var promptMenuTitle: String {
+        switch webviewView?.composerAction {
+        case .quote: "Quote Selection"
+        case .focus: "Focus Composer"
+        case .prompt: "Prompt…"
+        case .promptQuote: "Prompt with Selection…"
+        case nil: hasSelection ? "Prompt with Selection…" : "Prompt…"
+        }
+    }
+    var onPrompt: (PaneView, String?, KoSchema.PromptTarget?) -> Void = { _, _, _ in }
     private(set) var webviewView: WebviewPaneView?
     var inputResponder: NSResponder { if let webviewView { webviewView } else { self } }
     var webviewFocused: Bool {
@@ -2031,12 +2044,19 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
         else { bindingAction("copy_to_clipboard") }
     }
 
-    @objc func promptSelectionItem(_ sender: Any?) { openPrompt() }
+    @objc func promptSelectionItem(_ sender: Any?) {
+        if let webview = webviewView, webview.composerAction != nil {
+            webview.quoteSelection { [weak self] record, quote in
+                guard let self, canPrompt() else { return }
+                onPrompt(self, quote, .init(pane: pane, record: record))
+            }
+        } else { openPrompt() }
+    }
 
     func openPrompt() {
         if case .entering = copyMode { return }
         guard canPrompt() else { beep(); return }
-        onPrompt(self, selectionQuote)
+        onPrompt(self, selectionQuote, nil)
     }
 
     func promptDelivered() {

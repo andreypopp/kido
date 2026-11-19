@@ -15,7 +15,9 @@ import KoModel
         _ = try await KoServer.launch(dir: directory.path)
         let assets = directory.appendingPathComponent("assets")
         try FileManager.default.createDirectory(at: assets, withIntermediateDirectories: true)
-        let command = "printf '\\033]7501;state=working:app=koa\\007'; export PATH=\(SSH.quote(koaPath(self))); exec node \(SSH.quote(checkoutRoot.appendingPathComponent("koa/testdata/replay.ts").path)) transcript testKoaWebviewComposerFocus \(SSH.quote(assets.path))"
+        WebviewPaneView.visualInitialScript = "const Source=EventSource;window.EventSource=class extends Source{constructor(...args){super(...args);window.testSource=this;this.addEventListener('message',event=>{const value=JSON.parse(event.data);if(value.type==='state')window.testState=value})}};"
+        defer { WebviewPaneView.visualInitialScript = nil }
+        let command = "printf '\\033]7501;state=working:app=koa\\007'; export PATH=\(SSH.quote(koaPath(self))); exec node \(SSH.quote(checkoutRoot.appendingPathComponent("koa/testdata/replay.ts").path)) transcript testKoaWebviewQuoteSelectionMenu \(SSH.quote(assets.path))"
         try await koPut(directory.path, #"[{"name":"visual","windows":[{"name":"koa","tree":\#(koPane(command))}]}]"#)
         let app = AppDelegate(runtime: runtime)
         let owner = try XCTUnwrap(app.open(.local, start: false))
@@ -43,8 +45,21 @@ import KoModel
         }
         let initiallyFocused = try await webviewJS(web, "document.activeElement===document.querySelector('#prompt .cm-content')")
         XCTAssertEqual(initiallyFocused, "true")
+        try await wait("composer menu state") { pane.webviewView?.composerAction == .focus }
+        XCTAssertEqual(pane.promptMenuTitle, "Focus Composer")
+        pane.canPrompt = { false }
+        let quoteItem = NSMenuItem(title: pane.promptMenuTitle, action: #selector(PaneView.promptSelectionItem(_:)), keyEquivalent: "o")
+        XCTAssertTrue(pane.validateMenuItem(quoteItem))
+        try await webviewUntil(web, "document.querySelector('#items .assistant p')?.textContent==='Keep this quote in the composer.'")
+        _ = try await webviewJS(web, "(()=>{const text=document.querySelector('#items .assistant p');const range=document.createRange();range.selectNodeContents(text);const selection=getSelection();selection.removeAllRanges();selection.addRange(range);return true})()")
+        try await wait("quote menu state") { pane.webviewView?.composerAction == .quote }
+        XCTAssertEqual(pane.promptMenuTitle, "Quote Selection")
+        pane.promptSelectionItem(nil)
+        try await webviewUntil(web, "composer.text().startsWith('> ')&&composer.text().endsWith('\\n')&&getSelection().isCollapsed")
+        XCTAssertNil(app.palettePanel)
+        _ = try await webviewJS(web, "(composer.setText(''),true)")
         pane.canPrompt = { true }
-        pane.onPrompt = { pane, quote in app.openPrompt(owner: owner, pane: pane, quote: quote) }
+        pane.onPrompt = { pane, quote, preselect in app.openPrompt(owner: owner, pane: pane, quote: quote, preselect: preselect) }
         let menu = NSMenu()
         let item = menu.addItem(withTitle: "Prompt with Selection…", action: #selector(PaneView.promptSelectionItem(_:)), keyEquivalent: "o")
         item.target = pane
@@ -52,6 +67,8 @@ import KoModel
                                                windowNumber: owner.window.windowNumber, context: nil, characters: "o",
                                                charactersIgnoringModifiers: "o", isARepeat: false, keyCode: 31))
         XCTAssertTrue(menu.performKeyEquivalent(with: key))
+        XCTAssertNil(app.palettePanel)
+        pane.openPrompt()
         try await wait("Prompt with Selection popup") { app.palettePanel?.palette.prompt != nil }
         let panel = try XCTUnwrap(app.palettePanel)
         let prompt = try XCTUnwrap(panel.palette.prompt)
@@ -84,5 +101,24 @@ import KoModel
         try type("y", code: 16)
         try await webviewUntil(web, "composer.text()==='xy'")
         field.removeFromSuperview()
+        let position = try XCTUnwrap(owner.projection.placements[pane.pane]?.position)
+        let root = KoSchema.Candidate(session: position.session, target: .init(pane: pane.pane, record: ""), title: "ko", window: position.window)
+        let child = KoSchema.Candidate(session: position.session, target: .init(pane: pane.pane, record: "agents/reviewer"), title: "reviewer", window: position.window)
+        owner.testPrompt = { request, done in
+            if case .resolve = request { done(.success(.candidates([root, child]))) }
+        }
+        owner.window.makeFirstResponder(pane.inputResponder)
+        _ = try await webviewJS(web, "(()=>{testSource.dispatchEvent(new MessageEvent('message',{data:JSON.stringify({...testState,view:{type:'job',id:'j1',record:'agents/reviewer/jobs/j1',path:[{id:'s1',name:'ko',type:'agent'},{id:'child',name:'reviewer',type:'agent'},{id:'j1',name:'build',type:'job'}],job:{name:'build',command:'make',service:false,startedAt:1700000000000,place:{type:'mac'},log:'/tmp/build.log',state:{type:'running'}}}})}));testSource.dispatchEvent(new MessageEvent('message',{data:JSON.stringify({type:'job-reset',view:'j1',epoch:'job',start:0,end:9,data:btoa('job error')})}));return true})()")
+        try await wait("job prompt menu") { pane.webviewView?.composerAction == .prompt(record: "agents/reviewer/jobs/j1") }
+        XCTAssertEqual(pane.promptMenuTitle, "Prompt…")
+        try await webviewUntil(web, "document.querySelector('#jobv').textContent.includes('job error')")
+        _ = try await webviewJS(web, "(()=>{const range=document.createRange();range.selectNodeContents(document.querySelector('#jobv .job-output')||document.querySelector('#jobv'));const selection=getSelection();selection.removeAllRanges();selection.addRange(range);return true})()")
+        try await wait("job quote menu") { pane.webviewView?.composerAction == .promptQuote(record: "agents/reviewer/jobs/j1") }
+        XCTAssertEqual(pane.promptMenuTitle, "Prompt with Selection…")
+        pane.promptSelectionItem(nil)
+        try await wait("job owner prompt") { app.palettePanel?.palette.prompt?.target == child }
+        let jobPrompt = try XCTUnwrap(app.palettePanel?.palette.prompt)
+        XCTAssertEqual(jobPrompt.source.preselect, .init(pane: pane.pane, record: "agents/reviewer/jobs/j1"))
+        XCTAssertTrue(jobPrompt.textView.string.contains("job error"))
     }
 }

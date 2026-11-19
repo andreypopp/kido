@@ -73,6 +73,10 @@ final class WebviewPaneView: NSView, WKNavigationDelegate, WKUIDelegate {
     private var tasks: [ObjectIdentifier: Fetch] = [:]
     private var pending: [ObjectIdentifier] = []
     private var sockets: [Int: KoWebviewSocket] = [:]
+    enum ComposerAction: Equatable {
+        case focus, quote, prompt(record: String), promptQuote(record: String)
+    }
+    private(set) var composerAction: ComposerAction?
     private var generation = UUID().uuidString
     private var pendingDocument: PendingDocument? {
         if case .loading(_, let pending) = document { pending } else { nil }
@@ -143,6 +147,7 @@ final class WebviewPaneView: NSView, WKNavigationDelegate, WKUIDelegate {
         config.userContentController.add(bridge, contentWorld: .page, name: "koSocket")
         config.userContentController.add(bridge, contentWorld: .page, name: "koPreview")
         config.userContentController.add(bridge, contentWorld: .page, name: "koFocus")
+        config.userContentController.add(bridge, contentWorld: .page, name: "koComposer")
         browser = WebviewBrowser(frame: .zero, configuration: config)
         super.init(frame: .zero)
         // WebKit's base background overwrites the layer colour before the page paints.
@@ -322,6 +327,7 @@ final class WebviewPaneView: NSView, WKNavigationDelegate, WKUIDelegate {
         browser.configuration.userContentController.removeScriptMessageHandler(forName: "koSocket", contentWorld: .page)
         browser.configuration.userContentController.removeScriptMessageHandler(forName: "koPreview", contentWorld: .page)
         browser.configuration.userContentController.removeScriptMessageHandler(forName: "koFocus", contentWorld: .page)
+        browser.configuration.userContentController.removeScriptMessageHandler(forName: "koComposer", contentWorld: .page)
         browser.navigationDelegate = nil
         browser.uiDelegate = nil
         browser.removeFromSuperview()
@@ -479,6 +485,7 @@ final class WebviewPaneView: NSView, WKNavigationDelegate, WKUIDelegate {
     func webView(_ webView: WKWebView, didCommit navigation: WKNavigation!) {
         guard let pendingDocument, pendingDocument.navigation === navigation else { return }
         generation = pendingDocument.generation
+        composerAction = nil
         document = .loaded(pendingDocument.navigation)
         if ownsFocus { window?.makeFirstResponder(browser) }
         for socket in sockets.values { socket.cancel() }
@@ -550,6 +557,15 @@ final class WebviewPaneView: NSView, WKNavigationDelegate, WKUIDelegate {
                 guard let index = answer["index"] as? Int, let count = answer["count"] as? Int, let loading = answer["loading"] as? Bool else { done(.failed); return }
                 done(.answered(index: index, count: count, loading: loading))
             }
+        }
+    }
+
+    func quoteSelection(prompt: @escaping (String, String?) -> Void) {
+        let document = generation
+        browser.evaluateJavaScript("window.__koQuoteSelection&&window.__koQuoteSelection()") { [weak self] result, _ in
+            guard let self, !stopped, pendingDocument == nil, generation == document,
+                  let value = result as? [String: String], let record = value["record"] else { return }
+            prompt(record, value["quote"])
         }
     }
 
@@ -713,6 +729,17 @@ final class WebviewPaneView: NSView, WKNavigationDelegate, WKUIDelegate {
               let data = message.body as? [String: Any], data["document"] as? String == generation else { return }
         if message.name == "koPreview" { preview(data); return }
         if message.name == "koFocus" { focusPane(data); return }
+        if message.name == "koComposer" {
+            guard pendingDocument == nil, let value = data["state"] as? [String: String], let type = value["type"] else { return }
+            switch type {
+            case "focus": composerAction = .focus
+            case "quote": composerAction = .quote
+            case "prompt": if let record = value["record"] { composerAction = .prompt(record: record) }
+            case "prompt_quote": if let record = value["record"] { composerAction = .promptQuote(record: record) }
+            default: break
+            }
+            return
+        }
         guard message.name == "koSocket", let id = data["id"] as? Int, id >= 0, let rawAction = data["action"] as? String, let action = SocketAction(rawValue: rawAction) else { return }
         let generation = generation
         switch action {
@@ -769,6 +796,7 @@ final class WebviewPaneView: NSView, WKNavigationDelegate, WKUIDelegate {
       const bridge=window.webkit.messageHandlers.koSocket, sockets=new Map();let serial=0;
       const documentID='__KO_DOCUMENT__',MAX_PENDING_BYTES=1048576,MAX_PENDING_SENDS=256;
       window.__koFocus=(pane)=>window.webkit.messageHandlers.koFocus.postMessage({document:documentID,pane:String(pane)});
+      window.__koComposer=(state)=>window.webkit.messageHandlers.koComposer.postMessage({document:documentID,state});
       window.__koPreview=(url,rect)=>window.webkit.messageHandlers.koPreview.postMessage({document:documentID,url,rect:{x:rect.x,y:rect.y,width:rect.width,height:rect.height}});
       const post=(s,action,args={})=>bridge.postMessage({document:documentID,id:s._id,action,...args});
       class Socket extends EventTarget {

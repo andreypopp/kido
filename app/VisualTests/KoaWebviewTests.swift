@@ -65,6 +65,32 @@ import SidebarFeed
     func koaMeasured(_ web: WKWebView, _ selector: String, within seconds: Double = 5) async throws {
         _ = try await webviewJS(web, "new Promise((resolve,reject)=>{const targets=[...document.querySelectorAll(\(String(reflecting: selector)))];if(!targets.length){reject(Error('Koa measurement target missing: '+\(String(reflecting: selector))));return}const timer=setTimeout(()=>{observer.disconnect();reject(Error('Koa measurement deadline: '+\(String(reflecting: selector))))},\(seconds * 1000));const observer=new ResizeObserver(()=>{clearTimeout(timer);observer.disconnect();resolve(true)});targets.forEach(target=>observer.observe(target))})", within: seconds)
     }
+    func testKoaWebviewQuoteSelectionEmpty() async throws { try await quoteSelectionSnapshots(append: false) }
+    func testKoaWebviewQuoteSelectionAppend() async throws { try await quoteSelectionSnapshots(append: true) }
+    private func quoteSelectionSnapshots(append: Bool) async throws {
+        let web = try await scrollPage(module: "scroll-follow")
+        let pane = try XCTUnwrap(terminal?.displayedPanes.first)
+        try await webviewUntil(web, "document.querySelector('#items .assistant p')?.textContent==='Keep the composer in this pane.'")
+        for theme in ["light", "dark"] {
+            if theme == "dark" {
+                try await darken()
+                pane.webviewView?.updateTheme()
+                try await webviewUntil(web, "getComputedStyle(document.body).getPropertyValue('--ko-appearance').trim()==='dark'")
+            }
+            _ = try await webviewJS(web, "(()=>{composer.setText('');const select=index=>{const range=document.createRange();range.selectNodeContents(document.querySelectorAll('#items .assistant p')[index]);const selection=getSelection();selection.removeAllRanges();selection.addRange(range)};window.quoteMeasure=()=>{const reply=document.querySelector('#items .assistant p').getBoundingClientRect();return {scrollTop:document.querySelector('#scroll').scrollTop,top:reply.top,bottom:reply.bottom,dock:document.querySelector('#dock').getBoundingClientRect().top}};window.quoteBefore=quoteMeasure();select(0);window.__koQuoteSelection();" + (append ? "composer.setText(composer.text()+'Keep this draft.');select(1);window.__koQuoteSelection();" : "") + "return true})()")
+            let expected = "> Keep the composer in this pane.\n" + (append ? "Keep this draft.\n\n> A second quote follows the text that you type.\n" : "")
+            let value = try await webviewJS(web, "composer.text()===\(String(reflecting: expected))")
+            XCTAssertEqual(value, "true")
+            try await koaMeasured(web, "#dock")
+            try await webviewUntil(web, "document.querySelector('#prompt .cm-content')===document.activeElement&&document.querySelector('#prompt .cm-line:last-child').textContent===''")
+            let geometry = try await webviewJS(web, "({before:quoteBefore,after:quoteMeasure()})")
+            NSLog("Quote geometry: %@", geometry)
+            let visible = try await webviewJS(web, "(()=>{const after=quoteMeasure();return quoteBefore.bottom>0&&quoteBefore.top<quoteBefore.dock&&after.bottom>0&&after.top<after.dock})()")
+            guard visible == "true" else { XCTFail("Quoted reply visibility: " + geometry); return }
+            _ = try await webviewJS(web, "(()=>{const style=document.createElement('style');style.textContent='.cm-cursor{visibility:visible!important;animation:none!important}';document.head.append(style);return true})()")
+            try await webviewPageSnapshot(pane, theme, testName: append ? "testKoaWebviewQuoteSelectionAppend()" : "testKoaWebviewQuoteSelectionEmpty()")
+        }
+    }
     func testKoaWebviewDots() async throws {
         let web = try await scrollPage(module: "dots")
         let pane = try XCTUnwrap(terminal?.displayedPanes.first)

@@ -1101,6 +1101,19 @@ text to show.
   for a frame answers `cancelled` before it touches the selection,
   and the bar ignores that answer; closing the bar cancels the
   find (`window.__koFindCancel`).
+- **Quote Selection.** ⌘O quotes the transcript selection into the
+  composer of the view, or only focuses the composer; in a job view
+  it goes to the app's palette, with the job's owner preselected
+  through the job view's `record`, which koa names with the record
+  grammar of `koa-agents.ts` (the rules:
+  app/design/koa/NOTES.md, "⌘O in a koa pane"). One function,
+  `quoteSelection()`, does it: under Kido the app calls it as
+  `window.__koQuoteSelection()` from its Edit item, and the page
+  reports its state through `window.__koComposer` so the item's
+  title is right when the menu opens (design-app.md, "The composer
+  from a page"); in browser mode the page binds ⌘O, or ⌃O where ⌘
+  is not the modifier, itself, and a job view does nothing. The quote is `answers.ts`'s `quote()`
+  in `head()`'s format, the format of the reply annotations.
 - **Select All.** In Kido, ⌘A is the app's Select All, which
   reaches WebKit and never the page as a key, so the page knows a
   Select All only from the selection: at a copy, a selection that

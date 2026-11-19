@@ -243,7 +243,7 @@ Everything after -- is message text.
     const jobViewOf = (current: Viewed, path: View["path"]): Extract<View, { type: 'job' }> => {
       const { agent } = current, id = viewedId(current);
       const job: JobSnapshot = current.type === "job" ? agent.host.jobs.snapshot(current.job) : { name: current.ref.name, command: current.ref.command, service: current.ref.service, startedAt: current.ref.startedAt, place: current.ref.place, log: current.ref.log, state: { type: "cleared" } };
-      return { id, path: [...path, { id, name: job.name, type: "job" }], type: "job", job };
+      return { id, path: [...path, { id, name: job.name, type: "job" }], type: "job", job, record: koaAgents.jobRecord(agent, id) };
     };
     const facts = koaAgents.hostFacts(process.env);
     const pathEditor = !!facts.pane && !browser && !facts.runtime;

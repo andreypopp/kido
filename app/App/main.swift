@@ -348,7 +348,7 @@ import SidebarFeed
         else { return }
         let pane = PaneView.owner(responder)
         item.target = pane
-        item.title = pane?.hasSelection == true ? "Prompt with Selection…" : "Prompt…"
+        item.title = pane?.promptMenuTitle ?? "Prompt…"
         item.isEnabled = pane?.validateMenuItem(item) == true
     }
 
@@ -681,9 +681,9 @@ import SidebarFeed
         }
     }
 
-    func openPrompt(owner: WindowOwner, pane: PaneView, quote: String?) {
+    func openPrompt(owner: WindowOwner, pane: PaneView, quote: String?, preselect: KoSchema.PromptTarget? = nil) {
         guard let position = owner.projection.placements[pane.pane]?.position,
-              let source = owner.promptSource(position, quote: quote) else { return }
+              let source = owner.promptSource(position, quote: quote, preselect: preselect) else { return }
         resolvePrompt(source, panel: palettePanel, responder: pane)
     }
 

@@ -16,7 +16,11 @@ const older = expect({ on: { method: "GET", path: "/items" }, reply: { status: 2
   { seq: 9, revision: 0, at: stamp - 1, final: true, kind: "assistant", blocks: [{ type: "text", text: Array(30).fill("Oldest reply").join("\n\n") }], stop: "stop", error: "" },
 ] } } });
 
+const quoteOpen: PageRecord[] = open.map(record => record.type === 'reset' ? { ...record, items: [{ kind: 'assistant', seq: 0, revision: 0, at: stamp, final: true, blocks: [{ type: 'text', text: 'Keep the composer in this pane.\n\nA second quote follows the text that you type.' }], stop: 'stop', error: '' }] } : record);
+
 export const scenarios: Scenarios = {
+  testKoaWebviewQuoteSelectionEmpty: () => ({ open: quoteOpen, steps: [], files: {} }),
+  testKoaWebviewQuoteSelectionAppend: () => ({ open: quoteOpen, steps: [], files: {} }),
   testKoaWebviewRevealKeepsFollowing: () => ({ open, steps: [], files: {} }),
   testKoaWebviewStreamingNeverStepsUp: () => ({ open, steps: [], files: {} }),
   testKoaWebviewOlderHistoryKeepsTheReaderAnchor: () => ({ open: open.map(record => record.type === "reset" ? { ...record, more: true, items: record.items.map(item => ({ ...item, seq: item.seq + 10 })) } : record), steps: [older], files: {} }),

@@ -978,7 +978,7 @@ import XCTest
         pane.mouseUp(with: mouse(pane, .leftMouseUp, x: 0, y: alpha))
         var forwarded: [String?] = []
         pane.canPrompt = { true }
-        pane.onPrompt = { _, quote in forwarded.append(quote) }
+        pane.onPrompt = { _, quote, _ in forwarded.append(quote) }
         keys(pane, "p")
         XCTAssertTrue(forwarded.isEmpty, "a cursor-only cell does not prompt")
         pane.promptSelectionItem(nil)

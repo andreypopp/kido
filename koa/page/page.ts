@@ -1,4 +1,5 @@
 import { annotations, update } from './annotations.ts';
+import { head, quote } from './answers.ts';
 import { scrollInitial, scrollStored, scrollUpdate, scrollWindow, type ItemId, type ScrollEvent, type Measure, type Decision, type Row, type Lookup } from './scroll.ts';
 import { pathToken } from '../path-token.ts';
 import { markdown, markdownLine, type Tail } from './markdown.ts';
@@ -27,6 +28,8 @@ declare global {
     koaFocused?: boolean;
     __koFind?: (query: string, backwards: boolean) => Promise<{ index: number; count: number; loading: boolean } | { cancelled: true } | null>;
     __koFindCancel?: () => void;
+    __koQuoteSelection?: () => { record: string; quote?: string } | undefined;
+    __koComposer?: (state: { type: 'focus' | 'quote' } | { type: 'prompt' | 'prompt_quote'; record: string }) => void;
     koaMetrics?: { flush(): Promise<void>; readonly after: number; readonly count: number; readonly items: WireItem[] };
   }
 }
@@ -1629,6 +1632,7 @@ function apply(record: PageRecord) {
     if (previousFilter && priorInput?.kind === 'user') visible(priorInput.seq);
     const workingChanged = state.working !== record.working;
     state = record;
+    reportComposer();
     if (scopeChanged) { historyRequest = undefined; historyBefore = undefined; }
     if ('threads' in record && !record.threads.some(thread => thread.name === threadFilter())) threadFilters.delete(filterKey());
     renderThreads();
@@ -2159,16 +2163,49 @@ const previewHover = (event: KeyboardEvent) => document.documentElement.classLis
 document.addEventListener('keyup', previewHover);
 window.addEventListener('blur', () => { decide({ type: 'focus' }); document.documentElement.classList.remove('preview-modifiers'); composerFocus(); });
 document.addEventListener('selectionchange', () => {
+  reportComposer();
   const next = pinnedRows();
   if (next?.from === selected?.from && next?.to === selected?.to) return;
   selected = next; windowDirty = true; schedule();
 });
+function transcriptSelected(selection: Selection | null) {
+  return selection && !selection.isCollapsed && !element('prompt').contains(selection.anchorNode) && !element('prompt').contains(selection.focusNode) && (wholeSelection() || element('items').contains(selection.anchorNode) && element('items').contains(selection.focusNode));
+}
+function reportComposer() {
+  if (!window.__koComposer) return;
+  const selection = window.getSelection();
+  window.__koComposer(state.view.type === 'job'
+    ? { type: jobSelected(selection) ? 'prompt_quote' : 'prompt', record: state.view.record }
+    : { type: transcriptSelected(selection) ? 'quote' : 'focus' });
+}
+function jobSelected(selection: Selection | null) {
+  return selection && !selection.isCollapsed && element('jobv').contains(selection.anchorNode) && element('jobv').contains(selection.focusNode);
+}
+function quoteSelection() {
+  const selection = window.getSelection();
+  if (state.view.type === 'job') return window.ko ? { record: state.view.record, ...(selection && jobSelected(selection) ? { quote: selection.toString() } : {}) } : undefined;
+  if (selection && !selection.isCollapsed && (element('prompt').contains(selection.anchorNode) || element('prompt').contains(selection.focusNode))) return;
+  if (selection && transcriptSelected(selection)) {
+    const text = quote(wholeSelection() ? transcriptText() : selection.toString());
+    if (text) {
+      const draft = editor.text();
+      escaped = false;
+      editor.setText(draft + (draft && !draft.endsWith('\n\n') ? draft.endsWith('\n') ? '\n' : '\n\n' : '') + head(text));
+      selection.removeAllRanges();
+    }
+  }
+  editor.focus();
+}
+if (window.ko) window.__koQuoteSelection = quoteSelection;
 document.addEventListener('copy', event => {
   if (state.view.type === 'job' || !wholeSelection()) return;
   event.preventDefault();
   event.clipboardData?.setData('text/plain', transcriptText());
 });
 document.addEventListener('keydown', event => {
+  if (!window.ko && !event.defaultPrevented && !event.isComposing && !event.altKey && !event.shiftKey && event.key.toLowerCase() === 'o' && (/Mac|iPhone|iPad/.test(navigator.platform) ? event.metaKey && !event.ctrlKey : event.ctrlKey && !event.metaKey)) {
+    event.preventDefault(); quoteSelection(); return;
+  }
   if (!isControl(event.target)) {
     const direction = ['ArrowUp', 'PageUp', 'Home'].includes(event.key) || event.key === ' ' && event.shiftKey ? 'up'
       : ['ArrowDown', 'PageDown', 'End', ' '].includes(event.key) ? 'down' : undefined;

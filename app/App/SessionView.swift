@@ -82,7 +82,7 @@ final class SessionView: NSView {
     let runtime: GhosttyRuntime
     var canPrompt: () -> Bool = { false }
     var onURL: (String) -> Void = { _ in }
-    var onPrompt: (PaneView, String?) -> Void = { _, _ in }
+    var onPrompt: (PaneView, String?, KoSchema.PromptTarget?) -> Void = { _, _, _ in }
     // Where the panes run, from the model.
     private(set) var marks: [PaneID: RuntimeMark] = [:]
     // The current session's windows, and the hot windows of other sessions.

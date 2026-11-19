@@ -55,6 +55,13 @@ const blocksTwelfth: Block[] = [
 ];
 
 export const scenarios: Scenarios = {
+  testKoaWebviewQuoteSelectionMenu: dir => ({
+    open: [
+      { type: 'reset', epoch: 'quote-menu', more: false, items: [{ kind: 'assistant', seq: 0, revision: 0, at: 1700000001000, final: true, blocks: [{ type: 'text', text: 'Keep this quote in the composer.' }], stop: 'stop', error: '' }] },
+      stateIdle(dir),
+    ],
+    steps: [], files: {},
+  }),
   testKoaWebviewComposerFocus: dir => ({
     open: [
       { type: "reset", epoch: "epoch1", items: [], more: false },

@@ -998,7 +998,13 @@ before the menu opens. In copy mode, a right-click inside the selection or on
 an empty cell keeps the selection, and a right-click on another word selects
 that word. The copy cursor alone is not a selection. With no text and no
 selection, no menu opens. Copy acts like `y` in copy mode and like Ghostty's
-copy outside it. ⌘O is the key equivalent of an Edit menu item. It reads
+copy outside it. ⌘O is the key equivalent of an Edit menu item. In a
+page that reports a composer state (koa's; [Webview panes](#webview-panes),
+"The composer from a page") in an agent's view it reads "Quote
+Selection" or "Focus Composer" and acts in the page, and the palette's
+Prompt mode does not open; in a job view it reads as below and opens
+Prompt mode with the job view's selection as the quote and the job's
+owner preselected. Elsewhere it reads
 "Prompt with Selection…" when the focused pane has a selection, in copy mode or
 a Ghostty selection, and "Prompt…" otherwise. It enters the palette's Prompt
 mode ([Command palette](#command-palette)), with the selection appended as a
@@ -1817,6 +1823,23 @@ as koa's editor float, before the snapshot that adds it arrives: an
 unknown id becomes the window owner's one pending jump, which the
 snapshot that places the pane performs. A later `focus` replaces it,
 any other selection drops it, and it expires after 2 s.
+
+**The composer from a page.** A page that has a composer (koa's)
+posts its ⌘O state to the script message handler `koComposer` with the
+document's generation, at each record and selection change: `focus`
+(no transcript selection) or `quote` (a transcript selection) in an
+agent's view, `prompt` or `prompt_quote` (a selection) with the job's
+record in a job view.
+The handler keeps it on `WebviewPaneView` only when the generation
+matches and no navigation is pending, and a committed navigation clears
+it, so the Edit menu reads it synchronously when it opens. With a state,
+the pane's ⌘O item calls the page's `window.__koQuoteSelection()`, as
+find calls `window.__koFind`. In an agent's view the page acts and
+answers nothing; in a job view it answers the job's record and its
+selected text, and the app opens Prompt mode from the pane with that
+quote and `PromptTarget(pane, record)` as the preselect, which the
+palette resolves to the job's owner (the rules: app/design/koa/NOTES.md,
+"⌘O in a koa pane").
 
 **Drops on a page.** A Finder drop on a local program's page
 (`WindowOwner.isLocalProgram`) is the one grant of a host path to a
@@ -2852,7 +2875,8 @@ optional preselected target: a pane and a record of it, as
 `POST /prompt` takes it (protocol.md, section 11). The entry points are:
 
 - ⌘O, "Prompt with Selection…" in a pane's context menu, and `p` in copy mode
-  ([Panes](#panes)). The source is the focused pane, and the quote is its
+  ([Panes](#panes)); in a koa pane, ⌘O only from a job view, with the
+  job's record as the preselect. The source is the focused pane, and the quote is its
   selection, if any. With the palette closed, `WindowOwner` forwards the pane
   to `AppDelegate.openPrompt`, which opens the palette over the pane's window
   with the pane as the focus to restore.

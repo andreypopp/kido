@@ -1132,9 +1132,9 @@ private class AlertEscape: NSView {
             catch { return false }
         }
         view.canPrompt = { [weak self] in self?.canPrompt == true }
-        view.onPrompt = { [weak self] pane, quote in
+        view.onPrompt = { [weak self] pane, quote, preselect in
             guard let self else { return }
-            (NSApp.delegate as? AppDelegate)?.openPrompt(owner: self, pane: pane, quote: quote)
+            (NSApp.delegate as? AppDelegate)?.openPrompt(owner: self, pane: pane, quote: quote, preselect: preselect)
         }
         view.onPaneChange = { [weak self] in
             guard let self, accepts(generation) else { return }

@@ -116,7 +116,7 @@ struct PaletteEntry {
             else if action == #selector(AppDelegate.showThemes) { operation = .enter(.theme(.pick)) }
             else if action == #selector(SessionMenus.renameItem), let owner, let session = owner.currentSession, let instance = owner.snapshot?.serverInstance {
                 operation = .enter(.sessionName(owner, instance, .rename(session.id, original: session.name)))
-            } else if action == #selector(PaneView.promptSelectionItem(_:)), let owner, let pane = livePane(owner, responder),
+            } else if action == #selector(PaneView.promptSelectionItem(_:)), let owner, let pane = livePane(owner, responder), pane.webviewView?.composerAction == nil,
                       let position = owner.projection.placements[pane.pane]?.position,
                       let source = owner.promptSource(position, quote: pane.selectionQuote) {
                 operation = .enter(.prompt(source))
