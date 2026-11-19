@@ -36,6 +36,8 @@ export function pathEditorCommand(argv: string[], path: string, line?: number): 
   return [...argv, ...line !== undefined && ['vi', 'vim', 'nvim', 'nano', 'emacs', 'micro'].includes(basename(argv[0] ?? '')) ? ['+' + line] : [], path];
 }
 
+const keepFailedPath = 's=$?; if [ "$s" -ne 0 ] && [ "$s" -le 128 ]; then printf \'{"close":"keep"}\' | "$k" api -X PATCH --input - "/panes/$KO_PANE" >/dev/null; fi; exit "$s"';
+
 export async function openPathEditor(text: string, context: CompletionContext, agentDir: string, self: string, valid: () => boolean): Promise<Routes['/editor/path']['response']> {
   const warn = (reason: string) => ({ type: 'warning' as const, text: `${text}: ${reason}` });
   const token = pathToken(text), ko = findKo();
@@ -48,7 +50,7 @@ export async function openPathEditor(text: string, context: CompletionContext, a
       const path = resolvePath(token.path, cwd, homedir());
       try { await stat(path); } catch (error) { return warn(isRecord(error) && error.code === 'ENOENT' ? 'no such file' : errorText(error)); }
       if (!valid()) return warn('the session changed');
-      argv = [ko, 'shell', '--', ...pathEditorCommand(editorCommand(agentDir, cwd, process.env), path, token.line)];
+      argv = [ko, 'shell', '--', 'sh', '-c', 'k=$1; shift; "$@"; ' + keepFailedPath, 'sh', ko, ...pathEditorCommand(editorCommand(agentDir, cwd, process.env), path, token.line)];
       break;
     }
     case 'runtime': {
@@ -67,7 +69,7 @@ export async function openPathEditor(text: string, context: CompletionContext, a
         const [editor, path] = Buffer.concat(chunks).toString('utf8').split('\0');
         if (!editor || !path) return warn('the runtime is not up');
         const command = editor.split(' ');
-        argv = ['sh', '-lc', 'cd -- "$1" || exit; shift; exec ${EDITOR:-vi} "$@"', 'sh', cwd, ...pathEditorCommand(command, path, token.line).slice(command.length)];
+        argv = ['sh', '-c', 's=$1; shift; exec sh -lc "$s" sh "$(command -v ko)" "$@"', 'sh', 'k=$1; cd -- "$2" && { shift 2; ${EDITOR:-vi} "$@"; }; ' + keepFailedPath, cwd, ...pathEditorCommand(command, path, token.line).slice(command.length)];
       } catch { return warn('the runtime is not up'); }
       break;
     }

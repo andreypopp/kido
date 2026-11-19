@@ -10,6 +10,8 @@ import { dirname, join } from "node:path";
 import { selfPane, pollUntil, ofType } from "./koa-agent-fixture.ts";
 import { realFixture, linkFakeKo } from "./koa-program-fixture.ts";
 
+const keepFailedPath = 's=$?; if [ "$s" -ne 0 ] && [ "$s" -le 128 ]; then printf \'{"close":"keep"}\' | "$k" api -X PATCH --input - "/panes/$KO_PANE" >/dev/null; fi; exit "$s"';
+
 const f_notified = (app: Awaited<ReturnType<typeof realFixture>>, text: string) => app.until(ofType("item", record => record.item.kind === "notify" && record.item.text.text === text));
 
 async function editing(t: TestContext, env: NodeJS.ProcessEnv = {}, args: string[] = []) {
@@ -55,7 +57,7 @@ test('a routed path uses the runtime editor, home and cwd and opens a runtime pa
   const row = (await f.rows()).find(row => row.id === result.pane);
   assert.equal(row?.runtime, 'dev');
   assert.equal(row?.cwd, undefined);
-  assert.deepEqual(row?.command, ['sh', '-lc', 'cd -- "$1" || exit; shift; exec ${EDITOR:-vi} "$@"', 'sh', dir, '+12', join(dir, 'review.ts')]);
+  assert.deepEqual(row?.command, ['sh', '-c', 's=$1; shift; exec sh -lc "$s" sh "$(command -v ko)" "$@"', 'sh', 'k=$1; cd -- "$2" && { shift 2; ${EDITOR:-vi} "$@"; }; ' + keepFailedPath, dir, '+12', join(dir, 'review.ts')]);
   assert.equal(row?.fixed_title, '~/review.ts:12:3');
   const execs: { request: { argv: string[] } }[] = (await readFile(log, 'utf8')).trim().split('\n').map(line => JSON.parse(line));
   assert.equal(execs.filter(call => call.request.argv.includes('~/review.ts')).length, 1);
@@ -81,7 +83,7 @@ test('each path click opens a new float beside the draft; missing paths warn and
   assert.notEqual(first.pane, second.pane);
   for (const id of [first.pane, second.pane]) {
     const row = (await f.rows()).find(row => row.id === id);
-    assert.deepEqual(row?.command, [join(f.dir, 'ko'), 'shell', '--', 'myeditor', '--flag', file]);
+    assert.deepEqual(row?.command, [join(f.dir, 'ko'), 'shell', '--', 'sh', '-c', 'k=$1; shift; "$@"; ' + keepFailedPath, 'sh', join(f.dir, 'ko'), 'myeditor', '--flag', file]);
     assert.equal(row?.fixed_title, 'review.ts:12:3');
     assert.equal(row?.parent, 'pane_1'); assert.equal(row?.close, 'exit'); assert.equal(row?.close_confirm, 'never');
   }
@@ -93,6 +95,34 @@ test('each path click opens a new float beside the draft; missing paths warn and
   assert.equal(directory.type, 'opened');
   if (directory.type !== 'opened') return;
   assert.equal((await f.rows()).find(row => row.id === directory.pane)?.command?.at(-1), f.app.cwd);
+});
+
+test('path wrappers keep failures but close clean and signaled editors', { timeout: 15000 }, async t => {
+  const f = await editing(t);
+  const file = join(f.app.cwd, 'review.ts'), runtimes = join(f.dir, 'runtimes.json');
+  await writeFile(file, 'review');
+  await writeFile(runtimes, JSON.stringify({ dev: { cwd: f.app.cwd, env: { EDITOR: 'myeditor --flag' } } }));
+  const runtime = await editing(t, { KO_FAKE_RUNTIMES: runtimes });
+  const bin = await mkdtemp(join(tmpdir(), 'koa-path-wrapper-'));
+  t.after(() => rm(bin, { recursive: true, force: true }));
+  const log = join(bin, 'log'), editor = join(bin, 'myeditor');
+  await writeFile(join(bin, 'ko'), '#!/bin/sh\nprintf "%s\\n" "$@" > "$LOG"\ncat >> "$LOG"\n', { mode: 0o700 });
+  await writeFile(join(bin, '.profile'), `PATH=/usr/bin:/bin; export PATH\nEDITOR=${JSON.stringify(editor)}; export EDITOR\n`);
+  for (const [fixture, context] of [[runtime, { type: 'runtime', name: 'dev', cwd: f.app.cwd }], [f, { type: 'host', cwd: f.app.cwd }]] as const) {
+    assert.equal((await fixture.path(file, context)).type, 'opened');
+    const command = (await fixture.float()).command;
+    const argv = context.type === 'host' ? command.slice(3).map(arg => arg === join(f.dir, 'ko') ? join(bin, 'ko') : arg) : command;
+    for (const [body, status] of [['koa-missing-path-editor', 127], ['exit 0', 0], ['kill -TERM $$', 143]] as const) {
+      await rm(log, { force: true });
+      await writeFile(editor, '#!/bin/sh\n' + body + '\n', { mode: 0o700 });
+      const shell = argv[0];
+      assert.ok(shell);
+      const args = argv.slice(1);
+      const result = await promisify(execFile)(shell, args, { env: { ...process.env, HOME: bin, PATH: `${bin}:/usr/bin:/bin`, EDITOR: editor, KO_PANE: 'pane_wrapper', LOG: log }, timeout: 3000 }).then(() => 0, (error: { code: number }) => error.code);
+      assert.equal(result, status, `${context.type}: ${body}`);
+      assert.equal(await readFile(log, 'utf8').catch(() => ''), status === 127 ? 'api\n-X\nPATCH\n--input\n-\n/panes/pane_wrapper\n{"close":"keep"}' : '', `${context.type}: ${body}`);
+    }
+  }
 });
 
 test("an edit with exit 0 replaces the draft, does not send it and leaves nothing behind", { timeout: 15000 }, async t => {

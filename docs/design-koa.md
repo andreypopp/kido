@@ -1574,11 +1574,18 @@ transcript open in the editor").
   of koa's pane with the default `close: exit`, `fixed_title` the
   span's text and `close_confirm: never`. Nothing observes it and koa
   reads nothing back: the editor saves to the real file. The server
-  removes the float when the editor exits, because no one reads its
-  lingering screen (Control-G's float keeps `on_exit` for its ending
-  notice), and with koa's pane. A start failure of `ko-pane` (cause
-  `failed`) stays; an editor that fails after `ko shell` has run
-  closes its float, as any exit does. There is no limit of one float
+  removes the float when the editor exits cleanly, because no one
+  reads its lingering screen (Control-G's float keeps `on_exit` for
+  its ending notice), and with koa's pane. A failure stays, so the
+  user reads its error: a start failure of `ko-pane` (cause `failed`)
+  by the sweep's rule, and an editor that exits non-zero (a missing
+  editor is 127) by a `sh` wrapper around it, which sets its own pane
+  to `close: keep` with `ko api -X PATCH /panes/$KO_PANE` before it
+  exits with the editor's status, as ko's own wrappers do (design.md,
+  "Window lifecycle"). The wrapper is the same on the host and in a
+  runtime, where the float's own identity may send the patch. An
+  editor killed by a signal (status above 128) closes its float: the
+  user or a removal ended it, it did not fail. There is no limit of one float
   and no check for unsaved changes (the user's decision); the
   Control-G draft float is separate. On the host the command is
   Control-G's editor command under `ko shell --`; in a routed session
