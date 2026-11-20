@@ -58,6 +58,27 @@ test('rebuild replays the whole active branch across compactions', t => {
   assert.equal(items[8].blocks[0].text, 'after');
 });
 
+test('selecting a thread loads its items before compaction and outside the live window', t => {
+  const view = transcript({ sessionEntryToContextMessages, dir: directory(t), flushMs: 1, kind: 'root' }); t.after(() => view.close());
+  const entries: SessionEntry[] = [
+    { type: 'message', id: 'old', parentId: null, timestamp: new Date(123).toISOString(), message: assistant('[thread: old]\nHistorical reply') },
+    { type: 'custom', id: 'index', parentId: 'old', timestamp: new Date(124).toISOString(), customType: 'koa.thread', data: { name: 'old', at: 123 } },
+    { type: 'message', id: 'recent', parentId: 'index', timestamp: new Date(125).toISOString(), message: { role: 'user', content: 'Recent input', timestamp: 125 } },
+    { type: 'compaction', id: 'compact', parentId: 'recent', timestamp: new Date(126).toISOString(), summary: 'Compacted history', tokensBefore: 100, firstKeptEntryId: 'recent' },
+  ];
+  view.rebuild(entries, 'session', 'compact');
+  assert.ok(view.threads().some(thread => thread.name === 'old'));
+  const selected = () => JSON.parse(request(view, '/items?before=' + Number.MAX_SAFE_INTEGER + '&thread=old').join(''));
+  const historical = selected();
+  assert.deepEqual(historical.items.filter((item: WireItem) => item.kind === 'assistant').map((item: { blocks: { text: string }[] }) => item.blocks[0].text), ['Historical reply']);
+  assert.equal(historical.more, false);
+  for (let index = 0; index < 80; index++) view.message({ ...assistant('[thread: recent]\nRecent reply ' + index), timestamp: 200 + index }, 'end');
+  const live = JSON.parse(request(view, '/items?before=' + Number.MAX_SAFE_INTEGER).join(''));
+  assert.equal(live.more, true);
+  assert.equal(live.items.some((item: WireItem) => item.kind === 'assistant' && item.blocks.some(block => block.thread === 'old')), false);
+  assert.deepEqual(selected(), historical);
+});
+
 test('live compaction replaces its command without changing earlier items or epoch', t => {
   const view = transcript({ sessionEntryToContextMessages, dir: directory(t), flushMs: 1 }); t.after(() => view.close());
   view.message({ role: 'user', content: 'before', timestamp: 1 }, 'end');
