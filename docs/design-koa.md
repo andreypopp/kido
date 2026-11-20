@@ -125,8 +125,8 @@ the SDK. The shim checks the host and runs
 `${0%/*}/../share/koa/koa/koa.ts`, so a Homebrew symlink of `bin/koa`
 finds the linked `share/koa`, and a `brew upgrade koa` replaces the
 files under a running koa as an install does (`koa-identity.ts` then
-makes `/reload` restart it). ko does not ship koa: the server runs
-the `koa` of its PATH (design.md, "Starting a koa agent"). koa needs
+makes `/reload` restart it). ko does not ship koa: the login shell
+of a koa pane runs the `koa` of the login PATH (design.md, "Starting a koa agent"). koa needs
 only a `ko` on PATH at runtime, which every pane has, and it finds it
 there, so it always talks to the ko that runs its pane. koa takes ko's
 API types from `../webview/ko-api.d.ts`, with type-only imports. The

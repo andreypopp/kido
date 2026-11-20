@@ -320,7 +320,7 @@ import XCTest
             owner.navigation.windows.count == 3 && owner.navigation.window == owner.navigation.windows[1].id && owner.navigation.windows[1].id != first
         }
         let agent = try XCTUnwrap(windows(client).first { $0.id == owner.navigation.windows[1].id }?.panes.first)
-        XCTAssertEqual((try client.model()).panes.first { $0.id == agent }?.command, [bin + "/koa"], "the server runs koa from its PATH")
+        XCTAssertEqual((try client.model()).panes.first { $0.id == agent }?.command, ["koa"], "the server runs koa by name through the login shell")
         XCTAssertEqual(windows(client).first { $0.id == owner.navigation.windows[1].id }?.name, "koa", "the server names the agent's window")
     }
 

@@ -721,7 +721,7 @@ invariants.
   `invalid` with the document unchanged. A pane without `command` runs
   `ko shell`. A `command` (`Command`) is an `argv` with an absolute
   executable, a `shell` command line, or `koa`, which starts the
-  `koa` of the server's PATH (design.md, "Starting a koa agent"); with a
+  `koa` of the user's login PATH through `ko shell` (design.md, "Starting a koa agent"); with a
   `runtime`, the runtime's `koa` setting places a `koa` pane
   (design-runtimes.md, "A koa command in a runtime"). `parent` and `close` are the pane's for its life, and
   its row carries them from the layout event that adds it. `parent`
@@ -845,8 +845,10 @@ invariants.
   runtime-exec`) set their pane to `keep` when they fail before the
   user's program runs, for example when a runtime does not come up
   or the cwd is missing, and then exit 1 with the error on the pane's
-  screen. A shell that fails to run a command exits normally, because
-  the wrapper does not see that failure.
+  screen. `ko shell -- CMD` counts a CMD that its login shell does not
+  find as executable as such a failure. A command that the shell
+  found and that fails later exits normally, because the wrapper does
+  not see that failure.
 - `POST /panes/pane_N/clear_history` clears the pane's scrollback.
   `ko-pane` puts the clear into the ring at its position in the
   stream, so every mirror, live or resumed,

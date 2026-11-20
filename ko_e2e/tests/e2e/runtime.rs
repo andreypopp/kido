@@ -3008,7 +3008,7 @@ fn a_koa_command_runs_the_path_koa_on_the_host_routed_for_or_inside_a_runtime() 
         &prefix.join("bin/ko"),
         dir,
         Path::new("/bin/sh"),
-        &[("KO_RUNTIME_COMMAND_KIND", "1"), ("PATH", &path)],
+        &[("KO_RUNTIME_COMMAND_KIND", "1"), ("PATH", "/usr/bin:/bin")],
         &["--config", text_of(&file)],
     );
     let koa = |start: Value, extra: Value| {
@@ -3068,10 +3068,30 @@ fn a_koa_command_runs_the_path_koa_on_the_host_routed_for_or_inside_a_runtime() 
         row["status"]["kind"]["type"] == "host"
             && row["status"]["kind"]["pane"]["type"] == "koa_agent"
     });
-    assert_eq!(row["command"][0], text_of(&shipped));
+    assert_eq!(row["command"][0], "koa");
     assert!(row["runtime"].is_null());
+    let updated = Dir::new("ko-koa-updated-");
+    let updated_koa = updated.join("koa");
+    fs::write(
+        &updated_koa,
+        fs::read_to_string(&shipped)
+            .unwrap()
+            .replace("login=%s", "login=second:%s"),
+    )
+    .unwrap();
+    fs::set_permissions(&updated_koa, fs::Permissions::from_mode(0o755)).unwrap();
+    fs::write(
+        s.dir.join(".profile"),
+        format!(
+            "export KOA_LOGIN=updated\nexport PATH={}:/usr/bin:/bin\n",
+            updated.display()
+        ),
+    )
+    .unwrap();
     let resume = koa(json!({"type": "resume", "session": saved}), json!({}));
-    assert_eq!(args(&launched(&resume)), [format!("--session={saved}")]);
+    let ran = launched(&resume);
+    assert_eq!(args(&ran), [format!("--session={saved}")]);
+    assert_eq!(field(&ran, "login"), "second:updated");
     let fork = koa(
         json!({"type": "fork", "session": saved, "session_id": "s-fork"}),
         json!({}),
@@ -3147,21 +3167,33 @@ fn a_koa_command_runs_the_path_koa_on_the_host_routed_for_or_inside_a_runtime() 
         "runtime routed runs koa on the host",
     );
 
-    let script = fs::read(&shipped).unwrap();
-    fs::remove_file(&shipped).unwrap();
+    let script = fs::read(&updated_koa).unwrap();
+    fs::remove_file(&updated_koa).unwrap();
+    fs::write(
+        s.dir.join(".profile"),
+        format!(
+            "export PATH={}:/usr/bin:/bin\nkoa() {{ :; }}\n",
+            updated.display()
+        ),
+    )
+    .unwrap();
     let missing = koa(json!({"type": "new"}), json!({}));
     let row = dead(&s, &missing);
-    assert_eq!(row["dead"]["cause"]["type"], "failed");
-    let absent = prefix.join("bin/koa");
-    assert_eq!(row["command"][0], text_of(&absent));
-    s.screen_has(&missing, &format!("ko: exec {}:", absent.display()));
+    assert_eq!(row["close"], "keep");
+    assert_eq!(row["command"][0], "koa");
+    s.screen_has(&missing, "ko shell: koa was not found on the login PATH");
     assert!(
         s.has_pane(&missing),
         "a koa that fails to start keeps its row"
     );
-    fs::write(&shipped, script).unwrap();
-    fs::set_permissions(&shipped, fs::Permissions::from_mode(0o755)).unwrap();
+    fs::write(
+        s.dir.join(".profile"),
+        format!("export PATH={}:/usr/bin:/bin\n", updated.display()),
+    )
+    .unwrap();
+    fs::write(&updated_koa, script).unwrap();
+    fs::set_permissions(&updated_koa, fs::Permissions::from_mode(0o755)).unwrap();
     let restored = koa(json!({"type": "new"}), json!({}));
     assert_eq!(args(&launched(&restored)), Vec::<String>::new());
-    assert_eq!(s.row(&restored)["command"][0], text_of(&shipped));
+    assert_eq!(s.row(&restored)["command"][0], "koa");
 }

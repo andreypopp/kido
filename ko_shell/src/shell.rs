@@ -79,8 +79,12 @@ pub fn exec(command: &[String], exe: &Path, in_runtime: bool) -> io::Error {
     };
     let name = path.file_name().and_then(|name| name.to_str());
     if matches!(name, Some("bash" | "zsh" | "sh" | "dash" | "ksh")) {
+        let exe = match std::path::absolute(exe) {
+            Ok(exe) => exe,
+            Err(error) => return error,
+        };
         let script = format!(
-            "{}exec \"$@\"",
+            "{}ko_exe=$1; shift; case $(command -v -- \"$1\" 2>/dev/null) in /*) ;; *) if [ -n \"${{KO_PANE-}}\" ]; then printf '%s' '{{\"close\":\"keep\"}}' | \"$ko_exe\" api -X PATCH --input - \"/panes/$KO_PANE\" >/dev/null 2>&1; fi; printf 'ko shell: %s was not found on the login PATH\\n' \"$1\" >&2; exit 1 ;; esac; exec \"$@\"",
             bin_dir
                 .as_deref()
                 .map_or(String::new(), path_prepend_script)
@@ -88,6 +92,7 @@ pub fn exec(command: &[String], exe: &Path, in_runtime: bool) -> io::Error {
         Command::new(&path)
             .args(["-l", "-i", "-c", &script])
             .arg(&path)
+            .arg(exe)
             .args(command)
             .exec()
     } else {

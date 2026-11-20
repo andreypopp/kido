@@ -16,7 +16,6 @@ use crate::pane::{Birth, Pane, Program};
 use crate::pane_proc::{Io, Launch, Life};
 use crate::runtime::RuntimeKey;
 use ko_config::values::RuntimeName;
-use ko_sys::file::is_executable;
 use ko_wire::ids::{PaneId, PaneToken, SessionId};
 use ko_wire::protocol::{
     Close, Command, CreatePane, Error, ErrorKind, KoaStart, Relation, Variable,
@@ -129,7 +128,6 @@ pub(crate) fn program(
         Start::Runtime(_) => (b"/bin/sh".to_vec(), None),
         Start::Host { routed, .. } => (bytes(shell), routed),
     };
-    let mut entered = false;
     let inner: Option<Vec<Vec<u8>>> = match &request.command {
         None => None,
         Some(Command::Argv { argv }) => {
@@ -150,14 +148,7 @@ pub(crate) fn program(
             model,
             browser,
         }) => {
-            let mut argv = vec![match start {
-                Start::Runtime(_) => b"koa".to_vec(),
-                Start::Host { .. } => {
-                    let path = config.koa();
-                    entered = is_executable(&path);
-                    bytes(&path)
-                }
-            }];
+            let mut argv = vec![b"koa".to_vec()];
             if *browser {
                 argv.push(b"--browser".to_vec());
             }
@@ -198,7 +189,7 @@ pub(crate) fn program(
         .unwrap_or_else(|| vec![bytes(&config.exe), b"shell".to_vec()]);
     Ok(match start {
         Start::Host { cwd, .. } => Program {
-            argv: if entered {
+            argv: if matches!(request.command, Some(Command::Koa { .. })) {
                 [bytes(&config.exe), b"shell".to_vec(), b"--".to_vec()]
                     .into_iter()
                     .chain(record.iter().cloned())
@@ -946,14 +937,7 @@ mod tests {
 
     #[test]
     fn koa_option_values_are_single_arguments() {
-        let dir = PathBuf::from(format!("/tmp/ko-koa-{}", ko_sys::entropy::hex(8).unwrap()));
-        std::fs::create_dir(&dir).unwrap();
-        let koa = dir.join("koa");
-        std::os::unix::fs::symlink("/bin/sh", &koa).unwrap();
         let mut config = config();
-        config
-            .env
-            .push(format!("PATH={}", dir.display()).into_bytes());
         config.bin_dir = Some(PathBuf::from("/ignored"));
         for name in ["--browser", "--help"] {
             let request = CreatePane {
@@ -985,7 +969,7 @@ mod tests {
                 },
             )
             .unwrap();
-            let mut expected = vec![koa.as_os_str().as_encoded_bytes().to_vec()];
+            let mut expected = vec![b"koa".to_vec()];
             expected.extend(
                 ["--session-id=-id", &format!("--name={name}"), "--model=-x"]
                     .map(|arg| arg.as_bytes().to_vec()),
@@ -1021,7 +1005,6 @@ mod tests {
                 .map(|arg| arg.as_bytes().to_vec())
             );
         }
-        std::fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

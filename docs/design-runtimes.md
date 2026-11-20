@@ -1239,7 +1239,7 @@ runtime's `koa` (`Destination` in `ko_server/src/state/runtime_ops.rs`);
 every other command is inside:
 
 - `koa: host`: routed. The pane is a host pane (no row `runtime`),
-  and the server runs the koa of its PATH with `--runtime NAME`. The `cwd` is
+  and the login shell runs the koa of the login PATH with `--runtime NAME`. The `cwd` is
   a host path, as for a host pane; a `{pane}` cwd of a runtime pane
   maps its OSC 7 directory back to the host through the runtime's
   `paths`. koa maps its host directory into the runtime for its tools.
@@ -1249,9 +1249,10 @@ every other command is inside:
   runtime pane is: the cwd maps through `paths`, a `{pane}` cwd of a
   pane in the same runtime stays the runtime path, and `ko enter`
   runs the runtime's `koa` with no `--runtime`, under the runtime's
-  login shell and with `KO_RUNTIME`. A runtime without koa ends the
-  pane with the transport's exit, not with cause `failed`: the server
-  cannot see inside the runtime before the start.
+  login shell and with `KO_RUNTIME`. The server cannot see inside the
+  runtime before the start, so a runtime without koa is not cause
+  `failed`: `ko shell` keeps the pane and its screen says that koa
+  was not found on the login PATH.
 
 **Cancel.** A tool's abort or timeout kills its `ko api --stream`
 process, which closes the session. On every kind, the inside ko then

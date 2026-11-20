@@ -416,18 +416,16 @@ value that starts with `-`, such as a name `--browser`, stays a value
 for koa's strict parser. The task is not part of it: a spawner gives it as the
 pane variable `koa.task`.
 
-On the host, the server runs the first executable `koa` of its own
-PATH (`Config::koa` in `ko_server/src/config.rs`), looked up for each
-request, so an install of koa needs no server restart. It runs it
-through `ko shell --` ("The login environment"). When the PATH has no
-koa, the server runs the path `koa` beside its own executable. That
-file does not exist in an install of ko, so the start fails: the pane
-dies with cause `failed`, its row stays as any start failure does
-("Window lifecycle"), and the pane's screen names the path that it
-tried. The row's `command` is koa's path and its flags, without the
-shell. The server's PATH is the PATH of what started it: the `ko`
-launcher passes its own environment, and Kido.app the login PATH that
-it reads, else its own (design-app.md).
+On the host, routed or not, the server runs `<its ko> shell -- koa
+...` ("The login environment"): the server does not look koa up. The
+login shell resolves the bare name `koa` on the PATH that the user's
+login files give at this start, so a new install of koa or a change
+of the dotfiles needs no server restart, while the server's own PATH
+is the one fixed when it started (design-app.md). When the login PATH
+has no koa, `ko shell` keeps the pane as a start failure ("Window
+lifecycle") and its screen reads `ko shell: koa was not found on the
+login PATH`. The row's `command` is `koa` and its flags, without the
+shell. In a runtime, the runtime's shell runs the bare `koa`.
 
 The request's `cwd` is koa's launch directory, and koa takes it as
 the session's directory, also for a resumed session or an existing
@@ -442,23 +440,28 @@ environment and the request's. A koa that the user starts in a pane
 runs under the user's shell, which read the user's dotfiles: EDITOR,
 PATH additions (node), API keys, LANG. So that every agent gets the
 same environment, the server starts a `koa` command ("Starting a koa
-agent") as `<its ko> shell -- <its koa> ...`. A subagent shares
+agent") as `<its ko> shell -- koa ...`. A subagent shares
 its koa's environment. A job runs its
 command through pi's shell configuration, as pi's `bash` does,
 because its command is not an agent.
 
 `ko shell -- CMD...` resolves the shell as the bare `ko shell` does
 ("Priming a local shell"). For bash, zsh, sh, dash and ksh it execs
-`SHELL -l -i -c SCRIPT SHELL CMD...`. SCRIPT puts ko's bin directory
+`SHELL -l -i -c SCRIPT SHELL KO CMD...`. SCRIPT puts ko's bin directory
 first on PATH again, as a primed pane does after the login files, then
-runs `exec "$@"`. It names only ko's own directory, and the argv
-passes as positional parameters, so no shell parses model text. The
+runs `exec "$@"` on CMD. It names only ko's own directory, and ko's
+path and the argv pass as positional parameters, so no shell parses
+model text. When `command -v` does not find CMD's first word after
+the login files, SCRIPT sets its pane's `close` to `keep` through
+`KO api` and exits 1 with `ko shell: NAME was not found on the login
+PATH`, as ko's wrappers do for a failure before the user's program
+("Window lifecycle"). The
 shell is interactive, because EDITOR often lives in `.zshrc`. The
 shell integration is not installed, and no prompt runs before the
 exec, so the pane gets no OSC 133 marks from ko, and koa's OSC 7501
 root classifies it. Because the shell execs, koa keeps the pane's
-process: the pane's death is koa's. If the exec fails, the shell exits
-127 (126 for permission). Another shell, such as fish, has no `"$@"`
+process: the pane's death is koa's. If the exec of a command that was
+found fails, the shell exits 126. Another shell, such as fish, has no `"$@"`
 semantics: ko execs CMD directly, and the user's dotfiles do not run.
 
 ### Failure leaves no pane
@@ -959,6 +962,17 @@ file.
 ## Decisions
 
 Each decision names its date. The code states the rest.
+
+2026-11-20, the login shell finds koa:
+
+- The server does not look koa up on the host: `ko shell` resolves
+  `koa` on the login PATH at each start. This replaces the
+  2026-11-18 rules "the server runs the `koa` of its own PATH" and
+  "the screen names the path that the server tried", and drops the
+  fallback to a `koa` beside the ko executable. The server's PATH is
+  fixed at its start, and a restart ends every pane.
+- A missing koa keeps its pane with `close: keep`, as a wrapper's
+  failure before the program, not as an exit 127 of a shell.
 
 2026-11-18, koa is its own package:
 
