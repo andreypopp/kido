@@ -2353,6 +2353,19 @@ test('a restored position survives the entry animation of an unfinished reply an
   assert.equal(page.offset(6), anchor);
 });
 
+test('replacing a running compaction with its summary keeps the reader anchor offset', async () => {
+  const page = await flowPage();
+  page.open([page.text(0), { seq: 1, revision: 1, at: 1, final: false, kind: 'command', result: { type: 'compaction', state: { type: 'running' } } }, ...Array.from({ length: 9 }, (_, index) => page.text(index + 2))]);
+  page.settle();
+  page.reader(550);
+  const anchor = page.offset(5);
+  const get = page.extra.get.bind(page.extra);
+  page.extra.get = seq => (get(seq) ?? 0) + (seq === 1 && page.evaluate("views.get(1).item.kind === 'summary'") ? 150 : 0);
+  page.deliver({ type: 'item', item: { seq: 1, revision: 2, at: 11, final: true, kind: 'summary', source: 'compaction', text: 'Saved context' } });
+  page.settle();
+  assert.equal(page.offset(5), anchor);
+});
+
 test('a reset that is shorter than the pane keeps a restoring view from following while its older pages load', async () => {
   const page = await flowPage();
   page.go('r'); page.open([0, 1, 2, 3, 4, 5, 6, 7, 8, 9].map(page.text));

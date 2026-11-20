@@ -24,14 +24,14 @@ const promptStepFourth = (dir: string): Step => (expect({ on: { method: "POST", 
     { ...stateIdleFourth(dir), compaction: "running", working: true, since: 1794330720000 },
   ] }));
 
-const commandCompactionFourth: PageRecord = { type: "item", item: { seq: 6, revision: 2, at: 1794330720000, final: true, kind: "command", result: { type: "compaction", state: { type: "done", before: 84000, after: 105, summary: textTheSessionVerified } } } };
+const commandCompactionFourth: PageRecord = { type: "item", item: { seq: 6, revision: 2, at: 1794330720000, final: true, kind: "summary", source: "compaction", text: textTheSessionVerified } };
 
-const commandCompaction: WireItem = { seq: 4, revision: 0, at: 1794330720000, final: true, kind: "command", result: { type: "compaction", state: { type: "done", before: 84000, after: 105, summary: textTheSessionVerified } } };
+const commandCompaction: WireItem = { seq: 4, revision: 0, at: 1794330720000, final: true, kind: "summary", source: "compaction", text: textTheSessionVerified };
 
 const assistantVerifiedEveryStageSeq7Rev0: WireItem = { seq: 7, revision: 0, at: 1794330720000, final: true, kind: "assistant", blocks: [{ type: "text", text: "Verified: every stage passes. The snapshots that changed are the twelve of SidebarTests." }], stop: "stop", error: "" };
 
 
-const commandCompactionSecond: WireItem = { seq: 6, revision: 0, at: 1794330720000, final: true, kind: "command", result: { type: "compaction", state: { type: "done", before: 84000, after: 105, summary: textTheSessionVerified } } };
+const commandCompactionSecond: WireItem = { seq: 6, revision: 0, at: 1794330720000, final: true, kind: "summary", source: "compaction", text: textTheSessionVerified };
 
 const promptStepFifth = (dir: string): Step => (expect({ on: { method: "POST", path: "/prompt", body: value => same(value, { sessionId: "00000000-0000-7000-8000-000000000001", text: "/compact", mode: "prompt", attachments: [] }) }, reply: { status: 200, json: { disposition: "handled", action: { type: "none" } } }, after: [
     { type: "item", item: { seq: 7, revision: 1, at: 1794330720000, final: false, kind: "command", result: { type: "compaction", state: { type: "running" } } } },

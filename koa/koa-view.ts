@@ -18,6 +18,7 @@ export type Own = Omit<StateData, "agents" | "edit" | "pathEditor">;
 type Replaced = "new" | "resume" | "fork" | undefined;
 
 type ViewOptions = {
+  sessionEntryToContextMessages: typeof import('@earendil-works/pi-coding-agent').sessionEntryToContextMessages;
   kind: 'root' | 'subagent';
   dir: string;
   metrics: boolean;
@@ -39,7 +40,7 @@ export type AgentView = ReturnType<typeof createView>;
 
 export function createView(options: ViewOptions) {
   let publishedThreads: Thread[] | undefined;
-  const feed = transcript({ dir: options.dir, flushMs: FLUSH_MS, metrics: options.metrics, kind: options.kind, changed: () => publishThreads() });
+  const feed = transcript({ dir: options.dir, flushMs: FLUSH_MS, metrics: options.metrics, kind: options.kind, changed: () => publishThreads(), sessionEntryToContextMessages: options.sessionEntryToContextMessages });
   const { attached } = options;
   const pendingPrompts = prompts(options.kind);
   let compaction: { root: Root; working: boolean; since?: number } | undefined;
@@ -83,9 +84,9 @@ export function createView(options: ViewOptions) {
     pending.clear();
   };
   const running = () => !stopping() && life.type === "ready";
-  const finishCompaction = (result: Extract<CommandResult, { type: "compaction" }>["state"], willRetry = false) => {
+  const finishCompaction = (result: Extract<CommandResult, { type: "compaction" }>["state"] | { type: 'done' }, willRetry = false) => {
     if (compactRequest) compactRequest.ended = true;
-    feed.command({ type: "compaction", state: result });
+    if (result.type !== 'done') feed.command({ type: "compaction", state: result });
     if (compaction && !willRetry) {
       state.working = compaction.working; state.since = compaction.since;
       if (result.type === "failed") status("error", result.message.split("\n")[0] ?? "");
@@ -115,7 +116,7 @@ export function createView(options: ViewOptions) {
     const previous = state.bash;
     state.bash = previous.filter(item => !completed.includes(item));
     if (state.bash.length !== previous.length) publish();
-    try { feed.rebuild(session.messages, state.sessionId, session.sessionManager.getEntries(), session.sessionManager.getLeafId()); }
+    try { feed.rebuild(session.sessionManager.getEntries(), state.sessionId, session.sessionManager.getLeafId()); }
     catch (error) { state.bash = previous; publish(); throw error; }
   };
   const refresh = () => {
@@ -193,11 +194,14 @@ export function createView(options: ViewOptions) {
       case "thinking_level_changed": state.thinking = event.level; publish(); break;
       case "session_info_changed": if (options.name === undefined) state.name = event.name ?? "pi"; options.title(own()); publish(); break;
       case "compaction_end":
-        if (!compaction) { rebuild(); stats(); break; }
-        if (event.result) finishCompaction({ type: "done", before: event.result.tokensBefore, after: event.result.estimatedTokensAfter, summary: event.result.summary }, event.willRetry);
+        if (event.result) {
+          const entry = options.agent().session.sessionManager.getBranch().findLast(entry => entry.type === 'compaction');
+          if (entry) for (const message of options.sessionEntryToContextMessages(entry)) feed.message(message, 'end');
+          finishCompaction({ type: 'done' }, event.willRetry);
+        }
         else if (event.errorMessage) finishCompaction({ type: "failed", message: event.errorMessage }, event.willRetry);
         else finishCompaction({ type: "cancelled" }, event.willRetry);
-        rebuild(); stats(); break;
+        stats(); settleBash(); break;
       case "turn_end": stats(); break;
     }
   };

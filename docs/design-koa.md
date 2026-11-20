@@ -797,8 +797,17 @@ before. A job that ends keeps its log view: its stream gets
 messages, assistant messages with their text, thinking and tool
 blocks, the custom messages that pi displays, user `!` commands,
 summaries, and koa's notifications. It takes whole pi messages, so a
-replay from the session's `messages` and the live stream use one
-conversion.
+replay and the live stream use one conversion.
+
+The transcript is the whole active branch of the session, not the
+agent's context. A rebuild walks the branch from its root to its leaf
+and converts each entry with pi's `sessionEntryToContextMessages`,
+which koa gets from the loaded SDK. pi's context drops the turns
+before a compaction and applies context edits; the transcript keeps
+every turn as it was written. Each compaction is a summary row at its
+place in the branch, and the turns before it look the same as the
+turns after it (the user's decision). Other branches do not show; a
+branch summary on the path is a summary row.
 `koa-records.ts` defines the items and the records.
 
 - **Live messages.** Each `message_update` of the session carries
@@ -836,16 +845,20 @@ conversion.
 - **Notifications** (pi's `notify`) are items, one line where they
   arrived, and they stay. pi's messages have no notifications, so a
   rebuild keeps the module's own notification items and merges them
-  by time when the rebuild is of the same session (a compaction, a
-  restart), and drops them for another session (a switch, a new
+  by time when the rebuild is of the same session (a restart), and drops them for another session (a switch, a new
   session, a fork, a clone).
 - **Command outcomes** are one item kind, `command`, whose result
   is the outcome of a built-in: the copied length, the exported path,
   the session's stats, or a compaction. A compaction's item is
-  running from `compaction_start` and ends as done (tokens before and
-  after, pi's summary), failed (pi's error, a refusal of `compact`,
-  or the session's failure during it), or cancelled (an aborted
-  `compaction_end`). A rebuild of the same session keeps these items
+  running from `compaction_start`. A compaction that completes
+  replaces that item, at its seq, with the summary row of the
+  compaction entry, so a live session and a reload show the same row.
+  Otherwise the item ends as failed (pi's error, a refusal of
+  `compact`, or the session's failure during it) or cancelled (an
+  aborted `compaction_end`). A compaction does not rebuild: the
+  earlier items, their revisions and the epoch stay, so the reader's
+  anchor stays. Only a `!` command that completed during the
+  compaction rebuilds after it, as at `agent_settled`. A rebuild of the same session keeps the command items
   as it keeps notifications.
 - **One text edge.** The user decided with `refine.html` that the
   transcript, the user block, the composer, the dialogs and the failed
@@ -877,7 +890,7 @@ conversion.
   groups with the rows after it. The texts are the user's, family by
   family, in the mockup's notes.
 - **A rebuild** (at start, after `new_session`, `switch_session`,
-  `fork`, `clone` and `compaction_end`) mints a new epoch.
+  `fork` and `clone`) mints a new epoch.
 
 ## Delivery
 
@@ -1802,7 +1815,7 @@ NOTES.md "`!` runs a command".
   next `!` until the turn ends. pi stores a completed command's
   message at once while it is idle, and at `agent_settled` while it
   streams. So every rebuild that starts while pi is idle (the
-  reconcile after a command, at `agent_settled`, a compaction's)
+  reconcile after a command, at `agent_settled`)
   takes the completed commands of that moment, and one rebuild runs
   at a time; a `!` sent during a rebuild starts after it. A rebuild
   while pi streams keeps them, and a running command stays in every

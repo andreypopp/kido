@@ -74,7 +74,7 @@ export function findSegments(item: WireItem, context: FindContext): Segment[] {
       case 'copy': return [];
       case 'export': return plainSegments('exported ' + item.result.path);
       case 'session': return plainSegments(item.result.name);
-      case 'compaction': return item.result.state.type === 'done' ? plainSegments(item.result.state.summary, 'notice:' + item.seq) : [];
+      case 'compaction': return [];
     }
     case 'notice': return headSegments(item.text, 'notice:' + item.seq);
     case 'bash': return [...plainSegments(item.command), ...plainSegments(item.result.output.text, 'bash:' + item.seq)];

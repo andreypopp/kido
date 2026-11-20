@@ -256,6 +256,7 @@ Everything after -- is message text.
     const makeView = (agentRef: () => Agent, parent: Agent | undefined, name: string | undefined, cwd: string): AgentView => {
       const first = !parent;
       return createView({
+        sessionEntryToContextMessages: sdk.pi.sessionEntryToContextMessages,
         dir: join(dir, randomUUID()), kind: first ? 'root' : 'subagent', metrics: metricsFile !== undefined, attached, name, cwd: first ? process.cwd() : cwd, home: homedir(),
         agent: () => { const agent = agentRef(); if (!agent.runtime) throw new Error("the agent is not started"); return { session: agent.runtime.session, runtime: agent.runtime }; },
         compose: own => {

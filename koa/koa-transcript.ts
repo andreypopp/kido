@@ -139,7 +139,7 @@ function notRun(item: Assistant): void {
   for (const block of item.blocks) if (block.type === "tool" && block.state.type === "pending") block.state = { type: "not_run" };
 }
 
-export function transcript({ dir, flushMs, metrics = false, kind = 'subagent', changed }: { dir: string; flushMs: number; metrics?: boolean; kind?: 'root' | 'subagent'; changed?(): void }) {
+export function transcript({ dir, flushMs, metrics = false, kind = 'subagent', changed, sessionEntryToContextMessages }: { dir: string; flushMs: number; metrics?: boolean; kind?: 'root' | 'subagent'; changed?(): void; sessionEntryToContextMessages: typeof import('@earendil-works/pi-coding-agent').sessionEntryToContextMessages }) {
   const imageDir = join(dir, "images");
   mkdirSync(imageDir, { recursive: true, mode: 0o700 });
   const images = new Map<string, { ref: ImageRef; path: string; digest: string }>();
@@ -468,7 +468,9 @@ export function transcript({ dir, flushMs, metrics = false, kind = 'subagent', c
       case "branchSummary": case "compactionSummary": item = { seq, revision: 0, at: message.timestamp, final: true, kind: "summary", source: message.role === "branchSummary" ? "branch" : "compaction", text: message.summary }; break;
       default: return;
     }
-    items.push(item);
+    const running = !branch && message.role === 'compactionSummary' ? items.findLast(value => value.kind === 'command' && value.result.type === 'compaction' && value.result.state.type === 'running') : undefined;
+    if (running) { item.seq = running.seq; item.revision = running.revision; items[running.seq] = item; }
+    else items.push(item);
     if (!branch) { publish(item); flush(); }
   };
   const annotation = (entry: SessionEntry, notify = true): void => {
@@ -517,7 +519,7 @@ export function transcript({ dir, flushMs, metrics = false, kind = 'subagent', c
     }
     if (notify) flush();
   };
-  const rebuild = (messages: readonly AgentMessage[] = [], nextSession?: string, entries: readonly SessionEntry[] = [], leafId: string | null = null): void => {
+  const rebuild = (entries: readonly SessionEntry[] = [], nextSession?: string, leafId: string | null = null): void => {
     const notices = session.type === 'unbound' || session.id === nextSession ? items.filter(item => item.kind === 'notify' || item.kind === 'command').sort((a, b) => a.at - b.at) : [];
     session = { type: 'bound', id: nextSession };
     images.clear(); rmSync(imageDir, { recursive: true, force: true }); mkdirSync(imageDir, { mode: 0o700 });
@@ -534,10 +536,10 @@ export function transcript({ dir, flushMs, metrics = false, kind = 'subagent', c
     for (let entry = leafId === null ? undefined : byId.get(leafId); entry; entry = entry.parentId === null ? undefined : byId.get(entry.parentId)) { active.push(entry); byId.delete(entry.id); }
     indexed.length = 0; lastSections.clear(); provisional = [];
     let historicalThread: ThreadName | undefined;
-    for (const entry of [...active].reverse()) {
-      indexThread(entry);
-      if (entry.type !== 'message') continue;
-      const message = entry.message;
+    active.reverse();
+    const messages = active.flatMap(sessionEntryToContextMessages);
+    for (const entry of active) indexThread(entry);
+    for (const message of messages) {
       if (message.role === 'assistant') historicalThread = sectionFacts(message.content.flatMap(block => block.type === 'text' ? threadSections(block.text, true) : []), message.timestamp, historicalThread);
       else if (message.role === 'user') historicalThread = decodePrompt(contentText(message.content), [], kind).thread;
       else if (message.role === 'custom' && message.display && isRecord(message.details) && (agentDetails(message.details) || noticeDetails(message.details) || streamDetails(message.details))) historicalThread = parseThreadName(message.details.thread);
@@ -545,7 +547,7 @@ export function transcript({ dir, flushMs, metrics = false, kind = 'subagent', c
     provisional = [];
     const extra = [
       ...notices.map(notice => ({ type: 'notice' as const, at: notice.at, notice })),
-      ...active.reverse().flatMap(entry => { const decoded = decodeAnnotation(entry); return decoded ? [{ type: 'annotation' as const, at: decoded.at, entry }] : []; }),
+      ...active.flatMap(entry => { const decoded = decodeAnnotation(entry); return decoded ? [{ type: 'annotation' as const, at: decoded.at, entry }] : []; }),
     ].sort((a, b) => a.at - b.at);
     let next = 0;
     const replay = messages.flatMap(message => {

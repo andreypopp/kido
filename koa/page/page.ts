@@ -992,7 +992,6 @@ function commandNotice(item: Extract<WireItem, { kind: 'command' }>): NoticeRow 
       case 'running': return { key, at, content: { type: 'inline', head: () => [node('span', 'compacting'), dots()] } };
       case 'cancelled': return { key, at, content: { type: 'text', text: 'compaction cancelled' } };
       case 'failed': return { key, at, level: 'error', content: { type: 'text', text: 'compaction · ' + result.state.message } };
-      case 'done': return { key, at, content: { type: 'details', text: 'compacted · ' + quantity(result.state.before) + ' → ' + (result.state.after === undefined ? '—' : quantity(result.state.after)) + ' tokens', body: paragraphs(result.state.summary) } };
     }
   }
 }

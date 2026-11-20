@@ -64,7 +64,7 @@ test("model, thinking, statistics, copy and export use real pi", { timeout: 2000
   assert.equal((await app.close)[0], 0);
 });
 
-test("manual compaction ends once as cancelled when aborted, as failed and as done", { timeout: 30000 }, async t => {
+test("manual compaction ends once as cancelled when aborted, as failed and as a summary", { timeout: 30000 }, async t => {
   const app = await realFixture(t, { replies: [{ gate: "held", text: "never" }, { status: 400 }, { text: "## Goal\nsummary" }], setup: seeded(20, undefined, " " + "lorem ipsum ".repeat(700)) });
   let cursor = app.count();
   await send(app, "/compact");
@@ -76,11 +76,12 @@ test("manual compaction ends once as cancelled when aborted, as failed and as do
   for (const state of ["failed", "done"]) {
     cursor = app.count();
     assert.equal((await send(app, "/compact")).status, 200);
-    await app.until(compaction(state), cursor);
+    await app.until(state === 'done' ? ofType('item', record => record.item.kind === 'summary' && record.item.source === 'compaction') : compaction(state), cursor);
     await app.until(idle(), cursor);
   }
   const count = (state: string) => app.records().filter(record => record.type === "item" && JSON.stringify(record.item).includes(`"type":"compaction","state":{"type":"${state}"`)).length;
-  assert.deepEqual([count("cancelled"), count("failed"), count("done")], [1, 1, 1]);
+  assert.deepEqual([count("cancelled"), count("failed"), count("done")], [1, 1, 0]);
+  assert.equal(app.records().filter(record => record.type === 'item' && record.item.kind === 'summary' && record.item.source === 'compaction').length, 1);
 });
 
 test("streamed reasoning, text and fragmented tool arguments reach the transcript", { timeout: 20000 }, async t => {

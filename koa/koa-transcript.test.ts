@@ -5,6 +5,7 @@ import { test, type TestContext } from "node:test";
 import { mkdtempSync, rmSync, readFileSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { sessionEntryToContextMessages, type SessionEntry } from "@earendil-works/pi-coding-agent";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { transcript, appendBashOutput } from "./koa-transcript.ts";
 import type { WireItem } from "./koa-records.ts";
@@ -33,17 +34,61 @@ function record(line: string | undefined) {
   return JSON.parse(line.slice(6, -2));
 }
 
+test('rebuild replays the whole active branch across compactions', t => {
+  const view = transcript({ sessionEntryToContextMessages, dir: directory(t), flushMs: 1 }); t.after(() => view.close());
+  const entries: SessionEntry[] = [
+    { type: 'message', id: 'user', parentId: null, timestamp: new Date(1).toISOString(), message: { role: 'user', content: 'before', timestamp: 1 } },
+    { type: 'message', id: 'reply', parentId: 'user', timestamp: new Date(123).toISOString(), message: assistant('Proceed?') },
+    { type: 'custom', id: 'annotation', parentId: 'reply', timestamp: new Date(124).toISOString(), customType: 'reply-annotations', data: { reply: { at: 123, block: 0, length: 8 }, annotations: [{ type: 'question', kind: 'yes_no', range: [0, 8] }] } },
+    { type: 'compaction', id: 'compact1', parentId: 'annotation', timestamp: new Date(125).toISOString(), summary: 'first summary', tokensBefore: 100, firstKeptEntryId: 'reply' },
+    { type: 'custom_message', id: 'custom', parentId: 'compact1', timestamp: new Date(126).toISOString(), customType: 'test', content: 'custom body', display: true },
+    { type: 'branch_summary', id: 'branch', parentId: 'custom', timestamp: new Date(127).toISOString(), summary: 'branch summary', fromId: 'sibling' },
+    { type: 'message', id: 'middle', parentId: 'branch', timestamp: new Date(128).toISOString(), message: { role: 'user', content: 'middle', timestamp: 128 } },
+    { type: 'compaction', id: 'compact2', parentId: 'middle', timestamp: new Date(129).toISOString(), summary: 'second summary', tokensBefore: 200, firstKeptEntryId: 'middle' },
+    { type: 'message', id: 'last', parentId: 'compact2', timestamp: new Date(130).toISOString(), message: { ...assistant('after'), timestamp: 130 } },
+    { type: 'message', id: 'sibling', parentId: 'user', timestamp: new Date(131).toISOString(), message: { role: 'user', content: 'excluded', timestamp: 131 } },
+  ];
+  view.rebuild(entries, 'session', 'last');
+  const items = JSON.parse(request(view, '/items?before=100').join('')).items;
+  assert.deepEqual(items.map((item: WireItem) => item.kind), ['user', 'assistant', 'annotations', 'summary', 'notice', 'summary', 'user', 'summary', 'assistant']);
+  assert.deepEqual(items.filter((item: WireItem) => item.kind === 'summary').map((item: { source: string; text: string }) => [item.source, item.text]), [['compaction', 'first summary'], ['branch', 'branch summary'], ['compaction', 'second summary']]);
+  assert.deepEqual(items[2].reply, { seq: 1, block: 0 });
+  assert.equal(items[4].text, 'custom body');
+  assert.deepEqual(items.filter((item: WireItem) => item.kind === 'user').map((item: { text: string }) => item.text), ['before', 'middle']);
+  assert.equal(items[8].blocks[0].text, 'after');
+});
+
+test('live compaction replaces its command without changing earlier items or epoch', t => {
+  const view = transcript({ sessionEntryToContextMessages, dir: directory(t), flushMs: 1 }); t.after(() => view.close());
+  view.message({ role: 'user', content: 'before', timestamp: 1 }, 'end');
+  const before = JSON.parse(request(view, '/items?before=100').join(''));
+  view.command({ type: 'compaction', state: { type: 'running' } });
+  view.message({ role: 'compactionSummary', summary: 'saved', tokensBefore: 10, timestamp: 3 }, 'end');
+  const after = JSON.parse(request(view, '/items?before=100').join(''));
+  assert.equal(after.epoch, before.epoch);
+  assert.deepEqual(after.items[0], before.items[0]);
+  assert.deepEqual(after.items.map((item: WireItem) => item.kind), ['user', 'summary']);
+  assert.equal(after.items[1].seq, 1);
+  assert.equal(after.items[1].at, 3);
+});
+
 const fresh = (items: object[]) => items.map(item => ({ ...item, revision: 0 }));
+
+function linked(messages: readonly AgentMessage[], session?: string, extra: readonly SessionEntry[] = []): [SessionEntry[], string | undefined, string | null] {
+  const entries: SessionEntry[] = messages.map((message, index) => ({ type: 'message', id: 'message-' + index, parentId: index ? 'message-' + (index - 1) : null, timestamp: new Date(message.timestamp).toISOString(), message }));
+  const leaf = entries.at(-1)?.id ?? null;
+  return [[...entries, ...extra.map(entry => entry.parentId === null ? { ...entry, parentId: leaf } : entry)], session, leaf];
+}
 
 function assistant(text: string, stopReason: "stop" | "error" = "stop"): Extract<AgentMessage, { role: "assistant" }> {
   return { role: "assistant", content: [{ type: "text", text }], api: "openai-responses", provider: "openai", model: "test", usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } }, stopReason, timestamp: 123 };
 }
 
 test('root thread projection splits sections, preserves tool indexes and remaps annotations', t => {
-  const view = transcript({ dir: directory(t), flushMs: 1, kind: 'root' }); t.after(() => view.close());
+  const view = transcript({ sessionEntryToContextMessages, dir: directory(t), flushMs: 1, kind: 'root' }); t.after(() => view.close());
   const text = '[thread: one]\n😀 Pick one?\n[thread: two]\nNext?';
   const message = { ...assistant(text), content: [{ type: 'text' as const, text }, { type: 'toolCall' as const, id: 'read', name: 'read', arguments: { path: '/tmp/source' } }] };
-  view.rebuild([message]);
+  view.rebuild(...linked([message]));
   let items = JSON.parse(request(view, '/items?before=100').join('')).items;
   assert.deepEqual(items[0].blocks.map((block: { type: string; thread?: string; text?: string }) => [block.type, block.thread, block.text]), [['text', 'one', '😀 Pick one?\n'], ['text', 'two', 'Next?'], ['tool', 'two', undefined]]);
   assert.equal(view.itemFile(0, 2), '/tmp/source');
@@ -54,12 +99,12 @@ test('root thread projection splits sections, preserves tool indexes and remaps 
   items = JSON.parse(request(view, '/items?before=100').join('')).items;
   assert.deepEqual(items[1].reply, { seq: 0, block: 0 });
   assert.deepEqual(items[1].annotations, [{ type: 'question', kind: 'choice', range: [2, 11], options: [[7, 10]] }]);
-  const child = transcript({ dir: directory(t), flushMs: 1 }); t.after(() => child.close()); child.rebuild([assistant(text)]);
+  const child = transcript({ sessionEntryToContextMessages, dir: directory(t), flushMs: 1 }); t.after(() => child.close()); child.rebuild(...linked([assistant(text)]));
   assert.equal(JSON.parse(request(child, '/items?before=100').join('')).items[0].blocks[0].text, text);
 });
 
 test('thread attribution labels final prefixes with metadata without changing them', t => {
-  const view = transcript({ dir: directory(t), flushMs: 1, kind: 'root' }); t.after(() => view.close());
+  const view = transcript({ sessionEntryToContextMessages, dir: directory(t), flushMs: 1, kind: 'root' }); t.after(() => view.close());
   const user = { role: 'user' as const, content: 'work', timestamp: 100 };
   const prefix = { ...assistant(''), content: [{ type: 'thinking' as const, thinking: 'Plan' }] };
   view.message(user, 'end'); view.message(prefix, 'end');
@@ -75,7 +120,7 @@ test('thread attribution labels final prefixes with metadata without changing th
 });
 
 test('streaming markers do not leak and explicit users stay in one thread', t => {
-  const view = transcript({ dir: directory(t), flushMs: 1, kind: 'root' }); t.after(() => view.close());
+  const view = transcript({ sessionEntryToContextMessages, dir: directory(t), flushMs: 1, kind: 'root' }); t.after(() => view.close());
   view.message({ role: 'user', content: '[thread: selected]\nwork', timestamp: 100 }, 'end');
   view.message(assistant('[thread: one]\nBody\n[thre'), 'update');
   let items = JSON.parse(request(view, '/items?before=100').join('')).items;
@@ -87,7 +132,7 @@ test('streaming markers do not leak and explicit users stay in one thread', t =>
 });
 
 test('thread intervals follow inputs, tools inherit the turn thread and unmarked replies stay unlabelled', t => {
-  const view = transcript({ dir: directory(t), flushMs: 1, kind: 'root' }); t.after(() => view.close());
+  const view = transcript({ sessionEntryToContextMessages, dir: directory(t), flushMs: 1, kind: 'root' }); t.after(() => view.close());
   const inbound: AgentMessage = { role: 'custom', customType: 'agent-message', display: true, content: 'event', details: { thread: 'agent', agent: { name: 'worker' }, body: 'event', inbound: { form: 'message', relation: 'child' } }, timestamp: 100 };
   const tool = { ...assistant(''), content: ['read', 'spawn_agent', 'message_agent', 'async_bash'].map(name => ({ type: 'toolCall' as const, id: name, name, arguments: { path: '/tmp/file' } })) };
   const messages: AgentMessage[] = [
@@ -96,7 +141,7 @@ test('thread intervals follow inputs, tools inherit the turn thread and unmarked
     { role: 'user', content: 'steer', timestamp: 140 }, { ...assistant('[thread: steer]\nSteered'), timestamp: 150 },
     { role: 'user', content: 'follow-up', timestamp: 160 }, { ...assistant('No marker'), timestamp: 170 },
   ];
-  view.rebuild(messages);
+  view.rebuild(...linked(messages));
   const items = JSON.parse(request(view, '/items?before=100').join('')).items;
   assert.equal(items.find((item: { kind: string }) => item.kind === 'agent').thread, 'agent');
   assert.deepEqual(items.find((item: { kind: string; blocks?: { type: string }[] }) => item.kind === 'assistant' && item.blocks?.[0].type === 'tool').blocks.map((block: { thread?: string }) => block.thread), ['agent', 'agent', 'agent', 'agent']);
@@ -108,10 +153,10 @@ test('thread intervals follow inputs, tools inherit the turn thread and unmarked
 });
 
 test('thread state keeps entry order, raw last section and source time through compaction', t => {
-  const view = transcript({ dir: directory(t), flushMs: 1, kind: 'root' }); t.after(() => view.close());
+  const view = transcript({ sessionEntryToContextMessages, dir: directory(t), flushMs: 1, kind: 'root' }); t.after(() => view.close());
   const historical = { type: 'message' as const, id: 'old', parentId: null, timestamp: new Date(123).toISOString(), message: assistant('[thread: old]\n**raw summary**\nBody') };
   const entries = [historical, { type: 'custom' as const, id: 'empty', parentId: 'old', timestamp: new Date(124).toISOString(), customType: 'koa.thread', data: { name: 'empty', at: 124 } }, { type: 'custom' as const, id: 'index', parentId: 'empty', timestamp: new Date(125).toISOString(), customType: 'koa.thread', data: { name: 'old', at: 125 } }];
-  view.rebuild([], 'session', entries, 'index');
+  view.rebuild(entries, 'session', 'index');
   assert.deepEqual(view.threads(), [{ name: 'empty' }, { name: 'old', last: { summary: '**raw summary**', at: 123 } }]);
   view.message({ ...assistant('[thread: fresh]\n# New'), timestamp: 200 }, 'update');
   request(view, '/items?before=100');
@@ -121,8 +166,8 @@ test('thread state keeps entry order, raw last section and source time through c
 });
 
 test('thread rebuild emits one final label set per user across several assistant messages', t => {
-  const view = transcript({ dir: directory(t), flushMs: 1, kind: 'root' }); t.after(() => view.close());
-  view.rebuild([{ role: 'user', content: 'both', timestamp: 1 }, { ...assistant('[thread: one]\nOne'), timestamp: 2 }, { ...assistant('[thread: two]\nTwo'), timestamp: 3 }, { role: 'user', content: 'next', timestamp: 4 }]);
+  const view = transcript({ sessionEntryToContextMessages, dir: directory(t), flushMs: 1, kind: 'root' }); t.after(() => view.close());
+  view.rebuild(...linked([{ role: 'user', content: 'both', timestamp: 1 }, { ...assistant('[thread: one]\nOne'), timestamp: 2 }, { ...assistant('[thread: two]\nTwo'), timestamp: 3 }, { role: 'user', content: 'next', timestamp: 4 }]));
   const items = JSON.parse(request(view, '/items?before=100').join('')).items;
   const labels = items.filter((item: { kind: string; target?: number }) => item.kind === 'threads' && item.target === 0);
   assert.equal(labels.length, 1); assert.deepEqual(labels[0].threads, ['one', 'two']);
@@ -135,17 +180,17 @@ test('live output bounds keep a UTF-8 tail and count omitted bytes', () => {
 });
 
 test('stored bash facts survive live conversion and authoritative rebuild', t => {
-  const view = transcript({ dir: directory(t), flushMs: 1 }); t.after(() => view.close());
+  const view = transcript({ sessionEntryToContextMessages, dir: directory(t), flushMs: 1 }); t.after(() => view.close());
   const message = { role: 'bashExecution' as const, command: 'quiet', output: 'partial', exitCode: 2, cancelled: true, truncated: true, fullOutputPath: '/tmp/full', excludeFromContext: true, timestamp: 42 };
   view.message(message, 'end');
   const live = JSON.parse(request(view, '/items?before=100').join('')).items;
   assert.deepEqual(live, [{ seq: 0, revision: 1, at: 42, final: true, kind: 'bash', command: 'quiet', result: { output: { text: 'partial', cut: 0 }, exit: 2, cancelled: true, truncated: true, fullOutputPath: '/tmp/full' }, excludeFromContext: true }]);
-  view.rebuild([message]);
+  view.rebuild(...linked([message]));
   assert.deepEqual(JSON.parse(request(view, '/items?before=100').join('')).items, fresh(live));
 });
 
 test('reply annotations resolve live and replay, validate code points and keep cursor and paging items', t => {
-  const view = transcript({ dir: directory(t), flushMs: 1 });
+  const view = transcript({ sessionEntryToContextMessages, dir: directory(t), flushMs: 1 });
   t.after(() => view.close());
   const message = assistant('😀 Pick one or two?');
   const question = { type: 'question', kind: 'choice', range: [2, 18], options: [[7, 10], [14, 17], [0, 1], [9, 8], [7, 30]] };
@@ -163,7 +208,7 @@ test('reply annotations resolve live and replay, validate code points and keep c
   view.annotation(replacement);
   const replaced = JSON.parse(request(view, '/items?before=100').join('')).items;
   assert.equal(replaced[2].annotations[0].kind, 'open'); assert.equal(replaced[2].annotations[0].options, undefined);
-  view.rebuild([message, { ...assistant('Later'), timestamp: 130 }], 'same', [entry, replacement], replacement.id);
+  view.rebuild(linked([message, { ...assistant('Later'), timestamp: 130 }], 'same', [entry, replacement])[0], 'same', 'replacement');
   const replay = JSON.parse(request(view, '/items?before=100').join('')).items;
   assert.deepEqual(replay.slice(0, 3), fresh(replaced));
   assert.deepEqual(replay.map((item: WireItem) => item.kind), ['assistant', 'annotations', 'annotations', 'assistant']);
@@ -171,9 +216,9 @@ test('reply annotations resolve live and replay, validate code points and keep c
 });
 
 test('reply annotations keep disjoint questions and options in text order', t => {
-  const view = transcript({ dir: directory(t), flushMs: 1 });
+  const view = transcript({ sessionEntryToContextMessages, dir: directory(t), flushMs: 1 });
   t.after(() => view.close());
-  view.rebuild([assistant('01234567890123456789')]);
+  view.rebuild(...linked([assistant('01234567890123456789')]));
   const question = (range: number[], options: number[][] = []) => ({ type: 'question', kind: 'choice', range, options });
   view.annotation({ type: 'custom', id: 'overlap', parentId: null, timestamp: new Date(124).toISOString(), customType: 'reply-annotations', data: {
     reply: { at: 123, block: 0, length: 20 },
@@ -184,62 +229,62 @@ test('reply annotations keep disjoint questions and options in text order', t =>
 });
 
 test('reply annotation replay follows the active leaf, not another branch with the same reply', t => {
-  const view = transcript({ dir: directory(t), flushMs: 1 });
+  const view = transcript({ sessionEntryToContextMessages, dir: directory(t), flushMs: 1 });
   t.after(() => view.close());
   const message = assistant('Should I proceed?');
   const root = { type: 'message' as const, id: 'reply', parentId: null, timestamp: new Date(123).toISOString(), message };
   const left = { type: 'custom' as const, id: 'left', parentId: root.id, timestamp: new Date(124).toISOString(), customType: 'reply-annotations', data: { reply: { at: 123, block: 0, length: 17 }, annotations: [{ type: 'question', kind: 'open', range: [0, 17] }] } };
   const right = { ...left, id: 'right', timestamp: new Date(125).toISOString(), data: { ...left.data, annotations: [{ type: 'question', kind: 'yes_no', range: [0, 17] }] } };
   for (const [leaf, kind] of [['left', 'open'], ['right', 'yes_no']]) {
-    view.rebuild([message], 'branch', [root, left, right], leaf);
+    view.rebuild([root, left, right], 'branch', leaf);
     const items = JSON.parse(request(view, '/items?before=100').join('')).items;
     assert.equal(items.length, 2); assert.equal(items[1].annotations[0].kind, kind);
   }
-  view.rebuild([message], 'branch', [root, left, right], root.id);
+  view.rebuild([root, left, right], 'branch', root.id);
   assert.equal(JSON.parse(request(view, '/items?before=100').join('')).items.length, 1);
   view.annotation({ ...left, timestamp: 'not a timestamp' });
   assert.equal(JSON.parse(request(view, '/items?before=100').join('')).items.length, 1);
 });
 
 test('reply annotation replay keeps branch message order when timestamps go backward', t => {
-  const view = transcript({ dir: directory(t), flushMs: 1 });
+  const view = transcript({ sessionEntryToContextMessages, dir: directory(t), flushMs: 1 });
   t.after(() => view.close());
-  view.rebuild([{ ...assistant('first'), timestamp: 200 }, { ...assistant('second'), timestamp: 100 }]);
+  view.rebuild(...linked([{ ...assistant('first'), timestamp: 200 }, { ...assistant('second'), timestamp: 100 }]));
   const items = JSON.parse(request(view, '/items?before=100').join('')).items;
   assert.deepEqual(items.map((item: { blocks: { text: string }[] }) => item.blocks[0].text), ['first', 'second']);
 });
 
 test('startup notifications bind to the first session and not to a later session', t => {
-  const view = transcript({ dir: directory(t), flushMs: 1 });
+  const view = transcript({ sessionEntryToContextMessages, dir: directory(t), flushMs: 1 });
   view.notify('Extension failed to load', 'error');
-  view.rebuild([], 'first-session');
+  view.rebuild(...linked([], 'first-session'));
   const items = JSON.parse(request(view, '/items?before=100').join('')).items;
   assert.equal(items.length, 1); assert.equal(items[0].text.text, 'Extension failed to load');
-  view.rebuild([], 'second-session');
+  view.rebuild(...linked([], 'second-session'));
   assert.deepEqual(JSON.parse(request(view, '/items?before=100').join('')).items, []); view.close();
 });
 
 test('notifications are retained transcript items across reconnect and same-session rebuild', t => {
-  const view = transcript({ dir: directory(t), flushMs: 1 }), first = assistant('before');
-  view.rebuild([first], 'session-one');
+  const view = transcript({ sessionEntryToContextMessages, dir: directory(t), flushMs: 1 }), first = assistant('before');
+  view.rebuild(...linked([first], 'session-one'));
   view.notify('Remember this warning', 'warning');
   const live = JSON.parse(request(view, '/items?before=100').join('')).items;
   assert.equal(live.length, 2);
   assert.equal(live[1].kind, 'notify'); assert.equal(live[1].text.text, 'Remember this warning');
-  view.rebuild([first], 'session-one');
+  view.rebuild(...linked([first], 'session-one'));
   assert.deepEqual(JSON.parse(request(view, '/items?before=100').join('')).items, fresh(live));
   const reconnect = record(request(view, '/events')[0]);
   assert.deepEqual(reconnect.items, fresh(live));
   const later = { ...assistant('after'), timestamp: live[1].at + 1 };
-  view.rebuild([first, later], 'session-one');
+  view.rebuild(...linked([first, later], 'session-one'));
   assert.deepEqual(JSON.parse(request(view, '/items?before=100').join('')).items.map((item: WireItem) => item.kind), ['assistant', 'notify', 'assistant']);
   view.notify('x'.repeat(20000), 'error');
   assert.deepEqual(JSON.parse(request(view, '/items?before=100').join('')).items.at(-1).text, { text: 'x'.repeat(16384), cut: 3616 });
-  view.rebuild([], 'new-session'); assert.deepEqual(JSON.parse(request(view, '/items?before=100').join('')).items, []); view.close();
+  view.rebuild(...linked([], 'new-session')); assert.deepEqual(JSON.parse(request(view, '/items?before=100').join('')).items, []); view.close();
 });
 
 test('structured agent and job details render identically live and on rebuild', t => {
-  const view = transcript({ dir: directory(t), flushMs: 1 }), log = join(directory(t), 'build.log');
+  const view = transcript({ sessionEntryToContextMessages, dir: directory(t), flushMs: 1 }), log = join(directory(t), 'build.log');
   writeFileSync(log, '');
   const messages: AgentMessage[] = [
     { role: 'custom', customType: 'ko-message', display: true, timestamp: 1, content: 'Do not parse this header', details: { agent: { name: 'boss', session: 'boss-id', pane: 'pane_2' }, body: 'Review the module', inbound: { form: 'message', relation: 'parent', runtime: 'dev' } } },
@@ -250,12 +295,12 @@ test('structured agent and job details render identically live and on rebuild', 
   const live = JSON.parse(request(view, '/items?before=100').join('')).items;
   assert.deepEqual(live[0], { seq: 0, revision: 1, at: 1, final: true, kind: 'agent', direction: 'in', from: { name: 'boss', session: 'boss-id', pane: 'pane_2' }, text: { text: 'Review the module', cut: 0 }, inbound: { form: 'message', relation: 'parent', runtime: 'dev' } });
   assert.deepEqual(live[1], { seq: 1, revision: 1, at: 2, final: true, kind: 'job', job: { id: 'j1', name: 'build', service: false, log, command: 'make', startedAt: 1, place: { type: 'mac' as const } }, event: { type: 'stream', batch: { text: 'compiled', cut: 0 }, omitted: 2, cut: true } });
-  assert.equal(live[2].kind, 'notice'); view.rebuild(messages);
+  assert.equal(live[2].kind, 'notice'); view.rebuild(...linked(messages));
   assert.deepEqual(JSON.parse(request(view, '/items?before=100').join('')).items, fresh(live)); view.close();
 });
 
 test('agent forms and every job ending use typed details, capped bodies and strict shape checks', t => {
-  const view = transcript({ dir: directory(t), flushMs: 1 }), agent = { name: 'worker' }, job = { id: 'j', name: 'build', service: false, log: '/tmp/log', command: 'make', startedAt: 1, place: { type: 'mac' as const } };
+  const view = transcript({ sessionEntryToContextMessages, dir: directory(t), flushMs: 1 }), agent = { name: 'worker' }, job = { id: 'j', name: 'build', service: false, log: '/tmp/log', command: 'make', startedAt: 1, place: { type: 'mac' as const } };
   const forms = [
     { customType: 'ko-steer', details: { agent, body: 'redirect', inbound: { form: 'steer' } }, inbound: { form: 'steer' } },
     { customType: 'ko-notice', details: { agent, inbound: { form: 'report' }, body: 'x'.repeat(20000) }, inbound: { form: 'report' } },
@@ -275,7 +320,7 @@ test('agent forms and every job ending use typed details, capped bodies and stri
 });
 
 test('agent tool cards keep full capped arguments and typed outcomes on live and replay paths', t => {
-  const view = transcript({ dir: directory(t), flushMs: 1 }), message = assistant(''), log = join(directory(t), 'build.log');
+  const view = transcript({ sessionEntryToContextMessages, dir: directory(t), flushMs: 1 }), message = assistant(''), log = join(directory(t), 'build.log');
   writeFileSync(log, '');
   message.content = [
     { type: 'toolCall', id: 'spawn', name: 'spawn_agent', arguments: { name: 'worker', task: 'x'.repeat(20000), model: 'provider/model' } },
@@ -295,12 +340,12 @@ test('agent tool cards keep full capped arguments and typed outcomes on live and
   assert.deepEqual(live[0].agent.to, { name: 'worker', session: 'worker-id', pane: 'pane_2' });
   assert.deepEqual(live[1].agent.outcome, { ok: false, failure: 'refused', message: 'Not now' }); assert.equal(live[1].agent.text.text, 'Review');
   assert.deepEqual(live[2].job, { id: 'j1', name: 'build', log, service: true, command: 'make', startedAt: 1, place: { type: 'mac' as const } });
-  view.rebuild([message, ...results]); const replay = JSON.parse(request(view, '/items?before=100').join('')).items[0].blocks;
+  view.rebuild(...linked([message, ...results])); const replay = JSON.parse(request(view, '/items?before=100').join('')).items[0].blocks;
   assert.deepEqual(replay.map((block: { agent?: unknown; job?: unknown }) => [block.agent, block.job]), live.map((block: { agent?: unknown; job?: unknown }) => [block.agent, block.job])); view.close();
 });
 
 test("events use SSE framing", t => {
-  const view = transcript({ dir: directory(t), flushMs: 10 });
+  const view = transcript({ sessionEntryToContextMessages, dir: directory(t), flushMs: 10 });
   const lines = request(view, "/events");
   assert.ok(lines.length > 0);
   for (const line of lines) {
@@ -311,7 +356,7 @@ test("events use SSE framing", t => {
 });
 
 test("caps preserve UTF-8 and windows retain the newest forty items", t => {
-  const view = transcript({ dir: directory(t), flushMs: 1 });
+  const view = transcript({ sessionEntryToContextMessages, dir: directory(t), flushMs: 1 });
   view.message({ role: "bashExecution", command: "test", output: "a".repeat(16383) + "😀", exitCode: 0, cancelled: false, truncated: false, timestamp: 12 }, "end");
   const item = JSON.parse(request(view, "/items?before=100").join("")).items[0];
   assert.equal(item.kind, "bash");
@@ -324,10 +369,10 @@ test("caps preserve UTF-8 and windows retain the newest forty items", t => {
   assert.equal(page.items[0].text, "message 5");
   assert.equal(page.items.at(-1).text, "message 44");
   assert.equal(page.more, true);
-  view.rebuild([
+  view.rebuild(...linked([
     { role: "user", content: "x".repeat(200000), timestamp: 1 },
     { role: "user", content: "y".repeat(200000), timestamp: 2 },
-  ]);
+  ]));
   const bounded = JSON.parse(request(view, "/items?before=2").join(""));
   assert.equal(bounded.items.length, 1);
   assert.equal(bounded.items[0].at, 2);
@@ -336,7 +381,7 @@ test("caps preserve UTF-8 and windows retain the newest forty items", t => {
 });
 
 test("patches append only unchanged text prefixes and replace changed blocks", t => {
-  const view = transcript({ dir: directory(t), flushMs: 1000 });
+  const view = transcript({ sessionEntryToContextMessages, dir: directory(t), flushMs: 1000 });
   const lines = request(view, "/events");
   view.message(assistant("hello"), "start");
   view.message(assistant("hello world"), "update");
@@ -362,7 +407,7 @@ test("patches append only unchanged text prefixes and replace changed blocks", t
 });
 
 test("a history snapshot holds only published state and carries the stream's revision", t => {
-  const view = transcript({ dir: directory(t), flushMs: 1000 });
+  const view = transcript({ sessionEntryToContextMessages, dir: directory(t), flushMs: 1000 });
   const lines = request(view, "/events");
   view.message(assistant("hello"), "start");
   view.message(assistant("hello world"), "update");
@@ -377,7 +422,7 @@ test("a history snapshot holds only published state and carries the stream's rev
 });
 
 test("tool timing survives assistant updates and reaches patches", t => {
-  const view = transcript({ dir: directory(t), flushMs: 1000 });
+  const view = transcript({ sessionEntryToContextMessages, dir: directory(t), flushMs: 1000 });
   const message = assistant("");
   message.content = [{ type: "toolCall", id: "call", name: "read", arguments: { path: "file" } }];
   const lines = request(view, "/events");
@@ -392,7 +437,7 @@ test("tool timing survives assistant updates and reaches patches", t => {
   assert.deepEqual(item.blocks[0], { type: "tool", id: "call", name: "read", args: { text: '{"path":"file"}', cut: 0 }, state: { type: "done", result: { text: "done", cut: 0, images: [] }, error: false }, started: 200, ended: 250, durationMs: 49 });
   assert.equal(lines.some(line => line.includes('"started":200') && line.includes('"ended":250') && line.includes('"durationMs":49')), true);
   assert.equal(lines.some(line => line.includes('"text":"partial"')), false);
-  view.rebuild([message, { role: "toolResult", toolCallId: "call", toolName: "read", content: [{ type: "text", text: "saved" }], isError: false, timestamp: 300 }]);
+  view.rebuild(...linked([message, { role: "toolResult", toolCallId: "call", toolName: "read", content: [{ type: "text", text: "saved" }], isError: false, timestamp: 300 }]));
   const restored = JSON.parse(request(view, "/items?before=100").join("")).items[0];
   assert.equal(restored.kind, "assistant");
   if (restored.kind === "assistant" && restored.blocks[0].type === "tool") assert.deepEqual({ started: restored.blocks[0].started, ended: restored.blocks[0].ended }, { started: 123, ended: 300 });
@@ -401,7 +446,7 @@ test("tool timing survives assistant updates and reaches patches", t => {
 });
 
 test("bash exit codes come from structured results or the status footer", t => {
-  const view = transcript({ dir: directory(t), flushMs: 1000 });
+  const view = transcript({ sessionEntryToContextMessages, dir: directory(t), flushMs: 1000 });
   const message = assistant("");
   message.content = [{ type: "toolCall", id: "call", name: "bash", arguments: { command: "make verify" } }];
   const block = () => JSON.parse(request(view, "/items?before=100").join("")).items[0].blocks[0];
@@ -409,14 +454,14 @@ test("bash exit codes come from structured results or the status footer", t => {
   view.toolDone("call", [{ type: "text", text: "failed\n\nCommand exited with code 101" }], true, 250, 49, { exit_code: 101 });
   assert.equal(block().exit, 101);
   assert.equal(block().state.result.text, "failed");
-  view.rebuild([message, { role: "toolResult", toolCallId: "call", toolName: "bash", content: [{ type: "text", text: "saved\n\nCommand exited with code 7" }], isError: true, timestamp: 300 }]);
+  view.rebuild(...linked([message, { role: "toolResult", toolCallId: "call", toolName: "bash", content: [{ type: "text", text: "saved\n\nCommand exited with code 7" }], isError: true, timestamp: 300 }]));
   assert.equal(block().exit, 7);
   assert.equal(block().state.result.text, "saved");
   view.close();
 });
 
 test("delivered attachment paths are data and a rebuild never guesses them", t => {
-  const view = transcript({ dir: directory(t), flushMs: 1 });
+  const view = transcript({ sessionEntryToContextMessages, dir: directory(t), flushMs: 1 });
   const lines = request(view, "/events");
   const file = { id: "upload", name: "data.txt", size: 4, path: "/tmp/copy/data.txt", kind: "file" as const };
   const message = { role: "user" as const, timestamp: 1, content: "Inspect\n" + file.path };
@@ -426,7 +471,7 @@ test("delivered attachment paths are data and a rebuild never guesses them", t =
   assert.equal(item?.text, "Inspect");
   assert.deepEqual(item?.attachments, [file]);
   lines.length = 0;
-  view.rebuild([message]);
+  view.rebuild(...linked([message]));
   const rebuilt = lines.map(record).find(record => record.type === "reset")?.items[0];
   assert.equal(rebuilt?.text, message.content);
   assert.deepEqual(rebuilt?.attachments, []);
@@ -434,7 +479,7 @@ test("delivered attachment paths are data and a rebuild never guesses them", t =
 });
 
 test("identical image partials emit no patch and changed bytes advance the wire revision", t => {
-  const view = transcript({ dir: directory(t), flushMs: 1000 });
+  const view = transcript({ sessionEntryToContextMessages, dir: directory(t), flushMs: 1000 });
   const lines = request(view, "/events");
   view.message({ ...assistant(""), content: [{ type: "toolCall", id: "image", name: "read", arguments: {} }] }, "start");
   const image = { type: "image" as const, mimeType: "image/png", data: Buffer.from("old").toString("base64") }, old = [image];
@@ -452,14 +497,14 @@ test("identical image partials emit no patch and changed bytes advance the wire 
 });
 
 test("rebuild sends reset then exactly one caller-supplied state and keeps the epoch format", t => {
-  const view = transcript({ dir: directory(t), flushMs: 1000 });
+  const view = transcript({ sessionEntryToContextMessages, dir: directory(t), flushMs: 1000 });
   const state = { pathEditor: false, agents: [], bash: [], compaction: 'idle' as const, working: false, name: "before", model: { provider: "test", id: "test" }, aborted: false, levels: [], cwd: "/tmp", home: "/tmp", dialogs: [], statuses: {}, queue: { steering: [], followUp: [] }, view: { id: "root", path: [{ id: "root", name: "pi", type: "agent" as const }], type: 'root' as const }, threads: [], life: { type: "ready" as const } };
   view.state(state);
   const lines = request(view, "/events");
   const firstEpoch = record(lines[0]).epoch;
   assert.match(firstEpoch, /^[A-Za-z0-9_-]{22}$/);
   lines.length = 0;
-  view.rebuild([{ role: "user", content: "restored", timestamp: 456 }]);
+  view.rebuild(...linked([{ role: "user", content: "restored", timestamp: 456 }]));
   view.state({ ...state, working: true, name: "after" });
   const records = lines.map(record);
   assert.deepEqual(records.map(record => record.type), ["reset", "state"]);
@@ -474,7 +519,7 @@ const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR
 
 test("image references keep disk bytes beyond the feed window and serve missing and unknown images", async t => {
   const dir = directory(t);
-  const view = transcript({ dir, flushMs: 1 });
+  const view = transcript({ sessionEntryToContextMessages, dir, flushMs: 1 });
   const server = createServer((request, response) => { if (!view.handle(request, response)) { response.writeHead(404); response.end(); } });
   await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
   t.after(() => new Promise<void>(resolve => { view.close(); server.closeAllConnections(); server.close(() => resolve()); }));
@@ -522,13 +567,13 @@ test("image references keep disk bytes beyond the feed window and serve missing 
   rmSync(join(dir, "images", image.id));
   assert.equal((await fetch(url + "/images/" + image.id)).status, 410);
   assert.equal((await fetch(url + "/images/unknown")).status, 404);
-  view.rebuild([user]);
+  view.rebuild(...linked([user]));
   assert.deepEqual(readFileSync(join(dir, "images", image.id)), png);
-  view.rebuild([]);
+  view.rebuild(...linked([]));
   assert.equal((await fetch(url + "/images/" + image.id)).status, 404);
   for (const [mimeType, data] of [["text/html", "<!doctype html><script>globalThis.pwned=true</script>"], ["image/svg+xml", '<svg xmlns="http://www.w3.org/2000/svg"><script>globalThis.pwned=true</script></svg>']]) {
     assert.ok(mimeType !== undefined && data !== undefined);
-    view.rebuild([{ role: "user", timestamp: 1, content: [{ type: "image", mimeType, data: Buffer.from(data).toString("base64") }] }]);
+    view.rebuild(...linked([{ role: "user", timestamp: 1, content: [{ type: "image", mimeType, data: Buffer.from(data).toString("base64") }] }]));
     const response = await fetch(url + "/images/0.0");
     assert.equal(response.status, 200);
     assert.equal(response.headers.get("content-type"), "application/octet-stream");
@@ -539,7 +584,7 @@ test("image references keep disk bytes beyond the feed window and serve missing 
 });
 
 test("an aborted turn shows no provider error text and a real error still shows", t => {
-  const view = transcript({ dir: directory(t), flushMs: 1 });
+  const view = transcript({ sessionEntryToContextMessages, dir: directory(t), flushMs: 1 });
   view.message({ ...assistant("partial"), stopReason: "aborted", errorMessage: "Request was aborted" }, "end");
   view.message({ ...assistant("failed", "error"), errorMessage: "provider said no" }, "end");
   const items = JSON.parse(request(view, "/items?before=100").join("")).items;
@@ -548,7 +593,7 @@ test("an aborted turn shows no provider error text and a real error still shows"
 });
 
 test("show moves the open pages to this feed, sends its state before the reset under a fresh epoch", t => {
-  const before = transcript({ dir: directory(t), flushMs: 1000 }), after = transcript({ dir: directory(t), flushMs: 1000 });
+  const before = transcript({ sessionEntryToContextMessages, dir: directory(t), flushMs: 1000 }), after = transcript({ sessionEntryToContextMessages, dir: directory(t), flushMs: 1000 });
   const state = { pathEditor: false, agents: [], bash: [], compaction: 'idle' as const, working: false, name: "a", aborted: false, levels: [], cwd: "/tmp", home: "/tmp", dialogs: [], statuses: {}, queue: { steering: [], followUp: [] }, view: { id: "a", path: [{ id: "a", name: "a", type: "agent" as const }], type: 'root' as const }, threads: [], life: { type: "ready" as const } };
   before.state(state);
   after.state({ ...state, name: "b", view: { id: "b", path: [{ id: "a", name: "a", type: "agent" as const }, { id: "b", name: "b", type: "agent" as const }], type: 'root' as const }, threads: [] });
@@ -570,7 +615,7 @@ test("show moves the open pages to this feed, sends its state before the reset u
 });
 
 test("a page that moved to another feed and then disconnects is held by neither feed", t => {
-  const before = transcript({ dir: directory(t), flushMs: 1000, metrics: true }), after = transcript({ dir: directory(t), flushMs: 1000, metrics: true });
+  const before = transcript({ sessionEntryToContextMessages, dir: directory(t), flushMs: 1000, metrics: true }), after = transcript({ sessionEntryToContextMessages, dir: directory(t), flushMs: 1000, metrics: true });
   const incoming = new IncomingMessage(new Socket());
   incoming.method = "GET";
   incoming.url = "/events";
@@ -587,7 +632,7 @@ test("a page that moved to another feed and then disconnects is held by neither 
 });
 
 test("show keeps a named page's epoch and cursor: pending output reaches it first, and only the moved pages get a reset", t => {
-  const before = transcript({ dir: directory(t), flushMs: 1000 }), after = transcript({ dir: directory(t), flushMs: 1000 });
+  const before = transcript({ sessionEntryToContextMessages, dir: directory(t), flushMs: 1000 }), after = transcript({ sessionEntryToContextMessages, dir: directory(t), flushMs: 1000 });
   after.message(assistant("a"), "start");
   const moved = request(before, "/events");
   const named = request(after, "/events", { type: "named", id: "b" });
