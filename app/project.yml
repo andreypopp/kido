@@ -43,7 +43,7 @@ targets:
     platform: macOS
     sources:
       - App
-      - path: Resources/Assets.xcassets
+      - path: Resources/AppIcon.icon
         buildPhase: resources
       - path: Resources/ghostty
         type: folder

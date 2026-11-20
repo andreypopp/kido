@@ -711,6 +711,22 @@ unchanged, from the release that the notice names.
 `app/Resources/ghostty/themes/LICENSE-iTerm2-Color-Schemes` is their MIT
 notice, with one line per copied file that names its original.
 
+The app icon is the Icon Composer bundle `app/Resources/AppIcon.icon`,
+because an asset catalog's mac icon set has no dark variant. Its one
+layer has a light and a dark image; the system applies the mask and the
+shadow, so the images are the full-bleed square art of
+`website/brand/kandinsky/kido-appicon-ios.svg` and
+`kido-appicon-dark-ios.svg`. actool compiles the bundle into
+`Assets.car` and an `AppIcon.icns` for older systems. The app does not
+set `applicationIconImage`, so the Dock follows the appearance. To
+make the images again after the art changes, from the repository root:
+
+    mkdir -p /tmp/kido-icon-source
+    cp website/brand/kandinsky/kido-appicon{,-dark}-ios.svg /tmp/kido-icon-source/
+    qlmanage -t -s 1024 -o /tmp/kido-icon-source /tmp/kido-icon-source/kido-appicon{,-dark}-ios.svg
+    cp /tmp/kido-icon-source/kido-appicon-ios.svg.png app/Resources/AppIcon.icon/Assets/Light.png
+    cp /tmp/kido-icon-source/kido-appicon-dark-ios.svg.png app/Resources/AppIcon.icon/Assets/Dark.png
+
 `kido-light` and `kido-dark` are the one source of Kido's default
 colours, also for a native client that does not run Ghostty's config.
 The Swift package `app/Packages/KidoTheme` holds their background,

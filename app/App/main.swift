@@ -106,7 +106,6 @@ import SidebarFeed
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         let isDefaultLaunch = notification.userInfo?[NSApplication.launchIsDefaultUserInfoKey] as? Bool
-        NSApp.applicationIconImage = NSImage(named: "AppIcon")
         paths.start()
         // AppKit marks a windowless app as terminated by TAL; no Dock reopen reached such a process (pid log, 2026-10-25).
         ProcessInfo.processInfo.disableAutomaticTermination("a Dock reopen with no window opens a Local window")

@@ -1,0 +1,39 @@
+{
+  "fill": {
+    "solid": "extended-srgb:0.93333,0.94118,0.90196,1.00000"
+  },
+  "groups": [
+    {
+      "name": "Artwork",
+      "layers": [
+        {
+          "name": "Kandinsky",
+          "image-name-specializations": [
+            {
+              "value": "Light.png"
+            },
+            {
+              "appearance": "dark",
+              "value": "Dark.png"
+            }
+          ],
+          "glass": false
+        }
+      ],
+      "shadow": {
+        "kind": "none",
+        "opacity": 0
+      },
+      "specular": false,
+      "translucency": {
+        "enabled": false,
+        "value": 0
+      }
+    }
+  ],
+  "supported-platforms": {
+    "squares": [
+      "macOS"
+    ]
+  }
+}
