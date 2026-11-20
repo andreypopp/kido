@@ -77,7 +77,7 @@ import SidebarFeed
         pane.layoutSubtreeIfNeeded()
         XCTAssertTrue(pane.placeVisible)
         try await webviewUntil(web, "getComputedStyle(document.documentElement).getPropertyValue('--ko-inset-top').trim()==='30px'")
-        _ = try await webviewJS(web, "(()=>{document.querySelector('.thread-open').click();return true})()")
+        _ = try await webviewJS(web, "(()=>{document.querySelector('.thread-overflow').click();return true})()")
         try await webviewUntil(web, "document.querySelector('.thread-panel')?.hidden===false")
         let result = try await webviewJS(web, #"""
           (()=>{
@@ -514,6 +514,27 @@ import SidebarFeed
         try await koaWebview(width: 470, height: 560, scenario: .failed, captures: ["narrow-exited"])
     }
 
+    func testKoaWebviewRhythm() async throws {
+        let web = try await scrollPage(module: "rhythm")
+        try await webviewUntil(web, "document.querySelector('#items>[data-seq=\"0\"] ul')!==null&&document.querySelector('#items>[data-seq=\"14\"] p')!==null")
+        let initial = try await webviewJS(web, #"(()=>{const row=n=>document.querySelector('#items>[data-seq="'+n+'"]'),node=(n,selector)=>row(n).querySelector(selector),gap=(a,b)=>b.getBoundingClientRect().top-a.getBoundingClientRect().bottom,inside=row(10).querySelectorAll('.msg.prose');return {'list to run':gap(node(0,'ul'),node(1,'.run')),'run through follower to prose':gap(node(1,'.run'),node(3,'p')),'prose to run':gap(node(3,'.msg.prose'),node(4,'.run')),'run to user':gap(node(6,'.run'),row(7)),'prose to prose':gap(node(8,'.msg.prose'),node(9,'.msg.prose')),'section prose to run':gap(inside[0],node(10,'.run')),'section run to prose':gap(node(10,'.run'),inside[1]),'section list to run':gap(node(11,'ul'),node(11,'.run')),'notice to prose':gap(node(13,'.nrow'),node(14,'p'))}})()"#)
+        let gaps = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(initial.utf8)) as? [String: Double])
+        for (name, gap) in gaps { XCTAssertEqual(gap, 14, accuracy: 0.5, name) }
+        let notices = try await webviewJS(web, #"(()=>{const a=document.querySelector('#items>[data-seq="12"] .nrow').getBoundingClientRect(),b=document.querySelector('#items>[data-seq="13"] .nrow').getBoundingClientRect();return b.top-a.bottom})()"#)
+        XCTAssertEqual(try XCTUnwrap(Double(notices)), 2, accuracy: 0.5, "Consecutive notice lines")
+        _ = try await webviewJS(web, "(()=>{document.querySelector('.reply-pill[data-thread=one]').click();return true})()")
+        try await webviewUntil(web, "document.querySelector('.thread-clear')!==null&&document.querySelector('#items>[data-seq=\"5\"]')===null&&document.querySelector('#items>[data-seq=\"4\"] .run')?.dataset.rhythm==='compact'&&\(koaIdle)")
+        let filtered = try await webviewJS(web, #"(()=>{const a=document.querySelector('#items>[data-seq="4"] .run').getBoundingClientRect(),b=document.querySelector('#items>[data-seq="6"] .run').getBoundingClientRect();return b.top-a.bottom})()"#)
+        XCTAssertEqual(try XCTUnwrap(Double(filtered)), 2, accuracy: 0.5, "Consecutive runs across a hidden prose boundary")
+        _ = try await webviewJS(web, #"(()=>{document.querySelector('#items>[data-seq="4"] .run>.line').click();return true})()"#)
+        let opened = try await webviewJS(web, #"(()=>{const a=document.querySelector('#items>[data-seq="4"] .run').getBoundingClientRect(),b=document.querySelector('#items>[data-seq="6"] .run').getBoundingClientRect();return b.top-a.bottom})()"#)
+        XCTAssertEqual(try XCTUnwrap(Double(opened)), 14, accuracy: 0.5, "An open run separates the next line")
+    }
+
+    func testKoaWebviewThreadsModes() async throws {
+        try await koaWebview(width: 1400, height: 560, scenario: .threads, captures: ["threads-block", "threads-block-filter", "threads-line-resize", "threads-block-resize"])
+    }
+
     func testKoaWebviewThreadsTwo() async throws {
         try await koaWebview(width: 980, height: 560, scenario: .threads, captures: ["threads-two"])
     }
@@ -833,6 +854,8 @@ import SidebarFeed
                 XCTAssertEqual(order, "true", "Queued steers and follow-ups stay above the attachment chips and composer field")
             }
             try await settle()
+            let columnAligned = try await webviewJS(web, "(()=>{const column=document.querySelector('#transcript'),rect=column.getBoundingClientRect(),field=document.querySelector(document.body.classList.contains('jobmode')?'#jobfoot .field':'#field'),box=field.getBoundingClientRect(),style=getComputedStyle(field),edge=box.left+parseFloat(style.borderLeftWidth)+parseFloat(style.paddingLeft);return Math.abs(rect.left)<.5&&rect.width<=720.5&&Math.abs(edge-rect.left-parseFloat(getComputedStyle(column).paddingLeft))<=1.5})()")
+            XCTAssertEqual(columnAligned, "true", "Transcript and composer share the left-aligned column")
             if name.contains("marks") {
                 let aligned = try await webviewJS(web, "(()=>{const times=['.reply-pill time','.user time','.run>.line .time'].map(selector=>document.querySelector(selector));if(times.some(time=>!time))throw Error('Missing transcript time');const edges=times.map(time=>time.getBoundingClientRect().right);return Math.max(...edges)-Math.min(...edges)<1})()")
                 XCTAssertEqual(aligned, "true", "Reply, user and run times share the text edge")
@@ -864,6 +887,23 @@ import SidebarFeed
         }
         _ = try await webviewJS(web, "(()=>{const NativeDate=Date;window.Date=class extends NativeDate{constructor(...args){super(...(args.length?args:[\(stamp + 12000)]))}static now(){return \(stamp + 12000)}};const style=document.createElement('style');style.textContent='.caret,.dot.on,.cm-cursorLayer\(scenario == .reveal ? "" : ",.grow"){animation:none!important}\(scenario == .reveal ? ".grow{animation-play-state:paused!important;animation-delay:-110ms!important}" : "").info .chev,#latest{transition:none!important}#transcript{transform:none!important}';document.head.append(style);return true})()")
         if scenario == .threads {
+            if captures.contains("threads-block") {
+                try await webviewUntil(web, "document.querySelector('#threads').dataset.mode==='block'&&document.querySelectorAll('.thread-entry').length===9")
+                let placed = try await webviewJS(web, "(()=>{const host=document.querySelector('#threads'),panel=host.querySelector('.thread-panel'),box=panel.getBoundingClientRect(),column=document.querySelector('#transcript').getBoundingClientRect(),style=getComputedStyle(panel),inset=parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--ko-inset-top'))||0;return !host.querySelector('.thread-capsule')&&Math.abs(box.left-column.right-20)<.5&&Math.abs(box.top-inset-8)<.5&&Math.abs(box.width-Math.min(360,innerWidth-column.width-28))<.5&&style.borderTopWidth==='0px'&&style.boxShadow==='none'&&style.backgroundColor==='rgba(0, 0, 0, 0)'&&[...panel.querySelectorAll('.thread-entry')].every(row=>Math.abs(row.getBoundingClientRect().height-28)<.5)})()")
+                XCTAssertEqual(placed, "true", "The block stands directly beside the transcript")
+                try await capture("threads-block")
+                _ = try await webviewJS(web, "(()=>{document.querySelector('.thread-entry[data-thread=sidebar]').click();return true})()")
+                try await webviewUntil(web, "document.querySelector('.thread-entry.current')?.dataset.thread==='sidebar'&&document.querySelector('.thread-all')!==null&&\(koaIdle)")
+                try await capture("threads-block-filter")
+                _ = try await webviewJS(web, "(()=>{document.querySelector('.thread-entry.current').click();return true})()")
+                koaContentSize(window: window, width: 470, height: 560)
+                try await webviewUntil(web, "document.querySelector('#threads').dataset.mode==='line'&&document.querySelector('.thread-overflow')!==null")
+                try await capture("threads-line-resize")
+                koaContentSize(window: window, width: 1400, height: 560)
+                try await webviewUntil(web, "document.querySelector('#threads').dataset.mode==='block'&&!document.querySelector('.thread-panel').hidden")
+                try await capture("threads-block-resize")
+                return
+            }
             let name = try XCTUnwrap(captures.first)
             try await webviewUntil(web, "!document.querySelector('#threads').hidden&&document.querySelector('.thread-capsule')!==null")
             if name == "threads-many" || name == "threads-many-narrow" {
@@ -880,13 +920,13 @@ import SidebarFeed
                 XCTAssertEqual(wrapping, "[true,\"normal\",\"normal\",true]", "Threaded prose wraps an unbroken token; code and tables keep horizontal scrolling")
             }
             if name.contains("filter") {
-                _ = try await webviewJS(web, "(()=>{document.querySelector('.thread-open').click();document.querySelector('.thread-entry[data-thread=sidebar]').click();return true})()")
+                _ = try await webviewJS(web, "(()=>{document.querySelector('.thread-overflow').click();document.querySelector('.thread-entry[data-thread=sidebar]').click();return true})()")
                 try await webviewUntil(web, "document.querySelector('.thread-clear')!==null&&document.querySelector('.user')!==null&&[...document.querySelectorAll('#items .reply-pill')].every(pill=>pill.classList.contains('plain'))&&\(koaIdle)")
                 let filtered = try await webviewJS(web, "document.querySelectorAll('#items .thread-mark,#items .thread-section,#items .thread-edge,#items .thread-waiting').length===0&&[...document.querySelectorAll('#items .reply-pill')].every(pill=>pill.classList.contains('plain')&&!pill.querySelector('.thread-name')&&!pill.hasAttribute('role'))&&document.querySelector('#thread-cell').textContent==='#sidebar'")
                 XCTAssertEqual(filtered, "true", "Filtered replies have time-only pills and pending users have no label")
             }
             if name == "threads-two" || name.contains("many") || name.hasSuffix("panel") {
-                _ = try await webviewJS(web, "(()=>{document.querySelector('.thread-open').click();return true})()")
+                _ = try await webviewJS(web, "(()=>{document.querySelector(document.querySelector('.thread-clear')?'.thread-open':'.thread-overflow').click();return true})()")
                 try await webviewUntil(web, "!document.querySelector('.thread-panel').hidden")
             }
             try await capture(name)

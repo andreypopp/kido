@@ -49,10 +49,13 @@ const threadItems = new Map<number, Extract<WireItem, { kind: 'threads' }>>();
 const projections = new Map<number, WireItem | undefined>();
 const threadFilters = new Map<string, ThreadName>();
 const threadCell = Object.assign(node('span', undefined, 'thread-cell'), { id: 'thread-cell' });
+const threadMeasure = node('span', '0', 'thread-measure');
+threadMeasure.setAttribute('aria-hidden', 'true'); document.body.append(threadMeasure);
 const threadFilter = (): ThreadName | undefined => state.view.type === 'root' ? threadFilters.get(filterKey()) : undefined;
 let historyBefore: number | undefined;
 let threadCapsule: { view: HTMLDivElement; names: ThreadName[]; selected?: ThreadName; width?: number } | undefined;
 
+const rhythmPending = new Set<HTMLElement>();
 const annotationItems = new Map<number, Map<number, Extract<WireItem, { kind: 'annotations' }>>>();
 const items = new Map<number, WireItem>();
 const views = new Map<number, { view: HTMLElement; item: WireItem; warning?: string; slots: Map<string, Slot>; filter?: ThreadName; runs: string }>();
@@ -169,14 +172,18 @@ function replyPill(name: ThreadName | undefined, at: number) {
   mark.append(threadName(name), time);
   return mark;
 }
+function threadMode(paneWidth: number, transcriptWidth: number, cellWidth: number): 'line' | 'block' {
+  return paneWidth - transcriptWidth - 28 >= 30 * cellWidth ? 'block' : 'line';
+}
 function toggleThreads() {
+  if (element('threads').dataset.mode === 'block') return;
   const panel = element('threads').querySelector<HTMLElement>('.thread-panel');
-  if (panel) { const open = panel.hidden; renderThreads(); const current = element('threads').querySelector<HTMLElement>('.thread-panel'); if (current) current.hidden = !open; element('threads').querySelector('.thread-open')?.setAttribute('aria-expanded', String(open)); }
+  if (panel) { const open = panel.hidden; renderThreads(); const current = element('threads').querySelector<HTMLElement>('.thread-panel'); if (current) current.hidden = !open; element('threads').querySelector(threadFilter() ? '.thread-open' : '.thread-overflow')?.setAttribute('aria-expanded', String(open)); }
 }
 function closeThreads() {
   const panel = element('threads').querySelector<HTMLElement>('.thread-panel');
-  if (panel) panel.hidden = true;
-  element('threads').querySelector('.thread-open')?.setAttribute('aria-expanded', 'false');
+  if (panel && element('threads').dataset.mode !== 'block') panel.hidden = true;
+  element('threads').querySelector(threadFilter() ? '.thread-open' : '.thread-overflow')?.setAttribute('aria-expanded', 'false');
 }
 function threadAge(at: number, now: number): string {
   const minutes = Math.max(0, Math.floor((now - at) / 60000));
@@ -190,9 +197,16 @@ function fitThreads(width = document.documentElement.clientWidth) {
   button.classList.remove('single');
   for (let count = capsule.names.length; count >= 1; count--) {
     const children: HTMLElement[] = [];
-    for (const name of capsule.names.slice(0, count)) { if (children.length) children.push(node('span', '·', 'thread-separator')); children.push(threadName(name)); }
+    for (const name of capsule.names.slice(0, count)) {
+      if (children.length) children.push(node('span', '·', 'thread-separator'));
+      const label = threadName(name); label.setAttribute('role', 'button'); label.tabIndex = -1;
+      label.onclick = () => setThread(name);
+      label.onkeydown = event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); setThread(name); } };
+      children.push(label);
+    }
     if (count < capsule.names.length) children.push(node('span', '·', 'thread-separator'), node('span', '+' + (capsule.names.length - count), 'thread-more'));
-    children.push(node('span', '▾', 'thread-chevron')); button.replaceChildren(...children);
+    const more = node('button', '…', 'thread-overflow'); more.type = 'button'; more.setAttribute('aria-label', 'Choose thread'); more.setAttribute('aria-expanded', String(element('threads').querySelector<HTMLElement>('.thread-panel')?.hidden === false)); more.onclick = toggleThreads;
+    children.push(more); button.replaceChildren(...children);
     const measured = button.scrollWidth + capsule.view.getBoundingClientRect().width - button.getBoundingClientRect().width;
     if (measured <= Math.max(0, width - 16) || count === 1) { button.classList.toggle('single', count === 1); break; }
   }
@@ -201,26 +215,32 @@ function fitThreads(width = document.documentElement.clientWidth) {
 function renderThreads() {
   const host = element('threads'), cell = threadCell, filter = threadFilter();
   host.hidden = state.view.type !== 'root' || !('threads' in state) || !state.threads.length;
-  document.body.classList.toggle('with-threads', !host.hidden);
+  const column = element('transcript').getBoundingClientRect(), width = document.documentElement.clientWidth;
+  const mode = threadMode(width, column.width, threadMeasure.getBoundingClientRect().width);
+  const previousMode = host.dataset.mode; host.dataset.mode = mode;
+  document.body.classList.toggle('with-threads', !host.hidden && mode === 'line');
+  host.style.left = mode === 'block' ? column.left + column.width + 20 + 'px' : '';
+  host.style.width = mode === 'block' ? Math.min(360, width - column.width - 28) + 'px' : '';
   cell.remove(); cell.replaceChildren();
   if (filter) { const model = element('model-cell'); model.parentNode?.insertBefore(cell, model); const separator = node('i', undefined, 'sep'); separator.setAttribute('aria-hidden', 'true'); cell.append(threadName(filter), separator); }
   if (!('threads' in state) || host.hidden) { host.replaceChildren(); threadCapsule = undefined; return; }
-  const previousPanel = host.querySelector<HTMLElement>('.thread-panel'), open = previousPanel?.hidden === false;
+  const previousPanel = host.querySelector<HTMLElement>('.thread-panel'), open = previousMode === 'line' && previousPanel?.hidden === false;
   const scrollTop = previousPanel?.scrollTop ?? 0;
   const threads = state.threads.map((thread, index) => ({ ...thread, index })).sort((a, b) => a.last && b.last ? b.last.at - a.last.at || b.index - a.index : a.last ? 1 : b.last ? -1 : b.index - a.index);
   const names = threads.map(thread => thread.name), changed = !threadCapsule || threadCapsule.selected !== filter || names.length !== threadCapsule.names.length || names.some((name, index) => name !== threadCapsule?.names[index]);
-  if (changed) {
-    const capsule = node('div', undefined, 'thread-capsule'), button = node('button', undefined, 'thread-open');
-    button.type = 'button'; button.setAttribute('aria-label', 'Threads'); button.onclick = toggleThreads;
+  if (mode === 'block') threadCapsule = undefined;
+  else if (changed) {
+    const capsule = node('div', undefined, 'thread-capsule'), button = node(filter ? 'button' : 'div', undefined, 'thread-open');
+    button.setAttribute('aria-label', 'Threads');
+    if (filter) { button.setAttribute('type', 'button'); button.onclick = toggleThreads; }
     if (filter) { button.classList.add('single'); button.append(threadName(filter)); }
     capsule.append(button);
     if (filter) { const clear = node('button', '×', 'thread-clear'); clear.type = 'button'; clear.setAttribute('aria-label', 'All threads'); clear.onclick = () => setThread(undefined); capsule.append(clear); }
     threadCapsule = { view: capsule, names, selected: filter };
   }
   const capsule = threadCapsule?.view;
-  if (!capsule) return;
-  capsule.querySelector('.thread-open')?.setAttribute('aria-expanded', String(open));
-  const panel = node('div', undefined, 'thread-panel'); panel.hidden = !open; panel.setAttribute('aria-label', 'Choose thread');
+  if (filter) capsule?.querySelector('.thread-open')?.setAttribute('aria-expanded', String(open));
+  const panel = node('div', undefined, 'thread-panel'); panel.hidden = mode === 'line' && !open; panel.setAttribute('aria-label', 'Choose thread');
   for (const thread of threads) {
     const entry = node('button', undefined, 'thread-entry'); entry.type = 'button'; entry.dataset.thread = thread.name;
     entry.classList.toggle('current', thread.name === filter); entry.setAttribute('aria-pressed', String(thread.name === filter));
@@ -232,9 +252,9 @@ function renderThreads() {
     entry.onclick = () => setThread(thread.name); panel.append(entry);
   }
   if (filter) { const all = node('button', 'All threads', 'thread-entry thread-all'); all.type = 'button'; all.onclick = () => setThread(undefined); panel.append(all); }
-  host.replaceChildren(capsule, panel);
-  if (open) panel.scrollTop = scrollTop;
-  if (changed && !filter) fitThreads();
+  host.replaceChildren(...(capsule ? [capsule, panel] : [panel]));
+  if (open || previousMode === 'block' && mode === 'block') panel.scrollTop = scrollTop;
+  if (capsule && !filter) fitThreads();
   for (const mark of [...element('items').querySelectorAll<HTMLElement>('.reply-pill,.thread-name'), ...host.querySelectorAll<HTMLElement>('.thread-name')]) {
     const thread = state.threads.find(thread => thread.name === mark.dataset.thread);
     if (thread) mark.style.setProperty('--thread-color', threadColour(thread.name));
@@ -591,11 +611,18 @@ function applyScroll(decision: Decision) {
   latest.classList.toggle('show', decision.latest.show);
   const before = decision.dividerBefore, inside = before !== undefined && decision.dividerRow && unitKeys(before)[0] !== decision.dividerRow;
   const view = before === undefined ? undefined : inside ? rowOf({ kind: 'message', seq: before, row: decision.dividerRow }) : views.get(before)?.view;
-  if (!view) { divider?.remove(); divider = undefined; }
+  const changed: Element[] = [];
+  const remember = () => {
+    if (!divider) return;
+    const parent = divider.parentNode;
+    for (const at of [divider.previousElementSibling, divider.nextElementSibling, parent instanceof HTMLElement && parent !== element('items') ? parent : undefined]) if (at) changed.push(at);
+  };
+  if (!view) { remember(); divider?.remove(); divider = undefined; }
   else {
     if (!divider) { divider = node('div', undefined, 'newmsgs'); divider.append(node('span', 'new messages')); }
-    if (divider.nextSibling !== view) view.parentNode?.insertBefore(divider, view);
+    if (divider.nextSibling !== view) { remember(); view.parentNode?.insertBefore(divider, view); remember(); }
   }
+  if (changed.length) rhythm(changed);
   if (decision.request?.type === 'mount') windowDirty = true;
   else if (decision.request?.type === 'load') void loadAnchor(decision.request.item, decision.request.generation);
   if (decision.frame !== 'none') schedule();
@@ -706,7 +733,7 @@ function fold(view: HTMLElement, key: string, line: HTMLElement, details: HTMLEl
   view.classList.toggle(className, folds.get(key) === true);
   line.setAttribute('role', 'button'); line.tabIndex = -1;
   line.setAttribute('aria-expanded', String(folds.get(key) === true));
-  const toggle = () => { if (view.classList.contains('no-detail')) return; const open = !view.classList.contains(className); folds.set(key, open); view.classList.toggle(className, open); line.setAttribute('aria-expanded', String(open)); if (open) show?.(); changed?.(); };
+  const toggle = () => { if (view.classList.contains('no-detail')) return; const open = !view.classList.contains(className); folds.set(key, open); view.classList.toggle(className, open); line.setAttribute('aria-expanded', String(open)); if (open) show?.(); changed?.(); const row = Array.from(messageRows()).find(row => row.contains(view)); rhythm(row ? [row] : []); };
   openers.set(key, { view, open: () => { if (!view.classList.contains(className)) toggle(); } });
   line.onclick = event => { if (!(event?.target instanceof Element && event.target.closest('a'))) toggleAt(line, toggle); };
   line.onkeydown = event => { if (!(event.target instanceof Element && event.target.closest('a')) && !event.metaKey && !event.ctrlKey && (event.key === 'Enter' || event.key === ' ')) { event.preventDefault(); toggleAt(line, toggle); } };
@@ -856,8 +883,13 @@ function run(input: Step[]) {
   runMarks.set(view, marks); if (adopt && working) working.place = { kind: 'run', owner: view };
   patchRun(marks, input); return view;
 }
+function removeRow(view: HTMLElement) {
+  const before = view.previousElementSibling;
+  if (before instanceof HTMLElement) rhythmPending.add(before);
+  view.remove();
+}
 function clearWorking() {
-  if (working?.place.kind === 'bare') working.place.row.remove();
+  if (working?.place.kind === 'bare') removeRow(working.place.row);
   working?.primary.remove(); working?.extra.forEach(mark => mark.remove()); working = undefined;
 }
 function lastRun() { const key = trailingOwner(); return key ? openers.get('run:' + key)?.view : undefined; }
@@ -869,7 +901,7 @@ function reconcileWorking() {
   }
   const turn = working, spots: Spot[] = [], tail = lastRun();
   if (tail) {
-    if (turn.place.kind === 'bare' && turn.place.row !== tail) turn.place.row.remove();
+    if (turn.place.kind === 'bare' && turn.place.row !== tail) removeRow(turn.place.row);
     turn.place = { kind: 'run', owner: tail };
     for (const marks of liveMarks.values()) {
       const live = marks.steps.filter(step => step.live), open = folds.get(marks.key) === true;
@@ -880,7 +912,7 @@ function reconcileWorking() {
   } else {
     if (turn.place.kind !== 'bare') turn.place = bareRun();
     const { row, sum } = turn.place, items = element('items');
-    if (row.parentNode !== items || items.lastChild !== row) items.append(row);
+    if (row.parentNode !== items || items.lastChild !== row) { removeRow(row); items.append(row); rhythmPending.add(row); }
     spots.push({ key: 'bare', parent: sum, before: null });
   }
   const place = (mark: HTMLElement, { parent, before }: Omit<Spot, 'key'>) => {
@@ -1204,8 +1236,8 @@ function measureExtents(targets: readonly Element[]) {
   for (const row of rows) {
     if (row.hidden || row.dataset.seq === undefined) continue;
     const seq = Number(row.dataset.seq), after = next(row), joined = after instanceof HTMLElement && after.dataset.seq !== undefined;
-    const earlier = extents.get(seq), height = row.offsetHeight, last = row.lastElementChild;
-    const px = joined ? after.offsetTop - row.offsetTop : height + (last ? parseFloat(getComputedStyle(last).marginBottom) || 0 : 0);
+    const earlier = extents.get(seq), height = row.offsetHeight;
+    const px = joined ? after.offsetTop - row.offsetTop : height + (parseFloat(getComputedStyle(row).marginBottom) || 0);
     if (earlier?.kind === 'measured' && earlier.px === px && earlier.width === width && earlier.lh === lh) continue;
     extents.set(seq, { kind: 'measured', width, lh, px });
     if (table) patched.add(seq);
@@ -1227,7 +1259,7 @@ function liveRange(t: Table) {
 function unmountRow(seq: number) {
   const entry = views.get(seq);
   if (!entry) return;
-  views.delete(seq); entry.view.remove();
+  views.delete(seq); removeRow(entry.view);
   unwatch(entry.view);
   for (const registry of [openers, fenceOpeners]) for (const [key, opener] of [...registry]) if (entry.view.contains(opener.view)) registry.delete(key);
   for (const [key, memo] of [...texts]) if (key.startsWith(seq + ':')) { texts.delete(key); revealing.delete(memo); }
@@ -1287,6 +1319,40 @@ function layoutWindow(t: Table) {
   });
   mountedSpans = ranges.map(range => ({ start: t.starts[range.lo], end: t.starts[range.hi + 1] }));
 }
+function rhythm(changed: Iterable<Element> = []) {
+  const pending = new Set([...rhythmPending, ...changed]), roots = new Set<HTMLElement>(), list = element('items'), lines = '.run,.nrow,.cmdrun,.step,.agent-step,.job-step';
+  const cached = new Map<HTMLElement, HTMLElement[]>();
+  rhythmPending.clear();
+  for (let root of pending) {
+    while (root.parentNode instanceof HTMLElement && root.parentNode !== list) root = root.parentNode;
+    if (root instanceof HTMLElement && root.parentNode === list) roots.add(root);
+  }
+  const parts = (root: HTMLElement) => {
+    const known = cached.get(root); if (known) return known;
+    const blocks: HTMLElement[] = [];
+    const collect = (view: HTMLElement) => {
+      if (view.hidden) return;
+      if (view.matches('.msg,' + lines + ',.gap,.newmsgs')) blocks.push(view);
+      else for (const child of view.children) if (child instanceof HTMLElement) collect(child);
+    };
+    collect(root); cached.set(root, blocks); return blocks;
+  };
+  const adjacent = (start: Element | null, previous: boolean) => {
+    for (let row = start; row; row = previous ? row.previousElementSibling : row.nextElementSibling) if (row instanceof HTMLElement) {
+      const blocks = parts(row), edge = previous ? blocks.at(-1) : blocks[0];
+      if (edge) return edge;
+    }
+  };
+  for (const root of roots) {
+    const before = adjacent(root.previousElementSibling, true), after = adjacent(root.nextElementSibling, false);
+    const blocks = before ? [before, ...parts(root)] : parts(root);
+    blocks.forEach((view, index) => {
+      if (view.matches('.gap,.newmsgs')) return;
+      const next = blocks[index + 1] ?? after, spacing = view.matches(lines) && next?.matches(lines) ? 'compact' : 'block';
+      if (view.dataset.rhythm !== spacing) view.dataset.rhythm = spacing;
+    });
+  }
+}
 function renderDirty(geo: Geo = geometry()) {
   const reset = resetting;
   if (resetting) {
@@ -1312,7 +1378,7 @@ function renderDirty(geo: Geo = geometry()) {
   const touched = rendered.length || seqs.length ? reconcileRuns() : [];
   if (annotated) { annotated = false; update(editor.text()); }
   if (reset) { refreshBash(); refreshComposer(); }
-  reconcileWorking();
+  reconcileWorking(); rhythm(new Set([...seqs, ...rendered].flatMap(seq => { const view = views.get(seq)?.view; return view ? [view] : []; })));
   for (const seq of new Set([...seqs, ...seqs.map(seq => seq + 1), ...touched])) changedItem(seq, false);
   for (const seq of rendered) { const row = views.get(seq)?.view; if (row) watchBlocks(row); }
   const older = element('older');
@@ -1356,12 +1422,12 @@ function commandRun(value: Extract<WireItem, { kind: 'bash' }> | Bash, key: stri
 }
 function refreshBash() {
   const ids = new Set(state.bash.map(item => item.id));
-  for (const [id, card] of pendingBash) if (!ids.has(id)) { card.view.remove(); pendingBash.delete(id); }
+  for (const [id, card] of pendingBash) if (!ids.has(id)) { removeRow(card.view); pendingBash.delete(id); }
   for (const item of state.bash) {
     let card = pendingBash.get(item.id);
     if (!card) { card = commandRun(item, 'live-bash:' + item.id); pendingBash.set(item.id, card); }
     else card.update(item);
-    if (!card.view.isConnected) element('items').append(card.view);
+    if (!card.view.isConnected) { element('items').append(card.view); rhythmPending.add(card.view); }
   }
 }
 function refreshComposer() {
@@ -2219,7 +2285,7 @@ document.addEventListener('keydown', event => {
       : ['ArrowDown', 'PageDown', 'End', ' '].includes(event.key) ? 'down' : undefined;
     if (direction) decide({ type: 'input', direction });
   }
-  previewHover(event); if (previewKey(event)) return; if (event.key === 'Escape' && element('threads').querySelector<HTMLElement>('.thread-panel')?.hidden === false) { event.preventDefault(); closeThreads(); return; } if (!barMenu.hidden && event.key === 'Escape') { event.preventDefault(); closeBarMenu(); return; } if (state.view.type === 'job') return; if (!event.defaultPrevented && event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey && !event.isComposing && event.key === 'g' && composerReceivesKeys() && !editing()) { event.preventDefault(); void openEditor(); return; } if (event.defaultPrevented || event.metaKey || event.ctrlKey || event.isComposing || state.dialogs.length || pickerButton || sessionPicker !== 'closed') return; if (event.key === 'Tab') { event.preventDefault(); if (!element('field').inert) editor.focus(); return; } if (composerReceivesKeys() && !event.altKey && event.key.length === 1 && !(event.key === ' ' && isControl(event.target)) && !isTextInput(event.target)) { event.preventDefault(); editor.focus(); editor.insert(event.key); return; } if (event.key === 'Enter' && hasFailed() && event.target === document.body) element('exited').querySelector('button')?.click(); if (event.key === 'Escape') { event.preventDefault(); if (editing()) return; if (state.bash.some(item => item.phase === 'running')) { escaped = false; void stop(); } else if (state.working) { escaped = true; void stop(); } else if (escaped) { editor.setText(''); } else { escaped = true; } } });
+  previewHover(event); if (previewKey(event)) return; if (event.key === 'Escape' && element('threads').dataset.mode === 'line' && element('threads').querySelector<HTMLElement>('.thread-panel')?.hidden === false) { event.preventDefault(); closeThreads(); return; } if (!barMenu.hidden && event.key === 'Escape') { event.preventDefault(); closeBarMenu(); return; } if (state.view.type === 'job') return; if (!event.defaultPrevented && event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey && !event.isComposing && event.key === 'g' && composerReceivesKeys() && !editing()) { event.preventDefault(); void openEditor(); return; } if (event.defaultPrevented || event.metaKey || event.ctrlKey || event.isComposing || state.dialogs.length || pickerButton || sessionPicker !== 'closed') return; if (event.key === 'Tab') { event.preventDefault(); if (!element('field').inert) editor.focus(); return; } if (composerReceivesKeys() && !event.altKey && event.key.length === 1 && !(event.key === ' ' && isControl(event.target)) && !isTextInput(event.target)) { event.preventDefault(); editor.focus(); editor.insert(event.key); return; } if (event.key === 'Enter' && hasFailed() && event.target === document.body) element('exited').querySelector('button')?.click(); if (event.key === 'Escape') { event.preventDefault(); if (editing()) return; if (state.bash.some(item => item.phase === 'running')) { escaped = false; void stop(); } else if (state.working) { escaped = true; void stop(); } else if (escaped) { editor.setText(''); } else { escaped = true; } } });
 element('model').onclick = () => picker('model'); element('thinking').onclick = () => picker('thinking');
 document.addEventListener('pointerdown', event => { if (!element('threads').contains(event.target instanceof Node ? event.target : null)) closeThreads(); if (!barMenu.hidden && !barMenu.contains(event.target instanceof Node ? event.target : null) && !(event.target instanceof Element && event.target.closest('.ellipsis'))) closeBarMenu(); if (!element('picker').contains(event.target instanceof Node ? event.target : null) && !pickerButton?.contains(event.target instanceof Node ? event.target : null)) closePicker(); });
 element('scroll').onscroll = () => {
@@ -2258,10 +2324,13 @@ function resized(entries: ResizeObserverEntry[]) {
   const column = entries.some(({ target }) => target === element('scroll')) && !bar.hidden ? element('transcript').getBoundingClientRect() : undefined;
   for (const { target, borderBoxSize } of entries) {
     if (target === element('dock')) { dockResized(borderBoxSize[0].blockSize); positionPicker(); }
-    if (target === element('scroll')) { if (column) layoutBar(column); fitThreads(); }
+    if (target === element('scroll') && column) layoutBar(column);
   }
+  if (entries.some(({ target }) => target === threadMeasure) && threadCapsule) delete threadCapsule.width;
+  if (entries.some(({ target }) => target === element('scroll') || target === threadMeasure)) renderThreads();
   decide({ type: 'layout', cause: 'layout' });
 }
+layoutObserver.observe(threadMeasure);
 for (const id of ['scroll', 'items', 'jobv', 'dock']) layoutObserver.observe(element(id));
 setInterval(() => { job.tick(); if (state.view.type === 'job') return; for (const item of state.bash) pendingBash.get(item.id)?.update(item); }, 1000);
 window.addEventListener('resize', positionPicker);

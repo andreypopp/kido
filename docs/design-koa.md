@@ -854,6 +854,20 @@ branch summary on the path is a summary row.
   last run when nothing stands between, otherwise it starts a new
   folded run, and a turn's first step joins it in the same way. Fold
   state is page-local and a reload loses it.
+- **Spacing is one margin below each block** (app/design/koa/NOTES.md,
+  "Compact spacing"). A group of lines (runs, notice rows, `!`
+  command rows) is one block: 2px between its lines, 14px after its
+  last line and after an open line; prose and a user message have
+  14px below, and the last block inside prose adds nothing. No block
+  has a top margin, so no two margins add. The lines of one group
+  are often in different rows (an agent item owns a run whose steps
+  come from the next reply, and that reply's row is empty), so CSS
+  sibling selectors cannot see the group's end. `rhythm` in
+  `page/page.ts` walks only the changed rows and their nearest
+  non-empty neighbours, skips empty rows and stops at a gap or the
+  new-messages divider, and sets each row's `data-rhythm`; the CSS
+  reads only that attribute. Each change of a row's first or last
+  block, of the row order or of the divider calls it.
 - **Thinking is Markdown when open.** A thinking step's line shows
   its first line without Markdown syntax, as an agent step does. Its
   text renders through the reply's Markdown memo only when the step
@@ -2294,9 +2308,8 @@ Markdown syntax of the line, as for an agent step.
 thread's position to its palette, modulo the palette's size.
 
 **The look** is the mockup `threads.html` (app/design/koa/NOTES.md,
-"Threads: the widget, the marks and the filter"): a capsule outside
-the scroll that names the newest threads, a panel of all threads,
-and a pill on each assistant message, or on each section of a reply
+"Threads: the widget, the marks and the filter"): the threads
+widget, a panel of all threads, and a pill on each assistant message, or on each section of a reply
 about two threads, with `# name` and the message's time
 (app/design/koa/NOTES.md, "The reply's pill"). A reply with no thread has a pill with only the time, so
 every assistant message shows its time in one place, on the text
@@ -2305,7 +2318,15 @@ only the time, because the filter names the thread. No other row shows a thread:
 mark line, no colour edge, nothing on a run, a step or a notice (the
 user, 2026-11-20); the item keeps its thread for the filter. The user
 decided against a status dot: `# name` in the thread's colour is the
-one sign of a thread. The
+one sign of a thread.
+
+**The widget has two modes** (app/design/koa/NOTES.md, "Two
+modes"), because the transcript is aligned left on every koa page and
+a wide pane has room at its right. When at least 30 cells are free
+right of the transcript, after the gap and the pane's edge, the
+threads stand there as a block of rows; else they are a capsule
+outside the scroll, whose names filter at once and whose "…" opens
+the panel. The page decides the mode again on each resize; nothing stores it. The
 panel's order is the page's: newest first by the time of the last
 section, a thread with no section before them; the colour stays the
 position in the state.

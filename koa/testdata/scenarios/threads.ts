@@ -61,6 +61,12 @@ function scene(dir: string, kind: 'two' | 'many' | 'marks' | 'marks-narrow' | 'f
 }
 
 export const scenarios: Scenarios = {
+  testKoaWebviewThreadsModes: dir => {
+    const result = scene(dir, 'filter'), initial = result.open.find(record => record.type === 'reset'), state = result.open.find(record => record.type === 'state');
+    if (!initial || !state) throw Error('Missing threads fixture state');
+    result.steps.push(expect({ on: { method: 'GET', path: '/items', body: value => same(value, { before: String(Number.MAX_SAFE_INTEGER), sessionId: state.sessionId }) }, reply: { status: 200, json: { epoch: initial.epoch, more: false, items: initial.items } } }));
+    return result;
+  },
   testKoaWebviewThreadsTwo: dir => scene(dir, 'two'),
   testKoaWebviewThreadsMany: dir => scene(dir, 'many'),
   testKoaWebviewThreadsManyNarrow: dir => scene(dir, 'many'),

@@ -651,6 +651,51 @@ test('a reply pill filters the capsule and prompt without a pending line', async
   assert.deepEqual(Array.from(result),['SPAN','button',true,'one','#one×','one',undefined,false]);
 });
 
+test('block thread updates preserve the scrolled panel position', async () => {
+  const app=await page();
+  const result=app.run(`(()=>{threadMeasure.getBoundingClientRect=()=>({width:8});element('transcript').getBoundingClientRect=()=>({width:720});document.documentElement.clientWidth=1100;state={...state,sessionId:'s',view:{id:'root',path:[],type:'root'},threads:Array.from({length:32},(_,index)=>({name:'thread-'+index,last:{summary:'Before',at:index}}))};renderThreads();element('threads').querySelector('.thread-panel').scrollTop=140;apply({...state,type:'state',threads:state.threads.map(thread=>({...thread,last:{...thread.last,summary:'After'}}))});return element('threads').querySelector('.thread-panel').scrollTop})()`);
+  assert.equal(result,140);
+});
+
+test('divider insertion movement and removal update rhythm across rows and reply sections', async () => {
+  const app=await page();
+  const result=app.run(`(()=>{const list=element('items');list.hidden=false;const previous=node('div'),outside=node('div',undefined,'nrow'),root=node('div'),section=node('div',undefined,'reply-section'),a=node('div'),b=node('div'),first=node('div',undefined,'run'),second=node('div',undefined,'run');previous.dataset.seq='0';root.dataset.seq='1';previous.append(outside);a.append(first);b.append(second);section.append(a,b);root.append(section);list.replaceChildren(previous,root);views.set(0,{view:previous});views.set(1,{view:root});unitKeys=seq=>{if(seq===0)return ['run:0:0'];if(seq===1)return ['run:1:0','run:1:2'];throw Error('Unexpected row')};openers.set('run:1:2',{view:second});rhythm([previous,root]);const flags=()=>[outside.dataset.rhythm,first.dataset.rhythm],states=[flags()];applyScroll({...scrollDecision,dividerBefore:1,dividerRow:'run:1:2'});states.push(flags());applyScroll({...scrollDecision,dividerBefore:1,dividerRow:'run:1:0'});states.push(flags());applyScroll({...scrollDecision,dividerBefore:undefined,dividerRow:undefined});states.push(flags());return states})()`);
+  assert.deepEqual(JSON.parse(JSON.stringify(result)),[['compact','compact'],['compact','block'],['block','compact'],['compact','compact']]);
+});
+
+test('streamed prose in a run follower updates only its preceding rhythm neighbour', async () => {
+  const app=await page();
+  const result=app.run(`(()=>{element('items').hidden=false;state={...state,life:{type:'ready'},sessionId:'s',view:{id:'root',path:[],type:'root'},threads:[{name:'one'},{name:'two'}]};setThread('one');const tool={type:'tool',thread:'one',id:'tool',name:'bash',args:{text:'{}'},state:{type:'done',error:false,result:{text:'',cut:0,images:[]}}};const reply=(seq,blocks,revision=0)=>({seq,revision,at:1,kind:'assistant',final:true,blocks,stop:'stop',error:''});put({seq:0,revision:0,at:1,kind:'agent',final:true,thread:'one',direction:'in',from:{name:'helper'},inbound:{form:'report',relation:'child'},text:{text:'ready',cut:0}});put(reply(1,[tool]));put(reply(2,[{type:'text',thread:'two',text:'hidden boundary'}]));put(reply(3,[tool]));const previous=views.get(0).view.querySelector('.run'),next=views.get(3).view.querySelector('.run'),before=previous.dataset.rhythm;Object.defineProperty(next.dataset,'rhythm',{get:()=> 'block',set:()=>{throw Error('Untouched row was rewritten')}});put(reply(1,[tool,{type:'text',thread:'one',text:'Streamed prose'}],1));return [before,previous.dataset.rhythm]})()`);
+  assert.deepEqual(Array.from(result),['compact','block']);
+});
+
+test('thread modes switch at thirty measured cells and resize across the threshold', async () => {
+  const app = await page();
+  assert.deepEqual(Array.from(app.run(`[threadMode(720+28+29.9*8,720,8),threadMode(720+28+30*8,720,8)]`)),['line','block']);
+  const result=app.run(`(()=>{threadMeasure.getBoundingClientRect=()=>({width:8});element('transcript').getBoundingClientRect=()=>({width:720});state={...state,sessionId:'s',view:{id:'root',path:[],type:'root'},threads:[{name:'one'}]};const modes=[];for(const width of [987.2,988,987.2]){document.documentElement.clientWidth=width;renderThreads();resized([{target:element('scroll'),borderBoxSize:[{blockSize:560}]}]);modes.push(element('threads').dataset.mode)}return modes})()`);
+  assert.deepEqual(Array.from(result),['line','block','line']);
+});
+
+test('the permanent thread block does not consume Escape', async () => {
+  const app=await page();
+  const result=app.run(`(()=>{threadMeasure.getBoundingClientRect=()=>({width:8});element('transcript').getBoundingClientRect=()=>({width:720});document.documentElement.clientWidth=1100;state={...state,working:true,sessionId:'s',view:{id:'root',path:[],type:'root'},threads:[{name:'one'}]};let stopped=0;stop=async()=>{stopped++};renderThreads();return {get stopped(){return stopped},get hidden(){return element('threads').querySelector('.thread-panel').hidden}}})()`);
+  app.listeners.get('keydown')?.({key:'Escape',target:app.context.document.body,preventDefault(){}});
+  assert.equal(result.stopped,1);
+  assert.equal(result.hidden,false);
+});
+
+test('line thread names apply their filter directly', async () => {
+  const app=await page();
+  const result=app.run(`state={...state,sessionId:'s',view:{id:'root',path:[],type:'root'},threads:[{name:'one'}]};renderThreads();element('threads').querySelector('.thread-capsule').querySelector('.thread-name').onclick?.();threadFilter()`);
+  assert.equal(result,'one');
+});
+
+test('thread block rows toggle filters and line names filter without opening the panel', async () => {
+  const app=await page();
+  const result=app.run(`(()=>{threadMeasure.getBoundingClientRect=()=>({width:8});element('transcript').getBoundingClientRect=()=>({width:720});document.documentElement.clientWidth=1100;state={...state,sessionId:'s',view:{id:'root',path:[],type:'root'},threads:[{name:'one',last:{summary:'Last message',at:1}}]};renderThreads();const block=[element('threads').dataset.mode,!element('threads').querySelector('.thread-capsule'),element('threads').querySelector('.thread-panel').hidden];element('threads').querySelector('.thread-entry').onclick();block.push(threadFilter(),element('threads').querySelector('.thread-entry').classList.contains('current'));element('threads').querySelector('.thread-entry').onclick();block.push(threadFilter());setThread('one');element('threads').querySelector('.thread-all').onclick();block.push(threadFilter());document.documentElement.clientWidth=600;renderThreads();const capsule=element('threads').querySelector('.thread-capsule');capsule.querySelector('.thread-name').onclick();const line=[threadFilter(),element('threads').querySelector('.thread-panel').hidden];setThread(undefined);element('threads').querySelector('.thread-overflow').onclick();line.push(element('threads').querySelector('.thread-panel').hidden);return [block,line]})()`);
+  assert.deepEqual(JSON.parse(JSON.stringify(result)),[['block',true,false,'one',true,null,null],['one',true,false]]);
+});
+
 test('the capsule shows every name when all measured names fit', async () => {
   const app = await page();
   const result = app.run(`
@@ -668,7 +713,7 @@ test('measured capsule overflow and resize keep whole names and skip unchanged s
     const capsule=element('threads').querySelector('.thread-capsule'),button=capsule.querySelector('.thread-open');
     capsule.getBoundingClientRect=()=>({width:100});button.getBoundingClientRect=()=>({width:80});
     let reads=0;
-    Object.defineProperty(button,'scrollWidth',{get(){reads++;return button.children.reduce((sum,child)=>{let width;if(child.classList.contains('thread-name'))width={one:80,two:90,three:100}[child.dataset.thread];else if(child.classList.contains('thread-separator'))width=10;else if(child.classList.contains('thread-more'))width=25;else if(child.classList.contains('thread-chevron'))width=10;else throw Error('Unexpected capsule child');return sum+width;},5*(button.children.length-1))}});
+    Object.defineProperty(button,'scrollWidth',{get(){reads++;return button.children.reduce((sum,child)=>{let width;if(child.classList.contains('thread-name'))width={one:80,two:90,three:100}[child.dataset.thread];else if(child.classList.contains('thread-separator'))width=10;else if(child.classList.contains('thread-more'))width=25;else if(child.classList.contains('thread-overflow'))width=10;else throw Error('Unexpected capsule child');return sum+width;},5*(button.children.length-1))}});
     const snapshot=()=>[button.children.filter(child=>child.classList.contains('thread-name')).map(child=>child.dataset.thread),button.querySelector('.thread-more')?.textContent??''];
     fitThreads(500);const all=snapshot();
     document.documentElement.clientWidth=300;resized([{target:element('scroll'),borderBoxSize:[{blockSize:560}]}]);const overflow=snapshot();
@@ -703,7 +748,7 @@ test('thread capsules sort activity, keep palette identity and show the filter c
     toggleThreads();const panel=!element('threads').querySelector('.thread-panel').hidden;
     [one,two,many,colours,filtered,foot,placeholder,panel,pendingNames];
   `);
-  assert.deepEqual(JSON.parse(JSON.stringify(result)), ['#one▾','#two·#one▾','#seven·#six·#five·#four·#three·#two·#one▾',['var(--thread-0)','var(--thread-1)','var(--thread-0)'],'#two×','#two','Message @pi in #two…',true,['pending-new','pending-old']]);
+  assert.deepEqual(JSON.parse(JSON.stringify(result)), ['#one…','#two·#one…','#seven·#six·#five·#four·#three·#two·#one…',['var(--thread-0)','var(--thread-1)','var(--thread-0)'],'#two×','#two','Message @pi in #two…',true,['pending-new','pending-old']]);
 });
 
 test('unfiltered roots keep the original foot and wrap unthreaded replies', async () => {
@@ -2180,10 +2225,10 @@ test('step previews require exactly Shift-Command and a stationary press', async
 test('browser lightbox Escape closes before abort and keeps the draft', async () => {
   const app = await page();
   const requests: string[] = []; app.context.fetch = async (path?: string) => { requests.push(path ?? ''); return { ok: true, json: async () => ({}) }; };
-  assert.equal(app.run(`(()=>{state.life={type:'ready'};state.working=true;editor.setText('draft');const target=node('button');preview('/images/0',target,'image',composerFocus);return document.body.children[0].className==='lightbox'})()`), true);
+  assert.equal(app.run(`(()=>{state.life={type:'ready'};state.working=true;editor.setText('draft');const target=node('button');preview('/images/0',target,'image',composerFocus);return document.querySelector('.lightbox')!==null})()`), true);
   let prevented = false;
   app.listeners.get('keydown')?.({ key: 'Escape', preventDefault() { prevented = true; }, stopPropagation() {} });
-  assert.equal(prevented, true); assert.equal(app.context.document.body.children.length, 0); assert.equal(app.text(), 'draft');
+  assert.equal(prevented, true); assert.equal(app.context.document.querySelector('.lightbox'), null); assert.equal(app.text(), 'draft');
   assert.deepEqual(requests.filter(path => ['/abort', '/queue/clear', '/clear_queue'].includes(path)), []);
   assert.equal(app.context.document.activeElement, app.prompt());
 });
@@ -2597,7 +2642,7 @@ async function flowPage(margin = 0) {
   const above = (seq: number) => flow(seq);
   layout.height = flow;
   const computed = app.context.getComputedStyle;
-  app.context.getComputedStyle = (node?: { tagName?: string; parent?: { dataset?: Record<string, string> } }) => node?.parent?.dataset?.seq !== undefined ? { ...computed(), marginBottom: margin + 'px' } : computed(node);
+  app.context.getComputedStyle = (node?: { tagName?: string; dataset?: Record<string, string> }) => node?.dataset?.seq !== undefined ? { ...computed(), marginBottom: margin + 'px' } : computed(node);
   const create = doc.createElement;
   doc.createElement = (tag: string) => {
     const node = create(tag), own = node.getBoundingClientRect.bind(node), add = node.classList.add;
@@ -3895,7 +3940,7 @@ test('a job view that is idle schedules no frame', async () => {
   assert.deepEqual([page.queued.size, page.timers.size], [0, 0]);
 });
 
-test('the table total equals the layout under collapsed margins, with a divider and a reader window', async () => {
+test('the table total includes row margins with a divider and a reader window', async () => {
   const page = await windowPage(14);
   page.origin.value = 30;
   page.open(page.rows(0, 300));
