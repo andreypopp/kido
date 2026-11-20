@@ -691,6 +691,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
     private var eventMonitor: Any?
     private var paste: (alert: NSAlert, state: UnsafeMutableRawPointer?)?
     let runtime: GhosttyRuntime
+    private var surfaceScale: CGFloat
     private var clipboard: (read: KoClipboardRead, timeout: DispatchWorkItem?, deadline: DispatchTime)?
     private weak var client: KoClient?
     private var pasteEvent: (changeCount: Int, deadline: DispatchTime, text: String?)?
@@ -728,7 +729,8 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
         }
     }
 
-    init?(runtime: GhosttyRuntime, pane: PaneID, font: Float, host: Host = .local) {
+    init?(runtime: GhosttyRuntime, pane: PaneID, font: Float, host: Host = .local, scale: CGFloat = NSScreen.main?.backingScaleFactor ?? 2) {
+        surfaceScale = scale
         self.runtime = runtime
         self.pane = pane
         self.host = host
@@ -745,7 +747,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
         config.userdata = this
         config.platform_tag = GHOSTTY_PLATFORM_MACOS
         config.platform = ghostty_platform_u(macos: ghostty_platform_macos_s(nsview: Unmanaged.passUnretained(terminal).toOpaque()))
-        config.scale_factor = Double(NSScreen.main?.backingScaleFactor ?? 2)
+        config.scale_factor = Double(surfaceScale)
         config.font_size = font
         config.io_mode = GHOSTTY_SURFACE_IO_MANUAL_MIRROR
         config.kitty_clipboard = false
@@ -1044,7 +1046,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
         #if KIDO_VISUAL
         if let visualScale { return visualScale }
         #endif
-        return window?.backingScaleFactor ?? 2
+        return window?.backingScaleFactor ?? surfaceScale
     }
 
     var cell: CGSize {
@@ -1563,6 +1565,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
         reflow { [weak self] in
             guard let self else { return }
             ghostty_surface_set_content_scale(surface, scale, scale)
+            surfaceScale = scale
             onCellChange()
         }
         ghostty_surface_set_render_insets(surface, UInt32((renderInsets.top * scale).rounded()), UInt32((renderInsets.bottom * scale).rounded()))

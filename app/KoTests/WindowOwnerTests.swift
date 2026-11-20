@@ -96,6 +96,19 @@ import KoModel
         XCTAssertTrue(try client.model().layout.layout.windows.first?.floats.contains { $0.pane == id } == true)
     }
 
+    func testUnattachedPaneUsesItsSurfaceScale() throws {
+        let board = NSPasteboard(name: .init("ko-scale-" + UUID().uuidString))
+        defer { board.releaseGlobally() }
+        let runtime = try XCTUnwrap(GhosttyRuntime(pasteboard: board))
+        let pane = try XCTUnwrap(PaneView(runtime: runtime, pane: PaneID(number: 1), font: 14, scale: 1))
+        defer { pane.dispose() }
+        XCTAssertNil(pane.window)
+        let pixels = ghostty_surface_size(pane.surface)
+        XCTAssertGreaterThan(pixels.cell_width_px, 0)
+        XCTAssertGreaterThan(pixels.cell_height_px, 0)
+        XCTAssertEqual(pane.cell, CGSize(width: Int(pixels.cell_width_px), height: Int(pixels.cell_height_px)))
+    }
+
     func testReconnectKeepsFloatFramesButAFreshOwnerUsesTheLayout() throws {
         let dir = try server()
         let pane = #"{"new":{"command":{"type":"argv","argv":["/bin/sleep","60"]}}}"#
@@ -103,6 +116,11 @@ import KoModel
         let first = try owner(dir)
         wait("the first owner is ready") { first.testBanner.isHidden && first.testSession?.hostWindows.count == 1 }
         let host = try XCTUnwrap(first.testSession?.hostWindows.first)
+        let id = try XCTUnwrap(host.content.pane)
+        let view = try XCTUnwrap(first.testSession?.pane(id))
+        wait("the float has attached and its geometry has settled") {
+            view.koView != nil && view.visualReady && first.testSession?.windows.values.contains { !$0.isHidden && $0.visualGeometryReady } == true
+        }
         let frame = host.frame.offsetBy(dx: -60, dy: -30)
         host.position = .local(frame: frame.insetBy(dx: FloatWindow.margin, dy: FloatWindow.margin), sent: CellPoint(x: 2, y: 2))
         host.setFrame(frame, display: false)
@@ -110,11 +128,21 @@ import KoModel
         XCTAssertTrue(host.content.isHidden)
         first.start()
         wait("the same native host is adopted after reconnect") { first.testBanner.isHidden && first.testSession?.hostWindows.first === host }
-        XCTAssertEqual(host.frame, frame)
+        wait("the reconnected float has attached and its geometry has settled") {
+            guard let reconnected = first.testSession?.pane(id) else { return false }
+            return reconnected.koView != nil && reconnected.visualReady && !host.content.isHidden && first.testSession?.windows.values.contains { !$0.isHidden && $0.visualGeometryReady } == true
+        }
+        XCTAssertEqual(host.frame.origin, frame.origin)
+        let reconnectedSize = host.frame.size
         first.close()
         let fresh = try owner(dir)
         wait("the fresh owner is ready") { fresh.testBanner.isHidden && fresh.testSession?.hostWindows.count == 1 }
         let replacement = try XCTUnwrap(fresh.testSession?.hostWindows.first)
+        let freshView = try XCTUnwrap(fresh.testSession?.pane(id))
+        wait("the fresh float has attached and its geometry has settled") {
+            freshView.koView != nil && freshView.visualReady && fresh.testSession?.windows.values.contains { !$0.isHidden && $0.visualGeometryReady } == true
+        }
+        XCTAssertEqual(reconnectedSize, replacement.frame.size)
         XCTAssertFalse(replacement === host)
         XCTAssertEqual(replacement.position, .layout)
         XCTAssertNotEqual(replacement.frame, frame)
