@@ -17,7 +17,7 @@ const pages = [
   ["runtime/mockup.html"], ["runtimes-section/mockup.html"], ["themes/ahrefs/mockup.html"],
   ["koa/mockup.html", 2], ["koa/blocks.html"], ["koa/thinking.html"], ["koa/user.html"], ["koa/working.html"],
   ["koa/composer.html"], ["koa/foot.html"], ["koa/complete.html"], ["koa/media.html"], ["koa/agents.html"],
-  ["koa/questions.html"], ["koa/refine.html", 2], ["koa/lines.html", 2], ["koa/scroll.html"], ["koa/job.html"], ["koa/bang.html"], ["koa/commands.html"], ["koa/sessions.html"],
+  ["koa/questions.html"], ["koa/refine.html", 2], ["koa/lines.html", 2], ["koa/steps.html", 4], ["koa/scroll.html"], ["koa/job.html"], ["koa/bang.html"], ["koa/commands.html"], ["koa/sessions.html"],
 ];
 const filter = process.argv[2] || "";
 const chrome = process.env.CHROME || "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";

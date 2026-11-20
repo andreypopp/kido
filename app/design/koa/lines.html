@@ -552,6 +552,11 @@ html[data-qd=outline] .qmsg{background:none;border:1px dashed color-mix(in srgb,
 html[data-qd=outline] .qmsg .kind{color:var(--faint)}
 .qtip{position:absolute;font:.82em/1.4 var(--prose);color:var(--ko-bg);background:color-mix(in srgb,var(--ko-fg) 88%,var(--ko-bg));padding:2px 7px;border-radius:5px;pointer-events:none;white-space:nowrap;box-shadow:0 2px 8px color-mix(in srgb,var(--ko-fg) 20%,transparent);z-index:3}
 .pane.tall{height:640px}
+.msg.assistant .pill{float:right;display:inline-flex;align-items:baseline;gap:6px;margin:0 -8px 4px 12px;padding:1px 8px;border-radius:999px;font:.8em/1.5 var(--prose);font-weight:600;color:var(--tc,var(--faint));background:color-mix(in srgb,var(--tc,var(--ko-fg)) 10%,transparent);white-space:nowrap;user-select:none}
+.msg.assistant .pill.plain{background:color-mix(in srgb,var(--ko-fg) 6%,transparent)}
+.msg.assistant .pill .h{opacity:.55;font-weight:400}
+.msg.assistant .pill time{font:1em var(--mono);font-variant-numeric:tabular-nums;font-weight:400}
+.msg.assistant::after{content:"";display:block;clear:both}
 </style>
 
 <body>
@@ -584,7 +589,7 @@ function shippedFoot(o){
 const who=(n,o={})=>o.gone?`<span class="who gone" title="ended">@${esc(n)}</span>`:`<a class="who${o.err?' err':''}" href="#pane:${esc(n)}">@${esc(n)}</a>`;
 const transcript=(inner)=>`<div class="scroll"><div class="transcript">${inner}</div></div>`;
 const userMsg=(html,t='09:12')=>`<div class="msg user"><div class="t">${html}</div><time>${t}</time></div>`;
-const assistant=(t)=>`<div class="msg assistant"><p>${t}</p></div>`;
+const assistant=(t,time='09:20')=>`<div class="msg assistant"><span class="pill plain"><time>${time}</time></span><p>${t}</p></div>`;
 const composer=(o={})=>`<div class="composer">${o.queue||''}<div class="field focus${o.working?' working':''}"><div class="text ph">${o.ph||'Message koa…'}</div>${shippedFoot({state:o.working?'working':'idle'})}</div></div>`;
 const jobLine=(o)=>`<div class="job${o.err?' err':''}"><div class="hd"><span class="chev">›</span><span class="nm">${esc(o.name)}</span>${o.kind?`<span class="kind">${o.kind}</span>`:''}<span class="end">${esc(o.end)}</span><time>${o.time}</time></div></div>`;
 const runLine=(sum,time)=>`<div class="run"><div class="line"><span class="chev">›</span><span class="sum"><span class="names">${sum}</span></span><span class="time">${time}</span></div></div>`;

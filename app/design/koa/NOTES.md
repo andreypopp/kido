@@ -1954,7 +1954,11 @@ light and dark in the gallery.
   a row sets the filter and closes the panel. With a filter active,
   the current row has the well2 fill and a last row "All threads",
   separated by a hairline, clears the filter.
-- **The mark** is a label line above the section or line it starts:
+- **The mark** (superseded 2026-11-20 by the reply's pill, next
+  bullet: a run, agent or job line carries no mark and no colour
+  edge. Rendering only: the transcript keeps every item's thread,
+  the filter still uses it; the page shows the thread on a reply
+  only). The earlier label line, kept for the record:
   .8em prose at line-height 1.35 (a 14pt line box at the 13px base;
   no fixed height), "#" at 55% of the thread's colour, a 6px gap, then the name
   in the colour at 600, 12pt above and 3pt below (10pt above inside
@@ -1971,6 +1975,33 @@ light and dark in the gallery.
   when its thread differs. A user message never carries a mark: its
   threads are the ones its reply names, and the reply's marks stand
   right under it. Nothing says "new" for a thread's first mark.
+- **The reply's pill** (user, 2026-11-20; threads.html `marks`,
+  steps.html, lines.html). Inside a reply the mark line is replaced
+  by a pill at the right of the message, floated on its first line
+  with the text flowing beside it, its time ending on the same
+  vertical as the user message's time, the text edge (the pill's
+  right margin is minus its own 8pt padding): "# name  HH:MM", "#" at 55% of the
+  thread's colour, the name at 600 in it, a 6px gap, the time in
+  the mono at tabular numerals, the text .8em at line-height 1.5,
+  1pt/8pt padding, 999pt radius, the fill the colour at 10%. The
+  time is the message's time, the same clock as the user message's.
+  A reply with no thread shows the time alone in the faint colour on
+  the foreground at 6%: every assistant message has a pill, in a
+  session with no thread too. A reply about two threads has a pill
+  on each section, each with the message's time (user, 2026-11-20:
+  the same message still needs its time on every pill). The pill is the
+  mark's control: the hand over the pill, hover underlines the name
+  at 50%, pressed 100%; the time-only pill is no control. With it
+  no colour edge remains anywhere (user, 2026-11-20: "remove left
+  border everywhere, from tool calls as well"), and a run, agent or
+  job line shows no mark (rendering only: the item keeps its thread
+  for the filter; the page shows the thread on the reply, whose
+  pill stands for the lines of its turn). The user message keeps
+  its plain time (chips with its threads were tried and removed,
+  user, 2026-11-20). The pending line "waiting for its thread"
+  above a pending user message in a filtered view is removed too
+  (user, 2026-11-20): the message shows with nothing above it until
+  its label arrives.
 - **The filter.** The capsule becomes the thread: "# name" in its
   colour and an × (14pt, the muted colour, hover the well2) that
   clears it; a click on the name opens the panel. The transcript
@@ -1978,10 +2009,9 @@ light and dark in the gallery.
   sections' colour edges (one thread needs no telling apart; the
   mockup's filter states draw none), plus a pending user
   message, one whose reply the agent is still working on and that
-  has no label yet, with the mark line "waiting for its thread" in
-  the faint colour, italic, above it (only in a filtered view; never
-  above an old unlabelled message, which has no thread and shows
-  only unfiltered). The composer's placeholder keeps the page's verb rule
+  has no label yet, shown as any user message, with nothing above
+  it (an old unlabelled message has no thread and shows only
+  unfiltered). The composer's placeholder keeps the page's verb rule
   with the thread added: "Steer @ko in #sidebar…" while the agent
   works, "Message @ko in #sidebar…" when it is idle (the view's
   agent, the thread; the three filter states have a working agent,
@@ -2078,7 +2108,7 @@ binds itself in browser mode.
   it; a second quote appended after typed text (blank line, quote,
   caret).
 
-## The bare dots row never leaves mid-turn (user, 2026-11-20, spec)
+## The bare dots row never leaves mid-turn (user, 2026-11-20, spec; steps.html section 1)
 
 The user sees the bare dots row appear, then vanish, and the layout
 jump up. The invariant: once a turn has rendered the bare row, no
@@ -2116,7 +2146,7 @@ these:
   bare row in the same frame. These are the only removals.
 - **Reduce Motion**: the same frames, static dots.
 
-## Agent messages and jobs are steps of the run (user, 2026-11-20, spec)
+## Agent messages and jobs are steps of the run (user, 2026-11-20, spec; steps.html section 2)
 
 The user: the transcript is too long; messages from and to agents,
 reports and async_bash job items go inside the tool/thinking run
