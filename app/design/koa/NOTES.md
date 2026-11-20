@@ -1937,9 +1937,8 @@ light and dark in the gallery.
   its own (32 characters at most), except the first, which always
   shows and ellipsizes when it alone does not fit. Re-fitted on each
   state update and resize.
-- **Two modes** (user, 2026-11-20; threads.html sections 1 and 1b;
-  still iterating, not confirmed: do not implement until this
-  note says so).
+- **Two modes** (user, 2026-11-20, approved; threads.html sections 1
+  and 1b).
   The widget is in block mode when its rows can stand at the left of
   the transcript and cover at most 10% of the transcript's width,
   else in line mode: so block in a wide pane, line in a narrow one.
