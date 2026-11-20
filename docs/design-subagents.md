@@ -549,7 +549,9 @@ the state is `working` while a turn runs, `blocked` with kind
 `question` while a dialog of that agent is open (the message is its
 title), `done` or `error` at the settle and `idle` after an abort; the
 message is the error's first line, else the first line of the last
-assistant text. `selection` is `selected` for the viewed agent and
+assistant text as plain text: `markdown-line.ts`, which the page also
+uses for its one-line previews, drops the line's Markdown syntax. An
+error stays raw, because it is not Markdown. `selection` is `selected` for the viewed agent and
 `offered` for every other; a click on the row in Kido.app sends the
 `select` message ("The pane's queue"). Every subagent record is
 `closeable`, and the row's × in Kido.app sends the `close` message.

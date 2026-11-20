@@ -228,15 +228,17 @@ whose package koa cannot find stops koa with one line.
 **The import boundary.** The installed koa has no `node_modules`, and
 pi's package exports only its index. `loadSdk`
 (`koa-sdk.ts`) registers one `node:module` resolve hook that maps the specifiers
-`@earendil-works/pi-coding-agent` and `typebox` to the files of the
+`@earendil-works/pi-coding-agent`, `typebox` and `marked` to the files of the
 selected package, only for importers inside koa's own directory (its
 real path, because Node reports `/tmp` as `/private/tmp`), so a user's
 extension resolves its own imports unchanged. Then koa imports pi's
 index and, by absolute file URL, the modules that the index does not
 export: the built-in extensions, the project trust resolution and its
 RPC context, the path helpers and the theme. `koa.ts` imports
-`koa-agents.ts`, and with it the agent extension, only after the hook
-exists. One SDK instance serves the process, so the queue patch below
+`koa-agents.ts`, and with it the agent extension, and `koa-view.ts`,
+which reaches `marked` through `markdown-line.ts`, only after the hook
+exists. The program uses pi's `marked`, and the page bundles its own
+from `koa/package.json`. One SDK instance serves the process, so the queue patch below
 reaches the class that every session uses.
 
 **The host.** `koa-agents.ts` holds the tree of agents (`createTree`)

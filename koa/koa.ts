@@ -30,7 +30,7 @@ import { findKo, apiArgs } from "./runtime-exec.ts";
 import { fileSource, jobView, liveSource } from "./koa-job-view.ts";
 import { parseThreadName, type ThreadName, type JobSnapshot } from "./records.ts";
 import type { Agent, Selection, Tree } from "./koa-agents.ts";
-import { createView, type AgentView, type Own } from "./koa-view.ts";
+import type { AgentView, Own } from "./koa-view.ts";
 import { agentCompletionItems, type AgentRow } from "./agents.ts";
 import { ATTACHMENT_LIMITS, type ViewGone, type PromptMode, type PageRecord, type State, type ThinkingLevel, type Dialog, type CompletionCommand, type CompletionQuery, type SessionStats, type Bash, type View, metricsRequest } from "./koa-records.ts";
 
@@ -180,6 +180,7 @@ Everything after -- is message text.
   let initialMessages: string[] = reloaded !== undefined ? [] : checked.messages;
   const resume = reloaded === undefined && checked.resume;
   const koaAgents = await import('./koa-agents.ts');
+  const { createView } = await import('./koa-view.ts');
   const agentDir = sdk.pi.getAgentDir();
   const { catalog, completion } = await commandCatalog(packageRoot);
   if (resume) {

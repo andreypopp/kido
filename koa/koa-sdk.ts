@@ -13,17 +13,20 @@ export type Sdk = {
   theme: import('@earendil-works/pi-coding-agent').ExtensionUIContext['theme'];
 };
 
-// koa's own modules import pi and typebox by package name; the installed koa has no node_modules.
+// The installed koa has no node_modules.
 export async function loadSdk(root: string): Promise<Sdk> {
   const dist = (file: string) => pathToFileURL(join(root, 'dist', file)).href;
   const pi = dist('index.js');
-  const typebox = pathToFileURL(createRequire(join(root, 'package.json')).resolve('typebox')).href;
+  const require = createRequire(join(realpathSync(root), 'package.json'));
+  const typebox = pathToFileURL(require.resolve('typebox')).href;
+  const marked = pathToFileURL(require.resolve('marked')).href;
   const real = realpathSync(fileURLToPath(new URL('.', import.meta.url))), own = pathToFileURL(real.endsWith('/') ? real : real + '/').href;
   registerHooks({
     resolve(specifier, context, next) {
       if (context.parentURL?.startsWith(own)) {
         if (specifier === '@earendil-works/pi-coding-agent') return { url: pi, shortCircuit: true };
         if (specifier === 'typebox') return { url: typebox, shortCircuit: true };
+        if (specifier === 'marked') return { url: marked, shortCircuit: true };
       }
       return next(specifier, context);
     },

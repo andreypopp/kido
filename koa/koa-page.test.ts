@@ -6,7 +6,8 @@ import { Lexer, Marked } from "marked";
 import remend from "remend";
 
 import { assemblePage } from "./koa-assemble.ts";
-import { markdown, markdownLine, type Mark } from "./page/markdown.ts";
+import { markdown, type Mark } from "./page/markdown.ts";
+import { markdownLine } from "./markdown-line.ts";
 import { revealHeight, type Unit } from "./page/reveal.ts";
 import { estimateExtent, windowOf } from "./page/extent.ts";
 import type { Block, WireItem } from "./koa-records.ts";
@@ -24,6 +25,13 @@ import { HighlightStyle, syntaxTree } from '@codemirror/language';
 
 test('Markdown previews strip first-line syntax and use the first fenced code line', () => {
   for (const [source, expected] of [
+    ['**bold**', 'bold'],
+    ['`code`', 'code'],
+    ['[link](https://example.com)', 'link'],
+    ['# Heading', 'Heading'],
+    ['- Bullet', 'Bullet'],
+    ['> Quote', 'Quote'],
+    ['2) Numbered', 'Numbered'],
     ['## **Ready** with `code`, _emphasis_ and ~~old~~ [link](https://example.com).\nNot shown', 'Ready with code, emphasis and old link.'],
     ['> - [ ] Review ![the image](https://example.com/image.png)  now', 'Review the image now'],
     ['1. __First__\r\nSecond', 'First'],

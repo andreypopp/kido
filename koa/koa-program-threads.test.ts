@@ -5,7 +5,7 @@ import { ofType, pollUntil } from './koa-agent-fixture.ts';
 
 test('reply status skips thread markers and uses the first non-empty section', { timeout: 20000 }, async t => {
   const app = await realFixture(t, { replies: [
-    { text: '[thread: x]\n\nHello there' },
+    { text: '[thread: x]\n\n## **Hello** `there`' },
     { text: '[thread: x]\n\nFirst part\nMore text\n[thread: y]\nSecond part' },
   ] });
   for (const expected of ['Hello there', 'First part']) {

@@ -1,4 +1,4 @@
-import { markdownLine } from './markdown.ts';
+import { markdownLine } from '../markdown-line.ts';
 import type { AgentCall, Block, WireAssistant, WireItem } from '../koa-records.ts';
 
 export type StepInput = { block: Exclude<Block, { type: 'text' }>; item: WireAssistant };
