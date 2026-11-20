@@ -57,6 +57,7 @@ section>p{margin:-4px 0 12px;color:var(--muted);max-width:900px}
 /* ---- the pane: one webview, the page owns its whole content area ---- */
 .pane{width:980px;height:560px;background:var(--bg);color:var(--fg);border:1px solid var(--hair2);border-radius:6px;overflow:hidden;display:flex;flex-direction:column;font:var(--ko-font-size)/1.5 var(--prose);box-shadow:0 1px 2px color-mix(in srgb,var(--ko-fg) 10%,transparent)}
 .pane.narrow{width:calc(60*var(--ko-cell-width) + 2px)}
+.pane.xwide{width:1400px}
 .pane.short{height:300px}
 html[data-width=narrow] .pane{width:calc(60*var(--ko-cell-width) + 2px)}
 
@@ -603,6 +604,14 @@ html[data-theme=dark] .cap{border-color:color-mix(in srgb,var(--ko-fg) 14%,trans
 .cap .x:hover{background:var(--well2);color:var(--fg)}
 .cap .chv{color:var(--faint);font-size:.8em;margin-left:1px}
 .cap.open .chv{transform:rotate(180deg)}
+/* two modes (user, 2026-11-20). line mode: the capsule; a click on a name applies the filter at once; the "…" at the right opens the panel. block mode: the panel's rows standing at the top left, in the gutter beside the transcript, when they cover at most 10% of the transcript's width */
+.cap .mb{color:var(--muted);font-weight:600;letter-spacing:1px;margin:0 -3px 0 1px;padding:0 3px;border-radius:4px;cursor:pointer}
+.cap .mb:hover{background:var(--well2);color:var(--fg)}
+.tcap .hn{cursor:pointer}.tcap .hn:hover{text-decoration:underline;text-decoration-color:color-mix(in srgb,var(--tc) 50%,transparent);text-decoration-thickness:1px;text-underline-offset:2px}
+.tpanel.block{top:8px;left:8px;width:var(--bw);min-width:0;max-width:none;max-height:none} /* the popup's card (user, 2026-11-20): its edge, radius, shadow and padding */
+.tpanel.block .row .n{max-width:45%}
+.tpanel.block .all{margin-top:2px}
+.pane.blockmode .transcript{padding-top:14px}
 .tpanel{position:absolute;top:36px;z-index:4;min-width:300px;max-width:min(420px,calc(100% - 16px));max-height:calc(60% - 36px);overflow:auto;background:var(--ko-bg);border:1px solid var(--hair2);border-radius:9px;box-shadow:0 8px 28px color-mix(in srgb,var(--ko-fg) 14%,transparent);padding:6px;font:.88em/1.5 var(--prose)}
 .tpanel .row{display:flex;align-items:center;gap:9px;padding:4px 8px;border-radius:6px;cursor:pointer;min-height:28px}
 .tpanel .row:hover{background:var(--well)}.tpanel .row.cur{background:var(--well2)}
@@ -649,16 +658,21 @@ html[data-theme=dark],.pane[data-theme=dark]{--t0:#a99bff;--t1:#52d1c2;--t2:#f27
 <span style="color:var(--muted)">docs/design-koa.md, "Threads" · the widget, the marks, the filter · approved 2026-11-18</span></div>
 <p class="lede">A thread is a named workstream of one session; the agent labels its own text with <code>[thread: name]</code> lines, which the transcript turns into marks. The page shows the threads in a capsule at the top left (the view bar's family), lists them with their status and summary in a panel under it, and filters the transcript to one thread on a click. Nothing here is live.</p>
 
-<section><h2>1 · The widget</h2>
-<p>A capsule at the top left of the pane, pinned outside the scroll, in the root agent's view only (a subagent's view has no threads: no widget, no marks, no filter; the view bar is a subagent's, so the two never share the corner): as many threads as fit, newest first, each as "# name" in its colour with "·" between, then "+N" muted for the ones that do not fit, and "▾"; the capsule is at most the pane's width minus 16pt, a name is never cut, and only the first one, which always shows, ellipsizes when it alone does not fit (user, 2026-11-18: show more while the width allows, collapse only on overflow). Threads have no status and no dot anywhere (user, 2026-11-18): "# name" in the thread's colour is the lead, in the widget as in the transcript. It does not show for a session with no thread. A click opens the panel under it: one row per thread, newest first: "# name" in the colour at 600, the summary muted and ellipsized, the age of the last section at the right. A click on a row sets the filter; Escape or a click outside closes the panel.</p>
+<section><h2>1 · The widget: line mode</h2>
+<p>Two modes (user, 2026-11-20), decided by the room beside the transcript: block mode when the thread rows can stand at the left and cover at most 10% of the transcript's width (section 1b), line mode otherwise. Line mode is the capsule: as many "# name" as fit, newest first, "+N" for the rest, and a "…" at the right. A click on a name applies the filter at once (no popup); the "…" opens the panel, the rows of the dropdown (name, the first line of the last message, the age); a second click, Escape or a click outside closes it. Hover underlines the name in its colour at 50%, like the reply's pill.</p>
 <div class="grid"><div class="pane aligned withcaps" data-state="two"></div><div class="pane aligned withcaps" data-state="many"></div><div class="pane aligned withcaps narrow" data-state="many-narrow"></div></div></section>
 
 <section><h2>2 · The marks in the transcript</h2>
 <p>Every reply carries a pill at its right, on its first line, its time ending on the same vertical as every other time: "# name HH:MM" in the thread's colour, the time alone in the faint colour when the reply has no thread. A reply about two threads has a pill on each section, each with the time. The pill is the control: a click sets the filter to its thread (a hand, hover underlines the name at 50%, pressed 100%). Nothing else is marked: a user message keeps its plain time (its threads are the ones its reply names; chips on it were tried and removed, 2026-11-20), and the run rows between the messages (the tool calls, the messages to and from agents and the jobs of a turn, folded into one row) show no thread and no colour edge, although each keeps its thread for the filter.</p>
 <div class="grid"><div class="pane aligned withcaps" data-state="marks"></div><div class="pane aligned withcaps narrow" data-state="marks-narrow"></div></div></section>
 
+<section><h2>1b · The widget: block mode</h2>
+<p>A wide pane (1400pt here; the transcript is 720pt at most, centred, so the gutter is 340pt): the rows stand at the top left of the pane, 8pt in, on the popup's card (the same edge, radius, shadow and padding), with no capsule and no popup: "# name" in the colour, the first line of the last message muted and ellipsized, the age at the right; newest first. A click on a row applies the filter; the current row has the well fill and "All threads" (or the row itself) clears it. The rule: block when a 240pt block, 8pt from the left, covers at most 10% of the transcript's width; the block is then the gutter plus that 10% wide, at most 340pt, so here it sits in the gutter entirely. Narrower panes (the 980pt panes above: a 130pt gutter) are line mode.</p>
+<div class="grid"><div class="pane aligned withcaps xwide" data-state="block"></div></div>
+<div class="grid" style="margin-top:14px"><div class="pane aligned withcaps xwide" data-state="block-filter"></div></div></section>
+
 <section><h2>3 · A filter active</h2>
-<p>The capsule becomes the thread: "# name" in its colour and an ×; the panel marks the row. The transcript shows only that thread's items, without pills (they would all say the same), and, until it is labelled, an implicit user message of any thread, with nothing above it; the label arrives with the reply and the message then stays or goes. The composer's foot gets a first cell "# name" before the model, and the placeholder keeps the page's verb rule with the thread added: "Steer @ko in #name…" while the agent works (the case here), "Message @ko in #name…" when it is idle; the prompt goes with the thread and koa writes the marker. The × in the capsule, the "All threads" row of the panel, or a click on the current row clears the filter.</p>
+<p>Line mode: the capsule becomes the thread: "# name" in its colour and an ×; the "…" is gone (the panel opens from the name). The panel marks the row. The transcript shows only that thread's items; a reply's pill shows the time alone, in the faint style of an unthreaded reply (the name would say the same on every row), and, until it is labelled, an implicit user message of any thread, with nothing above it; the label arrives with the reply and the message then stays or goes. The composer's foot gets a first cell "# name" before the model, and the placeholder keeps the page's verb rule with the thread added: "Steer @ko in #name…" while the agent works (the case here), "Message @ko in #name…" when it is idle; the prompt goes with the thread and koa writes the marker. The × in the capsule, the "All threads" row of the panel, or a click on the current row clears the filter.</p>
 <div class="grid"><div class="pane aligned withcaps" data-state="filter"></div><div class="pane aligned withcaps" data-state="filter-panel"></div><div class="pane aligned withcaps narrow" data-state="filter-narrow"></div></div></section>
 
 <div class="gallery" id="gallery"><h3>Every state, light and dark</h3></div>
@@ -683,13 +697,15 @@ const composer=(o={})=>`<div class="composer"><div class="field focus"><div clas
 const T2=[{n:'sidebar',st:'on',s:'Recording the right-side indicator snapshots; the unit reports in a minute.',w:'2m'},{n:'palette',st:'wait',s:'Should the Theme mode keep the "This session only" row?',w:'14m'}];
 const T9=[{n:'sidebar',st:'on',s:'Recording the right-side indicator snapshots; the unit reports in a minute.',w:'2m'},{n:'palette',st:'wait',s:'Should the Theme mode keep the "This session only" row?',w:'14m'},{n:'remote-mtls-pairing-ios',st:'on',s:'The iOS unit builds the Pair sheet; the scan well is a stand-in without a camera.',w:'20m'},{n:'release-0-32',st:'',s:'Waiting on CI for the rebase; nothing to do until it is green.',w:'35m'},{n:'koa-virtual-transcript',st:'on',s:'Find over the model lands the match in the mounted row; the WebKit check is pending.',w:'1h'},{n:'float-win',st:'',s:'Merged. The child windows pass the full visual stage.',w:'2h'},{n:'threads',st:'wait',s:'Which capsule family for the widget: the view bar\'s, or a new one?',w:'3h'},{n:'docs-cleanup-after-the-sessions',st:'',s:'Deferred until the sessions plan moves into docs/.',w:'5h'},{n:'ci-linux-flake',st:'',s:'Reproduced once under --contend 4; the fix is in the sweep test\'s wait.',w:'1d'}];
 const hn=(n)=>`<span class="hn" style="${tc(n)}"><span class="h">#</span>${esc(n)}</span>`;
-const capAll=(ts,open,k)=>{k=k??ts.length;const shown=ts.slice(0,k).map(t=>hn(t.n)).join('<span class="sp">·</span>');const rest=ts.length-k;return `<div class="cap tcap${open?' open':''}" data-k="${k}">${shown}${rest>0?`<span class="sp">·</span><span class="more">+${rest}</span>`:''}<span class="chv">▾</span></div>`};
+const capAll=(ts,open,k)=>{k=k??ts.length;const shown=ts.slice(0,k).map(t=>hn(t.n)).join('<span class="sp">·</span>');const rest=ts.length-k;return `<div class="cap tcap${open?' open':''}" data-k="${k}">${shown}${rest>0?`<span class="sp">·</span><span class="more">+${rest}</span>`:''}<span class="mb" title="All threads">…</span></div>`};
 /* as many names as fit, newest first: the capsule is at most the pane's width minus 16pt; a name is dropped from the end (and counted in +N) until the whole capsule with its tail fits; the first name always shows and ellipsizes alone */
 function fitCap(pane){const cap=pane.querySelector('.tcap[data-k]');if(!cap)return;const max=pane.clientWidth-16;let k=+cap.dataset.k;const ts=pane._ts;let cur=cap;while(k>1&&cur.scrollWidth>max){k--;cur.outerHTML=capAll(ts,cur.classList.contains('open'),k);cur=pane.querySelector('.tcap[data-k]')}const c=cur;c.style.maxWidth=max+'px';if(k===1)c.querySelector('.hn').style.cssText+=';overflow:hidden;text-overflow:ellipsis;min-width:0'}
 const capOne=(t)=>`<div class="cap tcap">${hn(t.n)}<span class="x"><svg viewBox="0 0 10 10"><path d="M2 2l6 6M8 2l-6 6"/></svg></span></div>`;
 const viewbar=`<div class="cap"><span class="bk">‹</span><span class="anc">@ko</span><span class="sp">›</span><b>@sidebar-right</b></div>`;
-const panel=(ts,cur)=>`<div class="tpanel">${ts.map(t=>`<div class="row${t.n===cur?' cur':''}" style="${tc(t.n)}"><span class="n">${hn(t.n)}</span><span class="s">${esc(t.s)}</span><span class="w">${t.w}</span></div>`).join('')}${cur?`<div class="row all"><span class="n">All threads</span></div>`:''}</div>`;
-const caps=(o)=>`<div class="caps">${o.cur?capOne(o.ts.find(t=>t.n===o.cur)):capAll(o.ts,o.open)}</div>${o.open?panel(o.ts,o.cur):''}`;
+const panel=(ts,cur,block)=>`<div class="tpanel${block?' block':''}"${block?` style="--bw:${block}px"`:''}>${ts.map(t=>`<div class="row${t.n===cur?' cur':''}" style="${tc(t.n)}"><span class="n">${hn(t.n)}</span><span class="s">${esc(t.s)}</span><span class="w">${t.w}</span></div>`).join('')}${cur?`<div class="row all"><span class="n">All threads</span></div>`:''}</div>`;
+/* the mode: block when a 240pt block, standing 8pt from the left, covers at most 10% of the transcript's width (the transcript is 720pt at most, centred); its width is then the gutter plus that 10%, at most 340pt */
+const blockWidth=(pane)=>{const pw=pane.clientWidth,tw=Math.min(720,pw-40),gutter=(pw-tw)/2;return 240-gutter<=tw*0.1?Math.min(340,Math.floor(gutter+tw*0.1)):0};
+const caps=(o,pane)=>{const bw=blockWidth(pane);pane.classList.toggle('blockmode',bw>0);if(bw)return panel(o.ts,o.cur,bw);return `<div class="caps">${o.cur?capOne(o.ts.find(t=>t.n===o.cur)):capAll(o.ts,o.open)}</div>${o.open?panel(o.ts,o.cur):''}`};
 const body1=userMsg('Start the sidebar unit on the right-side indicators, and ask the palette unit about the Theme mode\'s session row.','13:50')
   +assistant([{t:'sidebar'},'Spawned <b>@sidebar-right</b> with the indicator spec; it records the snapshots at the end.',{t:'palette'},'Asked <b>@palette</b> whether the Theme mode keeps the "This session only" row; its answer decides the save step.'],{time:'13:51'})
   +run({sum:'to @sidebar-right, to @palette, read x2, bash',time:'6s',steps:astep({kind:'task',dir:'to',name:'sidebar-right',rel:'subagent',text:'Build the right-side indicators from the spec; record the snapshots at the end.',time:'0.1s'})+astep({kind:'message',dir:'to',name:'palette',rel:'subagent',text:'Does the Theme mode keep the "This session only" row, or does the config file always change?',time:'0.1s'})+tool({name:'read',cmd:'app/App/SidebarRow.swift',time:'0.2s'})+tool({name:'read',cmd:'app/design/sidebar/NOTES.md',time:'0.2s'})+tool({name:'bash',cmd:'make -C app build',time:'5s'})})
@@ -713,21 +729,31 @@ const filtered=userMsg('Start the sidebar unit on the right-side indicators.','1
   +assistant(['Verification passed; I merge the unit next.'],{time:'14:45'})
   +userMsg('Also look at the Linux flake in the sweep test when you have a minute.','14:46');
 const states={
-  two:()=>caps({ts:T2,open:true})+transcript(body1)+composer(),
-  many:()=>caps({ts:T9,open:true})+transcript(body1)+composer(),
-  'many-narrow':()=>caps({ts:T9,open:true})+transcript(body1)+composer(),
-  marks:()=>caps({ts:T9})+transcript(body1+marks)+composer(),
-  'marks-narrow':()=>caps({ts:T9})+transcript(marks)+composer(),
-  filter:()=>caps({ts:T9,cur:'sidebar'})+transcript(filtered)+composer({thread:'sidebar'}),
-  'filter-panel':()=>caps({ts:T9,cur:'sidebar',open:true})+transcript(filtered)+composer({thread:'sidebar'}),
-  'filter-narrow':()=>caps({ts:T9,cur:'sidebar'})+transcript(filtered)+composer({thread:'sidebar'}),
+  two:(p)=>caps({ts:T2,open:true},p)+transcript(body1)+composer(),
+  many:(p)=>caps({ts:T9,open:true},p)+transcript(body1)+composer(),
+  'many-narrow':(p)=>caps({ts:T9,open:true},p)+transcript(body1)+composer(),
+  marks:(p)=>caps({ts:T9},p)+transcript(body1+marks)+composer(),
+  'marks-narrow':(p)=>caps({ts:T9},p)+transcript(marks)+composer(),
+  filter:(p)=>caps({ts:T9,cur:p._cur||'sidebar'},p)+transcript(filtered)+composer({thread:p._cur||'sidebar'}),
+  'filter-panel':(p)=>caps({ts:T9,cur:'sidebar',open:true},p)+transcript(filtered)+composer({thread:'sidebar'}),
+  'filter-narrow':(p)=>caps({ts:T9,cur:p._cur||'sidebar'},p)+transcript(filtered)+composer({thread:p._cur||'sidebar'}),
+  block:(p)=>caps({ts:T9},p)+transcript(body1+marks)+composer(),
+  'block-filter':(p)=>caps({ts:T9,cur:p._cur||'sidebar'},p)+transcript(filtered)+composer({thread:p._cur||'sidebar'}),
 };
-function fill(pane){pane._ts=/two/.test(pane.dataset.state)?T2:T9;pane.innerHTML=states[pane.dataset.state]();const dock=document.createElement('div');dock.className='dock';for(const k of [...pane.children].filter(c=>c.classList.contains('composer')))dock.appendChild(k);pane.appendChild(dock);pane.style.setProperty('--dock-h',dock.offsetHeight+'px');const sc=pane.querySelector('.scroll');if(/marks|filter/.test(pane.dataset.state))sc.scrollTop=sc.scrollHeight;fitCap(pane);}
+function fill(pane){pane._ts=/two/.test(pane.dataset.state)?T2:T9;pane.innerHTML=states[pane.dataset.state](pane);const dock=document.createElement('div');dock.className='dock';for(const k of [...pane.children].filter(c=>c.classList.contains('composer')))dock.appendChild(k);pane.appendChild(dock);pane.style.setProperty('--dock-h',dock.offsetHeight+'px');const sc=pane.querySelector('.scroll');if(/marks|filter|block/.test(pane.dataset.state))sc.scrollTop=sc.scrollHeight;fitCap(pane);}
 for(const pane of document.querySelectorAll('.pane[data-state]'))fill(pane);
-function gallery(){const g=document.getElementById('gallery');g.querySelectorAll('.gcell').forEach(c=>c.remove());for(const s of Object.keys(states))for(const th of ['light','dark']){const cell=document.createElement('div');cell.className='gcell';const p=document.createElement('div');p.className='pane aligned withcaps'+(s.includes('narrow')?' narrow':'');p.dataset.state=s;p.style.cssText='width:100%;height:420px;font-size:12px';if(th==='dark'){p.setAttribute('data-theme','dark')}cell.appendChild(p);fill(p);const c=document.createElement('div');c.className='cap2';c.textContent=s+' · '+th;cell.appendChild(c);g.appendChild(cell)}}
+function gallery(){const g=document.getElementById('gallery');g.querySelectorAll('.gcell').forEach(c=>c.remove());for(const s of Object.keys(states))for(const th of ['light','dark']){const cell=document.createElement('div');cell.className='gcell';const p=document.createElement('div');p.className='pane aligned withcaps'+(s.includes('narrow')?' narrow':'');p.dataset.state=s;p.style.cssText='width:100%;height:420px;font-size:12px';if(s.startsWith('block'))cell.style.gridColumn='1/-1';if(th==='dark'){p.setAttribute('data-theme','dark')}cell.appendChild(p);fill(p);const c=document.createElement('div');c.className='cap2';c.textContent=s+' · '+th;cell.appendChild(c);g.appendChild(cell)}}
 gallery();
 for(const id of ['theme','width']){const el=document.getElementById(id);el.value=document.documentElement.dataset[id];el.onchange=e=>{document.documentElement.dataset[id]=e.target.value;for(const pane of document.querySelectorAll('.pane[data-state]'))fill(pane)}}
-document.addEventListener('click',e=>{const st=e.target.closest('.step>.line');if(st){if(st.parentElement.querySelector('.detail'))st.parentElement.classList.toggle('open');return}const rl=e.target.closest('.run>.line');if(rl&&rl.parentElement.querySelector('.steps')){rl.parentElement.classList.toggle('open');return}const c=e.target.closest('.tcap');if(c){const pane=c.closest('.pane');const p=pane.querySelector('.tpanel');if(p)p.remove();else if(!c.querySelector('.x'))pane.insertAdjacentHTML('afterbegin',panel(pane._ts||T9,null));c.classList.toggle('open',!p)}});
+document.addEventListener('click',e=>{const st=e.target.closest('.step>.line');if(st){if(st.parentElement.querySelector('.detail'))st.parentElement.classList.toggle('open');return}const rl=e.target.closest('.run>.line');if(rl&&rl.parentElement.querySelector('.steps')){rl.parentElement.classList.toggle('open');return}const pane=e.target.closest('.pane');if(!pane)return;const S=pane.dataset.state,narrow=S.includes('narrow'),blk=S.startsWith('block');
+  const setFilter=(n)=>{pane._cur=n;pane.dataset.state=blk?'block-filter':narrow?'filter-narrow':'filter';fill(pane)};
+  const clear=()=>{pane._cur=null;pane.dataset.state=blk?'block':narrow?'marks-narrow':'marks';fill(pane)};
+  const row=e.target.closest('.tpanel .row');if(row){if(row.classList.contains('all')||row.classList.contains('cur'))clear();else setFilter(row.querySelector('.hn').textContent.slice(1));return}
+  const c=e.target.closest('.tcap');if(!c)return;
+  if(e.target.closest('.x')){clear();return}
+  const mb=e.target.closest('.mb');const n=e.target.closest('.hn');
+  if(n&&!c.querySelector('.x')){setFilter(n.textContent.slice(1));return}
+  const p=pane.querySelector('.tpanel');if(p)p.remove();else pane.insertAdjacentHTML('afterbegin',panel(pane._ts||T9,pane._cur||null));c.classList.toggle('open',!p)});
 </script>
 </body>
 </html>
