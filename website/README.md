@@ -35,7 +35,9 @@ fixed width of 1440 units; `src/lib/art.ts` holds its drawing helpers,
 and `src/components/Symbols.astro` holds the logo, the status marks and
 the section drawings. From 1100 px the text blocks sit at fixed
 positions on that canvas (`--x`, `--y`, `--w` on each `.b` block);
-below 1100 px the page is one column with one drawing for each section.
+below 1100 px the page is one column. `src/components/Shot.astro` shows
+a screenshot of `src/assets/` on a plane of the canvas, one file for
+light and one for dark mode, and enlarges it on a click.
 The texture is two tiled SVG noise layers in `src/styles/site.css`:
 the grain and the pigment clouds, with their sizes and strengths as
 custom properties on `:root`. The font is Jost, from
@@ -47,8 +49,10 @@ the middle and the headings of the page at the right. A page names its
 `title`, its `group` and its `order` in its frontmatter;
 `src/lib/docs.ts` holds the groups and builds the sidebar from the
 pages. `src/styles/base.css` holds what the landing page and the
-documentation share: the colours, the font and the texture.
+documentation share: the colours, the font and the texture. The
+documentation pages are placeholders, and the landing page does not
+link to them yet.
 
-`brand/kandinsky/` holds the proposed app icon in this style. The
+`brand/kandinsky/` holds the app icon in this style, light and dark. The
 recordings in `public/media/` and the `demo/` directory belong to the
 recording workstream; the page does not use them.

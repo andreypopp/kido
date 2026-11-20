@@ -12,6 +12,17 @@
 h1{font-size:clamp(3rem,13vw,5.2rem);line-height:.98;letter-spacing:-.02em}
 h2{font-size:clamp(2rem,7vw,3rem);line-height:1.05;letter-spacing:-.015em}
 h3{font-size:1.6rem}
+.shot img{display:block;width:100%;height:auto}
+.shot-open{all:unset;display:block;cursor:zoom-in}
+.shot-open:focus-visible{outline:3px solid var(--blue);outline-offset:4px}
+.zoom{border:0;padding:0;background:none;width:min(94vw,var(--full));max-width:none;max-height:none;cursor:zoom-out;overflow:visible}
+.zoom:focus-visible{outline:none}
+.zoom-close{all:unset;position:fixed;top:1.2rem;right:1.4rem;width:1.6rem;height:1.6rem;padding:.5rem;cursor:pointer;color:var(--ink)}
+.zoom-close svg{display:block;width:100%;height:100%}
+.zoom-close:focus-visible{outline:3px solid var(--blue);outline-offset:2px}
+.zoom::backdrop{background:var(--plane)}
+.shot .dark{display:none}
+@media (prefers-color-scheme:dark){.shot .light{display:none}.shot .dark{display:block}}
 .part{display:grid;gap:.6em;align-content:start;font-weight:400;}
 .part>svg{width:3.4rem;height:3.4rem}
 .part li{text-wrap:balance}
@@ -51,5 +62,7 @@ footer{display:flex;flex-wrap:wrap;gap:1em 2em;justify-content:space-between;ali
   .art-m{max-width:560px;margin:0 auto;padding:8px 24px 40px}
   .dome-grain{inset:0;border-radius:inherit}
   .dome{position:relative;background:var(--ink);border-radius:50% 50% 0 0/90px 90px 0 0;padding-top:110px;margin-top:40px}
+  .shot{margin-top:32px;padding:46px 66px 42px;isolation:isolate}
+  .shot::before{content:"";position:absolute;inset:0 14px;z-index:-1;background:var(--plane);clip-path:polygon(0 7%,100% 0,98% 100%,3% 96%)}
   footer{padding:40px 24px;max-width:640px;margin:auto}
 }

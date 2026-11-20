@@ -1,0 +1,19 @@
+---
+import { Image } from 'astro:assets';
+type Props = { light: ImageMetadata; dark: ImageMetadata; alt: string; width: number; style: string };
+const { light, dark, alt, width, style } = Astro.props;
+const widths = [width, width * 2, light.width];
+const sizes = `(min-width:1100px) ${Math.round(width / 14.4)}vw, 100vw`;
+const full = `${light.width / 2}px`;
+---
+<div class="b shot" style={`${style};--w:${width};--full:${full}`}>
+  <button type="button" class="shot-open" aria-label="Enlarge the screenshot">
+    <Image class="light" src={light} alt={alt} widths={widths} sizes={sizes} />
+    <Image class="dark" src={dark} alt="" widths={widths} sizes={sizes} />
+  </button>
+  <dialog class="zoom" aria-label="The screenshot, enlarged">
+    <button type="button" class="zoom-close" aria-label="Close"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4 20 20M20 4 4 20" fill="none" stroke="currentColor" stroke-width="2"/></svg></button>
+    <Image class="light" src={light} alt="" widths={[light.width]} sizes={full} loading="lazy" />
+    <Image class="dark" src={dark} alt="" widths={[dark.width]} sizes={full} loading="lazy" />
+  </dialog>
+</div>

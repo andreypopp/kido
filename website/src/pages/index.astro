@@ -1,6 +1,13 @@
 ---
 import Canvas, { height } from '../components/Canvas.astro';
 import Symbols from '../components/Symbols.astro';
+import Shot from '../components/Shot.astro';
+import koLight from '../assets/shot-ko-light.png';
+import koDark from '../assets/shot-ko-dark.png';
+import koaLight from '../assets/shot-koa-light.png';
+import koaDark from '../assets/shot-koa-dark.png';
+import appLight from '../assets/shot-app-light.png';
+import appDark from '../assets/shot-app-dark.png';
 import { description, github, install, title, url } from '../lib/site';
 import '@fontsource-variable/jost';
 import '../styles/base.css';
@@ -43,11 +50,11 @@ const canonical = new URL(url(), Astro.site);
       <li>and a rich UI for the <b>pi coding agent</b>!</li>
     </ul>
     <button type="button" class="brew" data-copy={install} aria-label="Copy the install command of Kido.app"><code>{install}</code></button>
-    <p class="links"><a href={url('docs/')}>Documentation</a><a href={github}>GitHub</a></p>
+    <p class="links"><a href={github}>GitHub</a></p>
   </div>
 </section>
 <section id="ko">
-  <div class="b part" style="--x:200;--y:985;--w:450">
+  <div class="b part" style="--x:150;--y:985;--w:450">
     <svg viewBox="0 0 72 72"><rect x="6" y="6" width="60" height="60" fill="var(--red)"/><rect x="24" y="24" width="24" height="24" fill="var(--paper)"/></svg>
     <h2>Terminal multiplexer</h2>
     <p>
@@ -61,6 +68,7 @@ const canonical = new URL(url(), Astro.site);
     </p>
     <p>Under the hood, ko uses <b>libghostty</b> for interacting with the terminal. This makes it possible to support modern terminal features &mdash; clipboard, images, status reporting and many more!</p>
   </div>
+  <Shot light={koLight} dark={koDark} width={405} style="--x:858;--y:1154" alt="The Kido.app window: the sidebar with two panes, beside two terminal splits" />
 </section>
 <section id="kido-app">
   <div class="b part" style="--x:810;--y:1670;--w:450">
@@ -80,6 +88,7 @@ const canonical = new URL(url(), Astro.site);
     On top, Kido.app provides <b>webview mode</b>, so programs running in the terminal can render rich UIs.
     </p>
   </div>
+  <Shot light={appLight} dark={appDark} width={366} style="--x:227;--y:1774" alt="The Kido.app window with three floating panes over it" />
 </section>
 <section id="koa">
   <div class="b part" style="--x:200;--y:2250;--w:500">
@@ -93,6 +102,7 @@ const canonical = new URL(url(), Astro.site);
     It also provides <b>subagent</b> and <b>async bash</b> tools, which integrate nicely with the sidebar.
     </p>
   </div>
+  <Shot light={koaLight} dark={koaDark} width={385} style="--x:767;--y:2286" alt="The Kido.app window with a koa session: an agent spawns a subagent, and the sidebar shows both" />
 </section>
 <section id="remote">
   <div class="b part" style="--x:760;--y:2860;--w:450">
@@ -112,11 +122,16 @@ const canonical = new URL(url(), Astro.site);
 </section>
 <section class="dome">
   <div class="dome-grain"></div>
-  <footer class="b" style="--x:150;--y:3580;--w:1140"><a class="wordmark" href={url()} aria-label="Kido home"><svg><use href="#mark"/></svg>kido</a><span>Made in Leipzig, Germany.</span><span class="links"><a href={url('docs/')}>Documentation</a><a href={github}>GitHub</a></span></footer>
+  <footer class="b" style="--x:150;--y:3580;--w:1140"><a class="wordmark" href={url()} aria-label="Kido home"><svg><use href="#mark"/></svg>kido</a><span>Made in Leipzig, Germany.</span><a href={github}>GitHub</a></footer>
 </section>
 </main>
     </div>
     <script>
+      document.querySelectorAll('.shot').forEach((shot) => {
+        const zoom = shot.querySelector('dialog');
+        shot.querySelector('.shot-open').addEventListener('click', () => zoom.showModal());
+        zoom.addEventListener('click', () => zoom.close());
+      });
       document.querySelectorAll('[data-copy]').forEach((button) => {
         button.addEventListener('click', async () => {
           await navigator.clipboard.writeText(button.dataset.copy);
