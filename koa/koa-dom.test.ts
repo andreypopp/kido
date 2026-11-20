@@ -586,12 +586,61 @@ test('an open thread panel keeps its scroll through state updates and closes by 
   assert.equal(ui.panel().hidden, true);
 });
 
-test('a transcript mark filters the capsule and prompt while the waiting line is not a control', async () => {
+test('reply sections carry interactive thread pills or a plain time with no marks or edges', async () => {
+  const app = await page();
+  const result = app.run(`(()=>{
+    const at=Date.now(),reply=(seq,blocks)=>({seq,at,revision:0,final:true,kind:'assistant',stop:'stop',error:'',blocks});
+    state={...state,working:true,view:{id:'root',path:[],type:'root'},sessionId:'pills',threads:[{name:'one'},{name:'two'}]};
+    put(reply(0,[{type:'text',text:'First',thread:'one'},{type:'text',text:'Second',thread:'two'}]));
+    put(reply(1,[{type:'text',text:'Plain'}]));
+    const all=node=>[node,...node.children.filter(child=>child instanceof HTMLElement).flatMap(all)];
+    const pills=all(views.get(0).view).filter(node=>node.classList.contains('reply-pill')),plain=all(views.get(1).view).find(node=>node.classList.contains('reply-pill'));
+    const labels=pills.map(pill=>[pill.querySelector('.thread-name')?.children[1].textContent,pill.children.find(node=>node.tagName==='TIME')?.textContent,pill.getAttribute('role'),typeof pill.onclick==='function']);
+    const plainInfo=[plain?.children.find(node=>node.tagName==='TIME')?.textContent,plain?.getAttribute('role'),typeof plain?.onclick==='function'];
+    const noMarks=all(views.get(0).view).every(node=>!node.classList.contains('thread-mark')&&!node.classList.contains('thread-edge'));
+    pills[0]?.onclick?.();
+    put({seq:2,at,kind:'user',revision:0,final:true,text:'pending',images:[],attachments:[]});
+    const pending=all(views.get(2).view).some(node=>node.classList.contains('thread-waiting')||node.classList.contains('thread-pending'));
+    const filtered=all(views.get(0).view).filter(node=>node.classList.contains('reply-pill')).map(pill=>[pill.children.find(node=>node.tagName==='TIME')?.textContent,!!pill.querySelector('.thread-name'),pill.getAttribute('role'),typeof pill.onclick==='function']);
+    return [labels,plainInfo,noMarks,threadFilter(),pending,timestamp(at),filtered];
+  })()`);
+  const value=JSON.parse(JSON.stringify(result));
+  assert.deepEqual(value.slice(0,5), [[['one',value[5],'button',true],['two',value[5],'button',true]],[value[5],null,false],true,'one',false]);
+  assert.deepEqual(value[6], [[value[5],false,null,false]]);
+});
+
+test('find ignores reply pill names and times and export contains only prose', async () => {
+  const app = await page();
+  const result = app.run(`(()=>{
+    const at=Date.now(),results=[];
+    for(const text of ['one',timestamp(at)]){
+      const row=node('div'),pill=replyPill('one',at),paragraph=node('p'),leaf=document.createTextNode(text); paragraph.append(leaf);row.append(pill,paragraph);
+      const found=locate(row,[{text,lowered:text,folds:[],fences:[]}],{seq:0,segment:0,start:0},text.length);
+      results.push(found?.start.node===leaf&&found?.end.node===leaf);
+    }
+    put({kind:'assistant',seq:0,at,revision:0,final:true,blocks:[{type:'text',thread:'one',text:'Only the reply'}],stop:'stop',error:''});
+    return [results,transcriptText()];
+  })()`);
+  assert.deepEqual(JSON.parse(JSON.stringify(result)), [[true,true],'Only the reply']);
+});
+
+test('whole transcript selection starts at prose rather than an unselectable reply pill', async () => {
+  const app = await page();
+  const result = app.run(`(()=>{
+    const row=node('div'),pill=replyPill('one',Date.now()),first=document.createTextNode('First'),last=document.createTextNode('Last');
+    row.append(pill,first,last);element('items').replaceChildren(row);order.push(0);
+    getSelection=()=>({rangeCount:1,isCollapsed:false,getRangeAt:()=>({startContainer:first,startOffset:0,endContainer:last,endOffset:4}),containsNode:()=>false});
+    return wholeSelection();
+  })()`);
+  assert.equal(result,true);
+});
+
+test('a reply pill filters the capsule and prompt without a pending line', async () => {
   const app = await page();
   const result = await app.run(`(async()=>{
     state={...state,life:{type:'ready'},working:true,sessionId:'s',view:{id:'root',path:[],type:'root'},threads:[{name:'one'}]};
     accept({kind:'user',seq:0,revision:1,at:1,final:true,text:'pending',images:[],attachments:[]});
-    const mark=threadMark('one'),clickable=typeof mark.onclick==='function';mark.onclick?.();renderItem(visible(0));
+    const mark=replyPill('one',Date.now()),clickable=typeof mark.onclick==='function';mark.onclick?.();renderItem(visible(0));
     const waiting=views.get(0).view.querySelector('.thread-waiting');
     const text=node=>node.textContent+node.children.map(text).join('');
     const capsule=text(element('threads').querySelector('.thread-capsule'));
@@ -599,7 +648,7 @@ test('a transcript mark filters the capsule and prompt while the waiting line is
     editor.setText('continue');await send();
     return [mark.tagName,mark.getAttribute('role'),clickable,threadFilter(),capsule,sent.thread,waiting?.tagName,typeof waiting?.onclick==='function'];
   })()`);
-  assert.deepEqual(Array.from(result),['DIV','button',true,'one','#one×','one','DIV',false]);
+  assert.deepEqual(Array.from(result),['SPAN','button',true,'one','#one×','one',undefined,false]);
 });
 
 test('the capsule shows every name when all measured names fit', async () => {
@@ -657,7 +706,7 @@ test('thread capsules sort activity, keep palette identity and show the filter c
   assert.deepEqual(JSON.parse(JSON.stringify(result)), ['#one▾','#two·#one▾','#seven·#six·#five·#four·#three·#two·#one▾',['var(--thread-0)','var(--thread-1)','var(--thread-0)'],'#two×','#two','Message @pi in #two…',true,['pending-new','pending-old']]);
 });
 
-test('unfiltered roots keep the original foot and unthreaded reply DOM', async () => {
+test('unfiltered roots keep the original foot and wrap unthreaded replies', async () => {
   const app = await page();
   const html = await readFile(new URL('page/page.html', import.meta.url), 'utf8');
   const first = html.match(/<div class="foot"><span id="([^"]+)"/)?.[1];
@@ -672,7 +721,7 @@ test('unfiltered roots keep the original foot and unthreaded reply DOM', async (
     }
     return cases;
   })()`);
-  assert.deepEqual(JSON.parse(JSON.stringify(result)), [['model-cell',false,['msg prose'],0],['model-cell',false,['msg prose'],0]]);
+  assert.deepEqual(JSON.parse(JSON.stringify(result)), [['model-cell',false,['reply-section'],0],['model-cell',false,['reply-section'],0]]);
 });
 
 test('a filtered composer keeps the working and compaction verbs', async () => {
@@ -686,7 +735,7 @@ test('a filtered composer keeps the working and compaction verbs', async () => {
   assert.deepEqual(Array.from(result), ['Steer @ko in #work…','Message @ko in #work…','Message @ko in #work…']);
 });
 
-test('one thread edge spans consecutive rows and stops at an unthreaded user', async () => {
+test('reply sections never draw a thread edge', async () => {
   const app = await page();
   const result = app.run(`(()=>{
     state={...state,life:{type:'ready'},view:{id:'root',path:[],type:'root'},sessionId:'edges',threads:[{name:'work'}]};
@@ -699,10 +748,10 @@ test('one thread edge spans consecutive rows and stops at an unthreaded user', a
     renderDirty();
     return sections.map(section=>[section.classList.contains('thread-edge'),section.style.getPropertyValue('--thread-edge-height')||null]);
   })()`);
-  assert.deepEqual(JSON.parse(JSON.stringify(result)), [[true,'90px'],[false,null],[false,null],[true,'30px']]);
+  assert.deepEqual(JSON.parse(JSON.stringify(result)), [[false,null],[false,null],[false,null],[false,null]]);
 });
 
-test('only pending implicit users wait under a filter and marks follow thread changes, never users', async () => {
+test('only pending implicit users show under a filter and pills stay on reply sections', async () => {
   const app = await page();
   const result = app.run(`
     state={...state,working:true,view:{id:'root',path:[],type:'root'},sessionId:'s',threads:[{name:'one'},{name:'two'}]};
@@ -717,12 +766,12 @@ test('only pending implicit users wait under a filter and marks follow thread ch
     accept(reply(5,[{type:'text',thread:'one',text:'First'}]));
     accept(user(6));accept(reply(7,[{type:'text',thread:'one',text:'Same'},{type:'text',text:'Unthreaded'},{type:'text',thread:'two',text:'Other'}]));
     renderItem(visible(5));renderItem(visible(6));renderItem(visible(7));
-    const marks=seq=>views.get(seq).view.querySelectorAll('.thread-section>.thread-mark').map(mark=>mark.dataset.thread);
+    const marks=seq=>views.get(seq).view.querySelectorAll('.reply-section>.msg>.reply-pill').map(mark=>mark.dataset.thread).filter(Boolean);
     accept({kind:'agent',seq:8,revision:1,at:2,final:true,thread:'two',direction:'in',from:{name:'worker'},inbound:{form:'report',relation:'child'},text:{text:'done',cut:0}});renderItem(visible(8));renderItem(visible(7));
     accept({kind:'job',seq:9,revision:1,at:2,final:true,thread:'one',job:{id:'j',name:'verify',service:false,command:'true',log:'/tmp/job',place:{type:'mac'},startedAt:1},event:{type:'ended',end:{type:'exit',code:0},tail:{text:'',cut:0}}});renderItem(visible(9));reconcileRuns();
     [waits,waiting,removed,stayed,waitingAgain,settled,marks(5),marks(6),marks(7),marks(8),marks(9)];
   `);
-  assert.deepEqual(JSON.parse(JSON.stringify(result)),[true,'waiting for its thread',true,true,true,true,['one'],[],['two'],[],[]]);
+  assert.deepEqual(JSON.parse(JSON.stringify(result)),[true,null,true,true,true,true,['one'],[],['one','two'],[],[]]);
 });
 
 test('a resumed reset before state clears the old filter and restores rows', async () => {
@@ -1821,16 +1870,16 @@ test('notices join an open run but do not open one after prose', async () => {
   assert.deepEqual(value.slice(2), [['run:0:0'],'1:item',true,true,{kind:'block',seq:5,index:0},true,'Reply failed',['run:0:0','1:item']]);
 });
 
-test('thread marks track only visible prose across intervening runs', async () => {
+test('each prose reply repeats its thread pill across intervening runs', async () => {
   const app = await page();
   const result = app.run(`(()=>{
     const reply=(seq,blocks)=>({seq,at:seq,revision:0,final:true,kind:'assistant',stop:'stop',error:'',blocks}),prose=(seq,thread)=>reply(seq,[{type:'text',text:'Prose '+seq,thread}]),steps=(seq,thread)=>reply(seq,[{type:'thinking',text:'Plan',thread}]);
     put(prose(0,'one')); put(steps(1,'two')); put(prose(2,'two'));
     put(steps(3,'one')); put(prose(4,'two'));
     put(prose(5,'one')); put(steps(6,'two')); put(prose(7,'one'));
-    return [0,1,2,3,4,5,6,7].map(seq=>views.get(seq).view.querySelectorAll('.thread-section>.thread-mark').map(mark=>mark.dataset.thread));
+    return [0,1,2,3,4,5,6,7].map(seq=>views.get(seq).view.querySelectorAll('.reply-section>.msg>.reply-pill').map(mark=>mark.dataset.thread).filter(Boolean));
   })()`);
-  assert.deepEqual(JSON.parse(JSON.stringify(result)), [['one'],[],['two'],[],[],['one'],[],[]]);
+  assert.deepEqual(JSON.parse(JSON.stringify(result)), [['one'],[],['two'],[],['two'],['one'],[],['one']]);
 });
 
 test('joined notice find uses rendered Markdown and command detail text', async () => {
@@ -3543,13 +3592,13 @@ test('a new block holds, is measured after layout, grows with its measured heigh
   const page = await revealPage();
   page.hooks.layout = () => { page.evaluate("for (const [target, watch] of observed) if (watch.type === 'hold') Object.assign(target, { scrollHeight: 66, offsetHeight: 2, clientHeight: 0 })"); };
   page.deliver({ type: 'item', item: assistant(0, 'First.\n\nSecond.') });
-  const classes = () => String(page.evaluate("views.get(0).view.children[0].children.map(block => block.className).join('|')"));
-  const height = () => page.evaluate("views.get(0).view.children[0].children[0].style['--h']");
+  const classes = () => String(page.evaluate("texts.get('0:0').view.children.filter(block => !block.classList.contains('reply-pill')).map(block => block.className).join('|')"));
+  const height = () => page.evaluate("texts.get('0:0').view.children.find(block => !block.classList.contains('reply-pill')).style['--h']");
   page.step(16);
   assert.deepEqual([classes(), height(), page.evaluate('measuredHolds.size')], ['hold|reveal dormant', undefined, 1]);
   page.step(16);
   assert.deepEqual([classes(), height(), page.evaluate('measuredHolds.size')], ['grow|reveal dormant', '68px', 0]);
-  page.evaluate("views.get(0).view.children[0].children.forEach(block => block.handlers.get('animationend')?.())");
+  page.evaluate("texts.get('0:0').view.children.forEach(block => block.handlers.get('animationend')?.())");
   assert.equal(classes(), '|reveal dormant');
 });
 
@@ -3558,7 +3607,7 @@ test('reduced motion shows a completed block at full height in its first frame w
   Object.assign(page.app.context, { matchMedia: () => ({ matches: true }) });
   page.deliver({ type: 'item', item: assistant(0, 'First.\n\nSecond.') });
   page.step(16);
-  assert.equal(page.evaluate("views.get(0).view.children[0].children[0].className"), '');
+  assert.equal(page.evaluate("texts.get('0:0').view.children.find(block => !block.classList.contains('reply-pill')).className"), '');
   assert.equal(page.evaluate('growing.length + measuredHolds.size'), 0);
   assert.equal(page.evaluate('animating.size'), 0);
 });

@@ -13,6 +13,11 @@ import SidebarFeed
     private static let paneFocus = "window.koaFocused=true;"
     private static let hideLatest = "document.addEventListener('DOMContentLoaded',()=>{const style=document.createElement('style');style.textContent='#latest{display:none!important}';document.head.append(style)});"
     private var testMethod: String { String(name.split(whereSeparator: { !$0.isLetter && !$0.isNumber && $0 != "_" }).last ?? "") }
+    private func assertReplyPillFirstLine(_ web: WKWebView, plain: Bool) async throws {
+        let result = try await webviewJS(web, "(()=>{const host=document.querySelector('\(plain ? ".reply-pill.plain" : ".reply-pill")')?.parentElement;if(!host)throw Error('Missing reply');const aligned=message=>{const pill=message.querySelector('.reply-pill'),block=[...message.children].find(child=>child!==pill);if(!pill||!block)throw Error('Missing first block');const walker=document.createTreeWalker(block,NodeFilter.SHOW_TEXT),text=walker.nextNode();if(!text)throw Error('Missing first line');const range=document.createRange();range.setStart(text,0);range.setEnd(text,1);const line=range.getBoundingClientRect(),rect=pill.getBoundingClientRect(),centre=(rect.top+rect.bottom)/2;return centre-(line.top+line.bottom)/2};const paragraph=aligned(host),heading=host.cloneNode(true);for(const child of [...heading.children])if(!child.classList.contains('reply-pill'))child.remove();const h=document.createElement('h2');h.textContent='Heading';heading.append(h);host.after(heading);try{const final=aligned(heading),wrapper=document.createElement('div');wrapper.className='reveal';wrapper.style.maxHeight='none';h.replaceWith(wrapper);wrapper.append(h);return [paragraph,final,aligned(heading)]}finally{heading.remove()}})()")
+        let offsets = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(result.utf8)) as? [Double])
+        XCTAssertTrue(offsets.allSatisfy { abs($0) <= 1.5 }, "Pills centre on the first paragraph and final or streaming heading lines: \(result)")
+    }
     // A frame shows paths of the asset directory, so its name is the same on every run, in the shape of a mkdtemp name.
     private func replayRoot() throws -> URL {
         var hash: UInt32 = 2166136261
@@ -252,7 +257,7 @@ import SidebarFeed
           await until(()=>gap()<=1&&document.querySelector('#items [data-seq="399"]'));
           await new Promise((resolve,reject)=>{let previous='',stable=0,frame;const timer=setTimeout(()=>{cancelAnimationFrame(frame);reject(Error('History geometry did not settle'))},5000);function sample(){const current=JSON.stringify([s.scrollHeight,s.scrollTop,s.clientHeight,document.querySelector('#items').getBoundingClientRect().height]);stable=current===previous&&s.scrollTop>20*s.clientHeight&&gap()<=1?stable+1:0;previous=current;if(stable>=2){clearTimeout(timer);resolve()}else frame=requestAnimationFrame(sample)}frame=requestAnimationFrame(sample)});
           const rows=()=>document.querySelectorAll('#items > [data-seq]').length;
-          const usable=()=>{const box=s.getBoundingClientRect(),limit=dock.getBoundingClientRect().top;return [...document.querySelectorAll('#items > [data-seq]')].some(row=>{const rect=row.getBoundingClientRect();return rect.height>0&&rect.bottom>box.top&&rect.top<limit&&row.textContent.startsWith('Row ')})};
+          const usable=()=>{const box=s.getBoundingClientRect(),limit=dock.getBoundingClientRect().top;return [...document.querySelectorAll('#items > [data-seq]')].some(row=>{const rect=row.getBoundingClientRect();return rect.height>0&&rect.bottom>box.top&&rect.top<limit&&row.querySelector('p')?.textContent.startsWith('Row ')})};
           const start=s.scrollTop,viewport=s.clientHeight,atEnd=rows();
           moveTo(Math.max(0,start-40*viewport));
           await until(()=>usable()&&s.scrollTop<start-20*viewport,20000);
@@ -828,6 +833,13 @@ import SidebarFeed
                 XCTAssertEqual(order, "true", "Queued steers and follow-ups stay above the attachment chips and composer field")
             }
             try await settle()
+            if name.contains("marks") {
+                let aligned = try await webviewJS(web, "(()=>{const times=['.reply-pill time','.user time','.run>.line .time'].map(selector=>document.querySelector(selector));if(times.some(time=>!time))throw Error('Missing transcript time');const edges=times.map(time=>time.getBoundingClientRect().right);return Math.max(...edges)-Math.min(...edges)<1})()")
+                XCTAssertEqual(aligned, "true", "Reply, user and run times share the text edge")
+                try await assertReplyPillFirstLine(web, plain: false)
+            } else if name == "lines" || name.hasPrefix("threads-filter") {
+                try await assertReplyPillFirstLine(web, plain: true)
+            }
             try await pageSnapshot(name, "-light")
             try await afterLight?()
             try await darken()
@@ -859,19 +871,19 @@ import SidebarFeed
                 try await webviewUntil(web, "(()=>{const capsule=document.querySelector('.thread-capsule');return capsule.querySelectorAll('.thread-open>.thread-name').length===\(expected)&&\(expected == 9 ? "capsule.querySelector('.thread-more')===null" : "capsule.querySelector('.thread-more')?.textContent==='+5'")})()")
             }
             if name.contains("marks") {
-                try await webviewUntil(web, "document.querySelector('.thread-mark:not(.thread-waiting) .thread-name')!==null")
-                let hitBox = try await webviewJS(web, "(()=>{const mark=document.querySelector('.thread-mark:not(.thread-waiting)'),label=mark?.querySelector('.thread-name');if(!mark||!label)throw Error('Missing thread mark');return Math.abs(mark.getBoundingClientRect().width-label.getBoundingClientRect().width)<1&&getComputedStyle(mark).cursor==='pointer'})()")
-                XCTAssertEqual(hitBox, "true", "Only the thread label is the mark's pointer target")
+                try await webviewUntil(web, "document.querySelector('.reply-pill .thread-name')!==null")
+                let hitBox = try await webviewJS(web, "(()=>{const pill=document.querySelector('.reply-pill'),label=pill?.querySelector('.thread-name'),time=pill?.querySelector('time');if(!pill||!label||!time)throw Error('Missing reply pill');return pill.contains(label)&&pill.contains(time)&&pill.getBoundingClientRect().width>label.getBoundingClientRect().width&&getComputedStyle(pill).cursor==='pointer'&&getComputedStyle(pill).float==='right'})()")
+                XCTAssertEqual(hitBox, "true", "The complete reply pill is the filter control")
             }
             if name == "threads-marks-narrow" {
-                let wrapping = try await webviewJS(web, "(()=>{const host=document.querySelector('.assistant>.thread-section>.msg');if(!host)throw Error('Missing threaded prose');const token='identifier'.repeat(100),p=document.createElement('p'),pre=document.createElement('pre'),table=document.createElement('table');p.textContent=pre.textContent=token;table.innerHTML='<tr><td>'+token+'</td></tr>';host.append(p,pre,table);try{return [p.scrollWidth<=p.clientWidth,getComputedStyle(pre).overflowWrap,getComputedStyle(table).overflowWrap,pre.scrollWidth>pre.clientWidth]}finally{p.remove();pre.remove();table.remove()}})()")
+                let wrapping = try await webviewJS(web, "(()=>{const host=document.querySelector('.assistant>.reply-section>.msg');if(!host)throw Error('Missing threaded prose');const token='identifier'.repeat(100),p=document.createElement('p'),pre=document.createElement('pre'),table=document.createElement('table');p.textContent=pre.textContent=token;table.innerHTML='<tr><td>'+token+'</td></tr>';host.append(p,pre,table);try{return [p.scrollWidth<=p.clientWidth,getComputedStyle(pre).overflowWrap,getComputedStyle(table).overflowWrap,pre.scrollWidth>pre.clientWidth]}finally{p.remove();pre.remove();table.remove()}})()")
                 XCTAssertEqual(wrapping, "[true,\"normal\",\"normal\",true]", "Threaded prose wraps an unbroken token; code and tables keep horizontal scrolling")
             }
             if name.contains("filter") {
                 _ = try await webviewJS(web, "(()=>{document.querySelector('.thread-open').click();document.querySelector('.thread-entry[data-thread=sidebar]').click();return true})()")
-                try await webviewUntil(web, "document.querySelector('.thread-clear')!==null&&document.querySelector('.thread-waiting')!==null&&\(koaIdle)")
-                let filtered = try await webviewJS(web, "document.querySelectorAll('#items .thread-mark:not(.thread-waiting),#items .thread-section').length===0&&document.querySelector('#thread-cell').textContent==='#sidebar'")
-                XCTAssertEqual(filtered, "true", "The filter names the thread in the capsule and foot, not on transcript sections")
+                try await webviewUntil(web, "document.querySelector('.thread-clear')!==null&&document.querySelector('.user')!==null&&[...document.querySelectorAll('#items .reply-pill')].every(pill=>pill.classList.contains('plain'))&&\(koaIdle)")
+                let filtered = try await webviewJS(web, "document.querySelectorAll('#items .thread-mark,#items .thread-section,#items .thread-edge,#items .thread-waiting').length===0&&[...document.querySelectorAll('#items .reply-pill')].every(pill=>pill.classList.contains('plain')&&!pill.querySelector('.thread-name')&&!pill.hasAttribute('role'))&&document.querySelector('#thread-cell').textContent==='#sidebar'")
+                XCTAssertEqual(filtered, "true", "Filtered replies have time-only pills and pending users have no label")
             }
             if name == "threads-two" || name.contains("many") || name.hasSuffix("panel") {
                 _ = try await webviewJS(web, "(()=>{document.querySelector('.thread-open').click();return true})()")
@@ -1695,6 +1707,7 @@ import SidebarFeed
         try await capture("narrow-stream")
         let caretCount = try await webviewJS(web, "document.querySelectorAll('.dots').length")
         XCTAssertEqual(caretCount, "1")
+        try await webviewUntil(web, "(()=>{document.querySelector('#scroll').scrollTop=0;return document.querySelector('.user .t')!==null})()")
         _ = try await webviewJS(web, "(()=>{document.querySelector('#prompt .cm-content').blur();window.savedUser=document.querySelector('.user .t');window.savedText=savedUser.querySelector('p').firstChild;const range=document.createRange();range.setStart(savedText,0);range.setEnd(savedText,4);getSelection().removeAllRanges();getSelection().addRange(range);return true})()")
         let initialSelection = try await webviewJS(web, "getSelection().toString()")
         XCTAssertEqual(initialSelection, "\"Expl\"")

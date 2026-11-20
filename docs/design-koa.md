@@ -2068,9 +2068,9 @@ run"); the separate agent and job rows are gone:
   item's `thread`; a notice has none). Under a filter the runs are
   those of the unfiltered transcript, so prose that the filter hides
   still ends a run, and each run shows or hides whole. A run with no
-  known thread shows only unfiltered. Only user messages and
-  assistant text carry a thread mark; a run, its steps and a notice
-  carry none.
+  known thread shows only unfiltered. Only assistant text shows a
+  thread, on its pill ("Threads", "The look"); a run, its steps
+  and a notice show none.
 - **`@name` goes to the agent.** An agent's name in an agent step,
   and an `@name` in the prose of a reply or a user message, is a link
   while the name is in koa's list of live agents. A click on an agent
@@ -2295,10 +2295,17 @@ thread's position to its palette, modulo the palette's size.
 
 **The look** is the mockup `threads.html` (app/design/koa/NOTES.md,
 "Threads: the widget, the marks and the filter"): a capsule outside
-the scroll that names the newest threads, a panel of all threads, a
-mark `# name` where the thread changes, and an edge in the thread's
-colour beside each section. The user decided against a status dot:
-`# name` in the thread's colour is the one sign of a thread. The
+the scroll that names the newest threads, a panel of all threads,
+and a pill on each assistant message, or on each section of a reply
+about two threads, with `# name` and the message's time
+(app/design/koa/NOTES.md, "The reply's pill"). A reply with no thread has a pill with only the time, so
+every assistant message shows its time in one place, on the text
+edge with the user message's time. Under a filter every pill has
+only the time, because the filter names the thread. No other row shows a thread: no
+mark line, no colour edge, nothing on a run, a step or a notice (the
+user, 2026-11-20); the item keeps its thread for the filter. The user
+decided against a status dot: `# name` in the thread's colour is the
+one sign of a thread. The
 panel's order is the page's: newest first by the time of the last
 section, a thread with no section before them; the colour stays the
 position in the state.
@@ -2306,9 +2313,9 @@ position in the state.
 **The filter** is the page's own state for the root's view, as fold
 state is; a page load starts without one. The event stream is not
 filtered: the page hides the live items of other threads. A pending
-implicit user message shows under every filter, with the line
-"waiting for its thread": it has no label yet, nothing entered the
-turn after it, and the agent still works. When the turn settles with
+implicit user message shows under every filter, with nothing above
+it: it has no label yet, nothing entered the turn after it, and the
+agent still works. When the turn settles with
 no label, the message has no thread and is hidden. `/items?before` takes `thread`, because a thread can be
 sparse: koa filters the items first and then applies the window's
 limits, returns each match whole with its `threads` and `annotations`

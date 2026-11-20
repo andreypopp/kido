@@ -55,7 +55,7 @@ let threadCapsule: { view: HTMLDivElement; names: ThreadName[]; selected?: Threa
 
 const annotationItems = new Map<number, Map<number, Extract<WireItem, { kind: 'annotations' }>>>();
 const items = new Map<number, WireItem>();
-const views = new Map<number, { view: HTMLElement; item: WireItem; warning?: string; slots: Map<string, Slot>; filter?: ThreadName; preceding?: ThreadName; runs: string }>();
+const views = new Map<number, { view: HTMLElement; item: WireItem; warning?: string; slots: Map<string, Slot>; filter?: ThreadName; runs: string }>();
 const openers = new Map<string, { view: HTMLElement; open: () => void }>(), fenceOpeners = new Map<string, { view: HTMLElement; open: () => void }>(), patched = new Set<number>(), live = new Set<number>(), order: number[] = [], extents = new Map<number, Extent>(), openFences = new Set<string>(), animating = new Map<HTMLElement, number>();
 type Extent = { kind: 'measured'; width: number; lh: number; px: number } | { kind: 'estimated'; px: number };
 type Group = SeqRange;
@@ -95,16 +95,6 @@ function latestThreadInput(): WireItem | undefined {
 }
 function waitingForThread(item: WireItem): boolean {
   return state.view.type === 'root' && state.working && item.kind === 'user' && !item.thread && !threadItems.has(item.seq) && latestThreadInput()?.seq === item.seq;
-}
-function precedingThread(seq: number): ThreadName | undefined {
-  if (state.view.type !== 'root' || threadFilter()) return;
-  for (let index = orderIndex(seq) - 1; index >= 0; index--) {
-    const item = items.get(order[index]);
-    const late = item && threadItems.get(item.seq)?.threads[0];
-    const block = item?.kind === 'assistant' ? item.blocks.findLast(block => visibleText(block) && (block.thread ?? late)) : undefined;
-    const name = block && (block.thread ?? late);
-    if (name) return name;
-  }
 }
 const runKeys = new Map<number, string>();
 let runThreads: { owners: RunContext['owners']; names: Map<string, ThreadName> } | undefined;
@@ -167,12 +157,16 @@ function threadName(name: ThreadName) {
   label.append(node('span', '#', 'thread-hash'), node('span', name));
   return label;
 }
-function threadMark(name: ThreadName) {
-  const mark = node('div', undefined, 'thread-mark'); mark.dataset.thread = name;
+function replyPill(name: ThreadName | undefined, at: number) {
+  const mark = node('span', undefined, name ? 'reply-pill' : 'reply-pill plain');
+  const time = node('time', timestamp(at)); time.dateTime = new Date(at).toISOString();
+  if (!name) { mark.append(time); return mark; }
+  mark.dataset.thread = name;
+  mark.style.setProperty('--thread-color', threadColour(name));
   mark.setAttribute('role', 'button'); mark.tabIndex = -1;
   mark.setAttribute('aria-label', 'Filter to thread ' + name); mark.onclick = () => setThread(name);
   mark.onkeydown = event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); event.stopPropagation(); setThread(name); } };
-  mark.append(threadName(name));
+  mark.append(threadName(name), time);
   return mark;
 }
 function toggleThreads() {
@@ -241,7 +235,7 @@ function renderThreads() {
   host.replaceChildren(capsule, panel);
   if (open) panel.scrollTop = scrollTop;
   if (changed && !filter) fitThreads();
-  for (const mark of [...element('items').querySelectorAll<HTMLElement>('.thread-section,.thread-name'), ...host.querySelectorAll<HTMLElement>('.thread-name')]) {
+  for (const mark of [...element('items').querySelectorAll<HTMLElement>('.reply-pill,.thread-name'), ...host.querySelectorAll<HTMLElement>('.thread-name')]) {
     const thread = state.threads.find(thread => thread.name === mark.dataset.thread);
     if (thread) mark.style.setProperty('--thread-color', threadColour(thread.name));
   }
@@ -1057,18 +1051,18 @@ function syncChildren(parent: HTMLElement, children: HTMLElement[]) {
   while (parent.childNodes.length > children.length) { const extra = parent.lastChild; if (extra) unwatch(extra); extra?.remove(); }
 }
 function renderItem(item: WireItem) {
-  const previous = views.get(item.seq), warning = pathWarnings.get(item.seq), preceding = precedingThread(item.seq), filter = threadFilter();
+  const previous = views.get(item.seq), warning = pathWarnings.get(item.seq), filter = threadFilter();
   const context = runContext(), runs = runParts(items.get(item.seq), item).map(part => part.kind === 'boundary' ? 'boundary' : part.kind + ':' + sourceKey(part.source) + ':' + (runOf(context, part.source) ? sourceKey(runOwner(context, part.source)) : '')).join('|');
-  if (previous?.item === item && previous.warning === warning && previous.filter === filter && previous.preceding === preceding && previous.runs === runs) return false;
+  if (previous?.item === item && previous.warning === warning && previous.filter === filter && previous.runs === runs) return false;
   const view = previous?.view ?? node('div');
   view.dataset.seq = String(item.seq);
   const refs = item.kind === 'user' ? item.images : item.kind === 'assistant' ? item.blocks.flatMap(block => block.type === 'tool' && 'result' in block.state ? block.state.result?.images ?? [] : []) : [];
   const ids = new Set(refs.map(ref => 'image:' + ref.id));
   const children: HTMLElement[] = [], slots = new Map([...previous?.slots ?? []].filter(([key]) => ids.has(key)));
   let steps: Step[] = [], parts = children;
-  let section: HTMLElement | undefined, sectionThread: ThreadName | undefined, previousThread = preceding;
+  let section: HTMLElement | undefined, sectionThread: ThreadName | undefined;
   const finishSection = () => {
-    if (section) { syncChildren(section, parts); section.classList.toggle('thread-lines', !parts.some(part => part.classList.contains('msg'))); }
+    if (section) syncChildren(section, parts);
     section = undefined; parts = children;
   };
   const flush = () => {
@@ -1080,13 +1074,12 @@ function renderItem(item: WireItem) {
     steps = [];
   };
   const startSection = (name: ThreadName | undefined, index: number) => {
-    if (state.view.type !== 'root' || filter || !name) { if (section) { flush(); finishSection(); } sectionThread = undefined; return; }
+    if (filter) { if (section) { flush(); finishSection(); } sectionThread = undefined; return; }
     if (section && sectionThread === name) return;
     flush(); finishSection(); sectionThread = name;
-    section = [...previous?.view.children ?? []].find((child): child is HTMLElement => child instanceof HTMLElement && child.classList.contains('thread-section') && child.dataset.block === String(index));
-    section ??= node('div', undefined, 'thread-section'); section.dataset.block = String(index); section.dataset.thread = name;
-    section.style.setProperty('--thread-color', threadColour(name)); children.push(section); parts = [];
-    if (name !== previousThread) parts.push(threadMark(name)); previousThread = name;
+    section = [...previous?.view.children ?? []].find((child): child is HTMLElement => child instanceof HTMLElement && child.classList.contains('reply-section') && child.dataset.block === String(index));
+    section ??= node('div', undefined, 'reply-section'); section.dataset.block = String(index);
+    children.push(section); parts = [];
   };
   if (item.kind === 'assistant') {
     view.className = 'assistant';
@@ -1096,7 +1089,13 @@ function renderItem(item: WireItem) {
       if (block.type === 'text' || previousStep?.kind === 'block' && sourceKey(runOwner(context, { kind: 'block', seq: item.seq, index })) !== sourceKey(runOwner(context, { kind: 'block', seq: item.seq, index: previousStep.index }))) flush();
       if (block.type === 'text') startSection(block.thread, index);
       const key = item.seq + ':' + index;
-      if (block.type === 'text') { flush(); if (block.text) parts.push(prose(key, block.text, item.final || index < item.blocks.length - 1, annotationItems.get(item.seq)?.get(index), 'assistant')); }
+      if (block.type === 'text') {
+        flush();
+        const message = prose(key, block.text, item.final || index < item.blocks.length - 1, annotationItems.get(item.seq)?.get(index), 'assistant');
+        message.querySelector('.reply-pill')?.remove();
+        if (!parts.some(part => part.classList.contains('msg'))) message.prepend(replyPill(!filter && state.view.type === 'root' ? block.thread : undefined, item.at));
+        parts.push(message);
+      }
       else steps.push({ kind: 'block', block, item, key, index, slots });
     });
     flush(); finishSection();
@@ -1115,7 +1114,6 @@ function renderItem(item: WireItem) {
       if (item.images.length) { const images = thumbnails(item.images, () => slots); images.load(); text.append(images.view); }
       const paths = item.attachments.filter(file => file.kind === 'file').map(file => file.path);
       if (paths.length) text.append(node('div', paths.join('\n'), 'paths'));
-      if (filter && waitingForThread(item)) { const waiting = node('div', 'waiting for its thread', 'thread-mark thread-waiting'); view.classList.add('thread-pending'); children.push(waiting); } else view.classList.remove('thread-pending');
       children.push(time, text);
     } else if (item.kind === 'agent' || item.kind === 'job' || noticeOf(item) && runOf(runContext(), { kind: 'item', seq: item.seq })) {
       view.className = '';
@@ -1132,7 +1130,7 @@ function renderItem(item: WireItem) {
     children.push(noticeRow({ key: 'path:' + item.seq, at: item.at, level: 'warning', content: { type: 'text', text: warning } }));
   }
   syncChildren(view, children);
-  views.set(item.seq, { view, item, warning, slots, filter, preceding, runs });
+  views.set(item.seq, { view, item, warning, slots, filter, runs });
   if (!previous) {
     observed.set(view, { type: 'row' }); layoutObserver.observe(view);
     const container = element('items'), next = [...views.keys()].filter(seq => seq > item.seq).sort((a, b) => a - b)[0];
@@ -1140,7 +1138,7 @@ function renderItem(item: WireItem) {
   }
   return true;
 }
-const ROW_BLOCKS = ':scope>:is(.msg,.nrow,.cmdrun),:scope>div>.run,:scope>.thread-section>:is(.msg,.nrow,.cmdrun),:scope>.thread-section>div>.run';
+const ROW_BLOCKS = ':scope>:is(.msg,.nrow,.cmdrun),:scope>div>.run,:scope>.reply-section>:is(.msg,.nrow,.cmdrun),:scope>.reply-section>div>.run';
 function watchBlocks(row: HTMLElement) {
   for (const block of [...row.matches('.user') ? [row] : [], ...row.querySelectorAll(ROW_BLOCKS)]) if (!observed.has(block)) { observed.set(block, { type: 'block' }); layoutObserver.observe(block); }
 }
@@ -1319,25 +1317,6 @@ function renderDirty(geo: Geo = geometry()) {
   for (const seq of rendered) { const row = views.get(seq)?.view; if (row) watchBlocks(row); }
   const older = element('older');
   if (older.hidden === more) older.hidden = !more;
-  const sections: HTMLElement[] = [], edges: { view: HTMLElement; thread: string; top: number; bottom: number }[] = [];
-  let edge: typeof edges[number] | undefined;
-  for (const row of element('items').children) {
-    if (!(row instanceof HTMLElement) || row.hidden) continue;
-    if (row.classList.contains('gap')) { edge = undefined; continue; }
-    for (const child of row.children) {
-      if (!(child instanceof HTMLElement) || !child.classList.contains('thread-section') || !child.dataset.thread) { edge = undefined; continue; }
-      sections.push(child);
-      const rect = child.getBoundingClientRect();
-      if (edge?.thread === child.dataset.thread) edge.bottom = rect.bottom;
-      else { edge = { view: child, thread: child.dataset.thread, top: rect.top, bottom: rect.bottom }; edges.push(edge); }
-    }
-  }
-  const starts = new Set(edges.map(edge => edge.view));
-  for (const section of sections) section.classList.toggle('thread-edge', starts.has(section));
-  for (const edge of edges) {
-    const height = edge.bottom - edge.top + 'px';
-    if (edge.view.style.getPropertyValue('--thread-edge-height') !== height) edge.view.style.setProperty('--thread-edge-height', height);
-  }
   return reset;
 }
 
@@ -1798,9 +1777,8 @@ function rowSeq(node: Node | null) {
 function wholeSelection() {
   const selection = getSelection();
   if (!selection || !order.length || !selection.rangeCount || selection.isCollapsed) return false;
-  let first: Node = element('items'), last: Node = first;
-  while (first.firstChild) first = first.firstChild;
-  while (last.lastChild) last = last.lastChild;
+  const content = leaves(element('items')), first = content[0], last = content.at(-1);
+  if (!first || !last) return false;
   const range = selection.getRangeAt(0), length = last.textContent?.length ?? 0;
   const top = range.startContainer === first && range.startOffset === 0 || selection.containsNode(first, false);
   const bottom = range.endContainer === last && range.endOffset === length || selection.containsNode(last, false);
@@ -1842,6 +1820,7 @@ function allMatches(needle: string) {
 }
 const squash = (text: string) => text.replace(/\s+/g, '');
 function leaves(node: Node, into: Node[] = []) {
+  if (node instanceof HTMLElement && node.classList.contains('reply-pill')) return into;
   if (!node.childNodes.length) { if (node.textContent) into.push(node); }
   else for (const child of node.childNodes) leaves(child, into);
   return into;
