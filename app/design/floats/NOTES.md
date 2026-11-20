@@ -301,9 +301,15 @@ parent, minimise and Space for free; each is now a rule of ours.
   theme-background overlay while not key (the main window key, or
   another float). A koa page follows its pane's paper through
   `--ko-bg`, so the page of a tiled koa pane dims while its editor
-  float is key. When no Kido window is key, the not-key rule as
-  today: no pane is focused, every tiled pane shifted, every float
-  under the overlay.
+  float is key. A sheet or panel attached to a Kido window (the
+  close confirmation of section D, a save panel) counts as that
+  window being key for the paper, the stroke and the overlay: a
+  sheet on a float keeps the float pure with the stroke and the
+  tiled panes shifted; a sheet on the main window keeps its active
+  tiled pane pure with the stroke. Only the cursor follows the key
+  panel, hollow under a sheet as today. When no Kido window and no
+  sheet of one is key, the not-key rule as today: no pane is
+  focused, every tiled pane shifted, every float under the overlay.
 - **One transition, no blink.** A key handoff between two Kido
   windows (main to float, float to main, float to float) is one
   change of the focused pane, painted once: AppKit sends resign-key
