@@ -29,7 +29,10 @@ const canonical = new URL(url(), Astro.site);
     <meta name="twitter:title" content={title} />
     <meta name="twitter:description" content={description} />
     <link rel="canonical" href={canonical} />
+    <link rel="icon" href={url('favicon.ico')} sizes="32x32" />
+    <link rel="icon" type="image/png" sizes="32x32" href={url('favicon-32.png')} />
     <link rel="icon" type="image/svg+xml" href={url('favicon.svg')} />
+    <link rel="apple-touch-icon" href={url('apple-touch-icon.png')} />
     <title>{title}</title>
   </head>
   <body>

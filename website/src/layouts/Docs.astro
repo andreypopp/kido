@@ -21,7 +21,10 @@ const toc = headings.filter((h) => h.depth === 2 || h.depth === 3);
     <meta name="theme-color" content="#EEF0E6" media="(prefers-color-scheme: light)" />
     <meta name="theme-color" content="#262421" media="(prefers-color-scheme: dark)" />
     <link rel="canonical" href={new URL(Astro.url.pathname, Astro.site)} />
+    <link rel="icon" href={url('favicon.ico')} sizes="32x32" />
+    <link rel="icon" type="image/png" sizes="32x32" href={url('favicon-32.png')} />
     <link rel="icon" type="image/svg+xml" href={url('favicon.svg')} />
+    <link rel="apple-touch-icon" href={url('apple-touch-icon.png')} />
     <title>{frontmatter.title} — Kido</title>
   </head>
   <body>
