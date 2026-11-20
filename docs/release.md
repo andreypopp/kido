@@ -103,7 +103,7 @@ GitHub release, depends on Homebrew's Python and OpenTofu, and takes
 rsync and OpenSSH from the system. kow pins the ko and koa releases
 that `install` downloads, each with its SHA-256. `scripts/release.sh
 kow VERSION` first runs `kow/kow --check-pins` with Homebrew's
-`python@3.14`, the formula's interpreter, which refuses when a
+`python`, the formula's interpreter, which refuses when a
 newer ko or koa release exists: run `kow/kow --pin`, commit the
 change through the usual path, then release. So a kow release
 follows the ko and koa releases that it must install, and a Kido.app

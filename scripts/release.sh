@@ -53,8 +53,8 @@ if [[ -f $formula ]]; then
   previous=$(python3 -c 'import re,sys; print(re.search(r"version \"([^\"]+)\"",open(sys.argv[1]).read())[1])' "$formula")
 fi
 if [[ $product == kow ]]; then
-  python="$(brew --prefix python@3.14)/bin/python3.14"
-  [[ -x $python ]] || { echo 'kow release requires python@3.14; run brew install python@3.14' >&2; exit 1; }
+  python="$(brew --prefix python)/bin/python3"
+  [[ -x $python ]] || { echo 'kow release requires Homebrew python; run brew install python' >&2; exit 1; }
   "$python" kow/kow --check-pins
   if [[ -n $previous ]]; then
     python3 -c 'import sys; assert tuple(map(int,sys.argv[2].split("."))) > tuple(map(int,sys.argv[1].split("."))), "VERSION must increase"' "$previous" "$version"
@@ -74,7 +74,7 @@ class Kow < Formula
   url "https://github.com/andreypopp/kido/releases/download/kow/$version/kow-$version.tar.gz"
   sha256 "$digest"
   version "$version"
-  depends_on "python@3.14"
+  depends_on "python"
   depends_on "opentofu"
 
   def install
