@@ -135,6 +135,7 @@ import XCTest
         window.styleMask.insert([.closable, .miniaturizable])
         let owner = try sidebarOwner()
         let sidebar = owner.sidebar
+        (window as? OwnerWindow)?.focusChanged = { [weak self] _, _ in self?.terminal?.updateFocusTreatment() }
         window.titleVisibility = .hidden
         window.titlebarAppearsTransparent = true
         window.backgroundColor = runtime.background
@@ -330,6 +331,7 @@ import XCTest
         XCTAssertTrue(window.firstResponder is PaneView)
         try key()
         NotificationCenter.default.post(name: NSWindow.didResignKeyNotification, object: window)
+        await mainQueueFence()
         XCTAssertFalse(sidebar.isFloating)
         XCTAssertTrue(window.firstResponder is PaneView)
         NotificationCenter.default.post(name: NSWindow.didBecomeKeyNotification, object: window)

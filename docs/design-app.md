@@ -1139,11 +1139,30 @@ its window is key, also under sidebar focus. Floating panes keep a 45%
 theme-background overlay when they are not active.
 
 Focus treatment follows the physical key window ([Float
-windows](#float-windows)). While a float window is key, its pane has the
-1pt accent stroke and a solid cursor, the tiled panes follow the not-key
-rule without the shift (hollow cursor, no stroke), and the other floats
-keep the overlay. While the main window is key, its active tiled pane has
-the stroke and every float has the overlay, the last active float too.
+windows](#float-windows)). The focused pane is the first responder's pane
+of the key Kido window (`OwnerWindow.focusedPane`); a key sheet counts
+as its parent window being key, and only the cursor turns hollow under
+it, never the selection,
+which is only navigation. Paper, stroke, overlay and Ghostty surface focus
+all read it. While a float window is key, its pane has the 1pt accent
+stroke and a solid cursor, every tiled pane of the main window takes the
+shift, a sole tiled pane too, with a hollow cursor and no stroke, and the
+other floats keep the overlay. A float's paper never takes the shift:
+it is pure, under the overlay when the float is not focused. While the
+main window is key, its focused tiled pane has the stroke and every
+float has the overlay, the last active float too.
+
+A key handoff between two Kido windows is one change, painted once.
+AppKit sends resign-key to the old window before become-key to the new
+one, and the state between them must not reach the screen. The app
+records the key window (`OwnerWindow.keyWindow`) from every window's
+become-key, sheets and panels included, and derives the input window
+through the sheet's parents. A change of the input window, or of
+whether the input window itself is key, repaints every window's panes
+at once. A resign-key of the input window reads the key window one
+run-loop turn later, so a become-key in that turn takes precedence.
+The not-key rule applies only when neither a Kido window nor a sheet of
+one is key.
 
 A pane has Ghostty surface focus, and a solid cursor, only while it is its
 window's first responder and that window is key (see the not-key rule
@@ -1746,10 +1765,10 @@ close alert for a float's pane is a sheet of that float's own window,
 so it stays on the float wherever the float is, and it is modal to the
 float only: the main window keeps its look and takes clicks. AppKit
 places the sheet: on macOS 27 it centres a sheet on a window taller
-than the sheet, so the app does not position it. While the float hosts the sheet and the main window
-is not key, it counts as the key float, so only the float shows the
-inactive treatment; the focus report goes false only while the input
-window has a sheet. Hiding or detaching a float aborts its alert. Focus
+than the sheet, so the app does not position it. A key sheet counts as its window being key
+([Focus treatment](#focus-treatment)): the float keeps the stroke and
+the main window's tiled panes take the shift; the focus report goes false only while
+the input window has a sheet. Hiding or detaching a float aborts its alert. Focus
 Sidebar makes the main window key first.
 
 ### Webview panes
@@ -1974,8 +1993,8 @@ Ghostty config: `ghostty_config_get` does not read `cursor-color` or the
 selection colours, so `GhosttyRuntime.webviewColors` reads them from
 `ghostty_config_serialize`, with the foreground and background as their
 defaults. `--ko-bg` is the pane's paper (`PaneView.paperColor`), so an
-unfocused pane's page gets the same shifted paper as a terminal's
-default background; the other properties do not change with focus.
+unfocused pane's page, such as koa's under a key float, gets the same
+shifted paper as a terminal's default background; the other properties do not change with focus.
 `--ko-focus` is the colour of the pane's focus border (`Chrome.focusStroke`,
 the system accent), so a page's focused field matches it; a change of
 the system colours applies the theme again. The

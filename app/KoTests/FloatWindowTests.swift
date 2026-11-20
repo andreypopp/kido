@@ -189,6 +189,132 @@ import XCTest
         XCTAssertTrue(PaneView.owner(owner.inputResponder) === session.pane(id), "the menu and the palette act on the float's pane")
     }
 
+    func testKeyFloatShiftsEveryTiledPaneButNeverFloatPaper() throws {
+        for tree in [sleep, split] {
+            let (owner, _) = try shown(floatLayout(border: false, tree: tree))
+            let session = try XCTUnwrap(owner.testSession)
+            let terminal = try XCTUnwrap(session.windows.values.first { !$0.isHidden })
+            let host = try XCTUnwrap(session.hostWindows.first)
+            let pane = try XCTUnwrap(host.content.pane.flatMap(session.pane))
+            host.makeFirstResponder(pane)
+            host.testInput(true)
+            (owner.window as? OwnerWindow)?.testInput(false)
+            terminal.updateFocusTreatment()
+            for tiled in terminal.displayedPanes.filter(\.transparentPaper) {
+                XCTAssertTrue(tiled.shiftedBackground, "a key float shifts every tiled pane, including a sole pane")
+                XCTAssertEqual(terminal.visualChromes.first { $0.pane == tiled.pane }?.treatment, .plain)
+                XCTAssertFalse(tiled.runtimeFocused)
+            }
+            for floating in terminal.displayedPanes.filter({ !$0.transparentPaper }) {
+                XCTAssertFalse(floating.shiftedBackground, "float paper is never shifted")
+                XCTAssertEqual(terminal.visualChromes.first { $0.pane == floating.pane }?.treatment, floating === pane ? .focus : .overlay)
+            }
+            let main = try XCTUnwrap(owner.window as? OwnerWindow)
+            let tiled = try XCTUnwrap(terminal.displayedPanes.first { $0.transparentPaper })
+            main.makeFirstResponder(tiled)
+            main.testInput(true)
+            terminal.updateFocusTreatment()
+            XCTAssertFalse(tiled.shiftedBackground)
+            XCTAssertTrue(tiled.runtimeFocused)
+            XCTAssertEqual(terminal.visualChromes.first { $0.pane == pane.pane }?.treatment, .overlay)
+            main.testInput(false)
+            terminal.updateFocusTreatment()
+            XCTAssertTrue(terminal.displayedPanes.filter(\.transparentPaper).allSatisfy(\.shiftedBackground))
+            XCTAssertFalse(pane.shiftedBackground)
+            owner.close()
+        }
+    }
+
+    func testFindKeepsThePanePaperFocusedButNotTheTerminalCursor() throws {
+        let (owner, _) = try shown(twoFloats)
+        let session = try XCTUnwrap(owner.testSession)
+        let pane = try XCTUnwrap(session.pane(PaneID(number: 1)))
+        let host = try XCTUnwrap(owner.window as? OwnerWindow)
+        host.testInput(true)
+        host.makeFirstResponder(pane)
+        XCTAssertTrue(pane.visualSurfaceFocused)
+        pane.showFind()
+        let find = try XCTUnwrap(pane.find)
+        XCTAssertTrue(find.field.currentEditor() === host.firstResponder)
+        XCTAssertTrue(OwnerWindow.focusedPane === pane)
+        XCTAssertFalse(pane.shiftedBackground)
+        XCTAssertFalse(pane.visualSurfaceFocused, "Find takes keyboard input, not the terminal surface")
+        find.close()
+        host.makeFirstResponder(pane)
+        XCTAssertTrue(pane.visualSurfaceFocused, "returning to the terminal restores its cursor focus")
+    }
+
+    func testALateKeySheetRestoresItsMainWindowsPaperButNotItsCursor() throws {
+        class Sheet: NSWindow {
+            weak var host: NSWindow?
+            override var sheetParent: NSWindow? { host }
+        }
+        let (owner, _) = try shown(floatLayout(border: false, tree: split))
+        let main = try XCTUnwrap(owner.window as? OwnerWindow)
+        let session = try XCTUnwrap(owner.testSession)
+        let pane = try XCTUnwrap(session.pane(PaneID(number: 1)))
+        let terminal = try XCTUnwrap(session.windows.values.first { !$0.isHidden })
+        main.testInput(true)
+        main.makeFirstResponder(pane)
+        let center = NotificationCenter.default
+        center.post(name: NSWindow.didResignKeyNotification, object: main)
+        var turnFinished = false
+        DispatchQueue.main.async { turnFinished = true }
+        wait("the resign repaint finishes before the sheet becomes key") { turnFinished }
+        XCTAssertNil(OwnerWindow.inputWindow)
+        XCTAssertTrue(pane.shiftedBackground)
+        let sheet = Sheet(contentRect: .zero, styleMask: .titled, backing: .buffered, defer: false)
+        sheet.isReleasedWhenClosed = false
+        sheet.host = main
+        defer { sheet.close() }
+        let repaint = main.focusChanged
+        var repaints = 0
+        main.focusChanged = { old, next in repaints += 1; repaint(old, next) }
+        center.post(name: NSWindow.didBecomeKeyNotification, object: sheet)
+        XCTAssertTrue(OwnerWindow.inputWindow === main, "a late key sheet restores its Kido owner")
+        XCTAssertFalse(pane.shiftedBackground, "the late key sheet restores the active pane's pure paper")
+        XCTAssertEqual(terminal.visualChromes.first { $0.pane == pane.pane }?.treatment, .edge)
+        XCTAssertFalse(pane.visualSurfaceFocused, "the sheet, not the terminal, has keyboard focus")
+        XCTAssertEqual(repaints, 1)
+        center.post(name: NSWindow.didBecomeKeyNotification, object: sheet)
+        XCTAssertEqual(repaints, 1, "an unchanged key sheet must not repaint again")
+    }
+
+    func testKeyHandoffDoesNotRepaintTheIntermediateNotKeyState() throws {
+        let main = OwnerWindow(contentRect: .zero, styleMask: .titled, backing: .buffered, defer: false, input: true)
+        let float = OwnerWindow(contentRect: .zero, styleMask: .borderless, backing: .buffered, defer: false, input: false)
+        main.isReleasedWhenClosed = false
+        float.isReleasedWhenClosed = false
+        defer { main.close(); float.close() }
+        var paints: [String] = []
+        let paint: (NSResponder?, NSResponder?) -> Void = { _, _ in
+            paints.append(main.isInputWindow ? "main" : float.isInputWindow ? "float" : "none")
+        }
+        main.focusChanged = paint
+        float.focusChanged = paint
+        let center = NotificationCenter.default
+        center.post(name: NSWindow.didResignKeyNotification, object: main)
+        XCTAssertEqual(paints, [], "resign must not paint before the next window becomes key")
+        center.post(name: NSWindow.didBecomeKeyNotification, object: float)
+        XCTAssertFalse(paints.isEmpty)
+        XCTAssertTrue(paints.allSatisfy { $0 == "float" }, "the handoff paints only the new key state")
+        paints.removeAll()
+        center.post(name: NSWindow.didResignKeyNotification, object: float)
+        XCTAssertEqual(paints, [])
+        center.post(name: NSWindow.didBecomeKeyNotification, object: main)
+        XCTAssertFalse(paints.isEmpty)
+        XCTAssertTrue(paints.allSatisfy { $0 == "main" })
+        paints.removeAll()
+        var turnFinished = false
+        DispatchQueue.main.async { turnFinished = true }
+        wait("the deferred resign callbacks finish") { turnFinished }
+        XCTAssertEqual(paints, [], "a Kido become-key cancels the deferred resign paint")
+        center.post(name: NSWindow.didResignKeyNotification, object: main)
+        XCTAssertEqual(paints, [], "leaving Kido also waits one turn")
+        wait("leaving Kido paints the not-key state") { paints.contains("none") }
+        XCTAssertTrue(paints.allSatisfy { $0 == "none" })
+    }
+
     func testAnotherTabKeepsTheFloatsAndAClosedPaneClosesItsWindow() throws {
         let (owner, client) = try shown(twoFloats)
         let session = try XCTUnwrap(owner.testSession)

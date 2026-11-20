@@ -442,18 +442,16 @@ final class WindowView: NSView {
         let entries = displayedEntries
         let multiple = entries.filter { !$0.chrome.isHidden && $0.view.transparentPaper }.count > 1
         let mainKey = (window as? OwnerWindow)?.isInputWindow != false
-        let floatKey = floatWindows.values.contains { ($0.isInputWindow || !mainKey && $0.hostedSheet != nil) && !$0.content.isHidden }
-        let unfocused = !mainKey || (session?.sidebarFocused() ?? false)
+        let focusedPane = OwnerWindow.focusedPane
         for entry in entries {
             let pane = entry.view, chrome = entry.chrome
             pane.syncFocus()
             let tiled = pane.transparentPaper
-            let hostKey = (pane.window as? OwnerWindow)?.isInputWindow != false
-            let shifted = tiled && !floatKey && (!mainKey || multiple && (unfocused || chrome.pane != active))
+            let focused = pane === focusedPane
+            let shifted = tiled && (!mainKey || multiple && !focused)
             chrome.treatment = tiled
-                ? (multiple && !unfocused && chrome.pane == active ? .edge : .plain)
-                : (chrome.pane == active && hostKey ? .focus : .overlay)
-            let focused = tiled ? !shifted && !floatKey : chrome.pane == active && hostKey
+                ? (multiple && focused ? .edge : .plain)
+                : (focused ? .focus : .overlay)
             chrome.runtimeFocused = focused
             pane.runtimeFocused = focused
             let changed = shifted != pane.shiftedBackground

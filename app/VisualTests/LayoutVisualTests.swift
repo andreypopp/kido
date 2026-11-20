@@ -191,7 +191,6 @@ import XCTest
         XCTAssertEqual(owner.testModel?.layout.layout.windows.count, 2)
     }
 
-    // The close sheet of a float that is much bigger than it: the float's frame and corners show around the sheet, its text is dimmed and the tiled panes' text is not.
     func testTheCloseSheetOverADimmedFloatLight() async throws { try await closeSheet(dark: false, dragged: false) }
 
     func testTheCloseSheetOverADimmedFloatDark() async throws { try await closeSheet(dark: true, dragged: false) }
@@ -265,10 +264,13 @@ import XCTest
             XCTAssertEqual(sheet.frame.midX, drawn.midX, accuracy: 1, "centred on the float's frame")
             XCTAssertTrue(sheet.frame.maxY <= drawn.maxY && sheet.frame.maxY > drawn.minY, "the sheet's top is inside the float's frame: \(sheet.frame) in \(drawn)")
             let displayed = try XCTUnwrap(terminal).displayedPanes.filter { $0.pane != float }
-            // The sheet is key; the harness's late activation can leave the main window's key flag stale, so it is set as AppKit leaves it.
-            (owner.window as? OwnerWindow)?.testInput(false)
-            terminal?.updateFocusTreatment()
-            XCTAssertTrue(displayed.allSatisfy { !$0.shiftedBackground }, "the main window keeps its look with the sheet focused")
+            try await wait("the key sheet keeps its float's paper focus", within: 5) { NSApp.keyWindow === sheet && OwnerWindow.inputWindow === host && self.terminal?.visualChromes.first { $0.pane == float }?.treatment == .focus }
+            XCTAssertTrue(displayed.allSatisfy(\.shiftedBackground), "the sheet is key, so every main-window tiled pane has shifted paper")
+            let floatPane = try XCTUnwrap(session.pane(float))
+            XCTAssertFalse(floatPane.visualSurfaceFocused, "the sheet owns keyboard input, so the float cursor is hollow")
+            let frame = expectation(description: "the float presents its unfocused cursor")
+            floatPane.visualFrame { _ in frame.fulfill() }
+            await fulfillment(of: [frame], timeout: 10)
             let record = ProcessInfo.processInfo.environment["KIDO_VISUAL_RECORD"] == "1"
             let terminal = try XCTUnwrap(terminal)
             let main = owner.window.convertToScreen(terminal.convert(terminal.bounds, to: nil)), union = main.union(host.frame)
@@ -283,7 +285,7 @@ import XCTest
             image.unlockFocus()
             if let failure = verifySnapshot(of: image, as: .pixels, named: "sheet", record: record, testName: testName),
                !record || !failure.hasPrefix("Record mode is on.") { XCTFail(failure) }
-            XCTAssertEqual(try chrome(float).treatment, .overlay, "the float is dimmed")
+            XCTAssertEqual(try chrome(float).treatment, .focus, "the key sheet keeps the float's pure paper and accent stroke")
             owner.window.makeKeyAndOrderFront(nil)
             try await wait("the main window is key", within: 5) { NSApp.keyWindow === self.owner.window }
             terminal.focus(PaneID(number: 2))
@@ -296,6 +298,29 @@ import XCTest
         }
     }
 
+    func testTheMainWindowSheetKeepsThePanePaperAndStrokeButNotItsCursor() async throws {
+        try await put(#"[{"name":"w","tree":{"split":"h","children":[\#(sleep),\#(sleep)]}}]"#)
+        try await placed("two panes") { Layout($0).root.panes.count == 2 }
+        let session = try XCTUnwrap(owner.testSession)
+        let pane = try XCTUnwrap(session.pane(PaneID(number: 1)))
+        activate()
+        owner.window.makeKeyAndOrderFront(nil)
+        try XCTUnwrap(terminal).focus(pane.pane)
+        try await wait("the main window has keyboard focus", within: 5) { NSApp.keyWindow === self.owner.window && pane.visualSurfaceFocused }
+        session.paneCommand(.close, pane.pane)
+        try await wait("the main window's sheet is key", within: 5) {
+            guard let sheet = self.owner.window.attachedSheet else { return false }
+            return NSApp.keyWindow === sheet && OwnerWindow.inputWindow === self.owner.window && !pane.visualSurfaceFocused
+        }
+        XCTAssertTrue(OwnerWindow.focusedPane === pane)
+        XCTAssertFalse(pane.shiftedBackground, "the key sheet keeps the active tiled pane's pure paper")
+        XCTAssertEqual(try chrome(pane.pane).treatment, .edge, "the key sheet keeps the active tiled pane's stroke")
+        XCTAssertFalse(pane.visualSurfaceFocused, "keyboard input goes to the sheet, so the terminal cursor is hollow")
+        XCTAssertTrue(try XCTUnwrap(session.pane(PaneID(number: 2))).shiftedBackground)
+        owner.respondToAlert(.alertSecondButtonReturn)
+        try await wait("the main window's sheet is gone", within: 5) { self.owner.window.attachedSheet == nil }
+    }
+
     func testAFloatOverASplitPanesKoaIsShownWithBothPanes() async throws {
         try await put(#"[{"name":"w","tree":{"split":"h","children":[\#(sleep),\#(sleep)]}}]"#)
         try await placed("two panes") { Layout($0).root.panes.count == 2 }
@@ -305,6 +330,7 @@ import XCTest
         let session = try XCTUnwrap(owner.testModel?.layout.layout.sessions.first?.id), id = try XCTUnwrap(window).id
         owner.perform(.jump(Snapshot.Position(session: session, window: id, pane: float)))
         try await wait("the float is selected", within: 5) { self.owner.testModel?.selection.pane == float }
+        await mainQueueFence()
         let shown = try XCTUnwrap(terminal).displayedPanes.map(\.pane)
         XCTAssertEqual(Set(shown), [PaneID(number: 1), PaneID(number: 2), float], "the float is shown with both panes; none is replaced")
         XCTAssertEqual(owner.testModel?.layout.layout.windows.count, 1)
@@ -369,6 +395,7 @@ import XCTest
         terminal.focus(float)
         XCTAssertEqual(try chrome(float).treatment, .overlay, "with the main window key, the last-active float keeps the overlay")
         NotificationCenter.default.post(name: NSWindow.didResignKeyNotification, object: owner.window)
+        await mainQueueFence()
         XCTAssertEqual(try chrome(float).treatment, .overlay)
         try snapshot("float-window-not-key")
         NotificationCenter.default.post(name: NSWindow.didBecomeKeyNotification, object: owner.window)

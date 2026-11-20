@@ -517,6 +517,7 @@ import XCTest
                 }
             }
             NotificationCenter.default.post(name: NSWindow.didResignKeyNotification, object: window)
+            await mainQueueFence()
             try await drain(runtime)
             try await snapshot("window-not-key-\(name)", view: root)
             try await expectLook(false, "window not key")
@@ -527,6 +528,7 @@ import XCTest
             sidebar.focusSidebar(nil)
             XCTAssertFalse(sidebar.visualFocusEdge.isHidden)
             NotificationCenter.default.post(name: NSWindow.didResignKeyNotification, object: window)
+            await mainQueueFence()
             try await drain(runtime)
             try await expectLook(false, "sidebar focused, window not key")
             XCTAssertTrue(sidebar.visualFocusEdge.isHidden, "no sidebar stroke while the window is not key")
@@ -747,6 +749,7 @@ import XCTest
             window.makeFirstResponder(pane)
             try await expectLook(true, "single pane key", edge: false)
             NotificationCenter.default.post(name: NSWindow.didResignKeyNotification, object: window)
+            await mainQueueFence()
             try await drain(runtime)
             try await snapshot("single-window-not-key-\(name)", view: root)
             try await expectLook(false, "single pane window not key", edge: false)

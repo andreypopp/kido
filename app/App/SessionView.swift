@@ -178,7 +178,7 @@ final class SessionView: NSView {
         updating = true
         defer { updating = previousUpdate }
         let start = DispatchTime.now(), before = shown, last = recent.first
-        let focused = !hostWindows.contains { $0.isInputWindow } && PaneView.owner(shown?.inputWindow?.firstResponder).map(contains) == true
+        let focused = OwnerWindow.focusedPane.map { $0.window === self.window && contains($0) } == true
         defer { updateWebview(); DispatchQueue.main.async { [weak self] in self?.evict() } }
         for (id, view) in windows { view.isHidden = id != window }
         guard let window, let view = windows[window], view !== before else { return }

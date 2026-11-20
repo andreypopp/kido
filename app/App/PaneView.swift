@@ -662,6 +662,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
     func visualRefuseInput() { acceptingInput = false }
     static var renderOffscreen = false
     private var visualFrames: [UInt64: (ghostty_render_presentation_status_e) -> Void] = [:]
+    var visualSurfaceFocused: Bool { surfaceFocus == true }
     var visualInstalledPixels: CGSize? { installedPixels }
     var visualResizeIntent: Bool { resizeIntent }
     var visualTerminalFrame: CGRect { terminal.frame }
@@ -1488,7 +1489,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
     }
 
     func syncFocus() {
-        setSurfaceFocus((window?.firstResponder === self || webviewFocused) && (window as? OwnerWindow)?.isInputWindow != false)
+        setSurfaceFocus(window === OwnerWindow.keyWindow && (window?.firstResponder === self || webviewFocused))
     }
 
     override func becomeFirstResponder() -> Bool {

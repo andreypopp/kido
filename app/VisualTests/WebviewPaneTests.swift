@@ -348,7 +348,10 @@ import SidebarFeed
             for (name, focused) in [("focused", true), ("unfocused", false), ("refocused", true), ("not-key", false)] {
                 window.makeFirstResponder(focused ? pane.inputResponder : window)
                 session.sidebarFocused = { name == "unfocused" }
-                if name == "not-key" { NotificationCenter.default.post(name: NSWindow.didResignKeyNotification, object: window) }
+                if name == "not-key" {
+                    NotificationCenter.default.post(name: NSWindow.didResignKeyNotification, object: window)
+                    await mainQueueFence()
+                }
                 terminal?.updateFocusTreatment()
                 XCTAssertEqual(view.frame, frame, "focus does not resize the page")
                 let expected = try XCTUnwrap(pane.paperColor.usingColorSpace(.sRGB))

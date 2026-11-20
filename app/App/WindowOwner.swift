@@ -33,22 +33,54 @@ class OwnerWindow: NSWindow {
     }
 
     var focusChanged: (NSResponder?, NSResponder?) -> Void = { _, _ in }
-    private(set) var isInputWindow: Bool
+    private(set) static weak var keyWindow: NSWindow?
+    static var inputWindow: OwnerWindow? {
+        var host = keyWindow
+        while let window = host, !(window is OwnerWindow) { host = window.sheetParent }
+        return host as? OwnerWindow
+    }
+    private static var pendingResign: DispatchWorkItem?
+    private static let keyObserver = NotificationCenter.default.addObserver(forName: NSWindow.didBecomeKeyNotification, object: nil, queue: .main) { note in
+        let window = note.object as? NSWindow
+        MainActor.assumeIsolated { changeKeyWindow(window) }
+    }
+    static var focusedPane: PaneView? { PaneView.owner(inputWindow?.firstResponder) }
+    var isInputWindow: Bool { Self.inputWindow === self }
     override convenience init(contentRect: NSRect, styleMask: NSWindow.StyleMask, backing: NSWindow.BackingStoreType, defer flag: Bool) {
         self.init(contentRect: contentRect, styleMask: styleMask, backing: backing, defer: flag, input: true)
     }
     init(contentRect: NSRect, styleMask: NSWindow.StyleMask, backing: NSWindow.BackingStoreType, defer flag: Bool, input: Bool) {
-        isInputWindow = input
         super.init(contentRect: contentRect, styleMask: styleMask, backing: backing, defer: flag)
-        NotificationCenter.default.addObserver(self, selector: #selector(keyChanged), name: NSWindow.didBecomeKeyNotification, object: self)
+        #if KIDO_VISUAL || KIDO_STRESS
+        if input { Self.keyWindow = self }
+        #endif
+        _ = Self.keyObserver
         NotificationCenter.default.addObserver(self, selector: #selector(keyChanged), name: NSWindow.didResignKeyNotification, object: self)
     }
     #if KIDO_VISUAL || KIDO_STRESS
-    func testInput(_ input: Bool) { isInputWindow = input }
+    func testInput(_ input: Bool) {
+        if input { Self.keyWindow = self }
+        else if isInputWindow { Self.keyWindow = nil }
+    }
     #endif
     @objc private func keyChanged(_ note: Notification) {
-        isInputWindow = note.name == NSWindow.didBecomeKeyNotification
-        focusChanged(firstResponder, firstResponder)
+        guard isInputWindow else { return }
+        Self.pendingResign?.cancel()
+        let repaint = DispatchWorkItem { Self.changeKeyWindow(NSApp.keyWindow) }
+        Self.pendingResign = repaint
+        DispatchQueue.main.async(execute: repaint)
+    }
+    private static func changeKeyWindow(_ window: NSWindow?) {
+        pendingResign?.cancel()
+        pendingResign = nil
+        let previousWindow = keyWindow, previousInput = inputWindow
+        keyWindow = window
+        if previousInput !== inputWindow || inputWindow != nil && (previousWindow === previousInput) != (keyWindow === inputWindow) { repaintFocus() }
+    }
+    private static func repaintFocus() {
+        for case let host as OwnerWindow in NSApp.windows where !(host is FloatWindow) {
+            host.focusChanged(host.firstResponder, host.firstResponder)
+        }
     }
     private var nested = 0
     // Ending a field editor's session first makes the window itself first
