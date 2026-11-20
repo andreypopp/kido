@@ -114,9 +114,9 @@ async function page() {
   const revealSource = stripTypeScriptTypes(readFileSync(new URL('page/reveal.ts', import.meta.url), 'utf8')).replace(/^import .*;\n/gm, '').replace(/^export /gm, '');
   Object.assign(context, runInNewContext(revealSource + '\n({revealHeight,unitsOf})', context));
   const extentSource = stripTypeScriptTypes(readFileSync(new URL('page/extent.ts', import.meta.url), 'utf8')).replace(/^import .*;\n/gm, '').replace(/^export /gm, '');
-  Object.assign(context, runInNewContext(extentSource + '\n({estimateExtent,windowOf,groupAt,runParts,runOwner,invalidateRuns,sourceKey,visibleText})', context));
+  Object.assign(context, runInNewContext(extentSource + '\n({estimateExtent,windowOf,groupAt,runParts,runOwner,runOf,invalidateRuns,sourceKey,visibleText})', context));
   const stepsSource = stripTypeScriptTypes(readFileSync(new URL('page/steps.ts', import.meta.url), 'utf8')).replace(/^import .*;\n/gm, '').replace(/^export /gm, '');
-  Object.assign(context, runInNewContext(stepsSource + '\n({stepInfo,stepParts,toolArgs,agentBody})', context));
+  Object.assign(context, runInNewContext(stepsSource + '\n({stepInfo,stepParts,toolArgs,agentBody,noticeOf,noticeText,sessionFields})', context));
   const findSource = stripTypeScriptTypes(readFileSync(new URL('page/find.ts', import.meta.url), 'utf8')).replace(/^import .*;\n/gm, '').replace(/^export /gm, '');
   Object.assign(context, { markdownPlain }, runInNewContext(findSource + '\n({findSegments,matchesIn})', context));
   const workingSource = stripTypeScriptTypes(readFileSync(new URL('page/working.ts', import.meta.url), 'utf8')).replace(/^export /gm, '');
@@ -552,7 +552,7 @@ test('filtered run boundaries keep both tools reachable across hidden prose', as
   assert.deepEqual(Array.from(result), ['0:0','0:2']);
 });
 
-test('find owns separate threaded runs and resolves late-label boundaries', async () => {
+test('find keeps mixed-thread steps and late labels in one run', async () => {
   const app = await page();
   const result = app.run(`
     state={...state,sessionId:'s',view:{id:'root',path:[],type:'root'},threads:[{name:'one'},{name:'two'}]};
@@ -565,9 +565,9 @@ test('find owns separate threaded runs and resolves late-label boundaries', asyn
     const keys=[findSegments(visible(0),context).find(segment=>segment.text==='second').folds[0],findSegments(visible(1),context).find(segment=>segment.text==='late').folds[0],findSegments(visible(3),context).find(segment=>segment.text==='last').folds[0]];
     renderItem(visible(0));renderItem(visible(1));reconcileRuns();
     openers.get(keys[0]).open();
-    [...keys,openers.get('run:0:1').view.classList.contains('open'),openers.get('run:0:0').view.classList.contains('open')];
+    [...keys,openers.has('run:0:1'),openers.get('run:0:0').view.classList.contains('open')];
   `);
-  assert.deepEqual(Array.from(result), ['run:0:1','run:1:0','run:3:0',true,false]);
+  assert.deepEqual(Array.from(result), ['run:0:0','run:0:0','run:0:0',false,true]);
 });
 
 test('an open thread panel keeps its scroll through state updates and closes by Escape or outside click', async () => {
@@ -722,7 +722,7 @@ test('only pending implicit users wait under a filter and marks follow thread ch
     accept({kind:'job',seq:9,revision:1,at:2,final:true,thread:'one',job:{id:'j',name:'verify',service:false,command:'true',log:'/tmp/job',place:{type:'mac'},startedAt:1},event:{type:'ended',end:{type:'exit',code:0},tail:{text:'',cut:0}}});renderItem(visible(9));reconcileRuns();
     [waits,waiting,removed,stayed,waitingAgain,settled,marks(5),marks(6),marks(7),marks(8),marks(9)];
   `);
-  assert.deepEqual(JSON.parse(JSON.stringify(result)),[true,'waiting for its thread',true,true,true,true,['one'],[],['two'],[],['one']]);
+  assert.deepEqual(JSON.parse(JSON.stringify(result)),[true,'waiting for its thread',true,true,true,true,['one'],[],['two'],[],[]]);
 });
 
 test('a resumed reset before state clears the old filter and restores rows', async () => {
@@ -1773,7 +1773,129 @@ test('empty thread labels and whitespace are transparent to one mixed run', asyn
   assert.deepEqual(JSON.parse(JSON.stringify(result)), [1,['0:0','1:1','2:0','2:1','3:0','3:1','4:1','4:2'],'run:0:0',2,2]);
 });
 
-test('mixed run find owns folded bodies across transparent filtered prose', async () => {
+test('unthreaded assistant steps and threaded job share one run without step thread marks', async () => {
+  const app = await page();
+  const result = app.run(`(()=>{
+    const tool=name=>({type:'tool',id:name,name,args:{text:'{}'},state:{type:'pending'}}),reply=(seq,blocks)=>({seq,at:seq,revision:0,final:true,kind:'assistant',stop:'stop',error:'',blocks});
+    put(reply(0,[{type:'thinking',text:'Before'},tool('bash')]));
+    put({seq:1,at:1,kind:'job',thread:'threads',final:true,job:{id:'j',name:'koaproxy',service:true,log:''},event:{type:'stream',batch:{text:'Output',cut:0},omitted:0,cut:false}});
+    put(reply(2,[{type:'thinking',text:'After'},tool('codemode')]));
+    put({seq:3,at:3,kind:'agent',thread:'other',final:true,direction:'in',from:{name:'worker'},text:{text:'Report',cut:0},inbound:{form:'report'}});
+    put({seq:4,at:4,kind:'notice',final:true,customType:'notice',from:'worker',text:'Notice'});
+    const unfiltered=[[...openers.keys()].filter(key=>key.startsWith('run:')), [1,3,4].map(seq=>views.get(seq).view.querySelectorAll('.thread-mark,.thread-name').length)];
+    threadFilters.set(filterKey(),'threads'); refreshThreadItems(); renderDirty();
+    const filtered=[visible(0)?.blocks.length,!!visible(1),visible(2)?.blocks.length,!!visible(3)];
+    threadFilters.set(filterKey(),'other'); refreshThreadItems();
+    const other=[0,1,2,3].map(seq=>!!visible(seq));
+    threadFilters.delete(filterKey()); refreshThreadItems();
+    put(reply(5,[{type:'text',text:'Boundary'}])); put(reply(6,[tool('read')]));
+    threadFilters.set(filterKey(),'threads'); refreshThreadItems();
+    return [unfiltered,filtered,other,!!visible(6)];
+  })()`);
+  assert.deepEqual(JSON.parse(JSON.stringify(result)), [[['run:0:0'], [0,0,0]], [2,true,2,true], [false,false,false,false], false]);
+});
+
+test('notices join an open run but do not open one after prose', async () => {
+  const app = await page();
+  const result = app.run(`(()=>{
+    const tool=id=>({type:'tool',id,name:'bash',args:{text:'{}'},state:{type:'pending'}}),reply=(seq,blocks,error='')=>({seq,at:seq,revision:0,final:true,kind:'assistant',stop:'stop',error,blocks});
+    put(reply(0,[{...tool('first'),thread:'one'}]));
+    put({seq:1,at:1,kind:'notify',final:true,level:'warning',text:{text:'Careful\\nDetails',cut:0}});
+    put(reply(2,[tool('second')],'Reply failed'));
+    const owner=views.get(0).slots.get('0:0').view.firstElementChild, marks=runMarks.get(owner);
+    const steps=marks.steps.map(mark=>[mark.current.kind,mark.label.className,mark.label.textContent]);
+    const find=findSegments(visible(1),findContext()).find(segment=>segment.text==='Careful');
+    const body=findSegments(visible(1),findContext()).find(segment=>segment.text==='Details');
+    const copied=transcriptText();
+    put(reply(3,[{type:'text',text:'Done'}]));
+    put({seq:4,at:4,kind:'notice',final:true,customType:'note',from:'worker',text:'Lone notice'});
+    put(reply(5,[tool('third')]));
+    const standalone=!!views.get(4).view.querySelector('.nrow'), next=runOwner(runContext(),{kind:'block',seq:5,index:0});
+    threadFilters.set(filterKey(),'one'); refreshThreadItems();
+    return [steps,marks.names.children.map(child=>child.textContent).join(', '),find.folds,find.step,copied.includes('Careful'),standalone,next,!!visible(1),visible(2)?.error,body.folds];
+  })()`);
+  const value = JSON.parse(JSON.stringify(result));
+  assert.deepEqual(value[0].map((step: string[]) => step[0]), ['block','notice','block','notice']);
+  assert.deepEqual(value[0].filter((step: string[]) => step[0] === 'notice').map((step: string[]) => step.slice(1)), [['notice warning','Careful'],['notice error','Reply failed']]);
+  assert.match(value[1], /notify/); assert.match(value[1], /error/);
+  assert.deepEqual(value.slice(2), [['run:0:0'],'1:item',true,true,{kind:'block',seq:5,index:0},true,'Reply failed',['run:0:0','1:item']]);
+});
+
+test('thread marks track only visible prose across intervening runs', async () => {
+  const app = await page();
+  const result = app.run(`(()=>{
+    const reply=(seq,blocks)=>({seq,at:seq,revision:0,final:true,kind:'assistant',stop:'stop',error:'',blocks}),prose=(seq,thread)=>reply(seq,[{type:'text',text:'Prose '+seq,thread}]),steps=(seq,thread)=>reply(seq,[{type:'thinking',text:'Plan',thread}]);
+    put(prose(0,'one')); put(steps(1,'two')); put(prose(2,'two'));
+    put(steps(3,'one')); put(prose(4,'two'));
+    put(prose(5,'one')); put(steps(6,'two')); put(prose(7,'one'));
+    return [0,1,2,3,4,5,6,7].map(seq=>views.get(seq).view.querySelectorAll('.thread-section>.thread-mark').map(mark=>mark.dataset.thread));
+  })()`);
+  assert.deepEqual(JSON.parse(JSON.stringify(result)), [['one'],[],['two'],[],[],['one'],[],[]]);
+});
+
+test('joined notice find uses rendered Markdown and command detail text', async () => {
+  const app = await page();
+  const result = app.run(`(()=>{
+    put({seq:0,at:0,kind:'assistant',final:true,stop:'stop',error:'',blocks:[{type:'thinking',text:'Plan'}]});
+    put({seq:1,at:1,kind:'notice',final:true,customType:'note',from:'worker',text:'**Headline**\\n**Body**'});
+    const stats={sessionId:'id',sessionFile:'/f',totalMessages:3,userMessages:1,assistantMessages:1,toolResults:1,cost:1.5,tokens:{input:1,output:2,cacheRead:3,cacheWrite:4}};
+    put({seq:2,at:2,kind:'command',final:true,result:{type:'session',name:'session',stats}});
+    const note=findSegments(visible(1),findContext()), details=findSegments(visible(2),findContext());
+    return [note.map(segment=>segment.text),note.find(segment=>segment.text==='Body').folds,details.find(segment=>segment.text==='file /f').folds,transcriptText().includes('**')];
+  })()`);
+  assert.deepEqual(JSON.parse(JSON.stringify(result)), [['Headline','Body'],['run:0:0','1:item'],['run:0:0','2:item'],false]);
+});
+
+test('a filtered bang row keeps the runs on either side separate', async () => {
+  const app = await page();
+  const result = app.run(`(()=>{
+    const tool=id=>({type:'tool',id,name:'read',thread:'one',args:{text:'{}'},state:{type:'pending'}}),reply=(seq)=>({seq,at:seq,revision:0,final:true,kind:'assistant',stop:'stop',error:'',blocks:[tool(String(seq))]});
+    put(reply(0)); put({seq:1,at:1,kind:'bash',final:true,command:'true',excludeFromContext:false,result:{output:{text:'',cut:0},cancelled:false,truncated:false}}); put(reply(2));
+    threadFilters.set(filterKey(),'one'); refreshThreadItems();
+    return runOwner(runContext(),{kind:'block',seq:2,index:0});
+  })()`);
+  assert.deepEqual(JSON.parse(JSON.stringify(result)), {kind:'block',seq:2,index:0});
+});
+
+test('notice rendering follows ownership when a history gap is filled and replaced', async () => {
+  const app = await page();
+  const result = app.run(`(()=>{
+    const notice={seq:1,at:1,kind:'notice',final:true,customType:'note',from:'worker',text:'Note'},reply=blocks=>({seq:0,at:0,revision:0,final:true,kind:'assistant',stop:'stop',error:'',blocks});
+    put(notice); const before=!!views.get(1).view.querySelector('.nrow');
+    put(reply([{type:'thinking',text:'Plan'}])); const joined=!views.get(1).view.querySelector('.nrow')&&!!views.get(1).slots.get('1:item');
+    put(reply([{type:'text',text:'Done'}])); const after=!!views.get(1).view.querySelector('.nrow');
+    return [before,joined,after];
+  })()`);
+  assert.deepEqual(Array.from(result), [true,true,true]);
+});
+
+test('changing a step into a notice invalidates followers without an earlier run', async () => {
+  const app = await page();
+  const result = app.run(`(()=>{
+    const report=seq=>({seq,at:seq,kind:'agent',final:true,direction:'in',from:{name:'worker'},text:{text:'Report',cut:0},inbound:{form:'report'}});
+    put(report(0)); put(report(1));
+    put({seq:0,at:0,kind:'notice',final:true,customType:'note',from:'worker',text:'Note'});
+    return [runOf(runContext(),{kind:'item',seq:0}),runOwner(runContext(),{kind:'item',seq:1})];
+  })()`);
+  assert.deepEqual(JSON.parse(JSON.stringify(result)), [null,{kind:'item',seq:1}]);
+});
+
+test('step-only replies never render a thread mark and streaming keeps active find', async () => {
+  const app = await page();
+  const result = app.run(`(()=>{
+    const reply=(seq,thread,text)=>({seq,at:seq,revision:0,final:false,kind:'assistant',stop:'',error:'',blocks:[{type:'thinking',thread,text}]});
+    put(reply(0,'one','Before')); put(reply(1,undefined,'Late'));
+    put({seq:2,at:2,kind:'threads',final:true,target:1,threads:['one']});
+    const marks=[0,1].map(seq=>views.get(seq).view.querySelectorAll('.thread-section>.thread-mark').length);
+    threadFilters.set(filterKey(),'one'); refreshThreadItems();
+    const active={query:'Before',backwards:false,started:true}; find=active;
+    put(reply(0,'one','Before and after'));
+    return [marks,find===active];
+  })()`);
+  assert.deepEqual(JSON.parse(JSON.stringify(result)), [[0,0],true]);
+});
+
+test('mixed run find keeps hidden prose as a boundary under a thread filter', async () => {
   const app = await page();
   const result = app.run(`(()=>{
     const tool={type:'tool',id:'r',name:'read',thread:'one',args:{text:'{}'},state:{type:'done',error:false,result:{text:'read output',images:[]}}};
@@ -1791,7 +1913,7 @@ test('mixed run find owns folded bodies across transparent filtered prose', asyn
     const after=findSegments(visible(4),findContext()).find(segment=>segment.text==='read output');
     return [agent.folds,output.folds,(copied.match(/Unique report/g)||[]).length,copied.includes('Unique output'),after.folds[0]];
   })()`);
-  assert.deepEqual(JSON.parse(JSON.stringify(result)), [['run:0:0','1:item'],['run:0:0','2:item'],1,true,'run:0:0']);
+  assert.deepEqual(JSON.parse(JSON.stringify(result)), [['run:0:0','1:item'],['run:0:0','2:item'],1,true,'run:4:0']);
 });
 
 test('mixed run window groups include metadata and change owner after a history prepend', async () => {

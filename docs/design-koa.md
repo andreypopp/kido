@@ -837,8 +837,12 @@ branch summary on the path is a summary row.
   are steps of the run"). Nothing stores it: the page projects it
   from the existing item kinds, and the feed has no run, so the
   feed's clients that do not group (the iOS app) read the same items.
-  A user message, assistant text with visible content, a notice row
-  and a change of the effective thread end a run. Assistant text
+  A user message, assistant text with visible content and a `!`
+  command row end a run; the thread of a step never does (the user,
+  2026-11-20: a run is the work between two pieces of prose, and an
+  orchestrator's work interleaves threads). A notice joins the open
+  run as a step; with no open run it stays a row and opens none
+  ("Every notice is one row"). Assistant text
   that is empty or only whitespace, such as a reply that is only a
   thread label, hidden items and metadata items (annotations,
   threads) stand nowhere, so they do not split it. A gap of unloaded
@@ -906,7 +910,13 @@ branch summary on the path is a summary row.
   the start of its text, and keeps only the kind when open. The reply's
   error is a row after the reply's blocks, with the reply's time, so it
   groups with the rows after it. The texts are the user's, family by
-  family, in the mockup's notes.
+  family, in the mockup's notes. A notice that follows a step of an
+  open run, with no prose between, is a step of that run instead
+  (the user, 2026-11-20): the same muted line with its level's
+  colour, opening to the same body, and the folded summary names it
+  by its family (`noticeOf` in `page/steps.ts` is the one mapper of
+  the kinds). It never opens a run, so a notice never changes a row
+  above it.
 - **A rebuild** (at start, after `new_session`, `switch_session`,
   `fork` and `clone`) mints a new epoch.
 
@@ -2029,7 +2039,7 @@ run"); the separate agent and job rows are gone:
 - **The folded run's summary** names its steps in the order of their
   first occurrence: tools and thinking as before, an agent step as
   "to @name" or "from @name" (a report is "from"), a job step as "job
-  <name>"; a repeated name gets "xN". The name of a failed step is
+  <name>", a notice step by its family; a repeated name gets "xN". The name of a failed step is
   red. An agent's identity is its session id, and a job's its id, so
   two agents of one name do not merge.
 - **Times.** Tools, thinking and outgoing agent calls are timed:
@@ -2053,9 +2063,14 @@ run"); the separate agent and job rows are gone:
   the step, and a selection or a copy takes it. A step that joined a
   run from a later item lives in the DOM of the run's owner, so find
   resolves a match to that owner and its step.
-- **Threads.** A run belongs to its section, and its steps take its
-  marks and filter, as tool steps do. A run outside a section is
-  unthreaded and shows only unfiltered.
+- **Threads.** A run has one thread: the first known thread of its
+  steps in order (a block's own or its late label, an agent or job
+  item's `thread`; a notice has none). Under a filter the runs are
+  those of the unfiltered transcript, so prose that the filter hides
+  still ends a run, and each run shows or hides whole. A run with no
+  known thread shows only unfiltered. Only user messages and
+  assistant text carry a thread mark; a run, its steps and a notice
+  carry none.
 - **`@name` goes to the agent.** An agent's name in an agent step,
   and an `@name` in the prose of a reply or a user message, is a link
   while the name is in koa's list of live agents. A click on an agent

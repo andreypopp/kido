@@ -9,9 +9,9 @@ import { assemblePage } from "./koa-assemble.ts";
 import { markdown, type Mark } from "./page/markdown.ts";
 import { markdownLine } from "./markdown-line.ts";
 import { revealHeight, type Unit } from "./page/reveal.ts";
-import { estimateExtent, windowOf, runOwner, invalidateRuns, type RunContext } from "./page/extent.ts";
+import { estimateExtent, windowOf, runOwner, runOf, invalidateRuns, type RunContext } from "./page/extent.ts";
 import type { Block, WireItem } from "./koa-records.ts";
-import type { JobRef } from "./records.ts";
+import { parseThreadName, type JobRef } from "./records.ts";
 import { answer, current, quote } from "./page/answers.ts";
 import { composerLanguage } from "./page/composer.ts";
 import { highlightTree, tags } from '@lezer/highlight';
@@ -345,6 +345,36 @@ test('estimateExtent follows the rule of every item kind', () => {
     const context = { raw: (seq: number) => sources.get(seq), shown: (seq: number) => sources.get(seq), owners: new Map() };
     assert.equal(estimateExtent(item, lh, context), expected, name);
   }
+});
+
+test('run ownership joins steps regardless of thread', () => {
+  const sources = new Map<number, WireItem>([
+    [0, assistant([{ type: 'thinking', text: 'before' }, step('bash')])],
+    [1, { ...base, seq: 1, kind: 'job', thread: parseThreadName('threads'), job, event: { type: 'stream', batch: body, omitted: 0, cut: false } }],
+    [2, { ...assistant([{ type: 'thinking', text: 'after' }, step('codemode')]), seq: 2 }],
+    [3, { ...assistant([{ ...step('same'), thread: parseThreadName('threads') }, { ...step('different'), thread: parseThreadName('other') }]), seq: 3 }],
+  ]);
+  const context: RunContext = { raw: seq => sources.get(seq), shown: seq => sources.get(seq), owners: new Map() };
+  const owner = { kind: 'block', seq: 0, index: 0 };
+  assert.deepEqual(runOwner(context, { kind: 'item', seq: 1 }), owner);
+  assert.deepEqual(runOwner(context, { kind: 'block', seq: 2, index: 1 }), owner);
+  assert.equal([...sources.values()].slice(0, 3).reduce((sum, item) => sum + estimateExtent(item, 20, context), 0), 36, 'one run widget');
+  assert.deepEqual(runOwner(context, { kind: 'block', seq: 3, index: 0 }), owner);
+  assert.deepEqual(runOwner(context, { kind: 'block', seq: 3, index: 1 }), owner);
+});
+
+test('notice ownership joins only an existing run and keeps row extents otherwise', () => {
+  const notice = (seq: number): WireItem => ({ ...base, seq, kind: 'notice', customType: '', from: '', text: 'note' });
+  const sources = new Map<number, WireItem>([[0, notice(0)], [1, { ...assistant([step('bash')], 'error'), seq: 1 }], [2, notice(2)], [3, { ...assistant([text('done')]), seq: 3 }], [4, notice(4)]]);
+  const context: RunContext = { raw: seq => sources.get(seq), shown: seq => sources.get(seq), owners: new Map() };
+  assert.equal(runOf(context, { kind: 'item', seq: 0 }), undefined);
+  assert.deepEqual(runOf(context, { kind: 'item', seq: 1 }), { kind: 'block', seq: 1, index: 0 });
+  assert.deepEqual(runOf(context, { kind: 'item', seq: 2 }), { kind: 'block', seq: 1, index: 0 });
+  assert.equal(runOf(context, { kind: 'item', seq: 4 }), undefined);
+  assert.deepEqual([...sources.values()].map(item => estimateExtent(item, 20, context)), [36,36,0,20,36]);
+  sources.set(5, { ...assistant([step('next')]), seq: 5 });
+  assert.deepEqual(runOwner(context, { kind: 'block', seq: 5, index: 0 }), { kind: 'block', seq: 5, index: 0 });
+  assert.equal(runOf(context, { kind: 'item', seq: 4 }), undefined);
 });
 
 test('run ownership scans a cold item once and keeps owners beyond a stable boundary', () => {

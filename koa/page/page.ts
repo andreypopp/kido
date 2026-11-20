@@ -5,9 +5,9 @@ import { pathToken } from '../path-token.ts';
 import { markdown, type Tail } from './markdown.ts';
 import { markdownLine } from '../markdown-line.ts';
 import { revealHeight, unitsOf, type Unit } from './reveal.ts';
-import { visibleText, estimateExtent, groupAt, runParts, runOwner, invalidateRuns, sourceKey, windowOf, type SeqRange, type RunContext } from './extent.ts';
+import { visibleText, estimateExtent, groupAt, runParts, runOwner, runOf, invalidateRuns, sourceKey, windowOf, type SeqRange, type RunContext } from './extent.ts';
 import { composer } from './composer.ts';
-import { stepInfo, stepParts, toolArgs, type StepInput } from './steps.ts';
+import { stepInfo, stepParts, toolArgs, noticeOf, noticeText, sessionFields, type NoticeData, type StepInput } from './steps.ts';
 import { exportText, findSegments, lowered, matchesIn, type Segment } from './find.ts';
 import { attach } from './attach.ts';
 import { closeLightbox, preview, previewKey } from './preview.ts';
@@ -55,7 +55,7 @@ let threadCapsule: { view: HTMLDivElement; names: ThreadName[]; selected?: Threa
 
 const annotationItems = new Map<number, Map<number, Extract<WireItem, { kind: 'annotations' }>>>();
 const items = new Map<number, WireItem>();
-const views = new Map<number, { view: HTMLElement; item: WireItem; warning?: string; slots: Map<string, Slot>; filter?: ThreadName; preceding?: ThreadName }>();
+const views = new Map<number, { view: HTMLElement; item: WireItem; warning?: string; slots: Map<string, Slot>; filter?: ThreadName; preceding?: ThreadName; runs: string }>();
 const openers = new Map<string, { view: HTMLElement; open: () => void }>(), fenceOpeners = new Map<string, { view: HTMLElement; open: () => void }>(), patched = new Set<number>(), live = new Set<number>(), order: number[] = [], extents = new Map<number, Extent>(), openFences = new Set<string>(), animating = new Map<HTMLElement, number>();
 type Extent = { kind: 'measured'; width: number; lh: number; px: number } | { kind: 'estimated'; px: number };
 type Group = SeqRange;
@@ -75,7 +75,7 @@ const runMarks = new WeakMap<HTMLElement, RunMarks>();
 const liveMarks = new Map<string, RunMarks>();
 type WorkingPlace = { kind: 'bare'; row: HTMLElement; line: HTMLElement; sum: HTMLElement } | { kind: 'run'; owner: HTMLElement };
 let working: { view: string; since: number; primary: HTMLElement; place: WorkingPlace; extra: Map<string, HTMLElement> } | undefined;
-const runContext = (): RunContext => ({ raw: seq => items.get(seq), shown: visible, owners, threads: state.view.type === 'root' });
+const runContext = (): RunContext => ({ raw: seq => items.get(seq), shown: visible, owners });
 type Spot = { key: string; parent: HTMLElement; before: ChildNode | null };
 const revealing = new Set<TextMemo>();
 let capTimer: number | undefined;
@@ -100,9 +100,26 @@ function precedingThread(seq: number): ThreadName | undefined {
   if (state.view.type !== 'root' || threadFilter()) return;
   for (let index = orderIndex(seq) - 1; index >= 0; index--) {
     const item = items.get(order[index]);
-    const name = item?.kind === 'assistant' ? item.blocks.findLast(block => (block.type !== 'text' || block.text) && block.thread)?.thread ?? threadItems.get(item.seq)?.threads[0] : item?.kind === 'agent' || item?.kind === 'job' ? item.thread : undefined;
+    const late = item && threadItems.get(item.seq)?.threads[0];
+    const block = item?.kind === 'assistant' ? item.blocks.findLast(block => visibleText(block) && (block.thread ?? late)) : undefined;
+    const name = block && (block.thread ?? late);
     if (name) return name;
   }
+}
+const runKeys = new Map<number, string>();
+let runThreads: { owners: RunContext['owners']; names: Map<string, ThreadName> } | undefined;
+function runThread(source: Parameters<typeof runOwner>[1]): ThreadName | undefined {
+  if (!runThreads) {
+    const context: RunContext = { raw: seq => items.get(seq), shown: seq => items.get(seq), owners: new Map() }, names = new Map<string, ThreadName>();
+    for (const seq of [...items.keys()].sort((a, b) => a - b)) for (const part of runParts(items.get(seq), items.get(seq))) {
+      if (part.kind !== 'step') continue;
+      const key = sourceKey(runOwner(context, part.source));
+      const thread = part.step.kind === 'block' ? part.step.block.thread ?? threadItems.get(seq)?.threads[0] : part.step.kind === 'agent' || part.step.kind === 'job' ? part.step.item.thread : undefined;
+      if (thread && !names.has(key)) names.set(key, thread);
+    }
+    runThreads = { owners: context.owners, names };
+  }
+  return runThreads.names.get(sourceKey(runOwner({ raw: seq => items.get(seq), shown: seq => items.get(seq), owners: runThreads.owners }, source)));
 }
 function visible(seq: number): WireItem | undefined {
   const item = items.get(seq), filter = threadFilter();
@@ -115,13 +132,17 @@ function visible(seq: number): WireItem | undefined {
     if (item.kind !== 'assistant' || !names[0] || item.blocks.every(block => block.thread)) return item;
     projected = { ...item, blocks: item.blocks.map(block => block.thread ? block : { ...block, thread: names[0] }) };
   } else if (item.kind === 'assistant') {
-    const matches = (block: Block) => (block.thread ?? names[0]) === filter;
-    if (item.blocks.some(matches)) projected = { ...item, error: '', blocks: item.blocks.map(block => matches(block) ? block.thread ? block : { ...block, thread: names[0] } : { type: 'text', text: '' }) };
-  } else if ((item.kind === 'user' || item.kind === 'agent' || item.kind === 'job') && (item.thread ? item.thread === filter : names.includes(filter)) || waitingForThread(item)) projected = (item.kind === 'agent' || item.kind === 'job') && !item.thread && names[0] ? { ...item, thread: names[0] } : item;
+    const matches = (block: Block, index: number) => (block.type === 'text' ? block.thread ?? names[0] : runThread({ kind: 'block', seq, index })) === filter;
+    const error = item.error && runThread({ kind: 'item', seq }) === filter ? item.error : '';
+    if (item.blocks.some(matches) || error) projected = { ...item, error, blocks: item.blocks.map((block, index) => matches(block, index) ? block.thread ? block : { ...block, thread: names[0] } : { type: 'text', text: '' }) };
+  } else if (item.kind === 'agent' || item.kind === 'job' || noticeOf(item)) {
+    if (runThread({ kind: 'item', seq }) === filter) projected = item;
+  } else if (item.kind === 'user' && (item.thread ? item.thread === filter : names.includes(filter)) || waitingForThread(item)) projected = item;
   projections.set(seq, projected);
   return projected;
 }
 function refreshThreadItems() {
+  runThreads = undefined;
   projections.clear(); segmentCache.clear(); owners.clear(); find = undefined; selected = undefined;
   order.length = 0; extents.clear(); table = undefined;
   for (const seq of items.keys()) { if (visible(seq)) order.splice(orderIndex(seq), 0, seq); dirty.add(seq); }
@@ -295,7 +316,6 @@ function previewFile(label: HTMLElement, url: string) {
   label.onmousedown = event => { press = undefined; if (event.button === 0 && previewModifiers(event)) { event.preventDefault(); press = { x: event.clientX, y: event.clientY }; } };
   label.onclick = event => { const start = press; press = undefined; if (start && Math.hypot(event.clientX - start.x, event.clientY - start.y) < 3) { event.preventDefault(); event.stopPropagation(); preview(scoped(url, state.sessionId), label, 'file', composerFocus); } };
 }
-const quantity = (value: number) => value >= 1000000 ? Number((value / 1000000).toFixed(1)) + 'M' : value >= 1000 ? Number((value / 1000).toFixed(1)) + 'k' : String(value);
 function timestamp(at: number, today = new Date(), kind: 'message' | 'session' = 'message') {
   const date = new Date(at);
   const time = date.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
@@ -469,7 +489,7 @@ const rowOf = (item: ItemId): HTMLElement | undefined => {
   if (item.kind === 'job') return job.row(item.byte);
   if (item.row) return unitKeys(item.seq)[0] === item.row ? views.get(item.seq)?.view : unitView(item.row);
   const parts = runParts(items.get(item.seq), visible(item.seq)), first = parts[0];
-  const seq = first?.kind === 'step' ? runOwner(runContext(), first.source).seq : item.seq;
+  const seq = first && first.kind !== 'boundary' ? runOf(runContext(), first.source)?.seq ?? item.seq : item.seq;
   return views.get(seq)?.view;
 };
 function measure(): Measure {
@@ -725,6 +745,7 @@ function stepDetail(marks: StepMarks, step: Step & { args: Record<string, unknow
   let diff: HTMLElement | undefined;
   for (const part of stepParts(step, info, displayPath(state.cwd), !!marks.images)) {
     switch (part.kind) {
+      case 'notice': { const body = noticeRow(part.row, true); if (body.childNodes.length) nodes.push(body); break; }
       case 'agent': { const body = prose(undefined, part.text, true, undefined, 'agent'); body.className = 'agent-body prose'; nodes.push(body); break; }
       case 'job': { const head = node('div', undefined, 'job-head'); head.append(jobOpen(part.job)); nodes.push(head, node('pre', part.text)); if (part.facts) nodes.push(node('div', part.facts, 'delta')); break; }
       case 'redacted': nodes.push(node('div', part.text, 'think redacted')); break;
@@ -829,7 +850,7 @@ function bareRun(): Extract<WorkingPlace, { kind: 'bare' }> {
 function trailingOwner() {
   for (const seq of [...order].reverse()) {
     const part = runParts(items.get(seq), visible(seq)).at(-1);
-    if (part) return part.kind === 'step' ? sourceKey(runOwner(runContext(), part.source)) : undefined;
+    if (part) { const owner = part.kind !== 'boundary' ? runOf(runContext(), part.source) : undefined; return owner ? sourceKey(owner) : undefined; }
   }
 }
 function run(input: Step[]) {
@@ -881,7 +902,7 @@ function reconcileRuns() {
   for (const seq of [...views.keys()].sort((a, b) => a - b)) {
     touched.add(seq);
     const entry = views.get(seq); if (!entry) continue;
-    for (const part of runParts(items.get(seq), visible(seq))) if (part.kind === 'step') {
+    for (const part of runParts(items.get(seq), visible(seq))) if (part.kind !== 'boundary' && runOf(context, part.source)) {
       const key = sourceKey(part.source), owner = sourceKey(runOwner(context, part.source)), steps = groups.get(owner) ?? [];
       steps.push({ ...part.step, key, slots: entry.slots }); groups.set(owner, steps);
     }
@@ -912,7 +933,10 @@ function reconcileRuns() {
 }
 type NoticeContent = { type: 'text'; text: string } | { type: 'markdown'; text: string } | { type: 'details'; text: string; body: HTMLElement } | { type: 'lead'; lead: string; preview: string; body: HTMLElement } | { type: 'inline'; head: () => HTMLElement[] };
 type NoticeRow = { key: string; at: number; level?: 'warning' | 'error'; content: NoticeContent };
-function noticeRow({ key, at, level, content }: NoticeRow) {
+function noticeRow(input: NoticeRow | NoticeData, bodyOnly = false) {
+  if (input.content.type === 'command') return noticeRow(commandNotice({ seq: input.content.seq, at: input.at, result: input.content.result }, noticeText({ key: input.key, at: input.at, name: 'command', content: input.content })), bodyOnly);
+  if (input.content.type === 'summary') return noticeRow({ ...input, content: { type: 'lead', lead: input.content.lead, preview: ' · ' + input.content.text.split('\n')[0], body: paragraphs(input.content.text) } }, bodyOnly);
+  const { key, at, level, content } = input;
   const row = node('div', undefined, level ? 'nrow ' + level : 'nrow'), line = node('div', undefined, 'hd'), tx = node('span', undefined, 'tx'), details = node('div', undefined, 'bd');
   let more = false;
   if (content.type === 'text' || content.type === 'markdown') {
@@ -923,6 +947,7 @@ function noticeRow({ key, at, level, content }: NoticeRow) {
   } else if (content.type === 'details') { more = true; tx.textContent = content.text; details.append(content.body); }
   else if (content.type === 'lead') { more = true; tx.append(node('span', content.lead, 'lead'), node('span', content.preview, 'prev')); details.append(content.body); }
   else { tx.append(...content.head()); details.append(...content.head()); }
+  if (bodyOnly) { if (!more) clear(details); return details; }
   line.append(tx, node('time', timestamp(at)));
   if (more) row.classList.add('more'); else { observed.set(tx, { type: 'fit', row, width: 0 }); layoutObserver.observe(tx); }
   fold(row, key, line, details);
@@ -933,36 +958,40 @@ function paragraphs(text: string) {
   for (const paragraph of text.split(/\n\s*\n/)) body.append(node('p', paragraph.trim()));
   return body;
 }
-function commandNotice(item: Extract<WireItem, { kind: 'command' }>): NoticeRow {
+function commandNotice(item: Pick<Extract<WireItem, { kind: 'command' }>, 'seq' | 'at' | 'result'>, text: string): NoticeRow {
   const key = 'notice:' + item.seq, at = item.at, result = item.result;
   switch (result.type) {
-    case 'copy': return { key, at, content: { type: 'text', text: 'copied the last reply · ' + quantity(result.characters) + ' characters' } };
+    case 'copy': return { key, at, content: { type: 'text', text } };
     case 'export': {
-      const head = () => { const path = node('span', result.path, 'path preview-file'); previewFile(path, '/steps/' + item.seq + '/0/file'); return [node('span', 'exported '), path]; };
+      const head = () => { const path = node('span', result.path, 'path preview-file'); previewFile(path, '/steps/' + item.seq + '/0/file'); return [node('span', text.slice(0, -result.path.length)), path]; };
       return { key, at, content: { type: 'inline', head } };
     }
     case 'session': {
-      const stats = result.stats, grid = node('div', undefined, 'kv');
-      for (const [name, value, mono] of [['name', result.name, false], ['id', stats.sessionId, true], ['file', stats.sessionFile ?? '—', true], ['model', result.model ? result.model.id + (result.thinking ? ' · thinking ' + result.thinking : '') : '—', false], ['messages', stats.totalMessages + ' · ' + stats.userMessages + ' user · ' + stats.assistantMessages + ' assistant · ' + stats.toolResults + ' tool', false], ['tokens', quantity(stats.tokens.input) + ' in · ' + quantity(stats.tokens.output) + ' out · ' + quantity(stats.tokens.cacheRead) + ' cache read · ' + quantity(stats.tokens.cacheWrite) + ' cache write', false], ['cost', '$' + stats.cost.toFixed(2), false], ['context', stats.contextUsage?.tokens === null || !stats.contextUsage ? '—' : quantity(stats.contextUsage.tokens) + ' / ' + quantity(stats.contextUsage.contextWindow) + (stats.contextUsage.percent === null ? '' : ' · ' + Math.round(stats.contextUsage.percent) + '%'), false]] as const) grid.append(node('b', name), node('span', value, mono ? 'path' : ''));
-      return { key, at, content: { type: 'details', text: result.name + ' · ' + stats.totalMessages + ' messages · $' + stats.cost.toFixed(2), body: grid } };
+      const grid = node('div', undefined, 'kv');
+      for (const [name, value, mono] of sessionFields(result)) grid.append(node('b', name), node('span', value, mono ? 'path' : ''));
+      return { key, at, content: { type: 'details', text, body: grid } };
     }
     case 'compaction': switch (result.state.type) {
-      case 'running': return { key, at, content: { type: 'inline', head: () => [node('span', 'compacting'), dots()] } };
-      case 'cancelled': return { key, at, content: { type: 'text', text: 'compaction cancelled' } };
-      case 'failed': return { key, at, level: 'error', content: { type: 'text', text: 'compaction · ' + result.state.message } };
+      case 'running': return { key, at, content: { type: 'inline', head: () => [node('span', text), dots()] } };
+      case 'cancelled': return { key, at, content: { type: 'text', text } };
+      case 'failed': return { key, at, level: 'error', content: { type: 'text', text } };
     }
   }
 }
 function accept(item: WireItem) {
   const old = items.get(item.seq), previous = visible(item.seq);
   const priorInput = !old && threadFilter() && (item.kind === 'user' || item.kind === 'agent' || item.kind === 'job') ? latestThreadInput() : undefined;
+  const rawKey = runParts(item, item).map(part => part.kind === 'boundary' ? 'boundary' : part.kind + ':' + sourceKey(part.source) + ':' + (part.step.kind === 'block' ? part.step.block.thread ?? threadItems.get(item.seq)?.threads[0] ?? '' : part.step.kind === 'agent' || part.step.kind === 'job' ? part.step.item.thread ?? '' : '')).join('|') + ':' + (item.kind === 'assistant' ? item.blocks.filter(visibleText).map(block => block.thread ?? threadItems.get(item.seq)?.threads[0] ?? '').join('|') : item.kind === 'user' ? item.thread ?? threadItems.get(item.seq)?.threads.join('|') ?? '' : '');
+  const changedRun = runKeys.get(item.seq) !== rawKey;
+  runKeys.set(item.seq, rawKey);
   items.set(item.seq, item);
-  if (old !== item) projections.delete(item.seq);
+  if (changedRun) runThreads = undefined;
+  if (old !== item || changedRun) projections.delete(item.seq);
   const shown = visible(item.seq);
   if (shown && !previous) order.splice(orderIndex(item.seq), 0, item.seq);
   else if (!shown && previous) { const position = order.indexOf(item.seq); if (position >= 0) order.splice(position, 1); unmountRow(item.seq); }
   extents.delete(item.seq);
-  const topology = (raw: WireItem | undefined, shown: WireItem | undefined) => runParts(raw, shown).map(part => part.kind === 'boundary' ? 'boundary' : sourceKey(part.source) + ':' + (state.view.type === 'root' ? part.thread ?? '' : '')).join('|');
+  const topology = (raw: WireItem | undefined, shown: WireItem | undefined) => runParts(raw, shown).map(part => part.kind === 'boundary' ? 'boundary' : part.kind + ':' + sourceKey(part.source)).join('|');
   const same = old && topology(old, previous) === topology(item, shown);
   const appended = !old && shown && table && order.at(-1) === item.seq;
   const affected = same ? item.seq : invalidateRuns(runContext(), item.seq);
@@ -1000,6 +1029,25 @@ function accept(item: WireItem) {
     if (seq > item.seq) dirty.add(seq);
   }
   if (priorInput?.kind === 'user' && priorInput.seq !== item.seq) accept({ ...priorInput });
+  if (threadFilter() && changedRun) {
+    let from = item.seq, to = item.seq;
+    while (from > 0) {
+      const previous = items.get(from - 1); if (!previous) break;
+      from--; if (runParts(previous, previous).some(part => part.kind === 'boundary')) break;
+    }
+    while (items.has(to + 1)) {
+      to++; const next = items.get(to);
+      if (runParts(next, next).some(part => part.kind === 'boundary')) break;
+    }
+    for (let at = from; at <= to; at++) { projections.delete(at); owners.delete(at); segmentCache.delete(at); extents.delete(at); }
+    for (let at = from; at <= to; at++) {
+      const shown = visible(at), position = order.indexOf(at);
+      if (shown && position < 0) order.splice(orderIndex(at), 0, at);
+      else if (!shown && position >= 0) { order.splice(position, 1); unmountRow(at); }
+      dirty.add(at);
+    }
+    table = undefined;
+  }
   after = Math.max(after, first - 1);
   while (items.get(after + 1)?.final) after++;
   schedule();
@@ -1010,7 +1058,8 @@ function syncChildren(parent: HTMLElement, children: HTMLElement[]) {
 }
 function renderItem(item: WireItem) {
   const previous = views.get(item.seq), warning = pathWarnings.get(item.seq), preceding = precedingThread(item.seq), filter = threadFilter();
-  if (previous?.item === item && previous.warning === warning && previous.filter === filter && previous.preceding === preceding) return false;
+  const context = runContext(), runs = runParts(items.get(item.seq), item).map(part => part.kind === 'boundary' ? 'boundary' : part.kind + ':' + sourceKey(part.source) + ':' + (runOf(context, part.source) ? sourceKey(runOwner(context, part.source)) : '')).join('|');
+  if (previous?.item === item && previous.warning === warning && previous.filter === filter && previous.preceding === preceding && previous.runs === runs) return false;
   const view = previous?.view ?? node('div');
   view.dataset.seq = String(item.seq);
   const refs = item.kind === 'user' ? item.images : item.kind === 'assistant' ? item.blocks.flatMap(block => block.type === 'tool' && 'result' in block.state ? block.state.result?.images ?? [] : []) : [];
@@ -1045,14 +1094,19 @@ function renderItem(item: WireItem) {
       if (block.type === 'text' && !visibleText(block)) return;
       const previousStep = steps.at(-1), context = runContext();
       if (block.type === 'text' || previousStep?.kind === 'block' && sourceKey(runOwner(context, { kind: 'block', seq: item.seq, index })) !== sourceKey(runOwner(context, { kind: 'block', seq: item.seq, index: previousStep.index }))) flush();
-      const thread = block.thread;
-      startSection(thread, index);
+      if (block.type === 'text') startSection(block.thread, index);
       const key = item.seq + ':' + index;
       if (block.type === 'text') { flush(); if (block.text) parts.push(prose(key, block.text, item.final || index < item.blocks.length - 1, annotationItems.get(item.seq)?.get(index), 'assistant')); }
       else steps.push({ kind: 'block', block, item, key, index, slots });
     });
     flush(); finishSection();
-    if (item.error) children.push(noticeRow({ key: item.seq + ':error', at: item.at, level: 'error', content: { type: 'text', text: item.error } }));
+    const error = noticeOf(item);
+    if (error) {
+      if (runOf(runContext(), { kind: 'item', seq: item.seq })) {
+        const key = sourceKey({ kind: 'item', seq: item.seq }), slot: Slot = { type: 'run', view: node('div') };
+        slots.set(key, slot); children.push(slot.view);
+      } else children.push(noticeRow(error));
+    }
   } else {
     view.className = 'msg ' + item.kind;
     if (item.kind === 'user') {
@@ -1063,28 +1117,22 @@ function renderItem(item: WireItem) {
       if (paths.length) text.append(node('div', paths.join('\n'), 'paths'));
       if (filter && waitingForThread(item)) { const waiting = node('div', 'waiting for its thread', 'thread-mark thread-waiting'); view.classList.add('thread-pending'); children.push(waiting); } else view.classList.remove('thread-pending');
       children.push(time, text);
-    } else if (item.kind === 'notify') { view.className = ''; children.push(noticeRow({ key: 'notice:' + item.seq, at: item.at, level: item.level === 'info' ? undefined : item.level, content: { type: 'text', text: item.text.text } })); }
-    else if (item.kind === 'command') { view.className = ''; children.push(noticeRow(commandNotice(item))); }
-    else if (item.kind === 'agent' || item.kind === 'job') {
+    } else if (item.kind === 'agent' || item.kind === 'job' || noticeOf(item) && runOf(runContext(), { kind: 'item', seq: item.seq })) {
       view.className = '';
       const key = sourceKey({ kind: 'item', seq: item.seq }), saved = previous?.slots.get(key);
       const slot: Slot = saved?.type === 'run' ? saved : { type: 'run', view: node('div') };
       slots.set(key, slot); children.push(slot.view);
     }
     else if (item.kind === 'annotations' || item.kind === 'threads') { view.hidden = true; }
-    else if (item.kind === 'notice') { view.className = ''; children.push(noticeRow({ key: 'notice:' + item.seq, at: item.at, content: { type: 'markdown', text: item.text } })); }
     else if (item.kind === 'bash') { view.className = ''; children.push(commandRun(item, 'bash:' + item.seq).view); }
-    else { view.className = ''; children.push(noticeRow({ key: 'notice:' + item.seq, at: item.at, content: { type: 'lead', lead: item.source === 'branch' ? 'branch' : 'compacted', preview: ' · ' + item.text.split('\n')[0], body: paragraphs(item.text) } })); }
-  }
-  if (item.kind === 'agent' || item.kind === 'job') {
-    const content = children.splice(0); startSection(item.thread, 0); parts.push(...content); finishSection();
+    else { const row = noticeOf(item); view.className = ''; if (row) children.push(noticeRow(row)); }
   }
   if (warning) {
     if (item.kind === 'user') { const user = node('div', undefined, 'msg user'); user.append(...children); children.splice(0, children.length, user); view.className = ''; }
     children.push(noticeRow({ key: 'path:' + item.seq, at: item.at, level: 'warning', content: { type: 'text', text: warning } }));
   }
   syncChildren(view, children);
-  views.set(item.seq, { view, item, warning, slots, filter, preceding });
+  views.set(item.seq, { view, item, warning, slots, filter, preceding, runs });
   if (!previous) {
     observed.set(view, { type: 'row' }); layoutObserver.observe(view);
     const container = element('items'), next = [...views.keys()].filter(seq => seq > item.seq).sort((a, b) => a - b)[0];
@@ -1111,8 +1159,9 @@ function extentOf(t: Table, seq: number) {
 }
 function groupsAfter(t: Table, seq: number) {
   const context = runContext();
-  for (const part of runParts(items.get(seq), visible(seq))) if (part.kind === 'step') {
-    const owner = runOwner(context, part.source);
+  for (const part of runParts(items.get(seq), visible(seq))) if (part.kind !== 'boundary') {
+    const owner = runOf(context, part.source);
+    if (!owner) continue;
     if (owner.seq === seq) continue;
     const last = t.groups.at(-1);
     if (last && last.to >= owner.seq) last.to = seq;
@@ -1581,7 +1630,7 @@ function apply(record: PageRecord) {
   if (record.type === 'reset') {
     pathWarnings.clear(); pathWarningEpoch++;
     editor.resetCompletion();
-    find = undefined; selected = undefined; segmentCache.clear(); owners.clear(); epoch = record.epoch; after = -1; first = undefined; items.clear(); order.length = 0; extents.clear(); live.clear(); dirty.clear(); stale.clear(); annotationItems.clear(); threadItems.clear(); projections.clear(); folds.clear(); historyRequest = undefined; more = record.more;
+    find = undefined; selected = undefined; segmentCache.clear(); owners.clear(); epoch = record.epoch; after = -1; first = undefined; items.clear(); runKeys.clear(); runThreads = undefined; order.length = 0; extents.clear(); live.clear(); dirty.clear(); stale.clear(); annotationItems.clear(); threadItems.clear(); projections.clear(); folds.clear(); historyRequest = undefined; more = record.more;
     enqueue({ type: 'reset' });
     lastMeasurement = undefined;
     resetting = true;
@@ -1740,7 +1789,7 @@ type FindAnswer = { index: number; count: number; loading: boolean } | { cancell
 let find: Find | undefined;
 type Cached = { item: WireItem; previous: WireItem | undefined; segments: Segment[]; needle?: string; starts?: number[][] };
 const segmentCache = new Map<number, Cached>(), owners: RunContext['owners'] = new Map();
-const findContext = () => ({ items: visible, raw: (at: number) => items.get(at), fold: REVEAL.fold, cwd: displayPath(state.cwd), owners, threads: state.view.type === 'root' });
+const findContext = () => ({ items: visible, raw: (at: number) => items.get(at), fold: REVEAL.fold, cwd: displayPath(state.cwd), owners });
 let selected: { from: number; to: number } | undefined;
 function rowSeq(node: Node | null) {
   for (let at = node; at; at = at.parentNode) if (at.parentNode === element('items') && at instanceof HTMLElement && at.dataset.seq !== undefined) return Number(at.dataset.seq);

@@ -1971,8 +1971,8 @@ light and dark in the gallery.
   the pending line is not a control. A mark shows only where the
   thread differs from the last mark above; a line with no thread shows no
   mark and does not reset the last one. A reply about two threads
-  has a mark above each section; a run, agent or job line gets one
-  when its thread differs. A user message never carries a mark: its
+  has a mark above each section; a run, its steps and a notice get
+  none (user, 2026-11-20; see "Runs split only at prose"). A user message never carries a mark: its
   threads are the ones its reply names, and the reply's marks stand
   right under it. Nothing says "new" for a thread's first mark.
 - **The reply's pill** (user, 2026-11-20; threads.html `marks`,
@@ -2151,7 +2151,9 @@ these:
 The user: the transcript is too long; messages from and to agents,
 reports and async_bash job items go inside the tool/thinking run
 widget as steps. The user's own messages and the assistant's prose
-stay rows; koa's own notice rows (lines.html, A) stay rows.
+stay rows; koa's own notice rows (lines.html, A) stay rows (amended
+by "Runs split only at prose" below: a notice after a step joins the
+run).
 
 - **The run** is every consecutive thinking block, tool call, agent
   message (outgoing `spawn_agent`, `message_agent`; incoming
@@ -2216,13 +2218,38 @@ stay rows; koa's own notice rows (lines.html, A) stay rows.
   once when it appears; a step that joins an existing run adds no
   count and moves no divider. So a report while idle is one new
   item (its new run), and a report inside a working run is none.
-- **Threads**: a run belongs to the section it sits in and its steps
-  inherit it, marks and filter as for tool steps; a run that starts
-  outside a section is unthreaded and shows only unfiltered, as any
-  unlabelled line.
+- **Threads**: superseded by "Runs split only at prose" below.
 - **Find and copy**: a step's body is in the model like a tool's
   details: counted when folded, opened when current, selected and
   copied with the transcript.
 - **Browser mode and subagent views**: the same rendering; a
   subagent's view shows its own messages to its children, their
   reports, and its parent's messages as steps of its runs.
+
+## Runs split only at prose (user, 2026-11-20)
+
+The user saw one turn as three adjacent run rows: its tools carried
+no thread, its `async_bash` job carried one, and the run split at
+each change. The decision: a step's thread never splits a run, and
+koa's notices join runs too.
+
+- **A run splits** only at a user message, assistant text with
+  visible content, a `!` command row (the user's input) and a gap of
+  unloaded history. Agent, job and tool steps of any threads stay
+  one run.
+- **A notice in a run.** A notice (a notification, a command
+  outcome, koa's note, the reply's error, a history summary) that
+  follows a step of the open run is a step of it: its one muted line
+  with the warning or error colour, opening to its row's body when
+  it has one. The folded summary names it by family: "note",
+  "notify", "command", "error", "compacted", "branch". A notice with
+  no open run (after prose, after the user's message, at the start)
+  stays a row, and a later step starts a new run below it.
+- **Thread marks** stand only on prose: a run, its steps and a
+  notice carry none.
+- **The filter** keeps the unfiltered runs: prose of another thread
+  still ends a run, and two runs never merge because the prose
+  between them is hidden. A run's thread is the first known thread
+  of its steps (a notice has none); the run shows whole under that
+  thread's filter and hides under the others. A run with no known
+  thread shows only unfiltered.

@@ -156,6 +156,9 @@ body .cm-tooltip.cm-tooltip-autocomplete.koa-complete::after{flex-shrink:0;conte
 .nrow.more .hd:hover{color:var(--ko-fg)}
 .nrow .tx{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis}
 .nrow .path{font:.92em var(--ko-font-family);color:var(--ko-fg)}
+.step .notice{color:var(--muted)}
+.step .notice.warning{color:var(--ko-color-3)}
+.step .notice.error{color:var(--ko-color-1)}
 .nrow.warning .tx{color:var(--ko-color-3)}
 .nrow.error .tx{color:var(--ko-color-1)}
 .nrow time{margin-left:auto;color:var(--faint);flex-shrink:0}

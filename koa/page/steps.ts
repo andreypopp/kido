@@ -1,12 +1,47 @@
 import { markdownLine } from '../markdown-line.ts';
 import type { AgentCall, Block, WireAssistant, WireItem } from '../koa-records.ts';
 
+export type NoticeData = { key: string; at: number; name: 'note' | 'notify' | 'command' | 'error' | 'branch' | 'compacted'; level?: 'warning' | 'error'; content: { type: 'text'; text: string } | { type: 'markdown'; text: string } | { type: 'summary'; lead: string; text: string } | { type: 'command'; seq: number; result: Extract<WireItem, { kind: 'command' }>['result'] } };
+export function noticeOf(item: WireItem): NoticeData | undefined {
+  const base = { key: item.kind === 'assistant' ? item.seq + ':error' : 'notice:' + item.seq, at: item.at };
+  switch (item.kind) {
+    case 'assistant': return item.error ? { ...base, name: 'error', level: 'error', content: { type: 'text', text: item.error } } : undefined;
+    case 'notify': return { ...base, name: 'notify', level: item.level === 'info' ? undefined : item.level, content: { type: 'text', text: item.text.text } };
+    case 'notice': return { ...base, name: 'note', content: { type: 'markdown', text: item.text } };
+    case 'summary': return { ...base, name: item.source === 'branch' ? 'branch' : 'compacted', content: { type: 'summary', lead: item.source === 'branch' ? 'branch' : 'compacted', text: item.text } };
+    case 'command': return { ...base, name: 'command', level: item.result.type === 'compaction' && item.result.state.type === 'failed' ? 'error' : undefined, content: { type: 'command', seq: item.seq, result: item.result } };
+    default: return undefined;
+  }
+}
+const quantity = (value: number) => value >= 1000000 ? Number((value / 1000000).toFixed(1)) + 'M' : value >= 1000 ? Number((value / 1000).toFixed(1)) + 'k' : String(value);
+export function sessionFields(result: Extract<Extract<WireItem, { kind: 'command' }>['result'], { type: 'session' }>) {
+  const stats = result.stats;
+  return [['name', result.name, false], ['id', stats.sessionId, true], ['file', stats.sessionFile ?? '—', true], ['model', result.model ? result.model.id + (result.thinking ? ' · thinking ' + result.thinking : '') : '—', false], ['messages', stats.totalMessages + ' · ' + stats.userMessages + ' user · ' + stats.assistantMessages + ' assistant · ' + stats.toolResults + ' tool', false], ['tokens', quantity(stats.tokens.input) + ' in · ' + quantity(stats.tokens.output) + ' out · ' + quantity(stats.tokens.cacheRead) + ' cache read · ' + quantity(stats.tokens.cacheWrite) + ' cache write', false], ['cost', '$' + stats.cost.toFixed(2), false], ['context', stats.contextUsage?.tokens === null || !stats.contextUsage ? '—' : quantity(stats.contextUsage.tokens) + ' / ' + quantity(stats.contextUsage.contextWindow) + (stats.contextUsage.percent === null ? '' : ' · ' + Math.round(stats.contextUsage.percent) + '%'), false]] as const;
+}
+export function noticeText(row: NoticeData): string {
+  const content = row.content;
+  if (content.type === 'text' || content.type === 'markdown') return content.text;
+  if (content.type === 'summary') return content.lead + ' · ' + content.text;
+  const result = content.result;
+  switch (result.type) {
+    case 'copy': return 'copied the last reply · ' + quantity(result.characters) + ' characters';
+    case 'export': return 'exported ' + result.path;
+    case 'session': return result.name + ' · ' + result.stats.totalMessages + ' messages · $' + result.stats.cost.toFixed(2);
+    case 'compaction': switch (result.state.type) {
+      case 'running': return 'compacting';
+      case 'cancelled': return 'compaction cancelled';
+      case 'failed': return 'compaction · ' + result.state.message;
+    }
+  }
+}
 export type StepInput =
+  | { kind: 'notice'; item: WireItem; row: NoticeData }
   | { kind: 'block'; block: Exclude<Block, { type: 'text' }>; item: WireAssistant; index: number }
   | { kind: 'agent'; item: Extract<WireItem, { kind: 'agent' }> }
   | { kind: 'job'; item: Extract<WireItem, { kind: 'job' }> };
 export type AgentCard = AgentCall | Extract<WireItem, { kind: 'agent' }>;
 export type Part =
+  | { kind: 'notice'; row: NoticeData }
   | { kind: 'redacted' | 'command' | 'cwd' | 'cut'; text: string }
   | { kind: 'head'; text: string }
   | { kind: 'diff'; text: string; mark: string; change: 'ctx' | 'del' | 'add' }
@@ -20,6 +55,7 @@ export function toolArgs(block: Extract<Block, { type: 'tool' }>): Record<string
   catch { return {}; }
 }
 export function stepInfo(step: StepInput & { args: Record<string, unknown> }) {
+  if (step.kind === 'notice') return { label: markdownLine(noticeText(step.row).split(/\r\n?|\n/)[0]), labelClass: 'notice' + (step.row.level ? ' ' + step.row.level : ''), detail: '', kind: step.row.name };
   const card = step.kind === 'agent' ? step.item : step.kind === 'block' && step.block.type === 'tool' ? step.block.agent : undefined;
   if (card) {
     const inbound = card.direction === 'in', ref = inbound ? card.from : card.to;
@@ -76,6 +112,7 @@ export function stepInfo(step: StepInput & { args: Record<string, unknown> }) {
 export const agentBody = (card: AgentCard) => card.text.text || (card.direction === 'out' && card.outcome?.ok === false ? card.outcome.message : '');
 
 export function stepParts(step: StepInput & { args: Record<string, unknown> }, info: ReturnType<typeof stepInfo>, cwd: string, images: boolean): Part[] {
+  if (step.kind === 'notice') return [{ kind: 'notice', row: step.row }];
   if (info.card) return [{ kind: 'agent', text: agentBody(info.card) }];
   if (step.kind === 'job') {
     const { event, job } = step.item, text = event.type === 'stream' ? event.batch : event.tail;
