@@ -1354,6 +1354,9 @@ proptest! {
     fn views_and_mirrors_stay_equal_to_the_pane_under_random_operations(
         ops in prop::collection::vec(op(), 3..25),
     ) {
+        if let Some(path) = std::env::var_os("KO_HARNESS_OPS_LOG") {
+            std::fs::write(path, format!("{ops:#?}\n")).expect("write harness operations");
+        }
         match run(&ops) {
             Ok(()) => {}
             Err(Failure::Libghostty) => {

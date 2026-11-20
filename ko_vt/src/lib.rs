@@ -1485,6 +1485,23 @@ mod tests {
         out
     }
 
+    // libghostty-vt panics `increaseCapacity OutOfSpace` and aborts the test process.
+    #[test]
+    #[ignore]
+    fn a_region_scroll_across_a_page_full_of_hyperlinks_keeps_the_terminal() {
+        let mut terminal = make(80, 24);
+        let mut bytes = String::new();
+        for i in 0..1200 {
+            bytes.push_str(&format!("\x1b]8;;{i}\x1b\\X"));
+        }
+        for i in 1200..1787 {
+            bytes.push_str(&format!("\x1b]8;;{i}\x1b\\X\r\n"));
+        }
+        bytes.push_str("\x1b]8;;\x1b\\\x1b[2;24r\x1b[24;1H\n");
+        terminal.write(bytes.as_bytes());
+        assert_eq!(terminal.memory().unwrap().pages, 2);
+    }
+
     fn osc8(i: usize) -> String {
         format!("\x1b]8;;https://example.org/{i}\x1b\\link {i}\x1b]8;;\x1b\\\r\n")
     }
