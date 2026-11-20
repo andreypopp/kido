@@ -1937,34 +1937,6 @@ light and dark in the gallery.
   its own (32 characters at most), except the first, which always
   shows and ellipsizes when it alone does not fit. Re-fitted on each
   state update and resize.
-- **Two modes** (user, 2026-11-20; threads.html sections 1 and 1b).
-  The widget is in block mode when its rows can stand at the left of
-  the transcript and cover at most 10% of the transcript's width,
-  else in line mode: so block in a wide pane, line in a narrow one.
-  The rule, with the transcript 720pt at most and centred, so the
-  gutter is (pane − transcript) / 2: block when 240pt (the least
-  usable block), from 8pt in, exceeds the gutter by at most 10% of
-  the transcript's width; the block is then the gutter plus that
-  10% wide, at most 340pt (a 1400pt pane: a 340pt gutter, the block
-  entirely in it; a 980pt pane: a 130pt gutter, 110pt short, more
-  than 72: line mode). Re-decided on each resize. *Line mode* is the
-  capsule as before, with two changes: a click on a name applies the
-  filter at once (hover underlines the name in its colour at 50%,
-  like the reply's pill), and the "▾" is a "…" at the right (the
-  muted colour, 600, hover the well2) that opens the panel. *Block
-  mode* is the panel's rows standing at the top left of the pane,
-  8pt from the top and the left, on the popup's card (user,
-  2026-11-20: the panel's background, 1px edge at 18%, 9pt radius,
-  the 8/28 shadow at 14%, 6pt padding), with no capsule: for each
-  thread, newest first,
-  "# name" in the colour (ellipsized at 45% of the block), the
-  first line of the last message muted and ellipsized, the age at
-  the right, the panel's 28pt rows and 6pt radius, hover the well.
-  A click on a row applies the filter; the current row has the
-  well2 fill; a click on it or on the "All threads" row under a
-  hairline clears it. Block mode has no popup. The transcript keeps
-  its normal top padding in block mode (the block stands beside
-  it, within the 10%), and the 44pt only in line mode.
 - **The panel**, under the capsule (top 36pt, the capsule's left):
   the completion popup's style (the background, a 1px edge at 18%,
   9pt radius, the 8/28 shadow at 14%, 6pt padding, .88em prose),
@@ -2030,15 +2002,12 @@ light and dark in the gallery.
   above a pending user message in a filtered view is removed too
   (user, 2026-11-20): the message shows with nothing above it until
   its label arrives.
-- **The filter.** In line mode the capsule becomes the thread: "#
-  name" in its colour and an × (14pt, the muted colour, hover the
-  well2) that clears it; a click on the name opens the panel, and
-  the "…" is gone. In block mode the current row is marked and the
-  "All threads" row appears. The transcript
-  shows the thread's items only; every reply keeps its pill, but
-  with the time alone, in the faint style of an unthreaded reply
-  (the name would say the same on every row; the filter names the
-  thread), plus a pending user
+- **The filter.** The capsule becomes the thread: "# name" in its
+  colour and an × (14pt, the muted colour, hover the well2) that
+  clears it; a click on the name opens the panel. The transcript
+  shows the thread's items only, without marks and without the
+  sections' colour edges (one thread needs no telling apart; the
+  mockup's filter states draw none), plus a pending user
   message, one whose reply the agent is still working on and that
   has no label yet, shown as any user message, with nothing above
   it (an old unlabelled message has no thread and shows only
