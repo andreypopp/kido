@@ -114,7 +114,7 @@ async function page() {
   const revealSource = stripTypeScriptTypes(readFileSync(new URL('page/reveal.ts', import.meta.url), 'utf8')).replace(/^import .*;\n/gm, '').replace(/^export /gm, '');
   Object.assign(context, runInNewContext(revealSource + '\n({revealHeight,unitsOf})', context));
   const extentSource = stripTypeScriptTypes(readFileSync(new URL('page/extent.ts', import.meta.url), 'utf8')).replace(/^import .*;\n/gm, '').replace(/^export /gm, '');
-  Object.assign(context, runInNewContext(extentSource + '\n({estimateExtent,windowOf,groupAt,continuesRun,joinsRun,runStarts,isStep})', context));
+  Object.assign(context, runInNewContext(extentSource + '\n({estimateExtent,windowOf,groupAt,runParts,runOwner,invalidateRuns,sourceKey,visibleText})', context));
   const stepsSource = stripTypeScriptTypes(readFileSync(new URL('page/steps.ts', import.meta.url), 'utf8')).replace(/^import .*;\n/gm, '').replace(/^export /gm, '');
   Object.assign(context, runInNewContext(stepsSource + '\n({stepInfo,stepParts,toolArgs,agentBody})', context));
   const findSource = stripTypeScriptTypes(readFileSync(new URL('page/find.ts', import.meta.url), 'utf8')).replace(/^import .*;\n/gm, '').replace(/^export /gm, '');
@@ -122,7 +122,7 @@ async function page() {
   const workingSource = stripTypeScriptTypes(readFileSync(new URL('page/working.ts', import.meta.url), 'utf8')).replace(/^export /gm, '');
   Object.assign(context, runInNewContext(workingSource + '\n({dots})', context));
   Object.assign(context, { scrollInitial, scrollStored, scrollUpdate, scrollWindow });
-  const body = source.replace(/^import .*;\n/gm, "").replace(/^setInterval\([\s\S]*$/m, "") + "\nfunction put(item) { accept(item); renderDirty(); return views.get(item.seq)?.view; }";
+  const body = source.replace(/^import .*;\n/gm, "").replace(/^setInterval\([\s\S]*$/m, "") + "\nfunction put(item) { accept(item); renderDirty(); return views.get(item.seq)?.view; }\nlet agentTestSeq=10000;function agentStep(card,at,key,slots=new Map()){let seq=slots.get(key);if(seq===undefined){seq=agentTestSeq++;slots.set(key,seq)}const base={seq,revision:0,at,final:true};put(card.direction==='in'?{...base,kind:'agent',...card}:{...base,kind:'assistant',stop:'stop',error:'',blocks:[{type:'tool',id:key,name:'spawn_agent',args:{text:'{}'},state:{type:'done',error:false,result:{text:'',images:[]}},agent:card}]});const owner=runOwner(runContext(),card.direction==='in'?{kind:'item',seq}:{kind:'block',seq,index:0});return openers.get(sourceKey(card.direction==='in'?{kind:'item',seq}:{kind:'block',seq,index:0})).view;}";
   return { observers, repl: (): ((code: string) => unknown) => runInNewContext("(() => {\n" + body + "\nreturn code => eval(code);\n})()", context), context, elements, listeners, windowListeners, completionResets: () => completionResets, handlers: () => handlers, prompt: () => prompt, text: () => text(), run: (code: string) => runInNewContext("{\n" + body + "\n" + code + "\n}", context) };
 }
 
@@ -546,7 +546,7 @@ test('filtered run boundaries keep both tools reachable across hidden prose', as
     state={...state,sessionId:'s',view:{id:'root',path:[],type:'root'},threads:[{name:'one'},{name:'two'}]};
     const tool=(id)=>({type:'tool',id,name:'bash',thread:'one',args:{text:'{"command":"'+id+'"}',cut:0},state:{type:'done',error:false,result:{text:id,cut:0,images:[]}}});
     accept({kind:'assistant',seq:0,revision:1,at:1,final:true,stop:'stop',error:'',blocks:[tool('first'),{type:'text',thread:'two',text:'hidden'},tool('second')]});
-    setThread('one');renderItem(visible(0));reconcileRuns(0);
+    setThread('one');renderItem(visible(0));reconcileRuns();
     [...views.get(0).slots.values()].filter(slot=>slot.type==='run').flatMap(slot=>runMarks.get(slot.view.firstElementChild)?.steps.map(step=>step.key)??[]);
   `);
   assert.deepEqual(Array.from(result), ['0:0','0:2']);
@@ -563,7 +563,7 @@ test('find owns separate threaded runs and resolves late-label boundaries', asyn
     accept(reply(3,[tool('last','two')]));
     const context={items:visible,fold:5,cwd:'',owners:new Map()};
     const keys=[findSegments(visible(0),context).find(segment=>segment.text==='second').folds[0],findSegments(visible(1),context).find(segment=>segment.text==='late').folds[0],findSegments(visible(3),context).find(segment=>segment.text==='last').folds[0]];
-    renderItem(visible(0));renderItem(visible(1));reconcileRuns(0);
+    renderItem(visible(0));renderItem(visible(1));reconcileRuns();
     openers.get(keys[0]).open();
     [...keys,openers.get('run:0:1').view.classList.contains('open'),openers.get('run:0:0').view.classList.contains('open')];
   `);
@@ -719,7 +719,7 @@ test('only pending implicit users wait under a filter and marks follow thread ch
     renderItem(visible(5));renderItem(visible(6));renderItem(visible(7));
     const marks=seq=>views.get(seq).view.querySelectorAll('.thread-section>.thread-mark').map(mark=>mark.dataset.thread);
     accept({kind:'agent',seq:8,revision:1,at:2,final:true,thread:'two',direction:'in',from:{name:'worker'},inbound:{form:'report',relation:'child'},text:{text:'done',cut:0}});renderItem(visible(8));renderItem(visible(7));
-    accept({kind:'job',seq:9,revision:1,at:2,final:true,thread:'one',job:{id:'j',name:'verify',service:false,command:'true',log:'/tmp/job',place:{type:'mac'},startedAt:1},event:{type:'ended',end:{type:'exit',code:0},tail:{text:'',cut:0}}});renderItem(visible(9));reconcileJobs(9);
+    accept({kind:'job',seq:9,revision:1,at:2,final:true,thread:'one',job:{id:'j',name:'verify',service:false,command:'true',log:'/tmp/job',place:{type:'mac'},startedAt:1},event:{type:'ended',end:{type:'exit',code:0},tail:{text:'',cut:0}}});renderItem(visible(9));reconcileRuns();
     [waits,waiting,removed,stayed,waitingAgain,settled,marks(5),marks(6),marks(7),marks(8),marks(9)];
   `);
   assert.deepEqual(JSON.parse(JSON.stringify(result)),[true,'waiting for its thread',true,true,true,true,['one'],[],['two'],[],['one']]);
@@ -1160,8 +1160,8 @@ test('thinking Markdown renders only on expand and stays current across streamin
     put({seq:0,revision:0,at:1,kind:'assistant',final:false,blocks:[{type:'thinking',text:'**Plan**\\n\\n- Use \`code\`'}]});
     if (texts.has('0:0')) throw Error('Collapsed thinking rendered');
     const item=items.get(0);
-    if (stepInfo({block:item.blocks[0],item,args:{}}).detail!=='Plan') throw Error('Markdown syntax in summary');
-    const view=run([{block:item.blocks[0],item,index:0,key:'0:0'}]);
+    if (stepInfo({kind:'block',index:0,block:item.blocks[0],item,args:{}}).detail!=='Plan') throw Error('Markdown syntax in summary');
+    const view=run([{kind:'block',block:item.blocks[0],item,index:0,key:'0:0'}]);
     const step=view.children[1].children[0];
     if (step.children[1].children.length) throw Error('Collapsed details have children');
     step.children[0].onclick();
@@ -1188,21 +1188,21 @@ test('redacted thinking stays plain text when expanded', async () => {
   assert.equal(app.run(`['', '**secret**'].every(text=>{
     const block={type:'thinking',redacted:true,text},item={final:true,blocks:[block]};
     folds.set('0:0',true);
-    const view=run([{block,item,index:0,key:'0:0'}]);
+    const view=run([{kind:'block',block,item,index:0,key:'0:0'}]);
     const detail=view.children[1].children[0].children[1].children[0];
-    return detail.className==='think redacted'&&detail.textContent===(text||'Redacted thinking')&&detail.children.length===0&&stepInfo({block,item,args:{}}).detail==='redacted';
+    return detail.className==='think redacted'&&detail.textContent===(text||'Redacted thinking')&&detail.children.length===0&&stepInfo({kind:'block',index:0,block,item,args:{}}).detail==='redacted';
   })`), true);
 });
 
 test("a run joins adjacent assistant items without replacing their text views", async () => {
   const app = await page();
-  assert.equal(app.run("const firstSlot=node('div'),secondSlot=node('div');items.set(0,{seq:0,kind:'assistant',final:true,stop:'toolUse',blocks:[{type:'thinking',text:'check'}]});items.set(1,{seq:1,kind:'assistant',final:true,stop:'toolUse',blocks:[{type:'tool',name:'read',args:{text:'{}'},state:{type:'done',error:false,result:{text:'ok',images:[]}}}]});views.set(0,{slots:new Map([['0:0',{type:'run',view:firstSlot}]])});views.set(1,{slots:new Map([['1:0',{type:'run',view:secondSlot}]])});run=steps=>({count:steps.length});reconcileRuns(1);firstSlot.children[0].count===2&&secondSlot.children.length===0"), true);
+  assert.equal(app.run("const firstSlot=node('div'),secondSlot=node('div');items.set(0,{seq:0,kind:'assistant',final:true,stop:'toolUse',blocks:[{type:'thinking',text:'check'}]});items.set(1,{seq:1,kind:'assistant',final:true,stop:'toolUse',blocks:[{type:'tool',name:'read',args:{text:'{}'},state:{type:'done',error:false,result:{text:'ok',images:[]}}}]});views.set(0,{slots:new Map([['0:0',{type:'run',view:firstSlot}]])});views.set(1,{slots:new Map([['1:0',{type:'run',view:secondSlot}]])});run=steps=>({count:steps.length});reconcileRuns();firstSlot.children[0].count===2&&secondSlot.children.length===0"), true);
 });
 
 test("invalid tool arguments do not stop rendering", async () => {
   const app = await page();
   for (const text of ["null", '{"path":"file","oldText":42,"newText":"text"}', '{"path":{"toString":null},"oldText":42,"newText":"text"}', '{"path":{"toString":null},"oldText":"old","newText":"new"}']) {
-    assert.doesNotThrow(() => app.run(`run([{key:'0:0',index:0,item:{final:true,stop:'stop',blocks:[]},block:{type:'tool',name:'edit',args:{text:${JSON.stringify(text)}},state:{type:'done',error:false,result:{text:'done',images:[]}}}}])`));
+    assert.doesNotThrow(() => app.run(`run([{kind:'block',key:'0:0',index:0,item:{final:true,stop:'stop',blocks:[]},block:{type:'tool',name:'edit',args:{text:${JSON.stringify(text)}},state:{type:'done',error:false,result:{text:'done',images:[]}}}}])`));
   }
 });
 
@@ -1210,7 +1210,7 @@ test("a pending tool shows its name until its label arguments arrive", async () 
   const app = await page();
   const labels = app.run(`
     put({seq:1,revision:0,at:0,kind:'assistant',final:false,blocks:[{type:'tool',id:'call',name:'bash',args:{text:'{}'},state:{type:'pending'}}]});
-    const label=()=>{const item=items.get(1);return run([{key:'1:0',index:0,item,block:item.blocks[0]}]).children[1].children[0].children[0].children[1].children.map(c=>c.textContent).join('').trim();};
+    const label=()=>{const item=items.get(1);return run([{kind:'block',key:'1:0',index:0,item,block:item.blocks[0]}]).children[1].children[0].children[0].children[1].children.map(c=>c.textContent).join('').trim();};
     const before=label();
     apply({type:'patch',baseRevision:0,revision:1,seq:1,final:false,blocks:[{index:0,block:{type:'tool',id:'call',name:'bash',args:{text:JSON.stringify({command:'make verify'})},state:{type:'pending'}}}]});
     [before,label()];
@@ -1218,17 +1218,17 @@ test("a pending tool shows its name until its label arguments arrive", async () 
   assert.deepEqual(Array.from(labels), ['bashbash', 'bashmake verify']);
   assert.equal(app.run(`['bash','read','edit','write','custom'].every(name=>{
     const block={type:'tool',name,args:{text:'{}'},state:{type:'pending'}};
-    return stepInfo({block,item:{final:false},args:{}}).label===name;
+    return stepInfo({kind:'block',index:0,block,item:{final:false},args:{}}).label===name;
   })`), true);
   assert.equal(app.run(`['pending','running','done','not_run'].every(type=>{
     const block={type:'tool',name:'bash',args:{text:'{}'},state:{type}};
-    return stepInfo({block,item:{final:true},args:{}}).label==='bash {}';
+    return stepInfo({kind:'block',index:0,block,item:{final:true},args:{}}).label==='bash {}';
   })`), true);
 });
 
 test("ended thinking is not active while assistant text streams", async () => {
   const app = await page();
-  assert.equal(app.run("const block={type:'thinking',text:'done',started:1,ended:2};const item={final:false,blocks:[block,{type:'text',text:'streaming'}]};run([{block,item,index:0,key:'0:0'}]).children[0].children[0].children.some(child=>child?.className==='dots')"), false);
+  assert.equal(app.run("const block={type:'thinking',text:'done',started:1,ended:2};const item={final:false,blocks:[block,{type:'text',text:'streaming'}]};run([{kind:'block',block,item,index:0,key:'0:0'}]).children[0].children[0].children.some(child=>child?.className==='dots')"), false);
 });
 
 test("model picker matches provider and id", async () => {
@@ -1373,9 +1373,9 @@ test("thinking and aborted steps use live times without inventing replay times",
     const thinking={type:'thinking',text:'which stages',started:10000,ended:14000};
     const bash={type:'tool',name:'bash',args:{text:'{}'},started:14000,state:{type:'not_run'}};
     const item={at:10000,ended:37000,final:true,stop:'aborted',blocks:[thinking,bash]};
-    const live=run(item.blocks.map((block,index)=>({block,index,key:'a'+index,item})));
+    const live=run(item.blocks.map((block,index)=>({kind:'block',block,index,key:'a'+index,item})));
     delete thinking.started;delete thinking.ended;delete bash.started;delete item.ended;
-    const replay=run(item.blocks.map((block,index)=>({block,index,key:'b'+index,item})));
+    const replay=run(item.blocks.map((block,index)=>({kind:'block',block,index,key:'b'+index,item})));
     return {live:contents(live),replay:contents(replay)};
   })()`);
   assert.match(result.live, /27s/);
@@ -1606,11 +1606,11 @@ test("failed and aborted runs keep their outcomes", async () => {
     const read={type:'tool',name:'read',args:{text:JSON.stringify({path:'Makefile'})},started:0,ended:100,state:{type:'done',error:false,result:{text:'line',images:[]}}};
     const bad={type:'tool',name:'bash',args:{text:JSON.stringify({command:'make verify STAGES=unit'})},started:1000,ended:41000,exit:101,state:{type:'done',error:true,result:{text:'FAIL unit 40.2s',images:[]}}};
     const failedItem={at:0,final:true,stop:'toolUse',blocks:[read,bad]};
-    const failed=run(failedItem.blocks.map((block,index)=>({block,index,key:'f'+index,item:failedItem})));
+    const failed=run(failedItem.blocks.map((block,index)=>({kind:'block',block,index,key:'f'+index,item:failedItem})));
     const thinking={type:'thinking',text:'the order in sweep()'};
     const edit={type:'tool',name:'edit',args:{text:JSON.stringify({path:'ko_server/src/sweep.rs',oldText:'',newText:''})},state:{type:'not_run'}};
     const abortedItem={at:0,final:true,stop:'aborted',blocks:[thinking,edit]};
-    const aborted=run(abortedItem.blocks.map((block,index)=>({block,index,key:'a'+index,item:abortedItem})));
+    const aborted=run(abortedItem.blocks.map((block,index)=>({kind:'block',block,index,key:'a'+index,item:abortedItem})));
     return {failed:contents(failed.children[0]),output:contents(failed.children[1].children[1].children[1]),aborted:contents(aborted.children[0]),outcome:contents(aborted.children[1].children[1].children[0].children[2])};
   })()`);
   assert.match(result.failed, /read, bash41s/);
@@ -1672,9 +1672,204 @@ test('every notice is one nrow that opens only when it has more than its line', 
   });
 });
 
-test('consecutive job batches join without replacing the open line or earlier output', async () => {
+test('event-only run summaries show the last moment as later agent and job steps join', async () => {
+  const app = await page(), morning = new Date(1700000012000); morning.setHours(9, 0, 0, 0);
+  const result = app.run(`(()=>{
+    const at=${morning.getTime()},report=(seq,at)=>({seq,at,revision:0,final:true,kind:'agent',direction:'in',from:{name:'worker'},text:{text:'Report',cut:0},inbound:{form:'report'}});
+    put(report(0,at));const row=openers.get('run:0:item').view,time=()=>row.firstElementChild.querySelector('.time').textContent,first=time();
+    put({seq:1,at:at+300000,revision:0,final:true,kind:'job',job:{id:'j',name:'build',log:'/tmp/build.log',service:false},event:{type:'ended',end:{type:'exit',code:0},tail:{text:'PASS',cut:0}}});const second=time();
+    put(report(2,at+600000));
+    return [first,second,time(),openers.get('run:0:item').view===row];
+  })()`);
+  assert.deepEqual(JSON.parse(JSON.stringify(result)), ['09:00','09:05','09:10',true]);
+});
+
+test('mixed run durations ignore moments and outgoing calls show their tool duration', async () => {
+  const app = await page(), morning = new Date(1700000012000); morning.setHours(9, 0, 0, 0);
+  const result = app.run(`(()=>{
+    const at=${morning.getTime()},report=(seq,at)=>({seq,at,revision:0,final:true,kind:'agent',direction:'in',from:{name:'worker'},text:{text:'Report',cut:0},inbound:{form:'report'}});
+    const tool=(id,started,ended)=>({type:'tool',id,name:'read',args:{text:'{}'},state:{type:'done',error:false,result:{text:'done',images:[]}},started,ended});
+    const reply=(seq,block)=>({seq,at,revision:0,final:true,kind:'assistant',stop:'stop',error:'',blocks:[block]});
+    put(report(0,at));put(reply(1,tool('read',at+1000,at+5000)));
+    const time=()=>openers.get('run:0:item').view.firstElementChild.querySelector('.time').textContent,first=time();
+    put({seq:2,at:at+600000,revision:0,final:true,kind:'job',job:{id:'j',name:'build',log:'/tmp/build.log',service:false},event:{type:'ended',end:{type:'exit',code:0},tail:{text:'PASS',cut:0}}});const afterJob=time();
+    put(reply(3,{...tool('call',at+6000,at+7500),name:'message_agent',agent:{direction:'out',to:{name:'worker'},text:{text:'Message',cut:0},call:{tool:'message',mode:'message'},outcome:{ok:true}}}));
+    const outgoing=openers.get('3:0').view.querySelector('.time').textContent,afterCall=time();put(report(4,at+1200000));
+    return [first,afterJob,outgoing,afterCall,time()];
+  })()`);
+  assert.deepEqual(JSON.parse(JSON.stringify(result)), ['4s','4s','1.5s','6.5s','6.5s']);
+});
+
+test('an active tool keeps the run duration live when a later outgoing call is complete', async () => {
   const app = await page();
-  assert.equal(app.run(`(()=>{const job={id:'j',name:'build',service:false,log:'/tmp/build.log'},batch=(seq,text)=>({seq,at:seq*60000,final:true,kind:'job',job,event:{type:'stream',batch:{text,cut:0},omitted:0,cut:false}});put(batch(0,'first'));const root=views.get(0).view.children[0],line=root.children[0];if(root.children[1].children.length)return false;line.onclick();const pre=root.children[1].children[0];put(batch(1,'second'));const stable=root.children[0]===line&&root.children[1].children[0]===pre&&root.classList.contains('open');put({seq:2,at:120000,final:true,kind:'job',job,event:{type:'ended',end:{type:'exit',code:1},tail:{text:'last tail',cut:0}}});return stable&&views.get(1).view.hidden&&views.get(2).view.hidden&&root.classList.contains('err')&&root.children[1].children.some(child=>child.className==='sep')})()`), true);
+  const result = app.run(`(()=>{
+    put({seq:0,revision:0,at:1700000000000,final:false,kind:'assistant',stop:'',error:'',blocks:[{type:'tool',id:'bash',name:'bash',args:{text:'{}'},state:{type:'running'},started:1700000000000},{type:'tool',id:'message',name:'message_agent',args:{text:'{}'},state:{type:'done',error:false,result:{text:'done',images:[]}},started:1700000001000,ended:1700000002000,agent:{direction:'out',to:{name:'worker'},text:{text:'Message',cut:0},call:{tool:'message',mode:'message'},outcome:{ok:true}}}]});
+    const time=()=>openers.get('run:0:0').view.firstElementChild.querySelector('.time').textContent,first=time(),outgoing=openers.get('0:1').view.querySelector('.time').textContent;
+    Date=class extends Date{static now(){return 1700000014000}};
+    const current=items.get(0);put({...current,revision:1,blocks:current.blocks.map((block,index)=>index?block:{...block,args:{text:'{"command":"still running"}'}})});
+    return [first,outgoing,time()];
+  })()`);
+  assert.deepEqual(JSON.parse(JSON.stringify(result)), ['12s','1s','14s']);
+});
+
+test('failed tool times retain the error class without colouring successful agent or job times', async () => {
+  const app = await page();
+  const result = app.run(`(()=>{
+    const tool=(id,error)=>({type:'tool',id,name:'bash',args:{text:'{}'},state:{type:'done',error,result:{text:'done',images:[]}},started:0,ended:1000});
+    put({seq:0,revision:0,at:0,final:true,kind:'assistant',stop:'stop',error:'',blocks:[tool('ok',false),tool('bad',true),{...tool('agent',true),agent:{direction:'out',to:{name:'worker'},text:{text:'Refused',cut:0},call:{tool:'message',mode:'message'},outcome:{ok:false,failure:'refused',message:'Refused'}}}]});
+    put({seq:1,revision:0,at:1000,final:true,kind:'job',job:{id:'j',name:'build',log:'/tmp/build.log',service:false},event:{type:'ended',end:{type:'exit',code:1},tail:{text:'FAIL',cut:0}}});
+    return ['0:0','0:1','0:2','1:item'].map(key=>openers.get(key).view.querySelector('.time').className);
+  })()`);
+  assert.deepEqual(JSON.parse(JSON.stringify(result)), ['time','time err','time','time']);
+});
+
+test('a run keeps its source timestamp when leading thinking has no block timestamp', async () => {
+  const app = await page();
+  const elapsed = app.run(`(()=>{
+    put({seq:0,revision:0,at:0,final:true,kind:'assistant',stop:'stop',error:'',blocks:[{type:'thinking',text:'Thought'},{type:'tool',id:'r',name:'read',args:{text:'{}'},state:{type:'done',error:false,result:{text:'done',images:[]}},started:6000,ended:10000}]});
+    return openers.get('run:0:0').view.firstElementChild.querySelector('.time').textContent;
+  })()`);
+  assert.equal(elapsed, '10s');
+});
+
+test('text suffixes and another tool patch retain completed agent and tool DOM', async () => {
+  const page = await latestPage();
+  page.evaluate("state={...state,agents:[{name:'worker',target:{type:'pane',pane:'p1'}}]}");
+  const tool = { type: 'tool', id: 'read', name: 'read', args: { text: '{}' }, state: { type: 'done', error: false, result: { text: 'old output', images: [] } } };
+  const agent = { ...tool, id: 'message', name: 'message_agent', agent: { direction: 'out', to: { name: 'worker' }, text: { text: '**Report**', cut: 0 }, call: { tool: 'message', mode: 'message' }, outcome: { ok: true } } };
+  page.add({ seq: 0, revision: 0, at: 0, final: false, kind: 'assistant', stop: '', error: '', blocks: [tool, agent, { type: 'text', text: 'Answer' }] });
+  const details = () => page.evaluate("runMarks.get(views.get(0).slots.get('0:0').view.firstElementChild).steps.map(step=>step.detail.firstChild)");
+  const link = () => page.evaluate("openers.get('0:1').view.querySelector('.who')");
+  const before = details(), name = link();
+  assert.ok(Array.isArray(before));
+  page.deliver({ type: 'patch', seq: 0, baseRevision: 0, revision: 1, final: false, stop: '', error: '', blocks: [{ index: 2, suffix: ' grows' }] }); page.step(16);
+  assert.deepEqual(details(), before);
+  assert.equal(link(), name);
+  page.deliver({ type: 'patch', seq: 0, baseRevision: 1, revision: 2, final: false, stop: '', error: '', blocks: [{ index: 0, block: { ...tool, state: { ...tool.state, result: { text: 'new output', images: [] } } } }] }); page.step(16);
+  const after = details();
+  assert.ok(Array.isArray(after));
+  assert.notEqual(after[0], before[0]);
+  assert.equal(after[1], before[1]);
+  assert.equal(link(), name);
+});
+
+test('empty thread labels and whitespace are transparent to one mixed run', async () => {
+  const app = await page();
+  const result = app.run(`(()=>{
+    const thread='koa-design',thinking=()=>({type:'thinking',text:'Plan',thread}),bash=id=>({type:'tool',id,name:'bash',thread,args:{text:'{}'},state:{type:'done',error:false,result:{text:'ok',images:[]}}}),reply=(seq,blocks)=>({seq,at:seq,revision:0,final:true,kind:'assistant',stop:'stop',error:'',blocks});
+    put(reply(0,[thinking()]));
+    put(reply(1,[{type:'text',text:'',thread},bash('one')]));
+    put(reply(2,[bash('two'),thinking()]));
+    put(reply(3,[bash('three'),thinking()]));
+    put(reply(4,[{type:'text',text:' \\n\\t ',thread},bash('four'),{...bash('message'),name:'message_agent',agent:{direction:'out',to:{name:'worker'},text:{text:'Check this',cut:0},call:{tool:'message',mode:'message'},outcome:{ok:true}}}]));
+    const owner=views.get(0).slots.get('0:0').view.firstElementChild,marks=runMarks.get(owner),one=[...openers.keys()].filter(key=>key.startsWith('run:'));
+    const stepKeys=marks.steps.map(step=>step.key),findOwner=findSegments(visible(4),findContext()).find(segment=>segment.text==='Check this').folds[0];
+    put(reply(5,[{type:'text',text:'Visible prose',thread},bash('after')]));
+    put(reply(6,[{type:'text',text:'   ',thread}]));
+    put(reply(7,[bash('last')]));
+    const runs=[...views.values()].flatMap(entry=>[...entry.slots.values()].filter(slot=>slot.type==='run'&&slot.view.firstElementChild));
+    return [one.length,stepKeys,findOwner,runs.length,runMarks.get(views.get(5).slots.get('5:1').view.firstElementChild).steps.length];
+  })()`);
+  assert.deepEqual(JSON.parse(JSON.stringify(result)), [1,['0:0','1:1','2:0','2:1','3:0','3:1','4:1','4:2'],'run:0:0',2,2]);
+});
+
+test('mixed run find owns folded bodies across transparent filtered prose', async () => {
+  const app = await page();
+  const result = app.run(`(()=>{
+    const tool={type:'tool',id:'r',name:'read',thread:'one',args:{text:'{}'},state:{type:'done',error:false,result:{text:'read output',images:[]}}};
+    state={...state,view:{id:'root',type:'root',path:[]},threads:[{name:'one'},{name:'two'}]};
+    put({seq:0,at:0,kind:'assistant',final:true,stop:'stop',error:'',blocks:[tool]});
+    put({seq:1,at:1,kind:'agent',thread:'one',final:true,direction:'in',from:{name:'worker'},text:{text:'**Unique report**',cut:0},inbound:{form:'report'}});
+    const job={id:'j',name:'build',service:false,log:'/tmp/build.log'};
+    put({seq:2,at:2,kind:'job',thread:'one',final:true,job,event:{type:'stream',batch:{text:'Unique output',cut:0},omitted:0,cut:false}});
+    const agent=segmentsOf(1).find(segment=>segment.text.includes('Unique report')), output=segmentsOf(2).find(segment=>segment.text==='Unique output');
+    const copied=transcriptText();
+    agent.folds.forEach(key=>openers.get(key).open());
+    put({seq:3,at:3,kind:'assistant',final:true,stop:'stop',error:'',blocks:[{type:'text',text:'Hidden prose',thread:'two'}]});
+    put({seq:4,at:4,kind:'assistant',final:true,stop:'stop',error:'',blocks:[{...tool,id:'after'}]});
+    threadFilters.set(filterKey(),'one'); refreshThreadItems();
+    const after=findSegments(visible(4),findContext()).find(segment=>segment.text==='read output');
+    return [agent.folds,output.folds,(copied.match(/Unique report/g)||[]).length,copied.includes('Unique output'),after.folds[0]];
+  })()`);
+  assert.deepEqual(JSON.parse(JSON.stringify(result)), [['run:0:0','1:item'],['run:0:0','2:item'],1,true,'run:0:0']);
+});
+
+test('mixed run window groups include metadata and change owner after a history prepend', async () => {
+  const app = await page();
+  const result = app.run(`(()=>{
+    const report=seq=>({seq,at:seq,kind:'agent',final:true,direction:'in',from:{name:'worker'},text:{text:'Report',cut:0},inbound:{form:'report'}});
+    put(report(1));
+    put({seq:2,at:2,kind:'annotations',final:true,reply:{seq:1,block:0},annotations:[]});
+    put(report(3));
+    const first=ensureTable().groups.map(group=>[group.from,group.to]);
+    put({seq:0,at:0,kind:'assistant',final:true,stop:'stop',error:'',blocks:[{type:'thinking',text:'Earlier'}]});
+    const second=ensureTable().groups.map(group=>[group.from,group.to]);
+    const folds=findSegments(visible(3),findContext()).find(segment=>segment.text==='Report').folds;
+    return [first,second,folds,runMarks.get(views.get(0).slots.get('0:0').view.firstElementChild).steps.length];
+  })()`);
+  assert.deepEqual(JSON.parse(JSON.stringify(result)), [[[1,3]],[[0,3]],['run:0:0','3:item'],3]);
+});
+
+test('parallel completion abort and same-turn reset retain adopted working row', async () => {
+  const fixture = await revealPage(200), ev = fixture.evaluate;
+  ev("state={...state,working:true,since:1699999990000}; reconcileWorking()");
+  const row = ev("working.place.row");
+  const tool = (id: string, type: string) => ({type:'tool',id,name:'bash',args:{text:'{}'},state:{type,...type==='done'?{error:false,result:{text:'',images:[]}}:{}}});
+  const show = (blocks: object[], stop = '') => ev('put('+JSON.stringify({seq:0,at:0,kind:'assistant',revision:0,final:false,stop,error:'',blocks})+')');
+  show([tool('a','running'),tool('b','running')]);
+  assert.equal(ev("views.get(0).slots.get('0:0').view.firstElementChild"), row);
+  assert.equal(ev(dotsCount), 3);
+  show([tool('a','done'),tool('b','running')]);
+  assert.equal(ev("views.get(0).slots.get('0:0').view.firstElementChild"), row);
+  show([tool('a','done'),tool('b','running')], 'aborted');
+  assert.equal(ev(dotsCount), 1);
+  ev("resetting=true; dirty.add(0); renderDirty()");
+  assert.equal(ev("views.get(0).slots.get('0:0').view.firstElementChild"), row);
+  show([tool('a','done'),tool('b','running'),{type:'text',text:'Reply'}], 'aborted');
+  assert.equal(ev("views.get(0).slots.get('0:0').view.firstElementChild"), row);
+  assert.equal(ev("working.place.kind"), 'bare');
+  ev("apply({...state,type:'state',working:false})");
+  assert.equal(ev(dotsCount), 0);
+});
+
+test('bare row becomes the same run node', async () => {
+  const fixture = await revealPage(200), ev = fixture.evaluate;
+  ev("state={...state,working:true,since:1699999990000}; reconcileWorking()");
+  const row = ev("element('items').lastChild"), line = ev("element('items').lastChild.firstElementChild");
+  ev("put({seq:1,revision:0,at:0,kind:'assistant',final:false,stop:'',error:'',blocks:[{type:'text',text:'Reading'}]})");
+  assert.equal(ev("element('items').lastChild"), row, 'text grows before the same bare row');
+  ev("put({seq:1,revision:0,at:0,kind:'assistant',final:false,stop:'',error:'',blocks:[{type:'text',text:'Reading'},{type:'thinking',text:'Checking',started:1}]})");
+  assert.equal(ev("views.get(1).slots.get('1:1').view.firstElementChild"), row, 'the bare row is adopted, not replaced');
+  assert.equal(ev("views.get(1).slots.get('1:1').view.firstElementChild.firstElementChild"), line, 'its line is retained');
+});
+
+test('mixed idle steps join without unread growth', async () => {
+  const app = await page();
+  const result = app.run(`(()=>{
+    const tool={type:'tool',id:'read',name:'read',args:{text:'{}'},state:{type:'done',error:false,result:{text:'',images:[]}}};
+    put({seq:0,at:0,kind:'assistant',final:true,stop:'stop',error:'',blocks:[tool]});
+    const owner=views.get(0).slots.get('0:0').view.firstElementChild;
+    put({seq:1,at:1,kind:'agent',final:true,direction:'in',from:{name:'worker',session:'worker-id'},text:{text:'Report',cut:0},inbound:{form:'report'}});
+    const job={id:'j',name:'build',service:false,log:'/tmp/build.log'};
+    put({seq:2,at:2,kind:'job',final:true,job,event:{type:'stream',batch:{text:'output',cut:0},omitted:0,cut:false}});
+    put({seq:3,at:3,kind:'job',final:true,job,event:{type:'ended',end:{type:'exit',code:0},tail:{text:'done',cut:0}}});
+    put({seq:4,at:4,kind:'assistant',final:true,stop:'stop',error:'',blocks:[{...tool,id:'next'}]});
+    return [views.get(0).slots.get('0:0').view.firstElementChild===owner,runMarks.get(owner).steps.length];
+  })()`);
+  assert.deepEqual(Array.from(result), [true, 5]);
+});
+
+test('consecutive job batches are separate steps and retain earlier output', async () => {
+  const app = await page();
+  const result = app.run(`(()=>{
+    const job={id:'j',name:'build',service:false,log:'/tmp/build.log'},batch=(seq,text)=>({seq,at:seq*60000,final:true,kind:'job',job,event:{type:'stream',batch:{text,cut:0},omitted:0,cut:false}});
+    put(batch(0,'first'));
+    const owner=[...views.get(0).slots.values()].find(slot=>slot.type==='run').view.firstElementChild, marks=runMarks.get(owner), first=marks.steps[0];
+    put(batch(1,'second'));
+    put({seq:2,at:120000,final:true,kind:'job',job,event:{type:'ended',end:{type:'exit',code:1},tail:{text:'last tail',cut:0}}});
+    return [marks.steps.length,marks.steps[0]===first,marks.steps.map(step=>step.tailKey)];
+  })()`);
+  assert.deepEqual(JSON.parse(JSON.stringify(result)), [3, true, ['1 lines', '1 lines', 'exit 1']]);
 });
 
 test('agent body changes render fresh final Markdown without a retained prose memo', async () => {
@@ -1684,7 +1879,7 @@ test('agent body changes render fresh final Markdown without a retained prose me
   const result = app.run(`
     const card={direction:'out',to:{name:'worker'},text:{text:'**Review**',cut:0},call:{tool:'spawn',fork:false}};
     const slots=new Map();
-    const view=agentCard(card,0,'agent:0',slots);
+    const view=agentStep(card,0,'agent:0',slots);
     const header=view.children[0];
     header.onclick({});
     const link=document.createElement('a'), label=document.createElement('strong'); link.append(label); header.append(link);
@@ -1692,7 +1887,7 @@ test('agent body changes render fresh final Markdown without a retained prose me
     const clicked=view.classList.contains('open');
     header.onkeydown({target:label,key:'Enter',preventDefault(){throw Error('Link Enter was intercepted');}});
     const entered=view.classList.contains('open');
-    agentCard({...card,text:{text:'Use \`code\`',cut:0},outcome:{ok:false,failure:'refused',message:'No'}},0,'agent:0',slots);
+    agentStep({...card,text:{text:'Use \`code\`',cut:0},outcome:{ok:false,failure:'refused',message:'No'}},0,'agent:0',slots);
     const fallback=put({seq:1,at:0,kind:'notice',final:true,customType:'other',from:'',text:'## **Ready**\\nSecond line'});
     [clicked,entered,texts.size,fallback.children[0].className,fallback.children[0].children[0].children[0].textContent,fallback.children[0].children[0].children[1].tagName];
   `);
@@ -1701,9 +1896,16 @@ test('agent body changes render fresh final Markdown without a retained prose me
   assert.deepEqual(Array.from(result), [true, true, 0, 'nrow more', 'Ready', 'TIME']);
 });
 
-test('agent cards split runs and toggle their one-line body without success metadata', async () => {
+test('agent steps join runs and keep their final Markdown body without success metadata', async () => {
   const app = await page();
-  assert.deepEqual(Array.from(app.run(`(()=>{const tool=name=>({type:'tool',id:name,name,args:{text:'{}'},state:{type:'done',error:false,result:{text:'',images:[]}}});const card={...tool('spawn_agent'),agent:{direction:'out',to:{name:'worker',session:'worker-id'},text:{text:'Check the module\\nReturn findings',cut:0},call:{tool:'spawn',fork:false},outcome:{ok:true}}};const view=put({seq:0,at:0,kind:'assistant',final:true,stop:'stop',error:'',blocks:[tool('read'),card,tool('bash')]});const agent=view.children.find(child=>child.classList.contains('aline'));if(!agent||view.children.length!==3)return [];const header=agent.children[0];const closed=!agent.classList.contains('open');header.onclick({});const open=agent.classList.contains('open');const expanded=header.getAttribute('aria-expanded');header.onclick({});return [closed,open,expanded,agent.classList.contains('open'),header.children.map(child=>child.className).join(),header.children[0].children[0],header.children[1].textContent,agent.children[1].className]})()`)), [true, true, 'true', false, 'lead,tx,', 'task to ', 'Check the module', 'bd prose']);
+  const result = app.run(`(()=>{
+    const tool=name=>({type:'tool',id:name,name,args:{text:'{}'},state:{type:'done',error:false,result:{text:'',images:[]}}});
+    const card={...tool('spawn_agent'),agent:{direction:'out',to:{name:'worker',session:'worker-id'},text:{text:'Check the module\\nReturn findings',cut:0},call:{tool:'spawn',fork:false},outcome:{ok:true}}};
+    put({seq:0,at:0,kind:'assistant',final:true,stop:'stop',error:'',blocks:[tool('read'),card,tool('bash')]});
+    const owner=views.get(0).slots.get('0:0').view.firstElementChild,marks=runMarks.get(owner);
+    return [views.get(0).view.children.length,marks.steps.length,marks.steps[1].tailKey,marks.steps[1].detail.children.length];
+  })()`);
+  assert.deepEqual(Array.from(result), [1, 3, 'Check the module', 1]);
 });
 
 test('agent names link to live agents, a gone name is plain, a click focuses the pane and keeps the line closed', async () => {
@@ -1711,8 +1913,8 @@ test('agent names link to live agents, a gone name is plain, a click focuses the
   const names = Array.from(app.run(`(()=>{
     state={...state,agents:[{name:'worker',target:{type:'pane',pane:'p7'}}]};
     const card=name=>({direction:'out',to:{name},text:{text:'Hello',cut:0},call:{tool:'message',mode:'message'}});
-    const live=agentCard(card('worker'),0,'a',new Map()), gone=agentCard(card('ghost'),0,'b',new Map());
-    const link=live.children[0].children[0].children[1], ended=gone.children[0].children[0].children[1];
+    const live=agentStep(card('worker'),0,'a',new Map()), gone=agentStep(card('ghost'),0,'b',new Map());
+    const link=live.children[0].children[1].children[0].children[1], ended=gone.children[0].children[1].children[0].children[1];
     window.testLink=link; window.testLine=live;
     return [link.tagName,link.className,link.href,link.title,link.textContent,ended.tagName,ended.className,ended.title,ended.textContent];
   })()`));
@@ -1731,6 +1933,20 @@ test('agent names link to live agents, a gone name is plain, a click focuses the
   assert.deepEqual(focused, ['p7']);
 });
 
+test('failed agent summaries mark live and gone names as errors', async () => {
+  const app = await page();
+  const result = app.run(`(()=>{
+    state={...state,agents:[{name:'worker',target:{type:'pane',pane:'p1'}}]};
+    const card=name=>({direction:'out',to:{name},text:{text:'Refused',cut:0},call:{tool:'message',mode:'message'},outcome:{ok:false,failure:'refused',message:'Refused'}});
+    agentStep(card('worker'),0,'live');agentStep(card('ghost'),0,'gone');
+    const view=openers.get('run:10000:0').view,marks=runMarks.get(view);
+    return marks.names.children.filter(child=>child?.classList?.contains('err')).map(name=>[name.className,name.children.find(child=>child?.classList?.contains('who')).className]);
+  })()`);
+  assert.deepEqual(JSON.parse(JSON.stringify(result)), [['err','who'],['err','who gone']]);
+  const css = await readFile(new URL('page/page.css', import.meta.url), 'utf8');
+  assert.match(css, /\.run \.names \.err \.who\{color:var\(--ko-color-1\)\}/);
+});
+
 test('prose links only live agent names outside code and links, and a membership change re-renders agent lines', async () => {
   const app = await page(), html: string[] = [];
   const create = app.context.document.createElement;
@@ -1740,11 +1956,11 @@ test('prose links only live agent names outside code and links, and a membership
   assert.equal(html.join(''), `<p>Ask ${who('sidebar-right', 'p2')} and ${who('sidebar', 'p1')}, not @nobody or me@sidebar; <code>@sidebar</code> and <a href="https://x.test">@sidebar</a></p>\n`);
   assert.deepEqual(Array.from(app.run(`(()=>{
     state={...state,agents:[{name:'sidebar',target:{type:'pane',pane:'p1'}}]};
-    const slots=new Map(),view=agentCard({direction:'out',to:{name:'sidebar'},text:{text:'x',cut:0},call:{tool:'message',mode:'message'}},0,'k',slots);
-    const before=view.children[0].children[0].children[1].className;
-    views.set(0,{view,item:{},slots});
-    apply({...state,type:'state',agents:[]});
-    return [before,view.children[0].children[0].children[1].className]
+    const slots=new Map(),view=agentStep({direction:'out',to:{name:'sidebar'},text:{text:'x',cut:0},call:{tool:'message',mode:'message'}},0,'k',slots);
+    const before=view.children[0].children[1].children[0].children[1].className;
+
+    apply({...state,type:'state',agents:[]});renderDirty();
+    return [before,view.children[0].children[1].children[0].children[1].className]
   })()`)), ['who', 'who gone']);
 });
 
@@ -1777,17 +1993,17 @@ test('agent card header phrases preserve kinds, directions, relations and failur
     [outgoing({ tool: 'message', mode: 'message' }, { ok: false, failure: 'error', message: 'send failed' }), 'send failed to @worker', true],
   ];
   for (const [card, phrase, failed] of cases) {
-    const result = app.run(`(()=>{const view=agentCard(${JSON.stringify(card)},0,'card',new Map());const header=view.children[0],lead=header.children[0];return {phrase:lead.children.map(child=>child.textContent??child).join(''),classes:header.children.map(child=>child.className),time:header.children.at(-1).tagName,view:view.className}})()`);
+    const result = app.run(`(()=>{const view=agentStep(${JSON.stringify(card)},0,'card',new Map());const header=view.children[0],lead=header.children[1].children[0];return {phrase:lead.children.map(child=>child.textContent??child).join(''),classes:header.children.map(child=>child.className),time:header.children.at(-1).children.at(-1).tagName,failed:lead.classList.contains('err')}})()`);
     assert.equal(result.phrase, phrase);
-    assert.deepEqual(Array.from(result.classes), ['lead', 'tx', '']);
-    assert.equal(result.view, failed ? 'aline err' : 'aline');
-    assert.equal(result.time, 'TIME');
+    assert.deepEqual(Array.from(result.classes), ['chev', 'sum', 'outcome']);
+    assert.equal(result.failed, failed);
+    assert.equal(result.time, 'SPAN');
   }
 });
 
 test('step previews require exactly Shift-Command and a stationary press', async () => {
   const app = await page();
-  assert.equal(app.run(`(()=>{const urls=[];window.ko={preview:url=>urls.push(url)};const block={type:'tool',name:'read',args:{text:JSON.stringify({path:'file.txt'})},state:{type:'done',error:false,result:{text:'ok',images:[]}}};const item={seq:7,at:0,final:true,stop:'stop',blocks:[block]};const tree=run([{key:'7:2',index:2,item,block,slots:new Map()}]);const row=tree.children[1].children[0].children[0],label=row.children[1].children.find(node=>node?.classList?.contains('preview-file'));label.getBoundingClientRect=()=>({x:0,y:0,width:30,height:20});const event={button:0,clientX:2,clientY:3,shiftKey:true,metaKey:true,altKey:false,ctrlKey:false,preventDefault(){},stopPropagation(){}};label.onmousedown(event);label.onclick(event);for(const changes of [{shiftKey:false},{altKey:true},{ctrlKey:true}]){label.onmousedown({...event,...changes});label.onclick({...event,...changes})}label.onmousedown(event);label.onclick({...event,shiftKey:false,metaKey:false});if(urls.length!==2)return false;label.onmousedown(event);label.onclick({...event,clientX:5});return urls.length===2&&urls[0]==='/steps/7/2/file'})()`), true);
+  assert.equal(app.run(`(()=>{const urls=[];window.ko={preview:url=>urls.push(url)};const block={type:'tool',name:'read',args:{text:JSON.stringify({path:'file.txt'})},state:{type:'done',error:false,result:{text:'ok',images:[]}}};const item={seq:7,at:0,final:true,stop:'stop',blocks:[block]};const tree=run([{kind:'block',key:'7:2',index:2,item,block,slots:new Map()}]);const row=tree.children[1].children[0].children[0],label=row.children[1].children.find(node=>node?.classList?.contains('preview-file'));label.getBoundingClientRect=()=>({x:0,y:0,width:30,height:20});const event={button:0,clientX:2,clientY:3,shiftKey:true,metaKey:true,altKey:false,ctrlKey:false,preventDefault(){},stopPropagation(){}};label.onmousedown(event);label.onclick(event);for(const changes of [{shiftKey:false},{altKey:true},{ctrlKey:true}]){label.onmousedown({...event,...changes});label.onclick({...event,...changes})}label.onmousedown(event);label.onclick({...event,shiftKey:false,metaKey:false});if(urls.length!==2)return false;label.onmousedown(event);label.onclick({...event,clientX:5});return urls.length===2&&urls[0]==='/steps/7/2/file'})()`), true);
 });
 
 test('browser lightbox Escape closes before abort and keeps the draft', async () => {
@@ -1948,6 +2164,18 @@ async function latestPage() {
   const fixture = await revealPage();
   const { app, evaluate } = fixture, doc = app.context.document;
   Object.assign(app.context, { matchMedia: () => ({ matches: false }) });
+  const create = doc.createElement;
+  doc.createElement = tag => {
+    const node = create(tag), rect = node.getBoundingClientRect;
+    node.getBoundingClientRect = () => {
+      let row = node;
+      while (row.parent && row.parent !== doc.getElementById('items')) row = row.parent;
+      if (row === node || row.parent !== doc.getElementById('items')) return rect();
+      const outer = row.getBoundingClientRect(), own = rect();
+      return { ...own, top: outer.top + node.offsetTop, bottom: outer.top + node.offsetTop + (own.height ?? node.offsetHeight) };
+    };
+    return node;
+  };
   const text = (seq: number) => ({ seq, revision: 0, kind: 'assistant', final: true, blocks: [{ type: 'text', text: 'reply ' + seq }] });
   const own = (seq: number) => ({ seq, revision: 0, at: 1, kind: 'user', text: 'mine', images: [], attachments: [] });
   const add = (item: object) => { evaluate(`apply({type:'item',item:${JSON.stringify(item)}})`); fixture.step(0); };
@@ -1983,6 +2211,21 @@ test('a step that joins the run above gets no divider of its own, and the divide
   page.add(think(3));
   assert.equal(page.dividers(), '0,1,divider,2,3');
   assert.equal(page.latest(), '↓ 1 new,true');
+});
+
+test('mixed idle steps preserve one unread run and a stable divider', async () => {
+  const page = await latestPage();
+  page.add(page.text(0)); page.scroll(0); page.add(think(1));
+  const divider = page.evaluate('divider');
+  const report = (seq: number) => ({seq,revision:0,at:seq,kind:'agent',final:true,direction:'in',from:{name:'worker'},text:{text:'Report',cut:0},inbound:{form:'report'}});
+  page.add(report(2));
+  page.add({seq:3,revision:0,at:3,kind:'job',final:true,job:{id:'j',name:'build',service:false,log:'/tmp/build.log'},event:{type:'ended',end:{type:'exit',code:0},tail:{text:'PASS',cut:0}}});
+  page.add(think(4));
+  assert.equal(page.latest(), '↓ 1 new,true');
+  assert.equal(page.evaluate('divider'), divider);
+  page.add(page.text(5)); page.add(report(6));
+  assert.equal(page.latest(), '↓ 3 new,true');
+  assert.equal(page.evaluate('divider'), divider);
 });
 
 test('a patch that empties the item of the divider moves or removes it, and that item no longer counts', async () => {
@@ -2037,18 +2280,18 @@ test('an empty item that arrived while following and gets its first content afte
 
 const card = (seq: number) => ({ seq, revision: 0, kind: 'assistant', final: true, blocks: [{ type: 'tool', id: 'c' + seq, name: 'spawn_agent', args: { text: '{}' }, state: { type: 'done', error: false, result: { text: '', images: [] } }, agent: { direction: 'out', to: { name: 'worker', session: 'w' }, text: { text: 'Check the module', cut: 0 }, call: { tool: 'spawn', fork: false }, outcome: { ok: true } } }] });
 
-test('an item with only an agent card or an error notice is not new, and neither is blank text', async () => {
+test('an agent run counts once while an error notice and blank text do not count', async () => {
   const page = await latestPage();
   page.add(page.text(0));
   page.scroll(0);
   page.add(card(1));
   page.add({ ...page.text(2), blocks: [], stop: 'error', error: 'boom' });
   page.add({ ...page.text(3), blocks: [{ type: 'text', text: ' \n ' }] });
-  assert.equal(page.dividers(), '0,1,2,3');
-  assert.equal(page.latest(), '↓ Latest,true');
-  page.add({ ...page.text(4), blocks: [{ type: 'text', text: ' ' }, { type: 'text', text: 'words' }] });
-  assert.equal(page.dividers(), '0,1,2,3,divider,4');
+  assert.equal(page.dividers(), '0,divider,1,2,3');
   assert.equal(page.latest(), '↓ 1 new,true');
+  page.add({ ...page.text(4), blocks: [{ type: 'text', text: ' ' }, { type: 'text', text: 'words' }] });
+  assert.equal(page.dividers(), '0,divider,1,2,3,4');
+  assert.equal(page.latest(), '↓ 2 new,true');
 });
 
 test('nonblank text counts as new while its reveal is still closed, and a card item that gains text arrives once', async () => {
@@ -2061,7 +2304,7 @@ test('nonblank text counts as new while its reveal is still closed, and a card i
   assert.equal(page.dividers(), '0,divider,1,2');
   page.add({ ...card(2), revision: 1, blocks: [...card(2).blocks, { type: 'text', text: 'done' }] });
   assert.equal(page.dividers(), '0,divider,1,2');
-  assert.equal(page.latest(), '↓ 2 new,true');
+  assert.equal(page.latest(), '↓ 3 new,true');
 });
 
 test('an item that owns no shown step is not new, and the item that takes over the run is', async () => {
@@ -2214,12 +2457,12 @@ async function flowPage(margin = 0) {
 
 test('every transcript fold holds the clicked header in following and reader windows', async () => {
   const cards = [
-    `agentCard({direction:'out',to:{name:'worker'},text:{text:'task',cut:0},call:{tool:'spawn',fork:false}},0,'toggle',new Map())`,
-    ...['message', 'report'].map(form => `agentCard({direction:'in',from:{name:'worker'},inbound:{form:'${form}',relation:'child'},text:{text:'reply',cut:0}},0,'toggle',new Map())`),
+    `agentStep({direction:'out',to:{name:'worker'},text:{text:'task',cut:0},call:{tool:'spawn',fork:false}},0,'toggle',new Map())`,
+    ...['message', 'report'].map(form => `agentStep({direction:'in',from:{name:'worker'},inbound:{form:'${form}',relation:'child'},text:{text:'reply',cut:0}},0,'toggle',new Map())`),
     `noticeRow({key:'toggle',at:0,content:{type:'text',text:'head\\nbody'}})`,
     `commandRun({command:'echo ok',result:{output:{text:'ok',cut:0},exit:0}},'toggle').view`,
-    `jobCard({seq:0,at:0,job:{name:'job'},event:{type:'start',command:'echo ok'}},new Map()).view`,
-    ...['step', 'run'].map(kind => `(()=>{const block={type:'tool',id:'read',name:'read',args:{text:'{}'},state:{type:'done',error:false,result:{text:'output',images:[]}}};const step={key:'toggle',block,item:{seq:0,at:0,final:true,blocks:[block]},index:0,slots:new Map()};return ${kind === 'step' ? 'stepMarks(step).child' : 'run([step])'}})()`),
+    `(()=>{const item={kind:'job',seq:0,at:0,final:true,job:{id:'job',name:'job',log:'/tmp/job'},event:{type:'stream',batch:{text:'echo ok',cut:0},omitted:0,cut:false}},view=run([{kind:'job',key:'toggle',item,slots:new Map()}]);return runMarks.get(view).steps[0].child})()`,
+    ...['step', 'run'].map(kind => `(()=>{const block={type:'tool',id:'read',name:'read',args:{text:'{}'},state:{type:'done',error:false,result:{text:'output',images:[]}}};const step={kind:'block',key:'toggle',block,item:{seq:0,at:0,final:true,blocks:[block]},index:0,slots:new Map()};return ${kind === 'step' ? 'stepMarks(step).child' : 'run([step])'}})()`),
   ];
   for (const card of cards) for (const mode of ['following', 'reader', 'overscan', 'glide', 'keyboard']) {
     const page = await flowPage();
@@ -2618,7 +2861,7 @@ test('Enter follows after unfocused growth changes following to reader before th
   page.pad.value += 200;
   page.deliver({ type: 'item', item: page.own(1) });
   page.settle(3);
-  assert.equal(page.top() - page.bottom(), 0);
+  assert.equal(page.top() - page.bottom(), 0, String(page.evaluate("JSON.stringify({kind:scrolling.kind,pendingSend:scrolling.pendingSend,forceItem:scrolling.forceItem,last:scrolling.last,events:scrollEvents,rows:[...views].map(([seq,{view}])=>({seq,rect:view.getBoundingClientRect()}))})")));
 });
 
 test('Enter follows after composer shrink clamps and a delayed scroll arrives after the user item', async () => {
@@ -2648,7 +2891,7 @@ test('a name link opens the view of its agent, and a pane link still focuses the
   const app = await page();
   const link = app.run(`(()=>{${views}
     state={...state,sessionId:'r',agents:[{name:'worker',target:{type:'view',id:'v1'}},{name:'peer',target:{type:'pane',pane:'p3'}}]};
-    const card=ref=>agentCard({direction:'out',to:ref,text:{text:'Hello',cut:0},call:{tool:'message',mode:'message'}},0,ref.name,new Map()).children[0].children[0].children[1];
+    const card=ref=>agentStep({direction:'out',to:ref,text:{text:'Hello',cut:0},call:{tool:'message',mode:'message'}},0,ref.name,new Map()).children[0].children[1].children[0].children[1];
     window.calls=calls;
     return {view:card({name:'worker',session:'v1'}),twin:card({name:'worker',session:'other'}),pane:card({name:'peer'})};
   })()`);
@@ -3360,8 +3603,8 @@ test('new items below the dock are counted without DOM rows', async () => {
   assert.equal(page.latest(), '↓ 4 new,true');
   const toward = (top: number) => { page.reader(top); page.settle(8); };
   toward(page.bottom() - 60);
-  const fresh: number[] = JSON.parse(String(page.evaluate("JSON.stringify([...scrolling.candidates].filter(([,candidate])=>candidate.unread).map(([seq])=>seq))"))), below = fresh.filter(seq => page.seqs().includes(seq) && page.offset(seq) >= 4).length;
-  assert.equal(page.latest().split(',')[0], below ? '↓ ' + below + ' new' : '↓ Latest');
+  const fresh: number[] = JSON.parse(String(page.evaluate("JSON.stringify([...scrolling.candidates].flatMap(([seq,rows])=>[...rows.values()].filter(candidate=>candidate.unread).map(()=>seq)))"))), below = fresh.filter(seq => page.seqs().includes(seq) && page.offset(seq) >= 4).length;
+  assert.equal(page.latest().split(',')[0], below ? '↓ ' + below + ' new' : '↓ Latest', String(page.evaluate("JSON.stringify({top:geometry().top,dock:measure().dock,candidates:[...scrolling.candidates].flatMap(([seq,rows])=>[...rows.values()].filter(candidate=>candidate.unread).map(candidate=>({...candidate,seq,lookup:measure().lookup({kind:'message',seq,row:candidate.row}),rect:views.get(seq)?.view.getBoundingClientRect()})))})")));
   assert.ok(below < 4, 'scrolling toward the new items counted some of them as seen');
 });
 
@@ -3395,7 +3638,7 @@ test('a run or job group is mounted whole or not at all, and a folded fence stay
     assert.ok(mounted === 0 || mounted === group.length, 'the run is split at ' + top);
     const members = [200, 201, 202, 203, 204].filter(seq => page.seqs().includes(seq)).length;
     assert.ok(members === 0 || members === 5, 'the job group is split at ' + top);
-    if (members) assert.deepEqual([page.evaluate('views.get(200).view.children.length'), page.evaluate('views.get(201).view.hidden')], [1, true], 'the job card is in the first row, followers are hidden');
+    if (members) assert.deepEqual([page.evaluate('views.get(200).view.children.length'), page.evaluate('views.get(201).view.children[0].children.length===0')], [1, true], 'the run is in the first row and follower slots are empty');
   }
   page.reader(0);
   page.settle(8);
@@ -3467,7 +3710,7 @@ test('a reconcile across an unmounted text item keeps the two runs apart', async
   const tool = { type: 'tool', id: 't', name: 'read', args: { text: '{}' }, state: { type: 'done', error: false, result: { text: '', images: [] } } };
   page.open([step(0, [tool]), step(1, [{ type: 'text', text: 'between' }]), step(2, [{ ...tool, id: 'u' }])]);
   page.settle(4);
-  page.evaluate('unmountRow(1); reconcileRuns(2)');
+  page.evaluate('unmountRow(1); reconcileRuns()');
   assert.equal(page.evaluate("runMarks.get(views.get(0).slots.get('0:0').view.firstElementChild).steps.length"), 1, 'the first run keeps its own step');
   assert.equal(page.evaluate("views.get(2).slots.get('2:0').view.children.length"), 1, 'the last step owns its run');
 });
@@ -3510,7 +3753,7 @@ test('an appended item extends the table and its last group in place', async () 
   for (const seq of [1, 2]) page.deliver({ type: 'item', item: { seq, revision: 0, kind: 'assistant', final: true, blocks: [{ ...tool, id: 'u' + seq }] } });
   page.settle(4);
   assert.equal(page.evaluate('table'), before, 'an append does not rebuild');
-  assert.deepEqual(page.evaluate('JSON.stringify([table.groups, table.starts.length, table.index.size])'), JSON.stringify([[{ kind: 'run', from: 0, to: 2 }], 4, 3]));
+  assert.deepEqual(page.evaluate('JSON.stringify([table.groups, table.starts.length, table.index.size])'), JSON.stringify([[{ from: 0, to: 2 }], 4, 3]));
 });
 
 async function findPage() {
@@ -3560,6 +3803,24 @@ test('the count is over every loaded item and markdown syntax does not match', a
   assert.equal((await page.answer('bold'))?.count, 2);
   assert.equal((await page.answer('**'))?.count, 0);
   assert.equal((await page.answer('`'))?.count, 0);
+});
+
+test('find selects agent and job bodies in their earlier run owner DOM', async () => {
+  const page = await findPage();
+  const base = { revision: 0, at: 1, final: true };
+  page.open([
+    { ...base, seq: 0, kind: 'assistant', stop: 'stop', error: '', blocks: [{ type: 'thinking', text: 'Plan' }] },
+    { ...base, seq: 1, kind: 'agent', direction: 'in', from: { name: 'worker' }, inbound: { form: 'report' }, text: { text: '**uniquereport**', cut: 0 } },
+    { ...base, seq: 2, kind: 'job', job: { id: 'j', name: 'build', log: '/tmp/build.log', service: false }, event: { type: 'stream', batch: { text: 'uniquelog', cut: 0 }, omitted: 0, cut: false } },
+  ]);
+  page.settle(8);
+  for (const [needle, key, seq] of [['uniquereport', '1:item', 1], ['uniquelog', '2:item', 2]] as const) {
+    assert.deepEqual(await page.answer(needle), { index: 1, count: 1, loading: false });
+    assert.equal(page.where().text, needle);
+    Object.assign(page.app.context, { selectedNode: page.selection.node });
+    assert.equal(page.evaluate(`views.get(0).view.contains(selectedNode)&&!views.get(${seq}).view.contains(selectedNode)&&openers.get('${key}').view.querySelector('.detail').contains(selectedNode)`), true);
+    assert.equal(page.evaluate(`folds.get('run:0:0')&&folds.get('${key}')`), true);
+  }
 });
 
 test('a match in a collapsed step opens it when current and keeps it open, and a non-current match stays closed', async () => {

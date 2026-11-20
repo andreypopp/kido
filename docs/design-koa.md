@@ -829,11 +829,29 @@ branch summary on the path is a summary row.
   are capped, with the count of cut bytes (`MAX_WEBVIEW_*` in
   `koa-transcript.ts`). The feed is the page's memory, so nothing in
   it is unbounded.
-- **Runs are the page's.** A run is every consecutive thinking and
-  tool block between two texts; nothing stores it. Fold state is
-  page-local and a reload loses it.
+- **Runs are the page's.** A run is every consecutive step between
+  two visible elements: thinking and tool blocks, agent messages
+  (`spawn_agent` and `message_agent` calls, inbound messages, steers,
+  notices and reports) and job items (an `async_bash` start, a stream
+  batch, an end) (app/design/koa/NOTES.md, "Agent messages and jobs
+  are steps of the run"). Nothing stores it: the page projects it
+  from the existing item kinds, and the feed has no run, so the
+  feed's clients that do not group (the iOS app) read the same items.
+  A user message, assistant text with visible content, a notice row
+  and a change of the effective thread end a run. Assistant text
+  that is empty or only whitespace, such as a reply that is only a
+  thread label, hidden items and metadata items (annotations,
+  threads) stand nowhere, so they do not split it. A gap of unloaded
+  history ends the scan, so two runs never join across content that
+  the page has not seen. One function in `page/extent.ts` decides the
+  run's owner, the source of its first step, for rendering, the
+  position table, unread and find. A run's state is independent of
+  the turn: an item that arrives while the agent is idle joins the
+  last run when nothing stands between, otherwise it starts a new
+  folded run, and a turn's first step joins it in the same way. Fold
+  state is page-local and a reload loses it.
 - **Thinking is Markdown when open.** A thinking step's line shows
-  its first line without Markdown syntax, as an agent line does. Its
+  its first line without Markdown syntax, as an agent step does. Its
   text renders through the reply's Markdown memo only when the step
   is open: the first open renders it, and while it streams open, each
   rebuild gives the memo the new text, as a reply streams. A closed
@@ -874,7 +892,7 @@ branch summary on the path is a summary row.
 - **Every notice is one row.** The user decided with `lines.html`
   (2026-11-12) that notifications, command outcomes, koa's own notes,
   the reply's error, a custom message without agent details and a
-  summary from the history look like an agent line: one prose line in
+  summary from the history look like a run line: one prose line in
   the muted colour, the time at the text edge, no chevron and no
   terminal text except a path or a session file. The item kinds stay
   separate, because a rebuild keeps or drops them by kind; only the
@@ -972,6 +990,17 @@ content holds it. While no tool call runs, it is a bare run row, the
 last row of the items, with a tool row's height, indent and baseline;
 while a call runs, the same node stands after the tool's name, on a
 folded run's summary or on the running step of an opened run.
+Its placement is a bare row or a run (app/design/koa/NOTES.md, "The
+bare dots row never leaves mid-turn"): once a turn shows the bare
+row, nothing before the turn's end removes its height. Reply text
+goes in before the bare row. The first step after the bare row takes
+that row and its line as its run's row, in one frame, so a run never
+appears beside a bare row. Text after a run appends below it with a
+new bare row below the text. A step's end, a parallel step, an agent
+message or a job event moves the mark inside the run only. The
+turn's end and an abort are the only removals: of the bare row, or
+of only the mark when it stands in a run. A rebuild of the same turn
+keeps the placement.
 Parallel calls add one mark for each running step, never only inside
 a closed run. Each page update places the indicator after the items
 and runs change, so no frame shows neither or both; the turn's end,
@@ -1008,7 +1037,7 @@ text to show.
   images and annotations render whole at once; marks apply to final
   text only, which is never cut. A text block is complete when its
   item is final or a later block of the same item began (a tool
-  step, an agent card).
+  or agent step).
 - **Blocks.** A top-level block of the lexer appears when it is
   complete, that is when the next block began, and grows in. The
   reveal holds no working mark: the turn's indicator row stands
@@ -1317,7 +1346,7 @@ the command first ("`!` commands" below).
   deliver its layout in several callbacks, and none of them slides,
   until a frame finds the layout settled. The first measurement is
   a baseline. A toggle (a click or Enter/Space on the header of a
-  fold: an agent card or report, a job card, a step, a run, a
+  fold: a step, a run, a
   notice, a command's output, a folded fence) is its own cause with
   an anchor: the page reads the header's top, applies the change,
   measures, and gives the reducer the anchor that keeps that header
@@ -1392,22 +1421,31 @@ the command first ("`!` commands" below).
   and marks what arrived meanwhile as new. A `following` view
   returns at the end with no divider. An item is new at its
   first append only: a revision or a patch of the same sequence
-  number is growth. Only an assistant message with visible content
-  is new, and the page decides it from the item's data, never from
-  its DOM: a nonblank text block, or the run that it owns (a run
-  belongs to the item of its first step, so a run that later items
-  extend counts once). An appended assistant item stays a candidate
-  until its data qualifies, so an empty message that gains text
-  later is new then; history that a reset or Older brings is never
-  a candidate. The user's message, an agent card, an error notice,
-  a job event, a command, a summary and a `!` row never count and
-  never place the divider. The divider stands before the new item
+  number is growth. The units that are new are assistant text with
+  visible content and runs, and the page decides them from the
+  item's data, never from its DOM: a nonblank text block, or a run
+  with at least one shown step. A run belongs to the source of its
+  first step, so a step that joins it, from the same item or a later
+  one, an agent message or a job event included, adds no count and
+  moves no divider; a report while idle that starts a new run is one
+  new unit. One item can hold several units (a text, then a run), so
+  a unit's address is page-local: the item's sequence number and the
+  unit's row in it; the feed's addresses do not change. An appended
+  item stays a candidate until its data qualifies, so an empty
+  message that gains text later is new then; history that a reset or
+  Older brings is never a candidate. The user's message, an error
+  notice, a command, a summary and a `!` row never count and never
+  place the divider. The divider stands before the new item
   with the lowest sequence number.
   The count is of new items whose top is below the dock's top,
   because the dock covers the bottom of the transcript. It comes
   from the position table, so it counts new items that are not
   mounted, a jump past them also counts, and the count reads no
-  geometry of its own. The capsule
+  geometry of its own. The page's lookup of a unit's position reads
+  only the measurement that the frame took before its writes (the
+  feed wrappers and the units' rows inside them); a node that the
+  frame rendered after that measurement is not mounted for it, so a
+  forced item stays forced until its new height is measured. The capsule
   shows exactly while the state is `reader`. The divider and the count clear
   together, on a send and on a reset of the transcript, which a
   session switch, `/new`, `/reload` and `/restart` all cause.
@@ -1586,7 +1624,7 @@ composer's text; koa never sends it.
 ## Paths in the transcript
 
 A path in an inline code span of an assistant block, a user block or
-the opened body of an agent line opens in the user's editor, in a new
+the opened body of an agent step opens in the user's editor, in a new
 float of koa's pane (design: `app/design/koa/NOTES.md`, "Paths in the
 transcript open in the editor").
 
@@ -1651,13 +1689,13 @@ back and Clear return to. A job's view id is the job id, scoped by the
 owner's `sessionId`.
 
 - **Opening.** A `select` of the job's row, or the "open" link of a
-  job card (the `async_bash` result, a `bash` call that went to the
-  background, a notice) through `POST /view`. `/view` resolves the
-  live registry first, then the job facts that the owner's
-  transcript holds in its cards. It takes an id, never a path, so the
-  page reads only a log that koa's own registry or session named. A
-  card has no link when its log file does not exist; the host decides
-  that when it projects the card.
+  job step (the `async_bash` result, a `bash` call that went to the
+  background, a stream batch or an end) through `POST /view`. `/view`
+  resolves the live registry first, then the job facts that the
+  owner's transcript holds in its items. It takes an id, never a
+  path, so the page reads only a log that koa's own registry or
+  session named. A step has no link when its log file does not
+  exist; the host decides that when it projects the item.
 - **A gone record.** A job pruned from the registry, or a record
   cleared while viewed, shows the file read-only: the foot's state is
   "cleared" with no button. A log deleted by then shows "the log is
@@ -1941,7 +1979,7 @@ In a browser, `window.ko` does not exist: an image opens in a lightbox
 inside the page, which Escape closes before it aborts anything, and a
 file opens in a new tab.
 
-## Agent lines and job lines
+## Agent and job steps
 
 The agent extension is the only writer of agent messages and job
 notices, and it ships with koa, so it writes the facts that the page
@@ -1955,37 +1993,70 @@ lines. A custom message without these details (another extension's,
 or a session written before them) stays a plain notice.
 
 The user decided the look with the mockups `agents.html` and
-`refine.html`:
+`refine.html`, then made agent messages and jobs steps of the run
+(app/design/koa/NOTES.md, "Agent messages and jobs are steps of the
+run"); the separate agent and job rows are gone:
 
 - `spawn_agent`, `message_agent` and every inbound agent message are
-  one line, like a step's line, not a card: one phrase in the prose
-  font, `<kind> to|from @<name> <relation>` ("steer from @kido-app
-  parent"), then the first line of the text, then the time at the
-  text edge, in the prose font. The relation is one word,
-  `subagent`, `peer` or `parent`, that folds the extension's five
-  relations; its own notices have none. The line splits its run as a text
-  does. The first line is plain text with its Markdown syntax
-  removed (the first code line when the text starts with a fence),
-  and it ellipsizes, so a closed line keeps its height. A click opens
-  the text under the line, as Markdown rendered as final text by the
-  reply's renderer. A custom message without agent details is not
-  an agent line: it is a notice row ("Every notice is one row" under
-  "The transcript") of its first line with the same syntax removed,
-  and it opens to the rest as Markdown when it has more lines. A line shows no delivery status and no
-  meta lines: only a failure shows, in the error colour in the
-  kind's place ("refused to @name", "not reported from @name
-  subagent").
-- **Run, agent and job lines are one look.** None has a chevron; the
-  whole line folds it. Tool names, step names and the agent lead are
-  prose at the row's size; only a command or path inside a step is
-  terminal text. Times are prose at .8em with tabular digits. A
-  running tool shows its name and then the working mark, not its
-  command.
+  steps of the run they arrive in ("Runs are the page's" under "The
+  transcript"). A folded step's name is the message's phrase, in the
+  prose font: `<kind> to|from @<name> <relation>` ("steer from
+  @kido-app parent"). The relation is one word, `subagent`, `peer`
+  or `parent`, that folds the extension's five relations; its own
+  notices have none. Then comes the first line of the text, in the
+  foreground colour where a tool shows its command, ellipsized before
+  the time. The first line is plain text with its Markdown syntax
+  removed (the first code line when the text starts with a fence). A
+  failure shows only as the error colour of the name, in the kind's
+  place ("refused to @name", "not reported from @name subagent"); the
+  page takes it from the typed details and never parses the text. An
+  open step shows the whole text as Markdown rendered as final text
+  by the reply's renderer, in the foreground colour, with no height
+  cap. A step shows no delivery status and no meta lines. A custom
+  message without agent details is not an agent step: it is a notice
+  row ("Every notice is one row" under "The transcript") of its first
+  line with the same syntax removed, and it opens to the rest as
+  Markdown when it has more lines.
+- A job is not an agent (design-subagents.md, "A job"). Each job
+  item is its own step, named "job <name>": a successful
+  `async_bash` start shows "started" and does not open; a stream
+  batch shows its line count; an end shows its outcome, muted for
+  exit 0 and in the error colour for a failure, with no end text. An
+  `async_bash` call that failed stays a failed tool step. An open
+  batch or end shows its output in a step's well (260px, scrollable)
+  with the "open" link to the job's view at its head ("The job
+  view"). The page has no live list of jobs; the sidebar shows them.
+- **The folded run's summary** names its steps in the order of their
+  first occurrence: tools and thinking as before, an agent step as
+  "to @name" or "from @name" (a report is "from"), a job step as "job
+  <name>"; a repeated name gets "xN". The name of a failed step is
+  red. An agent's identity is its session id, and a job's its id, so
+  two agents of one name do not merge.
+- **Times.** Tools, thinking and outgoing agent calls are timed:
+  their line shows the call's duration, and the run's time is the
+  duration of its timed steps, which grows with the clock while one
+  runs. Inbound agent steps and job events are moments: their line
+  shows the clock time, and they add nothing to the duration. A run
+  with no timed step shows the clock time of its last step.
+- **Run lines and notice rows are one look.** None has a chevron;
+  the whole line folds it. Tool names, step names and the agent
+  phrase are prose at the row's size; only a command or path inside
+  a step is terminal text. Times are prose at .8em with tabular
+  digits. A running tool shows its name and then the working mark,
+  not its command.
   Rows indent by `--pad` from the text edge and their times end on it;
-  an opened body, a run's steps or an agent's text, indents from that
-  point. Consecutive run, agent, job and notice rows sit 2pt apart;
-  the last of a group and an opened row keep 14pt.
-- **`@name` goes to the agent.** An agent's name in an agent line,
+  an opened body, a run's steps or a step's text, indents from that
+  point. Consecutive run and notice rows sit 2pt apart; the last of
+  a group and an opened row keep 14pt.
+- **Find and copy** read a step's body from the model, as a tool's
+  details: a folded body counts, the current match opens the run and
+  the step, and a selection or a copy takes it. A step that joined a
+  run from a later item lives in the DOM of the run's owner, so find
+  resolves a match to that owner and its step.
+- **Threads.** A run belongs to its section, and its steps take its
+  marks and filter, as tool steps do. A run outside a section is
+  unthreaded and shows only unfiltered.
+- **`@name` goes to the agent.** An agent's name in an agent step,
   and an `@name` in the prose of a reply or a user message, is a link
   while the name is in koa's list of live agents. A click on an agent
   of this process switches the view ("Views"); one of another pane
@@ -2001,7 +2072,7 @@ The user decided the look with the mockups `agents.html` and
   events; a stale pane id is harmless, because the app refuses a pane
   that is not in its layout. Prose links a name only when it renders
   (never inside code or an existing link), so a name in an older reply
-  does not follow later changes; an agent line renders again when its
+  does not follow later changes; an agent step renders again when its
   agent joins or leaves the list, and a name that left it is muted,
   with no link ("ended"). In a browser, a click does nothing.
 - **An `@name` that matches no agent** gets one warning note after
@@ -2013,15 +2084,8 @@ The user decided the look with the mockups `agents.html` and
   after the submit returns. Nothing warns before the submit, because
   `@path` is legal, and the prompt goes to the model unchanged.
 - `stop_agent`, `list_agents`, `read_report`, `list_async_bash` and
-  `stop_async_bash` stay steps: they are the caller's own actions, not
-  messages.
-- A job is not an agent (design-subagents.md, "A job"): its end
-  notice is one prose line, like a run line, with no end text; it opens
-  to its output, gray on success and in the error colour on failure,
-  and the stream
-  batches of one job join into one entry. The page has no live list of
-  jobs; the sidebar shows them. A job card's "open" link switches to
-  the job's view ("The job view").
+  `stop_async_bash` stay tool steps: they are the caller's own
+  actions, not messages.
 
 ## Reply annotations
 
@@ -2209,7 +2273,7 @@ the order in which the extension appends them. So a thread's position
 never changes. Each has its last assistant section as one optional
 record, the raw first line and the time of its message; a thread that
 only a `thread` parameter named has none. The page removes the
-Markdown syntax of the line, as for an agent line.
+Markdown syntax of the line, as for an agent step.
 
 **The colour** of a thread is not stored or sent: the page maps the
 thread's position to its palette, modulo the palette's size.

@@ -2077,3 +2077,122 @@ binds itself in browser mode.
   selection quoted into an empty composer with the caret line under
   it; a second quote appended after typed text (blank line, quote,
   caret).
+
+## The bare dots row never leaves mid-turn (user, 2026-11-20, spec)
+
+The user sees the bare dots row appear, then vanish, and the layout
+jump up. The invariant: once a turn has rendered the bare row, no
+frame before the turn's end removes its vertical space. The rule of
+the last element stays; its transitions are now these, and only
+these:
+
+- **The bare row is the last element, always.** It exists after the
+  user's message before anything else, and under streaming text.
+  Reply text appends above it (the text block is inserted before the
+  row), so the row stays last and the text grows over it; the row
+  never moves above the text, and the caret carries no second mark.
+- **Bare row → run widget is a change of the same node.** When a
+  tool call or a thinking block starts while the bare row shows, the
+  row becomes that run's own line: the same element gains the
+  chevron and the name, the mark moves from the name's place to
+  where the summary rule puts it, in one frame. The bare row is
+  exactly a run line's height and sits with a run line's spacing (it
+  is one), so nothing is reserved and nothing jumps: the row count
+  and the height are the same before and after. A run never appends
+  as a new row beside a bare row.
+- **Run widget → bare row** happens only when text starts streaming
+  after a run: the text block appends below the run and the bare row
+  appends below the text, in the frame of the first text patch; the
+  mark leaves the run's line. Growth, never removal. When that text
+  is final and a run follows, the bare row becomes the run's line
+  (the rule above).
+- **Nothing else moves the row.** A step that finishes, a parallel
+  step, a message, a job event: the mark changes place inside the
+  run, the bare row (if any, under text) stays.
+- **The turn's end** removes the bare row in one frame, with the
+  Auto-scroll rule (following keeps the bottom, so the content moves
+  up by one row's height at most, once, when the agent is done); an
+  abort turns a running step into the "aborted" row and removes the
+  bare row in the same frame. These are the only removals.
+- **Reduce Motion**: the same frames, static dots.
+
+## Agent messages and jobs are steps of the run (user, 2026-11-20, spec)
+
+The user: the transcript is too long; messages from and to agents,
+reports and async_bash job items go inside the tool/thinking run
+widget as steps. The user's own messages and the assistant's prose
+stay rows; koa's own notice rows (lines.html, A) stay rows.
+
+- **The run** is every consecutive thinking block, tool call, agent
+  message (outgoing `spawn_agent`, `message_agent`; incoming
+  `ko-message`, `ko-steer`, `ko-notice`, a report, a child's end) and
+  job item (an `async_bash` start, a stream batch, a job's end)
+  between two assistant texts, or between the user's message and the
+  first text. An agent card no longer splits a run; "A card splits
+  the run it sits in" and the separate card and job rows of
+  agents.html and lines.html item 5 are superseded.
+- **An agent step, folded** is one step line like a tool's: the name
+  is the header phrase of the card, in the step's name tone
+  ("message to @impl", "steer from @ko parent", "report from
+  @reviewer subagent", "@impl ended"; the @name in 600 in the fg
+  as today), then the body's first line in the fg colour where a
+  tool shows its command, ellipsized before the time, the time at
+  the right. A failure colours the name red as a failed tool's
+  ("refused to @impl"; "not reported from @impl"): colour only.
+- **An agent step, open**: the whole body as prose in the step's
+  details, `--ko-fg`, no height cap (the agent body never had one);
+  the quote and Markdown as the card rendered them; @names linked
+  as everywhere.
+- **A job step, folded**: the name is "job <name>" with the job's
+  name in the fg ("job make-verify"), the detail the event: a start
+  "started", a stream "N lines", an end "exit 0" muted, "exit 1",
+  "signal TERM", "failed", "timeout 60s" in `--ko-color-1` with the
+  name (the job line's rule: no end text, no exit wording beyond
+  the number). The time at the right. Open: the output as a bash
+  step shows it (a well, 260pt cut, scrollable) with the "open" link
+  to the in-page job view at the well's head, as the async_bash
+  result has it; a start has no body and does not open.
+- **The folded run summary**: names in order of first occurrence,
+  tools as today ("thinking, bash x2"), agent steps as "to @impl"
+  and "from @impl" ("to @impl x2"; a report is "from"), job steps as
+  "job make-verify"; a failed step's name red; no counts beyond xN,
+  no icons. The dots rule is unchanged (the run is just larger).
+- **Times** (runsteps, 2026-11-20). A run's time is the duration of
+  its timed steps, as today: a tool, a thinking block, and an
+  outgoing agent step (a `spawn_agent` or `message_agent` call is a
+  tool call: its line shows the call's duration like a tool, not
+  the card's clock time). An incoming step (a message, a steer, a
+  report, a child's end, a notice) and a job event are moments:
+  their line shows the clock time, and they add nothing to the
+  run's duration. A run with no timed step (an idle report, "job
+  verify-unit, job lint") shows the clock time of its last step at
+  the right of the summary, so the folded line still says when; a
+  mixed run shows its duration. So the line's time is a duration
+  when the run has a timed step, else the last moment.
+  notice) joins the last element when that is a run and nothing
+  stands between (no user message, no assistant text); otherwise it
+  starts a new run row with that one step, folded, at the end. The
+  next item joins it. Whether the item starts a turn is pi's; the
+  turn's first step joins the same run, because it is consecutive.
+  visible content, or a run with at least one step shown, counts
+- **Outside a turn.** An incoming item (a report, a job's end, a
+  notice) joins the last element when that is a run and nothing
+  stands between (no user message, no assistant text); otherwise it
+  starts a new run row with that one step, folded, at the end. The
+  next item joins it. Whether the item starts a turn is pi's; the
+  turn's first step joins the same run, because it is consecutive.
+- **Unread counting**: the rule stands: an assistant text with
+  visible content, or a run with at least one step shown, counts
+  once when it appears; a step that joins an existing run adds no
+  count and moves no divider. So a report while idle is one new
+  item (its new run), and a report inside a working run is none.
+- **Threads**: a run belongs to the section it sits in and its steps
+  inherit it, marks and filter as for tool steps; a run that starts
+  outside a section is unthreaded and shows only unfiltered, as any
+  unlabelled line.
+- **Find and copy**: a step's body is in the model like a tool's
+  details: counted when folded, opened when current, selected and
+  copied with the transcript.
+- **Browser mode and subagent views**: the same rendering; a
+  subagent's view shows its own messages to its children, their
+  reports, and its parent's messages as steps of its runs.

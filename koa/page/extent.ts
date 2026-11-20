@@ -1,31 +1,79 @@
-import type { Block, WireAssistant, WireItem } from '../koa-records.ts';
+import type { Block, WireItem } from '../koa-records.ts';
+import type { ThreadName } from '../records.ts';
+import type { StepInput } from './steps.ts';
+
+type Source = { kind: 'item'; seq: number } | { kind: 'block'; seq: number; index: number };
+type RunPart = { kind: 'step'; source: Source; step: StepInput; thread?: ThreadName } | { kind: 'boundary' };
+type RunTail = { owner: Source; thread?: ThreadName };
+type OwnerItem = { sources: Map<string, Source>; tail?: RunTail };
+export type RunContext = { raw: (seq: number) => WireItem | undefined; shown: (seq: number) => WireItem | undefined; owners: Map<number, OwnerItem>; threads?: boolean };
+export const visibleText = (block: Block) => block.type === 'text' && block.text.trim() !== '';
+export const sourceKey = (source: Source) => source.seq + ':' + (source.kind === 'block' ? source.index : 'item');
+export function runParts(raw: WireItem | undefined, shown: WireItem | undefined): RunPart[] {
+  if (raw?.kind === 'annotations' || raw?.kind === 'threads') return [];
+  if (!shown) return raw ? [] : [{ kind: 'boundary' }];
+  switch (shown.kind) {
+    case 'assistant': return [...shown.blocks.flatMap((block, index): RunPart[] => block.type === 'text' ? visibleText(block) ? [{ kind: 'boundary' }] : [] : [{ kind: 'step', source: { kind: 'block', seq: shown.seq, index }, step: { kind: 'block', item: shown, block, index }, thread: block.thread }]), ...shown.error ? [{ kind: 'boundary' } as const] : []];
+    case 'agent': return [{ kind: 'step', source: { kind: 'item', seq: shown.seq }, step: { kind: 'agent', item: shown }, thread: shown.thread }];
+    case 'job': return [{ kind: 'step', source: { kind: 'item', seq: shown.seq }, step: { kind: 'job', item: shown }, thread: shown.thread }];
+    default: return [{ kind: 'boundary' }];
+  }
+}
+function ownersAt(context: RunContext, seq: number): OwnerItem {
+  const known = context.owners.get(seq);
+  if (known) return known;
+  const pending: { seq: number; parts: RunPart[] }[] = [];
+  let tail: RunTail | undefined;
+  for (let at = seq; at >= 0; at--) {
+    const cached = context.owners.get(at);
+    if (cached) { tail = cached.tail; break; }
+    const parts = runParts(context.raw(at), context.shown(at));
+    pending.push({ seq: at, parts });
+    if (parts[0]?.kind === 'boundary') break;
+  }
+  let result: OwnerItem = { sources: new Map() };
+  for (const item of pending.reverse()) {
+    const sources = new Map<string, Source>();
+    for (const part of item.parts) {
+      if (part.kind === 'boundary') { tail = undefined; continue; }
+      const thread = context.threads === false ? undefined : part.thread;
+      const owner = tail?.thread === thread && tail ? tail.owner : part.source;
+      sources.set(sourceKey(part.source), owner); tail = { owner, thread };
+    }
+    result = { sources, tail }; context.owners.set(item.seq, result);
+  }
+  return result;
+}
+export function runOwner(context: RunContext, source: Source): Source {
+  return ownersAt(context, source.seq).sources.get(sourceKey(source)) ?? source;
+}
+export function invalidateRuns(context: RunContext, seq: number): number {
+  let last = seq;
+  for (let at = seq; ; at++) {
+    const raw = context.raw(at);
+    if (!raw) break;
+    const previous = context.owners.get(at);
+    context.owners.delete(at);
+    const current = ownersAt(context, at);
+    last = at;
+    if (previous && (!previous.tail && !current.tail || previous.tail && current.tail && previous.tail.thread === current.tail.thread && sourceKey(previous.tail.owner) === sourceKey(current.tail.owner))) break;
+    if (at > seq && runParts(raw, context.shown(at)).some(part => part.kind === 'boundary')) break;
+  }
+  return last;
+}
 
 export type SeqRange = { from: number; to: number };
 
 const lineCount = (text: string) => { let count = 1; for (let at = text.indexOf('\n'); at >= 0; at = text.indexOf('\n', at + 1)) count++; return count; };
 
-export const isStep = (block: Block): block is Exclude<Block, { type: 'text' }> & { agent?: undefined } => block.type !== 'text' && !(block.type === 'tool' && block.agent);
-
-export const joinsRun = (previous: Block | undefined, next: Block | undefined) => !!previous && !!next && isStep(previous) && isStep(next) && previous.thread === next.thread;
-
-export const continuesRun = (previous: WireItem | undefined) => previous?.kind === 'assistant' && !previous.error && previous.blocks.length > 0 && isStep(previous.blocks[previous.blocks.length - 1]);
-
-export function runStarts(item: WireAssistant, joined: boolean) {
-  let count = 0, run = joined, previous: Block | undefined;
-  for (const block of item.blocks) {
-    if (!isStep(block)) run = false;
-    else { if (previous && !joinsRun(previous, block)) run = false; if (!run) { run = true; count++; } }
-    previous = block;
-  }
-  return count;
-}
-
-export function estimateExtent(item: WireItem, lh: number, joined = false): number {
+export function estimateExtent(item: WireItem, lh: number, context: RunContext): number {
+  const runs = runParts(context.raw(item.seq), item).filter(part => part.kind === 'step' && sourceKey(part.source) === sourceKey(runOwner(context, part.source))).length;
   switch (item.kind) {
     case 'user': return lineCount(item.text) * lh + 30;
     case 'annotations': case 'threads': return 0;
-    case 'assistant': return (runStarts(item, joined) + (item.error ? 1 : 0)) * (lh + 16) + item.blocks.reduce((total, block) => total + (block.type === 'text' && block.text.trim() ? lineCount(block.text) * lh : block.type === 'tool' && block.agent ? lh + 16 : 0), 0);
-    case 'agent': case 'job': case 'notify': case 'command': case 'notice': case 'bash': case 'summary': return lh + 16;
+    case 'assistant': return (runs + (item.error ? 1 : 0)) * (lh + 16) + item.blocks.reduce((total, block) => total + (block.type === 'text' && visibleText(block) ? lineCount(block.text) * lh : 0), 0);
+    case 'agent': case 'job': return runs * (lh + 16);
+    case 'notify': case 'command': case 'notice': case 'bash': case 'summary': return lh + 16;
   }
 }
 

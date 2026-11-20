@@ -5,9 +5,9 @@ import { pathToken } from '../path-token.ts';
 import { markdown, type Tail } from './markdown.ts';
 import { markdownLine } from '../markdown-line.ts';
 import { revealHeight, unitsOf, type Unit } from './reveal.ts';
-import { continuesRun, isStep, joinsRun, estimateExtent, groupAt, runStarts, windowOf, type SeqRange } from './extent.ts';
+import { visibleText, estimateExtent, groupAt, runParts, runOwner, invalidateRuns, sourceKey, windowOf, type SeqRange, type RunContext } from './extent.ts';
 import { composer } from './composer.ts';
-import { agentBody, stepInfo, stepParts, toolArgs, type AgentCard } from './steps.ts';
+import { stepInfo, stepParts, toolArgs, type StepInput } from './steps.ts';
 import { exportText, findSegments, lowered, matchesIn, type Segment } from './find.ts';
 import { attach } from './attach.ts';
 import { closeLightbox, preview, previewKey } from './preview.ts';
@@ -16,13 +16,11 @@ import { createJobPage } from './job.ts';
 import { dots } from './working.ts';
 import { install } from './metrics.ts';
 import { ATTACHMENT_LIMITS, pathArg } from '../koa-records.ts';
-import type { State, WireJob, WireItem, QueuedPrompt, WireAssistant, Block, Patch, PageRecord, MetricsSample, Stages, PromptMode, ImageRef, Bash, SessionRow, SessionScope, ThinkingLevel } from '../koa-records.ts';
+import type { State, WireJob, WireItem, QueuedPrompt, Block, Patch, PageRecord, MetricsSample, Stages, PromptMode, ImageRef, Bash, SessionRow, SessionScope, ThinkingLevel } from '../koa-records.ts';
 import type { ThreadName, AgentRef, Relation } from '../records.ts';
 
-type Step = { block: Exclude<Block, { type: 'text' }>;  item: WireAssistant; index: number; key: string; slots: Map<string, Slot> };
-type JobItem = Extract<WireItem, { kind: 'job' }>;
-type JobGroup = { first: JobItem; next: number; items: JobItem[]; shown: number; shownStreams?: number; streams: number; omitted: number; cut: boolean; view: HTMLDivElement; details: HTMLDivElement; footer?: HTMLDivElement; kind: HTMLSpanElement };
-type Slot = { type: 'image'; view: HTMLButtonElement } | { type: 'run'; view: HTMLDivElement } | { type: 'agent'; view: HTMLDivElement; rendered?: { card: AgentCard; at: number; key: string } } | { type: 'job'; view: HTMLDivElement; group: JobGroup };
+type Step = StepInput & { key: string; slots: Map<string, Slot> };
+type Slot = { type: 'image'; view: HTMLButtonElement } | { type: 'run'; view: HTMLDivElement };
 declare global {
   interface Window {
     composer: Pick<ReturnType<typeof composer>, 'text' | 'setText' | 'focus'>;
@@ -60,7 +58,7 @@ const items = new Map<number, WireItem>();
 const views = new Map<number, { view: HTMLElement; item: WireItem; warning?: string; slots: Map<string, Slot>; filter?: ThreadName; preceding?: ThreadName }>();
 const openers = new Map<string, { view: HTMLElement; open: () => void }>(), fenceOpeners = new Map<string, { view: HTMLElement; open: () => void }>(), patched = new Set<number>(), live = new Set<number>(), order: number[] = [], extents = new Map<number, Extent>(), openFences = new Set<string>(), animating = new Map<HTMLElement, number>();
 type Extent = { kind: 'measured'; width: number; lh: number; px: number } | { kind: 'estimated'; px: number };
-type Group = SeqRange & ({ kind: 'run' } | { kind: 'job'; id: string });
+type Group = SeqRange;
 type Table = { followers: Set<number>; index: Map<number, number>; starts: number[]; total: number; groups: Group[]; divider: { before: number; px: number } | undefined };
 let table: Table | undefined, windowDirty = true, mountedSpans: { start: number; end: number }[] = [], gaps: HTMLElement[] = [], measured = { width: 0, lh: 0 }, dividerPx: number | undefined;
 const template = document.createElement('template');
@@ -71,11 +69,13 @@ type Reveal = { at: number; tail?: { block: Tail; view: HTMLElement; shown: numb
 type Watch = { type: 'reveal'; memo: TextMemo } | { type: 'hold' } | { type: 'block' } | { type: 'row' } | { type: 'fit'; row: HTMLElement; width: number };
 type TextMemo = { render: ReturnType<typeof markdown>; view: HTMLElement; blocks: { block: ReturnType<ReturnType<typeof markdown>>[number]; nodes: ChildNode[] }[]; final?: boolean; source?: string; annotationItem?: Extract<WireItem, { kind: 'annotations' }>; assistant: boolean; paths: boolean; key?: string; reveal?: Reveal; grown: number };
 const texts = new Map<string, TextMemo>();
-type StepMarks = { key: string; shape: string; child: HTMLElement; sum: HTMLElement; name?: HTMLElement; label: HTMLElement; after: HTMLElement; tail: HTMLElement[]; tailKey: string; result: HTMLElement; time: HTMLElement; detail: HTMLElement; current: Step; live: boolean; file?: string; images?: ReturnType<typeof thumbnails>; show?: () => void };
-type RunMarks = { key: string; summary: HTMLElement; names: HTMLElement; namesKey: string; time: HTMLElement; children: HTMLElement; steps: StepMarks[] };
+type StepMarks = { key: string; shape: string; links: string; cwd: string; card?: NonNullable<ReturnType<typeof stepInfo>['card']>; child: HTMLElement; sum: HTMLElement; name?: HTMLElement; label: HTMLElement; after: HTMLElement; tail: HTMLElement[]; tailKey: string; result: HTMLElement; time: HTMLElement; detail: HTMLElement; current: Step; live: boolean; file?: string; images?: ReturnType<typeof thumbnails>; show?: () => void };
+type RunMarks = { key: string; links: string; cwd: string; summary: HTMLElement; names: HTMLElement; namesKey: string; time: HTMLElement; children: HTMLElement; steps: StepMarks[] };
 const runMarks = new WeakMap<HTMLElement, RunMarks>();
 const liveMarks = new Map<string, RunMarks>();
-let working: { view: string; since: number; primary: HTMLElement; row: HTMLElement; extra: Map<string, HTMLElement> } | undefined;
+type WorkingPlace = { kind: 'bare'; row: HTMLElement; line: HTMLElement; sum: HTMLElement } | { kind: 'run'; owner: HTMLElement };
+let working: { view: string; since: number; primary: HTMLElement; place: WorkingPlace; extra: Map<string, HTMLElement> } | undefined;
+const runContext = (): RunContext => ({ raw: seq => items.get(seq), shown: visible, owners, threads: state.view.type === 'root' });
 type Spot = { key: string; parent: HTMLElement; before: ChildNode | null };
 const revealing = new Set<TextMemo>();
 let capTimer: number | undefined;
@@ -111,12 +111,13 @@ function visible(seq: number): WireItem | undefined {
   const names = threadItems.get(seq)?.threads ?? [];
   let projected: WireItem | undefined;
   if (!filter) {
+    if ((item.kind === 'agent' || item.kind === 'job') && !item.thread && names[0]) { const projected = { ...item, thread: names[0] }; projections.set(seq, projected); return projected; }
     if (item.kind !== 'assistant' || !names[0] || item.blocks.every(block => block.thread)) return item;
     projected = { ...item, blocks: item.blocks.map(block => block.thread ? block : { ...block, thread: names[0] }) };
   } else if (item.kind === 'assistant') {
     const matches = (block: Block) => (block.thread ?? names[0]) === filter;
     if (item.blocks.some(matches)) projected = { ...item, error: '', blocks: item.blocks.map(block => matches(block) ? block.thread ? block : { ...block, thread: names[0] } : { type: 'text', text: '' }) };
-  } else if ((item.kind === 'user' || item.kind === 'agent' || item.kind === 'job') && (item.thread ? item.thread === filter : names.includes(filter)) || waitingForThread(item)) projected = item;
+  } else if ((item.kind === 'user' || item.kind === 'agent' || item.kind === 'job') && (item.thread ? item.thread === filter : names.includes(filter)) || waitingForThread(item)) projected = (item.kind === 'agent' || item.kind === 'job') && !item.thread && names[0] ? { ...item, thread: names[0] } : item;
   projections.set(seq, projected);
   return projected;
 }
@@ -280,74 +281,12 @@ function linkNames(html: string) {
     });
   }).join('');
 }
-function agentCard(card: AgentCard, at: number, key: string, slots: Map<string, Slot>) {
-  const saved = slots.get(key), slot: Extract<Slot, { type: 'agent' }> = saved?.type === 'agent' ? saved : { type: 'agent', view: node('div') };
-  slots.set(key, slot);
-  if (slot.rendered?.card === card && slot.rendered.at === at) return slot.view;
-  slot.rendered = { card, at, key };
-  const inbound = card.direction === 'in', ref = inbound ? card.from : card.to;
-  let kind = inbound ? card.inbound.form : card.call.tool === 'spawn' ? 'task' : card.call.mode === 'interrupt-and-steer' ? 'interrupt' : card.call.mode;
-  let failed = false;
-  if (card.direction === 'out' && card.outcome?.ok === false) { failed = true; kind = card.call.tool === 'spawn' ? 'refused' : card.outcome.failure === 'refused' || card.outcome.failure === 'gone' ? card.outcome.failure : card.outcome.message; }
-  const view = slot.view; view.className = failed ? 'aline err' : 'aline';
-  const header = node('div', undefined, 'hd'), lead = node('span', undefined, 'lead');
-  lead.append(kind + ' ' + (inbound ? 'from' : 'to') + ' ', who(ref));
+function agentLead(card: NonNullable<ReturnType<typeof stepInfo>['card']>, label: string) {
+  const lead = node('span', undefined, 'agent-name');
+  const ref = card.direction === 'in' ? card.from : card.to;
+  lead.append(label.slice(0, label.lastIndexOf('@')), who(ref));
   if (card.direction === 'in' && 'relation' in card.inbound && card.inbound.relation) lead.append(' ', node('span', relationWords[card.inbound.relation], 'rel'));
-  const body = agentBody(card);
-  header.append(lead, node('span', markdownLine(body), 'tx'), node('time', timestamp(at)));
-  const details = prose(undefined, body, true, undefined, 'agent'); details.className = 'bd prose';
-  view.replaceChildren();
-  fold(view, key, header, details);
-  return view;
-}
-function refreshAgentCards() {
-  for (const { slots } of views.values()) for (const slot of slots.values()) if (slot.type === 'agent' && slot.rendered) { const { card, at, key } = slot.rendered; slot.rendered = undefined; agentCard(card, at, key, slots); }
-}
-function jobCard(first: JobItem, slots: Map<string, Slot>): JobGroup {
-  const view = node('div', undefined, 'job'), line = node('div', undefined, 'hd'), details = node('div', undefined, 'out');
-  const kind = node('span', undefined, 'kind'), time = node('time', timestamp(first.at));
-  line.append(node('span', first.job.name, 'nm'), kind, time);
-  const group: JobGroup = { first, next: first.seq, items: [], shown: 0, streams: 0, omitted: 0, cut: false, view, details, kind };
-  slots.set('job', { type: 'job', view, group });
-  fold(view, 'job:' + first.seq, line, details, () => showJob(group));
-  return group;
-}
-function showJob(group: JobGroup) {
-  if (!group.footer) { group.footer = node('div', undefined, 'ft'); group.details.append(group.footer); }
-  let batches = group.shownStreams ?? 0;
-  for (; group.shown < group.items.length; group.shown++) {
-    const item = group.items[group.shown];
-    if (item.event.type === 'stream') {
-      if (batches++) group.details.insertBefore(node('div', '+ ' + timestamp(item.at), 'sep'), group.footer);
-      group.details.insertBefore(node('pre', item.event.batch.text), group.footer);
-    } else if (!group.streams && item.event.tail.text) group.details.insertBefore(node('pre', item.event.tail.text), group.footer);
-  }
-  group.shownStreams = batches;
-  group.footer.textContent = 'log: ' + group.first.job.log + (group.omitted ? ' · … ' + group.omitted + ' lines omitted' : '') + (group.cut ? ' · long lines truncated' : '');
-  group.footer.append(' ', jobOpen(group.first.job));
-}
-const jobOwners = new Map<number, JobGroup>();
-function reconcileJobs(seq: number) {
-  const current = visible(seq); if (current?.kind !== 'job') return;
-  const previous = jobOwners.get(seq - 1);
-  let group = previous && previous.first.job.id === current.job.id && previous.items.at(-1)?.event.type === 'stream' ? previous : jobOwners.get(seq);
-  if (!group) { const owner = views.get(seq); if (!owner) return; group = jobCard(current, owner.slots); }
-  while (group.items.at(-1)?.event.type !== 'ended') {
-    const item = visible(group.next), wrapper = views.get(group.next);
-    if (item?.kind !== 'job' || item.job.id !== group.first.job.id || !wrapper) break;
-    group.items.push(item); jobOwners.set(group.next, group);
-    if (group.next !== group.first.seq) { clear(wrapper.view); wrapper.view.hidden = true; }
-    group.next++;
-    if (item.event.type === 'stream') { group.streams++; group.omitted += item.event.omitted; group.cut ||= item.event.cut || item.event.batch.cut > 0; }
-    else { group.view.classList.toggle('err', item.event.end.type === 'exit' ? item.event.end.code !== 0 : item.event.end.type !== 'stopped'); break; }
-  }
-  const owner = views.get(group.first.seq);
-  if (owner) {
-    const parent = owner.view.querySelector<HTMLElement>('.thread-section') ?? owner.view;
-    if (group.view.parentNode !== parent) parent.append(group.view);
-  }
-  group.kind.textContent = group.first.job.service ? 'service' : group.streams ? 'stream' : ''; group.kind.hidden = !group.kind.textContent;
-  if (group.view.classList.contains('open')) showJob(group);
+  return lead;
 }
 
 function previewFile(label: HTMLElement, url: string) {
@@ -525,7 +464,14 @@ type Geo = { top: number; max: number; viewport: number; width: number; origin: 
 const geometry = (): Geo => scrolling.last ?? lastMeasurement ?? measure();
 const messageRows = (): ArrayLike<Element> => state.view.type === 'job' ? job.rows() : element('items').children;
 const itemOf = (row: Element | undefined): ItemId | undefined => row instanceof HTMLElement ? row.dataset.seq !== undefined ? { kind: 'message', seq: Number(row.dataset.seq) } : row.dataset.byte !== undefined ? { kind: 'job', byte: Number(row.dataset.byte) } : undefined : undefined;
-const rowOf = (item: ItemId) => item.kind === 'message' ? views.get(item.seq)?.view : job.row(item.byte);
+const unitView = (key: string) => key.startsWith('run:') ? openers.get(key)?.view : texts.get(key)?.view;
+const rowOf = (item: ItemId): HTMLElement | undefined => {
+  if (item.kind === 'job') return job.row(item.byte);
+  if (item.row) return unitKeys(item.seq)[0] === item.row ? views.get(item.seq)?.view : unitView(item.row);
+  const parts = runParts(items.get(item.seq), visible(item.seq)), first = parts[0];
+  const seq = first?.kind === 'step' ? runOwner(runContext(), first.source).seq : item.seq;
+  return views.get(seq)?.view;
+};
 function measure(): Measure {
   const scroll = element('scroll');
   const top = scroll.scrollTop;
@@ -533,7 +479,7 @@ function measure(): Measure {
   const viewport = scroll.clientHeight;
   const rect = scroll.getBoundingClientRect();
   const offset = scrollDecision.glideOffset;
-  const mounted = new Map<number, { row: Row; element: Element }>();
+  const mounted = new Map<number, { row: Row; element: Element }>(), projected = new Map<string, { row: Row; element: Element }>(), units = new Map<number, string[]>();
   const jobView = state.view.type === 'job';
   for (const view of jobView ? Array.from(messageRows()) : resetting ? [] : [...views.values()].map(entry => entry.view)) {
     const item = itemOf(view);
@@ -545,9 +491,18 @@ function measure(): Measure {
       bottom: top + box.bottom - rect.top - offset,
     };
     mounted.set(item.kind === 'message' ? item.seq : item.byte, { row, element: view });
+    if (item.kind === 'message') {
+      const keys = unitKeys(item.seq); units.set(item.seq, keys);
+      for (const key of keys) {
+        const address: ItemId = { ...item, row: key }, target = key === keys[0] ? view : unitView(key);
+        if (!target) continue;
+        const bounds = target === view ? box : target.getBoundingClientRect();
+        projected.set(key, { element: target, row: { item: address, top: top + bounds.top - rect.top - offset, bottom: top + bounds.bottom - rect.top - offset } });
+      }
+    }
   }
   let anchorRow: Row | undefined;
-  for (const { row } of mounted.values()) {
+  for (const { row } of [...mounted.values()].filter(({ row }) => row.item.kind !== 'message' || !units.get(row.item.seq)?.length).concat([...projected.values()])) {
     if (row.bottom > top && (!anchorRow || row.top < anchorRow.top)) anchorRow = row;
   }
   if (!jobView && (!anchorRow || anchorRow.top > top + viewport)) {
@@ -578,8 +533,10 @@ function measure(): Measure {
     anchor: anchorRow && { item: anchorRow.item, offset: anchorRow.top - top },
     lookup(item): Lookup {
       const key = item.kind === 'message' ? item.seq : item.byte;
-      const found = mounted.get(key);
-      if (found && rowOf(item) === found.element) return { kind: 'mounted', row: found.row };
+      const target = item.kind === 'message' && item.row ? units.get(item.seq)?.[0] === item.row ? views.get(item.seq)?.view : unitView(item.row) : rowOf(item), unit = item.kind === 'message' && item.row ? projected.get(item.row) : undefined;
+      if (unit && target === unit.element) return { kind: 'mounted', row: unit.row };
+      const found = mounted.get(item.kind === 'message' && target ? rowSeq(target) ?? key : key);
+      if (found && target === found.element) return { kind: 'mounted', row: { ...found.row, item } };
       if (item.kind === 'message') {
         const t = ensureTable();
         if (t.index.has(item.seq)) {
@@ -618,11 +575,12 @@ function applyScroll(decision: Decision) {
   const latest = element('latest'), label = decision.latest.count ? '↓ ' + decision.latest.count + ' new' : '↓ Latest';
   if (latest.textContent !== label) latest.textContent = label;
   latest.classList.toggle('show', decision.latest.show);
-  const before = decision.dividerBefore, view = before === undefined ? undefined : views.get(before)?.view;
+  const before = decision.dividerBefore, inside = before !== undefined && decision.dividerRow && unitKeys(before)[0] !== decision.dividerRow;
+  const view = before === undefined ? undefined : inside ? rowOf({ kind: 'message', seq: before, row: decision.dividerRow }) : views.get(before)?.view;
   if (!view) { divider?.remove(); divider = undefined; }
   else {
     if (!divider) { divider = node('div', undefined, 'newmsgs'); divider.append(node('span', 'new messages')); }
-    if (divider.nextSibling !== view) element('items').insertBefore(divider, view);
+    if (divider.nextSibling !== view) view.parentNode?.insertBefore(divider, view);
   }
   if (decision.request?.type === 'mount') windowDirty = true;
   else if (decision.request?.type === 'load') void loadAnchor(decision.request.item, decision.request.generation);
@@ -632,22 +590,25 @@ function applyScroll(decision: Decision) {
 function decide(event?: ScrollEvent, measurement = measure()) {
   if (event) scrollEvents.push(event);
   const result = scrollUpdate(scrolling, scrollEvents.splice(0), measurement);
-  const previousTop = scrollDecision.windowTop, previousDivider = scrollDecision.dividerBefore;
+  const previousTop = scrollDecision.windowTop, previousDivider = scrollDecision.dividerBefore, previousRow = scrollDecision.dividerRow;
   scrolling = result.state; scrollDecision = result.decision;
   if (previousTop !== scrollDecision.windowTop) windowDirty = true;
-  if (previousDivider !== scrollDecision.dividerBefore) { table = undefined; dividerPx = undefined; windowDirty = true; }
+  if (previousDivider !== scrollDecision.dividerBefore || previousRow !== scrollDecision.dividerRow) { if (previousDivider !== undefined) extents.delete(previousDivider); if (scrollDecision.dividerBefore !== undefined) extents.delete(scrollDecision.dividerBefore); table = undefined; dividerPx = undefined; windowDirty = true; }
   const stored = applyScroll(scrollDecision);
   if (stored !== undefined) scrolling = scrollStored(scrolling, stored);
 }
 function enqueue(event: ScrollEvent) { scrollEvents.push(event); schedule(); }
-const joins = (seq: number) => {
-  const previous = visible(seq - 1), current = visible(seq);
-  return previous?.kind === 'assistant' && current?.kind === 'assistant' && continuesRun(previous) && joinsRun(previous.blocks.at(-1), current.blocks[0]);
-};
-const shown = (seq: number) => { const item = visible(seq); return item?.kind === 'assistant' && (item.blocks.some(block => block.type === 'text' && block.text.trim() !== '') || runStarts(item, joins(seq)) > 0); };
+function unitKeys(seq: number): string[] {
+  const item = visible(seq), context = runContext(), keys: string[] = [];
+  if (!item) return keys;
+  if (item.kind === 'assistant') item.blocks.forEach((block, index) => { if (visibleText(block)) keys.push(seq + ':' + index); });
+  for (const part of runParts(items.get(seq), item)) if (part.kind === 'step' && sourceKey(part.source) === sourceKey(runOwner(context, part.source))) keys.push('run:' + sourceKey(part.source));
+  return keys.sort((a, b) => Number(a.replace('run:', '').split(':')[1]) - Number(b.replace('run:', '').split(':')[1]));
+}
+const shown = (seq: number) => unitKeys(seq).length > 0;
 function changedItem(seq: number, appended: boolean) {
   const item = items.get(seq);
-  if (item) enqueue({ type: 'item', seq, kind: item.kind === 'user' ? 'user' : item.kind === 'assistant' ? 'assistant' : 'other', visible: shown(seq), appended });
+  if (item) enqueue({ type: 'item', seq, kind: item.kind === 'user' ? 'user' : item.kind === 'assistant' || item.kind === 'agent' || item.kind === 'job' ? 'assistant' : 'other', visible: shown(seq), rows: unitKeys(seq), appended });
 }
 let loadingAnchor: number | undefined;
 async function loadAnchor(item: ItemId, generation: number) {
@@ -731,39 +692,41 @@ function fold(view: HTMLElement, key: string, line: HTMLElement, details: HTMLEl
   view.classList.toggle(className, folds.get(key) === true);
   line.setAttribute('role', 'button'); line.tabIndex = -1;
   line.setAttribute('aria-expanded', String(folds.get(key) === true));
-  const toggle = () => { const open = !view.classList.contains(className); folds.set(key, open); view.classList.toggle(className, open); line.setAttribute('aria-expanded', String(open)); if (open) show?.(); changed?.(); };
+  const toggle = () => { if (view.classList.contains('no-detail')) return; const open = !view.classList.contains(className); folds.set(key, open); view.classList.toggle(className, open); line.setAttribute('aria-expanded', String(open)); if (open) show?.(); changed?.(); };
   openers.set(key, { view, open: () => { if (!view.classList.contains(className)) toggle(); } });
   line.onclick = event => { if (!(event?.target instanceof Element && event.target.closest('a'))) toggleAt(line, toggle); };
   line.onkeydown = event => { if (!(event.target instanceof Element && event.target.closest('a')) && !event.metaKey && !event.ctrlKey && (event.key === 'Enter' || event.key === ' ')) { event.preventDefault(); toggleAt(line, toggle); } };
-  if (view !== line) view.append(line);
+  if (view !== line && line.parentNode !== view) view.append(line);
   view.append(details);
   if (folds.get(key)) show?.();
 }
-const isLive = (step: Step) => !step.item.final && step.item.stop !== 'aborted' && (step.block.type === 'tool' ? step.block.state.type === 'running' || step.block.state.type === 'pending' : step.block.ended === undefined);
+const isLive = (step: Step) => step.kind === 'block' && !step.item.final && step.item.stop !== 'aborted' && (step.block.type === 'tool' ? step.block.state.type === 'running' || step.block.state.type === 'pending' : step.block.ended === undefined);
 const setText = (target: HTMLElement, next: string) => { if (target.textContent !== next) target.textContent = next; };
-const stepShape = (step: Step) => step.block.type === 'tool' ? 'tool:' + step.block.name : step.block.type;
+const stepShape = (step: Step) => step.kind !== 'block' ? step.kind : step.block.type === 'tool' ? 'tool:' + step.block.name : step.block.type;
+const stepFailed = (step: Step) => step.kind === 'block' && step.block.type === 'tool' && step.block.state.type === 'done' && step.block.state.error;
 function rescue(host: HTMLElement, into: HTMLElement) {
   if (working) for (const mark of [working.primary, ...working.extra.values()]) if (host.contains(mark)) into.append(mark);
 }
 function stepMarks(step: Step): StepMarks {
-  const { block } = step, child = node('div', undefined, 'step'), row = node('div', undefined, 'line'), sum = node('span', undefined, 'sum');
-  const name = block.type === 'tool' && (block.name === 'bash' || stepInfo({ ...step, args: {} }).labelClass === 'path') ? node('span', block.name) : undefined;
+  const child = node('div', undefined, 'step'), row = node('div', undefined, 'line'), sum = node('span', undefined, 'sum');
+  const block = step.kind === 'block' ? step.block : undefined;
+  const name = block?.type === 'tool' && !block.agent && block.name !== 'async_bash' && (block.name === 'bash' || stepInfo({ ...step, args: {} }).labelClass === 'path') ? node('span', block.name) : undefined;
   const label = node('span'), result = node('span'), time = node('span'), outcome = node('span', undefined, 'outcome'), detail = node('div', undefined, 'detail');
   if (name) sum.append(name, ' ');
-  sum.append(label, ' ');
-  outcome.append(result, time);
-  row.append(node('span', '›', 'chev'), sum, outcome);
-  const marks: StepMarks = { key: step.key, shape: stepShape(step), child, sum, name, label, after: name ?? label, tail: [], tailKey: '', result, time, detail, current: step, live: false };
+  sum.append(label, ' '); outcome.append(result, time); row.append(node('span', '›', 'chev'), sum, outcome);
+  const marks: StepMarks = { key: step.key, shape: stepShape(step), links: '', cwd: '', child, sum, name, label, after: name ?? label, tail: [], tailKey: '', result, time, detail, current: step, live: false };
   fold(child, step.key, row, detail, () => marks.show?.());
   return marks;
 }
 function stepDetail(marks: StepMarks, step: Step & { args: Record<string, unknown>; file: string | undefined }, info: ReturnType<typeof stepInfo>) {
-  const { block } = step, nodes: Node[] = [];
-  const refs = block.type === 'tool' && 'result' in block.state ? block.state.result?.images : undefined;
+  const block = step.kind === 'block' ? step.block : undefined, nodes: Node[] = [];
+  const refs = block?.type === 'tool' && 'result' in block.state ? block.state.result?.images : undefined;
   marks.images = refs?.length ? thumbnails(refs, () => marks.current.slots, step.file) : undefined;
   let diff: HTMLElement | undefined;
   for (const part of stepParts(step, info, displayPath(state.cwd), !!marks.images)) {
     switch (part.kind) {
+      case 'agent': { const body = prose(undefined, part.text, true, undefined, 'agent'); body.className = 'agent-body prose'; nodes.push(body); break; }
+      case 'job': { const head = node('div', undefined, 'job-head'); head.append(jobOpen(part.job)); nodes.push(head, node('pre', part.text)); if (part.facts) nodes.push(node('div', part.facts, 'delta')); break; }
       case 'redacted': nodes.push(node('div', part.text, 'think redacted')); break;
       case 'head': diff = node('div', undefined, 'diff'); diff.append(node('div', part.text, 'h')); nodes.push(diff); break;
       case 'diff': { const row = node('div', undefined, 'l ' + part.change); row.append(node('span', part.mark, 'g'), part.text); diff?.append(row); break; }
@@ -774,183 +737,178 @@ function stepDetail(marks: StepMarks, step: Step & { args: Record<string, unknow
       case 'cut': nodes.push(node('div', part.text, 'delta')); break;
     }
   }
-  if (marks.images) { if (block.type === 'tool' && block.name === 'read') marks.images.view.classList.add('large'); nodes.push(marks.images.view); }
+  marks.child.classList.toggle('agent-step', !!info.card);
+  marks.child.classList.toggle('job-step', step.kind === 'job');
+  if (marks.images) { if (block?.type === 'tool' && block.name === 'read') marks.images.view.classList.add('large'); nodes.push(marks.images.view); }
   marks.detail.replaceChildren(...nodes);
+  const disclosure = nodes.length > 0 || block?.type === 'thinking' && !!block.text;
+  marks.child.classList.toggle('no-detail', !disclosure);
+  const line = marks.child.firstElementChild;
+  if (!disclosure) { marks.child.classList.remove('open'); folds.delete(step.key); line?.removeAttribute('role'); line?.removeAttribute('aria-expanded'); }
+  else { line?.setAttribute('role', 'button'); line?.setAttribute('aria-expanded', String(folds.get(step.key) === true)); }
 }
-function patchStep(marks: StepMarks, step: Step & { args: Record<string, unknown>; file: string | undefined }, info: ReturnType<typeof stepInfo>) {
-  const { block, item } = step, error = block.type === 'tool' && block.state.type === 'done' && block.state.error, changed = marks.current.block !== block || marks.tailKey === '' && !marks.tail.length;
-  marks.current = step;
-  marks.live = isLive(step);
+function patchStep(marks: StepMarks, step: Step & { args: Record<string, unknown>; file: string | undefined }, info: ReturnType<typeof stepInfo>, links: string) {
+  const block = step.kind === 'block' ? step.block : undefined, error = stepFailed(step) || info.failed;
+  const previous = marks.current, cwd = block?.type === 'tool' && block.name === 'bash' ? displayPath(state.cwd) : '';
+  const changed = step.kind === 'block' ? previous.kind !== 'block' || previous.block !== step.block : previous.kind !== step.kind || previous.item !== step.item;
+  const detailsChanged = (info.card ? marks.card !== info.card || marks.links !== links : changed || marks.cwd !== cwd) || !marks.tail.length;
+  marks.current = step; marks.live = isLive(step);
   if (step.file !== marks.file) {
     marks.file = step.file;
-    if (step.file) previewFile(marks.label, '/steps/' + item.seq + '/' + step.index + '/file');
-    else { marks.label.onmousedown = marks.label.onclick = null; }
+    if (step.file && step.kind === 'block') previewFile(marks.label, '/steps/' + step.item.seq + '/' + step.index + '/file');
+    else marks.label.onmousedown = marks.label.onclick = null;
   }
   if (marks.name) marks.name.className = error ? 'name err' : 'name';
-  const labelClass = error && block.type === 'tool' && block.name !== 'bash' && info.labelClass !== 'path' ? 'err' : info.labelClass;
+  const labelClass = error ? info.labelClass + ' err' : info.labelClass;
   marks.label.className = marks.file ? labelClass + ' preview-file' : labelClass;
-  setText(marks.label, info.label);
+  if (info.card && (marks.card !== info.card || marks.links !== links)) marks.label.replaceChildren(...agentLead(info.card, info.label).childNodes);
+  else if (!info.card) setText(marks.label, info.label);
+  marks.card = info.card; marks.links = links; marks.cwd = cwd;
   if (marks.tailKey !== info.detail || !marks.tail.length) {
     marks.tailKey = info.detail;
     for (const old of marks.tail) old.remove();
     const counts = info.detail.match(/^\+(\d+) −(\d+)$/);
-    marks.tail = counts ? [node('span', '+' + counts[1], 'added'), node('span', ' '), node('span', '−' + counts[2], 'err')] : [node('span', info.detail, 'delta')];
+    marks.tail = counts ? [node('span', '+' + counts[1], 'added'), node('span', ' '), node('span', '−' + counts[2], 'err')] : [node('span', info.detail, info.card ? 'agent-preview' : step.kind === 'job' && error ? 'delta err' : 'delta')];
     marks.sum.append(...marks.tail);
   }
-  const result = info.aborted ? 'aborted' : '', ended = block.ended ?? (info.aborted ? item.ended : !item.final ? Date.now() : undefined);
+  const result = info.aborted ? 'aborted' : '', ended = block?.ended ?? (info.aborted && step.kind === 'block' ? step.item.ended : !step.item.final ? Date.now() : undefined);
   setText(marks.result, result); marks.result.className = error ? 'err' : '';
-  setText(marks.time, (result ? ' ' : '') + duration((block.type === 'tool' ? block.durationMs : undefined) ?? (block.started !== undefined && ended !== undefined ? ended - block.started : undefined)));
-  marks.time.className = error ? 'time err' : 'time';
-  if (changed) {
-    const thinking = block.type === 'thinking' && !block.redacted;
+  setText(marks.time, step.kind !== 'block' ? timestamp(step.item.at) : (result ? ' ' : '') + duration((block?.type === 'tool' ? block.durationMs : undefined) ?? (block?.started !== undefined && ended !== undefined ? ended - block.started : undefined)));
+  marks.time.className = step.kind === 'block' && !info.card && error ? 'time err' : 'time';
+  if (detailsChanged) {
+    const thinking = block?.type === 'thinking' && !block.redacted;
     if (!thinking) stepDetail(marks, step, info);
     marks.show = thinking ? () => {
-      const { block, item, key } = marks.current;
-      if (block.type !== 'thinking' || !block.text) return;
-      const view = prose(key, block.text, item.final);
-      view.className = 'think prose';
+      const current = marks.current;
+      if (current.kind !== 'block' || current.block.type !== 'thinking' || !current.block.text) return;
+      const view = prose(current.key, current.block.text, current.item.final); view.className = 'think prose';
       if (marks.detail.firstChild !== view) marks.detail.replaceChildren(view);
     } : marks.images?.load;
   }
   if (folds.get(step.key)) marks.show?.();
 }
-function patchRun(marks: RunMarks, input: Step[]) {
-  const entries = input.map(step => { const value = { ...step, args: step.block.type === 'tool' ? toolArgs(step.block) : {}, file: pathArg(step.block) }; return { step, value, info: stepInfo(value) }; });
-  const failed = new Set(entries.filter(({ step }) => step.block.type === 'tool' && step.block.state.type === 'done' && step.block.state.error).map(({ info }) => info.kind));
-  const aborted = input.some(step => step.item.stop === 'aborted' && step.item.blocks.slice(step.index + 1).every(block => block.type !== 'text' || !block.text));
-  const active = input.some(isLive);
-  const counts = new Map<string, number>();
-  for (const { info } of entries) counts.set(info.kind, (counts.get(info.kind) || 0) + 1);
-  const namesKey = aborted ? 'aborted' : [...counts].map(([kind, count]) => kind + ':' + count + (failed.has(kind) ? '!' : '')).join(',');
+function patchRun(marks: RunMarks, input: Step[], links = JSON.stringify(state.agents)) {
+  marks.links = links; marks.cwd = displayPath(state.cwd);
+  const entries = input.map(step => { const block = step.kind === 'block' ? step.block : undefined; const value = { ...step, args: block?.type === 'tool' ? toolArgs(block) : {}, file: block ? pathArg(block) : undefined }; return { step, value, info: stepInfo(value) }; });
+  const failed = new Set(entries.filter(({ step, info }) => stepFailed(step) || info.failed).map(({ info }) => info.kind));
+  const aborted = input.some(step => step.kind === 'block' && step.item.stop === 'aborted' && step.item.blocks.slice(step.index + 1).every(block => block.type !== 'text' || !block.text));
+  const active = input.some(isLive), counts = new Map<string, { count: number; info: ReturnType<typeof stepInfo> }>();
+  for (const { info } of entries) { const old = counts.get(info.kind); counts.set(info.kind, { count: (old?.count ?? 0) + 1, info }); }
+  const namesKey = (aborted ? 'aborted' : [...counts].map(([kind, { count }]) => kind + ':' + count + (failed.has(kind) ? '!' : '')).join(',')) + ':' + links;
   if (marks.namesKey !== namesKey) {
-    marks.namesKey = namesKey;
-    const parts: (Node | string)[] = [];
+    marks.namesKey = namesKey; const parts: (Node | string)[] = [];
     if (aborted) parts.push('aborted, you pressed Escape');
-    else for (const [kind, count] of counts) { if (parts.length) parts.push(', '); parts.push(node('span', kind === 'thinking' || count === 1 ? kind : kind + ' x' + count, failed.has(kind) ? 'err' : '')); }
+    else for (const [kind, { count, info }] of counts) {
+      if (parts.length) parts.push(', ');
+      const name = node('span', undefined, failed.has(kind) ? 'err' : '');
+      if (info.card) { const ref = info.card.direction === 'in' ? info.card.from : info.card.to; name.append((info.card.direction === 'in' ? 'from' : 'to') + ' ', who(ref)); }
+      else name.textContent = (info.summary ?? info.kind) + (count > 1 ? ' x' + count : '');
+      if (info.card && count > 1) name.append(' x' + count);
+      parts.push(name);
+    }
     marks.names.replaceChildren(...parts);
   }
-  const timed = input.filter(step => step.block.started !== undefined), started = input[0].block.started ?? input[0].item.at;
-  const ended = aborted ? input.at(-1)?.item.ended : timed.at(-1)?.block.ended ?? (active ? Date.now() : undefined);
-  setText(marks.time, duration(started === undefined || ended === undefined ? undefined : ended - started));
+  const timed = input.filter((step): step is Step & Extract<StepInput, { kind: 'block' }> => step.kind === 'block');
+  const first = timed[0], last = timed.at(-1), moment = input.at(-1), started = first ? first.block.started ?? first.item.at : undefined;
+  const ended = active ? Date.now() : aborted ? last?.item.ended : last?.block.ended;
+  setText(marks.time, first ? duration(started === undefined || ended === undefined ? undefined : ended - started) : moment ? timestamp(moment.item.at) : '');
   const known = new Map(marks.steps.map(record => [record.key, record]));
   marks.steps = entries.map(({ step, value, info }) => {
-    let record = known.get(step.key);
-    known.delete(step.key);
+    let record = known.get(step.key); known.delete(step.key);
     if (record && record.shape !== stepShape(step)) { rescue(record.child, marks.summary); record.child.remove(); record = undefined; }
-    record ??= stepMarks(step);
-    patchStep(record, value, info);
-    return record;
+    record ??= stepMarks(step); patchStep(record, value, info, links); return record;
   });
   for (const old of known.values()) { rescue(old.child, marks.summary); old.child.remove(); }
   marks.steps.forEach((record, index) => { if (marks.children.children[index] !== record.child) marks.children.insertBefore(record.child, marks.children.children[index] ?? null); });
   if (marks.steps.some(step => step.live)) liveMarks.set(marks.key, marks); else liveMarks.delete(marks.key);
 }
-function run(input: Step[]) {
-  const view = node('div', undefined, 'run'), line = node('div', undefined, 'line'), summary = node('span', undefined, 'sum'), names = node('span', undefined, 'names'), time = node('span', undefined, 'time'), children = node('div', undefined, 'steps');
-  summary.append(names);
-  line.append(summary, time);
-  const marks: RunMarks = { key: 'run:' + input[0].key, summary, names, namesKey: '', time, children, steps: [] };
-  fold(view, marks.key, line, children, undefined, 'open', reconcileWorking);
-  runMarks.set(view, marks);
-  patchRun(marks, input);
-  return view;
+function bareRun(): Extract<WorkingPlace, { kind: 'bare' }> {
+  const row = node('div', undefined, 'run working'), line = node('div', undefined, 'line'), sum = node('span', undefined, 'sum');
+  line.append(sum); row.append(line); return { kind: 'bare', row, line, sum };
 }
-function clearWorking() {
-  working?.row.remove(); working?.primary.remove();
-  working?.extra.forEach(mark => mark.remove());
-  working = undefined;
-}
-function lastRun(skip: HTMLElement) {
-  for (const row of [...element('items').children].reverse()) {
-    if (!(row instanceof HTMLElement)) continue;
-    if (row === skip || row.hidden || !row.childNodes.length) continue;
-    const last = row.className === 'assistant' ? [...row.children].reverse().find(child => child.childNodes.length) : row;
-    if (!last) continue;
-    const view = last.firstElementChild;
-    return view instanceof HTMLElement ? runMarks.get(view) : undefined;
+function trailingOwner() {
+  for (const seq of [...order].reverse()) {
+    const part = runParts(items.get(seq), visible(seq)).at(-1);
+    if (part) return part.kind === 'step' ? sourceKey(runOwner(runContext(), part.source)) : undefined;
   }
 }
+function run(input: Step[]) {
+  const adopt = working?.place.kind === 'bare' && input[0].key === trailingOwner() ? working.place : undefined;
+  const { row: view, line, sum: summary } = adopt ?? bareRun(), names = node('span', undefined, 'names'), time = node('span', undefined, 'time'), children = node('div', undefined, 'steps');
+  view.classList.remove('working'); summary.insertBefore(names, summary.firstChild); line.append(time);
+  const marks: RunMarks = { key: 'run:' + input[0].key, links: '', cwd: '', summary, names, namesKey: '', time, children, steps: [] };
+  fold(view, marks.key, line, children, undefined, 'open', reconcileWorking);
+  runMarks.set(view, marks); if (adopt && working) working.place = { kind: 'run', owner: view };
+  patchRun(marks, input); return view;
+}
+function clearWorking() {
+  if (working?.place.kind === 'bare') working.place.row.remove();
+  working?.primary.remove(); working?.extra.forEach(mark => mark.remove()); working = undefined;
+}
+function lastRun() { const key = trailingOwner(); return key ? openers.get('run:' + key)?.view : undefined; }
 function reconcileWorking() {
   const since = state.working && state.view.type !== 'job' && state.compaction !== 'running' ? state.since : undefined;
   if (since === undefined) { clearWorking(); return; }
   if (working?.view !== state.view.id || working.since !== since) {
-    clearWorking();
-    const row = node('div', undefined, 'run working'), line = node('div', undefined, 'line');
-    line.append(node('span', undefined, 'sum')); row.append(line);
-    working = { view: state.view.id, since, primary: dots(), row, extra: new Map() };
+    clearWorking(); working = { view: state.view.id, since, primary: dots(), place: bareRun(), extra: new Map() };
   }
-  const turn = working, spots: Spot[] = [];
-  for (const marks of liveMarks.values()) {
-    const live = marks.steps.filter(step => step.live), open = folds.get(marks.key) === true;
-    if (!open) spots.push({ key: 'sum:' + marks.key, parent: marks.summary, before: null });
-    if (open || live.length > 1) for (const step of live) spots.push({ key: 'step:' + step.key, parent: step.sum, before: step.after.nextSibling });
+  const turn = working, spots: Spot[] = [], tail = lastRun();
+  if (tail) {
+    if (turn.place.kind === 'bare' && turn.place.row !== tail) turn.place.row.remove();
+    turn.place = { kind: 'run', owner: tail };
+    for (const marks of liveMarks.values()) {
+      const live = marks.steps.filter(step => step.live), open = folds.get(marks.key) === true;
+      if (!open) spots.push({ key: 'sum:' + marks.key, parent: marks.summary, before: null });
+      if (open || live.length > 1) for (const step of live) spots.push({ key: 'step:' + step.key, parent: step.sum, before: step.after.nextSibling });
+    }
+    if (!spots.length) { const marks = runMarks.get(tail); if (marks) spots.push({ key: 'sum:' + marks.key, parent: marks.summary, before: null }); }
+  } else {
+    if (turn.place.kind !== 'bare') turn.place = bareRun();
+    const { row, sum } = turn.place, items = element('items');
+    if (row.parentNode !== items || items.lastChild !== row) items.append(row);
+    spots.push({ key: 'bare', parent: sum, before: null });
   }
   const place = (mark: HTMLElement, { parent, before }: Omit<Spot, 'key'>) => {
-    if (before === mark || mark.parentNode === parent && mark.nextSibling === before) return;
-    parent.insertBefore(mark, before);
+    if (before !== mark && (mark.parentNode !== parent || mark.nextSibling !== before)) parent.insertBefore(mark, before);
   };
-  const tail = !spots.length && lastRun(turn.row);
-  if (tail) {
-    place(turn.primary, { parent: tail.summary, before: null });
-    turn.row.remove();
-  } else if (!spots.length) {
-    const items = element('items'), sum = turn.row.firstElementChild?.firstElementChild;
-    if (sum instanceof HTMLElement) place(turn.primary, { parent: sum, before: null });
-    if (turn.row.parentNode !== items || items.lastChild !== turn.row) items.append(turn.row);
-  } else {
-    place(turn.primary, spots[0]);
-    turn.row.remove();
-  }
+  if (spots[0]) place(turn.primary, spots[0]);
   const extra = new Map(spots.slice(1).map(spot => [spot.key, spot]));
   for (const [key, mark] of turn.extra) if (!extra.has(key)) { mark.remove(); turn.extra.delete(key); }
-  for (const [key, spot] of extra) {
-    let mark = turn.extra.get(key);
-    if (!mark) { mark = dots(); turn.extra.set(key, mark); }
-    place(mark, spot);
-  }
+  for (const [key, spot] of extra) { let mark = turn.extra.get(key); if (!mark) { mark = dots(); turn.extra.set(key, mark); } place(mark, spot); }
 }
-const runChanged = (marks: RunMarks, steps: Step[]) => marks.steps.length !== steps.length || steps.some((step, index) => {
-  const { key, current } = marks.steps[index];
-  return key !== step.key || current.block !== step.block || current.item.final !== step.item.final || current.item.stop !== step.item.stop || current.item.ended !== step.item.ended;
-});
-function reconcileRuns(seq: number, done = new Set<number>()) {
-  if (done.has(seq) || visible(seq)?.kind !== 'assistant') return;
-  let start = seq, end = seq;
-  while (visible(start - 1)?.kind === 'assistant') start--;
-  while (visible(end + 1)?.kind === 'assistant') end++;
-  for (let at = start; at <= end; at++) done.add(at);
-  let steps: Step[] = [];
-  const flush = () => {
-    if (!steps.length) return;
-    const owner = views.get(steps[0].item.seq)?.slots.get(steps[0].key);
-    if (owner?.type === 'run') {
-      const current = owner.view.firstElementChild;
-      let marks = current instanceof HTMLElement ? runMarks.get(current) : undefined;
-      if (!marks) { const next = run(steps); owner.view.replaceChildren(next); marks = runMarks.get(next); }
-      else if (runChanged(marks, steps)) patchRun(marks, steps);
-      for (const step of steps.slice(1)) {
-        const slot = views.get(step.item.seq)?.slots.get(step.key);
-        const first = slot?.type === 'run' && slot !== owner ? slot.view.firstElementChild : undefined;
-        if (slot?.type === 'run' && first instanceof HTMLElement) {
-          liveMarks.delete(runMarks.get(first)?.key ?? '');
-          if (marks) rescue(slot.view, marks.summary);
-          clear(slot.view);
-        }
+function reconcileRuns() {
+  const context = runContext(), groups = new Map<string, Step[]>(), touched = new Set<number>(), links = JSON.stringify(state.agents);
+  for (const seq of [...views.keys()].sort((a, b) => a - b)) {
+    touched.add(seq);
+    const entry = views.get(seq); if (!entry) continue;
+    for (const part of runParts(items.get(seq), visible(seq))) if (part.kind === 'step') {
+      const key = sourceKey(part.source), owner = sourceKey(runOwner(context, part.source)), steps = groups.get(owner) ?? [];
+      steps.push({ ...part.step, key, slots: entry.slots }); groups.set(owner, steps);
+    }
+  }
+  for (const [key, steps] of groups) {
+    const owner = views.get(steps[0].item.seq)?.slots.get(key);
+    if (owner?.type !== 'run') continue;
+    const current = owner.view.firstElementChild;
+    let marks = current instanceof HTMLElement ? runMarks.get(current) : undefined;
+    if (!marks) { const next = run(steps); owner.view.replaceChildren(next); marks = runMarks.get(next); }
+    else {
+      const records = marks.steps;
+      if (marks.links !== links || marks.cwd !== displayPath(state.cwd) || records.length !== steps.length || steps.some((step, index) => {
+        const previous = records[index]?.current;
+        return !previous || previous.key !== step.key || (step.kind === 'block' ? previous.kind !== 'block' || previous.block !== step.block || previous.item.final !== step.item.final || previous.item.stop !== step.item.stop || previous.item.ended !== step.item.ended : previous.kind !== step.kind || previous.item !== step.item);
+      })) patchRun(marks, steps, links);
+      else steps.forEach((step, index) => { records[index].current = step; });
+    }
+    for (const step of steps.slice(1)) {
+      const slot = views.get(step.item.seq)?.slots.get(step.key);
+      if (slot?.type === 'run' && slot !== owner && slot.view.childNodes.length) {
+        const first = slot.view.firstElementChild; if (first instanceof HTMLElement) liveMarks.delete(runMarks.get(first)?.key ?? '');
+        if (marks) rescue(slot.view, marks.summary); clear(slot.view);
       }
     }
-    steps = [];
-  };
-  for (let current = start; current <= end; current++) {
-    const item = visible(current), owner = views.get(current);
-    if (item?.kind !== 'assistant') continue;
-    if (!owner) { flush(); continue; }
-    item.blocks.forEach((block, index) => {
-      if (!isStep(block)) flush();
-      else { if (steps.length && !joinsRun(steps.at(-1)?.block, block)) flush(); steps.push({ block, item, index, key: item.seq + ':' + index, slots: owner.slots }); }
-    });
-    if (item.error) flush();
   }
-  flush();
+  return touched;
 }
 type NoticeContent = { type: 'text'; text: string } | { type: 'markdown'; text: string } | { type: 'details'; text: string; body: HTMLElement } | { type: 'lead'; lead: string; preview: string; body: HTMLElement } | { type: 'inline'; head: () => HTMLElement[] };
 type NoticeRow = { key: string; at: number; level?: 'warning' | 'error'; content: NoticeContent };
@@ -1000,29 +958,28 @@ function accept(item: WireItem) {
   const priorInput = !old && threadFilter() && (item.kind === 'user' || item.kind === 'agent' || item.kind === 'job') ? latestThreadInput() : undefined;
   items.set(item.seq, item);
   if (old !== item) projections.delete(item.seq);
-  const shown = visible(item.seq), appends = !old && shown && table !== undefined && item.seq > (order.at(-1) ?? -1);
+  const shown = visible(item.seq);
   if (shown && !previous) order.splice(orderIndex(item.seq), 0, item.seq);
   else if (!shown && previous) { const position = order.indexOf(item.seq); if (position >= 0) order.splice(position, 1); unmountRow(item.seq); }
   extents.delete(item.seq);
-  const before = visible(item.seq - 1), next = visible(item.seq + 1);
-  const sameJoins = previous?.kind !== 'assistant' || shown?.kind !== 'assistant' ||
-    ((!continuesRun(before) || before?.kind !== 'assistant' || joinsRun(before.blocks.at(-1), previous.blocks[0]) === joinsRun(before.blocks.at(-1), shown.blocks[0])) &&
-    (next?.kind !== 'assistant' || joinsRun(previous.blocks.at(-1), next.blocks[0]) === joinsRun(shown.blocks.at(-1), next.blocks[0])));
-  const same = previous && shown && table && sameJoins && previous.kind === shown.kind && continuesRun(previous) === continuesRun(shown) && (shown.kind !== 'job' || previous.kind === 'job' && previous.job.id === shown.job.id && previous.event.type === shown.event.type);
-  if (appends && table) appendRow(table, item.seq);
-  else if (same) patched.add(item.seq);
-  else if (previous || shown) { if (extents.get(item.seq + 1)?.kind === 'estimated') extents.delete(item.seq + 1); table = undefined; }
+  const topology = (raw: WireItem | undefined, shown: WireItem | undefined) => runParts(raw, shown).map(part => part.kind === 'boundary' ? 'boundary' : sourceKey(part.source) + ':' + (state.view.type === 'root' ? part.thread ?? '' : '')).join('|');
+  const same = old && topology(old, previous) === topology(item, shown);
+  const appended = !old && shown && table && order.at(-1) === item.seq;
+  const affected = same ? item.seq : invalidateRuns(runContext(), item.seq);
+  for (let at = item.seq; at <= affected; at++) { segmentCache.delete(at); extents.delete(at); }
+  if (!same && !appended) table = undefined;
+  else if (appended && table) appendRow(table, item.seq);
+  else if (table) patched.add(item.seq);
   windowDirty = true;
   if (item.kind === 'assistant' && !item.final || item.kind === 'command' && item.result.type === 'compaction' && item.result.state.type === 'running') live.add(item.seq); else live.delete(item.seq);
   first = first === undefined ? item.seq : Math.min(first, item.seq);
   if (item.kind === 'threads') {
     const previous = threadItems.get(item.target);
     if (!previous || previous.seq < item.seq) {
-      visible(item.target);
+      projections.set(item.target, visible(item.target));
       threadItems.set(item.target, item);
       const target = items.get(item.target);
       if (target && (!previous || previous.threads.length !== item.threads.length || previous.threads.some((name, index) => name !== item.threads[index]))) {
-        owners.clear(); segmentCache.clear();
         accept({ ...target }); changedItem(target.seq, false);
       }
     }
@@ -1039,11 +996,9 @@ function accept(item: WireItem) {
     }
   }
   dirty.add(item.seq);
-  const threadChanged = !old || old.kind === 'assistant' && item.kind === 'assistant' && (old.blocks.length !== item.blocks.length || old.blocks.some((block, index) => block.thread !== item.blocks[index]?.thread));
   for (const seq of views.keys()) {
     if (seq > item.seq) dirty.add(seq);
   }
-  if (old && threadChanged) { owners.clear(); segmentCache.clear(); }
   if (priorInput?.kind === 'user' && priorInput.seq !== item.seq) accept({ ...priorInput });
   after = Math.max(after, first - 1);
   while (items.get(after + 1)?.final) after++;
@@ -1055,7 +1010,7 @@ function syncChildren(parent: HTMLElement, children: HTMLElement[]) {
 }
 function renderItem(item: WireItem) {
   const previous = views.get(item.seq), warning = pathWarnings.get(item.seq), preceding = precedingThread(item.seq), filter = threadFilter();
-  if (previous?.item === item && previous.warning === warning && previous.filter === filter && previous.preceding === preceding) return;
+  if (previous?.item === item && previous.warning === warning && previous.filter === filter && previous.preceding === preceding) return false;
   const view = previous?.view ?? node('div');
   view.dataset.seq = String(item.seq);
   const refs = item.kind === 'user' ? item.images : item.kind === 'assistant' ? item.blocks.flatMap(block => block.type === 'tool' && 'result' in block.state ? block.state.result?.images ?? [] : []) : [];
@@ -1087,14 +1042,14 @@ function renderItem(item: WireItem) {
   if (item.kind === 'assistant') {
     view.className = 'assistant';
     item.blocks.forEach((block, index) => {
-      if (!isStep(block) || steps.length && !joinsRun(steps.at(-1)?.block, block)) flush();
-      if (block.type === 'text' && !block.text) return;
+      if (block.type === 'text' && !visibleText(block)) return;
+      const previousStep = steps.at(-1), context = runContext();
+      if (block.type === 'text' || previousStep?.kind === 'block' && sourceKey(runOwner(context, { kind: 'block', seq: item.seq, index })) !== sourceKey(runOwner(context, { kind: 'block', seq: item.seq, index: previousStep.index }))) flush();
       const thread = block.thread;
       startSection(thread, index);
       const key = item.seq + ':' + index;
       if (block.type === 'text') { flush(); if (block.text) parts.push(prose(key, block.text, item.final || index < item.blocks.length - 1, annotationItems.get(item.seq)?.get(index), 'assistant')); }
-      else if (block.type === 'tool' && block.agent) { flush(); const saved = previous?.slots.get('agent:' + key); if (saved?.type === 'agent') slots.set('agent:' + key, saved); parts.push(agentCard(block.agent, block.started ?? item.at, 'agent:' + key, slots)); }
-      else steps.push({ block, item, key, index, slots });
+      else steps.push({ kind: 'block', block, item, key, index, slots });
     });
     flush(); finishSection();
     if (item.error) children.push(noticeRow({ key: item.seq + ':error', at: item.at, level: 'error', content: { type: 'text', text: item.error } }));
@@ -1110,9 +1065,13 @@ function renderItem(item: WireItem) {
       children.push(time, text);
     } else if (item.kind === 'notify') { view.className = ''; children.push(noticeRow({ key: 'notice:' + item.seq, at: item.at, level: item.level === 'info' ? undefined : item.level, content: { type: 'text', text: item.text.text } })); }
     else if (item.kind === 'command') { view.className = ''; children.push(noticeRow(commandNotice(item))); }
-    else if (item.kind === 'agent') { view.className = ''; children.push(agentCard(item, item.at, 'agent:' + item.seq, slots)); }
+    else if (item.kind === 'agent' || item.kind === 'job') {
+      view.className = '';
+      const key = sourceKey({ kind: 'item', seq: item.seq }), saved = previous?.slots.get(key);
+      const slot: Slot = saved?.type === 'run' ? saved : { type: 'run', view: node('div') };
+      slots.set(key, slot); children.push(slot.view);
+    }
     else if (item.kind === 'annotations' || item.kind === 'threads') { view.hidden = true; }
-    else if (item.kind === 'job') { view.className = ''; const saved = previous?.slots.get('job'); if (saved?.type === 'job') slots.set('job', saved); }
     else if (item.kind === 'notice') { view.className = ''; children.push(noticeRow({ key: 'notice:' + item.seq, at: item.at, content: { type: 'markdown', text: item.text } })); }
     else if (item.kind === 'bash') { view.className = ''; children.push(commandRun(item, 'bash:' + item.seq).view); }
     else { view.className = ''; children.push(noticeRow({ key: 'notice:' + item.seq, at: item.at, content: { type: 'lead', lead: item.source === 'branch' ? 'branch' : 'compacted', preview: ' · ' + item.text.split('\n')[0], body: paragraphs(item.text) } })); }
@@ -1129,11 +1088,11 @@ function renderItem(item: WireItem) {
   if (!previous) {
     observed.set(view, { type: 'row' }); layoutObserver.observe(view);
     const container = element('items'), next = [...views.keys()].filter(seq => seq > item.seq).sort((a, b) => a - b)[0];
-    container.insertBefore(view, views.get(next)?.view ?? (working?.row.parentNode === container ? working.row : null));
+    container.insertBefore(view, views.get(next)?.view ?? (working?.place.kind === 'bare' && working.place.row.parentNode === container ? working.place.row : null));
   }
-  return !!(slots.size || previous?.slots.size || !previous);
+  return true;
 }
-const ROW_BLOCKS = ':scope>:is(.msg,.aline,.nrow,.job,.cmdrun),:scope>div>.run,:scope>.thread-section>:is(.msg,.aline,.nrow,.job,.cmdrun),:scope>.thread-section>div>.run';
+const ROW_BLOCKS = ':scope>:is(.msg,.nrow,.cmdrun),:scope>div>.run,:scope>.thread-section>:is(.msg,.nrow,.cmdrun),:scope>.thread-section>div>.run';
 function watchBlocks(row: HTMLElement) {
   for (const block of [...row.matches('.user') ? [row] : [], ...row.querySelectorAll(ROW_BLOCKS)]) if (!observed.has(block)) { observed.set(block, { type: 'block' }); layoutObserver.observe(block); }
 }
@@ -1144,19 +1103,20 @@ function orderIndex(seq: number) {
 }
 const lineHeight = () => parseFloat(getComputedStyle(element('items')).lineHeight);
 function readMetrics() { measured = { width: element('items').clientWidth, lh: lineHeight() }; }
-const estimatedPx = (seq: number, followers: Set<number>) => { const item = visible(seq); return followers.has(seq) || !item ? 0 : estimateExtent(item, measured.lh, joins(seq)); };
+const estimatedPx = (seq: number, followers: Set<number>) => { const item = visible(seq); return followers.has(seq) || !item ? 0 : estimateExtent(item, measured.lh, runContext()) + (scrollDecision.dividerBefore === seq && scrollDecision.dividerRow && unitKeys(seq)[0] !== scrollDecision.dividerRow ? measured.lh + 28 : 0); };
 function extentOf(t: Table, seq: number) {
   let extent = extents.get(seq);
   if (!extent) { extent = { kind: 'estimated', px: estimatedPx(seq, t.followers) }; extents.set(seq, extent); }
   return extent.px + (t.divider?.before === seq ? t.divider.px : 0);
 }
 function groupsAfter(t: Table, seq: number) {
-  const item = visible(seq), previous = visible(seq - 1), last = t.groups.at(-1), open = last && last.to === seq - 1 ? last : undefined;
-  if (item?.kind === 'assistant' && previous?.kind === 'assistant' && joins(seq)) {
-    if (open?.kind === 'run') open.to = seq; else t.groups.push({ kind: 'run', from: seq - 1, to: seq });
-  } else if (item?.kind === 'job' && previous?.kind === 'job' && previous.job.id === item.job.id && previous.event.type === 'stream') {
-    t.followers.add(seq);
-    if (open?.kind === 'job') open.to = seq; else t.groups.push({ kind: 'job', id: item.job.id, from: seq - 1, to: seq });
+  const context = runContext();
+  for (const part of runParts(items.get(seq), visible(seq))) if (part.kind === 'step') {
+    const owner = runOwner(context, part.source);
+    if (owner.seq === seq) continue;
+    const last = t.groups.at(-1);
+    if (last && last.to >= owner.seq) last.to = seq;
+    else t.groups.push({ from: owner.seq, to: seq });
   }
 }
 function refreshTable(t: Table) {
@@ -1170,7 +1130,7 @@ function ensureTable(): Table {
   if (table) { if (patched.size) refreshTable(table); return table; }
   patched.clear();
   if (!measured.lh) readMetrics();
-  const t: Table = { followers: new Set(), index: new Map(), starts: [0], total: 0, groups: [], divider: scrollDecision.dividerBefore === undefined ? undefined : { before: scrollDecision.dividerBefore, px: dividerPx ?? measured.lh + 28 } };
+  const t: Table = { followers: new Set(), index: new Map(), starts: [0], total: 0, groups: [], divider: scrollDecision.dividerBefore === undefined || scrollDecision.dividerRow && unitKeys(scrollDecision.dividerBefore)[0] !== scrollDecision.dividerRow ? undefined : { before: scrollDecision.dividerBefore, px: dividerPx ?? measured.lh + 28 } };
   for (const seq of order) { groupsAfter(t, seq); t.index.set(seq, t.index.size); t.starts.push(t.starts[t.starts.length - 1] + extentOf(t, seq)); }
   t.total = t.starts[order.length];
   return table = t;
@@ -1225,10 +1185,8 @@ function unmountRow(seq: number) {
   for (const registry of [openers, fenceOpeners]) for (const [key, opener] of [...registry]) if (entry.view.contains(opener.view)) registry.delete(key);
   for (const [key, memo] of [...texts]) if (key.startsWith(seq + ':')) { texts.delete(key); revealing.delete(memo); }
   for (const [key, marks] of [...liveMarks]) if (entry.view.contains(marks.summary)) liveMarks.delete(key);
-  const group = jobOwners.get(seq);
-  if (group) for (const member of [...group.items, group.first]) jobOwners.delete(member.seq);
 }
-function windowStep(geo: Geo, rendered: { seq: number; runs: boolean }[]) {
+function windowStep(geo: Geo, rendered: number[]) {
   const t = ensureTable(), top = scrollWindow(scrolling, item => item.kind === 'message' && t.index.has(item.seq) ? rowTop(item.seq) : undefined, geo.top - geo.origin, Math.max(0, t.total - geo.viewport));
   windowDirty = false;
   const want = windowOf(order, t.starts, top, geo.viewport, geo.viewport, t.groups), tail = liveRange(t), chosen = selected && { lo: t.index.get(selected.from), hi: t.index.get(selected.to) };
@@ -1240,8 +1198,8 @@ function windowStep(geo: Geo, rendered: { seq: number; runs: boolean }[]) {
   const mount = (index: number) => {
     const seq = order[index];
     if (views.has(seq)) return;
-    const item = visible(seq), runs = item && renderItem(item);
-    if (runs !== undefined) rendered.push({ seq, runs });
+    const item = visible(seq);
+    if (item && renderItem(item)) rendered.push(seq);
   };
   const bounds = (index: number): [number, number] => { const group = groupAt(t.groups, order[index]); return group ? [at(group.from) ?? index, at(group.to) ?? index] : [index, index]; };
   let pivot = 0;
@@ -1288,23 +1246,28 @@ function renderDirty(geo: Geo = geometry()) {
     resetting = false;
     const list = element('items');
     for (const target of [...observed.keys()]) if (list.contains(target)) { observed.delete(target); layoutObserver.unobserve(target); }
-    views.clear(); texts.clear(); openers.clear(); fenceOpeners.clear(); liveMarks.clear(); clearWorking(); revealing.clear(); growing.length = 0; measuredHolds.clear(); fits.clear(); animating.clear(); openFences.clear();
+    if (working && working.view === state.view.id && working.since === state.since && state.working) {
+      if (working.place.kind === 'run') {
+        const row = working.place.owner, line = row.firstElementChild, sum = runMarks.get(row)?.summary;
+        if (sum && line instanceof HTMLElement) { sum.replaceChildren(working.primary); line.replaceChildren(sum); row.replaceChildren(line); row.className = 'run working'; working.place = { kind: 'bare', row, line, sum }; }
+      }
+      working.extra.forEach(mark => mark.remove()); working.extra.clear();
+    } else clearWorking();
+    views.clear(); texts.clear(); openers.clear(); fenceOpeners.clear(); liveMarks.clear(); revealing.clear(); growing.length = 0; measuredHolds.clear(); fits.clear(); animating.clear(); openFences.clear();
     list.replaceChildren(); divider = undefined; gaps.length = 0; mountedSpans = []; table = undefined; windowDirty = true;
   }
   for (const key of stale) { const memo = texts.get(key); if (memo) revealing.delete(memo); texts.delete(key); }
   stale.clear();
-  const seqs = [...dirty].sort((a, b) => a - b), rendered: { seq: number; runs: boolean }[] = [];
+  const seqs = [...dirty].sort((a, b) => a - b), rendered: number[] = [];
   dirty.clear();
   if (windowDirty && state.view.type !== 'job') windowStep(geo, rendered);
-  for (const seq of seqs) { const item = visible(seq), runs = item && views.has(seq) ? renderItem(item) : undefined; if (runs !== undefined) rendered.push({ seq, runs }); }
-  const done = new Set<number>();
-  for (const { seq, runs } of rendered) if (runs) reconcileRuns(seq, done);
-  for (const { seq } of rendered) if (items.get(seq)?.kind === 'job') reconcileJobs(seq);
+  for (const seq of seqs) { const item = visible(seq); if (item && views.has(seq) && renderItem(item)) rendered.push(seq); }
+  const touched = rendered.length || seqs.length ? reconcileRuns() : [];
   if (annotated) { annotated = false; update(editor.text()); }
   if (reset) { refreshBash(); refreshComposer(); }
   reconcileWorking();
-  for (const seq of new Set([...seqs, ...seqs.map(seq => seq + 1), ...done])) changedItem(seq, false);
-  for (const { seq } of rendered) { const row = views.get(seq)?.view; if (row) watchBlocks(row); }
+  for (const seq of new Set([...seqs, ...seqs.map(seq => seq + 1), ...touched])) changedItem(seq, false);
+  for (const seq of rendered) { const row = views.get(seq)?.view; if (row) watchBlocks(row); }
   const older = element('older');
   if (older.hidden === more) older.hidden = !more;
   const sections: HTMLElement[] = [], edges: { view: HTMLElement; thread: string; top: number; bottom: number }[] = [];
@@ -1618,7 +1581,7 @@ function apply(record: PageRecord) {
   if (record.type === 'reset') {
     pathWarnings.clear(); pathWarningEpoch++;
     editor.resetCompletion();
-    find = undefined; selected = undefined; segmentCache.clear(); owners.clear(); epoch = record.epoch; after = -1; first = undefined; items.clear(); order.length = 0; extents.clear(); live.clear(); dirty.clear(); stale.clear(); annotationItems.clear(); threadItems.clear(); projections.clear(); folds.clear(); jobOwners.clear(); historyRequest = undefined; more = record.more;
+    find = undefined; selected = undefined; segmentCache.clear(); owners.clear(); epoch = record.epoch; after = -1; first = undefined; items.clear(); order.length = 0; extents.clear(); live.clear(); dirty.clear(); stale.clear(); annotationItems.clear(); threadItems.clear(); projections.clear(); folds.clear(); historyRequest = undefined; more = record.more;
     enqueue({ type: 'reset' });
     lastMeasurement = undefined;
     resetting = true;
@@ -1652,7 +1615,7 @@ function apply(record: PageRecord) {
     renderThreads();
     if (previousFilter !== threadFilter() || scopeChanged && threadFilter() !== undefined) { historyRequest = undefined; historyBefore = undefined; refreshThreadItems(); if (epoch && record.view.type === 'root') void reloadThread(); }
     if (workingChanged && previousFilter === threadFilter() && threadFilter() && priorInput?.kind === 'user') accept({ ...priorInput });
-    windowDirty = true; schedule(); if (agentsChanged || viewChanged) refreshAgentCards(); document.body.dataset.sessionId = state.sessionId ?? ''; element('items').hidden = state.life.type === 'switching';
+    windowDirty = true; schedule(); if (agentsChanged || viewChanged) { for (const seq of views.keys()) dirty.add(seq); } document.body.dataset.sessionId = state.sessionId ?? ''; element('items').hidden = state.life.type === 'switching';
     showJobView();
     if (viewChanged) rescopeImages();
     renderBar(); refreshBash(); reconcileWorking(); refreshComposer(); dialogs(); queue(); exited();
@@ -1776,8 +1739,8 @@ type Find = { query: string; backwards: boolean; started: boolean; loadedFrom: n
 type FindAnswer = { index: number; count: number; loading: boolean } | { cancelled: true } | null;
 let find: Find | undefined;
 type Cached = { item: WireItem; previous: WireItem | undefined; segments: Segment[]; needle?: string; starts?: number[][] };
-const segmentCache = new Map<number, Cached>(), owners = new Map<string, string>();
-const findContext = () => ({ items: (at: number) => visible(at), fold: REVEAL.fold, cwd: displayPath(state.cwd), owners });
+const segmentCache = new Map<number, Cached>(), owners: RunContext['owners'] = new Map();
+const findContext = () => ({ items: visible, raw: (at: number) => items.get(at), fold: REVEAL.fold, cwd: displayPath(state.cwd), owners, threads: state.view.type === 'root' });
 let selected: { from: number; to: number } | undefined;
 function rowSeq(node: Node | null) {
   for (let at = node; at; at = at.parentNode) if (at.parentNode === element('items') && at instanceof HTMLElement && at.dataset.seq !== undefined) return Number(at.dataset.seq);
@@ -1801,7 +1764,9 @@ function pinnedRows() {
   const first = rowSeq(range.startContainer), last = rowSeq(range.endContainer);
   const from = first ?? (last !== undefined && list.compareDocumentPosition(range.startContainer) & 2 ? rows[0] : undefined);
   const to = last ?? (first !== undefined && list.compareDocumentPosition(range.endContainer) & 4 ? rows[rows.length - 1] : undefined);
-  return from !== undefined && to !== undefined ? { from: Math.min(from, to), to: Math.max(from, to) } : undefined;
+  if (from === undefined || to === undefined) return;
+  const groups = ensureTable().groups, firstGroup = groupAt(groups, Math.min(from, to)), lastGroup = groupAt(groups, Math.max(from, to));
+  return { from: firstGroup?.from ?? Math.min(from, to), to: lastGroup?.to ?? Math.max(from, to) };
 }
 function transcriptText() {
   const context = findContext();
@@ -1811,7 +1776,6 @@ function cached(seq: number) {
   const item = visible(seq), previous = visible(seq - 1), entry = segmentCache.get(seq);
   if (!item) return undefined;
   if (entry?.item === item && entry.previous === previous) return entry;
-  owners.delete('run:' + seq); owners.delete('job:' + seq);
   const fresh: Cached = { item, previous, segments: findSegments(item, findContext()) };
   segmentCache.set(seq, fresh);
   return fresh;
@@ -1835,7 +1799,7 @@ function leaves(node: Node, into: Node[] = []) {
 }
 function locate(row: HTMLElement, segments: Segment[], match: Match, length: number) {
   const segment = segments[match.segment], key = squash(segment.text);
-  const earlier = segments.slice(0, match.segment).filter(other => squash(other.text) === key).length;
+  const earlier = segments.slice(0, match.segment).filter(other => other.step === segment.step && squash(other.text) === key).length;
   const containers: Node[] = [];
   const deepest = (node: Node): boolean => {
     if (!squash(leaves(node).map(leaf => leaf.textContent ?? '').join('')).includes(key)) return false;
@@ -1855,12 +1819,14 @@ function locate(row: HTMLElement, segments: Segment[], match: Match, length: num
   return { start: chars[first], end: { node: chars[first + count - 1].node, offset: chars[first + count - 1].offset + 1 } };
 }
 function collapseAt(match: Match, needle: string, backwards: boolean) {
-  const row = views.get(match.seq)?.view, found = row && locate(row, segmentsOf(match.seq), match, needle.length);
+  const segment = segmentsOf(match.seq)[match.segment], step = segment.step && openers.get(segment.step)?.view;
+  const row = step ? segment.step && segment.folds.includes(segment.step) ? step.querySelector<HTMLElement>('.detail') ?? step : step : views.get(match.seq)?.view;
+  const found = row && locate(row, segmentsOf(match.seq), match, needle.length);
   if (found) getSelection()?.collapse(backwards ? found.end.node : found.start.node, backwards ? found.end.offset : found.start.offset);
 }
 async function reveal(mine: Find, match: Match, needle: string, backwards: boolean) {
   const view = state.view.id, generation = epoch, seq = match.seq, segment = segmentsOf(seq)[match.segment];
-  const alive = () => find === mine && state.view.id === view && epoch === generation && segmentsOf(seq)[match.segment]?.text === segment.text;
+  const alive = () => find === mine && state.view.id === view && epoch === generation && segmentsOf(seq)[match.segment]?.text === segment.text && segmentsOf(seq)[match.segment]?.folds.join() === segment.folds.join();
   for (const key of segment.folds) folds.set(key, true);
   for (const key of segment.fences) openFences.add(key);
   enqueue({ type: 'navigate', anchor: { item: { kind: 'message', seq }, offset: geometry().viewport / 3 } });

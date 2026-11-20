@@ -1,20 +1,49 @@
 import { markdownLine } from '../markdown-line.ts';
 import type { AgentCall, Block, WireAssistant, WireItem } from '../koa-records.ts';
 
-export type StepInput = { block: Exclude<Block, { type: 'text' }>; item: WireAssistant };
+export type StepInput =
+  | { kind: 'block'; block: Exclude<Block, { type: 'text' }>; item: WireAssistant; index: number }
+  | { kind: 'agent'; item: Extract<WireItem, { kind: 'agent' }> }
+  | { kind: 'job'; item: Extract<WireItem, { kind: 'job' }> };
 export type AgentCard = AgentCall | Extract<WireItem, { kind: 'agent' }>;
 export type Part =
   | { kind: 'redacted' | 'command' | 'cwd' | 'cut'; text: string }
   | { kind: 'head'; text: string }
   | { kind: 'diff'; text: string; mark: string; change: 'ctx' | 'del' | 'add' }
   | { kind: 'log'; job: Extract<Block, { type: 'tool' }>['job'] & object; text: string }
-  | { kind: 'result'; text: string; note: boolean };
+  | { kind: 'result'; text: string; note: boolean }
+  | { kind: 'agent'; text: string }
+  | { kind: 'job'; job: Extract<WireItem, { kind: 'job' }>['job']; text: string; facts: string };
 
 export function toolArgs(block: Extract<Block, { type: 'tool' }>): Record<string, unknown> {
   try { const value = JSON.parse(block.args.text); return value && typeof value === 'object' && !Array.isArray(value) ? value : {}; }
   catch { return {}; }
 }
 export function stepInfo(step: StepInput & { args: Record<string, unknown> }) {
+  const card = step.kind === 'agent' ? step.item : step.kind === 'block' && step.block.type === 'tool' ? step.block.agent : undefined;
+  if (card) {
+    const inbound = card.direction === 'in', ref = inbound ? card.from : card.to;
+    let phrase: string = inbound ? card.inbound.form : card.call.tool === 'spawn' ? 'task' : card.call.mode === 'interrupt-and-steer' ? 'interrupt' : card.call.mode;
+    const failed = card.direction === 'out' && card.outcome?.ok === false;
+    if (card.direction === 'out' && card.outcome?.ok === false) phrase = card.call.tool === 'spawn' ? 'refused' : card.outcome.failure === 'refused' || card.outcome.failure === 'gone' ? card.outcome.failure : card.outcome.message;
+    const direction = inbound ? 'from' : 'to';
+    return { label: phrase + ' ' + direction + ' @' + ref.name, labelClass: 'agent-name', detail: markdownLine(agentBody(card)), kind: direction + ':' + (ref.session ?? ref.name), summary: direction + ' @' + ref.name, card, failed };
+  }
+  if (step.kind === 'job') {
+    const { job, event } = step.item;
+    const end = event.type === 'ended' ? event.end : undefined;
+    let detail: string;
+    if (event.type === 'stream') detail = event.batch.text.split('\n').length + ' lines';
+    else switch (event.end.type) {
+      case 'exit': detail = 'exit ' + event.end.code; break;
+      case 'signal': detail = 'signal ' + event.end.signal; break;
+      case 'failed': detail = 'failed'; break;
+      case 'stopped': detail = 'stopped'; break;
+      case 'timeout': detail = 'timeout ' + event.end.seconds + 's'; break;
+    }
+    return { label: 'job ' + job.name, labelClass: 'job-name', detail, kind: 'job:' + job.id, summary: 'job ' + job.name, failed: !!end && (end.type === 'exit' ? end.code !== 0 : end.type !== 'stopped') };
+  }
+  if (step.kind !== 'block') throw Error('Missing agent step');
   const { block, item } = step;
   if (block.type === 'thinking') {
     const first = block.text.indexOf('\n');
@@ -23,7 +52,7 @@ export function stepInfo(step: StepInput & { args: Record<string, unknown> }) {
   }
   const values = step.args;
   const kind = block.name;
-  if (block.name === 'async_bash') return { label: block.job?.name ?? (typeof values.name === 'string' ? values.name : 'async_bash'), labelClass: 'path', detail: '', kind };
+  if (block.name === 'async_bash' && block.job && block.state.type === 'done' && !block.state.error) return { label: 'job ' + block.job.name, labelClass: 'job-name', detail: 'started', kind: 'job:' + block.job.id, summary: 'job ' + block.job.name };
   const first = Object.values(values)[0];
   const labelClass = block.name === 'bash' ? 'cmd' : ['read', 'edit', 'write'].includes(block.name) ? 'path' : '';
   const label = labelClass === 'cmd' ? values.command : labelClass === 'path' ? values.path : block.name + (first === undefined ? '' : ' ' + (typeof first === 'string' ? first : JSON.stringify(first)));
@@ -47,7 +76,15 @@ export function stepInfo(step: StepInput & { args: Record<string, unknown> }) {
 export const agentBody = (card: AgentCard) => card.text.text || (card.direction === 'out' && card.outcome?.ok === false ? card.outcome.message : '');
 
 export function stepParts(step: StepInput & { args: Record<string, unknown> }, info: ReturnType<typeof stepInfo>, cwd: string, images: boolean): Part[] {
+  if (info.card) return [{ kind: 'agent', text: agentBody(info.card) }];
+  if (step.kind === 'job') {
+    const { event, job } = step.item, text = event.type === 'stream' ? event.batch : event.tail;
+    const facts = [text.cut ? text.cut + ' bytes omitted' : '', event.type === 'stream' && event.omitted ? event.omitted + ' lines omitted' : '', event.type === 'stream' && event.cut ? 'long lines truncated' : ''].filter(Boolean).join(' · ');
+    return [{ kind: 'job', job, text: text.text, facts }];
+  }
+  if (step.kind !== 'block') return [];
   const { block } = step, parts: Part[] = [];
+  if (block.type === 'tool' && block.name === 'async_bash' && block.job && block.state.type === 'done' && !block.state.error) return parts;
   const log = (job: NonNullable<Extract<Block, { type: 'tool' }>['job']>): Part => ({ kind: 'log', job, text: 'log: ' + job.log + (job.gone ? '' : ' open') });
   if (block.type === 'thinking' && block.redacted) parts.push({ kind: 'redacted', text: block.text || 'Redacted thinking' });
   else if (block.type === 'tool') {

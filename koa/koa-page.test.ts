@@ -9,7 +9,7 @@ import { assemblePage } from "./koa-assemble.ts";
 import { markdown, type Mark } from "./page/markdown.ts";
 import { markdownLine } from "./markdown-line.ts";
 import { revealHeight, type Unit } from "./page/reveal.ts";
-import { estimateExtent, windowOf } from "./page/extent.ts";
+import { estimateExtent, windowOf, runOwner, invalidateRuns, type RunContext } from "./page/extent.ts";
 import type { Block, WireItem } from "./koa-records.ts";
 import type { JobRef } from "./records.ts";
 import { answer, current, quote } from "./page/answers.ts";
@@ -327,18 +327,57 @@ test('estimateExtent follows the rule of every item kind', () => {
     ['assistant empty text', assistant([text(' \n ')]), 0],
     ['assistant run', assistant([step('read'), { type: 'thinking', text: 'x' }, step('bash')]), line],
     ['assistant text between runs', assistant([step('read'), text('hi'), step('bash')]), line + lh + line],
-    ['assistant agent card ends a run', assistant([step('read'), card(), step('bash')]), line + line + line],
+    ['assistant agent step joins a run', assistant([step('read'), card(), step('bash')]), line],
     ['assistant error', assistant([text('x')], 'boom'), lh + line],
-    ['assistant joined run', assistant([step('read'), text('x')]), lh],
+    ['assistant joined run', { ...assistant([step('read'), text('x')]), seq: 1 }, lh],
     ['agent', { ...base, kind: 'agent', direction: 'in', from: { name: 'a' }, text: body, inbound: { form: 'notice' } }, line],
     ['job', { ...base, kind: 'job', job, event: { type: 'stream', batch: body, omitted: 0, cut: false } }, line],
+    ['joined agent', { ...base, seq: 1, kind: 'agent', direction: 'in', from: { name: 'a' }, text: body, inbound: { form: 'notice' } }, 0],
+    ['joined job', { ...base, seq: 1, kind: 'job', job, event: { type: 'stream', batch: body, omitted: 0, cut: false } }, 0],
     ['notify', { ...base, kind: 'notify', level: 'info', text: body }, line],
     ['command', { ...base, kind: 'command', result: { type: 'copy', characters: 1 } }, line],
     ['notice', { ...base, kind: 'notice', customType: '', from: '', text: 'x' }, line],
     ['bash', { ...base, kind: 'bash', command: 'ls', excludeFromContext: false, result: { output: body, cancelled: false, truncated: false } }, line],
     ['summary', { ...base, kind: 'summary', source: 'branch', text: 'x' }, line],
   ];
-  for (const [name, item, expected] of cases) assert.equal(estimateExtent(item, lh, name === 'assistant joined run'), expected, name);
+  for (const [name, item, expected] of cases) {
+    const sources = new Map<number, WireItem>([[0, assistant([step('before')])], [item.seq, item]]);
+    const context = { raw: (seq: number) => sources.get(seq), shown: (seq: number) => sources.get(seq), owners: new Map() };
+    assert.equal(estimateExtent(item, lh, context), expected, name);
+  }
+});
+
+test('run ownership scans a cold item once and keeps owners beyond a stable boundary', () => {
+  const blocks = Array.from({ length: 200 }, (_, index) => step(String(index)));
+  const sources = new Map<number, WireItem>([
+    [0, assistant(blocks)],
+    [1, { ...assistant([text('boundary'), step('next')]), seq: 1 }],
+    [2, { ...assistant([step('follower')]), seq: 2 }],
+  ]);
+  let reads = 0;
+  const context: RunContext = { raw: seq => { reads++; return sources.get(seq); }, shown: seq => sources.get(seq), owners: new Map() };
+  for (let index = 0; index < blocks.length; index++) assert.deepEqual(runOwner(context, { kind: 'block', seq: 0, index }), { kind: 'block', seq: 0, index: 0 });
+  assert.equal(reads, 1, 'the cold item is enumerated once, not once per block');
+  assert.deepEqual(runOwner(context, { kind: 'block', seq: 2, index: 0 }), { kind: 'block', seq: 1, index: 1 });
+  const retained = context.owners.get(2);
+  sources.set(0, assistant([text('new boundary'), ...blocks]));
+  assert.equal(invalidateRuns(context, 0), 1);
+  assert.equal(context.owners.get(2), retained, 'the stable boundary retains the following cached item');
+  assert.deepEqual(runOwner(context, { kind: 'block', seq: 0, index: 200 }), { kind: 'block', seq: 0, index: 1 });
+});
+
+test('ownership invalidation crosses an uncached transparent item', () => {
+  const sources = new Map<number, WireItem>([
+    [0, assistant([step('first')])],
+    [1, { ...base, seq: 1, kind: 'annotations', reply: { seq: 0, block: 0 }, annotations: [] }],
+    [2, { ...assistant([step('last')]), seq: 2 }],
+  ]);
+  const context: RunContext = { raw: seq => sources.get(seq), shown: seq => sources.get(seq), owners: new Map() };
+  assert.deepEqual(runOwner(context, { kind: 'block', seq: 2, index: 0 }), { kind: 'block', seq: 0, index: 0 });
+  context.owners.delete(1);
+  sources.set(0, assistant([text('boundary'), step('first')]));
+  assert.equal(invalidateRuns(context, 0), 2);
+  assert.deepEqual(runOwner(context, { kind: 'block', seq: 2, index: 0 }), { kind: 'block', seq: 0, index: 1 });
 });
 
 const prefix = (order: number[], px: Map<number, number>) => order.reduce((sums, seq) => [...sums, sums[sums.length - 1] + (px.get(seq) ?? 0)], [0]);
