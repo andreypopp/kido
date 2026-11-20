@@ -45,7 +45,8 @@ reads a `.env` file and never detects a checkout on its own.
 
 The hidden options are for tests and releases: `kow --extract DIR`
 writes the server payload into DIR, `kow --test` runs the pairing test
-("Test locally"), and `kow --pin` and `kow --check-pins` rewrite or
+and the artifact tests, `kow --test-provision` runs `provision.sh` in a
+disposable container ("Test locally"), and `kow --pin` and `kow --check-pins` rewrite or
 check the pinned releases (docs/release.md, "kow").
 
 ## The workspace folder
@@ -101,7 +102,7 @@ after `tofu destroy`.
 3. Run `kow NAME deploy`. The install copies ko and koa as `me` into
    `~/ko-install/linux/` and `~/ko-install/koa/`, writes the payload
    into `~/ko-install/deploy/`, and runs `provision.sh` with sudo. You
-   can run `kow NAME install` again at any time. Wait for DNS and for
+   can run `kow NAME install` again at any time ("Repeated installs"). Wait for DNS and for
    Caddy to obtain both server certificates. Port 80 stays closed;
    ACME must use TLS-ALPN-01 on port 443.
 4. Run `kow NAME smoke`. It needs a curl with HTTP/3 (`curl -V` lists
@@ -123,6 +124,35 @@ after `tofu destroy`.
 
    Check `sudo journalctl -k` for AppArmor denials. Provisioning starts
    the profile in complain mode and keeps an enforced profile enforced.
+
+## Repeated installs
+
+A repeated `kow NAME install` with the same builds does no work that
+is already in place. kow identifies each build: a release by its
+version and archive SHA-256, a checkout build by a SHA-256 over its
+paths, contents, modes and symlink targets. Provisioning records the
+identity of the installed ko in `/opt/ko/.kow-source` and of koa in
+`/opt/koa.kow-source`. Before it downloads or copies a build, kow
+reads both files over SSH; on an exact match it neither downloads nor
+copies that build, and `provision.sh` leaves it in place. A
+mismatch, a missing file or a failed or unreadable answer takes the
+full path. A `--checkout` install still runs both builds. Provisioning
+removes an identity before it changes that build and writes it again
+only after the services run, so a failed install never leaves an
+identity that matches a mixed build.
+
+`provision.sh` compares each file, symlink, account setting and
+permission before it changes it. It runs `apt-get update` and
+`apt-get install` only when a listed package is missing or an apt
+source or key changed; package updates stay with unattended-upgrades.
+Work that a change makes necessary (apt, or the restart of ko, Caddy,
+nftables, ssh or systemd-resolved) has a marker in
+`/var/lib/kow/pending/` from the change until it succeeds, so a run
+that fails between the change and the restart leaves the work to the
+next run. A repeated install still does the SSH query, the checksum
+copy of the payload, the comparisons, the validations, the
+tmpfiles, sysctl and AppArmor loads, `systemctl daemon-reload`,
+`enable` and the status checks, and the checks of `me.sh`.
 
 ## Agents on the server
 
@@ -227,7 +257,8 @@ the operator must know:
 ## Test locally
 
 `kow --test` extracts the payload into a temporary folder and runs
-its `test.sh` against KidoPairing's fixture in the checkout. On a
+its `test.sh` against KidoPairing's fixture in the checkout, after the
+unit tests of the artifact identities and the transfer choice. On a
 Debian 13 host, as root, install `python3-cryptography`, `qrencode`,
 `openssl` and `curl`, then run `kow/kow --test`. On a Mac with
 Apple's container CLI:
@@ -237,6 +268,22 @@ container run --name kow-local-test \
   --mount type=bind,source="$PWD",target=/work,readonly debian:13 \
   bash -c 'apt-get update && apt-get install -y python3-cryptography qrencode openssl curl && python3 /work/kow/kow --test'
 container delete kow-local-test
+```
+
+`kow --test-provision` changes the system it runs on, so it runs only
+in a disposable Debian 13 container with `KOW_TEST_PROVISION=1`, and
+needs `sudo` and `diffutils` too. It replaces apt, systemd, Caddy and
+the other system commands with stubs that log their arguments, and
+installs a fake ko and koa. It checks that a second identical run
+writes no file, runs no apt or npm and starts or restarts no service,
+and that a run which fails after a change completes the apt work and
+the ko restart on the next run. It does not check real systemd
+effects.
+
+```sh
+container run --rm --mount type=bind,source="$PWD",target=/work,readonly \
+  -e KOW_TEST_PROVISION=1 debian:13 \
+  bash -c 'apt-get update && apt-get install -y python3-cryptography qrencode openssl curl sudo diffutils && python3 /work/kow/kow --test-provision'
 ```
 
 Tests use a private folder under `/tmp`. Only tests set

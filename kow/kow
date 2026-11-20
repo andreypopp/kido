@@ -578,9 +578,11 @@ if ! cmp -s "$base/tools/package-lock.json" "$tools/installed-lock.json"; then
     "$tools/node_modules/.bin/pi" --version
     cp "$tools/package-lock.json" "$tools/installed-lock.json"
 fi
-ln -sfn "$tools/node_modules/.bin/pi" "$HOME/.local/bin/pi"
-ln -sfn "$tools/node_modules/.bin/claude" "$HOME/.local/bin/claude"
-ln -sfn /usr/bin/fdfind "$HOME/.local/bin/fd"
+for name in pi claude fd; do
+    target=$tools/node_modules/.bin/$name
+    [[ $name != fd ]] || target=/usr/bin/fdfind
+    [[ $(readlink "$HOME/.local/bin/$name" || true) == "$target" ]] || ln -sfn "$target" "$HOME/.local/bin/$name"
+done
 if [[ ! -e $HOME/.pi/agent/settings.json ]]; then
     install -D -m 0644 "$base/files/pi-settings.json" "$HOME/.pi/agent/settings.json"
 fi
@@ -599,18 +601,29 @@ base=$(cd -- "$(dirname -- "$0")" && pwd)
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 pair_port=8791
-ko_changed=false
-caddy_changed=false
-nftables_changed=false
-ssh_changed=false
-resolved_changed=false
+pending=/var/lib/kow/pending
+install -d -o root -g root -m 0700 "$pending"
+for service in ko caddy nftables ssh resolved apt; do
+    if [[ -e $pending/$service ]]; then
+        printf -v "${service}_changed" true
+    else
+        printf -v "${service}_changed" false
+    fi
+done
+mark_changed() {
+    [[ -e $pending/$1 ]] || touch "$pending/$1"
+    printf -v "${1}_changed" true
+}
 install_changed() {
-    local source=$1 target=$2 service=$3 mode=${4:-0644} temporary
-    if ! cmp -s "$source" "$target"; then
+    local source=$1 target=$2 service=${3:-} mode=${4:-0644} temporary
+    if ! cmp -s "$source" "$target" || [[ $(stat -c %a "$target") != "${mode#0}" ]]; then
+        if [[ -n $service ]]; then
+            mark_changed "$service"
+        fi
+        [[ $service != ko ]] || rm -f /opt/ko/.kow-source
         temporary=$(mktemp "$(dirname -- "$target")/.ko-install-XXXXXX")
         install -o root -g root -m "$mode" "$source" "$temporary"
         mv -f "$temporary" "$target"
-        printf -v "${service}_changed" true
     fi
 }
 python3 - "$base/files" "$work" "$pair_port" "${certificate[0]:-}" "$@" <<'PY'
@@ -639,6 +652,7 @@ for name in ("Caddyfile", "nftables.conf"):
 PY
 export DEBIAN_FRONTEND=noninteractive
 if [[ ! -s /etc/apt/sources.list.d/caddy-stable.list || ! -s /usr/share/keyrings/caddy-stable-archive-keyring.asc ]]; then
+    mark_changed apt
     python3 - <<'PY'
 from pathlib import Path
 import urllib.request
@@ -650,45 +664,62 @@ with urllib.request.urlopen("https://dl.cloudsmith.io/public/caddy/stable/debian
 Path("/etc/apt/sources.list.d/caddy-stable.list").write_text(repo)
 PY
 fi
-install -m 0644 "$base/files/nodesource.asc" /usr/share/keyrings/nodesource.asc
-printf 'deb [signed-by=/usr/share/keyrings/nodesource.asc] https://deb.nodesource.com/node_24.x nodistro main\n' > /etc/apt/sources.list.d/nodesource.list
+install_changed "$base/files/nodesource.asc" /usr/share/keyrings/nodesource.asc apt
+printf 'deb [signed-by=/usr/share/keyrings/nodesource.asc] https://deb.nodesource.com/node_24.x nodistro main\n' > "$work/nodesource.list"
+install_changed "$work/nodesource.list" /etc/apt/sources.list.d/nodesource.list apt
+packages=(ca-certificates curl caddy nftables unattended-upgrades apparmor-utils python3-cryptography qrencode openssh-server sudo nodejs git fd-find)
+for package in "${packages[@]}"; do
+    [[ $(dpkg-query -W -f='${Status}' "$package" 2>/dev/null || true) == 'install ok installed' ]] || mark_changed apt
+done
 old_caddy=$(dpkg-query -W -f='${Version}' caddy 2>/dev/null || true)
-apt-get update
-apt-get install -y ca-certificates curl caddy nftables unattended-upgrades apparmor-utils python3-cryptography qrencode openssh-server sudo nodejs git fd-find
-[[ $old_caddy == "$(dpkg-query -W -f='${Version}' caddy)" ]] || caddy_changed=true
+if "$apt_changed"; then
+    apt-get update
+    apt-get install -y "${packages[@]}"
+    rm -f "$pending/apt"
+fi
+[[ $old_caddy == "$(dpkg-query -W -f='${Version}' caddy)" ]] || mark_changed caddy
 version=$(caddy version | awk '{print $1}')
 dpkg --compare-versions "${version#v}" ge 2.11.4 || { echo 'Caddy 2.11.4 or later is required' >&2; exit 1; }
 id me >/dev/null
 [[ -s /home/me/.ssh/authorized_keys ]] || { echo 'cloud-init must install the SSH key for me first' >&2; exit 1; }
-usermod --shell /bin/bash me
-printf 'me ALL=(ALL) NOPASSWD:ALL\n' > /etc/sudoers.d/90-ko-me
-chmod 0440 /etc/sudoers.d/90-ko-me
+[[ $(getent passwd me | cut -d: -f7) == /bin/bash ]] || usermod --shell /bin/bash me
+printf 'me ALL=(ALL) NOPASSWD:ALL\n' > "$work/sudoers"
+install_changed "$work/sudoers" /etc/sudoers.d/90-ko-me '' 0440
 visudo -cf /etc/sudoers.d/90-ko-me
-passwd -l root
+[[ $(passwd -S root | awk '{print $2}') == L ]] || passwd -l root
 getent group ko-socket >/dev/null || groupadd --system ko-socket
 if ! id -nG caddy | tr ' ' '\n' | grep -qx ko-socket; then
+    mark_changed caddy
     usermod -a -G ko-socket caddy
-    caddy_changed=true
 fi
 install -d -o root -g caddy -m 0750 /var/lib/ko-devices
 install -d -o caddy -g caddy -m 0750 /var/log/caddy
 [[ -d /etc/caddy/sites.d ]] || install -d -o root -g root -m 0755 /etc/caddy/sites.d
 install -d /opt/ko/bin /opt/ko/share /etc/systemd/system/caddy.service.d
+if [[ -e $base/ko-skip ]]; then
+    cmp -s "$base/ko-source" /opt/ko/.kow-source || { echo 'ko identity changed during install' >&2; exit 1; }
+else
 [[ -x $base/../linux/bin/ko && -x $base/../linux/bin/ko-pane ]] || { echo 'copy the Linux build beside deploy as linux/ first' >&2; exit 1; }
-[[ -x $base/../koa/bin/koa ]] || { echo 'copy build/koa beside deploy as koa/ first' >&2; exit 1; }
 for binary in ko ko-pane; do
     install_changed "$base/../linux/bin/$binary" "/opt/ko/bin/$binary" ko 0755
 done
 if ! diff -qr "$base/../linux/share" /opt/ko/share >/dev/null; then
+    mark_changed ko
+    rm -f /opt/ko/.kow-source
     share=$(mktemp -d /opt/ko/.share-XXXXXX)
     cp -a "$base/../linux/share/." "$share/"
     chown -R root:root "$share"
     mv /opt/ko/share "$share.old"
     mv "$share" /opt/ko/share
     rm -rf "$share.old"
-    ko_changed=true
 fi
+fi
+if [[ -e $base/koa-skip ]]; then
+    cmp -s "$base/koa-source" /opt/koa.kow-source || { echo 'koa identity changed during install' >&2; exit 1; }
+else
+[[ -x $base/../koa/bin/koa ]] || { echo 'copy build/koa beside deploy as koa/ first' >&2; exit 1; }
 if [[ ! -d /opt/koa ]] || ! diff -qr "$base/../koa" /opt/koa >/dev/null; then
+    rm -f /opt/koa.kow-source
     koa=$(mktemp -d /opt/.koa-XXXXXX)
     cp -a "$base/../koa/." "$koa/"
     chown -R root:root "$koa"
@@ -697,6 +728,7 @@ if [[ ! -d /opt/koa ]] || ! diff -qr "$base/../koa" /opt/koa >/dev/null; then
     [[ ! -e /opt/koa ]] || mv /opt/koa "$koa.old"
     mv "$koa" /opt/koa
     rm -rf "$koa.old"
+fi
 fi
 /opt/ko/bin/ko server --help | grep -q -- '--allow-uid'
 install_changed "$base/files/ko-tmpfiles.conf" /etc/tmpfiles.d/ko.conf ko
@@ -707,20 +739,22 @@ import sys
 print(Path(sys.argv[1]).read_text().replace("@CADDY_UID@", sys.argv[2]), end="")
 PY
 install_changed "$work/ko.service" /etc/systemd/system/ko.service ko
-printf 'export KO_STATE_DIR=/var/lib/ko\nexport PATH=/opt/ko/bin:/opt/koa/bin:$PATH\n' > /etc/profile.d/ko.sh
-install -m 0755 "$base/ko-devices" /usr/local/sbin/ko-devices
-ln -sfn ko-devices /usr/local/sbin/ko-revoke
-ln -sfn ko-devices /usr/local/sbin/ko-pair
-python3 - "$1" "$pair_port" > /etc/ko-pair.json <<'PY'
+printf 'export KO_STATE_DIR=/var/lib/ko\nexport PATH=/opt/ko/bin:/opt/koa/bin:$PATH\n' > "$work/profile"
+install_changed "$work/profile" /etc/profile.d/ko.sh
+install_changed "$base/ko-devices" /usr/local/sbin/ko-devices '' 0755
+for name in ko-revoke ko-pair; do
+    [[ $(readlink "/usr/local/sbin/$name" || true) == ko-devices ]] || ln -sfn ko-devices "/usr/local/sbin/$name"
+done
+python3 - "$1" "$pair_port" > "$work/ko-pair.json" <<'PY'
 import json
 import sys
 print(json.dumps({"host": sys.argv[1], "port": int(sys.argv[2])}))
 PY
-chmod 0644 /etc/ko-pair.json
+install_changed "$work/ko-pair.json" /etc/ko-pair.json
 if [[ ${#certificate[@]} != 0 ]]; then
     install_changed "${certificate[0]}" /etc/caddy/ko-server.crt caddy
     install_changed "${certificate[1]}" /etc/caddy/ko-server.key caddy 0640
-    chown root:caddy /etc/caddy/ko-server.key
+    [[ $(stat -c %U:%G /etc/caddy/ko-server.key) == root:caddy ]] || chown root:caddy /etc/caddy/ko-server.key
 fi
 install_changed "$base/files/sysctl.conf" /etc/sysctl.d/60-ko-quic.conf caddy
 sysctl -p /etc/sysctl.d/60-ko-quic.conf
@@ -744,7 +778,7 @@ install_changed "$base/files/sshd.conf" /etc/ssh/sshd_config.d/00-ko.conf ssh
 sshd -t
 nft -c -f "$work/nftables.conf"
 install_changed "$work/nftables.conf" /etc/nftables.conf nftables 0755
-install -m 0644 "$base/files/unattended-upgrades" /etc/apt/apt.conf.d/52ko-unattended-upgrades
+install_changed "$base/files/unattended-upgrades" /etc/apt/apt.conf.d/52ko-unattended-upgrades
 systemd-analyze verify /etc/systemd/system/ko.service /lib/systemd/system/caddy.service
 systemctl daemon-reload
 systemctl enable ko caddy nftables unattended-upgrades
@@ -755,15 +789,26 @@ for service in ko caddy nftables; do
     elif "${!flag}"; then
         systemctl restart "$service"
     fi
+    rm -f "$pending/$service"
 done
 if ! systemctl is-active --quiet ssh; then
     systemctl start ssh
 elif "$ssh_changed"; then
     systemctl reload ssh
 fi
-"$resolved_changed" && systemctl try-restart systemd-resolved
+rm -f "$pending/ssh"
+if "$resolved_changed"; then
+    systemctl try-restart systemd-resolved
+    rm -f "$pending/resolved"
+fi
 systemctl is-active --quiet ko caddy nftables
 runuser -u me -- env -i HOME=/home/me PATH=/usr/local/bin:/usr/bin:/bin "$base/me.sh"
+if [[ -f $base/ko-source ]]; then
+    install_changed "$base/ko-source" /opt/ko/.kow-source
+fi
+if [[ -f $base/koa-source ]]; then
+    install_changed "$base/koa-source" /opt/koa.kow-source
+fi
 printf 'Provisioned %s; run deploy/smoke.sh before aa-enforce caddy.\n' "$1"
 '''
 
@@ -3175,6 +3220,141 @@ TOOLS_PACKAGE_JSON = r'''{
 }
 '''
 
+PROVISION_TEST_PY = r"""import hashlib
+import os
+import shutil
+from pathlib import Path
+import subprocess
+import sys
+import time
+
+if os.environ.get('KOW_TEST_PROVISION') != '1':
+    raise SystemExit('provision test requires KOW_TEST_PROVISION=1 in a disposable Debian container')
+base = Path(sys.argv[1])
+work = base / 'provision-test'
+work.mkdir()
+bin_dir = work / 'bin'
+bin_dir.mkdir()
+log = work / 'commands'
+stub = bin_dir / 'stub'
+stub.write_text(r'''#!/bin/bash
+set -eu
+name=${0##*/}
+printf '%s' "$name" >> "$COMMAND_LOG"
+printf ' %q' "$@" >> "$COMMAND_LOG"
+printf '\n' >> "$COMMAND_LOG"
+if [[ $name == apt-get && ${1:-} == update && -e ${FAIL_APT_UPDATE_ONCE:-/nonexistent} ]]; then
+    rm "$FAIL_APT_UPDATE_ONCE"
+    exit 42
+fi
+if [[ $name == caddy && ${1:-} == validate && -e ${FAIL_CADDY_VALIDATE_ONCE:-/nonexistent} ]]; then
+    rm "$FAIL_CADDY_VALIDATE_ONCE"
+    exit 42
+fi
+case $name in
+    dpkg-query)
+        if [[ $* == *Status* ]]; then printf 'install ok installed'; else printf '2.11.4'; fi ;;
+    caddy) [[ ${1:-} != version ]] || echo v2.11.4 ;;
+    runuser) HOME=/home/me bash "$DEPLOY_BASE/me.sh" ;;
+    npm)
+        mkdir -p /home/me/.local/share/ko-tools/node_modules/.bin
+        for tool in pi claude; do
+            printf '#!/bin/sh\nexit 0\n' > "/home/me/.local/share/ko-tools/node_modules/.bin/$tool"
+            chmod +x "/home/me/.local/share/ko-tools/node_modules/.bin/$tool"
+        done ;;
+esac
+''')
+stub.chmod(0o755)
+for command in ('apt-get', 'systemctl', 'caddy', 'apparmor_parser', 'sshd', 'nft', 'sysctl',
+                'systemd-analyze', 'systemd-tmpfiles', 'runuser', 'dpkg-query', 'npm'):
+    (bin_dir / command).symlink_to(stub)
+env = {**os.environ, 'PATH': str(bin_dir) + ':' + os.environ['PATH'],
+       'COMMAND_LOG': str(log), 'DEPLOY_BASE': str(base)}
+for user in ('me', 'caddy'):
+    subprocess.run(['useradd', '-m', '-s', '/bin/bash', user], check=True)
+subprocess.run(['groupadd', 'ko-socket'], check=True)
+subprocess.run(['usermod', '-aG', 'ko-socket', 'caddy'], check=True)
+for directory in ('/home/me/.ssh', '/etc/sudoers.d', '/etc/caddy', '/etc/apparmor.d',
+                  '/etc/ssh/sshd_config.d', '/usr/share/keyrings', '/etc/apt/sources.list.d',
+                  '/etc/tmpfiles.d', '/etc/sysctl.d'):
+    Path(directory).mkdir(parents=True, exist_ok=True)
+Path('/home/me/.ssh/authorized_keys').write_text('test key\n')
+for name in ('/etc/apt/sources.list.d/caddy-stable.list', '/usr/share/keyrings/caddy-stable-archive-keyring.asc'):
+    Path(name).write_text('test repository\n')
+for name in ('linux/bin/ko', 'linux/bin/ko-pane', 'koa/bin/koa'):
+    path = base.parent / name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text('#!/bin/sh\necho --allow-uid\n')
+    path.chmod(0o755)
+(base.parent / 'linux/share').mkdir()
+(base.parent / 'linux/share/test').write_text('test share\n')
+for product in ('ko', 'koa'):
+    (base / (product + '-source')).write_text('test-sha256-' + product + '\n')
+
+def snapshot():
+    result = {}
+    for root in ('/etc', '/opt', '/usr/local/sbin', '/home/me', '/var/lib/kow/pending'):
+        for path in Path(root).rglob('*'):
+            if path.is_symlink():
+                result[str(path)] = (path.lstat().st_mtime_ns, os.readlink(path))
+            elif path.is_file():
+                result[str(path)] = (path.stat().st_mtime_ns, hashlib.sha256(path.read_bytes()).hexdigest())
+    return result
+
+command = ['bash', str(base / 'provision.sh'), 'ko.test', '0.0.0.0/0', '::/0']
+subprocess.run(command, check=True, env=env)
+assert 'apt-get install ' in log.read_text()
+before = snapshot()
+log.write_text('')
+start = time.monotonic()
+subprocess.run(command, check=True, env=env)
+elapsed = time.monotonic() - start
+after = snapshot()
+assert before == after, [name for name in before.keys() | after.keys() if before.get(name) != after.get(name)]
+commands = log.read_text().splitlines()
+assert not any(line.startswith(('apt-get ', 'npm ')) for line in commands), commands
+assert not any(line.startswith('systemctl ') and line.split()[1] in ('restart', 'reload', 'start', 'try-restart') for line in commands), commands
+print(f'PASS provision twice; second run {elapsed:.3f}s; unchanged target files')
+print('Second-run commands:\n' + '\n'.join(commands))
+
+apt_failure = work / 'fail-apt'
+apt_failure.touch()
+retry_env = {**env, 'FAIL_APT_UPDATE_ONCE': str(apt_failure)}
+(base / 'files/nodesource.asc').write_text('changed repository key\n')
+assert subprocess.run(command, env=retry_env).returncode == 42
+assert Path('/var/lib/kow/pending/apt').exists()
+log.write_text('')
+subprocess.run(command, check=True, env=retry_env)
+assert 'apt-get update\n' in log.read_text()
+assert 'apt-get install ' in log.read_text()
+assert not Path('/var/lib/kow/pending/apt').exists()
+print('PASS apt source change retries after failed update')
+
+caddy_failure = work / 'fail-caddy'
+caddy_failure.touch()
+retry_env = {**env, 'FAIL_CADDY_VALIDATE_ONCE': str(caddy_failure)}
+(base.parent / 'linux/bin/ko').write_text('#!/bin/sh\nprintf -- "--allow-uid changed\\n"\n')
+new_identity = 'changed-test-sha256-ko\n'
+(base / 'ko-source').write_text(new_identity)
+assert Path('/opt/ko/.kow-source').read_text() != new_identity
+assert subprocess.run(command, env=retry_env).returncode == 42
+assert not Path('/opt/ko/.kow-source').exists()
+assert Path('/var/lib/kow/pending/ko').exists()
+log.write_text('')
+subprocess.run(command, check=True, env=retry_env)
+assert 'systemctl restart ko\n' in log.read_text()
+assert Path('/opt/ko/.kow-source').read_text() == new_identity
+assert not Path('/var/lib/kow/pending/ko').exists()
+print('PASS ko identity invalidation and pending restart recovery')
+after = snapshot()
+for product, directory in (('ko', 'linux'), ('koa', 'koa')):
+    (base / (product + '-skip')).touch()
+    shutil.rmtree(base.parent / directory)
+subprocess.run(command, check=True, env=env)
+assert snapshot() == after
+print('PASS provision with skipped artifacts and no staged copies')
+"""
+
 FILES = {
     'enroll-request.py': (0o644, ENROLL_REQUEST_PY),
     'files/Caddyfile': (0o644, FILES_CADDYFILE),
@@ -3194,6 +3374,7 @@ FILES = {
     'provision.sh': (0o755, PROVISION_SH),
     'smoke.sh': (0o755, SMOKE_SH),
     'test.sh': (0o755, TEST_SH),
+    'test-provision.py': (0o644, PROVISION_TEST_PY),
     'tools/package-lock.json': (0o644, TOOLS_PACKAGE_LOCK_JSON),
     'tools/package.json': (0o644, TOOLS_PACKAGE_JSON),
 }
@@ -3251,7 +3432,7 @@ def pins(check=False):
         source.write_text(text)
 
 
-def download(product, version, destination):
+def archive_source(product, version):
     pinned_version, pinned_digest = (KO_VERSION, KO_SHA256) if product == 'ko' else (KOA_VERSION, KOA_SHA256)
     version = version or pinned_version
     if version == pinned_version:
@@ -3260,6 +3441,11 @@ def download(product, version, destination):
         url = f'https://github.com/andreypopp/kido/releases/download/{product}/{version}/{asset}'
     else:
         _, digest, url = release(product, version)
+    return version, digest, url
+
+
+def download(product, source, destination):
+    _, digest, url = source
     print(f'Download {url}', flush=True)
     with urllib.request.urlopen(url, timeout=60) as response:
         archive = response.read()
@@ -3335,6 +3521,34 @@ def ssh_command(folder):
     return args
 
 
+def installed_matches(identity, answer):
+    return bool(identity) and answer == identity + '\n'
+
+
+def installed_sources(ssh, host):
+    try:
+        result = run([*ssh, host, 'cat /opt/ko/.kow-source; cat /opt/koa.kow-source'],
+                     stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=20)
+        lines = result.stdout.decode().splitlines(keepends=True)
+        return lines if len(lines) == 2 else ['', '']
+    except (OSError, UnicodeError, subprocess.SubprocessError):
+        return ['', '']
+
+
+def checkout_identity(source):
+    digest = hashlib.sha256()
+    for path in sorted(source.rglob('*')):
+        name = str(path.relative_to(source))
+        if path.is_symlink():
+            entry = ['link', name, os.readlink(path)]
+        elif path.is_file():
+            entry = ['file', name, path.stat().st_mode & 0o777, hashlib.sha256(path.read_bytes()).hexdigest()]
+        else:
+            entry = ['directory', name]
+        digest.update(json.dumps(entry).encode() + b'\n')
+    return 'checkout:sha256:' + digest.hexdigest()
+
+
 def install(folder, checkout, ko_version, koa_version):
     outputs = json.loads((folder / 'terraform.tfstate').read_text())['outputs']
     host = address(folder)
@@ -3348,18 +3562,79 @@ def install(folder, checkout, ko_version, koa_version):
             run(['make', 'build-linux', 'LINUX_ARCHS=x86_64'], cwd=checkout)
             run(['make', '-C', 'koa', 'build'], cwd=checkout)
             linux, koa = checkout / 'build/ko/share/ko/linux/x86_64', checkout / 'build/koa'
+            identities = [checkout_identity(linux), checkout_identity(koa)]
         else:
             linux, koa = payload / 'linux-build', payload / 'koa-build'
-            download('ko', ko_version, linux)
-            download('koa', koa_version, koa)
-        for source, target in [(linux, 'linux'), (koa, 'koa')]:
+            archives = [archive_source('ko', ko_version), archive_source('koa', koa_version)]
+            identities = [f'release:{version}:sha256:{digest}' for version, digest, _ in archives]
+        answers = installed_sources(ssh, host)
+        for index, (product, source, target) in enumerate([('ko', linux, 'linux'), ('koa', koa, 'koa')]):
+            (payload / (product + '-source')).write_text(identities[index] + '\n')
+            if installed_matches(identities[index], answers[index]):
+                (payload / (product + '-skip')).touch()
+                print(f'{product} already installed; skip transfer', flush=True)
+                continue
+            if not checkout:
+                download(product, archives[index], source)
             run(['rsync', '-az', '--delete', '-e', shlex.join(ssh), str(source) + '/', f'{host}:ko-install/{target}/'])
-        if not checkout:
-            shutil.rmtree(linux)
-            shutil.rmtree(koa)
-        run(['rsync', '-az', '--delete', '-e', shlex.join(ssh), str(payload) + '/', f'{host}:ko-install/deploy/'])
+            if not checkout:
+                shutil.rmtree(source)
+        run(['rsync', '-rlzc', '--perms', '--delete', '-e', shlex.join(ssh), str(payload) + '/', f'{host}:ko-install/deploy/'])
     arguments = [outputs['ko_host']['value'], *outputs['ssh_cidrs']['value']]
     run([*ssh, '-t', host, 'sudo /home/me/ko-install/deploy/provision.sh ' + shlex.join(arguments)])
+
+
+def test_artifacts(root):
+    from unittest.mock import patch
+
+    identity = 'release:1:sha256:' + 'a' * 64
+    for answer in ('', identity, identity + '\nextra\n', identity + '\r\n', 'other\n'):
+        assert not installed_matches(identity, answer), answer
+    assert installed_matches(identity, identity + '\n')
+    with patch(__name__ + '.run', return_value=subprocess.CompletedProcess([], 0, b'ko\nkoa\n')) as remote:
+        assert installed_sources(['ssh-stub'], 'test-host') == ['ko\n', 'koa\n']
+        assert remote.call_args.args[0][0] == 'ssh-stub'
+    for result in (b'', b'one\n', b'one\ntwo\nthree\n', b'\xff'):
+        with patch(__name__ + '.run', return_value=subprocess.CompletedProcess([], 0, result)):
+            assert installed_sources(['ssh-stub'], 'test-host') == ['', '']
+    with patch(__name__ + '.run', side_effect=subprocess.CalledProcessError(1, 'ssh-stub')):
+        assert installed_sources(['ssh-stub'], 'test-host') == ['', '']
+    source = root / 'checkout-test'
+    source.mkdir()
+    file = source / 'binary'
+    file.write_bytes(b'one')
+    first = checkout_identity(source)
+    file.write_bytes(b'two')
+    assert checkout_identity(source) != first
+    second = checkout_identity(source)
+    file.chmod(0o755)
+    assert checkout_identity(source) != second
+    folder = root / 'workspace'
+    folder.mkdir()
+    (folder / 'terraform.tfstate').write_text(json.dumps({'outputs': {
+        'ipv4': {'value': 'test-host'}, 'ko_host': {'value': 'ko.test'},
+        'ssh_cidrs': {'value': ['0.0.0.0/0']}}}))
+    (folder / 'known_hosts').write_text('test host key')
+    identities = [f'release:{version}:sha256:{digest}\n' for version, digest, _ in
+                  (archive_source('ko', None), archive_source('koa', None))]
+    for answers, expected in ((identities, []), (['other\n', identities[1]], ['ko']), (['', ''], ['ko', 'koa'])):
+        transfers = []
+        downloads = []
+
+        def remote_run(args, **kwargs):
+            if args[0] == 'rsync':
+                transfers.append(args[-1])
+            return subprocess.CompletedProcess(args, 0, ''.join(answers).encode())
+
+        def fake_download(product, source, destination):
+            downloads.append(product)
+            destination.mkdir()
+
+        with patch(__name__ + '.run', side_effect=remote_run), patch(__name__ + '.download', side_effect=fake_download):
+            install(folder, None, None, None)
+        assert downloads == expected, downloads
+        assert len(transfers) == len(expected) + 1, transfers
+    print('PASS artifact identities, stubbed SSH answers and install transfers')
 
 
 def main():
@@ -3370,9 +3645,16 @@ def main():
     if args in (['--pin'], ['--check-pins']):
         pins(check=args == ['--check-pins'])
         return
+    if args == ['--test-provision']:
+        with tempfile.TemporaryDirectory(prefix='kow-provision-test-') as temporary:
+            root = Path(temporary)
+            extract(root)
+            run(['python3', root / 'test-provision.py', root])
+        return
     if args == ['--test']:
         with tempfile.TemporaryDirectory(prefix='kow-test-') as temporary:
             root = Path(temporary)
+            test_artifacts(root)
             extract(root)
             (root / 'testdata').symlink_to(CHECKOUT / 'app/Packages/KidoPairing/Tests/KidoPairingTests/testdata')
             run(['bash', root / 'test.sh'])
