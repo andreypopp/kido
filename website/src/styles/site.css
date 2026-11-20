@@ -13,7 +13,7 @@ h1{font-size:clamp(3rem,13vw,5.2rem);line-height:.98;letter-spacing:-.02em}
 h2{font-size:clamp(2rem,7vw,3rem);line-height:1.05;letter-spacing:-.015em}
 h3{font-size:1.6rem}
 .shot img{display:block;width:100%;height:auto}
-.shot-open{all:unset;display:block;cursor:zoom-in}
+.shot-open{all:unset;display:block;width:100%;cursor:zoom-in}
 .shot-open:focus-visible{outline:3px solid var(--blue);outline-offset:4px}
 .zoom{border:0;padding:0;background:none;width:min(94vw,var(--full));max-width:none;max-height:none;cursor:zoom-out;overflow:visible}
 .zoom:focus-visible{outline:none}
