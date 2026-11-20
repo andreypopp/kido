@@ -157,6 +157,10 @@ import SidebarFeed
         guard let runtime else { return nil }
         let owner = WindowOwner(host: host, runtime: runtime, start: start, cause: cause, identities: identities, paths: paths)
         owners.append(owner)
+        owner.reconcileFloats = { [weak self] in
+            guard let self else { return }
+            WindowOwner.reconcileFloats(owners)
+        }
         owner.becameKey = { [weak self, weak owner] in self?.lastKeyOwner = owner }
         if owner.isKeyHost { lastKeyOwner = owner }
         owner.snapshotReceived = { [weak self, weak owner] in

@@ -98,12 +98,12 @@ extension Snapshotting where Value == NSImage, Format == NSImage {
     (view.window?.childWindows ?? []).compactMap { $0 as? NoticesWindow }.first { $0.shown }
 }
 
-// The visible float windows over `view`'s window, lowest first.
 @MainActor func floatHosts(over view: NSView) -> [FloatWindow] {
-    let children = (view.window?.childWindows ?? []).compactMap { $0 as? FloatWindow }.filter { !$0.content.isHidden }
+    guard let window = view.window else { return [] }
+    let hosts = NSApp.windows.compactMap { $0 as? FloatWindow }.filter { $0.content.logical?.window === window && !$0.content.isHidden }
     var logicals: [WindowView] = []
-    for child in children { if let logical = child.content.logical, !logicals.contains(where: { $0 === logical }) { logicals.append(logical) } }
-    return logicals.flatMap { $0.visualFloatHosts }.filter { host in children.contains { $0 === host } }
+    for host in hosts { if let logical = host.content.logical, !logicals.contains(where: { $0 === logical }) { logicals.append(logical) } }
+    return logicals.flatMap { $0.visualFloatHosts }.filter { host in hosts.contains { $0 === host } }
 }
 
 extension WindowView {

@@ -89,6 +89,7 @@ private class AlertEscape: NSView {
     private var frameSave: DispatchWorkItem?
     private var hostFocusChanged: (NSResponder?, NSResponder?) -> Void = { _, _ in }
     private var changingFullScreen = false
+    private var floatAnchorFrame: CGRect?
     let ownerID = String(UUID().uuidString.prefix(8))
     let notificationID = UUID().uuidString
     var feedFresh = true
@@ -140,7 +141,37 @@ private class AlertEscape: NSView {
         var projection = PaneProjection(nil)
     }
     private var received = Received()
-    private var model: SessionModel { received.model }
+    private var shownWindow: WindowID?
+    private var model: SessionModel {
+        guard let shownWindow, let koModel,
+              let location = koModel.layout.layout.sessions.first(where: { $0.windows.contains { $0.id == shownWindow } }) else { return received.model }
+        var value = received.model
+        value.session = location.id
+        value.window = shownWindow
+        value.windows = location.windows.map { SessionModel.Window(id: $0.id, name: $0.name) }
+        return value
+    }
+    private(set) weak var floatOwner: WindowOwner?
+    var reconcileFloats: () -> Void = {}
+
+    static func reconcileFloats(_ owners: [WindowOwner]) {
+        var changed: [WindowOwner] = []
+        for owner in owners {
+            guard let instance = owner.snapshot?.serverInstance,
+                  let elected = owners.first(where: { $0.alive && $0.snapshot?.serverInstance == instance }) else { continue }
+            if owner.floatOwner !== elected { changed.append(owner) }
+            owner.floatOwner = elected
+        }
+        for owner in changed where owner.alive && owner.floatOwner === owner {
+            if let ko = owner.koModel {
+                owner.session?.update(ko.layout.layout.windows, shown: owner.model.window, selected: ko.selection.pane, marks: ko.runtimeMarks)
+            }
+        }
+        for owner in owners where owner.floatOwner !== owner {
+            if let source = owner.session, let target = owner.floatOwner?.session { target.adoptFloats(from: source) }
+        }
+        for owner in changed where owner.alive { owner.session?.refreshFloats() }
+    }
     private var koModel: KoModel? { received.ko }
     // Per window, the tiled pane that was active last: where Dock Pane docks a float.
     private var lastTiled: [WindowID: PaneID] = [:]
@@ -221,7 +252,7 @@ private class AlertEscape: NSView {
     private static let localServerRestarted = Notification.Name("KidoLocalServerRestarted")
 
     var attended: Bool {
-        var attended = NSApp.isActive && isKeyHost && !window.isMiniaturized && inputWindow.occlusionState.contains(.visible)
+        var attended = NSApp.isActive && (isKeyHost && !inputWindow.isMiniaturized && inputWindow.occlusionState.contains(.visible) || session?.hostWindows.contains { $0.isVisible && !$0.isMiniaturized && !$0.content.isHidden } == true)
         #if KIDO_VISUAL || KIDO_STRESS
         attended = testAttended ?? attended
         #endif
@@ -233,8 +264,22 @@ private class AlertEscape: NSView {
     var inputWindow: NSWindow { session?.hostWindows.first { $0.isInputWindow } ?? window }
     var inputResponder: NSResponder? { inputWindow.firstResponder }
 
-    var shownPanes: [PaneID] {
-        (session?.windows.values.first { !$0.isHidden }?.displayedPanes ?? []).filter { !$0.isHidden }.map(\.pane)
+    private var shownPanes: [PaneID] {
+        guard banner.isHidden else { return [] }
+        return (session?.retainedPanes ?? []).filter { pane in
+            guard !pane.isHiddenOrHasHiddenAncestor, let host = pane.window, !host.isMiniaturized else { return false }
+            if host is FloatWindow { return host.isVisible }
+            return host === window
+        }.map(\.pane)
+    }
+
+    var attendedPanes: [PaneID] {
+        guard attended else { return [] }
+        var mainAttended = window.isKeyWindow
+        #if KIDO_VISUAL || KIDO_STRESS
+        if let testAttended { mainAttended = testAttended }
+        #endif
+        return shownPanes.filter { session?.pane($0)?.window is FloatWindow || mainAttended }
     }
 
     private var presentedPanes: [PaneID] = []
@@ -247,7 +292,7 @@ private class AlertEscape: NSView {
         guard case .connected(let client) = link else { return }
         let pane = inputResponder.flatMap(PaneView.owner)
         let focused = NSApp.isActive && isKeyHost && inputWindow.attachedSheet == nil && (inputWindow as? FloatWindow)?.hostedSheet == nil
-            && pane.map { view in session?.windows.values.contains { !$0.isHidden && $0.contains(view) } == true } == true
+            && pane.map { !$0.isHiddenOrHasHiddenAncestor && session?.contains($0) == true } == true
         guard focused != reportedFocus else { return }
         reportedFocus = focused
         try? client.focus(focused)
@@ -317,7 +362,9 @@ private class AlertEscape: NSView {
         self.runtime = runtime
         notices = Notices(runtime: runtime)
         super.init()
+        floatOwner = self
         NotificationCenter.default.addObserver(self, selector: #selector(localServerRestarted(_:)), name: Self.localServerRestarted, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(screenParametersChanged), name: NSApplication.didChangeScreenParametersNotification, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(attend), name: NSApplication.didBecomeActiveNotification, object: nil)
         NotificationCenter.default.addObserver(self, selector: #selector(attend), name: NSApplication.didResignActiveNotification, object: nil)
         window = AppWindow(
@@ -387,7 +434,7 @@ private class AlertEscape: NSView {
         let focusChanged: (NSResponder?, NSResponder?) -> Void = { [weak self] old, next in
             guard let self else { return }
             sidebar.updateFocusEdge()
-            session?.windows.values.filter { !$0.isHidden }.forEach { $0.updateFocusTreatment() }
+            session?.windows.values.forEach { $0.updateFocusTreatment() }
             reportFocus()
             if old === next || session?.updating == true { return }
             if let pane = next as? PaneView, model.window.flatMap({ session?.windows[$0]?.active }) == pane.pane,
@@ -440,7 +487,7 @@ private class AlertEscape: NSView {
         session?.updateBackground()
         session?.updateWebview()
         if case .connected(let client) = link, client.rendersWebview != runtime.values.webview.enabled {
-            invalidate()
+            invalidate(keepingSnapshot: true)
             connect(cause: .reconnect)
         }
     }
@@ -458,8 +505,8 @@ private class AlertEscape: NSView {
     func windowDidFailToEnterFullScreen(_ window: NSWindow) { changingFullScreen = false }
     func windowDidFailToExitFullScreen(_ window: NSWindow) { changingFullScreen = false }
     func windowWillMiniaturize(_ notification: Notification) { if notification.object as? NSWindow === window { saveFrame() } }
-    func windowDidEnterFullScreen(_ notification: Notification) { changingFullScreen = false; updateAppearance() }
-    func windowDidExitFullScreen(_ notification: Notification) { changingFullScreen = false; updateAppearance() }
+    func windowDidEnterFullScreen(_ notification: Notification) { changingFullScreen = false; updateAppearance(); session?.windows.values.forEach { $0.place() } }
+    func windowDidExitFullScreen(_ notification: Notification) { changingFullScreen = false; updateAppearance(); session?.windows.values.forEach { $0.place() } }
 
     private func saveFrame() {
         frameSave?.cancel()
@@ -468,8 +515,23 @@ private class AlertEscape: NSView {
         frames.save(window.frame, for: host)
     }
 
-    func windowDidMove(_ notification: Notification) { if notification.object as? NSWindow === window { scheduleFrameSave() } }
-    func windowDidResize(_ notification: Notification) { if notification.object as? NSWindow === window { scheduleFrameSave() } }
+    func windowDidMove(_ notification: Notification) {
+        if notification.object as? NSWindow === window {
+            let frame = window.frame
+            if floatAnchorFrame?.size == frame.size, !changingFullScreen, !window.inLiveResize, banner.isHidden {
+                session?.windows.values.forEach { $0.freezeFloatOrigins() }
+            }
+            floatAnchorFrame = frame
+            scheduleFrameSave()
+        }
+    }
+    func windowDidResize(_ notification: Notification) {
+        if notification.object as? NSWindow === window {
+            floatAnchorFrame = window.frame
+            session?.windows.values.forEach { $0.constrainFloats() }
+            scheduleFrameSave()
+        }
+    }
 
     private func scheduleFrameSave() {
         frameSave?.cancel()
@@ -492,7 +554,7 @@ private class AlertEscape: NSView {
     @objc func start() {
         guard case .connected = link else { return begin(.reconnect) }
         guard host == .local else {
-            invalidate()
+            invalidate(keepingSnapshot: true)
             link = .down
             return connect(cause: .reconnect)
         }
@@ -538,7 +600,7 @@ private class AlertEscape: NSView {
         case .starting, .connected, .changed: return
         case .mismatch, .refused, .security, .down: break
         }
-        invalidate(keepingSnapshot: needsRestart)
+        invalidate(keepingSnapshot: snapshot != nil || needsRestart)
         connect(cause: cause)
     }
 
@@ -818,7 +880,7 @@ private class AlertEscape: NSView {
     func requestClipboard(_ pane: PaneView, _ scope: ClipboardConsent.Capability) {
         if clipboardPermission[scope] == .deny { return pane.finishClipboard(false) }
         if clipboardPermission[scope] == .allow || Self.clipboardConsent.allows(host, scope) { return pane.finishClipboard(true) }
-        guard !pane.isHiddenOrHasHiddenAncestor, window.isVisible,
+        guard !pane.isHiddenOrHasHiddenAncestor, pane.window?.isVisible == true,
               preparedAlert == nil, sheet == nil,
               Self.clipboardConsent.askingHosts.insert("read " + host.clipboardKey).inserted else { return pane.finishClipboard(false) }
         let alert = NSAlert()
@@ -1059,8 +1121,7 @@ private class AlertEscape: NSView {
             makeEditor { try client.edit($0) }
             observed = nil
             Notifier.shared.connected()
-            session?.close()
-            session = view
+            if session == nil { session = view }
             welcomed = false
             selectedFirst = false
             feedFresh = true
@@ -1084,8 +1145,18 @@ private class AlertEscape: NSView {
         let generation = generation
         let view = SessionView(runtime: runtime)
         view.hostFocusChanged = hostFocusChanged
-        view.hostsOrdered = { [weak self] in self?.notices.raise() }
+        view.ownsFloats = { [weak self] in
+            guard let self else { return false }
+            return floatOwner === self
+        }
         view.floatsAllowed = { [weak self] in self?.banner.isHidden != false }
+        view.place = { [weak self] window in self?.place(window) }
+        view.showWindow = { [weak self] window in self?.showWindow(window) }
+        view.floatTitle = { [weak self] pane, window in
+            guard let self, let place = place(window, includingShown: true) else { return "" }
+            let title = projection.items[pane]?.item.rowTitle ?? pane.description
+            return "\(title) — \(place.session) / \(place.window)"
+        }
         view.host = host
         view.onURL = { [weak self] in self?.openLink($0) }
         view.webview = { [weak self] in self?.koModel?.pane($0)?.webview }
@@ -1097,7 +1168,7 @@ private class AlertEscape: NSView {
         view.floatState = { [weak self] in self?.floatState($0) }
         view.editing = { [weak self] in self?.editor?.holding == true }
         view.selectPane = { [weak self] pane in
-            guard let self, accepts(generation), case .connected(let client) = link else { return }
+            guard let self, accepts(generation), case .connected = link, koModel?.selection.pane != pane else { return }
             if let position = projection.placements[pane]?.position {
                 perform(.jump(position))
             } else {
@@ -1130,7 +1201,7 @@ private class AlertEscape: NSView {
 
     private func failed(_ message: String) {
         guard alive else { return }
-        invalidate()
+        invalidate(keepingSnapshot: snapshot != nil)
         link = .down
         down("Kido could not reach \(host.label)", message, button: "Start")
     }
@@ -1316,8 +1387,23 @@ private class AlertEscape: NSView {
             }
         }
         session?.updateWebview()
-        let windows = model.session.flatMap { ko.layout.layout.session($0) }?.windows ?? []
-        session?.update(windows, alive: Set(ko.layout.layout.windows.map(\.id)), selected: ko.selection.pane, marks: marks)
+        if let selected = ko.selection.pane, let location = ko.layout.layout.locate(selected),
+           shownWindow == nil || location.window.floats.contains(where: { $0.pane == selected }) == false {
+            shownWindow = location.window.id
+        }
+        if shownWindow.flatMap({ ko.layout.layout.window($0) }) == nil { shownWindow = model.window ?? ko.layout.layout.windows.first?.id }
+        if session?.client !== client {
+            let old = session
+            let view = makeSessionView()
+            view.frame = sidebar.content.bounds
+            sidebar.content.addSubview(view, positioned: .below, relativeTo: banner)
+            view.update(ko.layout.layout.windows, shown: self.model.window, selected: ko.selection.pane, marks: marks)
+            if previous?.serverInstance == snapshot?.serverInstance, let old { view.adoptFloats(from: old) }
+            old?.close()
+            session = view
+        }
+        reconcileFloats()
+        session?.update(ko.layout.layout.windows, shown: self.model.window, selected: ko.selection.pane, marks: marks)
         guard let snapshot else {
             if let session { present(session) } else { updateTabs() }
             menuChanged()
@@ -1358,13 +1444,31 @@ private class AlertEscape: NSView {
     #endif
 
     private func updateTabs(_ projected: Snapshot?? = nil) {
-        let next = model.navigation(projected ?? snapshot.map(reorder.state.project), activePanes: session?.windows.compactMapValues(\.active) ?? [:])
+        let selected = koModel?.selection.pane
+        let activePanes = Dictionary(uniqueKeysWithValues: (koModel?.layout.layout.windows ?? []).map { window in
+            (window.id, selected.flatMap { window.panes.contains($0) ? $0 : nil } ?? window.focus)
+        })
+        let next = model.navigation(projected ?? snapshot.map(reorder.state.project), activePanes: activePanes)
         if sidebar.tabs.entries != next.tabs { sidebar.tabs.entries = next.tabs }
         sidebar.tabs.scope = next.model.session.map { .init(session: $0, generation: generation, instance: snapshot?.serverInstance) }
         if navigationModel != next.model {
             navigationModel = next.model
             menuChanged()
         }
+    }
+
+    private func place(_ window: WindowID, includingShown: Bool = false) -> PanePlace? {
+        guard includingShown || window != model.window,
+              let location = koModel?.layout.layout.sessions.first(where: { $0.windows.contains { $0.id == window } }),
+              let child = location.windows.first(where: { $0.id == window }) else { return nil }
+        return PanePlace(session: location.name, window: child.name, destination: window)
+    }
+
+    func showWindow(_ window: WindowID) {
+        guard let ko = koModel, ko.layout.layout.window(window) != nil else { return }
+        shownWindow = window
+        session?.update(ko.layout.layout.windows, shown: window, selected: ko.selection.pane, marks: ko.runtimeMarks)
+        if let session { present(session) }
     }
 
     private func present(_ view: SessionView, projected: Snapshot?? = nil) {
@@ -1588,6 +1692,7 @@ private class AlertEscape: NSView {
               let action = command.action(pane, in: window, new: koModel.newPane(from: pane, runtime), cell: session?.cell ?? .zero, lastTiled: lastTiled[window.id]) else { return }
         switch action {
         case .edit(let edit):
+            if case .unfloat = edit { showWindow(window.id) }
             submitSelecting(edit)
         case .select(let target): session?.selectPane(target)
         }
@@ -1756,7 +1861,13 @@ private class AlertEscape: NSView {
         pendingJump = nil
         if case .switchWindow(let next) = navigation,
            navigationPhase.enqueue(WindowDirection(next: next), focus: focus, cause: cause) { return }
-        if case .jump(let target) = navigation { sidebar.list.select(target) }
+        if case .jump(let target) = navigation {
+            if koModel?.layout.layout.window(target.window)?.floats.contains(where: { $0.pane == target.pane }) == true,
+               let floatOwner, floatOwner !== self {
+                return floatOwner.perform(navigation, focus: focus, cause: cause)
+            }
+            sidebar.list.select(target)
+        }
         supersedeIntent()
         if case .releaseSideFocus = navigation { return sidebar.list.leave() }
         guard case .connected(let client) = link else { return }
@@ -1772,7 +1883,7 @@ private class AlertEscape: NSView {
             case .jump(let target):
                 navigationPhase = .selecting(target.pane, wait)
                 if let window = koModel?.layout.layout.window(target.window),
-                   let zoom = window.zoom, zoom != target.pane {
+                   let zoom = window.zoom, zoom != target.pane, !window.floats.contains(where: { $0.pane == target.pane }) {
                     editor?.submit(.zoom(KoSchema.EditZoom(pane: nil, window: window.id)))
                 }
                 navigationPhase.sent(try client.select(KO_SELECT_PANE, target.pane))
@@ -1830,20 +1941,34 @@ private class AlertEscape: NSView {
         if let target = focusTarget {
             switch target {
             case .pane(let position):
+                if koModel?.layout.layout.window(position.window)?.floats.contains(where: { $0.pane == position.pane }) == true {
+                    guard session?.windows[position.window]?.active == position.pane else { return }
+                    focusTarget = nil
+                    session?.focusPane(position.pane)
+                    return
+                }
                 guard let placement = projection.placements[position.pane],
                       model.session == placement.position.session, model.window == placement.position.window,
                       session?.windows[placement.position.window]?.active == position.pane else { return }
             case .window(let s, let w):
+                if let pane = session?.windows[w]?.active, koModel?.layout.layout.window(w)?.floats.contains(where: { $0.pane == pane }) == true {
+                    focusTarget = nil
+                    session?.focusPane(pane)
+                    return
+                }
                 guard model.session == s, model.window == w, session?.windows[w]?.active != nil else { return }
             }
             focusTarget = nil
         }
-        session?.focusActive()
+        if let selected = koModel?.selection.pane, session?.pane(selected)?.window is FloatWindow {
+            session?.focusPane(selected)
+        } else { session?.focusActive() }
     }
 
 
     private func ready() {
-        guard welcomed, model.session != nil, case .connected = link else { return }
+        floatAnchorFrame = window.frame
+        guard welcomed, model.session != nil, case .connected(let client) = link, session?.client === client else { return }
         if !banner.isHidden {
             banner.isHidden = true
             focusSelected()
@@ -1902,6 +2027,7 @@ private class AlertEscape: NSView {
         guard alive, notification.object as? NSWindow === window else { return }
         saveFrame()
         alive = false
+        reconcileFloats()
         notices.stop()
         notices.close()
         Notifier.shared.forget(self)
@@ -1914,8 +2040,18 @@ private class AlertEscape: NSView {
     @objc func focusSidebar(_ sender: Any?) { sidebar.focusSidebar(sender) }
     func windowDidBecomeKey(_ notification: Notification) { becameKey(); supersedeIntent(); menuChanged(); attend() }
     func windowDidResignKey(_ notification: Notification) { supersedeIntent(); attend() }
-    func windowDidMiniaturize(_ notification: Notification) { session?.syncHosts(); notices.place(); attend() }
-    func windowDidDeminiaturize(_ notification: Notification) { session?.syncHosts(); notices.place(); attend() }
+    func windowDidMiniaturize(_ notification: Notification) {
+        if notification.object as? NSWindow === window { notices.place() }
+        attend()
+    }
+    func windowDidDeminiaturize(_ notification: Notification) {
+        if notification.object as? NSWindow === window { notices.place() }
+        attend()
+    }
+    func windowDidChangeScreen(_ notification: Notification) {
+        if let host = notification.object as? FloatWindow { host.content.logical?.constrainFloats() }
+    }
+    @objc private func screenParametersChanged() { session?.windows.values.forEach { $0.constrainFloats() } }
     func windowDidChangeOcclusionState(_ notification: Notification) { presentAlert(); attend() }
     func reloadConfig(font: Float?) { session?.reloadConfig(font: font) }
     func updateColorScheme() { session?.updateColorScheme() }

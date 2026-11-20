@@ -12,8 +12,8 @@ final class FloatWindow: OwnerWindow {
 
     enum Position: Equatable {
         case layout
-        case dragging(frame: CGRect, sent: CellPoint?)
-        case awaitingMove(frame: CGRect, sent: CellPoint)
+        case dragging(frame: CGRect, sent: CellPoint?, room: CGSize?)
+        case awaitingMove(frame: CGRect, sent: CellPoint, room: CGSize?)
         case local(frame: CGRect, sent: CellPoint)
         case awaitingDock(frame: CGRect)
     }
@@ -34,7 +34,10 @@ final class FloatWindow: OwnerWindow {
         backgroundColor = .clear
         hasShadow = false
         isReleasedWhenClosed = false
-        collectionBehavior = [.fullScreenAuxiliary]
+        level = .normal
+        collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .participatesInCycle]
+        isExcludedFromWindowsMenu = false
+        content.isHidden = true
         contentView = content
     }
 
@@ -44,35 +47,31 @@ final class FloatWindow: OwnerWindow {
     }
 
     @discardableResult
-    func present(_ shown: Bool, over parent: NSWindow?) -> Bool {
-        let target = shown ? parent : nil
-        guard content.isHidden == shown || self.parent !== target else { return false }
+    func present(_ shown: Bool) -> Bool {
+        guard content.isHidden == shown else { return false }
         content.isHidden = !shown
-        if !shown { (delegate as? WindowOwner)?.floatClosing(self) }
-        if let target {
-            if self.parent !== target {
-                self.parent?.removeChildWindow(self)
-                target.addChildWindow(self, ordered: .above)
-            }
-            if target.isVisible { orderFront(nil) }
+        if shown {
+            orderFront(nil)
         } else {
-            self.parent?.removeChildWindow(self)
+            (delegate as? WindowOwner)?.floatClosing(self)
             orderOut(nil)
         }
         return true
     }
 
     func raise() {
-        if let parent {
-            parent.removeChildWindow(self)
-            parent.addChildWindow(self, ordered: .above)
-        }
-        if isVisible { orderFront(nil) }
+        if !content.isHidden { orderFront(nil) }
+    }
+
+    static func reachable(_ frame: CGRect, in visible: CGRect) -> CGRect {
+        var result = frame
+        result.origin.x = min(max(frame.minX, visible.minX + min(60, frame.width) - frame.width), visible.maxX - min(60, frame.width))
+        result.origin.y = min(max(frame.minY, visible.minY + 10 - frame.height), visible.maxY - 6 - frame.height)
+        return result
     }
 
     func detach() {
         (delegate as? WindowOwner)?.floatClosing(self)
-        parent?.removeChildWindow(self)
         orderOut(nil)
         delegate = nil
         contentView = NSView()
@@ -143,7 +142,7 @@ final class FloatContent: NSView {
     private func toolbar() -> CGRect? { pane.flatMap { logical?.floatToolbar($0) } }
 
     private func zone(_ point: NSPoint) -> Zone? {
-        guard logical?.floatsInteractive == true else { return nil }
+        guard logical != nil else { return nil }
         return Self.zone(at: point, in: chrome, grid: grid, toolbar: toolbar())
     }
 

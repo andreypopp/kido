@@ -6,6 +6,48 @@ import KoModel
 @testable import Kido
 
 @MainActor final class KoaFocusTests: AppWindowCase {
+    func testTiledFocusFromAnotherWindowsFloatMakesTheMainWindowKey() async throws {
+        try loadRuntime()
+        let policy = NSApp.activationPolicy()
+        NSApp.setActivationPolicy(.regular)
+        NSApp.activate(ignoringOtherApps: true)
+        defer { NSApp.setActivationPolicy(policy) }
+        _ = try await KoServer.launch(dir: directory.path)
+        let pane = #"{"new":{"command":{"type":"argv","argv":["/bin/cat"]}}}"#
+        try await koPut(directory.path, #"[{"name":"first","windows":[{"name":"one","tree":{"pane":\#(pane)}}]},{"name":"second","windows":[{"name":"two","tree":{"pane":\#(pane)},"floats":[{"pane":\#(pane),"x":2,"y":2,"cols":30,"rows":8}]}]}]"#)
+        let app = AppDelegate(runtime: runtime)
+        let owner = try XCTUnwrap(app.open(.local, start: false))
+        defer { owner.close() }
+        owner.testServerDir = directory.path
+        owner.start()
+        try await wait("all floats are ready", within: 5) { owner.testBanner.isHidden && owner.testSession?.hostWindows.count == 1 }
+        let session = try XCTUnwrap(owner.testSession)
+        let host = try XCTUnwrap(session.hostWindows.first)
+        let floating = try XCTUnwrap(session.pane(PaneID(number: 3)))
+        let tiled = try XCTUnwrap(session.pane(PaneID(number: 1)))
+        owner.window.makeKeyAndOrderFront(nil)
+        try await wait("the main window is key", within: 5) { owner.window.isKeyWindow }
+        host.makeKeyAndOrderFront(nil)
+        try await wait("the float is key and selected", within: 5) { host.isKeyWindow && owner.testModel?.selection.pane == floating.pane }
+        XCTAssertEqual(session.windows.first { !$0.value.isHidden }?.key, WindowID(number: 1))
+        owner.perform(.jump(.init(session: SessionID(number: 1), window: WindowID(number: 1), pane: tiled.pane)))
+        try await wait("the tiled focus route makes the main window key", within: 5) { owner.window.isKeyWindow && owner.testModel?.selection.pane == tiled.pane }
+        XCTAssertTrue(PaneView.owner(owner.window.firstResponder) === tiled)
+        let floatKeys = floating.visualKeyEvents, tiledKeys = tiled.visualKeyEvents
+        let key = try XCTUnwrap(NSApp.keyWindow)
+        let event = try XCTUnwrap(NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: [], timestamp: 0,
+                                                 windowNumber: key.windowNumber, context: nil, characters: "x", charactersIgnoringModifiers: "x", isARepeat: false, keyCode: 7))
+        key.sendEvent(event)
+        XCTAssertEqual(tiled.visualKeyEvents, tiledKeys + 1)
+        XCTAssertEqual(floating.visualKeyEvents, floatKeys)
+        try await wait("the input reaches the tiled pane", within: 5) { tiled.visualText.contains("x") }
+        host.makeKeyAndOrderFront(nil)
+        try await wait("the float is key again", within: 5) { host.isKeyWindow && owner.testModel?.selection.pane == floating.pane }
+        floating.placeCapsule.invoke()
+        XCTAssertEqual(session.windows.first { !$0.value.isHidden }?.key, WindowID(number: 2))
+        XCTAssertTrue(host.isKeyWindow)
+    }
+
     func testKoaWebviewPromptDismissalRestoresComposer() async throws {
         try loadRuntime()
         let policy = NSApp.activationPolicy()

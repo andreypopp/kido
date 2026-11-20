@@ -65,6 +65,36 @@ import SidebarFeed
     func koaMeasured(_ web: WKWebView, _ selector: String, within seconds: Double = 5) async throws {
         _ = try await webviewJS(web, "new Promise((resolve,reject)=>{const targets=[...document.querySelectorAll(\(String(reflecting: selector)))];if(!targets.length){reject(Error('Koa measurement target missing: '+\(String(reflecting: selector))));return}const timer=setTimeout(()=>{observer.disconnect();reject(Error('Koa measurement deadline: '+\(String(reflecting: selector))))},\(seconds * 1000));const observer=new ResizeObserver(()=>{clearTimeout(timer);observer.disconnect();resolve(true)});targets.forEach(target=>observer.observe(target))})", within: seconds)
     }
+    func testKoaWebviewPlaceInset() async throws {
+        let web = try await scrollPage(module: "scroll-follow")
+        let pane = try XCTUnwrap(terminal?.displayedPanes.first)
+        pane.place = PanePlace(session: "Elsewhere", window: "Another window", destination: WindowID(number: 2))
+        pane.layoutSubtreeIfNeeded()
+        XCTAssertTrue(pane.placeVisible)
+        try await webviewUntil(web, "getComputedStyle(document.documentElement).getPropertyValue('--ko-inset-top').trim()==='30px'")
+        _ = try await webviewJS(web, "(()=>{document.querySelector('.thread-open').click();return true})()")
+        try await webviewUntil(web, "document.querySelector('.thread-panel')?.hidden===false")
+        let result = try await webviewJS(web, #"""
+          (()=>{
+            const body=document.body,root=document.documentElement,transcript=document.querySelector('#transcript'),dock=document.querySelector('#dock'),panel=document.querySelector('.thread-panel');
+            const bar=document.createElement('div');bar.className='bar';body.append(bar);
+            const threads=document.querySelector('#threads');
+            const measure=()=>({padding:parseFloat(getComputedStyle(transcript).paddingTop),bar:parseFloat(getComputedStyle(bar).top),threads:parseFloat(getComputedStyle(threads).top),panel:parseFloat(getComputedStyle(panel).top),available:parseFloat(getComputedStyle(panel).maxHeight),dock:dock.getBoundingClientRect().top});
+            const original=body.className;
+            const results=['','viewing','viewing jobmode','with-threads'].map(state=>{
+              body.className=state;root.style.setProperty('--ko-inset-top','0px');const before=measure();
+              root.style.setProperty('--ko-inset-top','30px');const after=measure();
+              return after.padding-before.padding===30&&after.bar-before.bar===30&&after.threads-before.threads===30&&after.panel-before.panel===30&&before.available-after.available===30&&after.panel>=30&&after.dock===before.dock;
+            });
+            body.className=original;bar.remove();return results.every(Boolean);
+          })()
+          """#)
+        XCTAssertEqual(result, "true")
+        pane.place = nil
+        pane.layoutSubtreeIfNeeded()
+        try await webviewUntil(web, "getComputedStyle(document.documentElement).getPropertyValue('--ko-inset-top').trim()==='0px'")
+    }
+
     func testKoaWebviewQuoteSelectionEmpty() async throws { try await quoteSelectionSnapshots(append: false) }
     func testKoaWebviewQuoteSelectionAppend() async throws { try await quoteSelectionSnapshots(append: true) }
     private func quoteSelectionSnapshots(append: Bool) async throws {

@@ -1,4 +1,5 @@
 import type { PageRecord } from "../../koa-records.ts";
+import { parseThreadName } from "../../records.ts";
 import { expect, type Scenarios } from "../scenario.ts";
 
 const stamp = 1700000000000;
@@ -19,6 +20,11 @@ const older = expect({ on: { method: "GET", path: "/items" }, reply: { status: 2
 const quoteOpen: PageRecord[] = open.map(record => record.type === 'reset' ? { ...record, items: [{ kind: 'assistant', seq: 0, revision: 0, at: stamp, final: true, blocks: [{ type: 'text', text: 'Keep the composer in this pane.\n\nA second quote follows the text that you type.' }], stop: 'stop', error: '' }] } : record);
 
 export const scenarios: Scenarios = {
+  testKoaWebviewPlaceInset: () => {
+    const name = parseThreadName('inset');
+    if (!name) throw Error('invalid fixture thread');
+    return { open: open.map(record => record.type === 'state' ? { ...record, threads: [{ name, last: { summary: 'Inset test', at: stamp } }] } : record), steps: [], files: {} };
+  },
   testKoaWebviewQuoteSelectionEmpty: () => ({ open: quoteOpen, steps: [], files: {} }),
   testKoaWebviewQuoteSelectionAppend: () => ({ open: quoteOpen, steps: [], files: {} }),
   testKoaWebviewRevealKeepsFollowing: () => ({ open, steps: [], files: {} }),

@@ -200,7 +200,7 @@ import XCTest
     func testTheCloseSheetOfAFloatDraggedPastTheMainWindowsEdge() async throws { try await closeSheet(dark: false, dragged: true) }
 
     // Switching tabs hides the float and ends its sheet; a later prompt is not blocked.
-    func testSwitchingTabsEndsTheSheetOfAFloat() async throws {
+    func testSwitchingTabsKeepsTheSheetOfAFloat() async throws {
         try await put(#"[{"name":"one","tree":\#(sleep)},{"name":"two","tree":\#(sleep)}]"#)
         try await placed("two tabs") { _ in self.owner.testModel?.layout.layout.windows.count == 2 }
         try await addFloat(window: try XCTUnwrap(window).id.description, parent: "pane_1")
@@ -214,9 +214,13 @@ import XCTest
         try await wait("the float is key", within: 5) { NSApp.keyWindow === host }
         session.paneCommand(.close, float)
         try await wait("the sheet", within: 5) { host.hostedSheet != nil }
+        let sheet = try XCTUnwrap(host.hostedSheet)
         let other = try XCTUnwrap(owner.testModel?.layout.layout.windows.first { $0.id != self.window?.id })
         owner.perform(.jump(Snapshot.Position(session: try XCTUnwrap(owner.testModel?.layout.layout.sessions.first?.id), window: other.id, pane: other.focus)))
-        try await wait("the prompt is gone", within: 5) { self.owner.preparedAlert == nil && self.owner.sheet == nil }
+        try await wait("the other tab is shown", within: 5) { session.windows[other.id]?.isHidden == false }
+        XCTAssertTrue(host.hostedSheet === sheet)
+        XCTAssertNotNil(owner.preparedAlert)
+        XCTAssertTrue(host.isVisible)
         XCTAssertNotNil(owner.testModel?.pane(float), "the float stays")
     }
 

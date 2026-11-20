@@ -112,7 +112,11 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
         guard let webviewView, let responder = window?.firstResponder as? NSView else { return false }
         return responder.isDescendant(of: webviewView)
     }
-    var chromeViews: [NSView] { [webviewView].compactMap { $0 } + [copyLabel, runtimePill] + [find].compactMap { $0 } }
+    var place: PanePlace? { didSet { if place != oldValue { needsLayout = true } } }
+    var showPlace: (WindowID) -> Void = { _ in }
+    var placeVisible: Bool { !placeCapsule.isHidden }
+    let placeCapsule: PanePlaceCapsule
+    var chromeViews: [NSView] { [webviewView].compactMap { $0 } + [copyLabel, runtimePill, placeCapsule] + [find].compactMap { $0 } }
 
     func updateWebview(_ webview: KoSchema.Webview?) {
         guard runtime.values.webview.enabled, let page = webview?.page, let client else { releaseWebview(); return }
@@ -544,7 +548,23 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
         let obstacles = parent.subviews.filter { ($0 is PaneFind || ($0 is PaneToolbar && toolbarShown)) && !$0.isHidden }
         let right = obstacles.map { $0.frame.minX - 6 }.min() ?? chrome.width - 8
         let y: CGFloat = !obstacles.isEmpty && right - copyEnd < 72 ? 48 : 8
-        copyLabel.frame = NSRect(x: 8, y: y, width: copyWidth, height: 22)
+        let contentOrigin = transparentPaper ? .zero : (parent as? PaneChrome)?.content.origin ?? .zero
+        copyLabel.frame = NSRect(x: contentOrigin.x + 8, y: contentOrigin.y + y, width: copyWidth, height: 22)
+        let wasVisible = placeVisible
+        placeCapsule.isHidden = true
+        if let place, let paneChrome = parent as? PaneChrome {
+            let origin = paneChrome.content.origin
+            let x = copyLabel.isHidden ? origin.x + 8 : copyLabel.frame.maxX + 6
+            let top = copyLabel.isHidden ? origin.y + 8 : copyLabel.frame.minY
+            let band = CGRect(x: x, y: top, width: max(0, chrome.maxX - x - 8), height: 22)
+            let end = obstacles.filter { $0.frame.intersects(band) }.map { $0.frame.minX - 6 }.min() ?? chrome.maxX - 8
+            if let width = placeCapsule.show(place, available: end - x) {
+                placeCapsule.frame = CGRect(x: x, y: top, width: width, height: 22)
+                placeCapsule.isHidden = false
+                placeCapsule.invoke = { [weak self] in self?.showPlace(place.destination) }
+            }
+        }
+        if wasVisible != placeVisible { webviewView?.updateTheme() }
         let width = runtimePill.fittingWidth
         runtimePill.frame = NSRect(x: chrome.width - 8 - width, y: 8, width: width, height: RuntimePill.height)
         runtimePill.isHidden = runtimeMark == nil || find != nil || toolbarShown
@@ -714,6 +734,7 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
         self.host = host
         copyLabel = Overlay(runtime: runtime, radius: 8)
         runtimePill = RuntimePill(runtime: runtime)
+        placeCapsule = PanePlaceCapsule(runtime: runtime)
         super.init(frame: NSRect(x: 0, y: 0, width: 800, height: 600))
         wantsLayer = true
         layer?.masksToBounds = true
@@ -769,6 +790,8 @@ final class PaneView: NSView, @preconcurrency NSTextInputClient, NSMenuItemValid
         copyLabel.addSubview(NSTextField(labelWithString: ""))
         copyLabel.isHidden = true
         runtimePill.pane = self
+        placeCapsule.pane = self
+        placeCapsule.isHidden = true
         runtimePill.isHidden = true
         ghostty_surface_set_color_scheme(surface, runtime.colorScheme)
         // The callback must not reenter the surface (ghostty.h).

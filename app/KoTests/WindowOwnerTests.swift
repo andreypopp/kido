@@ -21,6 +21,105 @@ import KoModel
         return owner
     }
 
+    func testFloatsOfAnotherSessionStayShownAndFocusDoesNotSwitchTheMainWindow() throws {
+        let dir = try server()
+        let pane = #"{"new":{"command":{"type":"argv","argv":["/bin/sleep","60"]}}}"#
+        try put(#"{"revision":0,"layout":{"sessions":[{"name":"first","windows":[{"name":"one","tree":{"pane":\#(pane)}}]},{"name":"second","windows":[{"name":"two","tree":{"pane":\#(pane)},"floats":[{"pane":\#(pane),"x":2,"y":2,"cols":30,"rows":8}]}]},{"name":"unused","windows":[{"name":"cold","tree":{"pane":\#(pane)}}]}]}}"#, dir: dir)
+        let owner = try owner(dir)
+        wait("all server floats are shown") { owner.testSession?.hostWindows.count == 1 && owner.testBanner.isHidden }
+        let session = try XCTUnwrap(owner.testSession)
+        let main = try XCTUnwrap(session.windows.first { !$0.value.isHidden }?.key)
+        XCTAssertEqual(owner.testModel?.layout.layout.windows.count, 3)
+        XCTAssertEqual(session.windows.count, 2)
+        let host = try XCTUnwrap(session.hostWindows.first)
+        let id = try XCTUnwrap(host.content.pane)
+        let paneView = try XCTUnwrap(session.pane(id))
+        paneView.layoutSubtreeIfNeeded()
+        XCTAssertTrue(host.isVisible)
+        XCTAssertTrue(host.title.hasSuffix(" — second / two"))
+        XCTAssertEqual(paneView.place?.session, "second")
+        XCTAssertEqual(paneView.place?.window, "two")
+        XCTAssertTrue(paneView.placeVisible)
+        owner.testAttended = true
+        XCTAssertTrue(owner.attendedPanes.contains(id))
+        XCTAssertFalse(owner.attendedPanes.contains(PaneID(number: 2)))
+        owner.testBanner.isHidden = false
+        XCTAssertFalse(owner.attendedPanes.contains(id))
+        owner.testBanner.isHidden = true
+        host.testInput(true)
+        (owner.window as? OwnerWindow)?.testInput(false)
+        host.becameKey()
+        wait("the float is selected") { owner.testModel?.selection.pane == id }
+        XCTAssertEqual(session.windows.first { !$0.value.isHidden }?.key, main)
+        let tiled = try XCTUnwrap(session.pane(PaneID(number: 1)))
+        owner.perform(.jump(.init(session: SessionID(number: 1), window: main, pane: tiled.pane)))
+        wait("the tiled route selects its target") { owner.testModel?.selection.pane == tiled.pane }
+        XCTAssertEqual(session.windows.first { !$0.value.isHidden }?.key, main)
+        XCTAssertTrue(session.windows[main]?.activePane === tiled)
+        XCTAssertTrue(PaneView.owner(owner.window.firstResponder) === tiled)
+        host.becameKey()
+        wait("the float is selected again") { owner.testModel?.selection.pane == id }
+        let destination = try XCTUnwrap(paneView.place?.destination)
+        paneView.placeCapsule.invoke()
+        XCTAssertEqual(session.windows.first { !$0.value.isHidden }?.key, destination)
+        XCTAssertTrue(host.isInputWindow)
+        owner.showWindow(main)
+        owner.paneCommand(.float, id)
+        wait("Dock Pane shows its window and docks") { owner.testModel?.layout.layout.locate(id)?.window.floats.isEmpty == true }
+        XCTAssertNotEqual(session.windows.first { !$0.value.isHidden }?.key, main)
+        XCTAssertTrue(session.pane(id)?.window === owner.window)
+        owner.showWindow(WindowID(number: 3))
+        XCTAssertFalse(try XCTUnwrap(session.windows[WindowID(number: 3)]).isHidden)
+    }
+
+    func testTheFirstOwnerTransfersItsFloatWindowsToTheNextOwner() throws {
+        let dir = try server()
+        let pane = #"{"new":{"command":{"type":"argv","argv":["/bin/sleep","60"]}}}"#
+        try put(#"{"revision":0,"layout":{"sessions":[{"name":"s","windows":[{"name":"w","tree":{"pane":\#(pane)},"floats":[{"pane":\#(pane),"x":2,"y":2,"cols":30,"rows":8}]}]}]}}"#, dir: dir)
+        let first = try owner(dir)
+        wait("the first owner is ready") { first.testBanner.isHidden && first.testSession?.hostWindows.count == 1 }
+        let second = try owner(dir, start: false)
+        let owners = [first, second]
+        for owner in owners { owner.reconcileFloats = { [weak first, weak second] in WindowOwner.reconcileFloats([first, second].compactMap { $0 }) } }
+        second.start()
+        wait("the second owner is ready without duplicate floats") { second.testBanner.isHidden && second.floatOwner === first }
+        XCTAssertEqual(second.testSession?.hostWindows.count, 0)
+        let host = try XCTUnwrap(first.testSession?.hostWindows.first)
+        let frame = host.frame
+        let id = try XCTUnwrap(host.content.pane)
+        first.close()
+        wait("the second owner adopts the existing native window") { second.testSession?.hostWindows.first === host }
+        XCTAssertEqual(host.frame, frame)
+        XCTAssertTrue(host.delegate === second)
+        let client = try connect(dir, panes: 2) { _ in }
+        second.close()
+        XCTAssertTrue(try client.model().layout.layout.windows.first?.floats.contains { $0.pane == id } == true)
+    }
+
+    func testReconnectKeepsFloatFramesButAFreshOwnerUsesTheLayout() throws {
+        let dir = try server()
+        let pane = #"{"new":{"command":{"type":"argv","argv":["/bin/sleep","60"]}}}"#
+        try put(#"{"revision":0,"layout":{"sessions":[{"name":"s","windows":[{"name":"w","tree":{"pane":\#(pane)},"floats":[{"pane":\#(pane),"x":2,"y":2,"cols":30,"rows":8}]}]}]}}"#, dir: dir)
+        let first = try owner(dir)
+        wait("the first owner is ready") { first.testBanner.isHidden && first.testSession?.hostWindows.count == 1 }
+        let host = try XCTUnwrap(first.testSession?.hostWindows.first)
+        let frame = host.frame.offsetBy(dx: -60, dy: -30)
+        host.position = .local(frame: frame.insetBy(dx: FloatWindow.margin, dy: FloatWindow.margin), sent: CellPoint(x: 2, y: 2))
+        host.setFrame(frame, display: false)
+        first.refused("Reconnect test")
+        XCTAssertTrue(host.content.isHidden)
+        first.start()
+        wait("the same native host is adopted after reconnect") { first.testBanner.isHidden && first.testSession?.hostWindows.first === host }
+        XCTAssertEqual(host.frame, frame)
+        first.close()
+        let fresh = try owner(dir)
+        wait("the fresh owner is ready") { fresh.testBanner.isHidden && fresh.testSession?.hostWindows.count == 1 }
+        let replacement = try XCTUnwrap(fresh.testSession?.hostWindows.first)
+        XCTAssertFalse(replacement === host)
+        XCTAssertEqual(replacement.position, .layout)
+        XCTAssertNotEqual(replacement.frame, frame)
+    }
+
     func testTLSProbeFailuresAndTerminalEventsNeverStartAServer() async throws {
         let local = try server()
         let root = URL(fileURLWithPath: try stateDir()).appendingPathComponent("identities")

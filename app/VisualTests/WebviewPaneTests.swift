@@ -506,7 +506,7 @@ import SidebarFeed
         let (owner, slot, _, child) = try await webviewChildSlot(keepHidden: 4,
             extraWindows: #",{"name":"budget","tree":{"split":"h","children":[\#(terminals)]}}"#)
         let session = try XCTUnwrap(owner.testSession)
-        let other = try XCTUnwrap(session.windows.first { $0.value.name == "budget" }?.key)
+        let other = try XCTUnwrap(owner.testModel?.layout.layout.windows.first { $0.name == "budget" }?.id)
         try owner.testClient?.select(KO_SELECT_PANE, child)
         try await wait("the parent window stays retained under the child window") {
             session.activePane?.pane == child && slot.retainedPanes.count == 1 && session.visualHotSurfaces == 2
@@ -514,7 +514,7 @@ import SidebarFeed
         XCTAssertEqual(slot.displayedPanes.count, 1)
         XCTAssertEqual(session.visualHotSurfaces, 2)
         try owner.testClient?.select(KO_SELECT_WINDOW, other)
-        session.show(other)
+        owner.showWindow(other)
         try await wait("the budget window is hot beside the retained one") { session.visualHotSurfaces == 33 }
         try await wait("retained window evicted over budget") { slot.retainedPanes.isEmpty }
         XCTAssertFalse(slot.hot)

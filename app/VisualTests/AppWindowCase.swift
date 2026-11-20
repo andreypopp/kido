@@ -206,8 +206,7 @@ import XCTest
         if next.selection.session == nil, let first = next.layout.layout.sessions.first { try? client.select(KO_SELECT_SESSION, first.id) }
         model = SessionModel(next)
         let windows = next.layout.layout.windows
-        session.update(model.session.flatMap { next.layout.layout.session($0) }?.windows ?? [],
-                       alive: Set(windows.map(\.id)), selected: next.selection.pane, marks: next.runtimeMarks)
+        session.update(windows, shown: model.window, selected: next.selection.pane, marks: next.runtimeMarks)
         session.show(model.window)
         let snapshot = Snapshot(model: next)
         (window.contentViewController as? Sidebar)?.tabs.entries = model.navigation(snapshot, activePanes: session.windows.compactMapValues(\.active)).tabs
@@ -382,7 +381,7 @@ import XCTest
         CATransaction.flush()
         terminal.displayedPanes.forEach { $0.scroller.isHidden = true }
         CATransaction.flush()
-        XCTAssertTrue(terminal.hostWindows.allSatisfy { !$0.isVisible }, "the float windows stay off screen")
+        terminal.hostWindows.forEach { $0.orderOut(nil) }
         if let view { checkSnapshot { verifyWindowView(view, named: name, record: $0, file: file, testName: testName) } }
         else if terminal.visualFloatHosts.isEmpty && terminal.visualGhost == nil {
             checkSnapshot { verifySnapshot(of: terminal, as: .pixels, named: name, record: $0, file: file, testName: testName) }

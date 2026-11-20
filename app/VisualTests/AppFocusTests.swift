@@ -106,14 +106,14 @@ import XCTest
         defer { app.closePalette(); owner.close() }
         owner.testServerDir = directory.path
         owner.start()
-        try await wait("two windows ready") { owner.testSession?.windows.count == 2 }
+        try await wait("two windows ready") { owner.testModel?.layout.layout.windows.count == 2 && owner.testSession?.activePane != nil }
         let session = try XCTUnwrap(owner.testSession)
         let original = try XCTUnwrap(session.activePane)
         owner.window.makeFirstResponder(original)
         app.togglePalette()
         XCTAssertNotNil(app.palettePanel)
-        let next = try XCTUnwrap(session.windows.first { !$0.value.displayedPanes.contains { $0 === original } }?.key)
-        session.show(next)
+        let next = try XCTUnwrap(owner.testModel?.layout.layout.windows.first { !$0.panes.contains(original.pane) }?.id)
+        owner.showWindow(next)
         XCTAssertTrue(original.isHiddenOrHasHiddenAncestor)
         app.closePalette()
         XCTAssertTrue(owner.window.firstResponder === session.activePane, "palette dismissal must not restore a hidden pane")

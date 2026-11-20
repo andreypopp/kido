@@ -114,7 +114,8 @@ What changes visibly:
   key to the window it took it from.
 - **Dragging** the main window moves the floats with it (child
   windows), with no edit: the cell geometry is unchanged. A resize of
-  the main window re-lays the floats by their cell geometry, as today.
+  the main window keeps each float where it is (section E; it
+  re-laid them by their cells before).
 - **Notices** stay above floats: the pane-area notices column (the
   transient card, the config notice) becomes its own borderless child
   window ordered above every float child, re-asserted when a float is
@@ -231,3 +232,134 @@ so a float docks and a tiled pane pops out without the menu.
   zoomed (Float disabled, with the grip); the toolbar at its new
   width under an open find bar. The existing toolbar snapshots are
   re-recorded at 171pt.
+
+## E · Floats are top-level windows (2026-11-20, spec)
+
+The user, after section B shipped: floats become top-level macOS
+windows, independent of the main window. Moving the main window does
+not move them; switching the main window to another session or window
+does not hide them. A pane-area resize does not reset them (the first
+request of the day, folded in here: a float's local frame is a screen
+frame). AppKit's child windows gave following, ordering above the
+parent, minimise and Space for free; each is now a rule of ours.
+
+- **Which floats are on screen.** Every float pane of the connected
+  server, from the moment the client learns of it (the layout that
+  creates it, a pop out, a reconnect) until it is docked, closed or
+  its pane goes; what the main window shows does not matter. A float
+  whose session or window the main window does not show is as real
+  as the others. Seen-state and clipboard-read permission count a
+  float as "shown in an attended window" while its window is on
+  screen and Kido is active, whatever the main window shows.
+- **The owner.** A float belongs to one Kido window: the one
+  connected to its server. With several Kido windows on one server,
+  the first in window order owns every float of that server, and the
+  others show none (a float is never doubled); when the owner
+  closes, the next window on that server adopts its floats with
+  their frames. When the last window on the server closes, the
+  floats close with it (the panes live on). On reconnect in a
+  running window the frames stay; on relaunch they are gone, and the
+  floats reappear at their cell geometry in the owner's pane area,
+  as a float without a local frame does today. No position memory
+  beyond the run.
+- **Level and order.** Normal window level; no panel. A float is an
+  ordinary window of the app: a click on the main window brings it
+  above the floats, a click on a float brings that one to the front.
+  Every focus route to a float (section B's list) orders it front;
+  focusing a tiled pane does not reorder. Floats are on all Spaces
+  (`canJoinAllSpaces` with `fullScreenAuxiliary`): a float stays on
+  screen over the main window's full-screen Space and over every
+  other Space, which is what "independent" means for a window that
+  the user put somewhere. ⌘\` cycles the floats with the main window;
+  Mission Control, Exposé and the Dock menu list them as windows
+  under their titles (next); Hide Kido hides all. No minimise for a
+  float, and no menu change: the app has no Minimize command, the
+  Window menu stays the ko windows' menu (no native window list, no
+  Bring All to Front; ⌘\` cycles), and a float is borderless, so it
+  cannot be minimised; a float that is in the way is docked or
+  closed. Minimising the main window (the title bar's button) leaves
+  the floats on screen: the user asked for independence.
+- **Focus.** A float that becomes key makes its pane the server's
+  active pane, as today; the main window does not switch session or
+  window for that: its tabs and the shown ko window stay, and the
+  sidebar marks the float's row where it is. A focus route that
+  lands on a tiled pane (⌘[, the sidebar, the palette, Back/Forward)
+  switches the main window to show it, as the sidebar does today; a
+  route that lands on a float never switches the main window.
+- **Identity on screen.** The window title (Dock menu, Mission
+  Control, ⌘\`, accessibility) is "<pane title> — <session> /
+  <window>", the pane title as the tab shows it. On the float
+  itself, nothing new while its ko window is the one the main window
+  shows. When it is not, a native **place capsule**, drawn by
+  Kido.app over the float for every pane kind (the app has no native
+  breadcrumb any more; koa's view bar is the page's): the pane
+  capsule family (koa NOTES, the breadcrumb pill's geometry: 22pt
+  high, 8pt radius, 11pt system font, pane background mixed 8%
+  toward the foreground, the 0.5pt edge and the contact shadow),
+  content "<session> › <window>" in the muted colour, the "›" at
+  the ancestors' tone, nothing else: no pane ancestors and no pane
+  title, because the float is the pane. The whole capsule is a
+  button, a hand cursor, no hover: a click switches the main window
+  to show that ko window and keeps the float key. Placement: at (8,
+  8) of the pane's content, under the move band and the runtime
+  stripe (which stay in the 10pt chrome above); when the COPY or
+  history pill shows, COPY stays at (8, 8) and the capsule sits 6pt
+  to its right, as the old breadcrumb did. For a koa pane the app
+  sets the page's `--ko-inset-top` to 30px while the capsule shows
+  (0 otherwise), and the page lays its view bar and transcript out
+  below that inset, so the view bar never sits under the capsule.
+  Truncation: the capsule may use the width up to 6pt before the
+  hover toolbar or the find capsule; the session is middle-
+  ellipsized first, then the window, each to at least 40pt; if even
+  that does not fit, the capsule is hidden, never clipped. The
+  runtime stripe, the hover toolbar, the close confirmation
+  (section D: attached to the float) and the
+  focus treatment are unchanged. Notices stay in the main window:
+  a transient notice about a float's pane shows in the owner's
+  notices column, and the connection banner hides the floats as
+  today (a hidden float is not "shown").
+- **The screen rule.** A float's local frame is a screen frame. A
+  resize of the main window, of the docked sidebar or a full-screen
+  change leaves the floats where they are and sends nothing; a float
+  without a local frame follows its cells on the new grid. The one
+  constraint, applied at a resize, a screen change and on adoption,
+  as a move and never a resize: the whole 16pt move band and 60pt of
+  the width inside the visible frame of the screen that holds the
+  float (menu bar and Dock excluded). Never inside the main window: a
+  float may cover the sidebar, the toolbar, the tabs, the edge, or
+  lie outside.
+- **Size: the server's cells** (user, 2026-11-20: the server keeps
+  clamping floats into the ko window's room on every float edit and
+  every ko-window resize, and this unit leaves the server unchanged).
+  The float's size follows the layout's cells, the pty's truth, in
+  the float's own grid; its local frame keeps only x and y. So a
+  layout that changes the ko window's size is a clamp, not another
+  client's move: the float keeps its screen x and y and takes the
+  layout's size, so a main-window shrink can shrink a float, and a
+  float is never larger than the pane area's room on this Mac. Only
+  an x and y change in a layout whose ko window size did not change
+  (another client's move) releases the local frame, as today. A move
+  or resize edit sends the cells clamped into the grid, as today.
+  Follow-up, not in this unit: the server keeps float cells through
+  resizes and ko_tui clips, which frees the size on this Mac.
+- **Docking.** The drop targets are the tiled panes of the ko window
+  the main window shows, and only when that is the float's own ko
+  window; over any other content the drag shows no bars and a drop
+  leaves the float where it was dropped. Dock Pane (⌥⌘F, the
+  toolbar button, the palette, the menu) from a float whose ko
+  window is not shown first switches the main window to show it, then
+  docks beside the remembered last-focused tiled pane (section A).
+  Float Pane is unchanged.
+- **ko_tui and other clients** are unchanged: the server keeps the
+  cell copies; a terminal client shows a float inside its ko window
+  as today.
+- **Tests.** WindowOwner or WindowView tests, no snapshot: a float
+  keeps its screen x and y through a main-window move, a resize, a
+  sidebar width change, a session switch and a full-screen entry,
+  and takes the layout's size when a shrink clamps its cells; a
+  float without a local frame follows its cells; a float of another
+  session is on screen, shown for the seen-state, and its breadcrumb
+  names the session and window; focusing it does not switch the main
+  window; Dock Pane from it switches first; a second Kido window on
+  the same server shows no floats and adopts them when the first
+  closes; the screen rule moves a float by the least amount.

@@ -150,7 +150,7 @@ import UserNotifications
 
     func update(host: Host, snapshotOwner: WindowOwner? = nil) {
         let windows = owners.allObjects.filter { $0.alive && $0.host == host }
-        let shown = Set(windows.filter(\.attended).flatMap(\.shownPanes))
+        let shown = Set(windows.flatMap(\.attendedPanes))
         for owner in windows {
             guard let snapshot = owner.snapshot, !owner.feedFresh || owner === snapshotOwner else { continue }
             let effects = state.step(owner: owner.notificationID, host: host.clipboardKey, identity: owner.identity,
@@ -174,7 +174,7 @@ import UserNotifications
     // The panes that the attended windows of the host show, which every window of the host marks seen.
     func seen(host: Host) -> Seen {
         let attended = owners.allObjects.filter { $0.alive && $0.host == host && $0.attended }
-        return Seen(shown: Set(attended.flatMap(\.shownPanes)).sorted { $0.number < $1.number }, attending: !attended.isEmpty)
+        return Seen(shown: Set(attended.flatMap(\.attendedPanes)).sorted { $0.number < $1.number }, attending: !attended.isEmpty)
     }
 
     func observeSeen(host: Host) {

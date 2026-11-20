@@ -30,14 +30,18 @@ final class SessionView: NSView {
                 else { pane.updateWebview(webview(pane.pane)) }
             }
             hiddenWebview.removeAll { release.contains($0) }
-            for view in Array(windows.values) + Array(others.values) { view.releaseUnusedPanes() }
+            for view in windows.values { view.releaseUnusedPanes() }
         }
     }
     var floatsAllowed: () -> Bool = { true }
-    var hostsOrdered: () -> Void = {}
+    var ownsFloats: () -> Bool = { true }
+    var place: (WindowID) -> PanePlace? = { _ in nil }
+    var showWindow: (WindowID) -> Void = { _ in }
+    var floatTitle: (PaneID, WindowID) -> String = { _, _ in "" }
     var hostFocusChanged: (NSResponder?, NSResponder?) -> Void = { _, _ in }
-    func contains(_ pane: PaneView) -> Bool { (Array(windows.values) + Array(others.values)).contains { $0.contains(pane) } }
-    var hostWindows: [FloatWindow] { (Array(windows.values) + Array(others.values)).flatMap(\.hostWindows) }
+    func contains(_ pane: PaneView) -> Bool { windows.values.contains { $0.contains(pane) } }
+    var hostWindows: [FloatWindow] { windows.values.flatMap(\.hostWindows) }
+    var inputWindow: NSWindow? { hostWindows.first { $0.isInputWindow } ?? window }
     var edit: (KoSchema.Edit, LayoutEditor.Key?) -> Void = { _, _ in }
     var editSelecting: (KoSchema.Edit) -> Void = { _ in }
     var floatState: (PaneID) -> PaneFloatState? = { _ in nil }
@@ -85,9 +89,7 @@ final class SessionView: NSView {
     var onPrompt: (PaneView, String?, KoSchema.PromptTarget?) -> Void = { _, _, _ in }
     // Where the panes run, from the model.
     private(set) var marks: [PaneID: RuntimeMark] = [:]
-    // The current session's windows, and the hot windows of other sessions.
     private(set) var windows: [WindowID: WindowView] = [:]
-    private var others: [WindowID: WindowView] = [:]
     private var recent: [WindowID] = []
     private static let budget = 32
 
@@ -104,16 +106,13 @@ final class SessionView: NSView {
 
     func close() {
         for view in windows.values { view.close() }
-        for view in others.values { view.close() }
         windows = [:]
-        others = [:]
         recent = []
         removeFromSuperview()
     }
 
     func updateBackground() {
         for view in windows.values { view.updateBackground() }
-        for view in others.values { view.updateBackground() }
     }
 
     func reloadConfig(font: Float?) {
@@ -125,16 +124,15 @@ final class SessionView: NSView {
         forEachPane { ghostty_surface_set_color_scheme($0.surface, runtime.colorScheme) }
     }
 
-    // The windows of the current session, the ids of every window of the server, and the client's selected pane.
-    func update(_ listing: [KoSchema.Window], alive: Set<WindowID>, selected: PaneID?, marks: [PaneID: RuntimeMark]) {
+    func update(_ listing: [KoSchema.Window], shown window: WindowID?, selected: PaneID?, marks: [PaneID: RuntimeMark]) {
         updating = true
         defer { updating = false }
         let marked = self.marks
         self.marks = marks
         let changed = Set(marked.keys).union(marks.keys).filter { marked[$0] != marks[$0] }
-        let old = windows.merging(others) { $1 }
+        let old = windows
         windows = [:]
-        for w in listing {
+        for w in listing where w.id == window || recent.contains(w.id) || ownsFloats() && !w.floats.isEmpty {
             let id = w.id
             let view = old[id] ?? WindowView(runtime: runtime)
             view.windowID = id
@@ -148,12 +146,23 @@ final class SessionView: NSView {
             let active = selected.flatMap { w.panes.contains($0) ? $0 : nil }
             view.update(Layout(w, active: active), Layout(w, visible: true, active: active))
         }
-        others = old.filter { windows[$0.key] == nil && $0.value.hot && alive.contains($0.key) }
-        for (id, gone) in old where windows[id] == nil && others[id] == nil { gone.close() }
-        recent.removeAll { windows[$0] == nil && others[$0] == nil }
-        if !changed.isEmpty { (Array(windows.values) + Array(others.values)).forEach { $0.marksChanged(changed, banded: Set(marked.keys) != Set(marks.keys)) } }
+        for (id, gone) in old where windows[id] == nil { gone.close() }
+        recent.removeAll { windows[$0] == nil }
+        if !changed.isEmpty { windows.values.forEach { $0.marksChanged(changed, banded: Set(marked.keys) != Set(marks.keys)) } }
+        for view in windows.values where view.hasFloats && ownsFloats() && !view.hot { _ = view.present() }
         if sentSize == nil { self.shown?.sizeClient() }
     }
+
+    func adoptFloats(from source: SessionView) {
+        for (id, view) in source.windows {
+            let hosts = view.takeFloatHosts()
+            guard !hosts.isEmpty else { continue }
+            if let destination = windows[id] { destination.adoptFloatHosts(hosts) }
+            else { hosts.values.forEach { $0.detach() } }
+        }
+    }
+
+    func refreshFloats() { windows.values.forEach { $0.refreshFloats() } }
 
     func syncHosts() { windows.values.forEach { $0.syncHosts() } }
 
@@ -169,10 +178,9 @@ final class SessionView: NSView {
         updating = true
         defer { updating = previousUpdate }
         let start = DispatchTime.now(), before = shown, last = recent.first
-        let focused = PaneView.owner(shown?.inputWindow?.firstResponder).map(contains) == true
+        let focused = !hostWindows.contains { $0.isInputWindow } && PaneView.owner(shown?.inputWindow?.firstResponder).map(contains) == true
         defer { updateWebview(); DispatchQueue.main.async { [weak self] in self?.evict() } }
         for (id, view) in windows { view.isHidden = id != window }
-        others.values.forEach { $0.isHidden = true }
         guard let window, let view = windows[window], view !== before else { return }
         #if KIDO_VISUAL
         visualShown(window)
@@ -181,24 +189,24 @@ final class SessionView: NSView {
         recent.insert(window, at: 0)
         let created = view.present()
         view.focusActive(force: focused)
+        windows.values.forEach { $0.refreshFloatIdentity() }
         debug("switch \(last?.description ?? "-")->\(window): created \(created), shown in \(milliseconds(since: start))")
     }
 
     private func evict() {
         var hot = 0
         for id in recent where hotSurfaces > Self.budget {
-            guard let view = windows[id] ?? others[id], view.hot else { continue }
+            guard let view = windows[id], view.hot, !view.hasFloats else { continue }
             let count = view.retainedCount
             hot += count
             guard hot > Self.budget, view !== shown else { continue }
             debug("evict \(id): \(count) of \(hot) hot surfaces")
             hot -= count
-            if others.removeValue(forKey: id) != nil { view.close() } else { view.evict() }
+            view.evict()
         }
-        recent.removeAll { windows[$0]?.hot != true && others[$0] == nil }
     }
 
-    private var hotSurfaces: Int { (Array(windows.values) + Array(others.values)).filter(\.hot).reduce(0) { $0 + $1.retainedCount } }
+    private var hotSurfaces: Int { windows.values.filter(\.hot).reduce(0) { $0 + $1.retainedCount } }
     #if KIDO_VISUAL
     var visualHotSurfaces: Int { hotSurfaces }
     #endif
@@ -211,6 +219,12 @@ final class SessionView: NSView {
         shown?.focusActive(force: true)
     }
 
+    func focusPane(_ pane: PaneID) {
+        guard let view = windows.values.first(where: { $0.active == pane }) else { return }
+        if let host = view.hostWindows.first(where: { $0.content.pane == pane }) { host.makeKeyAndOrderFront(nil) }
+        view.focusActive(force: true)
+    }
+
     func pane(_ pane: PaneID) -> PaneView? {
         shown?.displayedPanes.first { $0.pane == pane } ?? windows.values.lazy.flatMap(\.displayedPanes).first { $0.pane == pane }
     }
@@ -219,8 +233,8 @@ final class SessionView: NSView {
 
     func retryImages() { retainedPanes.forEach { $0.retryImages() } }
 
-    private var retainedPanes: [PaneView] {
-        (windows.values.flatMap(\.retainedPanes) + others.values.flatMap(\.retainedPanes)).sorted { $0.pane.number < $1.pane.number }
+    var retainedPanes: [PaneView] {
+        windows.values.flatMap(\.retainedPanes).sorted { $0.pane.number < $1.pane.number }
     }
 
     private func forEachPane(_ body: (PaneView) -> Void) { retainedPanes.forEach(body) }

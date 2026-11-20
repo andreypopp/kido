@@ -1527,7 +1527,8 @@ server handle already-spanning panes; one tiled pane has no drop targets.
 The accent highlight follows
 the effective appearance. A drop sends one `swap`, `dock` or `dock_window` edit, and
 only the next layout moves the views. A click, Escape, a drop
-on the source or a floating pane cancels. Dragging is disabled while zoomed.
+on the source or a floating pane cancels. A tiled pane does not drag while
+zoomed; a float does.
 A tiled grip pops the pane out (design: `app/design/floats/NOTES.md`,
 section A). Outside every target and outside the source, a ghost follows
 the pointer after 4pt of movement. Its size is the pane's size, limited to
@@ -1633,56 +1634,88 @@ so the terminal never moves vertically when the sidebar collapses.
 ### Float windows
 
 Each float is a `FloatWindow` (`App/FloatWindow.swift`), a borderless,
-transparent child window of the main window (design:
-`app/design/floats/NOTES.md`, section B). The app draws its chrome,
-border and shadow inside a margin of the window, and `hasShadow` is off,
-so a float looks the same inside the main window and past its edge:
-nothing clips there. The float window has the main window's `WindowOwner`
-as its delegate, so the owner's callbacks that belong to the main window
+transparent top-level window at the normal level (design:
+`app/design/floats/NOTES.md`, sections B and E). The app draws its
+chrome, border and shadow inside a margin of the window, and `hasShadow`
+is off, so a float looks the same over the main window and past its
+edge. A float is independent of the main window: a move, a resize, a
+miniaturize or a full-screen change of the main window, a tab or session
+switch and a zoom leave it on screen. It is on all Spaces
+(`canJoinAllSpaces` with `fullScreenAuxiliary`), takes part in ⌘\`
+cycling, Mission Control and the Dock menu under its title, "<pane
+title> — <session> / <window>", and has no miniaturize. Hide Kido hides
+it with the app. The float window has the main window's `WindowOwner` as
+its delegate, so the owner's callbacks that belong to the main window
 (frame save, close, miniaturize, full screen) check that the
 notification's object is the main window; otherwise the close of one
-float would end the client. WindowView owns one float window for each
-float of the layout, keyed by the layout pane, and moves the float's
-backing, pane view and chrome into it. A zoom that shows a float tiled
-keeps its float window hidden; a float whose pane goes closes its window.
+float would end the client.
 
-The float windows follow the visible layout, in the layout pass that
-moves the tiled panes: the floats of the shown ko window show and all
-others hide (`orderOut`), also at a tab or session switch and at a zoom,
-which hides the floats. The children's order is the
-floats' z order. The active float is the top float: when the layout pass
-that applies the shown focus (`WindowView.update`) shows a new active
-pane that is a float under another, it sends a `float` edit of the z
-order, so every way to focus a float raises it (a press, keyboard
-navigation, the sidebar, Back/Forward, the palette, a link, ⌘1…9 and a
-focus that the server moves). Only a change of the focus raises, and a
-press on the active float: a layout that only changes the order, such
-as another client's raise, sends nothing, so two clients with different
-active floats do not raise in turn. A focus on a tiled pane leaves the
-float order. `orderFront` does not
-reorder the children of a window, so `FloatWindow.raise` removes the
-child window and adds it again above its siblings. When the main window miniaturizes, its floats
-hide, so the Dock tile is the main window alone; they return at
-deminiaturize. While the owner is down and the banner veils the panes,
-the float windows hide too, because the veil cannot cover a child window.
-A drag of the main window moves the floats and sends no edit.
+**Which floats show.** A `SessionView` holds a `WindowView` for every
+ko window of the server, not only those of the shown session. A
+WindowView that is hidden keeps its floats: it hides only its tiled
+panes, and the eviction of hot surfaces skips a window with floats. So
+every float of the server is on screen from the layout that creates it
+until it is docked, closed or its pane goes. WindowView owns one float
+window for each float of its layout, keyed by the layout pane, and
+moves the float's backing, pane view and chrome into it. While the
+owner is down and the banner veils the panes, the float windows hide.
 
-**Position.** The server keeps a float's cell geometry inside its ko
-window; the native frame is not limited by the main window. Each float
-window has one position (`FloatWindow.Position`): the layout's, a frame
-during a gesture, a frame that waits for a move or dock edit to settle,
-or a local frame. A move sends x and y clamped into the cell grid and the
-size limited to the window's room, so other clients see the float at the
-edge. When the edits settle, the float keeps its frame as a local one if
-the layout's x and y equal what it sent, else it takes the layout's. A
-later layout releases a local frame only when its x and y differ, that
-is, when another client moved the float; a size change or an unrelated
-layout does not. A resize of the main window releases every local frame,
-and the floats follow their cell geometry on the new grid. In full screen
-the screen is the limit: a move is clamped as in the grid, so the local
-frame equals the sent one. A pop out holds the ghost's frame until the
-float appears, and a dock holds the release frame until the layout shows
-the dock.
+**The owner of the floats.** Of the Kido windows connected to one
+server instance, the first in `owners` order (creation order, not the
+AppKit order) shows the floats; the others show none
+(`WindowOwner.reconcileFloats`, which runs on every snapshot and on a
+close). When the owner closes, the next window on that server takes its
+float windows with their frames (`takeFloatHosts` and
+`adoptFloatHosts`): the native windows move, and the destination makes
+its own pane views and chrome, because the old ones belong to a client
+that closes. A reconnect keeps the old SessionView until the new model
+arrives and adopts its floats only when the server instance is the
+same. The last window on the server closes the float windows; the panes
+live on. A relaunch starts with no local frames.
+
+**Order.** A focus route that lands on a float orders that float front
+(`FloatWindow.raise`), and the layout pass that applies the shown focus
+(`WindowView.update`) sends a `float` edit of the z order when the new
+active pane is a float under another, so other clients see the raise.
+Only a change of the focus raises, and a press on the active float: a
+layout that only changes the order, such as another client's raise,
+sends nothing. A focus on a tiled pane leaves the float windows where
+they are in the window order.
+
+**Position.** Each float window has one position
+(`FloatWindow.Position`): the layout's, a frame during a gesture, a
+frame that waits for a move or dock edit to settle, or a local frame.
+Every frame of a position is a screen frame. A float with the layout's
+position follows its cells in the owner's pane area; a move of the main
+window turns it into a local frame at its current place
+(`freezeFloatOrigins`), so it does not follow the window, while a
+resize or a full-screen change does not. A move sends x and y clamped
+into the cell grid and the size limited to the ko window's room. When
+the edits settle, the float keeps its frame as a local one if the
+layout's x and y equal what it sent, else it takes the layout's. The
+server clamps every float into the room of its ko window, also when the
+window's size changes, so a layout whose ko window has another cell size
+is a clamp, not a move: the float keeps its screen origin, takes the
+layout's size and records the layout's x and y as the sent point
+(`releaseMovedFloats`; a gesture's and a pending move's position carry
+the room in which the edit was made). Only a layout that changes x or y at an unchanged ko window
+size releases a local frame, that is, another client's move. A float is
+therefore never larger than the pane area's room on this Mac. The one
+screen constraint (`FloatWindow.reachable`, `constrainFloats`) runs at
+a resize of the main window (not at a change of the sidebar's width), a
+change of the float's screen or of the screens, and an adoption, as a move
+of the least distance and never a resize: the move band and 60pt of the
+width stay inside the visible frame of the screen that holds the float.
+A pop out holds the ghost's frame until the float appears, and a dock
+holds the release frame until the layout shows the dock.
+
+**The place capsule.** While a float's ko window is not the one the
+main window shows, the pane draws `PanePlaceCapsule`
+(`App/PaneChrome.swift`) with "<session> › <window>"; a click shows
+that ko window in the main window and leaves the float key. For a page
+pane the app sets `--ko-inset-top` to 30px while the capsule is
+visible, and koa's page lays out its view bar, threads and transcript
+below it.
 
 **One drag engine.** The gesture state stays in WindowView. A float
 window's content forwards its press, drag and resize edges to it, and
@@ -1694,13 +1727,20 @@ can pass the main window's edge.
 **Focus.** A float window can become key but never main: the main window
 stays main, with its title bar active, while a float has the keyboard
 ([Focus treatment](#focus-treatment)). A float that becomes key makes
-its pane the active pane. `WindowOwner.owns` maps a window to its owner
+its pane the active pane; the main window keeps the ko window it shows
+(`WindowOwner.shownWindow`), so the main window's tabs and title come
+from the shown window, and the sidebar from the server's selection. A
+focus route that lands on a tiled pane switches the main window to it;
+one that lands on a float never does. Dock Pane from a float whose ko
+window is not shown shows it first, and a drag of a float offers drop
+targets only while its ko window is shown. `WindowOwner.owns` maps a window to its owner
 (the main window or one of its float windows); `inputWindow` and
 `inputResponder` give the key one of them and its first responder. The
 menu commands, the palette, the attendance and the focus report use
 them, so the Pane menu acts on the float's pane while the float is key.
-Attendance reads the occlusion of the key one, so a key float past the
-edge of a covered main window is attended.
+A float on screen counts as attended while the app is active, whatever
+the main window shows or whether it is key (`attendedPanes`), for the
+seen marks and the clipboard-read prompt.
 A sheet of the main window is modal for its float windows too. A
 close alert for a float's pane is a sheet of that float's own window,
 so it stays on the float wherever the float is, and it is modal to the
@@ -2496,7 +2536,9 @@ order; docked tabs show only error and waiting marks.
 The core owns seen. When the union of the panes that the attended
 windows of the host show on screen, or `attending`, changes, the owner calls
 `ko_client_observe` with it. A window is attended while the app is active
-and the window is key, not minimized and visible. `Notifier.seen(host:)`
+and the window is key, not minimized and visible; a float window on
+screen counts while the app is active ([Float windows](#float-windows)).
+`Notifier.seen(host:)`
 computes the union. The core acknowledges on every change and posts a
 model event when a mark changes, so no owner reads its model only to push
 observe. Each pane's `mark` (none, running, waiting, done or failed) is
@@ -3169,10 +3211,9 @@ Kido suppresses while frontmost and the user can deny.
 
 **The column.** Each `WindowOwner` owns one `Notices` view in its own
 `NoticesWindow`, a borderless, transparent child window of the main
-window that can become neither key nor main. It is ordered above every
-float window ([Float windows](#float-windows)) and raised again whenever
-the float windows are reordered, so a card draws above the panes, the
-floats and the banner's veil. The window covers only the cards and their
+window that can become neither key nor main. It is ordered above the
+main window, so a card draws above the panes and the banner's veil; the
+float windows are independent windows and can cover it. The window covers only the cards and their
 shadow, and follows the column's frame; a click anywhere else reaches
 the window below. It hides with its main window at miniaturize. A
 snapshot without floats draws the cards inline in the column
