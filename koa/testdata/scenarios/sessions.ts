@@ -64,32 +64,7 @@ const promptStepNinth: Step = expect({ on: { method: "POST", path: "/prompt", bo
 const stateWithAbortedAndNameSecond = (dir: string): PageRecord => ({ ...stateIdleFourth(dir), aborted: true, name: "koa-md", view: { id: "00000000-0000-7000-8000-000000000002", path: [{ id: "00000000-0000-7000-8000-000000000002", name: "ko", type: "agent" }], type: 'root' }, threads: [], sessionId: "00000000-0000-7000-8000-000000000002", sessionFile: `${dir}/home/sessions/2026-11-10T09-00-00-000Z_00000000-0000-7000-8000-000000000002.jsonl`, context: { tokens: 87940, window: 200000, percent: 43.97 }, life: { type: "switching" } });
 
 export const scenarios: Scenarios = {
-  testKoaWebviewSessionsNarrow: dir => ({
-    open: recordsFromResetOf2ItemsSecond(dir),
-    steps: [
-      promptStepSixth,
-      sessionsListStep(dir),
-      sessionsListStepSecond(dir),
-      promptStepSixth,
-      expect({ on: { method: "POST", path: "/sessions/list", body: value => same(value, { sessionId: "00000000-0000-7000-8000-000000000001", scope: "current" }) }, reply: { status: 200, json: { rows: [] } } }),
-      sessionsSwitchStep(dir),
-      promptStepSeventh(dir),
-      promptStepEighth,
-      abortStepThird(dir),
-      nextResetOf4Items(dir),
-      promptStepEighth,
-      expect({ on: { method: "POST", path: "/abort", body: value => same(value, { sessionId: "00000000-0000-7000-8000-000000000002" }) }, reply: { status: 200, json: {} }, after: recordsFromAssistantEmptySeq5Rev1(dir) }),
-      promptStepNinth,
-      expect({ on: { method: "POST", path: "/sessions/new", body: value => same(value, { sessionId: "00000000-0000-7000-8000-000000000002" }) }, before: [
-          stateWithAbortedAndNameSecond(dir),
-          { type: "reset", epoch: "epoch4", items: [], more: false },
-          { ...stateIdleFourth(dir), name: "pi", sessionId: "01a1c671-f700-7441-a6d6-ea626b87c178", sessionFile: `${dir}/home/sessions/2026-11-10T17-12-00-000Z_01a1c671-f700-7441-a6d6-ea626b87c178.jsonl`, context: { tokens: 0, window: 200000, percent: 0 } },
-          { type: "item", item: { seq: 0, revision: 1, at: 1794330720000, final: true, kind: "notify", level: "info", text: { text: "new session", cut: 0 } } },
-        ], reply: { status: 200, json: { cancelled: false } } }),
-    ],
-    files: {},
-  }),
-  testKoaWebviewSessionsWide: dir => ({
+  Sessions: dir => ({
     open: recordsFromResetOf2ItemsSecond(dir),
     steps: [
       promptStepSixth,

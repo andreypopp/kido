@@ -1,4 +1,4 @@
-import { next, expect, same, type Step, type Scenarios } from "../scenario.ts";
+import { next, expect, same, sequence, type Step, type Scenarios } from "../scenario.ts";
 import type { PageRecord } from "../../koa-records.ts";
 import { stateIdle, modelsStep } from "../scenario-parts.ts";
 
@@ -96,32 +96,20 @@ const stepsFromNextStateWithWorkingAndSinceThird = (dir: string): Step[] => ([
   ]),
 ]);
 
-export const scenarios: Scenarios = {
-  testKoaWebviewComposerFootEditingNarrow: dir => ({
+const phases = {
+  ComposerFootEditing: dir => ({
     open: recordsFromResetOf1ItemsFourth(dir),
     steps: [
       next([]),
     ],
     files: {},
   }),
-  testKoaWebviewComposerFootEditingWide: dir => ({
-    open: recordsFromResetOf1ItemsFourth(dir),
-    steps: [
-      next([]),
-    ],
-    files: {},
-  }),
-  testKoaWebviewComposerFootErrorNoticeNarrow: dir => ({
+  ComposerFootErrorNotice: dir => ({
     open: records(dir),
     steps: stepsFromNextNotifyExtensionReleaseTap(dir),
     files: {},
   }),
-  testKoaWebviewComposerFootErrorNoticeWide: dir => ({
-    open: records(dir),
-    steps: stepsFromNextNotifyExtensionReleaseTap(dir),
-    files: {},
-  }),
-  testKoaWebviewComposerFootExitedNarrow: dir => ({
+  ComposerFootExited: dir => ({
     open: [
       { type: "reset", epoch: "epoch1", items: [], more: false },
       stateFailed(dir),
@@ -131,56 +119,24 @@ export const scenarios: Scenarios = {
     ],
     files: {},
   }),
-  testKoaWebviewComposerFootExitedWide: dir => ({
-    open: [
-      { type: "reset", epoch: "epoch1", items: [], more: false },
-      stateFailed(dir),
-    ],
-    steps: [
-
-    ],
-    files: {},
-  }),
-  testKoaWebviewComposerFootIdleNarrow: dir => ({
+  ComposerFootIdle: dir => ({
     open: recordsFromResetOf1ItemsFourth(dir),
     steps: [
       next([]),
     ],
     files: {},
   }),
-  testKoaWebviewComposerFootIdleWide: dir => ({
-    open: recordsFromResetOf1ItemsFourth(dir),
-    steps: [
-      next([]),
-    ],
-    files: {},
-  }),
-  testKoaWebviewComposerFootLongWorkingNarrow: dir => ({
+  ComposerFootLongWorking: dir => ({
     open: recordsFromResetOf1ItemsFourth(dir),
     steps: stepsFromNextStateWithWorkingAndSince(dir),
     files: {},
   }),
-  testKoaWebviewComposerFootLongWorkingWide: dir => ({
-    open: recordsFromResetOf1ItemsFourth(dir),
-    steps: stepsFromNextStateWithWorkingAndSince(dir),
-    files: {},
-  }),
-  testKoaWebviewComposerFootNoticeNarrow: dir => ({
+  ComposerFootNotice: dir => ({
     open: recordsFromResetOf1ItemsFifth(dir),
     steps: stepsFromNextNotifySwitchedToClaude,
     files: {},
   }),
-  testKoaWebviewComposerFootNoticeWide: dir => ({
-    open: recordsFromResetOf1ItemsFifth(dir),
-    steps: stepsFromNextNotifySwitchedToClaude,
-    files: {},
-  }),
-  testKoaWebviewComposerFootPickerNarrow: dir => ({
-    open: recordsFromResetOf1ItemsFourth(dir),
-    steps: stepsFromNextNothing,
-    files: {},
-  }),
-  testKoaWebviewComposerFootPickerWide: dir => ({
+  ComposerFootPicker: dir => ({
     open: recordsFromResetOf1ItemsFourth(dir),
     steps: stepsFromNextNothing,
     files: {},
@@ -203,7 +159,7 @@ export const scenarios: Scenarios = {
     ],
     files: {},
   }),
-  testKoaWebviewComposerFootStatusesNarrow: dir => ({
+  ComposerFootStatuses: dir => ({
     open: recordsFromResetOf1ItemsFourth(dir),
     steps: [
       next([
@@ -213,34 +169,21 @@ export const scenarios: Scenarios = {
     ],
     files: {},
   }),
-  testKoaWebviewComposerFootStatusesWide: dir => ({
-    open: recordsFromResetOf1ItemsFourth(dir),
-    steps: [
-      next([
-        { ...stateIdleSixth(dir), statuses: { git: "↑2" } },
-        { ...stateIdleSixth(dir), statuses: { git: "↑2", tests: "3 failing" } },
-      ]),
-    ],
-    files: {},
-  }),
-  testKoaWebviewComposerFootWaitingNarrow: dir => ({
+  ComposerFootWaiting: dir => ({
     open: recordsSecond(dir),
     steps: stepsFromNextStateWithWorkingAndSinceSecond(dir),
     files: {},
   }),
-  testKoaWebviewComposerFootWaitingWide: dir => ({
-    open: recordsSecond(dir),
-    steps: stepsFromNextStateWithWorkingAndSinceSecond(dir),
-    files: {},
-  }),
-  testKoaWebviewComposerFootWorkingNarrow: dir => ({
+  ComposerFootWorking: dir => ({
     open: recordsFromResetOf1ItemsFourth(dir),
     steps: stepsFromNextStateWithWorkingAndSinceThird(dir),
     files: {},
   }),
-  testKoaWebviewComposerFootWorkingWide: dir => ({
-    open: recordsFromResetOf1ItemsFourth(dir),
-    steps: stepsFromNextStateWithWorkingAndSinceThird(dir),
-    files: {},
-  }),
+} satisfies Scenarios;
+
+const order: (keyof typeof phases)[] = ["ComposerFootIdle", "ComposerFootWorking", "ComposerFootEditing", "ComposerFootPicker", "ComposerFootNotice", "ComposerFootErrorNotice", "ComposerFootLongWorking", "ComposerFootStatuses", "ComposerFootWaiting", "ComposerFootExited"];
+
+export const scenarios: Scenarios = {
+  ComposerFootStates: dir => sequence(order.map(key => phases[key](dir))),
+  testKoaWebviewComposerFootResponsive: phases.testKoaWebviewComposerFootResponsive,
 };

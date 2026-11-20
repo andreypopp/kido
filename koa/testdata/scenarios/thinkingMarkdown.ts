@@ -8,14 +8,7 @@ const recordsFromResetOf2ItemsThird = (dir: string): PageRecord[] => ([
 ]);
 
 export const scenarios: Scenarios = {
-  testKoaWebviewThinkingMarkdownNarrow: dir => ({
-    open: recordsFromResetOf2ItemsThird(dir),
-    steps: [
-
-    ],
-    files: {},
-  }),
-  testKoaWebviewThinkingMarkdownWide: dir => ({
+  ThinkingMarkdown: dir => ({
     open: recordsFromResetOf2ItemsThird(dir),
     steps: [
 

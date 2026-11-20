@@ -1,7 +1,7 @@
 import { parseThreadName, type ThreadName } from '../../records.ts';
 import type { Block, Thread, WireItem } from '../../koa-records.ts';
 import { stateIdle } from '../scenario-parts.ts';
-import { expect, same, type Scenario, type Scenarios } from '../scenario.ts';
+import { expect, same, sequence, type Scenario, type Scenarios } from '../scenario.ts';
 
 function scene(dir: string, kind: 'two' | 'many' | 'marks' | 'marks-narrow' | 'filter'): Scenario {
   const names = ['sidebar', 'palette', 'remote-mtls-pairing-ios', 'release-0-32', 'koa-virtual-transcript', 'float-win', 'threads', 'docs-cleanup-after-the-sessions', 'ci-linux-flake'].map(value => {
@@ -60,7 +60,7 @@ function scene(dir: string, kind: 'two' | 'many' | 'marks' | 'marks-narrow' | 'f
   };
 }
 
-export const scenarios: Scenarios = {
+const phases = {
   testKoaWebviewThreadsModes: dir => {
     const result = scene(dir, 'filter'), initial = result.open.find(record => record.type === 'reset'), state = result.open.find(record => record.type === 'state');
     if (!initial || !state) throw Error('Missing threads fixture state');
@@ -69,10 +69,17 @@ export const scenarios: Scenarios = {
   },
   testKoaWebviewThreadsTwo: dir => scene(dir, 'two'),
   testKoaWebviewThreadsMany: dir => scene(dir, 'many'),
-  testKoaWebviewThreadsManyNarrow: dir => scene(dir, 'many'),
   testKoaWebviewThreadsMarks: dir => scene(dir, 'marks'),
   testKoaWebviewThreadsMarksNarrow: dir => scene(dir, 'marks-narrow'),
   testKoaWebviewThreadsFilter: dir => scene(dir, 'filter'),
   testKoaWebviewThreadsFilterPanel: dir => scene(dir, 'filter'),
-  testKoaWebviewThreadsFilterNarrow: dir => scene(dir, 'filter'),
+} satisfies Scenarios;
+
+const order: (keyof typeof phases)[] = ['testKoaWebviewThreadsTwo', 'testKoaWebviewThreadsMany', 'testKoaWebviewThreadsMarks', 'testKoaWebviewThreadsMarksNarrow'];
+
+export const scenarios: Scenarios = {
+  testKoaWebviewThreadsModes: phases.testKoaWebviewThreadsModes,
+  Threads: dir => sequence(order.map(key => phases[key](dir))),
+  ThreadsFilter: phases.testKoaWebviewThreadsFilter,
+  ThreadsFilterPanel: phases.testKoaWebviewThreadsFilterPanel,
 };

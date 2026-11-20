@@ -23,12 +23,7 @@ const stepsFromNextResetOf1Items = (dir: string): Step[] => ([
 ]);
 
 export const scenarios: Scenarios = {
-  testKoaWebviewUserMarkdownNarrow: dir => ({
-    open: recordsFromResetOf3ItemsSecond(dir),
-    steps: stepsFromNextResetOf1Items(dir),
-    files: {},
-  }),
-  testKoaWebviewUserMarkdownWide: dir => ({
+  UserMarkdown: dir => ({
     open: recordsFromResetOf3ItemsSecond(dir),
     steps: stepsFromNextResetOf1Items(dir),
     files: {},

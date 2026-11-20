@@ -20,12 +20,7 @@ const stepsFromNextStateWithWorkingAndSinceFifth = (dir: string): Step[] => ([
 ]);
 
 export const scenarios: Scenarios = {
-  testKoaWebviewQuestionsNarrow: dir => ({
-    open: recordsFromResetOf3Items(dir),
-    steps: stepsFromNextStateWithWorkingAndSinceFifth(dir),
-    files: {},
-  }),
-  testKoaWebviewQuestionsWide: dir => ({
+  Questions: dir => ({
     open: recordsFromResetOf3Items(dir),
     steps: stepsFromNextStateWithWorkingAndSinceFifth(dir),
     files: {},

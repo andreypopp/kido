@@ -1,4 +1,4 @@
-import type { Scenario, Scenarios } from "../scenario.ts";
+import { sequence, type Scenario, type Scenarios } from "../scenario.ts";
 import { stateIdle } from "../scenario-parts.ts";
 import type { PageRecord } from "../../koa-records.ts";
 import type { JobSnapshot } from "../../records.ts";
@@ -89,8 +89,5 @@ const serviceScenario = (dir: string): Scenario => ({
 });
 
 export const scenarios: Scenarios = {
-  testKoaWebviewJobRunning: runningScenario,
-  testKoaWebviewJobEnded: endedScenario,
-  testKoaWebviewJobService: serviceScenario,
-  testKoaWebviewJobNarrow: runningScenario,
+  Jobs: dir => sequence([runningScenario(dir), endedScenario(dir), serviceScenario(dir)]),
 };

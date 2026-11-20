@@ -68,6 +68,29 @@ the host's macOS build is not the reference. `make visual` prints one
 `visual: PHASE XmYs` line to stderr for the build, the VM wait, the
 tests, the quit check and the total; `test` and `ko-test` print the
 same lines without the quit check.
+
+The koa webview snapshots (`app/VisualTests/KoaWebviewTests.swift`)
+crop the WebKit page image to the component under test, so that a
+page-wide CSS change re-records the images that show the changed
+component, not every koa state. `webviewPageSnapshot` in
+`app/VisualTests/AppWindowCase.swift` takes a CSS selector and insets
+in CSS pixels, crops the union of the matched elements at the image's
+own backing scale, and fails when the selector matches nothing, when a
+rectangle is empty, or when the padded rectangle leaves the page; it
+never clamps. The insets keep borders and shadows in the image. Only
+the stream and narrow-stream states, light and dark, compare the whole
+page, and the focus-border states the native pane: they keep the
+composition. A state is captured only when it is stable, never in an
+animation's intermediate phase. A fact of layout that the browser
+computes (fit, gaps, alignment) stays an assertion of the visual test
+beside its capture. A fact of structure, presence or order is a test
+of `koa/koa-dom.test.ts` against the real `koa/page/page.html`,
+because that suite's DOM models no CSS layout. One test method starts
+one fixture: it drives its states as phases of one replay (`sequence`
+in `koa/testdata/scenario.ts`) and both widths by resizing the page. A
+light capture that shows only data or a transition that its dark
+capture already shows is not recorded, but the test still drives the
+transition.
 `scripts/main-watch.sh` watches main and reports each observed head's
 CI. `/gh-watch` starts it through streamed `async_bash`.
 

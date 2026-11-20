@@ -10,14 +10,7 @@ const recordsFromResetOf5Items = (dir: string): PageRecord[] => ([
 ]);
 
 export const scenarios: Scenarios = {
-  testKoaWebviewNoticesNarrow: dir => ({
-    open: recordsFromResetOf5Items(dir),
-    steps: [
-
-    ],
-    files: {},
-  }),
-  testKoaWebviewNoticesWide: dir => ({
+  Notices: dir => ({
     open: recordsFromResetOf5Items(dir),
     steps: [
 

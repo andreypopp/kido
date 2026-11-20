@@ -40,15 +40,7 @@ const stepsFromCompleteStepSecond = (dir: string): Step[] => ([
 ]);
 
 export const scenarios: Scenarios = {
-  testKoaWebviewCompletionNarrow: dir => ({
-    open: [
-      { type: "reset", epoch: "epoch1", items: [], more: false },
-      stateIdleFifth(dir),
-    ],
-    steps: stepsFromCompleteStepSecond(dir),
-    files: {},
-  }),
-  testKoaWebviewCompletionWide: dir => ({
+  Completion: dir => ({
     open: [
       { type: "reset", epoch: "epoch1", items: [], more: false },
       stateIdleFifth(dir),

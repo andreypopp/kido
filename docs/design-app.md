@@ -3452,8 +3452,9 @@ A snapshot shows the component under its test, so that a change elsewhere does
 not re-record it. The notice states crop to the pane
 area or the notice host in backing pixels; a few full-window anchors in each
 appearance and window mode keep the composition with the sidebar and the
-header. The koa states compare the WebKit page image; only the focus-border
-states take the native pane, whose frame is their check. States that reach the
+header. The koa states compare the WebKit page image, cropped to the component
+(verification.md, "CI"); only the focus-border states take the native pane,
+whose frame is their check. States that reach the
 same pixels through different transitions compare against one baseline that
 the test names explicitly; each transition keeps its actions and assertions.
 

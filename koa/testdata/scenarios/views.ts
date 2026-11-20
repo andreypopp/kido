@@ -57,8 +57,6 @@ const bar = (dir: string): Scenario => ({
 });
 
 export const scenarios: Scenarios = {
-  testKoaWebviewSubagentViewWide: subagent,
-  testKoaWebviewSubagentViewNarrow: subagent,
-  testKoaWebviewViewBarWide: bar,
-  testKoaWebviewViewBarNarrow: bar,
+  SubagentView: subagent,
+  ViewBar: bar,
 };

@@ -25,8 +25,7 @@ export const scenarios: Scenarios = {
     if (!name) throw Error('invalid fixture thread');
     return { open: open.map(record => record.type === 'state' ? { ...record, threads: [{ name, last: { summary: 'Inset test', at: stamp } }] } : record), steps: [], files: {} };
   },
-  testKoaWebviewQuoteSelectionEmpty: () => ({ open: quoteOpen, steps: [], files: {} }),
-  testKoaWebviewQuoteSelectionAppend: () => ({ open: quoteOpen, steps: [], files: {} }),
+  QuoteSelection: () => ({ open: quoteOpen, steps: [], files: {} }),
   testKoaWebviewRevealKeepsFollowing: () => ({ open, steps: [], files: {} }),
   testKoaWebviewStreamingNeverStepsUp: () => ({ open, steps: [], files: {} }),
   testKoaWebviewOlderHistoryKeepsTheReaderAnchor: () => ({ open: open.map(record => record.type === "reset" ? { ...record, more: true, items: record.items.map(item => ({ ...item, seq: item.seq + 10 })) } : record), steps: [older], files: {} }),

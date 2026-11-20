@@ -344,8 +344,44 @@ import XCTest
 
     private struct ImageRect: Decodable { let src: String; let x, y, w, h: CGFloat }
 
-    func webviewPageSnapshot(_ pane: PaneView, _ name: String, file: StaticString = #filePath, testName: String = #function) async throws {
-        let image = try await webviewPage(pane)
+    private struct SnapshotRect: Decodable { let x, y, w, h: CGFloat }
+
+    func webviewPageSnapshot(_ pane: PaneView, _ name: String, crop selector: String? = nil, padding: NSEdgeInsets = .init(), file: StaticString = #filePath, line: UInt = #line, testName: String = #function) async throws {
+        var image = try await webviewPage(pane)
+        if let selector {
+            let browser = try XCTUnwrap(pane.webviewView, file: file, line: line).browser
+            let encoded = String(decoding: try JSONEncoder().encode(selector), as: UTF8.self)
+            let json = try await webviewJS(browser, "Array.from(document.querySelectorAll(\(encoded)),e=>{const r=e.getBoundingClientRect();return{x:r.x,y:r.y,w:r.width,h:r.height}})")
+            let rects: [SnapshotRect]
+            do { rects = try JSONDecoder().decode([SnapshotRect].self, from: Data(json.utf8)) }
+            catch {
+                XCTFail("Snapshot crop \(selector): invalid element rectangles: \(error)", file: file, line: line)
+                throw error
+            }
+            func require(_ condition: Bool, _ message: String) throws {
+                guard condition else {
+                    XCTFail("Snapshot crop \(selector): \(message)", file: file, line: line)
+                    throw NSError(domain: "SnapshotCrop", code: 1, userInfo: [NSLocalizedDescriptionKey: message])
+                }
+            }
+            try require(!rects.isEmpty, "selector has no matches")
+            try require([padding.top, padding.left, padding.bottom, padding.right].allSatisfy { $0.isFinite && $0 >= 0 }, "padding must be finite and nonnegative")
+            var bounds = CGRect.null
+            for rect in rects {
+                try require([rect.x, rect.y, rect.w, rect.h].allSatisfy(\.isFinite) && rect.w > 0 && rect.h > 0, "empty or nonfinite element rectangle")
+                bounds = bounds.union(CGRect(x: rect.x, y: rect.y, width: rect.w, height: rect.h))
+            }
+            bounds = CGRect(x: bounds.minX - padding.left, y: bounds.minY - padding.top, width: bounds.width + padding.left + padding.right, height: bounds.height + padding.top + padding.bottom)
+            let bitmap = try XCTUnwrap(NSBitmapImageRep(data: try XCTUnwrap(image.tiffRepresentation, file: file, line: line)), file: file, line: line)
+            let sx = CGFloat(bitmap.pixelsWide) / browser.bounds.width
+            let sy = CGFloat(bitmap.pixelsHigh) / browser.bounds.height
+            let pixels = CGRect(x: floor(bounds.minX * sx), y: floor(bounds.minY * sy), width: ceil(bounds.maxX * sx) - floor(bounds.minX * sx), height: ceil(bounds.maxY * sy) - floor(bounds.minY * sy))
+            try require([bounds.minX, bounds.minY, bounds.maxX, bounds.maxY, sx, sy].allSatisfy(\.isFinite) && bounds.width > 0 && bounds.height > 0 && sx > 0 && sy > 0, "empty or nonfinite padded rectangle")
+            try require(bounds.minX >= 0 && bounds.minY >= 0 && bounds.maxX <= browser.bounds.width && bounds.maxY <= browser.bounds.height, "padded rectangle is outside the page")
+            try require(pixels.minX >= 0 && pixels.minY >= 0 && pixels.maxX <= CGFloat(bitmap.pixelsWide) && pixels.maxY <= CGFloat(bitmap.pixelsHigh), "pixel rectangle is outside the image")
+            let cropped = try XCTUnwrap(bitmap.cgImage?.cropping(to: pixels), file: file, line: line)
+            image = NSImage(cgImage: cropped, size: NSSize(width: pixels.width / sx, height: pixels.height / sy))
+        }
         checkSnapshot { verifySnapshot(of: image, as: .pixels, named: name, record: $0, file: file, testName: testName) }
     }
 

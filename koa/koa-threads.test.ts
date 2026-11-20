@@ -5,11 +5,11 @@ import { parseThreadName } from './records.ts';
 import { threadSections } from './text.ts';
 
 test('thread replay accepts the scoped filtered history query and refuses another thread', () => {
-  const scenario = scenarios.testKoaWebviewThreadsFilter('/tmp/thread-replay');
+  const scenario = scenarios.ThreadsFilter('/tmp/thread-replay');
   const state = scenario.open.find(record => record.type === 'state');
   assert.ok(state);
-  const step = scenario.steps[0];
-  assert.ok(step.on !== 'next');
+  const step = scenario.steps.find(step => step.on !== 'next');
+  assert.ok(step);
   assert.equal(step.on.body?.({ before: String(Number.MAX_SAFE_INTEGER), thread: 'sidebar', sessionId: state.sessionId }), true);
   assert.equal(step.on.body?.({ before: String(Number.MAX_SAFE_INTEGER), thread: 'palette', sessionId: state.sessionId }), false);
   const history = step.reply.json;

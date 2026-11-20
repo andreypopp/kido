@@ -15,6 +15,36 @@ export const expect = <P extends StepPath>(step: Expected<P>): Step => step;
 export type Scenario = { open: PageRecord[]; steps: Step[]; files: Record<string, string> };
 export type Scenarios = Record<string, (dir: string) => Scenario>;
 
+export function sequence(phases: Scenario[]): Scenario {
+  const files: Record<string, string> = {};
+  const prepared = phases.map((phase, index) => {
+    const records = (batch: PageRecord[]): PageRecord[] => batch.map(record => record.type === 'reset' || record.type === 'job-reset' ? { ...record, epoch: `${index}:${record.epoch}` } : record);
+    const batch = (value: Batch): Batch => typeof value === 'function' ? input => records(value(input)) : records(value);
+    for (const [name, contents] of Object.entries(phase.files)) {
+      if (name in files && files[name] !== contents) throw new Error(`Conflicting scenario file: ${name}`);
+      files[name] = contents;
+    }
+    return {
+      open: records(phase.open),
+      steps: phase.steps.map((step): Step => {
+        if (step.on === 'next') return next(records(step.records));
+        let reply = step.reply;
+        if (step.on.path === '/items' && reply.status === 200) {
+          const history = (value: Routes[StepPath]['response']): Routes['/items']['response'] => {
+            if (!('epoch' in value) || typeof value.epoch !== 'string' || !('items' in value) || !Array.isArray(value.items) || !('more' in value) || typeof value.more !== 'boolean') throw new Error('Invalid history scenario response');
+            return { epoch: `${index}:${value.epoch}`, items: value.items, more: value.more };
+          };
+          const original = reply.json;
+          reply = { ...reply, json: typeof original === 'function' ? input => history(original(input)) : history(original) };
+        }
+        return { ...step, reply, ...(step.before ? { before: batch(step.before) } : {}), ...(step.after ? { after: batch(step.after) } : {}) };
+      }),
+    };
+  });
+  if (!prepared.length) throw new Error('A scenario sequence needs a phase');
+  return { open: prepared[0].open, steps: prepared.flatMap((phase, index) => index ? [next(phase.open), ...phase.steps] : phase.steps), files };
+}
+
 export const anything = Symbol('anything');
 
 export function same(value: unknown, expected: unknown): boolean {

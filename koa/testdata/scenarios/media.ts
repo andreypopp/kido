@@ -14,24 +14,7 @@ const stepsFromNextResetOf5ItemsFourth = (dir: string): Step[] => ([
 ]);
 
 export const scenarios: Scenarios = {
-  testKoaWebviewMediaNarrow: dir => ({
-    open: [
-      { type: "reset", epoch: "epoch1", items: [], more: false },
-      stateIdle(dir),
-    ],
-    steps: stepsFromNextResetOf5ItemsFourth(dir),
-    files: {
-      "/images/1.0.0?e=epoch2&r=0": `${dir}/shot.png`,
-      "/images/2.0.0?e=epoch2&r=0": `${dir}/shot.png`,
-      "/images/3.0.0?e=epoch2&r=0": `${dir}/sidebar.png`,
-      "/images/3.0.1?e=epoch2&r=0": `${dir}/diagram.png`,
-      "/images/0.0?e=epoch3&r=0": `${dir}/sidebar.png`,
-      "/images/0.1?e=epoch3&r=0": `${dir}/diagram.png`,
-      "/images/0.0?e=epoch4&r=0": `${dir}/gone.png`,
-      "/images/0.1?e=epoch4&r=0": `${dir}/shot.png`,
-    },
-  }),
-  testKoaWebviewMediaWide: dir => ({
+  Media: dir => ({
     open: [
       { type: "reset", epoch: "epoch1", items: [], more: false },
       stateIdle(dir),

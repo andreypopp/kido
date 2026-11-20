@@ -7,11 +7,39 @@ import { stripTypeScriptTypes } from "node:module";
 import { markdown, markdownPlain } from "./page/markdown.ts";
 import { markdownLine } from "./markdown-line.ts";
 import { bashCommand } from "./prompt.ts";
+import { pathToken } from './path-token.ts';
 import { promptHistory } from './page/history.ts';
 import { ATTACHMENT_LIMITS, pathArg } from "./koa-records.ts";
 import { jobEndText } from "./records.ts";
 import type { PromptMode } from "./koa-records.ts";
 import { scrollInitial, scrollStored, scrollUpdate, scrollWindow } from "./page/scroll.ts";
+
+test('composer puts queue before attachments and field; footer contains its three facts and no legacy controls', async () => {
+  const html = await readFile(new URL('page/page.html', import.meta.url), 'utf8');
+  type Element = { tag: string; id: string; classes: string[]; children: Element[] };
+  const root: Element = { tag: '', id: '', classes: [], children: [] };
+  const stack = [root];
+  const elements: Element[] = [];
+  for (const token of html.matchAll(/<\/?([a-z][\w-]*)\b([^>]*)>/gi)) {
+    if (token[0].startsWith('</')) { stack.pop(); continue; }
+    const node: Element = { tag: token[1], id: token[2].match(/\bid="([^"]*)"/)?.[1] ?? '', classes: (token[2].match(/\bclass="([^"]*)"/)?.[1] ?? '').split(/\s+/), children: [] };
+    const parent = stack.at(-1);
+    assert.ok(parent);
+    parent.children.push(node);
+    elements.push(node);
+    if (!['meta', 'link', 'img', 'input', 'br', 'hr'].includes(node.tag)) stack.push(node);
+  }
+  const composer = elements.find(node => node.id === 'composer');
+  assert.ok(composer);
+  assert.deepEqual(composer.children.map(node => node.id), ['queue', 'attachments', 'field', 'error']);
+  const foot = elements.find(node => node.classes.includes('foot'));
+  assert.ok(foot);
+  assert.deepEqual(foot.children.filter(node => node.classes.includes('cell')).map(node => node.id || node.classes[0]), ['model-cell', 'ctxc', 'cwd']);
+  const model = elements.find(node => node.id === 'model-cell');
+  assert.ok(model);
+  assert.deepEqual(model.children.map(node => node.id), ['model', 'thinking']);
+  assert.equal(elements.some(node => ['send', 'notice'].includes(node.id) || node.tag === 'footer' && node.classes.includes('status')), false);
+});
 
 async function page() {
   const source = stripTypeScriptTypes(await readFile(new URL("page/page.ts", import.meta.url), "utf8"));
@@ -45,7 +73,7 @@ async function page() {
     querySelector(selector: string): Node | undefined { const match = selector.match(/^\.([\w-]+)(?::not\(\.([\w-]+)\))?$/); if (!match) return undefined; const find = (node: Node): Node | undefined => { for (const child of node.children) { if (!(child instanceof Node)) continue; if (child.classes.has(match[1]) && !(match[2] && child.classes.has(match[2]))) return child; const found = find(child); if (found) return found; } }; return find(this); }
     matches(selector: string) { return [...selector.matchAll(/\.([\w-]+)/g)].some(match => this.classes.has(match[1])); }
     querySelectorAll(selector = ''): Node[] {
-      return selector.split(/,(?![^(]*\))/).flatMap(part => part.replace(':scope>', '').split('>').reduce<Node[]>((nodes, step) => nodes.flatMap(node => node.children.filter((child): child is Node => child instanceof Node && (step === 'div' ? child.tagName === 'DIV' : [...step.matchAll(/\.([\w-]+)/g)].some(match => child.classes.has(match[1]))))), [this]));
+      return selector.split(/,(?![^(]*\))/).flatMap(part => part.replace(':scope>', '').split('>').reduce<Node[]>((nodes, step) => nodes.flatMap(node => node.children.filter((child): child is Node => child instanceof Node && (/^[a-z][\w-]*$/.test(step) ? child.tagName === step.toUpperCase() : [...step.matchAll(/\.([\w-]+)/g)].some(match => child.classes.has(match[1]))))), [this]));
     }
     get isConnected(): boolean { return this === document.body || this === document.documentElement || this.parent?.isConnected === true; }
     get childNodes(): Node[] { return this.children.map(child => typeof child === 'string' ? Object.assign(new Node(), { tagName: '#text', textContent: child }) : child); }
@@ -97,7 +125,7 @@ async function page() {
       placeholder(text: string) { content.placeholder = text; },
     };
   };
-  const context = { ResizeObserver, matchMedia: () => ({ matches: false, addEventListener() {} }), Date: class extends Date { constructor(value: string | number = 1700000012000) { super(value); } static now() { return 1700000012000; } }, getComputedStyle: (node?: { tagName?: string }) => ({ display: 'block', lineHeight: '20px', marginBottom: node?.tagName === 'P' ? '10px' : '0px' }), composer, bashCommand, ATTACHMENT_LIMITS, pathArg, jobEndText, AbortController, AbortSignal, CustomEvent: class { type: string; detail?: unknown; constructor(type: string, options?: { detail?: unknown }) { this.type = type; this.detail = options?.detail; } }, Node, Element: Node, HTMLElement: class { static [Symbol.hasInstance](value: unknown) { return value instanceof Node && value.tagName !== '#text'; } }, HTMLButtonElement: Node, HTMLImageElement: Node, markdown, markdownLine, document, window: { ko: {}, getSelection: () => null, addEventListener(type: string, handler: (event?: unknown) => void) { windowListeners.set(type, handler); } }, innerWidth: 980, innerHeight: 560, Event: class { type: string; constructor(type: string) { this.type = type; } }, console, setInterval() {}, clearInterval() {}, setTimeout, clearTimeout, requestAnimationFrame() {}, cancelAnimationFrame() {}, performance: { now: () => 0 }, fetch: async () => ({ ok: true, json: async () => ({}) }) };
+  const context = { ResizeObserver, matchMedia: () => ({ matches: false, addEventListener() {} }), Date: class extends Date { constructor(value: string | number = 1700000012000) { super(value); } static now() { return 1700000012000; } }, getComputedStyle: (node?: { tagName?: string }) => ({ display: 'block', lineHeight: '20px', marginBottom: node?.tagName === 'P' ? '10px' : '0px' }), composer, bashCommand, pathToken, ATTACHMENT_LIMITS, pathArg, jobEndText, AbortController, AbortSignal, CustomEvent: class { type: string; detail?: unknown; constructor(type: string, options?: { detail?: unknown }) { this.type = type; this.detail = options?.detail; } }, Node, Element: Node, HTMLElement: class { static [Symbol.hasInstance](value: unknown) { return value instanceof Node && value.tagName !== '#text'; } }, HTMLButtonElement: Node, HTMLImageElement: Node, markdown, markdownLine, document, window: { ko: {}, getSelection: () => null, addEventListener(type: string, handler: (event?: unknown) => void) { windowListeners.set(type, handler); } }, innerWidth: 980, innerHeight: 560, Event: class { type: string; constructor(type: string) { this.type = type; } }, console, setInterval() {}, clearInterval() {}, setTimeout, clearTimeout, requestAnimationFrame() {}, cancelAnimationFrame() {}, performance: { now: () => 0 }, fetch: async () => ({ ok: true, json: async () => ({}) }) };
   const answersSource = stripTypeScriptTypes(await readFile(new URL('page/answers.ts', import.meta.url), 'utf8')).replace(/^export /gm, '');
   const annotationsSource = stripTypeScriptTypes(await readFile(new URL('page/annotations.ts', import.meta.url), 'utf8')).replace(/^import .*;\n/gm, '').replace(/^export /gm, '');
   Object.assign(context, runInNewContext(answersSource + '\n' + annotationsSource + '\n({annotations,update,head,quote})', context));
@@ -2231,6 +2259,11 @@ test('browser lightbox Escape closes before abort and keeps the draft', async ()
   assert.equal(prevented, true); assert.equal(app.context.document.querySelector('.lightbox'), null); assert.equal(app.text(), 'draft');
   assert.deepEqual(requests.filter(path => ['/abort', '/queue/clear', '/clear_queue'].includes(path)), []);
   assert.equal(app.context.document.activeElement, app.prompt());
+});
+
+test('path links keep code paths interactive and literal text plain', async () => {
+  const app = await page();
+  assert.equal(app.run(`(()=>{const fragment=document.createElement('div'),codes=['koa/koa.ts:120','koa.ts','git add koa.ts'].map(text=>{const code=document.createElement('code');code.textContent=text;fragment.append(code);return code});decoratePaths(fragment);return JSON.stringify(codes.map(code=>code.classList.contains('path-open')))})()`), '[true,true,false]');
 });
 
 test('thumbnails call native preview with their resource and rectangle', async () => {

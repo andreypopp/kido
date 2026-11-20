@@ -89,49 +89,14 @@ const nextPatchSeq1Rev3 = (dir: string): Step => (next([
 ]));
 
 export const scenarios: Scenarios = {
-  testKoaWebviewBangCompletionNarrow: dir => ({
+  BangCompletion: dir => ({
     open: recordsFromResetOf1ItemsSecond(dir),
     steps: [
 
     ],
     files: {},
   }),
-  testKoaWebviewBangCompletionWide: dir => ({
-    open: recordsFromResetOf1ItemsSecond(dir),
-    steps: [
-
-    ],
-    files: {},
-  }),
-  testKoaWebviewBangNarrow: dir => ({
-    open: recordsFromResetOf1ItemsThird(dir),
-    steps: [
-      nextResetOf6Items(dir),
-      nextResetOf2ItemsSecond(dir),
-      nextResetOf2ItemsThird(dir),
-      nextResetOf2ItemsFourth(dir),
-      nextResetOf2ItemsFifth(dir),
-      nextResetOf2ItemsSixth(dir),
-      nextResetOf1ItemsSecond(dir),
-      expect({ on: { method: "POST", path: "/prompt", body: value => same(value, { sessionId: "00000000-0000-7000-8000-000000000001", text: "!make verify STAGES=unit", mode: "prompt", attachments: [] }) }, reply: { status: 200, json: { disposition: "handled", action: { type: "none" } } }, after: [
-          stateWithBash(dir),
-          stateWithBashSecond(dir),
-        ] }),
-      abortStep(dir),
-      nextResetOf1ItemsThird(dir),
-      expect({ on: { method: "POST", path: "/prompt", body: value => same(value, { sessionId: "00000000-0000-7000-8000-000000000001", text: "!git status --short", mode: "prompt", attachments: [] }) }, before: [
-          { type: "item", item: { seq: 1, revision: 1, at: 1794177120000, final: false, kind: "assistant", blocks: [], stop: "pending", error: "" } },
-          assistantTheSweepNeedsSeq1Rev2,
-          stateWithBashAndWorking(dir),
-        ], reply: { status: 200, json: { disposition: "handled", action: { type: "none" } } }, after: [
-          stateWithBashAndWorkingSecond(dir),
-        ] }),
-      abortStepSecond(dir),
-      nextPatchSeq1Rev3(dir),
-    ],
-    files: {},
-  }),
-  testKoaWebviewBangWide: dir => ({
+  Bang: dir => ({
     open: recordsFromResetOf1ItemsThird(dir),
     steps: [
       nextResetOf6Items(dir),

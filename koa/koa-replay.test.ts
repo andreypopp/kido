@@ -1,14 +1,14 @@
 import type { TestContext } from "node:test";
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtemp, readdir, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { Readable } from "node:stream";
 import { fileURLToPath } from "node:url";
 import { sse, ofType, pollUntil } from "./koa-agent-fixture.ts";
 import { serveChild } from "./koa-program-fixture.ts";
-import type { Scenarios } from "./testdata/scenario.ts";
+import { expect, next, sequence, type Scenarios, type Scenario } from "./testdata/scenario.ts";
 
 const replay = fileURLToPath(new URL("./testdata/replay.ts", import.meta.url));
 
@@ -121,16 +121,48 @@ test("a real upload goes through prompt, the queue and its take-back", async t =
 
 test("every scenario module builds its scenarios", async () => {
   const names = (await readdir(new URL("./testdata/scenarios/", import.meta.url))).filter(name => name.endsWith(".ts"));
-  let count = 0;
+  const keys = new Set<string>();
   for (const name of names) {
     const loaded: { scenarios: Scenarios } = await import(new URL(`./testdata/scenarios/${name}`, import.meta.url).href);
     for (const [method, build] of Object.entries(loaded.scenarios)) {
       const scenario = build("/tmp/koa-replay-dir");
       assert.ok(scenario.open.length, `${name} ${method}`);
-      count++;
+      keys.add(method);
     }
   }
-  assert.ok(count > 60, `${count} scenarios`);
+  const swift = await readFile(new URL('../app/VisualTests/KoaWebviewTests.swift', import.meta.url), 'utf8');
+  for (const match of swift.matchAll(/\bkey: "([^"]+)"/g)) assert.ok(keys.has(match[1]), `No replay scenario for ${match[1]}`);
+});
+
+test('scenario sequences keep strict steps and give reset phases separate epochs', () => {
+  const phase: Scenario = { open: [{ type: 'reset', epoch: 'same', items: [], more: false }], steps: [next([])], files: { 'a.txt': 'a' } };
+  const combined = sequence([phase, phase]);
+  assert.deepEqual(combined.open, [{ type: 'reset', epoch: '0:same', items: [], more: false }]);
+  assert.deepEqual(combined.steps, [next([]), next([{ type: 'reset', epoch: '1:same', items: [], more: false }]), next([])]);
+  assert.deepEqual(combined.files, { 'a.txt': 'a' });
+  assert.throws(() => sequence([phase, { ...phase, files: { 'a.txt': 'b' } }]), /Conflicting scenario file/);
+});
+
+test('scenario sequences remap static and computed history replies without changing request predicates', () => {
+  const matches = (value: unknown) => value === 'exact';
+  const input = { body: 'exact', attachments: [] };
+  const history = { epoch: 'same', more: false, items: [] };
+  const staticStep = expect({ on: { method: 'GET', path: '/items', body: matches }, reply: { status: 200, json: history } });
+  const computedStep = expect({ on: { method: 'GET', path: '/items', body: matches }, before: () => [{ type: 'reset', epoch: 'same', more: false, items: [] }], reply: { status: 200, json: () => history }, after: [{ type: 'reset', epoch: 'same', more: false, items: [] }] });
+  const combined = sequence([{ open: [], steps: [staticStep], files: {} }, { open: [], steps: [computedStep], files: {} }]);
+  const first = combined.steps[0], last = combined.steps[2];
+  assert.ok(first.on !== 'next' && last.on !== 'next');
+  assert.equal(first.on.body, matches);
+  assert.equal(last.on.body, matches);
+  assert.equal(last.on.body?.('wrong'), false);
+  assert.deepEqual(first.reply.json, { ...history, epoch: '0:same' });
+  assert.equal(typeof last.reply.json, 'function');
+  if (typeof last.reply.json !== 'function') throw Error('Missing computed reply');
+  assert.deepEqual(last.reply.json(input), { ...history, epoch: '1:same' });
+  assert.equal(typeof last.before, 'function');
+  if (typeof last.before !== 'function') throw Error('Missing computed records');
+  assert.deepEqual(last.before(input), [{ type: 'reset', epoch: '1:same', more: false, items: [] }]);
+  assert.deepEqual(last.after, [{ type: 'reset', epoch: '1:same', more: false, items: [] }]);
 });
 
 test("a step's file is served from the path in its block, and follows a patch", async t => {
