@@ -62,7 +62,7 @@ html[data-width=narrow] .pane{width:calc(60*var(--ko-cell-width) + 2px)}
 
 /* transcript */
 .scroll{flex:1;overflow:auto;scrollbar-gutter:stable}
-.transcript{max-width:720px;margin:0 auto;padding:14px 20px 8px}
+.transcript{max-width:720px;margin:0;padding:14px 20px 8px}
 .narrow .transcript,html[data-width=narrow] .transcript{padding:10px 12px 6px}
 .msg{margin:0 0 14px}
 .msg.user{color:var(--fg);display:flex;gap:14px;align-items:baseline;border-radius:8px;padding:7px 12px;background:color-mix(in srgb,var(--accent) 18%,var(--ko-bg))}
@@ -134,7 +134,7 @@ a{color:var(--accent);text-decoration:none;border-bottom:1px solid color-mix(in 
 .exit{color:var(--err)}
 
 /* ---- composer ---- */
-.composer{flex-shrink:0;padding:0 24px 12px;max-width:720px;width:100%;margin:0 auto}
+.composer{flex-shrink:0;padding:0 24px 12px;max-width:720px;width:100%;margin:0} /* left-aligned, with the transcript (user, 2026-11-20) */
 /* ---- floating composer: the transcript scrolls beneath a glass dock ---- */
 html:not([data-dock=band]) .pane .scroll{position:absolute;left:0;right:0;top:0;bottom:24px}
 html:not([data-dock=band]) .pane .transcript{padding-bottom:calc(var(--dock-h,96px) + 8px)}
@@ -584,7 +584,7 @@ html[data-theme=dark] .vbar{border-color:color-mix(in srgb,var(--ko-fg) 14%,tran
 .jfoot .gap{flex:1}
 .jfoot .jact{border:1px solid var(--hair2);background:none;border-radius:6px;padding:1px 9px;font:inherit;color:var(--fg);cursor:pointer;flex-shrink:0}.jfoot .jact:hover{background:var(--well2)}.jfoot .jact.stop:hover{color:var(--err);border-color:color-mix(in srgb,var(--err) 45%,var(--ko-bg))}
 .pane.aligned .field.job{padding:9px 16px 8px}
-.latest{position:absolute;left:50%;transform:translateX(-50%);height:24px;padding:0 10px;border-radius:12px;display:flex;align-items:center;gap:5px;font:.85em/1 var(--prose);color:var(--fg);background:color-mix(in srgb,var(--ko-bg) 72%,transparent);-webkit-backdrop-filter:blur(18px) saturate(1.35);backdrop-filter:blur(18px) saturate(1.35);border:.5px solid color-mix(in srgb,var(--ko-fg) 16%,transparent);box-shadow:0 1px 2px #0000001f;cursor:pointer;z-index:4;white-space:nowrap}
+.latest{position:absolute;left:24px;height:24px;padding:0 10px;border-radius:12px;display:flex;align-items:center;gap:5px;font:.85em/1 var(--prose);color:var(--fg);background:color-mix(in srgb,var(--ko-bg) 72%,transparent);-webkit-backdrop-filter:blur(18px) saturate(1.35);backdrop-filter:blur(18px) saturate(1.35);border:.5px solid color-mix(in srgb,var(--ko-fg) 16%,transparent);box-shadow:0 1px 2px #0000001f;cursor:pointer;z-index:4;white-space:nowrap}
 .latest svg{width:11px;height:11px;fill:none;stroke:currentColor;stroke-width:1.8;stroke-linecap:round;stroke-linejoin:round}
 </style>
 <body>
@@ -654,7 +654,7 @@ const states={
   service:(p)=>view({name:'main-watch',service:true,cmd:'scripts/main-watch.sh --stream',started:'14:31',by:'sidebar-right',where:'runtime devbox',log:'/tmp/ko-pi/01a10d51-…-jm4w1t0c.log',state:'running',clock:'2h 05m',bytes:'12.1 kB',out:out3,up:true,path:['@ko','@sidebar-right','main-watch']}),
 };
 for(const pane of document.querySelectorAll('.pane')){pane.innerHTML=states[pane.dataset.state](pane);const dock=document.createElement('div');dock.className='dock';for(const k of [...pane.children].filter(c=>c.classList.contains('composer')))dock.appendChild(k);pane.appendChild(dock)}
-function fit(){for(const pane of document.querySelectorAll('.pane')){const dock=pane.querySelector('.dock'),sc=pane.querySelector('.scroll');pane.style.setProperty('--dock-h',dock.offsetHeight+'px');const b=pane.querySelector('.latest');if(b){const top=dock.querySelector('.composer').getBoundingClientRect().top-pane.getBoundingClientRect().top;b.style.top=(top-8-24)+'px';sc.scrollTop=Math.max(0,sc.scrollHeight-sc.clientHeight-120)}else sc.scrollTop=sc.scrollHeight}}
+function fit(){for(const pane of document.querySelectorAll('.pane')){const dock=pane.querySelector('.dock'),sc=pane.querySelector('.scroll');pane.style.setProperty('--dock-h',dock.offsetHeight+'px');const b=pane.querySelector('.latest');if(b){const top=dock.querySelector('.composer').getBoundingClientRect().top-pane.getBoundingClientRect().top;b.style.top=(top-pane.clientTop-8-24)+'px';b.style.left=(dock.querySelector('.field').getBoundingClientRect().left-pane.getBoundingClientRect().left-pane.clientLeft)+'px';sc.scrollTop=Math.max(0,sc.scrollHeight-sc.clientHeight-120)}else sc.scrollTop=sc.scrollHeight}}
 fit();
 for(const id of ['theme','width']){const el=document.getElementById(id);el.value=document.documentElement.dataset[id];el.onchange=e=>{document.documentElement.dataset[id]=e.target.value;fit()}}
 </script>

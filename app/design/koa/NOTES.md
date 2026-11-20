@@ -1614,7 +1614,9 @@ Open WebUI): the scroll has two states and one animation.
   region; never a second one. It goes when the state becomes
   `following` with the pane focused, on the user's send, on a view
   switch, a session switch, `/reload`, `/restart` and `/new`.
-- **"↓ Latest".** A capsule centred in the content column 8pt above
+- **"↓ Latest".** A capsule at the left of the content column, its
+  left edge on the field's left edge (user, 2026-11-20, since the
+  transcript and the composer are left-aligned), 8pt above
   the dock's topmost element (the queue's first block, else the
   dialog card, the exit card or the field): 24pt high, 12pt radius,
   padding 0 10pt, the field's material (the background at 72% with
