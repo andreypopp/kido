@@ -29,6 +29,7 @@ if [[ -n "$orderings" ]]; then
   echo "$orderings" | sed 's/$/: ko_pane, ko_pane_wire and ko_server use only Ordering::SeqCst/'
   failed=1
 fi
+PYTHONPYCACHEPREFIX="$scratch/pycache" python3 -m py_compile kow/kow || failed=1
 make check-ko-tls || failed=1
 python3 - <<'PY' || failed=1
 import glob

@@ -17,7 +17,8 @@ tag `ko/<version>`. Neither ships koa ("koa").
 
 After the change is on `main`, `scripts/release.sh ko VERSION` (or
 `make release PRODUCT=ko VERSION=x.y.z`) releases ko, and
-`scripts/release.sh koa VERSION` releases koa ("koa"). The script
+`scripts/release.sh koa VERSION` releases koa ("koa") and
+`scripts/release.sh kow VERSION` releases kow ("kow"). The script
 requires HEAD equal to origin/main, a tree without changes in what it
 packs, and green CI for the commit; `--no-ci` skips the CI check,
 only when the user asks for it. `--dry-run` prints the tag, the
@@ -92,6 +93,23 @@ new version."
 
 `brew audit`/`brew style` vendor gems into the Homebrew checkout
 itself. This can leave the checkout dirty.
+
+## kow
+
+kow (docs/kow.md) has its own formula, `Formula/kow.rb` in the same
+tap, and its own versions, tagged `kow/X.Y.Z`. The formula installs
+the one script `kow/kow` from the tarball `kow-X.Y.Z.tar.gz` of the
+GitHub release, depends on Homebrew's Python and OpenTofu, and takes
+rsync and OpenSSH from the system. kow pins the ko and koa releases
+that `install` downloads, each with its SHA-256. `scripts/release.sh
+kow VERSION` first runs `kow/kow --check-pins` with Homebrew's
+`python@3.14`, the formula's interpreter, which refuses when a
+newer ko or koa release exists: run `kow/kow --pin`, commit the
+change through the usual path, then release. So a kow release
+follows the ko and koa releases that it must install, and a Kido.app
+release that needs a new ko on the server is followed by a kow
+release. The script then packs the tarball, tags the commit, creates
+the GitHub release and commits the formula to the tap, as for koa.
 
 ## Kido.app
 

@@ -1,7 +1,0 @@
-Unattended-Upgrade::Origins-Pattern {
-    "origin=Debian,codename=${distro_codename}-security,label=Debian-Security";
-};
-Unattended-Upgrade::Automatic-Reboot "true";
-Unattended-Upgrade::Automatic-Reboot-Time "04:00";
-APT::Periodic::Update-Package-Lists "1";
-APT::Periodic::Unattended-Upgrade "1";

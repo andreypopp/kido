@@ -238,7 +238,8 @@ Debian repository and `supervisor`), is built once by
 `scripts/build-quic-test-image.sh`, the only step that downloads.
 Inside, supervisor runs the repository's static aarch64 ko, mounted
 read-only from `build/ko/share/ko/linux/aarch64`, and Caddy with the
-client authentication of `deploy/` and `protocols h1 h2 h3`; the
+client authentication of kow's Caddyfile (the test cuts it out of
+`kow/kow`) and `protocols h1 h2 h3`; the
 test restarts or stops either one through `container exec
 supervisorctl`. A test-only endpoint (`Endpoint::Fixed`) gives every
 dial, the reconnects included, the container's address with the
@@ -487,26 +488,27 @@ and reader run on it.
 
 ## The deployment
 
-`deploy/` (deploy/README.md) has two test scripts that `make verify`
-does not run. `scripts/checks.sh` gives `deploy/` only the lint-sh
-stage.
+kow (docs/kow.md) has two tests that `make verify` does not run.
+`scripts/checks.sh` gives `kow/` only the lint-sh stage, and lint
+compiles `kow/kow`.
 
-- `deploy/test.sh` tests the pairing scripts against a private folder
-  under `/tmp`, with stubs for `caddy validate` and the Caddy restart.
-  It needs `python3-cryptography`, `qrencode`, `openssl` and `curl`,
-  so it runs in a Debian 13 container (on the Mac, through Apple's
-  `container`; deploy/README.md gives the command) or on the droplet.
-  It builds each request with `deploy/enroll-request.py`, which uses
-  `openssl` and not the code under test. `deploy/testdata/` holds the
-  fixed vector of the signed enrollment message and the payload line
-  of a pairing with the fixed token, which KidoPairing's tests also
-  use.
-- `deploy/smoke.sh HOST` tests a provisioned droplet from the
-  operator's Mac: the TLS refusals, a pairing, a request and a
-  WebSocket, HTTP/3, the revocation, the socket's uids and the open
-  TCP and UDP ports. It needs a curl with HTTP/3; the rehearsal in
-  the Debian guest runs it in the guest from a network namespace
-  (deploy/README.md).
+- `kow --test` tests the pairing scripts of the payload against a
+  private folder under `/tmp`, with stubs for `caddy validate` and the
+  Caddy restart. It needs `python3-cryptography`, `qrencode`,
+  `openssl` and `curl`, so it runs in a Debian 13 container (on the
+  Mac, through Apple's `container`; docs/kow.md gives the command) or
+  on the droplet. It builds each request with the payload's
+  `enroll-request.py`, which uses `openssl` and not the code under
+  test. KidoPairing's fixture
+  (`app/Packages/KidoPairing/Tests/KidoPairingTests/testdata`) holds
+  the fixed vector of the signed enrollment message and the payload
+  line of a pairing with the fixed token, which both tests use.
+- `kow NAME smoke` tests a provisioned droplet from the operator's
+  Mac: the TLS refusals, a pairing, a request and a WebSocket, HTTP/3,
+  the revocation, the socket's uids and the open TCP and UDP ports. It
+  needs a curl with HTTP/3; the rehearsal in the Debian guest runs the
+  payload's `smoke.sh` in the guest from a network namespace
+  (docs/kow.md).
 
 ## Reproducing a CI-only failure
 

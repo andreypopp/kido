@@ -9,11 +9,11 @@ for arg in "$@"; do
   case $arg in
     --dry-run) dry=true ;;
     --no-ci) ci=false ;;
-    ko|koa) [[ -z $product ]] || exit 1; product=$arg ;;
+    ko|koa|kow) [[ -z $product ]] || exit 1; product=$arg ;;
     *) [[ -z $version && $arg != -* ]] || exit 1; version=$arg ;;
   esac
 done
-[[ -n $product && -n $version ]] || { echo 'usage: scripts/release.sh [--dry-run] [--no-ci] ko|koa VERSION' >&2; exit 1; }
+[[ -n $product && -n $version ]] || { echo 'usage: scripts/release.sh [--dry-run] [--no-ci] ko|koa|kow VERSION' >&2; exit 1; }
 [[ $version =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo 'VERSION must be major.minor.patch' >&2; exit 1; }
 action() {
   printf '+'; printf ' %q' "$@"; printf '\n'
@@ -28,7 +28,8 @@ if [[ $(git rev-parse HEAD) != "$sha" ]]; then
   echo "HEAD is not origin/main: the comparison reads this checkout's build" >&2
   $dry || exit 1
 fi
-if { [[ $product == koa ]] && [[ -n $(git status --porcelain -- koa webview) ]]; } ||
+if { [[ $product == kow ]] && [[ -n $(git status --porcelain -- kow scripts/release.sh) ]]; } ||
+   { [[ $product == koa ]] && [[ -n $(git status --porcelain -- koa webview) ]]; } ||
    { [[ $product == ko ]] && [[ -n $(git status --porcelain) ]]; }; then
   echo "$product has uncommitted changes: the tarball and comparison would not match the release tag" >&2
   $dry || exit 1
@@ -50,6 +51,56 @@ if ! $dry; then trap 'rm -rf "$work"' EXIT; fi
 previous=
 if [[ -f $formula ]]; then
   previous=$(python3 -c 'import re,sys; print(re.search(r"version \"([^\"]+)\"",open(sys.argv[1]).read())[1])' "$formula")
+fi
+if [[ $product == kow ]]; then
+  python="$(brew --prefix python@3.14)/bin/python3.14"
+  [[ -x $python ]] || { echo 'kow release requires python@3.14; run brew install python@3.14' >&2; exit 1; }
+  "$python" kow/kow --check-pins
+  if [[ -n $previous ]]; then
+    python3 -c 'import sys; assert tuple(map(int,sys.argv[2].split("."))) > tuple(map(int,sys.argv[1].split("."))), "VERSION must increase"' "$previous" "$version"
+  fi
+  archive="$work/kow-$version.tar.gz"
+  tar -czf "$archive" -C kow kow
+  digest=$(shasum -a 256 "$archive" | awk '{print $1}')
+  action git tag -a "kow/$version" "$sha" -m "kow $version"
+  action git push origin "kow/$version"
+  action gh release create "kow/$version" "$archive" --repo andreypopp/kido --title "kow $version" --notes 'Install with brew install andreypopp/tap/kow.'
+  formula_text=$(cat <<RUBY
+class Kow < Formula
+  include Language::Python::Shebang
+
+  desc "Manage a ko workspace server"
+  homepage "https://github.com/andreypopp/kido"
+  url "https://github.com/andreypopp/kido/releases/download/kow/$version/kow-$version.tar.gz"
+  sha256 "$digest"
+  version "$version"
+  depends_on "python@3.14"
+  depends_on "opentofu"
+
+  def install
+    bin.install "kow"
+    rewrite_shebang detected_python_shebang, bin/"kow"
+  end
+
+  test do
+    system bin/"kow", "--help"
+  end
+end
+RUBY
+)
+  if $dry; then
+    echo "+ write $formula"
+    printf '%s\n' "$formula_text"
+    echo "+ tarball $archive"
+  else
+    printf '%s\n' "$formula_text" > "$formula"
+  fi
+  action git -C "$tap" add Formula/kow.rb
+  action git -C "$tap" commit -m "kow $version"
+  action git -C "$ssh_tap" fetch "$tap" HEAD
+  action git -C "$ssh_tap" merge --ff-only FETCH_HEAD
+  action git -C "$ssh_tap" push origin HEAD
+  exit 0
 fi
 if [[ $product == ko ]]; then
   [[ $(uname -s) == Darwin && $(uname -m) == arm64 ]] || { echo 'ko release requires a Darwin arm64 host' >&2; exit 1; }

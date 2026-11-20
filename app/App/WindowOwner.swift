@@ -717,7 +717,7 @@ private class AlertEscape: NSView {
         case .local: ("", "ko kill-server --server '\(serverDir.replacingOccurrences(of: "'", with: "'\"'\"'"))'")
         case .remote: ("\n\nOn \(host.title(in: identities)), stop the server with the command below, then run ko server. All sessions and panes on that server will end.", "ko kill-server")
         case .tls:
-            newer ? ("", nil) : ("\n\nIn the Kido checkout that deployed \(host.title(in: identities)), checked out at the release of this Kido.app, run the command below. It builds ko there, installs it on \(host.title(in: identities)) and restarts its service. All sessions and panes on that server will end.", "deploy/install.sh")
+            newer ? ("", nil) : ("\n\nUpdate kow to the release of this Kido.app, then run the command below in the folder that holds the workspace of \(host.title(in: identities)). It installs ko on \(host.title(in: identities)) and restarts its service. All sessions and panes on that server will end.", "kow NAME install")
         }
         let protocols = "This app speaks ko protocol \(own.`protocol`). The server speaks \(server.`protocol`)."
         let revisions = "This app runs terminal revision \(own.vt.prefix(9)); the server runs \(server.vt.prefix(9))."

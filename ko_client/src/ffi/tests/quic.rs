@@ -130,7 +130,13 @@ impl Container {
         let devices = container.dir.join("devices");
         std::fs::create_dir(&devices).unwrap();
         std::fs::write(devices.join("paired.pem"), pem(&certs.client.der)).unwrap();
-        let template = include_str!("../../../../deploy/files/Caddyfile");
+        let template = include_str!("../../../../kow/kow")
+            .split("FILES_CADDYFILE = r'''")
+            .nth(1)
+            .unwrap()
+            .split("'''")
+            .next()
+            .unwrap();
         let global = template.split("@ENROLL@").next().unwrap();
         let host = template.split("@HOST@").nth(1).unwrap();
         let config = format!("{global}localhost{host}").replace(

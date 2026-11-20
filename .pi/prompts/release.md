@@ -1,7 +1,7 @@
 ---
-description: Release Kido.app, ko and koa, Kido.app first
+description: Release Kido.app, ko, koa and kow, Kido.app first
 ---
-Release ko, and Kido.app and koa with it when they changed. $ARGUMENTS can name the commit to
+Release ko, and Kido.app, koa and kow with it when they changed. $ARGUMENTS can name the commit to
 release. If it does not, release origin/main. The user approved the release
 when they typed this command. Each step needs the result of the step before
 it.
@@ -30,6 +30,12 @@ it.
      `webview/ko-api.d.ts` differs between that tag and the commit, and
      the notes say to upgrade ko and koa together. Its version: a patch,
      unless a tool is removed or renamed; then a minor bump.
+   - kow: the tap formula `homebrew-tap/Formula/kow.rb` and the tag
+     `kow/<version>` mark it. kow releases when `git log
+     kow/<version>..<commit> -- kow` is not empty, when there is no
+     kow formula yet, or when ko or koa releases now: kow pins the ko
+     and koa releases that it installs. Its version: a patch, unless a
+     subcommand is removed or renamed; then a minor bump.
 3. When Kido.app must release first, send @kido-app (message_agent) the commit, the
    changes since the last release, and whether the schemas or the pin
    changed. Ask it to run its checks on that commit of main (make test, the
@@ -52,6 +58,12 @@ it.
      koa VERSION`. It tags `koa/VERSION`, uploads the tarball and
      writes `Formula/koa.rb`. A koa release needs no ko or Kido.app
      release.
+   - When kow releases, after the ko and koa releases: run `kow/kow
+     --pin`, commit the changed pins ("kow pins ko X and koa Y"), push
+     to main and wait for green CI. Then `scripts/release.sh --dry-run
+     kow VERSION` and `scripts/release.sh kow VERSION` at that commit.
+     It tags `kow/VERSION`, uploads the tarball and writes
+     `Formula/kow.rb`.
    - Do not run `brew upgrade`.
 5. Tell @kido-app the ko version and tap commit when it released.
    Tell the user:
@@ -59,6 +71,9 @@ it.
    - to run `brew upgrade ko` and update Kido.app
    - after a koa release, to run `brew upgrade koa` (`brew install
      andreypopp/tap/koa` the first time) and `/reload` in a koa pane
+   - after a kow release, to run `brew upgrade kow` (`brew install
+     andreypopp/tap/kow` the first time) and `kow NAME install` for
+     each remote server
    - to restart the koa agents after a koa release that removes tools
      (/reload is not sufficient then)
    - to restart the ko server (`ko kill-server`, then `ko`) when the

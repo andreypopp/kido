@@ -423,7 +423,7 @@ the probe) only connect to `<dir>/socket`.
 
 **TLS servers.** A window can also reach a ko server behind Caddy over
 HTTPS with mutual TLS (`Host.tls`, a validated DNS name, `ServerName` in
-KidoPairing; the deployment is `deploy/README.md`). Its
+KidoPairing; the deployment is docs/kow.md). Its
 validation is the core's `HostName` rule, so the two sides refuse the same
 names. There is no SSH layer: the owner loads the server's identity off
 main, probes within 20 s through a TLS endpoint, and dials the same
@@ -438,8 +438,8 @@ Reconnect, which uses the new identity) and Close (the window closes);
 the server-certificate sheet
 has only Close, because a reconnect fails in the same way. A mismatch
 opens the remote sheet; when the app is the older side, it asks only for
-an app update, else its host step names `deploy/install.sh` in the
-checkout that deployed the host, not `ko kill-server`. A file drop uploads through ko's drop route, as in
+an app update, else its host step names `kow NAME install`, run with
+the kow of the app's release, not `ko kill-server`. A file drop uploads through ko's drop route, as in
 every other window ("Uploads").
 
 **KidoPairing** (`app/Packages/KidoPairing`) is the code of the TLS
@@ -487,7 +487,7 @@ rows show the DNS host after the kind word, and the server-certificate
 sheet names only the DNS host, because the certificate is the DNS
 name's. A host with no stored identity shows its DNS name.
 The session makes a new key and certificate (the profile of
-`deploy/ko-pair`'s checks), signs the enrollment message, and sends one
+`ko-pair`'s checks, in kow's payload), signs the enrollment message, and sends one
 POST through an ephemeral `URLSession` with the system's trust, a
 streamed body that is never sent twice, and no redirect. The result
 decides what happens to the token and the key:
@@ -3345,12 +3345,11 @@ lock. Commit the lock with that change. The graph includes
 identity store.
 
 KidoPairing's tests (`swift test` in the package, a step of `make
-test`) read `deploy/testdata` (a token, a device certificate and its
+test`) read `Tests/KidoPairingTests/testdata` (a token, a device certificate and its
 software key, the bytes of the enrollment message, and the payload line
-of a pairing with that token) as a resource, through the symlink
-`Tests/KidoPairingTests/testdata`: `IdentityTests` decodes the payload
+of a pairing with that token) as a resource: `IdentityTests` decodes the payload
 and compares the message, and `PairingTests` signs requests with the
-key. `deploy/test.sh` checks the same message and the same payload
+key. `kow --test` checks the same message and the same payload
 line against the real `ko-pair`, so the apps and the server cannot
 agree on a wrong formula or shape. The enclave works for the package's
 test process as for the hosted bundles. The software key exists only in that fixture; the app makes

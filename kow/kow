@@ -1,0 +1,3440 @@
+#!/usr/bin/env python3
+import argparse
+import hashlib
+import io
+import json
+import os
+from pathlib import Path
+import re
+import shlex
+import shutil
+import subprocess
+import sys
+import tarfile
+import tempfile
+import urllib.request
+
+if sys.version_info < (3, 12):
+    sys.exit('kow requires Python 3.12 or later; install kow with Homebrew or run it with a newer Python')
+
+ENROLL_REQUEST_PY = r'''#!/usr/bin/env python3
+import base64
+import json
+from pathlib import Path
+import subprocess
+import sys
+import tempfile
+
+
+def run(*args, **kwargs):
+    return subprocess.run(args, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=10, **kwargs).stdout
+
+
+token = sys.stdin.read().strip()
+cert, key, name, *message_output = sys.argv[1:]
+with tempfile.TemporaryDirectory(prefix="ko-enroll-", dir="/tmp") as temporary:
+    root = Path(temporary)
+    (root / "token").write_bytes(base64.urlsafe_b64decode(token + "="))
+    der = run("openssl", "x509", "-in", cert, "-outform", "DER")
+    (root / "der").write_bytes(der)
+    message = run("bash", "-c", '{ printf "kido-enroll-v1\\000"; openssl dgst -sha256 -binary "$1/token"; openssl dgst -sha256 -binary "$1/der"; }', "bash", str(root))
+    (root / "message").write_bytes(message)
+    if message_output:
+        Path(message_output[0]).write_bytes(message)
+    signature = run("openssl", "dgst", "-sha256", "-sign", key, str(root / "message"))
+    print(json.dumps({"token": token, "name": name, "certificate": base64.b64encode(der).decode(), "signature": base64.b64encode(signature).decode()}))
+'''
+
+FILES_CADDYFILE = r'''{
+	admin unix//run/caddy/admin.sock|0600
+	auto_https disable_redirects
+	servers {
+		protocols h1 h2 h3
+	}
+	grace_period 3s
+}
+@ENROLL@ {
+	@enroll {
+		method POST
+		path /v1/enroll
+	}
+	request_body {
+		max_size 16KB
+	}
+	handle @enroll {
+		reverse_proxy 127.0.0.1:@PAIR_PORT@
+	}
+	handle {
+		respond 404
+	}
+}
+@HOST@ {
+	tls {
+		client_auth {
+			mode require
+			verifier leaf {
+				folder /var/lib/ko-devices
+			}
+		}
+	}
+	reverse_proxy unix//var/lib/ko/socket {
+		flush_interval -1
+	}
+}
+import /etc/caddy/sites.d/*.caddy
+'''
+
+FILES_CADDY_APPARMOR = r'''#include <tunables/global>
+profile caddy /usr/bin/caddy flags=(complain) {
+  #include <abstractions/base>
+  #include <abstractions/nameservice>
+  #include <abstractions/ssl_certs>
+  capability net_bind_service,
+  network inet stream,
+  network inet dgram,
+  network inet6 stream,
+  network inet6 dgram,
+  network netlink raw,
+  network unix stream,
+  /usr/bin/caddy mr,
+  /etc/caddy/** r,
+  /var/lib/caddy/ rw,
+  /var/lib/caddy/** rwk,
+  /var/log/caddy/ rw,
+  /var/log/caddy/** rw,
+  /run/caddy/ rw,
+  /run/caddy/** rw,
+  /var/lib/ko-devices/ r,
+  /var/lib/ko-devices/*.pem r,
+  /var/lib/ko/socket rw,
+  /sys/kernel/mm/transparent_hugepage/hpage_pmd_size r,
+  /etc/machine-id r,
+  /sys/devices/virtual/dmi/id/product_uuid r,
+  @{PROC}/@{pid}/{cgroup,cpuset,mountinfo} r,
+  @{PROC}/sys/net/core/somaxconn r,
+  /sys/fs/cgroup/{,**/}{memory,cpu}.max r,
+  /etc/mime.types r,
+}
+'''
+
+FILES_CADDY_CONF = r'''[Service]
+RuntimeDirectory=caddy
+RuntimeDirectoryMode=0700
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+NoNewPrivileges=true
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+SystemCallFilter=@system-service
+ReadWritePaths=/var/lib/caddy /var/log/caddy /run/caddy
+SupplementaryGroups=ko-socket
+AppArmorProfile=caddy
+'''
+
+FILES_KO_TMPFILES_CONF = r'''d /var/lib/ko 2710 me ko-socket -
+'''
+
+FILES_KO_SERVICE = r'''[Unit]
+Description=ko server
+After=network.target systemd-tmpfiles-setup.service
+
+[Service]
+User=me
+Environment=KO_STATE_DIR=/var/lib/ko
+Environment=PATH=/home/me/.local/bin:/opt/ko/bin:/opt/koa/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/opt/ko/bin/ko server --allow-uid @CADDY_UID@
+Restart=always
+RestartSec=1
+
+[Install]
+WantedBy=multi-user.target
+'''
+
+FILES_NFTABLES_CONF = r'''#!/usr/sbin/nft -f
+flush ruleset
+table inet filter {
+	set ssh4 {
+		type ipv4_addr
+		flags interval
+		elements = { @SSH4@ }
+	}
+	set ssh6 {
+		type ipv6_addr
+		flags interval
+		elements = { @SSH6@ }
+	}
+	chain input {
+		type filter hook input priority 0; policy drop;
+		iifname lo accept
+		ct state established,related accept
+		ct state invalid drop
+		ip protocol icmp icmp type { destination-unreachable, time-exceeded, parameter-problem } accept
+		meta l4proto ipv6-icmp icmpv6 type { destination-unreachable, packet-too-big, time-exceeded, parameter-problem, nd-router-advert, nd-neighbor-solicit, nd-neighbor-advert } accept
+		ip saddr @ssh4 tcp dport 22 accept
+		ip6 saddr @ssh6 tcp dport 22 accept
+		tcp dport 443 accept
+		udp dport 443 accept
+	}
+	chain forward {
+		type filter hook forward priority 0; policy drop;
+	}
+	chain output {
+		type filter hook output priority 0; policy accept;
+	}
+}
+'''
+
+FILES_NODESOURCE_ASC = r'''-----BEGIN PGP PUBLIC KEY BLOCK-----
+
+mQENBFdDN1ABCADaNd/I3j3tn40deQNgz7hB2NvT+syXe6k4ZmdiEcOfBvFrkS8B
+hNS67t93etHsxEy7E0qwsZH32bKazMqe9zDwoa3aVImryjh6SHC9lMtW27JPHFeM
+Srkt9YmH1WMwWcRO6eSY9B3PpazquhnvbammLuUojXRIxkDroy6Fw4UKmUNSRr32
+9Ej87jRoR1B2/57Kfp2Y4+vFGGzSvh3AFQpBHq51qsNHALU6+8PjLfIt+5TPvaWR
+TB+kAZnQZkaIQM2nr1n3oj6ak2RATY/+kjLizgFWzgEfbCrbsyq68UoY5FPBnu4Z
+E3iDZpaIqwKr0seUC7iA1xM5eHi5kty1oB7HABEBAAG0Ik5Tb2xpZCA8bnNvbGlk
+LWdwZ0Bub2Rlc291cmNlLmNvbT6JAU4EEwEKADgCGwMCHgECF4AWIQRvcfUlKChB
+7tr4UbQvWbX5mxvgtAUCaWfGnwULCQgHAgYVCgkICwIEFgIDAQAKCRAvWbX5mxvg
+tL0CB/0TTur63uXTPbq+JBQET6jnEVaDrNmpHI/z2RMuj163gmy9CtCwG060c+TI
+qzmzlPacbTkGc5C50teX2mhs+5JIthfhMibR6Dgy0zeSVuvt9WJ3TNWBpoW5Ezka
+17SA3Xv9UEJS2eyRd7ALf7TGGAj8DG+xRABXl6bJIXh1s7Hki7kwgVrpNxm/EqyX
+OrzExm0g2UjgdkbnZrnTyZMB6X8f8fZPo0QcByPvLee2DtkKeE+SZlFXyvnCzcw0
+94K45vlWkEdRzmiiWAG7guzZyZYGcCO5EoJ3LUP90qhrmQUfsbtczeoEW17EW1jM
+RohLo8BqVyYc1CAFlULIDNeS3aipuQENBFdDN1ABCACq02gutmss6jiD2u50vdAR
+x3JOGd92trWRf7qH9/MTToslhoU/LiXhaE0x5+UkKuRbcruCtytn226brvwD0BdO
+QGpY81ZAxjTFuKUpIDmrHcrI/N9XLrLKx19kWEttsIPNJOgvx8JoeReOX2hLjcbF
+fmz8e6D1K7eZ+hjMfOLxD94tfhQwYtKbfwf0JwxQV5ItQRryd+X+TcA3nyvFWiJ8
+Vz92Tf1iG7Z+XasaaZFf2JDuxoiZaSZY7va395ClCEMykFsRbGwgDyB6Fr+6x/UU
+sYA4rYV7RumIOUdWngWyWjzVy/cKSWASW4jI5ABWs+AfeRTqmZt6+6B7oIghrB19
+ABEBAAGJAR8EGAECAAkFAldDN1ACGwwACgkQL1m1+Zsb4LRPzgf9FTfPA0d2N37q
+su5av3bYZJ+w6pvWF3aK2Zdy9ednhCBfPNmhvBRN6mXWixo0DuKEoQMjVpkX0hrq
+B9FxEVwCPZ9K/JuJgzMROq7T+7R3rcv+TPMdwk8rjIMeRiw2hFLwbrJ0w/v7/3wT
+MESv3GfXbuT0huEedK7bLfqGMgtmqMeCNkoI7Rf3GO2xArGQ6Zc2rTd4L9+D5HHS
+IPEixwFZS+Debc7pg3os0bKXEsqMtitvocClOAuPnXpCy04PK450UTr6ZVdirWhJ
+Oq8SrSERQwqEJ4PMHybiDKwzSr6mcBURre3G71uTAp7h/DISLTpfVMadcB6eoLWr
+/4fBqejAWg==
+=wh5k
+-----END PGP PUBLIC KEY BLOCK-----
+'''
+
+FILES_PI_SETTINGS_JSON = r'''{
+  "packages": [
+    "git:github.com/andreypopp/pi-observational-memory@1529e144575da19ce6f877eeec42199a04925983",
+    "npm:@andreypopp/pi-infer-questions@0.1.5",
+    "npm:pi-claude-bridge@0.13.0"
+  ]
+}
+'''
+
+FILES_RESOLVED_CONF = r'''[Resolve]
+LLMNR=no
+MulticastDNS=no
+'''
+
+FILES_SSHD_CONF = r'''PasswordAuthentication no
+KbdInteractiveAuthentication no
+PermitRootLogin no
+PubkeyAuthentication yes
+AllowUsers me
+HostKey /etc/ssh/ssh_host_ed25519_key
+X11Forwarding no
+'''
+
+FILES_SYSCTL_CONF = r'''net.core.rmem_max = 7500000
+net.core.wmem_max = 7500000
+'''
+
+FILES_UNATTENDED_UPGRADES = r'''Unattended-Upgrade::Origins-Pattern {
+    "origin=Debian,codename=${distro_codename}-security,label=Debian-Security";
+};
+Unattended-Upgrade::Automatic-Reboot "true";
+Unattended-Upgrade::Automatic-Reboot-Time "04:00";
+APT::Periodic::Update-Package-Lists "1";
+APT::Periodic::Unattended-Upgrade "1";
+'''
+
+KO_DEVICES = r'''#!/usr/bin/python3
+import argparse
+import base64
+import binascii
+import fcntl
+import hashlib
+import hmac
+import http.server
+import json
+import os
+from pathlib import Path
+import re
+import secrets
+import signal
+import socket
+import subprocess
+import sys
+import tempfile
+import time
+from contextlib import contextmanager
+
+from cryptography import x509
+from cryptography.exceptions import InvalidSignature
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import ec
+from cryptography.x509.oid import ExtendedKeyUsageOID, SignatureAlgorithmOID
+
+DIRECTORY = Path(os.environ.get("KO_DEVICES_DIR", "/var/lib/ko-devices"))
+
+
+@contextmanager
+def locked():
+    fd = os.open(DIRECTORY, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield fd
+    finally:
+        os.close(fd)
+
+
+def atomic(name, data):
+    fd, temporary = tempfile.mkstemp(prefix=".device-", dir=DIRECTORY)
+    try:
+        with os.fdopen(fd, "wb") as stream:
+            os.fchmod(stream.fileno(), 0o640)
+            os.fchown(stream.fileno(), DIRECTORY.stat().st_uid, DIRECTORY.stat().st_gid)
+            stream.write(data)
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, DIRECTORY / name)
+    finally:
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+
+
+def restart():
+    override = os.environ.get("KO_PAIR_RESTART")
+    if override is not None:
+        subprocess.run(override, shell=True, check=True, timeout=10)
+        return
+    subprocess.run(["systemctl", "restart", "caddy"], check=True, timeout=10)
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        active = subprocess.run(["systemctl", "is-active", "--quiet", "caddy"], timeout=1).returncode == 0
+        if active:
+            try:
+                with socket.create_connection(("127.0.0.1", 443), timeout=0.2):
+                    return
+            except OSError:
+                pass
+        time.sleep(0.1)
+    raise RuntimeError("Caddy did not become ready within 10 seconds; device files stay as written")
+
+
+def decode(value, limit):
+    if not isinstance(value, str) or len(value) > limit * 2:
+        raise ValueError("invalid encoding")
+    result = base64.b64decode(value, validate=True)
+    if len(result) > limit:
+        raise ValueError("value too large")
+    return result
+
+
+def certificate(der):
+    cert = x509.load_der_x509_certificate(der)
+    if cert.public_bytes(serialization.Encoding.DER) != der:
+        raise ValueError("not one DER certificate")
+    key = cert.public_key()
+    if not isinstance(key, ec.EllipticCurvePublicKey) or not isinstance(key.curve, ec.SECP256R1):
+        raise ValueError("not P-256")
+    if cert.issuer != cert.subject or cert.signature_algorithm_oid != SignatureAlgorithmOID.ECDSA_WITH_SHA256:
+        raise ValueError("not self-signed with SHA-256")
+    key.verify(cert.signature, cert.tbs_certificate_bytes, ec.ECDSA(hashes.SHA256()))
+    if cert.extensions.get_extension_for_class(x509.BasicConstraints).value.ca:
+        raise ValueError("CA certificate")
+    if ExtendedKeyUsageOID.CLIENT_AUTH not in cert.extensions.get_extension_for_class(x509.ExtendedKeyUsage).value:
+        raise ValueError("no clientAuth")
+    return cert, key
+
+
+def valid_name(name):
+    return isinstance(name, str) and 1 <= len(name) <= 64 and not any(ord(c) < 32 or 127 <= ord(c) <= 159 for c in name)
+
+
+def pair(host, port, name):
+    seconds = float(os.environ.get("KO_PAIR_SECONDS", "120"))
+    if not 0 < seconds <= 120:
+        raise ValueError("KO_PAIR_SECONDS must be greater than zero and at most 120")
+    token = secrets.token_bytes(32)
+    token_hash = hashlib.sha256(token).digest()
+    payload = {"v": 1, "enroll": f"https://enroll.{host}/v1/enroll", "host": host, "name": name,
+               "token": base64.urlsafe_b64encode(token).decode().rstrip("=")}
+    text = "kido-pair: " + json.dumps(payload, separators=(",", ":"))
+    deadline = time.monotonic() + seconds
+    done = False
+    paired = None
+    wrong = 0
+    requests = 0
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def setup(self):
+            super().setup()
+            limit = min(5, max(0.001, deadline - time.monotonic()))
+            self.connection.settimeout(limit)
+            signal.setitimer(signal.ITIMER_REAL, limit)
+
+        def finish(self):
+            signal.setitimer(signal.ITIMER_REAL, 0)
+            super().finish()
+
+        def log_message(self, *_):
+            pass
+
+        def handle_one_request(self):
+            nonlocal requests, done
+            requests += 1
+            self.result, self.fingerprint = 400, "-"
+            try:
+                super().handle_one_request()
+            finally:
+                done = done or requests >= 30
+                headers = getattr(self, "headers", {})
+                forwarded = json.dumps(headers.get("X-Forwarded-For", "-"), ensure_ascii=True)
+                print(f"result={self.result} fingerprint={self.fingerprint} forwarded={forwarded}", file=sys.stderr, flush=True)
+
+        def __getattr__(self, name):
+            if name.startswith("do_"):
+                return self.do_POST
+            raise AttributeError(name)
+
+        def do_POST(self):
+            nonlocal done, paired, wrong
+            status, fingerprint = 400, "-"
+            try:
+                if time.monotonic() >= deadline:
+                    status = 403
+                    done = True
+                elif requests >= 30:
+                    status = 429
+                    done = True
+                elif self.command != "POST" or self.path != "/v1/enroll":
+                    status = 400
+                else:
+                    lengths = self.headers.get_all("Content-Length", [])
+                    if len(lengths) != 1 or not re.fullmatch(r"[0-9]{1,8}", lengths[0]) or self.headers.get("Transfer-Encoding"):
+                        raise ValueError("invalid length")
+                    length = int(lengths[0])
+                    if not 0 < length <= 8192:
+                        raise ValueError("body too large")
+                    body = self.rfile.read(length)
+                    if len(body) != length:
+                        raise ValueError("short body")
+                    data = json.loads(body)
+                    if not isinstance(data, dict) or set(data) != {"token", "name", "certificate", "signature"}:
+                        raise ValueError("invalid shape")
+                    name = data["name"]
+                    if not valid_name(name):
+                        raise ValueError("invalid name")
+                    supplied = data["token"]
+                    if not isinstance(supplied, str) or not re.fullmatch(r"[A-Za-z0-9_-]{43}", supplied):
+                        raise ValueError("invalid token encoding")
+                    if not isinstance(data["certificate"], str) or not isinstance(data["signature"], str):
+                        raise ValueError("invalid shape")
+                    raw_token = base64.urlsafe_b64decode(supplied + "=")
+                    if not hmac.compare_digest(hashlib.sha256(raw_token).digest(), token_hash):
+                        wrong += 1
+                        status = 403
+                        done = wrong >= 5
+                    else:
+                        done = True
+                        signal.setitimer(signal.ITIMER_REAL, 0)
+                        der = decode(data["certificate"], 2048)
+                        cert, key = certificate(der)
+                        fingerprint = hashlib.sha256(der).hexdigest()
+                        signature = decode(data["signature"], 128)
+                        key.verify(signature, b"kido-enroll-v1\x00" + token_hash + hashlib.sha256(der).digest(), ec.ECDSA(hashes.SHA256()))
+                        with locked() as fd:
+                            pem = DIRECTORY / (fingerprint + ".pem")
+                            if pem.exists():
+                                raise ValueError("device already exists")
+                            try:
+                                atomic(fingerprint + ".json", json.dumps({"name": name, "enrolled": int(time.time())}).encode())
+                                atomic(fingerprint + ".pem", cert.public_bytes(serialization.Encoding.PEM))
+                                os.fsync(fd)
+                                result = subprocess.run(["caddy", "validate", "--config", "/etc/caddy/Caddyfile"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10)
+                                if result.returncode:
+                                    raise ValueError("Caddy validation failed")
+                            except (OSError, ValueError, subprocess.SubprocessError):
+                                pem.unlink(missing_ok=True)
+                                (DIRECTORY / (fingerprint + ".json")).unlink(missing_ok=True)
+                                os.fsync(fd)
+                                raise
+                        paired = (name, fingerprint)
+                        status = 200
+            except (ValueError, TypeError, KeyError, RecursionError, InvalidSignature, x509.ExtensionNotFound, binascii.Error, OSError, subprocess.SubprocessError):
+                status = 400
+            signal.setitimer(signal.ITIMER_REAL, 0)
+            answer = json.dumps({"fingerprint": fingerprint} if status == 200 else {}).encode()
+            try:
+                self.send_response(status)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(answer)))
+                self.send_header("Connection", "close")
+                self.end_headers()
+                self.wfile.write(answer)
+                self.wfile.flush()
+            except OSError:
+                pass
+            self.result, self.fingerprint = status, fingerprint
+
+    def timed_out(*_):
+        raise TimeoutError("request deadline")
+
+    signal.signal(signal.SIGALRM, timed_out)
+    with http.server.HTTPServer(("127.0.0.1", port), Handler) as server:
+        print(text, flush=True)
+        subprocess.run(["qrencode", "-t", "ansiutf8"], input=text.encode(), check=True, timeout=seconds)
+        del token, payload, text
+        while not done and time.monotonic() < deadline:
+            server.timeout = min(0.2, max(0.001, deadline - time.monotonic()))
+            server.handle_request()
+    if paired:
+        try:
+            restart()
+        except (OSError, RuntimeError, subprocess.SubprocessError) as error:
+            raise RuntimeError(f"Caddy activation failed; device {paired[1]} stays installed: {error}") from error
+        print(f"paired {paired[0]} {paired[1]}", flush=True)
+        return 0
+    print("no device paired", file=sys.stderr)
+    return 1
+
+
+def main():
+    if os.geteuid() != 0:
+        raise ValueError("run as root")
+    command = Path(sys.argv[0]).name
+    if command == "ko-pair":
+        parser = argparse.ArgumentParser(prog=command)
+        parser.add_argument("--name", default=socket.gethostname())
+        parser.add_argument("server", nargs="*", metavar="HOST PORT")
+        args = parser.parse_args()
+        if not valid_name(args.name):
+            parser.error("use a name of 1 to 64 characters, without control characters")
+        if len(args.server) not in (0, 2):
+            parser.error("use HOST PORT, or no server arguments")
+        if not args.server:
+            settings = json.loads(Path("/etc/ko-pair.json").read_text())
+            host, port = settings["host"], settings["port"]
+        else:
+            host, port = args.server[0], int(args.server[1])
+        if not isinstance(port, int) or not 1 <= port <= 65535:
+            raise ValueError("invalid port")
+        if len("enroll." + host) > 253 or not re.fullmatch(r"[a-z0-9][a-z0-9.-]*[a-z0-9]", host):
+            raise ValueError("invalid host name")
+        return pair(host, port, args.name)
+    if command == "ko-revoke" and len(sys.argv) == 2:
+        prefix = sys.argv[1]
+        if not re.fullmatch(r"[0-9a-f]{8,64}", prefix):
+            raise ValueError("use a lowercase fingerprint or at least 8 hex digits")
+        with locked() as fd:
+            matches = list(DIRECTORY.glob(prefix + "*.pem"))
+            if len(matches) != 1:
+                raise ValueError("fingerprint is absent or ambiguous")
+            pem = matches[0]
+            pem.unlink()
+            pem.with_suffix(".json").unlink(missing_ok=True)
+            os.fsync(fd)
+            try:
+                restart()
+            except (OSError, RuntimeError, subprocess.SubprocessError) as error:
+                raise RuntimeError(f"Caddy activation failed; device {pem.stem} stays removed: {error}") from error
+        print(f"revoked {pem.stem}")
+        return 0
+    if command == "ko-devices" and len(sys.argv) == 1:
+        with locked():
+            for pem in sorted(DIRECTORY.glob("*.pem")):
+                data = json.loads(pem.with_suffix(".json").read_text())
+                print(f"{data['name']}\t{pem.stem}\t{data['enrolled']}")
+        return 0
+    raise ValueError("usage: ko-pair [--name NAME] [HOST PORT] | ko-revoke FP | ko-devices")
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except (ValueError, OSError, RuntimeError, subprocess.SubprocessError) as error:
+        print(f"{Path(sys.argv[0]).name}: {error}", file=sys.stderr)
+        sys.exit(1)
+'''
+
+ME_SH = r'''#!/bin/bash
+set -euo pipefail
+base=$(cd -- "$(dirname -- "$0")" && pwd)
+tools=$HOME/.local/share/ko-tools
+mkdir -p "$tools" "$HOME/.local/bin"
+if ! cmp -s "$base/tools/package-lock.json" "$tools/installed-lock.json"; then
+    rm -f "$tools/installed-lock.json"
+    cp "$base/tools/package.json" "$base/tools/package-lock.json" "$tools/"
+    npm ci --prefix "$tools" --no-audit --no-fund
+    "$tools/node_modules/.bin/claude" --version
+    "$tools/node_modules/.bin/pi" --version
+    cp "$tools/package-lock.json" "$tools/installed-lock.json"
+fi
+ln -sfn "$tools/node_modules/.bin/pi" "$HOME/.local/bin/pi"
+ln -sfn "$tools/node_modules/.bin/claude" "$HOME/.local/bin/claude"
+ln -sfn /usr/bin/fdfind "$HOME/.local/bin/fd"
+if [[ ! -e $HOME/.pi/agent/settings.json ]]; then
+    install -D -m 0644 "$base/files/pi-settings.json" "$HOME/.pi/agent/settings.json"
+fi
+'''
+
+PROVISION_SH = r'''#!/bin/bash
+set -euo pipefail
+certificate=()
+if [[ ${1:-} == --tls-cert ]]; then
+    [[ $# -ge 3 ]] || { echo '--tls-cert needs a certificate and key' >&2; exit 1; }
+    certificate=("$2" "$3")
+    shift 3
+fi
+[[ $EUID == 0 && $# -ge 2 ]] || { echo 'usage: sudo provision.sh [--tls-cert CERT KEY] KO_HOST SSH_CIDR...' >&2; exit 1; }
+base=$(cd -- "$(dirname -- "$0")" && pwd)
+work=$(mktemp -d)
+trap 'rm -rf "$work"' EXIT
+pair_port=8791
+ko_changed=false
+caddy_changed=false
+nftables_changed=false
+ssh_changed=false
+resolved_changed=false
+install_changed() {
+    local source=$1 target=$2 service=$3 mode=${4:-0644} temporary
+    if ! cmp -s "$source" "$target"; then
+        temporary=$(mktemp "$(dirname -- "$target")/.ko-install-XXXXXX")
+        install -o root -g root -m "$mode" "$source" "$temporary"
+        mv -f "$temporary" "$target"
+        printf -v "${service}_changed" true
+    fi
+}
+python3 - "$base/files" "$work" "$pair_port" "${certificate[0]:-}" "$@" <<'PY'
+import ipaddress
+from pathlib import Path
+import re
+import sys
+source, target, port, certificate, host, *cidrs = sys.argv[1:]
+enroll = "enroll." + host
+for name in (host, enroll):
+    if len(name) > 253 or not all(re.fullmatch(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?", label) for label in name.split(".")):
+        raise SystemExit("invalid DNS name")
+networks = [ipaddress.ip_network(cidr, strict=False) for cidr in cidrs]
+values = {"@HOST@": host, "@ENROLL@": enroll, "@PAIR_PORT@": port,
+          "@SSH4@": ", ".join(str(n) for n in networks if n.version == 4),
+          "@SSH6@": ", ".join(str(n) for n in networks if n.version == 6)}
+for name in ("Caddyfile", "nftables.conf"):
+    text = (Path(source) / name).read_text()
+    for key, value in values.items():
+        text = text.replace(key, value)
+    if name == "Caddyfile" and certificate:
+        tls = "tls /etc/caddy/ko-server.crt /etc/caddy/ko-server.key"
+        text = text.replace(enroll + " {", enroll + " {\n\t" + tls, 1).replace("\ttls {", "\t" + tls + " {", 1)
+    text = re.sub(r"^\s*elements = \{  \}\n", "", text, flags=re.MULTILINE)
+    (Path(target) / name).write_text(text)
+PY
+export DEBIAN_FRONTEND=noninteractive
+if [[ ! -s /etc/apt/sources.list.d/caddy-stable.list || ! -s /usr/share/keyrings/caddy-stable-archive-keyring.asc ]]; then
+    python3 - <<'PY'
+from pathlib import Path
+import urllib.request
+key = "/usr/share/keyrings/caddy-stable-archive-keyring.asc"
+with urllib.request.urlopen("https://dl.cloudsmith.io/public/caddy/stable/gpg.key", timeout=30) as response:
+    Path(key).write_bytes(response.read())
+with urllib.request.urlopen("https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt", timeout=30) as response:
+    repo = response.read().decode().replace("/usr/share/keyrings/caddy-stable-archive-keyring.gpg", key)
+Path("/etc/apt/sources.list.d/caddy-stable.list").write_text(repo)
+PY
+fi
+install -m 0644 "$base/files/nodesource.asc" /usr/share/keyrings/nodesource.asc
+printf 'deb [signed-by=/usr/share/keyrings/nodesource.asc] https://deb.nodesource.com/node_24.x nodistro main\n' > /etc/apt/sources.list.d/nodesource.list
+old_caddy=$(dpkg-query -W -f='${Version}' caddy 2>/dev/null || true)
+apt-get update
+apt-get install -y ca-certificates curl caddy nftables unattended-upgrades apparmor-utils python3-cryptography qrencode openssh-server sudo nodejs git fd-find
+[[ $old_caddy == "$(dpkg-query -W -f='${Version}' caddy)" ]] || caddy_changed=true
+version=$(caddy version | awk '{print $1}')
+dpkg --compare-versions "${version#v}" ge 2.11.4 || { echo 'Caddy 2.11.4 or later is required' >&2; exit 1; }
+id me >/dev/null
+[[ -s /home/me/.ssh/authorized_keys ]] || { echo 'cloud-init must install the SSH key for me first' >&2; exit 1; }
+usermod --shell /bin/bash me
+printf 'me ALL=(ALL) NOPASSWD:ALL\n' > /etc/sudoers.d/90-ko-me
+chmod 0440 /etc/sudoers.d/90-ko-me
+visudo -cf /etc/sudoers.d/90-ko-me
+passwd -l root
+getent group ko-socket >/dev/null || groupadd --system ko-socket
+if ! id -nG caddy | tr ' ' '\n' | grep -qx ko-socket; then
+    usermod -a -G ko-socket caddy
+    caddy_changed=true
+fi
+install -d -o root -g caddy -m 0750 /var/lib/ko-devices
+install -d -o caddy -g caddy -m 0750 /var/log/caddy
+[[ -d /etc/caddy/sites.d ]] || install -d -o root -g root -m 0755 /etc/caddy/sites.d
+install -d /opt/ko/bin /opt/ko/share /etc/systemd/system/caddy.service.d
+[[ -x $base/../linux/bin/ko && -x $base/../linux/bin/ko-pane ]] || { echo 'copy the Linux build beside deploy as linux/ first' >&2; exit 1; }
+[[ -x $base/../koa/bin/koa ]] || { echo 'copy build/koa beside deploy as koa/ first' >&2; exit 1; }
+for binary in ko ko-pane; do
+    install_changed "$base/../linux/bin/$binary" "/opt/ko/bin/$binary" ko 0755
+done
+if ! diff -qr "$base/../linux/share" /opt/ko/share >/dev/null; then
+    share=$(mktemp -d /opt/ko/.share-XXXXXX)
+    cp -a "$base/../linux/share/." "$share/"
+    chown -R root:root "$share"
+    mv /opt/ko/share "$share.old"
+    mv "$share" /opt/ko/share
+    rm -rf "$share.old"
+    ko_changed=true
+fi
+if [[ ! -d /opt/koa ]] || ! diff -qr "$base/../koa" /opt/koa >/dev/null; then
+    koa=$(mktemp -d /opt/.koa-XXXXXX)
+    cp -a "$base/../koa/." "$koa/"
+    chown -R root:root "$koa"
+    find "$koa" -type d -exec chmod 0755 {} +
+    chmod -R a+rX "$koa"
+    [[ ! -e /opt/koa ]] || mv /opt/koa "$koa.old"
+    mv "$koa" /opt/koa
+    rm -rf "$koa.old"
+fi
+/opt/ko/bin/ko server --help | grep -q -- '--allow-uid'
+install_changed "$base/files/ko-tmpfiles.conf" /etc/tmpfiles.d/ko.conf ko
+systemd-tmpfiles --create /etc/tmpfiles.d/ko.conf
+python3 - "$base/files/ko.service" "$(id -u caddy)" > "$work/ko.service" <<'PY'
+from pathlib import Path
+import sys
+print(Path(sys.argv[1]).read_text().replace("@CADDY_UID@", sys.argv[2]), end="")
+PY
+install_changed "$work/ko.service" /etc/systemd/system/ko.service ko
+printf 'export KO_STATE_DIR=/var/lib/ko\nexport PATH=/opt/ko/bin:/opt/koa/bin:$PATH\n' > /etc/profile.d/ko.sh
+install -m 0755 "$base/ko-devices" /usr/local/sbin/ko-devices
+ln -sfn ko-devices /usr/local/sbin/ko-revoke
+ln -sfn ko-devices /usr/local/sbin/ko-pair
+python3 - "$1" "$pair_port" > /etc/ko-pair.json <<'PY'
+import json
+import sys
+print(json.dumps({"host": sys.argv[1], "port": int(sys.argv[2])}))
+PY
+chmod 0644 /etc/ko-pair.json
+if [[ ${#certificate[@]} != 0 ]]; then
+    install_changed "${certificate[0]}" /etc/caddy/ko-server.crt caddy
+    install_changed "${certificate[1]}" /etc/caddy/ko-server.key caddy 0640
+    chown root:caddy /etc/caddy/ko-server.key
+fi
+install_changed "$base/files/sysctl.conf" /etc/sysctl.d/60-ko-quic.conf caddy
+sysctl -p /etc/sysctl.d/60-ko-quic.conf
+install_changed "$work/Caddyfile" /etc/caddy/Caddyfile caddy
+install_changed "$base/files/caddy.conf" /etc/systemd/system/caddy.service.d/ko.conf caddy
+if [[ -f /etc/apparmor.d/caddy ]] && ! grep -q 'flags=(complain)' /etc/apparmor.d/caddy; then
+    python3 - "$base/files/caddy.apparmor" > "$work/caddy.apparmor" <<'PY'
+from pathlib import Path
+import sys
+print(Path(sys.argv[1]).read_text().replace(" flags=(complain)", ""), end="")
+PY
+else
+    cp "$base/files/caddy.apparmor" "$work/caddy.apparmor"
+fi
+install_changed "$work/caddy.apparmor" /etc/apparmor.d/caddy caddy
+apparmor_parser -r /etc/apparmor.d/caddy
+caddy validate --config /etc/caddy/Caddyfile
+install -d /etc/systemd/resolved.conf.d
+install_changed "$base/files/resolved.conf" /etc/systemd/resolved.conf.d/ko.conf resolved
+install_changed "$base/files/sshd.conf" /etc/ssh/sshd_config.d/00-ko.conf ssh
+sshd -t
+nft -c -f "$work/nftables.conf"
+install_changed "$work/nftables.conf" /etc/nftables.conf nftables 0755
+install -m 0644 "$base/files/unattended-upgrades" /etc/apt/apt.conf.d/52ko-unattended-upgrades
+systemd-analyze verify /etc/systemd/system/ko.service /lib/systemd/system/caddy.service
+systemctl daemon-reload
+systemctl enable ko caddy nftables unattended-upgrades
+for service in ko caddy nftables; do
+    flag=${service}_changed
+    if ! systemctl is-active --quiet "$service"; then
+        systemctl start "$service"
+    elif "${!flag}"; then
+        systemctl restart "$service"
+    fi
+done
+if ! systemctl is-active --quiet ssh; then
+    systemctl start ssh
+elif "$ssh_changed"; then
+    systemctl reload ssh
+fi
+"$resolved_changed" && systemctl try-restart systemd-resolved
+systemctl is-active --quiet ko caddy nftables
+runuser -u me -- env -i HOME=/home/me PATH=/usr/local/bin:/usr/bin:/bin "$base/me.sh"
+printf 'Provisioned %s; run deploy/smoke.sh before aa-enforce caddy.\n' "$1"
+'''
+
+SMOKE_SH = r"""#!/bin/bash
+set -euo pipefail
+[[ $# == 2 || $# == 3 ]] || { echo 'usage: deploy/smoke.sh SSH_CONFIG HOST [ADDRESS]' >&2; exit 1; }
+base=$(cd -- "$(dirname -- "$0")" && pwd)
+python3 - "$base" "$@" <<'PY'
+import errno
+import json
+import os
+from pathlib import Path
+import selectors
+import shlex
+import socket
+import ssl
+import subprocess
+import sys
+import tempfile
+import threading
+import time
+
+if b"HTTP3" not in subprocess.check_output(["curl", "-V"]).split():
+    raise SystemExit("deploy/smoke.sh needs a curl with HTTP/3")
+
+base = Path(sys.argv[1])
+host = sys.argv[3]
+address = sys.argv[4] if len(sys.argv) == 5 else host
+ssh = ["ssh", "-F", sys.argv[2], "-o", "BatchMode=yes"]
+
+def run(*args, **kwargs):
+    return subprocess.run(args, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=kwargs.pop("timeout", 20), **kwargs).stdout
+
+def remote(command):
+    return run(*ssh, address, command)
+
+with tempfile.TemporaryDirectory(prefix="ko-smoke-") as temporary:
+    root = Path(temporary)
+    key, cert = root / "device.key", root / "device.pem"
+    run("openssl", "ecparam", "-name", "prime256v1", "-genkey", "-noout", "-out", str(key))
+    run("openssl", "req", "-new", "-x509", "-key", str(key), "-subj", "/CN=smoke", "-days", "1",
+        "-addext", "basicConstraints=critical,CA:FALSE", "-addext", "extendedKeyUsage=clientAuth", "-out", str(cert))
+    def curl(*extra):
+        return subprocess.run(["curl", "--silent", "--show-error", "--max-time", "10", *resolves, *extra], stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=12)
+    resolves = ["--resolve", f"{host}:443:{address}"] if address != host else []
+    for identity in ([], ["-cert", str(cert), "-key", str(key)]):
+        result = subprocess.run(["openssl", "s_client", "-ign_eof", "-connect", address + ":443", "-servername", host, *identity],
+                                input=(f"GET /version HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n").encode(),
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=12)
+        output = result.stdout + result.stderr
+        alert = b"bad certificate" if identity else b"certificate required"
+        assert b"HTTP/1." not in output and alert in output.lower(), output
+    assert curl("https://" + host + "/version").returncode != 0
+    assert curl("--cert", str(cert), "--key", str(key), "https://" + host + "/version").returncode != 0
+    assert curl("--http3-only", "https://" + host + "/version").returncode != 0
+    print("PASS no certificate and unpaired certificate refused, HTTP/3 without certificate refused", flush=True)
+    errors = root / "pair-errors"
+    with errors.open("wb") as stream:
+        process = subprocess.Popen([*ssh, address, "sudo ko-pair"], stdout=subprocess.PIPE, stderr=stream)
+    selector = selectors.DefaultSelector()
+    selector.register(process.stdout, selectors.EVENT_READ)
+    if not selector.select(10):
+        process.terminate()
+        process.wait(timeout=5)
+        raise AssertionError("pairing did not print its payload: " + errors.read_text())
+    line = process.stdout.readline().decode()
+    assert line.startswith("kido-pair: "), (line, errors.read_text())
+    payload = json.loads(line[11:])
+    selector.close()
+    remaining = []
+    reader = threading.Thread(target=lambda: remaining.append(process.stdout.read()), daemon=True)
+    reader.start()
+    enrolled = None
+    ws = None
+    try:
+        request = run("python3", str(base / "enroll-request.py"), str(cert), str(key), "operator smoke test", input=payload["token"].encode())
+        enroll = payload["enroll"].split("/")[2]
+        if address != host:
+            resolves += ["--resolve", f"{enroll}:443:{address}"]
+        fallback = curl("-o", "/dev/null", "-w", "%{http_code}", "https://" + enroll + "/version")
+        assert fallback.returncode == 0 and fallback.stdout == b"404", fallback
+        response = subprocess.run(["curl", *resolves, "--fail-with-body", "--silent", "--show-error", "--max-time", "10", "--data-binary", "@-", payload["enroll"]], input=request, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=12)
+        assert response.returncode == 0, response.stderr.decode()
+        enrolled = json.loads(response.stdout)["fingerprint"]
+        process.wait(timeout=20)
+        reader.join(timeout=1)
+        assert process.returncode == 0 and ("paired operator smoke test " + enrolled).encode() in b"".join(remaining)
+        result = curl("--fail", "--cert", str(cert), "--key", str(key), "https://" + host + "/version")
+        assert result.returncode == 0, result.stderr.decode()
+        version = json.loads(result.stdout)
+        result = curl("--http3-only", "--cert", str(cert), "--key", str(key), "-o", "/dev/null",
+                      "-w", "%{http_code} %{http_version}", "https://" + host + "/version")
+        assert result.returncode == 0 and result.stdout == b"200 3", result
+        context = ssl.create_default_context()
+        context.load_cert_chain(cert, key)
+        ws = context.wrap_socket(socket.create_connection((address, 443), timeout=5), server_hostname=host)
+        request = (f"GET /client HTTP/1.1\r\nHost: {host}\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nKo-Protocol: {version['protocol']}\r\nKo-Vt: {version['vt']}\r\n\r\n")
+        ws.sendall(request.encode())
+        header = b""
+        deadline = time.monotonic() + 5
+        while b"\r\n\r\n" not in header and len(header) < 16384 and time.monotonic() < deadline:
+            chunk = ws.recv(1)
+            if not chunk:
+                break
+            header += chunk
+        assert header.startswith(b"HTTP/1.1 101"), header
+        def send_frame(opcode, data):
+            assert len(data) < 126
+            mask = os.urandom(4)
+            ws.sendall(bytes([0x80 | opcode, 0x80 | len(data)]) + mask + bytes(c ^ mask[i % 4] for i, c in enumerate(data)))
+
+        def read_exact(length):
+            result = b""
+            while len(result) < length:
+                chunk = ws.recv(length - len(result))
+                assert chunk, "WebSocket ended before revocation"
+                result += chunk
+            return result
+
+        def read_frame():
+            head = read_exact(2)
+            assert not head[1] & 0x80
+            length = head[1] & 127
+            if length in (126, 127):
+                length = int.from_bytes(read_exact(2 if length == 126 else 8), "big")
+            assert length <= 16 * 1024 * 1024
+            opcode, data = head[0] & 15, read_exact(length)
+            assert opcode != 8, "WebSocket closed before revocation"
+            if opcode == 9:
+                send_frame(10, data)
+            return opcode, data
+
+        send_frame(1, b'{"type":"hello","name":"smoke","webview":false,"focused":false,"sizing":{"type":"disabled"}}')
+        opcode, answer = read_frame()
+        assert opcode == 1 and json.loads(answer)["type"] == "welcome", answer
+        for protocol in ("-tls1_2", "-tls1_3"):
+            result = run("openssl", "s_client", "-connect", address + ":443", "-servername", host, "-cert", str(cert), "-key", str(key), protocol, "-reconnect", input=b"")
+            assert b"Reused," not in result and result.count(b"New,") >= 5
+        enroll = payload["enroll"].split("/")[2]
+        result = curl("-H", "Host: " + host, "-o", "/dev/null", "-w", "%{http_code}", "https://" + enroll + "/version")
+        assert result.stdout == b"421", result
+        ping = os.urandom(16)
+        send_frame(9, ping)
+        deadline = time.monotonic() + 5
+        pong = False
+        while time.monotonic() < deadline:
+            opcode, data = read_frame()
+            if opcode == 10 and data == ping:
+                pong = True
+                break
+        assert pong, "WebSocket did not answer the pre-revocation ping"
+        remote("sudo ko-revoke " + enrolled)
+        enrolled = None
+        assert curl("--cert", str(cert), "--key", str(key), "https://" + host + "/version").returncode != 0
+        result = curl("--http3-only", "-o", "/dev/null", "-w", "%{http_code} %{http_version}",
+                      "https://" + enroll + "/version")
+        assert result.returncode == 0 and result.stdout == b"404 3", result
+        assert curl("--http3-only", "--cert", str(cert), "--key", str(key), "https://" + host + "/version").returncode != 0
+        ws.settimeout(5)
+        closed = False
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            data = ws.recv(65536)
+            if not data:
+                closed = True
+                break
+        assert closed, "old WebSocket did not end"
+        print("PASS pairing, version, HTTP/3 200 3, WebSocket, no TLS resumption, SNI/Host 421, revoke including HTTP/3", flush=True)
+    finally:
+        if ws:
+            ws.close()
+        if enrolled:
+            remote("sudo ko-revoke " + enrolled)
+        if process.poll() is None:
+            abort = json.dumps({"token": payload["token"], "name": "smoke cleanup", "certificate": "!", "signature": "!"}).encode()
+            subprocess.run([*ssh, address,
+                '''curl --silent --max-time 5 --data-binary @- "http://127.0.0.1:$(python3 -c 'import json; print(json.load(open("/etc/ko-pair.json"))["port"])')/v1/enroll"'''], input=abort, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10)
+            process.wait(timeout=10)
+        reader.join(timeout=1)
+    remote('''set -eu
+for user in me caddy; do
+  sudo -u "$user" curl --fail --silent --unix-socket /var/lib/ko/socket http://localhost/version >/dev/null
+done
+if sudo -u nobody curl --fail --silent --unix-socket /var/lib/ko/socket http://localhost/version >/dev/null; then exit 1; fi
+if sudo -u nobody test -r /run/caddy/admin.sock; then exit 1; fi
+if sudo -u nobody test -x /var/lib/ko-devices; then exit 1; fi
+''')
+    print("PASS socket admission and private admin/device paths", flush=True)
+    family, _, _, _, endpoint = socket.getaddrinfo(address, 443, type=socket.SOCK_STREAM)[0]
+    deadline = time.monotonic() + 120
+    ports = set()
+    pending = {}
+    port = 1
+    with selectors.DefaultSelector() as selector:
+        while port <= 65535 or pending:
+            now = time.monotonic()
+            assert now < deadline, "TCP scan deadline"
+            while port <= 65535 and len(pending) < 500:
+                connection = socket.socket(family, socket.SOCK_STREAM)
+                connection.setblocking(False)
+                status = connection.connect_ex((endpoint[0], port, *endpoint[2:]))
+                if status == 0:
+                    ports.add(port)
+                    connection.close()
+                elif status in (errno.EINPROGRESS, errno.EWOULDBLOCK):
+                    pending[connection] = (port, now + 0.5)
+                    selector.register(connection, selectors.EVENT_WRITE)
+                else:
+                    connection.close()
+                if port % 10000 == 0:
+                    print(f"TCP scan: {port}/65535", flush=True)
+                port += 1
+            wait = min((expires - time.monotonic() for _, expires in pending.values()), default=0)
+            ready = {key.fileobj for key, _ in selector.select(max(0, min(wait, deadline - time.monotonic())))}
+            for connection, (number, expires) in list(pending.items()):
+                if connection in ready or time.monotonic() >= expires:
+                    if connection in ready and connection.getsockopt(socket.SOL_SOCKET, socket.SO_ERROR) == 0:
+                        ports.add(number)
+                    selector.unregister(connection)
+                    connection.close()
+                    del pending[connection]
+    assert ports == {22, 443}, ports
+    nonce = os.urandom(32)
+    catcher = '''import json, selectors, socket, sys, time
+nonce = bytes.fromhex(sys.argv[1])
+ports = set()
+deadline = time.monotonic() + 90
+with selectors.DefaultSelector() as selector:
+    sockets = []
+    for family in (socket.AF_INET, socket.AF_INET6):
+        raw = socket.socket(family, socket.SOCK_RAW, socket.IPPROTO_UDP)
+        raw.setblocking(False)
+        sockets.append(raw)
+        selector.register(raw, selectors.EVENT_READ)
+    selector.register(sys.stdin, selectors.EVENT_READ)
+    print("ready", flush=True)
+    while True:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise SystemExit("UDP catcher deadline")
+        ready = selector.select(remaining)
+        finished = any(key.fileobj is sys.stdin and not sys.stdin.read(1) for key, _ in ready)
+        for raw in sockets:
+            while True:
+                if time.monotonic() >= deadline:
+                    raise SystemExit("UDP catcher deadline")
+                try:
+                    data = raw.recv(65535)
+                except BlockingIOError:
+                    break
+                offset = (data[0] & 15) * 4 if raw.family == socket.AF_INET else 0
+                if data[offset + 8:] == nonce:
+                    ports.add(int.from_bytes(data[offset + 2:offset + 4], "big"))
+        if finished:
+            print(json.dumps(sorted(ports)), flush=True)
+            sys.exit(0)
+'''
+    process = subprocess.Popen([*ssh, address,
+                                "sudo python3 -c " + shlex.quote(catcher) + " " + nonce.hex()],
+                               stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    try:
+        with selectors.DefaultSelector() as selector:
+            selector.register(process.stdout, selectors.EVENT_READ)
+            assert selector.select(10), "UDP catcher readiness deadline"
+            assert process.stdout.readline() == b"ready\n", "UDP catcher did not become ready"
+        deadline = time.monotonic() + 40
+        with socket.socket(family, socket.SOCK_DGRAM) as sender:
+            for _ in range(2):
+                for port in range(1, 65536):
+                    while True:
+                        assert time.monotonic() < deadline, "UDP scan deadline"
+                        try:
+                            sender.sendto(nonce, (endpoint[0], port, *endpoint[2:]))
+                            break
+                        except OSError as error:
+                            if error.errno != errno.ENOBUFS:
+                                raise
+                            time.sleep(0.01)
+                    if port % 256 == 0:
+                        time.sleep(0.005)
+        time.sleep(1)
+        output, errors = process.communicate(timeout=10)
+        assert process.returncode == 0, errors.decode()
+        assert json.loads(output) == [443], output
+    finally:
+        if process.poll() is None:
+            process.stdin.close()
+            try:
+                process.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                process.terminate()
+                process.wait(timeout=5)
+    print("PASS external ports: TCP 22 and 443, UDP 443 only", flush=True)
+PY
+"""
+
+TERRAFORM__TERRAFORM_LOCK_HCL = r'''# This file is maintained automatically by "tofu init".
+# Manual edits may be lost in future updates.
+
+provider "registry.opentofu.org/cloudflare/cloudflare" {
+  version     = "5.19.1"
+  constraints = "~> 5.19.0"
+  hashes = [
+    "h1:HkKPMZ/n+QiExkRUSLjGMTGnuIaph+k932LiTp7CKZM=",
+    "h1:LicdZu3hugYpWuCAprg2EslbVP0zANnV9n9/2KiOnYc=",
+    "h1:VvnqJUTXlbKrB/6X2K9dc7lE3CQj3KX055gr+bMyXsg=",
+    "h1:XYVRvCG+auhkY1NnSe6pK7ClqKW5GX8BgUnMQwfC7mQ=",
+    "h1:Xf1PHfUfK690caJYZvoudKKBppfleJ6RcqsEQWqKVCw=",
+    "h1:i6pbudcLi1X2MVeN9IV3bDeiGWnWhn+v9dMrMzAN+l8=",
+    "h1:mopYISyLkUVUwMjJbuPenxIUVDrna1/7ACB1hfMfciU=",
+    "h1:xfoTAyKkR12F8nuVC96DwBA2Fva38o5BnYHLXZzmDP4=",
+    "zh:0651618000db705564dab5a25322b9d76ea54b7dd78931ed3565497b559babeb",
+    "zh:1a7847e9479fb6d21a65ef933ffae1416b1e4b44ca940c0d6c50fc4248cc4a0d",
+    "zh:5597cee5854131045eb9f201ae3a70b59c51955d31a647d9616863c746d902cb",
+    "zh:580786830d93e35b957754fd4c62d4681a3b19abc28b757e41acba26455663b1",
+    "zh:83c4bdfb0e74fd50e56fff3c461d76c1c1ec61af3f679e4de1aa70b5ed05a09f",
+    "zh:abb4d1052cee61d80f9cb51e5421e3c118312403afb7104b98bd7e310ac736ee",
+    "zh:b0aeeb3d66ea4d719989875e778c477065ba941e3a76e9a8caacc3be08208dd9",
+    "zh:e43b4b2dfcec1ce2115f5a5c86042d432deb49bee8eae103eb56d97ea02e2e3b",
+    "zh:f809ab383cca0a5f83072981c64208cbd7fa67e986a86ee02dd2c82333221e32",
+  ]
+}
+
+provider "registry.opentofu.org/digitalocean/digitalocean" {
+  version     = "2.75.0"
+  constraints = "~> 2.75.0"
+  hashes = [
+    "h1:1eWaHF4l2WWjTkeZs9xEui7YANTGbvbKheO9Q9p3q20=",
+    "h1:5VCGZ+CgVFZFvds34TgZ26KNrZkTDyMwFgQ95aCTx4M=",
+    "h1:D4EySUECNYDAOLHEt/z3kqRkafOVVNhkKTMIJzZIX1w=",
+    "h1:EQgHlFL8pSaS30mnV2Sg3F0lGj+j+oyjPO0ZH+oy7L8=",
+    "h1:FTioa9VUczrM1mGz+d25ji9t6gRo+9PdX7R6De6vsCM=",
+    "h1:GhSqM8jFrQv8zIagoPYkln8IOUciM5+6ndH2MZf6/EI=",
+    "h1:Mm+jlYYaTMFBhHJGtGGk0yw+/GkYnlhnrNGSd8ZYKQE=",
+    "h1:O9S2vgqTU0E6dvfvBCIXOICu+nBVkerHHHYEIId24/c=",
+    "h1:PK9qkNkZeYWV5C+DgR0YgMmdv3Qzjacyhc8C1N5QMH8=",
+    "h1:beiegEsw0PnMjpjZJSwyAUm0YG70SvGtXAsCJnLZC/8=",
+    "h1:crbrJq10AEWWDX+twKE+BG8++rtvtgEE6Mr5W0LJwN0=",
+    "h1:svZspa3OfjG0Mf5HkRMlgDpmwdp58j66UbPATUFiePo=",
+    "h1:tHqeF7KpJM9oQtzX8zXq8l+YBmsUAPcg9MM/960I4XU=",
+    "h1:tY2vi6/JHD3yvEwKO/m/rePHtsvcPNCeetzVc2r8vMc=",
+    "h1:thoNViPkt6lmaUoqCskhpQYU/t9bHNtVxPJ0vogW87A=",
+    "h1:vo4dCaPAJdRGjZjRtUEHsnMnnFVyyqvF9DK3iryr1L0=",
+    "zh:34ddf4a57618ad6aba6d5c5a3a2c258d6655c80b4bbac3bbd9c0df0d61d4a0c5",
+    "zh:38f9f1069d568cb7cc686e80c421fd402319060ef906471f962f8d6d65c4f203",
+    "zh:40f855db88073735e48ec9dd9852cdccdfc30527adab9d16d8abc132d3d1c1db",
+    "zh:498e77b7249eb08cd375227187438738718bde0bb51185185335038962baf3f5",
+    "zh:850cfa918b41668c55b21fe00f2a6c0edba769fcc9d2fbe9f158d1f851fc3b15",
+    "zh:8b12f990fa0760c86218ce1a2ae891d30939359d49b36d79921926a628b1a110",
+    "zh:a603670f105107df860a51c165bbea2fa141651e844f148c18ab6d85631b381f",
+    "zh:acf2d25c7f511a10b4c29c3e43819e32e2b304f81fc43439efbc024adc7705d6",
+    "zh:b48bb399b90099a0964872c4bfd69b5fa4d09f0c2f5baecc02ff928a3ece6be5",
+    "zh:bae43ddcfc78454b2aff08c3212d65f1553c233090b1e3f3cfacb89f4bca2b48",
+    "zh:c3f151e59e04379b4b1fd2a19be285f2ea0aef76a1761ca364b1dc38d7919424",
+    "zh:d3c990f33fcdf1eabf651d0c731e8833613c016d3413f27202b4a0406d521c95",
+    "zh:d7d2b8b66326086274fd623839068b047466651071ae2f94b7f7365b0bbf65a5",
+    "zh:d85751fbc606e5ce5d89e06ed2ec2485ed58c1b5d1e7464fc5f5a2b47f350f5a",
+    "zh:e1940900e37027dff2c3bd924fbf3d05ec2d1541d7fec2f5ae37b1aaf0d3ef9f",
+    "zh:e318a2db5c857829f89c228d82c84cd0aec3a79e2125dac35826970c810bdede",
+  ]
+}
+'''
+
+TERRAFORM_CLOUD_INIT_YAML = r'''#cloud-config
+disable_root: true
+ssh_pwauth: false
+packages: [rsync]
+users:
+  - name: me
+    groups: [sudo]
+    shell: /bin/bash
+    lock_passwd: true
+    sudo: ALL=(ALL) NOPASSWD:ALL
+    ssh_authorized_keys:
+      - ${ssh_key}
+runcmd:
+  - [passwd, -l, root]
+'''
+
+TERRAFORM_MAIN_TF = r'''locals {
+  ssh_key = trimspace(file("${path.module}/id_ed25519.pub"))
+  ko_host = "${var.ko_label}.${var.zone_name}"
+  names = {
+    ko       = local.ko_host
+    enroll   = "enroll.${local.ko_host}"
+    wildcard = "*.${local.ko_host}"
+  }
+}
+
+resource "digitalocean_ssh_key" "operator" {
+  name       = local.names.ko
+  public_key = local.ssh_key
+}
+
+resource "digitalocean_droplet" "ko" {
+  name          = local.names.ko
+  image         = "debian-13-x64"
+  region        = var.region
+  size          = var.size
+  ipv6          = true
+  monitoring    = false
+  droplet_agent = false
+  ssh_keys      = [digitalocean_ssh_key.operator.fingerprint]
+  user_data     = templatefile("${path.module}/cloud-init.yaml", { ssh_key = jsonencode(local.ssh_key) })
+}
+
+resource "digitalocean_firewall" "ko" {
+  name        = "ko-${var.ko_label}"
+  droplet_ids = [digitalocean_droplet.ko.id]
+  inbound_rule {
+    protocol         = "tcp"
+    port_range       = "22"
+    source_addresses = var.ssh_cidrs
+  }
+  inbound_rule {
+    protocol         = "tcp"
+    port_range       = "443"
+    source_addresses = ["0.0.0.0/0", "::/0"]
+  }
+  inbound_rule {
+    protocol         = "udp"
+    port_range       = "443"
+    source_addresses = ["0.0.0.0/0", "::/0"]
+  }
+  outbound_rule {
+    protocol              = "tcp"
+    port_range            = "1-65535"
+    destination_addresses = ["0.0.0.0/0", "::/0"]
+  }
+  outbound_rule {
+    protocol              = "udp"
+    port_range            = "1-65535"
+    destination_addresses = ["0.0.0.0/0", "::/0"]
+  }
+  outbound_rule {
+    protocol              = "icmp"
+    destination_addresses = ["0.0.0.0/0", "::/0"]
+  }
+}
+
+resource "cloudflare_dns_record" "ipv4" {
+  for_each = local.names
+  zone_id  = var.zone_id
+  name     = each.value
+  type     = "A"
+  content  = digitalocean_droplet.ko.ipv4_address
+  ttl      = 60
+  # Caddy must receive the device's TLS certificate, not a proxy certificate.
+  proxied = false
+}
+
+resource "cloudflare_dns_record" "ipv6" {
+  for_each = local.names
+  zone_id  = var.zone_id
+  name     = each.value
+  type     = "AAAA"
+  content  = digitalocean_droplet.ko.ipv6_address
+  ttl      = 60
+  proxied  = false
+}
+'''
+
+TERRAFORM_OUTPUTS_TF = r'''output "ipv4" {
+  value = digitalocean_droplet.ko.ipv4_address
+}
+output "ipv6" {
+  value = digitalocean_droplet.ko.ipv6_address
+}
+output "ko_host" {
+  value = local.names.ko
+}
+output "ssh_cidrs" {
+  value = var.ssh_cidrs
+}
+'''
+
+TERRAFORM_VARIABLES_TF = r'''variable "zone_id" {
+  type = string
+}
+variable "zone_name" {
+  type = string
+}
+variable "ko_label" {
+  type    = string
+  default = "ko"
+  validation {
+    condition     = can(regex("^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$", var.ko_label))
+    error_message = "Use a DNS label."
+  }
+}
+variable "region" {
+  type    = string
+  default = "fra1"
+}
+variable "size" {
+  type    = string
+  default = "s-1vcpu-1gb"
+}
+variable "ssh_cidrs" {
+  type    = list(string)
+  default = ["0.0.0.0/0", "::/0"]
+  validation {
+    condition     = length(var.ssh_cidrs) > 0 && alltrue([for cidr in var.ssh_cidrs : can(cidrhost(cidr, 0))])
+    error_message = "Supply at least one SSH CIDR."
+  }
+}
+'''
+
+TERRAFORM_VERSIONS_TF = r'''terraform {
+  required_version = ">= 1.8.0"
+  backend "local" {}
+  required_providers {
+    digitalocean = {
+      source  = "digitalocean/digitalocean"
+      version = "~> 2.75.0"
+    }
+    cloudflare = {
+      source  = "cloudflare/cloudflare"
+      version = "~> 5.19.0"
+    }
+  }
+}
+
+provider "digitalocean" {}
+provider "cloudflare" {}
+'''
+
+TEST_SH = r"""#!/bin/bash
+set -euo pipefail
+base=$(cd -- "$(dirname -- "$0")" && pwd)
+python3 - "$base" <<'PY'
+import json
+import os
+from pathlib import Path
+import socket
+import selectors
+import subprocess
+import sys
+import tempfile
+import time
+
+base = Path(sys.argv[1])
+
+def run(*args, **kwargs):
+    return subprocess.run(args, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=15, **kwargs).stdout
+
+with tempfile.TemporaryDirectory(prefix="ko-devices-", dir="/tmp") as temporary:
+    root = Path(temporary)
+    devices = root / "devices"
+    devices.mkdir(mode=0o750)
+    stubs = root / "bin"
+    stubs.mkdir()
+    caddy = stubs / "caddy"
+    caddy.write_text('#!/bin/sh\n[ "$*" = "validate --config /etc/caddy/Caddyfile" ] || exit 9\ntest ! -e "$KO_DEVICES_DIR/fail-validation"\n')
+    caddy.chmod(0o755)
+    restart = root / "restart"
+    restart.write_text('''#!/usr/bin/python3
+import os
+from pathlib import Path
+folder = Path(os.environ["KO_DEVICES_DIR"])
+for output in folder.parent.glob("out-*"):
+    assert "paired test device" not in output.read_text()
+for pem in folder.glob("*.pem"):
+    assert pem.with_suffix(".json").is_file()
+with (folder / "restarts").open("a") as stream:
+    stream.write(str(len(list(folder.glob("*.pem")))) + "\\n")
+''')
+    restart.chmod(0o755)
+    env = {**os.environ, "PATH": str(stubs) + ":" + os.environ["PATH"],
+           "KO_DEVICES_DIR": str(devices), "KO_PAIR_RESTART": str(restart), "KO_PAIR_SECONDS": "3"}
+    run("openssl", "ecparam", "-name", "prime256v1", "-genkey", "-noout", "-out", str(root / "other.key"))
+    for kind, key, ca in (("ca", root / "other.key", "TRUE"), ("rsa", root / "rsa.key", "FALSE")):
+        if kind == "rsa":
+            run("openssl", "genrsa", "-out", str(key), "2048")
+        run("openssl", "req", "-new", "-x509", "-key", str(key), "-subj", "/CN=test", "-days", "1",
+            "-addext", "basicConstraints=critical,CA:" + ca, "-addext", "extendedKeyUsage=clientAuth",
+            "-out", str(root / (kind + ".pem")))
+    fixed = base / "testdata/device.pem"
+
+    fixed_token = (base / "testdata/token").read_text().strip()
+    run("python3", str(base / "enroll-request.py"), str(fixed), str(base / "testdata/device.key"), "test device", str(root / "message"), input=fixed_token.encode())
+    assert (root / "message").read_bytes().hex() == (base / "testdata/message.hex").read_text().strip()
+    print("PASS fixed OpenSSL message vector", flush=True)
+    serial = 0
+
+    def start(fixed_token_run=False, seconds="3"):
+        global serial
+        serial += 1
+        with socket.socket() as sock:
+            sock.bind(("127.0.0.1", 0))
+            port = sock.getsockname()[1]
+        local = {**env, "KO_PAIR_SECONDS": seconds}
+        output = root / f"out-{serial}"
+        errors = root / f"err-{serial}"
+        args = [str(base / "ko-pair"), "ko.example.test", str(port)]
+        if fixed_token_run:
+            args[1:1] = ["--name", "Test Server"]
+            args = ["python3", "-c", 'import runpy,secrets,sys; secrets.token_bytes=lambda n: bytes(range(n)); sys.argv=sys.argv[1:]; runpy.run_path(sys.argv[0],run_name="__main__")', *args]
+        with output.open("wb") as stdout, errors.open("wb") as stderr:
+            process = subprocess.Popen(args, env=local, stdout=stdout, stderr=stderr)
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline:
+            lines = output.read_text().splitlines()
+            if lines and lines[0].startswith("kido-pair: "):
+                payload = json.loads(lines[0][11:])
+                return process, payload, port, output, errors
+            if process.poll() is not None:
+                raise AssertionError(errors.read_text())
+            time.sleep(0.01)
+        raise AssertionError("pairing did not print payload")
+
+    def body(payload, cert=fixed, key=base / "testdata/device.key", signed_token=None):
+        request = json.loads(run("python3", str(base / "enroll-request.py"), str(cert), str(key), "test device", input=(signed_token or payload["token"]).encode()))
+        request["token"] = payload["token"]
+        return request
+
+    def post(port, data, headers=(), path="/v1/enroll"):
+        encoded = data if isinstance(data, bytes) else json.dumps(data).encode()
+        result = subprocess.run(["curl", "--silent", "--show-error", "--max-time", "6", "-o", str(root / "response"), "-w", "%{http_code}",
+                                 *headers, "--data-binary", "@-", f"http://127.0.0.1:{port}{path}"], input=encoded, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=7)
+        return result.returncode, result.stdout.decode()
+
+    def finish(state, expected):
+        process, payload, port, output, errors = state
+        assert process.wait(timeout=7) == expected, errors.read_text()
+        logs = errors.read_text()
+        assert payload["token"] not in logs and '"certificate"' not in logs and '"signature"' not in logs
+        assert '"certificate"' not in output.read_text()
+        assert payload["token"] not in "\n".join(output.read_text().splitlines()[1:])
+        return output.read_text(), logs
+
+    state = start(True)
+    request = body(state[1])
+    assert state[1]["token"] == fixed_token
+    assert state[3].read_text().splitlines()[0] + "\n" == (base / "testdata/payload").read_text()
+    assert post(state[2], request, ("-H", "X-Forwarded-For: 192.0.2.4")) == (0, "200")
+    response = json.loads((root / "response").read_text())
+    fp = response["fingerprint"]
+    output, logs = finish(state, 0)
+    assert f"paired test device {fp}" in output and "192.0.2.4" in logs
+    for suffix in (".pem", ".json"):
+        assert (devices / (fp + suffix)).stat().st_mode & 0o777 == 0o640
+    assert devices.stat().st_mode & 0o777 == 0o750
+    assert (devices / "restarts").read_text() == "1\n"
+    assert post(state[2], request)[0] != 0
+    assert fp in run(str(base / "ko-devices"), env=env).decode()
+    for previous in root.glob("out-*"):
+        previous.rename(previous.with_name(previous.name.replace("out-", "finished-")))
+    run(str(base / "ko-revoke"), fp[:8], env=env)
+    assert not list(devices.glob("*.pem")) and not list(devices.glob("*.json"))
+    assert (devices / "restarts").read_text() == "1\n0\n"
+    print("PASS pairing, single use, modes, logs, list, revoke, restart ordering", flush=True)
+
+    for name in ("", "x" * 65, "bad\nname", "bad\x85name"):
+        result = subprocess.run([str(base / "ko-pair"), "--name", name, "ko.example.test", "1"], env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=5)
+        assert result.returncode == 2 and b"usage:" in result.stderr and not result.stdout
+    state = start(seconds="60")
+    assert state[1]["name"] == socket.gethostname()
+    print("PASS server names, default hostname, invalid name usage errors", flush=True)
+    with socket.create_connection(("127.0.0.1", state[2]), timeout=1) as connection:
+        connection.sendall(b"POST /v1/enroll HTTP/1.0\r\nContent-Length: 8193\r\n\r\n")
+        assert b"400" in connection.recv(1024)
+    assert post(state[2], [])[1] == "400"
+    assert post(state[2], b"x" * 8193)[1] == "400"
+    assert post(state[2], {}, path="/wrong")[1] == "400"
+    with socket.create_connection(("127.0.0.1", state[2]), timeout=1) as connection:
+        connection.sendall(b"POST /v1/enroll HTTP/1.0\r\nContent-Length: 100\r\n\r\n")
+        started = time.monotonic()
+        deadline = started + 6
+        with selectors.DefaultSelector() as selector:
+            selector.register(connection, selectors.EVENT_READ)
+            response = b""
+            while time.monotonic() < deadline:
+                if selector.select(0.2):
+                    response = connection.recv(1024)
+                    break
+                connection.sendall(b"x")
+        assert b"400" in response, response
+        assert 4.5 <= time.monotonic() - started < 6
+    invalid = {"token": state[1]["token"], "name": "test", "certificate": "!", "signature": "!"}
+    assert post(state[2], invalid)[1] == "400"
+    assert state[0].wait(timeout=1) == 1
+    finish(state, 1)
+    print("PASS shape, sizes, path, absolute 5 s deadline, malformed DER consumes token", flush=True)
+
+    for label in ("ca", "rsa", "other-token", "other-key", "bad-signature-encoding", "validation", "wrong-token", "request-cap", "expiry"):
+        state = start(seconds="0.3" if label == "expiry" else "60")
+        if label == "expiry":
+            finish(state, 1)
+        elif label == "request-cap":
+            for index in range(30):
+                assert post(state[2], b"{}")[1] == ("429" if index == 29 else "400")
+            assert state[0].wait(timeout=1) == 1
+            finish(state, 1)
+        elif label == "wrong-token":
+            request = {"token": fixed_token, "name": "test", "certificate": "!", "signature": "!"}
+            for _ in range(5):
+                assert post(state[2], request)[1] == "403"
+            assert state[0].wait(timeout=1) == 1
+            finish(state, 1)
+        else:
+            cert = root / (label + ".pem") if label in ("ca", "rsa") else fixed
+            key = root / "other.key" if label == "other-key" else base / "testdata/device.key"
+            request = body(state[1], cert, key, signed_token=fixed_token if label == "other-token" else None)
+            if label == "bad-signature-encoding":
+                request["signature"] = "!"
+            elif label == "validation":
+                (devices / "fail-validation").touch()
+            assert post(state[2], request)[1] == "400", label
+            assert state[0].wait(timeout=1) == 1, label
+            finish(state, 1)
+        (devices / "fail-validation").unlink(missing_ok=True)
+        assert not list(devices.glob("*.pem")) and not list(devices.glob("*.json")), label
+        print("PASS " + label, flush=True)
+PY
+"""
+
+TOOLS_PACKAGE_LOCK_JSON = r'''{
+  "name": "tools",
+  "lockfileVersion": 3,
+  "requires": true,
+  "packages": {
+    "": {
+      "dependencies": {
+        "@anthropic-ai/claude-code": "2.1.295",
+        "@earendil-works/pi-coding-agent": "1.5.2"
+      }
+    },
+    "node_modules/@anthropic-ai/claude-code": {
+      "version": "2.1.295",
+      "resolved": "https://registry.npmjs.org/@anthropic-ai/claude-code/-/claude-code-2.1.295.tgz",
+      "integrity": "sha512-PTdE5NdqwwyCmtbX/0WAuosyip8DkwC6M5mAJv+b9KGuxMFnkTJbc2b3EY6FYdo5ZTWkm6MN8reA9YWWMrLR+g==",
+      "hasInstallScript": true,
+      "license": "SEE LICENSE IN README.md",
+      "bin": {
+        "claude": "bin/claude.exe"
+      },
+      "engines": {
+        "node": ">=22.0.0"
+      },
+      "optionalDependencies": {
+        "@anthropic-ai/claude-code-darwin-arm64": "2.1.295",
+        "@anthropic-ai/claude-code-darwin-x64": "2.1.295",
+        "@anthropic-ai/claude-code-linux-arm64": "2.1.295",
+        "@anthropic-ai/claude-code-linux-arm64-musl": "2.1.295",
+        "@anthropic-ai/claude-code-linux-x64": "2.1.295",
+        "@anthropic-ai/claude-code-linux-x64-musl": "2.1.295",
+        "@anthropic-ai/claude-code-win32-arm64": "2.1.295",
+        "@anthropic-ai/claude-code-win32-x64": "2.1.295"
+      }
+    },
+    "node_modules/@anthropic-ai/claude-code-darwin-arm64": {
+      "version": "2.1.295",
+      "resolved": "https://registry.npmjs.org/@anthropic-ai/claude-code-darwin-arm64/-/claude-code-darwin-arm64-2.1.295.tgz",
+      "integrity": "sha512-qGetxxeqaqHR7Ev5AfTFfYuze0S99d27DV2IuFfjXigY9CKkLUy2jf3cCXjt8y4BAlGyNrqwKmIdrCjwtjAe8g==",
+      "cpu": [
+        "arm64"
+      ],
+      "license": "SEE LICENSE IN LICENSE.md",
+      "optional": true,
+      "os": [
+        "darwin"
+      ]
+    },
+    "node_modules/@anthropic-ai/claude-code-darwin-x64": {
+      "version": "2.1.295",
+      "resolved": "https://registry.npmjs.org/@anthropic-ai/claude-code-darwin-x64/-/claude-code-darwin-x64-2.1.295.tgz",
+      "integrity": "sha512-tmxIaD+X7GRatzp6yrgB3Gwg9zRmBdZOMf1imwLrISco2eiCBQbillVg5t//xO3F6tpRx/wsYXq/6CmeZx3HgQ==",
+      "cpu": [
+        "x64"
+      ],
+      "license": "SEE LICENSE IN LICENSE.md",
+      "optional": true,
+      "os": [
+        "darwin"
+      ]
+    },
+    "node_modules/@anthropic-ai/claude-code-linux-arm64": {
+      "version": "2.1.295",
+      "resolved": "https://registry.npmjs.org/@anthropic-ai/claude-code-linux-arm64/-/claude-code-linux-arm64-2.1.295.tgz",
+      "integrity": "sha512-JgQigCZCbsTnJQMLBjzeIpx001jlw+QlSR08SsAW7p0hjUR73DczX4NpO2lq/+RPm8w48KhM8DxJqhUmAMV5+Q==",
+      "cpu": [
+        "arm64"
+      ],
+      "libc": [
+        "glibc"
+      ],
+      "license": "SEE LICENSE IN LICENSE.md",
+      "optional": true,
+      "os": [
+        "linux"
+      ]
+    },
+    "node_modules/@anthropic-ai/claude-code-linux-arm64-musl": {
+      "version": "2.1.295",
+      "resolved": "https://registry.npmjs.org/@anthropic-ai/claude-code-linux-arm64-musl/-/claude-code-linux-arm64-musl-2.1.295.tgz",
+      "integrity": "sha512-ao8kyoHS+XXIu6QieUthb5VilbkEtbCBEzbam97fWF/67vzZrogJX/RiJMhLZbrKX9L5avo7sh+eK6k85BDPlA==",
+      "cpu": [
+        "arm64"
+      ],
+      "libc": [
+        "musl"
+      ],
+      "license": "SEE LICENSE IN LICENSE.md",
+      "optional": true,
+      "os": [
+        "linux"
+      ]
+    },
+    "node_modules/@anthropic-ai/claude-code-linux-x64": {
+      "version": "2.1.295",
+      "resolved": "https://registry.npmjs.org/@anthropic-ai/claude-code-linux-x64/-/claude-code-linux-x64-2.1.295.tgz",
+      "integrity": "sha512-nC9RZ6ZArEavyAiFdEtGK6/XPhjfE79tP2tCh+PjmRUxSO/6W3IuXv/rmo8c6u2UzHyvgKodRj1z6UcBGlbnyA==",
+      "cpu": [
+        "x64"
+      ],
+      "libc": [
+        "glibc"
+      ],
+      "license": "SEE LICENSE IN LICENSE.md",
+      "optional": true,
+      "os": [
+        "linux"
+      ]
+    },
+    "node_modules/@anthropic-ai/claude-code-linux-x64-musl": {
+      "version": "2.1.295",
+      "resolved": "https://registry.npmjs.org/@anthropic-ai/claude-code-linux-x64-musl/-/claude-code-linux-x64-musl-2.1.295.tgz",
+      "integrity": "sha512-S/cMn4k8uzumMYMPATbx0i14ooSi8cLFr/WMyfFKQc8H/FRMhaZ4rWCmBJnttWP2s93YiU5KsAifYf3324DtFg==",
+      "cpu": [
+        "x64"
+      ],
+      "libc": [
+        "musl"
+      ],
+      "license": "SEE LICENSE IN LICENSE.md",
+      "optional": true,
+      "os": [
+        "linux"
+      ]
+    },
+    "node_modules/@anthropic-ai/claude-code-win32-arm64": {
+      "version": "2.1.295",
+      "resolved": "https://registry.npmjs.org/@anthropic-ai/claude-code-win32-arm64/-/claude-code-win32-arm64-2.1.295.tgz",
+      "integrity": "sha512-DOc5gff2KqGH+VPqs7J7D7iurRI0/V2OX8aIZN33bS0lOgU5IuYmWjEDoD9yFQRlOC2ebuD9ks00cYU+yI6/xQ==",
+      "cpu": [
+        "arm64"
+      ],
+      "license": "SEE LICENSE IN LICENSE.md",
+      "optional": true,
+      "os": [
+        "win32"
+      ]
+    },
+    "node_modules/@anthropic-ai/claude-code-win32-x64": {
+      "version": "2.1.295",
+      "resolved": "https://registry.npmjs.org/@anthropic-ai/claude-code-win32-x64/-/claude-code-win32-x64-2.1.295.tgz",
+      "integrity": "sha512-absbtyFKyhebVBSilCIj/JXVERLjXDAo4ID3nVRwNb52HCXfjd+g+b1THrq6NCNXCVcrpC+skkNfBqqy0N726A==",
+      "cpu": [
+        "x64"
+      ],
+      "license": "SEE LICENSE IN LICENSE.md",
+      "optional": true,
+      "os": [
+        "win32"
+      ]
+    },
+    "node_modules/@anthropic-ai/sdk": {
+      "version": "0.129.0",
+      "resolved": "https://registry.npmjs.org/@anthropic-ai/sdk/-/sdk-0.129.0.tgz",
+      "integrity": "sha512-MH7LB20kNpGLUpPTe2OG5XvL/KhX8HUO9XyBaFjgFk6TLS4Xjt0VPIuMKywe7POKKPslX+QxSlVok9e+8kG5Nw==",
+      "license": "MIT",
+      "dependencies": {
+        "json-schema-to-ts": "^3.1.1",
+        "standardwebhooks": "^1.0.0"
+      },
+      "bin": {
+        "anthropic-ai-sdk": "bin/cli"
+      },
+      "peerDependencies": {
+        "zod": "^3.25.0 || ^4.0.0"
+      },
+      "peerDependenciesMeta": {
+        "zod": {
+          "optional": true
+        }
+      }
+    },
+    "node_modules/@aws-sdk/client-bedrock-runtime": {
+      "version": "3.1127.0",
+      "resolved": "https://registry.npmjs.org/@aws-sdk/client-bedrock-runtime/-/client-bedrock-runtime-3.1127.0.tgz",
+      "integrity": "sha512-IDl/lrPb90aH+pZFHGNDmgH9nAUQj5PlZH1sJ3w7RikctyjHSnY3oNjZhrLoaBoQn/rNK0zsP6OHEqEhj2tdLA==",
+      "license": "Apache-2.0",
+      "dependencies": {
+        "@aws-sdk/core": "^3.977.9",
+        "@aws-sdk/credential-provider-node": "^3.972.82",
+        "@aws-sdk/eventstream-handler-node": "^3.972.34",
+        "@aws-sdk/middleware-eventstream": "^3.972.29",
+        "@aws-sdk/middleware-websocket": "^3.972.52",
+        "@aws-sdk/token-providers": "3.1127.0",
+        "@aws-sdk/types": "^3.974.5",
+        "@smithy/core": "^3.33.3",
+        "@smithy/fetch-http-handler": "^5.7.2",
+        "@smithy/node-http-handler": "^4.11.3",
+        "@smithy/types": "^4.17.2",
+        "tslib": "^2.6.2"
+      },
+      "engines": {
+        "node": ">=20.0.0"
+      }
+    },
+    "node_modules/@aws-sdk/core": {
+      "version": "3.981.0",
+      "resolved": "https://registry.npmjs.org/@aws-sdk/core/-/core-3.981.0.tgz",
+      "integrity": "sha512-Mnu7gaDrC5UCdyH8uLxLfB2eWbjE/HbjKX1U1J2VQxG3TTATUDObW2wU3I8iH3e9YH5NN2CY6w1mlAIe2XJ3jg==",
+      "license": "Apache-2.0",
+      "dependencies": {
+        "@aws-sdk/types": "^3.975.1",
+        "@aws-sdk/xml-builder": "^3.972.43",
+        "@aws/lambda-invoke-store": "^0.3.0",
+        "@smithy/core": "^3.40.0",
+        "@smithy/signature-v4": "^5.7.5",
+        "@smithy/types": "^4.20.0",
+        "bowser": "^2.11.0",
+        "tslib": "^2.6.2"
+      },
+      "engines": {
+        "node": ">=20.0.0"
+      }
+    },
+    "node_modules/@aws-sdk/credential-provider-env": {
+      "version": "3.972.84",
+      "resolved": "https://registry.npmjs.org/@aws-sdk/credential-provider-env/-/credential-provider-env-3.972.84.tgz",
+      "integrity": "sha512-akZJetiMVeLRHsKzYh3LamDCo74ZUCeo0XoyRKMEMZT5qP7ReM6LhpioBCyuqKP5Vav5gEOeCmaQV0VVQr1Meg==",
+      "license": "Apache-2.0",
+      "dependencies": {
+        "@aws-sdk/core": "^3.981.0",
+        "@aws-sdk/types": "^3.975.1",
+        "@smithy/core": "^3.40.0",
+        "@smithy/types": "^4.20.0",
+        "tslib": "^2.6.2"
+      },
+      "engines": {
+        "node": ">=20.0.0"
+      }
+    },
+    "node_modules/@aws-sdk/credential-provider-http": {
+      "version": "3.972.86",
+      "resolved": "https://registry.npmjs.org/@aws-sdk/credential-provider-http/-/credential-provider-http-3.972.86.tgz",
+      "integrity": "sha512-U4mHaDRPWAn63yhl7FXIzbppNmW1F+4dSLeuiUpej2v3Xb6rGwvayEJ8SdlrdMV+/mZtd+GStTEP2HqurEzXtw==",
+      "license": "Apache-2.0",
+      "dependencies": {
+        "@aws-sdk/core": "^3.981.0",
+        "@aws-sdk/types": "^3.975.1",
+        "@smithy/core": "^3.40.0",
+        "@smithy/fetch-http-handler": "^5.8.1",
+        "@smithy/node-http-handler": "^4.14.2",
+        "@smithy/types": "^4.20.0",
+        "tslib": "^2.6.2"
+      },
+      "engines": {
+        "node": ">=20.0.0"
+      }
+    },
+    "node_modules/@aws-sdk/credential-provider-http/node_modules/@smithy/node-http-handler": {
+      "version": "4.14.2",
+      "resolved": "https://registry.npmjs.org/@smithy/node-http-handler/-/node-http-handler-4.14.2.tgz",
+      "integrity": "sha512-i1uORV1v3qBqP43ayRKzIdm1q5x14tf8N4Dd06/QUX1Szm6VxHMrTsu20X5E63UFsaNZCRjI4SXG0jDmqYa+3w==",
+      "license": "Apache-2.0",
+      "dependencies": {
+        "@smithy/core": "^3.39.0",
+        "@smithy/types": "^4.20.0",
+        "tslib": "^2.6.2"
+      },
+      "engines": {
+        "node": ">=18.0.0"
+      }
+    },
+    "node_modules/@aws-sdk/credential-provider-ini": {
+      "version": "3.973.30",
+      "resolved": "https://registry.npmjs.org/@aws-sdk/credential-provider-ini/-/credential-provider-ini-3.973.30.tgz",
+      "integrity": "sha512-r6r6499GWoGN943NA5YEhBEQ6TEOGTf7tTOBhHd/zw0UbNvSzd1/zPCNcDkPmRarA+e24X7KgxutqxjoWcskBg==",
+      "license": "Apache-2.0",
+      "dependencies": {
+        "@aws-sdk/core": "^3.981.0",
+        "@aws-sdk/credential-provider-env": "^3.972.84",
+        "@aws-sdk/credential-provider-http": "^3.972.86",
+        "@aws-sdk/credential-provider-login": "^3.972.92",
+        "@aws-sdk/credential-provider-process": "^3.972.84",
+        "@aws-sdk/credential-provider-sso": "^3.973.28",
+        "@aws-sdk/credential-provider-web-identity": "^3.972.90",
+        "@aws-sdk/nested-clients": "^3.998.3",
+        "@aws-sdk/types": "^3.975.1",
+        "@smithy/core": "^3.40.0",
+        "@smithy/credential-provider-imds": "^4.5.2",
+        "@smithy/types": "^4.20.0",
+        "tslib": "^2.6.2"
+      },
+      "engines": {
+        "node": ">=20.0.0"
+      }
+    },
+    "node_modules/@aws-sdk/credential-provider-login": {
+      "version": "3.972.92",
+      "resolved": "https://registry.npmjs.org/@aws-sdk/credential-provider-login/-/credential-provider-login-3.972.92.tgz",
+      "integrity": "sha512-96bcp9Pe/Xd60OEwncZ+kAQTQSu+fJnpUGz1qE6ghF5jnETmrk8XMU86mIP3lolvnCgR61XbZ+Ht6hdBjiQOmQ==",
+      "license": "Apache-2.0",
+      "dependencies": {
+        "@aws-sdk/core": "^3.981.0",
+        "@aws-sdk/nested-clients": "^3.998.3",
+        "@aws-sdk/types": "^3.975.1",
+        "@smithy/core": "^3.40.0",
+        "@smithy/types": "^4.20.0",
+        "tslib": "^2.6.2"
+      },
+      "engines": {
+        "node": ">=20.0.0"
+      }
+    },
+    "node_modules/@aws-sdk/credential-provider-node": {
+      "version": "3.972.97",
+      "resolved": "https://registry.npmjs.org/@aws-sdk/credential-provider-node/-/credential-provider-node-3.972.97.tgz",
+      "integrity": "sha512-E4a0IXXJVsIdo/K9roX4JAEfI0JJr7KTPymkbKgETRDqEcLygE4ZlLTe24+7Qkh8Dl5YpnPd+Tt0DOPJDFXIwA==",
+      "license": "Apache-2.0",
+      "dependencies": {
+        "@aws-sdk/credential-provider-env": "^3.972.84",
+        "@aws-sdk/credential-provider-http": "^3.972.86",
+        "@aws-sdk/credential-provider-ini": "^3.973.30",
+        "@aws-sdk/credential-provider-process": "^3.972.84",
+        "@aws-sdk/credential-provider-sso": "^3.973.28",
+        "@aws-sdk/credential-provider-web-identity": "^3.972.90",
+        "@aws-sdk/types": "^3.975.1",
+        "@smithy/core": "^3.40.0",
+        "@smithy/credential-provider-imds": "^4.5.2",
+        "@smithy/types": "^4.20.0",
+        "tslib": "^2.6.2"
+      },
+      "engines": {
+        "node": ">=20.0.0"
+      }
+    },
+    "node_modules/@aws-sdk/credential-provider-process": {
+      "version": "3.972.84",
+      "resolved": "https://registry.npmjs.org/@aws-sdk/credential-provider-process/-/credential-provider-process-3.972.84.tgz",
+      "integrity": "sha512-199C6OpNejd0nq9GFAkEFIKids1FL0R6LJtL9c1OTiDOXki7S1OduuPxW4+hE0LwndcYJ7YHOuYTlqScfpCocA==",
+      "license": "Apache-2.0",
+      "dependencies": {
+        "@aws-sdk/core": "^3.981.0",
+        "@aws-sdk/types": "^3.975.1",
+        "@smithy/core": "^3.40.0",
+        "@smithy/types": "^4.20.0",
+        "tslib": "^2.6.2"
+      },
+      "engines": {
+        "node": ">=20.0.0"
+      }
+    },
+    "node_modules/@aws-sdk/credential-provider-sso": {
+      "version": "3.973.28",
+      "resolved": "https://registry.npmjs.org/@aws-sdk/credential-provider-sso/-/credential-provider-sso-3.973.28.tgz",
+      "integrity": "sha512-bGg7wH8wVDJQIcJggO9lg1ZYbG7l+PbLwHuM3Bi/e1TlCZhU712JS1W3tdRpyptdJD1UGyhBNGO/YrhrQCHKbg==",
+      "license": "Apache-2.0",
+      "dependencies": {
+        "@aws-sdk/core": "^3.981.0",
+        "@aws-sdk/nested-clients": "^3.998.3",
+        "@aws-sdk/token-providers": "3.1166.0",
+        "@aws-sdk/types": "^3.975.1",
+        "@smithy/core": "^3.40.0",
+        "@smithy/types": "^4.20.0",
+        "tslib": "^2.6.2"
+      },
+      "engines": {
+        "node": ">=20.0.0"
+      }
+    },
+    "node_modules/@aws-sdk/credential-provider-sso/node_modules/@aws-sdk/token-providers": {
+      "version": "3.1166.0",
+      "resolved": "https://registry.npmjs.org/@aws-sdk/token-providers/-/token-providers-3.1166.0.tgz",
+      "integrity": "sha512-ngJ8mxXqtQ9mnp7QV6TWKJCxkpjVfPWxKQSc2FYhCyCfOVFIGdFv7P+/RqVffFrJAorwBPpktnv32gNlcEgF4g==",
+      "license": "Apache-2.0",
+      "dependencies": {
+        "@aws-sdk/core": "^3.981.0",
+        "@aws-sdk/nested-clients": "^3.998.3",
+        "@aws-sdk/types": "^3.975.1",
+        "@smithy/core": "^3.40.0",
+        "@smithy/types": "^4.20.0",
+        "tslib": "^2.6.2"
+      },
+      "engines": {
+        "node": ">=20.0.0"
+      }
+    },
+    "node_modules/@aws-sdk/credential-provider-web-identity": {
+      "version": "3.972.90",
+      "resolved": "https://registry.npmjs.org/@aws-sdk/credential-provider-web-identity/-/credential-provider-web-identity-3.972.90.tgz",
+      "integrity": "sha512-duLeE3xlf0viHeH+1RM4z5duR3b32BCZTWVMu+MbxFPjQBxy7hmIGEqt5hekuFPRuXoyhMovjNl+PNNsb5oiGQ==",
+      "license": "Apache-2.0",
+      "dependencies": {
+        "@aws-sdk/core": "^3.981.0",
+        "@aws-sdk/nested-clients": "^3.998.3",
+        "@aws-sdk/types": "^3.975.1",
+        "@smithy/core": "^3.40.0",
+        "@smithy/types": "^4.20.0",
+        "tslib": "^2.6.2"
+      },
+      "engines": {
+        "node": ">=20.0.0"
+      }
+    },
+    "node_modules/@aws-sdk/eventstream-handler-node": {
+      "version": "3.972.42",
+      "resolved": "https://registry.npmjs.org/@aws-sdk/eventstream-handler-node/-/eventstream-handler-node-3.972.42.tgz",
+      "integrity": "sha512-YVB1wrpE1WF8NvMpaRyhwm9XBYl3HTbPNEIgybi0b0XpmBrJ7Y3Y/drbxh9qAVMbR+0hcwM63GPWzhOVRuerfg==",
+      "license": "Apache-2.0",
+      "dependencies": {
+        "@aws-sdk/types": "^3.975.1",
+        "@smithy/core": "^3.40.0",
+        "@smithy/types": "^4.20.0",
+        "tslib": "^2.6.2"
+      },
+      "engines": {
+        "node": ">=20.0.0"
+      }
+    },
+    "node_modules/@aws-sdk/middleware-eventstream": {
+      "version": "3.972.38",
+      "resolved": "https://registry.npmjs.org/@aws-sdk/middleware-eventstream/-/middleware-eventstream-3.972.38.tgz",
+      "integrity": "sha512-4K6FDz2BxH3rve8Hw/8uApWXKCuKKMeYKzY23PoiGqUBWaA23eAy+GzW9aoG3Cm7HqgYzqkljl3ECJRJCxGs7g==",
+      "license": "Apache-2.0",
+      "dependencies": {
+        "@aws-sdk/types": "^3.975.1",
+        "@smithy/core": "^3.40.0",
+        "@smithy/types": "^4.20.0",
+        "tslib": "^2.6.2"
+      },
+      "engines": {
+        "node": ">=20.0.0"
+      }
+    },
+    "node_modules/@aws-sdk/middleware-websocket": {
+      "version": "3.972.66",
+      "resolved": "https://registry.npmjs.org/@aws-sdk/middleware-websocket/-/middleware-websocket-3.972.66.tgz",
+      "integrity": "sha512-feGNDB15ZgqX4DTsUykkgj7d8hzfzx03v80EIyRA1FTbsbAJQKxYB50kRbrrpE5WeFaWhgk+p5YHlsoyXrI2/g==",
+      "license": "Apache-2.0",
+      "dependencies": {
+        "@aws-sdk/core": "^3.981.0",
+        "@aws-sdk/types": "^3.975.1",
+        "@smithy/core": "^3.40.0",
+        "@smithy/fetch-http-handler": "^5.8.1",
+        "@smithy/signature-v4": "^5.7.5",
+        "@smithy/types": "^4.20.0",
+        "tslib": "^2.6.2"
+      },
+      "engines": {
+        "node": ">= 14.0.0"
+      }
+    },
+    "node_modules/@aws-sdk/nested-clients": {
+      "version": "3.998.3",
+      "resolved": "https://registry.npmjs.org/@aws-sdk/nested-clients/-/nested-clients-3.998.3.tgz",
+      "integrity": "sha512-acHTTzMB13CU6dU4sxABYExMI3PQM2zStWH2MiUwJp/7QKTrLg2f7mbzSXoegW2kYOk2tdqQYagsZrWB8Xv7eA==",
+      "license": "Apache-2.0",
+      "dependencies": {
+        "@aws-sdk/core": "^3.981.0",
+        "@aws-sdk/signature-v4-multi-region": "^3.996.52",
+        "@aws-sdk/types": "^3.975.1",
+        "@smithy/core": "^3.40.0",
+        "@smithy/fetch-http-handler": "^5.8.1",
+        "@smithy/node-http-handler": "^4.14.2",
+        "@smithy/types": "^4.20.0",
+        "tslib": "^2.6.2"
+      },
+      "engines": {
+        "node": ">=20.0.0"
+      }
+    },
+    "node_modules/@aws-sdk/nested-clients/node_modules/@smithy/node-http-handler": {
+      "version": "4.14.2",
+      "resolved": "https://registry.npmjs.org/@smithy/node-http-handler/-/node-http-handler-4.14.2.tgz",
+      "integrity": "sha512-i1uORV1v3qBqP43ayRKzIdm1q5x14tf8N4Dd06/QUX1Szm6VxHMrTsu20X5E63UFsaNZCRjI4SXG0jDmqYa+3w==",
+      "license": "Apache-2.0",
+      "dependencies": {
+        "@smithy/core": "^3.39.0",
+        "@smithy/types": "^4.20.0",
+        "tslib": "^2.6.2"
+      },
+      "engines": {
+        "node": ">=18.0.0"
+      }
+    },
+    "node_modules/@aws-sdk/signature-v4-multi-region": {
+      "version": "3.996.52",
+      "resolved": "https://registry.npmjs.org/@aws-sdk/signature-v4-multi-region/-/signature-v4-multi-region-3.996.52.tgz",
+      "integrity": "sha512-6W6SjGc8OXUhMzNxU1X922ghD+PP1XvzmCk5Scui0jaYsLezycMYR1RaLp5xTIOUrhTXyb4DnAbPr3fBgmdnzg==",
+      "license": "Apache-2.0",
+      "dependencies": {
+        "@aws-sdk/types": "^3.975.1",
+        "@smithy/signature-v4": "^5.7.5",
+        "@smithy/types": "^4.20.0",
+        "tslib": "^2.6.2"
+      },
+      "engines": {
+        "node": ">=20.0.0"
+      }
+    },
+    "node_modules/@aws-sdk/token-providers": {
+      "version": "3.1127.0",
+      "resolved": "https://registry.npmjs.org/@aws-sdk/token-providers/-/token-providers-3.1127.0.tgz",
+      "integrity": "sha512-Dv2TMWBshJ+tF6ahs2Sy5bh4Iabsd4GAQqVvE9XZmYmnoaVbpS2QKIKE/HRacc7bTtbjEEvP+laGzHvHlf1CiQ==",
+      "license": "Apache-2.0",
+      "dependencies": {
+        "@aws-sdk/core": "^3.977.9",
+        "@aws-sdk/nested-clients": "^3.997.44",
+        "@aws-sdk/types": "^3.974.5",
+        "@smithy/core": "^3.33.3",
+        "@smithy/types": "^4.17.2",
+        "tslib": "^2.6.2"
+      },
+      "engines": {
+        "node": ">=20.0.0"
+      }
+    },
+    "node_modules/@aws-sdk/types": {
+      "version": "3.975.1",
+      "resolved": "https://registry.npmjs.org/@aws-sdk/types/-/types-3.975.1.tgz",
+      "integrity": "sha512-7rGxUkCB2QPoQOeJmonmAICTN2zrH+fpmi1p4Iwu72lnxNaMhOgqcbpyddifnM1DBb19TWQ1u6z/XjkaFNEDWw==",
+      "license": "Apache-2.0",
+      "dependencies": {
+        "@smithy/types": "^4.20.0",
+        "tslib": "^2.6.2"
+      },
+      "engines": {
+        "node": ">=20.0.0"
+      }
+    },
+    "node_modules/@aws-sdk/xml-builder": {
+      "version": "3.972.43",
+      "resolved": "https://registry.npmjs.org/@aws-sdk/xml-builder/-/xml-builder-3.972.43.tgz",
+      "integrity": "sha512-rG8QVx4DOrJWptsogu1Aq+CDsnPKaBrAlJpKLxrJrIDXAq1ElnW0yQjjBnlWSXll0cDakCG6UDvaqwz0A9d9Og==",
+      "license": "Apache-2.0",
+      "dependencies": {
+        "@smithy/types": "^4.20.0",
+        "tslib": "^2.6.2"
+      },
+      "engines": {
+        "node": ">=20.0.0"
+      }
+    },
+    "node_modules/@aws/lambda-invoke-store": {
+      "version": "0.3.0",
+      "resolved": "https://registry.npmjs.org/@aws/lambda-invoke-store/-/lambda-invoke-store-0.3.0.tgz",
+      "integrity": "sha512-sl4Bm6yiMNYrZKkqqDFWN0UfnWhlS8ivKxrYl+6t0gCLrqr8y3B2IqZZbFRkfaVVp7C/baApyh71P+LeE1A2sQ==",
+      "license": "Apache-2.0",
+      "engines": {
+        "node": ">=18.0.0"
+      }
+    },
+    "node_modules/@babel/runtime": {
+      "version": "7.29.14",
+      "resolved": "https://registry.npmjs.org/@babel/runtime/-/runtime-7.29.14.tgz",
+      "integrity": "sha512-Y5tqevQaUAZhhj82BpYMNC1ssvLQTVAfwKdm8iy8qwmhvC2/CpcAu8OC+QEtjM7pMk7knx83u1Qj8gzkicyelw==",
+      "license": "MIT",
+      "engines": {
+        "node": ">=6.9.0"
+      }
+    },
+    "node_modules/@earendil-works/pi-agent-core": {
+      "version": "1.5.2",
+      "resolved": "https://registry.npmjs.org/@earendil-works/pi-agent-core/-/pi-agent-core-1.5.2.tgz",
+      "integrity": "sha512-ie5mejS7mGfXt//9As7i3LfxVXdktZvF1JP4EQsUXTp4mU437h23MNGx7wXZ5VYs3YiG/Qnj3e7OZ2HC069OMw==",
+      "license": "MIT",
+      "dependencies": {
+        "@earendil-works/pi-ai": "1.5.2",
+        "@earendil-works/pi-schema": "1.5.2"
+      },
+      "engines": {
+        "node": ">=22.19.0"
+      }
+    },
+    "node_modules/@earendil-works/pi-ai": {
+      "version": "1.5.2",
+      "resolved": "https://registry.npmjs.org/@earendil-works/pi-ai/-/pi-ai-1.5.2.tgz",
+      "integrity": "sha512-2tWPSnV3qzfiDIY3aWluBag3vC++Vs+VsXt/UquSU5onPMohPih72FUhIhaqmDdMYubOgB3Byl9uF4Vk40JLvQ==",
+      "license": "MIT",
+      "dependencies": {
+        "@anthropic-ai/sdk": "0.129.0",
+        "@aws-sdk/client-bedrock-runtime": "3.1127.0",
+        "@earendil-works/pi-schema": "1.5.2",
+        "@earendil-works/pi-telemetry": "1.5.2",
+        "@google/genai": "2.21.0",
+        "@smithy/node-http-handler": "4.12.1",
+        "http-proxy-agent": "9.1.0",
+        "https-proxy-agent": "9.1.0",
+        "openai": "7.19.0",
+        "partial-json": "0.1.7"
+      },
+      "bin": {
+        "pi-ai": "dist/cli.js"
+      },
+      "engines": {
+        "node": ">=22.19.0"
+      }
+    },
+    "node_modules/@earendil-works/pi-codemode": {
+      "version": "1.5.2",
+      "resolved": "https://registry.npmjs.org/@earendil-works/pi-codemode/-/pi-codemode-1.5.2.tgz",
+      "integrity": "sha512-HoZQ40a9RgdZ1VgmrX6x8887cNXedaRJT1l+Ie5YRIMK4gY7v0EpsiNqf6dmixrKylZlTgUSyR+vE8xhjfkr+w==",
+      "license": "MIT",
+      "dependencies": {
+        "quickjs-wasi": "3.6.2"
+      },
+      "engines": {
+        "node": ">=22.19.0"
+      }
+    },
+    "node_modules/@earendil-works/pi-coding-agent": {
+      "version": "1.5.2",
+      "resolved": "https://registry.npmjs.org/@earendil-works/pi-coding-agent/-/pi-coding-agent-1.5.2.tgz",
+      "integrity": "sha512-mUWI04rqF1Vd/m1q+Ps1XeWsTXEVvRUnsmRa83I3Dzua0Tx5bYS93imeqtIfrXf7PkkaR6ERz+AuQhIJlom5yA==",
+      "license": "MIT",
+      "dependencies": {
+        "@earendil-works/pi-agent-core": "1.5.2",
+        "@earendil-works/pi-ai": "1.5.2",
+        "@earendil-works/pi-codemode": "1.5.2",
+        "@earendil-works/pi-mcp": "1.5.2",
+        "@earendil-works/pi-tui": "1.5.2",
+        "@silvia-odwyer/photon-node": "0.3.4",
+        "brace-expansion": "5.0.12",
+        "chalk": "6.0.0",
+        "cross-spawn": "7.0.6",
+        "diff": "8.0.4",
+        "highlight.js": "10.7.3",
+        "hosted-git-info": "9.0.3",
+        "ignore": "7.0.8",
+        "jiti": "2.7.0",
+        "lovely-mermaid": "0.3.3",
+        "minimatch": "11.0.3",
+        "proper-lockfile": "4.1.2",
+        "quickjs-wasi": "3.6.2",
+        "semver": "7.8.5",
+        "typebox": "1.3.27",
+        "undici": "8.12.3",
+        "yaml": "2.9.0"
+      },
+      "bin": {
+        "pi": "dist/bundle/cli.js"
+      },
+      "engines": {
+        "node": ">=22.19.0"
+      }
+    },
+    "node_modules/@earendil-works/pi-mcp": {
+      "version": "1.5.2",
+      "resolved": "https://registry.npmjs.org/@earendil-works/pi-mcp/-/pi-mcp-1.5.2.tgz",
+      "integrity": "sha512-zU1UgeXDlbixPqGEWD7Ql0brEMIpYr7aEWjoEE5h5enJbM/kQ2jIr7lN8JoR80oUnq1fJSU7SC8kLx2Fx/IZYg==",
+      "license": "MIT",
+      "dependencies": {
+        "cross-spawn": "7.0.6"
+      },
+      "engines": {
+        "node": ">=22.19.0"
+      }
+    },
+    "node_modules/@earendil-works/pi-schema": {
+      "version": "1.5.2",
+      "resolved": "https://registry.npmjs.org/@earendil-works/pi-schema/-/pi-schema-1.5.2.tgz",
+      "integrity": "sha512-hJoyCXWUhsSrXY5wJo2Q4kHXUsR51pNhkJHAMkWRwVMLDRtMDPkKNaa+JlVRVqTw1hjdSxcVVaFLSDbKlaTXEQ==",
+      "license": "MIT",
+      "engines": {
+        "node": ">=22.19.0"
+      }
+    },
+    "node_modules/@earendil-works/pi-telemetry": {
+      "version": "1.5.2",
+      "resolved": "https://registry.npmjs.org/@earendil-works/pi-telemetry/-/pi-telemetry-1.5.2.tgz",
+      "integrity": "sha512-m+cumjIqNh1aMISi/9ttcG3ZOwIdriPbz/eMyWmRMJCGa/WcgY1RX4lrb7HvsHhSfI/JUeBESA4nOCr8C3y5ow==",
+      "license": "MIT",
+      "engines": {
+        "node": ">=22.19.0"
+      }
+    },
+    "node_modules/@earendil-works/pi-tui": {
+      "version": "1.5.2",
+      "resolved": "https://registry.npmjs.org/@earendil-works/pi-tui/-/pi-tui-1.5.2.tgz",
+      "integrity": "sha512-WK8ih+c88GWizaB79y7Pq3PV7ySf5VI1pZ1i/6aBBjDOAiG2EE3ojKjl+pxQqLfyQGnzHYu4VfakOBJgumuoyw==",
+      "license": "MIT",
+      "dependencies": {
+        "get-east-asian-width": "1.6.0",
+        "marked": "18.0.11",
+        "marked-cjk-friendly": "0.1.2"
+      },
+      "engines": {
+        "node": ">=22.19.0"
+      }
+    },
+    "node_modules/@google/genai": {
+      "version": "2.21.0",
+      "resolved": "https://registry.npmjs.org/@google/genai/-/genai-2.21.0.tgz",
+      "integrity": "sha512-+PDtco2/Z0ONdzCGekCoCT+O1VJS9xJQNN4XzQpXG/t3El/SWWMkCWlFRO1KmivOHPa4Q0VjUYu1HBKCZ/v33Q==",
+      "hasInstallScript": true,
+      "license": "Apache-2.0",
+      "dependencies": {
+        "google-auth-library": "^10.3.0",
+        "p-retry": "^4.6.2",
+        "protobufjs": "^7.5.4",
+        "ws": "^8.18.0"
+      },
+      "engines": {
+        "node": ">=20.0.0"
+      },
+      "peerDependencies": {
+        "@modelcontextprotocol/sdk": "^1.25.2"
+      },
+      "peerDependenciesMeta": {
+        "@modelcontextprotocol/sdk": {
+          "optional": true
+        }
+      }
+    },
+    "node_modules/@isaacs/nonrecursive-glob-match": {
+      "version": "1.1.0",
+      "resolved": "https://registry.npmjs.org/@isaacs/nonrecursive-glob-match/-/nonrecursive-glob-match-1.1.0.tgz",
+      "integrity": "sha512-GPm/Dbvk5RLmhRnxXIa7nTpK0xtl4E0wj0MslsuNiJ1FIROU+2+9lgUC/dgF7Ey4QCWhfEsgxilMRMCdHPfDfw==",
+      "license": "BlueOak-1.0.0"
+    },
+    "node_modules/@protobufjs/aspromise": {
+      "version": "1.1.2",
+      "resolved": "https://registry.npmjs.org/@protobufjs/aspromise/-/aspromise-1.1.2.tgz",
+      "integrity": "sha512-j+gKExEuLmKwvz3OgROXtrJ2UG2x8Ch2YZUxahh+s1F2HZ+wAceUNLkvy6zKCPVRkU++ZWQrdxsUeQXmcg4uoQ==",
+      "license": "BSD-3-Clause"
+    },
+    "node_modules/@protobufjs/base64": {
+      "version": "1.1.2",
+      "resolved": "https://registry.npmjs.org/@protobufjs/base64/-/base64-1.1.2.tgz",
+      "integrity": "sha512-AZkcAA5vnN/v4PDqKyMR5lx7hZttPDgClv83E//FMNhR2TMcLUhfRUBHCmSl0oi9zMgDDqRUJkSxO3wm85+XLg==",
+      "license": "BSD-3-Clause"
+    },
+    "node_modules/@protobufjs/codegen": {
+      "version": "2.0.5",
+      "resolved": "https://registry.npmjs.org/@protobufjs/codegen/-/codegen-2.0.5.tgz",
+      "integrity": "sha512-zgXFLzW3Ap33e6d0Wlj4MGIm6Ce8O89n/apUaGNB/jx+hw+ruWEp7EwGUshdLKVRCxZW12fp9r40E1mQrf/34g==",
+      "license": "BSD-3-Clause"
+    },
+    "node_modules/@protobufjs/eventemitter": {
+      "version": "1.1.1",
+      "resolved": "https://registry.npmjs.org/@protobufjs/eventemitter/-/eventemitter-1.1.1.tgz",
+      "integrity": "sha512-vW1GmwMZNnL+gMRaovlh9yZX74kc+TTU3FObkkurpMaRtBfLP3ldjS9KQWlwZgraRE0+dheEEoAxdzcJQ8eXZg==",
+      "license": "BSD-3-Clause"
+    },
+    "node_modules/@protobufjs/fetch": {
+      "version": "1.1.1",
+      "resolved": "https://registry.npmjs.org/@protobufjs/fetch/-/fetch-1.1.1.tgz",
+      "integrity": "sha512-GpptLrs57adMSuHi3VNj0mAF8dwh36LMaYF6XyJ6JMWlVsc+t42tm1HSEDmOs3A8fC9yyeisgLhsTVQokOZ0zw==",
+      "license": "BSD-3-Clause",
+      "dependencies": {
+        "@protobufjs/aspromise": "^1.1.1"
+      }
+    },
+    "node_modules/@protobufjs/float": {
+      "version": "1.0.2",
+      "resolved": "https://registry.npmjs.org/@protobufjs/float/-/float-1.0.2.tgz",
+      "integrity": "sha512-Ddb+kVXlXst9d+R9PfTIxh1EdNkgoRe5tOX6t01f1lYWOvJnSPDBlG241QLzcyPdoNTsblLUdujGSE4RzrTZGQ==",
+      "license": "BSD-3-Clause"
+    },
+    "node_modules/@protobufjs/path": {
+      "version": "1.1.2",
+      "resolved": "https://registry.npmjs.org/@protobufjs/path/-/path-1.1.2.tgz",
+      "integrity": "sha512-6JOcJ5Tm08dOHAbdR3GrvP+yUUfkjG5ePsHYczMFLq3ZmMkAD98cDgcT2iA1lJ9NVwFd4tH/iSSoe44YWkltEA==",
+      "license": "BSD-3-Clause"
+    },
+    "node_modules/@protobufjs/pool": {
+      "version": "1.1.0",
+      "resolved": "https://registry.npmjs.org/@protobufjs/pool/-/pool-1.1.0.tgz",
+      "integrity": "sha512-0kELaGSIDBKvcgS4zkjz1PeddatrjYcmMWOlAuAPwAeccUrPHdUqo/J6LiymHHEiJT5NrF1UVwxY14f+fy4WQw==",
+      "license": "BSD-3-Clause"
+    },
+    "node_modules/@protobufjs/utf8": {
+      "version": "1.1.2",
+      "resolved": "https://registry.npmjs.org/@protobufjs/utf8/-/utf8-1.1.2.tgz",
+      "integrity": "sha512-b1UQwcEZ4yCnMCD8DAL1VlbvBJE9/IX4FTIp7BG1xYpf29SLazLSrqUkj4w7Y5y7cCVP6E5tcqqcI0xemPkHug==",
+      "license": "BSD-3-Clause"
+    },
+    "node_modules/@silvia-odwyer/photon-node": {
+      "version": "0.3.4",
+      "resolved": "https://registry.npmjs.org/@silvia-odwyer/photon-node/-/photon-node-0.3.4.tgz",
+      "integrity": "sha512-bnly4BKB3KDTFxrUIcgCLbaeVVS8lrAkri1pEzskpmxu9MdfGQTy8b8EgcD83ywD3RPMsIulY8xJH5Awa+t9fA==",
+      "license": "Apache-2.0"
+    },
+    "node_modules/@smithy/core": {
+      "version": "3.41.0",
+      "resolved": "https://registry.npmjs.org/@smithy/core/-/core-3.41.0.tgz",
+      "integrity": "sha512-fuZ34H1uizS3WgcX9VXG7Uy8od5A5/kCc+CR3NkHLNm2H/BE9AUHG02VIdu8ZB7FYhLqsr/RZbqAoXuOCg/Oxg==",
+      "license": "Apache-2.0",
+      "dependencies": {
+        "@smithy/types": "^4.20.0",
+        "tslib": "^2.6.2"
+      },
+      "engines": {
+        "node": ">=18.0.0"
+      }
+    },
+    "node_modules/@smithy/credential-provider-imds": {
+      "version": "4.5.2",
+      "resolved": "https://registry.npmjs.org/@smithy/credential-provider-imds/-/credential-provider-imds-4.5.2.tgz",
+      "integrity": "sha512-A9uSdn72ozbRUSit0eib0TW7nXuNPlaeM0zcGkJ+nE6tFcSDbnmtwoxbTCFBukVQcszDAyvsd7+rTduPTXpygg==",
+      "license": "Apache-2.0",
+      "dependencies": {
+        "@smithy/core": "^3.33.2",
+        "@smithy/types": "^4.17.2",
+        "tslib": "^2.6.2"
+      },
+      "engines": {
+        "node": ">=18.0.0"
+      }
+    },
+    "node_modules/@smithy/fetch-http-handler": {
+      "version": "5.8.1",
+      "resolved": "https://registry.npmjs.org/@smithy/fetch-http-handler/-/fetch-http-handler-5.8.1.tgz",
+      "integrity": "sha512-h8BdMUrUBhMhMaeK7QqAdINRZezCGuYOCpcOZZ1ewxbHST9rdTd09xwNpvLTYfzDRehxQiReK4SKbdYZxBA+ew==",
+      "license": "Apache-2.0",
+      "dependencies": {
+        "@smithy/core": "^3.39.0",
+        "@smithy/types": "^4.20.0",
+        "tslib": "^2.6.2"
+      },
+      "engines": {
+        "node": ">=18.0.0"
+      }
+    },
+    "node_modules/@smithy/node-http-handler": {
+      "version": "4.12.1",
+      "resolved": "https://registry.npmjs.org/@smithy/node-http-handler/-/node-http-handler-4.12.1.tgz",
+      "integrity": "sha512-ThMkboGeONWXAelq9FvGsuJC4rOi+qyC4/zhUF58xYpxUg5sQKx2VXZYJmtNjr4dSuBJ1HeJXETQILCz3wOHvw==",
+      "license": "Apache-2.0",
+      "dependencies": {
+        "@smithy/core": "^3.33.3",
+        "@smithy/types": "^4.18.0",
+        "tslib": "^2.6.2"
+      },
+      "engines": {
+        "node": ">=18.0.0"
+      }
+    },
+    "node_modules/@smithy/signature-v4": {
+      "version": "5.7.5",
+      "resolved": "https://registry.npmjs.org/@smithy/signature-v4/-/signature-v4-5.7.5.tgz",
+      "integrity": "sha512-WPjdr5oWOk1LArpI4pavu+fSo+/evi0Re1olxGvqwuZopd4gYR1UGCi+Soyn/IjmafqbWs+ZC+3AKxJS3ZpwUg==",
+      "license": "Apache-2.0",
+      "dependencies": {
+        "@smithy/core": "^3.38.0",
+        "@smithy/types": "^4.19.0",
+        "tslib": "^2.6.2"
+      },
+      "engines": {
+        "node": ">=18.0.0"
+      }
+    },
+    "node_modules/@smithy/types": {
+      "version": "4.20.0",
+      "resolved": "https://registry.npmjs.org/@smithy/types/-/types-4.20.0.tgz",
+      "integrity": "sha512-lCA6QG22dPk9ecHbv91jDQZsmtPUjdS1aE2Il6NNPqe7DrYc0dZQi6DhcESk2KYXH2sp5xbAcGdYMZDFnuzA2A==",
+      "license": "Apache-2.0",
+      "dependencies": {
+        "tslib": "^2.6.2"
+      },
+      "engines": {
+        "node": ">=18.0.0"
+      }
+    },
+    "node_modules/@stablelib/base64": {
+      "version": "1.0.1",
+      "resolved": "https://registry.npmjs.org/@stablelib/base64/-/base64-1.0.1.tgz",
+      "integrity": "sha512-1bnPQqSxSuc3Ii6MhBysoWCg58j97aUjuCSZrGSmDxNqtytIi0k8utUenAwTZN4V5mXXYGsVUI9zeBqy+jBOSQ==",
+      "license": "MIT"
+    },
+    "node_modules/@types/node": {
+      "version": "26.6.6",
+      "resolved": "https://registry.npmjs.org/@types/node/-/node-26.6.6.tgz",
+      "integrity": "sha512-MzQj+8Kx3XI40OmUAE6Qoh58ZMNstNNMwn2nfd3qWsfe7nDNSqJNzes4njhz6AHwrSHOffSLwXU6yb474Q4aog==",
+      "license": "MIT",
+      "dependencies": {
+        "undici-types": "~8.9.0"
+      }
+    },
+    "node_modules/@types/retry": {
+      "version": "0.12.0",
+      "resolved": "https://registry.npmjs.org/@types/retry/-/retry-0.12.0.tgz",
+      "integrity": "sha512-wWKOClTTiizcZhXnPY4wikVAwmdYHp8q6DmC+EJUzAMsycb7HB32Kh9RN4+0gExjmPmZSAQjgURXIGATPegAvA==",
+      "license": "MIT"
+    },
+    "node_modules/agent-base": {
+      "version": "9.0.0",
+      "resolved": "https://registry.npmjs.org/agent-base/-/agent-base-9.0.0.tgz",
+      "integrity": "sha512-TQf59BsZnytt8GdJKLPfUZ54g/iaUL2OWDSFCCvMOhsHduDQxO8xC4PNeyIkVcA5KwL2phPSv0douC0fgWzmnA==",
+      "license": "MIT",
+      "engines": {
+        "node": ">= 20"
+      }
+    },
+    "node_modules/balanced-match": {
+      "version": "4.0.4",
+      "resolved": "https://registry.npmjs.org/balanced-match/-/balanced-match-4.0.4.tgz",
+      "integrity": "sha512-BLrgEcRTwX2o6gGxGOCNyMvGSp35YofuYzw9h1IMTRmKqttAZZVU67bdb9Pr2vUHA8+j3i2tJfjO6C6+4myGTA==",
+      "license": "MIT",
+      "engines": {
+        "node": "18 || 20 || >=22"
+      }
+    },
+    "node_modules/base64-js": {
+      "version": "1.5.1",
+      "resolved": "https://registry.npmjs.org/base64-js/-/base64-js-1.5.1.tgz",
+      "integrity": "sha512-AKpaYlHn8t4SVbOHCy+b5+KKgvR4vrsD8vbvrbiQJps7fKDTkjkDry6ji0rUJjC0kzbNePLwzxq8iypo41qeWA==",
+      "funding": [
+        {
+          "type": "github",
+          "url": "https://github.com/sponsors/feross"
+        },
+        {
+          "type": "patreon",
+          "url": "https://www.patreon.com/feross"
+        },
+        {
+          "type": "consulting",
+          "url": "https://feross.org/support"
+        }
+      ],
+      "license": "MIT"
+    },
+    "node_modules/bignumber.js": {
+      "version": "9.3.1",
+      "resolved": "https://registry.npmjs.org/bignumber.js/-/bignumber.js-9.3.1.tgz",
+      "integrity": "sha512-Ko0uX15oIUS7wJ3Rb30Fs6SkVbLmPBAKdlm7q9+ak9bbIeFf0MwuBsQV6z7+X768/cHsfg+WlysDWJcmthjsjQ==",
+      "license": "MIT",
+      "engines": {
+        "node": "*"
+      }
+    },
+    "node_modules/bowser": {
+      "version": "2.15.0",
+      "resolved": "https://registry.npmjs.org/bowser/-/bowser-2.15.0.tgz",
+      "integrity": "sha512-xic6KSZglg/I4ymp45fdM4GWfYpBK79Fxd/TOvJktlaPgQqqDxvmGwOPZl2V0dyeS3Lj5c180bLhXF43iyAjZQ==",
+      "license": "MIT"
+    },
+    "node_modules/brace-expansion": {
+      "version": "5.0.12",
+      "resolved": "https://registry.npmjs.org/brace-expansion/-/brace-expansion-5.0.12.tgz",
+      "integrity": "sha512-YovQ3rzhaLMIrDjNDMkNS01tea93qhEhG5xy8f6+R0l+dw3Ki+5sCoIoI942iuLZTHWogWktgwVDhU09iNEimQ==",
+      "license": "MIT",
+      "dependencies": {
+        "balanced-match": "^4.0.2"
+      },
+      "engines": {
+        "node": "20 || >=22"
+      }
+    },
+    "node_modules/buffer-equal-constant-time": {
+      "version": "1.0.1",
+      "resolved": "https://registry.npmjs.org/buffer-equal-constant-time/-/buffer-equal-constant-time-1.0.1.tgz",
+      "integrity": "sha512-zRpUiDwd/xk6ADqPMATG8vc9VPrkck7T07OIx0gnjmJAnHnTVXNQG3vfvWNuiZIkwu9KrKdA1iJKfsfTVxE6NA==",
+      "license": "BSD-3-Clause"
+    },
+    "node_modules/chalk": {
+      "version": "6.0.0",
+      "resolved": "https://registry.npmjs.org/chalk/-/chalk-6.0.0.tgz",
+      "integrity": "sha512-2uNTXIuTTxk7ciZgAU1BQcgnchcG0xXnrs6jzkQfj9SsRa9M2s5zE8WT96hS6KmG4MzWHSrvH43DF1m4XRkrFg==",
+      "license": "MIT",
+      "engines": {
+        "node": ">=22"
+      },
+      "funding": {
+        "url": "https://github.com/chalk/chalk?sponsor=1"
+      }
+    },
+    "node_modules/cross-spawn": {
+      "version": "7.0.6",
+      "resolved": "https://registry.npmjs.org/cross-spawn/-/cross-spawn-7.0.6.tgz",
+      "integrity": "sha512-uV2QOWP2nWzsy2aMp8aRibhi9dlzF5Hgh5SHaB9OiTGEyDTiJJyx0uy51QXdyWbtAHNua4XJzUKca3OzKUd3vA==",
+      "license": "MIT",
+      "dependencies": {
+        "path-key": "^3.1.0",
+        "shebang-command": "^2.0.0",
+        "which": "^2.0.1"
+      },
+      "engines": {
+        "node": ">= 8"
+      }
+    },
+    "node_modules/data-uri-to-buffer": {
+      "version": "4.0.1",
+      "resolved": "https://registry.npmjs.org/data-uri-to-buffer/-/data-uri-to-buffer-4.0.1.tgz",
+      "integrity": "sha512-0R9ikRb668HB7QDxT1vkpuUBtqc53YyAwMwGeUFKRojY/NWKvdZ+9UYtRfGmhqNbRkTSVpMbmyhXipFFv2cb/A==",
+      "license": "MIT",
+      "engines": {
+        "node": ">= 12"
+      }
+    },
+    "node_modules/debug": {
+      "version": "4.4.3",
+      "resolved": "https://registry.npmjs.org/debug/-/debug-4.4.3.tgz",
+      "integrity": "sha512-RGwwWnwQvkVfavKVt22FGLw+xYSdzARwm0ru6DhTVA3umU5hZc28V3kO4stgYryrTlLpuvgI9GiijltAjNbcqA==",
+      "license": "MIT",
+      "dependencies": {
+        "ms": "^2.1.3"
+      },
+      "engines": {
+        "node": ">=6.0"
+      },
+      "peerDependenciesMeta": {
+        "supports-color": {
+          "optional": true
+        }
+      }
+    },
+    "node_modules/diff": {
+      "version": "8.0.4",
+      "resolved": "https://registry.npmjs.org/diff/-/diff-8.0.4.tgz",
+      "integrity": "sha512-DPi0FmjiSU5EvQV0++GFDOJ9ASQUVFh5kD+OzOnYdi7n3Wpm9hWWGfB/O2blfHcMVTL5WkQXSnRiK9makhrcnw==",
+      "license": "BSD-3-Clause",
+      "engines": {
+        "node": ">=0.3.1"
+      }
+    },
+    "node_modules/ecdsa-sig-formatter": {
+      "version": "1.0.11",
+      "resolved": "https://registry.npmjs.org/ecdsa-sig-formatter/-/ecdsa-sig-formatter-1.0.11.tgz",
+      "integrity": "sha512-nagl3RYrbNv6kQkeJIpt6NJZy8twLB/2vtz6yN9Z4vRKHN4/QZJIEbqohALSgwKdnksuY3k5Addp5lg8sVoVcQ==",
+      "license": "Apache-2.0",
+      "dependencies": {
+        "safe-buffer": "^5.0.1"
+      }
+    },
+    "node_modules/extend": {
+      "version": "3.0.2",
+      "resolved": "https://registry.npmjs.org/extend/-/extend-3.0.2.tgz",
+      "integrity": "sha512-fjquC59cD7CyW6urNXK0FBufkZcoiGG80wTuPujX590cB5Ttln20E2UB4S/WARVqhXffZl2LNgS+gQdPIIim/g==",
+      "license": "MIT"
+    },
+    "node_modules/fast-sha256": {
+      "version": "1.3.0",
+      "resolved": "https://registry.npmjs.org/fast-sha256/-/fast-sha256-1.3.0.tgz",
+      "integrity": "sha512-n11RGP/lrWEFI/bWdygLxhI+pVeo1ZYIVwvvPkW7azl/rOy+F3HYRZ2K5zeE9mmkhQppyv9sQFx0JM9UabnpPQ==",
+      "license": "Unlicense"
+    },
+    "node_modules/fetch-blob": {
+      "version": "3.2.0",
+      "resolved": "https://registry.npmjs.org/fetch-blob/-/fetch-blob-3.2.0.tgz",
+      "integrity": "sha512-7yAQpD2UMJzLi1Dqv7qFYnPbaPx7ZfFK6PiIxQ4PfkGPyNyl2Ugx+a/umUonmKqjhM4DnfbMvdX6otXq83soQQ==",
+      "funding": [
+        {
+          "type": "github",
+          "url": "https://github.com/sponsors/jimmywarting"
+        },
+        {
+          "type": "paypal",
+          "url": "https://paypal.me/jimmywarting"
+        }
+      ],
+      "license": "MIT",
+      "dependencies": {
+        "node-domexception": "^1.0.0",
+        "web-streams-polyfill": "^3.0.3"
+      },
+      "engines": {
+        "node": "^12.20 || >= 14.13"
+      }
+    },
+    "node_modules/formdata-polyfill": {
+      "version": "4.0.10",
+      "resolved": "https://registry.npmjs.org/formdata-polyfill/-/formdata-polyfill-4.0.10.tgz",
+      "integrity": "sha512-buewHzMvYL29jdeQTVILecSaZKnt/RJWjoZCF5OW60Z67/GmSLBkOFM7qh1PI3zFNtJbaZL5eQu1vLfazOwj4g==",
+      "license": "MIT",
+      "dependencies": {
+        "fetch-blob": "^3.1.2"
+      },
+      "engines": {
+        "node": ">=12.20.0"
+      }
+    },
+    "node_modules/gaxios": {
+      "version": "7.3.1",
+      "resolved": "https://registry.npmjs.org/gaxios/-/gaxios-7.3.1.tgz",
+      "integrity": "sha512-kB3rzJV7d9juLZh8/56QTXCwQfxyhdOMdyYk1HdQKFtF8TJTDTZQJtixWIwXdE9Jji91mC41DUNpjleo4L4eAQ==",
+      "license": "Apache-2.0",
+      "dependencies": {
+        "extend": "^3.0.2",
+        "https-proxy-agent": "^7.0.1",
+        "node-fetch": "^3.3.2"
+      },
+      "engines": {
+        "node": ">=18"
+      }
+    },
+    "node_modules/gaxios/node_modules/agent-base": {
+      "version": "7.1.4",
+      "resolved": "https://registry.npmjs.org/agent-base/-/agent-base-7.1.4.tgz",
+      "integrity": "sha512-MnA+YT8fwfJPgBx3m60MNqakm30XOkyIoH1y6huTQvC0PwZG7ki8NacLBcrPbNoo8vEZy7Jpuk7+jMO+CUovTQ==",
+      "license": "MIT",
+      "engines": {
+        "node": ">= 14"
+      }
+    },
+    "node_modules/gaxios/node_modules/https-proxy-agent": {
+      "version": "7.0.6",
+      "resolved": "https://registry.npmjs.org/https-proxy-agent/-/https-proxy-agent-7.0.6.tgz",
+      "integrity": "sha512-vK9P5/iUfdl95AI+JVyUuIcVtd4ofvtrOr3HNtM2yxC9bnMbEdp3x01OhQNnjb8IJYi38VlTE3mBXwcfvywuSw==",
+      "license": "MIT",
+      "dependencies": {
+        "agent-base": "^7.1.2",
+        "debug": "4"
+      },
+      "engines": {
+        "node": ">= 14"
+      }
+    },
+    "node_modules/gcp-metadata": {
+      "version": "8.1.2",
+      "resolved": "https://registry.npmjs.org/gcp-metadata/-/gcp-metadata-8.1.2.tgz",
+      "integrity": "sha512-zV/5HKTfCeKWnxG0Dmrw51hEWFGfcF2xiXqcA3+J90WDuP0SvoiSO5ORvcBsifmx/FoIjgQN3oNOGaQ5PhLFkg==",
+      "license": "Apache-2.0",
+      "dependencies": {
+        "gaxios": "^7.0.0",
+        "google-logging-utils": "^1.0.0",
+        "json-bigint": "^1.0.0"
+      },
+      "engines": {
+        "node": ">=18"
+      }
+    },
+    "node_modules/get-east-asian-width": {
+      "version": "1.6.0",
+      "resolved": "https://registry.npmjs.org/get-east-asian-width/-/get-east-asian-width-1.6.0.tgz",
+      "integrity": "sha512-QRbvDIbx6YklUe6RxeTeleMR0yv3cYH6PsPZHcnVn7xv7zO1BHN8r0XETu8n6Ye3Q+ahtSarc3WgtNWmehIBfA==",
+      "license": "MIT",
+      "engines": {
+        "node": ">=18"
+      },
+      "funding": {
+        "url": "https://github.com/sponsors/sindresorhus"
+      }
+    },
+    "node_modules/google-auth-library": {
+      "version": "10.9.1",
+      "resolved": "https://registry.npmjs.org/google-auth-library/-/google-auth-library-10.9.1.tgz",
+      "integrity": "sha512-i1ydyHrqcIxXkWh/uBmVkzCvIuq5yiK2ATndIe5XxKholrG/MTYP9xGYka4sQhrbIAgGjL2B6NOE7rFaiF3fXw==",
+      "license": "Apache-2.0",
+      "dependencies": {
+        "base64-js": "^1.3.0",
+        "ecdsa-sig-formatter": "^1.0.11",
+        "gaxios": "^7.1.4",
+        "gcp-metadata": "8.1.2",
+        "google-logging-utils": "1.1.3",
+        "jws": "^4.0.0"
+      },
+      "engines": {
+        "node": ">=18"
+      }
+    },
+    "node_modules/google-logging-utils": {
+      "version": "1.1.3",
+      "resolved": "https://registry.npmjs.org/google-logging-utils/-/google-logging-utils-1.1.3.tgz",
+      "integrity": "sha512-eAmLkjDjAFCVXg7A1unxHsLf961m6y17QFqXqAXGj/gVkKFrEICfStRfwUlGNfeCEjNRa32JEWOUTlYXPyyKvA==",
+      "license": "Apache-2.0",
+      "engines": {
+        "node": ">=14"
+      }
+    },
+    "node_modules/graceful-fs": {
+      "version": "4.2.12",
+      "resolved": "https://registry.npmjs.org/graceful-fs/-/graceful-fs-4.2.12.tgz",
+      "integrity": "sha512-iuyGF2E4oafQfPsRrG2wtY2ILupMhvtdrhzrxB+0VcjsPpSPttpfYdjnGFGsTi5MaJFjI1jOKHPQ6UTbTj9TAw==",
+      "license": "BlueOak-1.0.0"
+    },
+    "node_modules/highlight.js": {
+      "version": "10.7.3",
+      "resolved": "https://registry.npmjs.org/highlight.js/-/highlight.js-10.7.3.tgz",
+      "integrity": "sha512-tzcUFauisWKNHaRkN4Wjl/ZA07gENAjFl3J/c480dprkGTg5EQstgaNFqBfUqCq54kZRIEcreTsAgF/m2quD7A==",
+      "license": "BSD-3-Clause",
+      "engines": {
+        "node": "*"
+      }
+    },
+    "node_modules/hosted-git-info": {
+      "version": "9.0.3",
+      "resolved": "https://registry.npmjs.org/hosted-git-info/-/hosted-git-info-9.0.3.tgz",
+      "integrity": "sha512-Hc+ghLoSt6QaYZUv0WBiIvmMDZuZZ7oaDvdH8MbfOO4lOsxdXLEvuC6ePoGs9H1X9oCLyq6+NVN0MKqD+ydxyg==",
+      "license": "ISC",
+      "dependencies": {
+        "lru-cache": "^11.1.0"
+      },
+      "engines": {
+        "node": "^20.17.0 || >=22.9.0"
+      }
+    },
+    "node_modules/http-proxy-agent": {
+      "version": "9.1.0",
+      "resolved": "https://registry.npmjs.org/http-proxy-agent/-/http-proxy-agent-9.1.0.tgz",
+      "integrity": "sha512-2NxoveTT58mjYT4n3RPTEfCZGLMbidoO8XEieXfpSYxu+PQJ1qpx4ypwH6N+uF9twBPIvRRgvkvW5HUTYWENig==",
+      "license": "MIT",
+      "dependencies": {
+        "agent-base": "9.0.0",
+        "debug": "^4.3.4",
+        "proxy-agent-negotiate": "1.1.0"
+      },
+      "engines": {
+        "node": ">= 20"
+      }
+    },
+    "node_modules/https-proxy-agent": {
+      "version": "9.1.0",
+      "resolved": "https://registry.npmjs.org/https-proxy-agent/-/https-proxy-agent-9.1.0.tgz",
+      "integrity": "sha512-ag87y7cJJ9/3+GxFr8Oy4O5faDsGRGnBGsJj/YjOSsSx/5eadKLYTMPlzuR6obgoCDDm0abAAZitXXQkMOPSpA==",
+      "license": "MIT",
+      "dependencies": {
+        "agent-base": "9.0.0",
+        "debug": "^4.3.4",
+        "proxy-agent-negotiate": "1.1.0"
+      },
+      "engines": {
+        "node": ">= 20"
+      }
+    },
+    "node_modules/ignore": {
+      "version": "7.0.8",
+      "resolved": "https://registry.npmjs.org/ignore/-/ignore-7.0.8.tgz",
+      "integrity": "sha512-YYNsSlXBjMk92SKnkwvB5LOVSa6OznlFUGcsvrFgNJbJCd0M1XKeFVRc8ZByeCqz32FivYNHJVooLmdqrmvp/Q==",
+      "license": "MIT",
+      "engines": {
+        "node": ">= 4"
+      }
+    },
+    "node_modules/isexe": {
+      "version": "2.0.0",
+      "resolved": "https://registry.npmjs.org/isexe/-/isexe-2.0.0.tgz",
+      "integrity": "sha512-RHxMLp9lnKHGHRng9QFhRCMbYAcVpn69smSGcq3f36xjgVVWThj4qqLbTLlq7Ssj8B+fIQ1EuCEGI2lKsyQeIw==",
+      "license": "ISC"
+    },
+    "node_modules/jiti": {
+      "version": "2.7.0",
+      "resolved": "https://registry.npmjs.org/jiti/-/jiti-2.7.0.tgz",
+      "integrity": "sha512-AC/7JofJvZGrrneWNaEnJeOLUx+JlGt7tNa0wZiRPT4MY1wmfKjt2+6O2p2uz2+skll8OZZmJMNqeke7kKbNgQ==",
+      "license": "MIT",
+      "bin": {
+        "jiti": "lib/jiti-cli.mjs"
+      }
+    },
+    "node_modules/json-bigint": {
+      "version": "1.0.0",
+      "resolved": "https://registry.npmjs.org/json-bigint/-/json-bigint-1.0.0.tgz",
+      "integrity": "sha512-SiPv/8VpZuWbvLSMtTDU8hEfrZWg/mH/nV/b4o0CYbSxu1UIQPLdwKOCIyLQX+VIPO5vrLX3i8qtqFyhdPSUSQ==",
+      "license": "MIT",
+      "dependencies": {
+        "bignumber.js": "^9.0.0"
+      }
+    },
+    "node_modules/json-schema-to-ts": {
+      "version": "3.1.1",
+      "resolved": "https://registry.npmjs.org/json-schema-to-ts/-/json-schema-to-ts-3.1.1.tgz",
+      "integrity": "sha512-+DWg8jCJG2TEnpy7kOm/7/AxaYoaRbjVB4LFZLySZlWn8exGs3A4OLJR966cVvU26N7X9TWxl+Jsw7dzAqKT6g==",
+      "license": "MIT",
+      "dependencies": {
+        "@babel/runtime": "^7.18.3",
+        "ts-algebra": "^2.0.0"
+      },
+      "engines": {
+        "node": ">=16"
+      }
+    },
+    "node_modules/jwa": {
+      "version": "2.0.1",
+      "resolved": "https://registry.npmjs.org/jwa/-/jwa-2.0.1.tgz",
+      "integrity": "sha512-hRF04fqJIP8Abbkq5NKGN0Bbr3JxlQ+qhZufXVr0DvujKy93ZCbXZMHDL4EOtodSbCWxOqR8MS1tXA5hwqCXDg==",
+      "license": "MIT",
+      "dependencies": {
+        "buffer-equal-constant-time": "^1.0.1",
+        "ecdsa-sig-formatter": "1.0.11",
+        "safe-buffer": "^5.0.1"
+      }
+    },
+    "node_modules/jws": {
+      "version": "4.0.1",
+      "resolved": "https://registry.npmjs.org/jws/-/jws-4.0.1.tgz",
+      "integrity": "sha512-EKI/M/yqPncGUUh44xz0PxSidXFr/+r0pA70+gIYhjv+et7yxM+s29Y+VGDkovRofQem0fs7Uvf4+YmAdyRduA==",
+      "license": "MIT",
+      "dependencies": {
+        "jwa": "^2.0.1",
+        "safe-buffer": "^5.0.1"
+      }
+    },
+    "node_modules/long": {
+      "version": "5.3.2",
+      "resolved": "https://registry.npmjs.org/long/-/long-5.3.2.tgz",
+      "integrity": "sha512-mNAgZ1GmyNhD7AuqnTG3/VQ26o760+ZYBPKjPvugO8+nLbYfX6TVpJPseBvopbdY+qpZ/lKUnmEc1LeZYS3QAA==",
+      "license": "Apache-2.0"
+    },
+    "node_modules/lovely-mermaid": {
+      "version": "0.3.3",
+      "resolved": "https://registry.npmjs.org/lovely-mermaid/-/lovely-mermaid-0.3.3.tgz",
+      "integrity": "sha512-EMLJS934qwt2MLO/a5o+T/89HGbuXZPwmCpHIhHO+DVrm+y5tHlEHgpZzlC2o4yW/rFPHRFO9xSMafzqH4wH5A==",
+      "license": "Apache-2.0",
+      "engines": {
+        "node": ">=18"
+      }
+    },
+    "node_modules/lru-cache": {
+      "version": "11.5.3",
+      "resolved": "https://registry.npmjs.org/lru-cache/-/lru-cache-11.5.3.tgz",
+      "integrity": "sha512-U4N8FgzmWxc8k1VH8Kr6lQg18U7Fjvby6wXHVRX/ZZ7IwWbRMgrRbP0Wrb5q5NVinryp4SQampHKdvtecItxUg==",
+      "license": "BlueOak-1.0.0",
+      "engines": {
+        "node": "20 || >=22"
+      }
+    },
+    "node_modules/marked": {
+      "version": "18.0.11",
+      "resolved": "https://registry.npmjs.org/marked/-/marked-18.0.11.tgz",
+      "integrity": "sha512-HnslJfsZkRPBDJRHvVtAaWlZHEpSu7u8LgQuJCELjRKuWR+hpq4A7sLq3p8HaI9ypVoXDXxV34CsQJEe1+J5Aw==",
+      "license": "MIT",
+      "bin": {
+        "marked": "bin/marked.js"
+      },
+      "engines": {
+        "node": ">= 20"
+      }
+    },
+    "node_modules/marked-cjk-friendly": {
+      "version": "0.1.2",
+      "resolved": "https://registry.npmjs.org/marked-cjk-friendly/-/marked-cjk-friendly-0.1.2.tgz",
+      "integrity": "sha512-GUj8HjiEbur9yhgUo52FBgKizggF1QtT6gVdrYdWW6ZB4lVVjgS3EyyXPyfyRD0V4ghGRPlO7MO80rgSWbm0eA==",
+      "license": "MIT",
+      "engines": {
+        "node": ">=18"
+      },
+      "peerDependencies": {
+        "marked": ">=15.0.0"
+      }
+    },
+    "node_modules/minimatch": {
+      "version": "11.0.3",
+      "resolved": "https://registry.npmjs.org/minimatch/-/minimatch-11.0.3.tgz",
+      "integrity": "sha512-iny/40PEGkNJQ5/Pv6z3nm6FbRAby32GeZRjCUJk2WnNDbgPSTcdI+DDvLqsgBdD4cD5sMtMheqPPnehCCa8Nw==",
+      "license": "BlueOak-1.0.0",
+      "dependencies": {
+        "@isaacs/nonrecursive-glob-match": "^1.0.3",
+        "brace-expansion": "^5.0.12"
+      },
+      "engines": {
+        "node": "18 || 20 || >=22"
+      },
+      "funding": {
+        "url": "https://github.com/sponsors/isaacs"
+      }
+    },
+    "node_modules/ms": {
+      "version": "2.1.3",
+      "resolved": "https://registry.npmjs.org/ms/-/ms-2.1.3.tgz",
+      "integrity": "sha512-6FlzubTLZG3J2a/NVCAleEhjzq5oxgHyaCU9yYXvcLsvoVaHJq/s5xXI6/XXP6tz7R9xAOtHnSO/tXtF3WRTlA==",
+      "license": "MIT"
+    },
+    "node_modules/node-domexception": {
+      "version": "1.0.0",
+      "resolved": "https://registry.npmjs.org/node-domexception/-/node-domexception-1.0.0.tgz",
+      "integrity": "sha512-/jKZoMpw0F8GRwl4/eLROPA3cfcXtLApP0QzLmUT/HuPCZWyB7IY9ZrMeKw2O/nFIqPQB3PVM9aYm0F312AXDQ==",
+      "deprecated": "Use your platform's native DOMException instead",
+      "funding": [
+        {
+          "type": "github",
+          "url": "https://github.com/sponsors/jimmywarting"
+        },
+        {
+          "type": "github",
+          "url": "https://paypal.me/jimmywarting"
+        }
+      ],
+      "license": "MIT",
+      "engines": {
+        "node": ">=10.5.0"
+      }
+    },
+    "node_modules/node-fetch": {
+      "version": "3.3.2",
+      "resolved": "https://registry.npmjs.org/node-fetch/-/node-fetch-3.3.2.tgz",
+      "integrity": "sha512-dRB78srN/l6gqWulah9SrxeYnxeddIG30+GOqK/9OlLVyLg3HPnr6SqOWTWOXKRwC2eGYCkZ59NNuSgvSrpgOA==",
+      "license": "MIT",
+      "dependencies": {
+        "data-uri-to-buffer": "^4.0.0",
+        "fetch-blob": "^3.1.4",
+        "formdata-polyfill": "^4.0.10"
+      },
+      "engines": {
+        "node": "^12.20.0 || ^14.13.1 || >=16.0.0"
+      },
+      "funding": {
+        "type": "opencollective",
+        "url": "https://opencollective.com/node-fetch"
+      }
+    },
+    "node_modules/openai": {
+      "version": "7.19.0",
+      "resolved": "https://registry.npmjs.org/openai/-/openai-7.19.0.tgz",
+      "integrity": "sha512-MX2s3u2L5racTO0CC/SWpCOasJQBCJrqLKXK+l82cAhdeF8mPMBEe/gxMm0ZFa2xpKpOFLRjxv5afYEZbBXmbQ==",
+      "license": "Apache-2.0",
+      "engines": {
+        "node": ">=22.0.0"
+      },
+      "peerDependencies": {
+        "@aws-sdk/credential-provider-node": ">=3.972.0 <4",
+        "@smithy/hash-node": ">=4.3.0 <5",
+        "@smithy/signature-v4": ">=5.4.0 <6",
+        "undici": ">=5 <9",
+        "ws": "^8.21.0",
+        "zod": "^3.25 || ^4.0"
+      },
+      "peerDependenciesMeta": {
+        "@aws-sdk/credential-provider-node": {
+          "optional": true
+        },
+        "@smithy/hash-node": {
+          "optional": true
+        },
+        "@smithy/signature-v4": {
+          "optional": true
+        },
+        "undici": {
+          "optional": true
+        },
+        "ws": {
+          "optional": true
+        },
+        "zod": {
+          "optional": true
+        }
+      }
+    },
+    "node_modules/p-retry": {
+      "version": "4.6.2",
+      "resolved": "https://registry.npmjs.org/p-retry/-/p-retry-4.6.2.tgz",
+      "integrity": "sha512-312Id396EbJdvRONlngUx0NydfrIQ5lsYu0znKVUzVvArzEIt08V1qhtyESbGVd1FGX7UKtiFp5uwKZdM8wIuQ==",
+      "license": "MIT",
+      "dependencies": {
+        "@types/retry": "0.12.0",
+        "retry": "^0.13.1"
+      },
+      "engines": {
+        "node": ">=8"
+      }
+    },
+    "node_modules/partial-json": {
+      "version": "0.1.7",
+      "resolved": "https://registry.npmjs.org/partial-json/-/partial-json-0.1.7.tgz",
+      "integrity": "sha512-Njv/59hHaokb/hRUjce3Hdv12wd60MtM9Z5Olmn+nehe0QDAsRtRbJPvJ0Z91TusF0SuZRIvnM+S4l6EIP8leA==",
+      "license": "MIT"
+    },
+    "node_modules/path-key": {
+      "version": "3.1.1",
+      "resolved": "https://registry.npmjs.org/path-key/-/path-key-3.1.1.tgz",
+      "integrity": "sha512-ojmeN0qd+y0jszEtoY48r0Peq5dwMEkIlCOu6Q5f41lfkswXuKtYrhgoTpLnyIcHm24Uhqx+5Tqm2InSwLhE6Q==",
+      "license": "MIT",
+      "engines": {
+        "node": ">=8"
+      }
+    },
+    "node_modules/proper-lockfile": {
+      "version": "4.1.2",
+      "resolved": "https://registry.npmjs.org/proper-lockfile/-/proper-lockfile-4.1.2.tgz",
+      "integrity": "sha512-TjNPblN4BwAWMXU8s9AEz4JmQxnD1NNL7bNOY/AKUzyamc379FWASUhc/K1pL2noVb+XmZKLL68cjzLsiOAMaA==",
+      "license": "MIT",
+      "dependencies": {
+        "graceful-fs": "^4.2.4",
+        "retry": "^0.12.0",
+        "signal-exit": "^3.0.2"
+      }
+    },
+    "node_modules/proper-lockfile/node_modules/retry": {
+      "version": "0.12.0",
+      "resolved": "https://registry.npmjs.org/retry/-/retry-0.12.0.tgz",
+      "integrity": "sha512-9LkiTwjUh6rT555DtE9rTX+BKByPfrMzEAtnlEtdEwr3Nkffwiihqe2bWADg+OQRjt9gl6ICdmB/ZFDCGAtSow==",
+      "license": "MIT",
+      "engines": {
+        "node": ">= 4"
+      }
+    },
+    "node_modules/protobufjs": {
+      "version": "7.6.6",
+      "resolved": "https://registry.npmjs.org/protobufjs/-/protobufjs-7.6.6.tgz",
+      "integrity": "sha512-dYDWdjSl5RNb7SgPxGQcRU+GtvP7s2fpkrY0r432PcOIaZ0/rBcxEZnQN67iJhFuQiVw754JDoPruPCNdGsbjg==",
+      "hasInstallScript": true,
+      "license": "BSD-3-Clause",
+      "dependencies": {
+        "@protobufjs/aspromise": "^1.1.2",
+        "@protobufjs/base64": "^1.1.2",
+        "@protobufjs/codegen": "^2.0.5",
+        "@protobufjs/eventemitter": "^1.1.1",
+        "@protobufjs/fetch": "^1.1.1",
+        "@protobufjs/float": "^1.0.2",
+        "@protobufjs/path": "^1.1.2",
+        "@protobufjs/pool": "^1.1.0",
+        "@protobufjs/utf8": "^1.1.1",
+        "@types/node": ">=13.7.0",
+        "long": "^5.3.2"
+      },
+      "engines": {
+        "node": ">=12.0.0"
+      }
+    },
+    "node_modules/proxy-agent-negotiate": {
+      "version": "1.1.0",
+      "resolved": "https://registry.npmjs.org/proxy-agent-negotiate/-/proxy-agent-negotiate-1.1.0.tgz",
+      "integrity": "sha512-N8IBcM3UgCVzz2L2Lqv8DVntDnnC8/hiV4nEDUPkqq72TPUgYWjQc+bdZlBPZK9LzPAvOY//gAt0S0DApoOXWQ==",
+      "license": "MIT",
+      "engines": {
+        "node": ">= 20"
+      },
+      "peerDependencies": {
+        "kerberos": "^2.0.0"
+      },
+      "peerDependenciesMeta": {
+        "kerberos": {
+          "optional": true
+        }
+      }
+    },
+    "node_modules/quickjs-wasi": {
+      "version": "3.6.2",
+      "resolved": "https://registry.npmjs.org/quickjs-wasi/-/quickjs-wasi-3.6.2.tgz",
+      "integrity": "sha512-FCqGtGOrMgzUiIrMNMA2YnsOxCNwo31dzqXvclXUC6xeT35NJLKXQJsvbeCTjvoFAwZgEAPg8U6+KAPDGXn8Mg==",
+      "license": "MIT"
+    },
+    "node_modules/retry": {
+      "version": "0.13.1",
+      "resolved": "https://registry.npmjs.org/retry/-/retry-0.13.1.tgz",
+      "integrity": "sha512-XQBQ3I8W1Cge0Seh+6gjj03LbmRFWuoszgK9ooCpwYIrhhoO80pfq4cUkU5DkknwfOfFteRwlZ56PYOGYyFWdg==",
+      "license": "MIT",
+      "engines": {
+        "node": ">= 4"
+      }
+    },
+    "node_modules/safe-buffer": {
+      "version": "5.2.1",
+      "resolved": "https://registry.npmjs.org/safe-buffer/-/safe-buffer-5.2.1.tgz",
+      "integrity": "sha512-rp3So07KcdmmKbGvgaNxQSJr7bGVSVk5S9Eq1F+ppbRo70+YeaDxkw5Dd8NPN+GD6bjnYm2VuPuCXmpuYvmCXQ==",
+      "funding": [
+        {
+          "type": "github",
+          "url": "https://github.com/sponsors/feross"
+        },
+        {
+          "type": "patreon",
+          "url": "https://www.patreon.com/feross"
+        },
+        {
+          "type": "consulting",
+          "url": "https://feross.org/support"
+        }
+      ],
+      "license": "MIT"
+    },
+    "node_modules/semver": {
+      "version": "7.8.5",
+      "resolved": "https://registry.npmjs.org/semver/-/semver-7.8.5.tgz",
+      "integrity": "sha512-Y7/KDsb8LjooZpwaqGyulO6DQlksgCncchHGk+sZIY4SBvUocMBEFH5Ur1fI4dV+Jvl0w6cjvucaIi40puRioA==",
+      "license": "ISC",
+      "bin": {
+        "semver": "bin/semver.js"
+      },
+      "engines": {
+        "node": ">=10"
+      }
+    },
+    "node_modules/shebang-command": {
+      "version": "2.0.0",
+      "resolved": "https://registry.npmjs.org/shebang-command/-/shebang-command-2.0.0.tgz",
+      "integrity": "sha512-kHxr2zZpYtdmrN1qDjrrX/Z1rR1kG8Dx+gkpK1G4eXmvXswmcE1hTWBWYUzlraYw1/yZp6YuDY77YtvbN0dmDA==",
+      "license": "MIT",
+      "dependencies": {
+        "shebang-regex": "^3.0.0"
+      },
+      "engines": {
+        "node": ">=8"
+      }
+    },
+    "node_modules/shebang-regex": {
+      "version": "3.0.0",
+      "resolved": "https://registry.npmjs.org/shebang-regex/-/shebang-regex-3.0.0.tgz",
+      "integrity": "sha512-7++dFhtcx3353uBaq8DDR4NuxBetBzC7ZQOhmTQInHEd6bSrXdiEyzCvG07Z44UYdLShWUyXt5M/yhz8ekcb1A==",
+      "license": "MIT",
+      "engines": {
+        "node": ">=8"
+      }
+    },
+    "node_modules/signal-exit": {
+      "version": "3.0.7",
+      "resolved": "https://registry.npmjs.org/signal-exit/-/signal-exit-3.0.7.tgz",
+      "integrity": "sha512-wnD2ZE+l+SPC/uoS0vXeE9L1+0wuaMqKlfz9AMUo38JsyLSBWSFcHR1Rri62LZc12vLr1gb3jl7iwQhgwpAbGQ==",
+      "license": "ISC"
+    },
+    "node_modules/standardwebhooks": {
+      "version": "1.1.1",
+      "resolved": "https://registry.npmjs.org/standardwebhooks/-/standardwebhooks-1.1.1.tgz",
+      "integrity": "sha512-bCbX9ZEyFkWPsRz7Bl3NuQUJohmwGSev/yhr7vhaGPlc4AfIrspIRa6cPTBuI1ItmrTDJ4d/S2hCsfe4+vQGnQ==",
+      "license": "MIT",
+      "dependencies": {
+        "@stablelib/base64": "^1.0.0",
+        "fast-sha256": "^1.3.0"
+      }
+    },
+    "node_modules/ts-algebra": {
+      "version": "2.0.0",
+      "resolved": "https://registry.npmjs.org/ts-algebra/-/ts-algebra-2.0.0.tgz",
+      "integrity": "sha512-FPAhNPFMrkwz76P7cdjdmiShwMynZYN6SgOujD1urY4oNm80Ou9oMdmbR45LotcKOXoy7wSmHkRFE6Mxbrhefw==",
+      "license": "MIT"
+    },
+    "node_modules/tslib": {
+      "version": "2.9.1",
+      "resolved": "https://registry.npmjs.org/tslib/-/tslib-2.9.1.tgz",
+      "integrity": "sha512-a4Ux9VKuIMHsOS7ENbEq6hK2ZGYIT27Rtl0E4eD9KqwxhKiQeMZE/9xb3IdYwWaSOyIBQLExhQgXDTYoiCxnWA==",
+      "license": "0BSD"
+    },
+    "node_modules/typebox": {
+      "version": "1.3.27",
+      "resolved": "https://registry.npmjs.org/typebox/-/typebox-1.3.27.tgz",
+      "integrity": "sha512-zu+jc1pcy4UiNThxikUr36f0Rybk9PEeCg/NE6adeWr/SKsdNO4EzZHYRDlv2YCVAfj3Odq3dESSo/jNyoBXzA==",
+      "license": "MIT"
+    },
+    "node_modules/undici": {
+      "version": "8.12.3",
+      "resolved": "https://registry.npmjs.org/undici/-/undici-8.12.3.tgz",
+      "integrity": "sha512-+fdndUTwBP86cVjihTp21hZHo7d6oj1c/47XPA3lL8mM0XHs+C4EkcjmgRsFnFk2f/UONGDy9ItBItmXsLOQHw==",
+      "license": "MIT",
+      "engines": {
+        "node": ">=22.19.0"
+      }
+    },
+    "node_modules/undici-types": {
+      "version": "8.9.0",
+      "resolved": "https://registry.npmjs.org/undici-types/-/undici-types-8.9.0.tgz",
+      "integrity": "sha512-KTDyRTYX8sWmKXAikPHHSyc63CRPETMctyjKFupcC6OBLXT3xsN0e9aF7m+mIXutFWpUXuedtowG7iLOzp0kQg==",
+      "license": "MIT"
+    },
+    "node_modules/web-streams-polyfill": {
+      "version": "3.3.3",
+      "resolved": "https://registry.npmjs.org/web-streams-polyfill/-/web-streams-polyfill-3.3.3.tgz",
+      "integrity": "sha512-d2JWLCivmZYTSIoge9MsgFCZrt571BikcWGYkjC1khllbTeDlGqZ2D8vD8E/lJa8WGWbb7Plm8/XJYV7IJHZZw==",
+      "license": "MIT",
+      "engines": {
+        "node": ">= 8"
+      }
+    },
+    "node_modules/which": {
+      "version": "2.0.2",
+      "resolved": "https://registry.npmjs.org/which/-/which-2.0.2.tgz",
+      "integrity": "sha512-BLI3Tl1TW3Pvl70l3yq3Y64i+awpwXqsGBYWkkqMtnbXgrMD+yj7rhW0kuEDxzJaYXGjEW5ogapKNMEKNMjibA==",
+      "license": "ISC",
+      "dependencies": {
+        "isexe": "^2.0.0"
+      },
+      "bin": {
+        "node-which": "bin/node-which"
+      },
+      "engines": {
+        "node": ">= 8"
+      }
+    },
+    "node_modules/ws": {
+      "version": "8.23.0",
+      "resolved": "https://registry.npmjs.org/ws/-/ws-8.23.0.tgz",
+      "integrity": "sha512-wCkmX8QMOrKjgO8HW2WyDbTSGeqkocxgDzS9iR79rEAexty6/2qzilx3Ag8Tqf9ykop3irLKle0MtVn5qjVnoQ==",
+      "license": "MIT",
+      "engines": {
+        "node": ">=10.0.0"
+      },
+      "peerDependencies": {
+        "bufferutil": "^4.0.1",
+        "utf-8-validate": ">=5.0.2"
+      },
+      "peerDependenciesMeta": {
+        "bufferutil": {
+          "optional": true
+        },
+        "utf-8-validate": {
+          "optional": true
+        }
+      }
+    },
+    "node_modules/yaml": {
+      "version": "2.9.0",
+      "resolved": "https://registry.npmjs.org/yaml/-/yaml-2.9.0.tgz",
+      "integrity": "sha512-2AvhNX3mb8zd6Zy7INTtSpl1F15HW6Wnqj0srWlkKLcpYl/gMIMJiyuGq2KeI2YFxUPjdlB+3Lc10seMLtL4cA==",
+      "license": "ISC",
+      "bin": {
+        "yaml": "bin.mjs"
+      },
+      "engines": {
+        "node": ">= 14.6"
+      },
+      "funding": {
+        "url": "https://github.com/sponsors/eemeli"
+      }
+    }
+  }
+}
+'''
+
+TOOLS_PACKAGE_JSON = r'''{
+  "private": true,
+  "dependencies": {
+    "@anthropic-ai/claude-code": "2.1.295",
+    "@earendil-works/pi-coding-agent": "1.5.2"
+  }
+}
+'''
+
+FILES = {
+    'enroll-request.py': (0o644, ENROLL_REQUEST_PY),
+    'files/Caddyfile': (0o644, FILES_CADDYFILE),
+    'files/caddy.apparmor': (0o644, FILES_CADDY_APPARMOR),
+    'files/caddy.conf': (0o644, FILES_CADDY_CONF),
+    'files/ko-tmpfiles.conf': (0o644, FILES_KO_TMPFILES_CONF),
+    'files/ko.service': (0o644, FILES_KO_SERVICE),
+    'files/nftables.conf': (0o644, FILES_NFTABLES_CONF),
+    'files/nodesource.asc': (0o644, FILES_NODESOURCE_ASC),
+    'files/pi-settings.json': (0o644, FILES_PI_SETTINGS_JSON),
+    'files/resolved.conf': (0o644, FILES_RESOLVED_CONF),
+    'files/sshd.conf': (0o644, FILES_SSHD_CONF),
+    'files/sysctl.conf': (0o644, FILES_SYSCTL_CONF),
+    'files/unattended-upgrades': (0o644, FILES_UNATTENDED_UPGRADES),
+    'ko-devices': (0o755, KO_DEVICES),
+    'me.sh': (0o755, ME_SH),
+    'provision.sh': (0o755, PROVISION_SH),
+    'smoke.sh': (0o755, SMOKE_SH),
+    'test.sh': (0o755, TEST_SH),
+    'tools/package-lock.json': (0o644, TOOLS_PACKAGE_LOCK_JSON),
+    'tools/package.json': (0o644, TOOLS_PACKAGE_JSON),
+}
+
+WORKSPACE_FILES = {
+    '.terraform.lock.hcl': TERRAFORM__TERRAFORM_LOCK_HCL,
+    'cloud-init.yaml': TERRAFORM_CLOUD_INIT_YAML,
+    'main.tf': TERRAFORM_MAIN_TF,
+    'outputs.tf': TERRAFORM_OUTPUTS_TF,
+    'variables.tf': TERRAFORM_VARIABLES_TF,
+    'versions.tf': TERRAFORM_VERSIONS_TF,
+}
+
+CHECKOUT = Path(__file__).resolve().parent.parent
+KO_VERSION = '0.7.0'
+KO_SHA256 = '7ecbd97278a4707b3700450f9b792b602c2287efd78a505655184f6bccdf23da'
+KOA_VERSION = '0.3.0'
+KOA_SHA256 = 'c20eb59294b23fe8a2eea90fabf026ff09cb54690c6390f963c9655db57aef3a'
+REPOSITORY = 'https://api.github.com/repos/andreypopp/kido'
+
+
+def release(product, version=None):
+    if version is None:
+        with urllib.request.urlopen(REPOSITORY + '/releases?per_page=100', timeout=30) as response:
+            releases = json.load(response)
+        versions = [r['tag_name'].removeprefix(product + '/') for r in releases
+                    if not r['draft'] and not r['prerelease'] and re.fullmatch(product + r'/\d+\.\d+\.\d+', r['tag_name'])]
+        version = max(versions, key=lambda v: tuple(map(int, v.split('.'))))
+    if not re.fullmatch(r'\d+\.\d+\.\d+', version):
+        raise ValueError('version must be major.minor.patch')
+    asset_name = f'ko-{version}-linux-x86_64.tar.gz' if product == 'ko' else f'koa-{version}.tar.gz'
+    with urllib.request.urlopen(REPOSITORY + f'/releases/tags/{product}/{version}', timeout=30) as response:
+        data = json.load(response)
+    asset = next((a for a in data['assets'] if a['name'] == asset_name), None)
+    if asset is None:
+        raise ValueError(f'release has no {asset_name}')
+    digest = asset.get('digest') or ''
+    if not re.fullmatch(r'sha256:[0-9a-f]{64}', digest):
+        raise ValueError(f'{asset_name} has no published SHA256 digest')
+    return version, digest[7:], asset['browser_download_url']
+
+
+def pins(check=False):
+    source = Path(__file__).resolve()
+    text = source.read_text()
+    for product in ('ko', 'koa'):
+        version, digest, _ = release(product)
+        for suffix, value in [('VERSION', version), ('SHA256', digest)]:
+            text = re.sub(r'^' + product.upper() + '_' + suffix + r' = .+$',
+                          product.upper() + '_' + suffix + ' = ' + repr(value), text, flags=re.MULTILINE)
+    if check:
+        if text != source.read_text():
+            raise ValueError('release pins are stale; run python3 kow/kow --pin, then commit the change before release')
+    else:
+        source.write_text(text)
+
+
+def download(product, version, destination):
+    pinned_version, pinned_digest = (KO_VERSION, KO_SHA256) if product == 'ko' else (KOA_VERSION, KOA_SHA256)
+    version = version or pinned_version
+    if version == pinned_version:
+        asset = f'ko-{version}-linux-x86_64.tar.gz' if product == 'ko' else f'koa-{version}.tar.gz'
+        digest = pinned_digest
+        url = f'https://github.com/andreypopp/kido/releases/download/{product}/{version}/{asset}'
+    else:
+        _, digest, url = release(product, version)
+    print(f'Download {url}', flush=True)
+    with urllib.request.urlopen(url, timeout=60) as response:
+        archive = response.read()
+    if hashlib.sha256(archive).hexdigest() != digest:
+        raise ValueError(f'{product} archive SHA256 mismatch')
+    destination.mkdir()
+    with tarfile.open(fileobj=io.BytesIO(archive), mode='r:gz') as tar:
+        tar.extractall(destination, filter='data')
+
+
+def run(args, **kwargs):
+    return subprocess.run([str(a) for a in args], check=True, **kwargs)
+
+
+def extract(folder):
+    folder.mkdir(parents=True, exist_ok=True)
+    for name, (mode, content) in FILES.items():
+        path = folder / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(content.encode())
+        path.chmod(mode)
+    for name in ('ko-pair', 'ko-revoke'):
+        (folder / name).symlink_to('ko-devices')
+
+
+def initialize(folder):
+    folder.mkdir(mode=0o700)
+    for name, content in WORKSPACE_FILES.items():
+        (folder / name).write_text(content)
+    run(['ssh-keygen', '-q', '-t', 'ed25519', '-N', '', '-C', 'ko-deploy-' + folder.name, '-f', folder / 'id_ed25519'])
+    (folder / 'known_hosts').touch(mode=0o600)
+    (folder / 'ssh_config').write_text(f'''Host *
+    User me
+    IdentityFile "{folder}/id_ed25519"
+    IdentitiesOnly yes
+    IdentityAgent none
+    ForwardAgent no
+    PasswordAuthentication no
+    KbdInteractiveAuthentication no
+    UserKnownHostsFile "{folder}/known_hosts"
+    GlobalKnownHostsFile /dev/null
+    HostKeyAlias {folder.name}
+    HostKeyAlgorithms ssh-ed25519
+    StrictHostKeyChecking yes
+    CheckHostIP no
+    UpdateHostKeys no
+    VerifyHostKeyDNS no
+''')
+    (folder / 'terraform.tfvars').write_text('''zone_id   = "YOUR_ZONE_ID"
+zone_name = "example.net"
+ko_label  = "ko"
+region    = "fra1"
+size      = "s-1vcpu-1gb"
+''')
+    print(f'Created {folder}')
+
+
+def address(folder):
+    state, file = folder / 'terraform.tfstate', folder / 'address'
+    if state.exists() and file.exists():
+        raise ValueError(f'{folder} has both terraform.tfstate and address')
+    if state.exists():
+        return json.loads(state.read_text())['outputs']['ipv4']['value']
+    if file.exists():
+        return file.read_text().strip()
+    raise ValueError(f'{folder} has no terraform.tfstate or address')
+
+
+def ssh_command(folder):
+    args = ['ssh', '-F', str(folder / 'ssh_config')]
+    if (folder / 'known_hosts').stat().st_size == 0:
+        args += ['-o', 'StrictHostKeyChecking=accept-new']
+    return args
+
+
+def install(folder, checkout, ko_version, koa_version):
+    outputs = json.loads((folder / 'terraform.tfstate').read_text())['outputs']
+    host = address(folder)
+    ssh = ssh_command(folder)
+    run([*ssh, host, 'cloud-init status --wait >/dev/null && mkdir -p ~/ko-install/linux ~/ko-install/koa ~/ko-install/deploy'])
+    with tempfile.TemporaryDirectory(prefix='kow-') as temporary:
+        payload = Path(temporary)
+        extract(payload)
+        if checkout:
+            checkout = Path(checkout).expanduser().resolve()
+            run(['make', 'build-linux', 'LINUX_ARCHS=x86_64'], cwd=checkout)
+            run(['make', '-C', 'koa', 'build'], cwd=checkout)
+            linux, koa = checkout / 'build/ko/share/ko/linux/x86_64', checkout / 'build/koa'
+        else:
+            linux, koa = payload / 'linux-build', payload / 'koa-build'
+            download('ko', ko_version, linux)
+            download('koa', koa_version, koa)
+        for source, target in [(linux, 'linux'), (koa, 'koa')]:
+            run(['rsync', '-az', '--delete', '-e', shlex.join(ssh), str(source) + '/', f'{host}:ko-install/{target}/'])
+        if not checkout:
+            shutil.rmtree(linux)
+            shutil.rmtree(koa)
+        run(['rsync', '-az', '--delete', '-e', shlex.join(ssh), str(payload) + '/', f'{host}:ko-install/deploy/'])
+    arguments = [outputs['ko_host']['value'], *outputs['ssh_cidrs']['value']]
+    run([*ssh, '-t', host, 'sudo /home/me/ko-install/deploy/provision.sh ' + shlex.join(arguments)])
+
+
+def main():
+    args = sys.argv[1:]
+    if len(args) == 2 and args[0] == '--extract':
+        extract(Path(args[1]))
+        return
+    if args in (['--pin'], ['--check-pins']):
+        pins(check=args == ['--check-pins'])
+        return
+    if args == ['--test']:
+        with tempfile.TemporaryDirectory(prefix='kow-test-') as temporary:
+            root = Path(temporary)
+            extract(root)
+            (root / 'testdata').symlink_to(CHECKOUT / 'app/Packages/KidoPairing/Tests/KidoPairingTests/testdata')
+            run(['bash', root / 'test.sh'])
+        return
+    parser = argparse.ArgumentParser(prog='kow', usage='kow NAME {init,ssh,deploy,install,pair,unpair,list-devices,smoke} ...')
+    parser.add_argument('name')
+    parser.add_argument('command', choices=['init', 'ssh', 'deploy', 'install', 'pair', 'unpair', 'list-devices', 'smoke'])
+    if len(args) >= 2 and args[1] in ('install', 'deploy'):
+        parser.add_argument('--checkout', default=os.environ.get('KOW_CHECKOUT'))
+        parser.add_argument('--ko')
+        parser.add_argument('--koa')
+    else:
+        parser.set_defaults(checkout=None, ko=None, koa=None)
+    parser.add_argument('arguments', nargs='*' if len(args) >= 2 and args[1] in ('install', 'deploy') else argparse.REMAINDER)
+    options = parser.parse_args(args)
+    if options.checkout and (options.ko or options.koa):
+        parser.error('--checkout cannot be combined with --ko or --koa')
+    folder = Path(options.name).absolute()
+    if not re.fullmatch(r'[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?', folder.name):
+        parser.error('NAME must be a DNS label')
+    if any(c in str(folder) for c in '\n\r"\\'):
+        parser.error('workspace path cannot contain quotes, backslashes or newlines')
+    command, extra = options.command, options.arguments
+    if command in ('init', 'deploy', 'install', 'list-devices') and extra:
+        parser.error(f'{command} takes no arguments')
+    if command == 'init':
+        initialize(folder)
+    elif command == 'deploy':
+        tofu_env = {**os.environ, 'TF_WORKSPACE': 'default'}
+        run(['tofu', 'init'], cwd=folder, env=tofu_env)
+        run(['tofu', 'apply'], cwd=folder, env=tofu_env)
+        install(folder, options.checkout, options.ko, options.koa)
+    elif command == 'install':
+        install(folder, options.checkout, options.ko, options.koa)
+    elif command == 'smoke':
+        curl = run(['curl', '-V'], stdout=subprocess.PIPE).stdout
+        if b'HTTP3' not in curl.split():
+            raise ValueError('smoke needs curl with HTTP/3 support; use Homebrew curl (macOS curl has no HTTP/3)')
+        if len(extra) >= 2 and extra[0] == '--host':
+            host, extra = extra[1], extra[2:]
+        else:
+            host = json.loads((folder / 'terraform.tfstate').read_text())['outputs']['ko_host']['value']
+        if len(extra) > 1:
+            parser.error('smoke accepts [--host HOST] [ADDRESS]')
+        with tempfile.TemporaryDirectory(prefix='kow-smoke-') as temporary:
+            root = Path(temporary)
+            extract(root)
+            run(['bash', root / 'smoke.sh', folder / 'ssh_config', host, *(extra or [address(folder)])])
+    elif command == 'ssh':
+        run([*ssh_command(folder), address(folder), *extra])
+    else:
+        remote = {'pair': 'ko-pair', 'unpair': 'ko-revoke', 'list-devices': 'ko-devices'}[command]
+        if command == 'pair' and not (not extra or len(extra) == 2 and extra[0] == '--name'):
+            parser.error('pair accepts only --name NAME')
+        if command == 'unpair' and len(extra) != 1:
+            parser.error('unpair needs a fingerprint')
+        run([*ssh_command(folder), *(['-t'] if command == 'pair' else []), address(folder), shlex.join(['sudo', remote, *extra])])
+
+
+if __name__ == '__main__':
+    try:
+        main()
+    except (OSError, ValueError, KeyError, subprocess.SubprocessError) as error:
+        print(f'kow: {error}', file=sys.stderr)
+        sys.exit(1)

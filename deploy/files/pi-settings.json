@@ -1,7 +1,0 @@
-{
-  "packages": [
-    "git:github.com/andreypopp/pi-observational-memory@1529e144575da19ce6f877eeec42199a04925983",
-    "npm:@andreypopp/pi-infer-questions@0.1.5",
-    "npm:pi-claude-bridge@0.13.0"
-  ]
-}

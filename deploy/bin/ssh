@@ -1,8 +1,0 @@
-#!/bin/bash
-set -euo pipefail
-. "$(dirname -- "$0")/deployment.sh"
-resolve 'deploy/bin/ssh [NAME] [COMMAND...]' "$@"
-shift "$consumed"
-host=$(address)
-ssh_command
-exec "${ssh[@]}" "$host" "$@"

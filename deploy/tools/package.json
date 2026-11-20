@@ -1,7 +1,0 @@
-{
-  "private": true,
-  "dependencies": {
-    "@anthropic-ai/claude-code": "2.1.295",
-    "@earendil-works/pi-coding-agent": "1.5.2"
-  }
-}

@@ -92,7 +92,7 @@ app/App/* app/Resources/* app/Packages/*|app ko-test visual
 app/*|app ko-test
 website/*|website
 scripts/* bench/*|build lint-sh lint-rs
-deploy/*|lint-sh
+kow/*|lint-sh
 *|all
 TABLE
 done <<< "$paths"

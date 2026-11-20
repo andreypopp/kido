@@ -7,11 +7,11 @@ func linux(_ args: [String]) -> Never {
         switch args.first {
         case "install":
             var options = Array(args.dropFirst())
-            let template = option("--cloud-init", in: &options) ?? "deploy/terraform/cloud-init.yaml"
+            let template = option("--cloud-init", in: &options)
             guard let deployment = option("--deployment", in: &options).map({ URL(fileURLWithPath: $0).standardizedFileURL }), options.isEmpty, !isRunning() else {
                 fail("usage: kido-vm linux install --deployment DIR [--cloud-init FILE] (VM must be stopped)")
             }
-            var userData = try String(contentsOfFile: template, encoding: .utf8)
+            var userData = try String(contentsOfFile: template ?? deployment.appendingPathComponent("cloud-init.yaml").path, encoding: .utf8)
             let encoder = JSONEncoder()
             encoder.outputFormatting = .withoutEscapingSlashes
             guard userData.contains("${ssh_key}") else { fail("cloud-init template has no ${ssh_key} placeholder") }

@@ -369,19 +369,19 @@ What the setup does, and why:
 ### The Debian guest
 
 `kido-vm linux` runs a second, unrelated guest: Debian 13 with
-systemd, for a rehearsal of `deploy/` before a droplet
-(`deploy/README.md`, "Rehearse in a local VM").
+systemd, for a rehearsal of a kow deployment before a droplet
+(docs/kow.md, "Rehearse in a local VM").
 `app/vm/Sources/kido-vm/linux.swift` defines it. Its state is in
 `~/.local/state/kido-vm-linux/`, with its own disk, locks and MAC
 address, so it runs beside the macOS guest and never touches its
-state. Its SSH key is that of a deployment folder (deploy/README.md,
-"Deployments"), which `install --deployment DIR` records.
+state. Its SSH key is that of a kow workspace folder (docs/kow.md,
+"The workspace folder"), which `install --deployment DIR` records.
 
 `install` downloads Debian's `genericcloud` arm64 raw image and refuses
 it unless its SHA-512 matches Debian's `SHA512SUMS`. It grows the disk
 to 20 GB (cloud-init grows the partition) and writes a NoCloud seed
-ISO. The seed's user-data is `deploy/terraform/cloud-init.yaml`, the
-file that OpenTofu also renders, with the folder's public key in
+ISO. The seed's user-data is the folder's `cloud-init.yaml` (or
+`--cloud-init FILE`), the file that OpenTofu also renders, with the folder's public key in
 place of `${ssh_key}`; so the VM and the droplet start from the same
 cloud-init. The seed's network config sets the DHCP identifier to the
 MAC address, because Debian's default DUID does not match the host's

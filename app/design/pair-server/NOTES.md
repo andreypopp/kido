@@ -113,11 +113,11 @@ promise of a date. The notice component is unchanged.
 
 The same `mismatchAlert` as for SSH (`mismatch/NOTES.md`), with the
 host step changed: there is no SSH, systemd owns ko on the host
-(`ko.service`, binaries in /opt/ko), and `deploy/install.sh`, run in
-the Kido checkout that deployed the host, builds ko from that
-checkout, reads the host from the checkout's Terraform state,
-installs ko there and restarts the service. It takes no argument and
-does not use the app's bundled ko. HOST is the host's label.
+(`ko.service`, binaries in /opt/ko), and `kow NAME install`, run in
+the folder that holds the host's kow workspace, reads the host from
+the workspace's OpenTofu state, installs the ko release that kow pins
+and restarts the service. It does not use the app's bundled ko. HOST
+is the host's label.
 
 - The server speaks a newer protocol: title "Update Kido.app to
   connect to HOST"; body "The server speaks ko protocol X; this app
@@ -132,14 +132,14 @@ does not use the app's bundled ko. HOST is the host's label.
   app runs terminal revision R1; the server runs R2. Install the ko
   release of this Kido.app on the host, or update Kido.app. The
   server is build A; this app is build B." then the host step.
-- The host step, for the two cases that change the host: "In the
-  Kido checkout that deployed HOST, checked out at the release of
-  this Kido.app, run the command below. It builds ko there, installs
-  it on HOST and restarts its service. All sessions and panes on
-  that server will end." The selectable monospace field under it
-  holds `deploy/install.sh`, with no argument. The release clause is
-  there because the script builds whatever is checked out; a
-  checkout at another release installs another mismatch.
+- The host step, for the two cases that change the host: "Update
+  kow to the release of this Kido.app, then run the command below in
+  the folder that holds the workspace of HOST. It installs ko on HOST
+  and restarts its service. All sessions and panes on that server
+  will end." The selectable monospace field under it holds `kow NAME
+  install`. The release clause is there because kow installs the ko
+  release that it pins; a kow of another release installs another
+  mismatch.
 - Buttons as for SSH: "Reconnect" (not destructive) and "Close"
   (default, Escape). Reconnect checks the versions again.
 

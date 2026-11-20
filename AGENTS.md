@@ -19,6 +19,8 @@ repeat them.
 - [docs/design-koa.md](docs/design-koa.md): koa, the pi harness that
   renders through a page.
 - [docs/design-app.md](docs/design-app.md): Kido.app.
+- [docs/kow.md](docs/kow.md): kow, the deployment of one remote ko
+  server.
 - [docs/build.md](docs/build.md): the crates, the toolchain, the
   platforms, the installed layout and the source trees.
 - [docs/verification.md](docs/verification.md): `make verify`, the
@@ -895,16 +897,17 @@ delegates as its brief says and does not write code.
 
 ## Releasing
 
-ko, koa and Kido.app ship from `main`, each with its own formula in
+ko, koa, kow and Kido.app ship from `main`, each with its own formula in
 `andreypopp/homebrew-tap`. The `ko` formula pins a revision with a
 manually increased version; `ko/<version>` tags mark ko releases, whose
 GitHub release holds the `ko-bin` tarballs. `koa/N.N.N` tags mark koa
 releases, whose formula installs the tag's tarball, and
-`kido-app/N.N.N` tags mark Kido.app releases. ko, ko-bin and Kido.app
-do not ship koa. `/release` (`.pi/prompts/release.md`) is the whole
+`kido-app/N.N.N` tags mark Kido.app releases. `kow/N.N.N` tags mark
+kow releases; kow pins the ko and koa releases that it installs, so a
+kow release follows them. ko, ko-bin and Kido.app do not ship koa. `/release` (`.pi/prompts/release.md`) is the whole
 sequence for an agent: Kido.app first when the schemas or the Ghostty
-pin changed, then ko, and koa when it changed. After the change is on
-`main`, run `scripts/release.sh ko|koa VERSION`; `--dry-run` inspects
+pin changed, then ko, koa when it changed, and kow last. After the change is on
+`main`, run `scripts/release.sh ko|koa|kow VERSION`; `--dry-run` inspects
 its actions. It requires HEAD equal to origin/main and green CI, and
 a removed or renamed command (ko) or tool (koa) requires a minor
 bump. It never runs `brew upgrade` (docs/release.md).

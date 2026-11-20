@@ -1,4 +1,0 @@
-.terraform/
-*.tfstate*
-*.tfvars
-__pycache__/
