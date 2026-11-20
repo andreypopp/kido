@@ -248,6 +248,8 @@ net.core.wmem_max = 7500000
 
 FILES_UNATTENDED_UPGRADES = r'''Unattended-Upgrade::Origins-Pattern {
     "origin=Debian,codename=${distro_codename}-security,label=Debian-Security";
+    "origin=cloudsmith/caddy/stable,codename=any-version,site=dl.cloudsmith.io";
+    "origin=. nodistro,codename=nodistro,site=deb.nodesource.com";
 };
 Unattended-Upgrade::Automatic-Reboot "true";
 Unattended-Upgrade::Automatic-Reboot-Time "04:00";
@@ -3304,6 +3306,28 @@ def snapshot():
 command = ['bash', str(base / 'provision.sh'), 'ko.test', '0.0.0.0/0', '::/0']
 subprocess.run(command, check=True, env=env)
 assert 'apt-get install ' in log.read_text()
+import importlib.machinery
+import importlib.util
+from types import SimpleNamespace
+
+loader = importlib.machinery.SourceFileLoader('unattended_upgrade', '/usr/bin/unattended-upgrade')
+spec = importlib.util.spec_from_loader(loader.name, loader)
+unattended_upgrade = importlib.util.module_from_spec(spec)
+loader.exec_module(unattended_upgrade)
+unattended_upgrade.apt_pkg.init_config()
+config = unattended_upgrade.apt_pkg.config
+allowed = unattended_upgrade.get_allowed_origins()
+for origin, label, codename, site in (
+        ('cloudsmith/caddy/stable', 'source=none', 'any-version', 'dl.cloudsmith.io'),
+        ('. nodistro', '. nodistro', 'nodistro', 'deb.nodesource.com')):
+    release = SimpleNamespace(origin=origin, label=label, archive=codename,
+                              codename=codename, site=site, component='main')
+    assert unattended_upgrade.is_allowed_origin(release, allowed), release
+    release.site = 'other.example'
+    assert not unattended_upgrade.is_allowed_origin(release, allowed), release
+for key in ('Update-Package-Lists', 'Unattended-Upgrade'):
+    assert config.find('APT::Periodic::' + key) == '1', key
+print('PASS unattended-upgrades origins, site restrictions and periodic settings')
 before = snapshot()
 log.write_text('')
 start = time.monotonic()

@@ -145,6 +145,22 @@ identity that matches a mixed build.
 permission before it changes it. It runs `apt-get update` and
 `apt-get install` only when a listed package is missing or an apt
 source or key changed; package updates stay with unattended-upgrades.
+
+unattended-upgrades runs daily (`APT::Periodic` in
+`/etc/apt/apt.conf.d/52ko-unattended-upgrades`). It upgrades Debian
+security updates and every package of the Caddy and NodeSource
+repositories, and reboots at 04:00 when an upgrade needs it. Each
+repository pattern names the Origin and Codename of the repository's
+Release file and its host (`site=`), because NodeSource's Origin
+`. nodistro` is generic. Caddy's Label `source=none` cannot be a
+pattern: unattended-upgrades splits a pattern at each `=`. If its
+Origin or Codename changes, the repository stops getting updates. The
+Caddy package restarts Caddy itself on upgrade. If a new Caddy
+changes its default `/etc/caddy/Caddyfile`, dpkg would ask about the
+conffile, so unattended-upgrades holds the package back for a manual
+upgrade. A Node.js upgrade does not stop running koa panes: they keep
+the old Node until they restart.
+
 Work that a change makes necessary (apt, or the restart of ko, Caddy,
 nftables, ssh or systemd-resolved) has a marker in
 `/var/lib/kow/pending/` from the change until it succeeds, so a run
@@ -272,10 +288,12 @@ container delete kow-local-test
 
 `kow --test-provision` changes the system it runs on, so it runs only
 in a disposable Debian 13 container with `KOW_TEST_PROVISION=1`, and
-needs `sudo` and `diffutils` too. It replaces apt, systemd, Caddy and
+needs `sudo`, `diffutils` and `unattended-upgrades` too. It replaces apt, systemd, Caddy and
 the other system commands with stubs that log their arguments, and
-installs a fake ko and koa. It checks that a second identical run
-writes no file, runs no apt or npm and starts or restarts no service,
+installs a fake ko and koa. It checks with the matcher of the real
+unattended-upgrades that the installed policy allows the Caddy and
+NodeSource repositories only from their own hosts. It checks that a
+second identical run writes no file, runs no apt or npm and starts or restarts no service,
 and that a run which fails after a change completes the apt work and
 the ko restart on the next run. It does not check real systemd
 effects.
@@ -283,7 +301,7 @@ effects.
 ```sh
 container run --rm --mount type=bind,source="$PWD",target=/work,readonly \
   -e KOW_TEST_PROVISION=1 debian:13 \
-  bash -c 'apt-get update && apt-get install -y python3-cryptography qrencode openssl curl sudo diffutils && python3 /work/kow/kow --test-provision'
+  bash -c 'apt-get update && apt-get install -y python3-cryptography qrencode openssl curl sudo diffutils unattended-upgrades && python3 /work/kow/kow --test-provision'
 ```
 
 Tests use a private folder under `/tmp`. Only tests set
