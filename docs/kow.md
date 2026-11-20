@@ -99,16 +99,19 @@ after `tofu destroy`.
    `enroll.` and the ko host. `ssh_cidrs` limits SSH to source
    networks; by default every address may connect (see "Threat
    model").
-3. Run `kow NAME deploy`. The install copies ko and koa as `me` into
-   `~/ko-install/linux/` and `~/ko-install/koa/`, writes the payload
-   into `~/ko-install/deploy/`, and runs `provision.sh` with sudo. You
-   can run `kow NAME install` again at any time ("Repeated installs"). Wait for DNS and for
+3. Run `kow NAME deploy`. Each install stages its files as `me` in
+   its own folder `~/ko-install/run-<random>/`: ko in `linux/`, koa in
+   `koa/` and the payload in `deploy/`. Then it runs `provision.sh`
+   with sudo and removes the folder; a failed install leaves it for
+   inspection. You can run `kow NAME install` again at any time
+   ("Repeated installs"). Wait for DNS and for
    Caddy to obtain both server certificates. Port 80 stays closed;
    ACME must use TLS-ALPN-01 on port 443.
 4. Run `kow NAME smoke`. It needs a curl with HTTP/3 (`curl -V` lists
    `HTTP3`): Homebrew's curl has it, the curl of macOS has none, and
    the test refuses to start without it. It creates and revokes a
-   test device. It checks TLS, HTTP/3, the WebSocket, socket access,
+   test device; it takes the fingerprint from its own certificate, so
+   it revokes the device also when the enrollment answer is lost. It checks TLS, HTTP/3, the WebSocket, socket access,
    all TCP ports (only 22 and 443 may accept a connection) and all UDP
    ports (only 443 may receive a datagram). The TCP scan takes about a
    minute, because the firewall drops the other ports. The UDP scan
@@ -134,12 +137,23 @@ paths, contents, modes and symlink targets. Provisioning records the
 identity of the installed ko in `/opt/ko/.kow-source` and of koa in
 `/opt/koa.kow-source`. Before it downloads or copies a build, kow
 reads both files over SSH; on an exact match it neither downloads nor
-copies that build, and `provision.sh` leaves it in place. A
+copies that build, and `provision.sh` leaves it in place. The copy
+compares checksums, not size and time. kow computes the identity of
+a checkout build from a private copy, which it then transfers, and
+puts a digest of each transferred tree (paths, contents, modes and
+symlink targets) into the payload. Under its lock, `provision.sh`
+computes the digest of each staged tree again and stops on a
+difference or a missing digest before it changes anything, so a
+recorded identity always names the bytes that were installed. Provisioning replaces the ko share tree or the koa tree
+whenever its identity differs from the recorded one. A
 mismatch, a missing file or a failed or unreadable answer takes the
 full path. A `--checkout` install still runs both builds. Provisioning
 removes an identity before it changes that build and writes it again
-only after the services run, so a failed install never leaves an
-identity that matches a mixed build.
+only after ko, Caddy and nftables are each active and ko answers
+`/version` within 5 seconds, so a failed install never leaves an
+identity that matches a mixed build. `provision.sh` holds
+`/var/lock/kow-install.lock`; a second install that starts while one
+provisions stops with a message, and you run it again later.
 
 `provision.sh` compares each file, symlink, account setting and
 permission before it changes it. It runs `apt-get update` and
@@ -149,7 +163,10 @@ source or key changed; package updates stay with unattended-upgrades.
 unattended-upgrades runs daily (`APT::Periodic` in
 `/etc/apt/apt.conf.d/52ko-unattended-upgrades`). It upgrades Debian
 security updates and every package of the Caddy and NodeSource
-repositories, and reboots at 04:00 when an upgrade needs it. Each
+repositories. It never reboots, because a reboot ends every pane:
+when `/var/run/reboot-required` exists, `kow NAME install` prints one
+line with the packages that need it, and you reboot when convenient
+(`kow NAME ssh sudo reboot`). Each
 repository pattern names the Origin and Codename of the repository's
 Release file and its host (`site=`), because NodeSource's Origin
 `. nodistro` is generic. Caddy's Label `source=none` cannot be a
@@ -242,6 +259,12 @@ the operator must know:
 - Caddy refuses a TLS handshake without a certificate from
   `/var/lib/ko-devices`. ko has no TCP listener; its socket accepts
   only `me` and `caddy`.
+- Caddy is root-equivalent. A request on ko's socket from `caddy`
+  (`--allow-uid`) acts as the user, so code that runs inside Caddy
+  can start a pane as `me` and use sudo without a password. AppArmor
+  and `NoNewPrivileges` do not contain this, because ko starts the
+  pane, not Caddy. Such code does not bypass mTLS; the boundary is
+  the integrity of Caddy.
 - The key of Kido.app is a Secure Enclave key. A copy of the Mac's
   disk does not give access. Malware that runs as the Mac user can
   sign while it runs; revoke that device.
@@ -292,7 +315,7 @@ needs `sudo`, `diffutils` and `unattended-upgrades` too. It replaces apt, system
 the other system commands with stubs that log their arguments, and
 installs a fake ko and koa. It checks with the matcher of the real
 unattended-upgrades that the installed policy allows the Caddy and
-NodeSource repositories only from their own hosts. It checks that a
+NodeSource repositories only from their own hosts and never reboots. It checks that a
 second identical run writes no file, runs no apt or npm and starts or restarts no service,
 and that a run which fails after a change completes the apt work and
 the ko restart on the next run. It does not check real systemd

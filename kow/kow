@@ -2,6 +2,7 @@
 import argparse
 import hashlib
 import io
+import inspect
 import json
 import os
 from pathlib import Path
@@ -251,8 +252,7 @@ FILES_UNATTENDED_UPGRADES = r'''Unattended-Upgrade::Origins-Pattern {
     "origin=cloudsmith/caddy/stable,codename=any-version,site=dl.cloudsmith.io";
     "origin=. nodistro,codename=nodistro,site=deb.nodesource.com";
 };
-Unattended-Upgrade::Automatic-Reboot "true";
-Unattended-Upgrade::Automatic-Reboot-Time "04:00";
+Unattended-Upgrade::Automatic-Reboot "false";
 APT::Periodic::Update-Package-Lists "1";
 APT::Periodic::Unattended-Upgrade "1";
 '''
@@ -600,6 +600,21 @@ if [[ ${1:-} == --tls-cert ]]; then
 fi
 [[ $EUID == 0 && $# -ge 2 ]] || { echo 'usage: sudo provision.sh [--tls-cert CERT KEY] KO_HOST SSH_CIDR...' >&2; exit 1; }
 base=$(cd -- "$(dirname -- "$0")" && pwd)
+exec 9>/var/lock/kow-install.lock
+flock -n 9 || { echo 'another kow install is provisioning; retry when it finishes' >&2; exit 1; }
+for product in ko koa; do
+    [[ ! -e $base/$product-skip ]] || continue
+    directory=$product
+    [[ $product != ko ]] || directory=linux
+    actual=$(python3 "$base/tree-identity.py" "$base/../$directory")
+    [[ -s $base/$product-tree && $(cat "$base/$product-tree") == "$actual" ]] || {
+        echo "$product staged tree identity mismatch" >&2
+        exit 1
+    }
+    if grep -q '^checkout:' "$base/$product-source"; then
+        cmp -s "$base/$product-source" "$base/$product-tree" || { echo "$product checkout identity mismatch" >&2; exit 1; }
+    fi
+done
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
 pair_port=8791
@@ -705,7 +720,7 @@ else
 for binary in ko ko-pane; do
     install_changed "$base/../linux/bin/$binary" "/opt/ko/bin/$binary" ko 0755
 done
-if ! diff -qr "$base/../linux/share" /opt/ko/share >/dev/null; then
+if ! cmp -s "$base/ko-source" /opt/ko/.kow-source; then
     mark_changed ko
     rm -f /opt/ko/.kow-source
     share=$(mktemp -d /opt/ko/.share-XXXXXX)
@@ -720,7 +735,7 @@ if [[ -e $base/koa-skip ]]; then
     cmp -s "$base/koa-source" /opt/koa.kow-source || { echo 'koa identity changed during install' >&2; exit 1; }
 else
 [[ -x $base/../koa/bin/koa ]] || { echo 'copy build/koa beside deploy as koa/ first' >&2; exit 1; }
-if [[ ! -d /opt/koa ]] || ! diff -qr "$base/../koa" /opt/koa >/dev/null; then
+if ! cmp -s "$base/koa-source" /opt/koa.kow-source; then
     rm -f /opt/koa.kow-source
     koa=$(mktemp -d /opt/.koa-XXXXXX)
     cp -a "$base/../koa/." "$koa/"
@@ -791,7 +806,6 @@ for service in ko caddy nftables; do
     elif "${!flag}"; then
         systemctl restart "$service"
     fi
-    rm -f "$pending/$service"
 done
 if ! systemctl is-active --quiet ssh; then
     systemctl start ssh
@@ -803,7 +817,14 @@ if "$resolved_changed"; then
     systemctl try-restart systemd-resolved
     rm -f "$pending/resolved"
 fi
-systemctl is-active --quiet ko caddy nftables
+for service in ko caddy nftables; do
+    systemctl is-active --quiet "$service"
+done
+timeout 5 bash -c 'until runuser -u me -- /opt/ko/bin/ko --server /var/lib/ko api /version >/dev/null 2>&1; do :; done' || {
+    echo 'ko did not answer /version within 5 seconds' >&2
+    exit 1
+}
+rm -f "$pending/ko" "$pending/caddy" "$pending/nftables"
 runuser -u me -- env -i HOME=/home/me PATH=/usr/local/bin:/usr/bin:/bin "$base/me.sh"
 if [[ -f $base/ko-source ]]; then
     install_changed "$base/ko-source" /opt/ko/.kow-source
@@ -820,6 +841,7 @@ set -euo pipefail
 base=$(cd -- "$(dirname -- "$0")" && pwd)
 python3 - "$base" "$@" <<'PY'
 import errno
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -883,7 +905,7 @@ with tempfile.TemporaryDirectory(prefix="ko-smoke-") as temporary:
     remaining = []
     reader = threading.Thread(target=lambda: remaining.append(process.stdout.read()), daemon=True)
     reader.start()
-    enrolled = None
+    enrolled = hashlib.sha256(run('openssl', 'x509', '-in', str(cert), '-outform', 'DER')).hexdigest()
     ws = None
     try:
         request = run("python3", str(base / "enroll-request.py"), str(cert), str(key), "operator smoke test", input=payload["token"].encode())
@@ -894,7 +916,7 @@ with tempfile.TemporaryDirectory(prefix="ko-smoke-") as temporary:
         assert fallback.returncode == 0 and fallback.stdout == b"404", fallback
         response = subprocess.run(["curl", *resolves, "--fail-with-body", "--silent", "--show-error", "--max-time", "10", "--data-binary", "@-", payload["enroll"]], input=request, stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=12)
         assert response.returncode == 0, response.stderr.decode()
-        enrolled = json.loads(response.stdout)["fingerprint"]
+        assert json.loads(response.stdout)["fingerprint"] == enrolled
         process.wait(timeout=20)
         reader.join(timeout=1)
         assert process.returncode == 0 and ("paired operator smoke test " + enrolled).encode() in b"".join(remaining)
@@ -3253,11 +3275,22 @@ if [[ $name == caddy && ${1:-} == validate && -e ${FAIL_CADDY_VALIDATE_ONCE:-/no
     rm "$FAIL_CADDY_VALIDATE_ONCE"
     exit 42
 fi
+if [[ $name == systemctl && ${1:-} == is-active && -n ${INACTIVE_SERVICE:-} ]]; then
+    for service in "${@:3}"; do
+        [[ $service == "$INACTIVE_SERVICE" ]] || exit 0
+    done
+    exit 3
+fi
 case $name in
     dpkg-query)
         if [[ $* == *Status* ]]; then printf 'install ok installed'; else printf '2.11.4'; fi ;;
     caddy) [[ ${1:-} != version ]] || echo v2.11.4 ;;
-    runuser) HOME=/home/me bash "$DEPLOY_BASE/me.sh" ;;
+    runuser)
+        if [[ $* == *'/opt/ko/bin/ko'* ]]; then
+            /usr/sbin/runuser "$@"
+        else
+            HOME=/home/me bash "$DEPLOY_BASE/me.sh"
+        fi ;;
     npm)
         mkdir -p /home/me/.local/share/ko-tools/node_modules/.bin
         for tool in pi claude; do
@@ -3286,7 +3319,7 @@ for name in ('/etc/apt/sources.list.d/caddy-stable.list', '/usr/share/keyrings/c
 for name in ('linux/bin/ko', 'linux/bin/ko-pane', 'koa/bin/koa'):
     path = base.parent / name
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text('#!/bin/sh\necho --allow-uid\n')
+    path.write_text('#!/bin/sh\ncase "$*" in *"api /version"*) [ "$(id -un)" = me ] || { echo "readiness probe requires me" >&2; exit 41; }; if [ -e /home/me/ko-not-ready ]; then rm /home/me/ko-not-ready; echo "ko not listening yet" >&2; exit 42; fi;; esac\necho --allow-uid\n')
     path.chmod(0o755)
 (base.parent / 'linux/share').mkdir()
 (base.parent / 'linux/share/test').write_text('test share\n')
@@ -3304,8 +3337,53 @@ def snapshot():
     return result
 
 command = ['bash', str(base / 'provision.sh'), 'ko.test', '0.0.0.0/0', '::/0']
+def record_trees():
+    for product, directory in (('ko', 'linux'), ('koa', 'koa')):
+        identity = subprocess.check_output(['python3', str(base / 'tree-identity.py'), str(base.parent / directory)])
+        (base / (product + '-tree')).write_bytes(identity)
+
+(base.parent / 'linux/share/link').symlink_to('test')
+record_trees()
+staged = base.parent / 'linux/share/test'
+staged.write_text('wrong bytes\n')
+assert subprocess.run(command, env=env).returncode != 0, 'corrupt staged artifact accepted'
+staged.write_text('test share\n')
+Path('/home/me/ko-not-ready').touch()
+subprocess.run(['chown', 'me:me', '/home/me/ko-not-ready'], check=True)
 subprocess.run(command, check=True, env=env)
 assert 'apt-get install ' in log.read_text()
+accepted = []
+for change in ('mode', 'link', 'directory', 'extra', 'empty-tree', 'missing-tree'):
+    tree = base.parent / 'linux'
+    saved = work / 'saved-tree'
+    shutil.copytree(tree, saved, symlinks=True)
+    expected_tree = (base / 'ko-tree').read_bytes()
+    if change == 'mode':
+        (tree / 'share/test').chmod(0o755)
+    elif change == 'link':
+        (tree / 'share/link').unlink()
+        (tree / 'share/link').symlink_to('../bin/ko')
+    elif change == 'directory':
+        (tree / 'share').chmod(0o700)
+    elif change == 'extra':
+        (tree / 'extra').write_text('unexpected')
+    elif change == 'empty-tree':
+        (base / 'ko-tree').write_text('')
+    else:
+        (base / 'ko-tree').unlink()
+    if subprocess.run(command, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE).returncode == 0:
+        accepted.append(change)
+    shutil.rmtree(tree)
+    saved.rename(tree)
+    (base / 'ko-tree').write_bytes(expected_tree)
+assert not accepted, 'staged tree changes accepted: ' + ', '.join(accepted)
+print('PASS staged tree contents, modes, symlinks, directories and required identities')
+import fcntl
+with open('/var/lock/kow-install.lock', 'w') as lock:
+    fcntl.flock(lock, fcntl.LOCK_EX)
+    blocked = subprocess.run(command, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    assert blocked.returncode != 0 and b'another kow install' in blocked.stderr, 'concurrent provision accepted'
+print('PASS concurrent provisioning refused')
 import importlib.machinery
 import importlib.util
 from types import SimpleNamespace
@@ -3341,6 +3419,25 @@ assert not any(line.startswith('systemctl ') and line.split()[1] in ('restart', 
 print(f'PASS provision twice; second run {elapsed:.3f}s; unchanged target files')
 print('Second-run commands:\n' + '\n'.join(commands))
 
+for product, tree, installed in (('ko', 'linux/share', '/opt/ko/share'), ('koa', 'koa', '/opt/koa')):
+    source = base.parent / tree / 'mode-test'
+    source.write_text('same bytes\n')
+    source.chmod(0o644)
+    (base / (product + '-source')).write_text('mode-before-' + product + '\n')
+    record_trees()
+    subprocess.run(command, check=True, env=env)
+    source.chmod(0o755)
+    (base / (product + '-source')).write_text('mode-after-' + product + '\n')
+    record_trees()
+    subprocess.run(command, check=True, env=env)
+    assert (Path(installed) / 'mode-test').stat().st_mode & 0o777 == 0o755, product + ' mode-only update lost'
+print('PASS mode-only tree replacement')
+
+Path('/var/lib/kow/pending/ko').touch()
+assert subprocess.run(command, env={**env, 'INACTIVE_SERVICE': 'ko'}).returncode != 0, 'inactive ko accepted'
+assert Path('/var/lib/kow/pending/ko').exists(), 'pending ko cleared before health check'
+print('PASS inactive ko prevents identity commit')
+
 apt_failure = work / 'fail-apt'
 apt_failure.touch()
 retry_env = {**env, 'FAIL_APT_UPDATE_ONCE': str(apt_failure)}
@@ -3360,6 +3457,7 @@ retry_env = {**env, 'FAIL_CADDY_VALIDATE_ONCE': str(caddy_failure)}
 (base.parent / 'linux/bin/ko').write_text('#!/bin/sh\nprintf -- "--allow-uid changed\\n"\n')
 new_identity = 'changed-test-sha256-ko\n'
 (base / 'ko-source').write_text(new_identity)
+record_trees()
 assert Path('/opt/ko/.kow-source').read_text() != new_identity
 assert subprocess.run(command, env=retry_env).returncode == 42
 assert not Path('/opt/ko/.kow-source').exists()
@@ -3422,8 +3520,15 @@ REPOSITORY = 'https://api.github.com/repos/andreypopp/kido'
 
 def release(product, version=None):
     if version is None:
-        with urllib.request.urlopen(REPOSITORY + '/releases?per_page=100', timeout=30) as response:
-            releases = json.load(response)
+        releases = []
+        for page in range(1, 101):
+            with urllib.request.urlopen(REPOSITORY + f'/releases?per_page=100&page={page}', timeout=30) as response:
+                batch = json.load(response)
+            releases.extend(batch)
+            if len(batch) < 100:
+                break
+        else:
+            raise ValueError('release pagination exceeded 100 pages')
         versions = [r['tag_name'].removeprefix(product + '/') for r in releases
                     if not r['draft'] and not r['prerelease'] and re.fullmatch(product + r'/\d+\.\d+\.\d+', r['tag_name'])]
         version = max(versions, key=lambda v: tuple(map(int, v.split('.'))))
@@ -3493,6 +3598,9 @@ def extract(folder):
         path.chmod(mode)
     for name in ('ko-pair', 'ko-revoke'):
         (folder / name).symlink_to('ko-devices')
+    (folder / 'tree-identity.py').write_text(
+        'import hashlib, json, os, sys\nfrom pathlib import Path\n' +
+        inspect.getsource(checkout_identity) + '\nprint(checkout_identity(Path(sys.argv[1])))\n')
 
 
 def initialize(folder):
@@ -3568,16 +3676,23 @@ def checkout_identity(source):
         elif path.is_file():
             entry = ['file', name, path.stat().st_mode & 0o777, hashlib.sha256(path.read_bytes()).hexdigest()]
         else:
-            entry = ['directory', name]
+            entry = ['directory', name, path.stat().st_mode & 0o777]
         digest.update(json.dumps(entry).encode() + b'\n')
     return 'checkout:sha256:' + digest.hexdigest()
+
+
+REBOOT_NOTICE_SH = '''if test -e /var/run/reboot-required; then
+    packages=$(tr '\\n' ' ' </var/run/reboot-required.pkgs 2>/dev/null || true)
+    printf 'Reboot required (%s); reboot when convenient.\\n' "${packages% }"
+fi'''
 
 
 def install(folder, checkout, ko_version, koa_version):
     outputs = json.loads((folder / 'terraform.tfstate').read_text())['outputs']
     host = address(folder)
     ssh = ssh_command(folder)
-    run([*ssh, host, 'cloud-init status --wait >/dev/null && mkdir -p ~/ko-install/linux ~/ko-install/koa ~/ko-install/deploy'])
+    staging = 'ko-install/run-' + os.urandom(16).hex()
+    run([*ssh, host, f'cloud-init status --wait >/dev/null && mkdir -p ~/{staging}/linux ~/{staging}/koa ~/{staging}/deploy'])
     with tempfile.TemporaryDirectory(prefix='kow-') as temporary:
         payload = Path(temporary)
         extract(payload)
@@ -3585,7 +3700,8 @@ def install(folder, checkout, ko_version, koa_version):
             checkout = Path(checkout).expanduser().resolve()
             run(['make', 'build-linux', 'LINUX_ARCHS=x86_64'], cwd=checkout)
             run(['make', '-C', 'koa', 'build'], cwd=checkout)
-            linux, koa = checkout / 'build/ko/share/ko/linux/x86_64', checkout / 'build/koa'
+            linux = Path(shutil.copytree(checkout / 'build/ko/share/ko/linux/x86_64', payload / 'linux-build', symlinks=True))
+            koa = Path(shutil.copytree(checkout / 'build/koa', payload / 'koa-build', symlinks=True))
             identities = [checkout_identity(linux), checkout_identity(koa)]
         else:
             linux, koa = payload / 'linux-build', payload / 'koa-build'
@@ -3597,20 +3713,63 @@ def install(folder, checkout, ko_version, koa_version):
             if installed_matches(identities[index], answers[index]):
                 (payload / (product + '-skip')).touch()
                 print(f'{product} already installed; skip transfer', flush=True)
+                if checkout:
+                    shutil.rmtree(source)
                 continue
             if not checkout:
                 download(product, archives[index], source)
-            run(['rsync', '-az', '--delete', '-e', shlex.join(ssh), str(source) + '/', f'{host}:ko-install/{target}/'])
-            if not checkout:
-                shutil.rmtree(source)
-        run(['rsync', '-rlzc', '--perms', '--delete', '-e', shlex.join(ssh), str(payload) + '/', f'{host}:ko-install/deploy/'])
+            (payload / (product + '-tree')).write_text(checkout_identity(source) + '\n')
+            run(['rsync', '-azc', '--delete', '-e', shlex.join(ssh), str(source) + '/', f'{host}:{staging}/{target}/'])
+            shutil.rmtree(source)
+        run(['rsync', '-rlzc', '--perms', '--delete', '-e', shlex.join(ssh), str(payload) + '/', f'{host}:{staging}/deploy/'])
     arguments = [outputs['ko_host']['value'], *outputs['ssh_cidrs']['value']]
-    run([*ssh, '-t', host, 'sudo /home/me/ko-install/deploy/provision.sh ' + shlex.join(arguments)])
+    run([*ssh, '-t', host, f'sudo /home/me/{staging}/deploy/provision.sh ' + shlex.join(arguments)])
+    run([*ssh, host, REBOOT_NOTICE_SH])
+    run([*ssh, host, 'rm -rf -- ' + shlex.quote(staging)])
 
 
 def test_artifacts(root):
     from unittest.mock import patch
 
+    def paged_release(url, **kwargs):
+        if '/tags/' in url:
+            assert url.endswith('/ko/9.0.0'), url
+            data = {'assets': [{'name': 'ko-9.0.0-linux-x86_64.tar.gz',
+                               'digest': 'sha256:' + 'a' * 64, 'browser_download_url': 'test'}]}
+        elif 'page=2' in url:
+            data = [{'tag_name': 'ko/9.0.0', 'draft': False, 'prerelease': False}]
+        else:
+            data = [{'tag_name': 'koa/1.0.0', 'draft': False, 'prerelease': False}] * 100
+        return io.BytesIO(json.dumps(data).encode())
+
+    with patch('urllib.request.urlopen', side_effect=paged_release):
+        assert release('ko')[0] == '9.0.0', 'newest release must include later pages'
+    print('PASS release pagination')
+    enrollment = SMOKE_SH[SMOKE_SH.index('    enrolled = '):SMOKE_SH.index('        process.wait(timeout=20)')]
+    enrollment += SMOKE_SH[SMOKE_SH.index('    finally:\n        if ws:'):SMOKE_SH.index("    remote('''set -eu")]
+    from types import SimpleNamespace
+    revoked = []
+    scope = dict(subprocess=subprocess, json=json, hashlib=hashlib, base=root, cert=root / 'cert', key=root / 'key',
+                 payload={'token': 'test', 'enroll': 'https://enroll.test/v1/enroll'}, host='test',
+                 address='test', resolves=[], run=lambda *a, **k: b'certificate DER',
+                 curl=lambda *a: subprocess.CompletedProcess([], 0, b'404'), remote=revoked.append,
+                 process=SimpleNamespace(poll=lambda: 0), reader=SimpleNamespace(join=lambda **k: None))
+    with patch('subprocess.run', return_value=subprocess.CompletedProcess([], 1, b'', b'lost response')):
+        try:
+            exec('if True:\n' + enrollment, scope)
+        except AssertionError:
+            pass
+    assert revoked == ['sudo ko-revoke ' + hashlib.sha256(b'certificate DER').hexdigest()], 'lost enrollment response must revoke local fingerprint'
+    print('PASS lost enrollment response cleanup')
+    assert 'Automatic-Reboot "false"' in FILES_UNATTENDED_UPGRADES, 'automatic reboot still enabled'
+    assert 'Automatic-Reboot-Time' not in FILES_UNATTENDED_UPGRADES
+    notice_path = root / 'reboot-required'
+    notice_command = REBOOT_NOTICE_SH.replace('/var/run/reboot-required', str(notice_path))
+    assert subprocess.check_output(['bash', '-c', notice_command]) == b''
+    notice_path.touch()
+    Path(str(notice_path) + '.pkgs').write_text('linux-image\nlibc6\n')
+    assert subprocess.check_output(['bash', '-c', notice_command]) == b'Reboot required (linux-image libc6); reboot when convenient.\n'
+    print('PASS manual reboot policy and reboot notice')
     identity = 'release:1:sha256:' + 'a' * 64
     for answer in ('', identity, identity + '\nextra\n', identity + '\r\n', 'other\n'):
         assert not installed_matches(identity, answer), answer
@@ -3653,11 +3812,44 @@ def test_artifacts(root):
         def fake_download(product, source, destination):
             downloads.append(product)
             destination.mkdir()
+            (destination / 'binary').write_bytes(b'bytes')
 
         with patch(__name__ + '.run', side_effect=remote_run), patch(__name__ + '.download', side_effect=fake_download):
             install(folder, None, None, None)
         assert downloads == expected, downloads
         assert len(transfers) == len(expected) + 1, transfers
+        assert all('ko-install/run-' in target for target in transfers), 'installs share staging paths'
+    checkout = root / 'checkout-build'
+    linux = checkout / 'build/ko/share/ko/linux/x86_64'
+    koa = checkout / 'build/koa'
+    linux.mkdir(parents=True)
+    koa.mkdir(parents=True)
+    original = linux / 'binary'
+    original.write_bytes(b'original')
+    (koa / 'binary').write_bytes(b'koa')
+
+    def mutate_checkout(args, **kwargs):
+        if args[0] == 'ssh' and args[-1].startswith('cat /opt/ko/'):
+            original.write_bytes(b'mutated!')
+        if args[0] == 'rsync' and args[-1].endswith('/linux/'):
+            assert (Path(args[-2]) / 'binary').read_bytes() == b'original', 'source mutation reached staging'
+        return subprocess.CompletedProcess(args, 0, b'')
+
+    with patch(__name__ + '.run', side_effect=mutate_checkout):
+        install(folder, checkout, None, None)
+    print('PASS private checkout snapshot excludes later source changes')
+    checkout_answers = [checkout_identity(linux), checkout_identity(koa)]
+
+    def skipped_checkout(args, **kwargs):
+        if args[0] == 'rsync':
+            assert args[-1].endswith('/deploy/'), 'skipped checkout artifact transferred'
+            copied = Path(args[-2])
+            assert not (copied / 'linux-build').exists() and not (copied / 'koa-build').exists(), 'skipped checkout snapshots uploaded in payload'
+        return subprocess.CompletedProcess(args, 0, ('\n'.join(checkout_answers) + '\n').encode())
+
+    with patch(__name__ + '.run', side_effect=skipped_checkout):
+        install(folder, checkout, None, None)
+    print('PASS skipped checkout payload excludes build snapshots')
     print('PASS artifact identities, stubbed SSH answers and install transfers')
 
 
