@@ -1937,38 +1937,32 @@ light and dark in the gallery.
   its own (32 characters at most), except the first, which always
   shows and ellipsizes when it alone does not fit. Re-fitted on each
   state update and resize.
-- **Two modes** (user, 2026-11-20; threads.html sections 1 and 1b;
-  not confirmed, being redesigned: the 10% rule below is retracted,
-  and iteration 2 on the page puts the transcript left-aligned and
-  the block at its right, with no card, when at least 30 cells are
-  free there; do not implement until this note says so).
-  The widget is in block mode when its rows can stand at the left of
-  the transcript and cover at most 10% of the transcript's width,
-  else in line mode: so block in a wide pane, line in a narrow one.
-  The rule, with the transcript 720pt at most and centred, so the
-  gutter is (pane − transcript) / 2: block when 240pt (the least
-  usable block), from 8pt in, exceeds the gutter by at most 10% of
-  the transcript's width; the block is then the gutter plus that
-  10% wide, at most 340pt (a 1400pt pane: a 340pt gutter, the block
-  entirely in it; a 980pt pane: a 130pt gutter, 110pt short, more
-  than 72: line mode). Re-decided on each resize. *Line mode* is the
-  capsule as before, with two changes: a click on a name applies the
-  filter at once (hover underlines the name in its colour at 50%,
-  like the reply's pill), and the "▾" is a "…" at the right (the
-  muted colour, 600, hover the well2) that opens the panel. *Block
-  mode* is the panel's rows standing at the top left of the pane,
-  8pt from the top and the left, on the popup's card (user,
-  2026-11-20: the panel's background, 1px edge at 18%, 9pt radius,
-  the 8/28 shadow at 14%, 6pt padding), with no capsule: for each
-  thread, newest first,
-  "# name" in the colour (ellipsized at 45% of the block), the
-  first line of the last message muted and ellipsized, the age at
-  the right, the panel's 28pt rows and 6pt radius, hover the well.
-  A click on a row applies the filter; the current row has the
-  well2 fill; a click on it or on the "All threads" row under a
-  hairline clears it. Block mode has no popup. The transcript keeps
-  its normal top padding in block mode (the block stands beside
-  it, within the 10%), and the 44pt only in line mode.
+- **Two modes** (user, 2026-11-20, approved as iteration 2;
+  threads.html sections 1 and 1b). The transcript is aligned left,
+  not centred: 720pt at most from the pane's left edge, and the
+  composer with it, so the text edges stay on one vertical (the
+  page shows this in every pane; it applies to every koa page). The
+  widget is in block mode when at least 30 cells (30 × the cell
+  width) are free at the right of the transcript after a 20pt gap
+  and the pane's 8pt edge; else in line mode. Re-decided on each
+  resize. *Block mode*: the panel's rows stand at the right of the
+  transcript, 20pt from it, 8pt from the top, directly on the
+  pane's background with no card, no edge, no shadow, no capsule
+  and no popup; the block takes the free room, at most 360pt. For
+  each thread, newest first: "# name" in the colour (ellipsized at
+  45% of the block), the first line of the last message muted and
+  ellipsized, the age at the right; the panel's 28pt rows and 6pt
+  radius, hover the well. A click on a row applies the filter; the
+  current row has the well2 fill; a click on it or on the "All
+  threads" row under a hairline clears it. The transcript keeps its
+  normal top padding in block mode and the 44pt only in line mode.
+  *Line mode*: the capsule as before, with two changes: a click on
+  a name applies the filter at once (hover underlines the name in
+  its colour at 50%, like the reply's pill), and the "▾" is a "…"
+  at the right (the muted colour, 600, hover the well2) that opens
+  the panel. (An earlier iteration placed the block at the left on
+  a card when it covered at most 10% of a centred transcript; the
+  user retracted it.)
 - **The panel**, under the capsule (top 36pt, the capsule's left):
   the completion popup's style (the background, a 1px edge at 18%,
   9pt radius, the 8/28 shadow at 14%, 6pt padding, .88em prose),
