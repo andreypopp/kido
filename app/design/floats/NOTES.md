@@ -102,11 +102,12 @@ What changes visibly:
   traffic lights active) while a float window is key: the float is
   a non-activating child that can become key. When the float is key:
   its pane is the active pane, with the 1pt accent focus stroke and a
-  solid cursor; the main window's tiled panes follow the not-key rule
-  (hollow cursor, no stroke, no 3% shift), and the other floats keep
-  their 45% inactive overlay. When the main window is key: its active
-  tiled pane has the stroke and the solid cursor, and every float has
-  the overlay, the last-active float too. A click anywhere in the
+  solid cursor; the main window's tiled panes are all unfocused
+  (hollow cursor, no stroke, the 3% shifted paper, also on a sole
+  tiled pane: user, 2026-11-20, section E "The paper"), and the
+  other floats keep their 45% inactive overlay. When the main window
+  is key: its active tiled pane has the stroke and the solid cursor,
+  and every float has the overlay, the last-active float too. A click anywhere in the
   main window (sidebar, tabs, a pane) makes it key; a click in a float
   makes that float key. The menu bar and ⌘-shortcuts act on the key
   window's pane: the Pane menu on the float's pane while the float is
@@ -286,6 +287,35 @@ parent, minimise and Space for free; each is now a rule of ours.
   lands on a tiled pane (⌘[, the sidebar, the palette, Back/Forward)
   switches the main window to show it, as the sidebar does today; a
   route that lands on a float never switches the main window.
+- **The paper** (user, 2026-11-20; replaces "no 3% shift" in
+  section B and the same in docs/design-app.md "Focus treatment").
+  One rule: the focused pane is the pane of the key window among
+  Kido's, and it alone has the pure paper, the stroke and the solid
+  cursor; every other pane is unfocused. An unfocused tiled pane has
+  the 3% shifted paper, no stroke and a hollow cursor, so while a
+  float is key every tiled pane of the main window is shifted, a
+  sole tiled pane too (the single-pane exception of "Focus
+  treatment" holds only while the main window is key, when that pane
+  is the focused one). A float's paper is never shifted: a float is
+  pure with the stroke while key, and pure under its 45%
+  theme-background overlay while not key (the main window key, or
+  another float). A koa page follows its pane's paper through
+  `--ko-bg`, so the page of a tiled koa pane dims while its editor
+  float is key. When no Kido window is key, the not-key rule as
+  today: no pane is focused, every tiled pane shifted, every float
+  under the overlay.
+- **One transition, no blink.** A key handoff between two Kido
+  windows (main to float, float to main, float to float) is one
+  change of the focused pane, painted once: AppKit sends resign-key
+  to one window before become-key to the other, and the intermediate
+  "no key window" state must never reach the screen. The app derives
+  the focused pane from the key window on become-key and repaints
+  both windows' panes (paper, stroke, cursor, overlay) in that one
+  pass; a resign-key repaints only when the key goes outside Kido,
+  which it tells apart by deferring the resign-key repaint to the
+  next run-loop turn and dropping it when a Kido window became key
+  meanwhile. The paper and the stroke of one pane change in the same
+  draw, never in two.
 - **Identity on screen.** The window title (Dock menu, Mission
   Control, ⌘\`, accessibility) is "<pane title> — <session> /
   <window>", the pane title as the tab shows it. On the float
