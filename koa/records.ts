@@ -2,10 +2,24 @@ import type { components } from "../webview/ko-api.d.ts";
 
 declare const threadName: unique symbol;
 export type ThreadName = string & { readonly [threadName]: true };
-export const THREAD_NAME_PATTERN = '^[a-z0-9-]{1,32}$';
-const threadNamePattern = new RegExp(THREAD_NAME_PATTERN);
-const isThreadName = (value: unknown): value is ThreadName => typeof value === 'string' && threadNamePattern.test(value);
-export const parseThreadName = (value: unknown): ThreadName | undefined => isThreadName(value) ? value : undefined;
+export const THREAD_NAME_PATTERN = '^[^\\]\\u0000-\\u001f\\u007f-\\u009f]{1,200}$';
+const threadNamePattern = new RegExp(THREAD_NAME_PATTERN, 'u');
+const isThreadName = (value: string): value is ThreadName => threadNamePattern.test(value);
+export const parseThreadName = (value: unknown): ThreadName | undefined => {
+  const name = typeof value === 'string' ? value.replace(/[^\S\u0000-\u001f\u007f-\u009f]+/gu, ' ').replace(/^ | $/g, '') : undefined;
+  return name !== undefined && isThreadName(name) ? name : undefined;
+};
+export const threadMove = (entry: { type: string; customType?: string; data?: unknown }): { from: ThreadName; to: ThreadName } | undefined => {
+  if (entry.type !== 'custom' || entry.customType !== 'koa.thread-move' || typeof entry.data !== 'object' || entry.data === null) return;
+  const from = parseThreadName('from' in entry.data ? entry.data.from : undefined), to = parseThreadName('to' in entry.data ? entry.data.to : undefined);
+  return from && to ? { from, to } : undefined;
+};
+export const messageThread = (entry: { type: string; customType?: string; data?: unknown }): { entries: string[]; thread: ThreadName } | undefined => {
+  if (entry.type !== 'custom' || entry.customType !== 'koa.message-thread' || typeof entry.data !== 'object' || entry.data === null) return;
+  const data = entry.data, entries = 'entries' in data ? data.entries : undefined;
+  const name = parseThreadName('thread' in data ? data.thread : undefined);
+  return Array.isArray(entries) && entries.length > 0 && entries.every((id): id is string => typeof id === 'string' && id.length > 0) && new Set(entries).size === entries.length && name ? { entries, thread: name } : undefined;
+};
 
 export type Relation = components["schemas"]["Relation"];
 const relations = new Set<string>(["parent", "child", "sibling", "descendant", "sibling_descendant"] satisfies Relation[]);

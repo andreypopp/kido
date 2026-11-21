@@ -33,7 +33,7 @@ import type { Agent, Selection, Tree } from "./koa-agents.ts";
 import { jobRecord } from "./koa-status.ts";
 import type { AgentView, Own } from "./koa-view.ts";
 import { agentCompletionItems, type AgentRow } from "./agents.ts";
-import { ATTACHMENT_LIMITS, type ViewGone, type PromptMode, type PageRecord, type State, type ThinkingLevel, type Dialog, type CompletionCommand, type CompletionQuery, type SessionStats, type Bash, type View, metricsRequest } from "./koa-records.ts";
+import { ATTACHMENT_LIMITS, type Thread, type ViewGone, type PromptMode, type PageRecord, type State, type ThinkingLevel, type Dialog, type CompletionCommand, type CompletionQuery, type SessionStats, type Bash, type View, metricsRequest } from "./koa-records.ts";
 
 enableCompileCache();
 
@@ -252,10 +252,10 @@ Everything after -- is message text.
     };
     const facts = koaAgents.hostFacts(process.env);
     const pathEditor = !!facts.pane && !browser && !facts.runtime;
-    const compose = (agent: Agent) => (own: Own): State => {
+    const compose = (agent: Agent) => (own: Own, threads?: Thread[]): State => {
       const view = agentViewOf(agent);
       const common = { ...own, pathEditor, ...(agent === tree.selected() ? { edit: edits.view() } : {}), agents: agentsFor(agent) };
-      return view.type === 'root' ? { ...common, view: { ...view, type: 'root' }, threads: agent.view.feed.threads() } : { ...common, view: { ...view, type: 'subagent' } };
+      return view.type === 'root' ? { ...common, view: { ...view, type: 'root' }, threads: threads ?? agent.view.feed.threads() } : { ...common, view: { ...view, type: 'subagent' } };
     };
     const makeView = (agentRef: () => Agent, parent: Agent | undefined, name: string | undefined, cwd: string): AgentView => {
       const first = !parent;
@@ -263,8 +263,9 @@ Everything after -- is message text.
         sessionEntryToContextMessages: sdk.pi.sessionEntryToContextMessages,
         dir: join(dir, randomUUID()), kind: first ? 'root' : 'subagent', metrics: metricsFile !== undefined, attached, name, cwd: first ? process.cwd() : cwd, home: homedir(),
         agent: () => { const agent = agentRef(); if (!agent.runtime) throw new Error("the agent is not started"); return { session: agent.runtime.session, runtime: agent.runtime }; },
-        compose: own => {
-          const agent = agentRef(), state = compose(agent)(own);
+        branch: () => agentRef().runtime?.session.sessionManager.getBranch() ?? [],
+        compose: (own, threads) => {
+          const agent = agentRef(), state = compose(agent)(own, threads);
           for (const open of feeds.values()) if (open.selection.agent === agent) open.feed.state({ ...own, pathEditor: state.pathEditor, agents: state.agents, view: jobViewOf(open.selection, state.view.path), type: "state" });
           return state;
         },
@@ -426,18 +427,28 @@ Everything after -- is message text.
       answer();
     };
     const owned = ({ agent, valid }: Req, owner: AgentSession) => { if (agent.session !== owner || agent.torn.has(owner) || !valid()) throw new Error("pi session changed"); };
-    const queuePrompt = async (agent: Agent, session: AgentSession, text: string, requested: PromptMode | "steer", files: Awaited<ReturnType<AgentView["attached"]["prepare"]>>, thread?: ThreadName) => {
+    const queuePrompt = async (agent: Agent, session: AgentSession, text: string, requested: PromptMode | "steer", files: Awaited<ReturnType<AgentView["attached"]["prepare"]>>, thread: ThreadName | undefined, source: { type: 'user'; validate(): void; label: ReturnType<typeof tree.labelPrompt>; entry: ReturnType<AgentView['prompts']['hold']> | undefined } | { type: 'resend' }) => {
       const v = agent.view;
-      const message = [text.startsWith('/') ? text : threadPrompt(text, thread), ...files.paths].filter(Boolean).join("\n");
-      const typed = unknownMentions(text, agentsFor(agent).map(row => row.name), path => existsSync(resolve(v.state.cwd, path)));
-      const discovered = typed.length ? (await agent.extension?.scope(0, true) ?? []).map(row => row.name) : [];
-      const unknown = typed.filter(name => !discovered.includes(name));
-      const mode = v.state.working ? requested === "follow_up" ? "followUp" : "steer" : "prompt";
-      const entry = v.prompts.add(message, mode, files.files, unknown.length ? `${unknown.map(name => `@${name}`).join(", ")} ${unknown.length === 1 ? "matches" : "match"} no agent` : undefined);
+      const mode = () => v.state.working ? requested === "follow_up" ? "followUp" : "steer" : "prompt";
+      const marked = text.startsWith('/') ? text : threadPrompt(text, thread);
+      const label = source.type === 'user' ? source.label : undefined;
+      const held = source.type === 'user' ? source.entry : undefined;
       try {
-        const disposition = await koaAgents.submitPrompt(v.hooks.notify, session, message, { ...(files.images.length ? { images: files.images } : {}), ...(mode !== "prompt" ? { streamingBehavior: mode } : {}) });
-        return { entry, disposition };
-      } catch (error) { v.prompts.reject(entry); throw error; }
+        if (source.type === 'user') source.validate();
+        const message = [typeof label === 'function' ? await label() : label ?? marked, ...files.paths].filter(Boolean).join("\n");
+        const typed = unknownMentions(text, agentsFor(agent).map(row => row.name), path => existsSync(resolve(v.state.cwd, path)));
+        const discovered = typed.length ? (await agent.extension?.scope(0, true) ?? []).map(row => row.name) : [];
+        const unknown = typed.filter(name => !discovered.includes(name));
+        if (source.type === 'user') source.validate();
+        const warning = unknown.length ? `${unknown.map(name => `@${name}`).join(", ")} ${unknown.length === 1 ? "matches" : "match"} no agent` : undefined;
+        const sending = mode();
+        if (held) v.prompts.settle(held, message, sending, warning);
+        const entry = held || v.prompts.add(message, sending, files.files, warning);
+        try {
+          const disposition = await koaAgents.submitPrompt(v.hooks.notify, session, message, { ...(files.images.length ? { images: files.images } : {}), ...(sending !== "prompt" ? { streamingBehavior: sending } : {}) });
+          return { entry, disposition };
+        } catch (error) { v.prompts.reject(entry); throw error; }
+      } catch (error) { if (held) { v.prompts.reject(held); v.publish(); } throw error; }
     };
     type Req = { address: ViewAddress; selection: Selection; agent: Agent; valid(): boolean };
     const routes: Record<string, { method: "GET" | "POST"; access: Access; scope: "agent" | "view" | "job"; handle(value: unknown, response: ServerResponse, req: Req): void | Promise<void> }> = {
@@ -565,10 +576,26 @@ Everything after -- is message text.
         }
         const owner = agent.session;
         const files = await v.attached.prepare(prompt.attachments);
-        const { entry, disposition } = await v.serial(async () => { owned(req, owner); return queuePrompt(agent, owner, prompt.text, prompt.mode, files, prompt.thread); });
-        if (disposition === 'handled') { v.prompts.reject(entry); respond(response, 200, JSON.stringify({ disposition: 'handled', action: { type: 'none' } })); return; }
-        v.attached.consume(prompt.attachments, disposition === "queued" ? "queued" : "used");
-        respond(response, 200, JSON.stringify({ disposition }));
+        const marked = prompt.text.startsWith('/') ? prompt.text : threadPrompt(prompt.text, prompt.thread);
+        const label = tree.labelPrompt(agent, marked);
+        const pending = typeof label === 'function' ? v.prompts.hold([marked, ...files.paths].filter(Boolean).join('\n'), v.state.working ? prompt.mode === 'follow_up' ? 'followUp' : 'steer' : 'prompt', files.files) : undefined;
+        const answered = pending !== undefined;
+        if (pending) { v.attached.consume(prompt.attachments, 'queued'); v.publish(); respond(response, 200, JSON.stringify({ disposition: 'queued' })); }
+        try {
+          const { entry, disposition } = await v.serial(() => queuePrompt(agent, owner, prompt.text, prompt.mode, files, prompt.thread, { type: 'user', validate: () => owned(req, owner), label, entry: pending }));
+          if (disposition === 'handled') { v.prompts.reject(entry); if (!answered) respond(response, 200, JSON.stringify({ disposition: 'handled', action: { type: 'none' } })); return; }
+          if (answered) return;
+          v.attached.consume(prompt.attachments, disposition === "queued" ? "queued" : "used");
+          respond(response, 200, JSON.stringify({ disposition }));
+        } catch (error) {
+          if (!answered) throw error;
+          if (agent.session === owner) {
+            v.attached.restore(prompt.attachments);
+            v.state.editor = { id: randomUUID(), text: prompt.text, attachments: files.files };
+            v.publish();
+          }
+          v.feed.notify(errorText(error), 'error');
+        }
       } },
       "/abort": { method: "POST", access: "session", scope: "agent", handle: (_value, response, { agent }) => {
         const v = agent.view;
@@ -586,13 +613,32 @@ Everything after -- is message text.
           v.publish(); respond(response, 200, JSON.stringify(restored));
         } finally { v.prompts.endClear(); }
       }); } },
+      "/messages/thread": { method: "POST", access: "session", scope: "agent", handle: (value, response, req) => { const { agent } = req, v = agent.view, owner = agent.session; return v.serial(async () => {
+        owned(req, owner);
+        const thread = isRecord(value) ? parseThreadName(value.thread) : undefined, seq = isRecord(value) && typeof value.seq === "number" && Number.isSafeInteger(value.seq) ? value.seq : undefined;
+        const targets = seq === undefined ? undefined : v.feed.moveTargets(seq);
+        if (agent.parent || !thread || !targets?.length || !v.feed.threads().some(row => row.name === thread)) { respond(response, 400, JSON.stringify({ error: "A finished message of the root and a live thread are required" })); return; }
+        const entry = owner.sessionManager.getEntry(owner.sessionManager.appendCustomEntry('koa.message-thread', { entries: targets, thread }));
+        if (entry) v.feed.annotation(entry);
+        v.publish();
+        respond(response, 200, "{}");
+      }); } },
+      "/threads/move": { method: "POST", access: "session", scope: "agent", handle: (value, response, req) => { const { agent } = req, v = agent.view, owner = agent.session; return v.serial(async () => {
+        owned(req, owner);
+        const from = isRecord(value) ? parseThreadName(value.from) : undefined, to = isRecord(value) ? parseThreadName(value.to) : undefined;
+        if (agent.parent || !from || !to || !v.feed.threads().some(thread => thread.name === from) || !v.feed.movable(from, to)) { respond(response, 400, JSON.stringify({ error: "A thread of the root and a different free or live name are required" })); return; }
+        const entry = owner.sessionManager.getEntry(owner.sessionManager.appendCustomEntry('koa.thread-move', { from, to }));
+        if (entry) v.feed.annotation(entry);
+        v.publish();
+        respond(response, 200, "{}");
+      }); } },
       "/queue/remove": { method: "POST", access: "session", scope: "agent", handle: (value, response, req) => { const { agent } = req, v = agent.view, owner = agent.session; return v.serial(async () => {
         owned(req, owner);
         if (!isRecord(value) || value.kind !== "steer" && value.kind !== "follow-up" || typeof value.index !== "number" || !Number.isSafeInteger(value.index) || value.index < 0 || typeof value.text !== "string") { respond(response, 400, JSON.stringify({ error: "A queue kind, index and text are required" })); return; }
         const { kind, index, text } = value;
         const thread = parseThreadName(value.thread);
         if (value.thread !== undefined && (!thread || agent.parent)) { respond(response, 400, '{}'); return; }
-        const shown = v.prompts.view();
+        const shown = v.queue();
         if ((kind === "steer" ? shown.steering : shown.followUp)[index]?.text !== text || (kind === 'steer' ? shown.steering : shown.followUp)[index]?.thread !== thread) { respond(response, 409, JSON.stringify({ error: "The queue changed" })); return; }
         v.prompts.beginClear();
         try {
@@ -600,14 +646,15 @@ Everything after -- is message text.
           const all = [...restored.steering.map(entry => ({ entry, behavior: "steer" as const })), ...restored.followUp.map(entry => ({ entry, behavior: "follow_up" as const }))];
           v.attached.restore(all.flatMap(({ entry }) => entry.attachments.map(file => file.id)));
           const list = kind === "steer" ? restored.steering : restored.followUp;
-          const stale = list[index]?.text !== text || list[index]?.thread !== thread;
+          const selected = list[index];
+          const stale = selected?.text !== text || (selected?.thread ? v.feed.resolveThread(selected.thread) : undefined) !== thread;
           const keep = all.filter(({ entry }) => stale || entry !== list[index]);
           for (const [done, { entry, behavior }] of keep.entries()) {
             const ids = entry.attachments.map(file => file.id);
             let failure: string | undefined;
             try {
               owned(req, owner);
-              const sent = await queuePrompt(agent, owner, entry.text, behavior, await v.attached.prepare(ids), entry.thread);
+              const sent = await queuePrompt(agent, owner, entry.text, behavior, await v.attached.prepare(ids), entry.thread, { type: 'resend' });
               if (sent.disposition === "handled") v.prompts.reject(sent.entry); else v.attached.consume(ids, "queued");
             } catch (error) { failure = errorText(error); }
             if (failure !== undefined) {
@@ -749,11 +796,24 @@ Everything after -- is message text.
         if (!await startRoot()) return;
         if (reloaded !== undefined) root().view.feed.notify(reloaded ? `restarted · ${reloaded} ${reloaded === 1 ? "subagent" : "subagents"} ended` : "reloaded", "info");
         const messages = initialMessages; initialMessages = [];
-        for (const message of messages) {
+        for (const text of messages) {
           const v = root().view;
           if (!v.running()) break;
           const done = v.settleWait();
-          if (await koaAgents.submitPrompt(v.hooks.notify, root().session, message, {}) === 'handled') v.clearSettleWait();
+          const label = tree.labelPrompt(root(), text);
+          const held = typeof label === 'function' ? v.prompts.hold(text, 'prompt', []) : undefined;
+          if (held) v.publish();
+          const disposition = await v.serial(async () => {
+            if (!held || typeof label !== 'function') return koaAgents.submitPrompt(v.hooks.notify, root().session, typeof label === 'string' ? label : text, {});
+            const labelled = await label();
+            v.prompts.settle(held, labelled, 'prompt');
+            try {
+              const disposition = await koaAgents.submitPrompt(v.hooks.notify, root().session, labelled, {});
+              if (disposition === 'handled') { v.prompts.reject(held); v.publish(); }
+              return disposition;
+            } catch (error) { v.prompts.reject(held); throw error; }
+          });
+          if (disposition === 'handled') v.clearSettleWait();
           else await done;
         }
       })());

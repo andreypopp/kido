@@ -1,3 +1,6 @@
+import { classify } from './koa-classify.ts';
+import { decodePrompt, threadPrompt } from './prompt.ts';
+import { isRecord } from './text.ts';
 import { hostname } from "node:os";
 import { join, resolve } from "node:path";
 import type { ImageContent } from "@earendil-works/pi-ai";
@@ -115,6 +118,7 @@ export type AgentHost = {
 
 export type Tree = {
   readonly root: Agent;
+  labelPrompt(agent: Agent, text: string): string | (() => Promise<string>) | undefined;
   readonly records: Records;
   all(): Agent[];
   find(id: string): Agent | undefined;
@@ -138,6 +142,7 @@ export type Tree = {
 
 type TreeOptions = {
   sdk: Sdk;
+  classifierDeadlineMs?: number;
   args: Args;
   cwd: string;
   agentDir: string;
@@ -212,6 +217,28 @@ export function createTree(options: TreeOptions): Tree {
   const trustStore = new pi.ProjectTrustStore(agentDir);
   const trustByCwd = new Map<string, boolean>();
   const startupSettings: SettingsManager = pi.SettingsManager.create(options.cwd, agentDir, { projectTrusted: false });
+  const global: unknown = startupSettings.getGlobalSettings();
+  const koa = isRecord(global) && isRecord(global.koa) ? global.koa : undefined;
+  const configured: unknown = koa && isRecord(koa.threads) ? koa.threads.model : undefined;
+  const modelName = configured === undefined ? 'openai-codex/gpt-6-luna' : configured;
+  const parts = typeof modelName === 'string' ? /^([^/]+)\/(.+)$/.exec(modelName) : null;
+  const classifier: { type: 'off' } | { type: 'model'; provider: string; id: string } | { type: 'invalid'; setting: string } = modelName === 'off' ? { type: 'off' } : parts ? { type: 'model', provider: parts[1], id: parts[2] } : { type: 'invalid', setting: JSON.stringify(modelName) };
+  let classifierWarned = false;
+  const labelPrompt = (agent: Agent, text: string): string | (() => Promise<string>) | undefined => {
+    if (agent.parent || !text.trim() || text.startsWith('/') || decodePrompt(text, [], 'root').thread) return undefined;
+    const quoted = agent.view.feed.quotedThread(text);
+    if (quoted) return threadPrompt(text, quoted);
+    if (classifier.type === 'off') return undefined;
+    return async () => { try {
+      if (classifier.type === 'invalid') throw Error(`invalid koa.threads.model: ${classifier.setting}`);
+      const queued = agent.view.prompts.view();
+      const { threads, others } = agent.view.feed.threadContext([...queued.steering, ...queued.followUp]);
+      return threadPrompt(text, await classify(agent.session.modelRuntime, classifier, threads, others, text, AbortSignal.timeout(options.classifierDeadlineMs ?? 15000)));
+    } catch (error) {
+      if (!classifierWarned) { classifierWarned = true; agent.host.notify(`Thread classifier: ${errorText(error)}`, 'warning'); }
+      return text;
+    } };
+  };
   const paths = (values: string[] | undefined) => values?.map(value => sdk.isLocalPath(value) ? sdk.resolvePath(value, options.cwd) : value);
   const reserved = new Map<string, Agent>();
   const plans = new WeakMap<Agent, SpawnPlan>();
@@ -502,7 +529,7 @@ export function createTree(options: TreeOptions): Tree {
   records = createPublisher({ active: !!facts.pane && facts.insideKo, pane: facts.pane ?? "", derive: budget => deriveRecords(root, view(), budget) });
   records.changed(true);
   const tree: Tree = {
-    root, records, all, find, selected: () => view().agent, view, resolveView, select, changed: () => records?.changed(), retry, stop,
+    root, records, all, find, labelPrompt, selected: () => view().agent, view, resolveView, select, changed: () => records?.changed(), retry, stop,
     byRecord: id => all().find(agent => agent.parent && agentPath(agent) === id),
     openInbox: () => {
       if (!facts.pane || !facts.ko || !facts.insideKo) { ready(); return; }
@@ -512,7 +539,17 @@ export function createTree(options: TreeOptions): Tree {
         return "ack";
       };
       inbox = openInbox(facts.ko, facts.pane, {
-        user: (record, text) => deliver(record === "" ? root : tree.byRecord(record), { kind: "user", text }),
+        user: async (record, text) => {
+          const agent = record === '' ? root : tree.byRecord(record);
+          if (!agent) return 'refuse';
+          const v = agent.view, label = labelPrompt(agent, text);
+          const held = typeof label === 'function' ? v.prompts.hold(text, v.state.working ? 'followUp' : 'prompt', []) : undefined;
+          if (held) v.publish();
+          return v.serial(async () => {
+            const labelled = typeof label === 'function' ? await label().finally(() => { if (held) { v.prompts.reject(held); v.publish(); } }) : label ?? text;
+            return deliver(agent, { kind: 'user', text: labelled });
+          });
+        },
         message: (target, message) => deliver(target === undefined ? root : find(target), message),
         select: record => {
           const next = resolveView(record);

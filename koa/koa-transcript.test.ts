@@ -34,8 +34,65 @@ function record(line: string | undefined) {
   return JSON.parse(line.slice(6, -2));
 }
 
+test('message moves use persisted entry identity with equal timestamps', t => {
+  const branch: SessionEntry[] = [
+    { type: 'message', id: 'one', parentId: null, timestamp: new Date(123).toISOString(), message: { role: 'user', content: '[thread: one]\nFirst', timestamp: 123 } },
+    { type: 'message', id: 'two', parentId: 'one', timestamp: new Date(123).toISOString(), message: { role: 'user', content: '[thread: two]\nSecond', timestamp: 123 } },
+  ];
+  const view = transcript({ sessionEntryToContextMessages, branch: () => branch, dir: directory(t), flushMs: 1, kind: 'root' }); t.after(() => view.close());
+  view.rebuild(branch, 'session', 'two');
+  assert.deepEqual(view.moveTargets(0), ['one']);
+  const before = JSON.parse(request(view, '/items?before=100').join(''));
+  const move: SessionEntry = { type: 'custom', id: 'move', parentId: 'two', timestamp: new Date(124).toISOString(), customType: 'koa.message-thread', data: { entries: ['one'], thread: 'target' } };
+  branch.push(move); view.annotation(move);
+  const after = JSON.parse(request(view, '/items?before=100').join(''));
+  assert.deepEqual(after.items.filter((item: WireItem) => item.kind === 'user').map((item: { thread: string }) => item.thread), ['target', 'two']);
+  assert.notEqual(after.epoch, before.epoch);
+  view.rebuild(branch, 'session', 'move');
+  assert.deepEqual(JSON.parse(request(view, '/items?before=100').join('')).items, after.items);
+});
+
+test('corrections reset reconnect cursors and replay merges and whole reply turns', t => {
+  const branch: SessionEntry[] = [];
+  const view = transcript({ sessionEntryToContextMessages, branch: () => branch, dir: directory(t), flushMs: 1, kind: 'root' }); t.after(() => view.close());
+  const user: AgentMessage = { role: 'user', content: '[thread: one]\nWork', timestamp: 100 };
+  const reply = assistant('[thread: one]\nReply with a sufficiently long quotation');
+  reply.content.push({ type: 'toolCall', id: 'call', name: 'read', arguments: { path: 'a' } });
+  const later = { ...assistant('[thread: one]\nFinal'), timestamp: 124 };
+  const add = (id: string, message: Extract<AgentMessage, { role: 'user' | 'assistant' }>) => { branch.push({ type: 'message', id, parentId: branch.at(-1)?.id ?? null, timestamp: new Date(message.timestamp).toISOString(), message }); view.message(message, 'end'); };
+  add('user', user); add('reply', reply); add('later', later);
+  assert.deepEqual(view.moveTargets(1), ['user', 'reply', 'later']);
+  const unpersisted = { ...assistant('Not saved'), timestamp: 125 }; view.message(unpersisted, 'end');
+  assert.equal(view.moveTargets(3), undefined);
+  branch.push({ type: 'message', id: 'unsaved', parentId: 'later', timestamp: new Date(125).toISOString(), message: unpersisted });
+  const before = JSON.parse(request(view, '/items?before=100').join(''));
+  const custom = (id: string, customType: string, data: unknown) => { const entry: SessionEntry = { type: 'custom', id, parentId: branch.at(-1)?.id ?? null, timestamp: new Date(130).toISOString(), customType, data }; branch.push(entry); view.annotation(entry); };
+  custom('move', 'koa.message-thread', { entries: ['user', 'reply', 'later', 'unsaved'], thread: 'target' });
+  custom('merge', 'koa.thread-move', { from: 'target', to: 'renamed' });
+  const live = JSON.parse(request(view, '/items?before=100').join(''));
+  assert.ok(live.items.filter((item: WireItem) => item.kind === 'assistant').every((item: { blocks: { thread: string }[] }) => item.blocks.every(block => block.thread === 'renamed')));
+  const reconnect = record(request(view, '/events?epoch=' + before.epoch + '&after=3')[0]);
+  assert.equal(reconnect.type, 'reset'); assert.equal(reconnect.epoch, live.epoch);
+  assert.equal(view.quotedThread('> Reply with a sufficiently long quotation'), 'renamed');
+  view.rebuild(branch, 'session', 'merge');
+  const replay = JSON.parse(request(view, '/items?before=100').join(''));
+  assert.deepEqual(replay.items.map((item: WireItem) => item.kind === 'assistant' ? item.blocks.map(block => block.thread) : item.kind === 'user' ? item.thread : item.kind), live.items.map((item: WireItem) => item.kind === 'assistant' ? item.blocks.map(block => block.thread) : item.kind === 'user' ? item.thread : item.kind));
+});
+
+test('moving the latest persisted reply removes its only old thread', t => {
+  const branch: SessionEntry[] = [];
+  const view = transcript({ sessionEntryToContextMessages, branch: () => branch, dir: directory(t), flushMs: 1, kind: 'root' }); t.after(() => view.close());
+  const reply = assistant('[thread: old]\nThe only reply in the old thread');
+  view.message(reply, 'end');
+  branch.push({ type: 'message', id: 'reply', parentId: null, timestamp: new Date(123).toISOString(), message: reply });
+  const move: SessionEntry = { type: 'custom', id: 'move', parentId: 'reply', timestamp: new Date(124).toISOString(), customType: 'koa.message-thread', data: { entries: ['reply'], thread: 'target' } };
+  branch.push(move); view.annotation(move);
+  assert.deepEqual(view.threads().map(thread => thread.name), ['target']);
+  assert.deepEqual(view.threadContext([]).others, []);
+});
+
 test('rebuild replays the whole active branch across compactions', t => {
-  const view = transcript({ sessionEntryToContextMessages, dir: directory(t), flushMs: 1 }); t.after(() => view.close());
+  const view = transcript({ sessionEntryToContextMessages, branch: () => [], dir: directory(t), flushMs: 1 }); t.after(() => view.close());
   const entries: SessionEntry[] = [
     { type: 'message', id: 'user', parentId: null, timestamp: new Date(1).toISOString(), message: { role: 'user', content: 'before', timestamp: 1 } },
     { type: 'message', id: 'reply', parentId: 'user', timestamp: new Date(123).toISOString(), message: assistant('Proceed?') },
@@ -59,14 +116,15 @@ test('rebuild replays the whole active branch across compactions', t => {
 });
 
 test('selecting a thread loads its items before compaction and outside the live window', t => {
-  const view = transcript({ sessionEntryToContextMessages, dir: directory(t), flushMs: 1, kind: 'root' }); t.after(() => view.close());
+  let branch: SessionEntry[] = [];
+  const view = transcript({ sessionEntryToContextMessages, branch: () => branch, dir: directory(t), flushMs: 1, kind: 'root' }); t.after(() => view.close());
   const entries: SessionEntry[] = [
     { type: 'message', id: 'old', parentId: null, timestamp: new Date(123).toISOString(), message: assistant('[thread: old]\nHistorical reply') },
     { type: 'custom', id: 'index', parentId: 'old', timestamp: new Date(124).toISOString(), customType: 'koa.thread', data: { name: 'old', at: 123 } },
     { type: 'message', id: 'recent', parentId: 'index', timestamp: new Date(125).toISOString(), message: { role: 'user', content: 'Recent input', timestamp: 125 } },
     { type: 'compaction', id: 'compact', parentId: 'recent', timestamp: new Date(126).toISOString(), summary: 'Compacted history', tokensBefore: 100, firstKeptEntryId: 'recent' },
   ];
-  view.rebuild(entries, 'session', 'compact');
+  branch = entries; view.rebuild(entries, 'session', 'compact');
   assert.ok(view.threads().some(thread => thread.name === 'old'));
   const selected = () => JSON.parse(request(view, '/items?before=' + Number.MAX_SAFE_INTEGER + '&thread=old').join(''));
   const historical = selected();
@@ -80,7 +138,7 @@ test('selecting a thread loads its items before compaction and outside the live 
 });
 
 test('live compaction replaces its command without changing earlier items or epoch', t => {
-  const view = transcript({ sessionEntryToContextMessages, dir: directory(t), flushMs: 1 }); t.after(() => view.close());
+  const view = transcript({ sessionEntryToContextMessages, branch: () => [], dir: directory(t), flushMs: 1 }); t.after(() => view.close());
   view.message({ role: 'user', content: 'before', timestamp: 1 }, 'end');
   const before = JSON.parse(request(view, '/items?before=100').join(''));
   view.command({ type: 'compaction', state: { type: 'running' } });
@@ -106,7 +164,7 @@ function assistant(text: string, stopReason: "stop" | "error" = "stop"): Extract
 }
 
 test('root thread projection splits sections, preserves tool indexes and remaps annotations', t => {
-  const view = transcript({ sessionEntryToContextMessages, dir: directory(t), flushMs: 1, kind: 'root' }); t.after(() => view.close());
+  const view = transcript({ sessionEntryToContextMessages, branch: () => [], dir: directory(t), flushMs: 1, kind: 'root' }); t.after(() => view.close());
   const text = '[thread: one]\n😀 Pick one?\n[thread: two]\nNext?';
   const message = { ...assistant(text), content: [{ type: 'text' as const, text }, { type: 'toolCall' as const, id: 'read', name: 'read', arguments: { path: '/tmp/source' } }] };
   view.rebuild(...linked([message]));
@@ -120,12 +178,12 @@ test('root thread projection splits sections, preserves tool indexes and remaps 
   items = JSON.parse(request(view, '/items?before=100').join('')).items;
   assert.deepEqual(items[1].reply, { seq: 0, block: 0 });
   assert.deepEqual(items[1].annotations, [{ type: 'question', kind: 'choice', range: [2, 11], options: [[7, 10]] }]);
-  const child = transcript({ sessionEntryToContextMessages, dir: directory(t), flushMs: 1 }); t.after(() => child.close()); child.rebuild(...linked([assistant(text)]));
+  const child = transcript({ sessionEntryToContextMessages, branch: () => [], dir: directory(t), flushMs: 1 }); t.after(() => child.close()); child.rebuild(...linked([assistant(text)]));
   assert.equal(JSON.parse(request(child, '/items?before=100').join('')).items[0].blocks[0].text, text);
 });
 
 test('thread attribution labels final prefixes with metadata without changing them', t => {
-  const view = transcript({ sessionEntryToContextMessages, dir: directory(t), flushMs: 1, kind: 'root' }); t.after(() => view.close());
+  const view = transcript({ sessionEntryToContextMessages, branch: () => [], dir: directory(t), flushMs: 1, kind: 'root' }); t.after(() => view.close());
   const user = { role: 'user' as const, content: 'work', timestamp: 100 };
   const prefix = { ...assistant(''), content: [{ type: 'thinking' as const, thinking: 'Plan' }] };
   view.message(user, 'end'); view.message(prefix, 'end');
@@ -141,7 +199,7 @@ test('thread attribution labels final prefixes with metadata without changing th
 });
 
 test('streaming markers do not leak and explicit users stay in one thread', t => {
-  const view = transcript({ sessionEntryToContextMessages, dir: directory(t), flushMs: 1, kind: 'root' }); t.after(() => view.close());
+  const view = transcript({ sessionEntryToContextMessages, branch: () => [], dir: directory(t), flushMs: 1, kind: 'root' }); t.after(() => view.close());
   view.message({ role: 'user', content: '[thread: selected]\nwork', timestamp: 100 }, 'end');
   view.message(assistant('[thread: one]\nBody\n[thre'), 'update');
   let items = JSON.parse(request(view, '/items?before=100').join('')).items;
@@ -153,7 +211,7 @@ test('streaming markers do not leak and explicit users stay in one thread', t =>
 });
 
 test('thread intervals follow inputs, tools inherit the turn thread and unmarked replies stay unlabelled', t => {
-  const view = transcript({ sessionEntryToContextMessages, dir: directory(t), flushMs: 1, kind: 'root' }); t.after(() => view.close());
+  const view = transcript({ sessionEntryToContextMessages, branch: () => [], dir: directory(t), flushMs: 1, kind: 'root' }); t.after(() => view.close());
   const inbound: AgentMessage = { role: 'custom', customType: 'agent-message', display: true, content: 'event', details: { thread: 'agent', agent: { name: 'worker' }, body: 'event', inbound: { form: 'message', relation: 'child' } }, timestamp: 100 };
   const tool = { ...assistant(''), content: ['read', 'spawn_agent', 'message_agent', 'async_bash'].map(name => ({ type: 'toolCall' as const, id: name, name, arguments: { path: '/tmp/file' } })) };
   const messages: AgentMessage[] = [
@@ -174,20 +232,21 @@ test('thread intervals follow inputs, tools inherit the turn thread and unmarked
 });
 
 test('thread state keeps entry order, raw last section and source time through compaction', t => {
-  const view = transcript({ sessionEntryToContextMessages, dir: directory(t), flushMs: 1, kind: 'root' }); t.after(() => view.close());
+  let branch: SessionEntry[] = [];
+  const view = transcript({ sessionEntryToContextMessages, branch: () => branch, dir: directory(t), flushMs: 1, kind: 'root' }); t.after(() => view.close());
   const historical = { type: 'message' as const, id: 'old', parentId: null, timestamp: new Date(123).toISOString(), message: assistant('[thread: old]\n**raw summary**\nBody') };
   const entries = [historical, { type: 'custom' as const, id: 'empty', parentId: 'old', timestamp: new Date(124).toISOString(), customType: 'koa.thread', data: { name: 'empty', at: 124 } }, { type: 'custom' as const, id: 'index', parentId: 'empty', timestamp: new Date(125).toISOString(), customType: 'koa.thread', data: { name: 'old', at: 125 } }];
-  view.rebuild(entries, 'session', 'index');
-  assert.deepEqual(view.threads(), [{ name: 'empty' }, { name: 'old', last: { summary: '**raw summary**', at: 123 } }]);
+  branch = entries; view.rebuild(entries, 'session', 'index');
+  assert.deepEqual(view.threads(), [{ name: 'old', last: { summary: '**raw summary**', at: 123 } }]);
   view.message({ ...assistant('[thread: fresh]\n# New'), timestamp: 200 }, 'update');
   request(view, '/items?before=100');
   assert.deepEqual(view.threads().at(-1), { name: 'fresh', last: { summary: '# New', at: 200 } });
   view.annotation({ type: 'custom', id: 'promoted', parentId: 'index', timestamp: new Date(201).toISOString(), customType: 'koa.thread', data: { name: 'fresh', at: 200 } });
-  assert.deepEqual(view.threads().map(thread => thread.name), ['empty', 'old', 'fresh']);
+  assert.deepEqual(view.threads().map(thread => thread.name), ['old', 'fresh']);
 });
 
 test('thread rebuild emits one final label set per user across several assistant messages', t => {
-  const view = transcript({ sessionEntryToContextMessages, dir: directory(t), flushMs: 1, kind: 'root' }); t.after(() => view.close());
+  const view = transcript({ sessionEntryToContextMessages, branch: () => [], dir: directory(t), flushMs: 1, kind: 'root' }); t.after(() => view.close());
   view.rebuild(...linked([{ role: 'user', content: 'both', timestamp: 1 }, { ...assistant('[thread: one]\nOne'), timestamp: 2 }, { ...assistant('[thread: two]\nTwo'), timestamp: 3 }, { role: 'user', content: 'next', timestamp: 4 }]));
   const items = JSON.parse(request(view, '/items?before=100').join('')).items;
   const labels = items.filter((item: { kind: string; target?: number }) => item.kind === 'threads' && item.target === 0);
@@ -201,7 +260,7 @@ test('live output bounds keep a UTF-8 tail and count omitted bytes', () => {
 });
 
 test('stored bash facts survive live conversion and authoritative rebuild', t => {
-  const view = transcript({ sessionEntryToContextMessages, dir: directory(t), flushMs: 1 }); t.after(() => view.close());
+  const view = transcript({ sessionEntryToContextMessages, branch: () => [], dir: directory(t), flushMs: 1 }); t.after(() => view.close());
   const message = { role: 'bashExecution' as const, command: 'quiet', output: 'partial', exitCode: 2, cancelled: true, truncated: true, fullOutputPath: '/tmp/full', excludeFromContext: true, timestamp: 42 };
   view.message(message, 'end');
   const live = JSON.parse(request(view, '/items?before=100').join('')).items;
@@ -211,7 +270,7 @@ test('stored bash facts survive live conversion and authoritative rebuild', t =>
 });
 
 test('reply annotations resolve live and replay, validate code points and keep cursor and paging items', t => {
-  const view = transcript({ sessionEntryToContextMessages, dir: directory(t), flushMs: 1 });
+  const view = transcript({ sessionEntryToContextMessages, branch: () => [], dir: directory(t), flushMs: 1 });
   t.after(() => view.close());
   const message = assistant('😀 Pick one or two?');
   const question = { type: 'question', kind: 'choice', range: [2, 18], options: [[7, 10], [14, 17], [0, 1], [9, 8], [7, 30]] };
@@ -237,7 +296,7 @@ test('reply annotations resolve live and replay, validate code points and keep c
 });
 
 test('reply annotations keep disjoint questions and options in text order', t => {
-  const view = transcript({ sessionEntryToContextMessages, dir: directory(t), flushMs: 1 });
+  const view = transcript({ sessionEntryToContextMessages, branch: () => [], dir: directory(t), flushMs: 1 });
   t.after(() => view.close());
   view.rebuild(...linked([assistant('01234567890123456789')]));
   const question = (range: number[], options: number[][] = []) => ({ type: 'question', kind: 'choice', range, options });
@@ -250,7 +309,7 @@ test('reply annotations keep disjoint questions and options in text order', t =>
 });
 
 test('reply annotation replay follows the active leaf, not another branch with the same reply', t => {
-  const view = transcript({ sessionEntryToContextMessages, dir: directory(t), flushMs: 1 });
+  const view = transcript({ sessionEntryToContextMessages, branch: () => [], dir: directory(t), flushMs: 1 });
   t.after(() => view.close());
   const message = assistant('Should I proceed?');
   const root = { type: 'message' as const, id: 'reply', parentId: null, timestamp: new Date(123).toISOString(), message };
@@ -268,7 +327,7 @@ test('reply annotation replay follows the active leaf, not another branch with t
 });
 
 test('reply annotation replay keeps branch message order when timestamps go backward', t => {
-  const view = transcript({ sessionEntryToContextMessages, dir: directory(t), flushMs: 1 });
+  const view = transcript({ sessionEntryToContextMessages, branch: () => [], dir: directory(t), flushMs: 1 });
   t.after(() => view.close());
   view.rebuild(...linked([{ ...assistant('first'), timestamp: 200 }, { ...assistant('second'), timestamp: 100 }]));
   const items = JSON.parse(request(view, '/items?before=100').join('')).items;
@@ -276,7 +335,7 @@ test('reply annotation replay keeps branch message order when timestamps go back
 });
 
 test('startup notifications bind to the first session and not to a later session', t => {
-  const view = transcript({ sessionEntryToContextMessages, dir: directory(t), flushMs: 1 });
+  const view = transcript({ sessionEntryToContextMessages, branch: () => [], dir: directory(t), flushMs: 1 });
   view.notify('Extension failed to load', 'error');
   view.rebuild(...linked([], 'first-session'));
   const items = JSON.parse(request(view, '/items?before=100').join('')).items;
@@ -286,7 +345,7 @@ test('startup notifications bind to the first session and not to a later session
 });
 
 test('notifications are retained transcript items across reconnect and same-session rebuild', t => {
-  const view = transcript({ sessionEntryToContextMessages, dir: directory(t), flushMs: 1 }), first = assistant('before');
+  const view = transcript({ sessionEntryToContextMessages, branch: () => [], dir: directory(t), flushMs: 1 }), first = assistant('before');
   view.rebuild(...linked([first], 'session-one'));
   view.notify('Remember this warning', 'warning');
   const live = JSON.parse(request(view, '/items?before=100').join('')).items;
@@ -305,7 +364,7 @@ test('notifications are retained transcript items across reconnect and same-sess
 });
 
 test('structured agent and job details render identically live and on rebuild', t => {
-  const view = transcript({ sessionEntryToContextMessages, dir: directory(t), flushMs: 1 }), log = join(directory(t), 'build.log');
+  const view = transcript({ sessionEntryToContextMessages, branch: () => [], dir: directory(t), flushMs: 1 }), log = join(directory(t), 'build.log');
   writeFileSync(log, '');
   const messages: AgentMessage[] = [
     { role: 'custom', customType: 'ko-message', display: true, timestamp: 1, content: 'Do not parse this header', details: { agent: { name: 'boss', session: 'boss-id', pane: 'pane_2' }, body: 'Review the module', inbound: { form: 'message', relation: 'parent', runtime: 'dev' } } },
@@ -321,7 +380,7 @@ test('structured agent and job details render identically live and on rebuild', 
 });
 
 test('agent forms and every job ending use typed details, capped bodies and strict shape checks', t => {
-  const view = transcript({ sessionEntryToContextMessages, dir: directory(t), flushMs: 1 }), agent = { name: 'worker' }, job = { id: 'j', name: 'build', service: false, log: '/tmp/log', command: 'make', startedAt: 1, place: { type: 'mac' as const } };
+  const view = transcript({ sessionEntryToContextMessages, branch: () => [], dir: directory(t), flushMs: 1 }), agent = { name: 'worker' }, job = { id: 'j', name: 'build', service: false, log: '/tmp/log', command: 'make', startedAt: 1, place: { type: 'mac' as const } };
   const forms = [
     { customType: 'ko-steer', details: { agent, body: 'redirect', inbound: { form: 'steer' } }, inbound: { form: 'steer' } },
     { customType: 'ko-notice', details: { agent, inbound: { form: 'report' }, body: 'x'.repeat(20000) }, inbound: { form: 'report' } },
@@ -341,7 +400,7 @@ test('agent forms and every job ending use typed details, capped bodies and stri
 });
 
 test('agent tool cards keep full capped arguments and typed outcomes on live and replay paths', t => {
-  const view = transcript({ sessionEntryToContextMessages, dir: directory(t), flushMs: 1 }), message = assistant(''), log = join(directory(t), 'build.log');
+  const view = transcript({ sessionEntryToContextMessages, branch: () => [], dir: directory(t), flushMs: 1 }), message = assistant(''), log = join(directory(t), 'build.log');
   writeFileSync(log, '');
   message.content = [
     { type: 'toolCall', id: 'spawn', name: 'spawn_agent', arguments: { name: 'worker', task: 'x'.repeat(20000), model: 'provider/model' } },
@@ -366,7 +425,7 @@ test('agent tool cards keep full capped arguments and typed outcomes on live and
 });
 
 test("events use SSE framing", t => {
-  const view = transcript({ sessionEntryToContextMessages, dir: directory(t), flushMs: 10 });
+  const view = transcript({ sessionEntryToContextMessages, branch: () => [], dir: directory(t), flushMs: 10 });
   const lines = request(view, "/events");
   assert.ok(lines.length > 0);
   for (const line of lines) {
@@ -377,7 +436,7 @@ test("events use SSE framing", t => {
 });
 
 test("caps preserve UTF-8 and windows retain the newest forty items", t => {
-  const view = transcript({ sessionEntryToContextMessages, dir: directory(t), flushMs: 1 });
+  const view = transcript({ sessionEntryToContextMessages, branch: () => [], dir: directory(t), flushMs: 1 });
   view.message({ role: "bashExecution", command: "test", output: "a".repeat(16383) + "😀", exitCode: 0, cancelled: false, truncated: false, timestamp: 12 }, "end");
   const item = JSON.parse(request(view, "/items?before=100").join("")).items[0];
   assert.equal(item.kind, "bash");
@@ -402,7 +461,7 @@ test("caps preserve UTF-8 and windows retain the newest forty items", t => {
 });
 
 test('a history page returns its first record even when it exceeds the byte limit', t => {
-  const view = transcript({ sessionEntryToContextMessages, dir: directory(t), flushMs: 1 }); t.after(() => view.close());
+  const view = transcript({ sessionEntryToContextMessages, branch: () => [], dir: directory(t), flushMs: 1 }); t.after(() => view.close());
   const summary = 'x'.repeat(421000);
   view.message({ role: 'user', content: 'before', timestamp: 1 }, 'end');
   view.message({ role: 'compactionSummary', summary, tokensBefore: 100, timestamp: 2 }, 'end');
@@ -414,7 +473,7 @@ test('a history page returns its first record even when it exceeds the byte limi
 });
 
 test("patches append only unchanged text prefixes and replace changed blocks", t => {
-  const view = transcript({ sessionEntryToContextMessages, dir: directory(t), flushMs: 1000 });
+  const view = transcript({ sessionEntryToContextMessages, branch: () => [], dir: directory(t), flushMs: 1000 });
   const lines = request(view, "/events");
   view.message(assistant("hello"), "start");
   view.message(assistant("hello world"), "update");
@@ -440,7 +499,7 @@ test("patches append only unchanged text prefixes and replace changed blocks", t
 });
 
 test("a history snapshot holds only published state and carries the stream's revision", t => {
-  const view = transcript({ sessionEntryToContextMessages, dir: directory(t), flushMs: 1000 });
+  const view = transcript({ sessionEntryToContextMessages, branch: () => [], dir: directory(t), flushMs: 1000 });
   const lines = request(view, "/events");
   view.message(assistant("hello"), "start");
   view.message(assistant("hello world"), "update");
@@ -455,7 +514,7 @@ test("a history snapshot holds only published state and carries the stream's rev
 });
 
 test("tool timing survives assistant updates and reaches patches", t => {
-  const view = transcript({ sessionEntryToContextMessages, dir: directory(t), flushMs: 1000 });
+  const view = transcript({ sessionEntryToContextMessages, branch: () => [], dir: directory(t), flushMs: 1000 });
   const message = assistant("");
   message.content = [{ type: "toolCall", id: "call", name: "read", arguments: { path: "file" } }];
   const lines = request(view, "/events");
@@ -479,7 +538,7 @@ test("tool timing survives assistant updates and reaches patches", t => {
 });
 
 test("bash exit codes come from structured results or the status footer", t => {
-  const view = transcript({ sessionEntryToContextMessages, dir: directory(t), flushMs: 1000 });
+  const view = transcript({ sessionEntryToContextMessages, branch: () => [], dir: directory(t), flushMs: 1000 });
   const message = assistant("");
   message.content = [{ type: "toolCall", id: "call", name: "bash", arguments: { command: "make verify" } }];
   const block = () => JSON.parse(request(view, "/items?before=100").join("")).items[0].blocks[0];
@@ -494,7 +553,7 @@ test("bash exit codes come from structured results or the status footer", t => {
 });
 
 test("delivered attachment paths are data and a rebuild never guesses them", t => {
-  const view = transcript({ sessionEntryToContextMessages, dir: directory(t), flushMs: 1 });
+  const view = transcript({ sessionEntryToContextMessages, branch: () => [], dir: directory(t), flushMs: 1 });
   const lines = request(view, "/events");
   const file = { id: "upload", name: "data.txt", size: 4, path: "/tmp/copy/data.txt", kind: "file" as const };
   const message = { role: "user" as const, timestamp: 1, content: "Inspect\n" + file.path };
@@ -512,7 +571,7 @@ test("delivered attachment paths are data and a rebuild never guesses them", t =
 });
 
 test("identical image partials emit no patch and changed bytes advance the wire revision", t => {
-  const view = transcript({ sessionEntryToContextMessages, dir: directory(t), flushMs: 1000 });
+  const view = transcript({ sessionEntryToContextMessages, branch: () => [], dir: directory(t), flushMs: 1000 });
   const lines = request(view, "/events");
   view.message({ ...assistant(""), content: [{ type: "toolCall", id: "image", name: "read", arguments: {} }] }, "start");
   const image = { type: "image" as const, mimeType: "image/png", data: Buffer.from("old").toString("base64") }, old = [image];
@@ -530,8 +589,8 @@ test("identical image partials emit no patch and changed bytes advance the wire 
 });
 
 test("rebuild sends reset then exactly one caller-supplied state and keeps the epoch format", t => {
-  const view = transcript({ sessionEntryToContextMessages, dir: directory(t), flushMs: 1000 });
-  const state = { pathEditor: false, agents: [], bash: [], compaction: 'idle' as const, working: false, name: "before", model: { provider: "test", id: "test" }, aborted: false, levels: [], cwd: "/tmp", home: "/tmp", dialogs: [], statuses: {}, queue: { steering: [], followUp: [] }, view: { id: "root", path: [{ id: "root", name: "pi", type: "agent" as const }], type: 'root' as const }, threads: [], life: { type: "ready" as const } };
+  const view = transcript({ sessionEntryToContextMessages, branch: () => [], dir: directory(t), flushMs: 1000 });
+  const state = { pathEditor: false, agents: [], bash: [], compaction: 'idle' as const, working: false, name: "before", model: { provider: "test", id: "test" }, aborted: false, levels: [], cwd: "/tmp", home: "/tmp", dialogs: [], statuses: {}, queue: { steering: [], followUp: [], classifying: [] }, view: { id: "root", path: [{ id: "root", name: "pi", type: "agent" as const }], type: 'root' as const }, threads: [], life: { type: "ready" as const } };
   view.state(state);
   const lines = request(view, "/events");
   const firstEpoch = record(lines[0]).epoch;
@@ -552,7 +611,7 @@ const png = Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR
 
 test("image references keep disk bytes beyond the feed window and serve missing and unknown images", async t => {
   const dir = directory(t);
-  const view = transcript({ sessionEntryToContextMessages, dir, flushMs: 1 });
+  const view = transcript({ sessionEntryToContextMessages, branch: () => [], dir, flushMs: 1 });
   const server = createServer((request, response) => { if (!view.handle(request, response)) { response.writeHead(404); response.end(); } });
   await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
   t.after(() => new Promise<void>(resolve => { view.close(); server.closeAllConnections(); server.close(() => resolve()); }));
@@ -617,7 +676,7 @@ test("image references keep disk bytes beyond the feed window and serve missing 
 });
 
 test("an aborted turn shows no provider error text and a real error still shows", t => {
-  const view = transcript({ sessionEntryToContextMessages, dir: directory(t), flushMs: 1 });
+  const view = transcript({ sessionEntryToContextMessages, branch: () => [], dir: directory(t), flushMs: 1 });
   view.message({ ...assistant("partial"), stopReason: "aborted", errorMessage: "Request was aborted" }, "end");
   view.message({ ...assistant("failed", "error"), errorMessage: "provider said no" }, "end");
   const items = JSON.parse(request(view, "/items?before=100").join("")).items;
@@ -626,8 +685,8 @@ test("an aborted turn shows no provider error text and a real error still shows"
 });
 
 test("show moves the open pages to this feed, sends its state before the reset under a fresh epoch", t => {
-  const before = transcript({ sessionEntryToContextMessages, dir: directory(t), flushMs: 1000 }), after = transcript({ sessionEntryToContextMessages, dir: directory(t), flushMs: 1000 });
-  const state = { pathEditor: false, agents: [], bash: [], compaction: 'idle' as const, working: false, name: "a", aborted: false, levels: [], cwd: "/tmp", home: "/tmp", dialogs: [], statuses: {}, queue: { steering: [], followUp: [] }, view: { id: "a", path: [{ id: "a", name: "a", type: "agent" as const }], type: 'root' as const }, threads: [], life: { type: "ready" as const } };
+  const before = transcript({ sessionEntryToContextMessages, branch: () => [], dir: directory(t), flushMs: 1000 }), after = transcript({ sessionEntryToContextMessages, branch: () => [], dir: directory(t), flushMs: 1000 });
+  const state = { pathEditor: false, agents: [], bash: [], compaction: 'idle' as const, working: false, name: "a", aborted: false, levels: [], cwd: "/tmp", home: "/tmp", dialogs: [], statuses: {}, queue: { steering: [], followUp: [], classifying: [] }, view: { id: "a", path: [{ id: "a", name: "a", type: "agent" as const }], type: 'root' as const }, threads: [], life: { type: "ready" as const } };
   before.state(state);
   after.state({ ...state, name: "b", view: { id: "b", path: [{ id: "a", name: "a", type: "agent" as const }, { id: "b", name: "b", type: "agent" as const }], type: 'root' as const }, threads: [] });
   after.message(assistant("from b"), "end");
@@ -648,7 +707,7 @@ test("show moves the open pages to this feed, sends its state before the reset u
 });
 
 test("a page that moved to another feed and then disconnects is held by neither feed", t => {
-  const before = transcript({ sessionEntryToContextMessages, dir: directory(t), flushMs: 1000, metrics: true }), after = transcript({ sessionEntryToContextMessages, dir: directory(t), flushMs: 1000, metrics: true });
+  const before = transcript({ sessionEntryToContextMessages, branch: () => [], dir: directory(t), flushMs: 1000, metrics: true }), after = transcript({ sessionEntryToContextMessages, branch: () => [], dir: directory(t), flushMs: 1000, metrics: true });
   const incoming = new IncomingMessage(new Socket());
   incoming.method = "GET";
   incoming.url = "/events";
@@ -665,7 +724,7 @@ test("a page that moved to another feed and then disconnects is held by neither 
 });
 
 test("show keeps a named page's epoch and cursor: pending output reaches it first, and only the moved pages get a reset", t => {
-  const before = transcript({ sessionEntryToContextMessages, dir: directory(t), flushMs: 1000 }), after = transcript({ sessionEntryToContextMessages, dir: directory(t), flushMs: 1000 });
+  const before = transcript({ sessionEntryToContextMessages, branch: () => [], dir: directory(t), flushMs: 1000 }), after = transcript({ sessionEntryToContextMessages, branch: () => [], dir: directory(t), flushMs: 1000 });
   after.message(assistant("a"), "start");
   const moved = request(before, "/events");
   const named = request(after, "/events", { type: "named", id: "b" });

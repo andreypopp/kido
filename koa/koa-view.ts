@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { rmSync } from "node:fs";
-import type { AgentSession, AgentSessionEvent, AgentSessionRuntime } from "@earendil-works/pi-coding-agent";
+import type { AgentSession, AgentSessionEvent, AgentSessionRuntime, SessionEntry } from "@earendil-works/pi-coding-agent";
 import { transcript, appendBashOutput } from "./koa-transcript.ts";
 import { attachments } from "./koa-attach.ts";
 import { prompts } from "./koa-queue.ts";
@@ -9,6 +9,7 @@ import { errorText, contentText, threadSections } from "./text.ts";
 import { markdownLine } from "./markdown-line.ts";
 import type { Dialogs } from "./koa-agents.ts";
 import type { Life, State, StateData, Dialog, Bash, CommandResult, Attachment, Thread } from "./koa-records.ts";
+import type { ThreadName } from "./records.ts";
 
 const FLUSH_MS = 50;
 
@@ -27,7 +28,8 @@ type ViewOptions = {
   cwd: string;
   home: string;
   agent(): { session: AgentSession; runtime: AgentSessionRuntime };
-  compose(own: Own): State;
+  branch(): readonly SessionEntry[];
+  compose(own: Own, threads?: Thread[]): State;
   status(value: Root["value"] | "clear", message: string, dialog: string | undefined): void;
   title(own: Own): void;
   closed(): boolean;
@@ -41,7 +43,7 @@ export type AgentView = ReturnType<typeof createView>;
 
 export function createView(options: ViewOptions) {
   let publishedThreads: Thread[] | undefined;
-  const feed = transcript({ dir: options.dir, flushMs: FLUSH_MS, metrics: options.metrics, kind: options.kind, changed: () => publishThreads(), sessionEntryToContextMessages: options.sessionEntryToContextMessages });
+  const feed = transcript({ dir: options.dir, flushMs: FLUSH_MS, metrics: options.metrics, kind: options.kind, changed: () => publishThreads(), branch: options.branch, sessionEntryToContextMessages: options.sessionEntryToContextMessages });
   const { attached } = options;
   const pendingPrompts = prompts(options.kind);
   let compaction: { root: Root; working: boolean; since?: number } | undefined;
@@ -50,13 +52,18 @@ export function createView(options: ViewOptions) {
   let closed = false;
   const stopping = () => closed || options.closed();
   const state: Omit<Own, "life" | "queue"> = { bash: [], get compaction() { return compaction ? "running" : "idle"; }, working: false, aborted: false, name: options.name ?? "pi", levels: [], cwd: options.cwd, home: options.home, dialogs: [], statuses: {} };
-  const own = (): Own => ({ ...state, queue: pendingPrompts.view(), life });
+  const queue = () => {
+    const queued = pendingPrompts.view();
+    const resolved = <T extends { thread?: ThreadName }>(list: readonly T[]): T[] => list.map(prompt => prompt.thread ? { ...prompt, thread: feed.resolveThread(prompt.thread) } : prompt);
+    return { steering: resolved(queued.steering), followUp: resolved(queued.followUp), classifying: resolved(queued.classifying) };
+  };
+  const own = (): Own => ({ ...state, queue: queue(), life });
   let root: Root = { value: "idle", message: options.name ?? "pi" };
   let lastText = "";
-  const publish = (dialogsChanged = false) => {
+  const publish = (dialogsChanged = false, threads?: Thread[]) => {
     options.changed();
     if (life.type === 'starting' && !dialogsChanged) return;
-    const next = options.compose(own());
+    const next = options.compose(own(), threads);
     if ('threads' in next) publishedThreads = next.threads;
     feed.state(next);
   };
@@ -67,7 +74,7 @@ export function createView(options: ViewOptions) {
       const previous = publishedThreads?.[index];
       return previous?.name === thread.name && previous.last?.summary === thread.last?.summary && previous.last?.at === thread.last?.at;
     })) return;
-    publish();
+    publish(false, next);
   };
   const status = (value: Root["value"] | "clear", message = state.name) => {
     if (value !== "clear") root = { value, message };
@@ -263,7 +270,7 @@ export function createView(options: ViewOptions) {
     queueChain = next.catch(() => undefined);
     return next;
   };
-  const reloadBusy = () => !running() || state.working || compaction || compactRequest && !compactRequest.ended || state.bash.some(item => item.phase !== "completed") || pendingPrompts.view().steering.length || pendingPrompts.view().followUp.length || state.dialogs.length;
+  const reloadBusy = () => !running() || state.working || compaction || compactRequest && !compactRequest.ended || state.bash.some(item => item.phase !== "completed") || pendingPrompts.view().steering.length || pendingPrompts.view().followUp.length || pendingPrompts.view().classifying.length || state.dialogs.length;
   const hooks = {
     ui: dialogApi,
     onEvent: event,
@@ -293,7 +300,7 @@ export function createView(options: ViewOptions) {
     nextBash: () => String(++bashSerial),
     title: () => options.title(own()),
     publish, status, background, running, stopping, newSessionScope, cancelDialogs, removeDialog, finishCompaction, fail, stats, levels, rebuild, refresh, resetSession,
-    replaySwitching, setModel, announce, serial, reloadBusy, settleBash, dropBash,
+    replaySwitching, setModel, announce, serial, queue, reloadBusy, settleBash, dropBash,
     clearBashTimer: () => { clearTimeout(bashTimer); bashTimer = undefined; },
     begin: () => { switchingUI = []; },
     close: () => { closed = true; cancelDialogs(); sessionStop.abort(); dropBash(); feed.close(); rmSync(options.dir, { recursive: true, force: true }); },

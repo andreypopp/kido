@@ -222,7 +222,7 @@ test("steer and interrupt-and-steer reach an agent of the process as their own k
     assert.deepEqual(boss.received.map((m) => [m.kind, "relation" in m ? m.relation : undefined]), [["message", "child"], ["steer", "child"], ["interrupt", "child"]]);
     await message.execute("c", { to: "kid", message: "carry on" });
     assert.deepEqual(child.received.map((m) => ["relation" in m ? m.relation : undefined]), [["parent"]]);
-    assert.deepEqual(s.entries.filter((entry) => entry.customType === "koa.work").map((entry) => entry.data.child), ["kid-session"], "a message to an own child is work for it");
+    assert.deepEqual(s.entries.flatMap(entry => entry.type === 'custom' && entry.customType === 'koa.work' ? [entry.data.child] : []), ["kid-session"], "a message to an own child is work for it");
   } finally {
     await fx.restore();
   }

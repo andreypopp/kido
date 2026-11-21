@@ -211,9 +211,11 @@ the reply is about.
   relates to its subject: a follow-up, a deeper look or a subtask
   belongs to the thread that it grew from.
 - Start a new thread only for a subject that no existing thread
-  covers. Name it by its broad subject, not by the current task, so
-  that later work fits it: a short name of lowercase letters, digits
-  and `-`.
+  covers. Name it like a Zulip topic: a short, clear, sentence-like
+  topic of its broad subject, not of the current task, so that later
+  work fits it, for example `Reload UI open items` or
+  `Pane resize bug`. A name has at most 60 characters and no `]`.
+- To continue a thread, repeat its name exactly as it was written.
 - A reply about several threads has one part for each, and each
   part starts with its own line.
 - A part about the session as a whole, not about one workstream,
@@ -226,11 +228,11 @@ the reply is about.
 
 ### spawn_agent
 
-- `thread` (string): The thread that this agent or job works for: an existing thread when one covers the work, not the name of the agent or job.
+- `thread` (string): The thread that this agent or job works for: the exact name of an existing thread when one covers the work, not the name of the agent or job.
 
 ### async_bash
 
-- `thread` (string): The thread that this agent or job works for: an existing thread when one covers the work, not the name of the agent or job.
+- `thread` (string): The thread that this agent or job works for: the exact name of an existing thread when one covers the work, not the name of the agent or job.
 
 ## Messages the extension injects at runtime
 

@@ -432,7 +432,7 @@ export function makeFixture(): Fixture {
   };
 }
 
-type Entry = { type: "custom"; customType: string; data: Record<string, unknown> };
+type Entry = { type: "custom"; customType: string; data: Record<string, unknown> } | { type: 'message'; id: string; message: import('@earendil-works/pi-agent-core').AgentMessage };
 
 // A tree member that has only the fields a test names; the extension reads no others.
 export const stubAgent = (fields: object): Agent => Object.assign(Object.create(null), fields);
@@ -783,7 +783,7 @@ export function notices(s: Pick<ReturnType<typeof createFakePi>, "messages">): s
 }
 
 export function entriesOf(s: Pick<ReturnType<typeof createFakePi>, "entries">, customType: string): Array<Record<string, unknown>> {
-  return s.entries.filter((entry) => entry.customType === customType).map((entry) => entry.data);
+  return s.entries.flatMap(entry => entry.type === 'custom' && entry.customType === customType ? [entry.data] : []);
 }
 
 export function text(result: ToolResult): string {

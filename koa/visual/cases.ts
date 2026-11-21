@@ -24,6 +24,7 @@ export const fixtures: { name: string; captures: Record<string, Policy> }[] = [
   {"name": "Failed", "captures": {"exited": "light", "narrow-exited": "geometry"}},
   {"name": "Rhythm", "captures": {}},
   {"name": "Threads", "captures": {"threads-many": "both", "threads-many-narrow": "both", "threads-marks": "both", "threads-marks-narrow": "geometry", "threads-two": "geometry"}},
+  {"name": "ThreadsEdit", "captures": {"threads-drag-row": "light", "threads-drag-reply": "light", "threads-rename": "light", "threads-pending": "light"}},
   {"name": "ThreadsFilter", "captures": {"threads-filter": "light", "threads-filter-narrow": "geometry"}},
   {"name": "ThreadsFilterPanel", "captures": {"threads-filter-panel": "both"}},
   {"name": "Agents", "captures": {"agents-out": "light", "agents-failed": "light", "agents-in": "light", "agents-jobs": "light", "agents-fold-a": "light", "agents-fold-b": "light", "agents-tools": "light", "narrow-agents-out": "light", "narrow-agents-failed": "geometry", "narrow-agents-jobs": "geometry", "narrow-agents-in": "geometry", "narrow-agents-fold-a": "geometry", "narrow-agents-fold-b": "geometry", "narrow-agents-tools": "geometry"}},

@@ -99,7 +99,7 @@ let revealDirty = false, resetting = false, annotated = false;
 const growing: HTMLElement[] = [], observed = new Map<Element, Watch>(), measuredHolds = new Map<HTMLElement, number>(), fits = new Map<HTMLElement, boolean>();
 const pathWarnings = new Map<number, string>();
 let pathWarningEpoch = 0;
-let state: State = { pathEditor: false, view: { id: '', path: [], type: 'root' }, threads: [], agents: [], bash: [], compaction: 'idle', life: { type: 'starting' }, working: false, aborted: false, name: '', levels: [], cwd: '', home: '', statuses: {}, queue: { steering: [], followUp: [] }, dialogs: [] };
+let state: State = { pathEditor: false, view: { id: '', path: [], type: 'root' }, threads: [], agents: [], bash: [], compaction: 'idle', life: { type: 'starting' }, working: false, aborted: false, name: '', levels: [], cwd: '', home: '', statuses: {}, queue: { steering: [], followUp: [], classifying: [] }, dialogs: [] };
 const filterKey = () => state.view.id + ':' + (state.sessionId ?? '');
 function latestThreadInput(): WireItem | undefined {
   let latest: WireItem | undefined;
@@ -165,7 +165,7 @@ function threadColour(name: ThreadName): string {
   return `var(--thread-${Math.max(0, index) % 6})`;
 }
 function threadName(name: ThreadName) {
-  const label = node('span', undefined, 'thread-name'); label.dataset.thread = name;
+  const label = node('span', undefined, 'thread-name'); label.dataset.thread = name; label.title = name;
   label.style.setProperty('--thread-color', threadColour(name));
   label.append(node('span', '#', 'thread-hash'), node('span', name));
   return label;
@@ -181,6 +181,104 @@ function replyPill(name: ThreadName | undefined, at: number) {
   mark.onkeydown = event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); event.stopPropagation(); setThread(name); } };
   mark.append(threadName(name), time);
   return mark;
+}
+let threadDragged = false;
+function dragThread(event: PointerEvent, source: HTMLElement, from: ThreadName) {
+  if (event.button !== 0 || !event.isPrimary) return;
+  const startX = event.clientX, startY = event.clientY;
+  let dragging = false, target: HTMLElement | undefined, hovered: HTMLElement | undefined, eligible = false;
+  const mark = (next: HTMLElement | undefined) => {
+    target?.classList.remove('drop-target'); target?.style.removeProperty('--drop-color');
+    target = next;
+    target?.style.setProperty('--drop-color', threadColour(from)); target?.classList.add('drop-target');
+  };
+  const move = (moved: PointerEvent) => {
+    if (!dragging && Math.hypot(moved.clientX - startX, moved.clientY - startY) < 5) return;
+    if (!dragging) { dragging = true; source.classList.add('dragging'); document.body.classList.add('thread-dragging'); }
+    moved.preventDefault();
+    const scroller = element('scroll').getBoundingClientRect();
+    if (moved.clientX >= scroller.left && moved.clientX <= scroller.right) element('scroll').scrollBy(0, moved.clientY < scroller.top + 48 ? -24 : moved.clientY > scroller.bottom - 48 ? 24 : 0);
+    const under = document.elementFromPoint(moved.clientX, moved.clientY);
+    const row = under?.closest<HTMLElement>('.thread-entry[data-thread]') ?? undefined;
+    const message = row ? undefined : under?.closest<HTMLElement>('#items > [data-seq]') ?? undefined, item = message && items.get(Number(message.dataset.seq));
+    if (message !== hovered) {
+      hovered = message;
+      eligible = item?.kind === 'user' && item.thread !== from;
+      if (item?.kind === 'assistant' && item.final) {
+        let different = false, finished = true;
+        for (const other of items.values()) {
+          if (other.kind === 'user') {
+            if (other.seq > item.seq) break;
+            different = other.thread !== from; finished = true;
+          } else if (other.kind === 'assistant') {
+            different ||= other.blocks.some(block => block.thread !== from);
+            finished &&= other.final;
+          }
+        }
+        eligible = different && finished;
+      }
+    }
+    mark(row ? row.dataset.thread !== from ? row : undefined : eligible ? message : undefined);
+  };
+  const cancel = (key: KeyboardEvent) => { if (key.key === 'Escape') { key.preventDefault(); key.stopImmediatePropagation(); end(); } };
+  const end = (ended?: PointerEvent) => {
+    document.removeEventListener('keydown', cancel, true);
+    document.removeEventListener('pointermove', move); document.removeEventListener('pointerup', end); document.removeEventListener('pointercancel', end);
+    source.classList.remove('dragging'); document.body.classList.remove('thread-dragging');
+    const dropped = ended?.type === 'pointerup' ? target : undefined;
+    mark(undefined);
+    if (!dragging) return;
+    threadDragged = true; setTimeout(() => { threadDragged = false; });
+    const into = parseThreadName(dropped?.dataset.thread);
+    if (into) void moveThread(from, into);
+    else if (dropped?.dataset.seq !== undefined) fetchJSON('/messages/thread', { sessionId: state.sessionId, seq: Number(dropped.dataset.seq), thread: from }).catch(reportError);
+  };
+  document.addEventListener('keydown', cancel, true);
+  document.addEventListener('pointermove', move); document.addEventListener('pointerup', end); document.addEventListener('pointercancel', end);
+}
+async function moveThread(from: ThreadName, to: ThreadName) {
+  try {
+    const filtered = threadFilter() === from;
+    await fetchJSON('/threads/move', { sessionId: state.sessionId, from, to });
+    if (filtered) { threadFilters.delete(filterKey()); setThread(to); }
+  } catch (error) { reportError(error); }
+}
+let renaming = false, threadClick: number | undefined;
+function clickThread(event: MouseEvent, entry: HTMLElement, name: ThreadName) {
+  if (threadDragged || renaming) return;
+  clearTimeout(threadClick);
+  if (event.detail === 0) setThread(name);
+  else if (event.detail === 1) threadClick = setTimeout(() => setThread(name), 250);
+  else renameThread(entry, name);
+}
+function renameThread(entry: HTMLElement, name: ThreadName) {
+  const label = entry.querySelector('.thread-name');
+  if (!label) return;
+  renaming = true;
+  const input = node('input', undefined, 'thread-rename');
+  input.value = name; input.spellcheck = false; input.setAttribute('aria-label', 'Thread name');
+  let done = false;
+  const finish = (commit: boolean) => {
+    if (done) return;
+    done = true; renaming = false;
+    const to = commit ? parseThreadName(input.value.slice(0, 200)) : undefined;
+    renderThreads();
+    if (to && to !== name) void moveThread(name, to);
+  };
+  input.onkeydown = event => {
+    event.stopPropagation();
+    if (event.key === 'Enter') { event.preventDefault(); finish(true); }
+    else if (event.key === 'Escape') { event.preventDefault(); finish(false); }
+  };
+  input.onkeyup = event => { event.stopPropagation(); event.preventDefault(); };
+  input.onpointerdown = event => event.stopPropagation();
+  input.onclick = event => event.stopPropagation();
+  input.onblur = () => finish(true);
+  const row = node('div', undefined, entry.className + ' renaming');
+  const hash = node('span', '#', 'thread-name'); hash.style.setProperty('--thread-color', threadColour(name));
+  row.append(hash, input);
+  entry.replaceWith(row);
+  input.focus(); input.select();
 }
 function threadMode(paneWidth: number, transcriptWidth: number, cellWidth: number): 'line' | 'block' {
   return paneWidth - transcriptWidth - 28 >= 30 * cellWidth ? 'block' : 'line';
@@ -223,6 +321,7 @@ function fitThreads(width = document.documentElement.clientWidth) {
   capsule.width = width;
 }
 function renderThreads() {
+  if (renaming) return;
   const host = element('threads'), cell = threadCell, filter = threadFilter();
   host.hidden = state.view.type !== 'root' || !('threads' in state) || !state.threads.length;
   const column = element('transcript').getBoundingClientRect(), width = document.documentElement.clientWidth;
@@ -259,7 +358,8 @@ function renderThreads() {
       const time = node('time', threadAge(thread.last.at, Date.now())); time.dateTime = new Date(thread.last.at).toISOString();
       entry.append(node('span', markdownLine(thread.last.summary), 'thread-summary'), time);
     }
-    entry.onclick = () => setThread(thread.name); panel.append(entry);
+    entry.onpointerdown = event => dragThread(event, entry, thread.name);
+    entry.onclick = event => clickThread(event, entry, thread.name); panel.append(entry);
   }
   if (filter) { const all = node('button', 'All threads', 'thread-entry thread-all'); all.type = 'button'; all.onclick = () => setThread(undefined); panel.append(all); }
   host.replaceChildren(...(capsule ? [capsule, panel] : [panel]));
@@ -1539,15 +1639,20 @@ function dialogs() {
 }
 function queue() {
   const entries = [...state.queue.steering.map((entry, index) => ({ kind: 'steer', index, entry }) as const), ...state.queue.followUp.map((entry, index) => ({ kind: 'follow-up', index, entry }) as const)];
-  const signature = JSON.stringify(entries);
+  const classifying = state.queue.classifying.map(entry => ({ kind: entry.mode === 'steer' ? 'steer' : entry.mode === 'followUp' ? 'follow-up' : 'sending', entry }));
+  const signature = JSON.stringify([entries, classifying]);
   if (shownQueue === signature) return;
   shownQueue = signature;
   const host = element('queue'); host.replaceChildren();
-  for (const { kind, index, entry } of entries) {
-    const row = node('div', undefined, 'qmsg user'), close = node('button', undefined, 'attach-remove');
+  const pendingRow = (kind: string, entry: QueuedPrompt) => {
+    const row = node('div', undefined, 'qmsg user');
     row.dataset.kind = kind;
     row.append(node('div', markdownLine(entry.text), 't'));
     if (entry.attachments.length) { const count = node('span', undefined, 'att'); count.innerHTML = '<svg viewBox="0 0 16 16"><path d="M10.5 5.5 6 10a1.6 1.6 0 0 0 2.3 2.3l5-5a3.2 3.2 0 0 0-4.5-4.5l-5.2 5.2a4.8 4.8 0 0 0 6.8 6.8l4-4"/></svg>'; count.append(document.createTextNode(String(entry.attachments.length))); row.append(count); }
+    return row;
+  };
+  for (const { kind, index, entry } of entries) {
+    const row = pendingRow(kind, entry), close = node('button', undefined, 'attach-remove');
     close.type = 'button'; close.title = 'Remove from the queue'; close.setAttribute('aria-label', 'Remove from the queue');
     close.innerHTML = '<svg viewBox="0 0 10 10"><path d="m2 2 6 6m0-6-6 6"/></svg>';
     close.onclick = () => {
@@ -1562,6 +1667,7 @@ function queue() {
     const label = node('span', kind, 'kind'); label.append(close); row.append(label);
     host.append(row);
   }
+  for (const { kind, entry } of classifying) { const row = pendingRow(kind, entry), label = node('span', kind, 'kind'); label.append(dots()); row.append(label); host.append(row); }
 }
 function restoreQueued(entries: QueuedPrompt[]) {
   editor.setText([editor.text(), ...entries.map(entry => entry.text)].filter(Boolean).join('\n\n'));
@@ -1727,7 +1833,9 @@ function apply(record: PageRecord) {
     if (viewChanged) rescopeImages();
     renderBar(); refreshBash(); reconcileWorking(); refreshComposer(); dialogs(); queue(); exited();
     if (state.life.type === 'ready' && state.editor && editorId !== state.editor.id) {
-      editor.setText(state.editor.text); editorId = state.editor.id;
+      if (state.editor.attachments) restoreQueued([{ text: state.editor.text, attachments: state.editor.attachments }]);
+      else editor.setText(state.editor.text);
+      editorId = state.editor.id;
       void fetchJSON('/editor/ack', { sessionId: state.sessionId, id: state.editor.id }).catch(reportError);
     }
     statuses();

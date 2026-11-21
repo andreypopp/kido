@@ -1,10 +1,10 @@
 import type { Attachment, Block, PageRecord, State, WireItem } from '../../koa-records.ts';
 import { expect, type Scenarios, type Scenario } from '../scenario.ts';
 
-const state: State = { pathEditor: false, compaction: 'idle', view: { id: "s1", path: [{ id: "s1", name: "ko", type: "agent" }], type: 'root' }, threads: [], agents: [], bash: [], working: false, aborted: false, name: 'pi', levels: ['off'], cwd: '/work', home: '/home', sessionId: 's1', sessionFile: '/work/s1.jsonl', queue: { steering: [], followUp: [] }, dialogs: [], statuses: {}, life: { type: 'ready' } };
+const state: State = { pathEditor: false, compaction: 'idle', view: { id: "s1", path: [{ id: "s1", name: "ko", type: "agent" }], type: 'root' }, threads: [], agents: [], bash: [], working: false, aborted: false, name: 'pi', levels: ['off'], cwd: '/work', home: '/home', sessionId: 's1', sessionFile: '/work/s1.jsonl', queue: { steering: [], followUp: [], classifying: [] }, dialogs: [], statuses: {}, life: { type: 'ready' } };
 const user = (seq: number, text: string, attachments: Attachment[] = []): WireItem => ({ seq, revision: 0, at: 1, final: true, kind: 'user', text, images: [], attachments });
 const open: PageRecord[] = [{ type: 'reset', epoch: 'e1', more: false, items: [user(0, 'hello')] }, { type: 'state', ...state }];
-const queued = (attachments: Attachment[]): PageRecord => ({ type: 'state', ...state, working: true, queue: { steering: [{ text: 'later', attachments }], followUp: [] } });
+const queued = (attachments: Attachment[]): PageRecord => ({ type: 'state', ...state, working: true, queue: { steering: [{ text: 'later', attachments }], followUp: [], classifying: [] } });
 
 const read = (path: string): Block => ({ type: 'tool', id: 't1', name: 'read', args: { text: JSON.stringify({ path }), cut: 0 }, state: { type: 'pending' } });
 const reading = (dir: string): WireItem => ({ seq: 0, revision: 0, at: 1, final: false, kind: 'assistant', blocks: [read(`${dir}/a.txt`)], stop: '', error: '' });

@@ -11,6 +11,7 @@ export const apiKey = "koa-test-key";
 
 export type Reply = {
   when?: string;
+  model?: string;
   reasoning?: string;
   text?: string;
   tools?: { name: string; args: object; pieces?: number }[];
@@ -24,7 +25,7 @@ export type Reply = {
 };
 export type Part = { type: string; text?: string; image_url?: { url: string } };
 const isPart = (value: unknown): value is Part => typeof value === "object" && value !== null && "type" in value && typeof value.type === "string";
-export type Request = { body: { model: string; messages: { role: string; content: unknown; tool_calls?: unknown[]; tool_call_id?: string }[]; tools?: { function: { name: string } }[] }; aborted: boolean };
+export type Request = { body: { model: string; max_tokens?: number; max_completion_tokens?: number; reasoning_effort?: string; messages: { role: string; content: unknown; tool_calls?: unknown[]; tool_call_id?: string }[]; tools?: { function: { name: string } }[] }; aborted: boolean };
 
 
 export type Model = { provider: string; id: string; name?: string; contextWindow?: number };
@@ -62,7 +63,7 @@ export async function startProvider(script: Reply[], deadlineMs = 10000, accepte
     const entry: Request = { body: JSON.parse(await read(request)), aborted: false };
     if (!accepted.includes(entry.body.model)) return reject(response, 400, `unexpected model ${entry.body.model}`);
     const wanted = lastUser(entry.body);
-    const index = script.findIndex((reply, at) => !used.has(at) && (reply.when === undefined || wanted.includes(reply.when)));
+    const index = script.findIndex((reply, at) => !used.has(at) && entry.body.model === (reply.model ?? modelId) && (reply.when === undefined || wanted.includes(reply.when)));
     const step = script[index];
     if (!step) return reject(response, 500, `unexpected request ${next + 1} (${wanted.slice(0, 60)}): no unused reply of the script of ${script.length} matches`);
     used.add(index);
@@ -114,7 +115,7 @@ export async function writeAgentDir(dir: string, baseUrl: string, settings: obje
   const providers = Object.fromEntries([...grouped].map(([name, models]) => [name, { baseUrl, api: "openai-completions", apiKey, compat: { supportsDeveloperRole: false }, models }]));
   const first = models[0];
   await writeFile(join(dir, "models.json"), JSON.stringify({ providers }));
-  await writeFile(join(dir, "settings.json"), JSON.stringify({ defaultProvider: first?.provider, defaultModel: first?.id, quietStartup: true, ...settings }));
+  await writeFile(join(dir, "settings.json"), JSON.stringify({ defaultProvider: first?.provider, defaultModel: first?.id, quietStartup: true, koa: { threads: { model: "off" } }, ...settings }));
 }
 
 if (process.argv[1] && realpathSync(process.argv[1]) === fileURLToPath(import.meta.url)) {

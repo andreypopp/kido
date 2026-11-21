@@ -142,7 +142,7 @@ test('attachment queue restores chips and separates sent paths', async () => {
     requests.push({ path, body: options?.body ? JSON.parse(options.body) : undefined });
     return { ok: true, json: async () => path === '/queue/clear' ? { steering: [{ text: 'Review', attachments: [file] }], followUp: [] } : { disposition: 'started' } };
   };
-  evaluate('state={...state,sessionId:"s",life:{type:"ready"},queue:{steering:[{text:"Review",attachments:[' + JSON.stringify(file) + ']}],followUp:[]}};refreshComposer();queue()');
+  evaluate('state={...state,sessionId:"s",life:{type:"ready"},queue:{steering:[{text:"Review",attachments:[' + JSON.stringify(file) + ']}],followUp:[],classifying:[]}};refreshComposer();queue()');
   assert.equal(evaluate("element('queue').children[0].querySelector('.att').children.at(-1).textContent"), '1');
   await evaluate('takeBack()');
   assert.equal(app.text(), 'Review');
@@ -173,6 +173,8 @@ async function page() {
     prepend(...children: Node[]) { children.forEach(child => { if (child instanceof Node) { child.remove(); child.parent = this; } }); this.children.unshift(...children); }
     before(...children: Node[]) { const parent = this.parent; if (!parent) return; children.forEach(child => { if (child instanceof Node) { child.remove(); child.parent = parent; } }); parent.children.splice(parent.children.indexOf(this), 0, ...children); }
     remove() { if (this.contains(document.activeElement)) document.activeElement = undefined; if (this.parent) this.parent.children = this.parent.children.filter(child => child !== this); this.parent = undefined; }
+    select() { this.selectionStart = 0; this.selectionEnd = this.value.length; }
+    replaceWith(next: Node) { this.before(next); this.remove(); }
     replaceChildren(...children: Node[]) { this.children.forEach(child => { if (child instanceof Node) child.parent = undefined; }); this.children = []; this.append(...children); }
     content: { childNodes: Node[]; querySelectorAll(): Node[] } = { childNodes: [], querySelectorAll: () => [] };
     tagName = 'DIV'; isContentEditable = false; readOnly = false; selectionStart = 0; selectionEnd = 0; hidden = true;
@@ -662,6 +664,32 @@ test('busy confirmation submits once and cancelling a held abort prevents the se
   await new Promise<void>(resolve => setImmediate(resolve));
   assert.deepEqual(calls, ['/abort']); assert.equal(saved.closed(), true);
 });
+test('thread rename selects the name and commits Enter and blur but cancels Escape', async t => {
+  t.mock.timers.enable({ apis: ['setTimeout'] });
+  const app = await page(), calls: { path: string; body: { from: string; to: string } }[] = [];
+  app.context.fetch = async (path?: string, options?: { body: string }) => { calls.push({ path: path ?? '', body: JSON.parse(options?.body ?? '{}') }); return { ok: true, json: async () => ({}) }; };
+  const controls = app.run(`(()=>{
+    state={...state,life:{type:'ready'},sessionId:'s',view:{id:'root',path:[],type:'root'},threads:[{name:'one',last:{summary:'Summary',at:1}},{name:'two',last:{summary:'Older',at:0}}]};renderThreads();
+    const row=()=>element('threads').querySelector('.thread-entry');
+    const open=()=>{row().onclick({detail:1});row().onclick({detail:2});return element('threads').querySelector('.thread-rename')};
+    const input=open();
+    return {selection:[input.selectionStart,input.selectionEnd],filter:()=>threadFilter(),key:(value,key)=>{const field=element('threads').querySelector('.thread-rename')??open();field.value=value;field.onkeydown({key,preventDefault(){},stopPropagation(){}})},blur:value=>{const field=open();field.value=value;field.onblur()},open};
+  })()`);
+  assert.deepEqual([...controls.selection], [0, 3]); t.mock.timers.tick(250); assert.equal(controls.filter(), undefined);
+  controls.key('cancelled', 'Escape'); assert.equal(calls.length, 0);
+  controls.key('two', 'Enter'); await new Promise<void>(resolve => setImmediate(resolve));
+  assert.deepEqual(calls.map(call => [call.path, call.body.from, call.body.to]), [['/threads/move', 'one', 'two']]);
+  controls.blur('x'.repeat(201)); await new Promise<void>(resolve => setImmediate(resolve));
+  assert.equal(calls.at(-1)?.body.to.length, 200);
+  const before = calls.length; controls.blur('one'); controls.blur(' '); assert.equal(calls.length, before);
+});
+
+test('pending prompts show mode and working dots without a remove control', async () => {
+  const app = await page();
+  const result = app.run(`(()=>{state={...state,queue:{steering:[],followUp:[],classifying:[{text:'Pending',attachments:[],mode:'followUp'}]}};queue();return [element('queue').querySelector('.kind').textContent,element('queue').querySelectorAll('button').length,!!element('queue').querySelector('.dots')]})()`);
+  assert.deepEqual([...result], ['follow-up', 0, true]);
+});
+
 test('thread filters project blocks without changing their addresses and apply newest late labels', async () => {
   const app = await page();
   const result = app.run(`
@@ -836,7 +864,7 @@ test('line thread names apply their filter directly', async () => {
 
 test('thread block rows toggle filters and line names filter without opening the panel', async () => {
   const app=await page();
-  const result=app.run(`(()=>{threadMeasure.getBoundingClientRect=()=>({width:8});element('transcript').getBoundingClientRect=()=>({width:720});document.documentElement.clientWidth=1100;state={...state,sessionId:'s',view:{id:'root',path:[],type:'root'},threads:[{name:'one',last:{summary:'Last message',at:1}}]};renderThreads();const block=[element('threads').dataset.mode,!element('threads').querySelector('.thread-capsule'),element('threads').querySelector('.thread-panel').hidden];element('threads').querySelector('.thread-entry').onclick();block.push(threadFilter(),element('threads').querySelector('.thread-entry').classList.contains('current'));element('threads').querySelector('.thread-entry').onclick();block.push(threadFilter());setThread('one');element('threads').querySelector('.thread-all').onclick();block.push(threadFilter());document.documentElement.clientWidth=600;renderThreads();const capsule=element('threads').querySelector('.thread-capsule');capsule.querySelector('.thread-name').onclick();const line=[threadFilter(),element('threads').querySelector('.thread-panel').hidden];setThread(undefined);element('threads').querySelector('.thread-overflow').onclick();line.push(element('threads').querySelector('.thread-panel').hidden);return [block,line]})()`);
+  const result=app.run(`(()=>{threadMeasure.getBoundingClientRect=()=>({width:8});element('transcript').getBoundingClientRect=()=>({width:720});document.documentElement.clientWidth=1100;state={...state,sessionId:'s',view:{id:'root',path:[],type:'root'},threads:[{name:'one',last:{summary:'Last message',at:1}}]};renderThreads();const block=[element('threads').dataset.mode,!element('threads').querySelector('.thread-capsule'),element('threads').querySelector('.thread-panel').hidden];element('threads').querySelector('.thread-entry').onclick({detail:0});block.push(threadFilter(),element('threads').querySelector('.thread-entry').classList.contains('current'));element('threads').querySelector('.thread-entry').onclick({detail:0});block.push(threadFilter());setThread('one');element('threads').querySelector('.thread-all').onclick();block.push(threadFilter());document.documentElement.clientWidth=600;renderThreads();const capsule=element('threads').querySelector('.thread-capsule');capsule.querySelector('.thread-name').onclick();const line=[threadFilter(),element('threads').querySelector('.thread-panel').hidden];setThread(undefined);element('threads').querySelector('.thread-overflow').onclick();line.push(element('threads').querySelector('.thread-panel').hidden);return [block,line]})()`);
   assert.deepEqual(JSON.parse(JSON.stringify(result)),[['block',true,false,'one',true,null,null],['one',true,false]]);
 });
 
@@ -1491,7 +1519,7 @@ test("Escape takes back queued work before aborting", { timeout: 1000 }, async (
     else throw Error("Unexpected request: " + path);
     return { ok: true, json: async () => data };
   };
-  app.run("state={...state,life:{type:'ready'},working:true,dialogs:[],queue:{steering:[{text:'first queued',attachments:[]}],followUp:[{text:'second queued',attachments:[]}]}}");
+  app.run("state={...state,life:{type:'ready'},working:true,dialogs:[],queue:{steering:[{text:'first queued',attachments:[]}],followUp:[{text:'second queued',attachments:[]}],classifying:[]}}");
   app.listeners.get("keydown")?.({ key: "Escape", preventDefault() {} });
   await done;
   assert.deepEqual(commands, ["clear_queue", "abort"]);
@@ -1527,7 +1555,7 @@ test("a held prompt response prevents duplicate draft submissions", async () => 
 
 test("a startup dialog is visible with an inert composer", async () => {
   const app = await page();
-  assert.equal(app.run("apply({type:'state',view:{id:'v',path:[]},bash:[],cwd:'',home:'',life:{type:'starting'},dialogs:[{id:'trust',method:'select',title:'Trust project?',options:['Yes','No']}],queue:{steering:[],followUp:[]}});!element('composer').hidden&&element('field').inert&&element('dialogs').children[0].className==='dialog'"), true);
+  assert.equal(app.run("apply({type:'state',view:{id:'v',path:[]},bash:[],cwd:'',home:'',life:{type:'starting'},dialogs:[{id:'trust',method:'select',title:'Trust project?',options:['Yes','No']}],queue:{steering:[],followUp:[],classifying:[]}});!element('composer').hidden&&element('field').inert&&element('dialogs').children[0].className==='dialog'"), true);
 });
 
 test("a state record preserves a typed dialog answer", async () => {
@@ -1539,10 +1567,10 @@ test("a queued block's × removes that entry only and leaves the draft alone", a
   const app = await page();
   const requests: { path: string; body: unknown }[] = [];
   app.context.fetch = async (path?: string, options?: { body?: string }) => { requests.push({ path: path ?? '', body: JSON.parse(options?.body ?? '{}') }); return { ok: true, json: async () => ({}) }; };
-  app.run("dialogs=()=>{};exited=()=>{};editor.setText('draft');apply({...state,type:'state',sessionId:'s1',life:{type:'ready'},queue:{steering:[{text:'a',attachments:[]},{text:'b',attachments:[]}],followUp:[{text:'c',attachments:[]}]}})");
+  app.run("dialogs=()=>{};exited=()=>{};editor.setText('draft');apply({...state,type:'state',sessionId:'s1',life:{type:'ready'},queue:{steering:[{text:'a',attachments:[]},{text:'b',attachments:[]}],followUp:[{text:'c',attachments:[]}],classifying:[]}})");
   assert.deepEqual(app.run("element('queue').children.map(row=>row.dataset.kind+':'+row.children[1].textContent)"), ['steer:steer', 'steer:steer', 'follow-up:follow-up']);
-  assert.deepEqual(JSON.parse(String(app.run("apply({...state,type:'state',queue:{steering:[{text:'**bold** first\\nsecond',attachments:[{id:'a',kind:'file'},{id:'b',kind:'file'}]}],followUp:[]}});const row=element('queue').children[0];JSON.stringify([row.children.map(c=>c.className),row.children[0].textContent,row.children[1].children.at(-1).textContent])"))), [['t', 'att', 'kind'], 'bold first', '2']);
-  app.run("apply({...state,type:'state',sessionId:'s1',queue:{steering:[{text:'a',attachments:[]},{text:'b',attachments:[]}],followUp:[{text:'c',attachments:[]}]}})");
+  assert.deepEqual(JSON.parse(String(app.run("apply({...state,type:'state',queue:{steering:[{text:'**bold** first\\nsecond',attachments:[{id:'a',kind:'file'},{id:'b',kind:'file'}]}],followUp:[],classifying:[]}});const row=element('queue').children[0];JSON.stringify([row.children.map(c=>c.className),row.children[0].textContent,row.children[1].children.at(-1).textContent])"))), [['t', 'att', 'kind'], 'bold first', '2']);
+  app.run("apply({...state,type:'state',sessionId:'s1',queue:{steering:[{text:'a',attachments:[]},{text:'b',attachments:[]}],followUp:[{text:'c',attachments:[]}],classifying:[]}})");
   app.run("element('queue').children[2].querySelector('.attach-remove').onclick()");
   await new Promise(resolve => setImmediate(resolve));
   assert.deepEqual(requests, [{ path: '/queue/remove', body: { sessionId: 's1', kind: 'follow-up', index: 0, text: 'c' } }]);
@@ -1568,7 +1596,7 @@ test('a dock that grows or shrinks keeps a bottom view at the bottom and a scrol
 test('a remove that leaves unsent entries puts them into the draft and reports the error', async () => {
   const app = await page();
   app.context.fetch = async () => ({ ok: false, json: async () => ({ error: 'refused', unsent: { steering: [{ text: 'first', attachments: [] }], followUp: [{ text: 'later', attachments: [] }] } }) });
-  app.run("dialogs=()=>{};exited=()=>{};editor.setText('draft');apply({...state,type:'state',sessionId:'s1',life:{type:'ready'},queue:{steering:[{text:'x',attachments:[]}],followUp:[]}});element('queue').children[0].querySelector('.attach-remove').onclick()");
+  app.run("dialogs=()=>{};exited=()=>{};editor.setText('draft');apply({...state,type:'state',sessionId:'s1',life:{type:'ready'},queue:{steering:[{text:'x',attachments:[]}],followUp:[],classifying:[]}});element('queue').children[0].querySelector('.attach-remove').onclick()");
   await new Promise(resolve => setImmediate(resolve));
   assert.equal(app.text(), 'draft\n\nfirst\n\nlater');
   assert.equal(app.run("element('error').textContent"), 'refused');
@@ -1578,7 +1606,7 @@ test("unchanged state keeps queue controls and status nodes and acknowledges edi
   const app = await page();
   const requests: string[] = [];
   app.context.fetch = async (path?: string) => { requests.push(path ?? ''); return {ok:true,json:async()=>({})}; };
-  assert.equal(app.run("dialogs=()=>{};exited=()=>{};const record={...state,type:'state',life:{type:'starting'},queue:{steering:[{text:'queued',attachments:[]}],followUp:[]},statuses:{tests:'ok'},editor:{id:'one',text:'draft'}};apply(record);const deferred=editorId===undefined;record.life={type:'ready'};apply(record);const back=element('queue').children[0].querySelector('.attach-remove');apply({...record});deferred&&back===element('queue').children[0].querySelector('.attach-remove')&&back.title==='Remove from the queue'&&element('queue').children[0].dataset.kind==='steer'&&element('queue').children[0].className==='qmsg user'&&element('status-extras').children.length===1"), true);
+  assert.equal(app.run("dialogs=()=>{};exited=()=>{};const record={...state,type:'state',life:{type:'starting'},queue:{steering:[{text:'queued',attachments:[]}],followUp:[],classifying:[]},statuses:{tests:'ok'},editor:{id:'one',text:'draft'}};apply(record);const deferred=editorId===undefined;record.life={type:'ready'};apply(record);const back=element('queue').children[0].querySelector('.attach-remove');apply({...record});deferred&&back===element('queue').children[0].querySelector('.attach-remove')&&back.title==='Remove from the queue'&&element('queue').children[0].dataset.kind==='steer'&&element('queue').children[0].className==='qmsg user'&&element('status-extras').children.length===1"), true);
   assert.deepEqual(requests, ['/editor/ack']);
 });
 

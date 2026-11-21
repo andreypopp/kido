@@ -1,7 +1,7 @@
 import type { Attachment, QueuedPrompt } from './koa-records.ts';
 import { decodePrompt } from './prompt.ts';
 
-type Sent = { text: string; mode: 'prompt' | 'steer' | 'followUp'; attachments: Attachment[]; warning?: string };
+type Sent = { text: string; mode: 'prompt' | 'steer' | 'followUp'; attachments: Attachment[]; warning?: string; classifying?: true };
 type Queue = { steering: readonly string[]; followUp: readonly string[] };
 
 export function prompts(kind: 'root' | 'subagent' = 'subagent') {
@@ -16,11 +16,11 @@ export function prompts(kind: 'root' | 'subagent' = 'subagent') {
     return texts.filter(text => { if (text || !skip) return true; skip--; return false; });
   };
   const take = (mode: Sent['mode'], text: string, skip?: Sent) => {
-    const index = sent.findIndex(entry => entry !== skip && entry.mode === mode && entry.text === text);
+    const index = sent.findIndex(entry => entry !== skip && !entry.classifying && entry.mode === mode && entry.text === text);
     return index < 0 ? undefined : sent.splice(index, 1)[0];
   };
   const entries = (texts: readonly string[], mode: 'steer' | 'followUp'): QueuedPrompt[] => {
-    const available = sent.filter(entry => entry.mode === mode && entry !== next?.entry);
+    const available = sent.filter(entry => entry.mode === mode && !entry.classifying && entry !== next?.entry);
     return freshTexts(texts, mode).map(text => {
       const index = available.findIndex(entry => entry.text === text);
       const attachments = index < 0 ? [] : available.splice(index, 1)[0]?.attachments ?? [];
@@ -29,6 +29,8 @@ export function prompts(kind: 'root' | 'subagent' = 'subagent') {
   };
   return {
     add(text: string, mode: Sent['mode'], attachments: Attachment[], warning?: string) { const entry: Sent = { text, mode, attachments, ...(warning ? { warning } : {}) }; sent.push(entry); return entry; },
+    hold(text: string, mode: Sent['mode'], attachments: Attachment[]) { const entry: Sent = { text, mode, attachments, classifying: true }; sent.push(entry); return entry; },
+    settle(entry: Sent, text: string, mode: Sent['mode'], warning?: string) { entry.text = text; entry.mode = mode; delete entry.classifying; if (warning) entry.warning = warning; },
     reject(entry: Sent) { const index = sent.indexOf(entry); if (index >= 0) sent.splice(index, 1); },
     start(text: string) {
       const mark = next; next = undefined;
@@ -52,7 +54,7 @@ export function prompts(kind: 'root' | 'subagent' = 'subagent') {
       }
       queue = value;
     },
-    view() { return { steering: entries(queue.steering, 'steer'), followUp: entries(queue.followUp, 'followUp') }; },
+    view() { return { steering: entries(queue.steering, 'steer'), followUp: entries(queue.followUp, 'followUp'), classifying: sent.filter(entry => entry.classifying).map(entry => ({ ...decodePrompt(entry.text, entry.attachments, kind), attachments: entry.attachments, mode: entry.mode })) }; },
     beginClear() { if (phase === 'clearing') throw Error('Queue take-back is in progress'); phase = 'clearing'; },
     endClear() { phase = 'live'; usedEmpty.steer = Math.min(usedEmpty.steer, queue.steering.filter(text => text === '').length); usedEmpty.followUp = Math.min(usedEmpty.followUp, queue.followUp.filter(text => text === '').length); },
     takeBack(value: Queue) {

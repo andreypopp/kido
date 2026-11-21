@@ -18,7 +18,7 @@ const nextResetOf1Items = (dir: string): Step => (next([
   { type: "patch", seq: 1, baseRevision: 2, revision: 3, blocks: [{ index: 0, block: { type: "tool", id: "call_1_0", name: "bash", args: { text: "{\"command\":\"make verify\"}", cut: 0 }, state: { type: "running" }, started: 1794330720000 } }], final: false, stop: "toolUse", error: "", ended: 1794330720000 },
 ]));
 
-const stateWithWorkingAndSince = (dir: string): PageRecord => ({ ...stateIdleSecond(dir), working: true, since: 1794330720000, queue: { steering: [{ text: "skip the Linux check, I'll run it in CI", attachments: [] }], followUp: [] } });
+const stateWithWorkingAndSince = (dir: string): PageRecord => ({ ...stateIdleSecond(dir), working: true, since: 1794330720000, queue: { steering: [{ text: "skip the Linux check, I'll run it in CI", attachments: [] }], followUp: [], classifying: [] } });
 
 const patchSeq1Rev4: PageRecord = { type: "patch", seq: 1, baseRevision: 3, revision: 4, blocks: [{ index: 0, block: { type: "tool", id: "call_1_0", name: "bash", args: { text: "{\"command\":\"make verify\"}", cut: 0 }, state: { type: "running", result: { text: "", cut: 0, images: [] } }, started: 1794330720000 } }], final: false, stop: "toolUse", error: "", ended: 1794330720000 };
 
@@ -49,7 +49,7 @@ export const scenarios: Scenarios = {
           patchSeq1Rev4,
         ] }),
       expect({ on: { method: "POST", path: "/prompt", body: value => same(value, { sessionId: "00000000-0000-7000-8000-000000000001", text: "then compare with these two renders", mode: "follow_up", attachments: [anything, anything] }) }, reply: { status: 200, json: { disposition: "queued" } }, after: ({ attachments }) => [
-          { ...stateIdleSecond(dir), working: true, since: 1794330720000, queue: { steering: [{ text: "skip the Linux check, I'll run it in CI", attachments: [] }], followUp: [{ text: "then compare with these two renders", attachments: [attachments[0], attachments[1]] }] } },
+          { ...stateIdleSecond(dir), working: true, since: 1794330720000, queue: { steering: [{ text: "skip the Linux check, I'll run it in CI", attachments: [] }], followUp: [{ text: "then compare with these two renders", attachments: [attachments[0], attachments[1]] }], classifying: [] } },
         ] }),
       expect({ on: { method: "POST", path: "/queue/clear", body: value => same(value, { sessionId: "00000000-0000-7000-8000-000000000001" }) }, reply: { status: 200, json: ({ attachments }) => ({ steering: [{ text: "skip the Linux check, I'll run it in CI", attachments: [] }], followUp: [{ text: "then compare with these two renders", attachments: [attachments[0], attachments[1]] }] }) } }),
       next([

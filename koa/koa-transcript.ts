@@ -1,3 +1,6 @@
+import { threadContext, quotedThread } from './koa-classify.ts';
+import type { QueuedPrompt } from './koa-records.ts';
+import { cleanLine } from './text.ts';
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { later } from "./koa-timer.ts";
 import { respond, serveFile } from "./koa-http.ts";
@@ -6,8 +9,9 @@ import { existsSync, mkdirSync, renameSync, rmSync, writeFileSync } from "node:f
 import { join } from "node:path";
 import { imageInfo, imageExtensions } from "./koa-image.ts";
 import { pathArg, type Annotation } from "./koa-records.ts";
-import { isRelation, isAgentFailure, parseThreadName, type ThreadName } from "./records.ts";
+import { isRelation, isAgentFailure, parseThreadName, messageThread, type ThreadName } from "./records.ts";
 import { decodePrompt } from "./prompt.ts";
+import { threadList, type ThreadList } from "./thread-list.ts";
 import type { Thread, Text, Block, Item, Assistant, WireItem, State, PageRecord, ImageRef, Attachment, AgentCall, NotifyLevel, CommandResult, BashResult } from "./koa-records.ts";
 import { send, forget, follow, take, expire, type ViewAddress } from "./koa-feed.ts";
 import type { WireJob } from "./koa-records.ts";
@@ -139,7 +143,7 @@ function notRun(item: Assistant): void {
   for (const block of item.blocks) if (block.type === "tool" && block.state.type === "pending") block.state = { type: "not_run" };
 }
 
-export function transcript({ dir, flushMs, metrics = false, kind = 'subagent', changed, sessionEntryToContextMessages }: { dir: string; flushMs: number; metrics?: boolean; kind?: 'root' | 'subagent'; changed?(): void; sessionEntryToContextMessages: typeof import('@earendil-works/pi-coding-agent').sessionEntryToContextMessages }) {
+export function transcript({ dir, flushMs, metrics = false, kind = 'subagent', changed, branch, sessionEntryToContextMessages }: { dir: string; flushMs: number; metrics?: boolean; kind?: 'root' | 'subagent'; changed?(): void; branch(): readonly SessionEntry[]; sessionEntryToContextMessages: typeof import('@earendil-works/pi-coding-agent').sessionEntryToContextMessages }) {
   const imageDir = join(dir, "images");
   mkdirSync(imageDir, { recursive: true, mode: 0o700 });
   const images = new Map<string, { ref: ImageRef; path: string; digest: string }>();
@@ -174,27 +178,39 @@ export function transcript({ dir, flushMs, metrics = false, kind = 'subagent', c
   let flushTimer: NodeJS.Timeout | null = null;
   const sources = new Map<number, { seed?: ThreadName; blocks: { source: number; start: number; end: number; length: number }[] }>();
   const labels = new Map<number, ThreadName[]>();
-  const indexed: ThreadName[] = [];
-  const lastSections = new Map<ThreadName, NonNullable<Thread['last']>>();
-  let provisional: ThreadName[] = [];
-  const sectionFacts = (sections: ReturnType<typeof threadSections>, at: number, seed?: ThreadName): ThreadName | undefined => {
-    if (kind !== 'root') return;
-    provisional = [];
-    let thread = seed ?? sections.find(section => section.thread)?.thread;
-    for (const section of sections) {
-      if (section.thread) {
-        thread = section.thread;
-        if (!provisional.includes(thread)) provisional.push(thread);
-      }
-      if (thread) lastSections.set(thread, { summary: utf8Prefix(section.text.split(/\r?\n/)[0], MAX_WEBVIEW_RESULT_BYTES), at });
-    }
-    return thread ?? seed;
+  const messages = new Map<number, { message: AgentMessage; entryId?: string }>();
+  let list: { key: string; value: ThreadList } | undefined;
+  const threads = (entries = branch()): ThreadList => {
+    const key = entries.length + ':' + (entries.at(-1)?.id ?? '');
+    if (list?.key !== key) list = { key, value: threadList(entries) };
+    return list.value;
   };
-  const indexThread = (entry: SessionEntry): boolean => {
-    if (kind !== 'root' || entry.type !== 'custom' || entry.customType !== 'koa.thread') return false;
-    const name = isRecord(entry.data) ? parseThreadName(entry.data.name) : undefined;
-    if (name && !indexed.includes(name)) indexed.push(name);
-    return true;
+  const entryId = (seq: number, entries = branch()): string | undefined => {
+    const source = messages.get(seq);
+    if (!source) return;
+    source.entryId ??= entries.find(entry => entry.type === 'message' && entry.message === source.message)?.id;
+    return source.entryId;
+  };
+  const projection = () => {
+    const entries = branch(), owner = threads(entries);
+    const id = (seq: number) => entryId(seq, entries);
+    const project = (item: Item): Item => {
+      if (kind !== 'root') return item;
+      const assignment = (thread: ThreadName | undefined) => owner.assignment(id(item.seq), thread);
+      if (item.kind === 'assistant') return { ...item, blocks: item.blocks.map(block => ({ ...block, thread: assignment(block.thread) })) };
+      if (item.kind === 'user' || item.kind === 'agent' || item.kind === 'job') return { ...item, thread: assignment(item.thread) };
+      if (item.kind === 'threads') return { ...item, threads: owner.overridden(id(item.target)) ? [] : [...new Set(item.threads.map(owner.resolve))] };
+      return item;
+    };
+    const latest = items.findLast(item => item.kind === 'assistant');
+    const live = latest && id(latest.seq) === undefined ? project(latest) : undefined;
+    const names = [...new Set([...owner.names, ...(live?.kind === 'assistant' ? live.blocks.flatMap(block => block.thread ? [block.thread] : []) : [])])];
+    return { owner, project, names, id, output: (item: Item, seen?: Map<string, boolean>) => wireItem(project(item), seen) };
+  };
+  const isThreadRecord = (entry: SessionEntry): boolean => {
+    if (kind !== 'root' || entry.type !== 'custom') return false;
+    if (entry.customType === 'koa.thread-move' || messageThread(entry)) return true;
+    return entry.customType === 'koa.thread';
   };
   let currentThread: ThreadName | undefined;
   let implicitUser: number | undefined;
@@ -229,8 +245,12 @@ export function transcript({ dir, flushMs, metrics = false, kind = 'subagent', c
   };
   const flushRecord = (bytes: number, id: number): Extract<PageRecord, { type: "flush" }> => ({ type: "flush", id, t: Date.now(), bytes });
   const window = (before: number, thread?: ThreadName): string => {
+    const { owner, project, output, id } = projection();
     if (thread) {
-      const matches = (item: Item): boolean => item.kind === 'assistant' ? item.blocks.some(block => (block.thread ?? labels.get(item.seq)?.[0]) === thread) : item.kind === 'user' || item.kind === 'agent' || item.kind === 'job' ? item.thread === thread || labels.get(item.seq)?.includes(thread) === true : false;
+      const matches = (raw: Item): boolean => {
+        const item = project(raw), inferred = owner.overridden(id(item.seq)) ? [] : labels.get(item.seq)?.map(owner.resolve);
+        return item.kind === 'assistant' ? item.blocks.some(block => (block.thread ?? inferred?.[0]) === thread) : item.kind === 'user' || item.kind === 'agent' || item.kind === 'job' ? item.thread === thread || inferred?.includes(thread) === true : false;
+      };
       const dependencies = new Map<number, Map<string, Item>>();
       for (const extra of items) {
         if (extra.kind !== 'threads' && extra.kind !== 'annotations') continue;
@@ -245,7 +265,7 @@ export function transcript({ dir, flushMs, metrics = false, kind = 'subagent', c
         const item = items[index];
         if (!matches(item)) continue;
         if (selected.length >= MAX_WEBVIEW_WINDOW_ITEMS || bytes >= MAX_WEBVIEW_WINDOW_BYTES) { more = true; break; }
-        const bundle = [item, ...(dependencies.get(item.seq)?.values() ?? [])].map(entry => ({ seq: entry.seq, json: JSON.stringify(wireItem(entry)) }));
+        const bundle = [item, ...(dependencies.get(item.seq)?.values() ?? [])].map(entry => ({ seq: entry.seq, json: JSON.stringify(output(entry)) }));
         const size = bundle.reduce((sum, entry) => sum + Buffer.byteLength(entry.json), 0);
         if (selected.length && (selected.length + bundle.length > MAX_WEBVIEW_WINDOW_ITEMS || bytes + size > MAX_WEBVIEW_WINDOW_BYTES)) { more = true; break; }
         selected.push(...bundle); bytes += size;
@@ -257,7 +277,7 @@ export function transcript({ dir, flushMs, metrics = false, kind = 'subagent', c
     let bytes = 0;
     const seen = new Map<string, boolean>();
     while (start > 0 && strings.length < MAX_WEBVIEW_WINDOW_ITEMS) {
-      const item: WireItem = wireItem(items[start - 1], seen);
+      const item: WireItem = output(items[start - 1], seen);
       const json = JSON.stringify(item);
       const size = Buffer.byteLength(json);
       if (strings.length && bytes + size > MAX_WEBVIEW_WINDOW_BYTES) break;
@@ -280,7 +300,6 @@ export function transcript({ dir, flushMs, metrics = false, kind = 'subagent', c
       return { length, sections: kind === 'root' ? threadSections(block.text, ended) : [{ text: block.text, start: 0, end: length }] };
     });
     const sections = parsed.flatMap(part => part?.sections ?? []);
-    sectionFacts(sections, message.timestamp, source.seed);
     sources.set(item.seq, source);
     const previousBlocks = item.blocks;
     const mapped: typeof source.blocks = [];
@@ -390,6 +409,7 @@ export function transcript({ dir, flushMs, metrics = false, kind = 'subagent', c
       } catch (error) { process.stderr.write(`koa: transcript: ${errorText(error)}\n`); }
     }
     if (!notify) { dirty.clear(); return; }
+    const { project, output } = projection();
     for (const seq of dirty) {
       const item = items[seq];
       if (!item) continue;
@@ -399,13 +419,14 @@ export function transcript({ dir, flushMs, metrics = false, kind = 'subagent', c
           const old = previous.blocks[index];
           if (sameBlock(block, old)) return [];
           if (block.type !== "tool" && old.type === block.type && block.thread === old.thread && block.redacted === old.redacted && (block.type !== "thinking" || sameTiming(block, old)) && block.text.startsWith(old.text)) return [{ index, suffix: block.text.slice(old.text.length) }];
-          return [{ index, block }];
+          const projected = project(item);
+          return [{ index, block: projected.kind === 'assistant' ? projected.blocks[index] : block }];
         });
         if (blocks.length || item.final !== previous.final || item.stop !== previous.stop || item.error !== previous.error || item.ended !== previous.ended) {
           const baseRevision = item.revision++;
           broadcast({ type: "patch", seq, baseRevision, revision: item.revision, blocks, final: item.final, stop: item.stop, error: item.error, ended: item.ended });
         }
-      } else { item.revision++; broadcast({ type: "item", item: wireItem(item) }); }
+      } else { item.revision++; broadcast({ type: "item", item: output(item) }); }
       if (item.kind === "assistant" && !item.final) sent.set(seq, { ...item, blocks: item.blocks.map((block) => ({ ...block })) });
       else sent.delete(seq);
     }
@@ -431,6 +452,7 @@ export function transcript({ dir, flushMs, metrics = false, kind = 'subagent', c
         if (!branch) assistant = item.seq;
       }
       if (item.kind !== "assistant") return;
+      messages.set(item.seq, { message });
       if (branch || phase === "start") {
         applyAssistant(item, message, branch);
         if (branch) for (const block of item.blocks) if (block.type === "tool") block.started ??= message.timestamp;
@@ -471,10 +493,31 @@ export function transcript({ dir, flushMs, metrics = false, kind = 'subagent', c
     const running = !branch && message.role === 'compactionSummary' ? items.findLast(value => value.kind === 'command' && value.result.type === 'compaction' && value.result.state.type === 'running') : undefined;
     if (running) { item.seq = running.seq; item.revision = running.revision; items[running.seq] = item; }
     else items.push(item);
+    messages.set(item.seq, { message });
     if (!branch) { publish(item); flush(); }
   };
+  const moveTargets = (seq: number): string[] | undefined => {
+    const item = items[seq];
+    if (kind !== 'root' || !item || item.kind !== 'user' && item.kind !== 'assistant') return;
+    const user = item.kind === 'user' ? item : items.findLast(other => other.kind === 'user' && other.seq < seq);
+    const next = items.find(other => other.kind === 'user' && other.seq > seq)?.seq ?? items.length;
+    const targets = item.kind === 'user' ? [item] : [...(user ? [user] : []), ...items.filter(other => other.kind === 'assistant' && other.seq > (user?.seq ?? -1) && other.seq < next)];
+    if (targets.some(target => target.kind === 'assistant' && target.lifecycle !== 'ended')) return;
+    const entries = branch(), ids = targets.map(target => entryId(target.seq, entries));
+    return ids.every((id): id is string => id !== undefined) ? ids : undefined;
+  };
   const annotation = (entry: SessionEntry, notify = true): void => {
-    if (indexThread(entry)) return;
+    if (kind === 'root' && (entry.type === 'custom' && entry.customType === 'koa.thread-move' || messageThread(entry))) {
+      flush();
+      list = undefined;
+      epoch = mintId();
+      sent.clear();
+      const record = reset();
+      for (const req of subscribers) body(req, record, true);
+      changed?.();
+      return;
+    }
+    if (isThreadRecord(entry)) return;
     const decoded = decodeAnnotation(entry);
     if (!decoded) return;
     flush(notify);
@@ -534,33 +577,30 @@ export function transcript({ dir, flushMs, metrics = false, kind = 'subagent', c
     const byId = new Map(entries.map(entry => [entry.id, entry]));
     const active: SessionEntry[] = [];
     for (let entry = leafId === null ? undefined : byId.get(leafId); entry; entry = entry.parentId === null ? undefined : byId.get(entry.parentId)) { active.push(entry); byId.delete(entry.id); }
-    indexed.length = 0; lastSections.clear(); provisional = [];
-    let historicalThread: ThreadName | undefined;
+    messages.clear();
     active.reverse();
-    const messages = active.flatMap(sessionEntryToContextMessages);
-    for (const entry of active) indexThread(entry);
-    for (const message of messages) {
-      if (message.role === 'assistant') historicalThread = sectionFacts(message.content.flatMap(block => block.type === 'text' ? threadSections(block.text, true) : []), message.timestamp, historicalThread);
-      else if (message.role === 'user') historicalThread = decodePrompt(contentText(message.content), [], kind).thread;
-      else if (message.role === 'custom' && message.display && isRecord(message.details) && (agentDetails(message.details) || noticeDetails(message.details) || streamDetails(message.details))) historicalThread = parseThreadName(message.details.thread);
-    }
-    provisional = [];
+    const replayMessages = active.flatMap(entry => sessionEntryToContextMessages(entry).map(message => ({ entryId: entry.id, message })));
     const extra = [
       ...notices.map(notice => ({ type: 'notice' as const, at: notice.at, notice })),
       ...active.flatMap(entry => { const decoded = decodeAnnotation(entry); return decoded ? [{ type: 'annotation' as const, at: decoded.at, entry }] : []; }),
     ].sort((a, b) => a.at - b.at);
     let next = 0;
-    const replay = messages.flatMap(message => {
+    const replay = replayMessages.flatMap(({ entryId, message }) => {
       const start = next;
       while (next < extra.length && extra[next].at < message.timestamp) next++;
-      return [...extra.slice(start, next), { type: 'message' as const, message }];
+      return [...extra.slice(start, next), { type: 'message' as const, entryId, message }];
     });
     replay.push(...extra.slice(next));
     delivery = { type: 'replay', labels: new Map() };
     try {
       for (const event of replay) {
         switch (event.type) {
-          case 'message': applyMessage(event.message, 'branch'); break;
+          case 'message': {
+            const seq = items.length;
+            applyMessage(event.message, 'branch');
+            if (messages.has(seq)) messages.set(seq, { message: event.message, entryId: event.entryId });
+            break;
+          }
           case 'notice': items.push({ ...event.notice, seq: items.length, revision: 0 }); break;
           case 'annotation': annotation(event.entry, false); break;
         }
@@ -615,14 +655,16 @@ export function transcript({ dir, flushMs, metrics = false, kind = 'subagent', c
   };
   const handle = (request: IncomingMessage, req: ServerResponse, address: ViewAddress = { type: "selected" }): boolean => {
     const url = new URL(request.url ?? "/", "http://ko");
+    const { owner, project, output } = projection();
     if (request.method === "GET" && url.pathname.startsWith("/images/")) {
       const image = images.get(url.pathname.slice(8));
       if (!image) { respond(req, 404, "{}"); return true; }
       void serveFile(req, image.path, image.ref.id + "." + (imageExtensions[image.ref.mimeType] ?? "bin"), 410);
     } else if (request.method === 'GET' && url.pathname === '/history') {
-      const history: string[] = [];
+      const history: string[] = [], thread = parseThreadName(url.searchParams.get('thread'));
       for (let index = items.length - 1; index >= 0 && history.length < 100; index--) {
-        const item = items[index];
+        const item = project(items[index]);
+        if (thread && (item.kind !== 'user' || item.thread !== owner.resolve(thread))) continue;
         const text = (item?.kind === 'user' ? item.text : item?.kind === 'bash' ? (item.excludeFromContext ? '!!' : '!') + item.command : '').trim();
         if (text && history.at(-1) !== text) history.push(text);
       }
@@ -644,7 +686,7 @@ export function transcript({ dir, flushMs, metrics = false, kind = 'subagent', c
         const after = Number(url.searchParams.get("after") ?? -1);
         if (!Number.isSafeInteger(after) || after < -1) { body(req, ""); return true; }
         for (const item of items.slice(after + 1)) {
-          body(req, frame(JSON.stringify({ type: "item", item: wireItem(item) })), true);
+          body(req, frame(JSON.stringify({ type: "item", item: output(item) })), true);
           if (req.writableEnded || req.destroyed) break;
         }
       } else { if (counters) counters.resets++; body(req, reset(), true); }
@@ -672,5 +714,28 @@ export function transcript({ dir, flushMs, metrics = false, kind = 'subagent', c
       if (item.kind === 'assistant') for (const block of item.blocks) if (block.type === 'tool' && block.job?.id === id) return block.job;
     }
   };
-  return { threads: (): Thread[] => [...new Set([...indexed, ...provisional])].map(name => ({ name, ...(lastSections.has(name) ? { last: lastSections.get(name) } : {}) })), command, jobFacts, itemFile, release, show, expire: (parent: string) => expire(subscribers, parent), message, thinking, annotation, rebuild, toolRunning, toolPartial, toolDone, state, notify, handle, close, get metrics() { return counters && { ...counters, subscribers: subscribers.size }; } };
+  return { threadContext: (queued: readonly QueuedPrompt[]) => {
+    const { project, names, owner } = projection();
+    return threadContext(items.map(project), names, queued.map(prompt => prompt.thread ? { ...prompt, thread: owner.resolve(prompt.thread) } : prompt));
+  }, resolveThread: (name: ThreadName) => threads().resolve(name), movable: (from: ThreadName, to: ThreadName) => threads().movable(from, to), moveTargets, quotedThread: (text: string) => {
+    const { project } = projection();
+    return quotedThread(items.map(project), text);
+  }, threads: (): Thread[] => {
+    const { project, names } = projection(), remaining = new Set(names);
+    const summaries = new Map<ThreadName, NonNullable<Thread['last']>>();
+    const note = (name: ThreadName | undefined, text: string, at: number) => {
+      if (!name || !remaining.has(name)) return;
+      const line = text.split(/\r?\n/).map(line => line.trim()).find(Boolean);
+      if (!line) return;
+      summaries.set(name, { summary: cleanLine(line, MAX_WEBVIEW_RESULT_BYTES), at }); remaining.delete(name);
+    };
+    for (let index = items.length - 1; index >= 0 && remaining.size; index--) {
+      const item = project(items[index]);
+      if (item.kind === 'user') note(item.thread, item.text, item.at);
+      else if (item.kind === 'assistant') for (let block = item.blocks.length - 1; block >= 0; block--) {
+        const value = item.blocks[block]; if (value.type === 'text') note(value.thread, value.text, item.at);
+      }
+    }
+    return names.map(name => ({ name, ...(summaries.has(name) ? { last: summaries.get(name) } : {}) }));
+  }, command, jobFacts, itemFile, release, show, expire: (parent: string) => expire(subscribers, parent), message, thinking, annotation, rebuild, toolRunning, toolPartial, toolDone, state, notify, handle, close, get metrics() { return counters && { ...counters, subscribers: subscribers.size }; } };
 }

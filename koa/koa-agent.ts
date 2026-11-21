@@ -45,6 +45,7 @@ import { dirname, delimiter, extname, join, posix, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { Type } from "typebox";
 import type { components } from "../webview/ko-api.d.ts";
+import { threadList, type ThreadList } from './thread-list.ts';
 import { THREAD_NAME_PATTERN, parseThreadName, type ThreadName, isAgentFailure, jobEndText, type RestartState, type InProcessMessage, type AgentEnd, type Relation, type AgentRef, type AgentOutcome, type MessageDetails, type SteerDetails, type NoticeDetails, type StreamDetails, type JobRef, type JobEnd, type JobPlace, type JobSnapshot } from "./records.ts";
 import { reconnectBackoff, parsePanes, placesOf, koaAgent, peerPanes, runningRows, MIN_ID_PREFIX, VAR_SESSION, VAR_NAME, VAR_ACTIVITY, VAR_TASK, VAR_RUNTIME, type PaneInfo, type AgentRow, type Where } from "./agents.ts";
 
@@ -1163,20 +1164,17 @@ export const agentExtension = (host: AgentHost) => (pi: ExtensionAPI): void => {
   let ownSessionId: string | null = null;
   let pane: string | null = null;
   let active = false;
-  const threadSupport: { type: 'root' | 'subagent'; properties: Record<string, Type.TOptional<Type.TString>> } = host.self.parent ? { type: 'subagent' as const, properties: {} } : { type: 'root' as const, properties: { thread: Type.Optional(Type.String({ pattern: THREAD_NAME_PATTERN, description: 'The thread that this agent or job works for: an existing thread when one covers the work, not the name of the agent or job.' })) } };
-  const threadNames = (): ThreadName[] => [...new Set((session?.sessionManager.getBranch() ?? []).flatMap(entry => {
-    const name = entry.type === 'custom' && entry.customType === 'koa.thread' && isRecord(entry.data) ? parseThreadName(entry.data.name) : undefined;
-    return name ? [name] : [];
-  }))];
+  const threadSupport: { type: 'root' | 'subagent'; properties: Record<string, Type.TOptional<Type.TString>> } = host.self.parent ? { type: 'subagent' as const, properties: {} } : { type: 'root' as const, properties: { thread: Type.Optional(Type.String({ pattern: THREAD_NAME_PATTERN, description: 'The thread that this agent or job works for: the exact name of an existing thread when one covers the work, not the name of the agent or job.' })) } };
+  const threadIndex = (): ThreadList => threadList(session?.sessionManager.getBranch() ?? []);
   const indexThread = (name: ThreadName | undefined, at: number): void => {
-    if (threadSupport.type === 'root' && name && !threadNames().includes(name)) pi.appendEntry('koa.thread', { name, at });
+    if (threadSupport.type === 'root' && name && !threadIndex().indexed.includes(name)) pi.appendEntry('koa.thread', { name, at });
   };
   const threadParameter = (params: unknown): { thread?: ThreadName } | { error: string } => {
     const raw = isRecord(params) ? params.thread : undefined;
     if (raw === undefined) return {};
     if (threadSupport.type !== 'root') return { error: 'threads belong only to a root agent' };
     const thread = parseThreadName(raw);
-    return thread ? { thread } : { error: 'thread must have 1 to 32 lowercase letters, digits or hyphens' };
+    return thread ? { thread: threadIndex().resolve(thread) } : { error: 'thread must be a topic of 1 to 200 characters, without `]` or control characters' };
   };
   if (threadSupport.type === 'root') {
     let reminder: 'none' | 'pending' = 'none';
@@ -1194,17 +1192,18 @@ export const agentExtension = (host: AgentHost) => (pi: ExtensionAPI): void => {
     });
     pi.on('message_end', event => {
       if (event.message.role !== 'assistant') return;
-      const names = new Set(threadNames());
-      for (const block of event.message.content) if (block.type === 'text') for (const { thread } of threadSections(block.text, true)) if (thread && !names.has(thread)) {
+      const index = threadIndex(), names = new Set(index.indexed);
+      for (const block of event.message.content) if (block.type === 'text') for (const section of threadSections(block.text, true)) if (section.thread && !names.has(index.resolve(section.thread))) {
+        const thread = section.thread;
         pi.appendEntry('koa.thread', { name: thread, at: event.message.timestamp }); names.add(thread);
       }
     });
     pi.on('session_compact', () => {
-      const names = threadNames();
-      if (names.length) pi.sendMessage({ customType: 'koa.threads', content: 'Threads in this session: ' + names.join(', '), display: false }, { triggerTurn: false });
+      const { names } = threadIndex();
+      if (names.length) pi.sendMessage({ customType: 'koa.threads', content: 'Threads in this session:\n' + names.map(name => '- ' + name).join('\n'), display: false }, { triggerTurn: false });
     });
     pi.on('before_agent_start', event => {
-      event.systemPromptOptions.sections.threads = "# Threads\n\nEvery reply in this session starts with a line `[thread: name]` on\nits own. This has no exception: the first reply of the session, a\nshort answer and a reply after tool calls all start with it. A\nthread is a workstream of this session, and name is the thread that\nthe reply is about.\n\n- Reuse an existing thread whenever the reply continues, extends or\n  relates to its subject: a follow-up, a deeper look or a subtask\n  belongs to the thread that it grew from.\n- Start a new thread only for a subject that no existing thread\n  covers. Name it by its broad subject, not by the current task, so\n  that later work fits it: a short name of lowercase letters, digits\n  and `-`.\n- A reply about several threads has one part for each, and each\n  part starts with its own line.\n- A part about the session as a whole, not about one workstream,\n  goes into the thread `general`.\n- Give `spawn_agent` and `async_bash` the `thread` that the agent or\n  job works for: a thread as above, not the agent's or the job's\n  name.\n- A user message that starts with such a line is about that thread.";
+      event.systemPromptOptions.sections.threads = "# Threads\n\nEvery reply in this session starts with a line `[thread: name]` on\nits own. This has no exception: the first reply of the session, a\nshort answer and a reply after tool calls all start with it. A\nthread is a workstream of this session, and name is the thread that\nthe reply is about.\n\n- Reuse an existing thread whenever the reply continues, extends or\n  relates to its subject: a follow-up, a deeper look or a subtask\n  belongs to the thread that it grew from.\n- Start a new thread only for a subject that no existing thread\n  covers. Name it like a Zulip topic: a short, clear, sentence-like\n  topic of its broad subject, not of the current task, so that later\n  work fits it, for example `Reload UI open items` or\n  `Pane resize bug`. A name has at most 60 characters and no `]`.\n- To continue a thread, repeat its name exactly as it was written.\n- A reply about several threads has one part for each, and each\n  part starts with its own line.\n- A part about the session as a whole, not about one workstream,\n  goes into the thread `general`.\n- Give `spawn_agent` and `async_bash` the `thread` that the agent or\n  job works for: a thread as above, not the agent's or the job's\n  name.\n- A user message that starts with such a line is about that thread.";
     });
   }
   let routed: Routed | { refusal: string } | null = null;

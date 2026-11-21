@@ -10,6 +10,10 @@ test('root indexes markers once on the branch and supplies names only after comp
     const s = await startSession(fx, { entries: [{ type: 'custom', customType: 'koa.thread', data: { name: 'copied', at: 1, owner: 'another-session' } }] });
     const reply = { role: 'assistant', content: [{ type: 'text', text: '[thread: copied]\nOld\n[thread: fresh]\nNew\n```\n[thread: fenced]\n```' }], timestamp: 123 };
     await s.emit('message_end', { message: reply }); await s.emit('message_end', { message: reply });
+    s.entries.push(
+      { type: 'message', id: 'copied', message: { role: 'user', content: '[thread: copied]\nOld', timestamp: 122 } },
+      { type: 'message', id: 'fresh', message: { role: 'user', content: '[thread: fresh]\nNew', timestamp: 123 } },
+    );
     assert.deepEqual(entriesOf(s, 'koa.thread').map(entry => entry.name), ['copied', 'fresh']);
     assert.equal(entriesOf(s, 'koa.thread')[1].at, 123);
     const guidelines: string[] = [], sections: Record<string, string> = {};
@@ -130,5 +134,9 @@ test('root job results, streams and ending notices retain the assigned thread', 
 
 test('root tool schemas expose thread validation', () => {
   const s = createFakePi(); koaExtension(s.pi);
-  for (const name of ['spawn_agent', 'async_bash']) assert.equal(get(s.tool(name), 'parameters', 'properties', 'thread', 'pattern'), '^[a-z0-9-]{1,32}$');
+  for (const name of ['spawn_agent', 'async_bash']) {
+    const pattern = new RegExp(String(get(s.tool(name), 'parameters', 'properties', 'thread', 'pattern')), 'u');
+    assert.ok(pattern.test('Reload UI open items') && pattern.test('x'.repeat(200)));
+    for (const bad of ['', 'a]b', 'a\nb', 'x'.repeat(201)]) assert.ok(!pattern.test(bad), bad);
+  }
 });

@@ -706,10 +706,57 @@ does not apply CommonMark lazy quote continuation. Assistant Markdown
 keeps its normal rule. koa supplies no annotation-producing model.
 
 Threads belong only to the root. `koa/text.ts` scans markers and
-`koa/records.ts` validates names. The agent labels its own text; no
-second model classifies it. Tool and thinking blocks follow the last
-label in the turn. Agent and job details carry the root's assignment.
-Children do not receive that label as a task marker.
+`koa/records.ts` validates names. A name is a short topic, as in
+Zulip, not a slug: the models are asked for at most 60 characters,
+and validation accepts up to 200 without `]` or control characters,
+with whitespace normalised. Names match exactly, because the agent
+continues a thread by repeating its name. The agent labels its own
+text. Tool and thinking blocks follow the last label in the turn.
+Agent and job details carry the root's assignment. Children do not
+receive that label as a task marker.
+
+A user message to the root gets its marker before pi sees it, so the
+agent starts from the right thread (`Tree.labelPrompt` in
+`koa/koa-agents.ts`). This covers the page's prompts, steers and
+follow-ups, the command-line messages and `ko prompt` to the root;
+not subagents, messages between agents, a resent queue item, a slash
+command, empty text or a text whose thread a filter or a typed marker
+already decides. First, quoted lines that match reply sections of
+exactly one thread among the recent replies select that thread
+without a model call; this works also when the classifier is off.
+Otherwise a small model classifies the message
+(`koa/koa-classify.ts`) from the newest threads and their newest
+messages. The setting `koa.threads.model` in pi's global settings is
+`provider/id` or `off`; the default is on. The call has low reasoning,
+no tools and a 15 s deadline, and the parser accepts the usual
+wrappings of a name. A failure sends the message without a marker
+and shows one warning for each process, with the raw reply in its
+text; there is no retry. The agent still labels its own replies:
+the classifier only gives it the user's thread.
+
+Classification must not delay the user. The prompt is accepted and
+shown as pending in the queue at once (`hold` in `koa/koa-queue.ts`),
+before the model answers, and prompts are submitted in the order the
+user sent them. A pending prompt keeps reload and restart waiting,
+like a running turn. When the submission of an accepted prompt fails,
+its text and attachments return to the composer through the editor
+state, but only while the same pi session is current.
+
+The user corrects threads with two session entries, which
+`koa/thread-list.ts` folds into one derivation of the branch for
+the transcript and the extension. `koa.thread-move` renames or
+merges a thread: its names resolve to the target, and a chain of
+moves resolves to its end. `koa.message-thread` moves messages, named
+by their pi entry ids, to a thread; a move from a reply moves its
+whole turn. Entry ids, not timestamps, identify messages, because
+timestamps collide. pi emits `message_end` before it persists the
+entry, so the transcript keeps each item's message object and finds
+its entry id by identity when the user acts; an unpersisted message
+cannot move. The transcript keeps the original labels of its items
+and projects them through that derivation, so a live correction and a
+replay agree by construction. A correction changes items that a
+reconnect cursor may have passed, so it sends the reset record with a
+new epoch rather than a new wire variant.
 
 The root's prompt requires a marker and reuse of an existing thread
 for related work. Its branch stores a name index, not a second copy
@@ -730,6 +777,16 @@ window limits, so sparse threads can load useful history. A filtered
 prompt gets a marker at submission, except a slash command: pi needs
 the slash at the start to expand a template or skill. Take-back hides
 the inserted marker. Runs remain whole under filtering.
+
+The thread panel shows for each thread the first line of its newest
+non-empty user or assistant message. The user drags a thread row onto
+another row to merge it, double-clicks a row to rename it, and drags a
+row onto a message to move its turn. Rename to an existing name is a
+merge, and a filter on a merged thread follows to its target. A
+single click filters only after the double-click interval, so a
+rename does not filter. Long names are cut on the page with the whole
+name in the title. The visual rules of these interactions are in
+`app/design/koa/NOTES.md`, "Threads".
 
 ## Agent extension, subagents and jobs
 

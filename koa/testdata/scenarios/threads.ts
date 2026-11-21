@@ -80,6 +80,15 @@ const order: (keyof typeof phases)[] = ['testKoaWebviewThreadsTwo', 'testKoaWebv
 export const scenarios: Scenarios = {
   testKoaWebviewThreadsModes: phases.testKoaWebviewThreadsModes,
   Threads: dir => sequence(order.map(key => phases[key](dir))),
+  ThreadsEdit: dir => sequence(Array.from({ length: 4 }, (_, index) => {
+    const result = scene(dir, 'marks');
+    if (index === 3) {
+      const state = result.open.find(record => record.type === 'state');
+      if (!state) throw Error('Missing pending state');
+      state.queue.classifying = [{ text: 'Check the Linux sweep test and keep the failure output.', attachments: [], mode: 'followUp' }];
+    }
+    return result;
+  })),
   ThreadsFilter: phases.testKoaWebviewThreadsFilter,
   ThreadsFilterPanel: phases.testKoaWebviewThreadsFilterPanel,
 };

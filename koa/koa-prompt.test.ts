@@ -17,6 +17,20 @@ test('thread prompts hide their marker and retain attachment identity in queues'
   assert.deepEqual(queue.takeBack({ steering: [threadPrompt('same', two)], followUp: [] }).steering, [{ text: 'same', thread: two, attachments: [] }]);
 });
 
+test('held duplicate texts keep attachments through settle, start and rejection', () => {
+  const queue = prompts('root');
+  const first = queue.hold('same', 'prompt', [a]), second = queue.hold('same', 'prompt', [b]);
+  assert.deepEqual(queue.view().classifying.map(entry => entry.attachments), [[a], [b]]);
+  queue.settle(first, '[thread: one]\nsame', 'followUp');
+  queue.update({ steering: [], followUp: ['[thread: one]\nsame'] });
+  assert.deepEqual(queue.view().followUp, [{ text: 'same', thread: 'one', attachments: [a] }]);
+  queue.reject(second);
+  assert.deepEqual(queue.view().classifying, []);
+  queue.update({ steering: [], followUp: [] });
+  assert.deepEqual(queue.start('[thread: one]\nsame')?.attachments, [a]);
+  assert.deepEqual(queue.view(), { steering: [], followUp: [], classifying: [] });
+});
+
 test('bang commands keep shell text and context choice', () => {
   assert.deepEqual(bashCommand('! echo hi'), { command: 'echo hi', excludeFromContext: false, prefixLength: 1 });
   assert.deepEqual(bashCommand('!!echo hi\nnext'), { command: 'echo hi\nnext', excludeFromContext: true, prefixLength: 2 });
@@ -46,9 +60,9 @@ test('delivered empty texts do not remain in the queue or return in take-back', 
   queue.add('', 'followUp', [a]); queue.update({ steering: [], followUp: [''] });
   queue.add('', 'steer', [b]); queue.update({ steering: [''], followUp: [''] });
   assert.deepEqual((queue.start('')?.attachments ?? []), [b]);
-  assert.deepEqual(queue.view(), { steering: [], followUp: [{ text: '', attachments: [a] }] });
+  assert.deepEqual(queue.view(), { steering: [], followUp: [{ text: '', attachments: [a] }], classifying: [] });
   assert.deepEqual((queue.start('')?.attachments ?? []), [a]);
-  assert.deepEqual(queue.view(), { steering: [], followUp: [] });
+  assert.deepEqual(queue.view(), { steering: [], followUp: [], classifying: [] });
   queue.beginClear();
   assert.deepEqual(queue.takeBack({ steering: [''], followUp: [''] }), { steering: [], followUp: [] });
   queue.endClear();
@@ -56,7 +70,7 @@ test('delivered empty texts do not remain in the queue or return in take-back', 
   queue.update({ steering: [], followUp: ['external'] });
   assert.deepEqual((queue.start('')?.attachments ?? []), [a]);
   queue.add('', 'steer', [b]); queue.update({ steering: [''], followUp: ['external'] });
-  assert.deepEqual(queue.view(), { steering: [{ text: '', attachments: [b] }], followUp: [{ text: 'external', attachments: [] }] });
+  assert.deepEqual(queue.view(), { steering: [{ text: '', attachments: [b] }], followUp: [{ text: 'external', attachments: [] }], classifying: [] });
 });
 
 test('a delivering duplicate is not in the visible queue or taken back', () => {
@@ -64,7 +78,7 @@ test('a delivering duplicate is not in the visible queue or taken back', () => {
   queue.add('same', 'steer', [a]); queue.add('same', 'steer', [b]);
   queue.update({ steering: ['same', 'same'], followUp: [] });
   queue.update({ steering: ['same'], followUp: [] });
-  assert.deepEqual(queue.view(), { steering: [{ text: 'same', attachments: [b] }], followUp: [] });
+  assert.deepEqual(queue.view(), { steering: [{ text: 'same', attachments: [b] }], followUp: [], classifying: [] });
   queue.beginClear(); queue.update({ steering: [], followUp: [] });
   assert.deepEqual(queue.takeBack({ steering: ['same'], followUp: [] }), { steering: [{ text: 'same', attachments: [b] }], followUp: [] });
   queue.endClear();

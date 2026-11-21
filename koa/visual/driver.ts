@@ -115,8 +115,14 @@ function captureTarget(name: string, scenario: Scenario): { selector: string; pa
       return { selector: ".newmsgs", padding: { top: 4, left: 4, bottom: 4, right: 4 } };
     case "latest/latest-new":
       return { selector: "#latest", padding: { top: 4, left: 4, bottom: 4, right: 4 } };
+    case "threads/threads-drag-row":
+    case "threads/threads-rename":
     case "threads/threads-filter-panel":
       return { selector: ".thread-panel:not([hidden])", padding: { top: 8, left: 8, bottom: 8, right: 8 } };
+    case "threads/threads-drag-reply":
+      return { selector: "#items>.drop-target", padding: { top: 8, left: 8, bottom: 8, right: 8 } };
+    case "threads/threads-pending":
+      return { selector: "#queue", padding: { top: 8, left: 8, bottom: 8, right: 8 } };
     case "threads/threads-many":
     case "threads/threads-many-narrow":
       return { selector: ".thread-capsule", padding: { top: 4, left: 4, bottom: 4, right: 4 } };
@@ -201,7 +207,7 @@ const followHelpers = `        const s=document.querySelector('#scroll'),dock=do
         const until=async(test,ms=60000)=>{const end=performance.now()+ms;while(!test()&&performance.now()<end)await wait(50)};
         const moveTo=value=>{s.dispatchEvent(new WheelEvent('wheel',{deltaY:value<s.scrollTop?-1:1,bubbles:true}));s.scrollTop=value;s.dispatchEvent(new Event('scroll'))};
         const root={id:'s1',name:'ko',type:'agent'};
-        const view=(node,path,extra={})=>({type:'state',view:{id:node.id,path,type:node.type},agents:[],bash:[],compaction:'idle',life:{type:'ready'},working:false,aborted:false,name:'t',levels:[],cwd:'/w',home:'/h',statuses:{},queue:{steering:[],followUp:[]},dialogs:[],sessionId:'s1',...extra});
+        const view=(node,path,extra={})=>({type:'state',view:{id:node.id,path,type:node.type},agents:[],bash:[],compaction:'idle',life:{type:'ready'},working:false,aborted:false,name:'t',levels:[],cwd:'/w',home:'/h',statuses:{},queue:{steering:[],followUp:[],classifying:[]},dialogs:[],sessionId:'s1',...extra});
         `;
 async function assertCaptureWidth(web: Page, name: string, scenario: Scenario) {
         const key = name.startsWith("narrow-") ? name.slice(7) : name
@@ -295,7 +301,7 @@ async function prepareCapture(name: string, scenario: Scenario, measured: boolea
             case "threads-filter": case "threads-filter-narrow": case "threads-filter-panel":
                 ready = `document.querySelector('.thread-entry.current')?.dataset.thread==='sidebar'&&document.querySelector('#items').textContent.includes('Verification passed; I merge the unit next.')&&${koaIdle}`
             break;
-            case "threads-marks": case "threads-marks-narrow":
+            case "threads-marks": case "threads-marks-narrow": case "threads-drag-row": case "threads-drag-reply": case "threads-rename": case "threads-pending":
                 ready = "document.querySelector('#items').textContent.includes('A fix is in the test’s wait.')"
             break;
             case "threads-two": case "threads-many": case "threads-many-narrow":
@@ -318,7 +324,7 @@ async function prepareCapture(name: string, scenario: Scenario, measured: boolea
         equal(viewportWidth, viewport().width, `The page fills the native webview width at capture ${name}`)
         const initialScroll = top || aboveBottom ? "0" : scenario == "latest" ? "scroll.scrollTop" : "scroll.scrollHeight"
         const stopFollowing = top || aboveBottom
-        await webviewJS(web, `(()=>{if(!document.querySelector('.lightbox')&&!document.querySelector('.dialog')&&!document.querySelector('#exited:not([hidden])')&&document.querySelector('#picker').hidden)window.composer.focus();const scroll=document.querySelector('#scroll');if(${stopFollowing})scroll.dispatchEvent(new WheelEvent('wheel',{deltaY:-1,bubbles:true}));scroll.scrollTop=${initialScroll};if(${ordered})document.querySelectorAll('.assistant')[1].scrollIntoView({block:'start'});return true})()`)
+        await webviewJS(web, `(()=>{if(!document.querySelector('.thread-rename')&&!document.querySelector('.lightbox')&&!document.querySelector('.dialog')&&!document.querySelector('#exited:not([hidden])')&&document.querySelector('#picker').hidden)window.composer.focus();const scroll=document.querySelector('#scroll');if(${stopFollowing})scroll.dispatchEvent(new WheelEvent('wheel',{deltaY:-1,bubbles:true}));scroll.scrollTop=${initialScroll};if(${ordered})document.querySelectorAll('.assistant')[1].scrollIntoView({block:'start'});return true})()`)
         await webviewUntil(web, "(()=>{const dock=document.querySelector('#dock');return Number.parseFloat(getComputedStyle(document.body).getPropertyValue('--dock-h'))===dock.getBoundingClientRect().height})()")
         const latestAtTop = top || scenario == "latest" && name.endsWith("new")
         const scrollPosition = latestAtTop ? "0" : scenario == "latest" ? "document.querySelector('.newmsgs').offsetTop-300" : aboveBottom ? "0" : "scroll.scrollHeight"
@@ -351,7 +357,7 @@ async function driveThreads(web: Page, phases: string[], capture: (name: string)
                 await webviewJS(web, "(()=>{document.querySelector('.thread-clear')?.click();document.dispatchEvent(new KeyboardEvent('keydown',{key:'Escape',bubbles:true}));window.composer.setText('');return true})()")
                 await advance()
             }
-            await web.setViewportSize({ width: name == "threads-marks-narrow" ? 448 : 960, height: 557 })
+            await web.setViewportSize({ width: name == "threads-marks-narrow" ? 448 : name.startsWith("threads-drag") || name == "threads-rename" || name == "threads-pending" ? 980 : 960, height: 557 })
         await webviewUntil(web, "!document.querySelector('#threads').hidden&&document.querySelector('.thread-capsule')!==null")
         if (name == "threads-many" || name == "threads-many-narrow") {
             const expected = name == "threads-many" ? 9 : 4
@@ -380,7 +386,25 @@ async function driveThreads(web: Page, phases: string[], capture: (name: string)
             await webviewJS(web, "(()=>{if(!document.querySelector('.thread-panel').hidden)document.querySelector('.thread-overflow').click();return true})()")
             await webviewUntil(web, "document.querySelector('.thread-panel').hidden&&document.querySelector('.thread-capsule')!==null")
         }
+        if (name.startsWith("threads-drag") || name == "threads-rename") {
+            await web.locator('.thread-overflow').click()
+            await webviewUntil(web, "!document.querySelector('.thread-panel').hidden")
+            const source = web.locator('.thread-entry[data-thread=palette]')
+            if (name == "threads-rename") await source.dblclick()
+            else {
+                const start = requireValue(await source.boundingBox())
+                const target = requireValue(await (name == "threads-drag-row" ? web.locator('.thread-entry[data-thread=sidebar]') : web.locator('#items>.assistant').last()).boundingBox())
+                await web.mouse.move(start.x + start.width / 2, start.y + start.height / 2)
+                await web.mouse.down()
+                await web.mouse.move(target.x + target.width / 2, target.y + target.height / 2, { steps: 6 })
+                await webviewUntil(web, "document.querySelector('.drop-target')!==null")
+            }
+        }
         await capture(name)
+        if (name.startsWith("threads-drag") || name == "threads-rename") {
+            await web.keyboard.press('Escape')
+            await web.mouse.up()
+        }
         if (name == "threads-many" || name == "threads-filter") {
             await web.setViewportSize({ width: 448, height: 557 })
             await koaMeasured(web, "#threads")
@@ -1694,6 +1718,7 @@ const entries: Record<string, () => Promise<void>> = {
   "Failed": () => koaWebview("Failed", 960, 557, "failed", true, ["exited"]),
   "Rhythm": testKoaWebviewRhythm,
   "Threads": () => koaWebview("Threads", 960, 557, "threads", false, ["threads-two", "threads-many", "threads-marks", "threads-marks-narrow"]),
+  "ThreadsEdit": () => koaWebview("ThreadsEdit", 980, 557, "threads", false, ["threads-drag-row", "threads-drag-reply", "threads-rename", "threads-pending"]),
   "ThreadsFilter": () => koaWebview("ThreadsFilter", 960, 557, "threads", false, ["threads-filter"]),
   "ThreadsFilterPanel": () => koaWebview("ThreadsFilterPanel", 960, 557, "threads", false, ["threads-filter-panel"]),
   "Agents": () => koaWebview("Agents", 960, 557, "agents", true, []),

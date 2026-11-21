@@ -15,7 +15,7 @@ test('saved compaction adds one summary without resetting the live transcript', 
     sessionManager: { getEntries: () => entries, getBranch: () => entries, getLeafId: () => entries.at(-1)?.id ?? null },
   });
   const runtime: AgentSessionRuntime = Object.assign(Object.create(null), { cwd: dir });
-  const view = createView({ sessionEntryToContextMessages,
+  const view = createView({ sessionEntryToContextMessages, branch: () => [],
     kind: 'root', dir, metrics: false, attached: attachments(dir), name: 'test', cwd: dir, home: dir,
     agent: () => ({ session, runtime }), compose: () => { throw Error('a starting view does not publish'); },
     status() {}, title() {}, closed: () => false, cancelEditor() {}, shutdown() {}, agentsChanged() {}, changed() {},
@@ -51,7 +51,7 @@ test('reply status strips Markdown but provider and compaction errors stay raw',
   const session: AgentSession = Object.assign(Object.create(null), { getSessionStats: () => ({ totalMessages: 1 }) });
   const runtime: AgentSessionRuntime = Object.assign(Object.create(null), { cwd: dir });
   const statuses: [string, string][] = [];
-  const view = createView({ sessionEntryToContextMessages,
+  const view = createView({ sessionEntryToContextMessages, branch: () => [],
     kind: 'root', dir, metrics: false, attached: attachments(dir), name: 'test', cwd: dir, home: dir,
     agent: () => ({ session, runtime }),
     compose: () => { throw Error('a starting view does not publish'); },
