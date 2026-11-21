@@ -1756,6 +1756,25 @@ width stay inside the visible frame of the screen that holds the float.
 A pop out holds the ghost's frame until the float appears, and a dock
 holds the release frame until the layout shows the dock.
 
+**Float again** (design: `app/design/floats/NOTES.md`, section F). A
+pane's host state in its WindowView (`PaneHost`) also remembers a
+docked float: when a layout turns a float tiled, by any route (Dock
+Pane, the Option drop, another client's `unfloat`), the float's screen
+frame and its cells become `docked`. Float Pane on such a pane, from
+any Kido window, runs on the owner of the floats (`floatAgainEdit`): it
+sends the remembered cols and rows, and x and y as a move of that
+origin at the current cell size would send them, and the state waits as
+`refloating`. The float that the layout then shows takes the remembered
+screen origin as a local frame at the layout's size, moved by the
+screen rule (`reachable`) the least distance, never resized. The
+memory is used once: any layout that shows the pane as a float ends it,
+also a float from another client, which shows at its cells. A failed
+edit returns the state to `docked`. A pop out by drag replaces it with
+the ghost's frame. The state is a float state: it keeps a hidden
+WindowView and its pane through the eviction, it moves with the float
+windows at an adoption (which makes the destination's WindowView when
+it has none), and it goes with its pane. A relaunch starts without it.
+
 **A window, not a row.** A float's identity is its window title (the
 Dock menu, Mission Control, ⌘\`); nothing is drawn over its content for
 it, and a page's `--ko-inset-top` is 0 in a float. A float has no

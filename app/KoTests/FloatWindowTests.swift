@@ -75,6 +75,92 @@ import XCTest
         terminal.visualBeginDrag(id, try mouse(.leftMouseUp, end, in: try XCTUnwrap(view.window)))
     }
 
+    func testFloatAgainRestoresTheLastFrameAndCellSize() throws {
+        let (owner, client) = try shown(twoFloats)
+        let session = try XCTUnwrap(owner.testSession)
+        let id = PaneID(number: 2)
+        let view = try XCTUnwrap(session.pane(id))
+        session.edit(.float(KoSchema.EditFloat(cols: 31, pane: id, rows: 9)), nil)
+        wait("the resize settles") { self.floats(client).first { $0.pane == id }?.cols == 31 && !session.editing() }
+        try drag(session, id, dx: 95, dy: -65)
+        wait("the move settles") { !session.editing() }
+        let frame = try screen(view)
+        let geometry = try XCTUnwrap(floats(client).first { $0.pane == id })
+        owner.paneCommand(.float, id)
+        wait("the pane docks") { view.window === owner.window && !session.editing() }
+        var sent: KoSchema.EditFloat?
+        owner.testEditor { edit in
+            if case .float(let value) = edit, value.pane == id, value.z == nil { DispatchQueue.main.sync { sent = value } }
+            return try client.edit(edit)
+        }
+        owner.paneCommand(.float, id)
+        wait("the pane floats again") { view.window is FloatWindow && !session.editing() }
+        XCTAssertEqual(sent?.cols, geometry.cols)
+        XCTAssertEqual(sent?.rows, geometry.rows)
+        XCTAssertEqual(sent?.x, geometry.x)
+        XCTAssertEqual(sent?.y, geometry.y)
+        XCTAssertEqual(try screen(view), frame)
+
+        owner.paneCommand(.float, id)
+        wait("the pane docks again") { view.window === owner.window && !session.editing() }
+        _ = try client.edit(.float(KoSchema.EditFloat(cols: 23, pane: id, rows: 7, x: 1, y: 1)))
+        wait("an explicit placement floats it") { view.window is FloatWindow && !session.editing() }
+        let newer = try screen(view)
+        owner.paneCommand(.float, id)
+        wait("the new float docks") { view.window === owner.window && !session.editing() }
+        owner.paneCommand(.float, id)
+        wait("the new frame returns") { view.window is FloatWindow && !session.editing() }
+        XCTAssertEqual(sent?.cols, 23)
+        XCTAssertEqual(sent?.rows, 7)
+        XCTAssertEqual(try screen(view), newer)
+    }
+
+    func testFloatAgainMemorySurvivesEvictionAndAdoption() throws {
+        let (owner, client) = try shown(twoFloats)
+        let source = try XCTUnwrap(owner.testSession)
+        let id = PaneID(number: 2), window = WindowID(number: 1)
+        try drag(source, id, dx: 80, dy: -40)
+        wait("the move settles") { !source.editing() }
+        let geometry = try XCTUnwrap(floats(client).first { $0.pane == id })
+        owner.paneCommand(.float, id)
+        wait("the float docks") { source.pane(id)?.window === owner.window && !source.editing() }
+        try XCTUnwrap(source.windows[window]).evict()
+        let destination = SessionView(runtime: source.runtime)
+        destination.client = client
+        destination.frame = source.frame
+        try XCTUnwrap(source.superview).addSubview(destination)
+        defer { destination.close() }
+        destination.adoptFloats(from: source)
+        destination.show(window)
+        let terminal = try XCTUnwrap(destination.windows[window])
+        let edit = try XCTUnwrap(terminal.floatAgainEdit(id))
+        guard case .float(let value) = edit else { return XCTFail("expected a float edit") }
+        XCTAssertEqual(value.cols, geometry.cols)
+        XCTAssertEqual(value.rows, geometry.rows)
+        XCTAssertEqual(value.x, geometry.x)
+        XCTAssertEqual(value.y, geometry.y)
+        terminal.editsSettled()
+        XCTAssertNotNil(terminal.floatAgainEdit(id), "a failed edit keeps the saved frame")
+    }
+
+    func testFloatPaneWithoutMemorySendsNoGeometry() throws {
+        let (owner, client) = try shown(floatLayout(border: false, tree: split))
+        let session = try XCTUnwrap(owner.testSession)
+        let id = PaneID(number: 1)
+        var sent: KoSchema.EditFloat?
+        owner.testEditor { edit in
+            if case .float(let value) = edit, value.pane == id, value.z == nil { DispatchQueue.main.sync { sent = value } }
+            return try client.edit(edit)
+        }
+        owner.paneCommand(.float, id)
+        wait("the pane floats") { session.pane(id)?.window is FloatWindow && !session.editing() }
+        let edit = try XCTUnwrap(sent)
+        XCTAssertNil(edit.cols)
+        XCTAssertNil(edit.rows)
+        XCTAssertNil(edit.x)
+        XCTAssertNil(edit.y)
+    }
+
     func testAMainWindowResizeKeepsTheLocalScreenOriginThroughTheServerClamp() throws {
         let (owner, client) = try shown(twoFloats)
         let session = try XCTUnwrap(owner.testSession)

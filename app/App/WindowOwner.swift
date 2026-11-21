@@ -1710,6 +1710,7 @@ private class AlertEscape: NSView {
 
     func paneCommand(_ command: PaneCommand, _ pane: PaneID, _ runtime: NewPaneRuntime = .inherit) {
         guard CommandScope(command).isAvailable else { return }
+        if case .float = command, let floatOwner, floatOwner !== self { return floatOwner.paneCommand(command, pane, runtime) }
         switch command {
         case .close:
             let name = projection.items[pane]?.item.rowTitle ?? pane.description
@@ -1723,7 +1724,10 @@ private class AlertEscape: NSView {
         switch action {
         case .edit(let edit):
             if case .unfloat = edit { showWindow(window.id) }
-            submitSelecting(edit)
+            let remembered: KoSchema.Edit? = if case .float = edit {
+                session?.windows[window.id]?.floatAgainEdit(pane)
+            } else { nil }
+            submitSelecting(remembered ?? edit)
         case .select(let target): session?.selectPane(target)
         }
     }

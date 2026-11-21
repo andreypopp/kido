@@ -130,19 +130,8 @@ final class SessionView: NSView {
         let changed = Set(marked.keys).union(marks.keys).filter { marked[$0] != marks[$0] }
         let old = windows
         windows = [:]
-        for w in listing where w.id == window || recent.contains(w.id) || ownsFloats() && !w.floats.isEmpty {
-            let id = w.id
-            let view = old[id] ?? WindowView(runtime: runtime)
-            view.windowID = id
-            view.name = w.name
-            if view.superview == nil {
-                view.frame = bounds
-                view.isHidden = true
-                addSubview(view)
-            }
-            windows[id] = view
-            let active = selected.flatMap { w.panes.contains($0) ? $0 : nil }
-            view.update(Layout(w, active: active), Layout(w, visible: true, active: active))
+        for w in listing where w.id == window || recent.contains(w.id) || old[w.id]?.hasFloatState == true || ownsFloats() && !w.floats.isEmpty {
+            retain(w, reusing: old[w.id], active: selected.flatMap { w.panes.contains($0) ? $0 : nil })
         }
         for (id, gone) in old where windows[id] == nil { gone.close() }
         recent.removeAll { windows[$0] == nil }
@@ -151,12 +140,28 @@ final class SessionView: NSView {
         if sentSize == nil { self.shown?.sizeClient() }
     }
 
+    private func retain(_ window: KoSchema.Window, reusing: WindowView?, active: PaneID?) {
+        let view = reusing ?? WindowView(runtime: runtime)
+        view.windowID = window.id
+        view.name = window.name
+        if view.superview == nil {
+            view.frame = bounds
+            view.isHidden = true
+            addSubview(view)
+        }
+        windows[window.id] = view
+        view.update(Layout(window, active: active), Layout(window, visible: true, active: active))
+    }
+
     func adoptFloats(from source: SessionView) {
         for (id, view) in source.windows {
             let hosts = view.takeFloatHosts()
             guard !hosts.isEmpty else { continue }
+            if windows[id] == nil, let w = try? client?.model().layout.layout.window(id) {
+                retain(w, reusing: nil, active: nil)
+            }
             if let destination = windows[id] { destination.adoptFloatHosts(hosts) }
-            else { hosts.values.forEach { $0.detach() } }
+            else { hosts.values.forEach { $0.window?.detach() } }
         }
     }
 
@@ -194,7 +199,7 @@ final class SessionView: NSView {
     private func evict() {
         var hot = 0
         for id in recent where hotSurfaces > Self.budget {
-            guard let view = windows[id], view.hot, !view.hasFloats else { continue }
+            guard let view = windows[id], view.hot, !view.hasFloatState else { continue }
             let count = view.retainedCount
             hot += count
             guard hot > Self.budget, view !== shown else { continue }
